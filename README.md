@@ -14,10 +14,11 @@ agent 抓放流程目前仅支持内存模拟，通用真机运动适配器尚�
 保持 LarePass VPN 和现有 WebRTC Streaming Client 连接。
 Olares 的代码工作副本位于 `/root/Documents/mg400-isaac`。
 运行数据位于 `/root/Documents/mg400-data`。
+容器可能预设内部服务地址，VPN 启动时显式覆盖 `ISAACSIM_HOST`。
 需要启动服务时，先正常退出已有 Isaac Sim，再在 Olares 容器中运行：
 
 ```sh
-/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
+ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
 ```
 
 启动入口打开 `00_OPEN_MG400.usda` 和仿真动作面板，不启动仿真或真机运动。

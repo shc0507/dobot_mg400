@@ -149,10 +149,11 @@ PY
 需要重新启动服务时，先正常退出已有 Isaac Sim，再在 Olares 容器终端运行：
 
 ```sh
-/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
+ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
 ```
 
-启动脚本支持以下环境变量：
+容器可能预设内部服务地址，VPN 启动时显式覆盖 `ISAACSIM_HOST`。
+启动脚本支持以下环境变量。表中默认值仅在对应变量未设置时使用：
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -205,7 +206,7 @@ git -C /root/Documents/mg400-isaac remote set-url origin https://github.com/shc0
 git -C /root/Documents/mg400-isaac rev-parse HEAD
 ```
 
-核对提交后，运行仓库的 `scripts/start_isaac_olares.sh`，再核对 `runtime.json`。
+核对提交后，按上面的 VPN 启动命令运行服务，再核对 `runtime.json`。
 `origin` 地址为 `https://github.com/shc0507/dobot_mg400.git`。
 该私有仓库要求访问凭据，有获授权的 GitHub 只读访问后，可以改从 `origin` 获取提交。
 
@@ -284,7 +285,7 @@ MG400_DATA_DIR=/root/Documents/mg400-data /isaac-sim/python.sh /root/Documents/m
 也可在旧串流进程正常退出后，在 Olares 终端启动自动加载入口：
 
 ```sh
-/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/grasp_bootstrap.py
+ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/grasp_bootstrap.py
 ```
 
 此入口由 Kit 自身执行，用 `runpy` 加载测试，避免额外创建 `SimulationApp`。
@@ -357,7 +358,7 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/mirror.py")
 需要重启串流并自动同步时，先正常退出旧串流进程，再运行：
 
 ```sh
-/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py
+ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py
 ```
 
 当前场景已有 `/World/MG400` 时，入口保留该场景。
@@ -431,7 +432,7 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 停止现有串流进程后也可用同一脚本自动加载：
 
 ```sh
-/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/joint_control.py
+ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/joint_control.py
 ```
 
 Olares 容器内不绑定宿主机源 IP。需能连接所配置机器人的 `29999`、`30003`、

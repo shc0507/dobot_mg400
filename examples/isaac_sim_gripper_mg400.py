@@ -23,8 +23,15 @@ class GripperPanel:
         self.action = self.task = None
         self.closed = self.failed = False
         self.mirror_task = None
-        self.report = {"request": None, "result": "Waiting for robot state.", "mode": None,
-                       "di": None, "ack": False, "arrival_observed": False, "write_acks": []}
+        self.report = {
+            "request": None,
+            "result": "Waiting for robot state.",
+            "mode": None,
+            "di": None,
+            "ack": False,
+            "arrival_observed": False,
+            "write_acks": [],
+        }
         self.report["mirror"] = {"status": "Waiting for USB position feedback."}
 
     async def mirror(self):
@@ -84,10 +91,12 @@ class GripperPanel:
                     continue
                 result = mirror.apply(sample["position"])
                 if pose is not None and pose.stage == stage:
-                    pose.jaws.update(pgea_left_slide=result["q_m"],
-                                     pgea_right_slide=result["q_m"])
-                self.report["mirror"] = {"status": "Following measured USB position.",
-                                         **sample, **result}
+                    pose.jaws.update(pgea_left_slide=result["q_m"], pgea_right_slide=result["q_m"])
+                self.report["mirror"] = {
+                    "status": "Following measured USB position.",
+                    **sample,
+                    **result,
+                }
         except Exception as error:
             self.report["mirror"]["status"] = f"Mirror stopped: {error}"
         finally:
@@ -98,8 +107,15 @@ class GripperPanel:
         return self.action is not None and not self.action.done()
 
     def command(self, text):
-        allowed = {"RobotMode()", "GetErrorID()", "DI(1)", "DI(2)",
-                   "DOExecute(2,0)", "DOExecute(1,0)", "DOExecute(1,1)"}
+        allowed = {
+            "RobotMode()",
+            "GetErrorID()",
+            "DI(1)",
+            "DI(2)",
+            "DOExecute(2,0)",
+            "DOExecute(1,0)",
+            "DOExecute(1,1)",
+        }
         if text not in allowed:
             raise ValueError("This command is not allowed.")
         deadline = time.monotonic() + 2
@@ -151,8 +167,9 @@ class GripperPanel:
                 di = self.state()
                 moving = moving or di == (0, 0)
                 if moving and di == (1, 0):
-                    self.report.update(arrival_observed=True,
-                                       result="DI changed from 00 to 10. Arrival observed.")
+                    self.report.update(
+                        arrival_observed=True, result="DI changed from 00 to 10. Arrival observed."
+                    )
                     return
                 time.sleep(0.1)
             self.report["result"] = "The controller accepted the command. Arrival is not confirmed."
@@ -170,8 +187,13 @@ class GripperPanel:
         return self.action
 
     async def perform(self, request):
-        self.report.update(request=request, result="The command is in progress.", ack=False,
-                           arrival_observed=False, write_acks=[])
+        self.report.update(
+            request=request,
+            result="The command is in progress.",
+            ack=False,
+            arrival_observed=False,
+            write_acks=[],
+        )
         self.write_report()
         try:
             await asyncio.to_thread(self.operate, request)
@@ -197,9 +219,10 @@ class GripperPanel:
                 ui.Label("REAL GRIPPER | 192.168.1.6 | DO1 / DO2", height=24)
                 inputs = ui.Label("DI1 / DI2: waiting", height=24)
                 with ui.HStack(height=32, spacing=8):
-                    buttons = [ui.Button(label, clicked_fn=lambda name=name: self.submit(name))
-                               for label, name in (("Open gripper", "open"),
-                                                   ("Close gripper", "close"))]
+                    buttons = [
+                        ui.Button(label, clicked_fn=lambda name=name: self.submit(name))
+                        for label, name in (("Open gripper", "open"), ("Close gripper", "close"))
+                    ]
                 status = ui.Label(self.report["result"], word_wrap=True, height=65)
                 mirror_status = ui.Label(self.report["mirror"]["status"], word_wrap=True, height=50)
         self.mirror_task = asyncio.ensure_future(self.mirror())
@@ -222,8 +245,10 @@ class GripperPanel:
                 measured = self.report["mirror"]
                 mirror_status.text = measured["status"]
                 if "position" in measured:
-                    mirror_status.text += (f"\nActual: {measured['position']} / 1000 | "
-                                           f"Each jaw: {measured['q_m'] * 1000:.2f} mm")
+                    mirror_status.text += (
+                        f"\nActual: {measured['position']} / 1000 | "
+                        f"Each jaw: {measured['q_m'] * 1000:.2f} mm"
+                    )
                 for button in buttons:
                     button.enabled = not (self.busy or self.failed or self.report.get("read_error"))
         finally:

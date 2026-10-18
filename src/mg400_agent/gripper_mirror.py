@@ -38,9 +38,13 @@ class JawMirror:
                 stage.GetPrimAtPath(path.AppendChild(f"pgea_fingertip_{side}"))
             )
             if (
-                not jaw or not jaw.IsActive() or not jaw.IsA(UsdGeom.Xform)
-                or not joint or not joint.GetPrim().IsActive()
-                or not fingertip or not fingertip.GetPrim().IsActive()
+                not jaw
+                or not jaw.IsActive()
+                or not jaw.IsA(UsdGeom.Xform)
+                or not joint
+                or not joint.GetPrim().IsActive()
+                or not fingertip
+                or not fingertip.GetPrim().IsActive()
                 or joint.GetBody0Rel().GetTargets() != [self.housing.GetPath()]
                 or joint.GetBody1Rel().GetTargets() != [path]
                 or joint.GetAxisAttr().Get() != "Y"
@@ -52,15 +56,23 @@ class JawMirror:
             expected = Gf.Matrix4d(1)
             if direction == -1:
                 expected.SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), 180))
-            if any(abs(frame[row][column] - expected[row][column]) > 1e-6
-                   for frame in (local0, local1) for row in range(4) for column in range(4)):
+            if any(
+                abs(frame[row][column] - expected[row][column]) > 1e-6
+                for frame in (local0, local1)
+                for row in range(4)
+                for column in range(4)
+            ):
                 raise ValueError(f"The {side} jaw frames do not match the MG400 model.")
             self.jaws.append((jaw, local0, local1.GetInverse(), fingertip, direction))
 
     def apply(self, position_0_1000):
         """Apply a measured position. Return each jaw's displacement and the measured model gap."""
-        if (isinstance(position_0_1000, bool) or not isinstance(position_0_1000, Real)
-                or not math.isfinite(position_0_1000) or not 0 <= position_0_1000 <= 1000):
+        if (
+            isinstance(position_0_1000, bool)
+            or not isinstance(position_0_1000, Real)
+            or not math.isfinite(position_0_1000)
+            or not 0 <= position_0_1000 <= 1000
+        ):
             raise ValueError(
                 "The measured gripper position must be a finite number from 0 to 1000."
             )
@@ -71,8 +83,10 @@ class JawMirror:
             for jaw, local0, inverse1, _, _ in self.jaws:
                 xform = UsdGeom.Xformable(jaw)
                 attribute = jaw.GetAttribute("xformOp:transform:mg400Mirror")
-                op = UsdGeom.XformOp(attribute) if attribute else xform.AddTransformOp(
-                    opSuffix="mg400Mirror"
+                op = (
+                    UsdGeom.XformOp(attribute)
+                    if attribute
+                    else xform.AddTransformOp(opSuffix="mg400Mirror")
                 )
                 op.Set(inverse1 * motion * local0 * housing_pose)
                 xform.SetXformOpOrder([op])

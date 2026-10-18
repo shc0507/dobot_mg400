@@ -26,7 +26,8 @@ def stage():
 def matrices(stage):
     return {
         str(prim.GetPath()): UsdGeom.Xformable(prim).GetLocalTransformation()
-        for prim in stage.Traverse() if prim.IsA(UsdGeom.Xformable)
+        for prim in stage.Traverse()
+        if prim.IsA(UsdGeom.Xformable)
     }
 
 
@@ -37,8 +38,11 @@ def test_jaws_follow_fresh_housing_pose_without_changing_other_transforms(stage,
     )
     arm = namespace["UsdPoseMirror"](stage)
     mirror = JawMirror(stage)
-    sources = {layer.identifier: layer.ExportToString() for layer in stage.GetUsedLayers()
-               if layer != stage.GetSessionLayer()}
+    sources = {
+        layer.identifier: layer.ExportToString()
+        for layer in stage.GetUsedLayers()
+        if layer != stage.GetSessionLayer()
+    }
     edit_target = stage.GetEditTarget()
     for joints in ((0, 0, 0, 0), (60, 30, 40, 20), (-30, 10, 60, -50)):
         arm.update(joints)
@@ -58,12 +62,16 @@ def test_jaws_follow_fresh_housing_pose_without_changing_other_transforms(stage,
         for path in JAW_PATHS:
             assert len(UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetOrderedXformOps()) == 1
     assert stage.GetEditTarget() == edit_target
-    assert sources == {layer.identifier: layer.ExportToString() for layer in stage.GetUsedLayers()
-                       if layer != stage.GetSessionLayer()}
+    assert sources == {
+        layer.identifier: layer.ExportToString()
+        for layer in stage.GetUsedLayers()
+        if layer != stage.GetSessionLayer()
+    }
 
 
-@pytest.mark.parametrize("position", [None, "500", True, False, float("nan"), float("inf"),
-                                      -1, 1001, -0.01, 1000.01])
+@pytest.mark.parametrize(
+    "position", [None, "500", True, False, float("nan"), float("inf"), -1, 1001, -0.01, 1000.01]
+)
 def test_invalid_position_changes_nothing(stage, position):
     mirror = JawMirror(stage)
     before = stage.GetSessionLayer().ExportToString()

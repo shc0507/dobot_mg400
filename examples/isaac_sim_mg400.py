@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from mg400_agent.joint_limits import validate_joint_segment, validate_joints  # noqa: E402
-from mg400_agent.mirror import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 
 
 def main() -> None:

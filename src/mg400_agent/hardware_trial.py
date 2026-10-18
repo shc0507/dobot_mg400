@@ -6,11 +6,11 @@ captures state read-only; only the two action tools may enable or move the robot
 
 import json
 import math
-import re
 import socket
 import threading
 import time
 
+from .controller_protocol import parse_controller_response
 from .feedback import FeedbackConnection
 from .joint_limits import validate_joint_segment
 
@@ -125,13 +125,7 @@ class JointTrial:
                 packet.extend(part)
                 if len(packet) >= 4096:
                     raise ValueError("Oversized controller response")
-        response = packet.decode("ascii").strip()
-        match = re.fullmatch(r"(-?\d+),\{(.*)\},(.*);", response, re.DOTALL)
-        if not match or re.sub(r"\s+", "", match[3]) != re.sub(r"\s+", "", text):
-            raise RuntimeError(f"Unexpected controller response: {response}")
-        if int(match[1]) != 0:
-            raise RuntimeError(response)
-        return match[2].strip()
+        return parse_controller_response(packet, text)
 
     def _dashboard_state(self):
         mode = int(self._command("RobotMode()"))

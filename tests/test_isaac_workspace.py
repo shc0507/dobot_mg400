@@ -30,16 +30,24 @@ def stage():
 def cad_flange(joints):
     j1, j2, j3, _ = map(math.radians, joints)
     radius = (
-        0.1095 - 0.0010512570171516 * math.cos(j2) + 0.175001164344716 * math.sin(j2)
-        + 0.175 * math.cos(j3) + 0.00325 * math.sin(j3)
+        0.1095
+        - 0.0010512570171516 * math.cos(j2)
+        + 0.175001164344716 * math.sin(j2)
+        + 0.175 * math.cos(j3)
+        + 0.00325 * math.sin(j3)
     )
     lateral = -0.0000001243781102
-    return np.array([
-        -0.005 + radius * math.cos(j1) - lateral * math.sin(j1),
-        radius * math.sin(j1) + lateral * math.cos(j1),
-        0.175 + 0.0010512570171516 * math.sin(j2) + 0.175001164344716 * math.cos(j2)
-        - 0.175 * math.sin(j3) + 0.00325 * math.cos(j3),
-    ])
+    return np.array(
+        [
+            -0.005 + radius * math.cos(j1) - lateral * math.sin(j1),
+            radius * math.sin(j1) + lateral * math.cos(j1),
+            0.175
+            + 0.0010512570171516 * math.sin(j2)
+            + 0.175001164344716 * math.cos(j2)
+            - 0.175 * math.sin(j3)
+            + 0.00325 * math.cos(j3),
+        ]
+    )
 
 
 def test_main_entry_opens_complete_workbench_without_python(stage):
@@ -172,7 +180,13 @@ class Widget:
 @pytest.fixture
 def controls(monkeypatch, stage):
     state = SimpleNamespace(
-        stage=stage, playing=False, pending_play=False, steps=0, pauses=0, plays=0, views=[],
+        stage=stage,
+        playing=False,
+        pending_play=False,
+        steps=0,
+        pauses=0,
+        plays=0,
+        views=[],
         initial_targets=np.zeros((1, 10)),
     )
     timeline_events, stage_events = Events(), Events()
@@ -225,8 +239,18 @@ def controls(monkeypatch, stage):
         state.steps += 30
 
     modules = {}
-    for name in ("omni", "omni.kit", "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd",
-                 "warp", "isaacsim", "isaacsim.core", "isaacsim.core.simulation_manager"):
+    for name in (
+        "omni",
+        "omni.kit",
+        "omni.kit.app",
+        "omni.timeline",
+        "omni.ui",
+        "omni.usd",
+        "warp",
+        "isaacsim",
+        "isaacsim.core",
+        "isaacsim.core.simulation_manager",
+    ):
         module = modules[name] = ModuleType(name)
         monkeypatch.setitem(sys.modules, name, module)
         if "." in name:
@@ -234,12 +258,15 @@ def controls(monkeypatch, stage):
             setattr(modules[parent], attr, module)
     modules["omni.kit.app"].get_app = lambda: SimpleNamespace(next_update_async=update)
     modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(
-        play=play, pause=pause, is_playing=lambda: state.playing,
+        play=play,
+        pause=pause,
+        is_playing=lambda: state.playing,
         get_timeline_event_stream=lambda: timeline_events,
     )
     modules["omni.timeline"].TimelineEventType = SimpleNamespace(STOP=1)
     modules["omni.usd"].get_context = lambda: SimpleNamespace(
-        get_stage=lambda: state.stage, get_stage_event_stream=lambda: stage_events,
+        get_stage=lambda: state.stage,
+        get_stage_event_stream=lambda: stage_events,
     )
     modules["omni.usd"].StageEventType = SimpleNamespace(OPENING=2, CLOSING=3)
     for name in ("Window", "VStack", "HStack", "Label", "Button"):
@@ -358,7 +385,8 @@ def block_poses(stage, names):
     """Remove composed values in this test's anonymous session, never the saved USD."""
     source_before = {
         layer.identifier: layer.ExportToString()
-        for layer in stage.GetUsedLayers() if layer != stage.GetSessionLayer()
+        for layer in stage.GetUsedLayers()
+        if layer != stage.GetSessionLayer()
     }
     assert stage.GetSessionLayer().anonymous
     with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -366,7 +394,8 @@ def block_poses(stage, names):
             stage.GetPrimAtPath(ROBOT).GetAttribute(f"mg400:{name}JointsDeg").Block()
     assert source_before == {
         layer.identifier: layer.ExportToString()
-        for layer in stage.GetUsedLayers() if layer != stage.GetSessionLayer()
+        for layer in stage.GetUsedLayers()
+        if layer != stage.GetSessionLayer()
     }
     for name in names:
         assert stage.GetPrimAtPath(ROBOT).GetAttribute(f"mg400:{name}JointsDeg").Get() is None
@@ -400,9 +429,7 @@ def test_pickup_needs_only_pickup_preset(controls, stage):
         await panel.run("pickup")
         assert panel.status.text.startswith("Done"), panel.status.text
         robot = controls.state.views[0]
-        assert robot.targets[0, :8] == pytest.approx(
-            np.radians((0, 25, 25, 20, -25, -45, 45, 0))
-        )
+        assert robot.targets[0, :8] == pytest.approx(np.radians((0, 25, 25, 20, -25, -45, 45, 0)))
         assert robot.targets[0, -2:] == pytest.approx((0, 0))
         panel.close()
 
@@ -410,11 +437,21 @@ def test_pickup_needs_only_pickup_preset(controls, stage):
 
 
 @pytest.mark.parametrize("playing", (False, True))
-@pytest.mark.parametrize("action,missing", (
-    ("pickup", "pickup"), ("lift", "lift"), ("demo", "pickup"), ("demo", "lift"),
-))
+@pytest.mark.parametrize(
+    "action,missing",
+    (
+        ("pickup", "pickup"),
+        ("lift", "lift"),
+        ("demo", "pickup"),
+        ("demo", "lift"),
+    ),
+)
 def test_missing_required_preset_fails_before_play_without_disturbing_timeline(
-    controls, stage, action, missing, playing,
+    controls,
+    stage,
+    action,
+    missing,
+    playing,
 ):
     block_poses(stage, (missing,))
 

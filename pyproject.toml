@@ -17,6 +17,8 @@ mujoco = ["mujoco>=3.3,<4"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+notebook = ["ipykernel==7.4.0"]
+usd = ["usd-core==26.8", "numpy>=2,<3"]
 
 [project.scripts]
 mg400-agent = "mg400_agent.cli:main"
@@ -29,7 +31,7 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["work"]
+extend-exclude = ["work", ".agents"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

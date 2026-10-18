@@ -21,7 +21,7 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.feedback import FeedbackConnection  # noqa: E402
-from mg400_agent.mirror import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 
 ROBOT = "/World/MG400"
 HOST = "192.168.1.6"

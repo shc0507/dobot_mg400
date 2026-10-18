@@ -21,6 +21,9 @@
 | `examples/isaac_sim_mirror_mg400.py`                 | 在当前场景中实时显示真机四轴反馈，支持断线重连                          |
 | `examples/isaac_sim_mirror_bootstrap.py`             | Kit `--exec` 加载已保存的场景并启动真机姿态同步                         |
 | `examples/isaac_sim_control_mg400.py`                | Isaac 内四轴真机控制面板：读取当前角度、使能、单次到位、停止            |
+| `examples/isaac_sim_gripper_mg400.py`                | 实体夹爪面板：MG400 I/O 开合与 USB 位置反馈                            |
+| `scripts/gripper_feedback.py`                       | Olares 主机读取 USB 夹爪位置，写入供 Isaac 读取的测量文件              |
+| `scripts/isaac_gripper_feedback.mjs`                | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac                  |
 | `examples/isaac_sim_mg400.py`                        | 使用 Isaac Sim 5.1 兼容 API 的独立运行入口                              |
 | `scripts/build_isaac_model.py`                       | 从现有模型重建 USD，无需启动 Isaac Sim                                  |
 | `scripts/build_isaac_grasp.py`                       | 生成物理夹爪覆盖层，保留基础机器人资产                                  |
@@ -44,7 +47,8 @@ PGEA 侧出线版、两个估算指尖和各参考坐标系都随法兰移动。
 
 ```python
 import runpy
-runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_actions_mg400.py')
+
+runpy.run_path("/root/Documents/mg400-isaac/examples/isaac_sim_actions_mg400.py")
 ```
 
 脚本只显示 **MG400 Actions — current scene** 面板。点击按钮后才开始物理仿真，
@@ -115,15 +119,22 @@ Olares 容器内使用 Isaac Sim `6.1.0-rc.26`，安装目录为 `/isaac-sim`。
 /root/Documents/start-isaac-vpn.sh
 ```
 
-将项目的 `isaacsim/`、`examples/` 和 `src/` 保持相对目录结构，复制到例如
-`/root/Documents/mg400-isaac/`。这里的相对引用保证场景可以整体移动。
-不需要上传 `.env`、API key 或安装本项目的模型 API 依赖。
+将以下文件和目录复制到 `/root/Documents/mg400-isaac/`，保留相对目录结构：
 
-在 WebRTC 客户端中打开 **Window → Script Editor**，执行：
+- `00_OPEN_MG400.usda`：日常场景入口。
+- `isaacsim/`：场景层、机器人资产及许可证。
+- `examples/`：仿真动作、真机面板与验收脚本。
+- `src/`：面板和脚本共用的 Python 模块。
+- `scripts/`：包含 Olares 主机使用的 USB 反馈采集脚本。
+
+相对引用允许场景整体移动。不必上传 `.env` 或 API key，也不必安装模型 API 依赖。
+日常使用按上文打开 `00_OPEN_MG400.usda` 和仿真动作面板。
+检查基础模型导入时，在 **Window → Script Editor** 执行下列脚本：
 
 ```python
 import runpy
-runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_load_mg400.py')
+
+runpy.run_path("/root/Documents/mg400-isaac/examples/isaac_sim_load_mg400.py")
 ```
 
 脚本会先备份原场景到 `isaacsim/previous_scene_<时间>.usda`，再打开新场景；
@@ -145,7 +156,8 @@ runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_load_mg400.py')
 
 ```python
 import runpy
-runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_grasp_mg400.py')
+
+runpy.run_path("/root/Documents/mg400-isaac/examples/isaac_sim_grasp_mg400.py")
 ```
 
 脚本先备份当前场景到 `isaacsim/before_grasp_<时间>.usda`，然后打开
@@ -213,7 +225,8 @@ PhysX 接触、摩擦承载和释放行为，不能验证整机碰撞、真实�
 
 ```python
 import runpy
-runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_mirror_mg400.py')
+
+runpy.run_path("/root/Documents/mg400-isaac/examples/isaac_sim_mirror_mg400.py")
 ```
 
 脚本只接收 `192.168.1.6:30004` 的关节反馈，不发送真机命令。它先备份当前场景，
@@ -257,7 +270,9 @@ Isaac 模型与 Actual 显示 ← TCP 30004 ← MG400 实测角度
 **Window → Script Editor** 执行：
 
 ```python
-import runpy; runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_control_mg400.py')
+import runpy
+
+runpy.run_path("/root/Documents/mg400-isaac/examples/isaac_sim_control_mg400.py")
 ```
 
 脚本复用现有实时同步；尚未启动同步时，会通过 mirror bootstrap 备份当前场景、
@@ -307,7 +322,8 @@ Olares 容器内不绑定宿主机源 IP。需能连接机器人 `192.168.1.6` �
 
 ```python
 import runpy
-runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_gripper_mg400.py')
+
+runpy.run_path("/root/Documents/mg400-isaac/examples/isaac_sim_gripper_mg400.py")
 ```
 
 Olares 项目根目录的 `START_REAL_GRIPPER.py` 是同一入口。
@@ -397,10 +413,14 @@ python3 scripts/gripper_feedback.py --output work/gripper_olares_feedback.json
 
 ```python
 import runpy
-root = '/root/Documents/mg400-isaac'
-runpy.run_path(root + '/examples/isaac_sim_gripper_mg400.py', init_globals={
-    'FEEDBACK_PATH': root + '/work/gripper_olares_feedback.json',
-})
+
+root = "/root/Documents/mg400-isaac"
+runpy.run_path(
+    root + "/examples/isaac_sim_gripper_mg400.py",
+    init_globals={
+        "FEEDBACK_PATH": root + "/work/gripper_olares_feedback.json",
+    },
+)
 ```
 
 文件反馈与 Mac WebRTC 反馈互斥。
@@ -433,11 +453,20 @@ USD 旋转关节限位和 drive target 单位为度，Isaac articulation API 的
 ```sh
 uv run --no-project --with usd-core==26.8 --with numpy python scripts/build_isaac_model.py
 uv run --no-project --with usd-core==26.8 --with numpy python scripts/build_isaac_grasp.py
-uv run --no-project --with usd-core==26.8 --with numpy --with pytest python -m pytest tests/test_isaac_model.py tests/test_isaac_grasp.py -q
+uv run --no-project --with usd-core==26.8 --with numpy python scripts/build_isaac_workspace.py
+```
+
+运行全部离线检查，包含工作场景、动作面板和夹爪镜像：
+
+```sh
+uv sync --all-extras --group usd
+uv run --all-extras --group usd pytest -ra
 ```
 
 本地测试比较源网格/颜色、惯量张量、关节拓扑、零位坐标、多姿态 CAD 运动学和夹爪偏移。
 物理夹爪测试还检查两侧滑动方向、开闭净距、原视觉网格去重、质量分配、驱动与接触参数。
+`usd` 依赖组提供 `pxr` 和 NumPy。未安装时，USD 模型测试会跳过。
+`-ra` 显示跳过原因，Lua 检查仍要求本机安装 Lua 解释器。
 这些检查不能替代服务器端的渲染与 PhysX 验证。
 
 独立运行入口供装有 Isaac Sim 的 Linux / Windows 环境使用。以下是 5.1 的兼容 API，

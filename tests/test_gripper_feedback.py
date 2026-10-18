@@ -11,8 +11,13 @@ RESTART = "ea97d1be-5302-44a1-8dfb-83d88defc935"
 
 def sample(**changes):
     return {
-        "session": SESSION, "seq": 0, "sent_at": 1000.0,
-        "init": 1, "state": 1, "position": 1000, **changes,
+        "session": SESSION,
+        "seq": 0,
+        "sent_at": 1000.0,
+        "init": 1,
+        "state": 1,
+        "position": 1000,
+        **changes,
     }
 
 
@@ -116,17 +121,37 @@ def test_timestamp_limit_is_inclusive(clocks, offset):
     assert feedback.receive(sample(sent_at=1000.0 + offset))
 
 
-@pytest.mark.parametrize("field,value", [
-    ("session", "not-a-uuid"), ("session", UUID(SESSION)),
-    ("seq", -1), ("seq", True), ("seq", 1.0),
-    ("sent_at", True), ("sent_at", "1000"), ("sent_at", float("nan")),
-    ("sent_at", float("inf")), ("sent_at", -float("inf")),
-    ("sent_at", 10**1000), ("sent_at", 997.999), ("sent_at", 1002.001),
-    ("init", 0), ("init", 2), ("init", True), ("init", 1.0),
-    ("state", -1), ("state", 3), ("state", True), ("state", 1.0),
-    ("position", -1), ("position", 1001), ("position", True),
-    ("position", 0.0), ("position", float("nan")),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("session", "not-a-uuid"),
+        ("session", UUID(SESSION)),
+        ("seq", -1),
+        ("seq", True),
+        ("seq", 1.0),
+        ("sent_at", True),
+        ("sent_at", "1000"),
+        ("sent_at", float("nan")),
+        ("sent_at", float("inf")),
+        ("sent_at", -float("inf")),
+        ("sent_at", 10**1000),
+        ("sent_at", 997.999),
+        ("sent_at", 1002.001),
+        ("init", 0),
+        ("init", 2),
+        ("init", True),
+        ("init", 1.0),
+        ("state", -1),
+        ("state", 3),
+        ("state", True),
+        ("state", 1.0),
+        ("position", -1),
+        ("position", 1001),
+        ("position", True),
+        ("position", 0.0),
+        ("position", float("nan")),
+    ],
+)
 def test_invalid_sample_stops_updates_until_new_valid_sample(clocks, field, value):
     feedback = FeedbackState()
     assert feedback.receive(sample())

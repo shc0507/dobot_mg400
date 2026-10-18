@@ -143,8 +143,11 @@ def test_json_sequence_and_nonzero_exit_on_read_error(module, monkeypatch, capsy
             closed.append(True)
 
     monkeypatch.setitem(module.run.__globals__, "connect", connect)
-    monkeypatch.setitem(module.run.__globals__, "read",
-                        Mock(side_effect=[(1, 0, 600), (1, 1, 1000), TimeoutError("Read failed")]))
+    monkeypatch.setitem(
+        module.run.__globals__,
+        "read",
+        Mock(side_effect=[(1, 0, 600), (1, 1, 1000), TimeoutError("Read failed")]),
+    )
     monkeypatch.setattr(module.time, "sleep", Mock())
     assert module.main([]) == 1
     output = capsys.readouterr()
@@ -153,8 +156,11 @@ def test_json_sequence_and_nonzero_exit_on_read_error(module, monkeypatch, capsy
     assert str(uuid.UUID(rows[0]["session"])) == rows[1]["session"]
     assert [row["seq"] for row in rows] == [1, 2]
     assert [row["position"] for row in rows] == [600, 1000]
-    assert all(set(row) == {"session", "seq", "sent_at", "init", "state", "position"}
-               and isinstance(row["sent_at"], float) for row in rows)
+    assert all(
+        set(row) == {"session", "seq", "sent_at", "init", "state", "position"}
+        and isinstance(row["sent_at"], float)
+        for row in rows
+    )
     assert "Read failed" in output.err
     assert closed == [True]
 
@@ -184,9 +190,14 @@ def test_linux_selects_exact_identity(module, monkeypatch, tmp_path):
     assert module.resolve_port() == str(expected)
 
 
-@pytest.mark.parametrize("identity", [("0404", "6001", "BG02Q5TN"),
-                                      ("0403", "6002", "BG02Q5TN"),
-                                      ("0403", "6001", "BG02Q5TN-extra")])
+@pytest.mark.parametrize(
+    "identity",
+    [
+        ("0404", "6001", "BG02Q5TN"),
+        ("0403", "6002", "BG02Q5TN"),
+        ("0403", "6001", "BG02Q5TN-extra"),
+    ],
+)
 def test_linux_rejects_nonmatching_identity(module, monkeypatch, tmp_path, identity):
     linux_device(module, monkeypatch, tmp_path, "ttyUSB0", identity)
     with pytest.raises(RuntimeError, match="Found 0"):
@@ -214,8 +225,14 @@ def test_macos_keeps_original_device_path(module, monkeypatch):
 
 def test_file_output_replaces_complete_sample_without_stdout(module, tmp_path, capsys):
     output = tmp_path / "feedback.json"
-    sample = {"session": str(uuid.uuid4()), "seq": 1, "sent_at": 1234.5,
-              "init": 1, "state": 0, "position": 501}
+    sample = {
+        "session": str(uuid.uuid4()),
+        "seq": 1,
+        "sent_at": 1234.5,
+        "init": 1,
+        "state": 0,
+        "position": 501,
+    }
     module.emit(sample, output)
     with output.open() as old_file:
         sample["seq"] = 2

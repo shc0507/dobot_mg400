@@ -16,26 +16,9 @@ uv run --extra mujoco mg400-agent --backend mujoco --viewer demo
 窗口中的 J1 通过执行器转到 20°，然后运动回四轴零目标。夹爪使用已打包的
 PGEA 侧出线版外形，随法兰一起移动，无需重新生成模型。
 
-项目根目录的 `.env` 可从 `.env.example` 新建；已有文件时不要覆盖。
-以下 Qwen 服务使用此配置，允许保留空 key：
-
-```dotenv
-OPENAI_API_KEY=
-OPENAI_MODEL=Olares/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
-OPENAI_API_MODE=chat_completions
-OPENAI_BASE_URL=https://366ada1d.chrisjuan.olares.com/v1
-```
-
-另一台 Qwen 服务的配置地址为 `https://366ada1d.qumusphusis.olares.com/v1`。
-切换服务时，更改 `OPENAI_BASE_URL`。按对应服务的要求在本地配置 key。
-地址必须包含协议和 `/v1`。
-这两台服务使用 OpenAI 兼容的 Chat Completions 接口。
-使用 OpenAI 官方 Responses 接口时，设置 `OPENAI_API_MODE=responses`（默认），不设置 `OPENAI_BASE_URL`。
-
-服务和模型必须支持结构化函数工具调用，仅能回答 “Hello” 不足以证明可以执行关节动作。
-显式配置 `OPENAI_BASE_URL` 的 `chat_completions` 服务允许 key 留空；
-若服务器要求认证，请填写本地 key，程序不会在认证失败后自动尝试无认证请求。
-程序不会自动加载 `.env`，以下命令通过 uv 加载，也可直接设置环境变量。
+按 [模型 API 配置](../README.md#模型-api-配置) 设置项目根目录的 `.env`。
+该说明包含 Qwen 服务地址、认证条件和 OpenAI Responses 配置。
+以下命令通过 uv 加载 `.env`：
 
 ```bash
 # 连续对话：同一窗口、同一物理状态，保留对话上下文。
@@ -48,9 +31,7 @@ uv run --env-file .env --extra llm --extra mujoco mg400-agent --backend mujoco -
 uv run --extra mujoco mg400-agent --backend mujoco state
 ```
 
-`ask` 和 `chat` 可以追加 `--model 模型ID` 覆盖 `OPENAI_MODEL`。
-省略 `--viewer` 时无窗口运行；`demo` 固定执行动作，不调用模型。
-API key 只需保存在本地环境或 `.env`，不要粘贴到聊天或输出日志中。
+省略 `--viewer` 时无窗口运行。`demo` 固定执行动作，不调用模型。
 
 连续对话可依次输入“第一轴转到20度”“第一轴再增加10度”“读取当前关节角”
 “回到初始姿态”。关节编号是控制器的 J1、J2、J3、J4，角度单位为度，
@@ -254,6 +235,8 @@ MuJoCo 内部使用米、弧度；CLI 输入关节角为度，输出位置为毫
 
 ## 检查与重建
 
+只检查 MuJoCo 与基础功能时，运行：
+
 ```bash
 uv run --extra mujoco pytest
 uv run ruff check .
@@ -264,6 +247,7 @@ uv run ruff format --check .
 测试还检查重复回放无漂移、轨迹输入、插值端点，以及关闭窗口时及时取消。
 动力学测试检查关节扰动恢复、关闭执行器后的重力下落、条件限位和异常退出。
 未安装 MuJoCo 时，依赖真实模型的测试会跳过，其余项目测试仍可运行。
+完整离线检查命令见 [开发检查](../README.md#开发检查)。
 
 重建模型需要本地参考 Git 仓库中保留上述提交；支持 sparse checkout。
 构建依赖和运行依赖分开：

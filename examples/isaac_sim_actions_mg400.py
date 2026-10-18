@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.joint_limits import validate_joints  # noqa: E402
-from mg400_agent.mirror import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 
 ROBOT = "/World/MG400"
 ARM_NAMES = [f"mg400_{name}" for name in JOINT_NAMES]
@@ -59,9 +59,7 @@ class MG400Actions:
                         for label, action in choices:
                             ui.Button(label, clicked_fn=lambda action=action: self.start(action))
         timeline_events = self.timeline.get_timeline_event_stream()
-        self.stop_subscription = timeline_events.create_subscription_to_pop(
-            self.on_timeline_event
-        )
+        self.stop_subscription = timeline_events.create_subscription_to_pop(self.on_timeline_event)
         self.stage_subscription = self.context.get_stage_event_stream().create_subscription_to_pop(
             self.on_stage_event
         )
@@ -178,8 +176,10 @@ class MG400Actions:
     async def run(self, action):
         self.play_requested = False
         try:
-            required_poses = ("pickup", "lift") if action == "demo" else (
-                (action,) if action in ("pickup", "lift") else ()
+            required_poses = (
+                ("pickup", "lift")
+                if action == "demo"
+                else ((action,) if action in ("pickup", "lift") else ())
             )
             await self.attach(required_poses)
             if action in ("open", "close"):

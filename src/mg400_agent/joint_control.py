@@ -6,11 +6,11 @@ thread. A stopped instance never sends another enable or movement command.
 
 import json
 import math
-import re
 import socket
 import threading
 import time
 
+from .controller_protocol import parse_controller_response
 from .feedback import Feedback
 from .joint_limits import validate_joint_segment, validate_joints
 
@@ -42,8 +42,10 @@ class JointControl:
         """
         self._stopped.set()
         pending = self._pending
-        if pending is not None and pending["sent"] and not (
-            pending["done"].is_set() and pending["ok"]
+        if (
+            pending is not None
+            and pending["sent"]
+            and not (pending["done"].is_set() and pending["ok"])
         ):
             self._stop_uncertain = True
 
@@ -99,13 +101,7 @@ class JointControl:
                 packet.extend(part)
                 if len(packet) >= 4096:
                     raise ValueError("Oversized controller response")
-        response = packet.decode("ascii").strip()
-        match = re.fullmatch(r"(-?\d+),\{(.*)\},(.*);", response, re.DOTALL)
-        if not match or re.sub(r"\s+", "", match[3]) != re.sub(r"\s+", "", text):
-            raise RuntimeError(f"Unexpected controller response: {response}")
-        if int(match[1]) != 0:
-            raise RuntimeError(response)
-        return match[2].strip()
+        return parse_controller_response(packet, text)
 
     def _dashboard_state(self):
         mode = int(self._command("RobotMode()"))
@@ -279,8 +275,10 @@ class JointControl:
         self.cancel()
         with self._send_lock:
             pending = self._pending
-            uncertain = pending is not None and pending["sent"] and not (
-                pending["done"].is_set() and pending["ok"]
+            uncertain = (
+                pending is not None
+                and pending["sent"]
+                and not (pending["done"].is_set() and pending["ok"])
             )
             if uncertain:
                 self._stop_uncertain = True

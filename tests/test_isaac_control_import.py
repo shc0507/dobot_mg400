@@ -77,7 +77,13 @@ def test_panel_import_in_fresh_process():
 def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
     package_dir = tmp_path / "src/mg400_agent"
     package_dir.mkdir(parents=True)
-    for filename in ("__init__.py", "feedback.py", "joint_limits.py", "config.py"):
+    for filename in (
+        "__init__.py",
+        "feedback.py",
+        "joint_limits.py",
+        "config.py",
+        "controller_protocol.py",
+    ):
         shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
     examples = tmp_path / "examples"
     examples.mkdir()

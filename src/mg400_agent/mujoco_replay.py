@@ -13,7 +13,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from .config import finite_number
-from .mirror import JOINT_NAMES, joint_angles
+from .kinematics import JOINT_NAMES, joint_angles
 
 
 @dataclass(frozen=True)

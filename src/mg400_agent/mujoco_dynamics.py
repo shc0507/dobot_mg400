@@ -5,7 +5,7 @@ import time
 from contextlib import nullcontext
 
 from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
-from .mirror import JOINT_NAMES, joint_angles
+from .kinematics import JOINT_NAMES, joint_angles
 from .mujoco_replay import Keyframe, flange_state, load_model, trajectory_samples, wait_for_viewer
 
 # Acceptance values for this uncalibrated simulation controller, not hardware limits.

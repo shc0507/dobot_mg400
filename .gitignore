@@ -11,3 +11,17 @@ build/
 !.env.example
 .DS_Store
 work/
+
+# Isaac Sim writes these files during operation.
+/isaacsim/isaac_sim_validation.json
+/isaacsim/grasp_validation.json
+/isaacsim/mirror_status.json
+/isaacsim/control_status.json
+/isaacsim/real_gripper_status.json
+/isaacsim/grasp_held.png
+/isaacsim/grasp_released.png
+/isaacsim/grasp_test_scene.usda
+/isaacsim/previous_scene_[0-9]*.usda
+/isaacsim/before_grasp_[0-9]*.usda
+/isaacsim/before_mirror_[0-9]*.usda
+/isaacsim/before_mirror_load_[0-9]*.usda

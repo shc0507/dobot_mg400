@@ -37,7 +37,7 @@ from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics, UsdShade  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.joint_limits import validate_joints  # noqa: E402
-from mg400_agent.mirror import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 
 ROBOT = "/World/MG400"
 FINGERS = [f"{ROBOT}/pgea_{side}_jaw" for side in ("left", "right")]

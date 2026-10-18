@@ -1,7 +1,14 @@
 # MG400 与电动夹爪适配
 
 通用抓放真机入口 `src/mg400_agent/hardware.py` 仍会抛出 `NotImplementedError`。
-受限关节试验使用独立入口。通用真机适配的接口与要求见后文。
+现有真机功能通过直接 TCP 接入，使用独立入口：
+
+- [Isaac 四轴面板](isaacsim.md#在-isaac-中控制真机四轴)：单次受限关节运动与实际姿态同步。
+- [Isaac 夹爪面板](isaacsim.md#在-isaac-中控制实体夹爪)：MG400 I/O 开合与 USB 位置反馈。
+- 下述自然语言 J4 试验：仅接受预设的转出和回位动作。
+
+这些入口尚未接入通用 `Arm` / `Gripper` 抓放接口。
+通用适配可继续使用直接 TCP，也可采用后文的 ROS 2 路线。
 
 ## 自然语言 J4 受限试验
 
@@ -10,6 +17,7 @@
 程序以启动时读取的实际 J4 角度为起点。
 J4 从起点增加 2°，到位后返回起点。每个动作最多执行一次。
 此入口不支持通用真机聊天或抓放，也不使用仿真的四轴零位作为真机起点。
+模型 API 地址、认证和 `.env` 用法见 [模型 API 配置](../README.md#模型-api-配置)。
 
 确认夹爪、线缆周围有空隙且操作者在急停旁后，运行以下命令会实际使能和运动：
 
@@ -29,20 +37,21 @@ uv run --env-file .env --extra llm python examples/agent_j4_trial.py \
 同步显示可独立运行 `mg400-mirror`（见 [CoppeliaSim 说明](coppeliasim.md)）；
 显示来自真机实际反馈，CoppeliaSim 应保持仿真停止。当前这份显示模型尚不含夹爪。
 
-## 优先参考：HarvestX/MG400_ROS2
+## 可选 ROS 2 路线：HarvestX/MG400_ROS2
 
-ROS 2 接入优先参考 [HarvestX/MG400_ROS2](https://github.com/HarvestX/MG400_ROS2)。
+如果采用 ROS 2，可参考 [HarvestX/MG400_ROS2](https://github.com/HarvestX/MG400_ROS2)。
 本文接口说明基于 `humble` 分支提交
 [`1a8c7344be44c52030f7216c0f387873ed91fd11`](https://github.com/HarvestX/MG400_ROS2/tree/1a8c7344be44c52030f7216c0f387873ed91fd11)。
 这是 HarvestX 的 ROS 2 项目。
-下方 Dobot 官方 SDK 用于协议核对，也可作为直接 TCP 接入的备选。
+下方 Dobot 官方 SDK 用于核对现有直接 TCP 接口和后续通用适配。
 
 其 [README](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/README.md)
 列出的环境是 Ubuntu 22 + ROS 2 Humble、MG400 固件 1.5.6.0。
 仓库提供机器人模型、RViz 显示、驱动节点、运动 action 和控制 service。
 `display.launch.py` 可无硬件显示模型，但不等于物理仿真或完整避障规划。
 
-后续推荐结构：现有 agent / skills → ROS 2 适配器 → HarvestX 驱动 → MG400。
+ROS 2 路线结构：现有 agent / skills → ROS 2 适配器 → HarvestX 驱动 → MG400。
+本项目当前没有 ROS 2 后端。
 以下名称基于 `main.launch.py` 的默认 `mg400` 命名空间；修改 namespace 时应同步调整。
 
 | 本项目边界 | HarvestX 对应接口 / 接入要求 |
@@ -75,7 +84,7 @@ ROS 2 接入优先参考 [HarvestX/MG400_ROS2](https://github.com/HarvestX/MG400
 `rclpy` 必须与所安装 ROS 发行版的 Python 环境兼容，不能假定当前 macOS 的 venv 可直接使用。
 驱动应先在上游支持的 Ubuntu / Humble 环境验证，再确定 agent 同进程运行还是通过独立桥接进程通信。
 
-## Dobot 官方资料（直接 TCP 接入备选）
+## Dobot 官方资料（直接 TCP 接入）
 
 - [MG400 / M1Pro 四轴 Python SDK](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python)
 - [SDK 源码](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python/blob/main/dobot_api.py)

@@ -19,7 +19,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.joint_limits import validate_joints  # noqa: E402
-from mg400_agent.mirror import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 
 ROBOT = "/World/MG400"
 PICKUP = (0.0, 25.0, 45.0, 0.0)
@@ -48,7 +48,8 @@ def body_transforms(stage, joints_deg):
     result = {}
     while pending:
         available = [
-            joint for joint in pending
+            joint
+            for joint in pending
             if not joint.GetRelationship("physics:body0").GetTargets()
             or joint.GetRelationship("physics:body0").GetTargets()[0] in result
         ]
@@ -66,8 +67,7 @@ def body_transforms(stage, joints_deg):
                 motion.SetRotate(Gf.Rotation(Gf.Vec3d(*axis), math.degrees(coordinate)))
             parent_world = result[parent[0]] if parent else Gf.Matrix4d(1)
             result[child] = (
-                joint_frame(joint, 1).GetInverse()
-                * motion * joint_frame(joint, 0) * parent_world
+                joint_frame(joint, 1).GetInverse() * motion * joint_frame(joint, 0) * parent_world
             )
             pending.remove(joint)
     return result, coordinates
@@ -137,10 +137,21 @@ def build_workspace(project_root=ROOT):
     flange = low[Sdf.Path(ROBOT + "/mg400_end_effector_flange")].ExtractTranslation()
     object_center = flange - Gf.Vec3d(0, 0, 0.0965)
     support_height = object_center[2] - 0.01
-    box(stage, "/World/GraspSupport", (flange[0], flange[1], support_height / 2),
-        (0.12, 0.12, support_height), (0.18, 0.23, 0.28))
-    cube = box(stage, "/World/GraspObject", object_center + Gf.Vec3d(0, 0, 0.0005),
-               (0.008, 0.008, 0.02), (0.95, 0.24, 0.045), mass=0.005)
+    box(
+        stage,
+        "/World/GraspSupport",
+        (flange[0], flange[1], support_height / 2),
+        (0.12, 0.12, support_height),
+        (0.18, 0.23, 0.28),
+    )
+    cube = box(
+        stage,
+        "/World/GraspObject",
+        object_center + Gf.Vec3d(0, 0, 0.0005),
+        (0.008, 0.008, 0.02),
+        (0.95, 0.24, 0.045),
+        mass=0.005,
+    )
     material = UsdShade.Material.Define(stage, "/World/GraspMaterial")
     contact = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
     contact.CreateStaticFrictionAttr(1)

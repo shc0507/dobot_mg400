@@ -277,9 +277,10 @@ def test_run_initializes_passively_and_stops_active_move_on_close(
                 assert await asyncio.to_thread(panel.control.move_started.wait, 1)
             panel.window.visible = False
 
-    modules = {name: ModuleType(name) for name in (
-        "omni", "omni.kit", "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd"
-    )}
+    modules = {
+        name: ModuleType(name)
+        for name in ("omni", "omni.kit", "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd")
+    }
     modules["omni"].kit = modules["omni.kit"]
     modules["omni.kit"].app = modules["omni.kit.app"]
     for name in ("timeline", "ui", "usd"):

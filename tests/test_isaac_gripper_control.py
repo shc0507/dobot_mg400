@@ -19,10 +19,12 @@ def module(monkeypatch, tmp_path):
     monkeypatch.setattr(socket, "create_connection", Mock(side_effect=AssertionError("No network")))
     with monkeypatch.context() as guard:
         guard.setattr(asyncio, "ensure_future", Mock(side_effect=AssertionError("No startup task")))
-        namespace = runpy.run_path(str(ROOT / "examples/isaac_sim_gripper_mg400.py"),
-                                  run_name="test_gripper")
-    monkeypatch.setitem(namespace["GripperPanel"].write_report.__globals__,
-                        "REPORT", tmp_path / "status.json")
+        namespace = runpy.run_path(
+            str(ROOT / "examples/isaac_sim_gripper_mg400.py"), run_name="test_gripper"
+        )
+    monkeypatch.setitem(
+        namespace["GripperPanel"].write_report.__globals__, "REPORT", tmp_path / "status.json"
+    )
     return SimpleNamespace(**namespace)
 
 
@@ -64,8 +66,9 @@ def test_multiline_response_still_requires_success_and_exact_echo(module, monkey
     wire.sendall.assert_called_once_with(b"GetErrorID()")
 
 
-@pytest.mark.parametrize("reply", [b"-1,{},DOExecute(1,1);", b"0,{},DOExecute(1,0);",
-                                   b"0,{},DOExecute(1,1);extra", b""])
+@pytest.mark.parametrize(
+    "reply", [b"-1,{},DOExecute(1,1);", b"0,{},DOExecute(1,0);", b"0,{},DOExecute(1,1);extra", b""]
+)
 def test_bad_response_does_not_retry_write(module, monkeypatch, reply):
     wire = connection(monkeypatch, [reply])
     with pytest.raises((RuntimeError, ValueError, ConnectionError)):
@@ -89,7 +92,9 @@ def test_preflight_blocks_output_when_robot_is_not_ready(module, mode, alarms):
     with pytest.raises(RuntimeError, match="not ready"):
         panel.operate("close")
     assert [call.args[0] for call in panel.command.call_args_list] == [
-        "RobotMode()", "GetErrorID()"]
+        "RobotMode()",
+        "GetErrorID()",
+    ]
 
 
 @pytest.mark.parametrize("mode", ["4", "5"])
@@ -100,7 +105,11 @@ def test_refresh_reads_raw_inputs_without_output(module, mode):
     assert panel.report["di"] == [1, 0]
     assert panel.report["mode"] == int(mode)
     assert [call.args[0] for call in panel.command.call_args_list] == [
-        "RobotMode()", "GetErrorID()", "DI(1)", "DI(2)"]
+        "RobotMode()",
+        "GetErrorID()",
+        "DI(1)",
+        "DI(2)",
+    ]
 
 
 @pytest.mark.parametrize("action,value", [("open", 0), ("close", 1)])
@@ -117,7 +126,9 @@ def test_output_mapping_and_arrival_requires_transition(
     monkeypatch.setattr(module.time, "sleep", lambda delay: now.__setitem__(0, now[0] + delay))
     panel.operate(action)
     assert [call.args[0] for call in panel.command.call_args_list] == [
-        "DOExecute(2,0)", f"DOExecute(1,{value})"]
+        "DOExecute(2,0)",
+        f"DOExecute(1,{value})",
+    ]
     assert panel.report["ack"]
     assert panel.report["arrival_observed"] is transition
 

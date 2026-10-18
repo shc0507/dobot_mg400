@@ -33,8 +33,10 @@ def resolve_port():
             continue
         for parent in (device, *device.parents):
             try:
-                identity = tuple((parent / key).read_text().strip()
-                                 for key in ("idVendor", "idProduct", "serial"))
+                identity = tuple(
+                    (parent / key).read_text().strip()
+                    for key in ("idVendor", "idProduct", "serial")
+                )
             except FileNotFoundError:
                 continue
             if identity == ("0403", "6001", "BG02Q5TN"):
@@ -65,8 +67,14 @@ def connect():
         saved = termios.tcgetattr(fd)
         fcntl.ioctl(fd, termios.TIOCEXCL)
         attrs = termios.tcgetattr(fd)
-        attrs[:6] = [0, 0, termios.CLOCAL | termios.CREAD | termios.CS8, 0,
-                     termios.B115200, termios.B115200]
+        attrs[:6] = [
+            0,
+            0,
+            termios.CLOCAL | termios.CREAD | termios.CS8,
+            0,
+            termios.B115200,
+            termios.B115200,
+        ]
         attrs[6][termios.VMIN] = attrs[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
         termios.tcflush(fd, termios.TCIFLUSH)
@@ -134,8 +142,17 @@ def run(output=None):
         while True:
             initialized, state, position = read(fd)
             sequence += 1
-            emit({"session": session, "seq": sequence, "sent_at": time.time(),
-                  "init": initialized, "state": state, "position": position}, output)
+            emit(
+                {
+                    "session": session,
+                    "seq": sequence,
+                    "sent_at": time.time(),
+                    "init": initialized,
+                    "state": state,
+                    "position": position,
+                },
+                output,
+            )
             next_read = max(next_read + PERIOD_S, time.monotonic())
             time.sleep(max(0, next_read - time.monotonic()))
 

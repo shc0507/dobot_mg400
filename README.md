@@ -2,7 +2,7 @@
 
 Dobot MG400 + PGEA 电动夹爪的仿真、真机控制和 Python agent 项目。
 主要工作流是 Olares 上的 Isaac Sim 场景与真机面板。
-MuJoCo 用于离线关节控制和轨迹回放，CoppeliaSim 用于只读真机同步显示。
+MuJoCo 用于离线关节控制和轨迹回放。
 
 `mg400-agent` 默认使用内存模拟器，无需机械臂或 API key。
 它支持「读取场景 → 抓取 → 放置 → 反馈」，不含物理、运动学或碰撞检测。
@@ -99,19 +99,6 @@ uv run --extra mujoco mg400-mujoco --dynamics --viewer
 ```
 
 单次任务、工具参数、限速、到位标准和自定义轨迹见 [MuJoCo 使用说明](docs/mujoco.md)。
-
-## CoppeliaSim 真机同步显示
-
-此辅助入口只接收真机 TCP 30004 的关节反馈，不使能或移动机械臂，无需 API key。
-在 CoppeliaSim 4.10 中打开 `coppeliasim/MG400_mirror.ttt`，保持仿真停止。
-在项目根目录运行：
-
-```bash
-uv run --extra coppeliasim mg400-mirror --host 192.168.1.6 --source-host 192.168.1.10
-```
-
-按 Ctrl+C 结束显示不会停止或改变真机。
-网口配置、模型文件、刷新率和断线处理见 [CoppeliaSim 使用说明](docs/coppeliasim.md)。
 
 ## 模型 API 配置
 
@@ -236,5 +223,5 @@ uv run ruff format --check .
 测试不消耗模型额度，不连接机械臂，也不启动 Isaac Sim。
 `--all-extras` 安装 MuJoCo 等可选依赖，`--group usd` 安装 USD 检查依赖。
 只运行 `uv run pytest` 时，缺少依赖的模型测试会跳过，不能据此判断全部检查已通过。
-`-ra` 显示跳过原因，Lua 检查仍要求本机安装 Lua 解释器。
+`-ra` 显示跳过原因。
 自然语言入口依据 [OpenAI 官方函数调用文档](https://developers.openai.com/api/docs/guides/function-calling) 实现。

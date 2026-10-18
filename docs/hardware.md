@@ -28,6 +28,10 @@ uv run --env-file .env --extra llm python examples/agent_j4_trial.py \
   --host 192.168.1.6 --source-host 192.168.1.10 --execute-j4-trial
 ```
 
+这两个 IP 分别是 MG400 和运行试验的电脑机器人网口地址。
+如果系统路由能正确选择网口，可以省略 `--source-host`。
+在 Olares 容器内运行时，不要绑定宿主机的源 IP。
+
 试验使用每条指令的 `SpeedJ=5,AccJ=5` 比例参数；不改全局速度、负载、工具坐标或夹爪输出。
 被动反馈超过 0.25 秒未刷新、报警或离开限定关节区间会中止动作。
 到位要求新鲜反馈在目标 ±0.1° 内稳定至少 0.4 秒，并由 dashboard 再核对。
@@ -36,8 +40,9 @@ uv run --env-file .env --extra llm python examples/agent_j4_trial.py \
 正常返回起点后，若试验开始时未使能，会恢复未使能状态。
 恢复未使能状态后的最终检查中，若 J4 反馈超出起点 ±0.1°，程序按失败中止。
 
-同步显示可独立运行 `mg400-mirror`（见 [CoppeliaSim 说明](coppeliasim.md)）；
-显示来自真机实际反馈，CoppeliaSim 应保持仿真停止。当前这份显示模型尚不含夹爪。
+同步显示使用 [Isaac 真机姿态同步](isaacsim.md#真机姿态实时同步)。
+镜像只接收真机实际关节反馈，不发送真机命令。
+与四轴控制面板同时使用时，按 [面板停止流程](isaacsim.md#在-isaac-中控制真机四轴) 结束控制。
 
 ## 可选 ROS 2 路线：HarvestX/MG400_ROS2
 

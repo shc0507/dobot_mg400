@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mg400_agent.mirror import JOINT_NAMES, joint_angles
+from mg400_agent.kinematics import JOINT_NAMES, joint_angles
 from mg400_agent.mujoco_replay import load_model
 
 mujoco = pytest.importorskip("mujoco")

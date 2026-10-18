@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from mg400_agent.kinematics import JOINT_NAMES, joint_angles
+from mg400_agent.kinematics import joint_angles
 
 
 @pytest.mark.parametrize(
@@ -25,10 +25,3 @@ def test_maps_robot_degrees_to_eight_coupled_model_joints(source, expected_degre
 def test_rejects_invalid_robot_joint_input(joints):
     with pytest.raises(ValueError, match="four finite joint angles"):
         joint_angles(joints)
-
-
-def test_coppeliasim_imports_remain_compatible():
-    from mg400_agent import mirror
-
-    assert mirror.JOINT_NAMES == JOINT_NAMES
-    assert mirror.joint_angles is joint_angles

@@ -12,7 +12,6 @@ dependencies = []
 
 [project.optional-dependencies]
 llm = ["openai>=2,<3"]
-coppeliasim = ["coppeliasim-zmqremoteapi-client>=2.0.4,<3"]
 mujoco = ["mujoco>=3.3,<4"]
 
 [dependency-groups]
@@ -22,7 +21,6 @@ usd = ["usd-core==26.8", "numpy>=2,<3"]
 
 [project.scripts]
 mg400-agent = "mg400_agent.cli:main"
-mg400-mirror = "mg400_agent.mirror:main"
 mg400-mujoco = "mg400_agent.mujoco_replay:main"
 
 [tool.pytest.ini_options]

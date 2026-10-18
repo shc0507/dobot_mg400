@@ -3,7 +3,7 @@
 MuJoCo 支持运动学回放，以及带重力、四轴执行器和理想连杆约束的关节动力学模式。
 `mg400-agent --backend mujoco` 支持自然语言关节控制和持续对话。
 所有 MuJoCo 入口均不连接机械臂；`ask` / `chat` 需要模型 API，`state`、固定演示和
-轨迹回放不需要 API key。内存抓放模拟和 CoppeliaSim 真机反馈镜像仍使用各自原有入口。
+轨迹回放不需要 API key。内存抓放模拟使用独立入口。
 
 ## 自然语言控制与连续窗口
 
@@ -77,7 +77,7 @@ uv run --extra mujoco mg400-mujoco --dynamics --viewer
 
 运行环境参考：Python 3.12、MuJoCo 3.15.0、macOS。
 依赖版本记录在 `uv.lock`，其中 MuJoCo 锁定为上述版本。
-模型和演示数据包含在 Python 包中，安装后无需依赖参考仓库或 CoppeliaSim。
+模型和演示数据包含在 Python 包中，安装后无需依赖参考仓库。
 
 viewer 完成后自动关闭。提前关闭窗口或按 Ctrl+C 会取消回放，退出码为 130；
 成功为 0，输入或运行错误为 1。无窗口模式不等待真实时间。

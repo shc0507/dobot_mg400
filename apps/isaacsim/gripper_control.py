@@ -15,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.robot_config import load_robot_host  # noqa: E402
+from mg400_agent.runtime_paths import data_path  # noqa: E402
 
-REPORT = ROOT / "isaacsim/real_gripper_status.json"
+REPORT = data_path("isaacsim/real_gripper_status.json")
 ROBOT_CONFIG = ROOT / "config/robot.toml"
 SINGLETON = "_mg400_isaac_real_gripper"
 

@@ -1,5 +1,6 @@
 """Check panel imports in separate processes without Isaac Sim or hardware."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,7 @@ control = namespace["JointControl"]
 module = sys.modules[control.__module__]
 assert Path(module.__file__).resolve() == root / "src/mg400_agent/joint_control.py"
 assert "MG400_CONTROL_START_TASK" not in namespace
+assert namespace["REPORT"] == Path(os.environ["MG400_DATA_DIR"]) / "isaacsim/control_status.json"
 if old_package is not None:
     assert sys.modules["mg400_agent"] is old_package
     assert sys.modules["mg400_agent.feedback"] is old_feedback
@@ -60,18 +62,19 @@ if old_package is not None:
 """
 
 
-def check_import(root, *paths):
+def check_import(root, data_directory, *paths):
     result = subprocess.run(
         [sys.executable, "-B", "-c", IMPORT_CHECK, str(root), *map(str, paths)],
         capture_output=True,
         text=True,
+        env={**os.environ, "MG400_DATA_DIR": str(data_directory)},
         timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_panel_import_in_fresh_process():
-    check_import(ROOT)
+def test_panel_import_in_fresh_process(tmp_path):
+    check_import(ROOT, tmp_path / "external-data")
 
 
 def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
@@ -84,9 +87,10 @@ def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
         "config.py",
         "controller_protocol.py",
         "robot_config.py",
+        "runtime_paths.py",
     ):
         shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
     apps = tmp_path / "apps/isaacsim"
     apps.mkdir(parents=True)
     shutil.copyfile(ROOT / "apps/isaacsim/joint_control.py", apps / "joint_control.py")
-    check_import(tmp_path, ROOT / "src/mg400_agent/joint_control.py")
+    check_import(tmp_path, tmp_path / "external-data", ROOT / "src/mg400_agent/joint_control.py")

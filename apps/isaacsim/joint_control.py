@@ -18,10 +18,11 @@ sys.path.insert(0, str(ROOT / "src"))
 importlib.invalidate_caches()
 from mg400_agent.joint_control import JointControl  # noqa: E402
 from mg400_agent.robot_config import load_robot_host  # noqa: E402
+from mg400_agent.runtime_paths import data_path  # noqa: E402
 
 SINGLETON = "_mg400_isaac_joint_control"
 MIRROR_SINGLETON = "_mg400_isaac_feedback_mirror"
-REPORT = ROOT / "isaacsim/control_status.json"
+REPORT = data_path("isaacsim/control_status.json")
 ROBOT_CONFIG = ROOT / "config/robot.toml"
 
 

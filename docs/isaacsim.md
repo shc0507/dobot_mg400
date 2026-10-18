@@ -8,6 +8,8 @@
 | 文件                                                 | 用途                                                                    |
 | ---------------------------------------------------- | ----------------------------------------------------------------------- |
 | `00_OPEN_MG400.usda`                                 | 日常主入口：直接打开即可看到机械臂、物理夹爪、灯光、支撑台和测试方块    |
+| `scripts/start_isaac_olares.sh`                      | Olares 服务启动入口，复用现有 Isaac Sim 安装                            |
+| `apps/isaacsim/startup.py`                           | 打开日常场景和动作面板，记录代码与运行环境，不启动运动                  |
 | `isaacsim/workspace_scene.usda`                      | 保存初始姿态、测试物体、物理参数、动作预设和观察相机的场景层            |
 | `apps/isaacsim/actions.py`                | 当前场景的仿真动作面板；加载时不运动，不重载或搭建场景                  |
 | `scripts/build_isaac_workspace.py`                   | 开发时重建静态主场景；日常打开和控制时不需要运行                        |
@@ -22,6 +24,7 @@
 | `apps/isaacsim/mirror_bootstrap.py`             | Kit `--exec` 加载已保存的场景并启动真机姿态同步                         |
 | `apps/isaacsim/joint_control.py`                | Isaac 内四轴真机控制面板：读取当前角度、使能、单次到位、停止            |
 | `apps/isaacsim/gripper_control.py`                | 实体夹爪面板：MG400 I/O 开合与 USB 位置反馈                            |
+| `apps/isaacsim/olares_gripper.py`                    | Olares USB 文件反馈入口，读取数据目录中的夹爪测量文件                  |
 | `config/robot.toml`                                 | Isaac 镜像、四轴面板和夹爪面板共用的机器人地址                         |
 | `scripts/gripper_feedback.py`                       | Olares 主机读取 USB 夹爪位置，写入供 Isaac 读取的测量文件              |
 | `scripts/isaac_gripper_feedback.mjs`                | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac                  |
@@ -39,12 +42,13 @@ PGEA 侧出线版、两个估算指尖和各参考坐标系都随法兰移动。
 
 ## 日常使用：场景保存在 USD，Python 只控制动作
 
-在 Isaac Sim 用 **File → Open** 打开
-`/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
+Olares 启动脚本通过 `apps/isaacsim/startup.py` 打开 `00_OPEN_MG400.usda` 和动作面板。
+该入口不启动物理仿真，不连接或移动真机。
+在已有服务中，也可用 **File → Open** 打开 `/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
 模型、灯光、地面、相机、支撑台、橙色方块和物理参数都已经保存在 USD 中。
 机械臂各刚体的初始变换和关节驱动目标也一并保存，打开时不需要 Python 帮忙摆姿态。
 
-需要控制时，在 **Window → Script Editor** 运行：
+如果动作面板尚未打开，在 **Window → Script Editor** 运行：
 
 ```python
 import runpy
@@ -82,11 +86,39 @@ uv run --group usd python scripts/build_isaac_workspace.py
 ## Olares / WebRTC
 
 Olares 容器内使用 Isaac Sim `6.1.0-rc.26`，安装目录为 `/isaac-sim`。
+内置 Python 版本为 `3.12.13`，继续使用该安装提供的 Kit 和运行依赖。
+不要用项目的 `uv sync` 或 pip 依赖覆盖 Kit 的 Python 环境。
 客户端保持 LarePass VPN 连接：
 
 - Server：`100.64.0.1`
 - Signal：`49100/TCP`
 - Stream：`47998/UDP`
+
+### Warp 兼容性
+
+当前 Isaac 安装依赖 Warp `1.16.0` 的 APIC 初始化文件修补。
+`/isaac-sim/extscache/omni.warp.core-1.16.0+lx64/warp/_src/apic/__init__.py` 必须为 137 字节常规文件。
+该路径不能是符号链接，内容使用 [NVIDIA Warp v1.16.0 源文件](https://raw.githubusercontent.com/NVIDIA/warp/v1.16.0/warp/_src/apic/__init__.py)。
+在容器内运行以下校验：
+
+```sh
+python3 - <<'PY'
+import hashlib
+from pathlib import Path
+
+warp_file = Path("/isaac-sim/extscache/omni.warp.core-1.16.0+lx64/warp/_src/apic/__init__.py")
+assert warp_file.is_file() and not warp_file.is_symlink()
+assert warp_file.stat().st_size == 137
+assert hashlib.sha256(warp_file.read_bytes()).hexdigest() == (
+    "39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14"
+)
+print("校验通过")
+PY
+```
+
+更换或重建容器映像后，先重新执行此校验。
+修补元数据位于 `/root/Documents/isaac-repairs/warp-1.16.0/original-symlink.json`。
+保留 `/root/Documents/isaac-repairs` 及其现有路径。
 
 ### WebRTC 客户端自动点击 SOP
 
@@ -114,26 +146,86 @@ Olares 容器内使用 Isaac Sim `6.1.0-rc.26`，安装目录为 `/isaac-sim`。
 ### 服务与场景加载
 
 已有服务运行时直接使用当前客户端，不需要启动第二个 Isaac Sim。
-需要重新启动服务时，在 Olares 容器终端运行现有脚本：
+需要重新启动服务时，先正常退出已有 Isaac Sim，再在 Olares 容器终端运行：
 
 ```sh
-/root/Documents/start-isaac-vpn.sh
+/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
 ```
 
-将以下文件和目录复制到 `/root/Documents/mg400-isaac/`，保留相对目录结构：
+启动脚本支持以下环境变量：
 
-- `00_OPEN_MG400.usda`：日常场景入口。
-- `isaacsim/`：场景层、机器人资产及许可证。
-- `apps/`：Isaac 仿真动作、真机面板与验收脚本。
-- `config/robot.toml`：Isaac 真机入口共用的机器人地址。
-- `src/`：面板和脚本共用的 Python 模块。
-- `scripts/`：包含 Olares 主机使用的 USB 反馈采集脚本。
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `ISAACSIM_ROOT` | `/isaac-sim` | 现有 Isaac Sim 安装目录 |
+| `ISAACSIM_HOST` | `100.64.0.1` | 客户端连接的服务地址 |
+| `ISAACSIM_SIGNAL_PORT` | `49100` | WebRTC 信令 TCP 端口 |
+| `ISAACSIM_STREAM_PORT` | `47998` | WebRTC 视频 UDP 端口 |
+| `MG400_DATA_DIR` | `/root/Documents/mg400-data` | 运行数据根目录 |
 
-相对引用允许场景整体移动。不必上传 `.env` 或 API key，也不必安装模型 API 依赖。
-更新脚本时，同步完整的 `apps/`、`src/`、`scripts/` 和 `config/robot.toml`。
-更新后重新打开面板，Script Editor、自定义启动脚本和 `--exec` 均使用本页的当前路径。
-先另存自己编辑的 USD 场景，再更新 `isaacsim/` 和 `00_OPEN_MG400.usda`。
-日常使用按上文打开 `00_OPEN_MG400.usda` 和仿真动作面板。
+默认启动 `apps/isaacsim/startup.py`，只打开日常场景和仿真动作面板。
+启动记录写入 `$MG400_DATA_DIR/isaacsim/runtime.json`。
+记录包含 Git 提交、未提交修改标志、Isaac/Python 版本、场景和数据目录。
+`config_sources` 记录机器人配置路径，以及安装、串流和数据目录环境变量。
+核对提交与预期版本一致，`status` 为 `ready` 才表示场景和面板加载成功。
+这不代表物理测试或真机动作已经通过。
+显式传入 `--exec` 时，启动脚本只运行指定入口，不再运行默认 `startup.py`。
+该方式不会自动生成默认启动入口的 `runtime.json`，各入口仍写入自身状态文件。
+
+### 代码与运行数据
+
+代码通过 GitHub 管理，Olares 运行选定提交。
+`/root/Documents/mg400-isaac` 是 Git 工作副本。
+`apps/`、`config/`、`src/`、`scripts/`、`isaacsim/` 和 `00_OPEN_MG400.usda` 随同一提交更新。
+不要只覆盖其中的几个脚本。
+不必上传 `.env` 或 API key，也不必安装模型 API 依赖。
+
+Olares 未配置 GitHub 读取凭据时，通过 Git bundle 导入目标版本。
+在本地项目根目录生成包含完整 Git 历史的 bundle，并记录目标提交：
+
+```sh
+git bundle create /tmp/mg400-deploy.bundle --all
+git rev-parse HEAD
+```
+
+通过已登录的 Olares 网页会话，将 bundle 传到 `/root/Documents/mg400-data/mg400-deploy.bundle`。
+先正常退出已有 Isaac Sim，再在容器中查看工作副本：
+
+```sh
+git -C /root/Documents/mg400-isaac status --short
+```
+
+如果有未提交修改，先提交或另存改动，再切换版本。
+将下列 `COMMIT_SHA` 替换为本地记录的目标提交：
+
+```sh
+git -C /root/Documents/mg400-isaac bundle verify /root/Documents/mg400-data/mg400-deploy.bundle
+git -C /root/Documents/mg400-isaac fetch /root/Documents/mg400-data/mg400-deploy.bundle 'refs/heads/*:refs/remotes/bundle/*'
+git -C /root/Documents/mg400-isaac switch --detach COMMIT_SHA
+git -C /root/Documents/mg400-isaac remote set-url origin https://github.com/shc0507/dobot_mg400.git
+git -C /root/Documents/mg400-isaac rev-parse HEAD
+```
+
+核对提交后，运行仓库的 `scripts/start_isaac_olares.sh`，再核对 `runtime.json`。
+`origin` 地址为 `https://github.com/shc0507/dobot_mg400.git`。
+该私有仓库要求访问凭据，有获授权的 GitHub 只读访问后，可以改从 `origin` 获取提交。
+
+Isaac 入口通过 `MG400_DATA_DIR` 指定运行数据根目录。
+未设置时，默认使用项目的 `work/`，Olares 启动脚本设为 `/root/Documents/mg400-data`。
+Isaac 状态 JSON、场景备份、验收截图和测试 USD 写入数据根目录下的 `isaacsim/`。
+USB 测量文件存放于数据根目录下的 `work/`。
+Olares 代码目录下的 `work` 使用相对链接 `../mg400-data/work`，供既有宿主机采集路径使用。
+下文的 `$MG400_DATA_DIR` 均表示实际使用的数据根目录。
+
+自定义场景另存到数据目录，更新代码前保留当前场景与已有备份。
+脚本导出的场景备份保留引用和会话修改，仍依赖原源码资产位置。
+如果被引用的外部资产含未保存的修改，脚本会拒绝备份，以免重开快照后恢复旧值。
+先保存这些资产，再运行会自动备份的入口；脚本不会自动覆盖源资产。
+`src/` 修改后必须完整重启 Isaac Sim。
+重新运行面板脚本不保证更新 Python 已加载的模块。
+Script Editor、自定义启动脚本和 `--exec` 均使用本页的当前入口。
+
+### 基础模型导入检查
+
 检查基础模型导入时，在 **Window → Script Editor** 执行下列脚本：
 
 ```python
@@ -142,10 +234,10 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/load_model.py")
 ```
 
-脚本会先备份原场景到 `isaacsim/previous_scene_<时间>.usda`，再打开新场景；
-设置观察相机、初始化 PhysX，将控制器四轴设为 `[20, 15, 35, 25]` 度，
+脚本会先备份原场景到 `$MG400_DATA_DIR/isaacsim/previous_scene_<时间>.usda`，再打开新场景。
+随后设置观察相机、初始化 PhysX，将控制器四轴设为 `[20, 15, 35, 25]` 度，
 检查八个具名关节的回读与固定底座，最后暂停并保留画面。
-结果写入 `isaacsim/isaac_sim_validation.json`。
+结果写入 `$MG400_DATA_DIR/isaacsim/isaac_sim_validation.json`。
 只有 `success: true` 才代表运行时校验成功；异常也会写入这个文件。
 
 该校验检查直接赋值关节后的数值一致性，不测量动力学跟踪精度或真机精度。
@@ -165,12 +257,13 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/validate_grasp.py")
 ```
 
-脚本先备份当前场景到 `isaacsim/before_grasp_<时间>.usda`，然后打开
+脚本先备份当前场景到 `$MG400_DATA_DIR/isaacsim/before_grasp_<时间>.usda`，然后打开
 `grasp_scene.usda`，创建支撑台和一个 **5 g、8 × 8 × 20 mm** 的自由刚体。
 测试依次执行空爪闭合、重新打开、下降接近、夹住物体、向上提起 80 mm、
 保持 2 秒、松开并等待物体落回支撑台。测试结束暂停场景，结果写入
-`isaacsim/grasp_validation.json`；成功后另外保存 `isaacsim/grasp_test_scene.usda`。
-有可用视口时，还会保存 `isaacsim/grasp_held.png` 与 `isaacsim/grasp_released.png`。
+`$MG400_DATA_DIR/isaacsim/grasp_validation.json`。
+成功后另外保存 `$MG400_DATA_DIR/isaacsim/grasp_test_scene.usda`。
+有可用视口时，还会保存同目录下的 `grasp_held.png` 与 `grasp_released.png`。
 GUI 测试通过后会显示 **MG400 Gripper** 面板；点击 **Open** 或 **Close** 可再次开合，
 面板显示实测夹指净距，每次动作结束会自动暂停。重新加载场景后需重新运行脚本建立控制面板。
 
@@ -184,14 +277,14 @@ GUI 测试通过后会显示 **MG400 Gripper** 面板；点击 **Open** 或 **Cl
 独立测试必须由服务器上的 Isaac Sim Python 启动，它会创建一个无窗口实例：
 
 ```sh
-/isaac-sim/python.sh /root/Documents/mg400-isaac/apps/isaacsim/validate_grasp.py
+MG400_DATA_DIR=/root/Documents/mg400-data /isaac-sim/python.sh /root/Documents/mg400-isaac/apps/isaacsim/validate_grasp.py
 ```
 
 要在当前 WebRTC 画面里观察测试，使用上面的 Script Editor 入口。
 也可在旧串流进程正常退出后，在 Olares 终端启动自动加载入口：
 
 ```sh
-/root/Documents/start-isaac-vpn.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/grasp_bootstrap.py
+/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/grasp_bootstrap.py
 ```
 
 此入口由 Kit 自身执行，用 `runpy` 加载测试，避免额外创建 `SimulationApp`。
@@ -258,16 +351,29 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/mirror.py")
 超过 0.5 秒没有新数据时显示 `STALE / RECONNECTING`，模型停在最后有效姿态，
 后台自动重连。点击 **Stop synchronization** 停止同步；再次运行脚本可恢复。
 更换场景或启动物理仿真也会停止同步，防止两个更新来源同时控制模型。
-运行状态每 0.5 秒写入 `isaacsim/mirror_status.json`，其中包含反馈数、应用帧数、
+运行状态每 0.5 秒写入 `$MG400_DATA_DIR/isaacsim/mirror_status.json`，其中包含反馈数、应用帧数、
 真机角度、法兰位置、夹爪保持值与场景备份路径。
 
 需要重启串流并自动同步时，先正常退出旧串流进程，再运行：
 
 ```sh
-/root/Documents/start-isaac-vpn.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py
+/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py
 ```
 
-入口优先打开已有的 `grasp_test_scene.usda`，否则打开 `grasp_scene.usda`。
+当前场景已有 `/World/MG400` 时，入口保留该场景。
+否则打开项目的 `00_OPEN_MG400.usda`。
+显式传入 `SCENE_PATH` 时，先备份当前场景，再加载指定文件。
+例如，在 Script Editor 中指定保存在数据目录的测试场景：
+
+```python
+import runpy
+
+runpy.run_path(
+    "/root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py",
+    init_globals={"SCENE_PATH": "/root/Documents/mg400-data/isaacsim/grasp_test_scene.usda"},
+)
+```
+
 加载后创建 session layer 中的 `MirrorCamera`，以完整机械臂视角观察同步。
 其他相机的可视图标在 session layer 中隐藏，避免近距离挡住观察画面；相机源定义保留。
 面板显示的反馈年龄是 Isaac Sim 收到反馈后的经过时间，不包含客户端视频串流延迟。
@@ -285,7 +391,7 @@ Isaac 面板 J1–J4（度） → TCP 29999 / 30003 → MG400
 Isaac 模型与 Actual 显示 ← TCP 30004 ← MG400 实测角度
 ```
 
-无需 ROS 2 或额外桥接服务。按 [上传清单](#服务与场景加载) 同步项目文件。
+无需 ROS 2 或额外桥接服务。按 [代码与运行数据](#代码与运行数据) 准备工作副本。
 在当前 Isaac 的 **Window → Script Editor** 执行：
 
 ```python
@@ -320,11 +426,12 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 建议首次由现场操作者将 J4 目标改为当前值加 1°，检查真实运动与画面一致后再扩大操作。
 打开脚本和只读连接测试不会自动执行这一步。
 
-状态每 0.5 秒写入 `isaacsim/control_status.json`，包含连接状态、实测值、目标值和操作结果；
-`mirror_status.json` 继续记录模型同步。停止现有串流进程后也可用同一脚本自动加载：
+状态每 0.5 秒写入 `$MG400_DATA_DIR/isaacsim/control_status.json`。
+其中包含连接状态、实测值、目标值和操作结果，`mirror_status.json` 继续记录模型同步。
+停止现有串流进程后也可用同一脚本自动加载：
 
 ```sh
-/root/Documents/start-isaac-vpn.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/joint_control.py
+/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/joint_control.py
 ```
 
 Olares 容器内不绑定宿主机源 IP。需能连接所配置机器人的 `29999`、`30003`、
@@ -356,7 +463,7 @@ I/O 组 1 为全开（1000），组 2 为全闭（0），位置单位为行程�
 两组力度均为 50%。面板显示原始 DI 值。
 只有命令后观察到 DI 从 00 变为 10，才报告到位。
 通信失败会锁定后续写入，不自动重发命令。
-状态写入 `isaacsim/real_gripper_status.json`。
+状态写入 `$MG400_DATA_DIR/isaacsim/real_gripper_status.json`。
 
 断电重启后，自动初始化可能未完成。
 当前须保留 USB–RS485 连接作为初始化入口：
@@ -418,29 +525,26 @@ Isaac 容器没有映射串口设备。
 该目录对应容器的 `/root/Documents/mg400-isaac`。
 
 ```sh
-python3 scripts/gripper_feedback.py --output work/gripper_olares_feedback.json
+mkdir -p ../mg400-data/work
+python3 scripts/gripper_feedback.py --output ../mg400-data/work/gripper_olares_feedback.json
 ```
 
 脚本每 50 ms 读取三个状态寄存器，并原子替换最新测量文件。
 文件权限为 `0644`，容器可以读取。
+容器中的对应路径为 `/root/Documents/mg400-data/work/gripper_olares_feedback.json`。
 串口被占用、设备缺失或读取失败时，脚本退出。
 按 `Ctrl+C` 停止前台采集，或向确认过身份的后台采集进程发送 `SIGTERM`。
 主机重启或 USB 重新连接后，手动重新启动采集。
 
-在 Isaac Script Editor 中选择文件反馈：
+用仓库启动脚本启动 Isaac 后，在 Script Editor 运行 Olares 文件反馈入口：
 
 ```python
 import runpy
 
-root = "/root/Documents/mg400-isaac"
-runpy.run_path(
-    root + "/apps/isaacsim/gripper_control.py",
-    init_globals={
-        "FEEDBACK_PATH": root + "/work/gripper_olares_feedback.json",
-    },
-)
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/olares_gripper.py")
 ```
 
+该入口把 `$MG400_DATA_DIR/work/gripper_olares_feedback.json` 传给夹爪面板。
 文件反馈与 Mac WebRTC 反馈互斥。
 同一文件重复读取不会延长测量值的有效期。
 该方式沿用 Stop 时间轴和反馈过期保护，不必重启 Isaac 或新增网络端口。

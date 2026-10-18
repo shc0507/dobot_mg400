@@ -28,11 +28,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from mg400_agent.joint_limits import validate_joints  # noqa: E402
 from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.runtime_paths import data_path, export_scene  # noqa: E402
 
 
 async def load_mg400() -> None:
     scene_path = ROOT / "isaacsim/scene.usda"
-    report_path = scene_path.parent / "isaac_sim_validation.json"
+    report_path = data_path("isaacsim/isaac_sim_validation.json")
     report = {"success": False, "scene": str(scene_path), "mode": "kinematic_pose_check"}
     app = omni.kit.app.get_app()
     timeline = omni.timeline.get_timeline_interface()
@@ -44,8 +45,8 @@ async def load_mg400() -> None:
         previous_stage = context.get_stage()
         if previous_stage is not None:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            backup = scene_path.parent / f"previous_scene_{stamp}.usda"
-            if not previous_stage.Export(str(backup)):
+            backup = data_path(f"isaacsim/previous_scene_{stamp}.usda")
+            if not export_scene(previous_stage, backup):
                 raise RuntimeError("Could not back up the current scene")
             report["previous_scene_backup"] = str(backup)
         del previous_stage
@@ -210,7 +211,7 @@ async def load_mg400() -> None:
         report["error"] = traceback.format_exc()
         raise
     finally:
-        if scene_path.parent.is_dir():
+        if report_path.parent.is_dir():
             report_path.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
 

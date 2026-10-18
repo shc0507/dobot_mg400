@@ -12,9 +12,17 @@ agent 抓放流程目前仅支持内存模拟，通用真机运动适配器尚�
 ## Isaac Sim 与真机入口
 
 保持 LarePass VPN 和现有 WebRTC Streaming Client 连接。
-在 Olares 的 Isaac Sim 6.1 中打开 `/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
+Olares 的代码工作副本位于 `/root/Documents/mg400-isaac`。
+运行数据位于 `/root/Documents/mg400-data`。
+需要启动服务时，先正常退出已有 Isaac Sim，再在 Olares 容器中运行：
+
+```sh
+/root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
+```
+
+启动入口打开 `00_OPEN_MG400.usda` 和仿真动作面板，不启动仿真或真机运动。
 场景已保存机器人、物理夹爪、灯光、支撑台、测试方块和动作预设。
-在 **Window → Script Editor** 运行仿真动作面板：
+在已有服务中，也可手动打开该场景，再在 **Window → Script Editor** 运行面板：
 
 ```python
 import runpy
@@ -39,7 +47,8 @@ Isaac 时间轴的 **Stop** 会恢复场景保存的初始状态。
 夹爪面板启动只读，点击开合按钮会驱动实体夹爪，但不会使能或移动机械臂。
 三个真机入口共用 `config/robot.toml` 中 `[robot]` 表的 `host`。
 修改地址后，重新启动镜像和面板，详见 [真机地址配置](docs/isaacsim.md#真机地址配置)。
-上传清单、运行步骤和停止条件见 [Isaac Sim 使用说明](docs/isaacsim.md)。
+代码按 Git 提交更新，修改 `src/` 后必须完整重启 Isaac Sim。
+部署步骤、运行数据路径和停止条件见 [Isaac Sim 使用说明](docs/isaacsim.md)。
 自然语言真机入口仅提供 J4 +2° 后回位，见 [受限真机试验说明](docs/hardware.md#自然语言-j4-受限试验)。
 
 Isaac 夹持由 PhysX 接触与摩擦承载，夹指尺寸、摩擦及质量分配仍是估算。
@@ -145,6 +154,7 @@ isaacsim/                    USD 模型、物理夹爪覆盖层与工作场景
 apps/isaacsim/               Isaac 仿真、真机面板与验收入口
 examples/                    标准库单文件教学、受限 J4 试验与 notebook
 scripts/                     模型构建、串流客户端操作与夹爪反馈采集
+scripts/start_isaac_olares.sh Olares 启动入口，复用现有 Isaac Sim 安装
 src/mg400_agent/
   cli.py                     state / demo / ask / chat 命令入口
   agent.py                   可选的大模型工具调用循环
@@ -158,6 +168,7 @@ src/mg400_agent/
   feedback.py                真机关节反馈读取
   joint_control.py           受限真机四轴控制
   gripper_feedback.py        夹爪位置反馈读取
+  runtime_paths.py           MG400_DATA_DIR 下的运行文件和场景备份
   hardware.py                MG400 真机适配入口（待实现）
 docs/hardware.md             当前真机入口、通用适配要求与可选 ROS 2 路线
 tests/                       动作失败、状态变化、agent 循环与 CLI 测试

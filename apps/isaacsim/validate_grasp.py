@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.joint_limits import validate_joints  # noqa: E402
 from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.runtime_paths import data_path, export_scene  # noqa: E402
 
 ROBOT = "/World/MG400"
 FINGERS = [f"{ROBOT}/pgea_{side}_jaw" for side in ("left", "right")]
@@ -159,7 +160,7 @@ def box(stage, path, position, size, color, mass=None):
 
 
 async def grasp_test():
-    report_path = ROOT / "isaacsim/grasp_validation.json"
+    report_path = data_path("isaacsim/grasp_validation.json")
     report = {"success": False, "mode": "force_driven_friction_grasp", "phases": []}
     app = omni.kit.app.get_app()
     timeline = omni.timeline.get_timeline_interface()
@@ -169,8 +170,8 @@ async def grasp_test():
         previous = context.get_stage()
         if previous is not None:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            backup = ROOT / f"isaacsim/before_grasp_{stamp}.usda"
-            if not previous.Export(str(backup)):
+            backup = data_path(f"isaacsim/before_grasp_{stamp}.usda")
+            if not export_scene(previous, backup):
                 raise RuntimeError("Could not back up the current stage")
             report["previous_scene_backup"] = str(backup)
         del previous
@@ -374,7 +375,7 @@ async def grasp_test():
             raise RuntimeError(f"Object was not held securely: lift={lift}, slip={slip}")
         if viewport is not None:
             await capture_viewport_to_file(
-                viewport, str(ROOT / "isaacsim/grasp_held.png")
+                viewport, str(data_path("isaacsim/grasp_held.png"))
             ).wait_for_result()
         await move("release", 1.0, high, high, 0.005, 0)
         released = await move("settle_released", 2.0, high, high, 0, 0)
@@ -407,10 +408,11 @@ async def grasp_test():
             empty_closed_gap_m=closed_empty["gap_m"],
         )
         # Save reproducible setup separately; recording the live result does not pin the object.
-        stage.Export(str(ROOT / "isaacsim/grasp_test_scene.usda"))
+        if not export_scene(stage, data_path("isaacsim/grasp_test_scene.usda")):
+            raise RuntimeError("Could not save the grasp test scene")
         if viewport is not None:
             await capture_viewport_to_file(
-                viewport, str(ROOT / "isaacsim/grasp_released.png")
+                viewport, str(data_path("isaacsim/grasp_released.png"))
             ).wait_for_result()
         if simulation_app is None:
             command = show_controls(robot, device, indices, slide_indices, report)

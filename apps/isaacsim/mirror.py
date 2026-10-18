@@ -23,10 +23,11 @@ sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.feedback import FeedbackConnection  # noqa: E402
 from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 from mg400_agent.robot_config import load_robot_host  # noqa: E402
+from mg400_agent.runtime_paths import data_path, export_scene  # noqa: E402
 
 ROBOT = "/World/MG400"
 STALE_SECONDS = 0.5
-REPORT = ROOT / "isaacsim/mirror_status.json"
+REPORT = data_path("isaacsim/mirror_status.json")
 ROBOT_CONFIG = ROOT / "config/robot.toml"
 SINGLETON = "_mg400_isaac_feedback_mirror"
 
@@ -194,7 +195,7 @@ class LiveMirror:
             UsdPoseMirror(stage)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             backup = REPORT.parent / f"before_mirror_{stamp}.usda"
-            if not stage.Export(str(backup)):
+            if not export_scene(stage, backup):
                 raise RuntimeError("Could not back up current stage")
             self.report["previous_scene_backup"] = str(backup)
             snapshots, jaws = {}, {}

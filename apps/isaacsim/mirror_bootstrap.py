@@ -3,6 +3,7 @@
 import asyncio
 import builtins
 import runpy
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,23 +15,23 @@ from omni.kit.viewport.utility import get_active_viewport
 from pxr import Gf, Usd, UsdGeom
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+from mg400_agent.runtime_paths import data_path, export_scene  # noqa: E402
 
 
 async def bootstrap():
     app = omni.kit.app.get_app()
     context = omni.usd.get_context()
     stage = context.get_stage()
-    if stage is None or not stage.GetPrimAtPath("/World/MG400"):
+    if "SCENE_PATH" in globals() or stage is None or not stage.GetPrimAtPath("/World/MG400"):
         if stage is not None:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            backup = ROOT / f"isaacsim/before_mirror_load_{stamp}.usda"
-            if not stage.Export(str(backup)):
+            backup = data_path(f"isaacsim/before_mirror_load_{stamp}.usda")
+            if not export_scene(stage, backup):
                 raise RuntimeError("Could not back up previous scene")
         omni.timeline.get_timeline_interface().stop()
         await app.next_update_async()
-        scene = ROOT / "isaacsim/grasp_test_scene.usda"
-        if not scene.exists():
-            scene = ROOT / "isaacsim/grasp_scene.usda"
+        scene = Path(globals().get("SCENE_PATH", ROOT / "00_OPEN_MG400.usda")).resolve()
         opened, error = await context.open_stage_async(str(scene))
         if not opened:
             raise RuntimeError(f"Could not load MG400 scene: {error}")

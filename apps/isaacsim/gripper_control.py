@@ -11,13 +11,19 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+from mg400_agent.robot_config import load_robot_host  # noqa: E402
+
 REPORT = ROOT / "isaacsim/real_gripper_status.json"
+ROBOT_CONFIG = ROOT / "config/robot.toml"
 SINGLETON = "_mg400_isaac_real_gripper"
 
 
 class GripperPanel:
     def __init__(self, feedback_path=None):
+        self.host = load_robot_host(ROBOT_CONFIG)
         self.feedback_path = feedback_path
         self.lock = threading.Lock()
         self.action = self.task = None
@@ -40,8 +46,6 @@ class GripperPanel:
         import omni.timeline
         import omni.usd
 
-        if str(ROOT / "src") not in sys.path:
-            sys.path.insert(0, str(ROOT / "src"))
         from mg400_agent.gripper_feedback import FeedbackState, FileFeedback
         from mg400_agent.gripper_mirror import JawMirror
 
@@ -119,7 +123,7 @@ class GripperPanel:
         if text not in allowed:
             raise ValueError("This command is not allowed.")
         deadline = time.monotonic() + 2
-        with socket.create_connection(("192.168.1.6", 29999), timeout=2) as connection:
+        with socket.create_connection((self.host, 29999), timeout=2) as connection:
             connection.sendall(text.encode("ascii"))
             data = bytearray()
             while b";" not in data:
@@ -216,7 +220,7 @@ class GripperPanel:
         self.window = ui.Window("MG400 Real Gripper", width=440, height=260)
         with self.window.frame:
             with ui.VStack(spacing=8):
-                ui.Label("REAL GRIPPER | 192.168.1.6 | DO1 / DO2", height=24)
+                ui.Label(f"REAL GRIPPER | {self.host} | DO1 / DO2", height=24)
                 inputs = ui.Label("DI1 / DI2: waiting", height=24)
                 with ui.HStack(height=32, spacing=8):
                     buttons = [

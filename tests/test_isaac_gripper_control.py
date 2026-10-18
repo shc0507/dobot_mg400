@@ -20,12 +20,15 @@ def module(monkeypatch, tmp_path):
     with monkeypatch.context() as guard:
         guard.setattr(asyncio, "ensure_future", Mock(side_effect=AssertionError("No startup task")))
         namespace = runpy.run_path(
-            str(ROOT / "examples/isaac_sim_gripper_mg400.py"), run_name="test_gripper"
+            str(ROOT / "apps/isaacsim/gripper_control.py"), run_name="test_gripper"
         )
     monkeypatch.setitem(
         namespace["GripperPanel"].write_report.__globals__, "REPORT", tmp_path / "status.json"
     )
-    return SimpleNamespace(**namespace)
+    config = tmp_path / "robot.toml"
+    config.write_text('[robot]\nhost = "192.168.1.6"\n')
+    monkeypatch.setitem(namespace["GripperPanel"].__init__.__globals__, "ROBOT_CONFIG", config)
+    return SimpleNamespace(**namespace, config_path=config)
 
 
 def test_import_and_construction_send_no_commands(module):
@@ -49,6 +52,27 @@ def test_command_checks_fragmented_response(module, monkeypatch):
     assert module.GripperPanel().command("DOExecute(1,1)") == ""
     wire.sendall.assert_called_once_with(b"DOExecute(1,1)")
     socket.create_connection.assert_called_once_with(("192.168.1.6", 29999), timeout=2)
+
+
+def test_command_uses_host_captured_when_panel_was_created(module, monkeypatch):
+    module.config_path.write_text('[robot]\nhost = "robot-first.test"\n')
+    panel = module.GripperPanel()
+    module.config_path.write_text('[robot]\nhost = "robot-second.test"\n')
+    connection(monkeypatch, [b"0,{5},RobotMode();"])
+    assert panel.command("RobotMode()") == "5"
+    assert panel.host == "robot-first.test"
+    socket.create_connection.assert_called_once_with(("robot-first.test", 29999), timeout=2)
+
+
+@pytest.mark.parametrize("invalid", ("missing", "invalid"))
+def test_invalid_configuration_prevents_gripper_connections(module, invalid):
+    if invalid == "missing":
+        module.config_path.unlink()
+    else:
+        module.config_path.write_text('[robot]\nhost = ""\n')
+    with pytest.raises((FileNotFoundError, ValueError)):
+        module.GripperPanel()
+    socket.create_connection.assert_not_called()
 
 
 def test_command_accepts_multiline_alarm_json(module, monkeypatch):

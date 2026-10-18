@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Build portable Isaac Sim USD assets from the project's existing CAD model.
 
-Run: uv run --no-project --with usd-core==26.8 --with numpy \
-    python scripts/build_isaac_model.py
+Run: uv run --group usd python scripts/build_isaac_model.py
 
 No Isaac Sim installation is needed for export. Geometry, frames and inertias
 come from dynamics.xml; its MuJoCo actuator/loop model is not translated.

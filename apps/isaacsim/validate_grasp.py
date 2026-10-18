@@ -1,7 +1,7 @@
 """PhysX pinch/lift/release test in Isaac Sim 6.1, or its existing Script Editor.
 
-GUI: import runpy; runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_grasp_mg400.py')
-Standalone: /isaac-sim/python.sh examples/isaac_sim_grasp_mg400.py
+GUI: import runpy; runpy.run_path('/root/Documents/mg400-isaac/apps/isaacsim/validate_grasp.py')
+Standalone: /isaac-sim/python.sh apps/isaacsim/validate_grasp.py
 Only the initial robot state is assigned; all subsequent motion uses drives.
 The object is a free, gravity-enabled rigid body throughout the test.
 """
@@ -34,7 +34,7 @@ from omni.kit.viewport.utility import (  # noqa: E402
 )
 from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics, UsdShade  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.joint_limits import validate_joints  # noqa: E402
 from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402

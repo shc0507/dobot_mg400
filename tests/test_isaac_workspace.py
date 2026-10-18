@@ -282,7 +282,7 @@ def controls(monkeypatch, stage):
     monkeypatch.setattr(builtins, "_mg400_actions_controller", None, raising=False)
     monkeypatch.setattr(sys, "path", list(sys.path))
     namespace = runpy.run_path(
-        str(ROOT / "examples/isaac_sim_actions_mg400.py"), run_name="test_workspace_controls"
+        str(ROOT / "apps/isaacsim/actions.py"), run_name="test_workspace_controls"
     )
     return SimpleNamespace(**namespace, state=state, stop=stop, stage_events=stage_events)
 

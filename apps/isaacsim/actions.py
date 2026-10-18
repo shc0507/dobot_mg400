@@ -2,7 +2,7 @@
 
 Open 00_OPEN_MG400.usda, then run these two lines in Window > Script Editor:
     import runpy
-    runpy.run_path('/root/Documents/mg400-isaac/examples/isaac_sim_actions_mg400.py')
+    runpy.run_path('/root/Documents/mg400-isaac/apps/isaacsim/actions.py')
 
 Loading this script only shows the panel. Click a button to start physics and move.
 The scene owns geometry, lights, physics settings and named poses; this script
@@ -26,7 +26,7 @@ import omni.usd
 import warp as wp
 from isaacsim.core.simulation_manager import SimulationManager
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.joint_limits import validate_joints  # noqa: E402

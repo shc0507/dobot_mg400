@@ -46,7 +46,7 @@ socket.create_connection = forbidden
 asyncio.ensure_future = forbidden
 asyncio.create_task = forbidden
 namespace = runpy.run_path(
-    str(root / "examples/isaac_sim_control_mg400.py"),
+    str(root / "apps/isaacsim/joint_control.py"),
     run_name="test_isaac_control_import",
 )
 control = namespace["JointControl"]
@@ -83,11 +83,10 @@ def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
         "joint_limits.py",
         "config.py",
         "controller_protocol.py",
+        "robot_config.py",
     ):
         shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
-    examples = tmp_path / "examples"
-    examples.mkdir()
-    shutil.copyfile(
-        ROOT / "examples/isaac_sim_control_mg400.py", examples / "isaac_sim_control_mg400.py"
-    )
+    apps = tmp_path / "apps/isaacsim"
+    apps.mkdir(parents=True)
+    shutil.copyfile(ROOT / "apps/isaacsim/joint_control.py", apps / "joint_control.py")
     check_import(tmp_path, ROOT / "src/mg400_agent/joint_control.py")

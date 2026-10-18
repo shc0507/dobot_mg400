@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Save the complete MG400 workbench as USD, ready for current-stage controls.
 
-Run: uv run --no-project --with usd-core==26.8 python scripts/build_isaac_workspace.py
+Run: uv run --group usd python scripts/build_isaac_workspace.py
 
 This offline authoring tool runs only when rebuilding the scene. It references
 the existing assets and stores the robot pose, physics, props and camera in USD.

@@ -19,7 +19,7 @@ agent 抓放流程目前仅支持内存模拟，通用真机运动适配器尚�
 ```python
 import runpy
 
-runpy.run_path("/root/Documents/mg400-isaac/examples/isaac_sim_actions_mg400.py")
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/actions.py")
 ```
 
 面板加载时不运动，点击动作按钮后才开始物理仿真。
@@ -31,12 +31,14 @@ Isaac 时间轴的 **Stop** 会恢复场景保存的初始状态。
 
 | 入口 | 用途 |
 | --- | --- |
-| `examples/isaac_sim_mirror_mg400.py` | 只接收真机四轴反馈，更新场景姿态 |
-| `examples/isaac_sim_control_mg400.py` | 四轴面板，通过 Olares 直连 MG400 |
-| `examples/isaac_sim_gripper_mg400.py` | 实体夹爪面板，通过 MG400 I/O 开合 |
+| `apps/isaacsim/mirror.py` | 只接收真机四轴反馈，更新场景姿态 |
+| `apps/isaacsim/joint_control.py` | 四轴面板，通过 Olares 直连 MG400 |
+| `apps/isaacsim/gripper_control.py` | 实体夹爪面板，通过 MG400 I/O 开合 |
 
 四轴面板启动只读，必须手动使能和执行，每次每轴最多变化 5°。
 夹爪面板启动只读，点击开合按钮会驱动实体夹爪，但不会使能或移动机械臂。
+三个真机入口共用 `config/robot.toml` 中 `[robot]` 表的 `host`。
+修改地址后，重新启动镜像和面板，详见 [真机地址配置](docs/isaacsim.md#真机地址配置)。
 上传清单、运行步骤和停止条件见 [Isaac Sim 使用说明](docs/isaacsim.md)。
 自然语言真机入口仅提供 J4 +2° 后回位，见 [受限真机试验说明](docs/hardware.md#自然语言-j4-受限试验)。
 
@@ -150,9 +152,11 @@ uv run --env-file .env --extra llm mg400-agent ask "把红色积木 red_block �
 
 ```text
 config/demo.toml              模拟场景、命名目标、单位、工作空间范围
+config/robot.toml             Isaac 真机入口共用的机器人地址
 00_OPEN_MG400.usda            Isaac 日常场景入口
 isaacsim/                    USD 模型、物理夹爪覆盖层与工作场景
-examples/isaac_sim_*.py       Isaac 仿真、真机面板与验收入口
+apps/isaacsim/               Isaac 仿真、真机面板与验收入口
+examples/                    标准库单文件教学、受限 J4 试验与 notebook
 scripts/                     模型构建、串流客户端操作与夹爪反馈采集
 src/mg400_agent/
   cli.py                     state / demo / ask / chat 命令入口
@@ -162,6 +166,8 @@ src/mg400_agent/
   mujoco_session.py           持续对话、单次任务与 viewer 生命周期
   config.py                  四轴 TCP 位姿与 TOML 配置校验
   backends.py                Arm / Gripper 接口与内存模拟实现
+  kinematics.py              四轴到模型八关节的映射
+  controller_protocol.py     真机 TCP 命令应答解析
   feedback.py                真机关节反馈读取
   joint_control.py           受限真机四轴控制
   gripper_feedback.py        夹爪位置反馈读取

@@ -1,6 +1,6 @@
 """Mirror receive-only MG400 feedback in the current Isaac Sim 6.1 scene.
 
-Script Editor: import runpy; runpy.run_path('/path/to/examples/isaac_sim_mirror_mg400.py')
+Script Editor: import runpy; runpy.run_path('/path/to/apps/isaacsim/mirror.py')
 Only TCP 30004 is opened. Physics stays stopped: this displays measured poses,
 without sending robot commands or simulating contacts. Stop with the UI button.
 """
@@ -18,15 +18,16 @@ from pathlib import Path
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 from mg400_agent.feedback import FeedbackConnection  # noqa: E402
 from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
+from mg400_agent.robot_config import load_robot_host  # noqa: E402
 
 ROBOT = "/World/MG400"
-HOST = "192.168.1.6"
 STALE_SECONDS = 0.5
 REPORT = ROOT / "isaacsim/mirror_status.json"
+ROBOT_CONFIG = ROOT / "config/robot.toml"
 SINGLETON = "_mg400_isaac_feedback_mirror"
 
 
@@ -133,6 +134,7 @@ class UsdPoseMirror:
 
 class LiveMirror:
     def __init__(self):
+        self.host = load_robot_host(ROBOT_CONFIG)
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest = None
@@ -143,7 +145,7 @@ class LiveMirror:
         self.pose_mirror = None
         self.report = {
             "status": "starting",
-            "source": f"{HOST}:30004",
+            "source": f"{self.host}:30004",
             "read_only": True,
             "physics": "stopped",
             "applied_frames": 0,
@@ -153,7 +155,7 @@ class LiveMirror:
     def receive(self):
         while not self.stop_event.is_set():
             try:
-                with FeedbackConnection(HOST, timeout_s=1.0) as connection:
+                with FeedbackConnection(self.host, timeout_s=1.0) as connection:
                     while not self.stop_event.is_set():
                         feedback = connection.read_latest()
                         with self.lock:

@@ -13,20 +13,28 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 importlib.invalidate_caches()
 from mg400_agent.joint_control import JointControl  # noqa: E402
+from mg400_agent.robot_config import load_robot_host  # noqa: E402
 
 SINGLETON = "_mg400_isaac_joint_control"
 MIRROR_SINGLETON = "_mg400_isaac_feedback_mirror"
 REPORT = ROOT / "isaacsim/control_status.json"
+ROBOT_CONFIG = ROOT / "config/robot.toml"
 
 
 class ControlPanel:
     def __init__(self, mirror):
+        self.host = load_robot_host(ROBOT_CONFIG)
+        if getattr(mirror, "host", None) != self.host:
+            raise RuntimeError(
+                "Robot address does not match the live mirror. "
+                "Restart the mirror and control panel."
+            )
         self.mirror = mirror
-        self.control = JointControl("192.168.1.6", self.feedback_snapshot)
+        self.control = JointControl(self.host, self.feedback_snapshot)
         self.action = self.stop_task = self.task = None
         self.closed = False
         self.initialized = False
@@ -117,7 +125,7 @@ class ControlPanel:
         self.window.setPosition(15, 15)
         with self.window.frame:
             with ui.VStack(spacing=6):
-                ui.Label("REAL ROBOT  |  192.168.1.6", height=22)
+                ui.Label(f"REAL ROBOT  |  {self.host}", height=22)
                 state_label = ui.Label("CONNECTING", height=24)
                 with ui.HStack(height=24):
                     ui.Label("Axis", width=55)
@@ -234,7 +242,7 @@ async def replace_panel():
             await old.task
     mirror = getattr(builtins, MIRROR_SINGLETON, None)
     if mirror is None or mirror.stop_event.is_set():
-        namespace = runpy.run_path(str(ROOT / "examples/isaac_sim_mirror_bootstrap.py"))
+        namespace = runpy.run_path(str(ROOT / "apps/isaacsim/mirror_bootstrap.py"))
         await namespace["MG400_MIRROR_BOOTSTRAP_TASK"]
         mirror = getattr(builtins, MIRROR_SINGLETON)
     panel = ControlPanel(mirror)

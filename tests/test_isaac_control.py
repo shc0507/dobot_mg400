@@ -78,18 +78,22 @@ def panel_module(monkeypatch, tmp_path):
     with monkeypatch.context() as import_patch:
         import_patch.setattr(asyncio, "ensure_future", no_startup_task)
         namespace = runpy.run_path(
-            str(ROOT / "examples/isaac_sim_control_mg400.py"), run_name="test_isaac_control"
+            str(ROOT / "apps/isaacsim/joint_control.py"), run_name="test_isaac_control"
         )
     panel_class = namespace["ControlPanel"]
     monkeypatch.setitem(panel_class.run.__globals__, "REPORT", tmp_path / "status.json")
+    config = tmp_path / "robot.toml"
+    config.write_text('[robot]\nhost = "192.168.1.6"\n')
+    monkeypatch.setitem(panel_class.__init__.__globals__, "ROBOT_CONFIG", config)
     monkeypatch.setattr(builtins, namespace["SINGLETON"] + "_start_lock", None, raising=False)
-    return SimpleNamespace(**namespace, instances=instances)
+    return SimpleNamespace(**namespace, instances=instances, config_path=config)
 
 
 @pytest.fixture
 def panel(panel_module):
     sample = Feedback((1.0, 2.0, 3.0, 4.0), mode=5, timestamp=0, error_status=False)
     mirror = SimpleNamespace(
+        host="192.168.1.6",
         lock=threading.Lock(),
         stop_event=threading.Event(),
         network_error=None,
@@ -103,6 +107,39 @@ def panel(panel_module):
 def test_import_does_not_start_control_or_schedule_tasks(panel_module):
     assert panel_module.instances == []
     assert not hasattr(panel_module, "MG400_CONTROL_START_TASK")
+
+
+def test_panel_uses_configured_host_after_matching_mirror(panel_module):
+    panel_module.config_path.write_text('[robot]\nhost = "robot-new.test"\n')
+    panel = panel_module.ControlPanel(SimpleNamespace(host="robot-new.test"))
+    assert panel.host == panel.control.host == "robot-new.test"
+    assert panel.control.calls == []
+
+
+@pytest.mark.parametrize("mirror_host", (None, "192.168.1.6"))
+def test_reload_rejects_old_mirror_after_configuration_change(
+    panel_module, monkeypatch, mirror_host
+):
+    panel_module.config_path.write_text('[robot]\nhost = "robot-new.test"\n')
+    mirror = SimpleNamespace(stop_event=threading.Event())
+    if mirror_host is not None:
+        mirror.host = mirror_host
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, None, raising=False)
+    monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, mirror, raising=False)
+    with pytest.raises(RuntimeError, match="Restart the mirror and control panel"):
+        asyncio.run(panel_module.start())
+    assert panel_module.instances == []
+
+
+@pytest.mark.parametrize("invalid", ("missing", "invalid"))
+def test_invalid_configuration_prevents_control_creation(panel_module, invalid):
+    if invalid == "missing":
+        panel_module.config_path.unlink()
+    else:
+        panel_module.config_path.write_text('[robot]\nhost = ""\n')
+    with pytest.raises((FileNotFoundError, ValueError)):
+        panel_module.ControlPanel(SimpleNamespace(host="192.168.1.6"))
+    assert panel_module.instances == []
 
 
 def test_copy_actual_initializes_targets_and_editing_sends_nothing(panel):

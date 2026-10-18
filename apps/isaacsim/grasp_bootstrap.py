@@ -3,4 +3,4 @@
 import runpy
 from pathlib import Path
 
-runpy.run_path(str(Path(__file__).with_name("isaac_sim_grasp_mg400.py")))
+runpy.run_path(str(Path(__file__).with_name("validate_grasp.py")))

@@ -1,6 +1,6 @@
 """Load and verify MG400 in an existing Isaac Sim 6.1 GUI/streaming session.
 
-In Script Editor: import runpy; runpy.run_path('/path/to/examples/isaac_sim_load_mg400.py')
+In Script Editor: import runpy; runpy.run_path('/path/to/apps/isaacsim/load_model.py')
 Also usable as a Kit --exec script. Does not create a second SimulationApp.
 The current stage is backed up before opening the packaged scene. This verifies
 coupled kinematic poses, not physical linkage closure or gripper actuation.
@@ -23,7 +23,7 @@ from isaacsim.core.simulation_manager import SimulationManager
 from omni.kit.viewport.utility import get_active_viewport
 from pxr import Gf, UsdGeom, UsdPhysics
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from mg400_agent.joint_limits import validate_joints  # noqa: E402

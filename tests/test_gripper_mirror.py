@@ -33,9 +33,7 @@ def matrices(stage):
 
 @pytest.mark.parametrize("position", [0, 500, 1000])
 def test_jaws_follow_fresh_housing_pose_without_changing_other_transforms(stage, position):
-    namespace = runpy.run_path(
-        str(ROOT / "examples/isaac_sim_mirror_mg400.py"), run_name="test_jaw_mirror"
-    )
+    namespace = runpy.run_path(str(ROOT / "apps/isaacsim/mirror.py"), run_name="test_jaw_mirror")
     arm = namespace["UsdPoseMirror"](stage)
     mirror = JawMirror(stage)
     sources = {

@@ -13,7 +13,7 @@ import omni.usd
 from omni.kit.viewport.utility import get_active_viewport
 from pxr import Gf, Usd, UsdGeom
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 async def bootstrap():
@@ -34,7 +34,7 @@ async def bootstrap():
         opened, error = await context.open_stage_async(str(scene))
         if not opened:
             raise RuntimeError(f"Could not load MG400 scene: {error}")
-    namespace = runpy.run_path(str(ROOT / "examples/isaac_sim_mirror_mg400.py"))
+    namespace = runpy.run_path(str(ROOT / "apps/isaacsim/mirror.py"))
     await namespace["MG400_MIRROR_START_TASK"]
     mirror = getattr(builtins, namespace["SINGLETON"])
     deadline = time.monotonic() + 15

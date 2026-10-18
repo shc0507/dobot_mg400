@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Add physical PGEA jaws as an overlay on the existing MG400 USD asset.
 
-Run: uv run --no-project --with usd-core==26.8 --with numpy \
-    python scripts/build_isaac_grasp.py
+Run: uv run --group usd python scripts/build_isaac_grasp.py
 
 The manufacturer specifies 10 mm total stroke, 0.15 kg mass and 2 N maximum
 force per jaw for PGEA-2-10: https://en.dh-robotics.com/product/pgea .
@@ -157,7 +156,10 @@ def main():
         parser.error("Build the base asset with scripts/build_isaac_model.py first")
     build_robot(args.source, args.output)
     build_scene(args.output)
-    print(f"Wrote mg400_grasp.usda and grasp_scene.usda to {args.output}")
+    (args.output / "GRASP_NOTICE.txt").write_bytes(
+        (ROOT / "isaacsim/GRASP_NOTICE.txt").read_bytes()
+    )
+    print(f"Wrote mg400_grasp.usda, grasp_scene.usda and GRASP_NOTICE.txt to {args.output}")
 
 
 if __name__ == "__main__":

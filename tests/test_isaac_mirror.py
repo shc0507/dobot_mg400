@@ -2,9 +2,11 @@
 
 import math
 import runpy
+import socket
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -13,7 +15,7 @@ pytest.importorskip("pxr")
 from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE = runpy.run_path(str(ROOT / "examples/isaac_sim_mirror_mg400.py"), run_name="test_mirror")
+MODULE = runpy.run_path(str(ROOT / "apps/isaacsim/mirror.py"), run_name="test_mirror")
 UsdPoseMirror = MODULE["UsdPoseMirror"]
 LiveMirror = MODULE["LiveMirror"]
 
@@ -89,8 +91,12 @@ def test_live_arm_changes_hold_measured_jaw_opening():
     assert restarted.jaws == pytest.approx(mirror.jaws, abs=3e-8)
 
 
-def test_worker_reconnects_on_invalid_frame_and_receives_without_sending(monkeypatch):
+def test_worker_reconnects_on_invalid_frame_and_receives_without_sending(monkeypatch, tmp_path):
+    config = tmp_path / "robot.toml"
+    config.write_text('[robot]\nhost = "robot-first.test"\n')
+    monkeypatch.setitem(LiveMirror.__init__.__globals__, "ROBOT_CONFIG", config)
     mirror = LiveMirror()
+    config.write_text('[robot]\nhost = "robot-second.test"\n')
     received = threading.Event()
     attempts = []
     feedback = object()
@@ -119,8 +125,23 @@ def test_worker_reconnects_on_invalid_frame_and_receives_without_sending(monkeyp
     assert received.wait(3)
     worker.join(timeout=1)
     assert not worker.is_alive()
-    assert attempts == [("192.168.1.6", 1.0)] * 2
+    assert attempts == [("robot-first.test", 1.0)] * 2
+    assert mirror.host == "robot-first.test"
+    assert mirror.report["source"] == "robot-first.test:30004"
     assert mirror.received == 1
     assert mirror.latest[0] is feedback
     assert began <= mirror.latest[1] <= time.monotonic()
     assert mirror.network_error is None
+
+
+@pytest.mark.parametrize("invalid", ("missing", "invalid"))
+def test_invalid_configuration_prevents_mirror_connections(monkeypatch, tmp_path, invalid):
+    config = tmp_path / "robot.toml"
+    if invalid == "invalid":
+        config.write_text('[robot]\nhost = ""\n')
+    monkeypatch.setitem(LiveMirror.__init__.__globals__, "ROBOT_CONFIG", config)
+    connection = Mock(side_effect=AssertionError("No network"))
+    monkeypatch.setattr(socket, "create_connection", connection)
+    with pytest.raises((FileNotFoundError, ValueError)):
+        LiveMirror()
+    connection.assert_not_called()

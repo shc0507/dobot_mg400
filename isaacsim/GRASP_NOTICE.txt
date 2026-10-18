@@ -1,0 +1,44 @@
+Isaac Sim physical gripper overlay (2026-10-13)
+
+Assets: mg400_grasp.usda and grasp_scene.usda.
+Rebuild: scripts/build_isaac_grasp.py.
+These assets reference the original mg400_with_gripper.usd and scene.usda;
+the base model, its source attribution and licenses remain unchanged. See
+NOTICE.txt and LICENSE. DH-Robotics meshes retain their separate provenance;
+the HarvestX Apache-2.0 license does not license the DH-Robotics geometry.
+
+Physical changes:
+  - Two original jaw-carrier meshes and estimated fingertips are deactivated
+    in the base reference and reproduced under two movable rigid jaw links.
+  - A fixed housing mass is added at the existing PGEA flange mounting frame.
+  - Two opposed prismatic joints travel inward 0 to 0.005 m per jaw.
+    Zero preserves the source CAD pose. The estimated fingertip inner gap is
+    0.0119 m open and 0.0019 m closed. Reference frames remain unchanged.
+  - Only the fingertip boxes receive gripper collision geometry. Internal
+    racks, cable, housing and arm CAD meshes remain non-colliding visuals.
+  - The physical-gripper scene adds a ground collider. Its runtime grasp
+    example adds a support and a free 0.005 kg, 8 x 8 x 20 mm test object.
+
+Manufacturer specifications used for PGEA-2-10:
+  Total stroke 10 mm, total mass 0.15 kg, force 0.8 to 2 N per jaw.
+  Source: https://en.dh-robotics.com/product/pgea
+  Catalog: https://en.dh-robotics.com/wp-content/uploads/2025/06/DH_PGEAPGIA-catalog_V255.pdf
+  The existing PGEA-2/15-10 O-S CAD is shared between force variants; this
+  simulation's 2 N limit does not establish the actual hardware variant.
+
+Simulation assumptions, not measured hardware parameters:
+  Housing mass 0.13 kg, each moving jaw plus tip 0.01 kg; box inertias.
+  The existing 10 x 9 x 15 mm fingertips are estimated from a photograph,
+  not manufacturer CAD. Their net gap differs from the stock carrier gap.
+  Linear force drives: maximum 2 N, stiffness 1000 N/m, damping 10 N s/m.
+  Static/dynamic friction 1.0, restitution 0, contact offset 0.0002 m,
+  rest offset 0. Articulation solver iterations: position 32, velocity 8.
+  Housing and jaws have gravity enabled; the original arm links retain
+  disabled gravity and no self-collision geometry.
+
+The runtime test uses drives after its single initial robot-state assignment.
+The test object remains free and gravity-enabled, without attachment joints
+or subsequent scripted pose assignment. Arm coupling remains coordinated
+drive commands to eight joints, not physical closed-loop linkage constraints.
+Passing this test demonstrates the selected simulated contact/drive setup;
+it does not validate hardware gripping performance or whole-arm dynamics.

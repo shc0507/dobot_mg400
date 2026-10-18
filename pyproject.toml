@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mg400-agent"
+version = "0.1.0"
+description = "Simulation-first agent scaffold for a Dobot MG400 and electric gripper"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+llm = ["openai>=2,<3"]
+coppeliasim = ["coppeliasim-zmqremoteapi-client>=2.0.4,<3"]
+mujoco = ["mujoco>=3.3,<4"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[project.scripts]
+mg400-agent = "mg400_agent.cli:main"
+mg400-mirror = "mg400_agent.mirror:main"
+mg400-mujoco = "mg400_agent.mujoco_replay:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["work"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

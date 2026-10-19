@@ -22,6 +22,8 @@ from mg400_agent.keyboard_jog import KeyboardJogSession  # noqa: E402
 from mg400_agent.robot_config import load_robot_host  # noqa: E402
 from mg400_agent.runtime_paths import data_path  # noqa: E402
 
+backend = importlib.import_module("mg400_agent.joint_control")
+
 SINGLETON = "_mg400_isaac_joint_control"
 MIRROR_SINGLETON = "_mg400_isaac_feedback_mirror"
 REPORT = data_path("isaacsim/control_status.json")
@@ -205,11 +207,16 @@ class ControlPanel:
                 self.disable_task and not self.disable_task.done()
             ):
                 self.copy_actual()
-                self.message = (
-                    "Hold limit reached. Release the key before pressing again."
-                    if expired
-                    else "Stopped. Hold a key for the next move."
-                )
+                if key not in "ZX" and session.limit_reason:
+                    self.message = (
+                        f"{session.limit_reason} Release the key and choose another direction."
+                    )
+                else:
+                    self.message = (
+                        "Hold limit reached. Release the key before pressing again."
+                        if expired
+                        else "Stopped. Hold a key for the next move."
+                    )
         except Exception as error:
             self.set_keyboard(False)
             if self.stop_task is None and not (
@@ -277,6 +284,11 @@ class ControlPanel:
                 self.message = (
                     "Enabled. No movement sent." if name == "enable" else "Arrival verified."
                 )
+        except backend.TargetRejectedError as error:
+            if not self.control.stopped and self.stop_task is None and not (
+                self.disable_task and not self.disable_task.done()
+            ):
+                self.message = f"{error} Adjust X/Y/Z/R and try again."
         except Exception as error:
             self.set_keyboard(False)
             if self.stop_task is None and not (
@@ -535,6 +547,18 @@ class ControlPanel:
         temporary.replace(REPORT)
 
 
+def _reload_control_modules():
+    """Load control changes only after the previous panel has finished its workers."""
+    global backend, JointControl, KeyboardJogSession
+    importlib.invalidate_caches()
+    importlib.reload(importlib.import_module("mg400_agent.controller_protocol"))
+    control_module = importlib.reload(importlib.import_module("mg400_agent.joint_control"))
+    jog_module = importlib.reload(importlib.import_module("mg400_agent.keyboard_jog"))
+    backend = control_module
+    JointControl = control_module.JointControl
+    KeyboardJogSession = jog_module.KeyboardJogSession
+
+
 async def start():
     # Script Editor and --exec may run this file repeatedly, in separate namespaces.
     lock_name = SINGLETON + "_start_lock"
@@ -559,6 +583,9 @@ async def replace_panel():
         raise RuntimeError("The gripper command is in progress. Wait before reloading.")
     if old and (old.busy or old.control.busy):
         raise RuntimeError("Control panel is busy. Stop and verify the robot before reloading.")
+    pending = getattr(old.control, "_pending", None) if old else None
+    if pending is not None and not pending["done"].is_set():
+        raise RuntimeError("A controller acknowledgement is pending. Wait before reloading.")
     if old_gripper is not None:
         old_gripper.closed = True
     if old:
@@ -571,6 +598,7 @@ async def replace_panel():
                 await old_gripper.task
             except Exception as error:
                 print("MG400_GRIPPER_CLOSED", str(error), flush=True)
+    _reload_control_modules()
     mirror = getattr(builtins, MIRROR_SINGLETON, None)
     if mirror is None or mirror.stop_event.is_set():
         namespace = runpy.run_path(str(ROOT / "apps/isaacsim/mirror_bootstrap.py"))

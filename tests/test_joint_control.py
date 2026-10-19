@@ -5,8 +5,9 @@ from unittest.mock import Mock, call
 
 import pytest
 
+from mg400_agent.controller_protocol import ControllerCommandError, parse_controller_response
 from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import JointControl
+from mg400_agent.joint_control import JointControl, TargetRejectedError
 
 START = (0.7, 0.04, 0.52, 23.08)
 TARGET = (*START[:3], START[3] + 2)
@@ -128,6 +129,18 @@ def test_read_pose_checks_feedback_freshness_before_and_after_query(rig, monkeyp
     assert query.call_count == (0 if when == "before" else 1)
 
 
+def test_solve_pose_checks_ik_without_sending_motion(cartesian_rig):
+    control, sample, _, commands, pose = cartesian_rig
+    assert control.solve_pose(LINEAR_TARGET) == TARGET
+    assert commands == [
+        ("InverseSolution(251.000000,10.000000,40.000000,23.780000,0,0)", 29999)
+    ]
+    assert sample[0].joints_deg == START
+    assert pose[0] == POSE
+    assert not control.busy
+    assert not control.stopped
+
+
 def test_linear_move_uses_controller_ik_and_verifies_pose_and_joints(cartesian_rig):
     control, _, now, commands, pose = cartesian_rig
     assert control.move_linear(LINEAR_TARGET).joints_deg == TARGET
@@ -164,7 +177,7 @@ def test_linear_move_does_not_enable_disabled_robot(cartesian_rig):
     assert not control.stopped
 
 
-@pytest.mark.parametrize("solution", ["1,2,3", "0,0,0,nan", "160,0,0,0"])
+@pytest.mark.parametrize("solution", ["1,2,3", "1,2,3,4,0,0", "0,0,0,nan", "0,0,0,inf"])
 def test_invalid_controller_inverse_solution_prevents_linear_motion(
     cartesian_rig, monkeypatch, solution
 ):
@@ -177,9 +190,177 @@ def test_invalid_controller_inverse_solution_prevents_linear_motion(
         return original(text, *args, **kwargs)
 
     monkeypatch.setattr(control, "_command", command)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as error:
+        control.move_linear(LINEAR_TARGET)
+    assert not isinstance(error.value, TargetRejectedError)
+    assert not any(text.startswith("MovL(") for text, _ in commands)
+    assert ("ResetRobot()", 29999) in commands
+    assert control.stopped
+    assert not control.busy
+
+
+@pytest.mark.parametrize("prior_move", [False, True])
+@pytest.mark.parametrize("rejection", ["controller", "joint_range"])
+def test_rejected_linear_target_can_be_corrected_without_stopping_control(
+    cartesian_rig, monkeypatch, prior_move, rejection
+):
+    control, sample, _, commands, pose = cartesian_rig
+    if prior_move:
+        control.move_linear(LINEAR_TARGET)
+    before = sample[0]
+    before_pose = pose[0]
+    commands.clear()
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text.startswith("InverseSolution("):
+            commands.append((text, 29999))
+            if rejection == "joint_range":
+                return "160,0,0,0"
+            return parse_controller_response(f"-1,{{0,0,0,0}},{text};".encode(), text)
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(TargetRejectedError) as error:
+        control.move_linear(LINEAR_TARGET)
+    assert isinstance(error.value, ValueError)
+    if rejection == "controller":
+        assert isinstance(error.value.__cause__, ControllerCommandError)
+    assert sample[0] == before
+    assert pose[0] == before_pose
+    assert not any(text.startswith(("MovL(", "ResetRobot(")) for text, _ in commands)
+    assert not control.stopped
+    assert not control.busy
+
+    monkeypatch.setattr(control, "_command", original)
+    corrected = (POSE[0] - 1, *POSE[1:])
+    assert control.move_linear(corrected).joints_deg == TARGET
+    assert pose[0] == corrected
+    assert sum(text.startswith("MovL(") for text, _ in commands) == 1
+    assert ("ResetRobot()", 29999) not in commands
+    assert not control.stopped
+
+
+@pytest.mark.parametrize("code", [-2, -10000, 1])
+def test_inverse_error_codes_other_than_unreachable_remain_faults(
+    cartesian_rig, monkeypatch, code
+):
+    control, _, _, commands, _ = cartesian_rig
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text.startswith("InverseSolution("):
+            return parse_controller_response(f"{code},{{0,0,0,0}},{text};".encode(), text)
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(ControllerCommandError) as error:
+        control.move_linear(LINEAR_TARGET)
+    assert error.value.code == code
+    assert not any(text.startswith("MovL(") for text, _ in commands)
+    assert ("ResetRobot()", 29999) in commands
+    assert control.stopped
+    assert not control.busy
+
+
+@pytest.mark.parametrize("rejection", ["controller", "joint_range"])
+@pytest.mark.parametrize("new_frame", [False, True])
+def test_target_rejection_requires_feedback_newer_than_the_inverse_request(
+    cartesian_rig, monkeypatch, rejection, new_frame
+):
+    control, sample, now, commands, _ = cartesian_rig
+    original = control._command
+    observed_new_frame = []
+
+    def command(text, *args, **kwargs):
+        if text.startswith("InverseSolution("):
+            received_before_request = now[0]
+
+            def feedback_snapshot():
+                if new_frame and now[0] >= received_before_request + 0.1:
+                    observed_new_frame.append(now[0])
+                    return sample[0], now[0]
+                return sample[0], received_before_request
+
+            control.feedback_snapshot = feedback_snapshot
+            now[0] += 0.01
+            if rejection == "joint_range":
+                return "160,0,0,0"
+            return parse_controller_response(f"-1,{{0,0,0,0}},{text};".encode(), text)
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    expected = TargetRejectedError if new_frame else RuntimeError
+    with pytest.raises(expected):
+        control.move_linear(LINEAR_TARGET)
+    assert bool(observed_new_frame) is new_frame
+    assert control.stopped is not new_frame
+    assert (("ResetRobot()", 29999) in commands) is not new_frame
+    assert not any(text.startswith("MovL(") for text, _ in commands)
+    assert not control.busy
+
+
+@pytest.mark.parametrize("change", ["stale", "moving", "disabled", "alarm", "joints", "cancelled"])
+def test_inverse_rejection_with_unconfirmed_stationary_state_remains_a_fault(
+    cartesian_rig, monkeypatch, change
+):
+    control, sample, now, commands, _ = cartesian_rig
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text.startswith("InverseSolution("):
+            if change == "stale":
+                control.feedback_snapshot = lambda: (sample[0], now[0] - 0.3)
+            elif change == "moving":
+                sample[0] = Feedback(START, 7, 0, False)
+            elif change == "disabled":
+                sample[0] = Feedback(START, 4, 0, False)
+            elif change == "alarm":
+                sample[0] = Feedback(START, 5, 0, True)
+            elif change == "joints":
+                sample[0] = Feedback((START[0] + 0.2, *START[1:]), 5, 0, False)
+            else:
+                control.cancel()
+            return parse_controller_response(f"-1,{{0,0,0,0}},{text};".encode(), text)
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(RuntimeError):
         control.move_linear(LINEAR_TARGET)
     assert not any(text.startswith("MovL(") for text, _ in commands)
+    assert ("ResetRobot()", 29999) in commands
+    assert control.stopped
+    assert not control.busy
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("-1,{0,0,0,0},InverseSolution(251,10,40,23.78,0,0);"),
+        RuntimeError("Unexpected controller response: -1,{0,0,0,0},WrongCommand();"),
+        TimeoutError("Controller acknowledgement timed out"),
+        ConnectionError("Controller disconnected before acknowledgement"),
+    ],
+)
+def test_inverse_protocol_or_transport_failure_still_stops_control(
+    cartesian_rig, monkeypatch, failure
+):
+    control, _, _, commands, _ = cartesian_rig
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text.startswith("InverseSolution("):
+            raise failure
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(type(failure)) as error:
+        control.move_linear(LINEAR_TARGET)
+    assert error.value is failure
+    assert not any(text.startswith("MovL(") for text, _ in commands)
+    assert ("ResetRobot()", 29999) in commands
+    assert control.stopped
+    assert not control.busy
 
 
 def test_linear_arrival_does_not_accept_idle_feedback_before_motion_starts(

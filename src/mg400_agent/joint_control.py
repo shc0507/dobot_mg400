@@ -11,9 +11,13 @@ import threading
 import time
 
 from .config import finite_number
-from .controller_protocol import parse_controller_response
+from .controller_protocol import ControllerCommandError, parse_controller_response
 from .feedback import Feedback
 from .joint_limits import validate_joint_segment, validate_joints
+
+
+class TargetRejectedError(ValueError):
+    """The target was rejected before its movement command was sent."""
 
 
 class JointControl:
@@ -98,6 +102,41 @@ class JointControl:
     def read_pose(self):
         """Read measured XYZ in mm and R in degrees for User=0, Tool=0."""
         return self._read_pose({4, 5, 7})
+
+    def _check_rejected_target_state(self, before, received):
+        while True:
+            after, updated = self._fresh({5})
+            if self.stopped or not self._near(before.joints_deg, after.joints_deg):
+                raise RuntimeError("Robot state changed during target validation")
+            if updated > received:
+                return
+            time.sleep(0.01)
+
+    def solve_pose(self, target):
+        """Check a Cartesian target without sending a movement command."""
+        target = self._four_values(target)
+        before, received = self._fresh({5})
+        values = ",".join(f"{value:.6f}" for value in target)
+        # With six arguments, the controller chooses the nearest joint solution.
+        try:
+            payload = self._command(f"InverseSolution({values},0,0)")
+        except ControllerCommandError as error:
+            if error.code != -1:
+                raise
+            self._check_rejected_target_state(before, received)
+            raise TargetRejectedError(
+                f"Controller rejected the target (InverseSolution code {error.code}). "
+                "This target was not sent."
+            ) from error
+        # Invalid reply data remains a fault, not a rejected target.
+        solution = self._four_values(tuple(float(value) for value in payload.split(",")))
+        try:
+            return validate_joints(solution)
+        except ValueError as error:
+            self._check_rejected_target_state(before, received)
+            raise TargetRejectedError(
+                f"Target exceeds the configured joint range: {error}"
+            ) from error
 
     def _command(self, text, port=29999, *, pending=None, stopping=False):
         """Send once; a reply must have a successful code and the matching echo."""
@@ -362,12 +401,7 @@ class JointControl:
             _, start = self._preflight({5})
             start_pose = self._read_pose({5})
             values = ",".join(f"{value:.6f}" for value in target)
-            # The six-argument form selects the solution nearest the current joints.
-            solution = tuple(
-                float(value)
-                for value in self._command(f"InverseSolution({values},0,0)").split(",")
-            )
-            target_joints = validate_joints(solution)
+            target_joints = self.solve_pose(target)
             if not self._near(self._read_pose({5}), start_pose):
                 raise RuntimeError("Robot pose changed before Cartesian movement")
             self._guarded_command(
@@ -389,6 +423,8 @@ class JointControl:
             ):
                 raise RuntimeError("Final dashboard position does not verify Cartesian arrival")
             return sample
+        except TargetRejectedError:
+            raise
         except Exception as error:
             self._failed(error)
             raise

@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import JointControl
+from mg400_agent.joint_control import JointControl, TargetRejectedError
 from mg400_agent.keyboard_jog import KeyboardJogSession
 
 START = (30.0, 0.0, 10.0, 0.0)
@@ -372,7 +372,7 @@ def test_expiry_stops_and_requires_a_real_release_before_next_hold(rig, monkeypa
     assert rig.session.expired
     assert not released.is_set()
     assert len(rig.moves) == 1
-    with pytest.raises(RuntimeError, match="Release the expired key"):
+    with pytest.raises(RuntimeError, match="Release the current key"):
         rig.session.run("R", threading.Event())
     rig.session.release()
     monkeypatch.setattr("mg400_agent.keyboard_jog.HOLD_SECONDS", 5.0)
@@ -412,9 +412,12 @@ def test_bad_ik_never_sends_motion(rig, monkeypatch):
         return original(text)
 
     monkeypatch.setattr(rig, "command", command)
-    with pytest.raises(RuntimeError, match="outside"):
-        rig.session.run("W", threading.Event())
+    assert rig.session.run("W", threading.Event()) == POSE
+    assert "outside" in rig.session.limit_reason
     assert not rig.moves
+    assert "ResetRobot()" not in rig.commands
+    assert rig.session.fault is None
+    assert not rig.session.control.stopped
 
 
 def test_cartesian_ik_crossing_invalid_joint_region_is_rejected(rig, monkeypatch):
@@ -428,8 +431,175 @@ def test_cartesian_ik_crossing_invalid_joint_region_is_rejected(rig, monkeypatch
         return original(text)
 
     monkeypatch.setattr(rig, "command", command)
-    with pytest.raises(RuntimeError, match="outside"):
+    assert rig.session.run("W", threading.Event()) == POSE
+    assert "outside" in rig.session.limit_reason
+    assert not rig.moves
+    assert "ResetRobot()" not in rig.commands
+    assert rig.session.fault is None
+    assert not rig.session.control.stopped
+
+
+def test_ik_rejection_ends_hold_without_motion_or_stop(rig, monkeypatch):
+    rig.session.prepare()
+    solve = Mock(side_effect=TargetRejectedError("The controller rejected the target"))
+    monkeypatch.setattr(JointControl, "solve_pose", solve)
+    released = threading.Event()
+    assert rig.session.run("W", released) == POSE
+    solve.assert_called_once()
+    assert rig.session.limit_reason == "The controller rejected the target"
+    assert not released.is_set()
+    assert rig.session.fault is None
+    assert rig.session.ready
+    assert not rig.session.control.stopped
+    assert not rig.moves
+    assert "ResetRobot()" not in rig.commands
+    with pytest.raises(RuntimeError, match="Release the current key"):
+        rig.session.run("S", threading.Event())
+
+
+def test_limit_after_completed_step_requires_release_and_allows_reverse(rig, monkeypatch):
+    rig.session.prepare()
+    rig.release_after = None
+    solve = JointControl.solve_pose
+    calls = []
+
+    def reject_second(active, target):
+        calls.append(target)
+        if len(calls) == 2:
+            raise TargetRejectedError("The next target is outside the workspace")
+        return solve(active, target)
+
+    monkeypatch.setattr(JointControl, "solve_pose", reject_second)
+    released = threading.Event()
+    result = rig.session.run("W", released)
+    assert result == rig.pose
+    assert len(rig.moves) == 1
+    assert rig.session.limit_reason == "The next target is outside the workspace"
+    assert not rig.session.control.stopped
+    assert rig.session.fault is None
+    assert "ResetRobot()" not in rig.commands
+    with pytest.raises(RuntimeError, match="Release the current key"):
+        rig.session.run("S", threading.Event())
+    rig.session.release()
+    assert released.is_set()
+    rig.release_after = 2
+    assert rig.session.run("S", threading.Event()) == pytest.approx(POSE)
+    assert len(rig.moves) == 2
+    assert rig.commands.count("ResetRobot()") == 1
+    assert rig.session.limit_reason is None
+    assert rig.session.fault is None
+    assert rig.session.ready
+
+
+def test_joint_target_limit_ends_hold_without_stopping_parent(rig):
+    rig.sample = Feedback((158.5, *START[1:]), 5, 0, False)
+    rig.session.prepare()
+    rig.session.run("A", threading.Event())
+    assert "J1" in rig.session.limit_reason
+    assert not rig.moves
+    assert "ResetRobot()" not in rig.commands
+    assert rig.session.fault is None
+    assert not rig.session.control.stopped
+
+
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_release_during_final_pose_read_waits_for_stop_confirmation(
+    rig, monkeypatch, stop_fails
+):
+    rig.session.prepare()
+    monkeypatch.setattr(
+        JointControl, "solve_pose", Mock(side_effect=TargetRejectedError("Target rejected"))
+    )
+    reset_received, allow_ack = threading.Event(), threading.Event()
+
+    def release(text):
+        if text == "GetPose(0,0)" and rig.session.limit_reason:
+            rig.session.release()
+
+    def block_reply(text):
+        if text == "ResetRobot()":
+            reset_received.set()
+            assert allow_ack.wait(2)
+            if stop_fails:
+                raise ConnectionError("Lost stop acknowledgement")
+
+    rig.hook, rig.reply_hook = release, block_reply
+    thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
+    assert reset_received.wait(1)
+    try:
+        assert thread.is_alive()
+        assert rig.session.busy
+        assert rig.session.control.busy
+        assert not rig.session.ready
+    finally:
+        allow_ack.set()
+    result = finish_thread(thread, outcome)
+    assert isinstance(result, RuntimeError) is stop_fails
+    assert rig.session.control.stopped is stop_fails
+    assert rig.session.ready is not stop_fails
+    assert not rig.moves
+
+
+@pytest.mark.parametrize("reason", ["release", "expiry", "disable", "stale", "stop_failure"])
+def test_target_rejection_does_not_bypass_concurrent_stop_or_fault(rig, monkeypatch, reason):
+    rig.session.prepare()
+
+    def reject(active, target):
+        if reason == "release":
+            rig.session.release()
+        elif reason == "expiry":
+            rig.now += 5.1
+        elif reason == "disable":
+            rig.session.control.cancel(disabling=True)
+        elif reason == "stale":
+            rig.stale = True
+        else:
+            rig.reset_failure = True
+            rig.session.release()
+        raise TargetRejectedError("Target rejected")
+
+    monkeypatch.setattr(JointControl, "solve_pose", reject)
+    if reason in ("disable", "stale", "stop_failure"):
+        with pytest.raises(RuntimeError):
+            rig.session.run("W", threading.Event())
+        assert rig.session.control.stopped
+        assert not rig.session.ready
+    else:
         rig.session.run("W", threading.Event())
+        assert not rig.session.control.stopped
+        assert rig.session.ready
+    assert rig.session.limit_reason is None
+    assert rig.session.expired is (reason == "expiry")
+    assert not rig.moves
+    assert rig.commands.count("ResetRobot()") == 1
+
+
+def test_invalid_measured_joints_remain_a_fault(rig):
+    rig.session.prepare()
+    rig.sample = Feedback((200, *START[1:]), 5, 0, False)
+    with pytest.raises(RuntimeError, match="outside"):
+        rig.session.run("D", threading.Event())
+    assert rig.session.control.stopped
+    assert rig.session.limit_reason is None
+    assert not rig.moves
+
+
+@pytest.mark.parametrize("payload", ["1,2,3", "nan,0,10,0"])
+def test_invalid_ik_reply_remains_a_fault(rig, monkeypatch, payload):
+    rig.session.prepare()
+    original = rig.command
+
+    def command(text):
+        if text.startswith("InverseSolution("):
+            return payload
+        return original(text)
+
+    monkeypatch.setattr(rig, "command", command)
+    with pytest.raises(RuntimeError):
+        rig.session.run("W", threading.Event())
+    assert rig.session.control.stopped
+    assert rig.session.fault is not None
+    assert rig.session.limit_reason is None
     assert not rig.moves
 
 

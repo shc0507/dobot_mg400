@@ -4,7 +4,7 @@ import math
 import threading
 import time
 
-from .joint_control import JointControl
+from .joint_control import JointControl, TargetRejectedError
 from .joint_limits import validate_joint_segment, validate_joints
 
 HOLD_SECONDS = 5.0
@@ -36,6 +36,7 @@ class KeyboardJogSession:
         self._pose = None
         self.fault = None
         self.expired = False
+        self.limit_reason = None
 
     @property
     def busy(self):
@@ -59,7 +60,7 @@ class KeyboardJogSession:
             if phase == "running" and not self._prepared:
                 raise RuntimeError("Prepare keyboard control before movement")
             if self._release_gate is not None and not self._release_gate.is_set():
-                raise RuntimeError("Release the expired key before another hold")
+                raise RuntimeError("Release the current key before another hold")
             active = JointControl(
                 self.control.host, self.control.feedback_snapshot,
                 parent=self.control, command_timeout=0.5,
@@ -70,6 +71,7 @@ class KeyboardJogSession:
             self._released = released
             self._stop_thread = self._stop_result = None
             self.expired = False
+            self.limit_reason = None
             return active
 
     def _stop(self, active):
@@ -138,22 +140,28 @@ class KeyboardJogSession:
         pending = active._pending
         if pending is not None and not pending["done"].wait(1.0):
             self._revoke(error=RuntimeError("Keyboard command did not finish after cancellation"))
-        with self._lock:
-            stop_thread = self._stop_thread
-        if stop_thread is not None:
-            stop_thread.join()
-            if not self._stop_result["ok"]:
-                self._revoke(error=RuntimeError(
-                    f"Keyboard stop unconfirmed: {self._stop_result.get('error', '')}"
-                ))
-        if read_pose and self.fault is None and not self.control.stopped:
-            try:
-                self._pose = active._read_pose({5})
-            except Exception as error:
-                self._revoke(error=error)
-        active._operation_lock.release()
-        with self._lock:
-            self._active = self._phase = None
+        while True:
+            with self._lock:
+                stop_thread = self._stop_thread
+            if stop_thread is not None:
+                stop_thread.join()
+                if not self._stop_result["ok"]:
+                    self._revoke(error=RuntimeError(
+                        f"Keyboard stop unconfirmed: {self._stop_result.get('error', '')}"
+                    ))
+            if read_pose and self.fault is None and not self.control.stopped:
+                try:
+                    self._pose = active._read_pose({5})
+                except Exception as error:
+                    self._revoke(error=error)
+            read_pose = False
+            with self._lock:
+                # A release can start a stop while the final pose read is pending.
+                if self._stop_thread is not stop_thread:
+                    continue
+                active._operation_lock.release()
+                self._active = self._phase = None
+                return
 
     def prepare(self):
         """Verify enabled idle state once and return measured User=0/Tool=0 pose."""
@@ -195,12 +203,15 @@ class KeyboardJogSession:
     def _step(self, active, key):
         sample, _ = active._fresh({5})
         pose = active._read_pose({5})
-        joints = sample.joints_deg
+        joints = validate_joints(sample.joints_deg)
         if key in "AD":
             target_joints = list(joints)
             target_joints[0] += STEP_DEG if key == "A" else -STEP_DEG
-            target_joints = validate_joints(target_joints)
-            validate_joint_segment(joints, target_joints)
+            try:
+                target_joints = validate_joints(target_joints)
+                validate_joint_segment(joints, target_joints)
+            except ValueError as error:
+                raise TargetRejectedError(str(error)) from error
             values = ",".join(f"{value:.6f}" for value in target_joints)
             command = f"JointMovJ({values},SpeedJ=5,AccJ=20)"
             target_pose = None
@@ -217,11 +228,11 @@ class KeyboardJogSession:
                 target_pose[3] += STEP_DEG if key == "Q" else -STEP_DEG
             target_pose = tuple(target_pose)
             values = ",".join(f"{value:.6f}" for value in target_pose)
-            solution = tuple(float(value) for value in active._command(
-                f"InverseSolution({values},0,0)"
-            ).split(","))
-            target_joints = validate_joints(solution)
-            validate_joint_segment(joints, target_joints)
+            target_joints = active.solve_pose(target_pose)
+            try:
+                validate_joint_segment(joints, target_joints)
+            except ValueError as error:
+                raise TargetRejectedError(str(error)) from error
             command = f"MovL({values},User=0,Tool=0,SpeedL=2,AccL=20)"
         active._send_guard()
         active._guarded_command(
@@ -259,6 +270,18 @@ class KeyboardJogSession:
             while True:
                 active._send_guard()
                 self._step(active, key)
+        except TargetRejectedError as error:
+            try:
+                active._send_guard()
+                active._fresh({5})
+            except Exception as state_error:
+                if not self._revoked.is_set():
+                    self._revoke(error=state_error)
+            else:
+                with self._lock:
+                    if not self._revoked.is_set() and not active.stopped:
+                        self.limit_reason = str(error)
+                        self._release_gate = released
         except Exception as error:
             if not self._revoked.is_set():
                 self._revoke(error=error)

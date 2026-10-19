@@ -33,6 +33,7 @@ def panel_module(monkeypatch, tmp_path):
     sessions = []
     grippers = []
     gripper_loads = []
+    reload_calls = []
 
     class Control:
         def __init__(self, host, snapshot):
@@ -101,6 +102,7 @@ def panel_module(monkeypatch, tmp_path):
 
     backend = ModuleType("mg400_agent.joint_control")
     backend.JointControl = Control
+    backend.TargetRejectedError = type("TargetRejectedError", (ValueError,), {})
     monkeypatch.setitem(sys.modules, backend.__name__, backend)
 
     class KeyboardSession:
@@ -108,6 +110,7 @@ def panel_module(monkeypatch, tmp_path):
             self.control = control
             self.ready = self.closed = False
             self.expired = False
+            self.limit_reason = None
             self.prepare_started = asyncio.Event()
             self.prepare_allowed = asyncio.Event()
             self.prepare_allowed.set()
@@ -183,6 +186,10 @@ def panel_module(monkeypatch, tmp_path):
             str(ROOT / "apps/isaacsim/joint_control.py"), run_name="test_isaac_control"
         )
     panel_class = namespace["ControlPanel"]
+    monkeypatch.setitem(
+        panel_class.run.__globals__, "_reload_control_modules",
+        lambda: reload_calls.append("reload"),
+    )
 
     class Gripper:
         def __init__(self, feedback_path=None):
@@ -243,6 +250,7 @@ def panel_module(monkeypatch, tmp_path):
     return SimpleNamespace(
         **namespace, instances=instances, sessions=sessions, config_path=config,
         grippers=grippers, Gripper=Gripper, gripper_loads=gripper_loads,
+        reload_calls=reload_calls,
         feedback_path=tmp_path / "data/work/gripper_olares_feedback.json",
     )
 
@@ -654,6 +662,43 @@ def test_enable_sends_no_move(panel):
     assert panel.message == "Enabled. No movement sent."
 
 
+def test_manual_target_rejection_keeps_coordinates_and_allows_retry(
+    panel_module, panel, monkeypatch
+):
+    move_linear = panel.control.move_linear
+    rejected = True
+
+    def reject_once(target):
+        nonlocal rejected
+        if rejected:
+            rejected = False
+            raise panel_module.backend.TargetRejectedError("Controller rejected the target")
+        return move_linear(target)
+
+    monkeypatch.setattr(panel.control, "move_linear", reject_once)
+
+    async def exercise():
+        panel.copy_actual()
+        panel.models[0].set_value(406.8)
+        panel.submit("move")
+        first_action = panel.action
+        await first_action
+        assert "Adjust X/Y/Z/R and try again" in panel.message
+        assert [model.as_float for model in panel.models] == [406.8, 2.0, 3.0, 4.0]
+        assert not panel.control.stopped
+        assert not panel.busy
+        assert panel.control.calls == []
+        panel.models[0].set_value(396.8)
+        panel.control.release_move.set()
+        panel.submit("move")
+        assert panel.action is not first_action
+        await panel.action
+        assert panel.control.calls == [("move_linear", (396.8, 2.0, 3.0, 4.0))]
+        assert panel.message == "Arrival verified."
+
+    asyncio.run(exercise())
+
+
 def test_disable_cancels_once_drains_move_and_allows_explicit_enable_then_move(
     panel_module, panel
 ):
@@ -928,6 +973,47 @@ def test_hold_limit_requires_keyup_before_another_hold(panel):
         panel.key_event("W", False)
         await asyncio.wait_for(panel.action, 1)
         assert session.run_calls == ["W", "W"]
+
+    asyncio.run(exercise())
+
+
+def test_keyboard_target_limit_keeps_keys_on_but_requires_release(panel, monkeypatch):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        run = type(session).run
+
+        async def reject_first_hold(self, key, released):
+            if key == "W":
+                self.run_calls.append(key)
+                self.limit_reason = "Controller rejected the target. This target was not sent."
+                return self.control.pose
+            self.limit_reason = None
+            return await run(self, key, released)
+
+        monkeypatch.setattr(type(session), "run", reject_first_hold)
+        panel.key_event("W", True)
+        first_action = panel.action
+        await asyncio.wait_for(first_action, 1)
+        assert "Release the key and choose another direction" in panel.message
+        assert panel.keyboard_enabled
+        assert not panel.control.stopped
+        assert panel.held_keys == {"W"}
+        for repeat in (True, False):
+            panel.key_event("W", True, repeat=repeat)
+        assert panel.action is first_action
+        panel.key_event("S", True)
+        assert panel.action is first_action
+        panel.key_event("S", False)
+        panel.key_event("W", False)
+        assert panel.held_keys == set()
+        panel.key_event("S", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        assert panel.action is not first_action
+        panel.key_event("S", False)
+        await asyncio.wait_for(panel.action, 1)
+        assert session.run_calls == ["W", "S"]
+        assert panel.keyboard_enabled
+        assert panel.control.calls == []
 
     asyncio.run(exercise())
 
@@ -1446,6 +1532,92 @@ def test_start_refuses_to_replace_busy_panel(panel_module, panel, monkeypatch):
         asyncio.run(panel_module.start())
     assert not panel.closed
     assert len(panel_module.instances) == 1
+    assert panel_module.reload_calls == []
+
+
+def test_start_refuses_reload_while_stopped_command_thread_is_pending(
+    panel_module, panel, monkeypatch
+):
+    panel.control.stopped = True
+    panel.control._pending = {"done": threading.Event()}
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, panel, raising=False)
+    assert not panel.busy and not panel.control.busy
+    with pytest.raises(RuntimeError, match="acknowledgement is pending"):
+        asyncio.run(panel_module.start())
+    assert not panel.closed
+    assert panel_module.reload_calls == []
+    assert len(panel_module.instances) == 1
+
+
+def test_reload_control_modules_uses_dependency_order_and_rebinds_classes(
+    panel_module, monkeypatch
+):
+    protocol = ModuleType("mg400_agent.controller_protocol")
+    control = ModuleType("mg400_agent.joint_control")
+    jog = ModuleType("mg400_agent.keyboard_jog")
+    control.JointControl = type("NewControl", (), {})
+    jog.KeyboardJogSession = type("NewKeyboardSession", (), {})
+    modules = {module.__name__: module for module in (protocol, control, jog)}
+    calls = []
+
+    def reload(module):
+        calls.append(module.__name__)
+        return module
+
+    globals_ = panel_module._reload_control_modules.__globals__
+    monkeypatch.setitem(globals_, "importlib", SimpleNamespace(
+        import_module=modules.__getitem__, reload=reload,
+        invalidate_caches=lambda: calls.append("invalidate"),
+    ))
+    panel_module._reload_control_modules()
+    assert calls == ["invalidate", *modules]
+    assert globals_["backend"] is control
+    assert globals_["JointControl"] is control.JointControl
+    assert globals_["KeyboardJogSession"] is jog.KeyboardJogSession
+
+
+def test_start_reloads_only_after_old_panel_and_gripper_tasks_finish(
+    panel_module, panel, monkeypatch
+):
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, panel, raising=False)
+    monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, panel.mirror, raising=False)
+    child = panel_module.Gripper()
+    monkeypatch.setattr(builtins, panel_module.GRIPPER_SINGLETON, child, raising=False)
+
+    async def run_until_closed(self):
+        while not self.closed:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(panel_module.ControlPanel, "run", run_until_closed)
+
+    async def exercise():
+        panel_finished, child_finished = asyncio.Event(), asyncio.Event()
+        panel.task = asyncio.create_task(panel_finished.wait())
+        child.task = asyncio.create_task(child_finished.wait())
+        start = asyncio.create_task(panel_module.start())
+        replacement = None
+        try:
+            await asyncio.sleep(0)
+            assert panel.closed
+            assert panel_module.reload_calls == []
+            panel_finished.set()
+            await panel.task
+            await asyncio.sleep(0)
+            assert not start.done()
+            assert panel_module.reload_calls == []
+            child_finished.set()
+            replacement = await asyncio.wait_for(start, 1)
+            assert panel_module.reload_calls == ["reload"]
+            assert panel.task.done() and child.task.done()
+            assert replacement.control.calls == []
+        finally:
+            panel_finished.set()
+            child_finished.set()
+            if replacement is not None:
+                replacement.closed = True
+                await replacement.task
+
+    asyncio.run(exercise())
 
 
 def test_concurrent_starts_wait_for_prior_panel_to_exit(panel_module, panel, monkeypatch):

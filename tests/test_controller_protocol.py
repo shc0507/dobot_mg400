@@ -1,6 +1,6 @@
 import pytest
 
-from mg400_agent.controller_protocol import parse_controller_response
+from mg400_agent.controller_protocol import ControllerCommandError, parse_controller_response
 
 
 @pytest.mark.parametrize(
@@ -39,13 +39,29 @@ def test_invalid_reply_or_echo_preserves_error_text(packet):
     with pytest.raises(RuntimeError) as error:
         parse_controller_response(packet, "EnableRobot()")
     assert str(error.value) == f"Unexpected controller response: {packet.decode('ascii')}"
+    assert not isinstance(error.value, ControllerCommandError)
 
 
-@pytest.mark.parametrize("packet", [b"-1,{},EnableRobot();", b" 1,{failed},EnableRobot();\n"])
-def test_controller_rejection_preserves_error_text(packet):
-    with pytest.raises(RuntimeError) as error:
-        parse_controller_response(packet, "EnableRobot()")
+@pytest.mark.parametrize(
+    "packet, command, code",
+    [
+        (b"-1,{},EnableRobot();", "EnableRobot()", -1),
+        (b" 1,{failed},EnableRobot();\n", "EnableRobot()", 1),
+        (
+            b"-1,{0,0,0,0},InverseSolution(406.817825,9.647012,112.928917,1.446726,0,0);",
+            "InverseSolution(406.817825,9.647012,112.928917,1.446726,0,0)",
+            -1,
+        ),
+    ],
+)
+def test_controller_rejection_preserves_error_text_and_command_details(packet, command, code):
+    with pytest.raises(ControllerCommandError) as error:
+        parse_controller_response(packet, command)
+    assert isinstance(error.value, RuntimeError)
     assert str(error.value) == packet.decode("ascii").strip()
+    assert error.value.response == packet.decode("ascii").strip()
+    assert error.value.command == command
+    assert error.value.code == code
 
 
 def test_non_ascii_reply_preserves_decode_error():

@@ -7,6 +7,8 @@ Buttons send commands only when clicked. The viewport shows measured angles.
 import asyncio
 import builtins
 import importlib
+import importlib.util
+import inspect
 import json
 import runpy
 import sys
@@ -550,10 +552,37 @@ class ControlPanel:
 def _reload_control_modules():
     """Load control changes only after the previous panel has finished its workers."""
     global backend, JointControl, KeyboardJogSession
-    importlib.invalidate_caches()
-    importlib.reload(importlib.import_module("mg400_agent.controller_protocol"))
-    control_module = importlib.reload(importlib.import_module("mg400_agent.joint_control"))
-    jog_module = importlib.reload(importlib.import_module("mg400_agent.keyboard_jog"))
+    modules = []
+    for name in ("controller_protocol", "joint_control", "keyboard_jog"):
+        path = ROOT / "src" / "mg400_agent" / f"{name}.py"
+        fullname = f"mg400_agent.{name}"
+        spec = importlib.util.spec_from_file_location(fullname, path)
+        module = sys.modules.get(fullname)
+        if module is None:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[fullname] = module
+        module.__file__ = str(path)
+        module.__spec__ = spec
+        module.__loader__ = spec.loader
+        module.__package__ = "mg400_agent"
+        setattr(sys.modules["mg400_agent"], name, module)
+        # Read source directly. Kit loaders and old package paths can retain old code.
+        exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+        modules.append(module)
+    protocol_module, control_module, jog_module = modules
+    control_module.ControllerCommandError = protocol_module.ControllerCommandError
+    control_module.parse_controller_response = protocol_module.parse_controller_response
+    jog_module.JointControl = control_module.JointControl
+    jog_module.TargetRejectedError = control_module.TargetRejectedError
+    inspect.signature(control_module.JointControl).bind(
+        "unused", lambda: None, parent=None, command_timeout=0.5,
+    )
+    if not callable(getattr(control_module.JointControl, "solve_pose", None)):
+        raise RuntimeError("The control module does not provide Cartesian target validation.")
+    if jog_module.KeyboardJogSession._start.__globals__["JointControl"] is not (
+        control_module.JointControl
+    ):
+        raise RuntimeError("Keyboard control uses a different control class.")
     backend = control_module
     JointControl = control_module.JointControl
     KeyboardJogSession = jog_module.KeyboardJogSession

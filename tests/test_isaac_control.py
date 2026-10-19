@@ -1549,31 +1549,59 @@ def test_start_refuses_reload_while_stopped_command_thread_is_pending(
     assert len(panel_module.instances) == 1
 
 
-def test_reload_control_modules_uses_dependency_order_and_rebinds_classes(
-    panel_module, monkeypatch
+def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
+    panel_module, monkeypatch, tmp_path
 ):
-    protocol = ModuleType("mg400_agent.controller_protocol")
-    control = ModuleType("mg400_agent.joint_control")
-    jog = ModuleType("mg400_agent.keyboard_jog")
-    control.JointControl = type("NewControl", (), {})
-    jog.KeyboardJogSession = type("NewKeyboardSession", (), {})
-    modules = {module.__name__: module for module in (protocol, control, jog)}
-    calls = []
-
-    def reload(module):
-        calls.append(module.__name__)
-        return module
-
+    sources = {
+        "controller_protocol": (
+            "class ControllerCommandError(RuntimeError): pass\n"
+            "def parse_controller_response(packet, command): return 'current'\n"
+        ),
+        "joint_control": (
+            "from .controller_protocol import ControllerCommandError, parse_controller_response\n"
+            "class JointControl:\n"
+            "    def __init__(self, host, snapshot, *, parent=None, command_timeout=2):\n"
+            "        self.parent = parent\n"
+            "    def solve_pose(self, target): return target\n"
+            "class TargetRejectedError(ValueError): pass\n"
+        ),
+        "keyboard_jog": (
+            "from .joint_control import JointControl, TargetRejectedError\n"
+            "class KeyboardJogSession:\n"
+            "    control_type = JointControl\n"
+            "    def _start(self): return JointControl\n"
+        ),
+    }
+    package = sys.modules["mg400_agent"]
+    feedback = sys.modules["mg400_agent.feedback"]
+    source_dir = tmp_path / "src/mg400_agent"
+    source_dir.mkdir(parents=True)
+    for name, source in sources.items():
+        (source_dir / f"{name}.py").write_text(source)
+        cached = ModuleType(f"mg400_agent.{name}")
+        cached.__file__ = f"/legacy/mg400_agent/{name}.py"
+        monkeypatch.setitem(sys.modules, cached.__name__, cached)
+        monkeypatch.setattr(package, name, cached, raising=False)
     globals_ = panel_module._reload_control_modules.__globals__
-    monkeypatch.setitem(globals_, "importlib", SimpleNamespace(
-        import_module=modules.__getitem__, reload=reload,
-        invalidate_caches=lambda: calls.append("invalidate"),
-    ))
+    monkeypatch.setitem(globals_, "ROOT", tmp_path)
     panel_module._reload_control_modules()
-    assert calls == ["invalidate", *modules]
+    protocol, control, jog = (sys.modules[f"mg400_agent.{name}"] for name in sources)
     assert globals_["backend"] is control
     assert globals_["JointControl"] is control.JointControl
     assert globals_["KeyboardJogSession"] is jog.KeyboardJogSession
+    assert control.ControllerCommandError is protocol.ControllerCommandError
+    assert control.parse_controller_response is protocol.parse_controller_response
+    assert jog.JointControl is jog.KeyboardJogSession.control_type is control.JointControl
+    assert jog.TargetRejectedError is control.TargetRejectedError
+    assert control.JointControl("robot.test", lambda: None, parent="parent").parent == "parent"
+    assert Path(control.JointControl.solve_pose.__code__.co_filename) == (
+        source_dir / "joint_control.py"
+    )
+    assert sys.modules["mg400_agent.feedback"] is feedback
+    for name in sources:
+        module = sys.modules[f"mg400_agent.{name}"]
+        assert getattr(package, name) is module
+        assert Path(module.__file__) == source_dir / f"{name}.py"
 
 
 def test_start_reloads_only_after_old_panel_and_gripper_tasks_finish(

@@ -1,10 +1,13 @@
 """Check panel imports in separate processes without Isaac Sim or hardware."""
 
 import os
+import py_compile
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,42 +108,97 @@ def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
     check_import(tmp_path, tmp_path / "external-data", ROOT / "src/mg400_agent/joint_control.py")
 
 
-def test_cached_legacy_control_modules_reload_after_import_without_reloading_feedback(tmp_path):
-    package_dir = tmp_path / "src/mg400_agent"
-    package_dir.mkdir(parents=True)
-    for filename in (
-        "__init__.py", "feedback.py", "joint_limits.py", "config.py",
-        "controller_protocol.py", "robot_config.py", "runtime_paths.py",
-    ):
-        shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
-    (package_dir / "controller_protocol.py").write_text(
-        "def parse_controller_response(*args): pass\n"
-    )
-    (package_dir / "joint_control.py").write_text("class JointControl: pass\n")
-    (package_dir / "keyboard_jog.py").write_text("class KeyboardJogSession: pass\n")
-    apps = tmp_path / "apps/isaacsim"
+@pytest.mark.parametrize("cache", ["modules", "legacy_path", "bytecode", "loader"])
+def test_control_source_reload_replaces_legacy_code_and_preserves_feedback(tmp_path, cache):
+    root = tmp_path / "deployed"
+    legacy = tmp_path / "legacy" if cache == "legacy_path" else root
+    old_sources = {
+        "controller_protocol.py": "def parse_controller_response(*args): pass\n",
+        "joint_control.py": (
+            "class JointControl:\n"
+            "    def __init__(self, host, snapshot): pass\n"
+        ),
+        "keyboard_jog.py": "class KeyboardJogSession: pass\n",
+    }
+    for directory in {root, legacy}:
+        package_dir = directory / "src/mg400_agent"
+        package_dir.mkdir(parents=True)
+        for filename in (
+            "__init__.py", "feedback.py", "joint_limits.py", "config.py",
+            "robot_config.py", "runtime_paths.py", *old_sources,
+        ):
+            shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
+    for filename, source in old_sources.items():
+        path = legacy / "src/mg400_agent" / filename
+        if cache == "bytecode":
+            # A valid timestamp cache checks source size and whole-second mtime.
+            source += "#" * (path.stat().st_size - len(source.encode()))
+        path.write_text(source)
+        if cache == "bytecode":
+            py_compile.compile(
+                path, doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP
+            )
+    apps = root / "apps/isaacsim"
     apps.mkdir(parents=True)
     shutil.copyfile(ROOT / "apps/isaacsim/joint_control.py", apps / "joint_control.py")
     script = """
 import asyncio
 import importlib
+import inspect
+import os
 import runpy
 import shutil
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 
-root, source = map(Path, sys.argv[1:])
-sys.path.insert(0, str(root / "src"))
+root, legacy, source = map(Path, sys.argv[1:4])
+cache = sys.argv[4]
+sys.path.insert(0, str(legacy / "src"))
+package = importlib.import_module("mg400_agent")
 feedback = importlib.import_module("mg400_agent.feedback")
 old_control = importlib.import_module("mg400_agent.joint_control")
 old_class = old_control.JointControl
 old_jog = importlib.import_module("mg400_agent.keyboard_jog").KeyboardJogSession
 importlib.import_module("mg400_agent.controller_protocol")
 assert not hasattr(old_control, "TargetRejectedError")
-for name in ("controller_protocol.py", "joint_control.py", "keyboard_jog.py"):
-    shutil.copyfile(source / "src/mg400_agent" / name, root / "src/mg400_agent" / name)
+assert "parent" not in inspect.signature(old_class).parameters
+names = ("controller_protocol", "joint_control", "keyboard_jog")
+old_sources = {
+    name: (legacy / "src/mg400_agent" / f"{name}.py").read_bytes() for name in names
+}
+for name in names:
+    path = root / "src/mg400_agent" / f"{name}.py"
+    previous = path.stat()
+    shutil.copyfile(source / "src/mg400_agent" / path.name, path)
+    if cache == "bytecode":
+        assert previous.st_size == path.stat().st_size
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+
+if cache == "loader":
+    class CachedLoader(importlib.machinery.SourceFileLoader):
+        def get_code(self, fullname):
+            return compile(old_sources[fullname.rsplit(".", 1)[1]], self.path, "exec")
+
+    class CachedFinder:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname in {f"mg400_agent.{name}" for name in names}:
+                filename = root / "src/mg400_agent" / f"{fullname.rsplit('.', 1)[1]}.py"
+                loader = CachedLoader(fullname, str(filename))
+                return importlib.util.spec_from_loader(fullname, loader)
+
+    sys.meta_path.insert(0, CachedFinder())
+
+if cache in {"bytecode", "loader"}:
+    # Confirm this fixture reproduces stale code even though the source is current.
+    assert "parent" in (root / "src/mg400_agent/joint_control.py").read_text()
+    old_control = importlib.reload(old_control)
+    old_class = old_control.JointControl
+    assert "parent" not in inspect.signature(old_class).parameters
+if cache == "legacy_path":
+    assert Path(package.__path__[0]) == legacy / "src/mg400_agent"
 
 def forbidden(*args, **kwargs):
     raise AssertionError("Loading modules must not connect to hardware or start tasks")
@@ -148,21 +206,11 @@ def forbidden(*args, **kwargs):
 socket.socket = socket.create_connection = forbidden
 asyncio.ensure_future = asyncio.create_task = forbidden
 threading.Thread.start = forbidden
-reload = importlib.reload
-reloads = []
-def record_reload(module):
-    reloads.append(module.__name__)
-    return reload(module)
-importlib.reload = record_reload
 namespace = runpy.run_path(str(root / "apps/isaacsim/joint_control.py"), run_name="test_import")
-assert reloads == []
 assert namespace["JointControl"] is old_class
 assert namespace["KeyboardJogSession"] is old_jog
 namespace["_reload_control_modules"]()
 state = namespace["_reload_control_modules"].__globals__
-assert reloads == [
-    "mg400_agent.controller_protocol", "mg400_agent.joint_control", "mg400_agent.keyboard_jog",
-]
 assert state["JointControl"] is not old_class
 assert state["KeyboardJogSession"] is not old_jog
 assert state["backend"].TargetRejectedError.__module__ == "mg400_agent.joint_control"
@@ -171,12 +219,55 @@ assert state["backend"].ControllerCommandError is protocol.ControllerCommandErro
 jog = sys.modules["mg400_agent.keyboard_jog"]
 assert jog.JointControl is state["JointControl"]
 assert jog.TargetRejectedError is state["backend"].TargetRejectedError
+assert sys.modules["mg400_agent"] is package
 assert sys.modules["mg400_agent.feedback"] is feedback
 assert state["JointControl"].read_state.__annotations__["return"] is feedback.Feedback
+for name in names:
+    module = sys.modules[f"mg400_agent.{name}"]
+    expected_path = root / "src/mg400_agent" / f"{name}.py"
+    assert Path(module.__file__).resolve() == expected_path
+    assert Path(module.__spec__.origin).resolve() == expected_path
+    assert getattr(package, name) is module
+for function, name in (
+    (protocol.parse_controller_response, "controller_protocol"),
+    (state["JointControl"].__init__, "joint_control"),
+    (jog.KeyboardJogSession.prepare, "keyboard_jog"),
+):
+    assert Path(function.__code__.co_filename) == root / "src/mg400_agent" / f"{name}.py"
+
+control_class = state["JointControl"]
+sample = feedback.Feedback((0.0, 0.0, 0.0, 0.0), 5, 0, False)
+snapshot = lambda: (sample, time.monotonic())
+parent = control_class("robot.test", snapshot)
+child = control_class("robot.test", snapshot, parent=parent, command_timeout=0.5)
+assert child._parent is parent
+assert child._command_timeout == 0.5
+assert child._operation_lock is parent._operation_lock
+assert child.read_state() is sample
+prepared = []
+pose = (250.0, 0.0, 50.0, 0.0)
+def preflight(active, modes):
+    assert type(active) is control_class
+    assert active._parent is parent
+    assert active._command_timeout == 0.5
+    assert active._operation_lock is parent._operation_lock
+    assert active.read_state() is sample
+    assert modes == {5}
+    prepared.append(active)
+    return sample, sample.joints_deg
+control_class._preflight = preflight
+control_class._read_pose = lambda active, modes: pose
+session = state["KeyboardJogSession"](parent)
+assert session.prepare() == pose
+assert len(prepared) == 1
+assert session.ready
+assert not session.busy
+assert not parent.busy
+assert not parent.stopped
 assert "omni.ui" not in sys.modules
 """
     result = subprocess.run(
-        [sys.executable, "-B", "-c", script, str(tmp_path), str(ROOT)],
+        [sys.executable, "-B", "-c", script, str(root), str(legacy), str(ROOT), cache],
         capture_output=True,
         text=True,
         env={**os.environ, "MG400_DATA_DIR": str(tmp_path / "external-data")},

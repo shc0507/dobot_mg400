@@ -34,6 +34,33 @@ def packet(module, data):
     return data + module.crc(data)
 
 
+def serial_transport(module, monkeypatch, replies, residual=b""):
+    """Deliver reply chunks at fixed times after each request without a real serial device."""
+    now = [0.0]
+    pending = [(0.0, residual)] if residual else []
+    responses = iter(replies)
+    sent_at = []
+
+    def write(fd, data):
+        sent_at.append(now[0])
+        pending.extend((now[0] + delay, chunk) for delay, chunk in next(responses))
+        return len(data)
+
+    def select(readers, writers, errors, timeout):
+        if pending and pending[0][0] <= now[0] + timeout:
+            now[0] = max(now[0], pending[0][0])
+            return readers, [], []
+        now[0] += timeout
+        return [], [], []
+
+    send = Mock(side_effect=write)
+    monkeypatch.setattr(module.os, "write", send)
+    monkeypatch.setattr(module.os, "read", lambda fd, count: pending.pop(0)[1])
+    monkeypatch.setattr(module.select, "select", select)
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    return SimpleNamespace(write=send, now=now, sent_at=sent_at)
+
+
 def test_crc_known_modbus_vector(module):
     assert module.crc(b"123456789") == b"\x37\x4b"
 
@@ -65,15 +92,13 @@ def test_decode_rejects_invalid_response(module, fault):
 
 def test_read_sends_only_fixed_read_request_and_accepts_fragments(module, monkeypatch):
     response = packet(module, b"\x01\x03\x06" + struct.pack(">3H", 1, 1, 1000))
-    write = Mock(return_value=8)
-    monkeypatch.setattr(module.os, "write", write)
-    monkeypatch.setattr(module.os, "read", Mock(side_effect=[response[:4], response[4:]]))
-    monkeypatch.setattr(module.select, "select", Mock(return_value=([42], [], [])))
+    wire = serial_transport(module, monkeypatch, [[(0.001, response[:4]), (0.002, response[4:])]])
     assert module.read(42) == (1, 1, 1000)
-    write.assert_called_once_with(42, packet(module, b"\x01\x03\x02\x00\x00\x03"))
+    wire.write.assert_called_once_with(42, packet(module, b"\x01\x03\x02\x00\x00\x03"))
 
 
 def test_partial_request_is_not_retried(module, monkeypatch):
+    serial_transport(module, monkeypatch, [])
     write = Mock(return_value=4)
     monkeypatch.setattr(module.os, "write", write)
     with pytest.raises(RuntimeError, match="incomplete"):
@@ -82,20 +107,10 @@ def test_partial_request_is_not_retried(module, monkeypatch):
 
 
 def test_truncated_reply_times_out_without_retry(module, monkeypatch):
-    now = [0.0]
-    write = Mock(return_value=8)
-    monkeypatch.setattr(module.os, "write", write)
-    monkeypatch.setattr(module.os, "read", Mock(return_value=b"\x01\x03\x06"))
-    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
-
-    def select(*args):
-        now[0] += 0.6
-        return [42], [], []
-
-    monkeypatch.setattr(module.select, "select", select)
-    with pytest.raises(TimeoutError):
+    wire = serial_transport(module, monkeypatch, [[(0.001, b"\x01\x03\x06")]])
+    with pytest.raises(TimeoutError, match="actual-length=3 expected-length=11"):
         module.read(42)
-    write.assert_called_once()
+    wire.write.assert_called_once()
 
 
 def test_serial_settings_are_exclusive_and_restored_on_error(module, monkeypatch):
@@ -278,12 +293,9 @@ def test_sigterm_runs_cleanup_and_restores_handler(module, monkeypatch):
 
 def test_position_write_uses_documented_frame_and_exact_echo(module, monkeypatch):
     request = bytes.fromhex("01 06 01 03 01 f4 78 21")
-    write = Mock(return_value=8)
-    monkeypatch.setattr(module.os, "write", write)
-    monkeypatch.setattr(module.os, "read", Mock(return_value=request))
-    monkeypatch.setattr(module.select, "select", Mock(return_value=([42], [], [])))
+    wire = serial_transport(module, monkeypatch, [[(0.001, request)]])
     assert module.register(42, 0x0103, 500) == 500
-    write.assert_called_once_with(42, request)
+    wire.write.assert_called_once_with(42, request)
 
 
 @pytest.mark.parametrize(
@@ -307,13 +319,124 @@ def test_position_transport_never_retries_uncertain_write(module, monkeypatch, f
         response = packet(module, bytes.fromhex("01 86 02"))
     else:
         response = response[:-1] + bytes([response[-1] ^ 1])
-    write = Mock(return_value=8)
-    monkeypatch.setattr(module.os, "write", write)
-    monkeypatch.setattr(module.os, "read", Mock(return_value=response))
-    monkeypatch.setattr(module.select, "select", Mock(return_value=([42], [], [])))
+    wire = serial_transport(module, monkeypatch, [[(0.001, response)]])
     with pytest.raises(ValueError):
         module.register(42, 0x0103, 500)
-    write.assert_called_once()
+    wire.write.assert_called_once()
+
+
+def test_transactions_wait_for_silence_and_share_read_and_write_framing(module, monkeypatch):
+    state = packet(module, b"\x01\x03\x06" + struct.pack(">3H", 1, 1, 1000))
+    force = packet(module, bytes.fromhex("01 03 02 00 32"))
+    target = packet(module, bytes.fromhex("01 06 01 03 01 f4"))
+    chunks = [[(0.001, value[:2]), (0.0015, value[2:])] for value in (state, force, target)]
+    wire = serial_transport(module, monkeypatch, chunks)
+    assert module.read(42) == (1, 1, 1000)
+    assert module.register(42, 0x0101) == 50
+    assert module.register(42, 0x0103, 500) == 500
+    assert wire.sent_at[0] >= module.FRAME_GAP_S
+    for previous, current in zip(wire.sent_at, wire.sent_at[1:]):
+        assert current - (previous + 0.0015) >= module.FRAME_GAP_S
+    assert wire.now[0] - (wire.sent_at[-1] + 0.0015) >= module.FRAME_GAP_S
+
+
+@pytest.mark.parametrize("value", [None, 500])
+def test_register_reports_empty_timeout_without_retry(module, monkeypatch, value):
+    wire = serial_transport(module, monkeypatch, [[]])
+    with pytest.raises(TimeoutError) as caught:
+        module.register(42, 0x0103, value)
+    error = str(caught.value)
+    assert f"operation={'read' if value is None else 'write'}" in error
+    assert "address=0x0103 phase=reply" in error
+    assert "timed out" in error
+    assert "actual-length=0" in error
+    assert "Raw=<empty>" in error
+    wire.write.assert_called_once()
+
+
+@pytest.mark.parametrize("fault", ["length", "crc", "count", "slave", "function"])
+def test_register_distinguishes_invalid_replies(module, monkeypatch, fault):
+    payload = bytearray.fromhex("01 03 02 00 32")
+    if fault == "count":
+        payload[2] = 4
+    elif fault == "slave":
+        payload[0] = 2
+    elif fault == "function":
+        payload[1] = 4
+    response = packet(module, payload)
+    if fault == "length":
+        response += b"\x00"
+    elif fault == "crc":
+        response = response[:-1] + bytes([response[-1] ^ 1])
+    wire = serial_transport(module, monkeypatch, [[(0.001, response)]])
+    with pytest.raises(ValueError) as caught:
+        module.register(42, 0x0101)
+    error = str(caught.value)
+    expected_reason = {
+        "length": "reply length", "crc": "reply CRC", "count": "register count",
+        "slave": "slave address", "function": "reply function",
+    }[fault]
+    assert expected_reason in error
+    assert "function=0x03 address=0x0101" in error
+    assert f"Raw={response.hex()}" in error
+    assert "elapsed=" in error
+    wire.write.assert_called_once()
+
+
+@pytest.mark.parametrize("value", [None, 500])
+def test_register_reports_valid_modbus_exception_code(module, monkeypatch, value):
+    function = 3 if value is None else 6
+    response = packet(module, bytes((1, function | 0x80, 6)))
+    wire = serial_transport(module, monkeypatch, [[(0.001, response)]])
+    with pytest.raises(ValueError, match="exception code 0x06") as caught:
+        module.register(42, 0x0103, value)
+    assert "actual-length=5 expected-length=5" in str(caught.value)
+    wire.write.assert_called_once()
+
+
+def test_state_read_reports_exception_code(module, monkeypatch):
+    response = packet(module, bytes.fromhex("01 83 02"))
+    wire = serial_transport(module, monkeypatch, [[(0.001, response)]])
+    with pytest.raises(ValueError, match="exception code 0x02") as caught:
+        module.read(42)
+    assert "function=0x03 address=0x0200" in str(caught.value)
+    wire.write.assert_called_once()
+
+
+def test_exception_with_wrong_slave_is_not_reported_as_device_rejection(module, monkeypatch):
+    response = packet(module, bytes.fromhex("02 86 06"))
+    serial_transport(module, monkeypatch, [[(0.001, response)]])
+    with pytest.raises(ValueError, match="slave address") as caught:
+        module.register(42, 0x0103, 500)
+    assert "exception code" not in str(caught.value)
+
+
+def test_residual_bytes_prevent_request_transmission(module, monkeypatch):
+    wire = serial_transport(module, monkeypatch, [], residual=b"\x00")
+    with pytest.raises(ValueError, match="Unexpected bytes before") as caught:
+        module.register(42, 0x0103, 500)
+    assert "phase=before-send" in str(caught.value)
+    assert "Raw=00" in str(caught.value)
+    wire.write.assert_not_called()
+
+
+def test_trailing_bytes_after_complete_reply_are_rejected(module, monkeypatch):
+    response = packet(module, bytes.fromhex("01 06 01 03 01 f4"))
+    wire = serial_transport(module, monkeypatch, [[(0.001, response), (0.002, b"\x00")]])
+    with pytest.raises(ValueError, match="Unexpected bytes after") as caught:
+        module.register(42, 0x0103, 500)
+    assert "phase=reply-end" in str(caught.value)
+    assert f"Raw={response.hex()}00" in str(caught.value)
+    wire.write.assert_called_once()
+
+
+def test_late_tail_before_next_request_prevents_another_write(module, monkeypatch):
+    response = packet(module, bytes.fromhex("01 03 02 00 32"))
+    wire = serial_transport(module, monkeypatch, [[(0.001, response), (0.004, b"\x00")]])
+    assert module.register(42, 0x0101) == 50
+    with pytest.raises(ValueError, match="Unexpected bytes before"):
+        module.register(42, 0x0103, 500)
+    wire.write.assert_called_once()
 
 
 @pytest.mark.parametrize("initial_mode", [0, 1])
@@ -436,6 +559,43 @@ def test_mailbox_locks_after_uncertain_write_and_never_retries(module, monkeypat
     assert restarted.control["locked"] and not restarted.control["ack"]
     restarted.poll(42)
     send.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", ["force_read", "target_write"])
+def test_transport_failure_locks_command_but_clean_state_read_cannot_unlock(
+    module, monkeypatch, tmp_path, capsys, failure
+):
+    state = packet(module, b"\x01\x03\x06" + struct.pack(">3H", 1, 1, 350))
+    force = packet(module, bytes.fromhex("01 03 02 00 32"))
+    speed = packet(module, bytes.fromhex("01 03 02 00 1e"))
+    mode = packet(module, bytes.fromhex("01 03 02 00 00"))
+    replies = [state] if failure == "force_read" else [state, force, speed, mode, mode]
+    wire = serial_transport(
+        module, monkeypatch, [[(0.001, response)] for response in replies]
+        + [[], [(0.001, state)]],
+    )
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
+    mailbox.path.write_text(json.dumps(dict(
+        id=str(uuid.uuid4()), session=mailbox.session, sent_at=1000.0, position=325,
+    )))
+    mailbox.poll(42)
+    assert mailbox.control["locked"] and not mailbox.control["ack"]
+    assert mailbox.lock_path.exists()
+    assert "actual-length=0" in mailbox.control["error"]
+    expected = "operation=read function=0x03 address=0x0101" if failure == "force_read" else (
+        "operation=write function=0x06 address=0x0103"
+    )
+    assert expected in mailbox.control["error"]
+    assert mailbox.control["error"] in capsys.readouterr().err
+    requests = [call.args[1] for call in wire.write.call_args_list]
+    assert sum(request[1] == 6 for request in requests) == (failure == "target_write")
+    mailbox.poll(42)
+    assert wire.write.call_count == len(requests)
+    assert module.read(42) == (1, 1, 350)
+    assert wire.write.call_args.args[1][2:6] == bytes.fromhex("02 00 00 03")
+    assert mailbox.control["locked"] and not mailbox.control["ack"]
+    assert mailbox.lock_path.exists()
 
 
 def test_mailbox_saves_lock_before_sending_and_removes_it_after_success(

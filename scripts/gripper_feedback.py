@@ -17,6 +17,8 @@ from pathlib import Path
 
 PORT = "/dev/cu.usbserial-BG02Q5TN"
 PERIOD_S = 0.05
+FRAME_GAP_S = 0.002
+REPLY_TIMEOUT_S = 1.0
 SYS_TTY = Path("/sys/class/tty")
 DEV_ROOT = Path("/dev")
 
@@ -100,24 +102,72 @@ def decode(response):
     return struct.unpack(">3H", response[3:-2])
 
 
-def read(fd):
-    payload = struct.pack(">BBHH", 1, 3, 0x0200, 3)
+def _exchange(fd, function, address, value):
+    """Send one request and require a complete reply with a silent frame boundary."""
+    payload = struct.pack(">BBHH", 1, function, address, value)
     request = payload + crc(payload)
-    if os.write(fd, request) != len(request):
-        raise RuntimeError("The serial read request is incomplete. No retry was sent.")
     response = bytearray()
-    deadline = time.monotonic() + 1
+    expected = 5 + 2 * value if function == 3 else 8
+    started = time.monotonic()
+    phase = "before-send"
+
+    def fail(error_type, reason):
+        raise error_type(
+            f"Modbus operation={'read' if function == 3 else 'write'} "
+            f"function=0x{function:02x} address=0x{address:04x} phase={phase}: {reason}. "
+            f"actual-length={len(response)} expected-length={expected} "
+            f"elapsed={time.monotonic() - started:.3f}s. "
+            f"Raw={response.hex() or '<empty>'}. The collector did not retry the request."
+        )
+
+    ready, _, _ = select.select([fd], [], [], FRAME_GAP_S)
+    if ready:
+        response.extend(os.read(fd, 256))
+        fail(ValueError, "Unexpected bytes before the request")
+    phase = "send"
+    if os.write(fd, request) != len(request):
+        fail(RuntimeError, "The serial request is incomplete")
+    phase = "reply"
+    deadline = time.monotonic() + REPLY_TIMEOUT_S
     while time.monotonic() < deadline:
         ready, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
         if ready:
             part = os.read(fd, 256)
             if not part:
-                raise ConnectionError("The serial connection closed.")
+                fail(ConnectionError, "The serial connection closed")
             response.extend(part)
-        expected = 5 if len(response) >= 2 and response[1] & 0x80 else 11
+        if len(response) >= 2 and response[1] & 0x80:
+            expected = 5
         if len(response) >= expected:
-            return decode(response)
-    raise TimeoutError(f"The Modbus read timed out after {len(response)} reply bytes.")
+            break
+    else:
+        fail(TimeoutError, "The reply timed out before the frame was complete")
+    if len(response) != expected:
+        fail(ValueError, "The reply length is invalid")
+    phase = "reply-end"
+    ready, _, _ = select.select([fd], [], [], FRAME_GAP_S)
+    if ready:
+        response.extend(os.read(fd, 256))
+        fail(ValueError, "Unexpected bytes after the reply")
+    phase = "validate"
+    if crc(response[:-2]) != response[-2:]:
+        fail(ValueError, "The reply CRC is invalid")
+    if response[0] != 1:
+        fail(ValueError, "The reply slave address is invalid")
+    if response[1] == function | 0x80:
+        fail(ValueError, f"The gripper returned exception code 0x{response[2]:02x}")
+    if response[1] != function:
+        fail(ValueError, "The reply function is invalid")
+    if function == 6 and response != request:
+        fail(ValueError, "The write reply does not match the request")
+    if function == 3 and response[2] != 2 * value:
+        fail(ValueError, "The reply register count is invalid")
+    return response
+
+
+def read(fd):
+    response = _exchange(fd, 3, 0x0200, 3)
+    return decode(response)
 
 
 def register(fd, address, value=None):
@@ -130,32 +180,9 @@ def register(fd, address, value=None):
     ):
         raise ValueError("The register write is not allowed.")
     function = 3 if value is None else 6
-    payload = struct.pack(">BBHH", 1, function, address, 1 if value is None else value)
-    request = payload + crc(payload)
-    if os.write(fd, request) != len(request):
-        raise RuntimeError("The serial request is incomplete. No retry was sent.")
-    response = bytearray()
-    deadline = time.monotonic() + 1
-    expected = 7 if value is None else 8
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
-        if ready:
-            part = os.read(fd, 256)
-            if not part:
-                raise ConnectionError("The serial connection closed.")
-            response.extend(part)
-        if len(response) >= 2 and response[1] & 0x80:
-            expected = 5
-        if len(response) >= expected:
-            break
-    if len(response) != expected or crc(response[:-2]) != response[-2:]:
-        raise ValueError("The Modbus reply length or CRC is invalid. No retry was sent.")
+    response = _exchange(fd, function, address, 1 if value is None else value)
     if value is not None:
-        if response != request:
-            raise ValueError("The Modbus write reply does not match the request.")
         return value
-    if response[:3] != b"\x01\x03\x02":
-        raise ValueError("The Modbus register reply is invalid.")
     return struct.unpack(">H", response[3:5])[0]
 
 
@@ -240,6 +267,7 @@ class PositionMailbox:
             self.control.update(ack=True, io_mode=0)
         except (OSError, ValueError, RuntimeError) as error:
             self.control.update(locked=True, error=str(error))
+            print(f"Gripper command stopped: {error}", file=sys.stderr, flush=True)
 
 
 def emit(sample, output=None, *, durable=False):

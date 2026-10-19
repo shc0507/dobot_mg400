@@ -1340,7 +1340,7 @@ def test_gripper_keyboard_awaits_measured_step_before_continuing(
 
         gripper = SimpleNamespace(
             closed=False, failed=False, busy=False, measured_position=measured_position,
-            submit_position=submit_position,
+            submit_position=submit_position, report={},
         )
         panel.gripper = gripper
         monkeypatch.setattr(
@@ -1416,13 +1416,85 @@ def test_gripper_hold_repeats_after_each_measured_step(panel):
 
         gripper = SimpleNamespace(
             closed=False, failed=False, busy=False, measured_position=lambda: current[0],
-            submit_position=submit_position,
+            submit_position=submit_position, report={},
         )
         panel.gripper = gripper
         panel.key_event("Z", True)
         await asyncio.wait_for(panel.action, 1)
         assert targets == [525, 550, 575]
         assert panel.keyboard_session.movements == []
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("key", ["Z", "X"])
+def test_gripper_contact_ends_hold_without_repeating_until_keyup(panel, key):
+    async def exercise():
+        await arm_keyboard(panel)
+        targets = []
+        result = "The gripper reports object contact before the target."
+        gripper = SimpleNamespace(
+            closed=False, failed=False, busy=False, measured_position=lambda: 350,
+            report={},
+        )
+
+        async def contact():
+            gripper.report.update(contact_observed=True, result=result)
+
+        def submit_position(value):
+            targets.append(value)
+            gripper.report["contact_observed"] = False
+            return asyncio.create_task(contact())
+
+        gripper.submit_position = submit_position
+        panel.gripper = gripper
+        panel.key_event(key, True)
+        await asyncio.wait_for(panel.action, 1)
+        first_action = panel.action
+        target = 375 if key == "Z" else 325
+        assert targets == [target]
+        assert panel.keyboard_enabled and not panel.control.stopped
+        assert result in panel.message and "Release the key" in panel.message
+        panel.key_event(key, True, repeat=True)
+        panel.key_event(key, True)
+        assert panel.action is first_action
+        assert targets == [target]
+        panel.key_event(key, False)
+        panel.key_event(key, True)
+        await asyncio.wait_for(panel.action, 1)
+        panel.key_event(key, False)
+        assert targets == [target, target]
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("stage", ["before", "rejected", "action"])
+def test_gripper_keyboard_preserves_specific_failure(panel, stage):
+    async def exercise():
+        await arm_keyboard(panel)
+        targets = []
+        reason = "Control is locked. Modbus reply length or CRC is invalid. No retry was sent."
+        gripper = SimpleNamespace(
+            closed=False, failed=stage == "before", busy=False,
+            measured_position=lambda: 350, report={"result": reason},
+        )
+
+        async def fail():
+            gripper.failed = True
+
+        def submit_position(value):
+            targets.append(value)
+            return None if stage == "rejected" else asyncio.create_task(fail())
+
+        gripper.submit_position = submit_position
+        panel.gripper = gripper
+        panel.key_event("X", True)
+        await asyncio.wait_for(panel.action, 1)
+        assert panel.message == f"ERROR: {reason}"
+        assert not panel.keyboard_enabled
+        assert targets == ([] if stage == "before" else [325])
+        assert panel.control.calls == []
 
     asyncio.run(exercise())
 
@@ -1445,7 +1517,7 @@ def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel, monkeypa
 
         gripper = SimpleNamespace(
             closed=False, failed=False, busy=False, measured_position=lambda: current[0],
-            submit_position=submit_position,
+            submit_position=submit_position, report={},
         )
         panel.gripper = gripper
         panel.key_event("Z", True)

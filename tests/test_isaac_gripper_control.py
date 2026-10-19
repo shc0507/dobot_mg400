@@ -274,8 +274,7 @@ def position_feedback(**changes):
         session="a51c687e-95f5-4fa5-a73d-6088dba073f1", seq=1, init=1, state=1, position=500,
         control=dict(protocol=1, command_id=None, target=None, ack=False,
                      locked=False, error=None, io_mode=None),
-        **changes,
-    )
+    ) | changes
 
 
 def test_file_transport_never_falls_back_to_io_and_requires_fresh_capability(module, tmp_path):
@@ -305,6 +304,7 @@ def test_position_requires_current_ack_and_measured_arrival(
         feedback_path = tmp_path / "feedback.json"
         command_path = tmp_path / "feedback.json.command.json"
         panel = module.GripperPanel(str(feedback_path))
+        panel.report["contact_observed"] = True
         sample = position_feedback()
         panel.feedback.get = lambda: sample.copy()
         original_sleep = asyncio.sleep
@@ -330,10 +330,89 @@ def test_position_requires_current_ack_and_measured_arrival(
         await first
         assert panel.report["ack"]
         assert panel.report["arrival_observed"] is arrival
+        assert panel.report["contact_observed"] is not arrival
         assert not panel.failed
         assert panel.measured_position() == sample["position"]
         assert len(observed) == 1
         socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+def test_position_waits_through_feedback_gap_without_refreshing_or_resending(
+    module, monkeypatch, tmp_path
+):
+    from mg400_agent.gripper_feedback import FileFeedback
+
+    now = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0 + now[0])
+
+    async def exercise():
+        feedback_path = tmp_path / "feedback.json"
+        command_path = tmp_path / "feedback.json.command.json"
+        panel = module.GripperPanel(str(feedback_path))
+        feedback_path.write_text(json.dumps(position_feedback(sent_at=1000.0)))
+        source = FileFeedback(feedback_path, panel.feedback)
+        source.poll()
+        original_sleep = asyncio.sleep
+        requests = []
+
+        async def advance(delay):
+            await original_sleep(0)
+            requests.append(command_path.read_text())
+            assert panel.busy and not panel.failed
+            assert panel.submit_position(550) is None
+            if len(requests) == 1:
+                now[0] = 0.8
+                source.poll()
+                assert panel.feedback.get() is None
+                assert panel.measured_position() is None
+            else:
+                now[0] = 0.9
+                request = json.loads(requests[0])
+                feedback_path.write_text(json.dumps(position_feedback(
+                    seq=2, sent_at=1000.9, position=525,
+                    control=dict(protocol=1, command_id=request["id"], target=525,
+                                 ack=True, locked=False, error=None, io_mode=0),
+                )))
+                source.poll()
+
+        monkeypatch.setattr(asyncio, "sleep", advance)
+        await panel.submit_position(525)
+        assert len(requests) == 2 and requests[0] == requests[1] == command_path.read_text()
+        assert not panel.failed
+        assert panel.report["ack"] and panel.report["arrival_observed"]
+        assert not panel.report["contact_observed"]
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("initialized", [0, 2])
+def test_position_stops_waiting_on_explicit_initialization_diagnostic(
+    module, monkeypatch, tmp_path, initialized
+):
+    async def exercise():
+        panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+        panel.feedback.receive(position_feedback(sent_at=module.time.time()))
+        original_sleep = asyncio.sleep
+        polls = []
+
+        async def advance(delay):
+            await original_sleep(0)
+            polls.append(delay)
+            assert not panel.feedback.receive(position_feedback(
+                seq=2, sent_at=module.time.time(), init=initialized,
+            ))
+
+        monkeypatch.setattr(asyncio, "sleep", advance)
+        await panel.submit_position(525)
+        assert panel.failed
+        assert panel.feedback.diagnostic() in panel.report["result"]
+        assert len(polls) == 1
+        assert not panel.report["ack"]
+        assert panel.submit_position(550) is None
 
     asyncio.run(exercise())
 
@@ -375,6 +454,11 @@ def test_position_failure_locks_panel_without_retry(
         assert not panel.report["ack"]
         assert panel.submit("open") is None
         assert command_path.read_text() == original
+        assert now[0] == (1 if fault in ("session", "locked") else 5)
+        if fault == "locked":
+            assert "Write reply lost" in panel.report["result"]
+        if fault == "stale":
+            assert "target arrival is not confirmed" in panel.report["result"]
         socket.create_connection.assert_not_called()
 
     asyncio.run(exercise())

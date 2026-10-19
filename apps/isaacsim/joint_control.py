@@ -226,6 +226,10 @@ class ControlPanel:
                     self.message = (
                         f"{session.limit_reason} Release the key and choose another direction."
                     )
+                elif key in "ZX" and self.gripper.report.get("contact_observed"):
+                    self.message = (
+                        f"{self.gripper.report['result']} Release the key before pressing again."
+                    )
                 else:
                     self.message = (
                         "Hold limit reached. Release the key before pressing again."
@@ -247,8 +251,10 @@ class ControlPanel:
         deadline = time.monotonic() + 5.0
         while not released.is_set() and time.monotonic() < deadline:
             self.control.read_state()
-            if gripper.closed or gripper.failed:
+            if gripper.closed:
                 raise RuntimeError("Gripper control is unavailable.")
+            if gripper.failed:
+                raise RuntimeError(gripper.report["result"])
             if gripper.busy:
                 raise RuntimeError("Wait for the current gripper command to finish.")
             position = gripper.measured_position()
@@ -263,10 +269,12 @@ class ControlPanel:
                 return
             action = gripper.submit_position(target)
             if action is None:
-                raise RuntimeError("Gripper command was not accepted.")
+                raise RuntimeError(gripper.report["result"])
             await action
             if gripper.failed:
-                raise RuntimeError("Gripper movement was not confirmed.")
+                raise RuntimeError(gripper.report["result"])
+            if gripper.report.get("contact_observed"):
+                return
         return not released.is_set()
 
     def submit(self, name):

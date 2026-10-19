@@ -42,6 +42,7 @@ class GripperPanel:
             "di": None,
             "ack": False,
             "arrival_observed": False,
+            "contact_observed": False,
             "write_acks": [],
         }
         self.report["mirror"] = {"status": "Waiting for USB position feedback."}
@@ -183,7 +184,7 @@ class GripperPanel:
         request_id = str(uuid4())
         self.report.update(
             request="position", target=position, result="The position command is in progress.",
-            ack=False, arrival_observed=False, write_acks=[],
+            ack=False, arrival_observed=False, contact_observed=False, write_acks=[],
         )
         try:
             if self.closed or self.closing:
@@ -191,7 +192,10 @@ class GripperPanel:
                 return
             current = self.position_sample()
             if current is None or current["session"] != initial["session"]:
-                raise RuntimeError("The USB collector feedback changed before the command.")
+                raise RuntimeError(
+                    self.feedback.diagnostic()
+                    or "The USB collector feedback changed before the command."
+                )
             path = Path(self.feedback_path)
             path = path.with_name(path.name + ".command.json")
             temporary = path.with_name(path.name + ".tmp")
@@ -203,9 +207,16 @@ class GripperPanel:
             deadline = time.monotonic() + 5
             while not self.closed and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
+                if time.monotonic() >= deadline:
+                    break
                 sample = self.feedback.get()
-                if sample is None or sample["session"] != initial["session"]:
-                    raise RuntimeError("The USB collector feedback is stale or changed.")
+                if sample is None:
+                    diagnostic = self.feedback.diagnostic()
+                    if diagnostic:
+                        raise RuntimeError(diagnostic)
+                    continue
+                if sample["session"] != initial["session"]:
+                    raise RuntimeError("The USB collector session changed.")
                 control = sample.get("control", {})
                 if control.get("locked"):
                     raise RuntimeError(control.get("error") or "The USB collector is locked.")
@@ -224,7 +235,10 @@ class GripperPanel:
                     )
                     return
                 if sample["state"] == 2:
-                    self.report["result"] = "The gripper reports object contact before the target."
+                    self.report.update(
+                        contact_observed=True,
+                        result="The gripper reports object contact before the target.",
+                    )
                     return
             raise TimeoutError("The gripper target arrival is not confirmed.")
         except Exception as error:

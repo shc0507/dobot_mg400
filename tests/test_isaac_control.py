@@ -394,6 +394,47 @@ def test_unconfirmed_disable_drains_move_keeps_old_control_and_retains_error(
     asyncio.run(exercise())
 
 
+def test_disable_requires_fresh_target_initialization_after_feedback_expires(panel, monkeypatch):
+    panel.copy_actual()
+    panel.models[0].set_value(99.0)
+    old = panel.control
+    disable = old.disable
+
+    def disable_then_expire_feedback():
+        sample = disable()
+        panel.mirror.latest = sample, time.monotonic() - 1.0
+        return sample
+
+    def read_fresh_state(control):
+        sample, received = control.snapshot()
+        if time.monotonic() - received > 0.25:
+            raise RuntimeError("Robot feedback is absent or stale")
+        return sample
+
+    monkeypatch.setattr(old, "disable", disable_then_expire_feedback)
+    monkeypatch.setattr(type(old), "read_state", read_fresh_state)
+
+    async def exercise():
+        panel.request_disable()
+        await panel.disable_task
+        assert panel.control is not old
+        assert not panel.control.stopped
+        assert not panel.initialized
+        assert panel.control.calls == []
+        assert old.calls == [("disable",)]
+        panel.submit("move")
+        panel.submit("home")
+        assert panel.action is None
+        sample, _ = panel.mirror.latest
+        panel.mirror.latest = sample, time.monotonic()
+        panel.copy_actual()
+        assert panel.initialized
+        assert [model.as_float for model in panel.models] == [1.0, 2.0, 3.0, 4.0]
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
 def test_home_moves_to_fixed_zero_angles_and_updates_edited_targets(panel):
     async def exercise():
         panel.copy_actual()

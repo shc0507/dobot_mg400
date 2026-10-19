@@ -125,6 +125,7 @@ class ControlPanel:
         else:
             if not self.closed:
                 self.control = JointControl(self.host, self.feedback_snapshot)
+                self.initialized = False
                 self.copy_actual()
             self.message = "Disabled. Click Enable robot to enable again."
         print("MG400_CONTROL", self.message, flush=True)

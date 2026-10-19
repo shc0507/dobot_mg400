@@ -2,6 +2,7 @@
 
 import asyncio
 import builtins
+import json
 import runpy
 import socket
 import sys
@@ -1426,6 +1427,11 @@ def test_sync_shutdown_waits_for_stop_actions_and_receiver_before_destroying_win
             assert panel.window.destroyed
             assert len(panel.mirror.stop_calls) == 1
             assert panel.control.calls == [("stop",)]
+            assert panel.report["status"] == "closed"
+            assert panel.report["keyboard_enabled"] is False
+            assert panel.report["keyboard_arming"] is False
+            assert panel.report["busy"] is False
+            assert panel.report["synchronization"]["status"] == "stopped"
         finally:
             stop_allowed.set()
             for pending in (arm_done, child_done):
@@ -1443,15 +1449,23 @@ def test_sync_shutdown_releases_keyboard_and_waits_for_its_current_action(
 ):
     closing = asyncio.Event()
     sessions = []
+    frames = 0
 
     async def next_update():
-        session = await arm_keyboard(panel)
-        sessions.append(session)
-        session.finish_allowed.clear()
-        panel.key_event("W", True)
-        await asyncio.wait_for(session.run_started.wait(), 1)
-        panel.request_sync_stop()
-        closing.set()
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            session = await arm_keyboard(panel)
+            sessions.append(session)
+            session.finish_allowed.clear()
+            panel.key_event("W", True)
+            await asyncio.wait_for(session.run_started.wait(), 1)
+        else:
+            assert panel.report["keyboard_enabled"] is True
+            assert panel.report["busy"] is True
+            assert panel.report["synchronization"]["status"] == "live"
+            panel.request_sync_stop()
+            closing.set()
 
     install_ui(panel_module, panel, monkeypatch, next_update)
 
@@ -1470,6 +1484,13 @@ def test_sync_shutdown_releases_keyboard_and_waits_for_its_current_action(
             await asyncio.wait_for(task, 1)
             assert panel.mirror.stop_event.is_set()
             assert panel.window.destroyed
+            saved = json.loads(panel.write_report.__globals__["REPORT"].read_text())
+            for report in (panel.report, saved):
+                assert report["status"] == "closed"
+                assert report["keyboard_enabled"] is False
+                assert report["keyboard_arming"] is False
+                assert report["busy"] is False
+                assert report["synchronization"]["status"] == "stopped"
         finally:
             for session in sessions:
                 session.finish_allowed.set()
@@ -1501,6 +1522,11 @@ def test_sync_shutdown_keeps_feedback_when_robot_stop_is_uncertain(
         assert not panel.keyboard_enabled
         assert panel.report["synchronization_retained"]
         assert "Synchronization remains active" in panel.message
+        assert panel.report["status"] == "closed"
+        assert panel.report["keyboard_enabled"] is False
+        assert panel.report["keyboard_arming"] is False
+        assert panel.report["busy"] is False
+        assert panel.report["synchronization"]["status"] == "live"
 
     asyncio.run(exercise())
 

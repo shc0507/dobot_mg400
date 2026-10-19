@@ -614,7 +614,16 @@ class ControlPanel:
                     self.message = f"Gripper control stopped: {error}"
             await self.close_synchronization()
             self.window.destroy()
-            self.report.update(status="closed", message=self.message)
+            self.report.update(
+                status="closed", message=self.message,
+                keyboard_enabled=self.keyboard_enabled,
+                keyboard_arming=self.keyboard_arming,
+                busy=self.busy,
+                synchronization={
+                    key: self.mirror.report.get(key)
+                    for key in ("status", "display_hz", "feedback_age_ms")
+                },
+            )
             self.write_report()
 
     def write_report(self):

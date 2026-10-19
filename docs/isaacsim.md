@@ -17,7 +17,7 @@
 | `apps/isaacsim/load_model.py` | 开发时检查基础模型导入 |
 | `apps/isaacsim/mirror.py` | 在当前 MG400 场景中显示真机四轴反馈，支持断线重连 |
 | `apps/isaacsim/mirror_bootstrap.py` | 必要时打开默认场景，再启动只读姿态镜像 |
-| `apps/isaacsim/joint_control.py` | 统一面板入口：法兰坐标、键盘点动、使能、下使能、复位和夹爪连续开口 |
+| `apps/isaacsim/joint_control.py` | 统一面板入口：实时同步、法兰坐标、键盘点动、使能、下使能、复位和夹爪连续开口 |
 | `apps/isaacsim/gripper_control.py` | 统一面板复用的夹爪模块，也保留独立 I/O 开合入口 |
 | `apps/isaacsim/olares_gripper.py` | 兼容旧入口，打开同一个统一控制面板 |
 | `config/robot.toml` | Isaac 镜像、法兰面板和夹爪面板共用的机器人地址 |
@@ -54,7 +54,10 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-`MG400 Control` 左侧显示法兰坐标，右侧显示夹爪开口。
+`MG400 Control` 顶部显示同步状态、更新频率、反馈年龄和 J1–J4 角度。
+左侧显示法兰坐标，右侧显示夹爪开口。
+统一入口复用现有同步，并隐藏旧同步窗口。
+没有同步实例时，脚本在后台启动同步，不再创建单独窗口。
 启动只读，连接后显示真机实测姿态。
 使能、下使能和运动步骤见 [在 Isaac 中控制真机法兰](#在-isaac-中控制真机法兰)。
 如果只显示姿态，运行 `apps/isaacsim/mirror_bootstrap.py`，见 [真机姿态实时同步](#真机姿态实时同步)。
@@ -62,8 +65,11 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 首次使用时安装宿主机采集服务，步骤见 [USB 接在 Olares](#usb-接在-olares)。
 此后打开面板会自动请求启动采集，运行中的采集不会重启。
 `olares_gripper.py` 保留为统一面板的兼容入口。
-关闭窗口会关闭两组控制，等待当前夹爪命令返回结果后才退出。
-动作期间不能重载面板，空闲时重复运行会替换旧实例。
+点击 `Stop synchronization` 或关闭统一窗口，会结束两组控制。
+脚本等待控制动作和当前夹爪命令结束，再停止同步连接。
+如果无法确认控制已停止，脚本保留反馈，并在状态记录中说明。
+动作期间不能重载面板，空闲时重复运行会替换控制面板并复用同步连接。
+停止或关闭后，重新运行统一入口可恢复面板和同步。
 
 将自定义场景另存到数据目录，操作要求见 [代码与运行数据](#代码与运行数据)。
 
@@ -225,7 +231,7 @@ host = "192.168.1.6"
 修改配置后，重新启动镜像和面板，才会使用新地址。
 法兰面板只复用地址与配置一致的镜像。
 如果现存镜像地址不同或没有 `host`，法兰面板会拒绝复用。
-先停止旧镜像，再重新运行 `apps/isaacsim/mirror.py` 和法兰面板。
+先点击 `Stop synchronization`，再重新运行 `apps/isaacsim/joint_control.py`。
 此配置只供 Isaac 真机入口使用，CLI 的 `--host` 和独立教学脚本保持各自的地址设置方式。
 
 ## 真机姿态实时同步
@@ -298,8 +304,10 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-脚本复用现有实时同步；尚未启动同步时，会通过 mirror bootstrap 备份当前场景、
-加载 MG400 并启动反馈。出现 `MG400 Control` 面板后：
+脚本复用现有实时同步。
+尚未启动同步时，脚本先备份当前场景，必要时加载 MG400，再启动反馈。
+同步状态与停止按钮位于统一窗口顶部，不必另开同步面板。
+出现 `MG400 Control` 面板后：
 
 1. 等待 `LIVE` 和 `Actual` 坐标。
    `Target` 首次自动填入实测坐标。

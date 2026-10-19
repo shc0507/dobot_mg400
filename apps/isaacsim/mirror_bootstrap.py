@@ -35,7 +35,10 @@ async def bootstrap():
         opened, error = await context.open_stage_async(str(scene))
         if not opened:
             raise RuntimeError(f"Could not load MG400 scene: {error}")
-    namespace = runpy.run_path(str(ROOT / "apps/isaacsim/mirror.py"))
+    namespace = runpy.run_path(
+        str(ROOT / "apps/isaacsim/mirror.py"),
+        init_globals={"SHOW_WINDOW": globals().get("SHOW_WINDOW", True)},
+    )
     await namespace["MG400_MIRROR_START_TASK"]
     mirror = getattr(builtins, namespace["SINGLETON"])
     deadline = time.monotonic() + 15

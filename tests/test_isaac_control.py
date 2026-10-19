@@ -27,6 +27,25 @@ class FloatModel:
         self.as_float = value
 
 
+class Mirror:
+    def __init__(self, sample):
+        self.host = "192.168.1.6"
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.network_error = None
+        self.latest = (sample, time.monotonic())
+        self.report = {"status": "live", "display_hz": 24.5, "feedback_age_ms": 10.0}
+        self.task = None
+        self.window = SimpleNamespace(visible=True, destroyed=False)
+        self.window.destroy = lambda: setattr(self.window, "destroyed", True)
+        self.stop_calls = []
+
+    def stop(self, reason="Stopped by user"):
+        self.stop_calls.append(reason)
+        self.report["status"] = "stopped"
+        self.stop_event.set()
+
+
 @pytest.fixture
 def panel_module(monkeypatch, tmp_path):
     instances = []
@@ -258,13 +277,7 @@ def panel_module(monkeypatch, tmp_path):
 @pytest.fixture
 def panel(panel_module):
     sample = Feedback((1.0, 2.0, 3.0, 4.0), mode=5, timestamp=0, error_status=False)
-    mirror = SimpleNamespace(
-        host="192.168.1.6",
-        lock=threading.Lock(),
-        stop_event=threading.Event(),
-        network_error=None,
-        latest=(sample, time.monotonic()),
-    )
+    mirror = Mirror(sample)
     panel = panel_module.ControlPanel(mirror)
     panel.models = [FloatModel(0.0) for _ in range(4)]
     panel.actual_pose = panel.control.read_pose()
@@ -289,7 +302,7 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
     class Widget:
         def __init__(self, text=None, *args, **kwargs):
             self.text = text
-            self.visible = True
+            self.visible = kwargs.get("visible", True)
             self.enabled = kwargs.get("enabled", True)
             self.clicked_fn = kwargs.get("clicked_fn")
             self.parent = containers[-1] if containers else None
@@ -1296,6 +1309,9 @@ def test_start_constructs_owned_gripper_from_shared_feedback_path(
             assert getattr(builtins, panel_module.GRIPPER_SINGLETON) is gripper
             assert gripper.calls == created.control.calls == []
             assert not created.keyboard_enabled
+            assert created.mirror is panel.mirror
+            assert not created.mirror.window.visible
+            assert created.mirror.stop_calls == []
             path, args, kwargs = panel_module.gripper_loads[0]
             assert Path(path) == ROOT / "apps/isaacsim/gripper_control.py"
             assert args == ()
@@ -1331,6 +1347,189 @@ def test_combined_panel_uses_one_window_and_starts_child_without_commands(
     assert child.task.done()
     assert child.run_finished.is_set()
     assert panel.window.destroyed
+
+
+def test_sync_status_and_measured_joints_are_shown_in_the_control_window(
+    panel_module, panel, monkeypatch
+):
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 2:
+            labels = [widget.text for widget in widgets if type(widget).__name__ == "Label"]
+            assert any("LIVE | 24.5 updates/s" in text and "ms old" in text for text in labels)
+            assert "  ".join(f"J{i}: {i:.2f} deg" for i in range(1, 5)) in labels
+            assert sum(type(widget).__name__ == "Window" for widget in widgets) == 1
+            panel.request_sync_stop()
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert panel.control.calls == []
+    assert panel.mirror.stop_event.is_set()
+
+
+@pytest.mark.parametrize("trigger", ("button", "window"))
+def test_sync_shutdown_waits_for_stop_actions_and_receiver_before_destroying_window(
+    panel_module, panel, monkeypatch, trigger
+):
+    child = panel_module.Gripper()
+    panel.gripper = child
+    child.owner = panel
+    stop_started, stop_allowed = threading.Event(), threading.Event()
+    original_stop = panel.control.stop
+
+    def stop():
+        stop_started.set()
+        assert stop_allowed.wait(2), "Test did not release stop confirmation"
+        return original_stop()
+
+    monkeypatch.setattr(panel.control, "stop", stop)
+
+    async def next_update():
+        await asyncio.wait_for(child.run_started.wait(), 1)
+        if trigger == "button":
+            next(widget for widget in widgets if widget.text == "Stop synchronization").clicked_fn()
+        else:
+            panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+
+    async def exercise():
+        arm_done = asyncio.get_running_loop().create_future()
+        child_done = asyncio.get_running_loop().create_future()
+        receiver_done = asyncio.Event()
+        panel.action = arm_done
+        child.action = child_done
+        panel.mirror.task = asyncio.create_task(receiver_done.wait())
+        task = asyncio.create_task(panel.run())
+        try:
+            assert await asyncio.to_thread(stop_started.wait, 1)
+            assert child.closing
+            assert not child.closed
+            assert not panel.mirror.stop_event.is_set()
+            assert not panel.window.destroyed
+            stop_allowed.set()
+            await asyncio.wait_for(panel.stop_task, 1)
+            assert not panel.mirror.stop_event.is_set()
+            arm_done.set_result(None)
+            await asyncio.sleep(0)
+            assert not panel.mirror.stop_event.is_set()
+            child_done.set_result(None)
+            assert await asyncio.to_thread(panel.mirror.stop_event.wait, 1)
+            assert child.task.done()
+            assert not task.done()
+            assert not panel.window.destroyed
+            receiver_done.set()
+            await asyncio.wait_for(task, 1)
+            assert panel.window.destroyed
+            assert len(panel.mirror.stop_calls) == 1
+            assert panel.control.calls == [("stop",)]
+        finally:
+            stop_allowed.set()
+            for pending in (arm_done, child_done):
+                if not pending.done():
+                    pending.set_result(None)
+            receiver_done.set()
+            panel.closed = True
+            await asyncio.wait_for(task, 1)
+
+    asyncio.run(exercise())
+
+
+def test_sync_shutdown_releases_keyboard_and_waits_for_its_current_action(
+    panel_module, panel, monkeypatch
+):
+    closing = asyncio.Event()
+    sessions = []
+
+    async def next_update():
+        session = await arm_keyboard(panel)
+        sessions.append(session)
+        session.finish_allowed.clear()
+        panel.key_event("W", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        panel.request_sync_stop()
+        closing.set()
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+
+    async def exercise():
+        task = asyncio.create_task(panel.run())
+        try:
+            await asyncio.wait_for(closing.wait(), 1)
+            session = sessions[0]
+            assert session.closed
+            assert session.released.is_set()
+            assert panel.held_keys == set()
+            assert not panel.keyboard_enabled
+            assert not panel.action.done()
+            assert not panel.mirror.stop_event.is_set()
+            session.finish_allowed.set()
+            await asyncio.wait_for(task, 1)
+            assert panel.mirror.stop_event.is_set()
+            assert panel.window.destroyed
+        finally:
+            for session in sessions:
+                session.finish_allowed.set()
+            panel.closed = True
+            await asyncio.wait_for(task, 1)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("fault", ("unconfirmed_stop", "pending_ack"))
+def test_sync_shutdown_keeps_feedback_when_robot_stop_is_uncertain(
+    panel_module, panel, monkeypatch, fault
+):
+    async def next_update():
+        panel.request_sync_stop()
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+
+    async def exercise():
+        if fault == "pending_ack":
+            panel.control._pending = {"done": threading.Event(), "sent": True, "ok": False}
+        else:
+            monkeypatch.setattr(panel.control, "stop", lambda: {"ok": False, "error": "lost ACK"})
+            panel.request_stop()
+            await asyncio.wait_for(panel.stop_task, 1)
+        await asyncio.wait_for(panel.run(), 1)
+        assert not panel.mirror.stop_event.is_set()
+        assert panel.mirror.stop_calls == []
+        assert not panel.keyboard_enabled
+        assert panel.report["synchronization_retained"]
+        assert "Synchronization remains active" in panel.message
+
+    asyncio.run(exercise())
+
+
+def test_closing_stopped_sync_preserves_error_and_waits_for_receiver(panel):
+    panel.mirror.stop_event.set()
+    panel.mirror.report.update(
+        status="error", reason="Stage changed", error="Mirror scene is no longer available"
+    )
+    original_report = dict(panel.mirror.report)
+
+    async def exercise():
+        receiver_done = asyncio.Event()
+        panel.mirror.task = asyncio.create_task(receiver_done.wait())
+        closing = asyncio.create_task(panel.close_synchronization())
+        try:
+            await asyncio.sleep(0)
+            assert not closing.done()
+            assert not panel.mirror.window.destroyed
+            assert panel.mirror.stop_calls == []
+            assert panel.mirror.report == original_report
+        finally:
+            receiver_done.set()
+            await asyncio.wait_for(closing, 1)
+        assert panel.mirror.window.destroyed
+        assert panel.mirror.stop_calls == []
+        assert panel.mirror.report == original_report
+
+    asyncio.run(exercise())
 
 
 def test_gripper_task_failure_does_not_prevent_parent_window_cleanup(
@@ -1512,6 +1711,11 @@ def test_repeated_start_replaces_old_window_and_owned_child(panel_module, panel,
             windows = [widget for widget in widgets if type(widget).__name__ == "Window"]
             assert [window for window in windows if not window.destroyed] == [second.window]
             assert second.gripper.owner is second
+            assert first.keep_mirror
+            assert first.mirror is second.mirror is panel.mirror
+            assert second.mirror.stop_calls == []
+            assert not second.mirror.stop_event.is_set()
+            assert not second.mirror.window.visible
             assert getattr(builtins, panel_module.SINGLETON) is second
             assert getattr(builtins, panel_module.GRIPPER_SINGLETON) is second.gripper
             assert all(control.calls == [] for control in panel_module.instances)
@@ -1520,6 +1724,64 @@ def test_repeated_start_replaces_old_window_and_owned_child(panel_module, panel,
             for created in (first, second):
                 if created is not None:
                     created.closed = True
+                    await asyncio.wait_for(created.task, 1)
+
+    asyncio.run(exercise())
+
+
+def test_rerunning_entry_after_sync_stop_starts_one_hidden_mirror_and_waits_for_feedback(
+    panel_module, panel, monkeypatch
+):
+    async def next_update():
+        await asyncio.sleep(0)
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    globals_ = panel_module.start.__globals__
+    original_load = globals_["runpy"].run_path
+    bootstraps = []
+    sample = panel.mirror.latest[0]
+
+    def load(path, *args, **kwargs):
+        if Path(path).name != "mirror_bootstrap.py":
+            return original_load(path, *args, **kwargs)
+        assert panel.mirror.stop_event.is_set()
+        assert args == ()
+        assert kwargs == {"init_globals": {"SHOW_WINDOW": False}}
+        mirror = Mirror(sample)
+        mirror.latest = None
+        mirror.window = None
+        mirror.report["status"] = "stale"
+        bootstraps.append(mirror)
+
+        async def bootstrap():
+            setattr(builtins, panel_module.MIRROR_SINGLETON, mirror)
+
+        return {"MG400_MIRROR_BOOTSTRAP_TASK": asyncio.create_task(bootstrap())}
+
+    monkeypatch.setitem(globals_, "runpy", SimpleNamespace(run_path=load))
+
+    async def exercise():
+        first = await panel_module.start()
+        second = None
+        try:
+            await asyncio.wait_for(first.gripper.run_started.wait(), 1)
+            first.request_sync_stop()
+            await asyncio.wait_for(first.task, 1)
+            assert first.window.destroyed
+            assert panel.mirror.stop_event.is_set()
+            second = await panel_module.start()
+            await asyncio.wait_for(second.gripper.run_started.wait(), 1)
+            assert bootstraps == [second.mirror]
+            assert second.mirror is not first.mirror
+            assert not second.mirror.stop_event.is_set()
+            assert not second.initialized
+            assert not second.keyboard_enabled
+            assert second.actual_pose is None
+            assert second.control.calls == []
+        finally:
+            for created in (first, second):
+                if created is not None:
+                    created.request_sync_stop()
                     await asyncio.wait_for(created.task, 1)
 
     asyncio.run(exercise())
@@ -1754,14 +2016,17 @@ def test_ui_button_rows_and_enabled_states(
         if frames == 2:
             buttons = [widget for widget in widgets if type(widget).__name__ == "Button"]
             assert [button.text for button in buttons] == [
+                "Stop synchronization",
                 "Enable robot", "Disable robot", "Return to Home", "Move Linear", "Keyboard: OFF"
             ]
-            enable, disable, home, move, keyboard = buttons
+            sync, enable, disable, home, move, keyboard = buttons
+            assert sync.enabled
+            assert sync.clicked_fn == panel.request_sync_stop
             assert enable.parent is disable.parent
             assert type(enable.parent).__name__ == "HStack"
             assert home.parent is move.parent is enable.parent.parent
             assert keyboard.parent is home.parent
-            assert [button.enabled for button in buttons] == expected_enabled
+            assert [button.enabled for button in buttons[1:]] == expected_enabled
             fields = [widget for widget in widgets if type(widget).__name__ == "FloatField"]
             assert len(fields) == 4
             assert all(field.enabled == (not busy) for field in fields)

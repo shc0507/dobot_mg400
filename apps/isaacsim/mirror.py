@@ -134,8 +134,9 @@ class UsdPoseMirror:
 
 
 class LiveMirror:
-    def __init__(self):
+    def __init__(self, show_window=True):
         self.host = load_robot_host(ROBOT_CONFIG)
+        self.show_window = show_window
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest = None
@@ -189,6 +190,7 @@ class LiveMirror:
         context = omni.usd.get_context()
         timeline = omni.timeline.get_timeline_interface()
         worker = None
+        label = angles_label = details = None
         try:
             stage = context.get_stage()
             # Validate before any scene changes. Never replace the user's stage.
@@ -237,16 +239,18 @@ class LiveMirror:
             mirror = UsdPoseMirror(stage, jaws)
             self.pose_mirror = mirror
             self.report["held_jaw_positions_m"] = mirror.jaws
-            self.window = ui.Window("MG400 Live Mirror", width=430, height=190)
-            self.window.setPosition(15, 370)
-            with self.window.frame:
-                with ui.VStack(spacing=7):
-                    label = ui.Label("CONNECTING — real robot → simulation", word_wrap=True)
-                    angles_label = ui.Label("")
-                    details = ui.Label(
-                        "Only receives TCP 30004; gripper held at its current pose.", word_wrap=True
-                    )
-                    ui.Button("Stop synchronization", clicked_fn=self.stop)
+            if self.show_window:
+                self.window = ui.Window("MG400 Live Mirror", width=430, height=190)
+                self.window.setPosition(15, 370)
+                with self.window.frame:
+                    with ui.VStack(spacing=7):
+                        label = ui.Label("CONNECTING — real robot → simulation", word_wrap=True)
+                        angles_label = ui.Label("")
+                        details = ui.Label(
+                            "Only receives TCP 30004; gripper held at its current pose.",
+                            word_wrap=True,
+                        )
+                        ui.Button("Stop synchronization", clicked_fn=self.stop)
             worker = threading.Thread(target=self.receive, name="MG400-feedback", daemon=True)
             worker.start()
             last_applied = last_report = last_rate = 0
@@ -304,16 +308,17 @@ class LiveMirror:
                     count = self.report["applied_frames"]
                     rate = (count - last_rate) / (now - rate_start)
                     self.report["display_hz"] = rate
-                    label.text = (
-                        f"LIVE · {rate:.1f} updates/s · {age * 1000:.0f} ms old"
-                        if live
-                        else "STALE / RECONNECTING — last pose held"
-                    )
-                    if latest:
-                        angles_label.text = "  ".join(
-                            f"J{i + 1}: {q:.2f}°" for i, q in enumerate(latest[0].joints_deg)
+                    if label is not None:
+                        label.text = (
+                            f"LIVE · {rate:.1f} updates/s · {age * 1000:.0f} ms old"
+                            if live
+                            else "STALE / RECONNECTING — last pose held"
                         )
-                    details.text = error or "Read-only · physics stopped · gripper pose held"
+                        if latest:
+                            angles_label.text = "  ".join(
+                                f"J{i + 1}: {q:.2f}°" for i, q in enumerate(latest[0].joints_deg)
+                            )
+                        details.text = error or "Read-only · physics stopped · gripper pose held"
                     self.write_report()
                     last_report, last_rate, rate_start = now, count, now
         except Exception:
@@ -327,25 +332,34 @@ class LiveMirror:
                 # The worker has a bounded one-second read; do not block Kit's UI.
                 while worker.is_alive():
                     await app.next_update_async()
-            if self.window:
+            if label is not None:
                 label.text = "STOPPED — displayed pose is no longer live"
+            if details is not None:
                 details.text = self.report.get("reason", self.report.get("error", "Stopped"))
             self.write_report()
             print("MG400_MIRROR_RESULT", json.dumps(self.report))
 
 
-async def start():
-    old = getattr(builtins, SINGLETON, None)
-    if old:
-        old.stop("Replaced by a new mirror instance")
-        if old.task:
-            await old.task
-        if old.window:
-            old.window.destroy()
-    mirror = LiveMirror()
-    setattr(builtins, SINGLETON, mirror)
-    mirror.task = asyncio.ensure_future(mirror.run())
+async def start(show_window=True):
+    lock_name = SINGLETON + "_start_lock"
+    lock = getattr(builtins, lock_name, None)
+    if lock is None:
+        lock = asyncio.Lock()
+        setattr(builtins, lock_name, lock)
+    async with lock:
+        old = getattr(builtins, SINGLETON, None)
+        if old:
+            old.stop("Replaced by a new mirror instance")
+            if old.task:
+                await old.task
+            if old.window:
+                old.window.destroy()
+        mirror = LiveMirror(show_window=show_window)
+        setattr(builtins, SINGLETON, mirror)
+        mirror.task = asyncio.ensure_future(mirror.run())
 
 
 if __name__ in ("__main__", "<run_path>"):
-    MG400_MIRROR_START_TASK = asyncio.ensure_future(start())
+    MG400_MIRROR_START_TASK = asyncio.ensure_future(
+        start(show_window=globals().get("SHOW_WINDOW", True))
+    )

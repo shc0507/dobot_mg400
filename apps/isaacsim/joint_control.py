@@ -52,6 +52,7 @@ class ControlPanel:
         self.control = JointControl(self.host, self.feedback_snapshot)
         self.action = self.disable_task = self.stop_task = self.task = None
         self.closed = False
+        self.keep_mirror = False
         self.initialized = False
         self.message = "Waiting for fresh robot feedback."
         self.models = []
@@ -335,6 +336,46 @@ class ControlPanel:
             self.control.cancel()
             self.stop_task = asyncio.ensure_future(self.stop())
 
+    def request_sync_stop(self):
+        self.set_keyboard(False)
+        self.closed = True
+
+    async def close_synchronization(self):
+        if self.keep_mirror:
+            return
+        pending = getattr(self.control, "_pending", None)
+        stop_result = getattr(self.control, "_stop_result", None)
+        if self.stop_task is not None:
+            stop_result = self.stop_task.result()
+        keyboard_stop = getattr(self.keyboard_session, "_stop_result", None)
+        uncertain = (
+            getattr(self.control, "_stop_uncertain", False)
+            or getattr(self.control, "_disable_error", None) is not None
+            or (pending is not None and (
+                not pending["done"].is_set()
+                or (pending.get("sent", False) and not pending.get("ok", False))
+            ))
+            or (stop_result is not None and not stop_result["ok"])
+            or (keyboard_stop is not None and not keyboard_stop["ok"])
+            or (self.control.stopped and stop_result is None
+                and getattr(self.control, "_disable_result", None) is None)
+        )
+        if not self.mirror.stop_event.is_set():
+            try:
+                self.control.read_state()
+            except Exception:
+                uncertain = True
+        if uncertain and not self.mirror.stop_event.is_set():
+            self.message += " Control stop unconfirmed. Synchronization remains active."
+            self.report["synchronization_retained"] = True
+            return
+        if not self.mirror.stop_event.is_set():
+            self.mirror.stop("Control panel closed")
+        if self.mirror.task:
+            await self.mirror.task
+        if self.mirror.window:
+            self.mirror.window.destroy()
+
     async def stop(self):
         self.message = "Requesting controlled stop..."
         try:
@@ -360,58 +401,72 @@ class ControlPanel:
         context = omni.usd.get_context()
         stage = context.get_stage()
         timeline = omni.timeline.get_timeline_interface()
-        self.window = ui.Window("MG400 Control", width=920, height=570)
+        self.window = ui.Window("MG400 Control", width=920, height=665)
         self.window.setPosition(15, 15)
         self.window.set_focused_changed_fn(
             lambda focused: None if focused else self.set_keyboard(False)
         )
         with self.window.frame:
-            with ui.HStack(spacing=16):
-                with ui.VStack(width=500, spacing=6):
-                    ui.Label(f"REAL ROBOT  |  {self.host}", height=22)
-                    state_label = ui.Label("CONNECTING", height=24)
-                    with ui.HStack(height=24):
-                        ui.Label("Axis", width=55)
-                        ui.Label("Actual", width=150)
-                        ui.Label("Target")
-                    actual_labels, fields = [], []
-                    for axis in ("X mm", "Y mm", "Z mm", "R deg"):
-                        with ui.HStack(height=27):
-                            ui.Label(axis, width=55)
-                            actual_labels.append(ui.Label("--", width=150))
-                            model = ui.SimpleFloatModel(0.0)
-                            self.models.append(model)
-                            fields.append(ui.FloatField(model, precision=3, enabled=False))
-                    with ui.HStack(height=30, spacing=6):
-                        enable_button = ui.Button(
-                            "Enable robot", clicked_fn=lambda: self.submit("enable")
+            with ui.VStack(spacing=8):
+                with ui.HStack(height=28, spacing=12):
+                    ui.Label("SYNCHRONIZATION | real robot to simulation")
+                    ui.Button(
+                        "Stop synchronization", width=210,
+                        clicked_fn=self.request_sync_stop,
+                    )
+                sync_label = ui.Label("CONNECTING", height=22)
+                sync_angles = ui.Label("J1-J4: waiting for feedback", height=22)
+                with ui.HStack(spacing=16):
+                    with ui.VStack(width=500, spacing=6):
+                        ui.Label(f"REAL ROBOT  |  {self.host}", height=22)
+                        state_label = ui.Label("CONNECTING", height=24)
+                        with ui.HStack(height=24):
+                            ui.Label("Axis", width=55)
+                            ui.Label("Actual", width=150)
+                            ui.Label("Target")
+                        actual_labels, fields = [], []
+                        for axis in ("X mm", "Y mm", "Z mm", "R deg"):
+                            with ui.HStack(height=27):
+                                ui.Label(axis, width=55)
+                                actual_labels.append(ui.Label("--", width=150))
+                                model = ui.SimpleFloatModel(0.0)
+                                self.models.append(model)
+                                fields.append(ui.FloatField(model, precision=3, enabled=False))
+                        with ui.HStack(height=30, spacing=6):
+                            enable_button = ui.Button(
+                                "Enable robot", clicked_fn=lambda: self.submit("enable")
+                            )
+                            disable_button = ui.Button(
+                                "Disable robot", clicked_fn=self.request_disable,
+                            )
+                        home_button = ui.Button(
+                            "Return to Home", height=32, clicked_fn=lambda: self.submit("home")
                         )
-                        disable_button = ui.Button("Disable robot", clicked_fn=self.request_disable)
-                    home_button = ui.Button(
-                        "Return to Home", height=32, clicked_fn=lambda: self.submit("home")
-                    )
-                    move_button = ui.Button(
-                        "Move Linear", height=32, clicked_fn=lambda: self.submit("move")
-                    )
-                    ui.Label(
-                        "Base frame / flange: User=0, Tool=0. Home: all joints 0 deg.", height=22,
-                    )
-                    keyboard_button = ui.Button(
-                        "Keyboard: OFF", height=30,
-                        clicked_fn=self.request_keyboard,
-                    )
-                    ui.Label("W/S reach | A/D base turn | R/F up/down | Q/E flange yaw", height=22)
-                    ui.Label("Z/X open/close gripper | Esc disable robot", height=22)
-                    ui.Label(
-                        "Hold one key to jog; release requests a stop. Max hold: 5 seconds.\n"
-                        "Gripper finishes its current small step. "
-                        "Leaving this panel turns keys off.",
-                        word_wrap=True, height=40,
-                    )
-                    message_label = ui.Label(self.message, word_wrap=True, height=45)
-                if self.gripper is not None:
-                    with ui.VStack(spacing=6):
-                        self.gripper.build_ui()
+                        move_button = ui.Button(
+                            "Move Linear", height=32, clicked_fn=lambda: self.submit("move")
+                        )
+                        ui.Label(
+                            "Base frame / flange: User=0, Tool=0. Home: all joints 0 deg.",
+                            height=22,
+                        )
+                        keyboard_button = ui.Button(
+                            "Keyboard: OFF", height=30,
+                            clicked_fn=self.request_keyboard,
+                        )
+                        ui.Label(
+                            "W/S reach | A/D base turn | R/F up/down | Q/E flange yaw", height=22,
+                        )
+                        ui.Label("Z/X open/close gripper | Esc disable robot", height=22)
+                        ui.Label(
+                            "Hold one key to jog; release requests a stop. Max hold: 5 seconds.\n"
+                            "Gripper finishes its current small step. "
+                            "Leaving this panel turns keys off.",
+                            word_wrap=True, height=40,
+                        )
+                        message_label = ui.Label(self.message, word_wrap=True, height=45)
+                    if self.gripper is not None:
+                        with ui.VStack(spacing=6):
+                            self.gripper.build_ui()
         if self.gripper is not None:
             self.gripper.task = asyncio.ensure_future(self.gripper.run(window=self.window))
         keys = {int(getattr(carb.input.KeyboardInput, key)): key for key in (*JOG_KEYS, "ESCAPE")}
@@ -445,6 +500,7 @@ class ControlPanel:
                     self.closed = True
                     break
                 sample = None
+                age = None
                 try:
                     sample, received = self.feedback_snapshot()
                     age = time.monotonic() - received
@@ -456,6 +512,18 @@ class ControlPanel:
                 except Exception as error:
                     live = False
                     state_label.text = f"DISCONNECTED: {error}"
+                sync_report = self.mirror.report
+                sync_age = f"{age * 1000:.0f} ms old" if age is not None else "no feedback"
+                sync_label.text = (
+                    f"{sync_report.get('status', 'starting').upper()} | "
+                    f"{sync_report.get('display_hz', 0):.1f} updates/s | {sync_age}"
+                    " | physics stopped"
+                )
+                if sample is not None:
+                    sync_angles.text = "  ".join(
+                        f"J{i + 1}: {value:.2f} deg"
+                        for i, value in enumerate(sample.joints_deg)
+                    )
                 gripper_busy = self.gripper is not None and self.gripper.busy
                 idle = (
                     live and sample.mode in (4, 5) and not self.busy
@@ -511,6 +579,10 @@ class ControlPanel:
                         keyboard_arming=self.keyboard_arming,
                         busy=self.busy,
                         message=self.message,
+                        synchronization={
+                            key: sync_report.get(key)
+                            for key in ("status", "display_hz", "feedback_age_ms")
+                        },
                     )
                     self.write_report()
                     last_report = now
@@ -524,9 +596,10 @@ class ControlPanel:
             if self.keyboard_task:
                 await self.keyboard_task
             # A closing/reloaded panel must not leave its worker commanding the robot.
-            if self.disable_task and not self.disable_task.done():
+            disabling = self.disable_task and not self.disable_task.done()
+            if self.disable_task:
                 await self.disable_task
-            elif self.busy or self.control.busy:
+            if not disabling and (self.busy or self.control.busy):
                 self.request_stop()
             if self.stop_task:
                 await self.stop_task
@@ -539,6 +612,7 @@ class ControlPanel:
                     await self.gripper.task
                 except Exception as error:
                     self.message = f"Gripper control stopped: {error}"
+            await self.close_synchronization()
             self.window.destroy()
             self.report.update(status="closed", message=self.message)
             self.write_report()
@@ -618,6 +692,7 @@ async def replace_panel():
     if old_gripper is not None:
         old_gripper.closed = True
     if old:
+        old.keep_mirror = True
         old.closed = True
         if old.task:
             await old.task
@@ -630,9 +705,14 @@ async def replace_panel():
     _reload_control_modules()
     mirror = getattr(builtins, MIRROR_SINGLETON, None)
     if mirror is None or mirror.stop_event.is_set():
-        namespace = runpy.run_path(str(ROOT / "apps/isaacsim/mirror_bootstrap.py"))
+        namespace = runpy.run_path(
+            str(ROOT / "apps/isaacsim/mirror_bootstrap.py"),
+            init_globals={"SHOW_WINDOW": False},
+        )
         await namespace["MG400_MIRROR_BOOTSTRAP_TASK"]
         mirror = getattr(builtins, MIRROR_SINGLETON)
+    if getattr(mirror, "window", None):
+        mirror.window.visible = False
     namespace = runpy.run_path(
         str(ROOT / "apps/isaacsim/gripper_control.py"), run_name="mg400_gripper_module"
     )

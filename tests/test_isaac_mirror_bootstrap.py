@@ -18,8 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize(
     "existing_robot, explicit_scene", ((False, False), (True, False), (True, True))
 )
+@pytest.mark.parametrize("show_window", [None, False])
 def test_bootstrap_uses_default_or_explicit_scene_and_preserves_existing_robot(
-    monkeypatch, tmp_path, existing_robot, explicit_scene
+    monkeypatch, tmp_path, existing_robot, explicit_scene, show_window
 ):
     data_directory = tmp_path / "external-data"
     monkeypatch.setenv("MG400_DATA_DIR", str(data_directory))
@@ -66,8 +67,8 @@ def test_bootstrap_uses_default_or_explicit_scene_and_preserves_existing_robot(
     real_run_path = runpy.run_path
     mirror_runs = []
 
-    def start_mirror(path):
-        mirror_runs.append(path)
+    def start_mirror(path, **kwargs):
+        mirror_runs.append((path, kwargs))
         name = "_test_bootstrap_mirror"
         monkeypatch.setattr(
             builtins, name, SimpleNamespace(report={"status": "live"}), raising=False
@@ -77,6 +78,8 @@ def test_bootstrap_uses_default_or_explicit_scene_and_preserves_existing_robot(
     monkeypatch.setattr(runpy, "run_path", start_mirror)
     selected = ROOT / "isaacsim/scene.usda"
     globals_ = {"SCENE_PATH": str(selected)} if explicit_scene else {}
+    if show_window is not None:
+        globals_["SHOW_WINDOW"] = show_window
     with monkeypatch.context() as startup:
         startup.setattr(asyncio, "ensure_future", lambda coroutine: coroutine)
         namespace = real_run_path(
@@ -97,5 +100,8 @@ def test_bootstrap_uses_default_or_explicit_scene_and_preserves_existing_robot(
         backups = list((data_directory / "isaacsim").glob("before_mirror_load_*.usda"))
         assert len(backups) == 1
         assert UsdUtils.ComputeAllDependencies(str(backups[0]))[2] == []
-    assert mirror_runs == [str(ROOT / "apps/isaacsim/mirror.py")]
+    assert mirror_runs == [(
+        str(ROOT / "apps/isaacsim/mirror.py"),
+        {"init_globals": {"SHOW_WINDOW": show_window is not False}},
+    )]
     connection.assert_not_called()

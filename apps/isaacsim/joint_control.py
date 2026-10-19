@@ -253,7 +253,9 @@ class ControlPanel:
                 raise RuntimeError("Wait for the current gripper command to finish.")
             position = gripper.measured_position()
             if position is None:
-                raise RuntimeError("Waiting for fresh gripper position feedback.")
+                raise RuntimeError(
+                    gripper.feedback.diagnostic() or "Waiting for fresh gripper position feedback."
+                )
             target = max(0, min(1000, position + (25 if key == "Z" else -25)))
             if target == position:
                 return

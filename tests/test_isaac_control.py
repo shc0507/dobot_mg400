@@ -1364,6 +1364,41 @@ def test_gripper_keyboard_awaits_measured_step_before_continuing(
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("key", ("Z", "X"))
+@pytest.mark.parametrize(
+    ("init", "message"),
+    (
+        (0, "The gripper is not initialized."),
+        (2, "Gripper initialization is in progress."),
+        (None, "Waiting for fresh gripper position feedback."),
+    ),
+)
+def test_gripper_keyboard_reports_feedback_reason_without_sending(panel, key, init, message):
+    from mg400_agent.gripper_feedback import FeedbackState
+
+    async def exercise():
+        await arm_keyboard(panel)
+        feedback = FeedbackState()
+        if init is not None:
+            feedback.receive({
+                "session": "b8af7f0a-d1a1-4887-adfe-d470d5527de6", "seq": 1,
+                "sent_at": time.time(), "init": init, "state": 65535, "position": 920,
+            })
+        targets = []
+        panel.gripper = SimpleNamespace(
+            closed=False, failed=False, busy=False, feedback=feedback,
+            measured_position=lambda: None, submit_position=targets.append,
+        )
+        panel.key_event(key, True)
+        await asyncio.wait_for(panel.action, 1)
+        assert panel.message == f"ERROR: {message}"
+        assert not panel.keyboard_enabled
+        assert targets == []
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
 def test_gripper_hold_repeats_after_each_measured_step(panel):
     async def exercise():
         await arm_keyboard(panel)

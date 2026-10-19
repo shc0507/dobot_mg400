@@ -2,6 +2,7 @@
 
 import asyncio
 import builtins
+import contextlib
 import json
 import re
 import socket
@@ -44,6 +45,21 @@ class GripperPanel:
             "write_acks": [],
         }
         self.report["mirror"] = {"status": "Waiting for USB position feedback."}
+
+    def request_collector_start(self):
+        if self.feedback_path is None:
+            return
+        request = Path(self.feedback_path).with_name("gripper_collector.start")
+        temporary = request.with_suffix(".tmp")
+        try:
+            temporary.write_text(str(uuid4()) + "\n")
+            temporary.replace(request)
+            self.report["collector_start_error"] = None
+        except OSError as error:
+            self.report["collector_start_error"] = f"Could not request USB feedback: {error}"
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
 
     async def mirror(self):
         import carb.eventdispatcher
@@ -363,6 +379,7 @@ class GripperPanel:
         import omni.kit.app
         import omni.ui as ui
 
+        self.request_collector_start()
         standalone = window is None
         if standalone:
             window = ui.Window(
@@ -384,7 +401,11 @@ class GripperPanel:
                         else:
                             sample = self.feedback.get()
                             if sample is None:
-                                raise RuntimeError("USB feedback is stale or unavailable.")
+                                raise RuntimeError(
+                                    self.report.get("collector_start_error")
+                                    or "USB feedback is stale or unavailable. "
+                                    "Check the collector on Olares."
+                                )
                             control = sample.get("control")
                             if control is None:
                                 raise RuntimeError("Start the USB collector with --commands.")

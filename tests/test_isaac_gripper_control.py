@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -38,6 +38,77 @@ def test_import_and_construction_send_no_commands(module):
     panel = module.GripperPanel()
     assert panel.action is None
     assert "MG400_GRIPPER_START_TASK" not in vars(module)
+    socket.create_connection.assert_not_called()
+
+
+def test_collector_request_atomically_replaces_token_without_sending_commands(
+    module, monkeypatch, tmp_path
+):
+    feedback = tmp_path / "feedback.json"
+    request = tmp_path / "gripper_collector.start"
+    temporary = tmp_path / "gripper_collector.tmp"
+    panel = module.GripperPanel(str(feedback))
+    assert not request.exists()
+    request.write_text("previous request\n")
+    previous, tokens = [request.read_text()], []
+    replace = Path.replace
+
+    def observe_replace(path, destination):
+        assert path == temporary
+        assert destination == request
+        assert request.read_text() == previous[0]
+        content = path.read_text()
+        token = UUID(content.strip())
+        assert token.version == 4
+        assert content == str(token) + "\n"
+        tokens.append(str(token))
+        result = replace(path, destination)
+        previous[0] = content
+        return result
+
+    monkeypatch.setattr(Path, "replace", observe_replace)
+    for _ in range(2):
+        assert panel.request_collector_start() is None
+        assert panel.report["collector_start_error"] is None
+        assert not temporary.exists()
+    assert tokens[0] != tokens[1]
+    assert not feedback.exists()
+    assert not list(tmp_path.glob("*.command.json"))
+    socket.create_connection.assert_not_called()
+
+
+def test_io_panel_does_not_write_collector_request(module, monkeypatch):
+    panel = module.GripperPanel()
+    write = Mock(side_effect=AssertionError("I/O mode must not write a collector request"))
+    monkeypatch.setattr(Path, "write_text", write)
+    assert panel.request_collector_start() is None
+    write.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ("write_text", "replace"))
+def test_collector_request_failure_preserves_old_request_and_removes_temporary_file(
+    module, monkeypatch, tmp_path, operation
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    request = tmp_path / "gripper_collector.start"
+    temporary = tmp_path / "gripper_collector.tmp"
+    request.write_text("previous request\n")
+    original = getattr(Path, operation)
+
+    def fail_request(path, *args, **kwargs):
+        if path == temporary:
+            raise PermissionError("Shared directory is read-only")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, fail_request)
+    assert panel.request_collector_start() is None
+    assert panel.report["collector_start_error"] == (
+        "Could not request USB feedback: Shared directory is read-only"
+    )
+    assert request.read_text() == "previous request\n"
+    assert not temporary.exists()
+    assert not panel.failed
     socket.create_connection.assert_not_called()
 
 
@@ -362,6 +433,89 @@ def gripper_owner(**changes):
     return SimpleNamespace(
         **dict(busy=False, keyboard_enabled=False, keyboard_arming=False, closed=False) | changes
     )
+
+
+def test_run_requests_collector_once_while_stale_feedback_keeps_ui_running(
+    module, monkeypatch, tmp_path
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    parent_window = SimpleNamespace(visible=True, destroy=Mock())
+    panel.mirror = AsyncMock()
+    panel.request_collector_start = Mock(wraps=panel.request_collector_start)
+    frames, clock = [0], [0.0]
+    monkeypatch.setitem(panel.run.__globals__, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def next_update():
+        frames[0] += 1
+        clock[0] += 0.6
+        if frames[0] == 2:
+            assert panel.status.text == (
+                "USB feedback is stale or unavailable. Check the collector on Olares."
+            )
+            assert all(not widget.enabled for widget in panel.buttons + panel.position_widgets)
+        if frames[0] == 3:
+            parent_window.visible = False
+
+    _, new_window = install_embedded_ui(monkeypatch, next_update)
+    panel.build_ui()
+    asyncio.run(panel.run(window=parent_window))
+    assert frames[0] == 3
+    panel.request_collector_start.assert_called_once_with()
+    assert (tmp_path / "gripper_collector.start").exists()
+    assert not list(tmp_path.glob("*.command.json"))
+    assert not panel.failed
+    new_window.assert_not_called()
+    parent_window.destroy.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+def test_fresh_feedback_restores_controls_after_collector_request_failure(
+    module, monkeypatch, tmp_path
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    parent_window = SimpleNamespace(visible=True, destroy=Mock())
+    panel.owner = gripper_owner()
+    panel.mirror = AsyncMock()
+    sample = [None]
+    panel.feedback.get = lambda: sample[0]
+    frames, clock = [0], [0.0]
+    monkeypatch.setitem(panel.run.__globals__, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    replace = Path.replace
+
+    def fail_request(path, destination):
+        if path.name == "gripper_collector.tmp":
+            raise PermissionError("Shared directory is read-only")
+        return replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_request)
+
+    async def next_update():
+        frames[0] += 1
+        clock[0] += 0.6
+        if frames[0] == 2:
+            assert panel.status.text == (
+                "Could not request USB feedback: Shared directory is read-only"
+            )
+            assert not panel.failed
+            assert not panel.manual_enabled
+            sample[0] = position_feedback()
+        if frames[0] == 3:
+            assert panel.report["read_error"] is None
+            assert panel.status.text.startswith("Ready.")
+            assert panel.manual_enabled
+            assert all(widget.enabled for widget in panel.buttons + panel.position_widgets)
+            parent_window.visible = False
+
+    _, new_window = install_embedded_ui(monkeypatch, next_update)
+    panel.build_ui()
+    asyncio.run(panel.run(window=parent_window))
+    assert frames[0] == 3
+    assert not panel.failed
+    assert not (tmp_path / "gripper_collector.tmp").exists()
+    assert not list(tmp_path.glob("*.command.json"))
+    new_window.assert_not_called()
+    parent_window.destroy.assert_not_called()
+    socket.create_connection.assert_not_called()
 
 
 def test_embedded_ui_uses_parent_window_and_preserves_edited_target(module, monkeypatch, tmp_path):

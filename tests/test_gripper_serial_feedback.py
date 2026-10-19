@@ -18,7 +18,15 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def module(monkeypatch, tmp_path):
     namespace = runpy.run_path(str(ROOT / "scripts/gripper_feedback.py"), run_name="test_feedback")
-    monkeypatch.setattr(namespace["os"], "open", Mock(side_effect=AssertionError("No hardware")))
+    os = namespace["os"]
+    original_open = os.open
+
+    def open_directory(path, flags):
+        if flags != os.O_RDONLY | os.O_DIRECTORY:
+            raise AssertionError("No hardware")
+        return original_open(path, flags)
+
+    monkeypatch.setattr(os, "open", open_directory)
     return SimpleNamespace(**namespace)
 
 
@@ -424,6 +432,145 @@ def test_mailbox_locks_after_uncertain_write_and_never_retries(module, monkeypat
     assert mailbox.control["locked"] and not mailbox.control["ack"]
     assert mailbox.control["error"] == "Write reply lost"
     send.assert_called_once_with(42, 501)
+    restarted = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
+    assert restarted.control["locked"] and not restarted.control["ack"]
+    restarted.poll(42)
+    send.assert_called_once()
+
+
+def test_mailbox_saves_lock_before_sending_and_removes_it_after_success(
+    module, monkeypatch, tmp_path
+):
+    session = str(uuid.uuid4())
+    output = tmp_path / "feedback.json"
+    mailbox = module.PositionMailbox(output, session)
+    request = dict(id=str(uuid.uuid4()), session=session, sent_at=1000.0, position=501)
+    mailbox.path.write_text(json.dumps(request))
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    synchronized = []
+    fsync = module.os.fsync
+
+    def synchronize(fd):
+        synchronized.append(fd)
+        fsync(fd)
+
+    def send(fd, position):
+        assert len(synchronized) == 2
+        assert json.loads(mailbox.lock_path.read_text()) == {
+            "command_id": request["id"], "target": 501,
+        }
+
+    monkeypatch.setattr(module.os, "fsync", synchronize)
+    send = Mock(side_effect=send)
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    mailbox.poll(42)
+    send.assert_called_once_with(42, 501)
+    assert mailbox.control["ack"] and not mailbox.control["locked"]
+    assert not mailbox.lock_path.exists()
+    restarted = module.PositionMailbox(output, str(uuid.uuid4()))
+    assert not restarted.control["locked"]
+    restarted.poll(42)
+    send.assert_called_once()
+
+
+@pytest.mark.parametrize("stage", ["before_send", "before_ack"])
+def test_mailbox_crash_keeps_lock_and_restart_cannot_send(
+    module, monkeypatch, tmp_path, stage
+):
+    output = tmp_path / "feedback.json"
+    session = str(uuid.uuid4())
+    mailbox = module.PositionMailbox(output, session)
+    mailbox.path.write_text(json.dumps(dict(
+        id=str(uuid.uuid4()), session=session, sent_at=1000.0, position=501,
+    )))
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    send = Mock(side_effect=SystemExit("Interrupted before acknowledgement"))
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    if stage == "before_send":
+        emit = module.emit
+
+        def save_then_exit(*args, **kwargs):
+            emit(*args, **kwargs)
+            raise SystemExit("Interrupted before sending")
+
+        monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "emit", save_then_exit)
+    with pytest.raises(SystemExit):
+        mailbox.poll(42)
+    assert mailbox.lock_path.exists()
+    restarted = module.PositionMailbox(output, str(uuid.uuid4()))
+    restarted.path.write_text(json.dumps(dict(
+        id=str(uuid.uuid4()), session=restarted.session, sent_at=1000.0, position=502,
+    )))
+    restarted.poll(42)
+    assert restarted.control["locked"] and not restarted.control["ack"]
+    assert send.call_count == (stage == "before_ack")
+
+
+@pytest.mark.parametrize("content", ["", "{", "null", '{"unexpected": true}'])
+def test_mailbox_existing_or_damaged_lock_always_blocks_commands(module, tmp_path, content):
+    output = tmp_path / "feedback.json"
+    output.with_name(output.name + ".command-lock.json").write_text(content)
+    mailbox = module.PositionMailbox(output, str(uuid.uuid4()))
+    assert mailbox.control["locked"]
+    assert "command lock exists" in mailbox.control["error"]
+
+
+def test_mailbox_cannot_check_lock_fails_closed(module, monkeypatch, tmp_path):
+    original_lstat = Path.lstat
+    lock = tmp_path / "feedback.json.command-lock.json"
+
+    def lstat(path):
+        if path == lock:
+            raise PermissionError("No access")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
+    assert mailbox.control["locked"]
+    assert "Cannot check the command lock" in mailbox.control["error"]
+
+
+def test_mailbox_lock_write_failure_prevents_hardware_command(module, monkeypatch, tmp_path):
+    mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
+    mailbox.path.write_text(json.dumps(dict(
+        id=str(uuid.uuid4()), session=mailbox.session, sent_at=1000.0, position=501,
+    )))
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    send = Mock()
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    monkeypatch.setitem(
+        module.PositionMailbox.poll.__globals__, "emit", Mock(side_effect=OSError("Disk full"))
+    )
+    mailbox.poll(42)
+    send.assert_not_called()
+    assert mailbox.control["locked"] and not mailbox.control["ack"]
+
+
+def test_mailbox_checks_persistent_lock_after_connect_and_still_emits_feedback(
+    module, monkeypatch, tmp_path, capsys
+):
+    output = tmp_path / "feedback.json"
+    lock = output.with_name(output.name + ".command-lock.json")
+
+    @contextlib.contextmanager
+    def connect():
+        lock.write_text("Previous collector stopped during a command.")
+        yield 42
+
+    monkeypatch.setitem(module.run.__globals__, "connect", connect)
+    monkeypatch.setitem(
+        module.run.__globals__, "read", Mock(side_effect=[(1, 1, 501), TimeoutError("Read failed")])
+    )
+    send = Mock()
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    monkeypatch.setattr(module.time, "sleep", Mock())
+    assert module.main(["--output", str(output), "--commands"]) == 1
+    sample = json.loads(output.read_text())
+    assert sample["position"] == 501
+    assert sample["control"]["locked"] and not sample["control"]["ack"]
+    assert lock.exists()
+    send.assert_not_called()
+    assert "Read failed" in capsys.readouterr().err
 
 
 def test_commands_require_shared_output_file(module):

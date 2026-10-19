@@ -186,6 +186,7 @@ class PositionMailbox:
 
     def __init__(self, output, session):
         self.path = output.with_name(output.name + ".command.json")
+        self.lock_path = output.with_name(output.name + ".command-lock.json")
         self.session = session
         self.previous = None
         self.seen = set()
@@ -193,6 +194,17 @@ class PositionMailbox:
             protocol=1, command_id=None, target=None, ack=False,
             locked=False, error=None, io_mode=None,
         )
+        try:
+            self.lock_path.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            self.control.update(locked=True, error=f"Cannot check the command lock: {error}")
+        else:
+            self.control.update(
+                locked=True,
+                error="A command lock exists. Check the gripper before removing the lock.",
+            )
 
     def poll(self, fd):
         if self.control["locked"]:
@@ -222,13 +234,15 @@ class PositionMailbox:
             return
         self.control.update(command_id=command_id, target=position, ack=False, error=None)
         try:
+            emit({"command_id": command_id, "target": position}, self.lock_path, durable=True)
             set_position(fd, position)
+            self.lock_path.unlink()
             self.control.update(ack=True, io_mode=0)
         except (OSError, ValueError, RuntimeError) as error:
             self.control.update(locked=True, error=str(error))
 
 
-def emit(sample, output=None):
+def emit(sample, output=None, *, durable=False):
     text = json.dumps(sample, separators=(",", ":"))
     if output is None:
         print(text, flush=True)
@@ -238,7 +252,16 @@ def emit(sample, output=None):
         with temporary.open("w") as stream:
             os.fchmod(stream.fileno(), 0o644)
             stream.write(text + "\n")
+            if durable:
+                stream.flush()
+                os.fsync(stream.fileno())
         temporary.replace(output)
+        if durable:
+            directory = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -246,8 +269,8 @@ def emit(sample, output=None):
 def run(output=None, commands=False):
     session = str(uuid.uuid4())
     sequence = 0
-    mailbox = PositionMailbox(output, session) if commands else None
     with connect() as fd:
+        mailbox = PositionMailbox(output, session) if commands else None
         next_read = time.monotonic()
         while True:
             if mailbox is not None:

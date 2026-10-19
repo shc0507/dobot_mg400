@@ -22,6 +22,7 @@
 | `apps/isaacsim/olares_gripper.py` | 兼容旧入口，打开同一个统一控制面板 |
 | `config/robot.toml` | Isaac 镜像、法兰面板和夹爪面板共用的机器人地址 |
 | `scripts/gripper_feedback.py` | Olares 主机读取 USB 夹爪位置，写入共享测量文件 |
+| `scripts/install_gripper_collector.py` | 在 Olares 主机安装夹爪采集的自动启动服务 |
 | `scripts/isaac_gripper_feedback.mjs` | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac |
 | `apps/isaacsim/standalone.py` | 基础资产独立检查入口，使用 5.1 兼容 API，6.x 已弃用这些接口 |
 | `scripts/build_isaac_model.py` | 从现有模型重建基础 USD，无需启动 Isaac Sim |
@@ -58,7 +59,8 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 使能、下使能和运动步骤见 [在 Isaac 中控制真机法兰](#在-isaac-中控制真机法兰)。
 如果只显示姿态，运行 `apps/isaacsim/mirror_bootstrap.py`，见 [真机姿态实时同步](#真机姿态实时同步)。
 夹爪区自动读取 Olares USB 反馈，不必另开面板。
-先启动宿主机采集，步骤见 [USB 接在 Olares](#usb-接在-olares)。
+首次使用时安装宿主机采集服务，步骤见 [USB 接在 Olares](#usb-接在-olares)。
+此后打开面板会自动请求启动采集，运行中的采集不会重启。
 `olares_gripper.py` 保留为统一面板的兼容入口。
 关闭窗口会关闭两组控制，等待当前夹爪命令返回结果后才退出。
 动作期间不能重载面板，空闲时重复运行会替换旧实例。
@@ -472,21 +474,43 @@ Mac 状态写入 `work/gripper_feedback_status.json`。
 不要用扩展坞上的其他串口替代。
 
 Isaac 容器没有映射串口设备。
-在 Control Hub 的 Olares 主机终端运行采集脚本。
+在 Control Hub 的 Olares 主机终端安装采集服务。
 先进入 `isaaclab-data` 的 `hostPath` 下的 `documents/mg400-isaac` 目录。
 该目录对应容器的 `/root/Documents/mg400-isaac`。
+以 root 身份运行一次：
 
 ```sh
-mkdir -p ../mg400-data/work
-python3 scripts/gripper_feedback.py --output ../mg400-data/work/gripper_olares_feedback.json --commands
+python3 scripts/install_gripper_collector.py
 ```
+
+安装前，停止已确认身份的独立采集进程。
+默认数据目录为仓库旁的 `mg400-data`，可用 `--data-dir` 指定。
+安装器启用 `mg400-gripper-collector.path`，监听共享文件 `work/gripper_collector.start`。
+面板每次打开时更新该文件，主机随后启动 `mg400-gripper-collector.service`。
+服务使用 `--commands`，运行中的采集不会重启。
+启动不初始化夹爪，也不发送位置命令。
+关闭面板后，采集继续运行。
 
 脚本每 50 ms 读取三个状态寄存器，并原子替换最新测量文件。
 文件权限为 `0644`，容器可以读取。
 容器中的对应路径为 `/root/Documents/mg400-data/work/gripper_olares_feedback.json`。
 串口被占用、设备缺失或读取失败时，脚本退出。
-按 `Ctrl+C` 停止前台采集，或向确认过身份的后台采集进程发送 `SIGTERM`。
-主机重启或 USB 重新连接后，手动重新启动采集。
+恢复连接后，重新打开面板以请求启动采集。
+主机重启后，监听服务自动恢复，采集仍由打开面板触发。
+查看日志或手动停止采集：
+
+```sh
+journalctl -u mg400-gripper-collector.service -n 50 --no-pager
+systemctl stop mg400-gripper-collector.service
+```
+
+如果短时间多次启动失败，系统可能同时停止监听服务。
+修复 USB 连接后，清除失败状态并恢复监听，再重新打开面板：
+
+```sh
+systemctl reset-failed mg400-gripper-collector.service mg400-gripper-collector.path
+systemctl restart mg400-gripper-collector.path
+```
 
 用仓库启动脚本启动 Isaac 后，在 Script Editor 运行统一入口：
 
@@ -516,6 +540,9 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 实测位置在目标 ±5 / 1000 内且夹爪报告到位时，才显示到位。
 检测到物体接触时，面板单独报告接触状态。
 写入失败或结果无法确认时，控制锁定，不重发命令。
+发送前，命令记录在反馈文件旁的 `.command-lock.json` 文件中。
+写应答和目标寄存器回读成功后，采集进程删除该记录。
+重启时若记录仍存在，采集进程保持锁定，只读取反馈。
 Mac WebRTC 反馈入口仍使用二态 I/O 开合，不支持位置命令。
 
 ## 四轴映射与当前范围

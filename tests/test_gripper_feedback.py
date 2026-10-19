@@ -109,7 +109,7 @@ def test_new_session_restarts_sequence_and_rejects_retired_session(clocks):
 def test_invalid_new_session_does_not_retire_current_session(clocks):
     feedback = FeedbackState()
     assert feedback.receive(sample(seq=20))
-    assert not feedback.receive(sample(session=RESTART, init=0))
+    assert not feedback.receive(sample(session=RESTART, init=3))
     assert feedback.get() is None
     assert feedback.receive(sample(seq=21))
     assert feedback.receive(sample(session=RESTART))
@@ -157,7 +157,7 @@ def test_invalid_sample_stops_updates_until_new_valid_sample(clocks, field, valu
     assert feedback.receive(sample())
     assert not feedback.receive(sample(**{"seq": 1, field: value}))
     assert feedback.get() is None
-    assert feedback.receive(sample(seq=1))
+    assert feedback.receive(sample(seq=2))
 
 
 @pytest.mark.parametrize("field", list(sample()))
@@ -189,6 +189,78 @@ def test_valid_motion_and_contact_states_are_accepted(clocks, state, position):
 def control_sample(**changes):
     return dict(protocol=1, command_id=None, target=None, ack=False,
                 locked=False, error=None, io_mode=None, **changes)
+
+
+@pytest.mark.parametrize("initialized,message", [
+    (0, "The gripper is not initialized."),
+    (2, "Gripper initialization is in progress."),
+])
+def test_initialization_diagnostic_expires_without_exposing_position(clocks, initialized, message):
+    feedback = FeedbackState()
+    assert not feedback.receive(sample(init=initialized, state=65535, position=1070))
+    assert feedback.get() is None
+    assert feedback.diagnostic() == message
+    clocks["wall"] += 100
+    assert feedback.diagnostic(now=10.75) == message
+    assert feedback.diagnostic(now=9.99) is None
+    assert feedback.diagnostic(now=10.751) is None
+    clocks["wall"] = 1000.0
+    assert feedback.receive(sample(seq=1))
+    assert feedback.diagnostic() is None
+    assert feedback.get() == sample(seq=1)
+
+
+def test_initialization_diagnostic_enforces_sequence_and_session_order(clocks):
+    feedback = FeedbackState()
+    assert feedback.receive(sample(seq=20))
+    assert not feedback.receive(sample(seq=21, init=0))
+    assert feedback.diagnostic() is not None
+    assert not feedback.receive(sample(seq=21, init=0))
+    assert feedback.diagnostic() is None
+    assert not feedback.receive(sample(seq=20))
+    assert feedback.get() is None
+    assert not feedback.receive(sample(session=RESTART, seq=0, init=2))
+    assert feedback.diagnostic() == "Gripper initialization is in progress."
+    assert not feedback.receive(sample(seq=22, init=0))
+    assert feedback.diagnostic() is None
+    assert not feedback.receive(sample(seq=22))
+    assert feedback.get() is None
+    assert feedback.receive(sample(session=RESTART, seq=1))
+
+
+@pytest.mark.parametrize("changes", [
+    {"session": "bad"}, {"seq": True}, {"sent_at": 997.999}, {"sent_at": 1002.001},
+    {"init": 3}, {"init": False}, {"state": None}, {"state": 65536},
+    {"position": None}, {"position": -1}, {"position": 65536},
+    {"control": {**control_sample(), "locked": 0}}, {"control": {}},
+])
+def test_bad_diagnostic_sample_clears_status(clocks, changes):
+    feedback = FeedbackState()
+    assert not feedback.receive(sample(init=0))
+    assert feedback.diagnostic() is not None
+    payload = sample(seq=1, init=2, state=65535, position=1070)
+    payload.update(changes)
+    assert not feedback.receive(payload)
+    assert feedback.get() is None
+    assert feedback.diagnostic() is None
+
+
+def test_unchanged_file_does_not_refresh_initialization_diagnostic(tmp_path, clocks):
+    path = tmp_path / "sample.json"
+    path.write_text(json.dumps(sample(init=0, state=65535, position=1070)))
+    feedback = FeedbackState()
+    source = FileFeedback(path, feedback)
+    source.poll()
+    assert feedback.diagnostic() == "The gripper is not initialized."
+    clocks["monotonic"] += 0.751
+    source.poll()
+    assert feedback.diagnostic() is None
+    path.write_text(json.dumps(sample(seq=1, init=2)))
+    source.poll()
+    assert feedback.diagnostic() == "Gripper initialization is in progress."
+    path.write_text("{")
+    source.poll()
+    assert feedback.diagnostic() is None
 
 
 def test_control_feedback_is_copied_and_expires_with_measurement(clocks):

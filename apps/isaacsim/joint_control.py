@@ -642,7 +642,7 @@ def _reload_control_modules():
     """Load control changes only after the previous panel has finished its workers."""
     global backend, JointControl, KeyboardJogSession
     modules = []
-    for name in ("controller_protocol", "joint_control", "keyboard_jog"):
+    for name in ("controller_protocol", "joint_control", "keyboard_jog", "gripper_feedback"):
         path = ROOT / "src" / "mg400_agent" / f"{name}.py"
         fullname = f"mg400_agent.{name}"
         spec = importlib.util.spec_from_file_location(fullname, path)
@@ -658,7 +658,7 @@ def _reload_control_modules():
         # Read source directly. Kit loaders and old package paths can retain old code.
         exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
         modules.append(module)
-    protocol_module, control_module, jog_module = modules
+    protocol_module, control_module, jog_module, _ = modules
     control_module.ControllerCommandError = protocol_module.ControllerCommandError
     control_module.parse_controller_response = protocol_module.parse_controller_response
     jog_module.JointControl = control_module.JointControl

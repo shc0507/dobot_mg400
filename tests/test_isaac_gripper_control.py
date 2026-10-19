@@ -469,6 +469,86 @@ def test_run_requests_collector_once_while_stale_feedback_keeps_ui_running(
     socket.create_connection.assert_not_called()
 
 
+@pytest.mark.parametrize("initialized,message", [
+    (0, "The gripper is not initialized."),
+    (2, "Gripper initialization is in progress."),
+])
+def test_uninitialized_feedback_disables_controls_and_expires_to_stale(
+    module, monkeypatch, tmp_path, initialized, message
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    parent_window = SimpleNamespace(visible=True, destroy=Mock())
+    panel.mirror = AsyncMock()
+    frames, clock = [0], [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    payload = position_feedback(sent_at=module.time.time())
+    payload.update(init=initialized, state=65535, position=1070)
+    assert not panel.feedback.receive(payload)
+    assert panel.measured_position() is None
+    assert panel.position_sample() is None
+    assert panel.submit_position(500) is None
+    assert panel.report["result"] == message
+
+    async def next_update():
+        frames[0] += 1
+        if frames[0] == 2:
+            assert panel.status.text == message
+            assert not panel.target_initialized
+            assert all(not widget.enabled for widget in panel.buttons + panel.position_widgets)
+            clock[0] = 0.751
+        elif frames[0] == 3:
+            assert panel.status.text.startswith("USB feedback is stale or unavailable.")
+            assert not panel.manual_enabled
+            parent_window.visible = False
+
+    install_embedded_ui(monkeypatch, next_update)
+    panel.build_ui()
+    asyncio.run(panel.run(window=parent_window))
+    assert not panel.failed
+    assert not list(tmp_path.glob("*.command.json"))
+    socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("initialized,message", [
+    (0, "The gripper is not initialized."),
+    (2, "Gripper initialization is in progress."),
+])
+def test_mirror_reports_initialization_without_applying_invalid_position(
+    module, monkeypatch, tmp_path, initialized, message
+):
+    path = tmp_path / "feedback.json"
+    panel = module.GripperPanel(str(path))
+    payload = position_feedback(sent_at=module.time.time())
+    payload.update(init=initialized, state=65535, position=1070)
+    path.write_text(json.dumps(payload))
+    frames, clock = [0], [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    async def next_update():
+        frames[0] += 1
+        if frames[0] == 2:
+            assert panel.report["mirror"]["status"] == message + " Holding last position."
+            clock[0] = 0.751
+        elif frames[0] == 3:
+            assert panel.report["mirror"]["status"] == (
+                "Feedback stale or invalid. Holding last position."
+            )
+            panel.closed = True
+
+    install_embedded_ui(monkeypatch, next_update)
+    for name in ("carb", "carb.eventdispatcher", "omni.timeline", "omni.usd",
+                 "mg400_agent.gripper_mirror"):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    jaw = Mock(side_effect=AssertionError("Invalid feedback must not update the model"))
+    sys.modules["mg400_agent.gripper_mirror"].JawMirror = jaw
+    asyncio.run(panel.mirror())
+    assert frames[0] == 3
+    assert panel.feedback.get() is None
+    assert "position" not in panel.report["mirror"]
+    jaw.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
 def test_fresh_feedback_restores_controls_after_collector_request_failure(
     module, monkeypatch, tmp_path
 ):

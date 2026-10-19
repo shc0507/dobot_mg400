@@ -1863,6 +1863,7 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
             "    control_type = JointControl\n"
             "    def _start(self): return JointControl\n"
         ),
+        "gripper_feedback": "class FeedbackState: pass\n",
     }
     package = sys.modules["mg400_agent"]
     feedback = sys.modules["mg400_agent.feedback"]
@@ -1877,7 +1878,8 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     globals_ = panel_module._reload_control_modules.__globals__
     monkeypatch.setitem(globals_, "ROOT", tmp_path)
     panel_module._reload_control_modules()
-    protocol, control, jog = (sys.modules[f"mg400_agent.{name}"] for name in sources)
+    protocol, control, jog, gripper = (sys.modules[f"mg400_agent.{name}"] for name in sources)
+    assert gripper.FeedbackState.__module__ == "mg400_agent.gripper_feedback"
     assert globals_["backend"] is control
     assert globals_["JointControl"] is control.JointControl
     assert globals_["KeyboardJogSession"] is jog.KeyboardJogSession

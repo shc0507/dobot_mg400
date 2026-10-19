@@ -96,8 +96,8 @@ class GripperPanel:
                 sample = feedback.get()
                 if sample is None:
                     self.report["mirror"]["status"] = (
-                        "Feedback stale or invalid. Holding last position."
-                    )
+                        feedback.diagnostic() or "Feedback stale or invalid."
+                    ) + " Holding last position."
                     continue
                 if not omni.timeline.get_timeline_interface().is_stopped():
                     self.report["mirror"]["status"] = (
@@ -172,7 +172,9 @@ class GripperPanel:
             return None
         sample = self.position_sample()
         if sample is None:
-            self.report["result"] = "Position control needs a fresh --commands collector."
+            self.report["result"] = (
+                self.feedback.diagnostic() or "Position control needs a fresh --commands collector."
+            )
             return None
         self.action = asyncio.ensure_future(self.perform_position(position, sample))
         return self.action
@@ -402,7 +404,8 @@ class GripperPanel:
                             sample = self.feedback.get()
                             if sample is None:
                                 raise RuntimeError(
-                                    self.report.get("collector_start_error")
+                                    self.feedback.diagnostic()
+                                    or self.report.get("collector_start_error")
                                     or "USB feedback is stale or unavailable. "
                                     "Check the collector on Olares."
                                 )

@@ -119,6 +119,7 @@ def test_control_source_reload_replaces_legacy_code_and_preserves_feedback(tmp_p
             "    def __init__(self, host, snapshot): pass\n"
         ),
         "keyboard_jog.py": "class KeyboardJogSession: pass\n",
+        "gripper_feedback.py": "class FeedbackState: pass\n",
     }
     for directory in {root, legacy}:
         package_dir = directory / "src/mg400_agent"
@@ -162,10 +163,11 @@ feedback = importlib.import_module("mg400_agent.feedback")
 old_control = importlib.import_module("mg400_agent.joint_control")
 old_class = old_control.JointControl
 old_jog = importlib.import_module("mg400_agent.keyboard_jog").KeyboardJogSession
+old_gripper = importlib.import_module("mg400_agent.gripper_feedback").FeedbackState
 importlib.import_module("mg400_agent.controller_protocol")
 assert not hasattr(old_control, "TargetRejectedError")
 assert "parent" not in inspect.signature(old_class).parameters
-names = ("controller_protocol", "joint_control", "keyboard_jog")
+names = ("controller_protocol", "joint_control", "keyboard_jog", "gripper_feedback")
 old_sources = {
     name: (legacy / "src/mg400_agent" / f"{name}.py").read_bytes() for name in names
 }
@@ -213,6 +215,7 @@ namespace["_reload_control_modules"]()
 state = namespace["_reload_control_modules"].__globals__
 assert state["JointControl"] is not old_class
 assert state["KeyboardJogSession"] is not old_jog
+assert sys.modules["mg400_agent.gripper_feedback"].FeedbackState is not old_gripper
 assert state["backend"].TargetRejectedError.__module__ == "mg400_agent.joint_control"
 protocol = sys.modules["mg400_agent.controller_protocol"]
 assert state["backend"].ControllerCommandError is protocol.ControllerCommandError

@@ -12,14 +12,15 @@ class FeedbackState:
 
     def __init__(self):
         self._latest = None
+        self._diagnostic = None
         self._received = None
         self._session = None
         self._sequence = -1
         self._retired_sessions = set()
 
     def receive(self, payload):
-        """Return whether this sample is valid. Every rejection clears freshness."""
-        self._latest = self._received = None
+        """Return whether the sample can update position."""
+        self._latest = self._diagnostic = self._received = None
         if not isinstance(payload, dict) or not isinstance(payload.get("session"), str):
             return False
         try:
@@ -42,10 +43,12 @@ class FeedbackState:
             return False
         if not math.isfinite(sent_at) or abs(time.time() - sent_at) > 2.0:
             return False
-        for key, lower, upper in (("init", 1, 1), ("state", 0, 2), ("position", 0, 1000)):
+        for key, lower, upper in (("init", 0, 2), ("state", 0, 65535), ("position", 0, 65535)):
             value = payload.get(key)
             if type(value) is not int or not lower <= value <= upper:
                 return False
+        if payload["init"] == 1 and (payload["state"] > 2 or payload["position"] > 1000):
+            return False
         control = payload.get("control")
         if control is not None:
             if not isinstance(control, dict) or type(control.get("protocol")) is not int:
@@ -76,13 +79,29 @@ class FeedbackState:
                 self._retired_sessions.add(self._session)
             self._session = session
         self._sequence = sequence
+        self._received = time.monotonic()
+        if payload["init"] != 1:
+            self._diagnostic = (
+                "The gripper is not initialized."
+                if payload["init"] == 0 else "Gripper initialization is in progress."
+            )
+            return False
         self._latest = {
             key: payload[key] for key in ("session", "seq", "sent_at", "init", "state", "position")
         }
         if control is not None:
             self._latest["control"] = control.copy()
-        self._received = time.monotonic()
         return True
+
+    def diagnostic(self, now=None):
+        """Return the initialization status only while its sample is fresh."""
+        if self._diagnostic is None:
+            return None
+        if now is None:
+            now = time.monotonic()
+        if not 0 <= now - self._received <= 0.75:
+            return None
+        return self._diagnostic
 
     def get(self, now=None):
         """Return a sample copy only while its monotonic age is at most 0.75 seconds."""

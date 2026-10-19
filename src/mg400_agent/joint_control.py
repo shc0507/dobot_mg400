@@ -21,6 +21,7 @@ class JointControl:
         self.host = host
         self.feedback_snapshot = feedback_snapshot
         self._operation_lock = threading.Lock()
+        self._dashboard_lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._stop_lock = threading.RLock()
         self._stopped = threading.Event()
@@ -95,6 +96,18 @@ class JointControl:
 
     def _command(self, text, port=29999, *, pending=None, stopping=False):
         """Send once; a reply must have a successful code and the matching echo."""
+        if port != 29999:
+            return self._exchange(text, port, pending=pending, stopping=stopping)
+        # Hold one dashboard connection through its reply and close. The motion
+        # port uses a separate connection so its pending ACK cannot block a stop.
+        if not self._dashboard_lock.acquire(timeout=2.0):
+            raise TimeoutError("Dashboard connection is busy")
+        try:
+            return self._exchange(text, port, pending=pending, stopping=stopping)
+        finally:
+            self._dashboard_lock.release()
+
+    def _exchange(self, text, port, *, pending=None, stopping=False):
         deadline = time.monotonic() + 2.0
         with socket.create_connection((self.host, port), timeout=2.0) as connection:
             with self._send_lock:

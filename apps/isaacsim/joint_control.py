@@ -352,7 +352,8 @@ class ControlPanel:
                 idle = live and sample.mode in (4, 5) and not self.busy and not self.control.stopped
                 now = time.monotonic()
                 if (
-                    self.pose_task is None or self.pose_task.done()
+                    not self.busy and not self.control.stopped
+                    and (self.pose_task is None or self.pose_task.done())
                 ) and now - self.pose_requested > 0.2:
                     self.pose_task = asyncio.ensure_future(self.refresh_pose())
                 for i, label in enumerate(actual_labels):

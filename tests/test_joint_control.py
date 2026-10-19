@@ -668,6 +668,156 @@ def test_transport_reassembles_reply_without_binding_host_source_ip(monkeypatch)
     connection.sendall.assert_called_once_with(b"GetAngle()")
 
 
+@pytest.mark.parametrize("second_command", ["GetAngle()", "ResetRobot()"])
+def test_dashboard_queries_and_stop_wait_for_previous_connection_to_close(
+    monkeypatch, second_command
+):
+    first_received, release_first = threading.Event(), threading.Event()
+    second_started, second_connected = threading.Event(), threading.Event()
+    events, results, failures = [], [], []
+
+    class Connection:
+        def __init__(self, index):
+            self.index = index
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            events.append(("close", self.index))
+
+        def settimeout(self, timeout):
+            pass
+
+        def sendall(self, data):
+            self.command = data.decode("ascii")
+
+        def recv(self, size):
+            if self.index == 0:
+                first_received.set()
+                assert release_first.wait(1)
+            return f"0,{{}},{self.command};".encode("ascii")
+
+    connections = []
+
+    def connect(address, timeout):
+        assert address == ("robot.test", 29999)
+        connection = Connection(len(connections))
+        connections.append(connection)
+        events.append(("connect", connection.index))
+        if connection.index == 1:
+            second_connected.set()
+        return connection
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    control = JointControl("robot.test", Mock())
+
+    def invoke(text):
+        try:
+            if text == second_command:
+                second_started.set()
+            results.append(control._command(text, stopping=text == "ResetRobot()"))
+        except Exception as error:
+            failures.append(error)
+
+    first = threading.Thread(target=invoke, args=("GetPose(0,0)",))
+    second = threading.Thread(target=invoke, args=(second_command,))
+    try:
+        first.start()
+        assert first_received.wait(1)
+        second.start()
+        assert second_started.wait(1)
+        assert not second_connected.wait(0.05)
+    finally:
+        release_first.set()
+        first.join(1)
+        if second.ident is not None:
+            second.join(1)
+    assert not first.is_alive() and not second.is_alive()
+    assert not failures
+    assert results == ["", ""]
+    assert events == [("connect", 0), ("close", 0), ("connect", 1), ("close", 1)]
+
+
+def test_dashboard_lock_wait_is_bounded_without_opening_another_connection(monkeypatch):
+    control = JointControl("robot.test", Mock())
+    lock = Mock()
+    lock.acquire.return_value = False
+    monkeypatch.setattr(control, "_dashboard_lock", lock)
+    with pytest.raises(TimeoutError, match="Dashboard connection is busy"):
+        control._command("GetPose(0,0)")
+    lock.acquire.assert_called_once_with(timeout=2.0)
+    lock.release.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+def test_dashboard_disconnect_releases_connection_for_stop(monkeypatch):
+    connection = socket_for(monkeypatch, [b"", b"0,{},ResetRobot();"])
+    control = JointControl("robot.test", Mock())
+    with pytest.raises(ConnectionError, match="disconnected"):
+        control._command("GetPose(0,0)")
+    assert control._command("ResetRobot()", stopping=True) == ""
+    assert connection.__exit__.call_count == 2
+    assert connection.sendall.call_args_list == [call(b"GetPose(0,0)"), call(b"ResetRobot()")]
+
+
+def test_stop_dashboard_connection_does_not_wait_for_motion_ack(monkeypatch):
+    motion_received, release_motion = threading.Event(), threading.Event()
+    failures = []
+    connections = []
+
+    class Connection:
+        def __init__(self, port):
+            self.port = port
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def sendall(self, data):
+            self.command = data.decode("ascii")
+
+        def recv(self, size):
+            if self.port == 30003:
+                motion_received.set()
+                assert release_motion.wait(3)
+            return f"0,{{}},{self.command};".encode("ascii")
+
+    def connect(address, timeout):
+        connections.append(address[1])
+        return Connection(address[1])
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    control = JointControl(
+        "robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic())
+    )
+    pending = {"sent": False, "send_modes": {5}, "expected": START}
+
+    def move():
+        try:
+            control._command(MOVE, 30003, pending=pending)
+        except Exception as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=move)
+    try:
+        worker.start()
+        assert motion_received.wait(1)
+        assert control._command("ResetRobot()", stopping=True) == ""
+        assert worker.is_alive()
+        assert connections == [30003, 29999]
+    finally:
+        release_motion.set()
+        worker.join(1)
+    assert not failures
+    assert not worker.is_alive()
+
+
 @pytest.mark.parametrize("reply", [b"0,{},Other();", b"-1,{},EnableRobot();", b"invalid;"])
 def test_transport_rejects_bad_ack_or_wrong_command_echo(monkeypatch, reply):
     connection = socket_for(monkeypatch, [reply])

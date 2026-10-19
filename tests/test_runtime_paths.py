@@ -152,7 +152,7 @@ def test_export_requires_saved_reference_edits_and_preserves_them_across_process
     assert asset_path.read_bytes() == source_bytes
 
 
-@pytest.mark.parametrize("scene", ("00_OPEN_MG400.usda", "isaacsim/grasp_scene.usda"))
+@pytest.mark.parametrize("scene", ("00_OPEN_MG400.usda", "isaacsim/workspace_scene.usda"))
 def test_project_scene_export_resolves_from_external_data_directory(tmp_path, scene):
     pytest.importorskip("pxr")
     from pxr import Usd, UsdUtils

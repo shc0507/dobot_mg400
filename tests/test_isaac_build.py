@@ -21,7 +21,7 @@ def test_rebuilt_workspace_contains_all_dependencies_and_notices():
         source = ROOT / "src/mg400_agent/assets/mg400"
         for script, arguments in (
             ("build_isaac_model.py", ["--source", str(source), "--output", str(output)]),
-            ("build_isaac_grasp.py", ["--source", str(source), "--output", str(output)]),
+            ("build_isaac_mirror.py", ["--source", str(source), "--output", str(output)]),
             ("build_isaac_workspace.py", ["--project-root", str(project)]),
         ):
             result = subprocess.run(
@@ -33,7 +33,7 @@ def test_rebuilt_workspace_contains_all_dependencies_and_notices():
             )
             assert result.returncode == 0, result.stdout + result.stderr
 
-        for filename in ("LICENSE", "NOTICE.txt", "GRASP_NOTICE.txt"):
+        for filename in ("LICENSE", "NOTICE.txt", "MIRROR_NOTICE.txt"):
             assert (output / filename).read_bytes() == (ROOT / "isaacsim" / filename).read_bytes()
 
         entry = project / "00_OPEN_MG400.usda"
@@ -43,11 +43,17 @@ def test_rebuilt_workspace_contains_all_dependencies_and_notices():
         assert stage.GetDefaultPrim().GetPath() == Sdf.Path("/World")
         for path in (
             "/World/MG400",
-            "/World/GraspObject",
-            "/World/GraspSupport",
-            "/World/GraspCamera",
+            "/World/MG400/pgea_housing",
+            "/World/MG400/pgea_left_jaw",
+            "/World/MG400/pgea_right_jaw",
+            "/World/Ground",
+            "/World/Camera",
         ):
             assert stage.GetPrimAtPath(path), path
+        for path in ("/World/GraspObject", "/World/GraspSupport", "/World/GraspMaterial"):
+            assert not stage.GetPrimAtPath(path), path
+        for filename in ("mg400_grasp.usda", "grasp_scene.usda", "GRASP_NOTICE.txt"):
+            assert not (output / filename).exists()
         layers, assets, unresolved = UsdUtils.ComputeAllDependencies(Sdf.AssetPath(str(entry)))
         assert not unresolved
         assert all(Path(layer.realPath).is_relative_to(project) for layer in layers)

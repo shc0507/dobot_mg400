@@ -66,18 +66,17 @@ def install_kit(monkeypatch, scene, opened=True):
 
 
 @pytest.mark.parametrize("opened", [True, False])
-def test_startup_records_result_and_only_opens_simulation_controls(
+def test_startup_records_result_and_only_imports_real_controls(
     startup_module, monkeypatch, tmp_path, opened
 ):
     scene = tmp_path / "actual_scene.usda"
     context, timeline = install_kit(monkeypatch, scene, opened)
     original_run_path = runpy.run_path
-    simulation_controls = []
+    control_imports = []
 
     def run_path(path, **kwargs):
-        if Path(path).name == "actions.py":
-            simulation_controls.append(path)
-            return {}
+        control_imports.append((path, kwargs))
+        assert kwargs == {"run_name": "mg400_startup_check"}
         return original_run_path(path, **kwargs)
 
     monkeypatch.setattr(runpy, "run_path", run_path)
@@ -100,12 +99,30 @@ def test_startup_records_result_and_only_opens_simulation_controls(
         assert report["status"] == "ready"
         assert report["control_imports"] == "ok"
         assert report["scene"] == str(scene)
-        assert simulation_controls == [str(ROOT / "apps/isaacsim/actions.py")]
+        assert control_imports == [
+            (str(ROOT / "apps/isaacsim" / filename), {"run_name": "mg400_startup_check"})
+            for filename in ("joint_control.py", "gripper_control.py")
+        ]
     else:
         assert report["status"] == "error"
         assert report["error"] == "Could not open MG400 scene: missing scene"
-        assert not simulation_controls
+        assert not control_imports
     assert not startup_module.REPORT.with_suffix(".tmp").exists()
+    asyncio.ensure_future.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+def test_missing_control_module_class_records_error_without_starting_panel(
+    startup_module, monkeypatch, tmp_path
+):
+    install_kit(monkeypatch, tmp_path / "actual_scene.usda")
+    monkeypatch.setattr(runpy, "run_path", Mock(return_value={}))
+    with pytest.raises(RuntimeError, match="joint_control.py does not define ControlPanel"):
+        asyncio.run(startup_module.startup())
+    report = json.loads(startup_module.REPORT.read_text())
+    assert report["status"] == "error"
+    assert report["error"] == "joint_control.py does not define ControlPanel"
+    assert "control_imports" not in report
     asyncio.ensure_future.assert_not_called()
     socket.create_connection.assert_not_called()
 

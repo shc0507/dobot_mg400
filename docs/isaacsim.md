@@ -5,83 +5,67 @@
 
 ## 文件
 
-| 文件                                                 | 用途                                                                    |
-| ---------------------------------------------------- | ----------------------------------------------------------------------- |
-| `00_OPEN_MG400.usda`                                 | 日常主入口：直接打开即可看到机械臂、物理夹爪、灯光、支撑台和测试方块    |
-| `scripts/start_isaac_olares.sh`                      | Olares 服务启动入口，复用现有 Isaac Sim 安装                            |
-| `apps/isaacsim/startup.py`                           | 打开日常场景和动作面板，记录代码与运行环境，不启动运动                  |
-| `isaacsim/workspace_scene.usda`                      | 保存初始姿态、测试物体、物理参数、动作预设和观察相机的场景层            |
-| `apps/isaacsim/actions.py`                | 当前场景的仿真动作面板；加载时不运动，不重载或搭建场景                  |
-| `scripts/build_isaac_workspace.py`                   | 开发时重建静态主场景；日常打开和控制时不需要运行                        |
-| `isaacsim/mg400_with_gripper.usd`                    | 自带网格与材质的机器人资产，默认 prim `/MG400`                          |
-| `isaacsim/scene.usda`                                | 引用机器人的场景，含地面外形、灯光、相机及 PhysicsScene                 |
-| `isaacsim/mg400_grasp.usda`                          | 在原资产上增加两侧物理滑块、夹指碰撞和夹爪质量的 USD 覆盖层             |
-| `isaacsim/grasp_scene.usda`                          | 引用物理夹爪资产，并启用地面碰撞的场景                                  |
-| `apps/isaacsim/validate_grasp.py`                  | Isaac Sim 6.1 的开合、接触夹持、提起与释放测试，可在 GUI 或独立进程运行 |
-| `apps/isaacsim/grasp_bootstrap.py`              | Kit `--exec` 自动加载入口，无需操作远程 Script Editor                   |
-| `apps/isaacsim/load_model.py`                   | 在运行中的 Isaac Sim 6.1 内加载并检查模型                               |
-| `apps/isaacsim/mirror.py`                 | 在当前场景中实时显示真机四轴反馈，支持断线重连                          |
-| `apps/isaacsim/mirror_bootstrap.py`             | Kit `--exec` 加载已保存的场景并启动真机姿态同步                         |
-| `apps/isaacsim/joint_control.py`                | Isaac 内四轴真机控制面板：读取当前角度、使能、单次到位、停止            |
-| `apps/isaacsim/gripper_control.py`                | 实体夹爪面板：MG400 I/O 开合与 USB 位置反馈                            |
-| `apps/isaacsim/olares_gripper.py`                    | Olares USB 文件反馈入口，读取数据目录中的夹爪测量文件                  |
-| `config/robot.toml`                                 | Isaac 镜像、四轴面板和夹爪面板共用的机器人地址                         |
-| `scripts/gripper_feedback.py`                       | Olares 主机读取 USB 夹爪位置，写入供 Isaac 读取的测量文件              |
-| `scripts/isaac_gripper_feedback.mjs`                | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac                  |
-| `apps/isaacsim/standalone.py`                        | 使用 Isaac Sim 5.1 兼容 API 的独立运行入口                              |
-| `scripts/build_isaac_model.py`                       | 从现有模型重建 USD，无需启动 Isaac Sim                                  |
-| `scripts/build_isaac_grasp.py`                       | 生成物理夹爪覆盖层，保留基础机器人资产                                  |
-| `isaacsim/LICENSE`、`NOTICE.txt`、`GRASP_NOTICE.txt` | 原始模型来源、许可证和物理夹爪假设                                      |
+| 文件 | 用途 |
+| --- | --- |
+| `00_OPEN_MG400.usda` | 日常主入口：机械臂、可镜像夹指、地面、灯光和观察相机 |
+| `scripts/start_isaac_olares.sh` | Olares 服务启动入口，复用现有 Isaac Sim 安装 |
+| `apps/isaacsim/startup.py` | 打开默认场景，检查真机控制导入，记录代码与运行环境 |
+| `isaacsim/workspace_scene.usda` | 真机镜像工作场景，引用机器人并停用物理场景 |
+| `isaacsim/mg400_with_gripper.usd` | 自带网格与材质的基础机器人资产，默认 prim 为 `/MG400` |
+| `isaacsim/scene.usda` | 基础资产检查场景，含地面、灯光、相机和 PhysicsScene |
+| `isaacsim/mg400_mirror.usda` | 增加可镜像夹指的 USD 覆盖层，保留关节坐标和行程 |
+| `apps/isaacsim/load_model.py` | 开发时检查基础模型导入 |
+| `apps/isaacsim/mirror.py` | 在当前 MG400 场景中显示真机四轴反馈，支持断线重连 |
+| `apps/isaacsim/mirror_bootstrap.py` | 必要时打开默认场景，再启动只读姿态镜像 |
+| `apps/isaacsim/joint_control.py` | 四轴真机面板：读取当前角度、使能、单次到位、停止 |
+| `apps/isaacsim/gripper_control.py` | 实体夹爪面板：MG400 I/O 开合与 USB 位置反馈 |
+| `apps/isaacsim/olares_gripper.py` | Olares 夹爪面板入口，读取数据目录中的 USB 测量文件 |
+| `config/robot.toml` | Isaac 镜像、四轴面板和夹爪面板共用的机器人地址 |
+| `scripts/gripper_feedback.py` | Olares 主机读取 USB 夹爪位置，写入共享测量文件 |
+| `scripts/isaac_gripper_feedback.mjs` | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac |
+| `apps/isaacsim/standalone.py` | 基础资产独立检查入口，使用 5.1 兼容 API，6.x 已弃用这些接口 |
+| `scripts/build_isaac_model.py` | 从现有模型重建基础 USD，无需启动 Isaac Sim |
+| `scripts/build_isaac_mirror.py` | 生成夹爪镜像覆盖层 |
+| `scripts/build_isaac_workspace.py` | 重建默认镜像工作场景和主入口 |
+| `isaacsim/LICENSE`、`NOTICE.txt`、`MIRROR_NOTICE.txt` | 原始模型来源、许可证和镜像模型说明 |
 
 模型单位为米，Z 轴向上。基础模型的八个旋转关节与三个固定关节连接 11 个刚体。
 PGEA 侧出线版、两个估算指尖和各参考坐标系都随法兰移动。
-物理夹爪覆盖层增加固定壳体与两个运动夹指，共 14 个刚体、8 个旋转自由度和
-2 个直线自由度；两个直线自由度由同一个开合目标同步控制。
-场景中的机器人为 `/World/MG400`，法兰为
-`/World/MG400/mg400_end_effector_flange`。
+镜像覆盖层为夹爪壳体和两侧夹指提供独立变换，以及关节坐标和行程。
+它不添加夹爪质量、驱动或碰撞，工作场景停用 PhysicsScene。
+场景中的机器人为 `/World/MG400`，法兰为 `/World/MG400/mg400_end_effector_flange`。
+观察相机为 `/World/Camera`。
 
-## 日常使用：场景保存在 USD，Python 只控制动作
+## 日常使用：查看真机姿态与打开控制面板
 
-Olares 启动脚本通过 `apps/isaacsim/startup.py` 打开 `00_OPEN_MG400.usda` 和动作面板。
-该入口不启动物理仿真，不连接或移动真机。
+Olares 启动脚本通过 `apps/isaacsim/startup.py` 打开 `00_OPEN_MG400.usda`。
+它检查四轴面板、夹爪面板和文件反馈模块能否导入，不创建面板或网络连接。
+默认启动不开始物理仿真，也不发送真机命令。
 在已有服务中，也可用 **File → Open** 打开 `/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
-模型、灯光、地面、相机、支撑台、橙色方块和物理参数都已经保存在 USD 中。
-机械臂各刚体的初始变换和关节驱动目标也一并保存，打开时不需要 Python 帮忙摆姿态。
 
-如果动作面板尚未打开，在 **Window → Script Editor** 运行：
+时间轴保持 **Stop**。
+在 **Window → Script Editor** 运行四轴面板，脚本会启动或复用真机姿态镜像：
 
 ```python
 import runpy
 
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/actions.py")
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-脚本只显示 **MG400 Actions — current scene** 面板。点击按钮后才开始物理仿真，
-通过驱动目标完成夹爪开合、移动到抓取位、抬起或完整的抓取／抬起／松开演示。
-每次动作结束自动暂停；**Pause** 按钮可以中途暂停。
-它不重新打开 USD、不创建方块或相机、不重置机器人位置，也不连接真机。
+四轴面板启动只读，连接后显示真机实测姿态。
+使能、运动和停止步骤见 [在 Isaac 中控制真机四轴](#在-isaac-中控制真机四轴)。
+如果只显示姿态，运行 `apps/isaacsim/mirror_bootstrap.py`，见 [真机姿态实时同步](#真机姿态实时同步)。
+USB 接在 Olares 时，先启动宿主机反馈采集，再在 Script Editor 运行夹爪面板：
 
-**Pause** 保留当前状态；Isaac 时间轴的 **Stop** 会恢复场景保存的初始状态，
-之后再次点击动作按钮即可重新建立物理控制接口。
-更换场景后，旧动作会取消；新场景需要包含同样的 MG400 结构和动作预设才能继续控制。
-重复运行面板脚本会替换旧面板，不会同时运行两个动作控制器。
+```python
+import runpy
 
-动作预设保存在 `/World/MG400` 的 `mg400:readyJointsDeg`、
-`mg400:pickupJointsDeg`、`mg400:liftJointsDeg` 属性中，均为四轴角度，单位为度。
-方块与支撑台分别为 `/World/GraspObject` 和 `/World/GraspSupport`；
-在界面中编辑、保存 USD 后，下一次打开仍使用保存的场景。
-如果移动了方块，需要相应调整抓取预设，演示不会自动识别新的物体位置。
-
-`validate_grasp.py` 是完整的自动验收脚本，它会重建自己的测试场景、
-生成报告并验证接触力等条件。日常学习和控制使用 `actions.py`。
-
-如需由项目源数据重新生成默认场景，在项目目录运行：
-
-```sh
-uv run --group usd python scripts/build_isaac_workspace.py
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/olares_gripper.py")
 ```
 
-此命令会重建主入口和工作场景层；先保存另一个副本，再重建，以保留自己的场景编辑。
+夹爪面板启动只读，点击开合按钮才驱动实体夹爪。
+采集和文件反馈步骤见 [USB 接在 Olares](#usb-接在-olares)。
+将自定义场景另存到数据目录，操作要求见 [代码与运行数据](#代码与运行数据)。
 
 ## Olares / WebRTC
 
@@ -163,12 +147,16 @@ ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.
 | `ISAACSIM_STREAM_PORT` | `47998` | WebRTC 视频 UDP 端口 |
 | `MG400_DATA_DIR` | `/root/Documents/mg400-data` | 运行数据根目录 |
 
-默认启动 `apps/isaacsim/startup.py`，只打开日常场景和仿真动作面板。
+默认启动 `apps/isaacsim/startup.py`，打开日常场景并检查真机控制模块能否导入。
+该入口不创建面板、不连接机器人，也不发送真机命令。
+
 启动记录写入 `$MG400_DATA_DIR/isaacsim/runtime.json`。
 记录包含 Git 提交、未提交修改标志、Isaac/Python 版本、场景和数据目录。
 `config_sources` 记录机器人配置路径，以及安装、串流和数据目录环境变量。
-核对提交与预期版本一致，`status` 为 `ready` 才表示场景和面板加载成功。
-这不代表物理测试或真机动作已经通过。
+核对提交与预期版本一致。
+`status` 为 `ready` 表示场景打开成功，真机控制模块通过导入检查。
+这不代表真机已连接或动作已通过验证。
+
 显式传入 `--exec` 时，启动脚本只运行指定入口，不再运行默认 `startup.py`。
 该方式不会自动生成默认启动入口的 `runtime.json`，各入口仍写入自身状态文件。
 
@@ -212,7 +200,7 @@ git -C /root/Documents/mg400-isaac rev-parse HEAD
 
 Isaac 入口通过 `MG400_DATA_DIR` 指定运行数据根目录。
 未设置时，默认使用项目的 `work/`，Olares 启动脚本设为 `/root/Documents/mg400-data`。
-Isaac 状态 JSON、场景备份、验收截图和测试 USD 写入数据根目录下的 `isaacsim/`。
+Isaac 状态 JSON 和场景备份写入数据根目录下的 `isaacsim/`。
 USB 测量文件存放于数据根目录下的 `work/`。
 Olares 代码目录下的 `work` 使用相对链接 `../mg400-data/work`，供既有宿主机采集路径使用。
 下文的 `$MG400_DATA_DIR` 均表示实际使用的数据根目录。
@@ -224,99 +212,6 @@ Olares 代码目录下的 `work` 使用相对链接 `../mg400-data/work`，供�
 `src/` 修改后必须完整重启 Isaac Sim。
 重新运行面板脚本不保证更新 Python 已加载的模块。
 Script Editor、自定义启动脚本和 `--exec` 均使用本页的当前入口。
-
-### 基础模型导入检查
-
-检查基础模型导入时，在 **Window → Script Editor** 执行下列脚本：
-
-```python
-import runpy
-
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/load_model.py")
-```
-
-脚本会先备份原场景到 `$MG400_DATA_DIR/isaacsim/previous_scene_<时间>.usda`，再打开新场景。
-随后设置观察相机、初始化 PhysX，将控制器四轴设为 `[20, 15, 35, 25]` 度，
-检查八个具名关节的回读与固定底座，最后暂停并保留画面。
-结果写入 `$MG400_DATA_DIR/isaacsim/isaac_sim_validation.json`。
-只有 `success: true` 才代表运行时校验成功；异常也会写入这个文件。
-
-该校验检查直接赋值关节后的数值一致性，不测量动力学跟踪精度或真机精度。
-场景时间范围为 0–600 帧，帧率为 60 fps。
-
-如果只查看外形，可用 **File → Open** 打开
-`/root/Documents/mg400-isaac/isaacsim/scene.usda`，选择 `/World/Camera` 相机。
-要加入自己的场景，可将 `mg400_with_gripper.usd` 作为 USD reference 引入。
-
-## 完整自动验收：夹爪开合与物理抓取
-
-在现有 WebRTC 客户端的 **Window → Script Editor** 中运行：
-
-```python
-import runpy
-
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/validate_grasp.py")
-```
-
-脚本先备份当前场景到 `$MG400_DATA_DIR/isaacsim/before_grasp_<时间>.usda`，然后打开
-`grasp_scene.usda`，创建支撑台和一个 **5 g、8 × 8 × 20 mm** 的自由刚体。
-测试依次执行空爪闭合、重新打开、下降接近、夹住物体、向上提起 80 mm、
-保持 2 秒、松开并等待物体落回支撑台。测试结束暂停场景，结果写入
-`$MG400_DATA_DIR/isaacsim/grasp_validation.json`。
-成功后另外保存 `$MG400_DATA_DIR/isaacsim/grasp_test_scene.usda`。
-有可用视口时，还会保存同目录下的 `grasp_held.png` 与 `grasp_released.png`。
-GUI 测试通过后会显示 **MG400 Gripper** 面板；点击 **Open** 或 **Close** 可再次开合，
-面板显示实测夹指净距，每次动作结束会自动暂停。重新加载场景后需重新运行脚本建立控制面板。
-
-只有报告中的 `success: true` 表示整套运行时检查通过。检查包括空爪行程、两侧接触力、
-物体实际升高量、保持期间的滑落量、释放后自由下落与固定底座稳定性。
-物理步频设为 120 Hz，脚本检查实际步长。
-释放检查包含最后 0.5 秒的速度与位置。
-物体全程启用重力，由接触与摩擦承载；创建后不再改写物体位置，也不添加物体附着关节。
-机器人仅在初始时赋值一次姿态，此后的机械臂和夹爪运动通过关节驱动目标完成。
-
-独立测试必须由服务器上的 Isaac Sim Python 启动，它会创建一个无窗口实例：
-
-```sh
-MG400_DATA_DIR=/root/Documents/mg400-data /isaac-sim/python.sh /root/Documents/mg400-isaac/apps/isaacsim/validate_grasp.py
-```
-
-要在当前 WebRTC 画面里观察测试，使用上面的 Script Editor 入口。
-也可在旧串流进程正常退出后，在 Olares 终端启动自动加载入口：
-
-```sh
-ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/grasp_bootstrap.py
-```
-
-此入口由 Kit 自身执行，用 `runpy` 加载测试，避免额外创建 `SimulationApp`。
-
-手动点击 Stop 或更换场景会使控制面板的物理句柄失效，需重新运行测试脚本。
-面板自己的动作只使用 Play / Pause。
-面板开合各推进约 2 秒的物理仿真。
-
-两个滑动关节为 `/World/MG400/joints/pgea_left_slide` 和
-`/World/MG400/joints/pgea_right_slide`，USD 与运行时的直线坐标单位均为米：
-
-| 坐标或参数                 | 定义                                                         |
-| -------------------------- | ------------------------------------------------------------ |
-| `q_left = q_right = 0`     | 保留当前 CAD 开口，估算夹指净距 11.9 mm                      |
-| `q_left = q_right = 0.005` | 两侧各向内移动 5 mm，空爪净距 1.9 mm                         |
-| 实际夹指净距               | `0.0119 - q_left - q_right` 米                               |
-| 夹爪质量                   | 共 0.15 kg，暂分配壳体 0.13 kg、左右夹指各 0.01 kg           |
-| 夹指驱动                   | 每侧最大力 2 N，力模式位置驱动，刚度 1000 N/m、阻尼 10 N·s/m |
-| 接触模型                   | 两个 10 × 9 × 15 mm 长方体夹指，静/动摩擦系数 1，恢复系数 0  |
-| 接触距离                   | `contactOffset = 0.2 mm`、`restOffset = 0`                   |
-
-总行程 10 mm、夹爪总质量 0.15 kg，以及 PGEA-2-10 每侧 0.8–2 N 的夹持力范围来自
-[DH-Robotics 官方规格](https://en.dh-robotics.com/product/pgea)。现有 CAD 同时适用于
-PGEA-2-10/15-10；这里选择较小的 2 N 力上限，未据此确认实物型号。
-夹指是按照片估算的外形，因此其 1.9–11.9 mm 净距不等同于厂商标准滑块开口。
-质量分配、长方体惯量、摩擦、接触距离和驱动增益均为仿真假设，未经过实测标定。
-
-壳体与滑块启用重力，仅夹指、支撑台、地面和测试物体参与碰撞；机械臂及夹爪内部
-CAD 网格未添加碰撞。机械臂仍按四轴映射给八个旋转关节发送驱动目标，
-没有真实的闭环连杆约束，机械臂自身重力也仍关闭。因此该测试可验证夹爪的
-PhysX 接触、摩擦承载和释放行为，不能验证整机碰撞、真实电机负载或闭环机构动力学。
 
 ## 真机地址配置
 
@@ -335,16 +230,18 @@ host = "192.168.1.6"
 
 ## 真机姿态实时同步
 
-在当前已加载 MG400 的 Isaac Sim **Script Editor** 中运行：
+只显示真机姿态时，在 Isaac Sim **Script Editor** 中运行：
 
 ```python
 import runpy
 
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/mirror.py")
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py")
 ```
 
-脚本只接收所配置机器人 TCP 30004 的关节反馈，不发送真机命令。它先备份当前场景，
-保留物体位置与夹爪开口，再停止物理仿真，在每次画面更新时应用最新的四轴姿态。
+入口在当前场景启动 `mirror.py`，没有 MG400 时先加载默认场景。
+镜像只接收所配置机器人 TCP 30004 的关节反馈，不发送真机命令。
+它先备份当前场景，保留物体位置与夹爪开口，再停止物理仿真。
+随后在每次画面更新时应用最新的四轴姿态。
 八个旋转关节使用下面的同一套映射；连杆变换只写入 USD session layer，源资产保持不变。
 夹爪随法兰移动，但开口保持启动时的值，因为此反馈流没有提供夹爪位置。
 
@@ -364,14 +261,14 @@ ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.
 当前场景已有 `/World/MG400` 时，入口保留该场景。
 否则打开项目的 `00_OPEN_MG400.usda`。
 显式传入 `SCENE_PATH` 时，先备份当前场景，再加载指定文件。
-例如，在 Script Editor 中指定保存在数据目录的测试场景：
+例如，先将自定义场景保存到下面的路径，再在 Script Editor 中指定该文件：
 
 ```python
 import runpy
 
 runpy.run_path(
     "/root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py",
-    init_globals={"SCENE_PATH": "/root/Documents/mg400-data/isaacsim/grasp_test_scene.usda"},
+    init_globals={"SCENE_PATH": "/root/Documents/mg400-data/isaacsim/my_scene.usda"},
 )
 ```
 
@@ -565,7 +462,8 @@ USD 旋转关节限位和 drive target 单位为度，Isaac articulation API 的
 
 基础导入脚本 `load_model.py` 使用运动学姿态赋值，保留 CAD 惯量并用位置驱动保持姿态，
 禁用机器人重力和碰撞；没有把 MuJoCo 的 tendon/equality 约束转换成 PhysX 闭环约束。
-基础资产的夹爪仍为固定外形；需要开合及接触时使用上述物理夹爪覆盖层与抓取脚本。
+基础资产的夹爪为固定外形，日常工作场景使用 `mg400_mirror.usda` 显示实测开口。
+镜像只显示实测姿态和夹指位置，不验证碰撞、夹持力或真实连杆动力学。
 `mg400_tcp` 仍是零工具偏移的法兰坐标系；估算指尖参考为法兰下方 104 mm，
 不能将法兰坐标直接当作已标定的实际夹爪 TCP。
 
@@ -575,14 +473,16 @@ USD 旋转关节限位和 drive target 单位为度，Isaac articulation API 的
 
 ```sh
 uv run --group usd python scripts/build_isaac_model.py
-uv run --group usd python scripts/build_isaac_grasp.py
+uv run --group usd python scripts/build_isaac_mirror.py
 uv run --group usd python scripts/build_isaac_workspace.py
 ```
 
 这些命令安装 `usd` 依赖组，不要求安装或启动 Isaac Sim 运行环境。
-构建顺序为基础模型、物理夹爪覆盖层、工作场景。
+构建顺序为基础模型、夹爪镜像覆盖层、工作场景。
+构建前，将自定义场景另存到数据目录。
+重建会覆盖默认模型、场景和主入口。
 
-运行全部离线检查，包含工作场景、动作面板和夹爪镜像：
+运行全部离线检查，包含工作场景、真机控制逻辑和夹爪镜像：
 
 ```sh
 uv sync --all-extras --group usd
@@ -590,21 +490,14 @@ uv run --all-extras --group usd pytest -ra
 ```
 
 本地测试比较源网格/颜色、惯量张量、关节拓扑、零位坐标、多姿态 CAD 运动学和夹爪偏移。
-物理夹爪测试还检查两侧滑动方向、开闭净距、原视觉网格去重、质量分配、驱动与接触参数。
+镜像测试检查夹指方向、开闭净距、原视觉网格去重和反馈失效处理。
 `usd` 依赖组提供 `pxr` 和 NumPy。未安装时，USD 模型测试会跳过。
 `-ra` 显示跳过原因。
-这些检查不能替代服务器端的渲染与 PhysX 验证。
+这些检查不能替代服务器端的显示核对或真机验证。
 
-独立运行入口供装有 Isaac Sim 的 Linux / Windows 环境使用。以下是 5.1 的兼容 API，
-6.x 已弃用这些接口，Olares 当前版本优先用上面的 GUI 加载脚本：
-
-```sh
-/path/to/isaac-sim/python.sh apps/isaacsim/standalone.py --headless --steps 240
-/path/to/isaac-sim/python.sh apps/isaacsim/standalone.py --demo
-```
-
-Windows 使用 `python.bat`。`--joints J1 J2 J3 J4` 接受度数；`--demo` 在零位和目标间往返。
-独立入口必须由 Isaac Sim 自带 Python 启动，本项目的 Mac 虚拟环境只能生成/检查 USD。
-
-参考：[SimulationManager](https://docs.isaacsim.omniverse.nvidia.com/latest/py/source/extensions/isaacsim.core.simulation_manager/docs/index.html)、
-[Physics tensor API](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/109.0/extensions/runtime/source/omni.physics.tensors/docs/api/python.html)。
+开发时可在 Isaac Script Editor 执行 `apps/isaacsim/load_model.py`，检查基础资产导入。
+该脚本先备份当前场景，再打开 `isaacsim/scene.usda` 并启动 PhysX 校验。
+结果写入 `$MG400_DATA_DIR/isaacsim/isaac_sim_validation.json`。
+只有 `success: true` 表示本项检查通过。
+它检查关节赋值和回读的一致性，不测量动力学跟踪精度或真机精度。
+独立检查入口 `apps/isaacsim/standalone.py` 必须由 Isaac Sim 自带 Python 启动。

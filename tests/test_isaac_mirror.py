@@ -20,12 +20,10 @@ UsdPoseMirror = MODULE["UsdPoseMirror"]
 LiveMirror = MODULE["LiveMirror"]
 
 
-@pytest.mark.parametrize("scene", ("scene.usda", "grasp_scene.usda"))
+@pytest.mark.parametrize("scene", ("isaacsim/scene.usda", "00_OPEN_MG400.usda"))
 @pytest.mark.parametrize("joints", ((0, 0, 0, 0), (20, 15, 35, 25), (-90, 45, 60, -30)))
 def test_authored_live_pose_matches_independent_cad_fk_without_editing_source(scene, joints):
-    stage = Usd.Stage.Open(
-        Sdf.Layer.FindOrOpen(str(ROOT / "isaacsim" / scene)), Sdf.Layer.CreateAnonymous()
-    )
+    stage = Usd.Stage.Open(Sdf.Layer.FindOrOpen(str(ROOT / scene)), Sdf.Layer.CreateAnonymous())
     before = {
         layer.identifier: layer.ExportToString()
         for layer in stage.GetUsedLayers()
@@ -72,7 +70,7 @@ def test_authored_live_pose_matches_independent_cad_fk_without_editing_source(sc
 
 def test_live_arm_changes_hold_measured_jaw_opening():
     stage = Usd.Stage.Open(
-        Sdf.Layer.FindOrOpen(str(ROOT / "isaacsim/grasp_scene.usda")), Sdf.Layer.CreateAnonymous()
+        Sdf.Layer.FindOrOpen(str(ROOT / "00_OPEN_MG400.usda")), Sdf.Layer.CreateAnonymous()
     )
     mirror = UsdPoseMirror(stage, {"pgea_left_slide": 0.001, "pgea_right_slide": 0.003})
     for joints in ((0, 0, 0, 0), (60, 30, 40, 20), (-30, 10, 60, -50)):

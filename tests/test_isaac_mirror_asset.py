@@ -1,4 +1,4 @@
-"""Verify the additive physical-gripper asset without an Isaac installation."""
+"""Check the movable gripper display without an Isaac installation."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 pytest.importorskip("pxr")
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ROBOT = "/MG400"
@@ -15,7 +15,7 @@ MOUNT = ROBOT + "/mg400_end_effector_flange/pgea_gripper"
 
 @pytest.fixture
 def stage():
-    return Usd.Stage.Open(str(ROOT / "isaacsim/mg400_grasp.usda"))
+    return Usd.Stage.Open(str(ROOT / "isaacsim/mg400_mirror.usda"))
 
 
 def frame(joint, index):
@@ -26,27 +26,19 @@ def frame(joint, index):
     return np.array(transform).T
 
 
-def test_gripper_is_additive_with_two_jaw_dofs_and_fixed_housing(stage):
+def test_gripper_has_two_jaw_coordinates_and_fixed_housing(stage):
     assert stage.GetDefaultPrim().GetPath() == Sdf.Path(ROBOT)
     assert stage.GetRootLayer().GetExternalReferences() == ("./mg400_with_gripper.usd",)
     root = stage.GetDefaultPrim()
-    assert root.GetAttribute("physxArticulation:enabledSelfCollisions").Get() is False
-    assert root.GetAttribute("physxArticulation:solverPositionIterationCount").Get() == 32
-    assert root.GetAttribute("physxArticulation:solverVelocityIterationCount").Get() == 8
-    assert sum(p.HasAPI(UsdPhysics.RigidBodyAPI) for p in stage.Traverse()) == 14
+    assert sum(p.HasAPI(UsdPhysics.RigidBodyAPI) for p in stage.Traverse()) == 11
     assert sum(p.IsA(UsdPhysics.RevoluteJoint) for p in stage.Traverse()) == 8
     assert sum(p.IsA(UsdPhysics.PrismaticJoint) for p in stage.Traverse()) == 2
     assert sum(p.IsA(UsdPhysics.FixedJoint) for p in stage.Traverse()) == 4
-    total_added_mass = 0
-    for name, expected_mass in (("housing", 0.13), ("left_jaw", 0.01), ("right_jaw", 0.01)):
+    for name in ("housing", "left_jaw", "right_jaw"):
         prim = stage.GetPrimAtPath(f"{ROBOT}/pgea_{name}")
         assert prim.GetParent() == root
-        assert prim.GetAttribute("physxRigidBody:disableGravity").Get() is False
-        mass = UsdPhysics.MassAPI(prim)
-        assert mass.GetMassAttr().Get() == pytest.approx(expected_mass)
-        assert min(mass.GetDiagonalInertiaAttr().Get()) > 0
-        total_added_mass += mass.GetMassAttr().Get()
-    assert total_added_mass == pytest.approx(0.15)
+        assert not prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        assert not prim.HasAPI(UsdPhysics.MassAPI)
     mount = UsdPhysics.FixedJoint(stage.GetPrimAtPath(f"{ROBOT}/joints/pgea_housing_mount"))
     assert mount.GetBody0Rel().GetTargets() == [Sdf.Path(f"{ROBOT}/mg400_end_effector_flange")]
     assert mount.GetBody1Rel().GetTargets() == [Sdf.Path(f"{ROBOT}/pgea_housing")]
@@ -57,12 +49,7 @@ def test_gripper_is_additive_with_two_jaw_dofs_and_fixed_housing(stage):
         assert joint.GetAxisAttr().Get() == "Y"
         assert joint.GetLowerLimitAttr().Get() == 0
         assert joint.GetUpperLimitAttr().Get() == pytest.approx(0.005)
-        drive = UsdPhysics.DriveAPI(joint.GetPrim(), "linear")
-        assert drive.GetTypeAttr().Get() == "force"
-        assert drive.GetMaxForceAttr().Get() == 2
-        assert drive.GetStiffnessAttr().Get() == 1000
-        assert drive.GetDampingAttr().Get() == 10
-        assert drive.GetTargetPositionAttr().Get() == 0
+        assert not joint.GetPrim().HasAPI(UsdPhysics.DriveAPI, "linear")
 
 
 @pytest.mark.parametrize("closure", (0, 0.0025, 0.005))
@@ -92,34 +79,13 @@ def test_opposed_slide_frames_preserve_mount_and_make_expected_gap(stage, closur
     assert tip.ExtractTranslation() == pytest.approx((mount @ [0, 0, -0.104, 1])[:3])
 
 
-def test_only_fingertips_collide_and_source_visuals_have_no_duplicates(stage):
+def test_display_has_no_colliders_or_duplicate_source_visuals(stage):
     collision_paths = {
         str(p.GetPath()) for p in stage.Traverse() if p.HasAPI(UsdPhysics.CollisionAPI)
     }
-    assert collision_paths == {
-        f"{ROBOT}/pgea_{side}_jaw/pgea_fingertip_{side}" for side in ("left", "right")
-    }
+    assert not collision_paths
     for side in ("left", "right"):
         for name in (f"visual_pgea_jaw_{side}", f"pgea_fingertip_{side}"):
             assert not stage.GetPrimAtPath(MOUNT + "/" + name).IsActive()
             assert stage.GetPrimAtPath(f"{ROBOT}/pgea_{side}_jaw/{name}").IsActive()
-        finger = stage.GetPrimAtPath(f"{ROBOT}/pgea_{side}_jaw/pgea_fingertip_{side}")
-        assert finger.GetAttribute("physxCollision:contactOffset").Get() == pytest.approx(0.0002)
-        assert finger.GetAttribute("physxCollision:restOffset").Get() == 0
-        material, _ = UsdShade.MaterialBindingAPI(finger).ComputeBoundMaterial(
-            materialPurpose="physics"
-        )
-        physics = UsdPhysics.MaterialAPI(material.GetPrim())
-        assert physics.GetStaticFrictionAttr().Get() == 1
-        assert physics.GetDynamicFrictionAttr().Get() == 1
-        assert physics.GetRestitutionAttr().Get() == 0
     assert sum(p.IsA(UsdGeom.Mesh) for p in stage.Traverse()) == 19
-
-
-def test_grasp_scene_replaces_reference_and_adds_ground_collision():
-    stage = Usd.Stage.Open(str(ROOT / "isaacsim/grasp_scene.usda"))
-    assert stage.GetPrimAtPath("/World/Ground").HasAPI(UsdPhysics.CollisionAPI)
-    assert stage.GetPrimAtPath("/World/Camera").IsA(UsdGeom.Camera)
-    assert stage.GetPrimAtPath("/World/MG400/pgea_housing")
-    assert sum(p.IsA(UsdPhysics.PrismaticJoint) for p in stage.Traverse()) == 2
-    assert stage.GetTimeCodesPerSecond() == stage.GetFramesPerSecond() == 60

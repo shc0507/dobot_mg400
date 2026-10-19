@@ -1,0 +1,30 @@
+MG400 and PGEA measured-position display
+
+Assets: mg400_mirror.usda and workspace_scene.usda.
+Builders: scripts/build_isaac_mirror.py and scripts/build_isaac_workspace.py.
+These assets reference mg400_with_gripper.usd and scene.usda.
+The base model, source attribution and licenses remain unchanged.
+See NOTICE.txt and LICENSE. DH-Robotics meshes retain their separate provenance.
+The HarvestX Apache-2.0 license does not license the DH-Robotics geometry.
+
+Display structure:
+  - Two original jaw-carrier meshes and estimated fingertips move under
+    separate jaw transforms. Their original instances are inactive.
+  - A housing transform follows the existing PGEA flange mounting frame.
+  - Two opposed prismatic joints define 0 to 0.005 m inward travel per jaw.
+    Zero travel preserves the source CAD pose and reference frames.
+  - The mirror code uses the fixed and prismatic joint frames to display
+    measured positions. The new housing and jaws have no rigid-body masses,
+    force drives, collision geometry or contact materials.
+  - The workspace contains the robot, ground, lights and camera.
+    Its physics scene is inactive. Keep the physics timeline stopped.
+
+Geometry limits:
+  - The manufacturer specifies 10 mm total stroke for PGEA-2-10.
+    Source: https://en.dh-robotics.com/product/pgea
+  - The existing 10 x 9 x 15 mm fingertips are estimates from a photograph.
+    They are not manufacturer CAD. Their inner gap is 0.0119 m when open
+    and 0.0019 m at full inward travel.
+  - The base model retains its arm joint and rigid-body metadata.
+    The mirror uses the controller-to-eight-joint mapping to display the arm.
+    These assets do not validate gripping performance or robot dynamics.

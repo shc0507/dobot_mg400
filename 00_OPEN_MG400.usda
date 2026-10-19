@@ -3,17 +3,15 @@
     customLayerData = {
         dictionary cameraSettings = {
             dictionary Perspective = {
-                double3 position = (0.75, -0.85, 0.6)
-                double3 target = (0.16, 0, 0.18)
+                double3 position = (0.78, -0.85, 0.66)
+                double3 target = (0.21819196486695136, -0.11532795405678253, 0.2796991762176289)
             }
-            string boundCamera = "/World/GraspCamera"
+            string boundCamera = "/World/Camera"
         }
     }
     defaultPrim = "World"
-    endTimeCode = 7200
     framesPerSecond = 60
     metersPerUnit = 1
-    startTimeCode = 0
     subLayers = [
         @./isaacsim/workspace_scene.usda@
     ]

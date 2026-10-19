@@ -1,4 +1,4 @@
-"""Open the MG400 scene and simulation controls without starting robot commands."""
+"""Open the MG400 scene and check control imports without starting robot commands."""
 
 import asyncio
 import json
@@ -102,7 +102,6 @@ async def startup():
         report["scene"] = context.get_stage().GetRootLayer().realPath
         validate_control_imports()
         report["control_imports"] = "ok"
-        runpy.run_path(str(ROOT / "apps/isaacsim/actions.py"))
         report["status"] = "ready"
     except Exception as error:
         report.update(status="error", error=str(error))

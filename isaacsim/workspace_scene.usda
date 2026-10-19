@@ -1,12 +1,10 @@
 #usda 1.0
 (
     defaultPrim = "World"
-    endTimeCode = 7200
     framesPerSecond = 60
     metersPerUnit = 1
-    startTimeCode = 0
     subLayers = [
-        @./grasp_scene.usda@
+        @./scene.usda@
     ]
     timeCodesPerSecond = 60
     upAxis = "Z"
@@ -14,213 +12,16 @@
 
 over "World"
 {
-    over "MG400"
+    over "MG400" (
+        references = @./mg400_mirror.usda@
+    )
     {
-        custom double4 mg400:liftJointsDeg = (0, 11.100607502974146, 19.146049844509935, 0)
-        custom double4 mg400:pickupJointsDeg = (0, 25, 45, 0)
-        custom double4 mg400:readyJointsDeg = (0, 14.994247007322407, 28.893303073703972, 0)
-
-        over "mg400_base_link"
-        {
-            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
-        }
-
-        over "mg400_link1"
-        {
-            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (-0.004999999888241291, 0, 0.10899999737739563, 1) )
-        }
-
-        over "mg400_link2_1"
-        {
-            matrix4d xformOp:transform = ( (0.9659518090943948, 0, -0.2587220564761843, 0), (0, 1, 0, 0), (0.2587220564761843, 0, 0.9659518090943948, 0), (0.03849999886006117, -0.03577499836683273, 0.2280000001192093, 1) )
-        }
-
-        over "mg400_link2_2"
-        {
-            matrix4d xformOp:transform = ( (0.9659518090943948, 0, -0.2587220564761843, 0), (0, 1, 0, 0), (0.2587220564761843, 0, 0.9659518090943948, 0), (-0.00047114305198192596, -0.030500000342726707, 0.25049999356269836, 1) )
-        }
-
-        over "mg400_link3_1"
-        {
-            matrix4d xformOp:transform = ( (0.8755210087144099, 0, -0.4831800526715711, 0), (0, 1, 0, 0), (0.4831800526715711, 0, 0.8755210087144099, 0), (0.08276119506688759, -1.2293457984924316e-7, 0.39731466992550857, 1) )
-        }
-
-        over "mg400_link3_2"
-        {
-            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0.043790966696913826, -0.024000000208616257, 0.4198132154250704, 1) )
-        }
-
-        over "mg400_link4_1"
-        {
-            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0.23754770418623572, -0.017000123858451843, 0.3156036054850025, 1) )
-        }
-
-        over "mg400_link4_2"
-        {
-            matrix4d xformOp:transform = ( (0.8755210087144099, 0, -0.4831800526715711, 0), (0, 1, 0, 0), (0.4831800526715711, 0, 0.8755210087144099, 0), (0.11169096869962988, -0.02350000018486753, 0.4317852153161727, 1) )
-        }
-
-        over "mg400_link5"
-        {
-            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0.30354770382860785, -1.2293457984924316e-7, 0.346603604978363, 1) )
-        }
-
-        over "mg400_link4_3"
-        {
-            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0.30354770382860785, -1.2293457984924316e-7, 0.3486036050733579, 1) )
-        }
-
-        over "mg400_end_effector_flange"
-        {
-            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0.30354770382860785, -1.2293457984924316e-7, 0.26260360611085126, 1) )
-        }
-
-        over "pgea_housing"
-        {
-            matrix4d xformOp:transform = ( (-3.422854177870249e-8, 0.9999999999999993, 0, 0), (-0.9999999999999993, -3.422854177870249e-8, 0, 0), (0, 0, 1, 0), (0.30354770382860785, -1.2293457984924316e-7, 0.26260360611085126, 1) )
-        }
-
-        over "pgea_left_jaw" (
-            prepend apiSchemas = ["PhysxContactReportAPI"]
-        )
-        {
-            custom float physxContactReport:threshold = 0
-            matrix4d xformOp:transform = ( (-3.422854177870249e-8, 0.9999999999999993, 0, 0), (-0.9999999999999993, -3.422854177870249e-8, 0, 0), (0, 0, 1, 0), (0.30354770382860785, -1.2293457984924316e-7, 0.26260360611085126, 1) )
-        }
-
-        over "pgea_right_jaw" (
-            prepend apiSchemas = ["PhysxContactReportAPI"]
-        )
-        {
-            custom float physxContactReport:threshold = 0
-            matrix4d xformOp:transform = ( (-3.422854177870249e-8, 0.9999999999999993, 0, 0), (-0.9999999999999993, -3.422854177870249e-8, 0, 0), (0, 0, 1, 0), (0.30354770382860785, -1.2293457984924316e-7, 0.26260360611085126, 1) )
-        }
-
-        over "joints"
-        {
-            over "mg400_j1"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = 0
-            }
-
-            over "mg400_j2_1"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = 14.994247
-            }
-
-            over "mg400_j2_2"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = 14.994247
-            }
-
-            over "mg400_j3_1"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = 13.899056
-            }
-
-            over "mg400_j3_2"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = -14.994247
-            }
-
-            over "mg400_j4_1"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = -28.893303
-            }
-
-            over "mg400_j4_2"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = 28.893303
-            }
-
-            over "mg400_j5"
-            {
-                float drive:angular:physics:damping = 500
-                float drive:angular:physics:stiffness = 10000
-                float drive:angular:physics:targetPosition = 0
-            }
-
-            over "pgea_left_slide"
-            {
-                float drive:linear:physics:targetPosition = 0
-            }
-
-            over "pgea_right_slide"
-            {
-                float drive:linear:physics:targetPosition = 0
-            }
-        }
     }
 
     over "physicsScene" (
-        prepend apiSchemas = ["PhysxSceneAPI"]
+        active = false
     )
     {
-        custom token physxScene:broadphaseType = "MBP"
-        custom bool physxScene:enableGPUDynamics = 0
-        custom token physxScene:solverType = "TGS"
-        custom uint physxScene:timeStepsPerSecond = 120
-    }
-
-    def Cube "GraspSupport" (
-        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI"]
-    )
-    {
-        custom float physxCollision:contactOffset = 0.0002
-        custom float physxCollision:restOffset = 0
-        color3f[] primvars:displayColor = [(0.18, 0.23, 0.28)]
-        double size = 1
-        float3 xformOp:scale = (0.12, 0.12, 0.10610361)
-        double3 xformOp:translate = (0.3035477035202936, -1.2293457984924316e-7, 0.05305180353341923)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
-    }
-
-    def Cube "GraspObject" (
-        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI", "MaterialBindingAPI"]
-    )
-    {
-        rel material:binding:physics = </World/GraspMaterial>
-        float physics:mass = 0.005
-        custom float physxCollision:contactOffset = 0.0002
-        custom float physxCollision:restOffset = 0
-        color3f[] primvars:displayColor = [(0.95, 0.24, 0.045)]
-        double size = 1
-        float3 xformOp:scale = (0.008, 0.008, 0.02)
-        double3 xformOp:translate = (0.3035477035202936, -1.2293457984924316e-7, 0.11660360706683845)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
-    }
-
-    def Material "GraspMaterial" (
-        prepend apiSchemas = ["PhysicsMaterialAPI"]
-    )
-    {
-        float physics:dynamicFriction = 1
-        float physics:restitution = 0
-        float physics:staticFriction = 1
-    }
-
-    def Camera "GraspCamera"
-    {
-        float2 clippingRange = (0.01, 100)
-        float focalLength = 24
-        float horizontalAperture = 29.386265
-        float verticalAperture = 16.527725
-        matrix4d xformOp:transform = ( (0.8214957220650596, 0.5702146776686884, -2.7755575615628914e-17, 0), (-0.21446402664558278, 0.3089735977097379, 0.9265746042242167, -0), (0.5283464392837043, -0.7611770735443198, 0.37611102457484047, 0), (0.75, -0.8500000000000001, 0.6, 1) )
-        uniform token[] xformOpOrder = ["xformOp:transform"]
     }
 }
 

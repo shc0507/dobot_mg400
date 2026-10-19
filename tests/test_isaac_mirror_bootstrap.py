@@ -75,7 +75,7 @@ def test_bootstrap_uses_default_or_explicit_scene_and_preserves_existing_robot(
         return {"SINGLETON": name, "MG400_MIRROR_START_TASK": asyncio.sleep(0)}
 
     monkeypatch.setattr(runpy, "run_path", start_mirror)
-    selected = ROOT / "isaacsim/grasp_scene.usda"
+    selected = ROOT / "isaacsim/scene.usda"
     globals_ = {"SCENE_PATH": str(selected)} if explicit_scene else {}
     with monkeypatch.context() as startup:
         startup.setattr(asyncio, "ensure_future", lambda coroutine: coroutine)

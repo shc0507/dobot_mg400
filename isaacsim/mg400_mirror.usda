@@ -6,73 +6,19 @@
 )
 
 def Xform "MG400" (
-    prepend apiSchemas = ["PhysxArticulationAPI"]
-    doc = """Add physical PGEA jaws as an overlay on the existing MG400 USD asset.
+    doc = """Add movable PGEA jaws for measured-position display in the MG400 USD asset.
 
-Run: uv run --no-project --with usd-core==26.8 --with numpy     python scripts/build_isaac_grasp.py
+Run: uv run --group usd python scripts/build_isaac_mirror.py
 
-The manufacturer specifies 10 mm total stroke, 0.15 kg mass and 2 N maximum
-force per jaw for PGEA-2-10: https://en.dh-robotics.com/product/pgea .
-The housing/jaw mass split, box inertias, friction and control gains are
-simulation estimates. Existing 10 x 9 x 15 mm fingertips are photo estimates.
-q=0 preserves the open CAD; q=.005 moves each jaw inward by 5 mm. The existing
-finger shapes therefore have an inner gap of 11.9 mm open and 1.9 mm closed.
-Arm linkage coupling still uses the existing controller-to-eight-joint mapping.
+Joint frames define each jaw's movement for the mirror code. This layer adds
+no rigid bodies, masses, drives or collision geometry. Zero travel preserves
+the open CAD pose. Each jaw moves inward by up to 5 mm.
 """
     prepend references = @./mg400_with_gripper.usd@
 )
 {
-    custom bool physxArticulation:enabledSelfCollisions = 0
-    custom int physxArticulation:solverPositionIterationCount = 32
-    custom int physxArticulation:solverVelocityIterationCount = 8
-
-    over "materials"
+    def Xform "pgea_housing"
     {
-        def Material "grip_contact" (
-            prepend apiSchemas = ["PhysicsMaterialAPI"]
-        )
-        {
-            float physics:dynamicFriction = 1
-            float physics:restitution = 0
-            float physics:staticFriction = 1
-        }
-
-        over "color_65000_68000_72000_100000"
-        {
-            token outputs:surface.connect = </MG400/materials/color_65000_68000_72000_100000/surface.outputs:surface>
-
-            over "surface"
-            {
-                uniform token info:id = "UsdPreviewSurface"
-                color3f inputs:diffuseColor = (0.65, 0.68, 0.72)
-                float inputs:opacity = 1
-                float inputs:roughness = 0.5
-            }
-        }
-
-        over "color_5500_6000_6500_100000"
-        {
-            token outputs:surface.connect = </MG400/materials/color_5500_6000_6500_100000/surface.outputs:surface>
-
-            over "surface"
-            {
-                uniform token info:id = "UsdPreviewSurface"
-                color3f inputs:diffuseColor = (0.055, 0.06, 0.065)
-                float inputs:opacity = 1
-                float inputs:roughness = 0.5
-            }
-        }
-    }
-
-    def Xform "pgea_housing" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
-    )
-    {
-        point3f physics:centerOfMass = (0, 0, -0.04225)
-        float3 physics:diagonalInertia = (0.00008710271, 0.00008086271, 0.00001326)
-        float physics:mass = 0.13
-        quatf physics:principalAxes = (1, 0, 0, 0)
-        custom bool physxRigidBody:disableGravity = 0
         matrix4d xformOp:transform = ( (2.220446049250313e-16, 1, 0, 0), (-1, 2.220446049250313e-16, 0, 0), (0, 0, 1, 0), (0.2784487429828484, -1.2437811020005185e-7, 0.353251164344716, 1) )
         uniform token[] xformOpOrder = ["xformOp:transform"]
     }
@@ -90,16 +36,8 @@ Arm linkage coupling still uses the existing controller-to-eight-joint mapping.
             quatf physics:localRot1 = (1, 0, 0, 0)
         }
 
-        def PhysicsPrismaticJoint "pgea_left_slide" (
-            prepend apiSchemas = ["PhysicsDriveAPI:linear"]
-        )
+        def PhysicsPrismaticJoint "pgea_left_slide"
         {
-            float drive:linear:physics:damping = 10
-            float drive:linear:physics:maxForce = 2
-            float drive:linear:physics:stiffness = 1000
-            float drive:linear:physics:targetPosition = 0
-            float drive:linear:physics:targetVelocity = 0
-            uniform token drive:linear:physics:type = "force"
             uniform token physics:axis = "Y"
             rel physics:body0 = </MG400/pgea_housing>
             rel physics:body1 = </MG400/pgea_left_jaw>
@@ -112,16 +50,8 @@ Arm linkage coupling still uses the existing controller-to-eight-joint mapping.
             float physics:upperLimit = 0.005
         }
 
-        def PhysicsPrismaticJoint "pgea_right_slide" (
-            prepend apiSchemas = ["PhysicsDriveAPI:linear"]
-        )
+        def PhysicsPrismaticJoint "pgea_right_slide"
         {
-            float drive:linear:physics:damping = 10
-            float drive:linear:physics:maxForce = 2
-            float drive:linear:physics:stiffness = 1000
-            float drive:linear:physics:targetPosition = 0
-            float drive:linear:physics:targetVelocity = 0
-            uniform token drive:linear:physics:type = "force"
             uniform token physics:axis = "Y"
             rel physics:body0 = </MG400/pgea_housing>
             rel physics:body1 = </MG400/pgea_right_jaw>
@@ -135,15 +65,8 @@ Arm linkage coupling still uses the existing controller-to-eight-joint mapping.
         }
     }
 
-    def Xform "pgea_left_jaw" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
-    )
+    def Xform "pgea_left_jaw"
     {
-        point3f physics:centerOfMass = (-0.00025, -0.0027, -0.08775)
-        float3 physics:diagonalInertia = (0.0000014698417, 9.810417e-7, 6.9046666e-7)
-        float physics:mass = 0.01
-        quatf physics:principalAxes = (1, 0, 0, 0)
-        custom bool physxRigidBody:disableGravity = 0
         matrix4d xformOp:transform = ( (2.220446049250313e-16, 1, 0, 0), (-1, 2.220446049250313e-16, 0, 0), (0, 0, 1, 0), (0.2784487429828484, -1.2437811020005185e-7, 0.353251164344716, 1) )
         uniform token[] xformOpOrder = ["xformOp:transform"]
 
@@ -166,13 +89,10 @@ Arm linkage coupling still uses the existing controller-to-eight-joint mapping.
         }
 
         def Cube "pgea_fingertip_left" (
-            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxCollisionAPI"]
+            prepend apiSchemas = ["MaterialBindingAPI"]
         )
         {
             rel material:binding = </MG400/materials/color_5500_6000_6500_100000>
-            rel material:binding:physics = </MG400/materials/grip_contact>
-            custom float physxCollision:contactOffset = 0.0002
-            custom float physxCollision:restOffset = 0
             color3f[] primvars:displayColor = [(0.055, 0.06, 0.065)]
             double size = 2
             matrix4d xformOp:transform = ( (0.005, 0, 0, 0), (0, 0.0045, 0, 0), (0, 0, 0.0075, 0), (0, -0.01045, -0.0965, 1) )
@@ -210,15 +130,37 @@ Arm linkage coupling still uses the existing controller-to-eight-joint mapping.
         }
     }
 
-    def Xform "pgea_right_jaw" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
-    )
+    over "materials"
     {
-        point3f physics:centerOfMass = (0.00025, 0.0027, -0.08775)
-        float3 physics:diagonalInertia = (0.0000014698417, 9.810417e-7, 6.9046666e-7)
-        float physics:mass = 0.01
-        quatf physics:principalAxes = (1, 0, 0, 0)
-        custom bool physxRigidBody:disableGravity = 0
+        over "color_65000_68000_72000_100000"
+        {
+            token outputs:surface.connect = </MG400/materials/color_65000_68000_72000_100000/surface.outputs:surface>
+
+            over "surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.65, 0.68, 0.72)
+                float inputs:opacity = 1
+                float inputs:roughness = 0.5
+            }
+        }
+
+        over "color_5500_6000_6500_100000"
+        {
+            token outputs:surface.connect = </MG400/materials/color_5500_6000_6500_100000/surface.outputs:surface>
+
+            over "surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.055, 0.06, 0.065)
+                float inputs:opacity = 1
+                float inputs:roughness = 0.5
+            }
+        }
+    }
+
+    def Xform "pgea_right_jaw"
+    {
         matrix4d xformOp:transform = ( (2.220446049250313e-16, 1, 0, 0), (-1, 2.220446049250313e-16, 0, 0), (0, 0, 1, 0), (0.2784487429828484, -1.2437811020005185e-7, 0.353251164344716, 1) )
         uniform token[] xformOpOrder = ["xformOp:transform"]
 
@@ -241,13 +183,10 @@ Arm linkage coupling still uses the existing controller-to-eight-joint mapping.
         }
 
         def Cube "pgea_fingertip_right" (
-            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxCollisionAPI"]
+            prepend apiSchemas = ["MaterialBindingAPI"]
         )
         {
             rel material:binding = </MG400/materials/color_5500_6000_6500_100000>
-            rel material:binding:physics = </MG400/materials/grip_contact>
-            custom float physxCollision:contactOffset = 0.0002
-            custom float physxCollision:restOffset = 0
             color3f[] primvars:displayColor = [(0.055, 0.06, 0.065)]
             double size = 2
             matrix4d xformOp:transform = ( (0.005, 0, 0, 0), (0, 0.0045, 0, 0), (0, 0, 0.0075, 0), (0, 0.01045, -0.0965, 1) )

@@ -18,7 +18,7 @@ JAW_PATHS = {f"{ROBOT}/pgea_{side}_jaw" for side in ("left", "right")}
 @pytest.fixture
 def stage():
     return Usd.Stage.Open(
-        Sdf.Layer.FindOrOpen(str(ROOT / "isaacsim/grasp_scene.usda")),
+        Sdf.Layer.FindOrOpen(str(ROOT / "00_OPEN_MG400.usda")),
         Sdf.Layer.CreateAnonymous(),
     )
 

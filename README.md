@@ -21,28 +21,24 @@ Olares 的代码工作副本位于 `/root/Documents/mg400-isaac`。
 ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
 ```
 
-启动入口打开 `00_OPEN_MG400.usda` 和仿真动作面板，不启动仿真或真机运动。
-场景已保存机器人、物理夹爪、灯光、支撑台、测试方块和动作预设。
-在已有服务中，也可手动打开该场景，再在 **Window → Script Editor** 运行面板：
+启动入口打开 `00_OPEN_MG400.usda`，检查真机控制模块能否导入。
+它不打开控制面板、不连接机器人，也不发送真机命令。
+场景保存机器人、可跟随实测位置的夹指、灯光和观察相机。
+在 **Window → Script Editor** 运行四轴面板，它也会启动姿态镜像：
 
 ```python
 import runpy
 
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/actions.py")
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-面板加载时不运动，点击动作按钮后才开始物理仿真。
-它不重载场景、不重置机器人，也不连接真机。
-每次动作结束自动暂停，**Pause** 保留当前状态。
-Isaac 时间轴的 **Stop** 会恢复场景保存的初始状态。
-
-真机功能使用独立入口：
+按用途选择入口，时间轴保持 **Stop**：
 
 | 入口 | 用途 |
 | --- | --- |
-| `apps/isaacsim/mirror.py` | 只接收真机四轴反馈，更新场景姿态 |
-| `apps/isaacsim/joint_control.py` | 四轴面板，通过 Olares 直连 MG400 |
-| `apps/isaacsim/gripper_control.py` | 实体夹爪面板，通过 MG400 I/O 开合 |
+| `apps/isaacsim/mirror_bootstrap.py` | 只读姿态镜像，必要时打开默认场景，不发送真机命令 |
+| `apps/isaacsim/joint_control.py` | 四轴面板，自动启动或复用姿态镜像，通过 Olares 直连 MG400 |
+| `apps/isaacsim/olares_gripper.py` | 实体夹爪面板，通过 MG400 I/O 开合，读取 Olares USB 反馈 |
 
 四轴面板启动只读，必须手动使能和执行，每次每轴最多变化 5°。
 夹爪面板启动只读，点击开合按钮会驱动实体夹爪，但不会使能或移动机械臂。
@@ -52,9 +48,8 @@ Isaac 时间轴的 **Stop** 会恢复场景保存的初始状态。
 部署步骤、运行数据路径和停止条件见 [Isaac Sim 使用说明](docs/isaacsim.md)。
 自然语言真机入口仅提供 J4 +2° 后回位，见 [受限真机试验说明](docs/hardware.md#自然语言-j4-受限试验)。
 
-Isaac 夹持由 PhysX 接触与摩擦承载，夹指尺寸、摩擦及质量分配仍是估算。
-机械臂使用同步关节驱动近似连杆关系，尚不包含整机碰撞或真实闭环连杆动力学。
-模型层次、基础导入和自动验收入口见 [Isaac Sim 文件说明](docs/isaacsim.md#文件)。
+Isaac 模型显示实测姿态和夹指位置，不验证碰撞、夹持力或真实连杆动力学。
+模型层次与构建入口见 [Isaac Sim 文件说明](docs/isaacsim.md#文件)。
 
 ## 内存模拟快速开始
 
@@ -151,8 +146,8 @@ uv run --env-file .env --extra llm mg400-agent ask "把红色积木 red_block �
 config/demo.toml              模拟场景、命名目标、单位、工作空间范围
 config/robot.toml             Isaac 真机入口共用的机器人地址
 00_OPEN_MG400.usda            Isaac 日常场景入口
-isaacsim/                    USD 模型、物理夹爪覆盖层与工作场景
-apps/isaacsim/               Isaac 仿真、真机面板与验收入口
+isaacsim/                    USD 模型、夹爪镜像覆盖层与工作场景
+apps/isaacsim/               Isaac 真机镜像、控制面板与基础模型检查入口
 examples/                    标准库单文件教学、受限 J4 试验与 notebook
 scripts/                     模型构建、串流客户端操作与夹爪反馈采集
 scripts/start_isaac_olares.sh Olares 启动入口，复用现有 Isaac Sim 安装

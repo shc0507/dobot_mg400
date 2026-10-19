@@ -223,21 +223,34 @@ def test_release_during_ik_prevents_send(rig):
     assert rig.session.ready
 
 
-def test_release_during_unacknowledged_send_locks_parent_and_session(rig):
+def test_release_before_pending_registration_blocks_delayed_registration(rig, monkeypatch):
+    rig.session.prepare()
+    original = JointControl._guarded_command
+
+    def guarded(active, *args, **kwargs):
+        rig.session.release()
+        return original(active, *args, **kwargs)
+
+    monkeypatch.setattr(JointControl, "_guarded_command", guarded)
+    rig.session.run("W", threading.Event())
+    assert not rig.moves
+    assert rig.session.control._pending is None
+    assert rig.commands.count("ResetRobot()") == 1
+    assert rig.session.ready
+
+
+def test_release_between_send_guard_and_send_waits_for_successful_ack(rig):
     rig.session.prepare()
     rig.hook = lambda text: rig.session.release() if text.startswith("MovL(") else None
-    with pytest.raises(RuntimeError, match="stop unconfirmed"):
-        rig.session.run("W", threading.Event())
+    rig.session.run("W", threading.Event())
     assert len(rig.moves) == 1
     assert rig.commands.count("ResetRobot()") == 1
-    assert not rig.session.ready
-    assert rig.session.control.stopped
-    with pytest.raises(RuntimeError):
-        rig.session.run("W", threading.Event())
-    assert len(rig.moves) == 1
+    assert rig.session.ready
+    assert not rig.session.control.stopped
+    assert not rig.session.control._stop_uncertain
 
 
-def test_stop_reply_before_late_motion_ack_cannot_restore_readiness(rig):
+def test_normal_release_waits_for_motion_ack_before_sending_reset(rig):
     rig.session.prepare()
     waiting_ack, allow_ack, reset_received = (threading.Event() for _ in range(3))
 
@@ -252,15 +265,91 @@ def test_stop_reply_before_late_motion_ack_cannot_restore_readiness(rig):
     thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
     assert waiting_ack.wait(1)
     rig.session.release()
-    assert reset_received.wait(1)
+    assert not reset_received.wait(0.03)
     assert not allow_ack.is_set()
     assert rig.session.busy
+    assert not rig.session.control.stopped
+    allow_ack.set()
+    result = finish_thread(thread, outcome)
+    assert not isinstance(result, Exception)
+    assert reset_received.is_set()
+    assert rig.session.ready
+    assert not rig.session.control.stopped
+    assert not rig.session.control._stop_uncertain
+    assert len(rig.moves) == 1
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("ACK timed out"), ConnectionError("ACK lost")])
+def test_normal_release_does_not_hide_failed_motion_ack(rig, failure):
+    rig.session.prepare()
+
+    def fail_ack(text):
+        if text.startswith("MovL("):
+            rig.session.release()
+            raise failure
+
+    rig.reply_hook = fail_ack
+    with pytest.raises(RuntimeError, match="stop unconfirmed"):
+        rig.session.run("W", threading.Event())
+    assert len(rig.moves) == 1
+    assert rig.commands.count("ResetRobot()") == 1
+    assert not rig.session.ready
+    assert rig.session.control.stopped
+    assert rig.session.control._stop_uncertain
+
+
+def test_ack_wait_timeout_locks_even_if_successful_ack_arrives_later(rig):
+    rig.session.prepare()
+    waiting_ack, allow_ack, reset_received = (threading.Event() for _ in range(3))
+
+    def block_reply(text):
+        if text.startswith("MovL("):
+            waiting_ack.set()
+            assert allow_ack.wait(2)
+        elif text == "ResetRobot()":
+            reset_received.set()
+
+    rig.reply_hook = block_reply
+    thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
+    assert waiting_ack.wait(1)
+    rig.session.release()
+    # Let the stop worker take its pending snapshot before advancing its clock.
+    assert not reset_received.wait(0.03)
+    rig.now += 0.6
+    assert reset_received.wait(1)
     allow_ack.set()
     result = finish_thread(thread, outcome)
     assert isinstance(result, RuntimeError)
-    assert "stop unconfirmed" in str(result)
+    assert "acknowledgement did not finish" in str(result)
     assert rig.session.control.stopped
+    assert rig.session.control._stop_uncertain
+    assert not rig.session.ready
     assert len(rig.moves) == 1
+
+
+def test_feedback_failure_during_release_ack_wait_stops_without_waiting(rig):
+    rig.session.prepare()
+    waiting_ack, allow_ack, reset_received = (threading.Event() for _ in range(3))
+
+    def block_reply(text):
+        if text.startswith("MovL("):
+            waiting_ack.set()
+            assert allow_ack.wait(2)
+        elif text == "ResetRobot()":
+            reset_received.set()
+
+    rig.reply_hook = block_reply
+    thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
+    assert waiting_ack.wait(1)
+    rig.session.release()
+    rig.stale = True
+    assert reset_received.wait(0.3)
+    allow_ack.set()
+    result = finish_thread(thread, outcome)
+    assert isinstance(result, RuntimeError)
+    assert "stale" in str(result)
+    assert rig.session.control.stopped
+    assert not rig.session.ready
 
 
 def test_release_during_flight_stops_instead_of_waiting_for_target(rig):

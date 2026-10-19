@@ -206,6 +206,8 @@ class JointControl:
             "expected": expected,
         }
         with self._send_lock:
+            if self._send_guard is not None:
+                self._send_guard()
             if self.stopped:
                 raise RuntimeError("Control has been stopped; reopen the panel")
             self._pending = pending

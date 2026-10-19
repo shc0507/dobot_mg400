@@ -74,6 +74,23 @@ class KeyboardJogSession:
 
     def _stop(self, active):
         try:
+            # Revocation blocks new sends. Let an already registered command
+            # finish its bounded exchange before cancel() records uncertainty.
+            with active._send_lock:
+                pending = active._pending
+            if pending is not None and not active.stopped:
+                deadline = time.monotonic() + active._command_timeout
+                try:
+                    while not pending["done"].wait(0.01):
+                        if active.stopped:
+                            break
+                        active._fresh({5, 7})
+                        if time.monotonic() >= deadline and not pending["done"].is_set():
+                            raise TimeoutError(
+                                "Keyboard command acknowledgement did not finish before stopping"
+                            )
+                except Exception as error:
+                    self._revoke(error=error)
             result = active.stop()
         except Exception as error:
             result = {"ok": False, "error": str(error)}
@@ -95,7 +112,8 @@ class KeyboardJogSession:
                 self.fault = str(error)
                 self.control.cancel()
             self._revoked.set()
-            self._active.cancel()
+            if error is not None or self._phase == "preparing" or self.control.stopped:
+                self._active.cancel()
             if self._phase == "preparing":
                 self._prepared = False
             elif self._stop_thread is None:

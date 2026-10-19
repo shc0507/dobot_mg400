@@ -360,7 +360,11 @@ class GripperPanel:
                                 )
                         self.report["read_error"] = None
                         if self.report["request"] is None:
-                            self.report["result"] = "Ready. Choose Open gripper or Close gripper."
+                            self.report["result"] = (
+                                "Ready. Set an opening or choose Open gripper / Close gripper."
+                                if self.feedback_path is not None
+                                else "Ready. Choose Open gripper or Close gripper."
+                            )
                     except Exception as error:
                         self.report["read_error"] = str(error)
                     self.write_report()

@@ -257,7 +257,7 @@ class ControlPanel:
         context = omni.usd.get_context()
         stage = context.get_stage()
         timeline = omni.timeline.get_timeline_interface()
-        self.window = ui.Window("MG400 Flange Control", width=500, height=505)
+        self.window = ui.Window("MG400 Flange Control", width=500, height=570)
         self.window.setPosition(15, 15)
         self.window.set_focused_changed_fn(
             lambda focused: None if focused else self.set_keyboard(False)

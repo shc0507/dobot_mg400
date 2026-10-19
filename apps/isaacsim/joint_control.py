@@ -458,10 +458,12 @@ class ControlPanel:
                         )
                         ui.Label("Z/X open/close gripper | Esc disable robot", height=22)
                         ui.Label(
-                            "Hold one key to jog; release requests a stop. Max hold: 5 seconds.\n"
+                            "Hold one key to move. Release to request a stop. "
+                            "Max hold: 5 seconds.\n"
+                            "Arm travel per hold: up to 50 mm or 10 deg.\n"
                             "Gripper finishes its current small step. "
                             "Leaving this panel turns keys off.",
-                            word_wrap=True, height=40,
+                            word_wrap=True, height=60,
                         )
                         message_label = ui.Label(self.message, word_wrap=True, height=45)
                     if self.gripper is not None:
@@ -536,6 +538,10 @@ class ControlPanel:
                     and (self.pose_task is None or self.pose_task.done())
                 ) and now - self.pose_requested > 0.2:
                     self.pose_task = asyncio.ensure_future(self.refresh_pose())
+                if self.busy and self.keyboard_session is not None:
+                    measured = self.keyboard_session.measured_pose
+                    if measured is not None and measured[1] > self.pose_received:
+                        self.actual_pose, self.pose_received = measured
                 for i, label in enumerate(actual_labels):
                     label.text = (
                         f"{self.actual_pose[i]:.3f}"

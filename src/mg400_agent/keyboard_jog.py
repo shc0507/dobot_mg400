@@ -1,4 +1,4 @@
-"""Bounded keyboard movement. Each hold owns at most one unfinished move."""
+"""Bounded keyboard movement. Each hold sends at most one continuous move."""
 
 import math
 import threading
@@ -8,8 +8,8 @@ from .joint_control import JointControl, TargetRejectedError
 from .joint_limits import validate_joint_segment, validate_joints
 
 HOLD_SECONDS = 5.0
-STEP_MM = 5.0
-STEP_DEG = 1.0
+HOLD_DISTANCE_MM = 50.0
+HOLD_ANGLE_DEG = 10.0
 KEYS = frozenset("WASDRFQE")
 
 
@@ -34,6 +34,7 @@ class KeyboardJogSession:
         self._stop_thread = None
         self._stop_result = None
         self._pose = None
+        self.measured_pose = None
         self.fault = None
         self.expired = False
         self.limit_reason = None
@@ -135,6 +136,12 @@ class KeyboardJogSession:
             self._closed = True
         self.release()
 
+    def _read_measured_pose(self, active, modes):
+        requested = time.monotonic()
+        pose = active._read_pose(modes)
+        self.measured_pose = (pose, requested)
+        return pose
+
     def _finish(self, active, *, read_pose=False):
         # Do not publish readiness while a send or stop thread can still act.
         pending = active._pending
@@ -151,7 +158,7 @@ class KeyboardJogSession:
                     ))
             if read_pose and self.fault is None and not self.control.stopped:
                 try:
-                    self._pose = active._read_pose({5})
+                    self._pose = self._read_measured_pose(active, {5})
                 except Exception as error:
                     self._revoke(error=error)
             read_pose = False
@@ -168,7 +175,7 @@ class KeyboardJogSession:
         active = self._start("preparing")
         try:
             active._preflight({5})
-            pose = active._read_pose({5})
+            pose = self._read_measured_pose(active, {5})
             with self._lock:
                 if self._revoked.is_set() or active.stopped or self._closed:
                     raise RuntimeError("Keyboard preparation cancelled")
@@ -202,37 +209,47 @@ class KeyboardJogSession:
 
     def _step(self, active, key):
         sample, _ = active._fresh({5})
-        pose = active._read_pose({5})
+        pose = self._read_measured_pose(active, {5})
         joints = validate_joints(sample.joints_deg)
-        if key in "AD":
-            target_joints = list(joints)
-            target_joints[0] += STEP_DEG if key == "A" else -STEP_DEG
+        distance = HOLD_DISTANCE_MM if key in "WSRF" else HOLD_ANGLE_DEG
+        minimum = 5.0 if key in "WSRF" else 1.0
+        while True:
+            active._send_guard()
             try:
-                target_joints = validate_joints(target_joints)
-                validate_joint_segment(joints, target_joints)
-            except ValueError as error:
-                raise TargetRejectedError(str(error)) from error
+                if key in "AD":
+                    target_joints = list(joints)
+                    target_joints[0] += distance if key == "A" else -distance
+                    target_pose = None
+                else:
+                    target_pose = list(pose)
+                    signed_distance = distance if key in "WRQ" else -distance
+                    if key in "WS":
+                        angle = math.radians(joints[0])
+                        target_pose[0] += signed_distance * math.cos(angle)
+                        target_pose[1] += signed_distance * math.sin(angle)
+                    elif key in "RF":
+                        target_pose[2] += signed_distance
+                    else:
+                        target_pose[3] += signed_distance
+                    target_pose = tuple(target_pose)
+                    target_joints = active.solve_pose(target_pose)
+                try:
+                    target_joints = validate_joints(target_joints)
+                    validate_joint_segment(joints, target_joints)
+                except ValueError as error:
+                    raise TargetRejectedError(str(error)) from error
+                break
+            except TargetRejectedError:
+                # Only rejected targets can shorten the hold. No movement has
+                # been sent. Communication and state errors remain faults.
+                if distance <= minimum:
+                    raise
+                distance = max(minimum, distance / 2)
+        if target_pose is None:
             values = ",".join(f"{value:.6f}" for value in target_joints)
             command = f"JointMovJ({values},SpeedJ=5,AccJ=20)"
-            target_pose = None
         else:
-            target_pose = list(pose)
-            if key in "WS":
-                distance = STEP_MM if key == "W" else -STEP_MM
-                angle = math.radians(joints[0])
-                target_pose[0] += distance * math.cos(angle)
-                target_pose[1] += distance * math.sin(angle)
-            elif key in "RF":
-                target_pose[2] += STEP_MM if key == "R" else -STEP_MM
-            else:
-                target_pose[3] += STEP_DEG if key == "Q" else -STEP_DEG
-            target_pose = tuple(target_pose)
             values = ",".join(f"{value:.6f}" for value in target_pose)
-            target_joints = active.solve_pose(target_pose)
-            try:
-                validate_joint_segment(joints, target_joints)
-            except ValueError as error:
-                raise TargetRejectedError(str(error)) from error
             command = f"MovL({values},User=0,Tool=0,SpeedL=2,AccL=20)"
         active._send_guard()
         active._guarded_command(
@@ -242,7 +259,7 @@ class KeyboardJogSession:
         _, before = active._fresh({5, 7})
         while True:
             active._send_guard()
-            actual_pose = active._read_pose({5, 7})
+            actual_pose = self._read_measured_pose(active, {5, 7})
             sample, received = active._fresh({5, 7})
             if (
                 received > before and sample.mode == 5
@@ -254,7 +271,7 @@ class KeyboardJogSession:
             time.sleep(0.01)
 
     def run(self, key, released):
-        """Run bounded moves until release or the five-second hold deadline."""
+        """Run one continuous move until arrival, release, or the hold deadline."""
         if key not in KEYS:
             raise ValueError("Expected one keyboard movement key")
         active = self._start("running", released)
@@ -267,9 +284,12 @@ class KeyboardJogSession:
         )
         watcher.start()
         try:
-            while True:
-                active._send_guard()
-                self._step(active, key)
+            active._send_guard()
+            self._step(active, key)
+            with self._lock:
+                if not self._revoked.is_set() and not active.stopped:
+                    self.limit_reason = "Travel limit reached."
+                    self._release_gate = released
         except TargetRejectedError as error:
             try:
                 active._send_guard()

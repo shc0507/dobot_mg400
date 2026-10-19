@@ -131,6 +131,7 @@ def panel_module(monkeypatch, tmp_path):
             self.ready = self.closed = False
             self.expired = False
             self.limit_reason = None
+            self.measured_pose = None
             self.prepare_started = asyncio.Event()
             self.prepare_allowed = asyncio.Event()
             self.prepare_allowed.set()
@@ -1450,6 +1451,7 @@ def test_sync_shutdown_releases_keyboard_and_waits_for_its_current_action(
     closing = asyncio.Event()
     sessions = []
     frames = 0
+    moving_pose = (310.0, 12.0, 50.0, 4.0)
 
     async def next_update():
         nonlocal frames
@@ -1460,7 +1462,9 @@ def test_sync_shutdown_releases_keyboard_and_waits_for_its_current_action(
             session.finish_allowed.clear()
             panel.key_event("W", True)
             await asyncio.wait_for(session.run_started.wait(), 1)
+            session.measured_pose = (moving_pose, time.monotonic())
         else:
+            assert panel.actual_pose == moving_pose
             assert panel.report["keyboard_enabled"] is True
             assert panel.report["busy"] is True
             assert panel.report["synchronization"]["status"] == "live"

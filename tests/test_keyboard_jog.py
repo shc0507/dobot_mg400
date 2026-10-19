@@ -7,6 +7,7 @@ import pytest
 
 from mg400_agent.feedback import Feedback
 from mg400_agent.joint_control import JointControl, TargetRejectedError
+from mg400_agent.joint_limits import validate_joints
 from mg400_agent.keyboard_jog import KeyboardJogSession
 
 START = (30.0, 0.0, 10.0, 0.0)
@@ -145,17 +146,17 @@ def test_prepare_is_read_only_and_shares_controller_locks(rig):
 
 
 @pytest.mark.parametrize("key,axis,change", [
-    ("W", 0, 5 * math.cos(math.radians(30))),
-    ("S", 0, -5 * math.cos(math.radians(30))),
-    ("R", 2, 5), ("F", 2, -5), ("Q", 3, 1), ("E", 3, -1),
+    ("W", 0, 50 * math.cos(math.radians(30))),
+    ("S", 0, -50 * math.cos(math.radians(30))),
+    ("R", 2, 50), ("F", 2, -50), ("Q", 3, 10), ("E", 3, -10),
 ])
-def test_cartesian_keys_use_bounded_measured_targets(rig, key, axis, change):
+def test_cartesian_keys_use_one_bounded_trajectory_from_measured_pose(rig, key, axis, change):
     rig.session.prepare()
     result = rig.session.run(key, threading.Event())
     assert result[axis] == pytest.approx(POSE[axis] + change, abs=1e-6)
     if key in "WS":
         direction = 1 if key == "W" else -1
-        assert result[1] == pytest.approx(POSE[1] + direction * 2.5)
+        assert result[1] == pytest.approx(POSE[1] + direction * 25)
     assert len(rig.moves) == 1
     assert rig.moves[0].endswith("User=0,Tool=0,SpeedL=2,AccL=20)")
     assert rig.commands.count("RobotMode()") == 1
@@ -165,8 +166,8 @@ def test_cartesian_keys_use_bounded_measured_targets(rig, key, axis, change):
     assert not rig.session.control.stopped
 
 
-@pytest.mark.parametrize("key,change", [("A", 1), ("D", -1)])
-def test_base_keys_use_one_degree_joint_moves(rig, key, change):
+@pytest.mark.parametrize("key,change", [("A", 10), ("D", -10)])
+def test_base_keys_use_one_ten_degree_joint_trajectory(rig, key, change):
     rig.session.prepare()
     rig.session.run(key, threading.Event())
     assert rig.sample.joints_deg == (START[0] + change, *START[1:])
@@ -176,17 +177,30 @@ def test_base_keys_use_one_degree_joint_moves(rig, key, change):
     assert not any(command.startswith("InverseSolution(") for command in rig.commands)
 
 
-def test_holding_uses_measured_steps_without_repeated_preflight(rig, monkeypatch):
+def test_travel_limit_ends_hold_without_queuing_another_trajectory(rig, monkeypatch):
     rig.session.prepare()
-    rig.release_after = 3
+    prepared_at = rig.now
+    rig.release_after = None
+    released = threading.Event()
     stable = Mock(wraps=JointControl._wait_stable)
     monkeypatch.setattr(JointControl, "_wait_stable", lambda self, *a, **kw: stable(self, *a, **kw))
-    rig.session.run("R", threading.Event())
-    assert [float(command.split(",")[2]) for command in rig.moves] == [45, 50, 55]
-    assert stable.call_count == 1  # Stop verification only; no per-step dwell.
+    assert rig.session.run("R", released)[2] == 90
+    assert rig.session.measured_pose[0] == rig.pose
+    assert prepared_at < rig.session.measured_pose[1] <= rig.now
+    assert [float(command.split(",")[2]) for command in rig.moves] == [90]
+    assert stable.call_count == 0
     assert rig.commands.count("GetErrorID()") == 1
-    rig.release_after = 4
-    assert rig.session.run("F", threading.Event())[2] == 50
+    assert "ResetRobot()" not in rig.commands
+    assert rig.session.limit_reason == "Travel limit reached."
+    assert not rig.session.expired
+    assert not released.is_set()
+    with pytest.raises(RuntimeError, match="Release the current key"):
+        rig.session.run("F", threading.Event())
+    assert len(rig.moves) == 1
+    rig.session.release()
+    assert released.is_set()
+    assert rig.session.run("F", threading.Event())[2] == 40
+    assert len(rig.moves) == 2
     assert rig.session.ready
 
 
@@ -365,6 +379,7 @@ def test_release_during_flight_stops_instead_of_waiting_for_target(rig):
 def test_expiry_stops_and_requires_a_real_release_before_next_hold(rig, monkeypatch):
     rig.session.prepare()
     rig.release_after = None
+    rig.finish_moves = False
     released = threading.Event()
 
     monkeypatch.setattr("mg400_agent.keyboard_jog.HOLD_SECONDS", 0.045)
@@ -376,6 +391,7 @@ def test_expiry_stops_and_requires_a_real_release_before_next_hold(rig, monkeypa
         rig.session.run("R", threading.Event())
     rig.session.release()
     monkeypatch.setattr("mg400_agent.keyboard_jog.HOLD_SECONDS", 5.0)
+    rig.finish_moves = True
     rig.release_after = 2
     rig.session.run("R", threading.Event())
     assert len(rig.moves) == 2
@@ -445,7 +461,7 @@ def test_ik_rejection_ends_hold_without_motion_or_stop(rig, monkeypatch):
     monkeypatch.setattr(JointControl, "solve_pose", solve)
     released = threading.Event()
     assert rig.session.run("W", released) == POSE
-    solve.assert_called_once()
+    assert solve.call_count == 5
     assert rig.session.limit_reason == "The controller rejected the target"
     assert not released.is_set()
     assert rig.session.fault is None
@@ -457,38 +473,108 @@ def test_ik_rejection_ends_hold_without_motion_or_stop(rig, monkeypatch):
         rig.session.run("S", threading.Event())
 
 
-def test_limit_after_completed_step_requires_release_and_allows_reverse(rig, monkeypatch):
+@pytest.mark.parametrize("key,distances", [
+    ("W", [50, 25, 12.5, 6.25, 5]),
+    ("Q", [10, 5, 2.5, 1.25, 1]),
+])
+def test_rejected_targets_shrink_to_minimum_before_one_trajectory(rig, monkeypatch, key, distances):
     rig.session.prepare()
     rig.release_after = None
     solve = JointControl.solve_pose
-    calls = []
+    attempted = []
 
-    def reject_second(active, target):
-        calls.append(target)
-        if len(calls) == 2:
-            raise TargetRejectedError("The next target is outside the workspace")
+    def reject_larger(active, target):
+        distance = (
+            math.hypot(target[0] - POSE[0], target[1] - POSE[1])
+            if key == "W" else abs(target[3] - POSE[3])
+        )
+        attempted.append(distance)
+        assert not rig.moves
+        if len(attempted) < len(distances):
+            raise TargetRejectedError("Target is outside the workspace")
         return solve(active, target)
 
-    monkeypatch.setattr(JointControl, "solve_pose", reject_second)
+    monkeypatch.setattr(JointControl, "solve_pose", reject_larger)
     released = threading.Event()
-    result = rig.session.run("W", released)
+    result = rig.session.run(key, released)
+    assert attempted == pytest.approx(distances)
     assert result == rig.pose
     assert len(rig.moves) == 1
-    assert rig.session.limit_reason == "The next target is outside the workspace"
+    assert rig.session.limit_reason == "Travel limit reached."
     assert not rig.session.control.stopped
     assert rig.session.fault is None
     assert "ResetRobot()" not in rig.commands
     with pytest.raises(RuntimeError, match="Release the current key"):
-        rig.session.run("S", threading.Event())
+        rig.session.run(key, threading.Event())
     rig.session.release()
     assert released.is_set()
-    rig.release_after = 2
-    assert rig.session.run("S", threading.Event()) == pytest.approx(POSE)
-    assert len(rig.moves) == 2
+    assert rig.session.ready
+
+
+def test_base_target_shortens_to_one_degree_at_joint_limit(rig, monkeypatch):
+    rig.sample = Feedback((157.8, *START[1:]), 5, 0, False)
+    rig.pose = (*POSE[:3], 157.8)
+    rig.release_after = None
+    rig.session.prepare()
+    attempted = []
+
+    def validate(target):
+        if target[0] != 157.8:
+            attempted.append(target[0] - 157.8)
+        return validate_joints(target)
+
+    monkeypatch.setattr("mg400_agent.keyboard_jog.validate_joints", validate)
+    rig.session.run("A", threading.Event())
+    assert attempted == pytest.approx([10, 5, 2.5, 1.25, 1])
+    assert len(rig.moves) == 1
+    assert rig.sample.joints_deg[0] == pytest.approx(158.8)
+    assert rig.session.limit_reason == "Travel limit reached."
+    assert not rig.session.control.stopped
+
+
+@pytest.mark.parametrize("reason", ["release", "expiry"])
+def test_release_or_expiry_during_target_shortening_prevents_motion(rig, monkeypatch, reason):
+    rig.session.prepare()
+    attempts = []
+
+    def reject(active, target):
+        attempts.append(target)
+        if len(attempts) == 2:
+            if reason == "release":
+                rig.session.release()
+            else:
+                rig.now += 5.1
+        raise TargetRejectedError("Target rejected")
+
+    monkeypatch.setattr(JointControl, "solve_pose", reject)
+    rig.session.run("W", threading.Event())
+    assert len(attempts) == 2
+    assert not rig.moves
     assert rig.commands.count("ResetRobot()") == 1
     assert rig.session.limit_reason is None
-    assert rig.session.fault is None
+    assert rig.session.expired is (reason == "expiry")
     assert rig.session.ready
+    assert not rig.session.control.stopped
+
+
+@pytest.mark.parametrize("failure", [
+    RuntimeError("Unexpected controller response"),
+    TimeoutError("Controller acknowledgement timed out"),
+    ValueError("Invalid inverse solution data"),
+])
+def test_fault_during_target_shortening_does_not_try_another_target(rig, monkeypatch, failure):
+    rig.session.prepare()
+    solve = Mock(side_effect=[TargetRejectedError("Target rejected"), failure])
+    monkeypatch.setattr(JointControl, "solve_pose", solve)
+    with pytest.raises(RuntimeError):
+        rig.session.run("W", threading.Event())
+    assert solve.call_count == 2
+    assert not rig.moves
+    assert rig.commands.count("ResetRobot()") == 1
+    assert rig.session.limit_reason is None
+    assert rig.session.fault is not None
+    assert rig.session.control.stopped
+    assert not rig.session.ready
 
 
 def test_joint_target_limit_ends_hold_without_stopping_parent(rig):

@@ -318,9 +318,13 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 坐标使用基座坐标系和法兰原点（`User=0,Tool=0`）。
 R 表示法兰朝向，不等于 J4 角度。
 面板从控制器读取坐标，不用 CAD 模型计算实机目标。
-直线运动采用 `MovL`，比例参数为 `SpeedL=1,AccL=1`。
+
+手动点击 `Move Linear` 时，`MovL` 使用比例参数 `SpeedL=1,AccL=1`。
+键盘 W/S、R/F、Q/E 的 `MovL` 使用 `SpeedL=2,AccL=20`。
 控制器逆解验证目标关节范围，控制器规划直线路径。
-复位和 J1 点动采用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
+
+复位使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
+键盘 A/D 的 J1 点动使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=20`。
 这两类关节动作检查整段关节范围。
 上述检查不包含现场碰撞检查。
 机械臂运动不修改全局速度或工具配置，也不写夹爪输出。

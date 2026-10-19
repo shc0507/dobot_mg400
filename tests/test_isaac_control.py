@@ -130,6 +130,7 @@ def panel_module(monkeypatch, tmp_path):
             self.control = control
             self.ready = self.closed = False
             self.expired = False
+            self.fault = None
             self.limit_reason = None
             self.measured_pose = None
             self.prepare_started = asyncio.Event()
@@ -1091,6 +1092,115 @@ def test_keyboard_preparation_rejects_robot_that_is_not_enabled_and_idle(panel, 
         assert panel.keyboard_session.run_calls == []
         assert "enabled and idle" in panel.message
         assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+@pytest.fixture
+def failed_preparation(panel_module, monkeypatch):
+    faulted = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def prepare(session):
+        session.fault = "Keyboard preflight failed"
+        session.control.cancel()
+        faulted.set()
+        await finish.wait()
+        raise RuntimeError("Keyboard preparation cancelled")
+
+    monkeypatch.setattr(panel_module.KeyboardJogSession, "prepare", prepare)
+    return SimpleNamespace(faulted=faulted, finish=finish)
+
+
+def test_window_shows_prepare_fault_after_stopped_frame_invalidates_generation(
+    panel_module, panel, monkeypatch, failed_preparation
+):
+    frames = 0
+    generation = None
+
+    async def next_update():
+        nonlocal frames, generation
+        frames += 1
+        if frames == 1:
+            button = next(widget for widget in widgets if widget.text == "Keyboard: OFF")
+            button.clicked_fn()
+            generation = panel.keyboard_generation
+            await asyncio.wait_for(failed_preparation.faulted.wait(), 1)
+        elif frames == 2:
+            try:
+                assert panel.control.stopped
+                assert panel.keyboard_generation > generation
+                assert not panel.keyboard_arming
+                assert not panel.keyboard_task.done()
+            finally:
+                failed_preparation.finish.set()
+            await asyncio.wait_for(panel.keyboard_task, 1)
+            assert panel.message == "ERROR: Keyboard preflight failed"
+            assert not panel.keyboard_enabled
+            panel.key_event("W", True)
+            assert panel.action is None
+        else:
+            assert frames == 3
+            assert any(widget.text == "ERROR: Keyboard preflight failed" for widget in widgets)
+            panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert panel.control.stopped
+    assert panel.control.calls == []
+    assert panel.keyboard_session.movements == []
+    assert not panel.keyboard_enabled
+    assert not panel.keyboard_arming
+
+
+@pytest.mark.parametrize("owner", ("stop", "disable", "close"))
+def test_prepare_fault_does_not_overwrite_shutdown_message(
+    panel, failed_preparation, owner
+):
+    async def exercise():
+        panel.request_keyboard()
+        await asyncio.wait_for(failed_preparation.faulted.wait(), 1)
+        panel.set_keyboard(False)
+        if owner == "stop":
+            panel.request_stop()
+            await asyncio.wait_for(panel.stop_task, 1)
+        elif owner == "disable":
+            panel.disable_task = asyncio.create_task(asyncio.Event().wait())
+            panel.message = "Disabling robot..."
+        else:
+            panel.closed = True
+            panel.message = "Control panel closed"
+        message = panel.message
+        failed_preparation.finish.set()
+        await asyncio.wait_for(panel.keyboard_task, 1)
+        assert panel.message == message
+        assert panel.control.stopped
+        assert not panel.keyboard_enabled
+        if panel.disable_task:
+            panel.disable_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await panel.disable_task
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("replacement", ("session", "control"))
+def test_old_preparation_fault_does_not_overwrite_current_owner(
+    panel_module, panel, failed_preparation, replacement
+):
+    async def exercise():
+        panel.request_keyboard()
+        await asyncio.wait_for(failed_preparation.faulted.wait(), 1)
+        panel.set_keyboard(False)
+        if replacement == "session":
+            panel.keyboard_session = panel_module.KeyboardJogSession(panel.control)
+        else:
+            panel.control = panel_module.JointControl(panel.host, panel.feedback_snapshot)
+        panel.message = "Current control state"
+        failed_preparation.finish.set()
+        await asyncio.wait_for(panel.keyboard_task, 1)
+        assert panel.message == "Current control state"
+        assert not panel.keyboard_enabled
 
     asyncio.run(exercise())
 

@@ -155,9 +155,16 @@ class ControlPanel:
             self.set_keyboard(True)
             self.message = "Keyboard ready. Hold one key; release requests a stop."
         except Exception as error:
-            if generation == self.keyboard_generation:
+            current_fault = (
+                session is self.keyboard_session and session.control is self.control
+                and session.fault is not None
+            )
+            if generation == self.keyboard_generation or current_fault:
                 self.set_keyboard(False)
-                self.message = f"ERROR: {error}"
+                if not self.closed and self.stop_task is None and not (
+                    self.disable_task and not self.disable_task.done()
+                ):
+                    self.message = f"ERROR: {session.fault or error}"
         finally:
             if generation == self.keyboard_generation:
                 self.keyboard_arming = False

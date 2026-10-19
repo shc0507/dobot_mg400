@@ -17,10 +17,10 @@
 | `apps/isaacsim/load_model.py` | 开发时检查基础模型导入 |
 | `apps/isaacsim/mirror.py` | 在当前 MG400 场景中显示真机四轴反馈，支持断线重连 |
 | `apps/isaacsim/mirror_bootstrap.py` | 必要时打开默认场景，再启动只读姿态镜像 |
-| `apps/isaacsim/joint_control.py` | 四轴真机面板：读取当前角度、使能、下使能、返回默认姿态、单次到位 |
-| `apps/isaacsim/gripper_control.py` | 实体夹爪面板：MG400 I/O 开合与 USB 位置反馈 |
+| `apps/isaacsim/joint_control.py` | 真机法兰面板：空间坐标、键盘点动、使能、下使能、复位 |
+| `apps/isaacsim/gripper_control.py` | 实体夹爪面板：USB 连续位置控制、位置反馈、I/O 开合 |
 | `apps/isaacsim/olares_gripper.py` | Olares 夹爪面板入口，读取数据目录中的 USB 测量文件 |
-| `config/robot.toml` | Isaac 镜像、四轴面板和夹爪面板共用的机器人地址 |
+| `config/robot.toml` | Isaac 镜像、法兰面板和夹爪面板共用的机器人地址 |
 | `scripts/gripper_feedback.py` | Olares 主机读取 USB 夹爪位置，写入共享测量文件 |
 | `scripts/isaac_gripper_feedback.mjs` | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac |
 | `apps/isaacsim/standalone.py` | 基础资产独立检查入口，使用 5.1 兼容 API，6.x 已弃用这些接口 |
@@ -39,12 +39,12 @@ PGEA 侧出线版、两个估算指尖和各参考坐标系都随法兰移动。
 ## 日常使用：查看真机姿态与打开控制面板
 
 Olares 启动脚本通过 `apps/isaacsim/startup.py` 打开 `00_OPEN_MG400.usda`。
-它检查四轴面板、夹爪面板和文件反馈模块能否导入，不创建面板或网络连接。
+它检查法兰面板、夹爪面板和文件反馈模块能否导入，不创建面板或网络连接。
 默认启动不开始物理仿真，也不发送真机命令。
 在已有服务中，也可用 **File → Open** 打开 `/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
 
 时间轴保持 **Stop**。
-在 **Window → Script Editor** 运行四轴面板，脚本会启动或复用真机姿态镜像：
+在 **Window → Script Editor** 运行法兰面板，脚本会启动或复用真机姿态镜像：
 
 ```python
 import runpy
@@ -52,8 +52,8 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-四轴面板启动只读，连接后显示真机实测姿态。
-使能、下使能和运动步骤见 [在 Isaac 中控制真机四轴](#在-isaac-中控制真机四轴)。
+法兰面板启动只读，连接后显示真机实测姿态。
+使能、下使能和运动步骤见 [在 Isaac 中控制真机法兰](#在-isaac-中控制真机法兰)。
 如果只显示姿态，运行 `apps/isaacsim/mirror_bootstrap.py`，见 [真机姿态实时同步](#真机姿态实时同步)。
 USB 接在 Olares 时，先启动宿主机反馈采集，再在 Script Editor 运行夹爪面板：
 
@@ -215,7 +215,7 @@ Script Editor、自定义启动脚本和 `--exec` 均使用本页的当前入口
 
 ## 真机地址配置
 
-Isaac 镜像、四轴面板和夹爪面板读取项目根目录下的 `config/robot.toml`：
+Isaac 镜像、法兰面板和夹爪面板读取项目根目录下的 `config/robot.toml`：
 
 ```toml
 [robot]
@@ -223,9 +223,9 @@ host = "192.168.1.6"
 ```
 
 修改配置后，重新启动镜像和面板，才会使用新地址。
-四轴面板只复用地址与配置一致的镜像。
-如果现存镜像地址不同或没有 `host`，四轴面板会拒绝复用。
-先停止旧镜像，再重新运行 `apps/isaacsim/mirror.py` 和四轴面板。
+法兰面板只复用地址与配置一致的镜像。
+如果现存镜像地址不同或没有 `host`，法兰面板会拒绝复用。
+先停止旧镜像，再重新运行 `apps/isaacsim/mirror.py` 和法兰面板。
 此配置只供 Isaac 真机入口使用，CLI 的 `--host` 和独立教学脚本保持各自的地址设置方式。
 
 ## 真机姿态实时同步
@@ -280,12 +280,12 @@ Olares 直连网口使用 `192.168.1.10/24`。IsaacLab 容器内直接连接机�
 不要绑定宿主机的源 IP。命名空间中的 `mg400-direct` Linkerd EgressNetwork
 将机器人 `30004` 标为 opaque TCP，避免服务端先发送数据的协议检测等待。
 
-## 在 Isaac 中控制真机四轴
+## 在 Isaac 中控制真机法兰
 
 使用 Isaac 自带面板，控制链路在 Olares 内完成：
 
 ```text
-Isaac 面板 J1–J4（度） → TCP 29999 / 30003 → MG400
+Isaac 面板 XYZ（mm）/ R（度） → TCP 29999 / 30003 → MG400
 Isaac 模型与 Actual 显示 ← TCP 30004 ← MG400 实测角度
 ```
 
@@ -299,29 +299,61 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
 脚本复用现有实时同步；尚未启动同步时，会通过 mirror bootstrap 备份当前场景、
-加载 MG400 并启动反馈。出现 **MG400 Joint Control** 面板后：
+加载 MG400 并启动反馈。出现 `MG400 Flange Control` 面板后：
 
-1. 等待 `LIVE`。`Actual (deg)` 显示实测角度，`Target (deg)` 首次自动填入实测值。
-2. 未使能时，点击第一排左侧的 **Enable robot**。
+1. 等待 `LIVE` 和 `Actual` 坐标。
+   `Target` 首次自动填入实测坐标。
+2. 未使能时，点击 `Enable robot`。
    此操作仅使能，不发送运动，沿用控制器当前负载设置。
-3. 返回默认姿态时，点击第二排的 **Return to Home**。
+3. 返回默认姿态时，点击 `Return to Home`。
    默认姿态为 J1–J4 全部 0°。
-4. 指定其他姿态时，修改所需轴的绝对目标角度。
-   点击第三排的 **Move to Target**。
-5. 等待 `Arrival verified`。此状态表示新鲜反馈已在目标 ±0.1° 内稳定至少 0.4 秒，
-   并通过 dashboard 回读核对。完成后保持使能，可继续下一次动作。
-6. 下使能时，点击第一排右侧的 **Disable robot**。
+4. 指定位置时，修改 X/Y/Z（mm）和 R（度）。
+   点击 `Move Linear`。
+5. 等待 `Arrival verified`。
+   直线运动核对坐标误差不超过 0.1 mm / 0.1°。
+   关节反馈还须在目标 ±0.1° 内稳定至少 0.4 秒。
+   程序随后用 dashboard 回读核对，完成后保持使能。
+6. 下使能时，点击 `Disable robot`。
 
-一次只执行一个目标。执行前，程序检查目标和整段路径的关节范围。
-指令采用 `SpeedJ=5,AccJ=5` 比例参数，保持全局速度、工具坐标和夹爪输出不变。
+坐标使用基座坐标系和法兰原点（`User=0,Tool=0`）。
+R 表示法兰朝向，不等于 J4 角度。
+面板从控制器读取坐标，不用 CAD 模型计算实机目标。
+直线运动采用 `MovL`，比例参数为 `SpeedL=1,AccL=1`。
+控制器逆解验证目标关节范围，控制器规划直线路径。
+复位和 J1 点动采用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
+这两类关节动作检查整段关节范围。
+上述检查不包含现场碰撞检查。
+机械臂运动不修改全局速度或工具配置，也不写夹爪输出。
 
-输入框本身不发运动命令。模型始终显示真机实际姿态，不把输入目标当作已到位。
+输入框本身不发运动命令，模型显示真机实际姿态。
 动作期间输入和执行按钮禁用，网络操作在后台线程运行。
-**Disable robot** 仍可点击，会取消当前动作并发送 `DisableRobot()`。
-此版本只控制四轴，不控制真实夹爪，不支持拖动 USD 连杆直接控制真机。
+`Disable robot` 仍可点击，会取消当前动作并发送 `DisableRobot()`。
+不支持拖动 USD 连杆控制真机。
+
+### 键盘点动
+
+点击 `Keyboard: OFF` 开启键盘控制。
+键盘控制仅在法兰面板获得焦点时生效。
+坐标输入框在此期间禁用。
+
+| 按键 | 动作 | 每步 |
+| --- | --- | --- |
+| W / S | 沿当前机械臂朝向伸出 / 收回，保持高度和法兰朝向 | 1 mm |
+| A / D | J1 左转 / 右转，保持 J2/J3/J4 | 1° |
+| R / F | 法兰上升 / 下降 | 1 mm |
+| Q / E | 法兰朝向 R 增加 / 减少，保持 XYZ | 1° |
+| Z / X | 夹爪开口增加 / 减少 | 25 / 1000 |
+| Esc | 下使能机械臂 | 单次 |
+
+按住一个键可重复点动，执行中的按键重复事件不排队。
+松键后不再追加动作，已发出的当前一步会完成。
+切换窗口、按修饰键或反馈失效时，键盘控制关闭。
+恢复控制前，再次点击键盘按钮。
+A/D 会随 J1 改变法兰朝向，不是基座 Y 方向的直线运动。
+Z/X 依赖已打开的 Olares 夹爪面板和带 `--commands` 的 USB 采集进程。
 
 下使能后，面板用新鲜反馈和 dashboard 回读核实静止且处于未使能状态。
-核实成功后，目标角度刷新为实测值。点击 **Enable robot** 即可重新使能，无需重载脚本。
+核实成功后，目标坐标刷新为实测值。点击 **Enable robot** 即可重新使能，无需重载脚本。
 若无法核实，下使能报错并保持操作锁定。
 
 运动时关闭面板、更换场景、启动物理仿真或停止反馈同步，会结束控制并请求停止。
@@ -331,7 +363,7 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 若显示 `STOP UNCONFIRMED`，使用现场物理急停。
 
 当前关节范围检查复用项目参考模型，并非现场碰撞检查；执行前应确认路径、夹爪和线缆的空间。
-建议首次由现场操作者将 J4 目标改为当前值加 1°，检查真实运动与画面一致后再扩大操作。
+建议首次用 Q/E 点动 1°，核对真实运动与画面一致后再扩大操作。
 打开脚本和只读连接测试不会自动执行这一步。
 
 状态每 0.5 秒写入 `$MG400_DATA_DIR/isaacsim/control_status.json`。
@@ -360,6 +392,7 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/gripper_control.py")
 ```
 
+此入口使用 I/O 开合，Olares 连续位置控制见 [USB 接在 Olares](#usb-接在-olares)。
 面板启动只读状态。`Open gripper` 写 DO2=0、DO1=0，
 `Close gripper` 写 DO2=0、DO1=1。它不使能机械臂，不发送关节命令。
 面板通过 MG400 的 TCP 29999 控制 I/O。
@@ -377,7 +410,7 @@ I/O 组 1 为全开（1000），组 2 为全闭（0），位置单位为行程�
 当前须保留 USB–RS485 连接作为初始化入口：
 从站 1、115200、8N1，写 `0x0100=1`，等待 `0x0200=1`。
 该初始化会让夹指张开寻找行程端点。
-完成初始化后，开合命令经 MG400 I/O 发送，USB 仅用于独立读取。
+完成初始化后，选择 I/O 开合或下述 Olares USB 位置控制。
 
 ### 同步实体夹爪位置
 
@@ -434,7 +467,7 @@ Isaac 容器没有映射串口设备。
 
 ```sh
 mkdir -p ../mg400-data/work
-python3 scripts/gripper_feedback.py --output ../mg400-data/work/gripper_olares_feedback.json
+python3 scripts/gripper_feedback.py --output ../mg400-data/work/gripper_olares_feedback.json --commands
 ```
 
 脚本每 50 ms 读取三个状态寄存器，并原子替换最新测量文件。
@@ -456,6 +489,23 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/olares_gripper.py")
 文件反馈与 Mac WebRTC 反馈互斥。
 同一文件重复读取不会延长测量值的有效期。
 该方式沿用 Stop 时间轴和反馈过期保护，不必重启 Isaac 或新增网络端口。
+
+`--commands` 允许同一串口进程接收位置命令。
+省略该参数时，采集进程只读反馈，位置按钮不可用。
+面板提供 0–1000 开口滑块和数值输入框。
+0 为闭合，1000 为全开。点击 `Move to opening` 执行目标。
+`Open gripper` 和 `Close gripper` 分别执行 1000 和 0。
+也可在法兰面板开启键盘控制后，用 Z/X 调节开口。
+
+首次位置命令将夹爪切换为仅 Modbus 控制，保留当前力度和速度。
+该操作不初始化夹爪，也不保存到闪存，I/O 开合随后不再生效。
+位置命令写入反馈文件旁的 `.command.json` 文件。
+采集进程只执行匹配当前会话且不超过 0.75 秒的请求，每个请求只执行一次。
+写应答和目标寄存器回读成功后，面板继续检查实测位置。
+实测位置在目标 ±5 / 1000 内且夹爪报告到位时，才显示到位。
+检测到物体接触时，面板单独报告接触状态。
+写入失败或结果无法确认时，控制锁定，不重发命令。
+Mac WebRTC 反馈入口仍使用二态 I/O 开合，不支持位置命令。
 
 ## 四轴映射与当前范围
 

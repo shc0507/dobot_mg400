@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
 
@@ -193,3 +194,122 @@ def test_write_failure_locks_panel_without_second_write(module):
         panel.command.assert_called_once_with("DOExecute(2,0)")
 
     asyncio.run(exercise())
+
+
+def position_feedback(**changes):
+    return dict(
+        session="a51c687e-95f5-4fa5-a73d-6088dba073f1", seq=1, init=1, state=1, position=500,
+        control=dict(protocol=1, command_id=None, target=None, ack=False,
+                     locked=False, error=None, io_mode=None),
+        **changes,
+    )
+
+
+def test_file_transport_never_falls_back_to_io_and_requires_fresh_capability(module, tmp_path):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.operate = Mock()
+    assert panel.measured_position() is None
+    assert panel.submit("open") is None
+    assert panel.submit("close") is None
+    assert panel.submit_position(500) is None
+    panel.operate.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("position", [-1, 1001, True, 50.0])
+def test_position_validation_prevents_file_writes(module, tmp_path, position):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    with pytest.raises(ValueError, match="integer"):
+        panel.submit_position(position)
+    assert not list(tmp_path.glob("*.command.json"))
+
+
+@pytest.mark.parametrize("arrival", [True, False])
+def test_position_requires_current_ack_and_measured_arrival(
+    module, monkeypatch, tmp_path, arrival
+):
+    async def exercise():
+        feedback_path = tmp_path / "feedback.json"
+        command_path = tmp_path / "feedback.json.command.json"
+        panel = module.GripperPanel(str(feedback_path))
+        sample = position_feedback()
+        panel.feedback.get = lambda: sample.copy()
+        original_sleep = asyncio.sleep
+        observed = []
+
+        async def advance(delay):
+            await original_sleep(0)
+            request = json.loads(command_path.read_text())
+            observed.append(request)
+            assert request["session"] == sample["session"]
+            assert request["position"] == 525
+            sample["seq"] += 1
+            sample["position"] = 525 if arrival else 515
+            sample["state"] = 1 if arrival else 2
+            sample["control"] = dict(
+                protocol=1, command_id=request["id"], target=525, ack=True,
+                locked=False, error=None, io_mode=0,
+            )
+
+        monkeypatch.setattr(asyncio, "sleep", advance)
+        first = panel.submit_position(525)
+        assert panel.submit_position(550) is None
+        await first
+        assert panel.report["ack"]
+        assert panel.report["arrival_observed"] is arrival
+        assert not panel.failed
+        assert panel.measured_position() == sample["position"]
+        assert len(observed) == 1
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("fault", ["stale", "session", "old_ack", "wrong_target", "locked"])
+def test_position_failure_locks_panel_without_retry(
+    module, monkeypatch, tmp_path, fault
+):
+    async def exercise():
+        command_path = tmp_path / "feedback.json.command.json"
+        panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+        sample = [position_feedback()]
+        panel.feedback.get = lambda: None if sample[0] is None else sample[0].copy()
+        original_sleep = asyncio.sleep
+        now = [0.0]
+        monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+
+        async def advance(delay):
+            await original_sleep(0)
+            request = json.loads(command_path.read_text())
+            now[0] += 1
+            if fault == "stale":
+                sample[0] = None
+            elif fault == "session":
+                sample[0]["session"] = str(uuid4())
+            else:
+                sample[0].update(seq=2, position=525)
+                sample[0]["control"] = dict(
+                    protocol=1,
+                    command_id=str(uuid4()) if fault == "old_ack" else request["id"],
+                    target=526 if fault == "wrong_target" else 525,
+                    ack=True, locked=fault == "locked", error="Write reply lost", io_mode=0,
+                )
+
+        monkeypatch.setattr(asyncio, "sleep", advance)
+        await panel.submit_position(525)
+        original = command_path.read_text()
+        assert panel.failed and not panel.report["arrival_observed"]
+        assert not panel.report["ack"]
+        assert panel.submit("open") is None
+        assert command_path.read_text() == original
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+def test_file_open_close_use_position_transport(module, tmp_path):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.submit_position = Mock()
+    panel.submit("open")
+    panel.submit("close")
+    assert [call.args for call in panel.submit_position.call_args_list] == [(1000,), (0,)]

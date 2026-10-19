@@ -11,6 +11,9 @@ from mg400_agent.joint_control import JointControl
 START = (0.7, 0.04, 0.52, 23.08)
 TARGET = (*START[:3], START[3] + 2)
 MOVE = "JointMovJ(0.700000,0.040000,0.520000,25.080000,SpeedJ=5,AccJ=5)"
+POSE = (250.0, 10.0, 40.0, 23.78)
+LINEAR_TARGET = (251.0, 10.0, 40.0, 23.78)
+LINEAR_MOVE = "MovL(251.000000,10.000000,40.000000,23.780000,User=0,Tool=0,SpeedL=1,AccL=1)"
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +62,30 @@ def rig(monkeypatch):
     return control, sample, now, commands
 
 
+@pytest.fixture
+def cartesian_rig(rig, monkeypatch):
+    control, sample, now, commands = rig
+    pose = [POSE]
+    original = control._command
+
+    def command(text, port=29999, *, pending=None, stopping=False):
+        if text.startswith(("GetPose(", "InverseSolution(", "MovL(")):
+            commands.append((text, port))
+            if text == "GetPose(0,0)":
+                return ",".join(map(str, pose[0]))
+            if text.startswith("InverseSolution("):
+                return ",".join(map(str, TARGET))
+            if pending is not None:
+                pending["sent"] = True
+            pose[0] = tuple(float(value) for value in text[len("MovL(") :].split(",")[:4])
+            sample[0] = Feedback(TARGET, 5, 0, False)
+            return ""
+        return original(text, port, pending=pending, stopping=stopping)
+
+    monkeypatch.setattr(control, "_command", command)
+    return control, sample, now, commands, pose
+
+
 def test_construction_and_read_only_state_never_open_connections(rig):
     control, _, _, commands = rig
     assert not control.busy
@@ -66,6 +93,144 @@ def test_construction_and_read_only_state_never_open_connections(rig):
     assert control.read_state().joints_deg == START
     assert not commands
     socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", [4, 5, 7])
+def test_read_pose_uses_explicit_zero_frames_without_mutation(cartesian_rig, mode):
+    control, sample, _, commands, _ = cartesian_rig
+    sample[0] = Feedback(START, mode, 0, False)
+    assert control.read_pose() == POSE
+    assert commands == [("GetPose(0,0)", 29999)]
+
+
+@pytest.mark.parametrize("raw", ["", "1,2,3", "1,2,3,4,0,0", "1,2,nan,4", "1,2,3,inf"])
+def test_read_pose_rejects_malformed_or_nonfinite_values(rig, monkeypatch, raw):
+    control, _, _, _ = rig
+    monkeypatch.setattr(control, "_command", Mock(return_value=raw))
+    with pytest.raises(ValueError):
+        control.read_pose()
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_read_pose_checks_feedback_freshness_before_and_after_query(rig, monkeypatch, when):
+    control, sample, now, _ = rig
+    stale = [when == "before"]
+    control.feedback_snapshot = lambda: (sample[0], now[0] - (0.3 if stale[0] else 0))
+
+    def query(text):
+        stale[0] = True
+        return ",".join(map(str, POSE))
+
+    query = Mock(side_effect=query)
+    monkeypatch.setattr(control, "_command", query)
+    with pytest.raises(RuntimeError, match="stale"):
+        control.read_pose()
+    assert query.call_count == (0 if when == "before" else 1)
+
+
+def test_linear_move_uses_controller_ik_and_verifies_pose_and_joints(cartesian_rig):
+    control, _, now, commands, pose = cartesian_rig
+    assert control.move_linear(LINEAR_TARGET).joints_deg == TARGET
+    assert pose[0] == LINEAR_TARGET
+    assert now[0] >= 10.8
+    assert ("InverseSolution(251.000000,10.000000,40.000000,23.780000,0,0)", 29999) in commands
+    mutations = [(text, port) for text, port in commands if text.startswith("MovL(")]
+    assert mutations == [(LINEAR_MOVE, 30003)]
+    assert not any(text.startswith(("Enable", "SpeedFactor", "CP(")) for text, _ in commands)
+    assert not control.busy
+    assert not control.stopped
+
+
+@pytest.mark.parametrize(
+    "target",
+    [None, "1234", (1, 2, 3), (1, 2, 3, True), (1, 2, 3, float("nan")), (1, 2, 3, 10**400)],
+)
+def test_invalid_linear_target_does_not_read_or_send(rig, monkeypatch, target):
+    control, _, _, commands = rig
+    read = Mock(side_effect=AssertionError("Invalid target must not read feedback"))
+    monkeypatch.setattr(control, "read_state", read)
+    with pytest.raises(ValueError):
+        control.move_linear(target)
+    assert not commands
+    read.assert_not_called()
+
+
+def test_linear_move_does_not_enable_disabled_robot(cartesian_rig):
+    control, sample, _, commands, _ = cartesian_rig
+    sample[0] = Feedback(START, 4, 0, False)
+    with pytest.raises(RuntimeError, match="enabled and idle"):
+        control.move_linear(LINEAR_TARGET)
+    assert not commands
+    assert not control.stopped
+
+
+@pytest.mark.parametrize("solution", ["1,2,3", "0,0,0,nan", "160,0,0,0"])
+def test_invalid_controller_inverse_solution_prevents_linear_motion(
+    cartesian_rig, monkeypatch, solution
+):
+    control, _, _, commands, _ = cartesian_rig
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text.startswith("InverseSolution("):
+            return solution
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(ValueError):
+        control.move_linear(LINEAR_TARGET)
+    assert not any(text.startswith("MovL(") for text, _ in commands)
+
+
+def test_linear_arrival_does_not_accept_idle_feedback_before_motion_starts(
+    cartesian_rig, monkeypatch
+):
+    control, sample, now, _, pose = cartesian_rig
+    original = control._command
+    sent_at = [None]
+
+    def command(text, *args, **kwargs):
+        if text == "GetPose(0,0)" and sent_at[0] is not None:
+            elapsed = now[0] - sent_at[0]
+            pose[0] = POSE if elapsed < 0.8 else LINEAR_TARGET
+            mode = 5 if elapsed < 0.5 or elapsed >= 1 else 7
+            sample[0] = Feedback(START if elapsed < 0.8 else TARGET, mode, 0, False)
+        result = original(text, *args, **kwargs)
+        if text.startswith("MovL("):
+            sent_at[0] = now[0]
+            sample[0] = Feedback(START, 5, 0, False)
+            pose[0] = POSE
+        return result
+
+    monkeypatch.setattr(control, "_command", command)
+    assert control.move_linear(LINEAR_TARGET).joints_deg == TARGET
+    assert now[0] - sent_at[0] >= 1.4
+
+
+def test_linear_arrival_requires_new_feedback_receipts(cartesian_rig, monkeypatch):
+    control, sample, _, _, pose = cartesian_rig
+    sample[0] = Feedback(TARGET, 5, 0, False)
+    pose[0] = LINEAR_TARGET
+    monkeypatch.setattr(control, "_fresh", lambda modes: (sample[0], 10.0))
+    with pytest.raises(TimeoutError):
+        control._wait_linear(LINEAR_TARGET, TARGET, timeout=0.5)
+
+
+def test_linear_final_pose_check_rejects_drift_after_stable_arrival(cartesian_rig, monkeypatch):
+    control, _, _, commands, pose = cartesian_rig
+    original = control._wait_linear
+
+    def wait(*args):
+        result = original(*args)
+        pose[0] = (LINEAR_TARGET[0] + 0.2, *LINEAR_TARGET[1:])
+        return result
+
+    monkeypatch.setattr(control, "_wait_linear", wait)
+    with pytest.raises(RuntimeError, match="Cartesian arrival"):
+        control.move_linear(LINEAR_TARGET)
+    assert sum(text.startswith("MovL(") for text, _ in commands) == 1
+    assert control.stopped
+    assert ("ResetRobot()", 29999) in commands
 
 
 @pytest.mark.parametrize("initial_mode", [4, 5])
@@ -202,7 +367,11 @@ def test_successful_disable_allows_explicit_enable_on_fresh_controller(rig, monk
     assert fresh_control.enable().mode == 5
     assert not fresh_control.stopped
     assert fresh_control.move(TARGET).joints_deg == TARGET
-    for action in (control.enable, lambda: control.move(TARGET)):
+    for action in (
+        control.enable,
+        lambda: control.move(TARGET),
+        lambda: control.move_linear(LINEAR_TARGET),
+    ):
         with pytest.raises(RuntimeError, match="stopped"):
             action()
     mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]

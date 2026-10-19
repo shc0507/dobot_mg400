@@ -184,3 +184,34 @@ def test_valid_motion_and_contact_states_are_accepted(clocks, state, position):
     payload = sample(state=state, position=position)
     assert feedback.receive(payload)
     assert feedback.get() == payload
+
+
+def control_sample(**changes):
+    return dict(protocol=1, command_id=None, target=None, ack=False,
+                locked=False, error=None, io_mode=None, **changes)
+
+
+def test_control_feedback_is_copied_and_expires_with_measurement(clocks):
+    feedback = FeedbackState()
+    control = control_sample()
+    assert feedback.receive(sample(control=control))
+    control["locked"] = True
+    result = feedback.get()
+    assert result["control"]["locked"] is False
+    result["control"]["locked"] = True
+    assert feedback.get()["control"]["locked"] is False
+    clocks["monotonic"] += 0.751
+    assert feedback.get() is None
+
+
+@pytest.mark.parametrize(
+    "change", [{"protocol": True}, {"protocol": 2}, {"ack": 1}, {"locked": 0},
+               {"ack": True}, {"target": 500}, {"io_mode": True}, {"io_mode": 2},
+               {"command_id": "bad", "target": 500},
+               {"command_id": SESSION, "target": 1001}, {"error": []}],
+)
+def test_invalid_control_feedback_clears_freshness(clocks, change):
+    feedback = FeedbackState()
+    assert feedback.receive(sample())
+    assert not feedback.receive(sample(seq=1, control={**control_sample(), **change}))
+    assert feedback.get() is None

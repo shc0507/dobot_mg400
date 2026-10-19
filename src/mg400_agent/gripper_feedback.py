@@ -46,6 +46,31 @@ class FeedbackState:
             value = payload.get(key)
             if type(value) is not int or not lower <= value <= upper:
                 return False
+        control = payload.get("control")
+        if control is not None:
+            if not isinstance(control, dict) or type(control.get("protocol")) is not int:
+                return False
+            if control["protocol"] != 1:
+                return False
+            if any(type(control.get(key)) is not bool for key in ("ack", "locked")):
+                return False
+            if control.get("io_mode") is not None and (
+                type(control["io_mode"]) is not int or control["io_mode"] not in (0, 1)
+            ):
+                return False
+            command_id, target = control.get("command_id"), control.get("target")
+            if command_id is not None:
+                try:
+                    if not isinstance(command_id, str) or str(UUID(command_id)) != command_id:
+                        return False
+                except ValueError:
+                    return False
+                if type(target) is not int or not 0 <= target <= 1000:
+                    return False
+            elif target is not None or control["ack"]:
+                return False
+            if control.get("error") is not None and not isinstance(control["error"], str):
+                return False
         if session != self._session:
             if self._session is not None:
                 self._retired_sessions.add(self._session)
@@ -54,6 +79,8 @@ class FeedbackState:
         self._latest = {
             key: payload[key] for key in ("session", "seq", "sent_at", "init", "state", "position")
         }
+        if control is not None:
+            self._latest["control"] = control.copy()
         self._received = time.monotonic()
         return True
 
@@ -65,7 +92,10 @@ class FeedbackState:
             now = time.monotonic()
         if not 0 <= now - self._received <= 0.75:
             return None
-        return self._latest.copy()
+        sample = self._latest.copy()
+        if "control" in sample:
+            sample["control"] = sample["control"].copy()
+        return sample
 
 
 class FileFeedback:

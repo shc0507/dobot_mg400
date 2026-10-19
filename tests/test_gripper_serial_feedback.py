@@ -266,3 +266,167 @@ def test_sigterm_runs_cleanup_and_restores_handler(module, monkeypatch):
     assert error.value.code == 128 + module.signal.SIGTERM
     assert cleaned == [True]
     assert module.signal.getsignal(module.signal.SIGTERM) is old_handler
+
+
+def test_position_write_uses_documented_frame_and_exact_echo(module, monkeypatch):
+    request = bytes.fromhex("01 06 01 03 01 f4 78 21")
+    write = Mock(return_value=8)
+    monkeypatch.setattr(module.os, "write", write)
+    monkeypatch.setattr(module.os, "read", Mock(return_value=request))
+    monkeypatch.setattr(module.select, "select", Mock(return_value=([42], [], [])))
+    assert module.register(42, 0x0103, 500) == 500
+    write.assert_called_once_with(42, request)
+
+
+@pytest.mark.parametrize(
+    "address,value", [(0x0100, 1), (0x0300, 1), (0x0402, 1), (0x0101, 50),
+                      (0x0104, 30), (0x0103, -1), (0x0103, 1001), (0x0103, True)],
+)
+def test_position_transport_rejects_other_writes(module, monkeypatch, address, value):
+    write = Mock()
+    monkeypatch.setattr(module.os, "write", write)
+    with pytest.raises(ValueError, match="not allowed"):
+        module.register(42, address, value)
+    write.assert_not_called()
+
+
+@pytest.mark.parametrize("fault", ["wrong_echo", "exception", "bad_crc"])
+def test_position_transport_never_retries_uncertain_write(module, monkeypatch, fault):
+    response = packet(module, bytes.fromhex("01 06 01 03 01 f4"))
+    if fault == "wrong_echo":
+        response = packet(module, bytes.fromhex("01 06 01 03 01 f5"))
+    elif fault == "exception":
+        response = packet(module, bytes.fromhex("01 86 02"))
+    else:
+        response = response[:-1] + bytes([response[-1] ^ 1])
+    write = Mock(return_value=8)
+    monkeypatch.setattr(module.os, "write", write)
+    monkeypatch.setattr(module.os, "read", Mock(return_value=response))
+    monkeypatch.setattr(module.select, "select", Mock(return_value=([42], [], [])))
+    with pytest.raises(ValueError):
+        module.register(42, 0x0103, 500)
+    write.assert_called_once()
+
+
+@pytest.mark.parametrize("initial_mode", [0, 1])
+def test_position_disables_io_preserves_force_speed_and_checks_target(
+    module, monkeypatch, initial_mode
+):
+    values = {0x0101: 50, 0x0104: 30, 0x0402: initial_mode, 0x0103: 0}
+    operations = []
+
+    def register(fd, address, value=None):
+        operations.append((address, value))
+        if value is not None:
+            values[address] = value
+        return values[address]
+
+    monkeypatch.setitem(module.set_position.__globals__, "read", Mock(return_value=(1, 1, 0)))
+    monkeypatch.setitem(module.set_position.__globals__, "register", register)
+    module.set_position(42, 501)
+    writes = [(address, value) for address, value in operations if value is not None]
+    assert writes == ([(0x0402, 0)] if initial_mode else []) + [(0x0103, 501)]
+    assert operations[-1] == (0x0103, None)
+    assert values[0x0101] == 50 and values[0x0104] == 30
+
+
+@pytest.mark.parametrize("state", [(0, 1, 500), (1, 3, 500), (1, 1, 1001)])
+def test_position_requires_valid_initialized_feedback_before_any_register_access(
+    module, monkeypatch, state
+):
+    register = Mock()
+    monkeypatch.setitem(module.set_position.__globals__, "read", Mock(return_value=state))
+    monkeypatch.setitem(module.set_position.__globals__, "register", register)
+    with pytest.raises(RuntimeError, match="not ready"):
+        module.set_position(42, 500)
+    register.assert_not_called()
+
+
+@pytest.mark.parametrize("fault", ["force", "speed", "mode", "mode_readback", "target_readback"])
+def test_position_rejects_invalid_settings_or_readback(module, monkeypatch, fault):
+    calls = []
+    mode_reads = [0]
+
+    def register(fd, address, value=None):
+        calls.append((address, value))
+        if value is not None:
+            return value
+        if address == 0x0101:
+            return 0 if fault == "force" else 50
+        if address == 0x0104:
+            return 101 if fault == "speed" else 30
+        if address == 0x0402:
+            mode_reads[0] += 1
+            if fault == "mode":
+                return 2
+            return 1 if fault == "mode_readback" else 0
+        return 499 if fault == "target_readback" else 500
+
+    monkeypatch.setitem(module.set_position.__globals__, "read", Mock(return_value=(1, 1, 0)))
+    monkeypatch.setitem(module.set_position.__globals__, "register", register)
+    with pytest.raises(RuntimeError):
+        module.set_position(42, 500)
+    if fault != "target_readback":
+        assert (0x0103, 500) not in calls
+
+
+def test_mailbox_reads_latest_request_once_and_rejects_replay(module, monkeypatch, tmp_path):
+    session = str(uuid.uuid4())
+    mailbox = module.PositionMailbox(tmp_path / "feedback.json", session)
+    send = Mock()
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    first = dict(id=str(uuid.uuid4()), session=session, sent_at=1000.0, position=501)
+    second = {**first, "id": str(uuid.uuid4()), "position": 502}
+    mailbox.path.write_text(json.dumps(first))
+    mailbox.path.write_text(json.dumps(second))
+    mailbox.poll(42)
+    mailbox.poll(42)
+    assert mailbox.control["ack"] and mailbox.control["io_mode"] == 0
+    assert mailbox.control["command_id"] == second["id"]
+    mailbox.path.write_text(json.dumps(first))
+    mailbox.poll(42)
+    mailbox.path.write_text(json.dumps(second))
+    mailbox.poll(42)
+    assert [call.args for call in send.call_args_list] == [(42, 502), (42, 501)]
+
+
+@pytest.mark.parametrize(
+    "change", [{"session": str(uuid.uuid4())}, {"id": "bad"}, {"sent_at": 999.249},
+               {"sent_at": 1000.01}, {"sent_at": float("nan")}, {"sent_at": True},
+               {"position": True}, {"position": 1001}, {"position": -1}],
+)
+def test_mailbox_rejects_other_sessions_expired_or_invalid_requests(
+    module, monkeypatch, tmp_path, change
+):
+    session = str(uuid.uuid4())
+    mailbox = module.PositionMailbox(tmp_path / "feedback.json", session)
+    send = Mock()
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    request = dict(id=str(uuid.uuid4()), session=session, sent_at=1000.0, position=500)
+    mailbox.path.write_text(json.dumps({**request, **change}))
+    mailbox.poll(42)
+    send.assert_not_called()
+
+
+def test_mailbox_locks_after_uncertain_write_and_never_retries(module, monkeypatch, tmp_path):
+    session = str(uuid.uuid4())
+    mailbox = module.PositionMailbox(tmp_path / "feedback.json", session)
+    send = Mock(side_effect=TimeoutError("Write reply lost"))
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    for position in (501, 502):
+        mailbox.path.write_text(json.dumps(dict(
+            id=str(uuid.uuid4()), session=session, sent_at=1000.0, position=position,
+        )))
+        mailbox.poll(42)
+    assert mailbox.control["locked"] and not mailbox.control["ack"]
+    assert mailbox.control["error"] == "Write reply lost"
+    send.assert_called_once_with(42, 501)
+
+
+def test_commands_require_shared_output_file(module):
+    with pytest.raises(SystemExit) as error:
+        module.main(["--commands"])
+    assert error.value.code == 2

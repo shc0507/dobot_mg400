@@ -10,6 +10,7 @@ import socket
 import threading
 import time
 
+from .config import finite_number
 from .controller_protocol import parse_controller_response
 from .feedback import Feedback
 from .joint_limits import validate_joint_segment, validate_joints
@@ -71,6 +72,26 @@ class JointControl:
     def read_state(self) -> Feedback:
         """Read fresh idle feedback without sending any controller command."""
         return self._fresh({4, 5})[0]
+
+    @staticmethod
+    def _four_values(values):
+        if not isinstance(values, (list, tuple)) or len(values) != 4:
+            raise ValueError("Expected four finite pose values in mm/degrees")
+        try:
+            return tuple(finite_number(value) for value in values)
+        except OverflowError as error:
+            raise ValueError("Expected four finite pose values in mm/degrees") from error
+
+    def _read_pose(self, modes):
+        self._fresh(modes)
+        values = tuple(float(value) for value in self._command("GetPose(0,0)").split(","))
+        pose = self._four_values(values)
+        self._fresh(modes)
+        return pose
+
+    def read_pose(self):
+        """Read measured XYZ in mm and R in degrees for User=0, Tool=0."""
+        return self._read_pose({4, 5, 7})
 
     def _command(self, text, port=29999, *, pending=None, stopping=False):
         """Send once; a reply must have a successful code and the matching echo."""
@@ -263,6 +284,82 @@ class JointControl:
                 or not self._near(sample.joints_deg, target)
             ):
                 raise RuntimeError("Final dashboard position does not verify arrival")
+            return sample
+        except Exception as error:
+            self._failed(error)
+            raise
+        finally:
+            self._operation_lock.release()
+
+    def _wait_linear(self, target, joints, timeout=120.0):
+        deadline = time.monotonic() + timeout
+        previous_received = None
+        anchor = stable_since = None
+        count = 0
+        while time.monotonic() < deadline:
+            if self.stopped:
+                raise RuntimeError("Control has been stopped; reopen the panel")
+            pose = self._read_pose({5, 7})
+            sample, received = self._fresh({5, 7})
+            if received != previous_received:
+                previous_received = received
+                ready = (
+                    sample.mode == 5
+                    and self._near(pose, target)
+                    and self._near(sample.joints_deg, joints)
+                )
+                if not ready:
+                    anchor = stable_since = None
+                    count = 0
+                elif anchor is None or not self._near(sample.joints_deg, anchor, 0.025):
+                    anchor, stable_since, count = sample.joints_deg, received, 1
+                else:
+                    count += 1
+                    if count >= 3 and received - stable_since >= 0.4:
+                        return sample
+            time.sleep(0.05)
+        raise TimeoutError("Robot did not reach a fresh, verified Cartesian target")
+
+    def move_linear(self, target) -> Feedback:
+        """Move to absolute User=0/Tool=0 XYZ/R and verify measured arrival.
+
+        The controller solves the endpoint and plans the Cartesian line.
+        R is flange yaw, not the J4 joint angle.
+        """
+        target = self._four_values(target)
+        if self.read_state().mode != 5:
+            raise RuntimeError("Robot must be enabled and idle before movement")
+        self._begin()
+        try:
+            _, start = self._preflight({5})
+            start_pose = self._read_pose({5})
+            values = ",".join(f"{value:.6f}" for value in target)
+            # The six-argument form selects the solution nearest the current joints.
+            solution = tuple(
+                float(value)
+                for value in self._command(f"InverseSolution({values},0,0)").split(",")
+            )
+            target_joints = validate_joints(solution)
+            if not self._near(self._read_pose({5}), start_pose):
+                raise RuntimeError("Robot pose changed before Cartesian movement")
+            self._guarded_command(
+                f"MovL({values},User=0,Tool=0,SpeedL=1,AccL=1)",
+                modes={5, 7},
+                send_modes={5},
+                expected=start,
+                port=30003,
+            )
+            self._wait_linear(target, target_joints)
+            mode, actual = self._dashboard_state()
+            pose = self._read_pose({5})
+            sample = self._fresh({5})[0]
+            if (
+                mode != 5
+                or not self._near(actual, target_joints)
+                or not self._near(sample.joints_deg, target_joints)
+                or not self._near(pose, target)
+            ):
+                raise RuntimeError("Final dashboard position does not verify Cartesian arrival")
             return sample
         except Exception as error:
             self._failed(error)

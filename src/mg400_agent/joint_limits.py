@@ -1,9 +1,20 @@
-"""Uncalibrated MG400 reference ranges for offline simulation, in degrees.
+"""Conservative project guards for MG400 controller J1-J4 angles, in degrees.
 
-Source: HarvestX/MG400_ROS2, commit 1a8c7344be44c52030f7216c0f387873ed91fd11,
-mg400_common/include/mg400_common/kinematics.hpp (Apache-2.0).
-Unlike its IK constraint check, angles are never normalized here.
-These ranges do not establish safe limits for a physical robot.
+The angles use the controller QActual / GetAngle() convention without changes.
+J3 is not J3-J2. This module never normalizes angles.
+
+The manufacturer User Guide V1.7, Appendix A, lists these joint ranges:
+J1 [-160, 160], J2 [-25, 85], J3 [-25, 105], J4 [-360, 360].
+Source:
+https://download.dobot.cc/DobotStudio-pro/20231116/Dobot%20MG400%20User%20Guide%20V1.7_20231116_en.pdf
+
+The project retains additional conservative guards from HarvestX/MG400_ROS2:
+J4 [-160, 160], J2 >= -19 when J3 <= 0, and J3-J2 [-60, 60].
+These project guards are not manufacturer controller limits.
+Target checks reduce each permitted range by 1.05 degrees at both ends.
+validate_measured_joints applies no margin. These guards do not establish physical safety.
+HarvestX source (Apache-2.0):
+https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_common/include/mg400_common/kinematics.hpp
 """
 
 from collections.abc import Sequence
@@ -14,12 +25,12 @@ MARGIN_DEG = 1.05
 
 
 def validate_joints(joints_deg: Sequence[float]) -> tuple[float, float, float, float]:
-    """Return four finite angles within the inward-margined reference ranges."""
+    """Check four finite controller angles against project guards with a 1.05-degree margin."""
     return _validate_joints(joints_deg, MARGIN_DEG)
 
 
 def validate_measured_joints(joints_deg: Sequence[float]) -> tuple[float, float, float, float]:
-    """Check measured simulation angles against reference ranges without margin."""
+    """Check measured controller angles against project guards without a margin."""
     return _validate_joints(joints_deg, 0.0)
 
 

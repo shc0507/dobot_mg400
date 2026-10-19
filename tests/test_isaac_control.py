@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from dataclasses import replace
+from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -152,6 +153,8 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
             self.parent = containers[-1] if containers else None
             self.destroyed = False
             self.focused = True
+            self.exclusive_keyboard = False
+            self.key_pressed = None
             self.frame = self
             widgets.append(self)
 
@@ -168,6 +171,9 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
         def set_focused_changed_fn(self, callback):
             self.focused_changed = callback
 
+        def set_key_pressed_fn(self, callback):
+            self.key_pressed = callback
+
         def set_focus(self, focused):
             self.focused = focused
             self.focused_changed(focused)
@@ -180,10 +186,14 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
             self.callback = None
             self.keyboard = object()
             self.subscription = object()
+            self.subscribed = []
             self.unsubscribed = []
+            self.window_events = []
+            self.global_events = []
 
         def subscribe_to_keyboard_events(self, keyboard, callback):
             assert keyboard is self.keyboard
+            self.subscribed.append((keyboard, callback))
             self.callback = callback
             return self.subscription
 
@@ -192,7 +202,40 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
             self.callback = None
 
         def emit(self, key, event_type="press", modifiers=0):
-            return self.callback(SimpleNamespace(input=key, type=event_type, modifiers=modifiers))
+            assert type(key) is int
+            assert event_type in ("press", "release", "repeat")
+            window = panel.window
+            if window.visible and window.focused and not window.destroyed:
+                exclusive = window.exclusive_keyboard
+                if window.key_pressed is not None:
+                    event = (key, modifiers, event_type != "release")
+                    self.window_events.append(event)
+                    window.key_pressed(*event)
+                if exclusive:
+                    return False
+            self.global_events.append((key, modifiers, event_type))
+            if self.callback is not None:
+                return self.callback(SimpleNamespace(
+                    input=KeyboardInput(key), type=event_type, modifiers=modifiers
+                ))
+            return True
+
+    class KeyboardInput(Enum):
+        # Carbonite InputTypes.h values. Window callbacks receive their integer values.
+        A = 19
+        D = 22
+        E = 23
+        F = 24
+        Q = 35
+        R = 36
+        S = 37
+        W = 41
+        X = 42
+        Z = 44
+        ESCAPE = 49
+
+        def __int__(self):
+            return self.value
 
     modules = {
         name: ModuleType(name)
@@ -204,9 +247,7 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
     input_interface = InputInterface()
     modules["carb"].input = modules["carb.input"]
     modules["carb.input"].acquire_input_interface = lambda: input_interface
-    modules["carb.input"].KeyboardInput = SimpleNamespace(
-        **{key: key for key in (*panel_module.JOG_KEYS, "ESCAPE")}
-    )
+    modules["carb.input"].KeyboardInput = KeyboardInput
     modules["carb.input"].KeyboardEventType = SimpleNamespace(
         KEY_PRESS="press", KEY_RELEASE="release", KEY_REPEAT="repeat"
     )
@@ -725,22 +766,41 @@ def test_keyboard_waits_for_enabled_idle_robot(panel, mode):
     assert panel.control.calls == []
 
 
-def test_keyboard_modifier_disarms_and_clears_held_keys(panel):
+@pytest.mark.parametrize("modifiers", (16, 32, 48))
+def test_keyboard_lock_modifiers_allow_motion_and_release(panel, modifiers):
+    async def exercise():
+        panel.control.release_move.set()
+        panel.set_keyboard(True)
+        panel.key_event("R", True, modifiers=modifiers)
+        assert panel.keyboard_enabled
+        assert panel.action is not None
+        await panel.action
+        panel.key_event("R", False, modifiers=modifiers)
+        assert panel.keyboard_enabled
+        assert panel.held_keys == set()
+        assert panel.control.calls == [("move_linear", (1.0, 2.0, 4.0, 4.0))]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("modifiers", (1, 2, 4, 8))
+def test_keyboard_modifier_disarms_and_clears_held_keys(panel, modifiers):
     panel.set_keyboard(True)
     panel.held_keys.add("W")
-    panel.key_event("R", True, modifiers=2)
+    panel.key_event("R", True, modifiers=modifiers)
     assert not panel.keyboard_enabled
     assert panel.held_keys == set()
     assert panel.action is None
     assert panel.control.calls == []
 
 
-def test_escape_disables_robot_and_clears_keyboard_state(panel):
+@pytest.mark.parametrize("modifiers", (0, 16, 32, 48))
+def test_escape_disables_robot_and_clears_keyboard_state(panel, modifiers):
     async def exercise():
         old = panel.control
         panel.set_keyboard(True)
         panel.held_keys.add("W")
-        panel.key_event("ESCAPE", True)
+        panel.key_event("ESCAPE", True, modifiers=modifiers)
         assert not panel.keyboard_enabled
         assert panel.held_keys == set()
         assert old.cancel_modes == [True]
@@ -866,9 +926,9 @@ def test_run_initializes_passively_and_stops_active_move_on_close(
     assert panel.report["status"] == "closed"
     assert panel.report["motion_sent_by_startup"] is False
     input_interface = sys.modules["carb.input"].acquire_input_interface()
-    assert input_interface.unsubscribed == [
-        (input_interface.keyboard, input_interface.subscription)
-    ]
+    assert input_interface.subscribed == []
+    assert input_interface.unsubscribed == []
+    assert input_interface.callback is None
 
 
 @pytest.mark.parametrize(
@@ -918,20 +978,24 @@ def test_ui_button_rows_and_enabled_states(
     assert panel.control.calls == []
 
 
-@pytest.mark.parametrize("disarm", ("focus", "hidden", "modifier"))
-def test_keyboard_subscription_handles_input_and_disarms_on_context_change(
-    panel_module, panel, monkeypatch, disarm
+@pytest.mark.parametrize("key,target", ((41, (2.0, 2.0, 3.0, 4.0)),
+                                       (37, (0.0, 2.0, 3.0, 4.0))))
+def test_exclusive_window_receives_integer_key_press_and_release(
+    panel_module, panel, monkeypatch, key, target
 ):
     frames = 0
     panel.copy_actual()
     panel.control.release_move.set()
+    sample, received = panel.mirror.latest
+    panel.mirror.latest = replace(sample, joints_deg=(0.0, 2.0, 3.0, 4.0)), received
 
     async def next_update():
         nonlocal frames
         frames += 1
         input_interface = sys.modules["carb.input"].acquire_input_interface()
         if frames == 1:
-            assert input_interface.emit("R") is True
+            assert input_interface.callback is None
+            assert input_interface.emit(key) is True
             assert panel.action is None
             keyboard_button = next(widget for widget in widgets if widget.text == "Keyboard: OFF")
             keyboard_button.clicked_fn()
@@ -940,26 +1004,128 @@ def test_keyboard_subscription_handles_input_and_disarms_on_context_change(
             assert panel.window.exclusive_keyboard
             fields = [widget for widget in widgets if type(widget).__name__ == "FloatField"]
             assert all(not field.enabled for field in fields)
-            assert input_interface.emit("R") is False
+            global_events = input_interface.global_events.copy()
+            assert input_interface.emit(key, modifiers=1 << 30) is False
+            assert panel.action is not None
+            pending_action = panel.action
+            assert input_interface.emit(key, "repeat", modifiers=1 << 30) is False
+            assert panel.action is pending_action
             await panel.action
-            completed_action = panel.action
-            assert input_interface.emit("R", "release") is False
-            assert input_interface.emit("R", "repeat") is False
-            assert panel.action is completed_action
-            assert panel.control.calls == [("move_linear", (1.0, 2.0, 4.0, 4.0))]
-            if disarm == "focus":
-                panel.window.set_focus(False)
-            elif disarm == "hidden":
-                panel.window.visible = False
-                assert input_interface.emit("W") is True
-            else:
-                assert input_interface.emit("LEFT_SHIFT", modifiers=2) is True
-            assert not panel.keyboard_enabled
+            assert panel.held_keys == {"W" if key == 41 else "S"}
+            assert input_interface.emit(key, "release", modifiers=1 << 30) is False
             assert panel.held_keys == set()
+            assert input_interface.window_events[-3:] == [
+                (key, 1 << 30, True), (key, 1 << 30, True), (key, 1 << 30, False),
+            ]
+            assert input_interface.global_events == global_events
+            assert panel.control.calls == [("move_linear", target)]
             panel.window.visible = False
 
     widgets = install_ui(panel_module, panel, monkeypatch, next_update)
     asyncio.run(panel.run())
     assert frames == 2
+    assert panel.control.calls == [("move_linear", target)]
+    assert panel.window.destroyed
+
+
+@pytest.mark.parametrize("disarm", ("focus", "hidden", "modifier"))
+def test_window_keyboard_disarms_and_focus_return_does_not_rearm(
+    panel_module, panel, monkeypatch, disarm
+):
+    frames = 0
+    panel.control.release_move.set()
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        input_interface = sys.modules["carb.input"].acquire_input_interface()
+        if frames == 1:
+            panel.set_keyboard(True)
+        if frames == 2:
+            assert panel.window.exclusive_keyboard
+            assert input_interface.emit(36) is False
+            await panel.action
+            completed_action = panel.action
+            assert panel.held_keys == {"R"}
+            if disarm == "focus":
+                panel.window.set_focus(False)
+                assert not panel.keyboard_enabled
+                assert panel.held_keys == set()
+                panel.window.set_focus(True)
+                input_interface.emit(41)
+                assert not panel.keyboard_enabled
+            elif disarm == "hidden":
+                panel.window.visible = False
+                input_interface.emit(41)
+            else:
+                assert input_interface.emit(41, modifiers=2) is False
+                assert not panel.keyboard_enabled
+                assert panel.held_keys == set()
+                input_interface.emit(41)
+                assert not panel.keyboard_enabled
+            assert panel.action is completed_action
+            panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert frames == 2
+    assert not panel.keyboard_enabled
+    assert panel.held_keys == set()
     assert panel.control.calls == [("move_linear", (1.0, 2.0, 4.0, 4.0))]
     assert panel.window.destroyed
+
+
+@pytest.mark.parametrize("modifiers", (16, 32, 48, 1 << 30))
+def test_window_keyboard_accepts_lock_states_and_ui_event_flags(
+    panel_module, panel, monkeypatch, modifiers
+):
+    frames = 0
+    panel.control.release_move.set()
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            panel.set_keyboard(True)
+        if frames == 2:
+            input_interface = sys.modules["carb.input"].acquire_input_interface()
+            assert input_interface.emit(36, modifiers=modifiers) is False
+            assert panel.keyboard_enabled
+            assert panel.action is not None
+            await panel.action
+            assert input_interface.emit(36, "release", modifiers=modifiers) is False
+            assert panel.keyboard_enabled
+            assert panel.held_keys == set()
+            assert input_interface.global_events == []
+            panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert panel.control.calls == [("move_linear", (1.0, 2.0, 4.0, 4.0))]
+
+
+@pytest.mark.parametrize("shortcut", (1, 2, 4, 8))
+def test_window_keyboard_rejects_shortcuts_despite_lock_and_ui_flags(
+    panel_module, panel, monkeypatch, shortcut
+):
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            panel.set_keyboard(True)
+            panel.held_keys.add("W")
+        if frames == 2:
+            input_interface = sys.modules["carb.input"].acquire_input_interface()
+            assert input_interface.emit(36, modifiers=shortcut | 48 | (1 << 30)) is False
+            assert not panel.keyboard_enabled
+            assert panel.held_keys == set()
+            assert panel.action is None
+            input_interface.emit(36)
+            assert panel.action is None
+            panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert panel.control.calls == []

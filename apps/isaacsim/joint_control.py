@@ -28,6 +28,8 @@ ROBOT_CONFIG = ROOT / "config/robot.toml"
 HOME_JOINTS_DEG = (0.0, 0.0, 0.0, 0.0)
 GRIPPER_SINGLETON = "_mg400_isaac_real_gripper"
 JOG_KEYS = frozenset("WASDQERFZX")
+# Shift/Control/Alt/Super only; ignore lock states and omni.ui event flags.
+SHORTCUT_MODIFIERS = 0x0F
 
 
 class ControlPanel:
@@ -104,7 +106,7 @@ class ControlPanel:
         if key == "ESCAPE" and self.keyboard_enabled:
             self.request_disable()
             return
-        if modifiers:
+        if modifiers & SHORTCUT_MODIFIERS:
             self.set_keyboard(False)
             return
         if key not in JOG_KEYS or not self.keyboard_enabled or self.closed:
@@ -247,7 +249,6 @@ class ControlPanel:
 
     async def run(self):
         import carb.input
-        import omni.appwindow
         import omni.kit.app
         import omni.timeline
         import omni.ui as ui
@@ -302,27 +303,21 @@ class ControlPanel:
                     word_wrap=True, height=40,
                 )
                 message_label = ui.Label(self.message, word_wrap=True, height=45)
-        input_interface = carb.input.acquire_input_interface()
-        keyboard = omni.appwindow.get_default_app_window().get_keyboard()
-        keys = {getattr(carb.input.KeyboardInput, key): key for key in (*JOG_KEYS, "ESCAPE")}
+        keys = {int(getattr(carb.input.KeyboardInput, key)): key for key in (*JOG_KEYS, "ESCAPE")}
 
-        def on_key(event):
+        def on_key(key, modifiers, pressed):
             if not self.window.focused or not self.window.visible:
                 self.set_keyboard(False)
-                return True
-            if event.modifiers:
+                return
+            if modifiers & SHORTCUT_MODIFIERS:
                 self.set_keyboard(False)
-                return True
-            key = keys.get(event.input)
+                return
+            key = keys.get(key)
             if key is not None:
-                self.key_event(
-                    key, event.type != carb.input.KeyboardEventType.KEY_RELEASE,
-                    repeat=event.type == carb.input.KeyboardEventType.KEY_REPEAT,
-                    modifiers=event.modifiers,
-                )
-            return not self.keyboard_enabled
+                self.key_event(key, pressed, modifiers=modifiers)
 
-        keyboard_subscription = input_interface.subscribe_to_keyboard_events(keyboard, on_key)
+        # Exclusive windows receive keys here before global carb subscriptions.
+        self.window.set_key_pressed_fn(on_key)
         last_report = 0
         try:
             while not self.closed:
@@ -400,7 +395,6 @@ class ControlPanel:
         finally:
             self.closed = True
             self.set_keyboard(False)
-            input_interface.unsubscribe_to_keyboard_events(keyboard, keyboard_subscription)
             # A closing/reloaded panel must not leave its worker commanding the robot.
             if self.disable_task and not self.disable_task.done():
                 await self.disable_task

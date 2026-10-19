@@ -8,9 +8,9 @@ import asyncio
 import builtins
 import importlib
 import json
-import math
 import runpy
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 importlib.invalidate_caches()
 from mg400_agent.joint_control import JointControl  # noqa: E402
+from mg400_agent.keyboard_jog import KeyboardJogSession  # noqa: E402
 from mg400_agent.robot_config import load_robot_host  # noqa: E402
 from mg400_agent.runtime_paths import data_path  # noqa: E402
 
@@ -53,6 +54,10 @@ class ControlPanel:
         self.pose_task = None
         self.pose_lock = asyncio.Lock()
         self.keyboard_enabled = False
+        self.keyboard_arming = False
+        self.keyboard_task = self.keyboard_session = None
+        self.keyboard_generation = 0
+        self.active_key = self.jog_released = None
         self.held_keys = set()
         self.report = {"status": "starting", "motion_sent_by_startup": False}
 
@@ -68,7 +73,8 @@ class ControlPanel:
     @property
     def busy(self):
         return any(
-            task and not task.done() for task in (self.action, self.disable_task, self.stop_task)
+            task and not task.done()
+            for task in (self.action, self.disable_task, self.stop_task, self.keyboard_task)
         )
 
     def copy_actual(self):
@@ -94,14 +100,65 @@ class ControlPanel:
             except Exception:
                 self.actual_pose = None
 
+    def release_key(self):
+        if self.jog_released is not None:
+            self.jog_released.set()
+        if self.keyboard_session is not None:
+            self.keyboard_session.release()
+
     def set_keyboard(self, enabled):
         self.keyboard_enabled = bool(enabled) and not self.closed and not self.control.stopped
         self.held_keys.clear()
+        self.active_key = None
+        if not self.keyboard_enabled:
+            self.keyboard_generation += 1
+            self.keyboard_arming = False
+            self.release_key()
+
+    def request_keyboard(self):
+        if self.keyboard_enabled or self.keyboard_arming:
+            self.set_keyboard(False)
+            return
+        if self.closed or self.busy or self.control.stopped:
+            return
+        if self.keyboard_session is not None:
+            self.keyboard_session.close()
+        self.keyboard_session = KeyboardJogSession(self.control)
+        self.keyboard_generation += 1
+        self.keyboard_arming = True
+        self.keyboard_task = asyncio.ensure_future(
+            self.prepare_keyboard(self.keyboard_session, self.keyboard_generation)
+        )
+
+    async def prepare_keyboard(self, session, generation):
+        self.message = "Checking keyboard control..."
+        try:
+            # Finish an existing read before preparing the shared controller session.
+            if self.pose_task:
+                await self.pose_task
+            pose = await asyncio.to_thread(session.prepare)
+            if self.closed or generation != self.keyboard_generation:
+                session.close()
+                return
+            self.actual_pose, self.pose_received = pose, time.monotonic()
+            self.copy_actual()
+            self.set_keyboard(True)
+            self.message = "Keyboard ready. Hold one key; release requests a stop."
+        except Exception as error:
+            if generation == self.keyboard_generation:
+                self.set_keyboard(False)
+                self.message = f"ERROR: {error}"
+        finally:
+            if generation == self.keyboard_generation:
+                self.keyboard_arming = False
 
     def key_event(self, key, pressed, *, repeat=False, modifiers=0):
-        """Accept one small step per input event. Never queue key repeats."""
+        """Start one hold task. A release cancels preparation and requests a stop."""
         if not pressed:
             self.held_keys.discard(key)
+            if key == self.active_key:
+                self.release_key()
+                self.active_key = None
             return
         if key == "ESCAPE" and self.keyboard_enabled:
             self.request_disable()
@@ -113,49 +170,75 @@ class ControlPanel:
             return
         if repeat and key not in self.held_keys:
             return
+        already_held = key in self.held_keys
         self.held_keys.add(key)
-        if len(self.held_keys) != 1 or self.busy or self.control.stopped:
+        if len(self.held_keys) != 1:
+            self.release_key()
             return
-        try:
-            if self.control.read_state().mode != 5:
-                return
-        except Exception as error:
-            self.message = str(error)
+        if already_held or self.busy or self.control.stopped:
+            return
+        if self.keyboard_session is None or not self.keyboard_session.ready:
             self.set_keyboard(False)
             return
-        if key in "ZX":
-            gripper = getattr(builtins, GRIPPER_SINGLETON, None)
-            try:
-                if gripper is None or gripper.closed:
-                    raise RuntimeError("Open the gripper position panel first.")
-                if not gripper.busy:
-                    position = gripper.measured_position()
-                    if position is None:
-                        raise RuntimeError("Waiting for fresh gripper position feedback.")
-                    target = max(0, min(1000, position + (25 if key == "Z" else -25)))
-                    gripper.submit_position(target)
-            except Exception as error:
-                self.message = str(error)
-            return
-        self.action = asyncio.ensure_future(self.perform("jog", key))
+        self.active_key = key
+        self.jog_released = threading.Event()
+        self.action = asyncio.ensure_future(self.perform_keyboard(key, self.jog_released))
 
-    def jog(self, key):
-        sample = self.control.read_state()
-        if key in "AD":
-            target = list(sample.joints_deg)
-            target[0] += 1.0 if key == "A" else -1.0
-            return self.control.move(tuple(target))
-        target = list(self.control.read_pose())
-        if key in "WS":
-            direction = 1.0 if key == "W" else -1.0
-            angle = math.radians(sample.joints_deg[0])
-            target[0] += direction * math.cos(angle)
-            target[1] += direction * math.sin(angle)
-        elif key in "RF":
-            target[2] += 1.0 if key == "R" else -1.0
-        elif key in "QE":
-            target[3] += 1.0 if key == "Q" else -1.0
-        return self.control.move_linear(tuple(target))
+    async def perform_keyboard(self, key, released):
+        session = self.keyboard_session
+        self.message = "Jogging... Release the key to stop."
+        try:
+            if key in "ZX":
+                expired = await self.jog_gripper(key, released)
+            else:
+                if self.pose_task:
+                    await self.pose_task
+                pose = await asyncio.to_thread(session.run, key, released)
+                self.actual_pose, self.pose_received = pose, time.monotonic()
+                expired = session.expired
+            if not self.control.stopped and self.stop_task is None and not (
+                self.disable_task and not self.disable_task.done()
+            ):
+                self.copy_actual()
+                self.message = (
+                    "Hold limit reached. Release the key before pressing again."
+                    if expired
+                    else "Stopped. Hold a key for the next move."
+                )
+        except Exception as error:
+            self.set_keyboard(False)
+            if self.stop_task is None and not (
+                self.disable_task and not self.disable_task.done()
+            ):
+                self.message = f"ERROR: {error}"
+        print("MG400_KEYBOARD", self.message, flush=True)
+
+    async def jog_gripper(self, key, released):
+        gripper = getattr(builtins, GRIPPER_SINGLETON, None)
+        if gripper is None or gripper.closed:
+            raise RuntimeError("Open the gripper position panel first.")
+        deadline = time.monotonic() + 5.0
+        while not released.is_set() and time.monotonic() < deadline:
+            self.control.read_state()
+            if gripper.closed or gripper.failed:
+                raise RuntimeError("Gripper control is unavailable.")
+            if gripper.busy:
+                raise RuntimeError("Wait for the current gripper command to finish.")
+            position = gripper.measured_position()
+            if position is None:
+                raise RuntimeError("Waiting for fresh gripper position feedback.")
+            target = max(0, min(1000, position + (25 if key == "Z" else -25)))
+            if target == position:
+                return
+            if released.is_set():
+                return
+            action = gripper.submit_position(target)
+            if action is None:
+                raise RuntimeError("Gripper command was not accepted.")
+            await action
+            if gripper.failed:
+                raise RuntimeError("Gripper movement was not confirmed.")
+        return not released.is_set()
 
     def submit(self, name):
         # Capture the target once; edits and repeated clicks cannot queue movements.
@@ -178,8 +261,6 @@ class ControlPanel:
                 await asyncio.to_thread(self.control.enable)
             elif name == "home":
                 await asyncio.to_thread(self.control.move, target)
-            elif name == "jog":
-                await asyncio.to_thread(self.jog, target)
             else:
                 await asyncio.to_thread(self.control.move_linear, target)
             if name != "enable":
@@ -293,13 +374,13 @@ class ControlPanel:
                 ui.Label("Base frame / flange: User=0, Tool=0. Home: all joints 0 deg.", height=22)
                 keyboard_button = ui.Button(
                     "Keyboard: OFF", height=30,
-                    clicked_fn=lambda: self.set_keyboard(not self.keyboard_enabled),
+                    clicked_fn=self.request_keyboard,
                 )
                 ui.Label("W/S reach | A/D base turn | R/F up/down | Q/E flange yaw", height=22)
                 ui.Label("Z/X open/close gripper | Esc disable robot", height=22)
                 ui.Label(
-                    "Hold one key for 1 mm / 1 deg steps. Release ends repeats.\n"
-                    "The current step finishes. Leaving this panel turns keyboard control off.",
+                    "Hold one key to jog; release requests a stop. Max hold: 5 seconds.\n"
+                    "Gripper finishes its current small step. Leaving this panel turns keys off.",
                     word_wrap=True, height=40,
                 )
                 message_label = ui.Label(self.message, word_wrap=True, height=45)
@@ -348,6 +429,7 @@ class ControlPanel:
                 now = time.monotonic()
                 if (
                     not self.busy and not self.control.stopped
+                    and not self.keyboard_arming
                     and (self.pose_task is None or self.pose_task.done())
                 ) and now - self.pose_requested > 0.2:
                     self.pose_task = asyncio.ensure_future(self.refresh_pose())
@@ -370,7 +452,10 @@ class ControlPanel:
                 keyboard_button.enabled = (
                     live and sample.mode in (5, 7) and not self.control.stopped
                 )
-                keyboard_button.text = f"Keyboard: {'ON' if self.keyboard_enabled else 'OFF'}"
+                keyboard_button.text = (
+                    "Keyboard: CHECKING..." if self.keyboard_arming
+                    else f"Keyboard: {'ON' if self.keyboard_enabled else 'OFF'}"
+                )
                 self.window.exclusive_keyboard = self.keyboard_enabled
                 for field in fields:
                     field.enabled = idle and self.initialized and not self.keyboard_enabled
@@ -387,6 +472,7 @@ class ControlPanel:
                         actual_pose=self.actual_pose,
                         target_pose=[model.as_float for model in self.models],
                         keyboard_enabled=self.keyboard_enabled,
+                        keyboard_arming=self.keyboard_arming,
                         busy=self.busy,
                         message=self.message,
                     )
@@ -395,6 +481,10 @@ class ControlPanel:
         finally:
             self.closed = True
             self.set_keyboard(False)
+            if self.keyboard_session is not None:
+                self.keyboard_session.close()
+            if self.keyboard_task:
+                await self.keyboard_task
             # A closing/reloaded panel must not leave its worker commanding the robot.
             if self.disable_task and not self.disable_task.done():
                 await self.disable_task

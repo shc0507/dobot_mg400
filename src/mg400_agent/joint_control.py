@@ -17,12 +17,15 @@ from .joint_limits import validate_joint_segment, validate_joints
 
 
 class JointControl:
-    def __init__(self, host, feedback_snapshot):
+    def __init__(self, host, feedback_snapshot, *, parent=None, command_timeout=2.0):
         self.host = host
         self.feedback_snapshot = feedback_snapshot
-        self._operation_lock = threading.Lock()
-        self._dashboard_lock = threading.Lock()
-        self._send_lock = threading.Lock()
+        self._parent = parent
+        self._command_timeout = command_timeout
+        self._send_guard = None
+        self._operation_lock = parent._operation_lock if parent else threading.Lock()
+        self._dashboard_lock = parent._dashboard_lock if parent else threading.Lock()
+        self._send_lock = parent._send_lock if parent else threading.Lock()
         self._stop_lock = threading.RLock()
         self._stopped = threading.Event()
         self._disable_requested = False
@@ -37,7 +40,7 @@ class JointControl:
 
     @property
     def stopped(self):
-        return self._stopped.is_set()
+        return self._stopped.is_set() or (self._parent is not None and self._parent.stopped)
 
     def cancel(self, *, disabling=False):
         """Immediately latch cancellation from the UI, without waiting or networking.
@@ -54,6 +57,8 @@ class JointControl:
             and not (pending["done"].is_set() and pending["ok"])
         ):
             self._stop_uncertain = True
+            if self._parent is not None:
+                self._parent._stop_uncertain = True
 
     @staticmethod
     def _near(first, second, tolerance=0.1):
@@ -100,7 +105,7 @@ class JointControl:
             return self._exchange(text, port, pending=pending, stopping=stopping)
         # Hold one dashboard connection through its reply and close. The motion
         # port uses a separate connection so its pending ACK cannot block a stop.
-        if not self._dashboard_lock.acquire(timeout=2.0):
+        if not self._dashboard_lock.acquire(timeout=self._command_timeout):
             raise TimeoutError("Dashboard connection is busy")
         try:
             return self._exchange(text, port, pending=pending, stopping=stopping)
@@ -108,9 +113,13 @@ class JointControl:
             self._dashboard_lock.release()
 
     def _exchange(self, text, port, *, pending=None, stopping=False):
-        deadline = time.monotonic() + 2.0
-        with socket.create_connection((self.host, port), timeout=2.0) as connection:
+        deadline = time.monotonic() + self._command_timeout
+        with socket.create_connection(
+            (self.host, port), timeout=self._command_timeout
+        ) as connection:
             with self._send_lock:
+                if pending is not None and self._send_guard is not None:
+                    self._send_guard()
                 if pending is not None and self.stopped and not stopping:
                     raise RuntimeError("Control stopped before command was sent")
                 if pending is not None:
@@ -200,6 +209,8 @@ class JointControl:
             if self.stopped:
                 raise RuntimeError("Control has been stopped; reopen the panel")
             self._pending = pending
+            if self._parent is not None:
+                self._parent._pending = pending
 
         def send():
             try:
@@ -212,6 +223,8 @@ class JointControl:
                 # send check; preserve uncertainty before publishing the ACK result.
                 if self.stopped and pending["sent"]:
                     self._stop_uncertain = True
+                    if self._parent is not None:
+                        self._parent._stop_uncertain = True
                 pending["done"].set()
 
         threading.Thread(target=send, name="MG400-command", daemon=True).start()

@@ -16,6 +16,7 @@ import runpy
 import shutil
 import socket
 import sys
+import threading
 from pathlib import Path
 
 root = Path(sys.argv[1])
@@ -46,6 +47,7 @@ socket.socket = forbidden
 socket.create_connection = forbidden
 asyncio.ensure_future = forbidden
 asyncio.create_task = forbidden
+threading.Thread.start = forbidden
 namespace = runpy.run_path(
     str(root / "apps/isaacsim/joint_control.py"),
     run_name="test_isaac_control_import",
@@ -53,6 +55,8 @@ namespace = runpy.run_path(
 control = namespace["JointControl"]
 module = sys.modules[control.__module__]
 assert Path(module.__file__).resolve() == root / "src/mg400_agent/joint_control.py"
+jog_module = sys.modules[namespace["KeyboardJogSession"].__module__]
+assert Path(jog_module.__file__).resolve() == root / "src/mg400_agent/keyboard_jog.py"
 assert "MG400_CONTROL_START_TASK" not in namespace
 assert namespace["REPORT"] == Path(os.environ["MG400_DATA_DIR"]) / "isaacsim/control_status.json"
 if old_package is not None:
@@ -88,6 +92,7 @@ def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
         "controller_protocol.py",
         "robot_config.py",
         "runtime_paths.py",
+        "keyboard_jog.py",
     ):
         shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
     apps = tmp_path / "apps/isaacsim"

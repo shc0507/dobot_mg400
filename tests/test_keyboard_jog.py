@@ -1,6 +1,7 @@
 import math
 import socket
 import threading
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -166,6 +167,90 @@ def test_cartesian_keys_use_one_bounded_trajectory_from_measured_pose(rig, key, 
     assert not rig.session.control.stopped
 
 
+@pytest.mark.parametrize("key", ["W", "A"])
+def test_fresh_pose_measurement_skips_only_the_initial_pose_query(rig, key):
+    rig.session.prepare()
+    measurement = rig.session.control.read_pose_measurement()
+    rig.commands.clear()
+    rig.session.run(key, threading.Event(), initial_pose=measurement)
+    first_move = rig.commands.index(rig.moves[0])
+    assert "GetPose(0,0)" not in rig.commands[:first_move]
+    assert any(command.startswith("InverseSolution(") for command in rig.commands) is (key == "W")
+    assert "GetPose(0,0)" in rig.commands[first_move:]
+    assert len(rig.moves) == 1
+    assert rig.session.ready
+
+
+@pytest.mark.parametrize("invalid", [
+    "missing", "expired", "future", "control", "before_mode", "after_mode",
+    "before_alarm", "after_alarm", "query_changed", "current_changed", "combined_drift",
+])
+def test_unusable_pose_measurement_falls_back_to_current_pose_query(rig, invalid):
+    rig.session.prepare()
+    measurement = rig.session.control.read_pose_measurement()
+    if invalid == "missing":
+        measurement = None
+    elif invalid == "expired":
+        measurement = replace(measurement, requested_at=rig.now - 0.251)
+    elif invalid == "future":
+        measurement = replace(measurement, requested_at=rig.now + 0.01)
+    elif invalid == "control":
+        measurement = replace(measurement, control=JointControl("robot.test", rig.snapshot))
+    elif invalid.endswith("mode"):
+        field = invalid.split("_")[0]
+        measurement = replace(measurement, **{
+            field: replace(getattr(measurement, field), mode=4 if field == "before" else 7)
+        })
+    elif invalid.endswith("alarm"):
+        field = invalid.split("_")[0]
+        measurement = replace(measurement, **{
+            field: replace(getattr(measurement, field), error_status=True)
+        })
+    elif invalid == "query_changed":
+        measurement = replace(measurement, before=replace(
+            measurement.before, joints_deg=(START[0] - 0.03, *START[1:])
+        ))
+    elif invalid == "current_changed":
+        rig.sample = replace(rig.sample, joints_deg=(START[0] + 0.03, *START[1:]))
+    else:
+        measurement = replace(measurement, before=replace(
+            measurement.before, joints_deg=(START[0] - 0.02, *START[1:])
+        ))
+        rig.sample = replace(rig.sample, joints_deg=(START[0] + 0.02, *START[1:]))
+    rig.commands.clear()
+    rig.session.run("W", threading.Event(), initial_pose=measurement)
+    first_move = rig.commands.index(rig.moves[0])
+    assert rig.commands[:first_move].count("GetPose(0,0)") == 1
+    assert len(rig.moves) == 1
+    assert rig.session.ready
+
+
+def test_reused_pose_does_not_bypass_changed_joints_at_motion_send(rig):
+    rig.session.prepare()
+    measurement = rig.session.control.read_pose_measurement()
+
+    def move_before_send(port):
+        if port == 30003:
+            rig.sample = replace(rig.sample, joints_deg=(START[0] + 0.2, *START[1:]))
+
+    rig.connect_hook = move_before_send
+    with pytest.raises(RuntimeError, match="Robot moved before command was sent"):
+        rig.session.run("W", threading.Event(), initial_pose=measurement)
+    assert not rig.moves
+    assert rig.session.control.stopped
+
+
+def test_released_key_cannot_start_from_reused_pose(rig):
+    rig.session.prepare()
+    measurement = rig.session.control.read_pose_measurement()
+    released = threading.Event()
+    released.set()
+    rig.session.run("W", released, initial_pose=measurement)
+    assert not rig.moves
+    assert not any(command.startswith("InverseSolution(") for command in rig.commands)
+    assert rig.session.ready
+
+
 @pytest.mark.parametrize("key,change", [("A", 10), ("D", -10)])
 def test_base_keys_use_one_ten_degree_joint_trajectory(rig, key, change):
     rig.session.prepare()
@@ -220,19 +305,23 @@ def test_release_during_preparation_cannot_arm_or_send(rig):
     assert rig.session.prepare() == POSE
 
 
-def test_release_during_motion_connection_prevents_send(rig):
+@pytest.mark.parametrize("reuse_pose", [False, True])
+def test_release_during_motion_connection_prevents_send(rig, reuse_pose):
     rig.session.prepare()
+    measurement = rig.session.control.read_pose_measurement() if reuse_pose else None
     rig.connect_hook = lambda port: rig.session.release() if port == 30003 else None
-    rig.session.run("W", threading.Event())
+    rig.session.run("W", threading.Event(), initial_pose=measurement)
     assert not rig.moves
     assert rig.commands.count("ResetRobot()") == 1
     assert rig.session.ready
 
 
-def test_release_during_ik_prevents_send(rig):
+@pytest.mark.parametrize("reuse_pose", [False, True])
+def test_release_during_ik_prevents_send(rig, reuse_pose):
     rig.session.prepare()
+    measurement = rig.session.control.read_pose_measurement() if reuse_pose else None
     rig.hook = lambda text: rig.session.release() if text.startswith("InverseSolution(") else None
-    rig.session.run("W", threading.Event())
+    rig.session.run("W", threading.Event(), initial_pose=measurement)
     assert not rig.moves
     assert rig.session.ready
 
@@ -758,13 +847,15 @@ def test_parent_cancel_revokes_child_and_exposes_pending(rig):
     assert not rig.session.ready
 
 
-def test_parent_cancel_before_send_prevents_child_motion(rig):
+@pytest.mark.parametrize("reuse_pose", [False, True])
+def test_parent_cancel_before_send_prevents_child_motion(rig, reuse_pose):
     rig.session.prepare()
+    measurement = rig.session.control.read_pose_measurement() if reuse_pose else None
     rig.connect_hook = (
         lambda port: rig.session.control.cancel() if port == 30003 else None
     )
     with pytest.raises(RuntimeError):
-        rig.session.run("W", threading.Event())
+        rig.session.run("W", threading.Event(), initial_pose=measurement)
     assert not rig.moves
     assert not rig.session.ready
 

@@ -207,9 +207,24 @@ class KeyboardJogSession:
                     self._revoke(error=error)
                 return
 
-    def _step(self, active, key):
+    def _step(self, active, key, initial_pose):
+        from .joint_control import PoseMeasurement
+
         sample, _ = active._fresh({5})
-        pose = self._read_measured_pose(active, {5})
+        if (
+            isinstance(initial_pose, PoseMeasurement)
+            and initial_pose.control is self.control
+            and 0 <= time.monotonic() - initial_pose.requested_at <= 0.25
+            and initial_pose.before.mode == initial_pose.after.mode == 5
+            and not initial_pose.before.error_status and not initial_pose.after.error_status
+            and active._near(initial_pose.before.joints_deg, initial_pose.after.joints_deg, 0.025)
+            and active._near(initial_pose.before.joints_deg, sample.joints_deg, 0.025)
+            and active._near(initial_pose.after.joints_deg, sample.joints_deg, 0.025)
+        ):
+            pose = initial_pose.pose
+            self.measured_pose = (pose, initial_pose.requested_at)
+        else:
+            pose = self._read_measured_pose(active, {5})
         joints = validate_joints(sample.joints_deg)
         distance = HOLD_DISTANCE_MM if key in "WSRF" else HOLD_ANGLE_DEG
         minimum = 5.0 if key in "WSRF" else 1.0
@@ -270,7 +285,7 @@ class KeyboardJogSession:
                 return
             time.sleep(0.01)
 
-    def run(self, key, released):
+    def run(self, key, released, initial_pose=None):
         """Run one continuous move until arrival, release, or the hold deadline."""
         if key not in KEYS:
             raise ValueError("Expected one keyboard movement key")
@@ -285,7 +300,7 @@ class KeyboardJogSession:
         watcher.start()
         try:
             active._send_guard()
-            self._step(active, key)
+            self._step(active, key, initial_pose)
             with self._lock:
                 if not self._revoked.is_set() and not active.stopped:
                     self.limit_reason = "Travel limit reached."

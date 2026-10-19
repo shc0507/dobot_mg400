@@ -104,6 +104,30 @@ def test_read_pose_uses_explicit_zero_frames_without_mutation(cartesian_rig, mod
     assert commands == [("GetPose(0,0)", 29999)]
 
 
+def test_pose_measurement_records_query_start_and_both_feedback_samples(
+    cartesian_rig, monkeypatch
+):
+    control, sample, now, commands, _ = cartesian_rig
+    before = sample[0]
+    started = now[0]
+    after = Feedback((START[0] + 0.01, *START[1:]), 5, 1, False)
+    original = control._command
+
+    def command(text):
+        now[0] += 0.1
+        sample[0] = after
+        return original(text)
+
+    monkeypatch.setattr(control, "_command", command)
+    measurement = control.read_pose_measurement()
+    assert measurement.control is control
+    assert measurement.pose == POSE
+    assert measurement.requested_at == started
+    assert measurement.before is before
+    assert measurement.after is after
+    assert commands == [("GetPose(0,0)", 29999)]
+
+
 @pytest.mark.parametrize("raw", ["", "1,2,3", "1,2,3,4,0,0", "1,2,nan,4", "1,2,3,inf"])
 def test_read_pose_rejects_malformed_or_nonfinite_values(rig, monkeypatch, raw):
     control, _, _, _ = rig
@@ -113,7 +137,8 @@ def test_read_pose_rejects_malformed_or_nonfinite_values(rig, monkeypatch, raw):
 
 
 @pytest.mark.parametrize("when", ["before", "after"])
-def test_read_pose_checks_feedback_freshness_before_and_after_query(rig, monkeypatch, when):
+@pytest.mark.parametrize("method", ["read_pose", "read_pose_measurement"])
+def test_read_pose_checks_feedback_freshness_before_and_after_query(rig, monkeypatch, when, method):
     control, sample, now, _ = rig
     stale = [when == "before"]
     control.feedback_snapshot = lambda: (sample[0], now[0] - (0.3 if stale[0] else 0))
@@ -125,7 +150,7 @@ def test_read_pose_checks_feedback_freshness_before_and_after_query(rig, monkeyp
     query = Mock(side_effect=query)
     monkeypatch.setattr(control, "_command", query)
     with pytest.raises(RuntimeError, match="stale"):
-        control.read_pose()
+        getattr(control, method)()
     assert query.call_count == (0 if when == "before" else 1)
 
 

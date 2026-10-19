@@ -77,6 +77,15 @@ def panel_module(monkeypatch, tmp_path):
             self.pose_reads += 1
             return self.pose
 
+        def read_pose_measurement(self):
+            requested_at = time.monotonic()
+            before = self.read_state()
+            pose = self.read_pose()
+            return SimpleNamespace(
+                control=self, pose=pose, requested_at=requested_at,
+                before=before, after=self.read_state(),
+            )
+
         def enable(self):
             self.calls.append(("enable",))
             return self.set_mode(5)
@@ -141,6 +150,7 @@ def panel_module(monkeypatch, tmp_path):
             self.finish_allowed = asyncio.Event()
             self.finish_allowed.set()
             self.run_calls = []
+            self.initial_poses = []
             self.movements = []
             self.release_calls = 0
             self.released = None
@@ -156,8 +166,9 @@ def panel_module(monkeypatch, tmp_path):
             self.ready = True
             return self.control.pose
 
-        async def run(self, key, released):
+        async def run(self, key, released, initial_pose=None):
             self.run_calls.append(key)
+            self.initial_poses.append(initial_pose)
             self.released = released
             self.expired = False
             if released.is_set() or self.closed:
@@ -541,9 +552,9 @@ def test_slow_pose_reply_does_not_make_old_coordinates_fresh(panel, monkeypatch)
 
     def slow_pose():
         clock[0] = 12.0
-        return (200.0, 50.0, 150.0, 25.0)
+        return SimpleNamespace(pose=(200.0, 50.0, 150.0, 25.0), requested_at=10.0)
 
-    monkeypatch.setattr(panel.control, "read_pose", slow_pose)
+    monkeypatch.setattr(panel.control, "read_pose_measurement", slow_pose)
     asyncio.run(panel.refresh_pose())
     assert panel.pose_received == 10.0
     panel.copy_actual()
@@ -602,7 +613,7 @@ def test_old_control_pose_cannot_replace_current_control_coordinates(
             panel.actual_pose = (300.0, 60.0, 160.0, 30.0)
         finally:
             release_read.set()
-            await refresh
+            assert await refresh is None
         assert panel.actual_pose == (300.0, 60.0, 160.0, 30.0)
 
     asyncio.run(exercise())
@@ -927,9 +938,27 @@ def test_release_before_worker_starts_does_not_move(panel):
     asyncio.run(exercise())
 
 
+def test_keyboard_receives_measurement_returned_by_pose_task(panel):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        panel.pose_task = asyncio.create_task(panel.refresh_pose())
+        measurement = await panel.pose_task
+        assert measurement.control is panel.control
+        panel.key_event("W", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        assert session.initial_poses == [measurement]
+        assert session.initial_poses[0] is panel.pose_task.result()
+        assert panel.actual_pose == measurement.pose
+        panel.key_event("W", False)
+        await asyncio.wait_for(panel.action, 1)
+
+    asyncio.run(exercise())
+
+
 def test_release_while_waiting_for_pose_read_does_not_start_motion(panel):
     async def exercise():
         session = await arm_keyboard(panel)
+        measurement = panel.control.read_pose_measurement()
         panel.pose_task = asyncio.get_running_loop().create_future()
         panel.key_event("W", True)
         await asyncio.sleep(0)
@@ -937,8 +966,9 @@ def test_release_while_waiting_for_pose_read_does_not_start_motion(panel):
         assert session.run_calls == []
         panel.key_event("W", False)
         assert panel.jog_released.is_set()
-        panel.pose_task.set_result(None)
+        panel.pose_task.set_result(measurement)
         await asyncio.wait_for(panel.action, 1)
+        assert session.initial_poses == [measurement]
         assert session.movements == []
         assert panel.held_keys == set()
         assert panel.control.calls == []
@@ -998,13 +1028,13 @@ def test_keyboard_target_limit_keeps_keys_on_but_requires_release(panel, monkeyp
         session = await arm_keyboard(panel)
         run = type(session).run
 
-        async def reject_first_hold(self, key, released):
+        async def reject_first_hold(self, key, released, initial_pose=None):
             if key == "W":
                 self.run_calls.append(key)
                 self.limit_reason = "Controller rejected the target. This target was not sent."
                 return self.control.pose
             self.limit_reason = None
-            return await run(self, key, released)
+            return await run(self, key, released, initial_pose=initial_pose)
 
         monkeypatch.setattr(type(session), "run", reject_first_hold)
         panel.key_event("W", True)

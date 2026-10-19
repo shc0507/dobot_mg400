@@ -108,7 +108,7 @@ def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
     check_import(tmp_path, tmp_path / "external-data", ROOT / "src/mg400_agent/joint_control.py")
 
 
-@pytest.mark.parametrize("cache", ["modules", "legacy_path", "bytecode", "loader"])
+@pytest.mark.parametrize("cache", ["modules", "legacy_path", "bytecode", "loader", "control_only"])
 def test_control_source_reload_replaces_legacy_code_and_preserves_feedback(tmp_path, cache):
     root = tmp_path / "deployed"
     legacy = tmp_path / "legacy" if cache == "legacy_path" else root
@@ -121,6 +121,8 @@ def test_control_source_reload_replaces_legacy_code_and_preserves_feedback(tmp_p
         "keyboard_jog.py": "class KeyboardJogSession: pass\n",
         "gripper_feedback.py": "class FeedbackState: pass\n",
     }
+    if cache == "control_only":
+        old_sources["joint_control.py"] += "class TargetRejectedError(ValueError): pass\n"
     for directory in {root, legacy}:
         package_dir = directory / "src/mg400_agent"
         package_dir.mkdir(parents=True)
@@ -162,10 +164,14 @@ package = importlib.import_module("mg400_agent")
 feedback = importlib.import_module("mg400_agent.feedback")
 old_control = importlib.import_module("mg400_agent.joint_control")
 old_class = old_control.JointControl
-old_jog = importlib.import_module("mg400_agent.keyboard_jog").KeyboardJogSession
+old_jog = (
+    None if cache == "control_only"
+    else importlib.import_module("mg400_agent.keyboard_jog").KeyboardJogSession
+)
 old_gripper = importlib.import_module("mg400_agent.gripper_feedback").FeedbackState
 importlib.import_module("mg400_agent.controller_protocol")
-assert not hasattr(old_control, "TargetRejectedError")
+assert hasattr(old_control, "TargetRejectedError") is (cache == "control_only")
+assert not hasattr(old_control, "PoseMeasurement")
 assert "parent" not in inspect.signature(old_class).parameters
 names = ("controller_protocol", "joint_control", "keyboard_jog", "gripper_feedback")
 old_sources = {
@@ -210,7 +216,11 @@ asyncio.ensure_future = asyncio.create_task = forbidden
 threading.Thread.start = forbidden
 namespace = runpy.run_path(str(root / "apps/isaacsim/joint_control.py"), run_name="test_import")
 assert namespace["JointControl"] is old_class
-assert namespace["KeyboardJogSession"] is old_jog
+if cache == "control_only":
+    assert namespace["KeyboardJogSession"] is not None
+    assert not hasattr(old_control, "PoseMeasurement")
+else:
+    assert namespace["KeyboardJogSession"] is old_jog
 namespace["_reload_control_modules"]()
 state = namespace["_reload_control_modules"].__globals__
 assert state["JointControl"] is not old_class

@@ -102,9 +102,11 @@ class ControlPanel:
             control = self.control
             self.pose_requested = time.monotonic()
             try:
-                pose = await asyncio.to_thread(control.read_pose)
+                measurement = await asyncio.to_thread(control.read_pose_measurement)
                 if self.control is control:
-                    self.actual_pose, self.pose_received = pose, self.pose_requested
+                    self.actual_pose = measurement.pose
+                    self.pose_received = measurement.requested_at
+                    return measurement
             except Exception:
                 self.actual_pose = None
 
@@ -208,9 +210,12 @@ class ControlPanel:
             if key in "ZX":
                 expired = await self.jog_gripper(key, released)
             else:
+                initial_pose = None
                 if self.pose_task:
-                    await self.pose_task
-                pose = await asyncio.to_thread(session.run, key, released)
+                    initial_pose = await self.pose_task
+                pose = await asyncio.to_thread(
+                    session.run, key, released, initial_pose=initial_pose
+                )
                 self.actual_pose, self.pose_received = pose, time.monotonic()
                 expired = session.expired
             if not self.control.stopped and self.stop_task is None and not (

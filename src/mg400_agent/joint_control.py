@@ -9,6 +9,7 @@ import math
 import socket
 import threading
 import time
+from dataclasses import dataclass
 
 from .config import finite_number
 from .controller_protocol import ControllerCommandError, parse_controller_response
@@ -18,6 +19,17 @@ from .joint_limits import validate_joint_segment, validate_joints
 
 class TargetRejectedError(ValueError):
     """The target was rejected before its movement command was sent."""
+
+
+@dataclass(frozen=True)
+class PoseMeasurement:
+    """One GetPose reply and the feedback that brackets its query."""
+
+    control: "JointControl"
+    pose: tuple[float, float, float, float]
+    requested_at: float
+    before: Feedback
+    after: Feedback
 
 
 class JointControl:
@@ -92,16 +104,24 @@ class JointControl:
         except OverflowError as error:
             raise ValueError("Expected four finite pose values in mm/degrees") from error
 
-    def _read_pose(self, modes):
-        self._fresh(modes)
+    def _read_pose_measurement(self, modes):
+        requested_at = time.monotonic()
+        before, _ = self._fresh(modes)
         values = tuple(float(value) for value in self._command("GetPose(0,0)").split(","))
         pose = self._four_values(values)
-        self._fresh(modes)
-        return pose
+        after, _ = self._fresh(modes)
+        return PoseMeasurement(self, pose, requested_at, before, after)
+
+    def _read_pose(self, modes):
+        return self._read_pose_measurement(modes).pose
 
     def read_pose(self):
         """Read measured XYZ in mm and R in degrees for User=0, Tool=0."""
         return self._read_pose({4, 5, 7})
+
+    def read_pose_measurement(self):
+        """Read a pose with its query time and fresh feedback before and after."""
+        return self._read_pose_measurement({4, 5, 7})
 
     def _check_rejected_target_state(self, before, received):
         while True:

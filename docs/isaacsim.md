@@ -17,7 +17,7 @@
 | `apps/isaacsim/load_model.py` | 开发时检查基础模型导入 |
 | `apps/isaacsim/mirror.py` | 在当前 MG400 场景中显示真机四轴反馈，支持断线重连 |
 | `apps/isaacsim/mirror_bootstrap.py` | 必要时打开默认场景，再启动只读姿态镜像 |
-| `apps/isaacsim/joint_control.py` | 四轴真机面板：读取当前角度、使能、单次到位、停止 |
+| `apps/isaacsim/joint_control.py` | 四轴真机面板：读取当前角度、使能、下使能、返回默认姿态、单次到位 |
 | `apps/isaacsim/gripper_control.py` | 实体夹爪面板：MG400 I/O 开合与 USB 位置反馈 |
 | `apps/isaacsim/olares_gripper.py` | Olares 夹爪面板入口，读取数据目录中的 USB 测量文件 |
 | `config/robot.toml` | Isaac 镜像、四轴面板和夹爪面板共用的机器人地址 |
@@ -53,7 +53,7 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
 四轴面板启动只读，连接后显示真机实测姿态。
-使能、运动和停止步骤见 [在 Isaac 中控制真机四轴](#在-isaac-中控制真机四轴)。
+使能、下使能和运动步骤见 [在 Isaac 中控制真机四轴](#在-isaac-中控制真机四轴)。
 如果只显示姿态，运行 `apps/isaacsim/mirror_bootstrap.py`，见 [真机姿态实时同步](#真机姿态实时同步)。
 USB 接在 Olares 时，先启动宿主机反馈采集，再在 Script Editor 运行夹爪面板：
 
@@ -301,24 +301,34 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 脚本复用现有实时同步；尚未启动同步时，会通过 mirror bootstrap 备份当前场景、
 加载 MG400 并启动反馈。出现 **MG400 Joint Control** 面板后：
 
-1. 等待 `LIVE`，`Actual (deg)` 显示实测角度，`Target (deg)` 首次自动填入实测值。
-2. 未使能时点击 **Enable robot**，仅使能，不发送运动；使能沿用控制器当前负载设置。
-3. 点击 **Use current angles** 重新取得起点，修改所需轴的绝对目标角度。
-4. 点击 **Move real robot to target**。一次只执行一个目标，每轴相对实测起点最多 5°，
-   指令采用 `SpeedJ=5,AccJ=5` 比例参数，保持全局速度、工具坐标和夹爪输出不变。
-5. `Arrival verified` 表示新鲜反馈已在目标 ±0.1° 内稳定至少 0.4 秒，
+1. 等待 `LIVE`。`Actual (deg)` 显示实测角度，`Target (deg)` 首次自动填入实测值。
+2. 未使能时，点击第一排左侧的 **Enable robot**。
+   此操作仅使能，不发送运动，沿用控制器当前负载设置。
+3. 返回默认姿态时，点击第二排的 **Return to Home**。
+   默认姿态为 J1–J4 全部 0°。
+4. 指定其他姿态时，修改所需轴的绝对目标角度。
+   点击第三排的 **Move to Target**。
+5. 等待 `Arrival verified`。此状态表示新鲜反馈已在目标 ±0.1° 内稳定至少 0.4 秒，
    并通过 dashboard 回读核对。完成后保持使能，可继续下一次动作。
+6. 下使能时，点击第一排右侧的 **Disable robot**。
 
-输入框本身不发运动命令；模型始终显示真机实际姿态，不把输入目标当作已到位。
-动作期间输入和执行按钮禁用，网络操作在后台线程运行，**STOP robot** 仍可点击。
+一次只执行一个目标。执行前，程序检查目标和整段路径的关节范围。
+指令采用 `SpeedJ=5,AccJ=5` 比例参数，保持全局速度、工具坐标和夹爪输出不变。
+
+输入框本身不发运动命令。模型始终显示真机实际姿态，不把输入目标当作已到位。
+动作期间输入和执行按钮禁用，网络操作在后台线程运行。
+**Disable robot** 仍可点击，会取消当前动作并发送 `DisableRobot()`。
 此版本只控制四轴，不控制真实夹爪，不支持拖动 USD 连杆直接控制真机。
 
-**STOP robot** 请求 `ResetRobot()` 并锁定本次控制会话。成功时显示静止已核实，
-否则显示 `STOP UNCONFIRMED`；这类情况下需使用现场物理急停。
-停止后重新运行脚本才能恢复控制。运动时关闭面板、更换场景、启动物理仿真，
-或停止反馈同步，也会结束控制并请求停止；异常不会自动重发动作或自动清除报警。
-超过 0.25 秒无新鲜反馈、控制器报警、异常模式或 20 秒内未到位都会中止。
+下使能后，面板用新鲜反馈和 dashboard 回读核实静止且处于未使能状态。
+核实成功后，目标角度刷新为实测值。点击 **Enable robot** 即可重新使能，无需重载脚本。
+若无法核实，下使能报错并保持操作锁定。
+
+运动时关闭面板、更换场景、启动物理仿真或停止反馈同步，会结束控制并请求停止。
+异常不会自动重发动作或自动清除报警。
+超过 0.25 秒无新鲜反馈、控制器报警、异常模式或 120 秒内未到位都会中止。
 命令应答未知时，即使收到停止指令的应答，也不宣称已确认停止。
+若显示 `STOP UNCONFIRMED`，使用现场物理急停。
 
 当前关节范围检查复用项目参考模型，并非现场碰撞检查；执行前应确认路径、夹爪和线缆的空间。
 建议首次由现场操作者将 J4 目标改为当前值加 1°，检查真实运动与画面一致后再扩大操作。

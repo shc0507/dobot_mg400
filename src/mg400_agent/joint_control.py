@@ -1,4 +1,4 @@
-"""Small joint moves driven by explicit UI actions and an existing feedback reader.
+"""Joint moves driven by explicit UI actions and an existing feedback reader.
 
 Construction is inert. Methods block and belong on a worker thread, not Kit's UI
 thread. A stopped instance never sends another enable or movement command.
@@ -21,8 +21,10 @@ class JointControl:
         self.feedback_snapshot = feedback_snapshot
         self._operation_lock = threading.Lock()
         self._send_lock = threading.Lock()
-        self._stop_lock = threading.Lock()
+        self._stop_lock = threading.RLock()
         self._stopped = threading.Event()
+        self._disable_requested = False
+        self._disable_result = self._disable_error = None
         self._pending = None
         self._stop_result = None
         self._stop_uncertain = False
@@ -35,11 +37,13 @@ class JointControl:
     def stopped(self):
         return self._stopped.is_set()
 
-    def cancel(self):
+    def cancel(self, *, disabling=False):
         """Immediately latch cancellation from the UI, without waiting or networking.
 
-        Call stop() on a worker next to request and verify the physical stop.
+        Call disable() or stop() on a worker next to verify the requested state.
         """
+        if disabling:
+            self._disable_requested = True
         self._stopped.set()
         pending = self._pending
         if (
@@ -194,8 +198,12 @@ class JointControl:
             self._operation_lock.release()
             raise RuntimeError("Control has been stopped; reopen the panel")
 
-    def _failed(self, error):
-        result = self.stop()
+    def _failed(self, error, *, disabling=False):
+        with self._stop_lock:
+            # The explicit disable owns cancellation of the previous operation.
+            if self._disable_requested and not disabling:
+                return
+            result = self.stop()
         if not result["ok"]:
             raise RuntimeError(
                 f"{error}; physical stop not confirmed: {result['error']}; "
@@ -228,20 +236,16 @@ class JointControl:
             self._operation_lock.release()
 
     def move(self, target) -> Feedback:
-        """Move absolute J1-J4 in degrees, at most five degrees per axis per action."""
+        """Move J1-J4 to absolute angles in degrees within the validated joint limits."""
         target = validate_joints(target)
         sample = self.read_state()
         if sample.mode != 5:
             raise RuntimeError("Robot must be enabled and idle before movement")
         validate_joint_segment(sample.joints_deg, target)
-        if any(abs(a - b) > 5.0 for a, b in zip(sample.joints_deg, target, strict=True)):
-            raise ValueError("Each joint change is limited to 5 degrees per action")
         self._begin()
         try:
             _, start = self._preflight({5})
             validate_joint_segment(start, target)
-            if any(abs(a - b) > 5.0 for a, b in zip(start, target, strict=True)):
-                raise ValueError("Each joint change is limited to 5 degrees per action")
             values = ",".join(f"{value:.6f}" for value in target)
             self._guarded_command(
                 f"JointMovJ({values},SpeedJ=5,AccJ=5)",
@@ -250,7 +254,7 @@ class JointControl:
                 expected=start,
                 port=30003,
             )
-            sample = self._wait_stable(target, modes={5, 7}, final_modes={5}, timeout=20.0)
+            sample = self._wait_stable(target, modes={5, 7}, final_modes={5}, timeout=120.0)
             mode, actual = self._dashboard_state()
             sample = self._fresh({5})[0]
             if (
@@ -265,6 +269,48 @@ class JointControl:
             raise
         finally:
             self._operation_lock.release()
+
+    def disable(self) -> Feedback:
+        """Cancel this instance and verify that the robot is disabled and stationary.
+
+        Create a new instance only after this succeeds and the previous operation exits.
+        """
+        self.cancel(disabling=True)
+        with self._send_lock:
+            # Record uncertainty if a send raced with the immediate cancellation.
+            self.cancel(disabling=True)
+        with self._stop_lock:
+            if self._disable_error is not None:
+                raise self._disable_error
+            if self._disable_result is not None:
+                return self._disable_result
+            try:
+                self._command("DisableRobot()", stopping=True)
+                if self._stop_uncertain:
+                    raise RuntimeError(
+                        "A command acknowledgement was unresolved or failed during disable. "
+                        "Command ordering remains unknown."
+                    )
+                stationary = self._wait_stable(
+                    modes={4, 5, 7}, final_modes={4}, timeout=5.0, stopping=True
+                )
+                mode, actual = self._dashboard_state()
+                sample = self._fresh({4})[0]
+                if (
+                    mode != 4
+                    or not self._near(actual, stationary.joints_deg)
+                    or not self._near(sample.joints_deg, stationary.joints_deg)
+                ):
+                    raise RuntimeError("Disabled stationary state was not confirmed")
+                self._disable_result = sample
+                return sample
+            except Exception as error:
+                try:
+                    self._failed(error, disabling=True)
+                except Exception as failure:
+                    error = failure
+                self._disable_error = error
+                raise error
 
     def stop(self):
         """Permanently cancel this instance, request a controlled stop, verify rest.

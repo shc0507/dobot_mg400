@@ -1,7 +1,7 @@
 """Four-axis control panel in the existing Isaac Sim / Olares process.
 
 Run in Script Editor or with Kit --exec. Opening the panel only reads feedback.
-Enable and Move are explicit button actions; the viewport shows measured angles.
+Buttons send commands only when clicked. The viewport shows measured angles.
 """
 
 import asyncio
@@ -24,6 +24,7 @@ SINGLETON = "_mg400_isaac_joint_control"
 MIRROR_SINGLETON = "_mg400_isaac_feedback_mirror"
 REPORT = data_path("isaacsim/control_status.json")
 ROBOT_CONFIG = ROOT / "config/robot.toml"
+HOME_JOINTS_DEG = (0.0, 0.0, 0.0, 0.0)
 
 
 class ControlPanel:
@@ -36,7 +37,7 @@ class ControlPanel:
             )
         self.mirror = mirror
         self.control = JointControl(self.host, self.feedback_snapshot)
-        self.action = self.stop_task = self.task = None
+        self.action = self.disable_task = self.stop_task = self.task = None
         self.closed = False
         self.initialized = False
         self.message = "Waiting for fresh robot feedback."
@@ -54,7 +55,9 @@ class ControlPanel:
 
     @property
     def busy(self):
-        return any(task and not task.done() for task in (self.action, self.stop_task))
+        return any(
+            task and not task.done() for task in (self.action, self.disable_task, self.stop_task)
+        )
 
     def copy_actual(self):
         try:
@@ -62,7 +65,7 @@ class ControlPanel:
             for model, value in zip(self.models, sample.joints_deg, strict=True):
                 model.set_value(value)
             self.initialized = True
-            self.message = "Target copied from the real robot. Edit angles, then click Move."
+            self.message = "Target copied from the robot. Edit angles, then click Move to Target."
         except Exception as error:
             self.message = str(error)
 
@@ -70,9 +73,14 @@ class ControlPanel:
         # Capture the target once; edits and repeated clicks cannot queue movements.
         if self.closed or self.busy or self.control.stopped:
             return
-        if name == "move" and not self.initialized:
+        if name in ("move", "home") and not self.initialized:
             return
-        target = tuple(model.as_float for model in self.models)
+        target = HOME_JOINTS_DEG if name == "home" else tuple(
+            model.as_float for model in self.models
+        )
+        if name == "home":
+            for model, value in zip(self.models, target, strict=True):
+                model.set_value(value)
         self.action = asyncio.ensure_future(self.perform(name, target))
 
     async def perform(self, name, target):
@@ -86,11 +94,39 @@ class ControlPanel:
                 await asyncio.to_thread(self.control.move, target)
             if not self.control.stopped:
                 self.message = (
-                    "Enabled; no movement sent." if name == "enable" else "Arrival verified."
+                    "Enabled. No movement sent." if name == "enable" else "Arrival verified."
                 )
         except Exception as error:
-            if self.stop_task is None:
+            if self.stop_task is None and not (
+                self.disable_task and not self.disable_task.done()
+            ):
                 self.message = f"ERROR: {error}"
+        print("MG400_CONTROL", self.message, flush=True)
+
+    def request_disable(self):
+        if self.closed or self.control.stopped or (
+            self.disable_task and not self.disable_task.done()
+        ):
+            return
+        self.control.cancel(disabling=True)
+        self.disable_task = asyncio.ensure_future(self.disable())
+
+    async def disable(self):
+        self.message = "Disabling robot..."
+        error_message = None
+        try:
+            await asyncio.to_thread(self.control.disable)
+        except Exception as error:
+            error_message = f"DISABLE UNCONFIRMED: {error}"
+        if self.action:
+            await self.action
+        if error_message:
+            self.message = error_message
+        else:
+            if not self.closed:
+                self.control = JointControl(self.host, self.feedback_snapshot)
+                self.copy_actual()
+            self.message = "Disabled. Click Enable robot to enable again."
         print("MG400_CONTROL", self.message, flush=True)
 
     def request_stop(self):
@@ -141,15 +177,17 @@ class ControlPanel:
                         self.models.append(model)
                         fields.append(ui.FloatField(model, precision=3, enabled=False))
                 with ui.HStack(height=30, spacing=6):
-                    copy_button = ui.Button("Use current angles", clicked_fn=self.copy_actual)
                     enable_button = ui.Button(
                         "Enable robot", clicked_fn=lambda: self.submit("enable")
                     )
-                move_button = ui.Button(
-                    "Move real robot to target", height=32, clicked_fn=lambda: self.submit("move")
+                    disable_button = ui.Button("Disable robot", clicked_fn=self.request_disable)
+                home_button = ui.Button(
+                    "Return to Home", height=32, clicked_fn=lambda: self.submit("home")
                 )
-                ui.Button("STOP robot", height=32, clicked_fn=self.request_stop)
-                ui.Label("Max change: 5 deg/axis. Speed/acceleration ratio: 5%.", height=22)
+                move_button = ui.Button(
+                    "Move to Target", height=32, clicked_fn=lambda: self.submit("move")
+                )
+                ui.Label("Home: 0 deg on all axes. Speed/acceleration ratio: 5%.", height=22)
                 message_label = ui.Label(self.message, word_wrap=True, height=45)
         last_report = 0
         try:
@@ -182,8 +220,11 @@ class ControlPanel:
                 idle = live and sample.mode in (4, 5) and not self.busy and not self.control.stopped
                 if idle and not self.initialized:
                     self.copy_actual()
-                copy_button.enabled = idle
                 enable_button.enabled = idle and sample.mode == 4
+                disable_button.enabled = not self.control.stopped and (
+                    self.busy or (sample is not None and sample.mode != 4)
+                )
+                home_button.enabled = idle and sample.mode == 5 and self.initialized
                 move_button.enabled = idle and sample.mode == 5 and self.initialized
                 for field in fields:
                     field.enabled = idle and self.initialized
@@ -206,7 +247,9 @@ class ControlPanel:
         finally:
             self.closed = True
             # A closing/reloaded panel must not leave its worker commanding the robot.
-            if self.busy or self.control.busy:
+            if self.disable_task and not self.disable_task.done():
+                await self.disable_task
+            elif self.busy or self.control.busy:
                 self.request_stop()
             if self.stop_task:
                 await self.stop_task

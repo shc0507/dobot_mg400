@@ -42,10 +42,13 @@ def rig(monkeypatch):
             return "[[],[],[],[],[]]"
         if text == "GetAngle()":
             return ",".join(map(str, (*sample[0].joints_deg, 0, 0)))
-        if text == MOVE:
-            sample[0] = Feedback(TARGET, 5, 0, False)
+        if text.startswith("JointMovJ("):
+            target = tuple(float(value) for value in text[len("JointMovJ(") :].split(",")[:4])
+            sample[0] = Feedback(target, 5, 0, False)
         elif text == "EnableRobot()":
             sample[0] = Feedback(sample[0].joints_deg, 5, 0, False)
+        elif text == "DisableRobot()":
+            sample[0] = Feedback(sample[0].joints_deg, 4, 0, False)
         elif text == "ResetRobot()":
             sample[0] = Feedback(sample[0].joints_deg, 5, 0, False)
         else:
@@ -107,13 +110,37 @@ def test_move_does_not_implicitly_enable_or_stop_disabled_robot(rig):
     assert not control.stopped
 
 
-def test_more_than_five_degrees_is_rejected_without_motion(rig):
+@pytest.mark.parametrize("target", [(*START[:3], START[3] + 90), (0, 0, 0, 0)])
+def test_moves_over_five_degrees_keep_validation_and_low_speed(rig, target):
     control, _, _, commands = rig
-    with pytest.raises(ValueError, match="5 degrees"):
-        control.move((*START[:3], START[3] + 5.01))
+    assert control.move(target).joints_deg == target
+    moves = [(text, port) for text, port in commands if text.startswith("JointMovJ(")]
+    values = ",".join(f"{value:.6f}" for value in target)
+    assert moves == [(f"JointMovJ({values},SpeedJ=5,AccJ=5)", 30003)]
+    assert not control.stopped
+
+
+@pytest.mark.parametrize("target", [(160, 0, 0, 0), (0, 85, 50, 0), (0, 0, 60, 0)])
+def test_out_of_range_targets_are_rejected_without_motion(rig, target):
+    control, _, _, commands = rig
+    with pytest.raises(ValueError, match="reference range"):
+        control.move(target)
     assert not commands
     assert not control.stopped
+
+
+def test_full_range_move_can_take_more_than_twenty_seconds(rig, monkeypatch):
+    control, sample, now, _ = rig
+    original_fresh = control._fresh
+
+    def fresh(modes):
+        if sample[0].joints_deg == TARGET and now[0] < 40:
+            return Feedback(START, 7, 0, False), now[0]
+        return original_fresh(modes)
+
+    monkeypatch.setattr(control, "_fresh", fresh)
     assert control.move(TARGET).joints_deg == TARGET
+    assert now[0] >= 40.4
 
 
 def test_complete_joint_segment_is_validated_before_motion(rig):
@@ -147,6 +174,158 @@ def test_stop_does_not_wait_for_active_operation_lock(rig):
         assert commands == [("ResetRobot()", 29999)]
     finally:
         control._operation_lock.release()
+
+
+@pytest.mark.parametrize("initial_mode", [4, 5, 7])
+def test_disable_verifies_mode_four_without_waiting_for_operation_lock(rig, initial_mode):
+    control, sample, now, commands = rig
+    sample[0] = Feedback(START, initial_mode, 0, False)
+    with control._operation_lock:
+        actual = control.disable()
+    assert actual == Feedback(START, 4, 0, False)
+    assert now[0] >= 10.4
+    assert control.disable() is actual
+    assert commands == [
+        ("DisableRobot()", 29999),
+        ("RobotMode()", 29999),
+        ("GetErrorID()", 29999),
+        ("GetAngle()", 29999),
+    ]
+    assert control.stopped
+
+
+def test_successful_disable_allows_explicit_enable_on_fresh_controller(rig, monkeypatch):
+    control, _, _, commands = rig
+    control.disable()
+    fresh_control = JointControl(control.host, control.feedback_snapshot)
+    monkeypatch.setattr(fresh_control, "_command", control._command)
+    assert fresh_control.enable().mode == 5
+    assert not fresh_control.stopped
+    assert fresh_control.move(TARGET).joints_deg == TARGET
+    for action in (control.enable, lambda: control.move(TARGET)):
+        with pytest.raises(RuntimeError, match="stopped"):
+            action()
+    mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
+    assert mutations == ["DisableRobot()", "EnableRobot()", MOVE]
+
+
+@pytest.mark.parametrize("action", ["enable", "move"])
+def test_disable_cancels_active_operation_without_competing_failure_stop(rig, monkeypatch, action):
+    control, sample, _, commands = rig
+    sample[0] = Feedback(START, 4 if action == "enable" else 5, 0, False)
+    entered = threading.Event()
+    original_wait = control._wait_stable
+    errors = []
+
+    def wait(*args, **kwargs):
+        if control._pending is not None and not kwargs.get("stopping"):
+            entered.set()
+            assert control._stopped.wait(1)
+            raise RuntimeError("Operation was cancelled")
+        return original_wait(*args, **kwargs)
+
+    def perform():
+        try:
+            control.enable() if action == "enable" else control.move(TARGET)
+        except Exception as error:
+            errors.append(error)
+
+    monkeypatch.setattr(control, "_wait_stable", wait)
+    worker = threading.Thread(target=perform)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        assert control.busy
+        control.cancel(disabling=True)
+        assert control.disable().mode == 4
+    finally:
+        control.cancel(disabling=True)
+        worker.join(1)
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert str(errors[0]) == "Operation was cancelled"
+    assert not control.busy
+    mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
+    assert mutations == ["EnableRobot()" if action == "enable" else MOVE, "DisableRobot()"]
+
+
+def test_concurrent_disable_sends_once_and_returns_same_result(rig, monkeypatch):
+    control, _, _, commands = rig
+    entered, release = threading.Event(), threading.Event()
+    original_command = control._command
+    results = []
+
+    def command(text, *args, **kwargs):
+        if text == "DisableRobot()":
+            entered.set()
+            assert release.wait(1)
+        return original_command(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    workers = [threading.Thread(target=lambda: results.append(control.disable())) for _ in range(2)]
+    workers[0].start()
+    try:
+        assert entered.wait(1)
+        workers[1].start()
+    finally:
+        release.set()
+        for worker in workers:
+            if worker.ident is not None:
+                worker.join(1)
+    assert len(results) == 2
+    assert results[0] is results[1]
+    assert [text for text, _ in commands].count("DisableRobot()") == 1
+
+
+@pytest.mark.parametrize("failure", ["ack", "enabled", "dashboard", "feedback"])
+def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, monkeypatch, failure):
+    control, sample, now, commands = rig
+    original_command = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "DisableRobot()" and failure == "ack":
+            commands.append((text, 29999))
+            raise TimeoutError("Disable acknowledgement was lost")
+        result = original_command(text, *args, **kwargs)
+        if text == "DisableRobot()":
+            if failure == "enabled":
+                sample[0] = Feedback(START, 5, 0, False)
+            elif failure == "feedback":
+                control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
+        if text == "RobotMode()" and failure == "dashboard":
+            return "5"
+        return result
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises((RuntimeError, TimeoutError)) as first:
+        control.disable()
+    with pytest.raises(type(first.value)) as second:
+        control.disable()
+    assert first.value is second.value
+    assert control.stopped
+    mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
+    assert mutations == ["DisableRobot()", "ResetRobot()"]
+
+
+def test_late_mutation_ack_cannot_confirm_disable_or_send_again(rig, monkeypatch):
+    control, _, _, commands = rig
+    pending = {"done": threading.Event(), "sent": True, "ok": False}
+    control._pending = pending
+    original_command = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "DisableRobot()":
+            pending["ok"] = True
+            pending["done"].set()
+        return original_command(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(RuntimeError, match="ordering remains unknown"):
+        control.disable()
+    with pytest.raises(RuntimeError, match="ordering remains unknown"):
+        control.disable()
+    assert commands == [("DisableRobot()", 29999), ("ResetRobot()", 29999)]
+    assert control.stopped
 
 
 def test_cancel_is_immediate_even_when_command_and_operation_locks_are_held(rig):
@@ -344,10 +523,11 @@ def test_transport_never_retries_lost_motion_ack(monkeypatch, parts, failure):
     connection.sendall.assert_called_once_with(MOVE.encode("ascii"))
 
 
-def test_cancelled_delayed_mutation_never_sends(monkeypatch):
+@pytest.mark.parametrize("disabling", [False, True])
+def test_cancelled_delayed_mutation_never_sends(monkeypatch, disabling):
     connection = socket_for(monkeypatch, [])
     control = JointControl("robot.test", Mock())
-    control.cancel()
+    control.cancel(disabling=disabling)
     pending = {"sent": False}
     with pytest.raises(RuntimeError, match="stopped before"):
         control._command(MOVE, 30003, pending=pending)

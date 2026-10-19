@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -37,6 +38,8 @@ def panel_module(monkeypatch, tmp_path):
             self.calls = []
             self.move_started = threading.Event()
             self.release_move = threading.Event()
+            self.disable_finished = threading.Event()
+            self.cancel_modes = []
             instances.append(self)
 
         def read_state(self):
@@ -44,6 +47,18 @@ def panel_module(monkeypatch, tmp_path):
 
         def enable(self):
             self.calls.append(("enable",))
+            return self.set_mode(5)
+
+        def set_mode(self, mode):
+            sample = replace(self.snapshot()[0], mode=mode)
+            self.snapshot.__self__.mirror.latest = sample, time.monotonic()
+            return sample
+
+        def disable(self):
+            self.calls.append(("disable",))
+            sample = self.set_mode(4)
+            self.disable_finished.set()
+            return sample
 
         def move(self, target):
             self.calls.append(("move", target))
@@ -51,6 +66,8 @@ def panel_module(monkeypatch, tmp_path):
             self.move_started.set()
             try:
                 assert self.release_move.wait(3), "Test did not release the move worker"
+                if self.stopped:
+                    raise RuntimeError("Control cancelled")
             finally:
                 self.busy = False
 
@@ -59,7 +76,8 @@ def panel_module(monkeypatch, tmp_path):
             self.stopped = True
             return {"ok": True}
 
-        def cancel(self):
+        def cancel(self, disabling=False):
+            self.cancel_modes.append(disabling)
             self.stopped = True
 
     backend = ModuleType("mg400_agent.joint_control")
@@ -102,6 +120,59 @@ def panel(panel_module):
     panel = panel_module.ControlPanel(mirror)
     panel.models = [FloatModel(0.0) for _ in range(4)]
     return panel
+
+
+def install_ui(panel_module, panel, monkeypatch, next_update):
+    widgets = []
+    containers = []
+
+    class Widget:
+        def __init__(self, text=None, *args, **kwargs):
+            self.text = text
+            self.visible = True
+            self.enabled = kwargs.get("enabled", True)
+            self.clicked_fn = kwargs.get("clicked_fn")
+            self.parent = containers[-1] if containers else None
+            self.destroyed = False
+            self.frame = self
+            widgets.append(self)
+
+        def __enter__(self):
+            containers.append(self)
+            return self
+
+        def __exit__(self, *args):
+            containers.pop()
+
+        def setPosition(self, *args):
+            pass
+
+        def destroy(self):
+            self.destroyed = True
+
+    modules = {
+        name: ModuleType(name)
+        for name in ("omni", "omni.kit", "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd")
+    }
+    modules["omni"].kit = modules["omni.kit"]
+    modules["omni.kit"].app = modules["omni.kit.app"]
+    for name in ("timeline", "ui", "usd"):
+        setattr(modules["omni"], name, modules[f"omni.{name}"])
+    modules["omni.kit.app"].get_app = lambda: SimpleNamespace(next_update_async=next_update)
+    stage = object()
+    modules["omni.usd"].get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
+    modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(
+        is_stopped=lambda: True
+    )
+    for name in ("Window", "VStack", "HStack", "Label", "FloatField", "Button"):
+        setattr(modules["omni.ui"], name, type(name, (Widget,), {}))
+    modules["omni.ui"].SimpleFloatModel = FloatModel
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, panel.mirror, raising=False)
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, panel, raising=False)
+    panel.models = []
+    return widgets
 
 
 def test_import_does_not_start_control_or_schedule_tasks(panel_module):
@@ -219,7 +290,123 @@ def test_enable_sends_no_move(panel):
 
     asyncio.run(exercise())
     assert panel.control.calls == [("enable",)]
-    assert panel.message == "Enabled; no movement sent."
+    assert panel.message == "Enabled. No movement sent."
+
+
+def test_disable_cancels_once_drains_move_and_allows_explicit_enable_then_move(
+    panel_module, panel
+):
+    async def exercise():
+        panel.copy_actual()
+        old = panel.control
+        panel.submit("move")
+        action = panel.action
+        try:
+            assert await asyncio.to_thread(old.move_started.wait, 1)
+            panel.request_disable()
+            assert old.stopped
+            assert old.cancel_modes == [True]
+            disable_task = panel.disable_task
+            panel.request_disable()
+            assert panel.disable_task is disable_task
+            assert await asyncio.to_thread(old.disable_finished.wait, 1)
+            await asyncio.sleep(0)
+            assert panel.control is old
+            assert len(panel_module.instances) == 1
+            assert not action.done()
+            assert not disable_task.done()
+            panel.submit("enable")
+            panel.submit("move")
+            assert panel.action is action
+        finally:
+            old.release_move.set()
+            await action
+            if panel.disable_task:
+                await panel.disable_task
+        assert old.calls == [("move", (1.0, 2.0, 3.0, 4.0)), ("disable",)]
+        assert old.cancel_modes == [True]
+        replacement = panel.control
+        assert replacement is not old
+        assert len(panel_module.instances) == 2
+        assert replacement.calls == []
+        assert replacement.read_state().mode == 4
+        assert not replacement.stopped
+        assert not panel.busy
+        assert panel.message == "Disabled. Click Enable robot to enable again."
+        panel.submit("enable")
+        await panel.action
+        assert replacement.calls == [("enable",)]
+        assert replacement.read_state().mode == 5
+        panel.models[0].set_value(30.0)
+        replacement.release_move.set()
+        panel.submit("move")
+        await panel.action
+        assert replacement.calls == [("enable",), ("move", (30.0, 2.0, 3.0, 4.0))]
+        assert panel.message == "Arrival verified."
+
+    asyncio.run(exercise())
+
+
+def test_unconfirmed_disable_drains_move_keeps_old_control_and_retains_error(
+    panel_module, panel, monkeypatch
+):
+    old = panel.control
+
+    def unconfirmed_disable():
+        old.calls.append(("disable",))
+        old.disable_finished.set()
+        raise RuntimeError("Disabled mode was not confirmed")
+
+    monkeypatch.setattr(old, "disable", unconfirmed_disable)
+
+    async def exercise():
+        panel.copy_actual()
+        panel.submit("move")
+        action = panel.action
+        try:
+            assert await asyncio.to_thread(old.move_started.wait, 1)
+            panel.request_disable()
+            assert old.stopped
+            assert await asyncio.to_thread(old.disable_finished.wait, 1)
+            await asyncio.sleep(0)
+            assert not action.done()
+            assert not panel.disable_task.done()
+            assert panel.control is old
+        finally:
+            old.release_move.set()
+            await action
+            if panel.disable_task:
+                await panel.disable_task
+        message = "DISABLE UNCONFIRMED: Disabled mode was not confirmed"
+        assert panel.message == message
+        assert panel.control is old
+        assert old.stopped
+        assert len(panel_module.instances) == 1
+        panel.submit("enable")
+        panel.submit("move")
+        panel.request_disable()
+        await asyncio.sleep(0)
+        assert panel.action is action
+        assert old.calls == [("move", (1.0, 2.0, 3.0, 4.0)), ("disable",)]
+        assert old.cancel_modes == [True]
+        assert panel.message == message
+
+    asyncio.run(exercise())
+
+
+def test_home_moves_to_fixed_zero_angles_and_updates_edited_targets(panel):
+    async def exercise():
+        panel.copy_actual()
+        for model in panel.models:
+            model.set_value(45.0)
+        panel.control.release_move.set()
+        panel.submit("home")
+        assert [model.as_float for model in panel.models] == [0.0] * 4
+        await panel.action
+
+    asyncio.run(exercise())
+    assert panel.control.calls == [("move", (0.0, 0.0, 0.0, 0.0))]
+    assert panel.message == "Arrival verified."
 
 
 def test_start_refuses_to_replace_busy_panel(panel_module, panel, monkeypatch):
@@ -269,28 +456,6 @@ def test_concurrent_starts_wait_for_prior_panel_to_exit(panel_module, panel, mon
 def test_run_initializes_passively_and_stops_active_move_on_close(
     panel_module, panel, monkeypatch, moving_at_close
 ):
-    widgets = []
-
-    class Widget:
-        def __init__(self, text=None, *args, **kwargs):
-            self.text = text
-            self.visible = self.enabled = True
-            self.destroyed = False
-            self.frame = self
-            widgets.append(self)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def setPosition(self, *args):
-            pass
-
-        def destroy(self):
-            self.destroyed = True
-
     frames = 0
 
     stop = panel.control.stop
@@ -314,29 +479,7 @@ def test_run_initializes_passively_and_stops_active_move_on_close(
                 assert await asyncio.to_thread(panel.control.move_started.wait, 1)
             panel.window.visible = False
 
-    modules = {
-        name: ModuleType(name)
-        for name in ("omni", "omni.kit", "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd")
-    }
-    modules["omni"].kit = modules["omni.kit"]
-    modules["omni.kit"].app = modules["omni.kit.app"]
-    for name in ("timeline", "ui", "usd"):
-        setattr(modules["omni"], name, modules[f"omni.{name}"])
-    modules["omni.kit.app"].get_app = lambda: SimpleNamespace(next_update_async=next_update)
-    stage = object()
-    modules["omni.usd"].get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
-    modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(
-        is_stopped=lambda: True
-    )
-    for name in ("Window", "VStack", "HStack", "Label", "FloatField", "Button"):
-        setattr(modules["omni.ui"], name, Widget)
-    modules["omni.ui"].SimpleFloatModel = FloatModel
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
-    monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, panel.mirror, raising=False)
-    monkeypatch.setattr(builtins, panel_module.SINGLETON, panel, raising=False)
-    panel.models = []
-
+    install_ui(panel_module, panel, monkeypatch, next_update)
     asyncio.run(panel.run())
 
     assert frames == 2
@@ -346,3 +489,49 @@ def test_run_initializes_passively_and_stops_active_move_on_close(
     assert panel.control.calls == expected_calls
     assert panel.report["status"] == "closed"
     assert panel.report["motion_sent_by_startup"] is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "busy", "expected_enabled"),
+    (
+        (4, False, [True, False, False, False]),
+        (5, False, [False, True, True, True]),
+        (5, True, [False, True, False, False]),
+    ),
+)
+def test_ui_button_rows_and_enabled_states(
+    panel_module, panel, monkeypatch, mode, busy, expected_enabled
+):
+    panel.control.set_mode(mode)
+    panel.initialized = True
+    frames = 0
+    pending_action = None
+
+    async def next_update():
+        nonlocal frames, pending_action
+        frames += 1
+        if frames == 1 and busy:
+            pending_action = asyncio.get_running_loop().create_future()
+            panel.action = pending_action
+        if frames == 2:
+            buttons = [widget for widget in widgets if type(widget).__name__ == "Button"]
+            assert [button.text for button in buttons] == [
+                "Enable robot", "Disable robot", "Return to Home", "Move to Target"
+            ]
+            enable, disable, home, move = buttons
+            assert enable.parent is disable.parent
+            assert type(enable.parent).__name__ == "HStack"
+            assert home.parent is move.parent is enable.parent.parent
+            assert [button.enabled for button in buttons] == expected_enabled
+            fields = [widget for widget in widgets if type(widget).__name__ == "FloatField"]
+            assert len(fields) == 4
+            assert all(field.enabled == (not busy) for field in fields)
+            assert panel.control.calls == []
+            if pending_action:
+                pending_action.set_result(None)
+            panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert frames == 2
+    assert panel.control.calls == []

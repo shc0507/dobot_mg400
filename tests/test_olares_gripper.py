@@ -29,13 +29,9 @@ def test_import_does_not_start_panel_or_read_feedback(entry_environment, tmp_pat
 
 
 @pytest.mark.parametrize("run_name", ("__main__", "<run_path>"))
-def test_explicit_execution_uses_shared_usb_feedback_path(entry_environment, tmp_path, run_name):
+def test_explicit_execution_opens_combined_control_panel(entry_environment, tmp_path, run_name):
     run, panel = entry_environment
     run(str(ENTRY), run_name=run_name)
-    feedback = tmp_path / "server-data/work/gripper_olares_feedback.json"
-    panel.assert_called_once_with(
-        str(ENTRY.with_name("gripper_control.py")),
-        init_globals={"FEEDBACK_PATH": str(feedback)},
-    )
-    assert feedback.parent.is_dir()
+    panel.assert_called_once_with(str(ENTRY.with_name("joint_control.py")))
+    assert not (tmp_path / "server-data").exists()
     socket.create_connection.assert_not_called()

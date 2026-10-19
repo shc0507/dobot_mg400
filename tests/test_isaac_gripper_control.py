@@ -1,13 +1,15 @@
 """Test gripper commands without Isaac Sim or hardware connections."""
 
 import asyncio
+import builtins
 import json
 import runpy
 import socket
+import sys
 import threading
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -313,3 +315,284 @@ def test_file_open_close_use_position_transport(module, tmp_path):
     panel.submit("open")
     panel.submit("close")
     assert [call.args for call in panel.submit_position.call_args_list] == [(1000,), (0,)]
+
+
+def install_embedded_ui(monkeypatch, next_update):
+    widgets = []
+
+    class IntModel:
+        def __init__(self, value=0):
+            self.value = value
+
+        def set_value(self, value):
+            self.value = value
+
+        def get_value_as_int(self):
+            return self.value
+
+    class Widget:
+        def __init__(self, text=None, *args, **kwargs):
+            self.text = text
+            self.enabled = kwargs.get("enabled", True)
+            self.clicked_fn = kwargs.get("clicked_fn")
+            self.model = kwargs.get("model", IntModel())
+            widgets.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    omni = ModuleType("omni")
+    omni.ui = ModuleType("omni.ui")
+    omni.kit = ModuleType("omni.kit")
+    omni.kit.app = ModuleType("omni.kit.app")
+    omni.kit.app.get_app = lambda: SimpleNamespace(next_update_async=next_update)
+    omni.ui.Window = Mock(side_effect=AssertionError("Embedded controls must not create a window"))
+    for name in ("VStack", "HStack", "Label", "IntSlider", "IntField", "Button"):
+        setattr(omni.ui, name, type(name, (Widget,), {}))
+    omni.ui.SimpleIntModel = IntModel
+    for item in (omni, omni.ui, omni.kit, omni.kit.app):
+        monkeypatch.setitem(sys.modules, item.__name__, item)
+    return widgets, omni.ui.Window
+
+
+def gripper_owner(**changes):
+    return SimpleNamespace(
+        **dict(busy=False, keyboard_enabled=False, keyboard_arming=False, closed=False) | changes
+    )
+
+
+def test_embedded_ui_uses_parent_window_and_preserves_edited_target(module, monkeypatch, tmp_path):
+    async def exercise():
+        panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+        panel.owner = gripper_owner()
+        parent_window = SimpleNamespace(visible=True, destroy=Mock())
+        sample = position_feedback()
+        panel.feedback.get = lambda: sample.copy()
+        frames = 0
+        mirror_finished = asyncio.Event()
+
+        async def mirror():
+            while not panel.closed:
+                await asyncio.sleep(0)
+            mirror_finished.set()
+
+        async def next_update():
+            nonlocal frames
+            frames += 1
+            await asyncio.sleep(0)
+            if frames == 2:
+                assert panel.target.model.get_value_as_int() == 500
+                panel.target.model.set_value(650)
+                sample["position"] = 700
+            elif frames == 3:
+                assert panel.target.model.get_value_as_int() == 650
+                parent_window.visible = False
+
+        widgets, new_window = install_embedded_ui(monkeypatch, next_update)
+        panel.mirror = mirror
+        panel.build_ui()
+        widget_count = len(widgets)
+        assert panel.action is None
+        assert not list(tmp_path.glob("*.command.json"))
+        await asyncio.wait_for(panel.run(window=parent_window), 1)
+        assert len(widgets) == widget_count
+        assert panel.closed
+        assert mirror_finished.is_set()
+        assert panel.mirror_task.done()
+        new_window.assert_not_called()
+        parent_window.destroy.assert_not_called()
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("owner_state", ["busy", "keyboard_enabled", "keyboard_arming", "closed"])
+def test_manual_callbacks_reject_owner_motion_and_keyboard_control(
+    module, monkeypatch, tmp_path, owner_state
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.owner = gripper_owner(**{owner_state: True})
+    panel.feedback.get = lambda: position_feedback()
+    widgets, _ = install_embedded_ui(monkeypatch, AsyncMock())
+    panel.build_ui()
+    panel.submit = Mock()
+    panel.submit_position = Mock()
+    panel.target.model.set_value(650)
+    callbacks = [widget.clicked_fn for widget in widgets if widget.clicked_fn is not None]
+    assert len(callbacks) == 3
+    for callback in callbacks:
+        callback()
+    panel.submit.assert_not_called()
+    panel.submit_position.assert_not_called()
+    setattr(panel.owner, owner_state, False)
+    for callback in callbacks:
+        callback()
+    assert [call.args for call in panel.submit.call_args_list] == [("open",), ("close",)]
+    panel.submit_position.assert_called_once_with(650)
+
+
+def test_keyboard_position_submission_remains_available_while_owner_is_busy(module, tmp_path):
+    async def exercise():
+        panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+        panel.owner = gripper_owner(busy=True, keyboard_enabled=True)
+        sample = position_feedback()
+        panel.feedback.get = lambda: sample.copy()
+        panel.perform_position = AsyncMock()
+        action = panel.submit_position(525)
+        assert action is not None
+        await action
+        panel.perform_position.assert_awaited_once_with(525, sample)
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("close_request", ["window", "closing"])
+def test_embedded_close_waits_for_current_ack_and_keeps_mirror_alive(
+    module, monkeypatch, tmp_path, close_request
+):
+    async def exercise():
+        feedback_path = tmp_path / "feedback.json"
+        command_path = tmp_path / "feedback.json.command.json"
+        panel = module.GripperPanel(str(feedback_path))
+        panel.owner = gripper_owner()
+        sample = position_feedback()
+        panel.feedback.get = lambda: sample.copy()
+        parent_window = SimpleNamespace(visible=True, destroy=Mock())
+        closing_seen = asyncio.Event()
+        mirror_finished = asyncio.Event()
+
+        async def mirror():
+            while not panel.closed:
+                await asyncio.sleep(0)
+            mirror_finished.set()
+
+        async def next_update():
+            await asyncio.sleep(0)
+            if command_path.exists():
+                if close_request == "window":
+                    parent_window.visible = False
+                else:
+                    panel.closing = True
+                closing_seen.set()
+
+        _, new_window = install_embedded_ui(monkeypatch, next_update)
+        panel.mirror = mirror
+        panel.build_ui()
+        panel.task = asyncio.create_task(panel.run(window=parent_window))
+        action = panel.submit_position(525)
+        assert action is not None
+        await asyncio.wait_for(closing_seen.wait(), 1)
+        await asyncio.sleep(0)
+        assert panel.closing
+        assert not panel.closed
+        assert not panel.task.done()
+        assert not mirror_finished.is_set()
+        assert panel.submit_position(550) is None
+        request = json.loads(command_path.read_text())
+        sample.update(seq=2, position=525)
+        sample["control"] = dict(
+            protocol=1, command_id=request["id"], target=525, ack=True,
+            locked=False, error=None, io_mode=0,
+        )
+        await asyncio.wait_for(panel.task, 1)
+        assert action.done()
+        assert panel.report["arrival_observed"]
+        assert not panel.failed
+        assert panel.closed
+        assert panel.mirror_task.done()
+        assert mirror_finished.is_set()
+        assert json.loads(command_path.read_text())["id"] == request["id"]
+        parent_window.destroy.assert_not_called()
+        new_window.assert_not_called()
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("transport", ["position", "io"])
+def test_close_before_action_starts_prevents_queued_command(module, tmp_path, transport):
+    async def exercise():
+        panel = module.GripperPanel(str(tmp_path / "feedback.json") if transport == "position"
+                                    else None)
+        panel.feedback.get = lambda: position_feedback()
+        panel.operate = Mock()
+        action = panel.submit_position(525) if transport == "position" else panel.submit("open")
+        assert action is not None
+        panel.closing = True
+        await action
+        assert not list(tmp_path.glob("*.command.json"))
+        panel.operate.assert_not_called()
+        assert not panel.failed
+
+    asyncio.run(exercise())
+
+
+def test_close_during_io_preflight_prevents_first_output(module):
+    panel = module.GripperPanel()
+
+    def state():
+        panel.closing = True
+        return 1, 0
+
+    panel.state = state
+    panel.command = Mock()
+    with pytest.raises(RuntimeError, match="cannot send another command"):
+        panel.operate("open")
+    panel.command.assert_not_called()
+    assert not panel.report["ack"]
+
+
+def test_embedded_close_releases_mirror_when_action_raises(module, monkeypatch, tmp_path):
+    async def exercise():
+        panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+        parent_window = SimpleNamespace(visible=False, destroy=Mock())
+        _, new_window = install_embedded_ui(monkeypatch, AsyncMock())
+        panel.build_ui()
+        panel.mirror = AsyncMock()
+        panel.action = asyncio.get_running_loop().create_future()
+        panel.action.set_exception(RuntimeError("Report write failed"))
+        with pytest.raises(RuntimeError, match="Report write failed"):
+            await panel.run(window=parent_window)
+        assert panel.closed
+        assert panel.mirror_task.done()
+        panel.mirror.assert_awaited_once_with()
+        parent_window.destroy.assert_not_called()
+        new_window.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+def test_standalone_reload_cannot_replace_owned_gripper(module, monkeypatch):
+    old = SimpleNamespace(owner=gripper_owner(), closed=False, busy=False, task=None)
+    monkeypatch.setattr(builtins, module.SINGLETON, old, raising=False)
+    with pytest.raises(RuntimeError, match="Use the MG400 Control panel"):
+        asyncio.run(module.replace_panel())
+    assert not old.closed
+    assert getattr(builtins, module.SINGLETON) is old
+    socket.create_connection.assert_not_called()
+
+
+def test_reload_drains_legacy_panel_without_closing_attribute(module, monkeypatch):
+    async def exercise():
+        old = SimpleNamespace(closed=False, busy=False, task=None)
+
+        async def old_run():
+            while not old.closed:
+                await asyncio.sleep(0)
+
+        old.task = asyncio.create_task(old_run())
+        monkeypatch.setattr(builtins, module.SINGLETON, old, raising=False)
+        monkeypatch.setattr(module.GripperPanel, "run", AsyncMock())
+        new = await asyncio.wait_for(module.replace_panel(), 1)
+        assert old.closed
+        assert old.task.done()
+        assert getattr(builtins, module.SINGLETON) is new
+        assert new is not old
+        await new.task
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())

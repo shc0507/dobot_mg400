@@ -31,6 +31,8 @@ class FloatModel:
 def panel_module(monkeypatch, tmp_path):
     instances = []
     sessions = []
+    grippers = []
+    gripper_loads = []
 
     class Control:
         def __init__(self, host, snapshot):
@@ -100,6 +102,7 @@ def panel_module(monkeypatch, tmp_path):
     backend = ModuleType("mg400_agent.joint_control")
     backend.JointControl = Control
     monkeypatch.setitem(sys.modules, backend.__name__, backend)
+
     class KeyboardSession:
         def __init__(self, control):
             self.control = control
@@ -180,12 +183,68 @@ def panel_module(monkeypatch, tmp_path):
             str(ROOT / "apps/isaacsim/joint_control.py"), run_name="test_isaac_control"
         )
     panel_class = namespace["ControlPanel"]
+
+    class Gripper:
+        def __init__(self, feedback_path=None):
+            self.feedback_path = feedback_path
+            self.owner = None
+            self.closed = self.closing = self.failed = False
+            self.action = self.task = None
+            self.calls = []
+            self.windows = []
+            self.build_count = 0
+            self.run_started = asyncio.Event()
+            self.run_finished = asyncio.Event()
+            grippers.append(self)
+
+        @property
+        def busy(self):
+            return self.action is not None and not self.action.done()
+
+        def build_ui(self):
+            import omni.ui as ui
+
+            self.build_count += 1
+            ui.Label("Embedded gripper")
+
+        async def run(self, window=None):
+            self.windows.append(window)
+            self.run_started.set()
+            try:
+                while not self.closed and not self.closing and window.visible:
+                    await asyncio.sleep(0)
+            finally:
+                if self.action:
+                    await self.action
+                self.closed = True
+                self.run_finished.set()
+
+    real_run_path = runpy.run_path
+
+    def load_script(path, *args, **kwargs):
+        if Path(path).name == "gripper_control.py":
+            gripper_loads.append((path, args, kwargs))
+            return {"GripperPanel": Gripper}
+        return real_run_path(path, *args, **kwargs)
+
+    monkeypatch.setitem(panel_class.run.__globals__, "runpy", SimpleNamespace(run_path=load_script))
+    monkeypatch.setitem(
+        panel_class.run.__globals__, "data_path", lambda name: tmp_path / "data" / name
+    )
     monkeypatch.setitem(panel_class.run.__globals__, "REPORT", tmp_path / "status.json")
     config = tmp_path / "robot.toml"
     config.write_text('[robot]\nhost = "192.168.1.6"\n')
     monkeypatch.setitem(panel_class.__init__.__globals__, "ROBOT_CONFIG", config)
     monkeypatch.setattr(builtins, namespace["SINGLETON"] + "_start_lock", None, raising=False)
-    return SimpleNamespace(**namespace, instances=instances, sessions=sessions, config_path=config)
+    monkeypatch.setattr(
+        builtins, namespace["GRIPPER_SINGLETON"] + "_start_lock", None, raising=False
+    )
+    monkeypatch.setattr(builtins, namespace["GRIPPER_SINGLETON"], None, raising=False)
+    return SimpleNamespace(
+        **namespace, instances=instances, sessions=sessions, config_path=config,
+        grippers=grippers, Gripper=Gripper, gripper_loads=gripper_loads,
+        feedback_path=tmp_path / "data/work/gripper_olares_feedback.json",
+    )
 
 
 @pytest.fixture
@@ -352,6 +411,8 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
 
 def test_import_does_not_start_control_or_schedule_tasks(panel_module):
     assert panel_module.instances == []
+    assert panel_module.grippers == []
+    assert panel_module.gripper_loads == []
     assert not hasattr(panel_module, "MG400_CONTROL_START_TASK")
 
 
@@ -1040,7 +1101,10 @@ def test_gripper_keyboard_awaits_measured_step_before_continuing(
             closed=False, failed=False, busy=False, measured_position=measured_position,
             submit_position=submit_position,
         )
-        monkeypatch.setattr(builtins, panel_module.GRIPPER_SINGLETON, gripper, raising=False)
+        panel.gripper = gripper
+        monkeypatch.setattr(
+            builtins, panel_module.GRIPPER_SINGLETON, SimpleNamespace(closed=True), raising=False
+        )
         panel.key_event(key, True)
         await asyncio.wait_for(submitted.wait(), 1)
         first_action = panel.action
@@ -1059,7 +1123,7 @@ def test_gripper_keyboard_awaits_measured_step_before_continuing(
     asyncio.run(exercise())
 
 
-def test_gripper_hold_repeats_after_each_measured_step(panel_module, panel, monkeypatch):
+def test_gripper_hold_repeats_after_each_measured_step(panel):
     async def exercise():
         await arm_keyboard(panel)
         current, targets = [500], []
@@ -1078,7 +1142,7 @@ def test_gripper_hold_repeats_after_each_measured_step(panel_module, panel, monk
             closed=False, failed=False, busy=False, measured_position=lambda: current[0],
             submit_position=submit_position,
         )
-        monkeypatch.setattr(builtins, panel_module.GRIPPER_SINGLETON, gripper, raising=False)
+        panel.gripper = gripper
         panel.key_event("Z", True)
         await asyncio.wait_for(panel.action, 1)
         assert targets == [525, 550, 575]
@@ -1087,7 +1151,7 @@ def test_gripper_hold_repeats_after_each_measured_step(panel_module, panel, monk
     asyncio.run(exercise())
 
 
-def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel_module, panel, monkeypatch):
+def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel, monkeypatch):
     async def exercise():
         await arm_keyboard(panel)
         clock, current, targets = [0.0], [500], []
@@ -1107,7 +1171,7 @@ def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel_module, p
             closed=False, failed=False, busy=False, measured_position=lambda: current[0],
             submit_position=submit_position,
         )
-        monkeypatch.setattr(builtins, panel_module.GRIPPER_SINGLETON, gripper, raising=False)
+        panel.gripper = gripper
         panel.key_event("Z", True)
         await asyncio.wait_for(panel.action, 1)
         first_action = panel.action
@@ -1120,6 +1184,257 @@ def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel_module, p
         await asyncio.wait_for(panel.action, 1)
         panel.key_event("Z", False)
         assert targets == [525, 550]
+
+    asyncio.run(exercise())
+
+
+def test_start_constructs_owned_gripper_from_shared_feedback_path(
+    panel_module, panel, monkeypatch
+):
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, None, raising=False)
+    monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, panel.mirror, raising=False)
+
+    async def run_until_closed(self):
+        while not self.closed:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(panel_module.ControlPanel, "run", run_until_closed)
+
+    async def exercise():
+        created = await panel_module.start()
+        try:
+            gripper = created.gripper
+            assert panel_module.grippers == [gripper]
+            assert gripper.owner is created
+            assert gripper.feedback_path == str(panel_module.feedback_path)
+            assert getattr(builtins, panel_module.GRIPPER_SINGLETON) is gripper
+            assert gripper.calls == created.control.calls == []
+            assert not created.keyboard_enabled
+            path, args, kwargs = panel_module.gripper_loads[0]
+            assert Path(path) == ROOT / "apps/isaacsim/gripper_control.py"
+            assert args == ()
+            assert kwargs["run_name"] not in ("__main__", "<run_path>")
+        finally:
+            created.closed = True
+            await created.task
+
+    asyncio.run(exercise())
+
+
+def test_combined_panel_uses_one_window_and_starts_child_without_commands(
+    panel_module, panel, monkeypatch
+):
+    child = panel_module.Gripper()
+    panel.gripper = child
+    child.owner = panel
+
+    async def next_update():
+        await asyncio.wait_for(child.run_started.wait(), 1)
+        windows = [widget for widget in widgets if type(widget).__name__ == "Window"]
+        assert windows == [panel.window]
+        assert panel.window.text == "MG400 Control"
+        assert child.windows == [panel.window]
+        assert child.build_count == 1
+        assert child.calls == panel.control.calls == []
+        assert not panel.keyboard_enabled
+        panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert child.closed
+    assert child.task.done()
+    assert child.run_finished.is_set()
+    assert panel.window.destroyed
+
+
+def test_gripper_task_failure_does_not_prevent_parent_window_cleanup(
+    panel_module, panel, monkeypatch
+):
+    child = panel_module.Gripper()
+    panel.gripper = child
+    child.owner = panel
+
+    async def fail_child(window=None):
+        child.run_started.set()
+        child.closed = True
+        raise RuntimeError("Gripper feedback task failed")
+
+    monkeypatch.setattr(child, "run", fail_child)
+
+    async def next_update():
+        await asyncio.wait_for(child.run_started.wait(), 1)
+        panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(asyncio.wait_for(panel.run(), 1))
+    assert child.task.done()
+    assert panel.closed
+    assert panel.window.destroyed
+    assert panel.report["status"] == "closed"
+    assert panel.report["message"] == "Gripper control stopped: Gripper feedback task failed"
+    assert panel.control.calls == []
+
+
+def test_reload_replaces_idle_gripper_after_its_task_failed(panel_module, panel, monkeypatch):
+    old_child = panel_module.Gripper()
+    panel.gripper = old_child
+    old_child.owner = panel
+    old_child.closed = panel.closed = True
+
+    async def next_update():
+        await asyncio.sleep(0)
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    monkeypatch.setattr(builtins, panel_module.GRIPPER_SINGLETON, old_child, raising=False)
+
+    async def fail_child():
+        raise RuntimeError("Old gripper task failed")
+
+    async def exercise():
+        old_child.task = asyncio.create_task(fail_child())
+        await asyncio.sleep(0)
+        assert old_child.task.done()
+        replacement = await asyncio.wait_for(panel_module.start(), 1)
+        try:
+            await asyncio.wait_for(replacement.gripper.run_started.wait(), 1)
+            assert replacement is not panel
+            assert replacement.gripper is not old_child
+            assert replacement.gripper.owner is replacement
+            assert getattr(builtins, panel_module.SINGLETON) is replacement
+            assert getattr(builtins, panel_module.GRIPPER_SINGLETON) is replacement.gripper
+            assert not replacement.closed
+            assert not replacement.gripper.closed
+            windows = [widget for widget in widgets if type(widget).__name__ == "Window"]
+            assert windows == [replacement.window]
+            assert replacement.control.calls == replacement.gripper.calls == []
+        finally:
+            replacement.closed = True
+            await asyncio.wait_for(replacement.task, 1)
+
+    asyncio.run(exercise())
+
+
+def test_closing_parent_waits_for_gripper_action_before_closing_child(
+    panel_module, panel, monkeypatch
+):
+    child = panel_module.Gripper()
+    panel.gripper = child
+    child.owner = panel
+
+    async def next_update():
+        await asyncio.wait_for(child.run_started.wait(), 1)
+        child.action = asyncio.get_running_loop().create_future()
+        panel.held_keys.add("Z")
+        panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+
+    async def exercise():
+        task = asyncio.create_task(panel.run())
+        try:
+            async def wait_for_closing():
+                while not child.closing:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(wait_for_closing(), 1)
+            assert panel.held_keys == set()
+            assert not child.closed
+            assert not child.task.done()
+            assert not task.done()
+            assert not panel.window.destroyed
+        finally:
+            if child.action is not None and not child.action.done():
+                child.action.set_result(None)
+            await asyncio.wait_for(task, 1)
+        assert child.closed
+        assert child.task.done()
+        assert panel.window.destroyed
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("owned", (False, True))
+def test_start_refuses_busy_gripper_before_closing_either_panel(
+    panel_module, panel, monkeypatch, owned
+):
+    child = panel_module.Gripper()
+    if owned:
+        panel.gripper = child
+        child.owner = panel
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, panel, raising=False)
+    monkeypatch.setattr(builtins, panel_module.GRIPPER_SINGLETON, child, raising=False)
+
+    async def exercise():
+        child.action = asyncio.get_running_loop().create_future()
+        try:
+            with pytest.raises(RuntimeError, match="gripper"):
+                await panel_module.start()
+            assert not panel.closed
+            assert not child.closed
+            assert not child.closing
+            assert panel_module.gripper_loads == []
+            assert len(panel_module.instances) == 1
+        finally:
+            child.action.set_result(None)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("operation", ("move", "home", "enable", "keyboard"))
+def test_arm_commands_do_not_start_while_owned_gripper_is_busy(panel_module, panel, operation):
+    child = panel_module.Gripper()
+    panel.gripper = child
+    panel.copy_actual()
+
+    async def exercise():
+        child.action = asyncio.get_running_loop().create_future()
+        try:
+            if operation == "keyboard":
+                panel.request_keyboard()
+            else:
+                panel.submit(operation)
+            assert panel.action is None
+            assert panel.keyboard_task is None
+            assert panel.control.calls == []
+        finally:
+            child.action.set_result(None)
+
+    asyncio.run(exercise())
+
+
+def test_repeated_start_replaces_old_window_and_owned_child(panel_module, panel, monkeypatch):
+    async def next_update():
+        await asyncio.sleep(0)
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+
+    async def wait_for_child(created):
+        await asyncio.wait_for(created.gripper.run_started.wait(), 1)
+
+    async def exercise():
+        first = await panel_module.start()
+        second = None
+        try:
+            await wait_for_child(first)
+            second = await panel_module.start()
+            await wait_for_child(second)
+            assert first.closed
+            assert first.task.done()
+            assert first.window.destroyed
+            assert first.gripper.closed
+            assert first.gripper.task.done()
+            windows = [widget for widget in widgets if type(widget).__name__ == "Window"]
+            assert [window for window in windows if not window.destroyed] == [second.window]
+            assert second.gripper.owner is second
+            assert getattr(builtins, panel_module.SINGLETON) is second
+            assert getattr(builtins, panel_module.GRIPPER_SINGLETON) is second.gripper
+            assert all(control.calls == [] for control in panel_module.instances)
+            assert all(child.calls == [] for child in panel_module.grippers)
+        finally:
+            for created in (first, second):
+                if created is not None:
+                    created.closed = True
+                    await asyncio.wait_for(created.task, 1)
 
     asyncio.run(exercise())
 

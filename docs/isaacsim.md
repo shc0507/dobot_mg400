@@ -17,9 +17,9 @@
 | `apps/isaacsim/load_model.py` | 开发时检查基础模型导入 |
 | `apps/isaacsim/mirror.py` | 在当前 MG400 场景中显示真机四轴反馈，支持断线重连 |
 | `apps/isaacsim/mirror_bootstrap.py` | 必要时打开默认场景，再启动只读姿态镜像 |
-| `apps/isaacsim/joint_control.py` | 真机法兰面板：空间坐标、键盘点动、使能、下使能、复位 |
-| `apps/isaacsim/gripper_control.py` | 实体夹爪面板：USB 连续位置控制、位置反馈、I/O 开合 |
-| `apps/isaacsim/olares_gripper.py` | Olares 夹爪面板入口，读取数据目录中的 USB 测量文件 |
+| `apps/isaacsim/joint_control.py` | 统一面板入口：法兰坐标、键盘点动、使能、下使能、复位和夹爪连续开口 |
+| `apps/isaacsim/gripper_control.py` | 统一面板复用的夹爪模块，也保留独立 I/O 开合入口 |
+| `apps/isaacsim/olares_gripper.py` | 兼容旧入口，打开同一个统一控制面板 |
 | `config/robot.toml` | Isaac 镜像、法兰面板和夹爪面板共用的机器人地址 |
 | `scripts/gripper_feedback.py` | Olares 主机读取 USB 夹爪位置，写入共享测量文件 |
 | `scripts/isaac_gripper_feedback.mjs` | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac |
@@ -44,7 +44,8 @@ Olares 启动脚本通过 `apps/isaacsim/startup.py` 打开 `00_OPEN_MG400.usda`
 在已有服务中，也可用 **File → Open** 打开 `/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
 
 时间轴保持 **Stop**。
-在 **Window → Script Editor** 运行法兰面板，脚本会启动或复用真机姿态镜像：
+在 **Window → Script Editor** 运行统一面板。
+脚本会启动或复用真机姿态镜像：
 
 ```python
 import runpy
@@ -52,19 +53,16 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-法兰面板启动只读，连接后显示真机实测姿态。
+`MG400 Control` 左侧显示法兰坐标，右侧显示夹爪开口。
+启动只读，连接后显示真机实测姿态。
 使能、下使能和运动步骤见 [在 Isaac 中控制真机法兰](#在-isaac-中控制真机法兰)。
 如果只显示姿态，运行 `apps/isaacsim/mirror_bootstrap.py`，见 [真机姿态实时同步](#真机姿态实时同步)。
-USB 接在 Olares 时，先启动宿主机反馈采集，再在 Script Editor 运行夹爪面板：
+夹爪区自动读取 Olares USB 反馈，不必另开面板。
+先启动宿主机采集，步骤见 [USB 接在 Olares](#usb-接在-olares)。
+`olares_gripper.py` 保留为统一面板的兼容入口。
+关闭窗口会关闭两组控制，等待当前夹爪命令返回结果后才退出。
+动作期间不能重载面板，空闲时重复运行会替换旧实例。
 
-```python
-import runpy
-
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/olares_gripper.py")
-```
-
-夹爪面板启动只读，点击开合按钮才驱动实体夹爪。
-采集和文件反馈步骤见 [USB 接在 Olares](#usb-接在-olares)。
 将自定义场景另存到数据目录，操作要求见 [代码与运行数据](#代码与运行数据)。
 
 ## Olares / WebRTC
@@ -299,7 +297,7 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
 脚本复用现有实时同步；尚未启动同步时，会通过 mirror bootstrap 备份当前场景、
-加载 MG400 并启动反馈。出现 `MG400 Flange Control` 面板后：
+加载 MG400 并启动反馈。出现 `MG400 Control` 面板后：
 
 1. 等待 `LIVE` 和 `Actual` 坐标。
    `Target` 首次自动填入实测坐标。
@@ -360,7 +358,9 @@ Z/X 松键后完成当前夹爪小步，不再追加目标。
 切换面板、按 Shift/Ctrl/Alt/Super 或反馈失效时，键盘控制关闭。
 恢复控制前，再次点击键盘按钮。
 A/D 会随 J1 改变法兰朝向，不是基座 Y 方向的直线运动。
-Z/X 依赖已打开的 Olares 夹爪面板和带 `--commands` 的 USB 采集进程。
+Z/X 使用同一窗口中的夹爪控制和带 `--commands` 的 USB 采集进程。
+开启键盘控制或机械臂动作期间，夹爪手动控件禁用。
+夹爪动作期间，机械臂运动按钮禁用。
 
 下使能后，面板用新鲜反馈和 dashboard 回读核实静止且处于未使能状态。
 核实成功后，目标坐标刷新为实测值。点击 **Enable robot** 即可重新使能，无需重载脚本。
@@ -394,7 +394,8 @@ Olares 容器内不绑定宿主机源 IP。需能连接所配置机器人的 `29
 
 ## 在 Isaac 中控制实体夹爪
 
-在 Script Editor 运行以下脚本，打开 `MG400 Real Gripper` 面板：
+Olares 日常使用统一面板右侧的夹爪区。
+仅使用 I/O 开合时，先关闭统一面板，再运行独立入口：
 
 ```python
 import runpy
@@ -487,15 +488,15 @@ python3 scripts/gripper_feedback.py --output ../mg400-data/work/gripper_olares_f
 按 `Ctrl+C` 停止前台采集，或向确认过身份的后台采集进程发送 `SIGTERM`。
 主机重启或 USB 重新连接后，手动重新启动采集。
 
-用仓库启动脚本启动 Isaac 后，在 Script Editor 运行 Olares 文件反馈入口：
+用仓库启动脚本启动 Isaac 后，在 Script Editor 运行统一入口：
 
 ```python
 import runpy
 
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/olares_gripper.py")
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-该入口把 `$MG400_DATA_DIR/work/gripper_olares_feedback.json` 传给夹爪面板。
+该入口把 `$MG400_DATA_DIR/work/gripper_olares_feedback.json` 传给右侧夹爪区。
 文件反馈与 Mac WebRTC 反馈互斥。
 同一文件重复读取不会延长测量值的有效期。
 该方式沿用 Stop 时间轴和反馈过期保护，不必重启 Isaac 或新增网络端口。

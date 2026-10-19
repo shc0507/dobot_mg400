@@ -24,7 +24,7 @@ ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.
 启动入口打开 `00_OPEN_MG400.usda`，检查真机控制模块能否导入。
 它不打开控制面板、不连接机器人，也不发送真机命令。
 场景保存机器人、可跟随实测位置的夹指、灯光和观察相机。
-在 **Window → Script Editor** 运行法兰面板，它也会启动姿态镜像：
+在 **Window → Script Editor** 运行统一控制面板，它也会启动姿态镜像：
 
 ```python
 import runpy
@@ -37,15 +37,17 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 | 入口 | 用途 |
 | --- | --- |
 | `apps/isaacsim/mirror_bootstrap.py` | 只读姿态镜像，必要时打开默认场景，不发送真机命令 |
-| `apps/isaacsim/joint_control.py` | 法兰坐标和键盘点动，自动启动或复用姿态镜像 |
-| `apps/isaacsim/olares_gripper.py` | 夹爪 0–1000 连续位置控制，读取 Olares USB 反馈 |
+| `apps/isaacsim/joint_control.py` | 统一控制面板：法兰坐标、键盘点动和夹爪连续开口，自动启动或复用姿态镜像 |
+| `apps/isaacsim/olares_gripper.py` | 兼容旧入口，打开同一个统一控制面板 |
 
-法兰面板启动只读，必须手动使能和执行。
+`MG400 Control` 左侧控制法兰，右侧控制夹爪。
+启动只读，机械臂运动须手动使能和执行。
 可输入 XYZ/R 直线目标，或开启键盘后用 WASD、R/F、Q/E 点动。
 按住按键可连续步进，每步 5 mm 或 1°。
 松键会取消后续步进并请求停止，每次长按最多 5 秒。
 复位按钮保持 J1–J4 归零。
-夹爪面板启动只读，宿主机采集脚本加 `--commands` 后可执行开口目标。
+右侧夹爪区读取 Olares USB 反馈，控制开口范围为 0–1000。
+宿主机采集脚本加 `--commands` 后可执行开口目标。
 按住 Z/X 连续调节开口，每步 25 / 1000。
 松键后夹爪完成当前一步，不再追加目标。
 夹爪命令不会使能或移动机械臂。

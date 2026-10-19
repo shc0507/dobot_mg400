@@ -31,7 +31,8 @@ class GripperPanel:
         self.feedback = FeedbackState()
         self.lock = threading.Lock()
         self.action = self.task = None
-        self.closed = self.failed = False
+        self.closed = self.closing = self.failed = False
+        self.owner = None
         self.mirror_task = None
         self.report = {
             "request": None,
@@ -114,6 +115,25 @@ class GripperPanel:
     def busy(self):
         return self.action is not None and not self.action.done()
 
+    @property
+    def manual_enabled(self):
+        if self.closed or self.closing or self.failed or self.busy or self.report.get("read_error"):
+            return False
+        return self.owner is None or not (
+            self.owner.busy or self.owner.keyboard_enabled
+            or self.owner.keyboard_arming or self.owner.closed
+        )
+
+    def _submit_manual(self, request):
+        if self.manual_enabled:
+            return self.submit(request)
+        return None
+
+    def _submit_position_manual(self):
+        if self.manual_enabled:
+            return self.submit_position(self.target.model.get_value_as_int())
+        return None
+
     def measured_position(self):
         """Return the fresh measured position, or None when feedback is unavailable."""
         sample = self.feedback.get()
@@ -132,7 +152,7 @@ class GripperPanel:
         """Send one target from 0 (closed) to 1000 (open) through the USB collector."""
         if type(position) is not int or not 0 <= position <= 1000:
             raise ValueError("The target position must be an integer from 0 to 1000.")
-        if self.closed or self.failed or self.busy:
+        if self.closed or self.closing or self.failed or self.busy:
             return None
         sample = self.position_sample()
         if sample is None:
@@ -148,7 +168,8 @@ class GripperPanel:
             ack=False, arrival_observed=False, write_acks=[],
         )
         try:
-            if self.closed:
+            if self.closed or self.closing:
+                self.report["result"] = "The panel cancelled the command before sending it."
                 return
             current = self.position_sample()
             if current is None or current["session"] != initial["session"]:
@@ -243,6 +264,8 @@ class GripperPanel:
     def operate(self, request):
         with self.lock:
             self.state()
+            if self.closed or self.closing or self.failed:
+                raise RuntimeError("The panel cannot send another command.")
             for text in ("DOExecute(2,0)", f"DOExecute(1,{int(request == 'close')})"):
                 if self.closed or self.failed:
                     raise RuntimeError("The panel cannot send another command.")
@@ -271,7 +294,7 @@ class GripperPanel:
             raise ValueError("Use open or close.")
         if self.feedback_path is not None:
             return self.submit_position(1000 if request == "open" else 0)
-        if self.closed or self.failed or self.busy:
+        if self.closed or self.closing or self.failed or self.busy:
             return None
         self.action = asyncio.ensure_future(self.perform(request))
         return self.action
@@ -286,6 +309,9 @@ class GripperPanel:
         )
         self.write_report()
         try:
+            if self.closed or self.closing:
+                self.report["result"] = "The panel cancelled the command before sending it."
+                return
             await asyncio.to_thread(self.operate, request)
         except Exception as error:
             self.failed = True
@@ -299,49 +325,57 @@ class GripperPanel:
         temporary.write_text(json.dumps(self.report, indent=2) + "\n")
         temporary.replace(REPORT)
 
-    async def run(self):
+    def build_ui(self):
+        """Create the gripper controls inside the current UI frame."""
+        import omni.ui as ui
+
+        self.target = None
+        self.target_initialized = False
+        with ui.VStack(spacing=8):
+            transport = "USB position" if self.feedback_path is not None else "DO1 / DO2"
+            ui.Label(f"REAL GRIPPER | {self.host} | {transport}", height=24)
+            self.inputs = ui.Label("DI1 / DI2: waiting", height=24)
+            self.position_widgets = []
+            if self.feedback_path is not None:
+                ui.Label("Opening: 0 closed, 1000 open | Z / X: open / close", height=20)
+                self.target = ui.IntSlider(min=0, max=1000, height=24)
+                with ui.HStack(height=28, spacing=8):
+                    field = ui.IntField(model=self.target.model)
+                    move = ui.Button(
+                        "Move to opening", clicked_fn=self._submit_position_manual,
+                    )
+                self.position_widgets = [self.target, field, move]
+                ui.Label(
+                    "First move disables I/O control. Force and speed stay unchanged.",
+                    height=34, word_wrap=True,
+                )
+            with ui.HStack(height=32, spacing=8):
+                self.buttons = [
+                    ui.Button(label, clicked_fn=lambda name=name: self._submit_manual(name))
+                    for label, name in (("Open gripper", "open"), ("Close gripper", "close"))
+                ]
+            self.status = ui.Label(self.report["result"], word_wrap=True, height=65)
+            self.mirror_status = ui.Label(
+                self.report["mirror"]["status"], word_wrap=True, height=50,
+            )
+
+    async def run(self, window=None):
         import omni.kit.app
         import omni.ui as ui
 
-        self.window = ui.Window(
-            "MG400 Real Gripper", width=460,
-            height=410 if self.feedback_path is not None else 260,
-        )
-        target = None
-        target_initialized = False
-        with self.window.frame:
-            with ui.VStack(spacing=8):
-                transport = "USB position" if self.feedback_path is not None else "DO1 / DO2"
-                ui.Label(f"REAL GRIPPER | {self.host} | {transport}", height=24)
-                inputs = ui.Label("DI1 / DI2: waiting", height=24)
-                position_widgets = []
-                if self.feedback_path is not None:
-                    ui.Label("Opening: 0 closed, 1000 open | Z / X: open / close", height=20)
-                    target = ui.IntSlider(min=0, max=1000, height=24)
-                    with ui.HStack(height=28, spacing=8):
-                        field = ui.IntField(model=target.model)
-                        move = ui.Button(
-                            "Move to opening",
-                            clicked_fn=lambda: self.submit_position(
-                                target.model.get_value_as_int()
-                            ),
-                        )
-                    position_widgets = [target, field, move]
-                    ui.Label(
-                        "First move disables I/O control. Force and speed stay unchanged.",
-                        height=34, word_wrap=True,
-                    )
-                with ui.HStack(height=32, spacing=8):
-                    buttons = [
-                        ui.Button(label, clicked_fn=lambda name=name: self.submit(name))
-                        for label, name in (("Open gripper", "open"), ("Close gripper", "close"))
-                    ]
-                status = ui.Label(self.report["result"], word_wrap=True, height=65)
-                mirror_status = ui.Label(self.report["mirror"]["status"], word_wrap=True, height=50)
+        standalone = window is None
+        if standalone:
+            window = ui.Window(
+                "MG400 Real Gripper", width=460,
+                height=410 if self.feedback_path is not None else 260,
+            )
+            with window.frame:
+                self.build_ui()
+        self.window = window
         self.mirror_task = asyncio.ensure_future(self.mirror())
         next_read = 0
         try:
-            while not self.closed and self.window.visible:
+            while not self.closed and not self.closing and self.window.visible:
                 await omni.kit.app.get_app().next_update_async()
                 if not self.busy and time.monotonic() >= next_read:
                     try:
@@ -369,33 +403,39 @@ class GripperPanel:
                         self.report["read_error"] = str(error)
                     self.write_report()
                     next_read = time.monotonic() + 0.5
-                if target is not None and not target_initialized:
+                if self.target is not None and not self.target_initialized:
                     position = self.measured_position()
                     if position is not None:
-                        target.model.set_value(position)
-                        target_initialized = True
-                inputs.text = (
+                        self.target.model.set_value(position)
+                        self.target_initialized = True
+                self.inputs.text = (
                     "USB feedback and position commands share one serial connection."
                     if self.feedback_path is not None else
                     f"Mode: {self.report['mode']} | DI1 / DI2 raw: {self.report['di']}"
                 )
-                status.text = self.report.get("read_error") or self.report["result"]
+                self.status.text = self.report.get("read_error") or self.report["result"]
                 measured = self.report["mirror"]
-                mirror_status.text = measured["status"]
+                self.mirror_status.text = measured["status"]
                 if "position" in measured:
-                    mirror_status.text += (
+                    self.mirror_status.text += (
                         f"\nActual: {measured['position']} / 1000 | "
                         f"Each jaw: {measured['q_m'] * 1000:.2f} mm"
                     )
-                for button in buttons + position_widgets:
-                    button.enabled = not (self.busy or self.failed or self.report.get("read_error"))
+                for button in self.buttons + self.position_widgets:
+                    button.enabled = self.manual_enabled
         finally:
-            self.closed = True
-            if self.mirror_task:
-                await self.mirror_task
-            if self.action:
-                await self.action
-            self.window.destroy()
+            self.closing = True
+            for button in self.buttons + self.position_widgets:
+                button.enabled = False
+            try:
+                if self.action:
+                    await self.action
+            finally:
+                self.closed = True
+                if self.mirror_task:
+                    await self.mirror_task
+                if standalone:
+                    self.window.destroy()
 
 
 async def start(feedback_path=None):
@@ -411,11 +451,17 @@ async def start(feedback_path=None):
 async def replace_panel(feedback_path=None):
     old = getattr(builtins, SINGLETON, None)
     if old:
+        if getattr(old, "owner", None) is not None and not old.closed:
+            raise RuntimeError("Use the MG400 Control panel.")
         if old.busy:
             raise RuntimeError("The gripper command is in progress. Wait before loading the panel.")
-        old.closed = True
+        if hasattr(old, "closing"):
+            old.closing = True
+        else:
+            old.closed = True
         if old.task:
             await old.task
+        old.closed = True
     panel = GripperPanel(feedback_path)
     setattr(builtins, SINGLETON, panel)
     panel.task = asyncio.ensure_future(panel.run())

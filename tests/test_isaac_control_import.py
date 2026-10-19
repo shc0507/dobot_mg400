@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 IMPORT_CHECK = """
 import asyncio
+import builtins
 import importlib
 import os
 import runpy
@@ -58,6 +59,9 @@ assert Path(module.__file__).resolve() == root / "src/mg400_agent/joint_control.
 jog_module = sys.modules[namespace["KeyboardJogSession"].__module__]
 assert Path(jog_module.__file__).resolve() == root / "src/mg400_agent/keyboard_jog.py"
 assert "MG400_CONTROL_START_TASK" not in namespace
+assert "omni.ui" not in sys.modules
+assert not hasattr(builtins, namespace["SINGLETON"])
+assert not hasattr(builtins, namespace["GRIPPER_SINGLETON"])
 assert namespace["REPORT"] == Path(os.environ["MG400_DATA_DIR"]) / "isaacsim/control_status.json"
 if old_package is not None:
     assert sys.modules["mg400_agent"] is old_package

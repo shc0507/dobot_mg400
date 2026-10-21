@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MG400 Control</title>
+  <style>
+    :root{color-scheme:dark;font:13px system-ui,-apple-system,sans-serif;color:#dce4ed;background:#11161c}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:start center;padding:48px 16px}
+    button,input{font:inherit}button{cursor:pointer;color:inherit;border:1px solid #374350;border-radius:5px;background:#28323e;padding:6px 10px}button:hover:enabled{background:#344251}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible{outline:2px solid #83bcf5;outline-offset:2px}
+    .panel{width:min(580px,100%);border:1px solid #36424e;border-radius:10px;background:#1a222c;box-shadow:0 14px 55px #0004;overflow:hidden}
+    header,footer{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#202a35}header h1{font-size:14px;font-weight:650;margin:0}header .mode{margin-left:auto;font-size:10px;letter-spacing:.08em;border:1px solid #49657c;color:#b2cee6;padding:3px 6px;border-radius:4px}
+    main{padding:8px;display:grid;gap:8px}.sync{display:flex;align-items:center;gap:6px;min-height:32px;color:#9caebf;font-size:11px}.sync .dot{width:6px;height:6px;border-radius:50%;background:#758392}.sync .dot.on{background:#72c7ad}.sync .state{margin-right:auto}.sync button{font-size:11px;padding:4px 8px}
+    .motion{border:1px solid #3b4c5f;border-radius:6px;background:#222d39;padding:10px}.motion h2{font-size:12px;margin:0 0 10px;display:inline-block;cursor:help}.columns,.row{display:grid;grid-template-columns:60px 82px minmax(0,1fr);gap:6px;align-items:center}.columns{font-size:10px;color:#8fa1b4;padding-bottom:5px}.row{min-height:37px}.label{font-weight:600;font-size:12px}.unit{display:block;color:#8295a7;font-weight:400;font-size:9px}.actual{font:12px ui-monospace,SFMono-Regular,monospace;color:#b0becc}.compound{display:flex;align-items:center;gap:6px;border:1px solid #42566a;border-radius:5px;background:#17212c;padding:3px 5px;height:30px;min-width:0}.compound input[type=range]{min-width:16px;width:100%;flex:1;accent-color:#86b6e1;height:18px}.compound input[type=number]{appearance:textfield;-moz-appearance:textfield;width:76px;border:0;border-left:1px solid #3c4c5d;background:transparent;color:#edf4fa;text-align:right;padding:2px 0 2px 5px;font:12px ui-monospace,SFMono-Regular,monospace}.compound input::-webkit-inner-spin-button{appearance:none}.actions{display:flex;justify-content:space-between;margin-top:10px}.primary{background:#7fb3df;color:#102034;border-color:#7fb3df;font-weight:650}.primary:hover:enabled{background:#9dc9ed}
+    .aux{display:flex;align-items:center;gap:16px;min-height:26px;color:#8295a7;font-size:10px}.joints{display:flex;gap:12px;margin-left:auto;flex-wrap:wrap;font-family:ui-monospace,SFMono-Regular,monospace}.joints span{white-space:nowrap}.joints b{color:#b6c4d1;font-weight:400}.status{font-size:11px;color:#91a4b7;line-height:1.45;min-height:16px;overflow-wrap:anywhere}.status.error{color:#f3b8b0}footer .robot-state{font-size:11px;color:#9cabb9;margin-right:auto}footer button{font-size:11px;padding:5px 8px}footer .disable{border-color:#76514f;background:#372c31;color:#f2c4bf}.connection{width:min(580px,100%);font-size:11px;color:#72869a;margin-top:10px;line-height:1.5}.auth{display:flex;gap:8px;margin:8px 0}.auth input{min-width:0;flex:1;border:1px solid #42566a;border-radius:5px;background:#111b25;color:#edf4fa;padding:7px}.auth[hidden]{display:none}
+    @media(max-width:460px){body{padding:16px 8px}.columns,.row{grid-template-columns:44px 65px minmax(0,1fr);gap:4px}.motion{padding:8px}.compound{gap:2px}.compound input[type=number]{width:67px}.aux{gap:8px;flex-wrap:wrap}.joints{gap:10px;margin-left:0}.sync button{padding:4px 6px}.connection{padding:0 4px}}
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <header><h1>MG400 Control</h1><span class="mode" id="mode">CONNECTING</span></header>
+    <main>
+      <form class="auth" id="auth" hidden><input id="token" type="password" placeholder="Panel access token" aria-label="Panel access token" autocomplete="off"><button type="submit">Connect</button></form>
+      <div class="sync" title="Sync reads feedback into this page. It does not synchronize Isaac Sim."><i class="dot" id="syncDot"></i><span class="state" id="syncState">Not connected</span><button id="startSync" disabled>Start sync</button><button id="stopSync" disabled>Stop sync</button></div>
+      <section class="motion">
+        <h2 title="Pose: robot base to flange. User=0, Tool=0. Demo ranges are fictional scene bounds, not hardware limits.">Coordinates &amp; Motion</h2>
+        <div class="columns"><span>Axis</span><span>Actual</span><span>Target</span></div>
+        <div id="rows"></div>
+        <div class="actions"><button id="home" disabled>Home</button><button class="primary" id="execute" disabled>Execute targets ↗</button></div>
+      </section>
+      <div class="aux"><span title="Keyboard jogging is not available in this web panel.">Keyboard · unavailable</span><div class="joints" id="joints"></div></div>
+      <div class="status" id="status" role="status" aria-live="polite">Connecting to the Python server…</div>
+    </main>
+    <footer><span class="robot-state" id="robotState">—</span><button id="enable" disabled>Enable robot</button><button class="disable" id="disable" disabled>Disable robot</button></footer>
+  </div>
+  <div class="connection" id="connection">Python panel · No connection to Isaac Sim.</div>
+  <script>
+    const $ = id => document.getElementById(id);
+    const axes = [{id:'x',label:'X',unit:'mm'},{id:'y',label:'Y',unit:'mm'},{id:'z',label:'Z',unit:'mm'},{id:'r',label:'R',unit:'deg'},{id:'grip',label:'Gripper',unit:'/ 1000'}];
+    let state, initialized = false, busy = false, connected = false;
+    let token = '';
+    try { token = sessionStorage.getItem('mg400-panel-token') || ''; } catch {}
+    const formatted = (value,axis) => value == null ? '—' : Number(value).toFixed(axis === 'grip' ? 0 : 3);
+    function buildRows(data) {
+      const initial = data.actual;
+      $('rows').innerHTML = axes.map((axis,i) => `<div class="row"><span class="label">${axis.label}<small class="unit">${axis.unit}</small></span><span class="actual" id="${axis.id}Actual">—</span>${data.mode === 'demo' ? `<div class="compound"><input type="range" id="${axis.id}Range" aria-label="${axis.label} target slider" min="${data.limits[axis.id][0]}" max="${data.limits[axis.id][1]}" step="${axis.id === 'grip' ? 1 : .001}" value="${initial[i]}"><input type="number" id="${axis.id}Target" aria-label="${axis.label} target" min="${data.limits[axis.id][0]}" max="${data.limits[axis.id][1]}" step="${axis.id === 'grip' ? 1 : .001}" value="${formatted(initial[i],axis.id)}"></div>` : '<span class="actual">Unavailable</span>'}</div>`).join('');
+      initialized = true;
+      if(data.mode !== 'demo') return;
+      axes.forEach(axis => {
+        const slider = $(axis.id+'Range'), number = $(axis.id+'Target');
+        slider.addEventListener('input',() => number.value = formatted(slider.value,axis.id));
+        number.addEventListener('input',() => {if(number.value !== '' && number.validity.valid) slider.value = number.value;});
+        const normalize = () => {const value = number.value === '' ? Number(slider.value) : Number(number.value);number.value = formatted(Math.min(Number(slider.max),Math.max(Number(slider.min),value)),axis.id);slider.value = number.value;};
+        number.addEventListener('change',normalize);
+        number.addEventListener('blur',normalize);
+        number.addEventListener('keydown',event => {if(event.key === 'Enter'){event.preventDefault();normalize();number.blur();}});
+      });
+    }
+    function render(data) {
+      state = data;
+      if(!initialized) buildRows(data);
+      const demo = data.mode === 'demo', active = connected && !busy;
+      $('mode').textContent = demo ? 'DEMO' : 'READ ONLY';
+      $('syncState').textContent = data.syncing ? (demo ? 'Demo sync on' : data.feedback_fresh ? 'Live feedback' : 'Waiting for feedback') : 'Sync stopped';
+      $('syncDot').classList.toggle('on',data.syncing && (demo || data.feedback_fresh));
+      $('startSync').disabled = !active || data.syncing;
+      $('stopSync').disabled = !active || !data.syncing;
+      $('enable').disabled = !active || !demo || data.enabled;
+      $('disable').disabled = !active || !demo || !data.enabled;
+      $('home').disabled = $('execute').disabled = !active || !demo || !data.enabled;
+      axes.forEach((axis,i) => {$(axis.id+'Actual').textContent = formatted(data.actual[i],axis.id);if(demo) $(axis.id+'Range').disabled = $(axis.id+'Target').disabled = !active;});
+      $('joints').innerHTML = [0,1,2,3].map(i => `<span>J${i+1} <b>${data.joints ? data.joints[i].toFixed(2)+'°' : '—'}</b></span>`).join('');
+      $('robotState').textContent = demo ? (data.enabled ? 'Demo · enabled' : 'Demo · disabled') : data.robot_mode == null ? 'Read-only · no feedback' : `Mode ${data.robot_mode}${data.robot_error ? ' · error' : ''}${data.feedback_fresh ? '' : ' · stale'}`;
+      $('connection').textContent = demo ? 'Demo only · No robot connection. Ranges use the fictional demo scene. Joint kinematics and keyboard jogging are unavailable.' : `Read-only · ${data.robot_host} · Joint feedback only. Pose, gripper, keyboard jogging, and robot commands are unavailable.`;
+      $('status').classList.remove('error');
+      $('status').textContent = data.message;
+    }
+    async function api(path, payload) {
+      const response = await fetch(path,{method:payload ? 'POST':'GET',headers:{'Authorization':token ? 'Bearer '+token:'','Content-Type':'application/json','X-MG400-Panel':'1'},...(payload ? {body:JSON.stringify(payload)} : {})});
+      const data = await response.json();
+      if(response.status === 401) {$('auth').hidden = false;connected = false;}
+      if(!response.ok) throw new Error(data.error || 'Request failed');
+      $('auth').hidden = true;
+      connected = true;
+      return data;
+    }
+    function showError(error) {
+      if(state) render(state);
+      $('status').textContent = error.message;
+      $('status').classList.add('error');
+    }
+    async function poll() {
+      if(!busy) {try {render(await api('api/state'));} catch(error) {connected = false;showError(error);}}
+      setTimeout(poll,1000);
+    }
+    async function command(action) {
+      if(busy) return;
+      busy = true;
+      render(state);
+      let failure;
+      try {
+        const payload = {action};
+        if(action === 'execute') payload.targets = Object.fromEntries(axes.map(axis => [axis.id,Number($(axis.id+'Target').value)]));
+        state = await api('api/command',payload);
+      } catch(error) {failure = error;}
+      finally {busy = false;render(state);if(failure) showError(failure);}
+    }
+    ['enable','disable','home'].forEach(id => $(id).addEventListener('click',() => command(id)));
+    $('execute').addEventListener('click',() => command('execute'));
+    $('startSync').addEventListener('click',() => command('start_sync'));
+    $('stopSync').addEventListener('click',() => command('stop_sync'));
+    $('auth').addEventListener('submit',async event => {event.preventDefault();token = $('token').value;try {render(await api('api/state'));try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value='';} catch(error) {showError(error);}});
+    poll();
+  </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+[Unit]
+Description=MG400 camera capture
+PartOf=mg400-camera-preview.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mg400-camera-preview
+ExecStart=/opt/mg400-camera-preview/go2rtc -config /opt/mg400-camera-preview/go2rtc.yaml
+ExecStartPost=/bin/bash -c 'for attempt in {1..50}; do if (true > /dev/tcp/127.0.0.1/1984) 2>/dev/null; then exit 0; fi; sleep 0.1; done; exit 1'
+Restart=on-failure
+RestartSec=3
+UMask=0077

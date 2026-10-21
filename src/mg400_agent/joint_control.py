@@ -4,21 +4,32 @@ Construction is inert. Methods block and belong on a worker thread, not Kit's UI
 thread. A stopped instance never sends another enable or movement command.
 """
 
+import errno
 import json
 import math
+import select
 import socket
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from .config import finite_number
 from .controller_protocol import ControllerCommandError, parse_controller_response
 from .feedback import Feedback
-from .joint_limits import validate_joint_segment, validate_joints
+from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
 
 
 class TargetRejectedError(ValueError):
     """The target was rejected before its movement command was sent."""
+
+
+class PreparationRejectedError(RuntimeError):
+    """A read-only query failed before this attempt sent an enable or movement command."""
+
+
+class DashboardQueryCancelledError(ConnectionAbortedError):
+    """A stop request cancelled this read-only query."""
 
 
 @dataclass(frozen=True)
@@ -41,6 +52,10 @@ class JointControl:
         self._send_guard = None
         self._operation_lock = parent._operation_lock if parent else threading.Lock()
         self._dashboard_lock = parent._dashboard_lock if parent else threading.Lock()
+        self._dashboard_guard = parent._dashboard_guard if parent else threading.Lock()
+        self._dashboard = parent._dashboard if parent else {
+            "query": None, "stops": 0, "generation": 0,
+        }
         self._send_lock = parent._send_lock if parent else threading.Lock()
         self._stop_lock = threading.RLock()
         self._stopped = threading.Event()
@@ -49,6 +64,9 @@ class JointControl:
         self._pending = None
         self._stop_result = None
         self._stop_uncertain = False
+        self._preparing = False
+        self._preparation_pending = None
+        self._preparation_baseline = None
 
     @property
     def busy(self):
@@ -107,7 +125,7 @@ class JointControl:
     def _read_pose_measurement(self, modes):
         requested_at = time.monotonic()
         before, _ = self._fresh(modes)
-        values = tuple(float(value) for value in self._command("GetPose(0,0)").split(","))
+        values = tuple(float(value) for value in self._query("GetPose(0,0)").split(","))
         pose = self._four_values(values)
         after, _ = self._fresh(modes)
         return PoseMeasurement(self, pose, requested_at, before, after)
@@ -139,7 +157,7 @@ class JointControl:
         values = ",".join(f"{value:.6f}" for value in target)
         # With six arguments, the controller chooses the nearest joint solution.
         try:
-            payload = self._command(f"InverseSolution({values},0,0)")
+            payload = self._query(f"InverseSolution({values},0,0)")
         except ControllerCommandError as error:
             if error.code != -1:
                 raise
@@ -158,25 +176,156 @@ class JointControl:
                 f"Target exceeds the configured joint range: {error}"
             ) from error
 
+    def _query(self, text):
+        before, _ = self._fresh({4, 5, 7})
+        if self._preparing and self._preparation_baseline is None:
+            self._preparation_baseline = before
+        try:
+            return self._command(text)
+        except DashboardQueryCancelledError:
+            raise
+        except OSError as error:
+            pending = self._pending
+            if (
+                not self._preparing or self.stopped
+                or pending is not self._preparation_pending
+                or (pending is not None and not (pending["done"].is_set() and pending["ok"]))
+            ):
+                raise
+            baseline = self._preparation_baseline
+            after, _ = self._fresh({baseline.mode})
+            if (
+                baseline.mode not in {4, 5}
+                or not self._near(before.joints_deg, baseline.joints_deg)
+                or not self._near(after.joints_deg, baseline.joints_deg)
+            ):
+                raise RuntimeError("Robot state changed during preparation") from error
+            if self.stopped:
+                raise
+            raise PreparationRejectedError(
+                f"{text} failed during preparation: {error}. "
+                "This attempt sent no enable or movement command. Retry the action."
+            ) from error
+
     def _command(self, text, port=29999, *, pending=None, stopping=False):
         """Send once; a reply must have a successful code and the matching echo."""
         if port != 29999:
             return self._exchange(text, port, pending=pending, stopping=stopping)
-        # Hold one dashboard connection through its reply and close. The motion
-        # port uses a separate connection so its pending ACK cannot block a stop.
-        if not self._dashboard_lock.acquire(timeout=self._command_timeout):
-            raise TimeoutError("Dashboard connection is busy")
+        readonly = pending is None and not stopping and text.partition("(")[0] in {
+            "GetPose", "InverseSolution", "RobotMode", "GetErrorID", "GetAngle",
+        }
+        query = None
+        registered_stop = False
         try:
-            return self._exchange(text, port, pending=pending, stopping=stopping)
+            with self._dashboard_guard:
+                generation = self._dashboard["generation"]
+                if stopping:
+                    self._dashboard["stops"] += 1
+                    registered_stop = True
+                    self._dashboard["generation"] += 1
+                    active = self._dashboard["query"]
+                    if active is not None:
+                        active["cancelled"].set()
+                        connection = active["connection"]
+                        if connection is not None:
+                            try:
+                                connection.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                            try:
+                                connection.close()
+                            except OSError:
+                                pass
+                elif readonly and self._dashboard["stops"]:
+                    raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
+            # Resolve before taking the connection lock. DNS cannot delay a stop.
+            addresses = (
+                socket.getaddrinfo(self.host, port, 0, socket.SOCK_STREAM) if readonly else None
+            )
+            # Keep the dashboard serial through connection close, including stop.
+            if not self._dashboard_lock.acquire(timeout=self._command_timeout):
+                raise TimeoutError("Dashboard connection is busy")
+            try:
+                if readonly:
+                    with self._dashboard_guard:
+                        if (
+                            self._dashboard["stops"]
+                            or generation != self._dashboard["generation"]
+                        ):
+                            raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
+                        query = {
+                            "cancelled": threading.Event(), "connection": None,
+                            "addresses": addresses,
+                        }
+                        self._dashboard["query"] = query
+                return self._exchange(
+                    text, port, pending=pending, stopping=stopping, query=query,
+                )
+            except OSError as error:
+                if query is not None and query["cancelled"].is_set():
+                    raise DashboardQueryCancelledError(
+                        "Dashboard query cancelled for stop"
+                    ) from error
+                raise
+            finally:
+                with self._dashboard_guard:
+                    if query is not None:
+                        self._dashboard["query"] = None
+                self._dashboard_lock.release()
         finally:
-            self._dashboard_lock.release()
+            if registered_stop:
+                with self._dashboard_guard:
+                    self._dashboard["stops"] -= 1
 
-    def _exchange(self, text, port, *, pending=None, stopping=False):
+    def _connect(self, port, deadline, query):
+        if query is None:
+            return socket.create_connection((self.host, port), timeout=self._command_timeout)
+        failure = OSError("Controller address has no stream sockets")
+        for family, kind, protocol, _, address in query["addresses"]:
+            if query["cancelled"].is_set():
+                raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
+            connection = socket.socket(family, kind, protocol)
+            with self._dashboard_guard:
+                if query["cancelled"].is_set():
+                    connection.close()
+                    raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
+                query["connection"] = connection
+            try:
+                connection.setblocking(False)
+                code = connection.connect_ex(address)
+                if code not in (0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY):
+                    raise OSError(code, "Controller connection failed")
+                while code:
+                    if query["cancelled"].is_set():
+                        raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Controller connection timed out")
+                    _, writable, failed = select.select(
+                        [], [connection], [connection], min(0.02, remaining),
+                    )
+                    if writable or failed:
+                        code = connection.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                        if code:
+                            raise OSError(code, "Controller connection failed")
+                return connection
+            except BaseException as error:
+                connection.close()
+                if query["cancelled"].is_set():
+                    raise DashboardQueryCancelledError(
+                        "Dashboard query cancelled for stop"
+                    ) from error
+                if not isinstance(error, OSError):
+                    raise
+                failure = error
+        raise failure
+
+    def _exchange(self, text, port, *, pending=None, stopping=False, query=None):
         deadline = time.monotonic() + self._command_timeout
-        with socket.create_connection(
-            (self.host, port), timeout=self._command_timeout
-        ) as connection:
-            with self._send_lock:
+        with self._connect(port, deadline, query) as connection:
+            with self._send_lock if query is None else nullcontext():
+                if query is not None and query["cancelled"].is_set():
+                    raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
                 if pending is not None and self._send_guard is not None:
                     self._send_guard()
                 if pending is not None and self.stopped and not stopping:
@@ -207,14 +356,23 @@ class JointControl:
                 packet.extend(part)
                 if len(packet) >= 4096:
                     raise ValueError("Oversized controller response")
+        if query is not None and query["cancelled"].is_set():
+            raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
         return parse_controller_response(packet, text)
 
     def _dashboard_state(self):
-        mode = int(self._command("RobotMode()"))
-        errors = json.loads(self._command("GetErrorID()"))
+        mode = int(self._query("RobotMode()"))
+        if self._preparing:
+            sample = self._fresh({4, 5})[0]
+            if mode != sample.mode:
+                raise RuntimeError(
+                    "Dashboard and passive feedback disagree: "
+                    f"dashboard_mode={mode}, passive_mode={sample.mode}"
+                )
+        errors = json.loads(self._query("GetErrorID()"))
         if not isinstance(errors, list) or not errors or any(item != [] for item in errors):
             raise RuntimeError(f"Controller alarms require inspection: {errors}")
-        joints = tuple(float(value) for value in self._command("GetAngle()").split(","))
+        joints = tuple(float(value) for value in self._query("GetAngle()").split(","))
         if len(joints) not in (4, 6) or not all(map(math.isfinite, joints)):
             raise ValueError("Invalid actual joint angles")
         return mode, joints[:4]
@@ -250,12 +408,33 @@ class JointControl:
         mode, joints = self._dashboard_state()
         sample, _ = self._fresh(modes)
         if mode != sample.mode or not self._near(joints, sample.joints_deg):
-            raise RuntimeError("Dashboard and passive feedback disagree")
-        self._wait_stable(joints, modes={mode}, final_modes={mode})
-        return mode, joints
+            delta = tuple(actual - reference for actual, reference in zip(
+                sample.joints_deg, joints, strict=True,
+            ))
+            raise RuntimeError(
+                "Dashboard and passive feedback disagree: "
+                f"dashboard_mode={mode}, passive_mode={sample.mode}, "
+                f"dashboard={joints!r}, passive={sample.joints_deg!r}, "
+                f"passive_minus_dashboard={delta!r}, tolerance_deg=0.1"
+            )
+        stationary = self._wait_stable(
+            None if mode == 4 else joints, modes={mode}, final_modes={mode},
+        )
+        if mode == 4:
+            current_mode, current_joints = self._dashboard_state()
+            sample = self._fresh({4})[0]
+            if (
+                current_mode != 4
+                or not self._near(current_joints, stationary.joints_deg)
+                or not self._near(sample.joints_deg, stationary.joints_deg)
+                or not self._near(current_joints, sample.joints_deg)
+            ):
+                raise RuntimeError("Disabled stationary state was not confirmed before enable")
+        return mode, stationary.joints_deg
 
     def _guarded_command(self, text, *, modes, send_modes, expected, port=29999):
         self._fresh(send_modes)
+        self._preparing = False
         pending = {
             "done": threading.Event(),
             "sent": False,
@@ -305,6 +484,9 @@ class JointControl:
         if self.stopped:
             self._operation_lock.release()
             raise RuntimeError("Control has been stopped; reopen the panel")
+        self._preparing = True
+        self._preparation_pending = self._pending
+        self._preparation_baseline = None
 
     def _failed(self, error, *, disabling=False):
         with self._stop_lock:
@@ -337,10 +519,13 @@ class JointControl:
             ):
                 raise RuntimeError("Enabled idle state was not confirmed")
             return sample
+        except PreparationRejectedError:
+            raise
         except Exception as error:
             self._failed(error)
             raise
         finally:
+            self._preparing = False
             self._operation_lock.release()
 
     def move(self, target) -> Feedback:
@@ -372,10 +557,13 @@ class JointControl:
             ):
                 raise RuntimeError("Final dashboard position does not verify arrival")
             return sample
+        except PreparationRejectedError:
+            raise
         except Exception as error:
             self._failed(error)
             raise
         finally:
+            self._preparing = False
             self._operation_lock.release()
 
     def _wait_linear(self, target, joints, timeout=120.0):
@@ -414,11 +602,14 @@ class JointControl:
         R is flange yaw, not the J4 joint angle.
         """
         target = self._four_values(target)
-        if self.read_state().mode != 5:
+        sample = self.read_state()
+        if sample.mode != 5:
             raise RuntimeError("Robot must be enabled and idle before movement")
+        validate_measured_joints(sample.joints_deg)
         self._begin()
         try:
             _, start = self._preflight({5})
+            validate_measured_joints(start)
             start_pose = self._read_pose({5})
             values = ",".join(f"{value:.6f}" for value in target)
             target_joints = self.solve_pose(target)
@@ -443,18 +634,20 @@ class JointControl:
             ):
                 raise RuntimeError("Final dashboard position does not verify Cartesian arrival")
             return sample
-        except TargetRejectedError:
+        except (TargetRejectedError, PreparationRejectedError):
             raise
         except Exception as error:
             self._failed(error)
             raise
         finally:
+            self._preparing = False
             self._operation_lock.release()
 
     def disable(self) -> Feedback:
-        """Cancel this instance and verify that the robot is disabled and stationary.
+        """Cancel this instance and verify the disabled state, without proving rest.
 
         Create a new instance only after this succeeds and the previous operation exits.
+        Use verify_stationary() separately before disconnecting feedback.
         """
         self.cancel(disabling=True)
         with self._send_lock:
@@ -466,23 +659,27 @@ class JointControl:
             if self._disable_result is not None:
                 return self._disable_result
             try:
+                # A new disable invalidates any earlier verification of rest.
+                self._stop_result = None
                 self._command("DisableRobot()", stopping=True)
+                acknowledged_at = time.monotonic()
                 if self._stop_uncertain:
                     raise RuntimeError(
                         "A command acknowledgement was unresolved or failed during disable. "
                         "Command ordering remains unknown."
                     )
-                stationary = self._wait_stable(
-                    modes={4, 5, 7}, final_modes={4}, timeout=5.0, stopping=True
-                )
-                mode, actual = self._dashboard_state()
+                deadline = acknowledged_at + 5.0
+                while time.monotonic() < deadline:
+                    sample, received = self._fresh({4, 5, 7})
+                    if sample.mode == 4 and received > acknowledged_at:
+                        break
+                    time.sleep(0.01)
+                else:
+                    raise TimeoutError("Fresh disabled robot feedback was not confirmed")
+                mode, _ = self._dashboard_state()
                 sample = self._fresh({4})[0]
-                if (
-                    mode != 4
-                    or not self._near(actual, stationary.joints_deg)
-                    or not self._near(sample.joints_deg, stationary.joints_deg)
-                ):
-                    raise RuntimeError("Disabled stationary state was not confirmed")
+                if mode != 4:
+                    raise RuntimeError("Disabled robot mode was not confirmed")
                 self._disable_result = sample
                 return sample
             except Exception as error:
@@ -492,6 +689,13 @@ class JointControl:
                     error = failure
                 self._disable_error = error
                 raise error
+
+    def verify_stationary(self) -> Feedback:
+        """Verify rest from feedback only. Call on a worker thread.
+
+        This accepts a stopped instance and does not clear command uncertainty.
+        """
+        return self._wait_stable(modes={4, 5}, final_modes={4, 5}, stopping=True)
 
     def stop(self):
         """Permanently cancel this instance, request a controlled stop, verify rest.

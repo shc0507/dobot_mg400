@@ -1,3 +1,4 @@
+import errno
 import socket
 import threading
 import time
@@ -7,7 +8,12 @@ import pytest
 
 from mg400_agent.controller_protocol import ControllerCommandError, parse_controller_response
 from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import JointControl, TargetRejectedError
+from mg400_agent.joint_control import (
+    DashboardQueryCancelledError,
+    JointControl,
+    PreparationRejectedError,
+    TargetRejectedError,
+)
 
 START = (0.7, 0.04, 0.52, 23.08)
 TARGET = (*START[:3], START[3] + 2)
@@ -15,6 +21,9 @@ MOVE = "JointMovJ(0.700000,0.040000,0.520000,25.080000,SpeedJ=5,AccJ=5)"
 POSE = (250.0, 10.0, 40.0, 23.78)
 LINEAR_TARGET = (251.0, 10.0, 40.0, 23.78)
 LINEAR_MOVE = "MovL(251.000000,10.000000,40.000000,23.780000,User=0,Tool=0,SpeedL=1,AccL=1)"
+REAL_SOCKET = socket.socket
+REAL_CREATE_CONNECTION = socket.create_connection
+REAL_GETADDRINFO = socket.getaddrinfo
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +31,10 @@ def prohibit_network(monkeypatch):
     monkeypatch.setattr(
         socket, "create_connection", Mock(side_effect=AssertionError("Network prohibited"))
     )
+    monkeypatch.setattr(socket, "socket", Mock(side_effect=AssertionError("Network prohibited")))
+    monkeypatch.setattr(socket, "getaddrinfo", Mock(return_value=[
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("robot.test", 29999)),
+    ]))
 
 
 @pytest.fixture
@@ -363,11 +376,9 @@ def test_inverse_rejection_with_unconfirmed_stationary_state_remains_a_fault(
     [
         RuntimeError("-1,{0,0,0,0},InverseSolution(251,10,40,23.78,0,0);"),
         RuntimeError("Unexpected controller response: -1,{0,0,0,0},WrongCommand();"),
-        TimeoutError("Controller acknowledgement timed out"),
-        ConnectionError("Controller disconnected before acknowledgement"),
     ],
 )
-def test_inverse_protocol_or_transport_failure_still_stops_control(
+def test_inverse_protocol_failure_still_stops_control(
     cartesian_rig, monkeypatch, failure
 ):
     control, _, _, commands, _ = cartesian_rig
@@ -516,7 +527,7 @@ def test_full_range_move_can_take_more_than_twenty_seconds(rig, monkeypatch):
 
 def test_complete_joint_segment_is_validated_before_motion(rig):
     control, sample, _, commands = rig
-    sample[0] = Feedback((0, -20, 1, 0), 5, 0, False)
+    sample[0] = Feedback((0, -22, 1, 0), 5, 0, False)
     # Both endpoints satisfy their branch; crossing J3=0 violates the stricter J2 minimum.
     with pytest.raises(ValueError, match="J2"):
         control.move((0, -17, -1, 0))
@@ -554,7 +565,7 @@ def test_disable_verifies_mode_four_without_waiting_for_operation_lock(rig, init
     with control._operation_lock:
         actual = control.disable()
     assert actual == Feedback(START, 4, 0, False)
-    assert now[0] >= 10.4
+    assert 10.0 < now[0] < 10.4
     assert control.disable() is actual
     assert commands == [
         ("DisableRobot()", 29999),
@@ -652,7 +663,10 @@ def test_concurrent_disable_sends_once_and_returns_same_result(rig, monkeypatch)
     assert [text for text, _ in commands].count("DisableRobot()") == 1
 
 
-@pytest.mark.parametrize("failure", ["ack", "enabled", "dashboard", "feedback"])
+@pytest.mark.parametrize("failure", [
+    "ack", "rejected_ack", "enabled", "dashboard", "feedback", "alarm",
+    "dashboard_alarm", "final_mode", "final_feedback",
+])
 def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, monkeypatch, failure):
     control, sample, now, commands = rig
     original_command = control._command
@@ -661,14 +675,26 @@ def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, mon
         if text == "DisableRobot()" and failure == "ack":
             commands.append((text, 29999))
             raise TimeoutError("Disable acknowledgement was lost")
+        if text == "DisableRobot()" and failure == "rejected_ack":
+            commands.append((text, 29999))
+            raise ControllerCommandError(-1, text, "Disable command was rejected")
         result = original_command(text, *args, **kwargs)
         if text == "DisableRobot()":
             if failure == "enabled":
                 sample[0] = Feedback(START, 5, 0, False)
             elif failure == "feedback":
                 control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
+            elif failure == "alarm":
+                sample[0] = Feedback(START, 4, 0, True)
         if text == "RobotMode()" and failure == "dashboard":
             return "5"
+        if text == "GetErrorID()" and failure == "dashboard_alarm":
+            return "[[1],[],[],[],[]]"
+        if text == "GetAngle()":
+            if failure == "final_mode":
+                sample[0] = Feedback(START, 5, 0, False)
+            elif failure == "final_feedback":
+                control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
         return result
 
     monkeypatch.setattr(control, "_command", command)
@@ -678,8 +704,171 @@ def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, mon
         control.disable()
     assert first.value is second.value
     assert control.stopped
+    assert control._disable_result is None
     mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
     assert mutations == ["DisableRobot()", "ResetRobot()"]
+    if failure == "enabled":
+        assert 15.0 <= now[0] < 15.5
+        assert "Fresh disabled robot feedback was not confirmed" in str(first.value)
+
+
+@pytest.mark.parametrize("settles_after_reset", [False, True])
+def test_disable_after_confirmed_stop_requires_new_stop_verification(
+    rig, monkeypatch, settles_after_reset,
+):
+    control, sample, now, commands = rig
+    previous_stop = control.stop()
+    assert previous_stop["ok"]
+    original_command = control._command
+    drift_started = [None]
+
+    def feedback():
+        if drift_started[0] is not None:
+            joints = (*START[:3], START[3] - (now[0] - drift_started[0]))
+            sample[0] = Feedback(joints, 4, 0, False)
+        return sample[0], now[0]
+
+    def command(text, *args, **kwargs):
+        if text == "ResetRobot()":
+            commands.append((text, 29999))
+            if settles_after_reset:
+                drift_started[0] = None
+            return ""
+        result = original_command(text, *args, **kwargs)
+        if text == "DisableRobot()":
+            drift_started[0] = now[0]
+        return result
+
+    control.feedback_snapshot = feedback
+    monkeypatch.setattr(control, "_command", command)
+    disabled = control.disable()
+    assert disabled.mode == 4
+    assert control._stop_result is None
+    assert control._disable_error is None
+    result = control.stop()
+    assert result is not previous_stop
+    assert result["ok"] is settles_after_reset
+    assert result["stationary_verified"] is settles_after_reset
+    assert control.stopped
+    assert control.disable() is disabled
+    assert control.stop() is result
+    assert commands == [
+        ("ResetRobot()", 29999),
+        ("DisableRobot()", 29999),
+        ("RobotMode()", 29999),
+        ("GetErrorID()", 29999),
+        ("GetAngle()", 29999),
+        ("ResetRobot()", 29999),
+    ]
+    with pytest.raises(RuntimeError, match="stopped"):
+        control.enable()
+
+
+def test_disable_during_drift_does_not_allow_enable_or_prove_rest(rig, monkeypatch):
+    control, sample, now, commands = rig
+
+    def feedback():
+        sample[0] = Feedback((*START[:3], START[3] + now[0] - 10.0), sample[0].mode, 0, False)
+        return sample[0], now[0]
+
+    control.feedback_snapshot = feedback
+    disabled = control.disable()
+    assert disabled.mode == 4
+    assert control._disable_error is None
+    assert control._stop_result is None
+    before_verification = list(commands)
+    with pytest.raises(TimeoutError, match="stationary state"):
+        control.verify_stationary()
+    assert commands == before_verification
+    assert control._disable_result is disabled
+    assert control._stop_result is None
+
+    fresh_control = JointControl(control.host, control.feedback_snapshot)
+    monkeypatch.setattr(fresh_control, "_command", control._command)
+    with pytest.raises(RuntimeError, match="stationary state"):
+        fresh_control.enable()
+    assert fresh_control.stopped
+    assert not fresh_control.stop()["stationary_verified"]
+    assert "EnableRobot()" not in [text for text, _ in commands]
+    assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == [
+        "DisableRobot()", "ResetRobot()",
+    ]
+
+
+def test_disable_does_not_require_stationary_angle_agreement(rig, monkeypatch):
+    control, sample, _, commands = rig
+    original_command = control._command
+
+    def command(text, *args, **kwargs):
+        result = original_command(text, *args, **kwargs)
+        if text == "GetAngle()":
+            sample[0] = Feedback((*START[:3], START[3] + 0.2), 4, 0, False)
+        return result
+
+    monkeypatch.setattr(control, "_command", command)
+    assert control.disable() is sample[0]
+    assert control._disable_result.joints_deg[3] == START[3] + 0.2
+    assert control._stop_result is None
+    assert ("ResetRobot()", 29999) not in commands
+
+
+@pytest.mark.parametrize("new_receipt", [False, True])
+def test_disable_requires_feedback_received_after_ack(rig, monkeypatch, new_receipt):
+    control, sample, now, commands = rig
+    before_ack = now[0]
+
+    def feedback():
+        received = now[0] if new_receipt and now[0] >= before_ack + 0.1 else before_ack
+        return sample[0], received
+
+    control.feedback_snapshot = feedback
+    original_command = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "RobotMode()":
+            assert now[0] >= before_ack + 0.1
+        return original_command(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    if new_receipt:
+        assert control.disable().mode == 4
+    else:
+        with pytest.raises(RuntimeError, match="stale"):
+            control.disable()
+        assert control._disable_result is None
+        assert ("RobotMode()", 29999) not in commands
+
+
+@pytest.mark.parametrize("mode", [4, 5])
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_verify_stationary_is_read_only_and_preserves_cancellation(rig, mode, cancelled):
+    control, sample, now, commands = rig
+    sample[0] = Feedback(START, mode, 0, False)
+    if cancelled:
+        control._pending = {"done": threading.Event(), "sent": True, "ok": False}
+        control.cancel()
+    assert control.verify_stationary() is sample[0]
+    assert now[0] >= 10.4
+    assert control.stopped is cancelled
+    assert control._stop_uncertain is cancelled
+    assert control._stop_result is None
+    assert not commands
+
+
+@pytest.mark.parametrize("fault", ["stale", "alarm", "moving", "duplicate"])
+def test_verify_stationary_rejects_invalid_feedback_without_commands(rig, monkeypatch, fault):
+    control, sample, now, commands = rig
+    if fault == "stale":
+        control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
+    elif fault == "duplicate":
+        monkeypatch.setattr(control, "_fresh", lambda modes: (sample[0], 10.0))
+    else:
+        sample[0] = Feedback(START, 7 if fault == "moving" else 4, 0, fault == "alarm")
+    with pytest.raises((RuntimeError, TimeoutError)):
+        control.verify_stationary()
+    assert not commands
+    assert not control.stopped
+    assert control._stop_result is None
 
 
 def test_late_mutation_ack_cannot_confirm_disable_or_send_again(rig, monkeypatch):
@@ -862,7 +1051,9 @@ def socket_for(monkeypatch, parts):
     connection.__enter__ = Mock(return_value=connection)
     connection.__exit__ = Mock(return_value=False)
     connection.recv.side_effect = parts
+    connection.connect_ex.return_value = 0
     monkeypatch.setattr(socket, "create_connection", Mock(return_value=connection))
+    monkeypatch.setattr(socket, "socket", Mock(return_value=connection))
     return connection
 
 
@@ -870,14 +1061,13 @@ def test_transport_reassembles_reply_without_binding_host_source_ip(monkeypatch)
     connection = socket_for(monkeypatch, [b"0,{1,2,", b"3,4,0,0},GetAngle();"])
     control = JointControl("robot.test", Mock())
     assert control._command("GetAngle()") == "1,2,3,4,0,0"
-    socket.create_connection.assert_called_once_with(("robot.test", 29999), timeout=2.0)
+    connection.connect_ex.assert_called_once_with(("robot.test", 29999))
+    socket.create_connection.assert_not_called()
     connection.sendall.assert_called_once_with(b"GetAngle()")
 
 
-@pytest.mark.parametrize("second_command", ["GetAngle()", "ResetRobot()"])
-def test_dashboard_queries_and_stop_wait_for_previous_connection_to_close(
-    monkeypatch, second_command
-):
+def test_dashboard_queries_wait_for_previous_connection_to_close(monkeypatch):
+    second_command = "GetAngle()"
     first_received, release_first = threading.Event(), threading.Event()
     second_started, second_connected = threading.Event(), threading.Event()
     events, results, failures = [], [], []
@@ -894,6 +1084,12 @@ def test_dashboard_queries_and_stop_wait_for_previous_connection_to_close(
 
         def settimeout(self, timeout):
             pass
+
+        def setblocking(self, value):
+            pass
+
+        def connect_ex(self, address):
+            return 0
 
         def sendall(self, data):
             self.command = data.decode("ascii")
@@ -916,6 +1112,7 @@ def test_dashboard_queries_and_stop_wait_for_previous_connection_to_close(
         return connection
 
     monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(socket, "socket", lambda *args: connect(("robot.test", 29999), 2.0))
     control = JointControl("robot.test", Mock())
 
     def invoke(text):
@@ -955,6 +1152,267 @@ def test_dashboard_lock_wait_is_bounded_without_opening_another_connection(monke
     lock.acquire.assert_called_once_with(timeout=2.0)
     lock.release.assert_not_called()
     socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("stop_command", ["ResetRobot()", "DisableRobot()"])
+@pytest.mark.parametrize("phase", ["connect", "send", "recv", "recv_eof"])
+def test_child_stop_interrupts_parent_query_and_closes_before_reconnecting(
+    monkeypatch, stop_command, phase,
+):
+    entered, closed = threading.Event(), threading.Event()
+    failures, events = [], []
+    query = socket_for(monkeypatch, [])
+
+    def block(*args):
+        entered.set()
+        assert closed.wait(1)
+        if phase == "recv_eof":
+            return b""
+        raise OSError("Query socket closed")
+
+    query.close.side_effect = lambda: (events.append("close"), closed.set())
+    query.shutdown.side_effect = lambda how: closed.set()
+    query.__exit__.side_effect = lambda *args: query.close()
+    if phase == "connect":
+        query.connect_ex.return_value = errno.EINPROGRESS
+        monkeypatch.setattr("mg400_agent.joint_control.select.select", block)
+    elif phase == "send":
+        query.sendall.side_effect = block
+    else:
+        query.recv.side_effect = block
+    stop_socket = Mock()
+    stop_socket.__enter__ = Mock(return_value=stop_socket)
+    stop_socket.__exit__ = Mock(return_value=False)
+    stop_socket.recv.return_value = f"0,{{}},{stop_command};".encode("ascii")
+
+    def connect(*args, **kwargs):
+        assert "close" in events
+        events.append("stop connect")
+        return stop_socket
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    parent = JointControl("robot.test", Mock())
+    child = JointControl("robot.test", Mock(), parent=parent, command_timeout=0.5)
+
+    def read():
+        try:
+            parent._command("GetPose(0,0)")
+        except OSError as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=read)
+    try:
+        worker.start()
+        assert entered.wait(1)
+        assert child._command(stop_command, stopping=True) == ""
+    finally:
+        closed.set()
+        worker.join(1)
+    assert not worker.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], DashboardQueryCancelledError)
+    assert parent._dashboard["stops"] == 0
+    assert events.index("close") < events.index("stop connect")
+    if phase == "connect":
+        query.sendall.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["send", "recv"])
+def test_uncancelled_query_oserror_is_not_mislabeled_as_stop_cancellation(monkeypatch, phase):
+    connection = socket_for(monkeypatch, [])
+    error = OSError("Dashboard connection failed")
+    getattr(connection, {"send": "sendall", "recv": "recv"}[phase]).side_effect = error
+    control = JointControl("robot.test", Mock())
+    with pytest.raises(OSError) as raised:
+        control._command("GetPose(0,0)")
+    assert raised.value is error
+    assert not isinstance(raised.value, DashboardQueryCancelledError)
+    connection.shutdown.assert_not_called()
+    connection.__exit__.assert_called_once()
+
+
+def test_query_connect_keeps_one_socket_until_original_deadline(monkeypatch):
+    connection = socket_for(monkeypatch, [b"0,{},GetPose(0,0);"])
+    connection.connect_ex.return_value = errno.EINPROGRESS
+    connection.getsockopt.return_value = 0
+    now = [10.0]
+    monkeypatch.setattr("mg400_agent.joint_control.time.monotonic", lambda: now[0])
+
+    def ready(read, write, error, timeout):
+        now[0] += timeout
+        return ([], [], []) if now[0] < 10.15 else ([], write, [])
+
+    monkeypatch.setattr("mg400_agent.joint_control.select.select", ready)
+    assert JointControl("robot.test", Mock())._command("GetPose(0,0)") == ""
+    assert now[0] >= 10.15
+    socket.socket.assert_called_once()
+    connection.connect_ex.assert_called_once()
+
+
+def test_stop_does_not_interrupt_pending_dashboard_mutation_ack(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    connection = socket_for(monkeypatch, [])
+    sample = Feedback(START, 5, 0, False)
+    control = JointControl("robot.test", lambda: (sample, time.monotonic()), command_timeout=0.05)
+    pending = {
+        "sent": False, "send_modes": {5}, "expected": START,
+        "done": threading.Event(), "ok": False,
+    }
+    control._pending = pending
+    failures = []
+
+    def reply(size):
+        entered.set()
+        assert release.wait(1)
+        return b"0,{},EnableRobot();"
+
+    def enable():
+        try:
+            control._command("EnableRobot()", pending=pending)
+            pending["ok"] = True
+        except Exception as error:
+            failures.append(error)
+        finally:
+            pending["done"].set()
+
+    connection.recv.side_effect = reply
+    worker = threading.Thread(target=enable)
+    try:
+        worker.start()
+        assert entered.wait(1)
+        result = control.stop()
+        assert not result["ok"]
+        assert control._stop_uncertain
+        connection.shutdown.assert_not_called()
+        connection.close.assert_not_called()
+        connection.sendall.assert_called_once_with(b"EnableRobot()")
+    finally:
+        release.set()
+        worker.join(1)
+    assert not worker.is_alive() and not failures
+    assert control._stop_uncertain
+
+
+def test_stop_rejects_queries_resolving_before_or_during_stop(monkeypatch):
+    resolving, release_dns = threading.Event(), threading.Event()
+    stop_entered, release_stop = threading.Event(), threading.Event()
+    failures = []
+    connection = socket_for(monkeypatch, [])
+    control = JointControl("robot.test", Mock())
+
+    def resolve(*args):
+        resolving.set()
+        assert release_dns.wait(1)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("robot.test", 29999))]
+
+    def stop_reply(size):
+        stop_entered.set()
+        assert release_stop.wait(1)
+        return b"0,{},ResetRobot();"
+
+    def read():
+        try:
+            control._command("GetPose(0,0)")
+        except ConnectionAbortedError as error:
+            failures.append(error)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    connection.recv.side_effect = stop_reply
+    reader = threading.Thread(target=read)
+    stopper = threading.Thread(target=lambda: control._command("ResetRobot()", stopping=True))
+    try:
+        reader.start()
+        assert resolving.wait(1)
+        stopper.start()
+        assert stop_entered.wait(1)
+        with pytest.raises(ConnectionAbortedError, match="cancelled for stop"):
+            control._command("GetAngle()")
+        release_stop.set()
+        stopper.join(1)
+        release_dns.set()
+        reader.join(1)
+    finally:
+        release_stop.set()
+        release_dns.set()
+        reader.join(1)
+        if stopper.ident is not None:
+            stopper.join(1)
+    assert len(failures) == 1
+    socket.socket.assert_not_called()
+    connection.sendall.assert_called_once_with(b"ResetRobot()")
+
+
+def test_stop_cleanup_error_does_not_latch_query_gate(monkeypatch):
+    connection = socket_for(monkeypatch, [b"0,{},ResetRobot();", b"0,{},GetAngle();"])
+    old = Mock()
+    old.shutdown.side_effect = OSError("Already disconnected")
+    old.close.side_effect = OSError("Close reported an error")
+    control = JointControl("robot.test", Mock())
+    control._dashboard["query"] = {"cancelled": threading.Event(), "connection": old}
+    assert control._command("ResetRobot()", stopping=True) == ""
+    assert control._dashboard["stops"] == 0
+    assert control._command("GetAngle()") == ""
+    assert connection.sendall.call_args_list == [call(b"ResetRobot()"), call(b"GetAngle()")]
+
+
+def test_stop_interrupts_real_loopback_tcp_query(monkeypatch):
+    # Only this local server is reachable. No robot connection is made.
+    listener = REAL_SOCKET(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(1)
+    address = listener.getsockname()
+    query_received, query_closed = threading.Event(), threading.Event()
+    failures, commands = [], []
+    monkeypatch.setattr(socket, "socket", REAL_SOCKET)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: REAL_GETADDRINFO(
+        address[0], address[1], 0, socket.SOCK_STREAM,
+    ))
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: REAL_CREATE_CONNECTION(
+        address, timeout=kwargs["timeout"],
+    ))
+
+    def server():
+        try:
+            with listener:
+                with listener.accept()[0] as query:
+                    query.settimeout(1)
+                    commands.append(query.recv(4096))
+                    query_received.set()
+                    assert query.recv(4096) == b""
+                query_closed.set()
+                with listener.accept()[0] as stop:
+                    stop.settimeout(1)
+                    commands.append(stop.recv(4096))
+                    stop.sendall(b"0,{},ResetRobot();")
+        except Exception as error:
+            failures.append(error)
+
+    parent = JointControl("robot.test", Mock())
+    child = JointControl("robot.test", Mock(), parent=parent, command_timeout=0.5)
+    monkeypatch.setattr(child, "_wait_stable", Mock())
+
+    def read():
+        try:
+            parent._command("GetPose(0,0)")
+        except OSError:
+            return
+        failures.append(AssertionError("Query was not interrupted"))
+
+    server_thread, query_thread = threading.Thread(target=server), threading.Thread(target=read)
+    try:
+        server_thread.start()
+        query_thread.start()
+        assert query_received.wait(1)
+        assert child.stop()["ok"]
+    finally:
+        query_thread.join(2)
+        server_thread.join(2)
+        listener.close()
+    assert not query_thread.is_alive() and not server_thread.is_alive()
+    assert not failures
+    assert query_closed.is_set()
+    assert commands == [b"GetPose(0,0)", b"ResetRobot()"]
 
 
 def test_dashboard_disconnect_releases_connection_for_stop(monkeypatch):
@@ -1083,3 +1541,316 @@ def test_stop_transport_failure_is_not_retried(rig, monkeypatch):
     assert not control.stop()["ok"]
     assert not control.stop()["stationary_verified"]
     assert command.call_args_list == [call("ResetRobot()", stopping=True)]
+
+
+def test_linear_move_cannot_start_outside_manufacturer_j4_range(cartesian_rig):
+    control, sample, _, commands, _ = cartesian_rig
+    sample[0] = Feedback((*START[:3], -361.0), 5, 0, False)
+    with pytest.raises(ValueError, match="J4"):
+        control.move_linear(LINEAR_TARGET)
+    assert not commands
+    assert not control.stopped
+
+
+def test_linear_move_rechecks_start_after_preflight(cartesian_rig, monkeypatch):
+    control, _, _, commands, _ = cartesian_rig
+    monkeypatch.setattr(control, "_preflight", lambda modes: (5, (*START[:3], -361.0)))
+    with pytest.raises(ValueError, match="J4"):
+        control.move_linear(LINEAR_TARGET)
+    assert not any(text.startswith(("InverseSolution", "MovL")) for text, _ in commands)
+    assert ("ResetRobot()", 29999) in commands
+
+
+def test_preflight_returns_latest_verified_passive_baseline(rig, monkeypatch):
+    control, _, now, commands = rig
+    dashboard = (*START[:3], START[3] - 0.06)
+    latest = (*START[:3], START[3] + 0.02)
+    monkeypatch.setattr(control, "_dashboard_state", lambda: (5, dashboard))
+
+    def feedback():
+        joints = latest if now[0] >= 10.2 else START
+        return Feedback(joints, 5, 0, False), now[0]
+
+    control.feedback_snapshot = feedback
+    assert control._preflight({5}) == (5, latest)
+    assert now[0] >= 10.4
+    assert not commands
+    assert not control.stopped
+
+
+@pytest.mark.parametrize("initial_mode", [4, 5])
+def test_enable_accepts_a_new_settled_position_only_while_disabled(rig, monkeypatch, initial_mode):
+    control, sample, now, commands = rig
+    sample[0] = Feedback(START, initial_mode, 0, False)
+    settled = (*START[:3], START[3] + 0.2)
+
+    def feedback():
+        joints = START if now[0] < 10.1 else settled
+        sample[0] = Feedback(joints, sample[0].mode, 0, False)
+        return sample[0], now[0]
+
+    control.feedback_snapshot = feedback
+    original_command = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "EnableRobot()":
+            assert now[0] >= 10.5
+            assert kwargs["pending"]["expected"] == settled
+        return original_command(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    if initial_mode == 4:
+        enabled = control.enable()
+        assert enabled.mode == 5
+        assert enabled.joints_deg == settled
+        assert not control.stopped
+        assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == [
+            "EnableRobot()",
+        ]
+        assert [text for text, _ in commands].count("RobotMode()") == 3
+    else:
+        with pytest.raises(TimeoutError, match="stationary state"):
+            control.enable()
+        assert control.stopped
+        assert ("EnableRobot()", 29999) not in commands
+        assert control.stop()["stationary_verified"]
+
+
+@pytest.mark.parametrize("fault", [
+    "dashboard_mode", "passive_mode", "alarm", "stale", "dashboard_angles",
+    "passive_angles", "both_angles", "source_difference", "cancelled",
+])
+def test_disabled_preflight_rechecks_settled_state_before_enable(rig, monkeypatch, fault):
+    control, sample, now, commands = rig
+    sample[0] = Feedback(START, 4, 0, False)
+    original_command = control._command
+    mode_reads = 0
+    changed = (*START[:3], START[3] + 0.11)
+
+    def command(text, *args, **kwargs):
+        nonlocal mode_reads
+        result = original_command(text, *args, **kwargs)
+        if text == "RobotMode()":
+            mode_reads += 1
+            if mode_reads == 2:
+                if fault == "dashboard_mode":
+                    return "5"
+                if fault == "passive_mode":
+                    sample[0] = Feedback(START, 5, 0, False)
+        if mode_reads == 2:
+            if text == "GetErrorID()" and fault == "alarm":
+                return "[[1],[],[],[],[]]"
+            if text == "GetAngle()":
+                if fault == "source_difference":
+                    sample[0] = Feedback((*START[:3], START[3] - 0.09), 4, 0, False)
+                    return ",".join(map(str, (*START[:3], START[3] + 0.09, 0, 0)))
+                if fault == "stale":
+                    control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
+                if fault in {"passive_angles", "both_angles"}:
+                    sample[0] = Feedback(changed, 4, 0, False)
+                if fault in {"dashboard_angles", "both_angles"}:
+                    return ",".join(map(str, (*changed, 0, 0)))
+                if fault == "cancelled":
+                    control.cancel()
+        return result
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(RuntimeError):
+        control.enable()
+    assert mode_reads == 2
+    assert ("EnableRobot()", 29999) not in commands
+    assert control.stopped
+
+
+def test_disabled_preflight_still_rejects_initial_source_mismatch(rig, monkeypatch):
+    control, sample, _, commands = rig
+    sample[0] = Feedback(START, 4, 0, False)
+    original_command = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "GetAngle()":
+            return ",".join(map(str, (*START[:3], START[3] + 0.2, 0, 0)))
+        return original_command(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(RuntimeError, match="Dashboard and passive feedback disagree"):
+        control.enable()
+    assert [text for text, _ in commands].count("RobotMode()") == 1
+    assert ("EnableRobot()", 29999) not in commands
+    assert control.stopped
+
+
+def test_move_rejects_excessive_source_difference_with_readings(rig, monkeypatch):
+    control, sample, _, commands = rig
+    passive = sample[0].joints_deg
+    dashboard = (*passive[:3], passive[3] - 0.11)
+    monkeypatch.setattr(control, "_dashboard_state", lambda: (5, dashboard))
+    with pytest.raises(RuntimeError, match="Dashboard and passive feedback disagree") as error:
+        control.move(TARGET)
+    delta = tuple(actual - reference for actual, reference in zip(passive, dashboard))
+    diagnostic = str(error.value)
+    assert "dashboard_mode=5, passive_mode=5" in diagnostic
+    assert f"dashboard={dashboard!r}" in diagnostic
+    assert f"passive={passive!r}" in diagnostic
+    assert f"passive_minus_dashboard={delta!r}" in diagnostic
+    assert "tolerance_deg=0.1" in diagnostic
+    assert control._pending is None
+    assert control.stopped
+    assert commands == [("ResetRobot()", 29999)]
+    socket.create_connection.assert_not_called()
+
+
+def test_joint_move_accepts_j4_within_manufacturer_range(rig):
+    control, sample, _, commands = rig
+    sample[0] = Feedback((*START[:3], -200.0), 5, 0, False)
+    target = (*START[:3], -199.0)
+    assert control.move(target).joints_deg == target
+    assert (
+        "JointMovJ(0.700000,0.040000,0.520000,-199.000000,SpeedJ=5,AccJ=5)", 30003,
+    ) in commands
+    assert not any(text.startswith(("Enable", "ClearError", "Reset")) for text, _ in commands)
+    assert not control.stopped
+
+
+@pytest.mark.parametrize("failure_type", [TimeoutError, ConnectionError])
+@pytest.mark.parametrize("method,query", [
+    ("enable", "RobotMode("), ("move", "GetAngle("),
+    ("move_linear", "GetPose("), ("move_linear", "InverseSolution("),
+])
+def test_read_only_preparation_query_failure_can_retry_same_control(
+    cartesian_rig, monkeypatch, method, query, failure_type
+):
+    control, sample, _, commands, _ = cartesian_rig
+    if method == "enable":
+        sample[0] = Feedback(START, 4, 0, False)
+    original = control._command
+    failed = False
+
+    def command(text, *args, **kwargs):
+        nonlocal failed
+        if text.startswith(query) and not failed:
+            failed = True
+            raise failure_type("Read-only connection failed")
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    args = () if method == "enable" else (TARGET if method == "move" else LINEAR_TARGET,)
+    with pytest.raises(PreparationRejectedError, match="Retry the action"):
+        getattr(control, method)(*args)
+    assert not any(text.startswith(("Enable", "JointMovJ", "MovL", "Reset"))
+                   for text, _ in commands)
+    assert control._pending is None
+    assert not control.stopped and not control.busy and not control._stop_uncertain
+    assert getattr(control, method)(*args).mode == 5
+    assert not control.stopped and not control.busy
+
+
+def test_query_failure_after_prior_successful_move_can_retry(cartesian_rig, monkeypatch):
+    control, _, _, commands, _ = cartesian_rig
+    control.move(TARGET)
+    pending = control._pending
+    commands.clear()
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "GetAngle()":
+            raise ConnectionError("Read unavailable")
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(PreparationRejectedError):
+        control.move(START)
+    assert control._pending is pending
+    assert not control.stopped and not control._stop_uncertain
+    assert ("ResetRobot()", 29999) not in commands
+    monkeypatch.setattr(control, "_command", original)
+    assert control.move(START).joints_deg == START
+
+
+@pytest.mark.parametrize("change", ["alarm", "moving", "disabled", "stale", "joints"])
+def test_preparation_query_failure_with_changed_feedback_still_latches(
+    rig, monkeypatch, change
+):
+    control, sample, now, commands = rig
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "GetAngle()":
+            if change == "stale":
+                control.feedback_snapshot = lambda: (sample[0], now[0] - 0.3)
+            else:
+                sample[0] = Feedback(
+                    (START[0] + 0.2, *START[1:]) if change == "joints" else START,
+                    7 if change == "moving" else 4 if change == "disabled" else 5,
+                    0, change == "alarm",
+                )
+            raise TimeoutError("Query lost")
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(RuntimeError) as caught:
+        control.move(TARGET)
+    assert not isinstance(caught.value, PreparationRejectedError)
+    assert control.stopped and not control.busy
+    assert ("ResetRobot()", 29999) in commands
+    assert not any(text.startswith("JointMovJ") for text, _ in commands)
+
+
+def test_post_send_query_timeout_still_latches_control(rig, monkeypatch):
+    control, _, _, commands = rig
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "GetAngle()" and control._pending is not None:
+            raise TimeoutError("Arrival query lost")
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(TimeoutError, match="Arrival query"):
+        control.move(TARGET)
+    assert control.stopped and not control.busy
+    assert (MOVE, 30003) in commands
+    assert ("ResetRobot()", 29999) in commands
+
+
+@pytest.mark.parametrize("axis,start,end", [(0, 159, 158), (3, 359, 358), (3, -359, -358)])
+def test_measured_margin_band_allows_inward_joint_move(rig, axis, start, end):
+    control, sample, _, commands = rig
+    joints = list(START)
+    joints[axis] = start
+    sample[0] = Feedback(tuple(joints), 5, 0, False)
+    joints[axis] = end
+    assert control.move(tuple(joints)).joints_deg == tuple(joints)
+    assert sum(text.startswith("JointMovJ") for text, _ in commands) == 1
+    assert not control.stopped
+
+
+@pytest.mark.parametrize("dashboard_mode", [4, 7, 9])
+def test_dashboard_state_change_cannot_be_hidden_by_later_query_timeout(
+    rig, monkeypatch, dashboard_mode
+):
+    control, _, _, commands = rig
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        if text == "RobotMode()":
+            return str(dashboard_mode)
+        if text == "GetErrorID()":
+            raise TimeoutError("Alarm query unavailable")
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises(RuntimeError, match="Dashboard and passive feedback disagree") as caught:
+        control.move(TARGET)
+    assert not isinstance(caught.value, PreparationRejectedError)
+    assert control.stopped and not control.busy
+    assert commands == [("ResetRobot()", 29999)]
+
+
+@pytest.mark.parametrize("j4", [-359, 359])
+def test_linear_move_accepts_measured_start_outside_target_margin(cartesian_rig, j4):
+    control, sample, _, commands, _ = cartesian_rig
+    sample[0] = Feedback((*START[:3], j4), 5, 0, False)
+    assert control.move_linear(LINEAR_TARGET).joints_deg == TARGET
+    assert (LINEAR_MOVE, 30003) in commands
+    assert not control.stopped

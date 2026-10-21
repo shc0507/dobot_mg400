@@ -1,15 +1,15 @@
-"""Bounded keyboard movement. Each hold sends at most one continuous move."""
+"""Keyboard movement with one checked, finite trajectory at a time."""
 
 import math
 import threading
 import time
 
+from . import joint_control
 from .joint_control import JointControl, TargetRejectedError
-from .joint_limits import validate_joint_segment, validate_joints
+from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
 
-HOLD_SECONDS = 5.0
-HOLD_DISTANCE_MM = 50.0
-HOLD_ANGLE_DEG = 10.0
+SEGMENT_DISTANCE_MM = 50.0
+SEGMENT_ANGLE_DEG = 10.0
 KEYS = frozenset("WASDRFQE")
 
 
@@ -35,8 +35,8 @@ class KeyboardJogSession:
         self._stop_result = None
         self._pose = None
         self.measured_pose = None
+        self._measurement = None
         self.fault = None
-        self.expired = False
         self.limit_reason = None
 
     @property
@@ -71,7 +71,6 @@ class KeyboardJogSession:
             self._revoked = threading.Event()
             self._released = released
             self._stop_thread = self._stop_result = None
-            self.expired = False
             self.limit_reason = None
             return active
 
@@ -100,7 +99,7 @@ class KeyboardJogSession:
         with self._lock:
             self._stop_result = result
 
-    def _revoke(self, *, error=None, expired=False, physical_release=False):
+    def _revoke(self, *, error=None, physical_release=False):
         with self._lock:
             if self._active is None:
                 if physical_release and self._release_gate is not None:
@@ -108,9 +107,6 @@ class KeyboardJogSession:
                 return
             if physical_release and self._released is not None:
                 self._released.set()
-            if expired:
-                self.expired = True
-                self._release_gate = self._released
             if error is not None and self.fault is None:
                 self.fault = str(error)
                 self.control.cancel()
@@ -137,10 +133,10 @@ class KeyboardJogSession:
         self.release()
 
     def _read_measured_pose(self, active, modes):
-        requested = time.monotonic()
-        pose = active._read_pose(modes)
-        self.measured_pose = (pose, requested)
-        return pose
+        measurement = active._read_pose_measurement(modes)
+        self._measurement = measurement
+        self.measured_pose = (measurement.pose, measurement.requested_at)
+        return measurement.pose
 
     def _finish(self, active, *, read_pose=False):
         # Do not publish readiness while a send or stop thread can still act.
@@ -159,6 +155,15 @@ class KeyboardJogSession:
             if read_pose and self.fault is None and not self.control.stopped:
                 try:
                     self._pose = self._read_measured_pose(active, {5})
+                except joint_control.DashboardQueryCancelledError as error:
+                    if self._revoked.is_set() and self._stop_thread is not stop_thread:
+                        # A release interrupted this read. Verify its stop, then
+                        # get a new measured pose instead of returning the old one.
+                        continue
+                    self._revoke(error=error)
+                except joint_control.PreparationRejectedError as error:
+                    self.limit_reason = str(error)
+                    self._release_gate = self._released
                 except Exception as error:
                     self._revoke(error=error)
             read_pose = False
@@ -166,6 +171,7 @@ class KeyboardJogSession:
                 # A release can start a stop while the final pose read is pending.
                 if self._stop_thread is not stop_thread:
                     continue
+                active._preparing = False
                 active._operation_lock.release()
                 self._active = self._phase = None
                 return
@@ -174,7 +180,9 @@ class KeyboardJogSession:
         """Verify enabled idle state once and return measured User=0/Tool=0 pose."""
         active = self._start("preparing")
         try:
-            active._preflight({5})
+            validate_measured_joints(active._fresh({5})[0].joints_deg)
+            _, joints = active._preflight({5})
+            validate_measured_joints(joints)
             pose = self._read_measured_pose(active, {5})
             with self._lock:
                 if self._revoked.is_set() or active.stopped or self._closed:
@@ -182,6 +190,9 @@ class KeyboardJogSession:
                 self._pose = pose
                 self._prepared = True
             return pose
+        except joint_control.PreparationRejectedError:
+            self._prepared = False
+            raise
         except Exception as error:
             if not self._revoked.is_set():
                 self._revoke(error=error)
@@ -189,45 +200,55 @@ class KeyboardJogSession:
         finally:
             self._finish(active)
 
-    def _check_hold(self, active, released, deadline):
+    def _check_hold(self, active, released):
         if released.is_set():
             self._revoke()
-        elif time.monotonic() >= deadline:
-            self._revoke(expired=True)
         if self._revoked.is_set() or active.stopped:
             raise RuntimeError("Keyboard hold cancelled")
 
-    def _watch(self, active, released, deadline, finished):
+    def _watch(self, active, released, finished):
         while not finished.wait(0.01):
             try:
-                self._check_hold(active, released, deadline)
-                active._fresh({5, 7})
+                self._check_hold(active, released)
+                validate_measured_joints(active._fresh({5, 7})[0].joints_deg)
             except Exception as error:
                 if not self._revoked.is_set():
                     self._revoke(error=error)
                 return
 
-    def _step(self, active, key, initial_pose):
+    def reusable_pose(self, measurement, *, active=None):
+        """Check a measured pose against its source, request time, and idle feedback."""
         from .joint_control import PoseMeasurement
 
+        if not isinstance(measurement, PoseMeasurement):
+            return False
+        if measurement.control is not self.control and measurement.control is not active:
+            return False
+        sample, _ = (active or self.control)._fresh({5})
+        return (
+            0 <= time.monotonic() - measurement.requested_at <= 0.25
+            and measurement.before.mode == measurement.after.mode == 5
+            and not measurement.before.error_status and not measurement.after.error_status
+            and self.control._near(
+                measurement.before.joints_deg, measurement.after.joints_deg, 0.025
+            )
+            and self.control._near(measurement.before.joints_deg, sample.joints_deg, 0.025)
+            and self.control._near(measurement.after.joints_deg, sample.joints_deg, 0.025)
+        )
+
+    def _step(self, active, key, initial_pose):
         sample, _ = active._fresh({5})
-        if (
-            isinstance(initial_pose, PoseMeasurement)
-            and initial_pose.control is self.control
-            and 0 <= time.monotonic() - initial_pose.requested_at <= 0.25
-            and initial_pose.before.mode == initial_pose.after.mode == 5
-            and not initial_pose.before.error_status and not initial_pose.after.error_status
-            and active._near(initial_pose.before.joints_deg, initial_pose.after.joints_deg, 0.025)
-            and active._near(initial_pose.before.joints_deg, sample.joints_deg, 0.025)
-            and active._near(initial_pose.after.joints_deg, sample.joints_deg, 0.025)
-        ):
+        if key in "AD":
+            pose = None
+        elif self.reusable_pose(initial_pose, active=active):
             pose = initial_pose.pose
+            self._measurement = initial_pose
             self.measured_pose = (pose, initial_pose.requested_at)
         else:
             pose = self._read_measured_pose(active, {5})
-        joints = validate_joints(sample.joints_deg)
-        distance = HOLD_DISTANCE_MM if key in "WSRF" else HOLD_ANGLE_DEG
-        minimum = 5.0 if key in "WSRF" else 1.0
+        joints = validate_measured_joints(sample.joints_deg)
+        distance = SEGMENT_DISTANCE_MM if key in "WSRF" else SEGMENT_ANGLE_DEG
+        minimum = 0.1
         while True:
             active._send_guard()
             try:
@@ -256,7 +277,7 @@ class KeyboardJogSession:
                 break
             except TargetRejectedError:
                 # Only rejected targets can shorten the hold. No movement has
-                # been sent. Communication and state errors remain faults.
+                # been sent. Query failures do not shorten the target.
                 if distance <= minimum:
                     raise
                 distance = max(minimum, distance / 2)
@@ -270,42 +291,57 @@ class KeyboardJogSession:
         active._guarded_command(
             command, modes={5, 7}, send_modes={5}, expected=joints, port=30003,
         )
+        origin = joints if target_pose is None else pose
+        destination = target_joints if target_pose is None else target_pose
         # Require another feedback receipt after the successful acknowledgement.
         _, before = active._fresh({5, 7})
         while True:
             active._send_guard()
-            actual_pose = self._read_measured_pose(active, {5, 7})
+            actual_pose = (
+                self._read_measured_pose(active, {5, 7}) if target_pose is not None else None
+            )
             sample, received = active._fresh({5, 7})
+            validate_measured_joints(sample.joints_deg)
+            measured = sample.joints_deg if target_pose is None else actual_pose
+            # Keep the target tolerance, but a microstep needs actual progress
+            # along its commanded direction, measured from the same source.
+            progress = sum(
+                (actual - start) * (end - start)
+                for actual, start, end in zip(measured, origin, destination, strict=True)
+            ) / distance
             if (
                 received > before and sample.mode == 5
+                and (distance >= 0.2 or progress >= distance / 2)
                 and active._near(sample.joints_deg, target_joints)
                 and (target_pose is None or active._near(actual_pose, target_pose))
             ):
-                self._pose = actual_pose
+                if actual_pose is not None:
+                    self._pose = actual_pose
                 return
             time.sleep(0.01)
 
     def run(self, key, released, initial_pose=None):
-        """Run one continuous move until arrival, release, or the hold deadline."""
+        """Continue checked trajectories until release, a limit, or a fault."""
         if key not in KEYS:
             raise ValueError("Expected one keyboard movement key")
         active = self._start("running", released)
-        deadline = time.monotonic() + HOLD_SECONDS
         finished = threading.Event()
-        active._send_guard = lambda: self._check_hold(active, released, deadline)
+        active._send_guard = lambda: self._check_hold(active, released)
         watcher = threading.Thread(
-            target=self._watch, args=(active, released, deadline, finished),
+            target=self._watch, args=(active, released, finished),
             name="MG400-keyboard-watch", daemon=True,
         )
         watcher.start()
+        read_pose = True
         try:
             active._send_guard()
-            self._step(active, key, initial_pose)
-            with self._lock:
-                if not self._revoked.is_set() and not active.stopped:
-                    self.limit_reason = "Travel limit reached."
-                    self._release_gate = released
-        except TargetRejectedError as error:
+            while True:
+                self._step(active, key, initial_pose)
+                active._send_guard()
+                initial_pose = self._measurement if key not in "AD" else None
+        except (TargetRejectedError, joint_control.PreparationRejectedError) as error:
+            if isinstance(error, joint_control.PreparationRejectedError):
+                read_pose = False
             try:
                 active._send_guard()
                 active._fresh({5})
@@ -323,7 +359,7 @@ class KeyboardJogSession:
         finally:
             finished.set()
             watcher.join()
-            self._finish(active, read_pose=True)
+            self._finish(active, read_pose=read_pose)
         if self.fault is not None:
             raise RuntimeError(self.fault)
         if self.control.stopped:

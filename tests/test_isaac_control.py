@@ -23,9 +23,22 @@ ROOT = Path(__file__).resolve().parents[1]
 class FloatModel:
     def __init__(self, value):
         self.as_float = value
+        self.begin_callbacks = {}
 
     def set_value(self, value):
         self.as_float = value
+
+    def add_begin_edit_fn(self, callback):
+        token = len(self.begin_callbacks) + 1
+        self.begin_callbacks[token] = callback
+        return token
+
+    def remove_begin_edit_fn(self, token):
+        del self.begin_callbacks[token]
+
+    def begin_edit(self):
+        for callback in self.begin_callbacks.values():
+            callback(self)
 
 
 class Mirror:
@@ -67,10 +80,15 @@ def panel_module(monkeypatch, tmp_path):
             self.cancel_modes = []
             self.pose = (1.0, 2.0, 3.0, 4.0)
             self.pose_reads = 0
+            self.stationary_checks = 0
             instances.append(self)
 
         def read_state(self):
             return self.snapshot()[0]
+
+        def verify_stationary(self):
+            self.stationary_checks += 1
+            return self.read_state()
 
         def read_pose(self):
             self.read_state()
@@ -132,13 +150,13 @@ def panel_module(monkeypatch, tmp_path):
     backend = ModuleType("mg400_agent.joint_control")
     backend.JointControl = Control
     backend.TargetRejectedError = type("TargetRejectedError", (ValueError,), {})
+    backend.PreparationRejectedError = type("PreparationRejectedError", (RuntimeError,), {})
     monkeypatch.setitem(sys.modules, backend.__name__, backend)
 
     class KeyboardSession:
         def __init__(self, control):
             self.control = control
             self.ready = self.closed = False
-            self.expired = False
             self.fault = None
             self.limit_reason = None
             self.measured_pose = None
@@ -151,6 +169,7 @@ def panel_module(monkeypatch, tmp_path):
             self.finish_allowed.set()
             self.run_calls = []
             self.initial_poses = []
+            self.reusable_checks = []
             self.movements = []
             self.release_calls = 0
             self.released = None
@@ -170,16 +189,22 @@ def panel_module(monkeypatch, tmp_path):
             self.run_calls.append(key)
             self.initial_poses.append(initial_pose)
             self.released = released
-            self.expired = False
             if released.is_set() or self.closed:
                 return self.control.pose
             self.movements.append(key)
             self.run_started.set()
             while not released.is_set() and not self.hold_finished.is_set():
                 await asyncio.sleep(0)
-            self.expired = self.hold_finished.is_set() and not released.is_set()
             await self.finish_allowed.wait()
             return self.control.pose
+
+        def reusable_pose(self, measurement):
+            self.reusable_checks.append(measurement)
+            return (
+                measurement is not None and measurement.control is self.control
+                and 0 <= time.monotonic() - measurement.requested_at <= 0.25
+                and measurement.before == measurement.after == self.control.read_state()
+            )
 
         def release(self):
             self.release_calls += 1
@@ -241,7 +266,7 @@ def panel_module(monkeypatch, tmp_path):
         def busy(self):
             return self.action is not None and not self.action.done()
 
-        def build_ui(self):
+        def build_compact_row(self):
             import omni.ui as ui
 
             self.build_count += 1
@@ -325,6 +350,8 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
             self.exclusive_keyboard = False
             self.key_pressed = None
             self.frame = self
+            self.tooltip = kwargs.get("tooltip")
+            self.model = kwargs.get("model", text if isinstance(text, FloatModel) else None)
             widgets.append(self)
 
         def __enter__(self):
@@ -406,15 +433,47 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
         def __int__(self):
             return self.value
 
+    class Observer:
+        def __init__(self, event_name, on_event, observer_name):
+            self.event_name = event_name
+            self.on_event = on_event
+            self.observer_name = observer_name
+            self.active = True
+            self.reset_count = 0
+
+        def reset(self):
+            self.active = False
+            self.reset_count += 1
+
+    class EventDispatcher:
+        def __init__(self):
+            self.observers = []
+
+        def observe_event(self, **kwargs):
+            observer = Observer(**kwargs)
+            self.observers.append(observer)
+            return observer
+
+        def disconnect(self):
+            for observer in self.observers:
+                if observer.active:
+                    assert observer.event_name == (
+                        "omni.kit.livestream.client_disconnected:immediate"
+                    )
+                    observer.on_event(SimpleNamespace())
+
     modules = {
         name: ModuleType(name)
         for name in (
-            "carb", "carb.input", "omni", "omni.appwindow", "omni.kit", "omni.kit.app",
-            "omni.timeline", "omni.ui", "omni.usd",
+            "carb", "carb.input", "carb.eventdispatcher", "omni", "omni.appwindow", "omni.kit",
+            "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd",
         )
     }
     input_interface = InputInterface()
+    dispatcher = EventDispatcher()
     modules["carb"].input = modules["carb.input"]
+    modules["carb"].eventdispatcher = modules["carb.eventdispatcher"]
+    modules["carb.eventdispatcher"].get_eventdispatcher = lambda: dispatcher
     modules["carb.input"].acquire_input_interface = lambda: input_interface
     modules["carb.input"].KeyboardInput = KeyboardInput
     modules["carb.input"].KeyboardEventType = SimpleNamespace(
@@ -433,7 +492,7 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
     modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(
         is_stopped=lambda: True
     )
-    for name in ("Window", "VStack", "HStack", "Label", "FloatField", "Button"):
+    for name in ("Window", "VStack", "HStack", "Label", "FloatField", "FloatSlider", "Button"):
         setattr(modules["omni.ui"], name, type(name, (Widget,), {}))
     modules["omni.ui"].SimpleFloatModel = FloatModel
     for name, module in modules.items():
@@ -533,6 +592,7 @@ def test_refresh_pose_reads_without_blocking_event_loop(panel, monkeypatch):
 
 
 def test_pose_read_failure_removes_previous_coordinates(panel, monkeypatch):
+    panel.pose_measurement = panel.control.read_pose_measurement()
     def failed_pose():
         raise RuntimeError("Pose query failed")
 
@@ -540,6 +600,7 @@ def test_pose_read_failure_removes_previous_coordinates(panel, monkeypatch):
     asyncio.run(panel.refresh_pose())
     panel.copy_actual()
     assert panel.actual_pose is None
+    assert panel.pose_measurement is None
     assert not panel.initialized
     assert panel.control.calls == []
 
@@ -726,6 +787,44 @@ def test_manual_target_rejection_keeps_coordinates_and_allows_retry(
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize(
+    "name,method", [("enable", "enable"), ("home", "move"), ("move", "move_linear")]
+)
+def test_preparation_rejection_leaves_action_available_for_explicit_retry(
+    panel_module, panel, monkeypatch, name, method,
+):
+    original = getattr(panel.control, method)
+    reject = True
+
+    def command(*args):
+        nonlocal reject
+        if reject:
+            reject = False
+            raise panel_module.backend.PreparationRejectedError("Read connection timed out.")
+        return original(*args)
+
+    monkeypatch.setattr(panel.control, method, command)
+
+    async def exercise():
+        panel.copy_actual()
+        panel.submit(name)
+        await panel.action
+        assert panel.message == (
+            "No command sent. Read connection timed out. Retry when feedback is ready."
+        )
+        assert panel.stop_task is None
+        assert not panel.control.stopped
+        assert panel.control.calls == []
+        panel.control.release_move.set()
+        panel.submit(name)
+        await panel.action
+        assert len(panel.control.calls) == 1
+        assert panel.control.calls[0][0] == method
+        assert not panel.control.stopped
+
+    asyncio.run(exercise())
+
+
 def test_disable_cancels_once_drains_move_and_allows_explicit_enable_then_move(
     panel_module, panel
 ):
@@ -901,6 +1000,28 @@ def test_keyboard_starts_disabled_and_ignores_unarmed_keys(panel):
     assert panel.control.calls == []
 
 
+@pytest.mark.parametrize("j4", (-360.0, -359.0, -220.0, 220.0, 359.0, 360.0))
+def test_keyboard_request_accepts_measured_j4_within_raw_range(panel, j4):
+    sample = replace(panel.control.read_state(), joints_deg=(1.0, 2.0, 3.0, j4))
+    panel.mirror.latest = sample, time.monotonic()
+    asyncio.run(arm_keyboard(panel))
+    assert panel.keyboard_enabled
+    assert panel.control.calls == []
+
+
+@pytest.mark.parametrize("j4", (-360.001, 360.001))
+def test_keyboard_request_rejects_measured_j4_outside_raw_range(panel, j4):
+    sample = replace(panel.control.read_state(), joints_deg=(1.0, 2.0, 3.0, j4))
+    panel.mirror.latest = sample, time.monotonic()
+    panel.request_keyboard()
+    assert panel.keyboard_task is None
+    assert panel.keyboard_session is None
+    assert not panel.keyboard_enabled
+    assert not panel.keyboard_arming
+    assert panel.control.calls == []
+    assert panel.message.startswith("Keyboard unavailable:")
+
+
 @pytest.mark.parametrize("key", tuple("WASDRFQE"))
 def test_keyboard_passes_one_hold_to_prepared_session(panel, key):
     async def exercise():
@@ -944,11 +1065,72 @@ def test_keyboard_receives_measurement_returned_by_pose_task(panel):
         panel.pose_task = asyncio.create_task(panel.refresh_pose())
         measurement = await panel.pose_task
         assert measurement.control is panel.control
+        assert panel.pose_measurement is measurement
         panel.key_event("W", True)
         await asyncio.wait_for(session.run_started.wait(), 1)
         assert session.initial_poses == [measurement]
         assert session.initial_poses[0] is panel.pose_task.result()
         assert panel.actual_pose == measurement.pose
+        panel.key_event("W", False)
+        await asyncio.wait_for(panel.action, 1)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("key", tuple("AD"))
+def test_base_turn_does_not_wait_for_pending_pose_query(panel, key):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        panel.pose_task = asyncio.get_running_loop().create_future()
+        panel.key_event(key, True)
+        try:
+            await asyncio.wait_for(session.run_started.wait(), 1)
+            assert not panel.pose_task.done()
+            assert session.initial_poses == [None]
+            assert session.reusable_checks == []
+        finally:
+            panel.key_event(key, False)
+            await asyncio.wait_for(panel.action, 1)
+            panel.pose_task.cancel()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("key", tuple("WSRFQE"))
+def test_fresh_pose_cache_skips_pending_pose_query(panel, key):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        measurement = await panel.refresh_pose()
+        panel.pose_task = asyncio.get_running_loop().create_future()
+        panel.key_event(key, True)
+        try:
+            await asyncio.wait_for(session.run_started.wait(), 1)
+            assert not panel.pose_task.done()
+            assert session.initial_poses == [measurement]
+            assert session.initial_poses[0] is panel.pose_measurement
+        finally:
+            panel.key_event(key, False)
+            await asyncio.wait_for(panel.action, 1)
+            panel.pose_task.cancel()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("result_available", [True, False])
+def test_stale_pose_cache_waits_for_existing_query_result(panel, result_available):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        stale = await panel.refresh_pose()
+        stale.requested_at = time.monotonic() - 1
+        panel.pose_task = asyncio.get_running_loop().create_future()
+        panel.key_event("W", True)
+        await asyncio.sleep(0)
+        assert session.reusable_checks == [stale]
+        assert session.run_calls == []
+        result = panel.control.read_pose_measurement() if result_available else None
+        panel.pose_task.set_result(result)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        assert session.initial_poses == [result]
         panel.key_event("W", False)
         await asyncio.wait_for(panel.action, 1)
 
@@ -996,16 +1178,16 @@ def test_keyboard_repeats_do_not_start_another_hold(panel):
     asyncio.run(exercise())
 
 
-def test_hold_limit_requires_keyup_before_another_hold(panel):
+def test_completed_arm_hold_requires_keyup_before_another_hold(panel):
     async def exercise():
         session = await arm_keyboard(panel)
         panel.key_event("W", True)
         await asyncio.wait_for(session.run_started.wait(), 1)
-        # Backend ends the hold at its five-second deadline without a key release.
+        # A completed backend operation must not restart from repeated key events.
         session.hold_finished.set()
         first_action = panel.action
         await asyncio.wait_for(first_action, 1)
-        assert "Hold limit reached" in panel.message
+        assert "Stopped. Hold a key" in panel.message
         for repeat in (True, False):
             panel.key_event("W", True, repeat=repeat)
         assert panel.action is first_action
@@ -1121,6 +1303,39 @@ def test_keyboard_preparation_rejects_robot_that_is_not_enabled_and_idle(panel, 
         assert panel.action is None
         assert panel.keyboard_session.run_calls == []
         assert "enabled and idle" in panel.message
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+def test_keyboard_preparation_rejection_allows_explicit_retry_without_stop(
+    panel_module, panel, monkeypatch,
+):
+    original = panel_module.KeyboardJogSession.prepare
+    reject = True
+
+    async def prepare(session):
+        nonlocal reject
+        if reject:
+            reject = False
+            raise panel_module.backend.PreparationRejectedError("Read connection timed out.")
+        return await original(session)
+
+    monkeypatch.setattr(panel_module.KeyboardJogSession, "prepare", prepare)
+
+    async def exercise():
+        panel.request_keyboard()
+        await panel.keyboard_task
+        assert panel.message == (
+            "Keyboard preparation deferred: Read connection timed out. Click Keyboard to retry."
+        )
+        assert not panel.keyboard_enabled
+        assert not panel.keyboard_arming
+        assert not panel.control.stopped
+        assert panel.stop_task is None
+        assert panel.control.calls == []
+        await arm_keyboard(panel)
+        assert panel.keyboard_enabled
         assert panel.control.calls == []
 
     asyncio.run(exercise())
@@ -1391,10 +1606,76 @@ def test_gripper_keyboard_reports_feedback_reason_without_sending(panel, key, in
         )
         panel.key_event(key, True)
         await asyncio.wait_for(panel.action, 1)
-        assert panel.message == f"ERROR: {message}"
-        assert not panel.keyboard_enabled
+        assert panel.message == f"Gripper unavailable: {message} Arm keys remain ready."
+        assert panel.keyboard_enabled
         assert targets == []
         assert panel.control.calls == []
+        panel.key_event(key, False)
+        panel.key_event("W", True)
+        await asyncio.wait_for(panel.keyboard_session.run_started.wait(), 1)
+        panel.key_event("W", False)
+        await asyncio.wait_for(panel.action, 1)
+        assert panel.keyboard_session.movements == ["W"]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("stop", [False, True])
+def test_gripper_prepublication_rejection_keeps_arm_keys_or_preserves_requested_stop(panel, stop):
+    async def exercise():
+        await arm_keyboard(panel)
+        started, finish = asyncio.Event(), asyncio.Event()
+        reason = "No command sent. The USB collector feedback changed. Check feedback and retry."
+
+        async def reject():
+            started.set()
+            await finish.wait()
+            return False
+
+        panel.gripper = SimpleNamespace(
+            closed=False, failed=False, busy=False, measured_position=lambda: 500,
+            report={"result": reason}, submit_position=lambda target: asyncio.create_task(reject()),
+        )
+        panel.key_event("Z", True)
+        await started.wait()
+        if stop:
+            panel.request_stop()
+            await panel.stop_task
+            stop_message = panel.message
+        finish.set()
+        await panel.action
+        if stop:
+            assert panel.message == stop_message
+            assert not panel.keyboard_enabled
+            assert panel.control.stopped
+            assert panel.control.calls == [("stop",)]
+        else:
+            assert panel.message == f"Gripper unavailable: {reason} Arm keys remain ready."
+            assert panel.keyboard_enabled
+            assert not panel.control.stopped
+            assert panel.control.calls == []
+            panel.key_event("Z", False)
+
+    asyncio.run(exercise())
+
+
+def test_gripper_feedback_loss_between_measurement_and_submit_keeps_arm_keys(panel):
+    async def exercise():
+        await arm_keyboard(panel)
+        reason = "Position control needs a fresh --commands collector."
+        targets = []
+        panel.gripper = SimpleNamespace(
+            closed=False, failed=False, busy=False, measured_position=lambda: 500,
+            report={"result": reason, "command_published": False},
+            submit_position=targets.append,
+        )
+        panel.key_event("X", True)
+        await panel.action
+        assert panel.keyboard_enabled
+        assert panel.message == f"Gripper unavailable: {reason} Arm keys remain ready."
+        assert targets == [475]
+        assert panel.control.calls == []
+        panel.key_event("X", False)
 
     asyncio.run(exercise())
 
@@ -1608,10 +1889,10 @@ def test_sync_status_and_measured_joints_are_shown_in_the_control_window(
         frames += 1
         if frames == 2:
             labels = [widget.text for widget in widgets if type(widget).__name__ == "Label"]
-            assert any("LIVE | 24.5 updates/s" in text and "ms old" in text for text in labels)
-            assert "  ".join(f"J{i}: {i:.2f} deg" for i in range(1, 5)) in labels
+            assert "Sync: live" in labels
+            assert "  ".join(f"J{i} {i:.2f}°" for i in range(1, 5)) in labels
             assert sum(type(widget).__name__ == "Window" for widget in widgets) == 1
-            panel.request_sync_stop()
+            panel.request_close()
 
     widgets = install_ui(panel_module, panel, monkeypatch, next_update)
     asyncio.run(panel.run())
@@ -1639,11 +1920,11 @@ def test_sync_shutdown_waits_for_stop_actions_and_receiver_before_destroying_win
     async def next_update():
         await asyncio.wait_for(child.run_started.wait(), 1)
         if trigger == "button":
-            next(widget for widget in widgets if widget.text == "Stop synchronization").clicked_fn()
+            panel.request_close()
         else:
             panel.window.visible = False
 
-    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    install_ui(panel_module, panel, monkeypatch, next_update)
 
     async def exercise():
         arm_done = asyncio.get_running_loop().create_future()
@@ -1715,7 +1996,7 @@ def test_sync_shutdown_releases_keyboard_and_waits_for_its_current_action(
             assert panel.report["keyboard_enabled"] is True
             assert panel.report["busy"] is True
             assert panel.report["synchronization"]["status"] == "live"
-            panel.request_sync_stop()
+            panel.request_close()
             closing.set()
 
     install_ui(panel_module, panel, monkeypatch, next_update)
@@ -1756,7 +2037,7 @@ def test_sync_shutdown_keeps_feedback_when_robot_stop_is_uncertain(
     panel_module, panel, monkeypatch, fault
 ):
     async def next_update():
-        panel.request_sync_stop()
+        panel.request_close()
 
     install_ui(panel_module, panel, monkeypatch, next_update)
 
@@ -1805,6 +2086,150 @@ def test_closing_stopped_sync_preserves_error_and_waits_for_receiver(panel):
         assert panel.mirror.window.destroyed
         assert panel.mirror.stop_calls == []
         assert panel.mirror.report == original_report
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("disable_first", [False, True])
+def test_sync_stop_verifies_stationary_feedback_before_disconnect(panel, disable_first):
+    async def exercise():
+        if disable_first:
+            panel.request_disable()
+            await panel.disable_task
+            assert panel.control.read_state().mode == 4
+        panel.request_sync_stop()
+        await panel.sync_task
+        assert panel.control.stationary_checks == 1
+        assert panel.mirror.stop_event.is_set()
+        assert panel.message == "Synchronization stopped. Click Start sync to reconnect."
+
+    asyncio.run(exercise())
+
+
+def test_sync_stop_after_disable_retains_feedback_if_stationarity_is_unverified(
+    panel, monkeypatch,
+):
+    async def exercise():
+        panel.request_disable()
+        await panel.disable_task
+        disabled_message = panel.message
+
+        def verify():
+            assert not panel.sync_enabled
+            assert not panel.mirror.stop_event.is_set()
+            raise TimeoutError("Joint feedback changed during the stationary check")
+
+        monkeypatch.setattr(panel.control, "verify_stationary", verify)
+        panel.request_sync_stop()
+        await panel.sync_task
+        assert not panel.mirror.stop_event.is_set()
+        assert panel.report["synchronization_retained"]
+        assert panel.message.startswith(disabled_message)
+        assert "Joint feedback changed" in panel.message
+        assert "Synchronization remains active" in panel.message
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+def test_sync_stop_preserves_original_disable_error_without_rechecking(panel):
+    panel.control._disable_error = RuntimeError("Disable acknowledgement was lost")
+    panel.control.cancel(disabling=True)
+    panel.message = "DISABLE UNCONFIRMED: Disable acknowledgement was lost"
+
+    async def exercise():
+        panel.request_sync_stop()
+        await panel.sync_task
+        assert panel.control.stationary_checks == 0
+        assert panel.control.calls == []
+        assert not panel.mirror.stop_event.is_set()
+        assert panel.message.startswith("DISABLE UNCONFIRMED: Disable acknowledgement was lost")
+        assert "Synchronization remains active" in panel.message
+
+    asyncio.run(exercise())
+
+
+def test_sync_stop_rechecks_command_uncertainty_after_stationary_verification(panel, monkeypatch):
+    def verify():
+        panel.control._stop_uncertain = True
+        return panel.control.read_state()
+
+    monkeypatch.setattr(panel.control, "verify_stationary", verify)
+
+    async def exercise():
+        panel.request_sync_stop()
+        await panel.sync_task
+        assert not panel.mirror.stop_event.is_set()
+        assert panel.report["synchronization_retained"]
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("disable_confirmed", [False, True])
+@pytest.mark.parametrize("verification_failed", [False, True])
+def test_sync_stop_drains_disable_started_during_stationary_verification(
+    panel, monkeypatch, disable_confirmed, verification_failed,
+):
+    control = panel.control
+    verifying, verify_allowed, verify_finished = (threading.Event() for _ in range(3))
+    disabling, disable_allowed = threading.Event(), threading.Event()
+    original_disable = control.disable
+
+    def verify():
+        control.stationary_checks += 1
+        verifying.set()
+        assert verify_allowed.wait(2), "Test did not release stationary verification"
+        verify_finished.set()
+        if verification_failed:
+            raise RuntimeError("Verification invalidated by disable")
+        return control.read_state()
+
+    def disable():
+        disabling.set()
+        assert disable_allowed.wait(2), "Test did not release disable"
+        if not disable_confirmed:
+            control._disable_error = RuntimeError("Disable acknowledgement was lost")
+            raise control._disable_error
+        return original_disable()
+
+    monkeypatch.setattr(control, "verify_stationary", verify)
+    monkeypatch.setattr(control, "disable", disable)
+
+    async def exercise():
+        try:
+            panel.request_sync_stop()
+            assert await asyncio.to_thread(verifying.wait, 1)
+            panel.request_disable()
+            assert await asyncio.to_thread(disabling.wait, 1)
+            verify_allowed.set()
+            assert await asyncio.to_thread(verify_finished.wait, 1)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(panel.sync_task), 0.05)
+            assert not panel.mirror.stop_event.is_set()
+            disable_allowed.set()
+            await asyncio.wait_for(panel.sync_task, 1)
+            assert control.stationary_checks == 1
+            if disable_confirmed:
+                assert panel.control is not control
+                assert panel.control.stationary_checks == 1
+                assert panel.mirror.stop_event.is_set()
+                assert panel.message == "Synchronization stopped. Click Start sync to reconnect."
+            else:
+                assert panel.control is control
+                assert not panel.mirror.stop_event.is_set()
+                assert panel.report["synchronization_retained"]
+                assert panel.message.startswith(
+                    "DISABLE UNCONFIRMED: Disable acknowledgement was lost"
+                )
+                assert "Synchronization remains active" in panel.message
+            assert "Verification invalidated" not in panel.message
+        finally:
+            verify_allowed.set()
+            disable_allowed.set()
+            for task in (panel.disable_task, panel.sync_task):
+                if task is not None:
+                    await asyncio.wait_for(task, 1)
 
     asyncio.run(exercise())
 
@@ -2042,7 +2467,7 @@ def test_rerunning_entry_after_sync_stop_starts_one_hidden_mirror_and_waits_for_
         second = None
         try:
             await asyncio.wait_for(first.gripper.run_started.wait(), 1)
-            first.request_sync_stop()
+            first.request_close()
             await asyncio.wait_for(first.task, 1)
             assert first.window.destroyed
             assert panel.mirror.stop_event.is_set()
@@ -2058,7 +2483,7 @@ def test_rerunning_entry_after_sync_stop_starts_one_hidden_mirror_and_waits_for_
         finally:
             for created in (first, second):
                 if created is not None:
-                    created.request_sync_stop()
+                    created.request_close()
                     await asyncio.wait_for(created.task, 1)
 
     asyncio.run(exercise())
@@ -2096,6 +2521,10 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
             "class ControllerCommandError(RuntimeError): pass\n"
             "def parse_controller_response(packet, command): return 'current'\n"
         ),
+        "joint_limits": (
+            "def validate_joints(joints): return joints\n"
+            "def validate_measured_joints(joints): return joints\n"
+        ),
         "joint_control": (
             "from .controller_protocol import ControllerCommandError, parse_controller_response\n"
             "class JointControl:\n"
@@ -2125,7 +2554,10 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     globals_ = panel_module._reload_control_modules.__globals__
     monkeypatch.setitem(globals_, "ROOT", tmp_path)
     panel_module._reload_control_modules()
-    protocol, control, jog, gripper = (sys.modules[f"mg400_agent.{name}"] for name in sources)
+    protocol, limits, control, jog, gripper = (
+        sys.modules[f"mg400_agent.{name}"] for name in sources
+    )
+    assert globals_["limits"] is limits
     assert gripper.FeedbackState.__module__ == "mg400_agent.gripper_feedback"
     assert globals_["backend"] is control
     assert globals_["JointControl"] is control.JointControl
@@ -2223,9 +2655,9 @@ def test_concurrent_starts_wait_for_prior_panel_to_exit(panel_module, panel, mon
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("moving_at_close", (False, True))
+@pytest.mark.parametrize("operation", (None, "move"))
 def test_run_initializes_passively_and_stops_active_move_on_close(
-    panel_module, panel, monkeypatch, moving_at_close
+    panel_module, panel, monkeypatch, operation
 ):
     frames = 0
 
@@ -2247,8 +2679,8 @@ def test_run_initializes_passively_and_stops_active_move_on_close(
             assert panel.initialized
             assert [model.as_float for model in panel.models] == [1.0, 2.0, 3.0, 4.0]
             assert panel.control.calls == []
-            if moving_at_close:
-                panel.submit("move")
+            if operation:
+                panel.submit(operation)
                 assert await asyncio.to_thread(panel.control.move_started.wait, 1)
             panel.window.visible = False
 
@@ -2260,8 +2692,12 @@ def test_run_initializes_passively_and_stops_active_move_on_close(
     assert frames == 3
     assert panel.closed
     assert panel.window.destroyed
-    expected_calls = [("move_linear", (1.0, 2.0, 3.0, 4.0)), ("stop",)] if moving_at_close else []
+    expected_calls = {
+        None: [],
+        "move": [("move_linear", (1.0, 2.0, 3.0, 4.0)), ("stop",)],
+    }[operation]
     assert panel.control.calls == expected_calls
+    assert panel.control.cancel_modes == ([False] if operation else [])
     assert panel.report["status"] == "closed"
     assert panel.report["motion_sent_by_startup"] is False
     input_interface = sys.modules["carb.input"].acquire_input_interface()
@@ -2271,17 +2707,26 @@ def test_run_initializes_passively_and_stops_active_move_on_close(
 
 
 @pytest.mark.parametrize(
-    ("mode", "busy", "expected_enabled"),
+    ("mode", "j4", "busy", "expected_enabled"),
     (
-        (4, False, [True, False, False, False, False]),
-        (5, False, [False, True, True, True, True]),
-        (5, True, [False, True, False, False, True]),
+        (4, 4.0, False, [True, False, False, False, False]),
+        (5, 4.0, False, [False, True, True, True, True]),
+        (5, 4.0, True, [False, True, False, False, True]),
+        (4, -227.81, False, [True, False, False, False, False]),
+        (5, -227.81, False, [False, True, True, True, True]),
+        (5, 227.81, False, [False, True, True, True, True]),
+        (5, -227.81, True, [False, True, False, False, True]),
+        (5, -359.0, False, [False, True, True, True, True]),
+        (5, 359.0, False, [False, True, True, True, True]),
+        (5, -360.001, False, [False, True, False, False, False]),
+        (5, 360.001, False, [False, True, False, False, False]),
     ),
 )
 def test_ui_button_rows_and_enabled_states(
-    panel_module, panel, monkeypatch, mode, busy, expected_enabled
+    panel_module, panel, monkeypatch, mode, j4, busy, expected_enabled
 ):
-    panel.control.set_mode(mode)
+    sample = replace(panel.control.read_state(), mode=mode, joints_deg=(1.0, 2.0, 3.0, j4))
+    panel.mirror.latest = sample, time.monotonic()
     panel.initialized = True
     frames = 0
     pending_action = None
@@ -2295,20 +2740,29 @@ def test_ui_button_rows_and_enabled_states(
         if frames == 2:
             buttons = [widget for widget in widgets if type(widget).__name__ == "Button"]
             assert [button.text for button in buttons] == [
-                "Stop synchronization",
-                "Enable robot", "Disable robot", "Return to Home", "Move Linear", "Keyboard: OFF"
+                "Start sync", "Stop sync", "Home", "Execute targets", "Keyboard: OFF",
+                "Enable robot", "Disable robot",
             ]
-            sync, enable, disable, home, move, keyboard = buttons
-            assert sync.enabled
-            assert sync.clicked_fn == panel.request_sync_stop
+            start, stop, home, move, keyboard, enable, disable = buttons
+            assert not start.enabled
+            assert stop.enabled
+            assert start.clicked_fn == panel.request_sync_start
+            assert stop.clicked_fn == panel.request_sync_stop
             assert enable.parent is disable.parent
             assert type(enable.parent).__name__ == "HStack"
-            assert home.parent is move.parent is enable.parent.parent
-            assert keyboard.parent is home.parent
-            assert [button.enabled for button in buttons[1:]] == expected_enabled
+            assert home.parent is move.parent
+            assert keyboard.parent.parent is home.parent.parent
+            assert [button.enabled for button in (enable, disable, home, move, keyboard)] == (
+                expected_enabled
+            )
+            sliders = [widget for widget in widgets if type(widget).__name__ == "FloatSlider"]
+            assert len(sliders) == 4
             fields = [widget for widget in widgets if type(widget).__name__ == "FloatField"]
             assert len(fields) == 4
-            assert all(field.enabled == (not busy) for field in fields)
+            assert all(field.enabled == (not busy) for field in fields + sliders)
+            assert all(field.model is slider.model for field, slider in zip(fields, sliders))
+            title = next(widget for widget in widgets if widget.text == "Coordinates & Motion")
+            assert "User=0, Tool=0" in title.tooltip
             assert panel.control.calls == []
             if pending_action:
                 pending_action.set_result(None)
@@ -2343,7 +2797,7 @@ def test_exclusive_window_receives_integer_key_press_and_release(
         if frames == 2:
             assert panel.window.exclusive_keyboard
             fields = [widget for widget in widgets if type(widget).__name__ == "FloatField"]
-            assert all(not field.enabled for field in fields)
+            assert all(field.enabled for field in fields)
             global_events = input_interface.global_events.copy()
             assert input_interface.emit(key, modifiers=1 << 30) is False
             assert panel.action is not None
@@ -2372,6 +2826,146 @@ def test_exclusive_window_receives_integer_key_press_and_release(
     assert panel.control.calls == []
     assert panel.window.destroyed
     assert panel.keyboard_session.closed
+
+
+@pytest.mark.parametrize("worker_thread", [False, True])
+def test_stream_disconnect_revokes_immediately_and_requires_explicit_rearming(
+    panel_module, panel, monkeypatch, worker_thread
+):
+    frames = 0
+    observer = None
+    sessions = []
+
+    async def next_update():
+        nonlocal frames, observer
+        frames += 1
+        if frames == 1:
+            sessions.append(await arm_keyboard(panel))
+        if frames == 2:
+            session = sessions[0]
+            panel.key_event("W", True)
+            await asyncio.wait_for(session.run_started.wait(), 1)
+            action = panel.action
+            dispatcher = sys.modules["carb.eventdispatcher"].get_eventdispatcher()
+            observer = dispatcher.observers[0]
+            assert observer is panel.stream_observer
+            errors = []
+
+            def disconnect():
+                try:
+                    dispatcher.disconnect()
+                    assert panel.jog_released.is_set()
+                    assert session.closed
+                    assert panel.keyboard_enabled  # UI mutation waits for the event loop.
+                except BaseException as error:
+                    errors.append(error)
+
+            if worker_thread:
+                worker = threading.Thread(target=disconnect)
+                worker.start()
+                worker.join(timeout=1)
+                assert not worker.is_alive()
+            else:
+                disconnect()
+            assert errors == []
+            await asyncio.sleep(0)
+            await asyncio.wait_for(action, 1)
+            assert not panel.keyboard_enabled
+            assert panel.held_keys == set()
+            assert "Stream disconnected" in panel.message
+            panel.key_event("W", True)
+            assert panel.action is action
+            assert session.run_calls == ["W"]
+            sessions.append(await arm_keyboard(panel))
+            assert sessions[1] is not session
+            panel.key_event("W", True)
+            await asyncio.wait_for(sessions[1].run_started.wait(), 1)
+            panel.key_event("W", False)
+            await asyncio.wait_for(panel.action, 1)
+            panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert observer.reset_count == 1 and not observer.active
+    assert panel.stream_observer is None
+    assert all(session.closed for session in sessions)
+    message = panel.message
+    release_calls = sessions[-1].release_calls
+    observer.on_event(SimpleNamespace())  # A late callback must not use the closed event loop.
+    assert sessions[-1].release_calls > release_calls
+    assert panel.message == message
+
+
+def test_stream_disconnect_cancels_keyboard_action_before_worker_starts(
+    panel_module, panel, monkeypatch
+):
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            await arm_keyboard(panel)
+        if frames == 2:
+            panel.key_event("A", True)
+            session = panel.keyboard_session
+            sys.modules["carb.eventdispatcher"].get_eventdispatcher().disconnect()
+            assert panel.jog_released.is_set() and session.closed
+            await asyncio.wait_for(panel.action, 1)
+            assert not panel.keyboard_enabled
+            assert session.movements == []
+            assert "Stream disconnected" in panel.message
+            panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert panel.control.calls == []
+
+
+def test_stream_disconnect_stops_gripper_after_current_step(
+    panel_module, panel, monkeypatch
+):
+    frames = 0
+    child = panel_module.Gripper()
+    child.owner = panel
+    child.report = {}
+    panel.gripper = child
+    targets = []
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def step():
+        started.set()
+        await finish.wait()
+
+    def submit(position):
+        targets.append(position)
+        child.action = asyncio.create_task(step())
+        return child.action
+
+    child.measured_position = lambda: 500
+    child.submit_position = submit
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            await arm_keyboard(panel)
+        if frames == 2:
+            panel.key_event("Z", True)
+            await asyncio.wait_for(started.wait(), 1)
+            sys.modules["carb.eventdispatcher"].get_eventdispatcher().disconnect()
+            assert panel.jog_released.is_set()
+            assert not panel.action.done()
+            finish.set()
+            await asyncio.wait_for(panel.action, 1)
+            assert targets == [525]
+            assert not panel.keyboard_enabled
+            assert "Stream disconnected" in panel.message
+            panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert child.closed
 
 
 @pytest.mark.parametrize("disarm", ("focus", "hidden", "modifier"))
@@ -2516,3 +3110,353 @@ def test_window_keyboard_rejects_shortcuts_despite_lock_and_ui_flags(
     install_ui(panel_module, panel, monkeypatch, next_update)
     asyncio.run(panel.run())
     assert panel.control.calls == []
+
+
+def test_sync_stop_keeps_window_open_and_start_reconnects_without_commands(
+    panel_module, panel, monkeypatch
+):
+    frames = 0
+    original_mirror = panel.mirror
+    replacement = Mirror(original_mirror.latest[0])
+    replacement.latest = None
+    replacement.window = None
+    reloads = []
+
+    def restart(path, **kwargs):
+        reloads.append((Path(path).name, kwargs))
+
+        async def start():
+            setattr(builtins, panel_module.MIRROR_SINGLETON, replacement)
+
+        return {"MG400_MIRROR_START_TASK": asyncio.create_task(start())}
+
+    monkeypatch.setitem(panel.run.__globals__, "runpy", SimpleNamespace(run_path=restart))
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 2:
+            panel.request_sync_stop()
+            first = panel.sync_task
+            panel.request_sync_stop()
+            assert panel.sync_task is first
+            await asyncio.wait_for(first, 1)
+            assert original_mirror.stop_event.is_set()
+            assert not panel.closed
+            assert not panel.window.destroyed
+            panel.submit("enable")
+            panel.request_keyboard()
+            assert panel.action is None
+            assert panel.keyboard_task is None
+            assert panel.control.calls == []
+            panel.request_sync_start()
+            await asyncio.wait_for(panel.sync_task, 1)
+            assert panel.sync_enabled
+            assert panel.mirror is replacement
+            assert not panel.initialized
+            assert panel.actual_pose is None
+            assert panel.control.calls == []
+            panel.request_close()
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert reloads == [("mirror.py", {"init_globals": {"SHOW_WINDOW": False}})]
+    assert all(control.calls == [] for control in panel_module.instances)
+
+
+def test_sync_stop_drains_active_move_before_stopping_feedback(panel):
+    panel.copy_actual()
+    original_stop = panel.control.stop
+
+    def stop():
+        result = original_stop()
+        panel.control.release_move.set()
+        return result
+
+    panel.control.stop = stop
+
+    async def exercise():
+        panel.submit("move")
+        assert await asyncio.to_thread(panel.control.move_started.wait, 1)
+        panel.request_sync_stop()
+        assert not panel.sync_enabled
+        await asyncio.wait_for(panel.sync_task, 1)
+        assert panel.action.done()
+        assert panel.stop_task.done()
+        assert panel.mirror.stop_event.is_set()
+        assert not panel.closed
+        assert not panel.keyboard_enabled
+
+    asyncio.run(exercise())
+
+
+def test_sync_stop_keeps_feedback_and_blocks_restart_when_stop_is_uncertain(panel):
+    panel.control._pending = {"done": threading.Event(), "sent": True, "ok": False}
+
+    async def exercise():
+        panel.request_sync_stop()
+        await asyncio.wait_for(panel.sync_task, 1)
+        assert not panel.mirror.stop_event.is_set()
+        assert not panel.sync_enabled
+        assert not panel.closed
+        old = panel.sync_task
+        panel.request_sync_start()
+        assert panel.sync_task is old
+        assert "reload" in panel.message
+        panel.submit("enable")
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+def execute_gripper(panel, target=500):
+    child = SimpleNamespace(
+        busy=False, closed=False, closing=False, failed=False, target_baseline=925,
+        report={"result": "Gripper arrival verified."}, calls=[],
+        pending_target=lambda: target, position_sample=lambda: {"position": 925},
+    )
+
+    def submit(position):
+        async def perform():
+            child.calls.append(position)
+        return asyncio.create_task(perform())
+
+    child.submit_position = submit
+    panel.gripper = child
+    return child
+
+
+@pytest.mark.parametrize("target", (None, 500))
+def test_execute_sends_changed_gripper_only_after_arm_arrival(panel, target):
+    panel.copy_actual()
+    child = execute_gripper(panel, target)
+
+    async def exercise():
+        panel.submit("execute")
+        first = panel.action
+        panel.submit("execute")
+        assert panel.action is first
+        assert await asyncio.to_thread(panel.control.move_started.wait, 1)
+        assert child.calls == []
+        panel.control.release_move.set()
+        await asyncio.wait_for(first, 1)
+        assert child.calls == ([] if target is None else [500])
+        assert len(panel.control.calls) == 1
+
+    asyncio.run(exercise())
+
+
+def test_execute_rejects_changed_gripper_without_feedback_before_arm_motion(panel):
+    panel.copy_actual()
+    child = execute_gripper(panel)
+    child.position_sample = lambda: None
+    panel.submit("execute")
+    assert panel.action is None
+    assert panel.control.calls == []
+    assert "No command sent" in panel.message
+
+
+def test_execute_reports_gripper_failure_after_arm_arrival(panel):
+    panel.copy_actual()
+    child = execute_gripper(panel)
+    child.submit_position = lambda target: None
+    child.report["result"] = "USB feedback expired."
+    panel.control.release_move.set()
+
+    async def exercise():
+        panel.submit("execute")
+        await asyncio.wait_for(panel.action, 1)
+
+    asyncio.run(exercise())
+    assert len(panel.control.calls) == 1
+    assert panel.message == "Arm arrival verified. Gripper incomplete: USB feedback expired."
+    assert child.target_baseline == 925
+
+
+def test_disable_during_arm_motion_does_not_send_pending_gripper_target(panel):
+    panel.copy_actual()
+    child = execute_gripper(panel)
+
+    async def exercise():
+        panel.submit("execute")
+        assert await asyncio.to_thread(panel.control.move_started.wait, 1)
+        panel.request_disable()
+        panel.control.release_move.set()
+        await asyncio.wait_for(panel.disable_task, 1)
+        assert child.calls == []
+
+    asyncio.run(exercise())
+
+
+def test_sync_restart_rejects_changed_host_before_binding_new_feedback(
+    panel_module, panel, monkeypatch
+):
+    original_mirror = panel.mirror
+    replacement = Mirror(original_mirror.latest[0])
+    replacement.host = "192.168.1.7"
+
+    def restart(path, **kwargs):
+        async def start():
+            setattr(builtins, panel_module.MIRROR_SINGLETON, replacement)
+        return {"MG400_MIRROR_START_TASK": asyncio.create_task(start())}
+
+    monkeypatch.setitem(panel.run.__globals__, "runpy", SimpleNamespace(run_path=restart))
+
+    async def exercise():
+        panel.request_sync_stop()
+        await panel.sync_task
+        panel.request_sync_start()
+        await panel.sync_task
+        assert not panel.sync_enabled
+        assert panel.mirror is original_mirror
+        assert replacement.stop_event.is_set()
+        panel.submit("enable")
+        panel.request_disable()
+        assert panel.control.calls == []
+        assert panel.disable_task is None
+        assert "Robot address changed" in panel.message
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("index", (0, 3))
+def test_target_edit_turns_keyboard_off_before_text_input(
+    panel_module, panel, monkeypatch, index
+):
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            await arm_keyboard(panel)
+        elif frames == 2:
+            fields = [widget for widget in widgets if type(widget).__name__ == "FloatField"]
+            assert all(field.enabled for field in fields)
+            assert panel.keyboard_enabled
+            fields[index].model.begin_edit()
+            assert not panel.keyboard_enabled
+            assert not panel.window.exclusive_keyboard
+            assert panel.message == "Keyboard off: target editing."
+            assert panel.keyboard_disarm_reason == "target editing."
+            fields[index].model.set_value(12.345)
+            panel.key_event("W", True)
+            assert panel.action is None
+            assert panel.control.calls == []
+        elif frames == 3:
+            assert panel.models[index].as_float == 12.345
+            assert panel.targets_editable
+            panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert panel.report["keyboard_disarm_reason"] == "target editing."
+    assert all(not model.begin_callbacks for model in panel.models)
+
+
+@pytest.mark.parametrize("state", ("preparing", "jogging"))
+def test_target_inputs_stay_disabled_during_keyboard_operations(
+    panel_module, panel, monkeypatch, state
+):
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            if state == "preparing":
+                panel.request_keyboard()
+                panel.keyboard_session.prepare_allowed.clear()
+                await panel.keyboard_session.prepare_started.wait()
+            else:
+                await arm_keyboard(panel)
+                panel.key_event("W", True)
+                await panel.keyboard_session.run_started.wait()
+        elif frames == 2:
+            fields = [
+                widget for widget in widgets
+                if type(widget).__name__ in ("FloatSlider", "FloatField")
+            ]
+            assert not panel.targets_editable
+            assert all(not field.enabled for field in fields)
+            if state == "preparing":
+                panel.keyboard_session.prepare_allowed.set()
+                await panel.keyboard_task
+            else:
+                panel.key_event("W", False)
+                await panel.action
+        elif frames == 3:
+            assert panel.targets_editable
+            panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert panel.control.calls == []
+
+
+@pytest.mark.parametrize("cause", ("modifier", "not_ready"))
+def test_keyboard_disarm_reports_reason_without_overwriting_it_on_idle_frames(panel, cause):
+    async def exercise():
+        await arm_keyboard(panel)
+        if cause == "not_ready":
+            panel.keyboard_session.ready = False
+        panel.key_event("W", True, modifiers=2 if cause == "modifier" else 0)
+        reason = (
+            "shortcut modifier is active." if cause == "modifier"
+            else "session is not ready. Click Keyboard to retry."
+        )
+        assert panel.keyboard_disarm_reason == reason
+        assert panel.message == f"Keyboard off: {reason}"
+        panel.set_keyboard(False, reason="window lost focus.")
+        assert panel.keyboard_disarm_reason == reason
+        assert panel.message == f"Keyboard off: {reason}"
+        assert panel.action is None
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("cause", ("focus", "stale"))
+def test_passive_keyboard_disarm_explains_focus_and_feedback_loss(
+    panel_module, panel, monkeypatch, cause
+):
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 1:
+            await arm_keyboard(panel)
+            if cause == "focus":
+                panel.window.set_focus(False)
+            else:
+                sample = panel.mirror.latest[0]
+                panel.mirror.latest = sample, time.monotonic() - 1
+        elif frames == 2:
+            reason = (
+                "window lost focus." if cause == "focus"
+                else "robot feedback is stale, unavailable, or reports a fault."
+            )
+            assert not panel.keyboard_enabled
+            assert panel.keyboard_disarm_reason == reason
+            assert panel.message == f"Keyboard off: {reason}"
+            assert panel.control.calls == []
+            panel.window.visible = False
+
+    install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+
+
+@pytest.mark.parametrize("fault", ("stopped", "session"))
+def test_disarm_reason_does_not_replace_existing_control_error(panel, fault):
+    async def exercise():
+        await arm_keyboard(panel)
+        panel.message = "ERROR: controller acknowledgement was lost."
+        if fault == "stopped":
+            panel.control.stopped = True
+        else:
+            panel.keyboard_session.fault = "controller acknowledgement was lost"
+        panel.set_keyboard(False, reason="window lost focus.")
+        assert panel.message == "ERROR: controller acknowledgement was lost."
+        assert panel.keyboard_disarm_reason == "window lost focus."
+
+    asyncio.run(exercise())

@@ -34,6 +34,8 @@ class GripperPanel:
         self.action = self.task = None
         self.closed = self.closing = self.failed = False
         self.owner = None
+        self.compact = False
+        self.edit_callback = None
         self.mirror_task = None
         self.report = {
             "request": None,
@@ -100,6 +102,9 @@ class GripperPanel:
                         feedback.diagnostic() or "Feedback stale or invalid."
                     ) + " Holding last position."
                     continue
+                if self.owner is not None and not getattr(self.owner, "sync_enabled", True):
+                    self.report["mirror"]["status"] = "Scene synchronization stopped."
+                    continue
                 if not omni.timeline.get_timeline_interface().is_stopped():
                     self.report["mirror"]["status"] = (
                         "Stop the simulation timeline to mirror the gripper."
@@ -119,7 +124,10 @@ class GripperPanel:
                 if pose is not None and pose.stage == stage:
                     pose.jaws.update(pgea_left_slide=result["q_m"], pgea_right_slide=result["q_m"])
                 self.report["mirror"] = {
-                    "status": "Following measured USB position.",
+                    "status": (
+                        "Object dropped. Following measured USB position."
+                        if sample["state"] == 3 else "Following measured USB position."
+                    ),
                     **sample,
                     **result,
                 }
@@ -139,6 +147,19 @@ class GripperPanel:
         return self.owner is None or not (
             self.owner.busy or self.owner.keyboard_enabled
             or self.owner.keyboard_arming or self.owner.closed
+            or not getattr(self.owner, "sync_enabled", True)
+        )
+
+    @property
+    def target_edit_enabled(self):
+        if not self.compact:
+            return self.manual_enabled
+        return (
+            not self.closed and not self.closing and not self.failed and not self.busy
+            and not self.report.get("read_error") and self.target_initialized
+            and self.owner.targets_editable and not self.owner.busy
+            and not self.owner.keyboard_arming and not self.owner.closed
+            and self.owner.sync_enabled and not self.owner.control.stopped
         )
 
     def _submit_manual(self, request):
@@ -155,6 +176,13 @@ class GripperPanel:
         """Return the fresh measured position, or None when feedback is unavailable."""
         sample = self.feedback.get()
         return None if sample is None else sample["position"]
+
+    def pending_target(self):
+        """Return a user-edited opening, or None when no opening edit is pending."""
+        if not self.target_initialized:
+            return None
+        target = self.target.model.get_value_as_int()
+        return target if target != self.target_baseline else None
 
     def position_sample(self):
         sample = self.feedback.get()
@@ -173,6 +201,7 @@ class GripperPanel:
             return None
         sample = self.position_sample()
         if sample is None:
+            self.report["command_published"] = False
             self.report["result"] = (
                 self.feedback.diagnostic() or "Position control needs a fresh --commands collector."
             )
@@ -185,25 +214,40 @@ class GripperPanel:
         self.report.update(
             request="position", target=position, result="The position command is in progress.",
             ack=False, arrival_observed=False, contact_observed=False, write_acks=[],
+            command_published=False,
         )
         try:
-            if self.closed or self.closing:
+            if self.closed or self.closing or (self.owner is not None and (
+                self.owner.closed or not getattr(self.owner, "sync_enabled", True)
+                or getattr(getattr(self.owner, "control", None), "stopped", False)
+            )):
                 self.report["result"] = "The panel cancelled the command before sending it."
-                return
+                return False
             current = self.position_sample()
             if current is None or current["session"] != initial["session"]:
-                raise RuntimeError(
+                reason = (
                     self.feedback.diagnostic()
                     or "The USB collector feedback changed before the command."
                 )
+                self.report["result"] = f"No command sent. {reason} Check feedback and retry."
+                return False
             path = Path(self.feedback_path)
             path = path.with_name(path.name + ".command.json")
             temporary = path.with_name(path.name + ".tmp")
-            temporary.write_text(json.dumps({
-                "id": request_id, "session": initial["session"],
-                "sent_at": time.time(), "position": position,
-            }) + "\n")
+            try:
+                temporary.write_text(json.dumps({
+                    "id": request_id, "session": initial["session"],
+                    "sent_at": time.time(), "position": position,
+                }) + "\n")
+            except OSError as error:
+                self.report["result"] = (
+                    f"No command sent. Could not prepare the command file: {error} "
+                    "Retry after repair."
+                )
+                return False
+            self.report["command_published"] = None
             temporary.replace(path)
+            self.report["command_published"] = True
             deadline = time.monotonic() + 5
             while not self.closed and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
@@ -363,6 +407,7 @@ class GripperPanel:
 
         self.target = None
         self.target_initialized = False
+        self.target_baseline = None
         with ui.VStack(spacing=8):
             transport = "USB position" if self.feedback_path is not None else "DO1 / DO2"
             ui.Label(f"REAL GRIPPER | {self.host} | {transport}", height=24)
@@ -390,6 +435,29 @@ class GripperPanel:
             self.mirror_status = ui.Label(
                 self.report["mirror"]["status"], word_wrap=True, height=50,
             )
+
+    def build_compact_row(self):
+        """Add one target row to the arm table. Edits do not send commands."""
+        import omni.ui as ui
+
+        self.compact = True
+        self.target_initialized = False
+        self.target_baseline = None
+        self.buttons = []
+        with ui.HStack(height=28, spacing=6):
+            ui.Label("Gripper", width=64, tooltip=(
+                "Opening: 0 closed, 1000 open. Execute targets moves the arm first. "
+                "It then applies an edited gripper target. "
+                "The first position command disables I/O control. Force and speed do not change."
+            ))
+            self.actual_label = ui.Label("--", width=84)
+            self.target = ui.IntSlider(min=0, max=1000, enabled=False)
+            self.edit_callback = self.target.model.add_begin_edit_fn(self.owner.begin_target_edit)
+            field = ui.IntField(
+                model=self.target.model, width=86, enabled=False,
+                tooltip="Double-click to type an opening. Editing turns keyboard control off.",
+            )
+        self.position_widgets = [self.target, field]
 
     async def run(self, window=None):
         import omni.kit.app
@@ -433,6 +501,8 @@ class GripperPanel:
                         self.report["read_error"] = None
                         if self.report["request"] is None:
                             self.report["result"] = (
+                                "Ready. Edit the gripper target, then click Execute targets."
+                                if self.compact else
                                 "Ready. Set an opening or choose Open gripper / Close gripper."
                                 if self.feedback_path is not None
                                 else "Ready. Choose Open gripper or Close gripper."
@@ -445,24 +515,35 @@ class GripperPanel:
                     position = self.measured_position()
                     if position is not None:
                         self.target.model.set_value(position)
+                        self.target_baseline = position
                         self.target_initialized = True
-                self.inputs.text = (
-                    "USB feedback and position commands share one serial connection."
-                    if self.feedback_path is not None else
-                    f"Mode: {self.report['mode']} | DI1 / DI2 raw: {self.report['di']}"
-                )
-                self.status.text = self.report.get("read_error") or self.report["result"]
-                measured = self.report["mirror"]
-                self.mirror_status.text = measured["status"]
-                if "position" in measured:
-                    self.mirror_status.text += (
-                        f"\nActual: {measured['position']} / 1000 | "
-                        f"Each jaw: {measured['q_m'] * 1000:.2f} mm"
+                if self.compact:
+                    position = self.measured_position()
+                    self.actual_label.text = "--" if position is None else str(position)
+                    self.actual_label.tooltip = (
+                        self.report.get("read_error") or self.report["result"]
                     )
+                else:
+                    self.inputs.text = (
+                        "USB feedback and position commands share one serial connection."
+                        if self.feedback_path is not None else
+                        f"Mode: {self.report['mode']} | DI1 / DI2 raw: {self.report['di']}"
+                    )
+                    self.status.text = self.report.get("read_error") or self.report["result"]
+                    measured = self.report["mirror"]
+                    self.mirror_status.text = measured["status"]
+                    if "position" in measured:
+                        self.mirror_status.text += (
+                            f"\nActual: {measured['position']} / 1000 | "
+                            f"Each jaw: {measured['q_m'] * 1000:.2f} mm"
+                        )
                 for button in self.buttons + self.position_widgets:
-                    button.enabled = self.manual_enabled
+                    button.enabled = self.target_edit_enabled
         finally:
             self.closing = True
+            if self.edit_callback is not None:
+                self.target.model.remove_begin_edit_fn(self.edit_callback)
+                self.edit_callback = None
             for button in self.buttons + self.position_widgets:
                 button.enabled = False
             try:

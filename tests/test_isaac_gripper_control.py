@@ -284,6 +284,7 @@ def test_file_transport_never_falls_back_to_io_and_requires_fresh_capability(mod
     assert panel.submit("open") is None
     assert panel.submit("close") is None
     assert panel.submit_position(500) is None
+    assert panel.report["command_published"] is False
     panel.operate.assert_not_called()
     socket.create_connection.assert_not_called()
 
@@ -297,15 +298,16 @@ def test_position_validation_prevents_file_writes(module, tmp_path, position):
 
 
 @pytest.mark.parametrize("arrival", [True, False])
+@pytest.mark.parametrize("initial_state", [1, 3])
 def test_position_requires_current_ack_and_measured_arrival(
-    module, monkeypatch, tmp_path, arrival
+    module, monkeypatch, tmp_path, arrival, initial_state
 ):
     async def exercise():
         feedback_path = tmp_path / "feedback.json"
         command_path = tmp_path / "feedback.json.command.json"
         panel = module.GripperPanel(str(feedback_path))
         panel.report["contact_observed"] = True
-        sample = position_feedback()
+        sample = position_feedback(state=initial_state)
         panel.feedback.get = lambda: sample.copy()
         original_sleep = asyncio.sleep
         observed = []
@@ -417,7 +419,9 @@ def test_position_stops_waiting_on_explicit_initialization_diagnostic(
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("fault", ["stale", "session", "old_ack", "wrong_target", "locked"])
+@pytest.mark.parametrize(
+    "fault", ["stale", "session", "old_ack", "wrong_target", "locked", "dropped"]
+)
 def test_position_failure_locks_panel_without_retry(
     module, monkeypatch, tmp_path, fault
 ):
@@ -439,7 +443,7 @@ def test_position_failure_locks_panel_without_retry(
             elif fault == "session":
                 sample[0]["session"] = str(uuid4())
             else:
-                sample[0].update(seq=2, position=525)
+                sample[0].update(seq=2, position=525, state=3 if fault == "dropped" else 1)
                 sample[0]["control"] = dict(
                     protocol=1,
                     command_id=str(uuid4()) if fault == "old_ack" else request["id"],
@@ -451,7 +455,9 @@ def test_position_failure_locks_panel_without_retry(
         await panel.submit_position(525)
         original = command_path.read_text()
         assert panel.failed and not panel.report["arrival_observed"]
-        assert not panel.report["ack"]
+        assert not panel.report["contact_observed"]
+        assert panel.report["command_published"] is True
+        assert panel.report["ack"] is (fault == "dropped")
         assert panel.submit("open") is None
         assert command_path.read_text() == original
         assert now[0] == (1 if fault in ("session", "locked") else 5)
@@ -459,6 +465,97 @@ def test_position_failure_locks_panel_without_retry(
             assert "Write reply lost" in panel.report["result"]
         if fault == "stale":
             assert "target arrival is not confirmed" in panel.report["result"]
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("change", ["session", "missing", "uninitialized", "write"])
+def test_position_rejection_before_publication_allows_explicit_retry(
+    module, monkeypatch, tmp_path, change
+):
+    async def exercise():
+        command_path = tmp_path / "feedback.json.command.json"
+        panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+        sample = [position_feedback()]
+        panel.feedback.get = lambda: sample[0]
+        action = panel.submit_position(525)
+        if change == "session":
+            sample[0] = position_feedback(session=str(uuid4()))
+        elif change == "write":
+            write_text = Path.write_text
+            failed_once = False
+
+            def fail_command_write(path, text, *args, **kwargs):
+                nonlocal failed_once
+                if path == command_path.with_name(command_path.name + ".tmp") and not failed_once:
+                    failed_once = True
+                    raise OSError("Temporary disk failure")
+                return write_text(path, text, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "write_text", fail_command_write)
+        else:
+            sample[0] = None
+            if change == "uninitialized":
+                panel.feedback.diagnostic = lambda: "The gripper is not initialized."
+        assert await action is False
+        assert not panel.failed
+        assert not panel.report["ack"]
+        assert panel.report["command_published"] is False
+        assert panel.report["result"].startswith("No command sent.")
+        assert not command_path.exists()
+
+        sample[0] = position_feedback(session=str(uuid4()))
+        panel.feedback.diagnostic = lambda: None
+        original_sleep = asyncio.sleep
+
+        async def arrive(delay):
+            await original_sleep(0)
+            request = json.loads(command_path.read_text())
+            sample[0] = position_feedback(
+                session=request["session"], seq=2, position=525,
+                control=dict(
+                    protocol=1, command_id=request["id"], target=525, ack=True,
+                    locked=False, error=None, io_mode=0,
+                ),
+            )
+
+        monkeypatch.setattr(asyncio, "sleep", arrive)
+        await panel.submit_position(525)
+        assert not panel.failed
+        assert panel.report["ack"]
+        assert panel.report["command_published"] is True
+        assert panel.report["arrival_observed"]
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_uncertain_command_publication_locks_panel_without_retry(
+    module, monkeypatch, tmp_path, published,
+):
+    async def exercise():
+        command_path = tmp_path / "feedback.json.command.json"
+        panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+        panel.feedback.get = lambda: position_feedback()
+        replace = Path.replace
+
+        def uncertain_replace(path, destination):
+            if Path(destination) == command_path:
+                if published:
+                    replace(path, destination)
+                raise OSError("Publication outcome unavailable")
+            return replace(path, destination)
+
+        monkeypatch.setattr(Path, "replace", uncertain_replace)
+        await panel.submit_position(525)
+        assert panel.failed
+        assert panel.report["command_published"] is None
+        assert not panel.report["ack"]
+        assert "Control is locked" in panel.report["result"]
+        assert command_path.exists() is published
+        assert panel.submit_position(525) is None
         socket.create_connection.assert_not_called()
 
     asyncio.run(exercise())
@@ -478,12 +575,25 @@ def install_embedded_ui(monkeypatch, next_update):
     class IntModel:
         def __init__(self, value=0):
             self.value = value
+            self.begin_callbacks = {}
 
         def set_value(self, value):
             self.value = value
 
         def get_value_as_int(self):
             return self.value
+
+        def add_begin_edit_fn(self, callback):
+            token = len(self.begin_callbacks) + 1
+            self.begin_callbacks[token] = callback
+            return token
+
+        def remove_begin_edit_fn(self, token):
+            del self.begin_callbacks[token]
+
+        def begin_edit(self):
+            for callback in self.begin_callbacks.values():
+                callback(self)
 
     class Widget:
         def __init__(self, text=None, *args, **kwargs):
@@ -515,7 +625,11 @@ def install_embedded_ui(monkeypatch, next_update):
 
 def gripper_owner(**changes):
     return SimpleNamespace(
-        **dict(busy=False, keyboard_enabled=False, keyboard_arming=False, closed=False) | changes
+        **dict(
+            busy=False, keyboard_enabled=False, keyboard_arming=False, closed=False,
+            sync_enabled=True, targets_editable=True, begin_target_edit=Mock(),
+            control=SimpleNamespace(stopped=False),
+        ) | changes
     )
 
 
@@ -630,6 +744,49 @@ def test_mirror_reports_initialization_without_applying_invalid_position(
     assert panel.feedback.get() is None
     assert "position" not in panel.report["mirror"]
     jaw.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+def test_mirror_displays_object_drop_and_keeps_measured_position(
+    module, monkeypatch, tmp_path
+):
+    path = tmp_path / "feedback.json"
+    panel = module.GripperPanel(str(path))
+    path.write_text(json.dumps(position_feedback(
+        sent_at=module.time.time(), state=3, position=1000,
+    )))
+    frames = [0]
+
+    async def next_update():
+        frames[0] += 1
+        if frames[0] == 2:
+            panel.closed = True
+
+    install_embedded_ui(monkeypatch, next_update)
+    for name in ("carb", "carb.eventdispatcher", "omni.timeline", "omni.usd",
+                 "mg400_agent.gripper_mirror"):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    sys.modules["omni"].timeline = sys.modules["omni.timeline"]
+    sys.modules["omni"].usd = sys.modules["omni.usd"]
+    sys.modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(
+        is_stopped=lambda: True,
+    )
+    stage = object()
+    sys.modules["omni.usd"].get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
+    jaw = Mock(stage=stage)
+    jaw.apply.return_value = {"q_m": 0.005}
+    sys.modules["mg400_agent.gripper_mirror"].JawMirror = Mock(return_value=jaw)
+    monkeypatch.setattr(builtins, "_mg400_isaac_feedback_mirror", None, raising=False)
+    asyncio.run(panel.mirror())
+    assert frames[0] == 2
+    assert panel.report["mirror"]["status"] == (
+        "Object dropped. Following measured USB position."
+    )
+    assert panel.report["mirror"]["position"] == 1000
+    assert panel.position_sample()["state"] == 3
+    assert not panel.report["arrival_observed"]
+    assert not panel.report["contact_observed"]
+    jaw.apply.assert_called_with(1000)
     socket.create_connection.assert_not_called()
 
 
@@ -914,3 +1071,113 @@ def test_reload_drains_legacy_panel_without_closing_attribute(module, monkeypatc
         socket.create_connection.assert_not_called()
 
     asyncio.run(exercise())
+
+
+def test_compact_gripper_row_shares_input_model_and_tracks_only_user_edits(
+    module, monkeypatch, tmp_path
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.owner = gripper_owner(sync_enabled=True)
+    panel.feedback.get = lambda: position_feedback()
+    panel.mirror = AsyncMock()
+    window = SimpleNamespace(visible=True)
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        if frames == 2:
+            assert panel.target_initialized
+            assert panel.target_baseline == 500
+            assert panel.pending_target() is None
+            assert panel.actual_label.text == "500"
+            panel.target.model.set_value(650)
+            assert panel.pending_target() == 650
+            panel.owner.sync_enabled = False
+        elif frames == 3:
+            assert not panel.manual_enabled
+            assert all(not widget.enabled for widget in panel.position_widgets)
+            window.visible = False
+
+    widgets, _ = install_embedded_ui(monkeypatch, next_update)
+    panel.build_compact_row()
+    assert panel.buttons == []
+    assert not any(type(widget).__name__ == "Button" for widget in widgets)
+    slider, field = panel.position_widgets
+    assert slider.model is field.model
+    asyncio.run(panel.run(window=window))
+    assert not list(tmp_path.glob("*.command.json"))
+    socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("cancel", ("closed", "sync_stopped", "control_stopped"))
+def test_queued_position_command_cancels_when_owner_stops_before_publication(
+    module, tmp_path, cancel
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.owner = gripper_owner(sync_enabled=True, control=SimpleNamespace(stopped=False))
+    panel.feedback.get = lambda: position_feedback()
+
+    async def exercise():
+        action = panel.submit_position(650)
+        assert action is not None
+        if cancel == "closed":
+            panel.owner.closed = True
+        elif cancel == "sync_stopped":
+            panel.owner.sync_enabled = False
+        else:
+            panel.owner.control.stopped = True
+        assert await action is False
+        assert panel.report["command_published"] is False
+        assert "cancelled" in panel.report["result"]
+        assert not panel.failed
+        assert not list(tmp_path.glob("*.command.json"))
+
+    asyncio.run(exercise())
+
+
+def test_compact_target_edit_can_disarm_idle_keyboard_without_enabling_manual_commands(
+    module, monkeypatch, tmp_path
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.owner = gripper_owner(keyboard_enabled=True)
+    panel.submit_position = Mock()
+
+    def disarm(_model):
+        panel.owner.keyboard_enabled = False
+
+    panel.owner.begin_target_edit = Mock(side_effect=disarm)
+    install_embedded_ui(monkeypatch, AsyncMock())
+    panel.build_compact_row()
+    panel.target_initialized = True
+    assert panel.target_edit_enabled
+    assert not panel.manual_enabled
+    panel.target.model.begin_edit()
+    assert not panel.owner.keyboard_enabled
+    panel.owner.begin_target_edit.assert_called_once_with(panel.target.model)
+    panel.target.model.set_value(650)
+    panel.submit_position.assert_not_called()
+
+
+@pytest.mark.parametrize("state", (
+    "busy", "keyboard_arming", "closed", "sync_stopped", "targets_locked", "gripper_failed",
+    "control_stopped",
+))
+def test_compact_target_edit_retains_owner_and_gripper_gates(module, monkeypatch, tmp_path, state):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.owner = gripper_owner(keyboard_enabled=True)
+    install_embedded_ui(monkeypatch, AsyncMock())
+    panel.build_compact_row()
+    panel.target_initialized = True
+    if state == "sync_stopped":
+        panel.owner.sync_enabled = False
+    elif state == "targets_locked":
+        panel.owner.targets_editable = False
+    elif state == "gripper_failed":
+        panel.failed = True
+    elif state == "control_stopped":
+        panel.owner.control.stopped = True
+    else:
+        setattr(panel.owner, state, True)
+    assert not panel.target_edit_enabled
+    assert not panel.manual_enabled

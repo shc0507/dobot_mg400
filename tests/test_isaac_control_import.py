@@ -269,7 +269,9 @@ def preflight(active, modes):
     prepared.append(active)
     return sample, sample.joints_deg
 control_class._preflight = preflight
-control_class._read_pose = lambda active, modes: pose
+control_class._read_pose_measurement = lambda active, modes: state["backend"].PoseMeasurement(
+    control=active, pose=pose, requested_at=time.monotonic(), before=sample, after=sample
+)
 session = state["KeyboardJogSession"](parent)
 assert session.prepare() == pose
 assert len(prepared) == 1
@@ -281,6 +283,60 @@ assert "omni.ui" not in sys.modules
 """
     result = subprocess.run(
         [sys.executable, "-B", "-c", script, str(root), str(legacy), str(ROOT), cache],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MG400_DATA_DIR": str(tmp_path / "external-data")},
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_panel_import_preserves_cached_limits_until_safe_reload(tmp_path):
+    script = """
+import asyncio
+import importlib
+import runpy
+import socket
+import sys
+import threading
+from pathlib import Path
+
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "src"))
+limits = importlib.import_module("mg400_agent.joint_limits")
+old_validate = limits.validate_joints
+old_measured = limits.validate_measured_joints
+assert "mg400_agent.joint_control" not in sys.modules
+
+def forbidden(*args, **kwargs):
+    raise AssertionError("Import and reload must not start tasks or connect to hardware")
+
+socket.socket = socket.create_connection = forbidden
+asyncio.ensure_future = asyncio.create_task = forbidden
+threading.Thread.start = forbidden
+namespace = runpy.run_path(str(root / "apps/isaacsim/joint_control.py"), run_name="test_import")
+assert limits.validate_joints is old_validate
+assert limits.validate_measured_joints is old_measured
+assert namespace["backend"].validate_joints is old_validate
+assert "MG400_CONTROL_START_TASK" not in namespace
+
+namespace["_reload_control_modules"]()
+state = namespace["_reload_control_modules"].__globals__
+assert state["limits"] is limits
+assert state["backend"].validate_joints is limits.validate_joints
+assert state["backend"].validate_measured_joints is limits.validate_measured_joints
+assert sys.modules["mg400_agent.keyboard_jog"].validate_joints is limits.validate_joints
+assert (
+    sys.modules["mg400_agent.keyboard_jog"].validate_measured_joints
+    is limits.validate_measured_joints
+)
+assert limits.validate_joints is not old_validate
+assert limits.validate_measured_joints is not old_measured
+assert limits.validate_joints((0, 0, 0, -220)) == (0, 0, 0, -220)
+assert limits.validate_measured_joints((0, 0, 0, -359)) == (0, 0, 0, -359)
+"""
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script, str(ROOT)],
         capture_output=True,
         text=True,
         env={**os.environ, "MG400_DATA_DIR": str(tmp_path / "external-data")},

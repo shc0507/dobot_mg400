@@ -49,12 +49,14 @@ def test_pick_and_place_updates_grip_scene_and_actual_pose(executor, config):
         ("place", {"location_id": "box_a"}),
     ],
 )
-def test_rejected_actions_do_not_move_and_latch_stop(executor, name, arguments):
+def test_rejected_actions_allow_corrected_request_without_movement(executor, name, arguments):
     result = executor.execute(name, arguments)
     assert not result["ok"]
     assert executor.arm.history == []
-    assert executor.arm.stopped and executor.stopped
-    assert not executor.execute("pick", {"object_id": "red_block"})["ok"]
+    assert result["recoverable"]
+    assert not executor.arm.stopped and not executor.stopped
+    assert executor.fault is None
+    assert executor.execute("pick", {"object_id": "red_block"})["ok"]
     assert executor.execute("get_robot_state", {})["ok"]
 
 
@@ -111,8 +113,27 @@ def test_release_failure_does_not_claim_successful_place(config):
 
 def test_out_of_bounds_route_rejected_before_any_movement(executor):
     executor.objects["red_block"] = Pose(999, 0, 20, 0)
-    assert not executor.execute("pick", {"object_id": "red_block"})["ok"]
+    result = executor.execute("pick", {"object_id": "red_block"})
+    assert not result["ok"] and result["recoverable"]
     assert not executor.arm.history
+    assert not executor.stopped and executor.fault is None
+
+
+@pytest.mark.parametrize("operation", ["get_pose", "move_linear", "release"])
+def test_device_value_error_still_stops(config, monkeypatch, operation):
+    executor = SkillExecutor(config, SimArm(config.home), SimGripper())
+
+    def fail(*args):
+        if operation == "move_linear":
+            executor.arm.history.append(config.home)
+        raise ValueError("Device rejected execution")
+
+    device = executor.gripper if operation == "release" else executor.arm
+    monkeypatch.setattr(device, operation, fail)
+    result = executor.execute("pick", {"object_id": "red_block"})
+    assert not result["ok"] and not result.get("recoverable")
+    assert executor.stopped and executor.fault
+    assert result["stop"]["ok"]
 
 
 def test_initially_occupied_destination_is_not_overwritten(config):

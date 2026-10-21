@@ -99,16 +99,24 @@ def test_rejects_multiple_calls_before_executing_any(executor):
     with pytest.raises(RuntimeError, match="Multiple tool calls"):
         run_agent("Move", executor, model="test", client=client)
     executor.execute.assert_not_called()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
 
 
 @pytest.mark.parametrize("arguments", ["{broken", "[]", "null", '"home"'])
-def test_malformed_arguments_stop_without_execution(executor, arguments):
+def test_malformed_arguments_leave_executor_available(executor, arguments):
     client = client_for(response(call(arguments=arguments)))
     with pytest.raises(ValueError):
         run_agent("Move", executor, model="test", client=client)
     executor.execute.assert_not_called()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
+
+
+@pytest.mark.parametrize("name", [None, "", 123])
+def test_malformed_tool_name_leaves_executor_available(executor, name):
+    with pytest.raises(ValueError, match="nonempty name"):
+        run_agent("Move", executor, model="test", client=client_for(response(call(name=name))))
+    executor.execute.assert_not_called()
+    executor.stop.assert_not_called()
 
 
 def test_unknown_tool_is_validated_by_executor_and_never_retried(executor):
@@ -133,37 +141,40 @@ def test_executor_exception_stops_before_propagating(executor):
 
 
 @pytest.mark.parametrize("status", ["incomplete", "failed", "in_progress", "cancelled"])
-def test_noncompleted_response_stops_before_execution(executor, status):
+def test_noncompleted_response_leaves_executor_available(executor, status):
     client = client_for(response(call(), status=status))
     with pytest.raises(RuntimeError, match="did not complete"):
         run_agent("Move", executor, model="test", client=client)
     executor.execute.assert_not_called()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
 
 
-def test_api_exception_stops_and_propagates(executor):
+def test_api_exception_allows_next_turn(executor):
     error = ConnectionError("API unavailable")
     client = client_for(error)
     with pytest.raises(ConnectionError) as caught:
         run_agent("Move", executor, model="test", client=client)
     assert caught.value is error
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
+    assert run_agent(
+        "Read state", executor, model="test", client=client_for(response(text="Ready."))
+    ) == "Ready."
 
 
-def test_loop_limit_stops_without_an_extra_model_request(executor):
+def test_loop_limit_does_not_stop_completed_synchronous_tools(executor):
     client = client_for(response(call()), response(call(call_id="call_2")))
     with pytest.raises(RuntimeError, match="limit of 2"):
         run_agent("Move", executor, model="test", client=client, max_steps=2)
     assert client.responses.create.call_count == 2
     assert executor.execute.call_count == 2
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
 
 
 def test_empty_final_response_is_failure(executor):
     client = client_for(response())
     with pytest.raises(RuntimeError, match="neither a tool call nor final text"):
         run_agent("Move", executor, model="test", client=client)
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
 
 
 @pytest.mark.parametrize("max_steps", [0, -1, True, 1.5])
@@ -172,13 +183,14 @@ def test_invalid_budget_does_not_make_api_request(executor, max_steps):
     with pytest.raises(ValueError, match="positive integer"):
         run_agent("Move", executor, model="test", client=client, max_steps=max_steps)
     client.responses.create.assert_not_called()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
 
 
 def test_stop_failure_is_reported_with_original_failure(executor):
     executor.stop.side_effect = RuntimeError("Stop unavailable")
-    original = ConnectionError("API unavailable")
-    client = client_for(original)
+    original = ConnectionError("Device disconnected")
+    executor.execute.side_effect = original
+    client = client_for(response(call()))
     with pytest.raises(RuntimeError, match="stopping also failed") as caught:
         run_agent("Move", executor, model="test", client=client)
     assert caught.value.__cause__ is original
@@ -187,8 +199,9 @@ def test_stop_failure_is_reported_with_original_failure(executor):
 
 def test_unsuccessful_stop_result_is_reported_with_original_failure(executor):
     executor.stop.return_value = {"ok": False, "error": "Stop unconfirmed"}
-    original = ConnectionError("API unavailable")
-    client = client_for(original)
+    original = ConnectionError("Device disconnected")
+    executor.execute.side_effect = original
+    client = client_for(response(call()))
     with pytest.raises(RuntimeError, match="stopping also failed") as caught:
         run_agent("Move", executor, model="test", client=client)
     assert caught.value.__cause__ is original
@@ -221,16 +234,58 @@ def test_successful_turn_commits_reasoning_tools_and_final_output_to_history(exe
     ]
 
 
-def test_failed_turn_does_not_partially_commit_external_history(executor):
+def test_api_failure_preserves_completed_tool_history_for_next_turn(executor):
     history = [{"role": "user", "content": "Earlier question"}]
-    before = list(history)
     client = client_for(response(call()), ConnectionError("Lost API connection"))
 
     with pytest.raises(ConnectionError, match="Lost API connection"):
         run_agent("Go home", executor, model="test", client=client, history=history)
 
     executor.execute.assert_called_once()
-    assert history == before
+    assert history[0] == {"role": "user", "content": "Earlier question"}
+    assert history[1] == {"role": "user", "content": "Go home"}
+    assert history[2].type == "function_call"
+    assert json.loads(history[3]["output"]) == executor.execute.return_value
+    executor.stop.assert_not_called()
+    prior = list(history)
+    next_client = client_for(response(text="The previous move completed."))
+    run_agent("What happened?", executor, model="test", client=next_client, history=history)
+    assert next_client.responses.create.call_args.kwargs["input"] == [
+        *prior, {"role": "user", "content": "What happened?"}
+    ]
+    executor.execute.assert_called_once()
+
+
+def test_agent_returns_recoverable_rejection_to_model_for_correction():
+    config = Config.load(Path(__file__).resolve().parents[1] / "config/demo.toml")
+    executor = SkillExecutor(config, SimArm(config.home), SimGripper())
+    client = client_for(
+        response(call("pick", '{"object_id": "typo"}', "bad")),
+        response(call("pick", '{"object_id": "red_block"}', "corrected")),
+        response(text="Picked red_block."),
+    )
+    assert run_agent("Pick red_block", executor, model="test", client=client) == "Picked red_block."
+    rejected = client.responses.create.call_args_list[1].kwargs["input"][-1]
+    assert json.loads(rejected["output"])["recoverable"]
+    assert executor.holding == "red_block"
+    assert not executor.stopped and executor.fault is None
+
+
+@pytest.mark.parametrize(
+    "result",
+    [None, {}, {"ok": "true"}, {"ok": False}, {"ok": True, "position": float("nan")}],
+)
+def test_unknown_executor_result_still_stops(executor, result):
+    executor.execute.return_value = result
+    with pytest.raises((RuntimeError, ValueError)):
+        run_agent("Move", executor, model="test", client=client_for(response(call())))
+    executor.stop.assert_called_once()
+
+
+def test_interrupt_during_tool_execution_still_stops(executor):
+    executor.execute.side_effect = KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt):
+        run_agent("Move", executor, model="test", client=client_for(response(call())))
     executor.stop.assert_called_once()
 
 

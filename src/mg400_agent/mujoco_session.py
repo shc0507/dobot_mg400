@@ -90,17 +90,21 @@ def _run_commands(args, executor, viewer):
                 break
             if not task.strip():
                 continue
-            print(
-                run_agent(
+            try:
+                answer = run_agent(
                     task,
                     executor,
                     model=args.model,
                     history=history,
                     request_runner=wait,
                     api_mode=args.api_mode,
-                ),
-                flush=True,
-            )
+                )
+            except Exception as error:
+                if executor.stopped:
+                    raise
+                print(f"Request failed: {error}", file=sys.stderr, flush=True)
+                continue
+            print(answer, flush=True)
             _print_state(executor)
     _print_state(executor)
     return 0

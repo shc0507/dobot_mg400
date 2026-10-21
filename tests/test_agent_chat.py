@@ -126,15 +126,18 @@ def test_chat_content_only_reply_does_not_move(executor):
     executor.stop.assert_not_called()
 
 
-def test_chat_failed_turn_leaves_history_unmodified(executor):
+def test_chat_api_failure_preserves_completed_tool_history(executor):
     original = [{"role": "assistant", "content": "Ready."}]
     history = list(original)
     client = client_for(response(call()), ConnectionError("Disconnected"))
     with pytest.raises(ConnectionError, match="Disconnected"):
         run("Go home", executor, client, history=history)
-    assert history == original
+    assert history[0] == original[0]
+    assert history[1] == {"role": "user", "content": "Go home"}
+    assert history[2]["role"] == "assistant"
+    assert json.loads(history[3]["content"]) == executor.execute.return_value
     executor.execute.assert_called_once()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -154,7 +157,7 @@ def test_chat_rejects_incomplete_or_ambiguous_response_before_motion(executor, r
     with pytest.raises(RuntimeError, match=error):
         run("Go home", executor, client)
     executor.execute.assert_not_called()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
     assert client.chat.completions.create.call_count == 1
 
 
@@ -165,7 +168,7 @@ def test_chat_rejects_bad_tool_arguments_or_id_before_motion(executor, tool):
     with pytest.raises(ValueError):
         run("Go home", executor, client_for(response(tool)))
     executor.execute.assert_not_called()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
 
 
 def test_chat_default_client_uses_bounded_timeout_and_no_retry(executor, monkeypatch):
@@ -215,4 +218,19 @@ def test_custom_chat_auth_failure_does_not_retry_with_placeholder(executor, monk
     factory.assert_called_once_with(timeout=120.0, max_retries=0, api_key="test-only-provided-key")
     assert client.chat.completions.create.call_count == 1
     executor.execute.assert_not_called()
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
+
+
+def test_chat_returns_recoverable_result_for_model_correction(executor):
+    rejected = {"ok": False, "error": "Invalid target", "recoverable": True}
+    executor.execute.side_effect = [rejected, {"ok": True}]
+    client = client_for(
+        response(call(arguments='{"extra": 1}')),
+        response(call(call_id="corrected")),
+        response(text="Reached home."),
+    )
+    assert run("Go home", executor, client) == "Reached home."
+    message = client.chat.completions.create.call_args_list[1].kwargs["messages"][-1]
+    assert json.loads(message["content"]) == rejected
+    assert executor.execute.call_count == 2
+    executor.stop.assert_not_called()

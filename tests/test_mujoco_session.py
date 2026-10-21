@@ -109,7 +109,7 @@ def test_window_close_discards_late_api_tool_call_without_execution():
         release.set()
         assert finished.wait(timeout=2)
 
-    executor.stop.assert_called_once()
+    executor.stop.assert_not_called()
     executor.execute.assert_not_called()
 
 
@@ -119,6 +119,37 @@ def test_already_closed_viewer_does_not_start_callback():
     with pytest.raises(KeyboardInterrupt):
         wait_with_viewer(callback, viewer)
     callback.assert_not_called()
+
+
+def test_chat_planning_failure_allows_next_input(monkeypatch, capsys):
+    inputs = iter(["first request", "corrected request", "quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    executor = Mock(stopped=False, state=Mock(return_value={}))
+    agent = Mock(side_effect=[ConnectionError("API unavailable"), "Completed."])
+    monkeypatch.setattr("mg400_agent.mujoco_session.run_agent", agent)
+    args = SimpleNamespace(command="chat", model="test", api_mode="responses")
+    assert _run_commands(args, executor, None) == 0
+    assert agent.call_count == 2
+    executor.stop.assert_not_called()
+    output = capsys.readouterr()
+    assert "API unavailable" in output.err
+    assert "Completed." in output.out
+
+
+def test_chat_device_failure_ends_session_without_next_input(monkeypatch):
+    read = Mock(return_value="move")
+    monkeypatch.setattr("builtins.input", read)
+    executor = Mock(stopped=False)
+
+    def fail(*args, **kwargs):
+        executor.stopped = True
+        raise RuntimeError("Device motion failed")
+
+    monkeypatch.setattr("mg400_agent.mujoco_session.run_agent", fail)
+    args = SimpleNamespace(command="chat", model="test", api_mode="responses")
+    with pytest.raises(RuntimeError, match="Device motion failed"):
+        _run_commands(args, executor, None)
+    read.assert_called_once()
 
 
 @pytest.mark.parametrize("error", [ConnectionError("API unavailable"), KeyboardInterrupt()])

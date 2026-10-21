@@ -5,6 +5,7 @@ from dataclasses import asdict
 
 from .backends import Arm, Gripper
 from .config import Config, Pose
+from .tool_errors import ToolRejectedError
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,13 @@ class SkillExecutor:
         current = self.arm.get_pose()
         height = self.config.travel_z_mm
         route = [current.at_height(height), target.at_height(height), target]
-        for pose in [current, *route]:
-            self.config.workspace.validate(pose)
-            if pose.z_mm > height:
-                raise ValueError("Pose above configured travel height")
+        try:
+            for pose in [current, *route]:
+                self.config.workspace.validate(pose)
+                if pose.z_mm > height:
+                    raise ValueError("Pose above configured travel height")
+        except ValueError as error:
+            raise ToolRejectedError(str(error)) from error
         # This bounds check is not IK, collision checking, or a real motion planner.
         return route
 
@@ -67,12 +71,12 @@ class SkillExecutor:
 
     def _pick(self, object_id: str) -> None:
         if self.holding is not None:
-            raise ValueError("Gripper already holds an object")
+            raise ToolRejectedError("Gripper already holds an object")
         if object_id not in self.objects:
-            raise ValueError(f"Unknown object: {object_id}")
+            raise ToolRejectedError(f"Unknown object: {object_id}")
         target = self.objects[object_id]
         if target is None:
-            raise ValueError("Object position is unknown")
+            raise ToolRejectedError("Object position is unknown")
         route = self._route(target)
         self.gripper.release(self.config.action_timeout_s)
         self._move(route)
@@ -84,11 +88,11 @@ class SkillExecutor:
 
     def _place(self, location_id: str) -> None:
         if self.holding is None:
-            raise ValueError("No confirmed object in gripper")
+            raise ToolRejectedError("No confirmed object in gripper")
         if location_id not in self.config.locations:
-            raise ValueError(f"Unknown location: {location_id}")
+            raise ToolRejectedError(f"Unknown location: {location_id}")
         if location_id in self.occupied_locations:
-            raise ValueError("Destination is already occupied")
+            raise ToolRejectedError("Destination is already occupied")
         target = self.config.locations[location_id]
         route = self._route(target)
         self._move(route)
@@ -106,12 +110,16 @@ class SkillExecutor:
             "stop": set(),
         }
         try:
-            if name not in expected or not isinstance(arguments, dict):
-                raise ValueError("Unknown tool or invalid arguments")
+            if (
+                not isinstance(name, str)
+                or name not in expected
+                or not isinstance(arguments, dict)
+            ):
+                raise ToolRejectedError("Unknown tool or invalid arguments")
             if set(arguments) != expected[name] or any(
                 not isinstance(value, str) for value in arguments.values()
             ):
-                raise ValueError(f"Invalid arguments for {name}")
+                raise ToolRejectedError(f"Invalid arguments for {name}")
             if name == "stop":
                 return self.stop()
             if name in {"get_scene", "get_robot_state"}:
@@ -124,6 +132,8 @@ class SkillExecutor:
                 self._place(arguments["location_id"])
             logger.info("Completed %s %s", name, arguments)
             return {"ok": True, "state": self.state()}
+        except ToolRejectedError as error:
+            return {"ok": False, "error": str(error), "recoverable": not self.stopped}
         except Exception as error:
             self.fault = str(error)
             stop_result = self.stop()

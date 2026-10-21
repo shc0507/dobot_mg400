@@ -3,9 +3,10 @@
 import logging
 
 from .config import finite_number
-from .joint_limits import validate_joint_segment, validate_joints
+from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
 from .mujoco_dynamics import DynamicModel, run_dynamics
 from .mujoco_replay import Keyframe
+from .tool_errors import ToolRejectedError
 
 HOME_JOINTS_DEG = (0.0, 0.0, 0.0, 0.0)
 MAX_TARGET_RATE_DEG_S = 15.0
@@ -48,9 +49,13 @@ class MuJoCoJointExecutor:
         return {"ok": True, "stopped": True}
 
     def _move(self, target) -> dict:
-        target = validate_joints(target)
         start = self.model.joints_deg
-        validate_joint_segment(start, target)
+        validate_measured_joints(start)
+        try:
+            target = validate_joints(target)
+            validate_joint_segment(start, target)
+        except ValueError as error:
+            raise ToolRejectedError(str(error)) from error
         duration = max(
             MIN_MOTION_TIME_S,
             max(abs(a - b) for a, b in zip(start, target, strict=True)) / MAX_TARGET_RATE_DEG_S,
@@ -75,9 +80,9 @@ class MuJoCoJointExecutor:
         }
         try:
             if not isinstance(name, str) or name not in expected:
-                raise ValueError("Unknown tool")
+                raise ToolRejectedError("Unknown tool")
             if not isinstance(arguments, dict) or set(arguments) != expected[name]:
-                raise ValueError(f"Invalid arguments for {name}")
+                raise ToolRejectedError(f"Invalid arguments for {name}")
             if name == "get_robot_state":
                 return {"ok": True, "state": self.state()}
             if name == "stop":
@@ -87,10 +92,13 @@ class MuJoCoJointExecutor:
             if name == "move_joint":
                 joint = arguments["joint"]
                 if not isinstance(joint, str) or joint not in JOINTS:
-                    raise ValueError("joint must be J1, J2, J3 or J4")
+                    raise ToolRejectedError("joint must be J1, J2, J3 or J4")
                 if type(arguments["relative"]) is not bool:
-                    raise ValueError("relative must be a boolean")
-                angle = finite_number(arguments["angle_deg"])
+                    raise ToolRejectedError("relative must be a boolean")
+                try:
+                    angle = finite_number(arguments["angle_deg"])
+                except ValueError as error:
+                    raise ToolRejectedError(str(error)) from error
                 index = JOINTS.index(joint)
                 target = list(self.model.target_joints_deg)
                 target[index] = angle + (
@@ -99,12 +107,14 @@ class MuJoCoJointExecutor:
             elif name == "move_joints":
                 target = arguments["joints_deg"]
                 if not isinstance(target, list) or len(target) != 4:
-                    raise ValueError("joints_deg must contain exactly four numbers")
+                    raise ToolRejectedError("joints_deg must contain exactly four numbers")
             else:
                 target = HOME_JOINTS_DEG
             motion = self._move(target)
             logger.info("Completed %s: measured joints_deg=%s", name, self.model.joints_deg)
             return {"ok": True, "motion": motion, "state": self.state()}
+        except ToolRejectedError as error:
+            return {"ok": False, "error": str(error), "recoverable": not self.stopped}
         except Exception as error:
             self.fault = str(error)
             return {"ok": False, "error": self.fault, "stop": self.stop()}

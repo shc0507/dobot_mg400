@@ -23,7 +23,8 @@ state. If the task is ambiguous, ask for clarification without moving the robot.
 Read the current state before planning a new motion task. Only offer actions
 supported by the available tools. Distinguish absolute angles (move to) from
 relative angles (move by); ask if the requested direction or amount is unclear.
-Issue at most one tool call per response. Do not retry failed actions. Describe
+Issue at most one tool call per response. Correct rejected arguments only when
+the tool result has recoverable=true. Do not retry failed device actions. Describe
 what was actually verified, and distinguish it from anything still unverified.
 """
 
@@ -39,15 +40,16 @@ def run_agent(
     request_runner: Callable[[Callable[[], Any]], Any] | None = None,
     api_mode: str = "responses",
 ) -> str:
-    """Run a Responses or Chat Completions loop; any failure stops the executor.
+    """Run a Responses or Chat Completions loop over synchronous tools.
 
     ``max_steps`` caps model requests, including requests returning final text.
     Returned prose is informational; consult ``executor.state()`` for robot state.
     A supplied client must expose the selected OpenAI-compatible API interface.
-    Optional history is committed after a successful turn, retaining tool feedback.
+    Optional history retains completed tool feedback even if a later API request fails.
     request_runner may keep a viewer responsive while an API request is pending;
     tool execution always stays on the calling thread.
     """
+    execution_pending = False
     try:
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task must be a nonempty string")
@@ -156,12 +158,19 @@ def run_agent(
             call_id = call.id if api_mode == "chat_completions" else call.call_id
             if not isinstance(call_id, str) or not call_id:
                 raise ValueError("Tool call must have a nonempty id")
+            name = getattr(function, "name", None)
+            if not isinstance(name, str) or not name:
+                raise ValueError("Tool call must have a nonempty name")
             arguments = json.loads(function.arguments)
             if not isinstance(arguments, dict):
                 raise ValueError("Tool arguments must be a JSON object")
-            result = executor.execute(function.name, arguments)
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                raise RuntimeError(f"Skill {function.name!r} failed: {result!r}")
+            execution_pending = True
+            result = executor.execute(name, arguments)
+            if not isinstance(result, dict) or not (
+                result.get("ok") is True
+                or (result.get("ok") is False and result.get("recoverable") is True)
+            ):
+                raise RuntimeError(f"Skill {name!r} failed: {result!r}")
             # Replay every output item, including encrypted reasoning, unchanged.
             messages.extend(output)
             encoded_result = json.dumps(result, allow_nan=False)
@@ -174,8 +183,13 @@ def run_agent(
                 if api_mode == "responses"
                 else {"role": "tool", "tool_call_id": call_id, "content": encoded_result}
             )
+            execution_pending = False
+            if history is not None:
+                history[:] = messages
         raise RuntimeError(f"Agent exceeded its limit of {max_steps} model requests")
     except BaseException as error:
+        if not execution_pending:
+            raise
         try:
             stop_result = executor.stop()
             if not isinstance(stop_result, dict) or stop_result.get("ok") is not True:

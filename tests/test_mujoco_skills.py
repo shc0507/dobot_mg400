@@ -128,16 +128,15 @@ def test_injected_model_is_not_reset_and_absolute_move_preserves_other_targets(m
         ("home", []),
     ],
 )
-def test_invalid_tools_latch_failure_without_mutating_physics(executor, name, arguments):
+def test_invalid_tools_allow_corrected_request_without_mutating_physics(executor, name, arguments):
     before = snapshot(executor.model)
     result = executor.execute(name, arguments)
     assert not result["ok"]
-    assert result["stop"] == {"ok": True, "stopped": True}
+    assert result["recoverable"]
     assert_unchanged(executor.model, before)
     state = executor.execute("get_robot_state", {})["state"]
-    assert state["stopped"] and not state["state_valid"] and state["fault"]
-    assert not executor.execute("home", {})["ok"]
-    assert_unchanged(executor.model, before)
+    assert not state["stopped"] and state["state_valid"] and state["fault"] is None
+    assert executor.execute("home", {})["ok"]
 
 
 def test_invalid_middle_of_segment_rejected_before_any_motion(executor):
@@ -146,7 +145,31 @@ def test_invalid_middle_of_segment_rejected_before_any_motion(executor):
     # Both endpoints pass, but crossing J3=0 violates the conditional J2 bound.
     result = executor.execute("move_joints", {"joints_deg": [0, -17, -5, 0]})
     assert not result["ok"]
+    assert result["recoverable"]
     assert "J2" in result["error"]
+    assert_unchanged(executor.model, before)
+    assert not executor.stopped and executor.fault is None
+
+
+def test_value_error_after_physics_step_still_stops(executor, monkeypatch):
+    def fail(model, *args, **kwargs):
+        model.step()
+        raise ValueError("Physics feedback failed")
+
+    monkeypatch.setattr("mg400_agent.mujoco_skills.run_dynamics", fail)
+    result = executor.execute("home", {})
+    assert not result["ok"] and not result.get("recoverable")
+    assert executor.stopped and executor.fault
+    assert executor.model.data.time > 0
+
+
+def test_measured_pose_outside_raw_limits_remains_a_fault(executor):
+    executor.model.data.joint("mg400_j1").qpos[0] = np.deg2rad(161)
+    before = snapshot(executor.model)
+    result = executor.execute("home", {})
+    assert not result["ok"] and not result.get("recoverable")
+    assert "J1" in result["error"]
+    assert executor.stopped and executor.fault
     assert_unchanged(executor.model, before)
 
 

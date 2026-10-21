@@ -40,25 +40,75 @@ runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 | `apps/isaacsim/joint_control.py` | 统一控制面板：法兰坐标、键盘点动和夹爪连续开口，自动启动或复用姿态镜像 |
 | `apps/isaacsim/olares_gripper.py` | 兼容旧入口，打开同一个统一控制面板 |
 
-`MG400 Control` 左侧控制法兰，右侧控制夹爪。
+`MG400 Control` 使用英文界面，`Coordinates & Motion` 合并 XYZ/R 和夹爪五行控制。
+每行使用滑块和数值框，坐标参考说明收在标题悬浮提示中。
 启动只读，机械臂运动须手动使能和执行。
-可输入 XYZ/R 直线目标，或开启键盘后用 WASD、R/F、Q/E 点动。
-按住按键可连续步进，每步 5 mm 或 1°。
-松键会取消后续步进并请求停止，每次长按最多 5 秒。
-复位按钮保持 J1–J4 归零。
-右侧夹爪区读取 Olares USB 反馈，控制开口范围为 0–1000。
+点击 `Execute targets` 后，机械臂先按 XYZ/R 直线运动。
+确认机械臂到位后，程序才执行用户修改过的夹爪目标。
+也可开启键盘后用 WASD、R/F、Q/E 点动。
+`Start sync` 和 `Stop sync` 启停姿态同步，停止时保留窗口。
+
+按住机械臂方向键时，程序接续发送有限行程轨迹。
+每段最多 50 mm 或 10°，到位且命令应答确认后续行。
+段间可能短暂停顿，长按没有总时限或总行程上限。
+目标搜索可缩小到 0.1 mm 或 0.1°。
+松键会取消尚未发送的轨迹并请求停止。
+`Home` 保持 J1–J4 归零。
+
+夹爪行读取 Olares USB 反馈，控制开口范围为 0–1000。
 宿主机采集脚本加 `--commands` 后可执行开口目标。
-按住 Z/X 连续调节开口，每步 25 / 1000。
+按住 Z/X 连续调节开口，每步 25 / 1000，每次长按最多 5 秒。
 松键后夹爪完成当前一步，不再追加目标。
-夹爪命令不会使能或移动机械臂。
+夹爪位置命令本身不会使能或移动机械臂。
+
 三个真机入口共用 `config/robot.toml` 中 `[robot]` 表的 `host`。
 修改地址后，重新启动镜像和面板，详见 [真机地址配置](docs/isaacsim.md#真机地址配置)。
-代码按 Git 提交更新，修改 `src/` 后必须完整重启 Isaac Sim。
+代码按 Git 提交更新。
+统一入口可重载指定控制模块，前提是旧操作已结束且没有未决命令应答。
+其他 `src/` 模块修改后必须完整重启 Isaac Sim。
 部署步骤、运行数据路径和停止条件见 [Isaac Sim 使用说明](docs/isaacsim.md)。
+Olares 重启后的摄像头启动命令见 [USB 摄像头预览](docs/isaacsim.md#usb-摄像头预览)。
 自然语言真机入口仅提供 J4 +2° 后回位，见 [受限真机试验说明](docs/hardware.md#自然语言-j4-受限试验)。
 
 Isaac 模型显示实测姿态和夹指位置，不验证碰撞、夹持力或真实连杆动力学。
 模型层次与构建入口见 [Isaac Sim 文件说明](docs/isaacsim.md#文件)。
+
+## 独立 Python 网页面板
+
+网页服务使用 Python 3.11+ 标准库，不依赖 Isaac Sim。
+在项目根目录运行默认演示模式，再打开 `http://127.0.0.1:8766/`：
+
+```sh
+python3 apps/control_panel/server.py
+```
+
+`demo` 模式提供使能、回零和五个目标值的执行操作。
+动作只更新进程内的演示状态，范围来自 `config/demo.toml`，不代表真机限位。
+演示不计算关节运动学。
+
+只读真机关节反馈使用以下命令：
+
+```sh
+python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
+```
+
+省略 `--robot-host` 时，地址取自 `config/robot.toml`。
+点击 `Start sync` 才连接 TCP `30004`，`Stop sync` 停止读取。
+此模式只显示实测关节、控制器模式和报警标志，不提供坐标或夹爪反馈。
+网页同步不会更新 Isaac 场景。
+两个模式均不支持键盘点动，也不发送真机控制命令。
+
+服务默认监听 `127.0.0.1:8766`，可用 `--bind` 和 `--port` 修改。
+监听非回环地址时，必须设置至少 24 个字符的 `MG400_PANEL_TOKEN` 环境变量。
+网页使用同一密钥访问 API。
+反向代理保留路径前缀时，可加 `--base-path /mg400-panel/`，网页和 API 均使用此前缀。
+
+Olares 复用已有 IsaacLab 私有入口，将 `/mg400-panel/` 转发给网页服务。
+访问 [MG400 网页面板](https://f568377c.qumusphusis.olares.com/mg400-panel/)，当前服务只运行 `demo` 模式。
+预览副本位于 `/root/Documents/mg400-panel-preview`，与生产源码目录分离。
+服务入口为 `/isaac-sim/python.sh /root/Documents/mg400-panel-preview/work/serve.py`。
+入口脚本读取 `.panel-token`，监听 `0.0.0.0:8766`，路径前缀为 `/mg400-panel/`。
+服务通过 `nohup` 运行，Pod 重建后不会自动恢复。
 
 ## 内存模拟快速开始
 
@@ -100,7 +150,8 @@ uv run --env-file .env --extra llm --extra mujoco mg400-agent --backend mujoco -
 ```
 
 输入“把第一轴转到20度”或“回到初始姿态”，输入 `quit`、`exit`、`退出` 结束。
-也可按 Ctrl+C 或关闭窗口。`stop` 或错误会冻结会话，必须重新启动才能继续运动。
+也可按 Ctrl+C 或关闭窗口。参数或目标被拒绝后可纠正请求，模型 API 错误可重试。
+`stop`、动作执行失败或执行结果未知会冻结会话，须重新启动才能继续运动。
 夹爪只能随法兰显示，目前不能开合、抓放或验证碰撞。
 执行器参数和参考限位未经真机标定。
 
@@ -155,7 +206,7 @@ uv run --env-file .env --extra llm mg400-agent ask "把红色积木 red_block �
 config/demo.toml              模拟场景、命名目标、单位、工作空间范围
 config/robot.toml             Isaac 真机入口共用的机器人地址
 00_OPEN_MG400.usda            Isaac 日常场景入口
-isaacsim/                    USD 模型、夹爪镜像覆盖层与工作场景
+isaacsim/                    含可动夹指的 USD 模型与工作场景
 apps/isaacsim/               Isaac 真机镜像、控制面板与基础模型检查入口
 examples/                    标准库单文件教学、受限 J4 试验与 notebook
 scripts/                     模型构建、串流客户端操作与夹爪反馈采集
@@ -197,7 +248,8 @@ MuJoCo 关节后端通过独立的关节工具执行动力学运动，工具及�
 
 - 模型只能选已知目标，不能发送任意坐标、脚本或底层 TCP 命令。
 - 所有动作串行、阻塞到完成；不提供并发控制或后台任务队列。
-- 任一失败会锁定本次会话，后续动作被拒绝；没有自动重试或自动恢复。
+- 参数或目标被拒绝时返回 `recoverable=true`，模型可纠正请求。
+- 动作执行失败或结果未知会锁定会话，后续动作被拒绝，不自动重试或恢复。
 - `state_valid=false` 表示动作状态需要核对，缓存的持物和物体位置不能视作新观测。
 - 大模型返回的文字仅作说明，判断执行结果应读取工具结果及最终状态。
 - `action_timeout_s` 是传给适配器的执行期限；适配器必须实现超时，

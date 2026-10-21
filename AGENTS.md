@@ -4,9 +4,12 @@ This document provides permanent information/instructions for the convenience of
 
 ## The Workflow
 
+- 操作 Chrome 时只控制需要的 page，不要再申请整个 Chrome 应用的权限。
 - Isaac Sim is located on Olares. It is a cloud platform for computing and simulation. It is used to run Isaac Sim, and the agents can control it through a web interface. Check the Chrome browser for already opened tabs. If there are no tabs open, ask the user to open Olares web interface and log in. The URL is: [https://desktop.qumusphusis.olares.com/](https://desktop.qumusphusis.olares.com/)
 - The GUI can be accessed locally with Isaac Sim WebRTC Streaming Client application. The server is 100.64.0.1, ports are 49100 (signal) and 47998 (stream). Note that VPN is required to access the server on Olares in this way. It can be turned on through LarePass application.
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
+- 排查真机报警或碰撞时，先读 [报警与历史日志](docs/isaacsim.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
+- When git-committing a task, also write a brief description of what was done.
 
 ## Local streaming client automation
 

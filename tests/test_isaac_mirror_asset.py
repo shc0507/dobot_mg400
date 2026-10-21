@@ -15,7 +15,7 @@ MOUNT = ROBOT + "/mg400_end_effector_flange/pgea_gripper"
 
 @pytest.fixture
 def stage():
-    return Usd.Stage.Open(str(ROOT / "isaacsim/mg400_mirror.usda"))
+    return Usd.Stage.Open(str(ROOT / "isaacsim/mg400_with_gripper.usd"))
 
 
 def frame(joint, index):
@@ -28,7 +28,7 @@ def frame(joint, index):
 
 def test_gripper_has_two_jaw_coordinates_and_fixed_housing(stage):
     assert stage.GetDefaultPrim().GetPath() == Sdf.Path(ROBOT)
-    assert stage.GetRootLayer().GetExternalReferences() == ("./mg400_with_gripper.usd",)
+    assert not stage.GetRootLayer().GetExternalReferences()
     root = stage.GetDefaultPrim()
     assert sum(p.HasAPI(UsdPhysics.RigidBodyAPI) for p in stage.Traverse()) == 11
     assert sum(p.IsA(UsdPhysics.RevoluteJoint) for p in stage.Traverse()) == 8
@@ -40,10 +40,12 @@ def test_gripper_has_two_jaw_coordinates_and_fixed_housing(stage):
         assert not prim.HasAPI(UsdPhysics.RigidBodyAPI)
         assert not prim.HasAPI(UsdPhysics.MassAPI)
     mount = UsdPhysics.FixedJoint(stage.GetPrimAtPath(f"{ROBOT}/joints/pgea_housing_mount"))
+    assert mount.GetJointEnabledAttr().Get() is False
     assert mount.GetBody0Rel().GetTargets() == [Sdf.Path(f"{ROBOT}/mg400_end_effector_flange")]
     assert mount.GetBody1Rel().GetTargets() == [Sdf.Path(f"{ROBOT}/pgea_housing")]
     for side in ("left", "right"):
         joint = UsdPhysics.PrismaticJoint(stage.GetPrimAtPath(f"{ROBOT}/joints/pgea_{side}_slide"))
+        assert joint.GetJointEnabledAttr().Get() is False
         assert joint.GetBody0Rel().GetTargets() == [Sdf.Path(f"{ROBOT}/pgea_housing")]
         assert joint.GetBody1Rel().GetTargets() == [Sdf.Path(f"{ROBOT}/pgea_{side}_jaw")]
         assert joint.GetAxisAttr().Get() == "Y"
@@ -86,6 +88,7 @@ def test_display_has_no_colliders_or_duplicate_source_visuals(stage):
     assert not collision_paths
     for side in ("left", "right"):
         for name in (f"visual_pgea_jaw_{side}", f"pgea_fingertip_{side}"):
-            assert not stage.GetPrimAtPath(MOUNT + "/" + name).IsActive()
+            original = stage.GetPrimAtPath(MOUNT + "/" + name)
+            assert not original or not original.IsActive()
             assert stage.GetPrimAtPath(f"{ROBOT}/pgea_{side}_jaw/{name}").IsActive()
     assert sum(p.IsA(UsdGeom.Mesh) for p in stage.Traverse()) == 19

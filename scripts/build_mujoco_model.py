@@ -297,8 +297,9 @@ def make_dynamics_scene(urdf: ET.Element, mesh_parts) -> ET.Element:
     ET.SubElement(scene.find("default"), "joint", damping="0.05", armature="0.001")
     scene.append(
         ET.Comment(
-            " Limits from pinned mg400_common/kinematics.hpp, before its 1.05 degree "
-            "planning margin. Runtime also applies J2 >= -19 degrees when J3 <= 0. "
+            " J4 limits from the MG400 User Guide: +/-360 degrees. Other limits "
+            "from pinned mg400_common/kinematics.hpp, before its 1.05 degree planning "
+            "margin. Runtime also applies J2 >= -19 degrees when J3 <= 0. "
         )
     )
     ranges_degrees = {
@@ -309,7 +310,7 @@ def make_dynamics_scene(urdf: ET.Element, mesh_parts) -> ET.Element:
         "mg400_j3_2": (-85, 25),
         "mg400_j4_1": (-105, 25),
         "mg400_j4_2": (-25, 105),
-        "mg400_j5": (-160, 160),
+        "mg400_j5": (-360, 360),
     }
     for joint in scene.findall("worldbody//joint"):
         joint.set("range", number_list(np.deg2rad(ranges_degrees[joint.attrib["name"]])))
@@ -358,7 +359,7 @@ def make_dynamics_scene(urdf: ET.Element, mesh_parts) -> ET.Element:
         (1, "joint", "mg400_j1", (-160, 160), 200, 8, 20),
         (2, "joint", "mg400_j2_1", (-25, 85), 200, 4, 20),
         (3, "tendon", "mg400_q3", (-25, 105), 200, 4, 20),
-        (4, "joint", "mg400_j5", (-160, 160), 20, 0.5, 3),
+        (4, "joint", "mg400_j5", (-360, 360), 20, 0.5, 3),
     ):
         ET.SubElement(
             actuator,

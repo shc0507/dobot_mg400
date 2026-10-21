@@ -41,6 +41,8 @@ def test_actuator_target_does_not_teleport_and_physics_advances(robot):
         (150, 80, 100, -140),
         (-150, 50, -5, 140),
         (120, -20, 35, 120),
+        (0, 20, 20, -200),
+        (0, 20, 20, 200),
     ],
 )
 def test_holds_pose_under_gravity_with_level_flange_and_coupled_joints(robot, pose):
@@ -57,6 +59,15 @@ def test_holds_pose_under_gravity_with_level_flange_and_coupled_joints(robot, po
     assert math.degrees(tilt) < 0.001
     assert np.isfinite(robot.data.qpos).all()
     assert not robot.data.warning.number.any()
+
+
+def test_j4_joint_and_actuator_allow_manufacturer_range(robot):
+    np.testing.assert_allclose(
+        robot.model.joint("mg400_j5").range, np.deg2rad((-360, 360))
+    )
+    np.testing.assert_allclose(
+        robot.model.actuator("mg400_q4_position").ctrlrange, np.deg2rad((-360, 360))
+    )
 
 
 def test_passive_linkage_perturbation_is_corrected_by_solver(robot):

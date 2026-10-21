@@ -76,7 +76,7 @@
                 </body>
                 <body name="mg400_end_effector_flange" pos="0 0 -0.084" euler="0 0 0">
                   <inertial pos="0 0 5.0e-3" mass="24.0e-3" fullinertia="2.058e-6 2.058e-6 3.335e-6 0.0 0.0 0.0" />
-                  <joint name="mg400_j5" type="hinge" axis="0 0 1" range="-2.79252680319093 2.79252680319093" />
+                  <joint name="mg400_j5" type="hinge" axis="0 0 1" range="-6.28318530717959 6.28318530717959" />
                   <geom name="visual_flange_0" type="mesh" mesh="flange_0" rgba="0.7960784 0.7960784 0.7960784 1" pos="0 0 0" euler="0 0 0" />
                   <!-- Zero tool offset: TCP coincides with the URDF flange frame. -->
                   <site name="mg400_flange" />
@@ -117,7 +117,7 @@
       </body>
     </body>
   </worldbody>
-  <!-- Limits from pinned mg400_common/kinematics.hpp, before its 1.05 degree planning margin. Runtime also applies J2 >= -19 degrees when J3 <= 0. -->
+  <!-- J4 limits from the MG400 User Guide: +/-360 degrees. Other limits from pinned mg400_common/kinematics.hpp, before its 1.05 degree planning margin. Runtime also applies J2 >= -19 degrees when J3 <= 0. -->
   <tendon>
     <fixed name="mg400_q3" range="-0.436332312998582 1.83259571459405">
       <joint joint="mg400_j2_1" coef="1" />
@@ -144,6 +144,6 @@
     <position name="mg400_q1_position" joint="mg400_j1" kp="200" kv="8" ctrlrange="-2.79252680319093 2.79252680319093" forcerange="-20 20" />
     <position name="mg400_q2_position" joint="mg400_j2_1" kp="200" kv="4" ctrlrange="-0.436332312998582 1.48352986419518" forcerange="-20 20" />
     <position name="mg400_q3_position" tendon="mg400_q3" kp="200" kv="4" ctrlrange="-0.436332312998582 1.83259571459405" forcerange="-20 20" />
-    <position name="mg400_q4_position" joint="mg400_j5" kp="20" kv="0.5" ctrlrange="-2.79252680319093 2.79252680319093" forcerange="-3 3" />
+    <position name="mg400_q4_position" joint="mg400_j5" kp="20" kv="0.5" ctrlrange="-6.28318530717959 6.28318530717959" forcerange="-3 3" />
   </actuator>
 </mujoco>

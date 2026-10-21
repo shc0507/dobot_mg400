@@ -13,7 +13,7 @@
 over "World"
 {
     over "MG400" (
-        references = @./mg400_mirror.usda@
+        references = @./mg400_with_gripper.usd@
     )
     {
     }

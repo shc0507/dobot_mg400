@@ -25,7 +25,7 @@ def build_workspace(project_root=ROOT):
     stage.SetTimeCodesPerSecond(60)
     stage.SetFramesPerSecond(60)
     stage.OverridePrim("/World/MG400").GetReferences().SetReferences(
-        [Sdf.Reference("./mg400_mirror.usda")]
+        [Sdf.Reference("./mg400_with_gripper.usd")]
     )
     stage.OverridePrim("/World/physicsScene").SetActive(False)
     stage.GetRootLayer().Save()
@@ -53,9 +53,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=ROOT)
     args = parser.parse_args()
-    for filename in ("scene.usda", "mg400_mirror.usda"):
+    for filename in ("scene.usda", "mg400_with_gripper.usd"):
         if not (args.project_root / "isaacsim" / filename).is_file():
-            parser.error("Build the base and mirror assets first")
+            parser.error("Build the model with scripts/build_isaac_model.py first")
     build_workspace(args.project_root)
     print(f"Wrote {args.project_root / '00_OPEN_MG400.usda'} and isaacsim/workspace_scene.usda")
 

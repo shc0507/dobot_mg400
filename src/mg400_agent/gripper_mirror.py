@@ -1,4 +1,4 @@
-"""Display measured gripper positions in USD without physics or robot commands."""
+"""Display gripper positions in USD without robot commands."""
 
 import math
 from numbers import Real
@@ -17,8 +17,20 @@ def _frame(joint, index):
     return matrix
 
 
+def _set_transform(prim, matrix):
+    xform = UsdGeom.Xformable(prim)
+    attribute = prim.GetAttribute("xformOp:transform:mg400Mirror")
+    op = (
+        UsdGeom.XformOp(attribute)
+        if attribute
+        else xform.AddTransformOp(opSuffix="mg400Mirror")
+    )
+    op.Set(matrix)
+    xform.SetXformOpOrder([op])
+
+
 class JawMirror:
-    """Update only the two jaw bodies. Position 1000 is open. Position 0 is closed."""
+    """Update the gripper display. Position 1000 is open. Position 0 is closed."""
 
     def __init__(self, stage):
         if stage is None or not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1):
@@ -65,8 +77,11 @@ class JawMirror:
                 raise ValueError(f"The {side} jaw frames do not match the MG400 model.")
             self.jaws.append((jaw, local0, local1.GetInverse(), fingertip, direction))
 
-    def apply(self, position_0_1000):
-        """Apply a measured position. Return each jaw's displacement and the measured model gap."""
+    def apply(self, position_0_1000, flange_pose=None):
+        """Apply the jaw position and return its displacement and model gap.
+
+        An optional flange pose, relative to /World/MG400, also moves the housing.
+        """
         if (
             isinstance(position_0_1000, bool)
             or not isinstance(position_0_1000, Real)
@@ -78,18 +93,15 @@ class JawMirror:
             )
         q = TRAVEL_M * (1 - position_0_1000 / 1000)
         housing_pose = UsdGeom.Xformable(self.housing).GetLocalTransformation()
+        if flange_pose is not None:
+            mount = self.stage.GetPrimAtPath(ROOT.AppendPath("joints/pgea_housing_mount"))
+            housing_pose = _frame(mount, 1).GetInverse() * _frame(mount, 0) * flange_pose
         motion = Gf.Matrix4d().SetTranslate(Gf.Vec3d(0, q, 0))
         with Usd.EditContext(self.stage, self.stage.GetSessionLayer()):
+            if flange_pose is not None:
+                _set_transform(self.housing, housing_pose)
             for jaw, local0, inverse1, _, _ in self.jaws:
-                xform = UsdGeom.Xformable(jaw)
-                attribute = jaw.GetAttribute("xformOp:transform:mg400Mirror")
-                op = (
-                    UsdGeom.XformOp(attribute)
-                    if attribute
-                    else xform.AddTransformOp(opSuffix="mg400Mirror")
-                )
-                op.Set(inverse1 * motion * local0 * housing_pose)
-                xform.SetXformOpOrder([op])
+                _set_transform(jaw, inverse1 * motion * local0 * housing_pose)
         cache = UsdGeom.XformCache()
         inverse_housing = cache.GetLocalToWorldTransform(self.housing).GetInverse()
         inner_faces = []

@@ -11,8 +11,8 @@ from mg400_agent.joint_limits import (
     "joints",
     [
         (0, 0, 0, 0),
-        (-158.95, 0, 0, 158.95),
-        (158.95, 0, 0, -158.95),
+        (-158.95, 0, 0, 358.95),
+        (158.95, 0, 0, -358.95),
         (0, -23.95, 1, 0),
         (0, -17.95, 0, 0),
         (0, 83.95, 60, 0),
@@ -40,8 +40,8 @@ def test_accepts_inclusive_reference_boundaries(joints):
         ((0, 83.950001, 60, 0), "J2"),
         ((0, 0, -23.950001, 0), "J3"),
         ((0, 60, 103.950001, 0), "J3"),
-        ((0, 0, 0, -158.950001), "J4"),
-        ((0, 0, 0, 158.950001), "J4"),
+        ((0, 0, 0, -358.950001), "J4"),
+        ((0, 0, 0, 358.950001), "J4"),
         ((0, 0, 58.950001, 0), "J3-J2"),
         ((0, 58.950001, 0, 0), "J3-J2"),
     ],
@@ -94,6 +94,8 @@ def test_valid_endpoints_can_cross_invalid_conditional_range(reverse):
         ((0, -17.95, 5, 0), (0, -17.95, -5, 0)),
         ((0, -17.95, 0, 0), (0, -23, 5, 0)),
         ((0, 0, 0, 0), (0, 0, 0, 0)),
+        ((0, 14, 9, -200), (0, 14, 9, -201)),
+        ((0, 14, 9, 200), (0, 14, 9, 201)),
     ],
 )
 def test_accepts_complete_valid_segments_in_either_direction(start, end):
@@ -109,8 +111,8 @@ def test_segment_rejects_invalid_endpoint_before_interpolation():
 @pytest.mark.parametrize(
     "joints",
     [
-        (-160, 0, 0, 160),
-        (160, 0, 0, -160),
+        (-160, 0, 0, 360),
+        (160, 0, 0, -360),
         (0, -25, 1, 0),
         (0, -19, 0, 0),
         (0, 85, 60, 0),
@@ -137,11 +139,10 @@ def test_measured_angles_may_reach_raw_reference_boundaries(joints):
         ((0, 85.000001, 60, 0), "J2"),
         ((0, 0, -25.000001, 0), "J3"),
         ((0, 60, 105.000001, 0), "J3"),
-        ((0, 0, 0, -160.000001), "J4"),
-        ((0, 0, 0, 160.000001), "J4"),
+        ((0, 0, 0, -360.000001), "J4"),
+        ((0, 0, 0, 360.000001), "J4"),
         ((0, 0, 60.000001, 0), "J3-J2"),
         ((0, 60.000001, 0, 0), "J3-J2"),
-        ((0, 0, 0, 360), "J4"),
     ],
 )
 def test_measured_angles_reject_raw_range_violations(joints, joint):
@@ -153,3 +154,44 @@ def test_measured_angles_reject_raw_range_violations(joints, joint):
 def test_measured_angles_require_finite_numbers(value):
     with pytest.raises(ValueError, match="finite number"):
         validate_measured_joints((value, 0, 0, 0))
+
+
+
+@pytest.mark.parametrize("j4", [-358.95, -227.81, -200.71, 200.71, 227.81, 358.95])
+def test_j4_uses_manufacturer_range_without_normalizing_angles(j4):
+    joints = (0, 14, 9, j4)
+    assert validate_joints(joints) == joints
+    assert validate_measured_joints(joints) == joints
+
+
+@pytest.mark.parametrize("start, target", [
+    ((0, 14, 9, 359), (0, 14, 9, 358)),
+    ((0, 14, 9, -360), (0, 14, 9, -358)),
+    ((159, 14, 9, 0), (158, 14, 9, 0)),
+    ((-160, 14, 9, 0), (-158, 14, 9, 0)),
+    ((0, -19, 0, 0), (0, -17, 0, 0)),
+    ((0, 0, 59.5, 0), (0, 0, 58, 0)),
+])
+def test_measured_start_may_move_out_of_target_margin(start, target):
+    validate_measured_joints(start)
+    with pytest.raises(ValueError):
+        validate_joints(start)
+    assert validate_joint_segment(start, target) is None
+    with pytest.raises(ValueError):
+        validate_joint_segment(target, start)
+
+
+@pytest.mark.parametrize("start", [
+    (0, 14, 9, 360.01),
+    (-160.01, 14, 9, 0),
+    (0, -19.01, 0, 0),
+    (0, 0, 60.01, 0),
+])
+def test_segment_still_rejects_a_start_outside_raw_ranges(start):
+    with pytest.raises(ValueError):
+        validate_joint_segment(start, (0, 0, 0, 0))
+
+
+def test_segment_crossing_uses_raw_conditional_range():
+    # The crossing is J2=-19, J3=0. Both commanded endpoints retain their margins.
+    assert validate_joint_segment((0, -21, 5, 0), (0, -17, -5, 0)) is None

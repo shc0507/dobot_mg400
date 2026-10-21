@@ -40,6 +40,19 @@ def test_main_entry_opens_mirror_scene_without_python(stage):
     assert stage.GetPrimAtPath("/World/Ground").IsA(UsdGeom.Cube)
 
 
+def test_workspace_uses_the_model_without_an_extra_robot_layer(stage):
+    assert {
+        Path(layer.realPath).relative_to(ROOT).as_posix()
+        for layer in stage.GetUsedLayers()
+        if layer != stage.GetSessionLayer()
+    } == {
+        "00_OPEN_MG400.usda",
+        "isaacsim/workspace_scene.usda",
+        "isaacsim/scene.usda",
+        "isaacsim/mg400_with_gripper.usd",
+    }
+
+
 def test_mirror_scene_has_no_grasp_demo_parameters(stage):
     assert not stage.GetPrimAtPath("/World/physicsScene").IsActive()
     for prim in stage.Traverse():

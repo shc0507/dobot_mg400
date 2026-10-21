@@ -79,8 +79,16 @@ def test_articulation_topology_mass_and_drives(stage):
         if prim.IsA(UsdPhysics.RevoluteJoint)
     ]
     assert len(joints) == 8
-    assert sum(prim.IsA(UsdPhysics.FixedJoint) for prim in stage.Traverse()) == 3
+    assert sum(prim.IsA(UsdPhysics.FixedJoint) for prim in stage.Traverse()) == 4
+    assert sum(prim.IsA(UsdPhysics.PrismaticJoint) for prim in stage.Traverse()) == 2
+    assert {
+        prim.GetName()
+        for prim in stage.Traverse()
+        if prim.IsA(UsdPhysics.FixedJoint)
+        and UsdPhysics.Joint(prim).GetJointEnabledAttr().Get()
+    } == {"fixed_mg400_base_link", "fixed_mg400_link5", "fixed_mg400_link4_3"}
     for joint in joints:
+        assert joint.GetJointEnabledAttr().Get() is True
         source = DOCUMENT.find(f".//joint[@name='{joint.GetPrim().GetName()}']")
         limits = [math.degrees(float(value)) for value in source.get("range").split()]
         assert joint.GetLowerLimitAttr().Get() == pytest.approx(limits[0])
@@ -91,6 +99,29 @@ def test_articulation_topology_mass_and_drives(stage):
         assert drive.GetStiffnessAttr().Get() > 0
         assert drive.GetDampingAttr().Get() > 0
     assert not any(prim.HasAPI(UsdPhysics.CollisionAPI) for prim in stage.Traverse())
+
+
+def test_physics_parser_excludes_display_joints_from_the_arm(stage):
+    parsed = UsdPhysics.UsdPhysicsLoadStageFromPrimRange(stage, [Sdf.Path("/MG400")])
+    paths, articulations = parsed[UsdPhysics.ObjectType.Articulation]
+    assert list(paths) == [Sdf.Path("/MG400")]
+    assert len(articulations) == 1
+    assert set(articulations[0].articulatedJoints) == {
+        Sdf.Path("/MG400/joints/" + name)
+        for name in (
+            "fixed_mg400_base_link",
+            "fixed_mg400_link5",
+            "fixed_mg400_link4_3",
+            "mg400_j1",
+            "mg400_j2_1",
+            "mg400_j2_2",
+            "mg400_j3_1",
+            "mg400_j3_2",
+            "mg400_j4_1",
+            "mg400_j4_2",
+            "mg400_j5",
+        )
+    }
 
 
 def test_all_mesh_triangles_and_fingers_match_source(stage):
@@ -172,7 +203,14 @@ def test_joint_frames_reproduce_cad_chain_and_gripper_mount(stage, angles):
             poses[child] = pose
             if angles == (0, 0, 0, 0):
                 authored = UsdGeom.Xformable(stage.GetPrimAtPath(child)).GetLocalTransformation()
-                assert np.array(authored).T == pytest.approx(pose, abs=2e-8)
+                authored = np.array(authored).T
+                if child.name in ("pgea_housing", "pgea_left_jaw", "pgea_right_jaw"):
+                    # Display joint frames store rotation with single precision.
+                    assert authored[:3, :3] == pytest.approx(pose[:3, :3], abs=1e-7)
+                    assert authored[:, 3] == pytest.approx(pose[:, 3], abs=2e-8)
+                    assert authored[3, :3] == pytest.approx(pose[3, :3], abs=2e-8)
+                else:
+                    assert authored == pytest.approx(pose, abs=2e-8)
             UsdGeom.Xformable(stage.GetPrimAtPath(child)).GetOrderedXformOps()[0].Set(
                 Gf.Matrix4d(*pose.T.ravel())
             )

@@ -26,6 +26,7 @@ from pxr import Gf, UsdGeom, UsdPhysics
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from mg400_agent.gripper_mirror import JawMirror  # noqa: E402
 from mg400_agent.joint_limits import validate_joints  # noqa: E402
 from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 from mg400_agent.runtime_paths import data_path, export_scene  # noqa: E402
@@ -61,6 +62,10 @@ async def load_mg400() -> None:
 
         # Keep runtime edits out of the portable asset's source layers.
         stage.SetEditTarget(stage.GetSessionLayer())
+        jaw_mirror = JawMirror(stage)
+        inverse_root = UsdGeom.XformCache().GetLocalToWorldTransform(
+            stage.GetPrimAtPath("/World/MG400")
+        ).GetInverse()
         viewport = get_active_viewport()
         if viewport is not None:
             viewport.camera_path = "/World/Camera"
@@ -175,6 +180,11 @@ async def load_mg400() -> None:
             if abs(norm - 1) > 0.01:
                 raise RuntimeError("Isaac Sim returned an invalid flange quaternion")
             quaternion = flange[3:] / norm  # Tensor order: x, y, z, w.
+            flange_pose = Gf.Matrix4d(
+                Gf.Matrix3d(Gf.Quatd(quaternion[3], Gf.Vec3d(*quaternion[:3]))),
+                Gf.Vec3d(*flange[:3]),
+            )
+            jaw_mirror.apply(1000, flange_pose=flange_pose * inverse_root)
             orientation_deg = math.degrees(
                 2 * math.acos(float(np.clip(abs(np.dot(quaternion, expected_quaternion)), 0, 1)))
             )

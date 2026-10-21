@@ -67,6 +67,49 @@ def test_jaws_follow_fresh_housing_pose_without_changing_other_transforms(stage,
     }
 
 
+@pytest.mark.parametrize("position", [0, 500, 1000])
+def test_tensor_flange_pose_moves_only_display_parts_in_session_layer(stage, position):
+    mirror = JawMirror(stage)
+    sources = {
+        layer.identifier: layer.ExportToString()
+        for layer in stage.GetUsedLayers()
+        if layer != stage.GetSessionLayer()
+    }
+    edit_target = stage.GetEditTarget()
+    before = matrices(stage)
+    flange_path = f"{ROBOT}/mg400_end_effector_flange"
+    actual_flange = Gf.Matrix4d(
+        Gf.Matrix3d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), 65)),
+        Gf.Vec3d(0.1, 0.2, 0.4),
+    )
+    assert actual_flange != before[flange_path]
+    mount = before[f"{flange_path}/pgea_gripper"]
+    expected_housing = mount * actual_flange
+    q = 0.005 * (1 - position / 1000)
+    for _ in range(2):
+        result = mirror.apply(position, flange_pose=actual_flange)
+        assert result == pytest.approx({"q_m": q, "gap_m": 0.0119 - 2 * q}, abs=1e-9)
+        after = matrices(stage)
+        display_paths = JAW_PATHS | {f"{ROBOT}/pgea_housing"}
+        assert {p: m for p, m in after.items() if p not in display_paths} == {
+            p: m for p, m in before.items() if p not in display_paths
+        }
+        assert Gf.IsClose(after[f"{ROBOT}/pgea_housing"], expected_housing, 1e-7)
+        for side, direction in (("left", 1), ("right", -1)):
+            relative = after[f"{ROBOT}/pgea_{side}_jaw"] * expected_housing.GetInverse()
+            assert tuple(relative.ExtractTranslation()) == pytest.approx(
+                (0, direction * q, 0), abs=1e-9
+            )
+        for path in display_paths:
+            assert len(UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetOrderedXformOps()) == 1
+    assert stage.GetEditTarget() == edit_target
+    assert sources == {
+        layer.identifier: layer.ExportToString()
+        for layer in stage.GetUsedLayers()
+        if layer != stage.GetSessionLayer()
+    }
+
+
 @pytest.mark.parametrize(
     "position", [None, "500", True, False, float("nan"), float("inf"), -1, 1001, -0.01, 1000.01]
 )

@@ -19,6 +19,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade, Vt
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/mg400_agent/assets/mg400"
+JAW_TRAVEL = 0.005
 
 
 def numbers(element, name, default="0 0 0"):
@@ -131,6 +132,50 @@ def add_joint(stage, body, parent_path, child_path):
     joint.CreateCollisionEnabledAttr(False)
 
 
+def add_gripper(stage, document, mesh_files):
+    """Add separate jaws and joint frames for measured-position display."""
+    robot = Sdf.Path("/MG400")
+    flange = robot.AppendChild("mg400_end_effector_flange")
+    mount_path = flange.AppendChild("pgea_gripper")
+    mount = UsdGeom.Xformable(stage.GetPrimAtPath(mount_path)).GetLocalTransformation()
+    world = UsdGeom.XformCache().GetLocalToWorldTransform(stage.GetPrimAtPath(mount_path))
+    housing_path = robot.AppendChild("pgea_housing")
+    housing = UsdGeom.Xform.Define(stage, housing_path).GetPrim()
+    add_transform(housing, world)
+    fixed = UsdPhysics.FixedJoint.Define(stage, "/MG400/joints/pgea_housing_mount")
+    fixed.CreateBody0Rel().SetTargets([flange])
+    fixed.CreateBody1Rel().SetTargets([housing_path])
+    fixed.CreateLocalPos0Attr(Gf.Vec3f(mount.ExtractTranslation()))
+    fixed.CreateLocalRot0Attr(Gf.Quatf(mount.ExtractRotationQuat()))
+    fixed.CreateLocalPos1Attr(Gf.Vec3f(0))
+    fixed.CreateLocalRot1Attr(Gf.Quatf(1))
+    fixed.CreateCollisionEnabledAttr(False)
+    # The mirror reads these frames. PhysX must not attach the flange to a non-rigid node.
+    fixed.CreateJointEnabledAttr(False)
+
+    for side in ("left", "right"):
+        body_path = robot.AppendChild(f"pgea_{side}_jaw")
+        body = UsdGeom.Xform.Define(stage, body_path).GetPrim()
+        add_transform(body, world)
+        for geom_name in (f"visual_pgea_jaw_{side}", f"pgea_fingertip_{side}"):
+            stage.RemovePrim(mount_path.AppendChild(geom_name))
+            geom = document.find(f".//geom[@name='{geom_name}']")
+            add_geometry(stage, body_path, geom, mesh_files)
+        joint = UsdPhysics.PrismaticJoint.Define(stage, f"/MG400/joints/pgea_{side}_slide")
+        joint.CreateBody0Rel().SetTargets([housing_path])
+        joint.CreateBody1Rel().SetTargets([body_path])
+        joint.CreateAxisAttr("Y")
+        joint.CreateLowerLimitAttr(0)
+        joint.CreateUpperLimitAttr(JAW_TRAVEL)
+        orientation = Gf.Quatf(1) if side == "left" else Gf.Quatf(0, Gf.Vec3f(0, 0, 1))
+        joint.CreateLocalPos0Attr(Gf.Vec3f(0))
+        joint.CreateLocalRot0Attr(orientation)
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0))
+        joint.CreateLocalRot1Attr(orientation)
+        joint.CreateCollisionEnabledAttr(False)
+        joint.CreateJointEnabledAttr(False)
+
+
 def build_robot(source, output):
     document = ET.parse(source / "dynamics.xml").getroot()
     mesh_files = {
@@ -144,7 +189,7 @@ def build_robot(source, output):
     stage.SetDefaultPrim(root)
     UsdPhysics.ArticulationRootAPI.Apply(root)
     root.SetDocumentation(
-        "MG400 CAD articulation with fixed visual PGEA gripper. Metres, Z up. "
+        "MG400 CAD articulation with movable visual PGEA jaws. Metres, Z up. "
         "No contacts, payload inertia, jaw actuation or physical closed-loop constraints. "
         "Drive all eight joint coordinates using the four-axis controller mapping. See NOTICE.txt."
     )
@@ -179,6 +224,7 @@ def build_robot(source, output):
             add_body(child, path, world)
 
     add_body(document.find("worldbody/body"))
+    add_gripper(stage, document, mesh_files)
     stage.GetRootLayer().Save()
     return document
 
@@ -245,6 +291,22 @@ def main():
         "  The four controller axes must drive all eight joints using the mapping above.\n"
         "  USD angular joint limits and drive targets are degrees; Isaac articulation\n"
         "  runtime joint APIs use radians. Gripper and fingertips remain visual only.\n"
+        "  Separate jaw transforms contain the two jaw carriers and estimated fingertips.\n"
+        "  The builder removes the original fixed jaw instances. "
+        "The housing frame follows the flange.\n"
+        "  Two opposed prismatic joints define 0 to 0.005 m inward travel per jaw.\n"
+        "  Zero travel preserves the open CAD pose and reference frames.\n"
+        "  The builder disables housing and jaw joints in physics. "
+        "Mirror code reads their frames.\n"
+        "  The jaws have no rigid bodies, masses, force drives, "
+        "collision geometry or contact materials.\n"
+        "  The manufacturer specifies 10 mm total stroke for PGEA-2-10: https://en.dh-robotics.com/product/pgea\n"
+        "  The estimated fingertips have an inner gap of 0.0119 m when open.\n"
+        "  The gap is 0.0019 m at full inward travel. "
+        "These are model dimensions, not hardware measurements.\n"
+        "  workspace_scene.usda contains the robot, ground, lights and camera.\n"
+        "  Its physics scene is inactive. Keep the physics timeline stopped.\n"
+        "  These assets do not validate gripping performance or robot dynamics.\n"
     )
     (args.output / "NOTICE.txt").write_text(notice)
     print(f"Wrote mg400_with_gripper.usd, scene.usda, LICENSE and NOTICE.txt to {args.output}")

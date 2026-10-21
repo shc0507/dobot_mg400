@@ -75,9 +75,10 @@ Coordinates and control mapping:
   Playback must assign joints by name; their MuJoCo storage order follows the
   branched body tree. scene.xml retains the URDF's broad joint ranges, which
   must not be interpreted as the controller's safe operating limits.
-  dynamics.xml uses reference ranges from the pinned kinematics.hpp: q1 and q4
-  [-160,160], q2 [-25,85], q3 [-25,105], q3-q2 [-60,60] degrees, with dependent
-  joint ranges derived from the same mapping. The conditional q2 minimum of
+  dynamics.xml uses the MG400 User Guide range for q4: [-360,360] degrees.
+  Other reference ranges come from the pinned kinematics.hpp: q1 [-160,160],
+  q2 [-25,85], q3 [-25,105], q3-q2 [-60,60] degrees.
+  Dependent joint ranges follow the same mapping. The conditional q2 minimum of
   -19 degrees when q3 <= 0 and the source's 1.05 degree planning margin are not
   represented by the static MJCF limits; apply them when validating commands.
   These source ranges are uncalibrated references, not a hardware safety claim.
@@ -117,3 +118,15 @@ Isaac Sim USD export (2026-10-13):
   The four controller axes must drive all eight joints using the mapping above.
   USD angular joint limits and drive targets are degrees; Isaac articulation
   runtime joint APIs use radians. Gripper and fingertips remain visual only.
+  Separate jaw transforms contain the two jaw carriers and estimated fingertips.
+  The builder removes the original fixed jaw instances. The housing frame follows the flange.
+  Two opposed prismatic joints define 0 to 0.005 m inward travel per jaw.
+  Zero travel preserves the open CAD pose and reference frames.
+  The builder disables housing and jaw joints in physics. Mirror code reads their frames.
+  The jaws have no rigid bodies, masses, force drives, collision geometry or contact materials.
+  The manufacturer specifies 10 mm total stroke for PGEA-2-10: https://en.dh-robotics.com/product/pgea
+  The estimated fingertips have an inner gap of 0.0119 m when open.
+  The gap is 0.0019 m at full inward travel. These are model dimensions, not hardware measurements.
+  workspace_scene.usda contains the robot, ground, lights and camera.
+  Its physics scene is inactive. Keep the physics timeline stopped.
+  These assets do not validate gripping performance or robot dynamics.

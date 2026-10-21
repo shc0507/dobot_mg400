@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load MG400 + fixed PGEA visuals with Isaac Sim 5.1's standalone Python.
+"""Load MG400 with open PGEA jaws using Isaac Sim 5.1's standalone Python.
 
 Run with Isaac Sim's python.sh (Windows: python.bat), not this project's venv.
 This is coupled kinematic playback: every step sets all eight joint states.
@@ -53,7 +53,9 @@ def main() -> None:
         from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
         from isaacsim.core.utils.types import ArticulationAction
         from isaacsim.core.utils.viewports import set_camera_view
-        from pxr import UsdLux
+        from pxr import Gf, UsdGeom, UsdLux
+
+        from mg400_agent.gripper_mirror import JawMirror
 
         world = World(stage_units_in_meters=1.0, physics_dt=1 / 60, rendering_dt=1 / 60)
         world.get_physics_context().set_gravity(0.0)
@@ -63,6 +65,15 @@ def main() -> None:
             set_camera_view(eye=np.array([0.85, -0.85, 0.65]), target=np.array([0.17, 0, 0.2]))
         robot = world.scene.add(SingleArticulation(prim_path="/World/MG400", name="mg400"))
         world.reset()
+        jaw_mirror = None
+        if world.stage.GetPrimAtPath("/World/MG400/pgea_housing"):
+            jaw_mirror = JawMirror(world.stage)
+            inverse_root = UsdGeom.XformCache().GetLocalToWorldTransform(
+                world.stage.GetPrimAtPath("/World/MG400")
+            ).GetInverse()
+            flange_view = world.physics_sim_view.create_rigid_body_view(
+                "/World/MG400/mg400_end_effector_flange"
+            )
         names = ["mg400_" + name for name in JOINT_NAMES]
         if set(robot.dof_names) != set(names):
             raise RuntimeError(f"Expected eight MG400 joints; found {robot.dof_names}")
@@ -80,7 +91,16 @@ def main() -> None:
             robot.set_joint_positions(positions, joint_indices=indices)
             robot.set_joint_velocities(zeros, joint_indices=indices)
             robot.apply_action(ArticulationAction(joint_positions=positions, joint_indices=indices))
-            world.step(render=not args.headless)
+            world.step(render=False)
+            if jaw_mirror is not None:
+                flange = flange_view.get_transforms()[0].astype(float)
+                flange_pose = Gf.Matrix4d(
+                    Gf.Matrix3d(Gf.Quatd(flange[6], Gf.Vec3d(*flange[3:6]))),
+                    Gf.Vec3d(*flange[:3]),
+                )
+                jaw_mirror.apply(1000, flange_pose=flange_pose * inverse_root)
+            if not args.headless:
+                world.render()
             actual = robot.get_joint_positions(joint_indices=indices)
             if not np.isfinite(actual).all():
                 raise RuntimeError("Isaac Sim returned a non-finite joint state")

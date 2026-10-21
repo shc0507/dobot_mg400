@@ -85,12 +85,15 @@ def test_freshness_uses_monotonic_time_and_copies_samples(clocks):
 
 
 @pytest.mark.parametrize("sequence", [1, 2])
-def test_repeated_or_older_sequence_invalidates_freshness(clocks, sequence):
+def test_repeated_or_older_sequence_preserves_sample_without_refreshing_age(clocks, sequence):
     feedback = FeedbackState()
     assert feedback.receive(sample(seq=2))
+    clocks["monotonic"] = 10.5
     assert not feedback.receive(sample(seq=sequence, position=0))
-    assert feedback.get() is None
+    assert feedback.get() == sample(seq=2)
+    clocks["monotonic"] = 10.751
     assert not feedback.receive(sample(seq=2))
+    assert feedback.get() is None
     assert feedback.receive(sample(seq=3, position=500))
     assert feedback.get()["position"] == 500
 
@@ -100,10 +103,15 @@ def test_new_session_restarts_sequence_and_rejects_retired_session(clocks):
     assert feedback.receive(sample(seq=20))
     assert feedback.receive(sample(session=RESTART, seq=0, position=0))
     assert feedback.get()["position"] == 0
+    clocks["monotonic"] = 10.5
     assert not feedback.receive(sample(session=SESSION.upper(), seq=21))
+    assert feedback.get() == sample(session=RESTART, seq=0, position=0)
+    clocks["monotonic"] = 10.751
+    assert not feedback.receive(sample(session=SESSION, seq=22))
     assert feedback.get() is None
     assert feedback.receive(sample(session=RESTART, seq=1))
     assert not feedback.receive(sample(session=UUID(RESTART).hex, seq=1))
+    assert feedback.get() == sample(session=RESTART, seq=1)
 
 
 def test_invalid_new_session_does_not_retire_current_session(clocks):
@@ -142,7 +150,7 @@ def test_timestamp_limit_is_inclusive(clocks, offset):
         ("init", True),
         ("init", 1.0),
         ("state", -1),
-        ("state", 3),
+        ("state", 4),
         ("state", True),
         ("state", 1.0),
         ("position", -1),
@@ -178,8 +186,8 @@ def test_non_object_message_invalidates_freshness(clocks, payload):
     assert feedback.get() is None
 
 
-@pytest.mark.parametrize("state,position", [(0, 0), (1, 1000), (2, 500)])
-def test_valid_motion_and_contact_states_are_accepted(clocks, state, position):
+@pytest.mark.parametrize("state,position", [(0, 0), (1, 1000), (2, 500), (3, 1000)])
+def test_valid_motion_contact_and_drop_states_are_accepted(clocks, state, position):
     feedback = FeedbackState()
     payload = sample(state=state, position=position)
     assert feedback.receive(payload)
@@ -216,16 +224,27 @@ def test_initialization_diagnostic_enforces_sequence_and_session_order(clocks):
     assert not feedback.receive(sample(seq=21, init=0))
     assert feedback.diagnostic() is not None
     assert not feedback.receive(sample(seq=21, init=0))
-    assert feedback.diagnostic() is None
+    assert feedback.diagnostic() == "The gripper is not initialized."
     assert not feedback.receive(sample(seq=20))
     assert feedback.get() is None
     assert not feedback.receive(sample(session=RESTART, seq=0, init=2))
     assert feedback.diagnostic() == "Gripper initialization is in progress."
     assert not feedback.receive(sample(seq=22, init=0))
-    assert feedback.diagnostic() is None
+    assert feedback.diagnostic() == "Gripper initialization is in progress."
     assert not feedback.receive(sample(seq=22))
     assert feedback.get() is None
     assert feedback.receive(sample(session=RESTART, seq=1))
+
+
+def test_repeated_diagnostic_does_not_refresh_expiry(clocks):
+    feedback = FeedbackState()
+    assert not feedback.receive(sample(init=0))
+    clocks["monotonic"] = 10.5
+    assert not feedback.receive(sample(init=0))
+    assert feedback.diagnostic() == "The gripper is not initialized."
+    clocks["monotonic"] = 10.751
+    assert not feedback.receive(sample(init=0))
+    assert feedback.diagnostic() is None
 
 
 @pytest.mark.parametrize("changes", [

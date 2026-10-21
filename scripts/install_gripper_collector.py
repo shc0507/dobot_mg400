@@ -44,10 +44,12 @@ def render_units(repo, data_dir, python_executable="/usr/bin/python3"):
             "[Unit]\n"
             "Description=MG400 gripper feedback and position collector\n"
             f"RequiresMountsFor={mounts}\n"
+            "StartLimitIntervalSec=0\n"
             "\n[Service]\n"
             "Type=exec\n"
             f"ExecStart={command}\n"
-            "Restart=no\n"
+            "Restart=on-failure\n"
+            "RestartSec=2s\n"
         ),
         PATH_UNIT: (
             "[Unit]\n"

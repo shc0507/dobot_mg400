@@ -20,6 +20,7 @@ class FeedbackState:
 
     def receive(self, payload):
         """Return whether the sample can update position."""
+        previous = self._latest, self._diagnostic, self._received
         self._latest = self._diagnostic = self._received = None
         if not isinstance(payload, dict) or not isinstance(payload.get("session"), str):
             return False
@@ -30,9 +31,10 @@ class FeedbackState:
         sequence = payload.get("seq")
         if type(sequence) is not int or sequence < 0:
             return False
-        if session in self._retired_sessions:
-            return False
-        if session == self._session and sequence <= self._sequence:
+        if session in self._retired_sessions or (
+            session == self._session and sequence <= self._sequence
+        ):
+            self._latest, self._diagnostic, self._received = previous
             return False
         sent_at = payload.get("sent_at")
         if type(sent_at) not in (int, float):
@@ -47,7 +49,7 @@ class FeedbackState:
             value = payload.get(key)
             if type(value) is not int or not lower <= value <= upper:
                 return False
-        if payload["init"] == 1 and (payload["state"] > 2 or payload["position"] > 1000):
+        if payload["init"] == 1 and (payload["state"] > 3 or payload["position"] > 1000):
             return False
         control = payload.get("control")
         if control is not None:

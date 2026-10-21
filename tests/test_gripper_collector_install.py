@@ -34,7 +34,9 @@ def test_units_watch_one_request_and_start_one_command_capable_collector(module,
     assert set(units) == {module.SERVICE, module.PATH_UNIT}
     service, watch = units[module.SERVICE], units[module.PATH_UNIT]
     assert unit_value(service, "Type") == "exec"
-    assert unit_value(service, "Restart") == "no"
+    assert unit_value(service, "Restart") == "on-failure"
+    assert unit_value(service, "RestartSec") == "2s"
+    assert unit_value(service, "StartLimitIntervalSec") == "0"
     command = shlex.split(unit_value(service, "ExecStart"))
     assert command[0] == "/usr/bin/python3"
     assert str(repo / "scripts/gripper_feedback.py") in command

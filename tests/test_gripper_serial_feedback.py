@@ -188,6 +188,56 @@ def test_json_sequence_and_nonzero_exit_on_read_error(module, monkeypatch, capsy
     assert closed == [True]
 
 
+@pytest.mark.parametrize("locked", [False, True])
+def test_restart_after_disconnect_uses_new_session_without_replaying_commands(
+    module, monkeypatch, tmp_path, locked
+):
+    output = tmp_path / "feedback.json"
+    opened, closed = [], []
+
+    @contextlib.contextmanager
+    def connect():
+        fd = 42 + len(opened)
+        opened.append(fd)
+        try:
+            yield fd
+        finally:
+            closed.append(fd)
+
+    monkeypatch.setitem(module.run.__globals__, "connect", connect)
+    monkeypatch.setitem(
+        module.run.__globals__, "read",
+        Mock(side_effect=[(1, 1, 501), OSError(19, "No such device"),
+                          (1, 1, 501), SystemExit(0)]),
+    )
+    monkeypatch.setattr(module.time, "sleep", Mock())
+    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    send = Mock()
+    monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
+    argv = ["--output", str(output), "--commands"]
+    assert module.main(argv) == 1
+    before = json.loads(output.read_text())
+    request = dict(id=str(uuid.uuid4()), session=before["session"], sent_at=1000.0, position=502)
+    output.with_name(output.name + ".command.json").write_text(json.dumps(request))
+    lock = output.with_name(output.name + ".command-lock.json")
+    if locked:
+        lock.write_text(json.dumps({"command_id": request["id"], "target": 502}))
+
+    with pytest.raises(SystemExit) as stopped:
+        module.main(argv)
+    assert stopped.value.code == 0
+    after = json.loads(output.read_text())
+    assert after["session"] != before["session"]
+    assert after["seq"] == 1
+    assert after["position"] == 501
+    assert after["control"]["locked"] is locked
+    assert after["control"]["command_id"] is None
+    assert not after["control"]["ack"]
+    assert lock.exists() is locked
+    assert opened == closed == [42, 43]
+    send.assert_not_called()
+
+
 def linux_device(module, monkeypatch, tmp_path, name, identity):
     sys_tty = tmp_path / "sys/class/tty"
     dev = tmp_path / "dev"
@@ -440,8 +490,9 @@ def test_late_tail_before_next_request_prevents_another_write(module, monkeypatc
 
 
 @pytest.mark.parametrize("initial_mode", [0, 1])
+@pytest.mark.parametrize("initial_state", [1, 3])
 def test_position_disables_io_preserves_force_speed_and_checks_target(
-    module, monkeypatch, initial_mode
+    module, monkeypatch, initial_mode, initial_state
 ):
     values = {0x0101: 50, 0x0104: 30, 0x0402: initial_mode, 0x0103: 0}
     operations = []
@@ -452,7 +503,9 @@ def test_position_disables_io_preserves_force_speed_and_checks_target(
             values[address] = value
         return values[address]
 
-    monkeypatch.setitem(module.set_position.__globals__, "read", Mock(return_value=(1, 1, 0)))
+    monkeypatch.setitem(
+        module.set_position.__globals__, "read", Mock(return_value=(1, initial_state, 0))
+    )
     monkeypatch.setitem(module.set_position.__globals__, "register", register)
     module.set_position(42, 501)
     writes = [(address, value) for address, value in operations if value is not None]
@@ -461,7 +514,7 @@ def test_position_disables_io_preserves_force_speed_and_checks_target(
     assert values[0x0101] == 50 and values[0x0104] == 30
 
 
-@pytest.mark.parametrize("state", [(0, 1, 500), (1, 3, 500), (1, 1, 1001)])
+@pytest.mark.parametrize("state", [(0, 1, 500), (1, 4, 500), (1, 1, 1001)])
 def test_position_requires_valid_initialized_feedback_before_any_register_access(
     module, monkeypatch, state
 ):

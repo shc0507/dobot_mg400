@@ -191,7 +191,7 @@ def set_position(fd, position):
     if type(position) is not int or not 0 <= position <= 1000:
         raise ValueError("The target position must be an integer from 0 to 1000.")
     initialized, state, measured = read(fd)
-    if initialized != 1 or state not in (0, 1, 2) or not 0 <= measured <= 1000:
+    if initialized != 1 or state not in (0, 1, 2, 3) or not 0 <= measured <= 1000:
         raise RuntimeError("The gripper feedback is not ready for a position command.")
     force, speed = register(fd, 0x0101), register(fd, 0x0104)
     if not 20 <= force <= 100 or not 1 <= speed <= 100:

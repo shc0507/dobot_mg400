@@ -32,9 +32,15 @@ def prohibit_network(monkeypatch):
         socket, "create_connection", Mock(side_effect=AssertionError("Network prohibited"))
     )
     monkeypatch.setattr(socket, "socket", Mock(side_effect=AssertionError("Network prohibited")))
-    monkeypatch.setattr(socket, "getaddrinfo", Mock(return_value=[
-        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("robot.test", 29999)),
-    ]))
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        Mock(
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("robot.test", 29999)),
+            ]
+        ),
+    )
 
 
 @pytest.fixture
@@ -109,6 +115,78 @@ def test_construction_and_read_only_state_never_open_connections(rig):
     socket.create_connection.assert_not_called()
 
 
+def test_operation_scope_excludes_other_actions_and_finishes_only_once(rig):
+    control, _, _, commands = rig
+    guard = Mock()
+    active = control.begin_operation(send_guard=guard)
+    assert active.busy and control.busy
+    assert control.feedback_retention_reason() is not None
+    guard.assert_not_called()
+    with pytest.raises(RuntimeError, match="Another robot operation"):
+        control.begin_operation()
+    with pytest.raises(RuntimeError, match="Another robot operation"):
+        control.move(TARGET)
+    assert active.wait_for_command(timeout=0)
+    active.finish_operation()
+    assert not control.busy
+    assert control.feedback_retention_reason() is None
+
+    next_active = control.begin_operation()
+    active.finish_operation()
+    assert next_active.busy and control.busy
+    next_active.finish_operation()
+    assert not control.busy and not control.stopped
+    assert not commands
+
+
+def test_cancelled_parent_rejects_operation_without_leaking_lock(rig):
+    control, _, _, commands = rig
+    control.cancel()
+    with pytest.raises(RuntimeError, match="Control has been stopped"):
+        control.begin_operation()
+    assert not control.busy
+    assert control.feedback_retention_reason() is not None
+    assert not commands
+
+
+def test_finished_child_stop_keeps_parent_stop_independent(rig, monkeypatch):
+    control, _, _, commands = rig
+    active = control.begin_operation()
+    monkeypatch.setattr(active, "_command", control._command)
+    assert active.stop_after_command()["ok"]
+    assert control.feedback_retention_reason() is not None  # Operation still owns the lock.
+    active.finish_operation()
+    assert not control.stopped
+    assert control.feedback_retention_reason() is None
+    assert control.stop()["ok"]
+    assert control.feedback_retention_reason() is None
+    assert commands == [("ResetRobot()", 29999), ("ResetRobot()", 29999)]
+
+
+def test_failed_child_stop_remains_visible_after_parent_stop(rig, monkeypatch):
+    control, _, _, commands = rig
+    active = control.begin_operation()
+    monkeypatch.setattr(active, "_command", Mock(side_effect=ConnectionError("Lost stop reply")))
+    assert not active.stop_after_command()["ok"]
+    active.finish_operation()
+    reason = control.feedback_retention_reason()
+    assert "Lost stop reply" in reason
+    assert control.stop()["ok"]
+    assert control.feedback_retention_reason() == reason
+    assert commands == [("ResetRobot()", 29999)]
+
+
+def test_disable_confirmation_still_requires_separate_stationary_check(rig, monkeypatch):
+    control, _, _, _ = rig
+    assert control.disable().mode == 4
+    assert control.feedback_retention_reason() is None
+    monkeypatch.setattr(control, "_wait_stable", Mock(side_effect=TimeoutError("Still drifting")))
+    with pytest.raises(TimeoutError, match="Still drifting"):
+        control.verify_stationary()
+    # The verdict describes command state. It cannot replace the rest check.
+    assert control.feedback_retention_reason() is None
+
+
 @pytest.mark.parametrize("mode", [4, 5, 7])
 def test_read_pose_uses_explicit_zero_frames_without_mutation(cartesian_rig, mode):
     control, sample, _, commands, _ = cartesian_rig
@@ -117,9 +195,7 @@ def test_read_pose_uses_explicit_zero_frames_without_mutation(cartesian_rig, mod
     assert commands == [("GetPose(0,0)", 29999)]
 
 
-def test_pose_measurement_records_query_start_and_both_feedback_samples(
-    cartesian_rig, monkeypatch
-):
+def test_pose_measurement_records_query_start_and_both_feedback_samples(cartesian_rig, monkeypatch):
     control, sample, now, commands, _ = cartesian_rig
     before = sample[0]
     started = now[0]
@@ -170,9 +246,7 @@ def test_read_pose_checks_feedback_freshness_before_and_after_query(rig, monkeyp
 def test_solve_pose_checks_ik_without_sending_motion(cartesian_rig):
     control, sample, _, commands, pose = cartesian_rig
     assert control.solve_pose(LINEAR_TARGET) == TARGET
-    assert commands == [
-        ("InverseSolution(251.000000,10.000000,40.000000,23.780000,0,0)", 29999)
-    ]
+    assert commands == [("InverseSolution(251.000000,10.000000,40.000000,23.780000,0,0)", 29999)]
     assert sample[0].joints_deg == START
     assert pose[0] == POSE
     assert not control.busy
@@ -280,9 +354,7 @@ def test_rejected_linear_target_can_be_corrected_without_stopping_control(
 
 
 @pytest.mark.parametrize("code", [-2, -10000, 1])
-def test_inverse_error_codes_other_than_unreachable_remain_faults(
-    cartesian_rig, monkeypatch, code
-):
+def test_inverse_error_codes_other_than_unreachable_remain_faults(cartesian_rig, monkeypatch, code):
     control, _, _, commands, _ = cartesian_rig
     original = control._command
 
@@ -378,9 +450,7 @@ def test_inverse_rejection_with_unconfirmed_stationary_state_remains_a_fault(
         RuntimeError("Unexpected controller response: -1,{0,0,0,0},WrongCommand();"),
     ],
 )
-def test_inverse_protocol_failure_still_stops_control(
-    cartesian_rig, monkeypatch, failure
-):
+def test_inverse_protocol_failure_still_stops_control(cartesian_rig, monkeypatch, failure):
     control, _, _, commands, _ = cartesian_rig
     original = control._command
 
@@ -595,6 +665,153 @@ def test_successful_disable_allows_explicit_enable_on_fresh_controller(rig, monk
     assert mutations == ["DisableRobot()", "EnableRobot()", MOVE]
 
 
+@pytest.mark.parametrize("jitter_deg", [0.024, 0.026])
+@pytest.mark.parametrize("jitter_stage", ["precheck", "after_command"])
+def test_enable_after_disable_verifies_fresh_feedback_stationarity(
+    rig,
+    monkeypatch,
+    jitter_deg,
+    jitter_stage,
+):
+    control, sample, now, commands = rig
+    settled = False
+
+    def feedback():
+        jitter_active = not settled and (
+            jitter_stage == "precheck" or ("EnableRobot()", 29999) in commands
+        )
+        offset = jitter_deg if jitter_active and int((now[0] - 10.0) / 0.1) % 2 else 0.0
+        sample[0] = Feedback((*START[:3], START[3] + offset), sample[0].mode, 0, False)
+        return sample[0], now[0]
+
+    control.feedback_snapshot = feedback
+    assert control.disable().mode == 4
+    fresh_control = JointControl(control.host, control.feedback_snapshot)
+    monkeypatch.setattr(fresh_control, "_command", control._command)
+
+    if jitter_deg < 0.025:
+        assert fresh_control.enable().mode == 5
+        assert not fresh_control.stopped
+        expected_mutations = ["DisableRobot()", "EnableRobot()"]
+    elif jitter_stage == "precheck":
+        with pytest.raises(PreparationRejectedError, match="Wait until the robot") as failure:
+            fresh_control.enable()
+        diagnostic = str(failure.value.__cause__)
+        assert "joint_span_deg=(0.0, 0.0, 0.0, 0.026)" in diagnostic
+        assert not fresh_control.stopped and not fresh_control.busy
+        assert fresh_control._pending is None and fresh_control._stop_result is None
+        assert not any(text in {"EnableRobot()", "ResetRobot()"} for text, _ in commands)
+        settled = True
+        assert fresh_control.enable().mode == 5
+        assert not fresh_control.stopped
+        expected_mutations = ["DisableRobot()", "EnableRobot()"]
+    else:
+        with pytest.raises(RuntimeError) as failure:
+            fresh_control.enable()
+        diagnostic = str(failure.value)
+        assert diagnostic.startswith("Robot did not reach a fresh, verified stationary state")
+        assert diagnostic.count("Robot did not reach a fresh, verified stationary state") == 2
+        assert "physical stop not confirmed" in diagnostic
+        assert diagnostic.endswith("use the physical emergency stop")
+        assert "joint_span_deg=(0.0, 0.0, 0.0, 0.026)" in diagnostic
+        assert fresh_control.stopped
+        assert not fresh_control.stop()["stationary_verified"]
+        assert "stage=after EnableRobot()" in diagnostic
+        assert fresh_control._pending["sent"] and fresh_control._pending["ok"]
+        expected_mutations = ["DisableRobot()", "EnableRobot()", "ResetRobot()"]
+
+    assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == (
+        expected_mutations
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "stale",
+        "alarm",
+        "mode",
+        "source_difference",
+        "cancelled",
+        "disabling",
+        "uncertain",
+        "parent_uncertain",
+        "new_pending",
+        "prior_pending",
+    ],
+)
+def test_disabled_stationary_timeout_rechecks_safety_before_allowing_retry(rig, monkeypatch, fault):
+    control, sample, now, commands = rig
+    if fault == "parent_uncertain":
+        parent = control
+        control = JointControl(parent.host, parent.feedback_snapshot, parent=parent)
+        monkeypatch.setattr(control, "_command", parent._command)
+    sample[0] = Feedback(START, 4, 0, False)
+    pending = {"done": threading.Event(), "sent": True, "ok": False}
+    if fault == "prior_pending":
+        control._pending = pending
+
+    def feedback():
+        offset = 0.026 if int((now[0] - 10.0) / 0.1) % 2 else 0.0
+        sample[0] = Feedback((*START[:3], START[3] + offset), 4, 0, False)
+        return sample[0], now[0]
+
+    control.feedback_snapshot = feedback
+    original_command = control._command
+    mode_reads = 0
+
+    def command(text, *args, **kwargs):
+        nonlocal mode_reads
+        result = original_command(text, *args, **kwargs)
+        if text == "RobotMode()":
+            mode_reads += 1
+            if mode_reads == 2 and fault == "mode":
+                return "5"
+        if mode_reads == 2:
+            if text == "GetErrorID()" and fault == "alarm":
+                return "[[1],[],[],[],[]]"
+            if text == "GetAngle()":
+                if fault == "stale":
+                    control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
+                if fault == "source_difference":
+                    return ",".join(map(str, (*START[:3], START[3] + 0.2, 0, 0)))
+                if fault in {"cancelled", "disabling"}:
+                    control.cancel(disabling=fault == "disabling")
+                if fault == "uncertain":
+                    control._stop_uncertain = True
+                if fault == "parent_uncertain":
+                    parent._stop_uncertain = True
+                if fault == "new_pending":
+                    control._pending = pending
+        return result
+
+    monkeypatch.setattr(control, "_command", command)
+    with pytest.raises((RuntimeError, TimeoutError)) as failure:
+        control.enable()
+    assert not isinstance(failure.value, PreparationRejectedError)
+    assert control.stopped
+    assert ("EnableRobot()", 29999) not in commands
+    assert (("ResetRobot()", 29999) in commands) is (fault != "disabling")
+
+
+def test_disabled_precheck_does_not_treat_other_timeouts_as_stationary_rejections(rig, monkeypatch):
+    control, sample, _, commands = rig
+    sample[0] = Feedback(START, 4, 0, False)
+    original_wait = control._wait_stable
+
+    def wait(*args, **kwargs):
+        if not kwargs.get("stopping"):
+            raise TimeoutError("Unrelated timeout")
+        return original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(control, "_wait_stable", wait)
+    with pytest.raises(TimeoutError, match="Unrelated timeout"):
+        control.enable()
+    assert control.stopped
+    assert ("EnableRobot()", 29999) not in commands
+    assert ("ResetRobot()", 29999) in commands
+
+
 @pytest.mark.parametrize("action", ["enable", "move"])
 def test_disable_cancels_active_operation_without_competing_failure_stop(rig, monkeypatch, action):
     control, sample, _, commands = rig
@@ -663,10 +880,20 @@ def test_concurrent_disable_sends_once_and_returns_same_result(rig, monkeypatch)
     assert [text for text, _ in commands].count("DisableRobot()") == 1
 
 
-@pytest.mark.parametrize("failure", [
-    "ack", "rejected_ack", "enabled", "dashboard", "feedback", "alarm",
-    "dashboard_alarm", "final_mode", "final_feedback",
-])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "ack",
+        "rejected_ack",
+        "enabled",
+        "dashboard",
+        "feedback",
+        "alarm",
+        "dashboard_alarm",
+        "final_mode",
+        "final_feedback",
+    ],
+)
 def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, monkeypatch, failure):
     control, sample, now, commands = rig
     original_command = control._command
@@ -714,7 +941,9 @@ def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, mon
 
 @pytest.mark.parametrize("settles_after_reset", [False, True])
 def test_disable_after_confirmed_stop_requires_new_stop_verification(
-    rig, monkeypatch, settles_after_reset,
+    rig,
+    monkeypatch,
+    settles_after_reset,
 ):
     control, sample, now, commands = rig
     previous_stop = control.stop()
@@ -785,13 +1014,13 @@ def test_disable_during_drift_does_not_allow_enable_or_prove_rest(rig, monkeypat
 
     fresh_control = JointControl(control.host, control.feedback_snapshot)
     monkeypatch.setattr(fresh_control, "_command", control._command)
-    with pytest.raises(RuntimeError, match="stationary state"):
+    with pytest.raises(PreparationRejectedError, match="not verified stationary"):
         fresh_control.enable()
-    assert fresh_control.stopped
-    assert not fresh_control.stop()["stationary_verified"]
+    assert not fresh_control.stopped
+    assert fresh_control._stop_result is None
     assert "EnableRobot()" not in [text for text, _ in commands]
     assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == [
-        "DisableRobot()", "ResetRobot()",
+        "DisableRobot()",
     ]
 
 
@@ -952,8 +1181,29 @@ def test_dashboard_rejects_alarm_or_malformed_error_state(rig, monkeypatch, erro
 def test_repeated_same_receipt_cannot_confirm_arrival(rig, monkeypatch):
     control, sample, _, _ = rig
     monkeypatch.setattr(control, "_fresh", lambda modes: (sample[0], 10.0))
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError) as failure:
         control._wait_stable(START, modes={5}, final_modes={5}, timeout=0.5)
+    assert "samples=1" in str(failure.value)
+    assert "longest_stable_s=0.000" in str(failure.value)
+
+
+def test_stationary_timeout_reports_observed_joint_span_and_stable_dwell(rig, monkeypatch):
+    control, _, now, _ = rig
+
+    def fresh(modes):
+        step = int((now[0] - 10.0 + 0.000001) / 0.1)
+        offset = (0.0, 0.01, 0.03, 0.04)[step]
+        return Feedback((*START[:3], START[3] + offset), 4, 0, False), 10.0 + step * 0.1
+
+    monkeypatch.setattr(control, "_fresh", fresh)
+    with pytest.raises(TimeoutError) as failure:
+        control._wait_stable(modes={4}, final_modes={4}, timeout=0.36)
+    diagnostic = str(failure.value)
+    assert "samples=4" in diagnostic
+    assert "joint_span_deg=(0.0, 0.0, 0.0, 0.04)" in diagnostic
+    assert "longest_stable_s=0.100" in diagnostic
+    assert "required_stable_s=0.4" in diagnostic
+    assert "tolerance_deg=0.025" in diagnostic
 
 
 def test_arrival_requires_stable_dwell_and_final_idle_mode(rig, monkeypatch):
@@ -1021,8 +1271,16 @@ def test_fault_during_pending_ack_requests_stop_without_retry(rig, monkeypatch):
         assert not release.is_set()
         assert control.stopped
         assert "unresolved" in control.stop()["error"]
+        assert not control.busy
+        assert control.command_pending
+        assert not control.wait_for_command(timeout=0)
+        reason = control.feedback_retention_reason()
+        assert reason is not None
     finally:
         release.set()
+        assert control.wait_for_command()
+    assert not control.command_pending
+    assert control.feedback_retention_reason() == reason
 
 
 def test_late_mutation_ack_cannot_clear_unknown_stop_ordering(rig, monkeypatch):
@@ -1055,6 +1313,55 @@ def socket_for(monkeypatch, parts):
     monkeypatch.setattr(socket, "create_connection", Mock(return_value=connection))
     monkeypatch.setattr(socket, "socket", Mock(return_value=connection))
     return connection
+
+
+def test_delayed_pose_poll_after_failed_stop_never_reconnects(monkeypatch):
+    connection = socket_for(monkeypatch, [b"", b"0,{250,10,40,23.78},GetPose(0,0);"])
+    control = JointControl("robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic()))
+    assert not control.stop()["ok"]
+    with pytest.raises(DashboardQueryCancelledError):
+        control.read_pose()
+    socket.socket.assert_not_called()
+    assert connection.sendall.call_args_list == [call(b"ResetRobot()")]
+
+
+def test_pose_poll_preserves_child_stop_failure_after_parent_stop_succeeds(monkeypatch):
+    connection = socket_for(
+        monkeypatch,
+        [
+            b"",
+            b"0,{},ResetRobot();",
+            b"0,{250,10,40,23.78},GetPose(0,0);",
+        ],
+    )
+    control = JointControl("robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic()))
+    child = control.begin_operation()
+    assert not child.stop()["ok"]
+    child.finish_operation()
+    assert control.stop()["ok"]
+    assert control.feedback_retention_reason() is not None
+    with pytest.raises(DashboardQueryCancelledError):
+        control.read_pose()
+    socket.socket.assert_not_called()
+    assert connection.sendall.call_args_list == [call(b"ResetRobot()"), call(b"ResetRobot()")]
+
+
+@pytest.mark.parametrize("phase", ("before", "dns", "connect"))
+def test_pose_poll_rechecks_cancellation_before_connect_and_send(monkeypatch, phase):
+    connection = socket_for(monkeypatch, [b"0,{250,10,40,23.78},GetPose(0,0);"])
+    control = JointControl("robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic()))
+    if phase == "before":
+        control.cancel()
+    elif phase == "dns":
+        addresses = socket.getaddrinfo.return_value
+        socket.getaddrinfo.side_effect = lambda *args: (control.cancel(), addresses)[1]
+    else:
+        connection.connect_ex.side_effect = lambda *args: (control.cancel(), 0)[1]
+    with pytest.raises(DashboardQueryCancelledError):
+        control.read_pose_measurement()
+    connection.sendall.assert_not_called()
+    if phase != "connect":
+        socket.socket.assert_not_called()
 
 
 def test_transport_reassembles_reply_without_binding_host_source_ip(monkeypatch):
@@ -1157,7 +1464,9 @@ def test_dashboard_lock_wait_is_bounded_without_opening_another_connection(monke
 @pytest.mark.parametrize("stop_command", ["ResetRobot()", "DisableRobot()"])
 @pytest.mark.parametrize("phase", ["connect", "send", "recv", "recv_eof"])
 def test_child_stop_interrupts_parent_query_and_closes_before_reconnecting(
-    monkeypatch, stop_command, phase,
+    monkeypatch,
+    stop_command,
+    phase,
 ):
     entered, closed = threading.Event(), threading.Event()
     failures, events = [], []
@@ -1255,8 +1564,11 @@ def test_stop_does_not_interrupt_pending_dashboard_mutation_ack(monkeypatch):
     sample = Feedback(START, 5, 0, False)
     control = JointControl("robot.test", lambda: (sample, time.monotonic()), command_timeout=0.05)
     pending = {
-        "sent": False, "send_modes": {5}, "expected": START,
-        "done": threading.Event(), "ok": False,
+        "sent": False,
+        "send_modes": {5},
+        "expected": START,
+        "done": threading.Event(),
+        "ok": False,
     }
     control._pending = pending
     failures = []
@@ -1365,12 +1677,24 @@ def test_stop_interrupts_real_loopback_tcp_query(monkeypatch):
     query_received, query_closed = threading.Event(), threading.Event()
     failures, commands = [], []
     monkeypatch.setattr(socket, "socket", REAL_SOCKET)
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: REAL_GETADDRINFO(
-        address[0], address[1], 0, socket.SOCK_STREAM,
-    ))
-    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: REAL_CREATE_CONNECTION(
-        address, timeout=kwargs["timeout"],
-    ))
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args: REAL_GETADDRINFO(
+            address[0],
+            address[1],
+            0,
+            socket.SOCK_STREAM,
+        ),
+    )
+    monkeypatch.setattr(
+        socket,
+        "create_connection",
+        lambda *args, **kwargs: REAL_CREATE_CONNECTION(
+            address,
+            timeout=kwargs["timeout"],
+        ),
+    )
 
     def server():
         try:
@@ -1457,9 +1781,7 @@ def test_stop_dashboard_connection_does_not_wait_for_motion_ack(monkeypatch):
         return Connection(address[1])
 
     monkeypatch.setattr(socket, "create_connection", connect)
-    control = JointControl(
-        "robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic())
-    )
+    control = JointControl("robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic()))
     pending = {"sent": False, "send_modes": {5}, "expected": START}
 
     def move():
@@ -1616,10 +1938,20 @@ def test_enable_accepts_a_new_settled_position_only_while_disabled(rig, monkeypa
         assert control.stop()["stationary_verified"]
 
 
-@pytest.mark.parametrize("fault", [
-    "dashboard_mode", "passive_mode", "alarm", "stale", "dashboard_angles",
-    "passive_angles", "both_angles", "source_difference", "cancelled",
-])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "dashboard_mode",
+        "passive_mode",
+        "alarm",
+        "stale",
+        "dashboard_angles",
+        "passive_angles",
+        "both_angles",
+        "source_difference",
+        "cancelled",
+    ],
+)
 def test_disabled_preflight_rechecks_settled_state_before_enable(rig, monkeypatch, fault):
     control, sample, now, commands = rig
     sample[0] = Feedback(START, 4, 0, False)
@@ -1655,11 +1987,16 @@ def test_disabled_preflight_rechecks_settled_state_before_enable(rig, monkeypatc
         return result
 
     monkeypatch.setattr(control, "_command", command)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(PreparationRejectedError if fault == "both_angles" else RuntimeError):
         control.enable()
     assert mode_reads == 2
     assert ("EnableRobot()", 29999) not in commands
-    assert control.stopped
+    if fault == "both_angles":
+        assert not control.stopped
+        assert ("ResetRobot()", 29999) not in commands
+        assert control.enable().mode == 5
+    else:
+        assert control.stopped
 
 
 def test_disabled_preflight_still_rejects_initial_source_mismatch(rig, monkeypatch):
@@ -1706,17 +2043,23 @@ def test_joint_move_accepts_j4_within_manufacturer_range(rig):
     target = (*START[:3], -199.0)
     assert control.move(target).joints_deg == target
     assert (
-        "JointMovJ(0.700000,0.040000,0.520000,-199.000000,SpeedJ=5,AccJ=5)", 30003,
+        "JointMovJ(0.700000,0.040000,0.520000,-199.000000,SpeedJ=5,AccJ=5)",
+        30003,
     ) in commands
     assert not any(text.startswith(("Enable", "ClearError", "Reset")) for text, _ in commands)
     assert not control.stopped
 
 
 @pytest.mark.parametrize("failure_type", [TimeoutError, ConnectionError])
-@pytest.mark.parametrize("method,query", [
-    ("enable", "RobotMode("), ("move", "GetAngle("),
-    ("move_linear", "GetPose("), ("move_linear", "InverseSolution("),
-])
+@pytest.mark.parametrize(
+    "method,query",
+    [
+        ("enable", "RobotMode("),
+        ("move", "GetAngle("),
+        ("move_linear", "GetPose("),
+        ("move_linear", "InverseSolution("),
+    ],
+)
 def test_read_only_preparation_query_failure_can_retry_same_control(
     cartesian_rig, monkeypatch, method, query, failure_type
 ):
@@ -1737,8 +2080,9 @@ def test_read_only_preparation_query_failure_can_retry_same_control(
     args = () if method == "enable" else (TARGET if method == "move" else LINEAR_TARGET,)
     with pytest.raises(PreparationRejectedError, match="Retry the action"):
         getattr(control, method)(*args)
-    assert not any(text.startswith(("Enable", "JointMovJ", "MovL", "Reset"))
-                   for text, _ in commands)
+    assert not any(
+        text.startswith(("Enable", "JointMovJ", "MovL", "Reset")) for text, _ in commands
+    )
     assert control._pending is None
     assert not control.stopped and not control.busy and not control._stop_uncertain
     assert getattr(control, method)(*args).mode == 5
@@ -1768,9 +2112,7 @@ def test_query_failure_after_prior_successful_move_can_retry(cartesian_rig, monk
 
 
 @pytest.mark.parametrize("change", ["alarm", "moving", "disabled", "stale", "joints"])
-def test_preparation_query_failure_with_changed_feedback_still_latches(
-    rig, monkeypatch, change
-):
+def test_preparation_query_failure_with_changed_feedback_still_latches(rig, monkeypatch, change):
     control, sample, now, commands = rig
     original = control._command
 
@@ -1782,7 +2124,8 @@ def test_preparation_query_failure_with_changed_feedback_still_latches(
                 sample[0] = Feedback(
                     (START[0] + 0.2, *START[1:]) if change == "joints" else START,
                     7 if change == "moving" else 4 if change == "disabled" else 5,
-                    0, change == "alarm",
+                    0,
+                    change == "alarm",
                 )
             raise TimeoutError("Query lost")
         return original(text, *args, **kwargs)

@@ -20,6 +20,7 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+from mg400_agent.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400_agent.feedback import FeedbackConnection  # noqa: E402
 from mg400_agent.kinematics import JOINT_NAMES, joint_angles  # noqa: E402
 from mg400_agent.robot_config import load_robot_host  # noqa: E402
@@ -136,6 +137,8 @@ class UsdPoseMirror:
 class LiveMirror:
     def __init__(self, show_window=True):
         self.host = load_robot_host(ROBOT_CONFIG)
+        self.ownership = ControllerOwnership(self.host)
+        self.control_owner = None
         self.show_window = show_window
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -180,18 +183,19 @@ class LiveMirror:
         temporary.replace(REPORT)
 
     async def run(self):
-        import omni.kit.app
-        import omni.timeline
-        import omni.ui as ui
-        import omni.usd
-        from isaacsim.core.simulation_manager import SimulationManager
-
-        app = omni.kit.app.get_app()
-        context = omni.usd.get_context()
-        timeline = omni.timeline.get_timeline_interface()
         worker = None
         label = angles_label = details = None
         try:
+            import omni.kit.app
+            import omni.timeline
+            import omni.ui as ui
+            import omni.usd
+            from isaacsim.core.simulation_manager import SimulationManager
+
+            app = omni.kit.app.get_app()
+            context = omni.usd.get_context()
+            timeline = omni.timeline.get_timeline_interface()
+            self.ownership.acquire()
             stage = context.get_stage()
             # Validate before any scene changes. Never replace the user's stage.
             UsdPoseMirror(stage)
@@ -332,6 +336,8 @@ class LiveMirror:
                 # The worker has a bounded one-second read; do not block Kit's UI.
                 while worker.is_alive():
                     await app.next_update_async()
+            if self.control_owner is None:
+                self.ownership.release()
             if label is not None:
                 label.text = "STOPPED — displayed pose is no longer live"
             if details is not None:
@@ -349,12 +355,17 @@ async def start(show_window=True):
     async with lock:
         old = getattr(builtins, SINGLETON, None)
         if old:
+            if getattr(old, "control_owner", None) is not None:
+                raise RuntimeError(
+                    "The control panel owns synchronization. Stop sync from that panel."
+                )
             old.stop("Replaced by a new mirror instance")
             if old.task:
                 await old.task
             if old.window:
                 old.window.destroy()
         mirror = LiveMirror(show_window=show_window)
+        mirror.ownership.acquire()
         setattr(builtins, SINGLETON, mirror)
         mirror.task = asyncio.ensure_future(mirror.run())
 

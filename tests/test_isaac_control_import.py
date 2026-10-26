@@ -114,10 +114,7 @@ def test_control_source_reload_replaces_legacy_code_and_preserves_feedback(tmp_p
     legacy = tmp_path / "legacy" if cache == "legacy_path" else root
     old_sources = {
         "controller_protocol.py": "def parse_controller_response(*args): pass\n",
-        "joint_control.py": (
-            "class JointControl:\n"
-            "    def __init__(self, host, snapshot): pass\n"
-        ),
+        "joint_control.py": ("class JointControl:\n    def __init__(self, host, snapshot): pass\n"),
         "keyboard_jog.py": "class KeyboardJogSession: pass\n",
         "gripper_feedback.py": "class FeedbackState: pass\n",
     }
@@ -127,8 +124,13 @@ def test_control_source_reload_replaces_legacy_code_and_preserves_feedback(tmp_p
         package_dir = directory / "src/mg400_agent"
         package_dir.mkdir(parents=True)
         for filename in (
-            "__init__.py", "feedback.py", "joint_limits.py", "config.py",
-            "robot_config.py", "runtime_paths.py", *old_sources,
+            "__init__.py",
+            "feedback.py",
+            "joint_limits.py",
+            "config.py",
+            "robot_config.py",
+            "runtime_paths.py",
+            *old_sources,
         ):
             shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
     for filename, source in old_sources.items():
@@ -230,7 +232,7 @@ assert state["backend"].TargetRejectedError.__module__ == "mg400_agent.joint_con
 protocol = sys.modules["mg400_agent.controller_protocol"]
 assert state["backend"].ControllerCommandError is protocol.ControllerCommandError
 jog = sys.modules["mg400_agent.keyboard_jog"]
-assert jog.JointControl is state["JointControl"]
+assert jog.joint_control.JointControl is state["JointControl"]
 assert jog.TargetRejectedError is state["backend"].TargetRejectedError
 assert sys.modules["mg400_agent"] is package
 assert sys.modules["mg400_agent.feedback"] is feedback

@@ -20,12 +20,34 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("pxr")
 from pxr import Gf, Sdf, Usd, UsdGeom  # noqa: E402
 
+from mg400_agent.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400_agent.feedback import Feedback  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = runpy.run_path(str(ROOT / "apps/isaacsim/mirror.py"), run_name="test_mirror")
 UsdPoseMirror = MODULE["UsdPoseMirror"]
 LiveMirror = MODULE["LiveMirror"]
+
+
+@pytest.fixture(autouse=True)
+def isolated_controller_locks(monkeypatch, tmp_path):
+    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path / "controller-locks"))
+
+
+def test_start_rejects_competing_panel_before_feedback_or_scene_changes(monkeypatch):
+    owner = ControllerOwnership("192.168.1.6")
+    owner.acquire()
+    monkeypatch.setattr(builtins, MODULE["SINGLETON"], None, raising=False)
+    monkeypatch.setattr(builtins, MODULE["SINGLETON"] + "_start_lock", None, raising=False)
+    receiver = Mock(side_effect=AssertionError("No feedback before ownership"))
+    monkeypatch.setattr(LiveMirror, "run", receiver)
+    try:
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            asyncio.run(MODULE["start"](show_window=False))
+        receiver.assert_not_called()
+        assert getattr(builtins, MODULE["SINGLETON"]) is None
+    finally:
+        owner.release()
 
 
 @pytest.mark.parametrize("scene", ("isaacsim/scene.usda", "00_OPEN_MG400.usda"))
@@ -157,8 +179,15 @@ def install_mirror_ui(monkeypatch, stage):
     modules = {
         name: ModuleType(name)
         for name in (
-            "omni", "omni.kit", "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd",
-            "isaacsim", "isaacsim.core", "isaacsim.core.simulation_manager",
+            "omni",
+            "omni.kit",
+            "omni.kit.app",
+            "omni.timeline",
+            "omni.ui",
+            "omni.usd",
+            "isaacsim",
+            "isaacsim.core",
+            "isaacsim.core.simulation_manager",
         )
     }
     for name, module in modules.items():
@@ -173,13 +202,17 @@ def install_mirror_ui(monkeypatch, stage):
     modules["omni.kit.app"].get_app = lambda: SimpleNamespace(next_update_async=update)
     modules["omni.usd"].get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
     modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(
-        is_stopped=lambda: True, stop=Mock(),
+        is_stopped=lambda: True,
+        stop=Mock(),
     )
     modules["isaacsim.core.simulation_manager"].SimulationManager = SimpleNamespace(
         get_physics_simulation_view=Mock(side_effect=AssertionError("No physics view")),
     )
     window = SimpleNamespace(
-        frame=contextlib.nullcontext(), visible=True, setPosition=Mock(), destroy=Mock(),
+        frame=contextlib.nullcontext(),
+        visible=True,
+        setPosition=Mock(),
+        destroy=Mock(),
     )
     ui = modules["omni.ui"]
     ui.Window = Mock(return_value=window)
@@ -191,8 +224,9 @@ def install_mirror_ui(monkeypatch, stage):
 
 
 @pytest.mark.parametrize("show_window", [True, False])
+@pytest.mark.parametrize("control_owned", [True, False])
 def test_run_preserves_feedback_without_visible_window_and_waits_for_receiver(
-    monkeypatch, tmp_path, show_window
+    monkeypatch, tmp_path, show_window, control_owned
 ):
     stage = Usd.Stage.Open(
         Sdf.Layer.FindOrOpen(str(ROOT / "00_OPEN_MG400.usda")), Sdf.Layer.CreateAnonymous()
@@ -203,6 +237,9 @@ def test_run_preserves_feedback_without_visible_window_and_waits_for_receiver(
     monkeypatch.setitem(LiveMirror.run.__globals__, "export_scene", Mock(return_value=True))
     monkeypatch.setattr(socket, "create_connection", Mock(side_effect=AssertionError("No network")))
     mirror = LiveMirror(show_window=show_window)
+    if control_owned:
+        mirror.control_owner = object()
+    contender = ControllerOwnership(mirror.host)
     entered, release, exited = (threading.Event() for _ in range(3))
 
     def receive():
@@ -247,11 +284,19 @@ def test_run_preserves_feedback_without_visible_window_and_waits_for_receiver(
             await asyncio.sleep(0.01)
             assert not mirror.task.done()
             assert not exited.is_set()
+            with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+                contender.acquire()
         finally:
             mirror.stop_event.set()
             release.set()
             await asyncio.wait_for(mirror.task, 1)
         assert exited.is_set()
+        if control_owned:
+            with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+                contender.acquire()
+            mirror.ownership.release()
+        contender.acquire()
+        contender.release()
 
     asyncio.run(exercise())
     mirror.receive.assert_called_once_with()
@@ -269,6 +314,7 @@ def test_concurrent_starts_wait_for_old_receiver_and_keep_one_instance(monkeypat
 
     class Mirror:
         def __init__(self, show_window=True):
+            self.ownership = ControllerOwnership("robot.test")
             self.show_window = show_window
             self.stop_event = threading.Event()
             self.task = None
@@ -286,6 +332,7 @@ def test_concurrent_starts_wait_for_old_receiver_and_keep_one_instance(monkeypat
                     await asyncio.sleep(0)
             finally:
                 active[0] -= 1
+                self.ownership.release()
 
     monkeypatch.setitem(MODULE["start"].__globals__, "LiveMirror", Mirror)
 
@@ -305,8 +352,7 @@ def test_concurrent_starts_wait_for_old_receiver_and_keep_one_instance(monkeypat
         setattr(builtins, singleton, old)
         await stopped.wait()
         starts = [
-            asyncio.create_task(MODULE["start"](show_window=value))
-            for value in (False, True)
+            asyncio.create_task(MODULE["start"](show_window=value)) for value in (False, True)
         ]
         try:
             await asyncio.sleep(0)

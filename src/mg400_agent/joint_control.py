@@ -25,7 +25,11 @@ class TargetRejectedError(ValueError):
 
 
 class PreparationRejectedError(RuntimeError):
-    """A read-only query failed before this attempt sent an enable or movement command."""
+    """A precheck rejected this attempt before it sent an enable or movement command."""
+
+
+class _StationaryTimeoutError(TimeoutError):
+    """Fresh feedback did not confirm a stationary state within the allowed time."""
 
 
 class DashboardQueryCancelledError(ConnectionAbortedError):
@@ -44,18 +48,28 @@ class PoseMeasurement:
 
 
 class JointControl:
-    def __init__(self, host, feedback_snapshot, *, parent=None, command_timeout=2.0):
+    def __init__(
+        self, host, feedback_snapshot, *, parent=None, command_timeout=2.0, send_guard=None
+    ):
         self.host = host
         self.feedback_snapshot = feedback_snapshot
         self._parent = parent
         self._command_timeout = command_timeout
-        self._send_guard = None
+        self._send_guard = send_guard
         self._operation_lock = parent._operation_lock if parent else threading.Lock()
+        self._operation_guard = threading.Lock()
+        self._operation_open = False
         self._dashboard_lock = parent._dashboard_lock if parent else threading.Lock()
         self._dashboard_guard = parent._dashboard_guard if parent else threading.Lock()
-        self._dashboard = parent._dashboard if parent else {
-            "query": None, "stops": 0, "generation": 0,
-        }
+        self._dashboard = (
+            parent._dashboard
+            if parent
+            else {
+                "query": None,
+                "stops": 0,
+                "generation": 0,
+            }
+        )
         self._send_lock = parent._send_lock if parent else threading.Lock()
         self._stop_lock = threading.RLock()
         self._stopped = threading.Event()
@@ -64,6 +78,7 @@ class JointControl:
         self._pending = None
         self._stop_result = None
         self._stop_uncertain = False
+        self._child_stop_error = None
         self._preparing = False
         self._preparation_pending = None
         self._preparation_baseline = None
@@ -75,6 +90,103 @@ class JointControl:
     @property
     def stopped(self):
         return self._stopped.is_set() or (self._parent is not None and self._parent.stopped)
+
+    @property
+    def command_pending(self):
+        """Whether a registered command worker has not finished."""
+        pending = self._pending
+        return pending is not None and not pending["done"].is_set()
+
+    def feedback_retention_reason(self):
+        """Return why command state requires feedback to remain connected.
+
+        None does not prove rest. Drain caller tasks, verify_stationary(), then
+        check again. A concurrent stop or disable invalidates prior verification.
+        """
+        if self._stop_uncertain:
+            return "Command ordering remains unknown."
+        if self._disable_error is not None:
+            return f"Disable is unconfirmed: {self._disable_error}"
+        if self._child_stop_error is not None:
+            return f"Operation stop is unconfirmed: {self._child_stop_error}"
+        pending = self._pending
+        if pending is not None:
+            if not pending["done"].is_set():
+                return "A controller acknowledgement is pending."
+            if pending["sent"] and not pending["ok"]:
+                return "A controller acknowledgement failed."
+        if self._stop_result is not None and not self._stop_result["ok"]:
+            return f"Control stop is unconfirmed: {self._stop_result['error']}"
+        if self.stopped and self._stop_result is None and self._disable_result is None:
+            return "Cancellation has no confirmed stop or disable result."
+        if self.busy:
+            return "A robot operation is still in progress."
+        return None
+
+    def begin_operation(self, *, command_timeout=0.5, send_guard=None):
+        """Claim a child operation without cancelling the reusable parent.
+
+        Use the child for one operation. Call finish_operation() after its workers
+        exit. The child shares command exclusion and transport with its parent.
+        """
+        active = JointControl(
+            self.host,
+            self.feedback_snapshot,
+            parent=self,
+            command_timeout=command_timeout,
+            send_guard=send_guard,
+        )
+        active._begin()
+        return active
+
+    def wait_for_command(self, timeout=1.0):
+        """Wait for the registered command worker. Return False on timeout."""
+        pending = self._pending
+        return pending is None or pending["done"].wait(timeout)
+
+    def finish_operation(self):
+        """Release this operation once, after caller workers have exited.
+
+        An unfinished command keeps the control cancelled and feedback retained.
+        Repeated cleanup of a returned child cannot release a sibling's lock.
+        """
+        with self._operation_guard:
+            if not self._operation_open:
+                return
+            if self.command_pending:
+                self.cancel()
+                if self._parent is not None:
+                    self._parent.cancel()
+            self._preparing = False
+            self._operation_open = False
+            self._operation_lock.release()
+
+    def stop_after_command(self, *, on_error=None):
+        """Stop a revoked hold after its bounded acknowledgement wait.
+
+        The caller must revoke input before calling. A wait failure cancels the
+        parent immediately. on_error reports that failure before stop verification.
+        """
+        with self._send_lock:
+            pending = self._pending
+        if pending is not None and not self.stopped:
+            deadline = time.monotonic() + self._command_timeout
+            try:
+                while not pending["done"].wait(0.01):
+                    if self.stopped:
+                        break
+                    self._fresh({5, 7})
+                    if time.monotonic() >= deadline and not pending["done"].is_set():
+                        raise TimeoutError(
+                            "Keyboard command acknowledgement did not finish before stopping"
+                        )
+            except Exception as error:
+                self.cancel()
+                if self._parent is not None:
+                    self._parent.cancel()
+                if on_error is not None:
+                    on_error(error)
+        return self.stop()
 
     def cancel(self, *, disabling=False):
         """Immediately latch cancellation from the UI, without waiting or networking.
@@ -187,7 +299,8 @@ class JointControl:
         except OSError as error:
             pending = self._pending
             if (
-                not self._preparing or self.stopped
+                not self._preparing
+                or self.stopped
                 or pending is not self._preparation_pending
                 or (pending is not None and not (pending["done"].is_set() and pending["ok"]))
             ):
@@ -207,13 +320,36 @@ class JointControl:
                 "This attempt sent no enable or movement command. Retry the action."
             ) from error
 
+    def _pose_query_cancelled(self):
+        # Keyboard release reads one final pose after its confirmed child stop.
+        # An unconfirmed stop must never permit a delayed display poll.
+        stop_result = self._stop_result
+        return self.stopped and (
+            stop_result is None
+            or not stop_result["ok"]
+            or self._stop_uncertain
+            or self._disable_error is not None
+            or self._child_stop_error is not None
+            or (self._parent is not None and self._parent.stopped)
+        )
+
     def _command(self, text, port=29999, *, pending=None, stopping=False):
         """Send once; a reply must have a successful code and the matching echo."""
         if port != 29999:
             return self._exchange(text, port, pending=pending, stopping=stopping)
-        readonly = pending is None and not stopping and text.partition("(")[0] in {
-            "GetPose", "InverseSolution", "RobotMode", "GetErrorID", "GetAngle",
-        }
+        readonly = (
+            pending is None
+            and not stopping
+            and text.partition("(")[0]
+            in {
+                "GetPose",
+                "InverseSolution",
+                "RobotMode",
+                "GetErrorID",
+                "GetAngle",
+            }
+        )
+        pose_query = readonly and text.startswith("GetPose(")
         query = None
         registered_stop = False
         try:
@@ -236,7 +372,9 @@ class JointControl:
                                 connection.close()
                             except OSError:
                                 pass
-                elif readonly and self._dashboard["stops"]:
+                elif readonly and (
+                    self._dashboard["stops"] or (pose_query and self._pose_query_cancelled())
+                ):
                     raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
             # Resolve before taking the connection lock. DNS cannot delay a stop.
             addresses = (
@@ -251,15 +389,21 @@ class JointControl:
                         if (
                             self._dashboard["stops"]
                             or generation != self._dashboard["generation"]
+                            or (pose_query and self._pose_query_cancelled())
                         ):
                             raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
                         query = {
-                            "cancelled": threading.Event(), "connection": None,
+                            "cancelled": threading.Event(),
+                            "connection": None,
                             "addresses": addresses,
                         }
                         self._dashboard["query"] = query
                 return self._exchange(
-                    text, port, pending=pending, stopping=stopping, query=query,
+                    text,
+                    port,
+                    pending=pending,
+                    stopping=stopping,
+                    query=query,
                 )
             except OSError as error:
                 if query is not None and query["cancelled"].is_set():
@@ -302,7 +446,10 @@ class JointControl:
                     if remaining <= 0:
                         raise TimeoutError("Controller connection timed out")
                     _, writable, failed = select.select(
-                        [], [connection], [connection], min(0.02, remaining),
+                        [],
+                        [connection],
+                        [connection],
+                        min(0.02, remaining),
                     )
                     if writable or failed:
                         code = connection.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
@@ -322,9 +469,14 @@ class JointControl:
 
     def _exchange(self, text, port, *, pending=None, stopping=False, query=None):
         deadline = time.monotonic() + self._command_timeout
+        if query is not None and text.startswith("GetPose(") and self._pose_query_cancelled():
+            raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
         with self._connect(port, deadline, query) as connection:
             with self._send_lock if query is None else nullcontext():
-                if query is not None and query["cancelled"].is_set():
+                if query is not None and (
+                    query["cancelled"].is_set()
+                    or (text.startswith("GetPose(") and self._pose_query_cancelled())
+                ):
                     raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
                 if pending is not None and self._send_guard is not None:
                     self._send_guard()
@@ -382,12 +534,21 @@ class JointControl:
         previous_received = None
         anchor = stable_since = None
         count = 0
+        samples = 0
+        minimum = maximum = ()
+        longest_stable = 0.0
         while time.monotonic() < deadline:
             if self.stopped and not stopping:
                 raise RuntimeError("Control has been stopped; reopen the panel")
             sample, received = self._fresh(modes)
             if received != previous_received:
                 previous_received = received
+                samples += 1
+                if samples == 1:
+                    minimum = maximum = sample.joints_deg
+                else:
+                    minimum = tuple(map(min, zip(minimum, sample.joints_deg, strict=True)))
+                    maximum = tuple(map(max, zip(maximum, sample.joints_deg, strict=True)))
                 ready = sample.mode in final_modes and (
                     target is None or self._near(sample.joints_deg, target)
                 )
@@ -398,38 +559,74 @@ class JointControl:
                     anchor, stable_since, count = sample.joints_deg, received, 1
                 else:
                     count += 1
+                    longest_stable = max(longest_stable, received - stable_since)
                     if count >= 3 and received - stable_since >= 0.4:
                         return sample
             time.sleep(0.01)
-        raise TimeoutError("Robot did not reach a fresh, verified stationary state")
+        span = tuple(round(high - low, 6) for low, high in zip(minimum, maximum, strict=True))
+        raise _StationaryTimeoutError(
+            "Robot did not reach a fresh, verified stationary state "
+            f"(samples={samples}, joint_span_deg={span}, "
+            f"longest_stable_s={longest_stable:.3f}, required_stable_s=0.4, "
+            "tolerance_deg=0.025)"
+        )
 
     def _preflight(self, modes):
         self._fresh(modes)
         mode, joints = self._dashboard_state()
         sample, _ = self._fresh(modes)
         if mode != sample.mode or not self._near(joints, sample.joints_deg):
-            delta = tuple(actual - reference for actual, reference in zip(
-                sample.joints_deg, joints, strict=True,
-            ))
+            delta = tuple(
+                actual - reference
+                for actual, reference in zip(
+                    sample.joints_deg,
+                    joints,
+                    strict=True,
+                )
+            )
             raise RuntimeError(
                 "Dashboard and passive feedback disagree: "
                 f"dashboard_mode={mode}, passive_mode={sample.mode}, "
                 f"dashboard={joints!r}, passive={sample.joints_deg!r}, "
                 f"passive_minus_dashboard={delta!r}, tolerance_deg=0.1"
             )
-        stationary = self._wait_stable(
-            None if mode == 4 else joints, modes={mode}, final_modes={mode},
-        )
+        stationary = stationary_error = None
+        try:
+            stationary = self._wait_stable(
+                None if mode == 4 else joints,
+                modes={mode},
+                final_modes={mode},
+            )
+        except _StationaryTimeoutError as error:
+            if mode != 4:
+                raise
+            stationary_error = error
         if mode == 4:
             current_mode, current_joints = self._dashboard_state()
             sample = self._fresh({4})[0]
-            if (
-                current_mode != 4
-                or not self._near(current_joints, stationary.joints_deg)
-                or not self._near(sample.joints_deg, stationary.joints_deg)
-                or not self._near(current_joints, sample.joints_deg)
-            ):
+            if current_mode != 4 or not self._near(current_joints, sample.joints_deg):
                 raise RuntimeError("Disabled stationary state was not confirmed before enable")
+            if stationary_error is not None or (
+                not self._near(current_joints, stationary.joints_deg)
+                or not self._near(sample.joints_deg, stationary.joints_deg)
+            ):
+                error = stationary_error or RuntimeError(
+                    "Disabled stationary state was not confirmed before enable"
+                )
+                pending = self._pending
+                if (
+                    not self._preparing
+                    or self.stopped
+                    or self._stop_uncertain
+                    or (self._parent is not None and self._parent._stop_uncertain)
+                    or pending is not self._preparation_pending
+                    or (pending is not None and not (pending["done"].is_set() and pending["ok"]))
+                ):
+                    raise error
+                raise PreparationRejectedError(
+                    "Robot is not verified stationary. "
+                    "Wait until the robot is still, then click Enable robot again."
+                ) from error
         return mode, stationary.joints_deg
 
     def _guarded_command(self, text, *, modes, send_modes, expected, port=29999):
@@ -479,14 +676,16 @@ class JointControl:
         self._fresh(modes)
 
     def _begin(self):
-        if not self._operation_lock.acquire(blocking=False):
-            raise RuntimeError("Another robot operation is in progress")
-        if self.stopped:
-            self._operation_lock.release()
-            raise RuntimeError("Control has been stopped; reopen the panel")
-        self._preparing = True
-        self._preparation_pending = self._pending
-        self._preparation_baseline = None
+        with self._operation_guard:
+            if not self._operation_lock.acquire(blocking=False):
+                raise RuntimeError("Another robot operation is in progress")
+            if self.stopped:
+                self._operation_lock.release()
+                raise RuntimeError("Control has been stopped; reopen the panel")
+            self._operation_open = True
+            self._preparing = True
+            self._preparation_pending = self._pending
+            self._preparation_baseline = None
 
     def _failed(self, error, *, disabling=False):
         with self._stop_lock:
@@ -503,12 +702,15 @@ class JointControl:
     def enable(self) -> Feedback:
         """Explicitly enable using the existing payload settings, without moving."""
         self._begin()
+        stage = "before EnableRobot()"
         try:
             mode, joints = self._preflight({4, 5})
             if mode == 4:
+                stage = "EnableRobot() command attempt"
                 self._guarded_command(
                     "EnableRobot()", modes={4, 5}, send_modes={4}, expected=joints
                 )
+            stage = "after EnableRobot()" if mode == 4 else "already enabled idle check"
             sample = self._wait_stable(joints, modes={4, 5}, final_modes={5})
             actual_mode, actual = self._dashboard_state()
             sample = self._fresh({5})[0]
@@ -521,12 +723,15 @@ class JointControl:
             return sample
         except PreparationRejectedError:
             raise
+        except TimeoutError as error:
+            diagnostic = TimeoutError(f"{error}. Failure stage={stage}.")
+            self._failed(diagnostic)
+            raise diagnostic from error
         except Exception as error:
             self._failed(error)
             raise
         finally:
-            self._preparing = False
-            self._operation_lock.release()
+            self.finish_operation()
 
     def move(self, target) -> Feedback:
         """Move J1-J4 to absolute angles in degrees within the validated joint limits."""
@@ -563,8 +768,7 @@ class JointControl:
             self._failed(error)
             raise
         finally:
-            self._preparing = False
-            self._operation_lock.release()
+            self.finish_operation()
 
     def _wait_linear(self, target, joints, timeout=120.0):
         deadline = time.monotonic() + timeout
@@ -640,8 +844,7 @@ class JointControl:
             self._failed(error)
             raise
         finally:
-            self._preparing = False
-            self._operation_lock.release()
+            self.finish_operation()
 
     def disable(self) -> Feedback:
         """Cancel this instance and verify the disabled state, without proving rest.
@@ -736,4 +939,7 @@ class JointControl:
                     "physical_stop_requested": True,
                     "error": str(error),
                 }
+            if self._parent is not None and not self._stop_result["ok"]:
+                # A child stop must not populate the reusable parent's stop cache.
+                self._parent._child_stop_error = self._stop_result["error"]
             return self._stop_result

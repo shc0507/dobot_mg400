@@ -5,7 +5,7 @@ import threading
 import time
 
 from . import joint_control
-from .joint_control import JointControl, TargetRejectedError
+from .joint_control import TargetRejectedError
 from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
 
 SEGMENT_DISTANCE_MM = 50.0
@@ -48,8 +48,11 @@ class KeyboardJogSession:
     def ready(self):
         with self._lock:
             return (
-                self._prepared and self._active is None and not self._closed
-                and self.fault is None and not self.control.stopped
+                self._prepared
+                and self._active is None
+                and not self._closed
+                and self.fault is None
+                and not self.control.stopped
             )
 
     def _start(self, phase, released=None):
@@ -62,11 +65,12 @@ class KeyboardJogSession:
                 raise RuntimeError("Prepare keyboard control before movement")
             if self._release_gate is not None and not self._release_gate.is_set():
                 raise RuntimeError("Release the current key before another hold")
-            active = JointControl(
-                self.control.host, self.control.feedback_snapshot,
-                parent=self.control, command_timeout=0.5,
+            active = self.control.begin_operation(
+                command_timeout=0.5,
+                send_guard=(lambda: self._check_hold(active, released))
+                if phase == "running"
+                else None,
             )
-            active._begin()
             self._active, self._phase = active, phase
             self._revoked = threading.Event()
             self._released = released
@@ -76,24 +80,7 @@ class KeyboardJogSession:
 
     def _stop(self, active):
         try:
-            # Revocation blocks new sends. Let an already registered command
-            # finish its bounded exchange before cancel() records uncertainty.
-            with active._send_lock:
-                pending = active._pending
-            if pending is not None and not active.stopped:
-                deadline = time.monotonic() + active._command_timeout
-                try:
-                    while not pending["done"].wait(0.01):
-                        if active.stopped:
-                            break
-                        active._fresh({5, 7})
-                        if time.monotonic() >= deadline and not pending["done"].is_set():
-                            raise TimeoutError(
-                                "Keyboard command acknowledgement did not finish before stopping"
-                            )
-                except Exception as error:
-                    self._revoke(error=error)
-            result = active.stop()
+            result = active.stop_after_command(on_error=lambda error: self._revoke(error=error))
         except Exception as error:
             result = {"ok": False, "error": str(error)}
         with self._lock:
@@ -117,7 +104,9 @@ class KeyboardJogSession:
                 self._prepared = False
             elif self._stop_thread is None:
                 self._stop_thread = threading.Thread(
-                    target=self._stop, args=(self._active,), name="MG400-keyboard-stop",
+                    target=self._stop,
+                    args=(self._active,),
+                    name="MG400-keyboard-stop",
                     daemon=True,
                 )
                 self._stop_thread.start()
@@ -140,8 +129,7 @@ class KeyboardJogSession:
 
     def _finish(self, active, *, read_pose=False):
         # Do not publish readiness while a send or stop thread can still act.
-        pending = active._pending
-        if pending is not None and not pending["done"].wait(1.0):
+        if not active.wait_for_command():
             self._revoke(error=RuntimeError("Keyboard command did not finish after cancellation"))
         while True:
             with self._lock:
@@ -149,9 +137,11 @@ class KeyboardJogSession:
             if stop_thread is not None:
                 stop_thread.join()
                 if not self._stop_result["ok"]:
-                    self._revoke(error=RuntimeError(
-                        f"Keyboard stop unconfirmed: {self._stop_result.get('error', '')}"
-                    ))
+                    self._revoke(
+                        error=RuntimeError(
+                            f"Keyboard stop unconfirmed: {self._stop_result.get('error', '')}"
+                        )
+                    )
             if read_pose and self.fault is None and not self.control.stopped:
                 try:
                     self._pose = self._read_measured_pose(active, {5})
@@ -171,8 +161,7 @@ class KeyboardJogSession:
                 # A release can start a stop while the final pose read is pending.
                 if self._stop_thread is not stop_thread:
                     continue
-                active._preparing = False
-                active._operation_lock.release()
+                active.finish_operation()
                 self._active = self._phase = None
                 return
 
@@ -228,7 +217,8 @@ class KeyboardJogSession:
         return (
             0 <= time.monotonic() - measurement.requested_at <= 0.25
             and measurement.before.mode == measurement.after.mode == 5
-            and not measurement.before.error_status and not measurement.after.error_status
+            and not measurement.before.error_status
+            and not measurement.after.error_status
             and self.control._near(
                 measurement.before.joints_deg, measurement.after.joints_deg, 0.025
             )
@@ -250,7 +240,7 @@ class KeyboardJogSession:
         distance = SEGMENT_DISTANCE_MM if key in "WSRF" else SEGMENT_ANGLE_DEG
         minimum = 0.1
         while True:
-            active._send_guard()
+            self._check_hold(active, self._released)
             try:
                 if key in "AD":
                     target_joints = list(joints)
@@ -287,16 +277,20 @@ class KeyboardJogSession:
         else:
             values = ",".join(f"{value:.6f}" for value in target_pose)
             command = f"MovL({values},User=0,Tool=0,SpeedL=2,AccL=20)"
-        active._send_guard()
+        self._check_hold(active, self._released)
         active._guarded_command(
-            command, modes={5, 7}, send_modes={5}, expected=joints, port=30003,
+            command,
+            modes={5, 7},
+            send_modes={5},
+            expected=joints,
+            port=30003,
         )
         origin = joints if target_pose is None else pose
         destination = target_joints if target_pose is None else target_pose
         # Require another feedback receipt after the successful acknowledgement.
         _, before = active._fresh({5, 7})
         while True:
-            active._send_guard()
+            self._check_hold(active, self._released)
             actual_pose = (
                 self._read_measured_pose(active, {5, 7}) if target_pose is not None else None
             )
@@ -305,12 +299,16 @@ class KeyboardJogSession:
             measured = sample.joints_deg if target_pose is None else actual_pose
             # Keep the target tolerance, but a microstep needs actual progress
             # along its commanded direction, measured from the same source.
-            progress = sum(
-                (actual - start) * (end - start)
-                for actual, start, end in zip(measured, origin, destination, strict=True)
-            ) / distance
+            progress = (
+                sum(
+                    (actual - start) * (end - start)
+                    for actual, start, end in zip(measured, origin, destination, strict=True)
+                )
+                / distance
+            )
             if (
-                received > before and sample.mode == 5
+                received > before
+                and sample.mode == 5
                 and (distance >= 0.2 or progress >= distance / 2)
                 and active._near(sample.joints_deg, target_joints)
                 and (target_pose is None or active._near(actual_pose, target_pose))
@@ -326,24 +324,25 @@ class KeyboardJogSession:
             raise ValueError("Expected one keyboard movement key")
         active = self._start("running", released)
         finished = threading.Event()
-        active._send_guard = lambda: self._check_hold(active, released)
         watcher = threading.Thread(
-            target=self._watch, args=(active, released, finished),
-            name="MG400-keyboard-watch", daemon=True,
+            target=self._watch,
+            args=(active, released, finished),
+            name="MG400-keyboard-watch",
+            daemon=True,
         )
         watcher.start()
         read_pose = True
         try:
-            active._send_guard()
+            self._check_hold(active, released)
             while True:
                 self._step(active, key, initial_pose)
-                active._send_guard()
+                self._check_hold(active, released)
                 initial_pose = self._measurement if key not in "AD" else None
         except (TargetRejectedError, joint_control.PreparationRejectedError) as error:
             if isinstance(error, joint_control.PreparationRejectedError):
                 read_pose = False
             try:
-                active._send_guard()
+                self._check_hold(active, released)
                 active._fresh({5})
             except Exception as state_error:
                 if not self._revoked.is_set():

@@ -15,6 +15,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from mg400_agent.controller_ownership import ControllerOwnership
 from mg400_agent.feedback import Feedback
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,8 +43,13 @@ class FloatModel:
 
 
 class Mirror:
+    instances = []
+
     def __init__(self, sample):
         self.host = "192.168.1.6"
+        self.ownership = ControllerOwnership(self.host)
+        self.control_owner = None
+        self.instances.append(self)
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.network_error = None
@@ -62,6 +68,8 @@ class Mirror:
 
 @pytest.fixture
 def panel_module(monkeypatch, tmp_path):
+    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path / "controller-locks"))
+    monkeypatch.setattr(Mirror, "instances", [])
     instances = []
     sessions = []
     grippers = []
@@ -81,6 +89,8 @@ def panel_module(monkeypatch, tmp_path):
             self.pose = (1.0, 2.0, 3.0, 4.0)
             self.pose_reads = 0
             self.stationary_checks = 0
+            self.command_pending = False
+            self.retention_reason = None
             instances.append(self)
 
         def read_state(self):
@@ -89,6 +99,9 @@ def panel_module(monkeypatch, tmp_path):
         def verify_stationary(self):
             self.stationary_checks += 1
             return self.read_state()
+
+        def feedback_retention_reason(self):
+            return self.retention_reason
 
         def read_pose(self):
             self.read_state()
@@ -100,8 +113,11 @@ def panel_module(monkeypatch, tmp_path):
             before = self.read_state()
             pose = self.read_pose()
             return SimpleNamespace(
-                control=self, pose=pose, requested_at=requested_at,
-                before=before, after=self.read_state(),
+                control=self,
+                pose=pose,
+                requested_at=requested_at,
+                before=before,
+                after=self.read_state(),
             )
 
         def enable(self):
@@ -116,6 +132,7 @@ def panel_module(monkeypatch, tmp_path):
         def disable(self):
             self.calls.append(("disable",))
             sample = self.set_mode(4)
+            self.retention_reason = None
             self.disable_finished.set()
             return sample
 
@@ -141,11 +158,13 @@ def panel_module(monkeypatch, tmp_path):
         def stop(self):
             self.calls.append(("stop",))
             self.stopped = True
+            self.retention_reason = None
             return {"ok": True}
 
         def cancel(self, disabling=False):
             self.cancel_modes.append(disabling)
             self.stopped = True
+            self.retention_reason = self.retention_reason or "Control cancellation is not confirmed"
 
     backend = ModuleType("mg400_agent.joint_control")
     backend.JointControl = Control
@@ -201,7 +220,8 @@ def panel_module(monkeypatch, tmp_path):
         def reusable_pose(self, measurement):
             self.reusable_checks.append(measurement)
             return (
-                measurement is not None and measurement.control is self.control
+                measurement is not None
+                and measurement.control is self.control
                 and 0 <= time.monotonic() - measurement.requested_at <= 0.25
                 and measurement.before == measurement.after == self.control.read_state()
             )
@@ -245,7 +265,8 @@ def panel_module(monkeypatch, tmp_path):
         )
     panel_class = namespace["ControlPanel"]
     monkeypatch.setitem(
-        panel_class.run.__globals__, "_reload_control_modules",
+        panel_class.run.__globals__,
+        "_reload_control_modules",
         lambda: reload_calls.append("reload"),
     )
 
@@ -301,16 +322,24 @@ def panel_module(monkeypatch, tmp_path):
     config.write_text('[robot]\nhost = "192.168.1.6"\n')
     monkeypatch.setitem(panel_class.__init__.__globals__, "ROBOT_CONFIG", config)
     monkeypatch.setattr(builtins, namespace["SINGLETON"] + "_start_lock", None, raising=False)
+    monkeypatch.setattr(builtins, namespace["SINGLETON"] + "_error_window", None, raising=False)
     monkeypatch.setattr(
         builtins, namespace["GRIPPER_SINGLETON"] + "_start_lock", None, raising=False
     )
     monkeypatch.setattr(builtins, namespace["GRIPPER_SINGLETON"], None, raising=False)
-    return SimpleNamespace(
-        **namespace, instances=instances, sessions=sessions, config_path=config,
-        grippers=grippers, Gripper=Gripper, gripper_loads=gripper_loads,
+    yield SimpleNamespace(
+        **namespace,
+        instances=instances,
+        sessions=sessions,
+        config_path=config,
+        grippers=grippers,
+        Gripper=Gripper,
+        gripper_loads=gripper_loads,
         reload_calls=reload_calls,
         feedback_path=tmp_path / "data/work/gripper_olares_feedback.json",
     )
+    for mirror in Mirror.instances:
+        mirror.ownership.release()
 
 
 @pytest.fixture
@@ -411,9 +440,9 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
                     return False
             self.global_events.append((key, modifiers, event_type))
             if self.callback is not None:
-                return self.callback(SimpleNamespace(
-                    input=KeyboardInput(key), type=event_type, modifiers=modifiers
-                ))
+                return self.callback(
+                    SimpleNamespace(input=KeyboardInput(key), type=event_type, modifiers=modifiers)
+                )
             return True
 
     class KeyboardInput(Enum):
@@ -465,8 +494,16 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
     modules = {
         name: ModuleType(name)
         for name in (
-            "carb", "carb.input", "carb.eventdispatcher", "omni", "omni.appwindow", "omni.kit",
-            "omni.kit.app", "omni.timeline", "omni.ui", "omni.usd",
+            "carb",
+            "carb.input",
+            "carb.eventdispatcher",
+            "omni",
+            "omni.appwindow",
+            "omni.kit",
+            "omni.kit.app",
+            "omni.timeline",
+            "omni.ui",
+            "omni.usd",
         )
     }
     input_interface = InputInterface()
@@ -512,9 +549,15 @@ def test_import_does_not_start_control_or_schedule_tasks(panel_module):
 
 def test_panel_uses_configured_host_after_matching_mirror(panel_module):
     panel_module.config_path.write_text('[robot]\nhost = "robot-new.test"\n')
-    panel = panel_module.ControlPanel(SimpleNamespace(host="robot-new.test"))
-    assert panel.host == panel.control.host == "robot-new.test"
-    assert panel.control.calls == []
+    ownership = ControllerOwnership("robot-new.test")
+    try:
+        panel = panel_module.ControlPanel(
+            SimpleNamespace(host="robot-new.test", ownership=ownership)
+        )
+        assert panel.host == panel.control.host == "robot-new.test"
+        assert panel.control.calls == []
+    finally:
+        ownership.release()
 
 
 @pytest.mark.parametrize("mirror_host", (None, "192.168.1.6"))
@@ -525,6 +568,7 @@ def test_reload_rejects_old_mirror_after_configuration_change(
     mirror = SimpleNamespace(stop_event=threading.Event())
     if mirror_host is not None:
         mirror.host = mirror_host
+    install_ui(panel_module, SimpleNamespace(mirror=mirror), monkeypatch, lambda: None)
     monkeypatch.setattr(builtins, panel_module.SINGLETON, None, raising=False)
     monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, mirror, raising=False)
     with pytest.raises(RuntimeError, match="Restart the mirror and control panel"):
@@ -593,6 +637,7 @@ def test_refresh_pose_reads_without_blocking_event_loop(panel, monkeypatch):
 
 def test_pose_read_failure_removes_previous_coordinates(panel, monkeypatch):
     panel.pose_measurement = panel.control.read_pose_measurement()
+
     def failed_pose():
         raise RuntimeError("Pose query failed")
 
@@ -791,7 +836,11 @@ def test_manual_target_rejection_keeps_coordinates_and_allows_retry(
     "name,method", [("enable", "enable"), ("home", "move"), ("move", "move_linear")]
 )
 def test_preparation_rejection_leaves_action_available_for_explicit_retry(
-    panel_module, panel, monkeypatch, name, method,
+    panel_module,
+    panel,
+    monkeypatch,
+    name,
+    method,
 ):
     original = getattr(panel.control, method)
     reject = True
@@ -825,9 +874,73 @@ def test_preparation_rejection_leaves_action_available_for_explicit_retry(
     asyncio.run(exercise())
 
 
-def test_disable_cancels_once_drains_move_and_allows_explicit_enable_then_move(
-    panel_module, panel
+def test_disabled_precheck_rejection_keeps_enable_button_and_gripper_unchanged(
+    panel_module,
+    panel,
+    monkeypatch,
 ):
+    panel.control.set_mode(4)
+    child = panel_module.Gripper()
+    child.owner = panel
+    panel.gripper = child
+    enable = panel.control.enable
+    rejected = False
+
+    def reject_once():
+        nonlocal rejected
+        if not rejected:
+            rejected = True
+            raise panel_module.backend.PreparationRejectedError(
+                "The disabled robot is not stationary. Wait until it is still."
+            )
+        return enable()
+
+    def gripper_command(*args, **kwargs):
+        child.calls.append((args, kwargs))
+        raise AssertionError("Enable must not send a gripper command")
+
+    monkeypatch.setattr(panel.control, "enable", reject_once)
+    child.submit_position = gripper_command
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        panel.mirror.latest = panel.control.read_state(), time.monotonic()
+        button = next(widget for widget in widgets if widget.text == "Enable robot")
+        if frames == 2:
+            assert button.enabled
+            button.clicked_fn()
+            await panel.action
+            assert "No command sent." in panel.message
+            assert "not stationary" in panel.message
+            assert panel.stop_task is None
+            assert not panel.control.stopped
+            assert not panel.busy
+            assert panel.control.calls == panel.control.cancel_modes == child.calls == []
+            assert not panel.keyboard_enabled
+        elif frames == 3:
+            assert button.enabled
+            assert any(widget.text == panel.message for widget in widgets)
+            button.clicked_fn()
+            await panel.action
+            assert panel.message == "Enabled. No movement sent."
+            assert panel.control.calls == [("enable",)]
+            assert child.calls == []
+        elif frames == 4:
+            assert not button.enabled
+            assert not panel.control.stopped
+            assert panel.stop_task is None
+            panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert frames == 4
+    assert panel.control.calls == [("enable",)]
+    assert panel.control.cancel_modes == child.calls == []
+
+
+def test_disable_cancels_once_drains_move_and_allows_explicit_enable_then_move(panel_module, panel):
     async def exercise():
         panel.copy_actual()
         old = panel.control
@@ -1309,7 +1422,9 @@ def test_keyboard_preparation_rejects_robot_that_is_not_enabled_and_idle(panel, 
 
 
 def test_keyboard_preparation_rejection_allows_explicit_retry_without_stop(
-    panel_module, panel, monkeypatch,
+    panel_module,
+    panel,
+    monkeypatch,
 ):
     original = panel_module.KeyboardJogSession.prepare
     reject = True
@@ -1399,9 +1514,7 @@ def test_window_shows_prepare_fault_after_stopped_frame_invalidates_generation(
 
 
 @pytest.mark.parametrize("owner", ("stop", "disable", "close"))
-def test_prepare_fault_does_not_overwrite_shutdown_message(
-    panel, failed_preparation, owner
-):
+def test_prepare_fault_does_not_overwrite_shutdown_message(panel, failed_preparation, owner):
     async def exercise():
         panel.request_keyboard()
         await asyncio.wait_for(failed_preparation.faulted.wait(), 1)
@@ -1554,8 +1667,12 @@ def test_gripper_keyboard_awaits_measured_step_before_continuing(
             return step_done
 
         gripper = SimpleNamespace(
-            closed=False, failed=False, busy=False, measured_position=measured_position,
-            submit_position=submit_position, report={},
+            closed=False,
+            failed=False,
+            busy=False,
+            measured_position=measured_position,
+            submit_position=submit_position,
+            report={},
         )
         panel.gripper = gripper
         monkeypatch.setattr(
@@ -1595,14 +1712,24 @@ def test_gripper_keyboard_reports_feedback_reason_without_sending(panel, key, in
         await arm_keyboard(panel)
         feedback = FeedbackState()
         if init is not None:
-            feedback.receive({
-                "session": "b8af7f0a-d1a1-4887-adfe-d470d5527de6", "seq": 1,
-                "sent_at": time.time(), "init": init, "state": 65535, "position": 920,
-            })
+            feedback.receive(
+                {
+                    "session": "b8af7f0a-d1a1-4887-adfe-d470d5527de6",
+                    "seq": 1,
+                    "sent_at": time.time(),
+                    "init": init,
+                    "state": 65535,
+                    "position": 920,
+                }
+            )
         targets = []
         panel.gripper = SimpleNamespace(
-            closed=False, failed=False, busy=False, feedback=feedback,
-            measured_position=lambda: None, submit_position=targets.append,
+            closed=False,
+            failed=False,
+            busy=False,
+            feedback=feedback,
+            measured_position=lambda: None,
+            submit_position=targets.append,
         )
         panel.key_event(key, True)
         await asyncio.wait_for(panel.action, 1)
@@ -1633,8 +1760,12 @@ def test_gripper_prepublication_rejection_keeps_arm_keys_or_preserves_requested_
             return False
 
         panel.gripper = SimpleNamespace(
-            closed=False, failed=False, busy=False, measured_position=lambda: 500,
-            report={"result": reason}, submit_position=lambda target: asyncio.create_task(reject()),
+            closed=False,
+            failed=False,
+            busy=False,
+            measured_position=lambda: 500,
+            report={"result": reason},
+            submit_position=lambda target: asyncio.create_task(reject()),
         )
         panel.key_event("Z", True)
         await started.wait()
@@ -1665,7 +1796,10 @@ def test_gripper_feedback_loss_between_measurement_and_submit_keeps_arm_keys(pan
         reason = "Position control needs a fresh --commands collector."
         targets = []
         panel.gripper = SimpleNamespace(
-            closed=False, failed=False, busy=False, measured_position=lambda: 500,
+            closed=False,
+            failed=False,
+            busy=False,
+            measured_position=lambda: 500,
             report={"result": reason, "command_published": False},
             submit_position=targets.append,
         )
@@ -1696,8 +1830,12 @@ def test_gripper_hold_repeats_after_each_measured_step(panel):
             return asyncio.create_task(complete(value))
 
         gripper = SimpleNamespace(
-            closed=False, failed=False, busy=False, measured_position=lambda: current[0],
-            submit_position=submit_position, report={},
+            closed=False,
+            failed=False,
+            busy=False,
+            measured_position=lambda: current[0],
+            submit_position=submit_position,
+            report={},
         )
         panel.gripper = gripper
         panel.key_event("Z", True)
@@ -1715,7 +1853,10 @@ def test_gripper_contact_ends_hold_without_repeating_until_keyup(panel, key):
         targets = []
         result = "The gripper reports object contact before the target."
         gripper = SimpleNamespace(
-            closed=False, failed=False, busy=False, measured_position=lambda: 350,
+            closed=False,
+            failed=False,
+            busy=False,
+            measured_position=lambda: 350,
             report={},
         )
 
@@ -1757,8 +1898,11 @@ def test_gripper_keyboard_preserves_specific_failure(panel, stage):
         targets = []
         reason = "Control is locked. Modbus reply length or CRC is invalid. No retry was sent."
         gripper = SimpleNamespace(
-            closed=False, failed=stage == "before", busy=False,
-            measured_position=lambda: 350, report={"result": reason},
+            closed=False,
+            failed=stage == "before",
+            busy=False,
+            measured_position=lambda: 350,
+            report={"result": reason},
         )
 
         async def fail():
@@ -1797,8 +1941,12 @@ def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel, monkeypa
             return asyncio.create_task(complete(value))
 
         gripper = SimpleNamespace(
-            closed=False, failed=False, busy=False, measured_position=lambda: current[0],
-            submit_position=submit_position, report={},
+            closed=False,
+            failed=False,
+            busy=False,
+            measured_position=lambda: current[0],
+            submit_position=submit_position,
+            report={},
         )
         panel.gripper = gripper
         panel.key_event("Z", True)
@@ -1817,9 +1965,7 @@ def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel, monkeypa
     asyncio.run(exercise())
 
 
-def test_start_constructs_owned_gripper_from_shared_feedback_path(
-    panel_module, panel, monkeypatch
-):
+def test_start_constructs_owned_gripper_from_shared_feedback_path(panel_module, panel, monkeypatch):
     monkeypatch.setattr(builtins, panel_module.SINGLETON, None, raising=False)
     monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, panel.mirror, raising=False)
 
@@ -2043,7 +2189,8 @@ def test_sync_shutdown_keeps_feedback_when_robot_stop_is_uncertain(
 
     async def exercise():
         if fault == "pending_ack":
-            panel.control._pending = {"done": threading.Event(), "sent": True, "ok": False}
+            panel.control.command_pending = True
+            panel.control.retention_reason = "A controller acknowledgement is pending"
         else:
             monkeypatch.setattr(panel.control, "stop", lambda: {"ok": False, "error": "lost ACK"})
             panel.request_stop()
@@ -2086,6 +2233,9 @@ def test_closing_stopped_sync_preserves_error_and_waits_for_receiver(panel):
         assert panel.mirror.window.destroyed
         assert panel.mirror.stop_calls == []
         assert panel.mirror.report == original_report
+        assert panel.report["synchronization_retained"]
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            ControllerOwnership(panel.host).acquire()
 
     asyncio.run(exercise())
 
@@ -2107,7 +2257,8 @@ def test_sync_stop_verifies_stationary_feedback_before_disconnect(panel, disable
 
 
 def test_sync_stop_after_disable_retains_feedback_if_stationarity_is_unverified(
-    panel, monkeypatch,
+    panel,
+    monkeypatch,
 ):
     async def exercise():
         panel.request_disable()
@@ -2133,7 +2284,7 @@ def test_sync_stop_after_disable_retains_feedback_if_stationarity_is_unverified(
 
 
 def test_sync_stop_preserves_original_disable_error_without_rechecking(panel):
-    panel.control._disable_error = RuntimeError("Disable acknowledgement was lost")
+    panel.control.retention_reason = "Disable acknowledgement was lost"
     panel.control.cancel(disabling=True)
     panel.message = "DISABLE UNCONFIRMED: Disable acknowledgement was lost"
 
@@ -2151,7 +2302,7 @@ def test_sync_stop_preserves_original_disable_error_without_rechecking(panel):
 
 def test_sync_stop_rechecks_command_uncertainty_after_stationary_verification(panel, monkeypatch):
     def verify():
-        panel.control._stop_uncertain = True
+        panel.control.retention_reason = "Controlled stop is not confirmed"
         return panel.control.read_state()
 
     monkeypatch.setattr(panel.control, "verify_stationary", verify)
@@ -2166,10 +2317,86 @@ def test_sync_stop_rechecks_command_uncertainty_after_stationary_verification(pa
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("confirmed", (False, True))
+def test_sync_stop_uses_controller_verdict_after_keyboard_stop(panel_module, panel, confirmed):
+    panel.keyboard_session = panel_module.KeyboardJogSession(panel.control)
+    panel.control.stopped = True
+    panel.control.retention_reason = None if confirmed else "Keyboard stop is not confirmed"
+
+    async def exercise():
+        panel.request_sync_stop()
+        await panel.sync_task
+        assert panel.keyboard_session.closed
+        assert panel.control.stationary_checks == int(confirmed)
+        assert panel.mirror.stop_event.is_set() is confirmed
+        assert panel.report.get("synchronization_retained", False) is not confirmed
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("stop_confirmed", (False, True))
+def test_sync_stop_preserves_keyboard_verdict_across_disable_replacement(
+    panel_module,
+    panel,
+    monkeypatch,
+    stop_confirmed,
+):
+    original_run = panel_module.KeyboardJogSession.run
+
+    async def run(session, *args, **kwargs):
+        result = await original_run(session, *args, **kwargs)
+        if not stop_confirmed:
+            session.control.retention_reason = "Keyboard stop is not confirmed"
+            session.fault = session.control.retention_reason
+            raise RuntimeError(session.fault)
+        return result
+
+    monkeypatch.setattr(panel_module.KeyboardJogSession, "run", run)
+
+    async def exercise():
+        session = await arm_keyboard(panel)
+        original_control = panel.control
+        session.finish_allowed.clear()
+        panel.key_event("W", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        try:
+            panel.request_disable()
+            assert await asyncio.to_thread(original_control.disable_finished.wait, 1)
+            assert panel.control is original_control
+            assert not panel.action.done()
+            assert not panel.disable_task.done()
+        finally:
+            session.finish_allowed.set()
+            await asyncio.wait_for(panel.action, 1)
+            await asyncio.wait_for(panel.disable_task, 1)
+        assert panel.control is not original_control
+        assert session.control is original_control
+        assert panel.control.feedback_retention_reason() is None
+        assert panel.message == "Disabled. Click Enable robot to enable again."
+
+        panel.request_sync_stop()
+        await asyncio.wait_for(panel.sync_task, 1)
+        assert panel.mirror.stop_event.is_set() is stop_confirmed
+        assert panel.control.stationary_checks == int(stop_confirmed)
+        assert panel.report.get("synchronization_retained", False) is not stop_confirmed
+        if not stop_confirmed:
+            panel.keyboard_session = panel_module.KeyboardJogSession(panel.control)
+            await panel.close_synchronization()
+            assert panel.mirror.stop_event.is_set()
+            assert panel.control.stationary_checks == 1
+            assert "synchronization_retained" not in panel.report
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("disable_confirmed", [False, True])
 @pytest.mark.parametrize("verification_failed", [False, True])
 def test_sync_stop_drains_disable_started_during_stationary_verification(
-    panel, monkeypatch, disable_confirmed, verification_failed,
+    panel,
+    monkeypatch,
+    disable_confirmed,
+    verification_failed,
 ):
     control = panel.control
     verifying, verify_allowed, verify_finished = (threading.Event() for _ in range(3))
@@ -2189,8 +2416,8 @@ def test_sync_stop_drains_disable_started_during_stationary_verification(
         disabling.set()
         assert disable_allowed.wait(2), "Test did not release disable"
         if not disable_confirmed:
-            control._disable_error = RuntimeError("Disable acknowledgement was lost")
-            raise control._disable_error
+            control.retention_reason = "Disable acknowledgement was lost"
+            raise RuntimeError(control.retention_reason)
         return original_disable()
 
     monkeypatch.setattr(control, "verify_stationary", verify)
@@ -2319,6 +2546,7 @@ def test_closing_parent_waits_for_gripper_action_before_closing_child(
     async def exercise():
         task = asyncio.create_task(panel.run())
         try:
+
             async def wait_for_closing():
                 while not child.closing:
                     await asyncio.sleep(0)
@@ -2503,7 +2731,7 @@ def test_start_refuses_reload_while_stopped_command_thread_is_pending(
     panel_module, panel, monkeypatch
 ):
     panel.control.stopped = True
-    panel.control._pending = {"done": threading.Event()}
+    panel.control.command_pending = True
     monkeypatch.setattr(builtins, panel_module.SINGLETON, panel, raising=False)
     assert not panel.busy and not panel.control.busy
     with pytest.raises(RuntimeError, match="acknowledgement is pending"):
@@ -2528,16 +2756,21 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
         "joint_control": (
             "from .controller_protocol import ControllerCommandError, parse_controller_response\n"
             "class JointControl:\n"
-            "    def __init__(self, host, snapshot, *, parent=None, command_timeout=2):\n"
+            "    def __init__(self, host, snapshot, *, parent=None, command_timeout=2, "
+            "send_guard=None):\n"
             "        self.parent = parent\n"
+            "    def begin_operation(self, *, command_timeout=0.5, send_guard=None):\n"
+            "        return JointControl('unused', lambda: None, parent=self, "
+            "send_guard=send_guard)\n"
             "    def solve_pose(self, target): return target\n"
             "class TargetRejectedError(ValueError): pass\n"
         ),
         "keyboard_jog": (
-            "from .joint_control import JointControl, TargetRejectedError\n"
+            "from . import joint_control\n"
+            "from .joint_control import TargetRejectedError\n"
             "class KeyboardJogSession:\n"
-            "    control_type = JointControl\n"
-            "    def _start(self): return JointControl\n"
+            "    def __init__(self, control): self.control = control\n"
+            "    def _start(self): return self.control.begin_operation()\n"
         ),
         "gripper_feedback": "class FeedbackState: pass\n",
     }
@@ -2564,9 +2797,13 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     assert globals_["KeyboardJogSession"] is jog.KeyboardJogSession
     assert control.ControllerCommandError is protocol.ControllerCommandError
     assert control.parse_controller_response is protocol.parse_controller_response
-    assert jog.JointControl is jog.KeyboardJogSession.control_type is control.JointControl
+    assert jog.joint_control is control
     assert jog.TargetRejectedError is control.TargetRejectedError
     assert control.JointControl("robot.test", lambda: None, parent="parent").parent == "parent"
+    parent = control.JointControl("robot.test", lambda: None)
+    child = jog.KeyboardJogSession(parent)._start()
+    assert type(child) is control.JointControl
+    assert child.parent is parent
     assert Path(control.JointControl.solve_pose.__code__.co_filename) == (
         source_dir / "joint_control.py"
     )
@@ -2740,8 +2977,13 @@ def test_ui_button_rows_and_enabled_states(
         if frames == 2:
             buttons = [widget for widget in widgets if type(widget).__name__ == "Button"]
             assert [button.text for button in buttons] == [
-                "Start sync", "Stop sync", "Home", "Execute targets", "Keyboard: OFF",
-                "Enable robot", "Disable robot",
+                "Start sync",
+                "Stop sync",
+                "Home",
+                "Execute targets",
+                "Keyboard: OFF",
+                "Enable robot",
+                "Disable robot",
             ]
             start, stop, home, move, keyboard, enable, disable = buttons
             assert not start.enabled
@@ -2812,7 +3054,9 @@ def test_exclusive_window_receives_integer_key_press_and_release(
             await asyncio.wait_for(panel.action, 1)
             assert panel.held_keys == set()
             assert input_interface.window_events[-3:] == [
-                (key, 1 << 30, True), (key, 1 << 30, True), (key, 1 << 30, False),
+                (key, 1 << 30, True),
+                (key, 1 << 30, True),
+                (key, 1 << 30, False),
             ]
             assert input_interface.global_events == global_events
             assert session.run_calls == [name]
@@ -2922,9 +3166,7 @@ def test_stream_disconnect_cancels_keyboard_action_before_worker_starts(
     assert panel.control.calls == []
 
 
-def test_stream_disconnect_stops_gripper_after_current_step(
-    panel_module, panel, monkeypatch
-):
+def test_stream_disconnect_stops_gripper_after_current_step(panel_module, panel, monkeypatch):
     frames = 0
     child = panel_module.Gripper()
     child.owner = panel
@@ -2969,9 +3211,7 @@ def test_stream_disconnect_stops_gripper_after_current_step(
 
 
 @pytest.mark.parametrize("disarm", ("focus", "hidden", "modifier"))
-def test_window_keyboard_disarms_and_releases_active_hold(
-    panel_module, panel, monkeypatch, disarm
-):
+def test_window_keyboard_disarms_and_releases_active_hold(panel_module, panel, monkeypatch, disarm):
     frames = 0
 
     async def next_update():
@@ -3191,7 +3431,8 @@ def test_sync_stop_drains_active_move_before_stopping_feedback(panel):
 
 
 def test_sync_stop_keeps_feedback_and_blocks_restart_when_stop_is_uncertain(panel):
-    panel.control._pending = {"done": threading.Event(), "sent": True, "ok": False}
+    panel.control.command_pending = True
+    panel.control.retention_reason = "A controller acknowledgement is pending"
 
     async def exercise():
         panel.request_sync_stop()
@@ -3209,16 +3450,141 @@ def test_sync_stop_keeps_feedback_and_blocks_restart_when_stop_is_uncertain(pane
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("disconnect", ("request_sync_stop", "request_close"))
+def test_disconnect_drops_pose_refresh_waiting_for_another_read(panel, disconnect):
+    panel.control.retention_reason = "Disable acknowledgement was lost"
+    reads = panel.control.pose_reads
+
+    async def exercise():
+        await panel.pose_lock.acquire()
+        queued = asyncio.create_task(panel.refresh_pose())
+        await asyncio.sleep(0)
+        getattr(panel, disconnect)()
+        panel.pose_lock.release()
+        await queued
+        if panel.sync_task:
+            await panel.sync_task
+        await panel.refresh_pose()
+        assert panel.control.pose_reads == reads
+        assert panel.control.calls == []
+        assert not panel.mirror.stop_event.is_set()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("confirmed", (True, False))
+def test_sync_disconnect_releases_ownership_only_after_safe_receiver_shutdown(panel, confirmed):
+    contender = ControllerOwnership(panel.host)
+    if not confirmed:
+        panel.control.retention_reason = "Disable acknowledgement was lost"
+
+    async def exercise():
+        receiver_done = asyncio.Event()
+        panel.mirror.task = asyncio.create_task(receiver_done.wait())
+        panel.request_sync_stop()
+        await asyncio.sleep(0.01)
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            contender.acquire()
+        receiver_done.set()
+        await panel.sync_task
+        if confirmed:
+            contender.acquire()
+            contender.release()
+        else:
+            assert not panel.mirror.stop_event.is_set()
+            with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+                contender.acquire()
+
+    asyncio.run(exercise())
+
+
+def test_reload_cannot_clear_failed_disconnect_or_release_ownership(
+    panel_module, panel, monkeypatch
+):
+    panel.control.retention_reason = "Disable acknowledgement was lost"
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, panel, raising=False)
+    monkeypatch.setattr(builtins, panel_module.MIRROR_SINGLETON, panel.mirror, raising=False)
+
+    async def exercise():
+        panel.request_sync_stop()
+        await panel.sync_task
+        with pytest.raises(RuntimeError, match="unconfirmed"):
+            await panel_module.start()
+        assert not panel.closed
+        assert not panel.keep_mirror
+        assert panel_module.reload_calls == []
+        assert len(panel_module.instances) == 1
+        assert panel.control.calls == []
+        contender = ControllerOwnership(panel.host)
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            contender.acquire()
+
+    asyncio.run(exercise())
+
+
+def test_first_panel_open_shows_competing_owner_without_safety_commands(
+    panel_module, panel, monkeypatch
+):
+    widgets = install_ui(panel_module, panel, monkeypatch, lambda: None)
+    monkeypatch.setattr(builtins, panel_module.SINGLETON, None, raising=False)
+    panel.mirror.ownership.release()
+    owner = ControllerOwnership(panel.host)
+    owner.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            asyncio.run(panel_module.start())
+        assert any(
+            widget.text and "Robot controlled by another panel" in widget.text
+            for widget in widgets
+            if type(widget).__name__ == "Label"
+        )
+        assert len(panel_module.instances) == 1
+        assert panel_module.gripper_loads == []
+        assert panel.control.calls == []
+        assert not panel.mirror.stop_event.is_set()
+    finally:
+        owner.release()
+
+
+def test_stop_after_disconnect_cannot_send_against_another_panel(panel):
+    contender = ControllerOwnership(panel.host)
+
+    async def exercise():
+        panel.request_sync_stop()
+        await panel.sync_task
+        contender.acquire()
+        try:
+            panel.request_stop()
+            panel.request_disable()
+            if panel.stop_task:
+                await panel.stop_task
+            assert panel.control.calls == []
+            assert panel.control.cancel_modes == []
+            assert panel.stop_task is None
+            assert "Robot controlled by another panel" in panel.message
+        finally:
+            contender.release()
+
+    asyncio.run(exercise())
+
+
 def execute_gripper(panel, target=500):
     child = SimpleNamespace(
-        busy=False, closed=False, closing=False, failed=False, target_baseline=925,
-        report={"result": "Gripper arrival verified."}, calls=[],
-        pending_target=lambda: target, position_sample=lambda: {"position": 925},
+        busy=False,
+        closed=False,
+        closing=False,
+        failed=False,
+        target_baseline=925,
+        report={"result": "Gripper arrival verified."},
+        calls=[],
+        pending_target=lambda: target,
+        position_sample=lambda: {"position": 925},
     )
 
     def submit(position):
         async def perform():
             child.calls.append(position)
+
         return asyncio.create_task(perform())
 
     child.submit_position = submit
@@ -3298,6 +3664,7 @@ def test_sync_restart_rejects_changed_host_before_binding_new_feedback(
     def restart(path, **kwargs):
         async def start():
             setattr(builtins, panel_module.MIRROR_SINGLETON, replacement)
+
         return {"MG400_MIRROR_START_TASK": asyncio.create_task(start())}
 
     monkeypatch.setitem(panel.run.__globals__, "runpy", SimpleNamespace(run_path=restart))
@@ -3320,9 +3687,7 @@ def test_sync_restart_rejects_changed_host_before_binding_new_feedback(
 
 
 @pytest.mark.parametrize("index", (0, 3))
-def test_target_edit_turns_keyboard_off_before_text_input(
-    panel_module, panel, monkeypatch, index
-):
+def test_target_edit_turns_keyboard_off_before_text_input(panel_module, panel, monkeypatch, index):
     frames = 0
 
     async def next_update():
@@ -3374,7 +3739,8 @@ def test_target_inputs_stay_disabled_during_keyboard_operations(
                 await panel.keyboard_session.run_started.wait()
         elif frames == 2:
             fields = [
-                widget for widget in widgets
+                widget
+                for widget in widgets
                 if type(widget).__name__ in ("FloatSlider", "FloatField")
             ]
             assert not panel.targets_editable
@@ -3402,7 +3768,8 @@ def test_keyboard_disarm_reports_reason_without_overwriting_it_on_idle_frames(pa
             panel.keyboard_session.ready = False
         panel.key_event("W", True, modifiers=2 if cause == "modifier" else 0)
         reason = (
-            "shortcut modifier is active." if cause == "modifier"
+            "shortcut modifier is active."
+            if cause == "modifier"
             else "session is not ready. Click Keyboard to retry."
         )
         assert panel.keyboard_disarm_reason == reason
@@ -3433,7 +3800,8 @@ def test_passive_keyboard_disarm_explains_focus_and_feedback_loss(
                 panel.mirror.latest = sample, time.monotonic() - 1
         elif frames == 2:
             reason = (
-                "window lost focus." if cause == "focus"
+                "window lost focus."
+                if cause == "focus"
                 else "robot feedback is stale, unavailable, or reports a fault."
             )
             assert not panel.keyboard_enabled

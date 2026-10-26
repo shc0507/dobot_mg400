@@ -39,9 +39,11 @@ def rig(monkeypatch):
             active = self.session._active if self.session else None
             pending = active._pending if active else None
             if (
-                self.release_after and len(self.moves) >= self.release_after
+                self.release_after
+                and len(self.moves) >= self.release_after
                 and self.moves[-1].startswith("JointMovJ(")
-                and pending is not None and pending["done"].is_set()
+                and pending is not None
+                and pending["done"].is_set()
                 and not self.session._revoked.is_set()
             ):
                 self.session.release()
@@ -66,8 +68,12 @@ def rig(monkeypatch):
                 return ",".join(map(str, self.pose))
             if text.startswith("InverseSolution("):
                 x, y, z, r = map(float, text.split("(")[1].split(",")[:4])
-                self.solution = (START[0], (x - POSE[0]) / 10, 10 + (z - POSE[2]) / 10,
-                                 r - START[0])
+                self.solution = (
+                    START[0],
+                    (x - POSE[0]) / 10,
+                    10 + (z - POSE[2]) / 10,
+                    r - START[0],
+                )
                 return ",".join(map(str, self.solution))
             if text.startswith(("MovL(", "JointMovJ(")):
                 self.moves.append(text)
@@ -142,9 +148,13 @@ def rig(monkeypatch):
 
     monkeypatch.setattr(socket, "create_connection", connect)
     monkeypatch.setattr(socket, "socket", make_socket)
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: [
-        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("robot.test", 29999)),
-    ])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("robot.test", 29999)),
+        ],
+    )
     monkeypatch.setattr("mg400_agent.keyboard_jog.time.monotonic", lambda: robot.now)
     monkeypatch.setattr("mg400_agent.keyboard_jog.time.sleep", robot.sleep)
     control = JointControl("robot.test", robot.snapshot)
@@ -185,11 +195,17 @@ def test_prepare_is_read_only_and_shares_controller_locks(rig):
     assert len(rig.commands) == 4
 
 
-@pytest.mark.parametrize("key,axis,change", [
-    ("W", 0, 50 * math.cos(math.radians(30))),
-    ("S", 0, -50 * math.cos(math.radians(30))),
-    ("R", 2, 50), ("F", 2, -50), ("Q", 3, 10), ("E", 3, -10),
-])
+@pytest.mark.parametrize(
+    "key,axis,change",
+    [
+        ("W", 0, 50 * math.cos(math.radians(30))),
+        ("S", 0, -50 * math.cos(math.radians(30))),
+        ("R", 2, 50),
+        ("F", 2, -50),
+        ("Q", 3, 10),
+        ("E", 3, -10),
+    ],
+)
 def test_cartesian_keys_first_segment_uses_measured_pose(rig, key, axis, change):
     rig.session.prepare()
     result = rig.session.run(key, threading.Event())
@@ -206,6 +222,26 @@ def test_cartesian_keys_first_segment_uses_measured_pose(rig, key, axis, change)
     assert not rig.session.control.stopped
 
 
+def test_repeated_hold_stops_do_not_replace_a_later_parent_stop(rig):
+    rig.session.prepare()
+    for count, key in enumerate(("R", "F"), 1):
+        rig.release_after = count
+        rig.session.run(key, threading.Event())
+        assert len(rig.moves) == count
+        assert rig.commands.count("ResetRobot()") == count
+        assert rig.session.ready
+        assert not rig.session.busy and not rig.session.control.busy
+        assert not rig.session.control.stopped
+
+    result = rig.session.control.stop()
+    assert result["ok"] and result["stationary_verified"]
+    assert rig.commands.count("ResetRobot()") == 3
+    assert rig.session.control.stopped
+    assert not rig.session.ready
+    assert rig.session.control.stop() == result
+    assert rig.commands.count("ResetRobot()") == 3
+
+
 @pytest.mark.parametrize("key", ["W", "A"])
 def test_fresh_pose_measurement_skips_only_the_initial_pose_query(rig, key):
     rig.session.prepare()
@@ -220,10 +256,22 @@ def test_fresh_pose_measurement_skips_only_the_initial_pose_query(rig, key):
     assert rig.session.ready
 
 
-@pytest.mark.parametrize("invalid", [
-    "missing", "expired", "future", "control", "before_mode", "after_mode",
-    "before_alarm", "after_alarm", "query_changed", "current_changed", "combined_drift",
-])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "missing",
+        "expired",
+        "future",
+        "control",
+        "before_mode",
+        "after_mode",
+        "before_alarm",
+        "after_alarm",
+        "query_changed",
+        "current_changed",
+        "combined_drift",
+    ],
+)
 def test_unusable_pose_measurement_falls_back_to_current_pose_query(rig, invalid):
     rig.session.prepare()
     measurement = rig.session.control.read_pose_measurement()
@@ -237,24 +285,27 @@ def test_unusable_pose_measurement_falls_back_to_current_pose_query(rig, invalid
         measurement = replace(measurement, control=JointControl("robot.test", rig.snapshot))
     elif invalid.endswith("mode"):
         field = invalid.split("_")[0]
-        measurement = replace(measurement, **{
-            field: replace(getattr(measurement, field), mode=4 if field == "before" else 7)
-        })
+        measurement = replace(
+            measurement,
+            **{field: replace(getattr(measurement, field), mode=4 if field == "before" else 7)},
+        )
     elif invalid.endswith("alarm"):
         field = invalid.split("_")[0]
-        measurement = replace(measurement, **{
-            field: replace(getattr(measurement, field), error_status=True)
-        })
+        measurement = replace(
+            measurement, **{field: replace(getattr(measurement, field), error_status=True)}
+        )
     elif invalid == "query_changed":
-        measurement = replace(measurement, before=replace(
-            measurement.before, joints_deg=(START[0] - 0.03, *START[1:])
-        ))
+        measurement = replace(
+            measurement,
+            before=replace(measurement.before, joints_deg=(START[0] - 0.03, *START[1:])),
+        )
     elif invalid == "current_changed":
         rig.sample = replace(rig.sample, joints_deg=(START[0] + 0.03, *START[1:]))
     else:
-        measurement = replace(measurement, before=replace(
-            measurement.before, joints_deg=(START[0] - 0.02, *START[1:])
-        ))
+        measurement = replace(
+            measurement,
+            before=replace(measurement.before, joints_deg=(START[0] - 0.02, *START[1:])),
+        )
         rig.sample = replace(rig.sample, joints_deg=(START[0] + 0.02, *START[1:]))
     rig.commands.clear()
     rig.session.run("W", threading.Event(), initial_pose=measurement)
@@ -444,6 +495,14 @@ def test_normal_release_does_not_hide_failed_motion_ack(rig, failure):
     assert not rig.session.ready
     assert rig.session.control.stopped
     assert rig.session.control._stop_uncertain
+    assert not rig.session.busy and not rig.session.control.busy
+    commands = rig.commands.copy()
+    with pytest.raises(RuntimeError):
+        rig.session.run("W", threading.Event())
+    with pytest.raises(RuntimeError, match="stopped"):
+        rig.session.control.move(START)
+    assert rig.commands == commands
+    assert not rig.session.control.busy
 
 
 def test_ack_wait_timeout_locks_even_if_successful_ack_arrives_later(rig):
@@ -606,18 +665,24 @@ def test_ik_rejection_ends_hold_without_motion_or_stop(rig, monkeypatch):
         rig.session.run("S", threading.Event())
 
 
-@pytest.mark.parametrize("key,distances", [
-    ("W", [50, 25, 12.5, 6.25, 3.125, 1.5625, 0.78125, 0.390625, 0.1953125, 0.1]),
-    ("Q", [10, 5, 2.5, 1.25, 0.625, 0.3125, 0.15625, 0.1]),
-])
+@pytest.mark.parametrize(
+    "key,distances",
+    [
+        ("W", [50, 25, 12.5, 6.25, 3.125, 1.5625, 0.78125, 0.390625, 0.1953125, 0.1]),
+        ("Q", [10, 5, 2.5, 1.25, 0.625, 0.3125, 0.15625, 0.1]),
+    ],
+)
 def test_rejected_targets_shrink_to_minimum_before_one_trajectory(rig, monkeypatch, key, distances):
     rig.session.prepare()
     solve = JointControl.solve_pose
     attempted = []
 
     def reject_larger(active, target):
-        distance = (math.hypot(target[0] - POSE[0], target[1] - POSE[1])
-                    if key == "W" else abs(target[3] - POSE[3]))
+        distance = (
+            math.hypot(target[0] - POSE[0], target[1] - POSE[1])
+            if key == "W"
+            else abs(target[3] - POSE[3])
+        )
         attempted.append(distance)
         assert not rig.moves
         if len(attempted) < len(distances):
@@ -679,11 +744,14 @@ def test_release_or_close_during_target_shortening_prevents_motion(rig, monkeypa
     assert not rig.session.control.stopped
 
 
-@pytest.mark.parametrize("failure", [
-    RuntimeError("Unexpected controller response"),
-    TimeoutError("Controller acknowledgement timed out"),
-    ValueError("Invalid inverse solution data"),
-])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("Unexpected controller response"),
+        TimeoutError("Controller acknowledgement timed out"),
+        ValueError("Invalid inverse solution data"),
+    ],
+)
 def test_fault_during_target_shortening_does_not_try_another_target(rig, monkeypatch, failure):
     rig.session.prepare()
     solve = Mock(side_effect=[TargetRejectedError("Target rejected"), failure])
@@ -711,9 +779,7 @@ def test_joint_target_limit_ends_hold_without_stopping_parent(rig):
 
 
 @pytest.mark.parametrize("stop_fails", [False, True])
-def test_release_during_final_pose_read_waits_for_stop_confirmation(
-    rig, monkeypatch, stop_fails
-):
+def test_release_during_final_pose_read_waits_for_stop_confirmation(rig, monkeypatch, stop_fails):
     rig.session.prepare()
     monkeypatch.setattr(
         JointControl, "solve_pose", Mock(side_effect=TargetRejectedError("Target rejected"))
@@ -753,7 +819,7 @@ def test_release_during_final_pose_read_waits_for_stop_confirmation(
         assert result == stopped_pose
         assert rig.session.measured_pose[0] == stopped_pose
         reset = rig.commands.index("ResetRobot()")
-        assert "GetPose(0,0)" in rig.commands[reset + 1:]
+        assert "GetPose(0,0)" in rig.commands[reset + 1 :]
     assert not rig.moves
 
 
@@ -829,8 +895,13 @@ def test_old_receipt_cannot_complete_a_step_or_allow_a_second_move(rig, monkeypa
     assert len(rig.moves) == 1
 
 
-def test_no_second_hold_or_absolute_move_can_queue_while_hold_is_active(rig):
+@pytest.mark.parametrize("completed_holds", [0, 1])
+def test_no_second_hold_or_absolute_move_can_queue_while_hold_is_active(rig, completed_holds):
     rig.session.prepare()
+    if completed_holds:
+        rig.session.run("R", threading.Event())
+        rig.release_after = None
+    previous_moves = rig.moves.copy()
     reached, unblock = threading.Event(), threading.Event()
 
     def block(text):
@@ -849,7 +920,10 @@ def test_no_second_hold_or_absolute_move_can_queue_while_hold_is_active(rig):
     rig.session.release()
     unblock.set()
     assert not isinstance(finish_thread(thread, outcome), Exception)
-    assert not rig.moves
+    assert rig.moves == previous_moves
+    assert rig.commands.count("ResetRobot()") == completed_holds + 1
+    assert rig.session.ready
+    assert not rig.session.busy and not rig.session.control.busy
 
 
 def test_close_cancels_hold_during_blocking_query(rig):
@@ -892,9 +966,7 @@ def test_parent_cancel_revokes_child_and_exposes_pending(rig):
 def test_parent_cancel_before_send_prevents_child_motion(rig, reuse_pose):
     rig.session.prepare()
     measurement = rig.session.control.read_pose_measurement() if reuse_pose else None
-    rig.connect_hook = (
-        lambda port: rig.session.control.cancel() if port == 30003 else None
-    )
+    rig.connect_hook = lambda port: rig.session.control.cancel() if port == 30003 else None
     with pytest.raises(RuntimeError):
         rig.session.run("W", threading.Event(), initial_pose=measurement)
     assert not rig.moves
@@ -937,6 +1009,7 @@ def test_prepare_rejects_j4_outside_measured_range_without_keyboard_readiness(ri
         def hook(text):
             if text == "RobotMode()":
                 rig.sample = replace(rig.sample, joints_deg=outside)
+
         rig.hook = hook
     with pytest.raises(ValueError, match="J4"):
         rig.session.prepare()
@@ -988,9 +1061,14 @@ def test_hold_query_failure_requires_release_then_allows_retry(rig, query):
     assert len(rig.moves) == 1 and rig.session.ready
 
 
-@pytest.mark.parametrize("axis,start,key,end", [
-    (0, 159, "D", 149), (3, 359, "E", 349), (3, -359, "Q", -349),
-])
+@pytest.mark.parametrize(
+    "axis,start,key,end",
+    [
+        (0, 159, "D", 149),
+        (3, 359, "E", 349),
+        (3, -359, "Q", -349),
+    ],
+)
 def test_keyboard_measured_margin_band_allows_inward_move(rig, axis, start, key, end):
     joints = list(START)
     joints[axis] = start
@@ -1040,28 +1118,47 @@ def test_minimum_step_requires_actual_progress_before_continuation(rig, monkeypa
                 rig.sample, rig.pose = target_state
                 if arrival == "offset":
                     if key == "A":
-                        rig.sample = replace(rig.sample, joints_deg=(
-                            rig.sample.joints_deg[0] + 0.06, *rig.sample.joints_deg[1:],
-                        ))
+                        rig.sample = replace(
+                            rig.sample,
+                            joints_deg=(
+                                rig.sample.joints_deg[0] + 0.06,
+                                *rig.sample.joints_deg[1:],
+                            ),
+                        )
                         rig.pose = (*rig.pose[:3], rig.pose[3] + 0.06)
                     else:
                         angle = math.radians(start_joints[0])
-                        rig.pose = (rig.pose[0] + 0.06 * math.cos(angle),
-                                    rig.pose[1] + 0.06 * math.sin(angle), *rig.pose[2:])
+                        rig.pose = (
+                            rig.pose[0] + 0.06 * math.cos(angle),
+                            rig.pose[1] + 0.06 * math.sin(angle),
+                            *rig.pose[2:],
+                        )
             elif arrival == "reverse":
                 if key == "A":
-                    rig.sample = replace(rig.sample, joints_deg=(
-                        start_joints[0] - 0.01, *start_joints[1:],
-                    ))
+                    rig.sample = replace(
+                        rig.sample,
+                        joints_deg=(
+                            start_joints[0] - 0.01,
+                            *start_joints[1:],
+                        ),
+                    )
                 else:
                     angle = math.radians(start_joints[0])
-                    rig.pose = (start_pose[0] - 0.01 * math.cos(angle),
-                                start_pose[1] - 0.01 * math.sin(angle), *start_pose[2:])
+                    rig.pose = (
+                        start_pose[0] - 0.01 * math.cos(angle),
+                        start_pose[1] - 0.01 * math.sin(angle),
+                        *start_pose[2:],
+                    )
             elif arrival == "perpendicular":
                 if key == "A":
-                    rig.sample = replace(rig.sample, joints_deg=(
-                        start_joints[0], start_joints[1] + 0.06, *start_joints[2:],
-                    ))
+                    rig.sample = replace(
+                        rig.sample,
+                        joints_deg=(
+                            start_joints[0],
+                            start_joints[1] + 0.06,
+                            *start_joints[2:],
+                        ),
+                    )
                 else:
                     rig.pose = (*start_pose[:2], start_pose[2] + 0.06, start_pose[3])
         if observations == 12:
@@ -1096,8 +1193,11 @@ def test_minimum_step_requires_actual_progress_before_continuation(rig, monkeypa
     rig.session.run(key, threading.Event())
     assert len(rig.moves) == 1
     sent_target = tuple(map(float, rig.moves[0].split("(")[1].split(",")[:4]))
-    sent_distance = (sent_target[0] - start_joints[0] if key == "A"
-                     else math.dist(sent_target[:3], start_pose[:3]))
+    sent_distance = (
+        sent_target[0] - start_joints[0]
+        if key == "A"
+        else math.dist(sent_target[:3], start_pose[:3])
+    )
     assert sent_distance == pytest.approx(0.1, abs=1e-6)
     assert observations >= 4
     assert bool(arrived) is (arrival in {"target", "offset"})
@@ -1110,9 +1210,7 @@ def test_minimum_step_requires_actual_progress_before_continuation(rig, monkeypa
 def test_base_motion_starts_while_background_pose_query_is_blocked(rig, key, query_fails):
     rig.session.prepare()
     rig.commands.clear()
-    pose_waiting, allow_pose, motion_sent, allow_motion_ack = (
-        threading.Event() for _ in range(4)
-    )
+    pose_waiting, allow_pose, motion_sent, allow_motion_ack = (threading.Event() for _ in range(4))
     blocked = False
 
     def reply(text):
@@ -1188,9 +1286,13 @@ def test_next_segment_is_rejected_when_no_target_remains_inside_joint_limit(rig)
         rig.session.run("D", threading.Event())
 
 
-@pytest.mark.parametrize("failure", [
-    TimeoutError("IK query timed out"), ValueError("Invalid IK reply"),
-])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("IK query timed out"),
+        ValueError("Invalid IK reply"),
+    ],
+)
 def test_next_segment_ik_failure_stops_and_latches_after_a_successful_move(rig, failure):
     rig.session.prepare()
     rig.release_after = None
@@ -1234,7 +1336,7 @@ def test_next_segment_reuses_only_fresh_measured_arrival_pose(rig, monkeypatch, 
     rig.session.run("R", threading.Event())
     assert len(rig.moves) == 2
     first, second = (rig.commands.index(move) for move in rig.moves)
-    between = rig.commands[first + 1:second]
+    between = rig.commands[first + 1 : second]
     assert between.count("GetPose(0,0)") == (2 if expired else 1)
     assert float(rig.moves[1].split(",")[2]) == pytest.approx(140.06)
     assert rig.session.ready and not rig.session.control.stopped
@@ -1288,9 +1390,7 @@ def test_base_release_stop_is_not_blocked_by_background_pose_query(rig):
     rig.commands.clear()
     rig.release_after = None
     rig.finish_moves = False
-    pose_waiting, allow_pose, motion_sent, reset_sent = (
-        threading.Event() for _ in range(4)
-    )
+    pose_waiting, allow_pose, motion_sent, reset_sent = (threading.Event() for _ in range(4))
     blocked = False
 
     def reply(text):
@@ -1298,7 +1398,8 @@ def test_base_release_stop_is_not_blocked_by_background_pose_query(rig):
         if text == "GetPose(0,0)" and not blocked:
             blocked = True
             query_connection = next(
-                connection for connection in rig.connections
+                connection
+                for connection in rig.connections
                 if getattr(connection, "text", None) == "GetPose(0,0)"
                 and not connection.shutdown_event.is_set()
             )

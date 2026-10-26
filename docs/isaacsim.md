@@ -1,51 +1,41 @@
-# Isaac Sim：MG400 + PGEA 夹爪
+# Isaac Sim：MG400 与 PGEA 夹爪
 
-复用本项目已校核的 CAD 网格、连杆尺寸、惯量和夹爪安装关系，直接导出原生 USD。
-不需要 ROS、URDF/MJCF 导入扩展或在线资产转换器。
+[项目首页](../README.md) · [连接](#打开场景与连接) · [操作](#控制机械臂与夹爪) · [停止](#停止与恢复) · [排障](#故障排查)
 
-## 文件
+本页说明如何在 Isaac Sim 中查看真机姿态，并控制机械臂和夹爪。
+日常场景显示实测姿态，时间轴保持 `Stop`。
+镜像不验证碰撞、夹持力或真实连杆动力学。
+法兰坐标也不能直接当作已标定的实际夹爪 TCP。
 
-| 文件 | 用途 |
-| --- | --- |
-| `00_OPEN_MG400.usda` | 日常主入口：机械臂、可镜像夹指、地面、灯光和观察相机 |
-| `scripts/start_isaac_olares.sh` | Olares 服务启动入口，复用现有 Isaac Sim 安装 |
-| `apps/isaacsim/startup.py` | 打开默认场景，检查真机控制导入，记录代码与运行环境 |
-| `isaacsim/workspace_scene.usda` | 真机镜像工作场景，直接引用基础机器人资产并停用物理场景 |
-| `isaacsim/mg400_with_gripper.usd` | 含可动夹指、网格与材质的基础机器人资产，默认 prim 为 `/MG400` |
-| `isaacsim/scene.usda` | 基础资产检查场景，含地面、灯光、相机和 PhysicsScene |
-| `apps/isaacsim/load_model.py` | 开发时检查基础模型导入 |
-| `apps/isaacsim/mirror.py` | 在当前 MG400 场景中显示真机四轴反馈，支持断线重连 |
-| `apps/isaacsim/mirror_bootstrap.py` | 必要时打开默认场景，再启动只读姿态镜像 |
-| `apps/isaacsim/joint_control.py` | 统一面板入口：实时同步、法兰坐标、键盘点动、使能、下使能、复位和夹爪连续开口 |
-| `apps/isaacsim/gripper_control.py` | 统一面板复用的夹爪模块，也保留独立 I/O 开合入口 |
-| `apps/isaacsim/olares_gripper.py` | 兼容旧入口，打开同一个统一控制面板 |
-| `config/robot.toml` | Isaac 镜像、法兰面板和夹爪面板共用的机器人地址 |
-| `scripts/gripper_feedback.py` | Olares 主机读取 USB 夹爪位置，写入共享测量文件 |
-| `scripts/install_gripper_collector.py` | 在 Olares 主机安装夹爪采集的自动启动服务 |
-| `scripts/isaac_gripper_feedback.mjs` | Mac 读取 USB 夹爪位置，经当前 WebRTC 会话转发到 Isaac |
-| `apps/isaacsim/standalone.py` | 基础资产独立检查入口，使用 5.1 兼容 API，6.x 已弃用这些接口 |
-| `scripts/build_isaac_model.py` | 从现有模型重建含可动夹指的基础 USD，无需启动 Isaac Sim |
-| `scripts/build_isaac_workspace.py` | 重建默认镜像工作场景和主入口 |
-| `isaacsim/LICENSE`、`NOTICE.txt` | 原始模型来源、许可证和模型限制 |
+安装和更新服务见 [Olares 配置与维护](olares.md)。
+模型、接口和构建说明见 [开发参考](development.md#isaac-模型与控制接口)。
 
-模型单位为米，Z 轴向上。机械臂的八个旋转关节与三个固定关节连接 11 个刚体。
-PGEA 侧出线版、两个估算指尖和各参考坐标系都随法兰移动。
-基础模型为夹爪壳体和两侧夹指提供独立变换，以及关节坐标和行程。
-这些夹爪关节不参与物理解算。
-夹爪不添加刚体、质量、驱动或碰撞，工作场景停用 PhysicsScene。
-场景中的机器人为 `/World/MG400`，法兰为 `/World/MG400/mg400_end_effector_flange`。
-观察相机为 `/World/Camera`。
+## 开始前
 
-## 日常使用：查看真机姿态与打开控制面板
+确认 LarePass VPN 已连接，并使用已运行的 WebRTC 客户端。
+服务地址为 `100.64.0.1`，信令端口为 `49100/TCP`，视频端口为 `47998/UDP`。
+服务未启动时，按 [启动 Isaac 服务](olares.md#启动-isaac-服务) 操作。
+首次使用 Olares USB 夹爪时，先 [安装采集服务](olares.md#usb-接在-olares)。
 
-Olares 启动脚本通过 `apps/isaacsim/startup.py` 打开 `00_OPEN_MG400.usda`。
-它检查法兰面板、夹爪面板和文件反馈模块能否导入，不创建面板或网络连接。
-默认启动不开始物理仿真，也不发送真机命令。
-在已有服务中，也可用 **File → Open** 打开 `/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
+关闭 DobotStudio 和其他控制程序。
+Isaac 与网页面板通过 [面板连接锁](olares.md#面板连接锁) 避免同时连接。
+该锁不限制其他主机或 DobotStudio。
+机器人地址配置见 [机器人地址与端口](olares.md#机器人地址与端口)。
 
-时间轴保持 **Stop**。
-在 **Window → Script Editor** 运行统一面板。
-脚本会启动或复用真机姿态镜像：
+执行运动前，确认路径、夹爪和线缆的空间。
+关节范围和逆解检查不包含现场碰撞检查。
+建议首次短按 Q/E，松键后核对真实运动与画面。
+确认两者一致后，再扩大操作。
+打开脚本和只读连接测试不会自动执行这一步。
+若显示 `STOP UNCONFIRMED`，使用现场物理急停。
+
+## 打开场景与连接
+
+默认启动打开 `00_OPEN_MG400.usda`，检查控制模块能否导入。
+它不创建面板、不连接机器人、不启动物理仿真，也不发送真机命令。
+在已有服务中，也可用 `File → Open` 打开 `/root/Documents/mg400-isaac/00_OPEN_MG400.usda`。
+
+保持时间轴 `Stop`，在 `Window → Script Editor` 运行：
 
 ```python
 import runpy
@@ -53,348 +43,34 @@ import runpy
 runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
 ```
 
-`MG400 Control` 使用英文界面，顶部保留同步状态和 `Start sync` / `Stop sync`。
-主体 `Coordinates & Motion` 合并 XYZ/R 和夹爪五行滑块与数值输入。
-键盘开关和 J1–J4 读数位于下方细栏，操作说明收在悬浮提示中。
-统一入口复用现有同步，并隐藏旧同步窗口。
-没有同步实例时，脚本在后台启动同步，不再创建单独窗口。
-启动只读，连接后显示真机实测姿态。
-使能、下使能和运动步骤见 [在 Isaac 中控制真机法兰](#在-isaac-中控制真机法兰)。
-如果只显示姿态，运行 `apps/isaacsim/mirror_bootstrap.py`，见 [真机姿态实时同步](#真机姿态实时同步)。
-夹爪区自动读取 Olares USB 反馈，不必另开面板。
-首次使用时安装宿主机采集服务，步骤见 [USB 接在 Olares](#usb-接在-olares)。
-此后打开面板会自动请求启动采集，运行中的采集不会重启。
-`olares_gripper.py` 保留为统一面板的兼容入口。
-点击 `Stop sync` 或关闭统一窗口，会结束两组控制。
-脚本等待控制动作和当前夹爪命令结束，再用新鲜反馈核实静止，最后停止同步连接。
-如果无法确认控制已停止，脚本保留反馈，并在状态记录中说明。
-动作期间不能重载面板，空闲时重复运行会替换控制面板并复用同步连接。
-`Stop sync` 保留窗口，确认停止后可点击 `Start sync` 恢复反馈。
-若无法确认停止，控制保持禁用，须核实机器人状态后重载面板。
-关闭窗口后，重新运行统一入口可恢复面板和同步。
-
-将自定义场景另存到数据目录，操作要求见 [代码与运行数据](#代码与运行数据)。
-
-## Olares / WebRTC
-
-Olares 容器内使用 Isaac Sim `6.1.0-rc.26`，安装目录为 `/isaac-sim`。
-内置 Python 版本为 `3.12.13`，继续使用该安装提供的 Kit 和运行依赖。
-不要用项目的 `uv sync` 或 pip 依赖覆盖 Kit 的 Python 环境。
-客户端保持 LarePass VPN 连接：
-
-- Server：`100.64.0.1`
-- Signal：`49100/TCP`
-- Stream：`47998/UDP`
-
-### Warp 兼容性
-
-当前 Isaac 安装依赖 Warp `1.16.0` 的 APIC 初始化文件修补。
-`/isaac-sim/extscache/omni.warp.core-1.16.0+lx64/warp/_src/apic/__init__.py` 必须为 137 字节常规文件。
-该路径不能是符号链接，内容使用 [NVIDIA Warp v1.16.0 源文件](https://raw.githubusercontent.com/NVIDIA/warp/v1.16.0/warp/_src/apic/__init__.py)。
-在容器内运行以下校验：
-
-```sh
-python3 - <<'PY'
-import hashlib
-from pathlib import Path
-
-warp_file = Path("/isaac-sim/extscache/omni.warp.core-1.16.0+lx64/warp/_src/apic/__init__.py")
-assert warp_file.is_file() and not warp_file.is_symlink()
-assert warp_file.stat().st_size == 137
-assert hashlib.sha256(warp_file.read_bytes()).hexdigest() == (
-    "39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14"
-)
-print("校验通过")
-PY
-```
-
-更换或重建容器映像后，先重新执行此校验。
-修补元数据位于 `/root/Documents/isaac-repairs/warp-1.16.0/original-symlink.json`。
-保留 `/root/Documents/isaac-repairs` 及其现有路径。
-
-### WebRTC 客户端自动点击 SOP
-
-使用后台点击脚本，不激活窗口、不移动系统鼠标。
-它临时使用已获授权的本机调试接口 `127.0.0.1:9229`，每批结束后关闭。
-
-1. 客户端必须已运行、位于后台且未最小化。用完整路径绑定应用：
-   `app = await cua.getApp("/Applications/Isaac Sim WebRTC Streaming Client.app")`。
-   本地控件优先用 AX 元素操作，远端视频控件按截图定位。
-2. 取得完整窗口截图，记录原始像素尺寸 `width × height` 和目标坐标 `(x, y)`。
-   窗口及布局未变时可复用上一批结果图。窗口移动、缩放或布局变化后重新截图。
-3. 在项目目录运行（Node.js 22+）：
-   `node scripts/isaac_client_click.mjs width height x y [x y ...]`。
-   脚本已完成移动和点击，不要再调用 `app.click`。
-   使用截图原始坐标，不手动扣标题栏、缩放或按远端分辨率换算。
-4. 确定的连续操作可合并，每批最多 8 次。批次结束后读取 AX 并截图确认远端结果。
-   遇到未知菜单、弹窗或报错时先观察，不要猜坐标或整批盲目重试。
-   已展开的菜单可因悬停切换，避免再次点击标题将其收起。
-5. 校准只用普通菜单、标签页，不用机械臂动作按钮，也不用拖动代替鼠标移动。
-
-截图失败时，按完整路径重新绑定应用，读取最新 AX。
-仍失败时停止操作，不自动改用 `Raise`、重启或前台移动脚本。
-只有用户明确接受切换前台和移动系统鼠标时，才可使用前台方案。
-
-### 服务与场景加载
-
-已有服务运行时直接使用当前客户端，不需要启动第二个 Isaac Sim。
-需要重新启动服务时，先正常退出已有 Isaac Sim，再在 Olares 容器终端运行：
-
-```sh
-ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh
-```
-
-容器可能预设内部服务地址，VPN 启动时显式覆盖 `ISAACSIM_HOST`。
-启动脚本支持以下环境变量。表中默认值仅在对应变量未设置时使用：
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `ISAACSIM_ROOT` | `/isaac-sim` | 现有 Isaac Sim 安装目录 |
-| `ISAACSIM_HOST` | `100.64.0.1` | 客户端连接的服务地址 |
-| `ISAACSIM_SIGNAL_PORT` | `49100` | WebRTC 信令 TCP 端口 |
-| `ISAACSIM_STREAM_PORT` | `47998` | WebRTC 视频 UDP 端口 |
-| `MG400_DATA_DIR` | `/root/Documents/mg400-data` | 运行数据根目录 |
-
-默认启动 `apps/isaacsim/startup.py`，打开日常场景并检查真机控制模块能否导入。
-该入口不创建面板、不连接机器人，也不发送真机命令。
-
-启动记录写入 `$MG400_DATA_DIR/isaacsim/runtime.json`。
-记录包含 Git 提交、未提交修改标志、Isaac/Python 版本、场景和数据目录。
-`config_sources` 记录机器人配置路径，以及安装、串流和数据目录环境变量。
-核对提交与预期版本一致。
-`status` 为 `ready` 表示场景打开成功，真机控制模块通过导入检查。
-这不代表真机已连接或动作已通过验证。
-
-显式传入 `--exec` 时，启动脚本只运行指定入口，不再运行默认 `startup.py`。
-该方式不会自动生成默认启动入口的 `runtime.json`，各入口仍写入自身状态文件。
-
-### 代码与运行数据
-
-代码通过 GitHub 管理，Olares 运行选定提交。
-`/root/Documents/mg400-isaac` 是 Git 工作副本。
-`apps/`、`config/`、`src/`、`scripts/`、`isaacsim/` 和 `00_OPEN_MG400.usda` 随同一提交更新。
-不要只覆盖其中的几个脚本。
-不必上传 `.env` 或 API key，也不必安装模型 API 依赖。
-
-Olares 未配置 GitHub 读取凭据时，通过 Git bundle 导入目标版本。
-在本地项目根目录生成包含完整 Git 历史的 bundle，并记录目标提交：
-
-```sh
-git bundle create /tmp/mg400-deploy.bundle --all
-git rev-parse HEAD
-```
-
-通过已登录的 Olares 网页会话，将 bundle 传到 `/root/Documents/mg400-data/mg400-deploy.bundle`。
-先正常退出已有 Isaac Sim，再在容器中查看工作副本：
-
-```sh
-git -C /root/Documents/mg400-isaac status --short
-```
-
-如果有未提交修改，先提交或另存改动，再切换版本。
-将下列 `COMMIT_SHA` 替换为本地记录的目标提交：
-
-```sh
-git -C /root/Documents/mg400-isaac bundle verify /root/Documents/mg400-data/mg400-deploy.bundle
-git -C /root/Documents/mg400-isaac fetch /root/Documents/mg400-data/mg400-deploy.bundle 'refs/heads/*:refs/remotes/bundle/*'
-git -C /root/Documents/mg400-isaac switch --detach COMMIT_SHA
-git -C /root/Documents/mg400-isaac remote set-url origin https://github.com/shc0507/dobot_mg400.git
-git -C /root/Documents/mg400-isaac rev-parse HEAD
-```
-
-核对提交后，按上面的 VPN 启动命令运行服务，再核对 `runtime.json`。
-`origin` 地址为 `https://github.com/shc0507/dobot_mg400.git`。
-该私有仓库要求访问凭据，有获授权的 GitHub 只读访问后，可以改从 `origin` 获取提交。
-
-Isaac 入口通过 `MG400_DATA_DIR` 指定运行数据根目录。
-未设置时，默认使用项目的 `work/`，Olares 启动脚本设为 `/root/Documents/mg400-data`。
-Isaac 状态 JSON 和场景备份写入数据根目录下的 `isaacsim/`。
-USB 测量文件存放于数据根目录下的 `work/`。
-Olares 代码目录下的 `work` 使用相对链接 `../mg400-data/work`，供既有宿主机采集路径使用。
-下文的 `$MG400_DATA_DIR` 均表示实际使用的数据根目录。
-
-自定义场景另存到数据目录，更新代码前保留当前场景与已有备份。
-脚本导出的场景备份保留引用和会话修改，仍依赖原源码资产位置。
-如果被引用的外部资产含未保存的修改，脚本会拒绝备份，以免重开快照后恢复旧值。
-先保存这些资产，再运行会自动备份的入口；脚本不会自动覆盖源资产。
-统一控制入口会在旧操作结束后重载控制模块。
-这些模块为 `controller_protocol`、`joint_limits`、`joint_control`、`keyboard_jog` 和 `gripper_feedback`。
-面板忙或仍有未决命令应答时，入口拒绝重载。
-其他 `src/` 模块修改后必须完整重启 Isaac Sim。
-Script Editor、自定义启动脚本和 `--exec` 均使用本页的当前入口。
-
-## USB 摄像头预览
-
-摄像头预览运行在 Olares 主机上，与 Isaac 容器独立。
-服务文件存放于 `/opt/mg400-camera-preview`，重启主机后保留。
-服务手动启动，未设置开机自启。
-
-在 Control Hub → Terminal → Olares 中运行：
-
-```sh
-systemctl start mg400-camera-preview
-cat /opt/mg400-camera-preview/preview.url
-```
-
-连接 LarePass VPN 后，在浏览器打开输出的完整链接。
-链接包含访问密钥，服务重启后保持不变。
-密钥存放于 `preview.key`，仅 root 可以读取。
-关闭终端不会停止预览服务。
-
-查询状态或停止预览：
-
-```sh
-systemctl status mg400-camera-preview mg400-camera-capture --no-pager
-systemctl stop mg400-camera-preview
-```
-
-停止预览时，摄像头采集服务也会停止。
-若启动失败，运行 `journalctl -u mg400-camera-preview -u mg400-camera-capture -n 30 --no-pager`。
-
-网页监听 VPN 地址 `100.64.0.1:1985`。
-Olares 的 VPN ACL（端口访问规则）必须允许端口 `1985`。
-go2rtc `1.9.14` 仅监听主机回环地址 `127.0.0.1:1984`。
-三台 AC410 按 USB 接口路径绑定，预览分辨率为 `640 × 480`。
-每路使用一条连续 MJPEG 视频流，最高每秒 30 帧。
-画面下方显示实际解码尺寸和更新帧率；实际帧率受摄像头、网络和浏览器性能影响。
-服务端和浏览器只保留最新待处理帧，网络变慢时丢弃积压帧。
-服务端发送超时为 1.5 秒。
-连续 1.5 秒未收到完整帧时，网页重连并暂留上一帧。
-断流或显示帧自接收起满 1.5 秒时，网页标注“画面已暂停 · 非实时”。
-上一帧自接收起最多保留 5 秒，重连不会延长该时限。
-切换到其他标签页时暂停预览并清图，返回预览页后恢复。
-保持摄像头连接原 USB 接口。
-更换接口后，更新 `/opt/mg400-camera-preview/go2rtc.yaml` 中的设备路径。
-
-三路同时断流时，先用 `lsusb -t` 和 `ls -l /dev/video*` 检查设备是否仍被识别。
-服务显示 `active` 只说明进程存活。取图返回 `200` 时，还须确认图片非空且能解码。
-若集线器和摄像头都未被识别，重启预览服务不能代替 USB 连接检查。
-
-若摄像头已被识别，但预览帧率很低，在 Olares 主机运行
-`curl -s http://127.0.0.1:1984/api/preload`。
-输出应包含 `camera1`、`camera2`、`camera3`。
-若有缺失，运行 `systemctl restart mg400-camera-preview`，等待 2 秒后再次查询。
-采集服务启动时若设备缺失，预加载可能未建立。
-网页的视频流会自动重连；保留的 `camera1.jpg`、`camera2.jpg`、`camera3.jpg` 单帧接口在没有持续采集时可能较慢。
-
-提高分辨率后，须同时检查三路画面，并验证连续多张 JPEG 能完整解码。
-浏览器显示分辨率和帧率不能排除花屏或部分图像损坏。
-若出现这类问题，恢复 `640 × 480` 配置，再检查 USB 采集链路。
-
-摄像头与夹爪 USB 转换器共用外接集线器。
-恢复共同上游 USB 端口前，停止 `mg400-gripper-collector.path` 和 `mg400-gripper-collector.service`。
-操作后恢复监听和采集服务。不要把 USB 重新连接视为允许机械臂或夹爪运动。
-
-源码位于 `scripts/camera_preview.py`，部署时使用文件名 `preview.py`。
-将 `scripts/camera_preview.js` 同时部署为同目录的 `preview.js`。
-采集配置和服务定义位于 `config/camera_preview/`。
-服务定义安装于主机的 `/etc/systemd/system/`。
-
-## 真机地址配置
-
-Isaac 镜像、法兰面板和夹爪面板读取项目根目录下的 `config/robot.toml`：
-
-```toml
-[robot]
-host = "192.168.1.6"
-```
-
-修改配置后，重新启动镜像和面板，才会使用新地址。
-法兰面板只复用地址与配置一致的镜像。
-如果现存镜像地址不同或没有 `host`，法兰面板会拒绝复用。
-统一面板先点击 `Stop sync`，再重新运行 `apps/isaacsim/joint_control.py`。
-独立 Python 网页的只读模式未指定 `--robot-host` 时，也读取此配置。
-CLI 的 `--host` 和独立教学脚本保持各自的地址设置方式。
-
-## 真机姿态实时同步
-
-只显示真机姿态时，在 Isaac Sim **Script Editor** 中运行：
-
-```python
-import runpy
-
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py")
-```
-
-入口在当前场景启动 `mirror.py`，没有 MG400 时先加载默认场景。
-镜像只接收所配置机器人 TCP 30004 的关节反馈，不发送真机命令。
-它先备份当前场景，保留物体位置与夹爪开口，再停止物理仿真。
-随后在每次画面更新时应用最新的四轴姿态。
-八个旋转关节使用下面的同一套映射；连杆变换只写入 USD session layer，源资产保持不变。
-夹爪随法兰移动，但开口保持启动时的值，因为此反馈流没有提供夹爪位置。
-
-**MG400 Live Mirror** 面板显示 `LIVE`、更新频率和反馈年龄。
-超过 0.5 秒没有新数据时显示 `STALE / RECONNECTING`，模型停在最后有效姿态，
-后台自动重连。点击 **Stop synchronization** 停止同步；再次运行脚本可恢复。
-更换场景或启动物理仿真也会停止同步，防止两个更新来源同时控制模型。
-运行状态每 0.5 秒写入 `$MG400_DATA_DIR/isaacsim/mirror_status.json`，其中包含反馈数、应用帧数、
-真机角度、法兰位置、夹爪保持值与场景备份路径。
-
-需要重启串流并自动同步时，先正常退出旧串流进程，再运行：
-
-```sh
-ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py
-```
-
-当前场景已有 `/World/MG400` 时，入口保留该场景。
-否则打开项目的 `00_OPEN_MG400.usda`。
-显式传入 `SCENE_PATH` 时，先备份当前场景，再加载指定文件。
-例如，先将自定义场景保存到下面的路径，再在 Script Editor 中指定该文件：
-
-```python
-import runpy
-
-runpy.run_path(
-    "/root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py",
-    init_globals={"SCENE_PATH": "/root/Documents/mg400-data/isaacsim/my_scene.usda"},
-)
-```
-
-加载后创建 session layer 中的 `MirrorCamera`，以完整机械臂视角观察同步。
-其他相机的可视图标在 session layer 中隐藏，避免近距离挡住观察画面；相机源定义保留。
-面板显示的反馈年龄是 Isaac Sim 收到反馈后的经过时间，不包含客户端视频串流延迟。
-
-Olares 直连网口使用 `192.168.1.10/24`。IsaacLab 容器内直接连接机器人，
-不要绑定宿主机的源 IP。命名空间中的 `mg400-direct` Linkerd EgressNetwork
-将机器人 `30004` 标为 opaque TCP，避免服务端先发送数据的协议检测等待。
-
-## 在 Isaac 中控制真机法兰
-
-使用 Isaac 自带面板，控制链路在 Olares 内完成：
-
-```text
-Isaac 面板 XYZ（mm）/ R（度） → TCP 29999 / 30003 → MG400
-Isaac 模型与 Actual 显示 ← TCP 30004 ← MG400 实测角度
-```
-
-无需 ROS 2 或额外桥接服务。按 [代码与运行数据](#代码与运行数据) 准备工作副本。
-在当前 Isaac 的 **Window → Script Editor** 执行：
-
-```python
-import runpy
-
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
-```
-
-脚本复用现有实时同步。
-尚未启动同步时，脚本先备份当前场景，必要时加载 MG400，再启动反馈。
-同步状态与 `Start sync` / `Stop sync` 位于统一窗口顶部，不必另开同步面板。
-出现 `MG400 Control` 面板后：
-
-1. 等待 `LIVE` 和 `Actual` 坐标。
-   `Target` 首次自动填入实测坐标。
-2. 未使能时，点击 `Enable robot`。
-   此操作仅使能，不发送运动，沿用控制器当前负载设置。
-3. 返回默认姿态时，点击 `Home`。
-   默认姿态为 J1–J4 全部 0°。
-4. 指定位置时，修改 X/Y/Z（mm）和 R（度），必要时修改夹爪开口。
-   点击 `Execute targets`。
-5. 等待机械臂到位确认，再查看夹爪结果。
-   直线运动核对坐标误差不超过 0.1 mm / 0.1°。
-   关节反馈还须在目标 ±0.1° 内稳定至少 0.4 秒。
-   程序随后用 dashboard 回读核对，再执行用户修改过的夹爪目标。
+入口打开英文界面的 `MG400 Control`，并启动或复用姿态镜像。
+尚无镜像时，入口先备份当前场景，必要时加载 MG400，再启动反馈。
+已有镜像窗口会隐藏，统一窗口顶部显示同步状态及 `Start sync` / `Stop sync`。
+`Coordinates & Motion` 提供 XYZ/R 和夹爪五行滑块及数值输入。
+键盘开关和 J1–J4 读数位于下方，操作说明见悬浮提示。
+等待 `LIVE` 和 `Actual` 坐标，`Target` 首次自动填入实测坐标。
+连接后显示真机姿态，运动仍须手动触发。
+
+夹爪行自动读取 Olares USB 反馈，并请求启动采集服务。
+运行中的采集不会重启，打开面板不会初始化夹爪。
+`olares_gripper.py` 保留为同一面板的兼容入口。
+自定义场景另存到数据目录，要求见 [代码与运行数据](olares.md#代码与运行数据)。
+
+## 控制机械臂与夹爪
+
+### 设置并执行目标
+
+1. 未使能时，点击 `Enable robot`。
+   此操作不发送运动，沿用控制器当前负载设置。
+2. 指定位置时，修改 X/Y/Z（mm）和 R（度）。
+   必要时修改夹爪开口，再点击 `Execute targets`。
+3. 等待机械臂到位确认，再查看夹爪结果。
+   程序只在机械臂到位后执行用户修改过的夹爪目标。
    完成后机械臂保持使能。
-6. 下使能时，点击 `Disable robot`。
+4. 下使能时，点击 `Disable robot`。
+
+若要返回默认姿态，点击 `Home`。
+默认姿态为 J1–J4 全部 0°。
 
 坐标使用基座坐标系和法兰原点（`User=0,Tool=0`）。
 将鼠标悬停在 `Coordinates & Motion` 标题上，可查看坐标参考说明。
@@ -406,29 +82,40 @@ XYZ 调节范围为 ±50 mm，R 为 ±10°。
 数值框可输入范围外的值，滑块范围不是工作空间限位。
 执行前仍由控制器逆解和关节范围检查验证目标。
 
-手动点击 `Execute targets` 时，机械臂的 `MovL` 使用比例参数 `SpeedL=1,AccL=1`。
-机械臂到位确认后，程序才发送用户修改过的夹爪目标。
+直线运动核对坐标误差不超过 0.1 mm / 0.1°。
+关节反馈还须在目标 ±0.1° 内稳定至少 0.4 秒，再用 dashboard 回读核对。
 若夹爪未完成，状态保留机械臂已到位的信息，并报告夹爪结果。
-键盘 W/S、R/F、Q/E 的 `MovL` 使用 `SpeedL=2,AccL=20`。
-控制器逆解验证目标关节范围，控制器规划直线路径。
-若控制器拒绝逆解，且更新后的反馈确认机械臂仍使能、静止且无报警，
-面板保留目标输入；修改坐标后可再次执行。
-动作发出前，若只读查询发生网络错误，可重新点击操作。
-程序仅在没有未决命令，且新鲜反馈保持静止、无报警、姿态未变时允许重试。
-动作发出后若通信失败，仍会锁定控制。
-回复格式错误或机器人状态异常也会锁定控制。
-
-复位使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
-键盘 A/D 的 J1 点动使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=20`。
-这两类关节动作检查整段关节范围。
-上述检查不包含现场碰撞检查。
-机械臂运动不修改全局速度或工具配置。
-`Home` 和机械臂键盘点动不写夹爪输出。
-
 输入框本身不发运动命令，模型显示真机实际姿态。
-动作期间输入和执行按钮禁用，网络操作在后台线程运行。
-`Disable robot` 仍可点击，会取消当前动作并发送 `DisableRobot()`。
+动作期间输入和执行按钮禁用，`Disable robot` 仍可取消动作并下使能。
+`Home` 和机械臂键盘点动不写夹爪输出。
 不支持拖动 USD 连杆控制真机。
+
+夹爪开口范围为 0–1000，0 为闭合，1000 为全开。
+统一面板不设独立夹爪执行或开合按钮。
+首次位置命令将夹爪切换为仅 Modbus 控制，保留当前力度和速度。
+该操作不初始化夹爪，也不保存到闪存，I/O 开合随后不再生效。
+实测位置在目标 ±5 / 1000 内且夹爪报告到位时，才显示到位。
+检测到物体接触时，面板单独报告接触状态，并结束本次 Z/X 长按。
+松开按键后，才可再次长按。
+`Object dropped` 表示物体掉落，不表示到位或夹持成功。
+面板继续显示实测位置，并允许发送新目标。
+
+### 初始化夹爪
+
+断电重启后，夹爪可能处于未初始化状态。
+Olares USB 面板默认不自动初始化夹爪，空爪和夹持物体时均使用统一入口。
+夹持物体时，不要初始化夹爪。
+初始化会张开夹指寻找行程端点，开始前清空行程内的障碍。
+先关闭键盘控制，保持同步开启和控制未锁定。
+夹爪未初始化时，等待新鲜反馈和机械臂空闲，再点击 `Initialize gripper`。
+反馈确认已初始化或正在初始化时，初始化按钮禁用。
+初始化期间，机械臂运动和夹爪目标操作禁用。
+初始化成功后，目标开口重置为实测开口。
+
+初始化共用 15 秒时限，不改变力度、速度、I/O 模式或闪存配置。
+失败或超时后不自动重发，通信状态不确定时保留命令锁。
+核实夹爪状态并修复故障后，再处理命令锁。
+独立 I/O 面板和 Mac 反馈转发不支持此初始化入口。
 
 ### 键盘点动
 
@@ -454,18 +141,11 @@ XYZ 调节范围为 ±50 mm，R 为 ±10°。
 段间可能短暂停顿，无需键盘重复事件。
 机械臂长按没有总时限或总行程上限。
 
-A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
-动作结束后读取坐标，更新面板。
-其余六个方向可复用同一控制实例读取的实测坐标。
-复用时，测量不得超过 0.25 秒。
-测量前后关节反馈还须与当前关节反馈一致。
-不满足条件时，重新读取坐标。
-
 每段仍检查实测关节、目标和路径限位。
 若目标被拒绝，程序在发送运动前逐次减半行程。
 平移最短尝试 0.1 mm，旋转最短尝试 0.1°。
 若这些目标均被拒绝，本次长按结束，松键后可重试或换方向。
-目标拒绝不锁定面板。满足上述条件的发送前查询失败，也可松键后重试。
+目标拒绝不锁定面板。发送前查询失败的重试条件见 [操作被拒绝或控制锁定](#操作被拒绝或控制锁定)。
 
 运动中的通信或机器人状态异常仍会锁定控制。
 松键会取消尚未发送的轨迹，并请求停止当前机械臂动作。
@@ -486,10 +166,19 @@ Z/X 使用同一窗口中的夹爪控制和带 `--commands` 的 USB 采集进程
 发送前若夹爪未初始化或反馈不可用，只提示夹爪错误，机械臂按键保持可用。
 夹爪动作期间，机械臂运动按钮禁用。
 
+## 停止与恢复
+
+点击 `Disable robot` 会取消当前动作并下使能。
 下使能后，面板用命令应答、新鲜反馈和 dashboard 回读核实未使能状态。
 此核验不表示机械臂已静止。
-核实成功后，目标坐标刷新为实测值。点击 **Enable robot** 会先核实静止，再重新使能，无需重载脚本。
+核实成功后，目标坐标刷新为实测值。
+点击 `Enable robot` 会先核实静止，再重新使能，无需重载脚本。
 若无法核实，下使能报错并保持操作锁定。
+
+使能前若关节未停稳，且新鲜反馈仍为未使能、无报警，面板只提示本次未使能。
+停稳后，再次点击 `Enable robot`，无需重开面板。
+程序不会自动重试使能。
+反馈失效、状态不一致或使能命令发出后的验证失败，仍会锁定控制。
 
 运动时关闭面板、更换场景、启动物理仿真或停止反馈同步，会结束控制并请求停止。
 异常不会自动重发动作或自动清除报警。
@@ -497,62 +186,171 @@ Z/X 使用同一窗口中的夹爪控制和带 `--commands` 的 USB 采集进程
 命令应答未知时，即使收到停止指令的应答，也不宣称已确认停止。
 若显示 `STOP UNCONFIRMED`，使用现场物理急停。
 
-J1–J4 使用控制器 `QActual` / `GetAngle()` 的角度，单位为度。
-J3 不减去 J2，也不改变符号或零点。
-模型肘关节使用 `J3−J2`，不能用它替代控制器 J3 做范围检查。
+点击 `Stop sync` 或关闭统一窗口，会结束机械臂和夹爪控制。
+脚本等待控制动作和当前夹爪命令结束，再用新鲜反馈核实静止。
+确认后停止同步连接，`Stop sync` 保留窗口。
+若无法确认停止，脚本保留反馈，记录原因，并保持控制禁用。
+此时须核实机器人状态后重载面板，重载本身不能清除未确认的停止状态。
 
-[MG400 用户手册 V1.7 附录 A](https://download.dobot.cc/DobotStudio-pro/20231116/Dobot%20MG400%20User%20Guide%20V1.7_20231116_en.pdf)
-给出的运动范围如下：
+确认停止后，点击 `Start sync` 可恢复反馈。
+关闭窗口后，重新运行统一入口可恢复面板和同步。
+动作期间不能重载面板，空闲时重复运行会替换控制面板并复用同步连接。
+关闭面板后，Olares USB 采集继续运行。
+若要停止采集服务，见 [USB 接在 Olares](olares.md#usb-接在-olares)。
 
-| 关节 | 厂家规格范围（度） |
-| --- | --- |
-| J1 | −160 … 160 |
-| J2 | −25 … 85 |
-| J3 | −25 … 105 |
-| J4 | −360 … 360 |
+## 可选用法
 
-关节目标范围向内保留 1.05° 余量。
-当前位置和路径按原始范围检查。
-当前位置在原始范围内时，可以从余量区移向允许的目标。
-J4 使用厂家 ±360° 范围，目标允许范围为 ±358.95°。
-角度使用控制器原始读数，不加减 360°。
+### 只同步真机姿态
 
-条件 J2 下限和 `J3−J2` 检查保留
-[HarvestX 参考模型的限制](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_common/include/mg400_common/kinematics.hpp)。
-当 J3 > 0° 时，J2 原始下限为 −25°。
-当 J3 ≤ 0° 时，下限收紧到 −19°。
-目标扣除余量后，对应下限为 −23.95° 和 −17.95°。
+只显示真机姿态时，在 Isaac Sim Script Editor 中运行：
 
-`J3−J2` 是模型肘关节相对零位的转角，原始范围为 ±60°。
-目标扣除余量后，差值范围为 ±58.95°。
-例如 J2=20°、J3=90° 各自未越界，但差值为 70°，因此拒绝该组合。
-这些检查不代表已读取本机控制器的限位配置。
-正解成功只表示坐标计算成功，不证明目标符合运动范围。
-未使能且无报警，也不证明当前姿态允许启动运动。
-执行前，确认路径、夹爪和线缆的空间。
-建议首次短按 Q/E，松键后核对真实运动与画面。
-确认两者一致后，再扩大操作。
-打开脚本和只读连接测试不会自动执行这一步。
+```python
+import runpy
 
-独立查询 `29999` 前，先关闭空闲控制面板。
-面板轮询与外部查询可能互相断开连接。
-查询结束后，重新运行统一入口恢复面板和同步。
-
-状态每 0.5 秒写入 `$MG400_DATA_DIR/isaacsim/control_status.json`。
-其中包含连接状态、实测值、目标值和操作结果，`mirror_status.json` 继续记录模型同步。
-停止现有串流进程后也可用同一脚本自动加载：
-
-```sh
-ISAACSIM_HOST=100.64.0.1 /root/Documents/mg400-isaac/scripts/start_isaac_olares.sh --exec /root/Documents/mg400-isaac/apps/isaacsim/joint_control.py
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py")
 ```
 
-Olares 容器内不绑定宿主机源 IP。需能连接所配置机器人的 `29999`、`30003`、
-`30004` 三个 TCP 端口；已有仅配置 `30004` 的服务网格规则不能代表命令端口也已连通。
-本地离线测试使用模拟控制器覆盖协议、限位、重复点击、反馈失效和停止逻辑；
-不能据此宣称真机运动或 Isaac 运行时验证已完成。
+入口在当前场景启动 `mirror.py`，没有 MG400 时先加载默认场景。
+镜像只接收所配置机器人 TCP 30004 的关节反馈，不发送真机命令。
+它先备份当前场景，保留物体位置与夹爪开口，再停止物理仿真。
+随后在每次画面更新时应用最新的四轴姿态。
+八个旋转关节使用 [四轴映射](development.md#四轴映射)。
+连杆变换只写入 USD session layer，源资产保持不变。
+夹爪随法兰移动，但开口保持启动时的值，因为此反馈流没有提供夹爪位置。
 
-面板 API 参考：[NVIDIA omni.ui FloatField](https://docs.omniverse.nvidia.com/kit/docs/omni.ui/latest/omni.ui/omni.ui.FloatField.html)；
-四轴协议参考：[Dobot 官方 SDK](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python/blob/main/dobot_api.py)。
+`MG400 Live Mirror` 面板显示 `LIVE`、更新频率和反馈年龄。
+超过 0.5 秒没有新数据时显示 `STALE / RECONNECTING`，模型停在最后有效姿态，
+后台自动重连。点击 `Stop synchronization` 停止同步，再次运行脚本可恢复。
+更换场景或启动物理仿真也会停止同步，防止两个更新来源同时控制模型。
+运行状态每 0.5 秒写入 `$MG400_DATA_DIR/isaacsim/mirror_status.json`，其中包含反馈数、应用帧数、
+真机角度、法兰位置、夹爪保持值与场景备份路径。
+
+当前场景已有 `/World/MG400` 时，入口保留该场景。
+否则打开项目的 `00_OPEN_MG400.usda`。
+显式传入 `SCENE_PATH` 时，先备份当前场景，再加载指定文件。
+例如，先将自定义场景保存到下面的路径，再在 Script Editor 中指定该文件：
+
+```python
+import runpy
+
+runpy.run_path(
+    "/root/Documents/mg400-isaac/apps/isaacsim/mirror_bootstrap.py",
+    init_globals={"SCENE_PATH": "/root/Documents/mg400-data/isaacsim/my_scene.usda"},
+)
+```
+
+加载后创建 session layer 中的 `MirrorCamera`，以完整机械臂视角观察同步。
+其他相机的可视图标在 session layer 中隐藏，避免近距离挡住观察画面。相机源定义保留。
+面板显示的反馈年龄是 Isaac Sim 收到反馈后的经过时间，不包含客户端视频串流延迟。
+
+启动串流时直接进入镜像，见 [启动时直接打开面板或镜像](olares.md#启动时直接打开面板或镜像)。
+
+### 使用 I/O 开合夹爪
+
+在 Isaac Script Editor 中使用独立 I/O 入口前，先关闭统一面板：
+
+```python
+import runpy
+
+runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/gripper_control.py")
+```
+
+此入口使用 I/O 开合，不支持连续位置命令。
+面板启动只读状态。`Open gripper` 写 DO2=0、DO1=0，
+`Close gripper` 写 DO2=0、DO1=1。它不使能机械臂，不发送关节命令。
+面板通过 MG400 的 TCP 29999 控制 I/O。
+启用下节的 Mac USB 反馈后，仿真夹指跟随实体位置。
+
+当前接线为 MG400 DO1/DO2 → 夹爪 INPUT1/INPUT2，
+夹爪 OUTPUT1/OUTPUT2 → MG400 DI1/DI2，输入和输出均为 PNP。
+I/O 组 1 为全开（1000），组 2 为全闭（0），位置单位为行程千分数。
+两组力度均为 50%。面板显示原始 DI 值。
+只有命令后观察到 DI 从 00 变为 10，才报告到位。
+通信失败会锁定后续写入，不自动重发命令。
+状态写入 `$MG400_DATA_DIR/isaacsim/real_gripper_status.json`。
+
+### USB 接在 Mac
+
+USB 接在 Mac 时，保持 LarePass VPN 和 WebRTC 客户端连接。
+Isaac 的仿真时间轴必须处于 Stop 状态，夹爪面板保持打开。
+在 Mac 项目根目录启动反馈转发：
+
+```sh
+node scripts/isaac_gripper_feedback.mjs start
+```
+
+脚本独占 `/dev/cu.usbserial-BG02Q5TN`，读取状态和实际位置。
+它不初始化夹爪，不写控制寄存器。
+位置经当前 WebRTC 会话送到 Isaac，不新增网络端口。
+面板显示 `Following measured USB position.` 后，模型跟随实体读数。
+
+同步用于显示实体开口，不模拟夹持力或接触。
+反馈失效时的行为见 [反馈与显示异常](#反馈与显示异常)。
+若同时运行四轴镜像，首次更新后重启四轴镜像脚本，避免旧实例覆盖夹指位置。
+
+查询或停止 Mac 反馈：
+
+```sh
+node scripts/isaac_gripper_feedback.mjs status
+node scripts/isaac_gripper_feedback.mjs stop
+```
+
+退出客户端或串口读取失败后，反馈进程停止。
+重新连接后再执行 `start`，不自动重启或重新初始化。
+反馈进程运行时，其他程序不能使用同一串口。
+Mac 状态写入 `work/gripper_feedback_status.json`。
+
+文件反馈与 Mac WebRTC 反馈互斥。
+此入口仍使用二态 I/O 开合，不支持位置命令。
+转发脚本仅支持 Streaming Client 2.0.0 内置的 SDK 3.7.0。
+客户端升级后须重新核对接口，详见 [Mac WebRTC 反馈接口](development.md#mac-webrtc-反馈接口)。
+
+## 故障排查
+
+### 操作被拒绝或控制锁定
+
+机械臂控制：
+
+若控制器拒绝逆解，且更新后的反馈确认机械臂仍使能、静止且无报警，
+面板保留目标输入。修改坐标后可再次执行。
+动作发出前，若只读查询发生网络错误，可重新点击操作。
+程序仅在没有未决命令，且新鲜反馈保持静止、无报警、姿态未变时允许重试。
+动作发出后若通信失败，仍会锁定控制。
+回复格式错误或机器人状态异常也会锁定控制。
+
+夹爪控制：
+
+命令执行期间若反馈短暂中断，面板在原有 5 秒时限内等待，不重发命令。
+寄存器确认成功后，若到位或物体接触均未在时限内确认，面板保持锁定。
+
+命令发布前若采集会话变化，取消本次请求，反馈恢复后可重试。
+临时命令文件写入失败时，也可在修复文件问题后重试。
+命令发布后若采集会话变化或采集进程报告锁定，面板停止等待并锁定控制。
+发布结果未知、设备寄存器写入失败或执行结果无法确认时，控制锁定，不重发命令。
+
+夹爪命令超时不会撤回已发送的目标，也不保证夹爪停止运动。
+重启采集进程不会清除命令锁。
+先核实夹爪状态，修复故障后再处理锁，格式见 [USB 夹爪协议](development.md#usb-夹爪协议)。
+
+### 反馈与显示异常
+
+Olares USB 文件反馈沿用 `Stop` 时间轴和反馈过期保护。
+它不要求重启 Isaac，也不新增网络端口。
+同一文件重复读取不会延长测量值的有效期。
+反馈超过 0.75 秒未更新，或初始化、位置数据无效时，模型保持最后位置。
+面板显示反馈过期或无效提示，有效反馈恢复后继续同步。
+
+夹爪场景更新报错时，独立窗口和统一面板均显示 `Scene update paused`。
+文件或 WebRTC 反馈继续接收，实测值仍按 0.75 秒有效期检查。
+反馈新鲜且现有控制条件满足时，夹爪控制仍可用。
+此时显示模型可能与实测位置不一致。
+
+同步开启、时间轴停止且反馈有效时，程序每 1 秒重试场景更新。
+重试只更新场景，不发送夹爪命令，也不解除控制锁定。
+完整更新成功后，警告消失。
+
+如果找不到 USB 设备、采集服务失败或反馈文件不更新，见 [USB 接在 Olares](olares.md#usb-接在-olares)。
+如果连接提示 `Robot controlled by another panel`，见 [面板连接锁](olares.md#面板连接锁)。
 
 ### 报警与历史日志
 
@@ -639,245 +437,16 @@ rg -n -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 面板空闲时，在 `async with panel.pose_lock` 内查询。
 调用 `await asyncio.to_thread(panel.control._command, "GetErrorID()")`。
 不要从外部另开 `29999` 连接与面板轮询竞争。
+独立查询 `29999` 前，先关闭空闲控制面板。
+面板轮询与外部查询可能互相断开连接。
+查询结束后，重新运行统一入口恢复面板和同步。
 Isaac 日志位于 `/root/.nvidia-omniverse/logs/Kit/`。
 检索 `MG400_KEYBOARD` 可定位应用故障，但其中可能没有具体报警码。
 
 路径参考：[MG400 日志导出说明](https://techshare.co.jp/faq/dobot/mg400/support.html)。
 报警码参考：[Dobot 四轴报警表](https://raw.githubusercontent.com/Dobot-Arm/TCP-IP-4Axis-Python/main/files/alarm_controller.json)。
 
-## 在 Isaac 中控制实体夹爪
+## WebRTC 客户端自动点击
 
-Olares 日常使用统一面板 `Coordinates & Motion` 中的夹爪行。
-仅使用 I/O 开合时，先关闭统一面板，再运行独立入口：
-
-```python
-import runpy
-
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/gripper_control.py")
-```
-
-此入口使用 I/O 开合，Olares 连续位置控制见 [USB 接在 Olares](#usb-接在-olares)。
-面板启动只读状态。`Open gripper` 写 DO2=0、DO1=0，
-`Close gripper` 写 DO2=0、DO1=1。它不使能机械臂，不发送关节命令。
-面板通过 MG400 的 TCP 29999 控制 I/O。
-启用下述 USB 反馈后，仿真夹指跟随实体位置。
-
-当前接线为 MG400 DO1/DO2 → 夹爪 INPUT1/INPUT2，
-夹爪 OUTPUT1/OUTPUT2 → MG400 DI1/DI2，输入和输出均为 PNP。
-I/O 组 1 为全开（1000），组 2 为全闭（0），位置单位为行程千分数。
-两组力度均为 50%。面板显示原始 DI 值。
-只有命令后观察到 DI 从 00 变为 10，才报告到位。
-通信失败会锁定后续写入，不自动重发命令。
-状态写入 `$MG400_DATA_DIR/isaacsim/real_gripper_status.json`。
-
-断电重启后，自动初始化可能未完成。
-当前须保留 USB–RS485 连接作为初始化入口：
-从站 1、115200、8N1，写 `0x0100=1`，等待 `0x0200=1`。
-该初始化会让夹指张开寻找行程端点。
-完成初始化后，选择 I/O 开合或下述 Olares USB 位置控制。
-
-### 同步实体夹爪位置
-
-USB 接在 Mac 时，保持 LarePass VPN 和 WebRTC 客户端连接。
-Isaac 的仿真时间轴必须处于 Stop 状态，夹爪面板保持打开。
-在 Mac 项目根目录启动反馈转发：
-
-```sh
-node scripts/isaac_gripper_feedback.mjs start
-```
-
-脚本独占 `/dev/cu.usbserial-BG02Q5TN`，以 20 Hz 读取初始化状态、
-运动状态和实际位置（`0x0200` 至 `0x0202`）。
-它不初始化夹爪，不写控制寄存器。
-位置经当前 WebRTC 会话送到 Isaac，不新增网络端口。
-面板显示 `Following measured USB position.` 后，模型跟随实体读数。
-
-真实位置 1000 对应全开，0 对应每侧夹指内收 5 mm。
-代码只更新两个夹指的 SessionLayer 变换，不启动物理仿真。
-这项同步用于显示实体开口，不模拟夹持力或接触。
-反馈超过 0.75 秒未更新，或初始化、位置数据无效时，模型保持最后位置。
-面板同时显示反馈过期或无效提示。有效反馈恢复后，模型继续同步。
-重复包、旧序号和已结束会话的包会被忽略，不清除新鲜样本，也不延长其有效期。
-若同时运行四轴镜像，首次更新后重启四轴镜像脚本，避免旧实例覆盖夹指位置。
-
-查询或停止 Mac 反馈：
-
-```sh
-node scripts/isaac_gripper_feedback.mjs status
-node scripts/isaac_gripper_feedback.mjs stop
-```
-
-退出客户端或串口读取失败后，反馈进程停止。
-重新连接后再执行 `start`，不自动重启或重新初始化。
-反馈进程运行时，其他程序不能使用同一串口。
-Mac 状态写入 `work/gripper_feedback_status.json`。
-
-转发脚本适配 Streaming Client 2.0.0 内置的 SDK 3.7.0。
-启动时使用临时回环调试接口连接现有 SDK，配置结束即关闭接口。
-客户端升级后须重新核对接口，脚本会拒绝其他版本。
-消息格式参考 [NVIDIA AppStreamer](https://docs.omniverse.nvidia.com/ov-web-sdk/latest/web-streaming-library/classes/AppStreamer.html)
-和 [Kit 消息扩展](https://docs.omniverse.nvidia.com/kit/docs/omni.kit.livestream.messaging/latest/Overview.html)。
-
-#### USB 接在 Olares
-
-转换器的 USB 身份为 `0403:6001`，序列号为 `BG02Q5TN`。
-主机稳定路径为 `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0`。
-`ttyUSB` 编号可能变化，采集脚本按完整 USB 身份选择设备。
-不要用扩展坞上的其他串口替代。
-
-Isaac 容器没有映射串口设备。
-在 Control Hub 的 Olares 主机终端安装采集服务。
-先进入 `isaaclab-data` 的 `hostPath` 下的 `documents/mg400-isaac` 目录。
-该目录对应容器的 `/root/Documents/mg400-isaac`。
-以 root 身份运行一次：
-
-```sh
-python3 scripts/install_gripper_collector.py
-```
-
-安装前，停止已确认身份的独立采集进程。
-默认数据目录为仓库旁的 `mg400-data`，可用 `--data-dir` 指定。
-安装器启用 `mg400-gripper-collector.path`，监听共享文件 `work/gripper_collector.start`。
-面板每次打开时更新该文件，主机随后启动 `mg400-gripper-collector.service`。
-服务使用 `--commands`，运行中的采集不会重启。
-启动不初始化夹爪，也不发送位置命令。
-关闭面板后，采集继续运行。
-
-脚本每 50 ms 读取三个状态寄存器，并原子替换最新测量文件。
-文件权限为 `0644`，容器可以读取。
-容器中的对应路径为 `/root/Documents/mg400-data/work/gripper_olares_feedback.json`。
-串口被占用、设备缺失或读取失败时，脚本退出。
-服务在异常退出后等待 2 秒，再尝试启动，不限制重试次数。
-USB 恢复连接后，采集自动恢复，不必重新打开面板。
-每次启动使用新会话，不重放旧命令，也不清除命令锁定。
-若断线发生在命令执行期间，控制可能锁定，须先核实夹爪状态。
-手动停止服务后，服务不会自行重启。
-主机重启后，监听服务自动恢复，采集仍由打开面板触发。
-若已安装旧版服务，重新运行安装器，再重启采集服务以应用新配置。
-查看日志或手动停止采集：
-
-```sh
-journalctl -u mg400-gripper-collector.service -n 50 --no-pager
-systemctl stop mg400-gripper-collector.service
-```
-
-如果日志报告找不到 `BG02Q5TN`，先在主机检查 USB：
-
-```sh
-ls -l /dev/serial/by-id/
-dmesg --ctime | grep -E 'BG02Q5TN|ftdi_sio|ttyUSB|device descriptor|accepting address'
-```
-
-`device descriptor read` 或 `device not accepting address` 表示 USB 枚举失败。
-先按日志中的端口路径核对原转换器，恢复该 USB 连接。
-更换集线器连接线不会改变转换器序列号，不要据此改选其他串口。
-若内核提供该端口的 `disable` 文件，可以单独重新枚举该端口。
-先停止采集监听和采集服务。
-将 `disable` 写为 `1`，再写回 `0`，随后恢复监听。
-不要重置共同上游集线器，否则其他设备也会断开。
-确认 `BG02Q5TN` 重新出现后，再启动采集并检查反馈文件是否持续更新。
-
-若服务或监听处于 `failed` 状态，修复 USB 连接后执行：
-
-```sh
-systemctl reset-failed mg400-gripper-collector.service mg400-gripper-collector.path
-systemctl restart mg400-gripper-collector.path
-systemctl start mg400-gripper-collector.service
-```
-
-用仓库启动脚本启动 Isaac 后，在 Script Editor 运行统一入口：
-
-```python
-import runpy
-
-runpy.run_path("/root/Documents/mg400-isaac/apps/isaacsim/joint_control.py")
-```
-
-该入口把 `$MG400_DATA_DIR/work/gripper_olares_feedback.json` 传给统一面板的夹爪行。
-文件反馈与 Mac WebRTC 反馈互斥。
-同一文件重复读取不会延长测量值的有效期。
-该方式沿用 Stop 时间轴和反馈过期保护，不必重启 Isaac 或新增网络端口。
-
-夹爪状态寄存器 `0x0201` 的 `3` 表示物体掉落。
-面板显示 `Object dropped`，继续显示实测位置，并允许发送新目标。
-该状态不表示到位或夹持成功。
-状态定义见 [PGEA 用户手册表 2.9](https://www.manualslib.com/manual/4358849/Dh-Robotics-Technology-Pgea-Series.html?page=17)。
-
-`--commands` 允许同一串口进程接收位置命令。
-省略该参数时，采集进程只读反馈，夹爪目标输入不可用。
-统一面板提供 0–1000 开口滑块和数值输入框，不设独立夹爪执行或开合按钮。
-0 为闭合，1000 为全开。
-点击 `Execute targets` 后，机械臂先执行 XYZ/R 目标。
-机械臂到位确认后，程序才执行修改过的夹爪目标。
-也可在法兰面板开启键盘控制后，用 Z/X 调节开口。
-
-首次位置命令将夹爪切换为仅 Modbus 控制，保留当前力度和速度。
-该操作不初始化夹爪，也不保存到闪存，I/O 开合随后不再生效。
-位置命令写入反馈文件旁的 `.command.json` 文件。
-采集进程只执行匹配当前会话且不超过 0.75 秒的请求，每个请求只执行一次。
-写应答和目标寄存器回读成功后，面板继续检查实测位置。
-实测位置在目标 ±5 / 1000 内且夹爪报告到位时，才显示到位。
-检测到物体接触时，面板单独报告接触状态，并结束本次 Z/X 长按；松开按键后才可再次长按。
-命令执行期间若反馈短暂中断，面板在原有 5 秒时限内等待，不重发命令。
-命令发布前若采集会话变化，取消本次请求，反馈恢复后可重试。
-临时命令文件写入失败时，也可在修复文件问题后重试。
-命令发布后若采集会话变化或采集进程报告锁定，面板停止等待并锁定控制。
-发布结果未知、设备寄存器写入失败或执行结果无法确认时，控制锁定，不重发命令。
-发送前，命令记录在反馈文件旁的 `.command-lock.json` 文件中。
-写应答和目标寄存器回读成功后，采集进程删除该记录。
-重启时若记录仍存在，采集进程保持锁定，只读取反馈。
-Mac WebRTC 反馈入口仍使用二态 I/O 开合，不支持位置命令。
-
-## 四轴映射与当前范围
-
-| 控制器角度 | USD 关节角度                                                |
-| ---------- | ----------------------------------------------------------- |
-| J1         | `mg400_j1 = J1`                                             |
-| J2         | `mg400_j2_1 = J2`、`mg400_j2_2 = J2`、`mg400_j3_2 = -J2`    |
-| J3         | `mg400_j3_1 = J3-J2`、`mg400_j4_1 = -J3`、`mg400_j4_2 = J3` |
-| J4         | `mg400_j5 = J4`                                             |
-
-USD 旋转关节限位和 drive target 单位为度，Isaac articulation API 的角度为弧度。
-脚本按名字匹配关节，不依赖 PhysX 内部排列。应通过该四轴映射同时设置八关节；
-单独拖动一个连杆关节不会自动维持平行连杆关系。
-
-基础导入脚本 `load_model.py` 使用运动学姿态赋值，保留 CAD 惯量并用位置驱动保持姿态，
-禁用机器人重力和碰撞；没有把 MuJoCo 的 tendon/equality 约束转换成 PhysX 闭环约束。
-基础资产内含可独立移动的夹指，日常工作场景直接引用它来显示实测开口。
-镜像只显示实测姿态和夹指位置，不验证碰撞、夹持力或真实连杆动力学。
-`mg400_tcp` 仍是零工具偏移的法兰坐标系；估算指尖参考为法兰下方 104 mm，
-不能将法兰坐标直接当作已标定的实际夹爪 TCP。
-
-## 重建与验证
-
-在本项目根目录依次运行，复用 `uv.lock` 锁定的 USD 构建依赖：
-
-```sh
-uv run --group usd python scripts/build_isaac_model.py
-uv run --group usd python scripts/build_isaac_workspace.py
-```
-
-这些命令安装 `usd` 依赖组，不要求安装或启动 Isaac Sim 运行环境。
-先构建含可动夹指的基础模型，再构建工作场景。
-构建前，将自定义场景另存到数据目录。
-重建会覆盖默认模型、场景和主入口。
-
-运行全部离线检查，包含工作场景、真机控制逻辑和夹爪镜像：
-
-```sh
-uv sync --all-extras --group usd
-uv run --all-extras --group usd pytest -ra
-```
-
-本地测试比较源网格/颜色、惯量张量、关节拓扑、零位坐标、多姿态 CAD 运动学和夹爪偏移。
-镜像测试检查夹指方向、开闭净距、原视觉网格去重和反馈失效处理。
-`usd` 依赖组提供 `pxr` 和 NumPy。未安装时，USD 模型测试会跳过。
-`-ra` 显示跳过原因。
-这些检查不能替代服务器端的显示核对或真机验证。
-
-开发时可在 Isaac Script Editor 执行 `apps/isaacsim/load_model.py`，检查基础资产导入。
-该脚本先备份当前场景，再打开 `isaacsim/scene.usda` 并启动 PhysX 校验。
-结果写入 `$MG400_DATA_DIR/isaacsim/isaac_sim_validation.json`。
-只有 `success: true` 表示本项检查通过。
-它检查关节赋值和回读的一致性，不测量动力学跟踪精度或真机精度。
-独立检查入口 `apps/isaacsim/standalone.py` 必须由 Isaac Sim 自带 Python 启动。
+自动操作客户端时，按 [后台点击流程](agents/isaac-client.md) 执行。
+该流程包括完整路径绑定、截图坐标、批量点击和异常处理。

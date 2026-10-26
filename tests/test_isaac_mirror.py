@@ -50,6 +50,45 @@ def test_start_rejects_competing_panel_before_feedback_or_scene_changes(monkeypa
         owner.release()
 
 
+def test_web_connection_blocks_isaac_start_before_feedback_connection(monkeypatch):
+    from mg400_agent.web_control import RobotPanelState
+
+    monkeypatch.setattr(builtins, MODULE["SINGLETON"], None, raising=False)
+    monkeypatch.setattr(builtins, MODULE["SINGLETON"] + "_start_lock", None, raising=False)
+    monkeypatch.setattr(socket, "create_connection", Mock(side_effect=AssertionError("No network")))
+    connection = Mock()
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+
+    def feedback():
+        time.sleep(0.005)
+        return Feedback((0, 0, 0, 0), 4, 0, False)
+
+    connection.read_latest = feedback
+    control = Mock(stopped=False)
+    control.read_pose.return_value = (250, 0, 30, 0)
+    control.stop.return_value = {"ok": True}
+    control.feedback_retention_reason.return_value = None
+    state = RobotPanelState(
+        "192.168.1.6",
+        connection_factory=lambda *args, **kwargs: connection,
+        control_factory=lambda *args, **kwargs: control,
+    )
+    isaac_connection = Mock(side_effect=AssertionError("Isaac must not open feedback"))
+    monkeypatch.setitem(LiveMirror.receive.__globals__, "FeedbackConnection", isaac_connection)
+    try:
+        state.command({"action": "start_sync"}, "browser")
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            asyncio.run(MODULE["start"](show_window=False))
+        isaac_connection.assert_not_called()
+        control.stop.assert_not_called()
+        control.disable.assert_not_called()
+        assert state.snapshot()["syncing"]
+    finally:
+        state.close()
+    socket.create_connection.assert_not_called()
+
+
 @pytest.mark.parametrize("scene", ("isaacsim/scene.usda", "00_OPEN_MG400.usda"))
 @pytest.mark.parametrize("joints", ((0, 0, 0, 0), (20, 15, 35, 25), (-90, 45, 60, -30)))
 def test_authored_live_pose_matches_independent_cad_fk_without_editing_source(scene, joints):

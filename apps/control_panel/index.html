@@ -23,10 +23,12 @@
       <form class="auth" id="auth" hidden><input id="token" type="password" placeholder="Panel access token" aria-label="Panel access token" autocomplete="off"><button type="submit">Connect</button></form>
       <div class="sync" title="Sync reads feedback into this page. It does not synchronize Isaac Sim."><i class="dot" id="syncDot"></i><span class="state" id="syncState">Not connected</span><button id="startSync" disabled>Start sync</button><button id="stopSync" disabled>Stop sync</button></div>
       <section class="motion">
-        <h2 title="Pose: robot base to flange. User=0, Tool=0. Demo ranges are fictional scene bounds, not hardware limits.">Coordinates &amp; Motion</h2>
+        <h2 title="Pose: robot base to flange. User=0, Tool=0. Slider ranges are not hardware limits.">Coordinates &amp; Motion</h2>
         <div class="columns"><span>Axis</span><span>Actual</span><span>Target</span></div>
         <div id="rows"></div>
-        <div class="actions"><button id="home" disabled>Home</button><button class="primary" id="execute" disabled>Execute targets ↗</button></div>
+        <div class="actions"><button id="home" disabled>Home</button><button id="copyActual" hidden disabled>Use actual</button><button class="primary" id="execute" disabled>Execute targets ↗</button></div>
+        <div class="actions"><button id="initializeGripper" title="Initialization opens the jaws. Remove held objects first." hidden disabled>Initialize gripper</button><button id="stop" class="disable" hidden disabled>Stop arm</button></div>
+        <div class="status" id="gripperStatus" hidden></div>
       </section>
       <div class="aux"><span title="Keyboard jogging is not available in this web panel.">Keyboard · unavailable</span><div class="joints" id="joints"></div></div>
       <div class="status" id="status" role="status" aria-live="polite">Connecting to the Python server…</div>
@@ -37,46 +39,75 @@
   <script>
     const $ = id => document.getElementById(id);
     const axes = [{id:'x',label:'X',unit:'mm'},{id:'y',label:'Y',unit:'mm'},{id:'z',label:'Z',unit:'mm'},{id:'r',label:'R',unit:'deg'},{id:'grip',label:'Gripper',unit:'/ 1000'}];
-    let state, initialized = false, busy = false, connected = false;
+    let state, initialized = false, busy = false, connected = false, gripEdited = false;
+    const clientId = Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2,'0')).join('');
     let token = '';
     try { token = sessionStorage.getItem('mg400-panel-token') || ''; } catch {}
     const formatted = (value,axis) => value == null ? '—' : Number(value).toFixed(axis === 'grip' ? 0 : 3);
     function buildRows(data) {
-      const initial = data.actual;
-      $('rows').innerHTML = axes.map((axis,i) => `<div class="row"><span class="label">${axis.label}<small class="unit">${axis.unit}</small></span><span class="actual" id="${axis.id}Actual">—</span>${data.mode === 'demo' ? `<div class="compound"><input type="range" id="${axis.id}Range" aria-label="${axis.label} target slider" min="${data.limits[axis.id][0]}" max="${data.limits[axis.id][1]}" step="${axis.id === 'grip' ? 1 : .001}" value="${initial[i]}"><input type="number" id="${axis.id}Target" aria-label="${axis.label} target" min="${data.limits[axis.id][0]}" max="${data.limits[axis.id][1]}" step="${axis.id === 'grip' ? 1 : .001}" value="${formatted(initial[i],axis.id)}"></div>` : '<span class="actual">Unavailable</span>'}</div>`).join('');
+      $('rows').innerHTML = axes.map(axis => `<div class="row"><span class="label">${axis.label}<small class="unit">${axis.unit}</small></span><span class="actual" id="${axis.id}Actual">—</span>${data.mode === 'robot' ? `<div class="compound"><input type="range" id="${axis.id}Range" aria-label="${axis.label} target slider" step="${axis.id === 'grip' ? 1 : .001}" disabled><input type="number" id="${axis.id}Target" aria-label="${axis.label} target" step="${axis.id === 'grip' ? 1 : .001}" disabled></div>` : '<span class="actual">Unavailable</span>'}</div>`).join('');
       initialized = true;
-      if(data.mode !== 'demo') return;
+      if(data.mode !== 'robot') return;
       axes.forEach(axis => {
         const slider = $(axis.id+'Range'), number = $(axis.id+'Target');
-        slider.addEventListener('input',() => number.value = formatted(slider.value,axis.id));
-        number.addEventListener('input',() => {if(number.value !== '' && number.validity.valid) slider.value = number.value;});
-        const normalize = () => {const value = number.value === '' ? Number(slider.value) : Number(number.value);number.value = formatted(Math.min(Number(slider.max),Math.max(Number(slider.min),value)),axis.id);slider.value = number.value;};
-        number.addEventListener('change',normalize);
-        number.addEventListener('blur',normalize);
-        number.addEventListener('keydown',event => {if(event.key === 'Enter'){event.preventDefault();normalize();number.blur();}});
+        const edited = () => {if(axis.id === 'grip') gripEdited = true;};
+        slider.addEventListener('input',() => {number.value = formatted(slider.value,axis.id);edited();});
+        number.addEventListener('input',() => {if(number.value !== '' && number.validity.valid) slider.value = number.value;edited();});
+        number.addEventListener('keydown',event => {if(event.key === 'Enter'){event.preventDefault();number.blur();}});
       });
+    }
+    function copyActual(data, onlyEmpty = false) {
+      axes.forEach((axis,i) => {
+        const number = $(axis.id+'Target'), slider = $(axis.id+'Range'), value = data.actual[i];
+        if(value == null || !number || (onlyEmpty && number.value !== '')) return;
+        const span = axis.id === 'r' ? 10 : 50;
+        const range = axis.id === 'grip' ? [0,1000] : [value-span,value+span];
+        slider.min = range[0]; slider.max = range[1];
+        if(axis.id === 'grip') {number.min = range[0];number.max = range[1];}
+        number.value = formatted(value,axis.id); slider.value = value;
+      });
+      if(!onlyEmpty) gripEdited = false;
     }
     function render(data) {
       state = data;
       if(!initialized) buildRows(data);
-      const demo = data.mode === 'demo', active = connected && !busy;
-      $('mode').textContent = demo ? 'DEMO' : 'READ ONLY';
-      $('syncState').textContent = data.syncing ? (demo ? 'Demo sync on' : data.feedback_fresh ? 'Live feedback' : 'Waiting for feedback') : 'Sync stopped';
-      $('syncDot').classList.toggle('on',data.syncing && (demo || data.feedback_fresh));
-      $('startSync').disabled = !active || data.syncing;
-      $('stopSync').disabled = !active || !data.syncing;
-      $('enable').disabled = !active || !demo || data.enabled;
-      $('disable').disabled = !active || !demo || !data.enabled;
-      $('home').disabled = $('execute').disabled = !active || !demo || !data.enabled;
-      axes.forEach((axis,i) => {$(axis.id+'Actual').textContent = formatted(data.actual[i],axis.id);if(demo) $(axis.id+'Range').disabled = $(axis.id+'Target').disabled = !active;});
+      const robot = data.mode === 'robot';
+      const owner = data.controller_id === clientId;
+      const active = connected && !busy && !data.busy;
+      const control = active && robot && owner && data.feedback_fresh && !data.locked;
+      if(robot) copyActual(data,true);
+      $('mode').textContent = robot ? 'REAL ROBOT' : 'READ ONLY';
+      $('syncState').textContent = data.syncing ? (data.feedback_fresh ? 'Live feedback' : 'Waiting for feedback') : 'Sync stopped';
+      if(robot && data.controller_id && !owner) $('syncState').textContent += ' · Another page has control';
+      $('syncDot').classList.toggle('on',data.syncing && data.feedback_fresh);
+      $('startSync').textContent = robot ? 'Connect & take control' : 'Start sync';
+      $('stopSync').textContent = robot ? 'Disconnect' : 'Stop sync';
+      $('startSync').disabled = !active || (robot ? !!data.controller_id && (!owner || data.syncing) : data.syncing);
+      $('stopSync').disabled = !connected || !data.syncing || (robot && !owner);
+      $('enable').disabled = !control || data.enabled;
+      $('disable').disabled = !robot || !data.syncing;
+      $('home').disabled = $('execute').disabled = !control || !data.enabled;
+      if(robot && axes.slice(0,4).some(axis => $(axis.id+'Target').value === '')) $('execute').disabled = true;
+      $('copyActual').hidden = $('stop').hidden = !robot;
+      $('copyActual').disabled = !control || data.actual.slice(0,4).some(value => value == null);
+      $('stop').disabled = !robot || !data.syncing;
+      $('initializeGripper').hidden = !robot;
+      $('initializeGripper').disabled = !control || !data.gripper_can_initialize;
+      $('gripperStatus').hidden = !robot;
+      $('gripperStatus').textContent = data.gripper_message || '';
+      axes.forEach((axis,i) => {
+        $(axis.id+'Actual').textContent = formatted(data.actual[i],axis.id);
+        if(robot) $(axis.id+'Range').disabled = $(axis.id+'Target').disabled = !control || (axis.id === 'grip' ? !data.gripper_available : $(axis.id+'Target').value === '');
+      });
       $('joints').innerHTML = [0,1,2,3].map(i => `<span>J${i+1} <b>${data.joints ? data.joints[i].toFixed(2)+'°' : '—'}</b></span>`).join('');
-      $('robotState').textContent = demo ? (data.enabled ? 'Demo · enabled' : 'Demo · disabled') : data.robot_mode == null ? 'Read-only · no feedback' : `Mode ${data.robot_mode}${data.robot_error ? ' · error' : ''}${data.feedback_fresh ? '' : ' · stale'}`;
-      $('connection').textContent = demo ? 'Demo only · No robot connection. Ranges use the fictional demo scene. Joint kinematics and keyboard jogging are unavailable.' : `Read-only · ${data.robot_host} · Joint feedback only. Pose, gripper, keyboard jogging, and robot commands are unavailable.`;
-      $('status').classList.remove('error');
+      $('robotState').textContent = data.robot_mode == null ? 'No feedback' : `Mode ${data.robot_mode}${data.robot_error ? ' · error' : ''}${data.feedback_fresh ? '' : ' · stale'}${data.locked ? ' · LOCKED' : ''}`;
+      $('connection').textContent = robot ? `Real robot · ${data.robot_host} · XYZ/R use the robot base and flange. Home moves all four joints to 0°. Stop arm does not stop a gripper command already sent. If stop is unconfirmed, use the physical emergency stop.` : `Read-only · ${data.robot_host} · Joint feedback only. Pose, gripper, keyboard jogging, and robot commands are unavailable.`;
+      $('status').classList.toggle('error',!!data.locked);
       $('status').textContent = data.message;
     }
+    function headers() {return {'Authorization':token ? 'Bearer '+token:'','Content-Type':'application/json','X-MG400-Panel':'1','X-MG400-Client':clientId};}
     async function api(path, payload) {
-      const response = await fetch(path,{method:payload ? 'POST':'GET',headers:{'Authorization':token ? 'Bearer '+token:'','Content-Type':'application/json','X-MG400-Panel':'1'},...(payload ? {body:JSON.stringify(payload)} : {})});
+      const response = await fetch(path,{method:payload ? 'POST':'GET',headers:headers(),signal:AbortSignal.timeout(2500),...(payload ? {body:JSON.stringify(payload)} : {})});
       const data = await response.json();
       if(response.status === 401) {$('auth').hidden = false;connected = false;}
       if(!response.ok) throw new Error(data.error || 'Request failed');
@@ -90,27 +121,48 @@
       $('status').classList.add('error');
     }
     async function poll() {
-      if(!busy) {try {render(await api('api/state'));} catch(error) {connected = false;showError(error);}}
-      setTimeout(poll,1000);
+      try {render(await api('api/state'));} catch(error) {connected = false;showError(error);}
+      setTimeout(poll,500);
+    }
+    async function heartbeat() {
+      if(state?.mode === 'robot' && state.controller_id === clientId) {
+        try {await api('api/heartbeat',{});} catch(error) {connected = false;showError(error);}
+      }
+      setTimeout(heartbeat,500);
     }
     async function command(action) {
-      if(busy) return;
-      busy = true;
+      const interrupt = ['stop','disable','stop_sync'].includes(action);
+      if(busy && !interrupt) return;
+      if(!interrupt) busy = true;
       render(state);
       let failure;
       try {
         const payload = {action};
-        if(action === 'execute') payload.targets = Object.fromEntries(axes.map(axis => [axis.id,Number($(axis.id+'Target').value)]));
+        if(action === 'execute') {
+          const included = axes.filter(axis => axis.id !== 'grip' || gripEdited);
+          payload.targets = Object.fromEntries(included.map(axis => {
+            const input = $(axis.id+'Target');
+            if(input.value === '' || !input.validity.valid || !Number.isFinite(Number(input.value))) throw new Error('Enter a valid target for '+axis.label);
+            return [axis.id,Number(input.value)];
+          }));
+        }
         state = await api('api/command',payload);
+        if(action === 'execute') gripEdited = false;
       } catch(error) {failure = error;}
-      finally {busy = false;render(state);if(failure) showError(failure);}
+      finally {if(!interrupt) busy = false;render(state);if(failure) showError(failure);}
     }
-    ['enable','disable','home'].forEach(id => $(id).addEventListener('click',() => command(id)));
+    ['enable','disable','home','stop'].forEach(id => $(id).addEventListener('click',() => command(id)));
     $('execute').addEventListener('click',() => command('execute'));
+    $('copyActual').addEventListener('click',() => copyActual(state));
+    $('initializeGripper').addEventListener('click',() => command('initialize_gripper'));
     $('startSync').addEventListener('click',() => command('start_sync'));
     $('stopSync').addEventListener('click',() => command('stop_sync'));
     $('auth').addEventListener('submit',async event => {event.preventDefault();token = $('token').value;try {render(await api('api/state'));try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value='';} catch(error) {showError(error);}});
+    window.addEventListener('pagehide',() => {
+      if(state?.mode === 'robot' && state.syncing && state.controller_id === clientId) fetch('api/command',{method:'POST',headers:headers(),body:JSON.stringify({action:'stop'}),keepalive:true}).catch(() => {});
+    });
     poll();
+    heartbeat();
   </script>
 </body>
 </html>

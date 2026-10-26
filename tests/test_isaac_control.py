@@ -1295,6 +1295,113 @@ def test_keyboard_repeats_do_not_start_another_hold(panel):
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("next_key", ["S", "W"])
+def test_keyboard_keeps_new_press_until_previous_stop_finishes(panel, next_key):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        session.finish_allowed.clear()
+        panel.key_event("W", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        first_action = panel.action
+        session.run_started.clear()
+        panel.key_event("W", False)
+        panel.key_event(next_key, True)
+        assert panel.action is first_action
+        assert session.run_calls == ["W"]
+        session.finish_allowed.set()
+        try:
+            await asyncio.wait_for(session.run_started.wait(), 1)
+            assert first_action.done()
+            assert session.run_calls == ["W", next_key]
+        finally:
+            panel.key_event(next_key, False)
+            await asyncio.wait_for(panel.action, 1)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("keep_latest", [False, True])
+def test_keyboard_does_not_replay_released_presses_during_stop(panel, keep_latest):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        session.finish_allowed.clear()
+        panel.key_event("W", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        first_action = panel.action
+        session.run_started.clear()
+        panel.key_event("W", False)
+        panel.key_event("S", True)
+        panel.key_event("S", False)
+        if keep_latest:
+            panel.key_event("R", True)
+        session.finish_allowed.set()
+        try:
+            if keep_latest:
+                await asyncio.wait_for(session.run_started.wait(), 1)
+            else:
+                await asyncio.wait_for(first_action, 1)
+                await asyncio.sleep(0)
+            assert session.run_calls == (["W", "R"] if keep_latest else ["W"])
+        finally:
+            panel.key_event("R", False)
+            await asyncio.wait_for(panel.action, 1)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("operation", ["disarm", "stop", "disable", "close"])
+def test_keyboard_revocation_clears_direction_waiting_for_stop(panel, operation):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        session.finish_allowed.clear()
+        panel.key_event("W", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        panel.key_event("W", False)
+        panel.key_event("S", True)
+        if operation == "disarm":
+            panel.set_keyboard(False, reason="window lost focus.")
+        else:
+            getattr(panel, f"request_{operation}")()
+        session.finish_allowed.set()
+        await asyncio.wait_for(panel.action, 1)
+        for task in (panel.stop_task, panel.disable_task):
+            if task:
+                await asyncio.wait_for(task, 1)
+        await asyncio.sleep(0)
+        assert session.run_calls == ["W"]
+        assert panel.held_keys == set()
+        assert not panel.keyboard_enabled
+
+    asyncio.run(exercise())
+
+
+def test_keyboard_fault_clears_direction_waiting_for_stop(panel, monkeypatch):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        run = type(session).run
+
+        async def fail(self, *args, **kwargs):
+            await run(self, *args, **kwargs)
+            session.fault = "Keyboard stop unconfirmed"
+            raise RuntimeError(session.fault)
+
+        monkeypatch.setattr(type(session), "run", fail)
+        session.finish_allowed.clear()
+        panel.key_event("W", True)
+        await asyncio.wait_for(session.run_started.wait(), 1)
+        panel.key_event("W", False)
+        panel.key_event("S", True)
+        session.finish_allowed.set()
+        await asyncio.wait_for(panel.action, 1)
+        await asyncio.sleep(0)
+        assert session.run_calls == ["W"]
+        assert panel.held_keys == set()
+        assert not panel.keyboard_enabled
+        assert "stop unconfirmed" in panel.message
+
+    asyncio.run(exercise())
+
+
 def test_completed_arm_hold_requires_keyup_before_another_hold(panel):
     async def exercise():
         session = await arm_keyboard(panel)
@@ -1700,6 +1807,56 @@ def test_gripper_keyboard_awaits_measured_step_before_continuing(
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("revoke", [False, True])
+def test_arm_key_waits_for_released_gripper_step(panel_module, panel, revoke):
+    async def exercise():
+        session = await arm_keyboard(panel)
+        child = panel_module.Gripper()
+        child.owner = panel
+        child.report = {}
+        child.measured_position = lambda: 500
+        panel.gripper = child
+        targets = []
+        submitted = asyncio.Event()
+        step_done = asyncio.get_running_loop().create_future()
+
+        def submit(position):
+            targets.append(position)
+            child.action = step_done
+            submitted.set()
+            return step_done
+
+        child.submit_position = submit
+        panel.key_event("Z", True)
+        await asyncio.wait_for(submitted.wait(), 1)
+        gripper_action = panel.action
+        panel.key_event("Z", False)
+        panel.key_event("W", True)
+        await asyncio.sleep(0)
+        assert panel.action is gripper_action
+        assert not gripper_action.done()
+        assert session.run_calls == []
+        assert targets == [525]
+        if revoke:
+            panel.set_keyboard(False)
+        step_done.set_result(None)
+        if revoke:
+            await asyncio.wait_for(gripper_action, 1)
+            await asyncio.sleep(0)
+            assert session.run_calls == []
+            assert not panel.keyboard_enabled
+        else:
+            await asyncio.wait_for(session.run_started.wait(), 1)
+            assert gripper_action.done()
+            assert session.run_calls == ["W"]
+            panel.key_event("W", False)
+            await asyncio.wait_for(panel.action, 1)
+        assert targets == [525]
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("key", ("Z", "X"))
 @pytest.mark.parametrize(
     ("init", "message"),
@@ -1928,12 +2085,14 @@ def test_gripper_keyboard_preserves_specific_failure(panel, stage):
     asyncio.run(exercise())
 
 
-def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel, monkeypatch):
+def test_gripper_hold_deadline_waits_for_keyup_before_restarting(panel_module, panel, monkeypatch):
     async def exercise():
         await arm_keyboard(panel)
         clock, current, targets = [0.0], [500], []
         monkeypatch.setitem(
-            panel.jog_gripper.__globals__, "time", SimpleNamespace(monotonic=lambda: clock[0])
+            panel_module.run_keyboard_hold.__globals__,
+            "time",
+            SimpleNamespace(monotonic=lambda: clock[0]),
         )
 
         async def complete(value):
@@ -2797,6 +2956,11 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
             "    def _start(self): return self.control.begin_operation()\n"
         ),
         "gripper_feedback": "class FeedbackState: pass\n",
+        "keyboard_control": (
+            "class KeyboardController: pass\n"
+            "class GripperUnavailableError(RuntimeError): pass\n"
+            "async def run_keyboard_hold(*args, **kwargs): pass\n"
+        ),
     }
     package = sys.modules["mg400_agent"]
     feedback = sys.modules["mg400_agent.feedback"]
@@ -2811,7 +2975,7 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     globals_ = panel_module._reload_control_modules.__globals__
     monkeypatch.setitem(globals_, "ROOT", tmp_path)
     panel_module._reload_control_modules()
-    protocol, limits, control, jog, gripper = (
+    protocol, limits, control, jog, gripper, keyboard = (
         sys.modules[f"mg400_agent.{name}"] for name in sources
     )
     assert globals_["limits"] is limits
@@ -2819,6 +2983,9 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     assert globals_["backend"] is control
     assert globals_["JointControl"] is control.JointControl
     assert globals_["KeyboardJogSession"] is jog.KeyboardJogSession
+    assert globals_["KeyboardController"] is keyboard.KeyboardController
+    assert globals_["run_keyboard_hold"] is keyboard.run_keyboard_hold
+    assert globals_["GripperUnavailableError"] is keyboard.GripperUnavailableError
     assert control.ControllerCommandError is protocol.ControllerCommandError
     assert control.parse_controller_response is protocol.parse_controller_response
     assert jog.joint_control is control
@@ -3103,6 +3270,18 @@ def test_stream_disconnect_revokes_immediately_and_requires_explicit_rearming(
     frames = 0
     observer = None
     sessions = []
+    child = panel_module.Gripper()
+    child.owner = panel
+    child.report = {"result": "Unexpected gripper request"}
+    child.measured_position = lambda: 500
+    panel.gripper = child
+    targets = []
+
+    def submit(position):
+        targets.append(position)
+        return None
+
+    child.submit_position = submit
 
     async def next_update():
         nonlocal frames, observer
@@ -3111,9 +3290,14 @@ def test_stream_disconnect_revokes_immediately_and_requires_explicit_rearming(
             sessions.append(await arm_keyboard(panel))
         if frames == 2:
             session = sessions[0]
+            session.finish_allowed.clear()
             panel.key_event("W", True)
             await asyncio.wait_for(session.run_started.wait(), 1)
             action = panel.action
+            panel.key_event("W", False)
+            panel.key_event("Z", True)
+            assert panel.held_keys == {"Z"}
+            assert not action.done()
             dispatcher = sys.modules["carb.eventdispatcher"].get_eventdispatcher()
             observer = dispatcher.observers[0]
             assert observer is panel.stream_observer
@@ -3136,8 +3320,11 @@ def test_stream_disconnect_revokes_immediately_and_requires_explicit_rearming(
             else:
                 disconnect()
             assert errors == []
+            assert targets == []
+            session.finish_allowed.set()
             await asyncio.sleep(0)
             await asyncio.wait_for(action, 1)
+            assert targets == []
             assert not panel.keyboard_enabled
             assert panel.held_keys == set()
             assert "Stream disconnected" in panel.message
@@ -3156,6 +3343,7 @@ def test_stream_disconnect_revokes_immediately_and_requires_explicit_rearming(
     asyncio.run(panel.run())
     assert observer.reset_count == 1 and not observer.active
     assert panel.stream_observer is None
+    assert targets == []
     assert all(session.closed for session in sessions)
     message = panel.message
     release_calls = sessions[-1].release_calls

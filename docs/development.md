@@ -168,6 +168,14 @@ Isaac 模型与 Actual 显示 ← TCP 30004 ← MG400 实测角度
 ```
 
 控制链路无需 ROS 2 或额外桥接服务。
+
+键盘按下和松开事件交给 `src/mg400_agent/keyboard_control.py`。
+该模块保存当前按键，串行启动机械臂长按或夹爪小步。
+按键变化或动作结束时，模块重新检查当前输入。
+机械臂确认停止或夹爪当前小步完成后，才启动下一次动作。
+`apps/isaacsim/joint_control.py` 检查面板权限并更新显示。
+机械臂有限轨迹和停止确认由 `src/mg400_agent/keyboard_jog.py` 执行。
+
 手动 `Execute targets` 的 `MovL` 使用 `SpeedL=1,AccL=1`。
 键盘 W/S、R/F、Q/E 的 `MovL` 使用 `SpeedL=2,AccL=20`。
 控制器逆解验证目标关节范围，控制器规划直线路径。

@@ -12,7 +12,6 @@ import inspect
 import json
 import runpy
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -20,6 +19,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 importlib.invalidate_caches()
 from mg400_agent.joint_control import JointControl  # noqa: E402
+from mg400_agent.keyboard_control import (  # noqa: E402
+    GripperUnavailableError,
+    KeyboardController,
+    run_keyboard_hold,
+)
 from mg400_agent.keyboard_jog import KeyboardJogSession  # noqa: E402
 from mg400_agent.robot_config import load_robot_host  # noqa: E402
 from mg400_agent.runtime_paths import data_path  # noqa: E402
@@ -37,10 +41,6 @@ AUTO_INITIALIZE_GRIPPER = globals().get("AUTO_INITIALIZE_GRIPPER", False)
 JOG_KEYS = frozenset("WASDQERFZX")
 # Shift/Control/Alt/Super only; ignore lock states and omni.ui event flags.
 SHORTCUT_MODIFIERS = 0x0F
-
-
-class GripperUnavailableError(RuntimeError):
-    """The gripper cannot start this step. No command was sent."""
 
 
 class ControlPanel:
@@ -83,8 +83,12 @@ class ControlPanel:
         self.keyboard_task = self.keyboard_session = None
         self.stream_observer = None
         self.keyboard_generation = 0
-        self.active_key = self.jog_released = None
-        self.held_keys = set()
+        self.keyboard_controller = KeyboardController(
+            self.perform_keyboard,
+            self._release_keyboard_session,
+            self._can_start_keyboard,
+            self._keyboard_started,
+        )
         self.report = {
             "status": "starting",
             "motion_sent_by_startup": False,
@@ -106,6 +110,18 @@ class ControlPanel:
             task and not task.done()
             for task in (self.action, self.disable_task, self.stop_task, self.keyboard_task)
         )
+
+    @property
+    def held_keys(self):
+        return self.keyboard_controller.held_keys
+
+    @property
+    def active_key(self):
+        return self.keyboard_controller.active_key
+
+    @property
+    def jog_released(self):
+        return self.keyboard_controller.released
 
     def copy_actual(self):
         try:
@@ -147,20 +163,19 @@ class ControlPanel:
                 self.actual_pose = None
 
     def release_key(self):
-        if self.jog_released is not None:
-            self.jog_released.set()
+        self.keyboard_controller.release()
+
+    def _release_keyboard_session(self):
         if self.keyboard_session is not None:
             self.keyboard_session.release()
 
     def set_keyboard(self, enabled, *, reason=None):
         was_active = self.keyboard_enabled or self.keyboard_arming
         self.keyboard_enabled = bool(enabled) and not self.closed and not self.control.stopped
-        self.held_keys.clear()
-        self.active_key = None
+        self.keyboard_controller.set_enabled(self.keyboard_enabled)
         if not self.keyboard_enabled:
             self.keyboard_generation += 1
             self.keyboard_arming = False
-            self.release_key()
             if was_active and reason is not None:
                 self.keyboard_disarm_reason = reason
                 fault = self.keyboard_session and self.keyboard_session.fault
@@ -245,12 +260,9 @@ class ControlPanel:
                 self.keyboard_arming = False
 
     def key_event(self, key, pressed, *, repeat=False, modifiers=0):
-        """Start one hold task. A release cancels preparation and requests a stop."""
+        """Publish keyboard input after checking the panel's input permissions."""
         if not pressed:
-            self.held_keys.discard(key)
-            if key == self.active_key:
-                self.release_key()
-                self.active_key = None
+            self.keyboard_controller.key_event(key, False)
             return
         if key == "ESCAPE" and self.keyboard_enabled:
             self.request_disable()
@@ -260,40 +272,41 @@ class ControlPanel:
             return
         if key not in JOG_KEYS or not self.keyboard_enabled or self.closed:
             return
-        if repeat and key not in self.held_keys:
-            return
-        already_held = key in self.held_keys
-        self.held_keys.add(key)
-        if len(self.held_keys) != 1:
-            self.release_key()
-            return
-        if already_held or self.busy or self.control.stopped:
-            return
+        self.keyboard_controller.key_event(key, True, repeat=repeat)
+
+    def _can_start_keyboard(self):
+        if (
+            not self.keyboard_enabled
+            or self.closed
+            or not self.sync_enabled
+            or self.busy
+            or self.control.stopped
+            or self.stop_task is not None
+            or (self.gripper is not None and self.gripper.busy)
+        ):
+            return False
         if self.keyboard_session is None or not self.keyboard_session.ready:
             self.set_keyboard(False, reason="session is not ready. Click Keyboard to retry.")
-            return
-        self.active_key = key
-        self.jog_released = threading.Event()
-        self.action = asyncio.ensure_future(self.perform_keyboard(key, self.jog_released))
+            return False
+        return True
+
+    def _keyboard_started(self, task):
+        self.action = task
 
     async def perform_keyboard(self, key, released):
         session = self.keyboard_session
         self.message = "Jogging... Release the key to stop."
         try:
-            if key in "ZX":
-                expired = await self.jog_gripper(key, released)
-            else:
-                initial_pose = None
-                if key not in "AD":
-                    if session.reusable_pose(self.pose_measurement):
-                        initial_pose = self.pose_measurement
-                    elif self.pose_task:
-                        initial_pose = await self.pose_task
-                pose = await asyncio.to_thread(
-                    session.run, key, released, initial_pose=initial_pose
-                )
+            pose, expired = await run_keyboard_hold(
+                session,
+                key,
+                released,
+                pose_measurement=self.pose_measurement,
+                pose_task=self.pose_task,
+                gripper=self.gripper,
+            )
+            if pose is not None:
                 self.actual_pose, self.pose_received = pose, time.monotonic()
-                expired = False
             if (
                 self.keyboard_enabled
                 and not self.control.stopped
@@ -330,47 +343,6 @@ class ControlPanel:
             if self.stop_task is None and not (self.disable_task and not self.disable_task.done()):
                 self.message = f"ERROR: {error}"
         print("MG400_KEYBOARD", self.message, flush=True)
-
-    async def jog_gripper(self, key, released):
-        gripper = self.gripper
-        if gripper is None or gripper.closed:
-            raise GripperUnavailableError("Gripper control is unavailable.")
-        deadline = time.monotonic() + 5.0
-        while not released.is_set() and time.monotonic() < deadline:
-            self.control.read_state()
-            if gripper.closed:
-                raise GripperUnavailableError("Gripper control is unavailable.")
-            if gripper.failed:
-                raise RuntimeError(gripper.report["result"])
-            if gripper.busy:
-                raise RuntimeError("Wait for the current gripper command to finish.")
-            position = gripper.measured_position()
-            if position is None:
-                raise GripperUnavailableError(
-                    gripper.feedback.diagnostic() or "Waiting for fresh gripper position feedback."
-                )
-            target = max(0, min(1000, position + (25 if key == "Z" else -25)))
-            if target == position:
-                return
-            if released.is_set():
-                return
-            action = gripper.submit_position(target)
-            if action is None:
-                if (
-                    not gripper.failed
-                    and not gripper.busy
-                    and gripper.report.get("command_published") is False
-                ):
-                    raise GripperUnavailableError(gripper.report["result"])
-                raise RuntimeError(gripper.report["result"])
-            completed = await action
-            if gripper.failed:
-                raise RuntimeError(gripper.report["result"])
-            if completed is False:
-                raise GripperUnavailableError(gripper.report["result"])
-            if gripper.report.get("contact_observed"):
-                return
-        return not released.is_set()
 
     def submit(self, name):
         # Capture the target once; edits and repeated clicks cannot queue movements.
@@ -834,7 +806,7 @@ class ControlPanel:
 
         def on_disconnect(event):
             # The dispatcher can call this from a worker thread. Revoke input first.
-            self.release_key()
+            self.keyboard_controller.revoke()
             if self.keyboard_session is not None:
                 self.keyboard_session.close()
             if not self.closed:
@@ -1064,13 +1036,15 @@ class ControlPanel:
 
 def _reload_control_modules():
     """Load control changes only after the previous panel has finished its workers."""
-    global backend, limits, JointControl, KeyboardJogSession
+    global backend, limits, JointControl, KeyboardJogSession, KeyboardController
+    global GripperUnavailableError, run_keyboard_hold
     modules = []
     for name in (
         "controller_protocol",
         "joint_limits",
         "joint_control",
         "keyboard_jog",
+        "keyboard_control",
         "gripper_feedback",
     ):
         path = ROOT / "src" / "mg400_agent" / f"{name}.py"
@@ -1088,7 +1062,7 @@ def _reload_control_modules():
         # Read source directly. Kit loaders and old package paths can retain old code.
         exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
         modules.append(module)
-    protocol_module, limits, control_module, jog_module, _ = modules
+    protocol_module, limits, control_module, jog_module, keyboard_module, _ = modules
     control_module.ControllerCommandError = protocol_module.ControllerCommandError
     control_module.parse_controller_response = protocol_module.parse_controller_response
     jog_module.TargetRejectedError = control_module.TargetRejectedError
@@ -1113,6 +1087,9 @@ def _reload_control_modules():
     backend = control_module
     JointControl = control_module.JointControl
     KeyboardJogSession = jog_module.KeyboardJogSession
+    KeyboardController = keyboard_module.KeyboardController
+    GripperUnavailableError = keyboard_module.GripperUnavailableError
+    run_keyboard_hold = keyboard_module.run_keyboard_hold
 
 
 async def start():

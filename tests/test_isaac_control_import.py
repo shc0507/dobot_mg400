@@ -100,6 +100,7 @@ def test_panel_import_discovers_module_added_after_failed_import(tmp_path):
         "robot_config.py",
         "runtime_paths.py",
         "keyboard_jog.py",
+        "keyboard_control.py",
     ):
         shutil.copyfile(ROOT / "src/mg400_agent" / filename, package_dir / filename)
     apps = tmp_path / "apps/isaacsim"
@@ -116,6 +117,11 @@ def test_control_source_reload_replaces_legacy_code_and_preserves_feedback(tmp_p
         "controller_protocol.py": "def parse_controller_response(*args): pass\n",
         "joint_control.py": ("class JointControl:\n    def __init__(self, host, snapshot): pass\n"),
         "keyboard_jog.py": "class KeyboardJogSession: pass\n",
+        "keyboard_control.py": (
+            "class KeyboardController: pass\n"
+            "class GripperUnavailableError(RuntimeError): pass\n"
+            "async def run_keyboard_hold(*args, **kwargs): pass\n"
+        ),
         "gripper_feedback.py": "class FeedbackState: pass\n",
     }
     if cache == "control_only":
@@ -171,11 +177,14 @@ old_jog = (
     else importlib.import_module("mg400_agent.keyboard_jog").KeyboardJogSession
 )
 old_gripper = importlib.import_module("mg400_agent.gripper_feedback").FeedbackState
+old_keyboard = importlib.import_module("mg400_agent.keyboard_control").KeyboardController
 importlib.import_module("mg400_agent.controller_protocol")
 assert hasattr(old_control, "TargetRejectedError") is (cache == "control_only")
 assert not hasattr(old_control, "PoseMeasurement")
 assert "parent" not in inspect.signature(old_class).parameters
-names = ("controller_protocol", "joint_control", "keyboard_jog", "gripper_feedback")
+names = (
+    "controller_protocol", "joint_control", "keyboard_jog", "keyboard_control", "gripper_feedback"
+)
 old_sources = {
     name: (legacy / "src/mg400_agent" / f"{name}.py").read_bytes() for name in names
 }
@@ -227,6 +236,10 @@ namespace["_reload_control_modules"]()
 state = namespace["_reload_control_modules"].__globals__
 assert state["JointControl"] is not old_class
 assert state["KeyboardJogSession"] is not old_jog
+assert state["KeyboardController"] is not old_keyboard
+keyboard = sys.modules["mg400_agent.keyboard_control"]
+assert state["run_keyboard_hold"] is keyboard.run_keyboard_hold
+assert state["GripperUnavailableError"] is keyboard.GripperUnavailableError
 assert sys.modules["mg400_agent.gripper_feedback"].FeedbackState is not old_gripper
 assert state["backend"].TargetRejectedError.__module__ == "mg400_agent.joint_control"
 protocol = sys.modules["mg400_agent.controller_protocol"]

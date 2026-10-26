@@ -276,6 +276,8 @@ def panel_module(monkeypatch, tmp_path):
             self.owner = None
             self.closed = self.closing = self.failed = False
             self.action = self.task = None
+            self.auto_initialize_pending = True
+            self.auto_initialize_at_start = None
             self.calls = []
             self.windows = []
             self.build_count = 0
@@ -295,6 +297,7 @@ def panel_module(monkeypatch, tmp_path):
 
         async def run(self, window=None):
             self.windows.append(window)
+            self.auto_initialize_at_start = self.auto_initialize_pending
             self.run_started.set()
             try:
                 while not self.closed and not self.closing and window.visible:
@@ -881,6 +884,7 @@ def test_disabled_precheck_rejection_keeps_enable_button_and_gripper_unchanged(
 ):
     panel.control.set_mode(4)
     child = panel_module.Gripper()
+    child.auto_initialize_pending = False
     child.owner = panel
     panel.gripper = child
     enable = panel.control.enable
@@ -900,7 +904,7 @@ def test_disabled_precheck_rejection_keeps_enable_button_and_gripper_unchanged(
         raise AssertionError("Enable must not send a gripper command")
 
     monkeypatch.setattr(panel.control, "enable", reject_once)
-    child.submit_position = gripper_command
+    child.submit_position = child.submit_initialization = gripper_command
     frames = 0
 
     async def next_update():
@@ -2617,7 +2621,19 @@ def test_arm_commands_do_not_start_while_owned_gripper_is_busy(panel_module, pan
     asyncio.run(exercise())
 
 
-def test_repeated_start_replaces_old_window_and_owned_child(panel_module, panel, monkeypatch):
+@pytest.mark.parametrize("auto_initialize", [None, False, True])
+def test_repeated_start_replaces_old_window_and_owned_child(
+    panel_module,
+    panel,
+    monkeypatch,
+    auto_initialize,
+):
+    if auto_initialize is not None:
+        monkeypatch.setitem(
+            panel_module.start.__globals__, "AUTO_INITIALIZE_GRIPPER", auto_initialize
+        )
+    expected_auto_initialize = auto_initialize is True
+
     async def next_update():
         await asyncio.sleep(0)
 
@@ -2650,6 +2666,14 @@ def test_repeated_start_replaces_old_window_and_owned_child(panel_module, panel,
             assert getattr(builtins, panel_module.GRIPPER_SINGLETON) is second.gripper
             assert all(control.calls == [] for control in panel_module.instances)
             assert all(child.calls == [] for child in panel_module.grippers)
+            assert all(
+                child.auto_initialize_at_start is expected_auto_initialize
+                for child in panel_module.grippers
+            )
+            assert all(
+                created.report["gripper_auto_initialize_on_open"] is expected_auto_initialize
+                for created in (first, second)
+            )
         finally:
             for created in (first, second):
                 if created is not None:

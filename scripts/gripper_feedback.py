@@ -1,4 +1,4 @@
-"""Read gripper telemetry. Enable position commands only with --commands and --output."""
+"""Read gripper telemetry. Enable commands only with --commands and --output."""
 
 import argparse
 import contextlib
@@ -102,7 +102,7 @@ def decode(response):
     return struct.unpack(">3H", response[3:-2])
 
 
-def _exchange(fd, function, address, value):
+def _exchange(fd, function, address, value, *, deadline=None):
     """Send one request and require a complete reply with a silent frame boundary."""
     payload = struct.pack(">BBHH", 1, function, address, value)
     request = payload + crc(payload)
@@ -120,17 +120,25 @@ def _exchange(fd, function, address, value):
             f"Raw={response.hex() or '<empty>'}. The collector did not retry the request."
         )
 
+    def check_deadline():
+        if deadline is not None and time.monotonic() >= deadline:
+            fail(TimeoutError, "The gripper command deadline expired")
+
+    check_deadline()
     ready, _, _ = select.select([fd], [], [], FRAME_GAP_S)
     if ready:
         response.extend(os.read(fd, 256))
         fail(ValueError, "Unexpected bytes before the request")
     phase = "send"
+    check_deadline()
     if os.write(fd, request) != len(request):
         fail(RuntimeError, "The serial request is incomplete")
     phase = "reply"
-    deadline = time.monotonic() + REPLY_TIMEOUT_S
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
+    # Finish an outstanding reply before checking the command deadline again.
+    # Leaving its tail unread could corrupt the next telemetry exchange.
+    reply_deadline = time.monotonic() + REPLY_TIMEOUT_S
+    while time.monotonic() < reply_deadline:
+        ready, _, _ = select.select([fd], [], [], max(0, reply_deadline - time.monotonic()))
         if ready:
             part = os.read(fd, 256)
             if not part:
@@ -162,49 +170,73 @@ def _exchange(fd, function, address, value):
         fail(ValueError, "The write reply does not match the request")
     if function == 3 and response[2] != 2 * value:
         fail(ValueError, "The reply register count is invalid")
+    check_deadline()
     return response
 
 
-def read(fd):
-    response = _exchange(fd, 3, 0x0200, 3)
+def read(fd, *, deadline=None):
+    response = _exchange(fd, 3, 0x0200, 3, deadline=deadline)
     return decode(response)
 
 
-def register(fd, address, value=None):
+def register(fd, address, value=None, *, deadline=None):
     """Read one register or write one allowed control value. Never retry a request."""
     if value is not None and (
-        type(value) is not int or not (
+        type(value) is not int
+        or not (
             (address == 0x0103 and 0 <= value <= 1000)
+            or (address, value) == (0x0100, 1)
             or (address, value) == (0x0402, 0)
         )
     ):
         raise ValueError("The register write is not allowed.")
     function = 3 if value is None else 6
-    response = _exchange(fd, function, address, 1 if value is None else value)
+    response = _exchange(fd, function, address, 1 if value is None else value, deadline=deadline)
     if value is not None:
         return value
     return struct.unpack(">H", response[3:5])[0]
 
 
-def set_position(fd, position):
+def initialize(fd, *, deadline):
+    """Initialize once and wait for measured completion. Do not change other settings."""
+    initialized, state, position = read(fd, deadline=deadline)
+    if initialized == 0:
+        register(fd, 0x0100, 1, deadline=deadline)
+    while True:
+        if initialized not in (0, 1, 2):
+            raise RuntimeError("The gripper initialization state is invalid.")
+        if initialized == 1:
+            if state not in (0, 1, 2, 3) or not 0 <= position <= 1000:
+                raise RuntimeError("The gripper feedback is invalid after initialization.")
+            if state == 1:
+                return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("The gripper initialization deadline expired.")
+        time.sleep(min(PERIOD_S, remaining))
+        initialized, state, position = read(fd, deadline=deadline)
+
+
+def set_position(fd, position, *, deadline):
     """Set a PGEA target through Modbus. Do not initialize or save to flash."""
     if type(position) is not int or not 0 <= position <= 1000:
         raise ValueError("The target position must be an integer from 0 to 1000.")
-    initialized, state, measured = read(fd)
+    initialized, state, measured = read(fd, deadline=deadline)
     if initialized != 1 or state not in (0, 1, 2, 3) or not 0 <= measured <= 1000:
         raise RuntimeError("The gripper feedback is not ready for a position command.")
-    force, speed = register(fd, 0x0101), register(fd, 0x0104)
+    force = register(fd, 0x0101, deadline=deadline)
+    speed = register(fd, 0x0104, deadline=deadline)
     if not 20 <= force <= 100 or not 1 <= speed <= 100:
         raise RuntimeError("The gripper force or speed setting is invalid.")
-    mode = register(fd, 0x0402)
+    mode = register(fd, 0x0402, deadline=deadline)
     if mode not in (0, 1):
         raise RuntimeError("The gripper I/O mode is invalid.")
     if mode == 1:
-        register(fd, 0x0402, 0)
-    if register(fd, 0x0402) != 0:
+        register(fd, 0x0402, 0, deadline=deadline)
+    if register(fd, 0x0402, deadline=deadline) != 0:
         raise RuntimeError("The gripper did not enter Modbus-only control.")
-    register(fd, 0x0103, position)
-    if register(fd, 0x0103) != position:
+    register(fd, 0x0103, position, deadline=deadline)
+    if register(fd, 0x0103, deadline=deadline) != position:
         raise RuntimeError("The gripper target readback does not match the command.")
 
 
@@ -218,8 +250,14 @@ class PositionMailbox:
         self.previous = None
         self.seen = set()
         self.control = dict(
-            protocol=1, command_id=None, target=None, ack=False,
-            locked=False, error=None, io_mode=None,
+            protocol=3,
+            command_id=None,
+            operation=None,
+            target=None,
+            ack=False,
+            locked=False,
+            error=None,
+            io_mode=None,
         )
         try:
             self.lock_path.lstat()
@@ -255,16 +293,48 @@ class PositionMailbox:
                 return
             if not 0 <= time.time() - sent_at <= 0.75:
                 return
-            if type(position) is not int or not 0 <= position <= 1000:
+            operation = request.get("operation", "position")
+            if operation == "initialize":
+                if "position" in request:
+                    return
+                budget = 15.0
+            elif operation == "position":
+                if type(position) is not int or not 0 <= position <= 1000:
+                    return
+                budget = 5.0
+            else:
+                return
+            # The panel and collector must share a monotonic clock.
+            deadline = request.get("deadline_monotonic")
+            if type(deadline) not in (int, float) or not math.isfinite(deadline):
+                return
+            if not 0 < deadline - time.monotonic() <= budget:
                 return
         except (OSError, ValueError, OverflowError):
             return
-        self.control.update(command_id=command_id, target=position, ack=False, error=None)
+        self.control.update(
+            command_id=command_id,
+            operation=operation,
+            target=position,
+            ack=False,
+            error=None,
+        )
         try:
-            emit({"command_id": command_id, "target": position}, self.lock_path, durable=True)
-            set_position(fd, position)
+            emit(
+                {"command_id": command_id, "operation": operation, "target": position},
+                self.lock_path,
+                durable=True,
+            )
+            if operation == "initialize":
+                initialize(fd, deadline=deadline)
+            else:
+                set_position(fd, position, deadline=deadline)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("The gripper command deadline expired.")
             self.lock_path.unlink()
-            self.control.update(ack=True, io_mode=0)
+            self.control.update(ack=True)
+            if operation == "position":
+                self.control["io_mode"] = 0
         except (OSError, ValueError, RuntimeError) as error:
             self.control.update(locked=True, error=str(error))
             print(f"Gripper command stopped: {error}", file=sys.stderr, flush=True)
@@ -329,8 +399,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="Replace this file with each complete sample.")
     parser.add_argument(
-        "--commands", action="store_true",
-        help="Accept fresh position commands beside --output through the same serial connection.",
+        "--commands",
+        action="store_true",
+        help=(
+            "Accept fresh position and initialization commands beside --output "
+            "on the same serial connection."
+        ),
     )
     args = parser.parse_args(argv)
     if args.commands and args.output is None:

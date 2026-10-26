@@ -1,4 +1,4 @@
-"""Control the real gripper from Isaac Script Editor. Startup only reads state."""
+"""Control the real gripper. Initialization is manual by default."""
 
 import asyncio
 import builtins
@@ -37,6 +37,8 @@ class GripperPanel:
         self.compact = False
         self.edit_callback = None
         self.mirror_task = None
+        self.auto_initialize_pending = False
+        self.initialize_button = self.initialization_status = None
         self.report = {
             "request": None,
             "result": "Waiting for robot state.",
@@ -126,7 +128,8 @@ class GripperPanel:
                 self.report["mirror"] = {
                     "status": (
                         "Object dropped. Following measured USB position."
-                        if sample["state"] == 3 else "Following measured USB position."
+                        if sample["state"] == 3
+                        else "Following measured USB position."
                     ),
                     **sample,
                     **result,
@@ -145,8 +148,10 @@ class GripperPanel:
         if self.closed or self.closing or self.failed or self.busy or self.report.get("read_error"):
             return False
         return self.owner is None or not (
-            self.owner.busy or self.owner.keyboard_enabled
-            or self.owner.keyboard_arming or self.owner.closed
+            self.owner.busy
+            or self.owner.keyboard_enabled
+            or self.owner.keyboard_arming
+            or self.owner.closed
             or not getattr(self.owner, "sync_enabled", True)
         )
 
@@ -155,11 +160,18 @@ class GripperPanel:
         if not self.compact:
             return self.manual_enabled
         return (
-            not self.closed and not self.closing and not self.failed and not self.busy
-            and not self.report.get("read_error") and self.target_initialized
-            and self.owner.targets_editable and not self.owner.busy
-            and not self.owner.keyboard_arming and not self.owner.closed
-            and self.owner.sync_enabled and not self.owner.control.stopped
+            not self.closed
+            and not self.closing
+            and not self.failed
+            and not self.busy
+            and not self.report.get("read_error")
+            and self.target_initialized
+            and self.owner.targets_editable
+            and not self.owner.busy
+            and not self.owner.keyboard_arming
+            and not self.owner.closed
+            and self.owner.sync_enabled
+            and not self.owner.control.stopped
         )
 
     def _submit_manual(self, request):
@@ -177,6 +189,155 @@ class GripperPanel:
         sample = self.feedback.get()
         return None if sample is None else sample["position"]
 
+    def _initialization_error(self, sample):
+        if self.closed or self.closing or self.failed:
+            return "Gripper control is closed or locked."
+        if self.feedback_path is None:
+            return "Initialization requires the Olares USB collector."
+        if sample is None:
+            return "Wait for fresh USB feedback before initialization."
+        control = sample.get("control")
+        if control is None or control["protocol"] != 3:
+            return "Update and restart the USB collector to enable initialization."
+        if control["locked"]:
+            return control.get("error") or "The collector is locked."
+        if sample["init"] != 0:
+            return (
+                "The gripper is already initialized."
+                if sample["init"] == 1
+                else "Gripper initialization is in progress."
+            )
+        if self.owner is not None:
+            if (
+                self.owner.busy
+                or self.owner.keyboard_enabled
+                or self.owner.keyboard_arming
+                or self.owner.closed
+                or not self.owner.sync_enabled
+                or self.owner.control.stopped
+            ):
+                return "Keep the robot idle and keyboard control off before initialization."
+            try:
+                self.owner.control.read_state()
+            except Exception as error:
+                return f"Wait for fresh idle robot feedback. {error}"
+        return None
+
+    @property
+    def initialization_enabled(self):
+        return not self.busy and self._initialization_error(self.feedback.get_status()) is None
+
+    def maybe_initialize(self):
+        """Check startup feedback and submit at most one initialization request."""
+        if not self.auto_initialize_pending:
+            return None
+        sample = self.feedback.get_status()
+        if sample is not None and sample["init"] in (1, 2):
+            self.auto_initialize_pending = False
+            return None
+        if self.initialization_enabled:
+            return self.submit_initialization()
+        return None
+
+    def submit_initialization(self):
+        """Initialize through the collector. Initialization opens the gripper."""
+        if self.busy:
+            return None
+        sample = self.feedback.get_status()
+        error = self._initialization_error(sample)
+        if error:
+            self.report["result"] = error
+            return None
+        self.auto_initialize_pending = False
+        self.action = asyncio.ensure_future(self.perform_initialization(sample))
+        return self.action
+
+    async def perform_initialization(self, initial):
+        request_id = str(uuid4())
+        self.report.update(
+            request="initialize",
+            target=None,
+            result="Initializing gripper. The jaws will open.",
+            ack=False,
+            arrival_observed=False,
+            contact_observed=False,
+            write_acks=[],
+            command_published=False,
+            read_error=None,
+        )
+        temporary = None
+        try:
+            current = self.feedback.get_status()
+            error = self._initialization_error(current)
+            if error or current["session"] != initial["session"]:
+                self.report["result"] = error or "The USB collector session changed."
+                return False
+            path = Path(self.feedback_path)
+            path = path.with_name(path.name + ".command.json")
+            temporary = path.with_name(path.name + ".tmp")
+            deadline = time.monotonic() + 15
+            try:
+                temporary.write_text(
+                    json.dumps(
+                        {
+                            "id": request_id,
+                            "session": initial["session"],
+                            "sent_at": time.time(),
+                            "operation": "initialize",
+                            "deadline_monotonic": deadline,
+                        }
+                    )
+                    + "\n"
+                )
+            except OSError as error:
+                self.report["result"] = (
+                    f"No command sent. Could not prepare initialization: {error}"
+                )
+                return False
+            self.report["command_published"] = None
+            temporary.replace(path)
+            self.report["command_published"] = True
+            while not self.closed and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+                if time.monotonic() >= deadline:
+                    break
+                sample = self.feedback.get_status()
+                if sample is None:
+                    continue
+                if sample["session"] != initial["session"]:
+                    raise RuntimeError("The USB collector session changed.")
+                control = sample.get("control")
+                if control is None or control["protocol"] != 3:
+                    raise RuntimeError("The collector no longer supports initialization.")
+                if control["locked"]:
+                    raise RuntimeError(control.get("error") or "The collector is locked.")
+                if (
+                    sample["seq"] > initial["seq"]
+                    and control["command_id"] == request_id
+                    and control.get("operation") == "initialize"
+                    and control["ack"]
+                    and sample["init"] == 1
+                    and sample["state"] == 1
+                    and 0 <= sample["position"] <= 1000
+                ):
+                    self.report.update(
+                        ack=True,
+                        arrival_observed=True,
+                        result="Gripper initialization complete.",
+                    )
+                    self.target_initialized = False
+                    return True
+            raise TimeoutError("Gripper initialization did not complete within 15 seconds.")
+        except Exception as error:
+            self.failed = True
+            self.report["result"] = f"Control is locked. Check the gripper. {error}"
+            return False
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
+            self.write_report()
+
     def pending_target(self):
         """Return a user-edited opening, or None when no opening edit is pending."""
         if not self.target_initialized:
@@ -186,12 +347,29 @@ class GripperPanel:
 
     def position_sample(self):
         sample = self.feedback.get()
-        if self.feedback_path is None or sample is None:
-            return None
-        control = sample.get("control")
-        if control is None or control["locked"]:
+        if self._position_error(sample):
             return None
         return sample
+
+    def _position_error(self, sample):
+        if self.feedback_path is None:
+            return "Position control needs a fresh --commands collector."
+        if sample is None:
+            return (
+                self.feedback.diagnostic()
+                or self.report.get("collector_start_error")
+                or "USB feedback is stale or unavailable. Check the collector on Olares."
+            )
+        control = sample.get("control")
+        if control is None:
+            return "Start the USB collector with --commands."
+        if control["protocol"] not in (2, 3):
+            return (
+                "Update and restart the USB collector for position commands with deadline support."
+            )
+        if control["locked"]:
+            return control.get("error") or "The collector is locked."
+        return None
 
     def submit_position(self, position):
         """Send one target from 0 (closed) to 1000 (open) through the USB collector."""
@@ -199,12 +377,11 @@ class GripperPanel:
             raise ValueError("The target position must be an integer from 0 to 1000.")
         if self.closed or self.closing or self.failed or self.busy:
             return None
-        sample = self.position_sample()
-        if sample is None:
+        sample = self.feedback.get()
+        error = self._position_error(sample)
+        if error:
             self.report["command_published"] = False
-            self.report["result"] = (
-                self.feedback.diagnostic() or "Position control needs a fresh --commands collector."
-            )
+            self.report["result"] = error
             return None
         self.action = asyncio.ensure_future(self.perform_position(position, sample))
         return self.action
@@ -212,33 +389,53 @@ class GripperPanel:
     async def perform_position(self, position, initial):
         request_id = str(uuid4())
         self.report.update(
-            request="position", target=position, result="The position command is in progress.",
-            ack=False, arrival_observed=False, contact_observed=False, write_acks=[],
+            request="position",
+            target=position,
+            result="The position command is in progress.",
+            ack=False,
+            arrival_observed=False,
+            contact_observed=False,
+            write_acks=[],
             command_published=False,
         )
         try:
-            if self.closed or self.closing or (self.owner is not None and (
-                self.owner.closed or not getattr(self.owner, "sync_enabled", True)
-                or getattr(getattr(self.owner, "control", None), "stopped", False)
-            )):
+            if (
+                self.closed
+                or self.closing
+                or (
+                    self.owner is not None
+                    and (
+                        self.owner.closed
+                        or not getattr(self.owner, "sync_enabled", True)
+                        or getattr(getattr(self.owner, "control", None), "stopped", False)
+                    )
+                )
+            ):
                 self.report["result"] = "The panel cancelled the command before sending it."
                 return False
-            current = self.position_sample()
-            if current is None or current["session"] != initial["session"]:
-                reason = (
-                    self.feedback.diagnostic()
-                    or "The USB collector feedback changed before the command."
-                )
+            current = self.feedback.get()
+            reason = self._position_error(current)
+            if reason or current["session"] != initial["session"]:
+                reason = reason or "The USB collector feedback changed before the command."
                 self.report["result"] = f"No command sent. {reason} Check feedback and retry."
                 return False
             path = Path(self.feedback_path)
             path = path.with_name(path.name + ".command.json")
             temporary = path.with_name(path.name + ".tmp")
+            deadline = time.monotonic() + 5
             try:
-                temporary.write_text(json.dumps({
-                    "id": request_id, "session": initial["session"],
-                    "sent_at": time.time(), "position": position,
-                }) + "\n")
+                temporary.write_text(
+                    json.dumps(
+                        {
+                            "id": request_id,
+                            "session": initial["session"],
+                            "sent_at": time.time(),
+                            "position": position,
+                            "deadline_monotonic": deadline,
+                        }
+                    )
+                    + "\n"
+                )
             except OSError as error:
                 self.report["result"] = (
                     f"No command sent. Could not prepare the command file: {error} "
@@ -248,7 +445,6 @@ class GripperPanel:
             self.report["command_published"] = None
             temporary.replace(path)
             self.report["command_published"] = True
-            deadline = time.monotonic() + 5
             while not self.closed and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
                 if time.monotonic() >= deadline:
@@ -261,9 +457,10 @@ class GripperPanel:
                     continue
                 if sample["session"] != initial["session"]:
                     raise RuntimeError("The USB collector session changed.")
-                control = sample.get("control", {})
-                if control.get("locked"):
-                    raise RuntimeError(control.get("error") or "The USB collector is locked.")
+                error = self._position_error(sample)
+                if error:
+                    raise RuntimeError(error)
+                control = sample["control"]
                 if (
                     sample["seq"] <= initial["seq"]
                     or control.get("command_id") != request_id
@@ -419,12 +616,14 @@ class GripperPanel:
                 with ui.HStack(height=28, spacing=8):
                     field = ui.IntField(model=self.target.model)
                     move = ui.Button(
-                        "Move to opening", clicked_fn=self._submit_position_manual,
+                        "Move to opening",
+                        clicked_fn=self._submit_position_manual,
                     )
                 self.position_widgets = [self.target, field, move]
                 ui.Label(
                     "First move disables I/O control. Force and speed stay unchanged.",
-                    height=34, word_wrap=True,
+                    height=34,
+                    word_wrap=True,
                 )
             with ui.HStack(height=32, spacing=8):
                 self.buttons = [
@@ -433,8 +632,26 @@ class GripperPanel:
                 ]
             self.status = ui.Label(self.report["result"], word_wrap=True, height=65)
             self.mirror_status = ui.Label(
-                self.report["mirror"]["status"], word_wrap=True, height=50,
+                self.report["mirror"]["status"],
+                word_wrap=True,
+                height=50,
             )
+            if self.feedback_path is not None:
+                self.build_initialization_controls()
+
+    def build_initialization_controls(self):
+        import omni.ui as ui
+
+        with ui.HStack(height=30, spacing=6):
+            self.initialize_button = ui.Button(
+                "Initialize gripper",
+                width=150,
+                enabled=False,
+                clicked_fn=self.submit_initialization,
+                tooltip="Initialization opens the gripper to find the travel limit.",
+            )
+            ui.Label("Initialization opens the gripper.", word_wrap=True)
+        self.initialization_status = ui.Label("", height=32, word_wrap=True)
 
     def build_compact_row(self):
         """Add one target row to the arm table. Edits do not send commands."""
@@ -445,19 +662,27 @@ class GripperPanel:
         self.target_baseline = None
         self.buttons = []
         with ui.HStack(height=28, spacing=6):
-            ui.Label("Gripper", width=64, tooltip=(
-                "Opening: 0 closed, 1000 open. Execute targets moves the arm first. "
-                "It then applies an edited gripper target. "
-                "The first position command disables I/O control. Force and speed do not change."
-            ))
+            ui.Label(
+                "Gripper",
+                width=64,
+                tooltip=(
+                    "Opening: 0 closed, 1000 open. Execute targets moves the arm first. "
+                    "It then applies an edited gripper target. "
+                    "The first position command disables I/O control. "
+                    "Force and speed do not change."
+                ),
+            )
             self.actual_label = ui.Label("--", width=84)
             self.target = ui.IntSlider(min=0, max=1000, enabled=False)
             self.edit_callback = self.target.model.add_begin_edit_fn(self.owner.begin_target_edit)
             field = ui.IntField(
-                model=self.target.model, width=86, enabled=False,
+                model=self.target.model,
+                width=86,
+                enabled=False,
                 tooltip="Double-click to type an opening. Editing turns keyboard control off.",
             )
         self.position_widgets = [self.target, field]
+        self.build_initialization_controls()
 
     async def run(self, window=None):
         import omni.kit.app
@@ -467,8 +692,9 @@ class GripperPanel:
         standalone = window is None
         if standalone:
             window = ui.Window(
-                "MG400 Real Gripper", width=460,
-                height=410 if self.feedback_path is not None else 260,
+                "MG400 Real Gripper",
+                width=460,
+                height=520 if self.feedback_path is not None else 260,
             )
             with window.frame:
                 self.build_ui()
@@ -478,32 +704,22 @@ class GripperPanel:
         try:
             while not self.closed and not self.closing and self.window.visible:
                 await omni.kit.app.get_app().next_update_async()
+                if self.window.visible:
+                    self.maybe_initialize()
                 if not self.busy and time.monotonic() >= next_read:
                     try:
                         if self.feedback_path is None:
                             await asyncio.to_thread(self.refresh)
                         else:
-                            sample = self.feedback.get()
-                            if sample is None:
-                                raise RuntimeError(
-                                    self.feedback.diagnostic()
-                                    or self.report.get("collector_start_error")
-                                    or "USB feedback is stale or unavailable. "
-                                    "Check the collector on Olares."
-                                )
-                            control = sample.get("control")
-                            if control is None:
-                                raise RuntimeError("Start the USB collector with --commands.")
-                            if control["locked"]:
-                                raise RuntimeError(
-                                    control.get("error") or "The collector is locked."
-                                )
+                            error = self._position_error(self.feedback.get())
+                            if error:
+                                raise RuntimeError(error)
                         self.report["read_error"] = None
                         if self.report["request"] is None:
                             self.report["result"] = (
                                 "Ready. Edit the gripper target, then click Execute targets."
-                                if self.compact else
-                                "Ready. Set an opening or choose Open gripper / Close gripper."
+                                if self.compact
+                                else "Ready. Set an opening or choose Open gripper / Close gripper."
                                 if self.feedback_path is not None
                                 else "Ready. Choose Open gripper or Close gripper."
                             )
@@ -526,8 +742,8 @@ class GripperPanel:
                 else:
                     self.inputs.text = (
                         "USB feedback and position commands share one serial connection."
-                        if self.feedback_path is not None else
-                        f"Mode: {self.report['mode']} | DI1 / DI2 raw: {self.report['di']}"
+                        if self.feedback_path is not None
+                        else f"Mode: {self.report['mode']} | DI1 / DI2 raw: {self.report['di']}"
                     )
                     self.status.text = self.report.get("read_error") or self.report["result"]
                     measured = self.report["mirror"]
@@ -539,6 +755,18 @@ class GripperPanel:
                         )
                 for button in self.buttons + self.position_widgets:
                     button.enabled = self.target_edit_enabled
+                if self.initialize_button is not None:
+                    self.initialize_button.enabled = self.initialization_enabled
+                    self.initialization_status.text = (
+                        self.report["result"]
+                        if self.busy or self.failed
+                        else self.report.get("read_error")
+                        or (
+                            self.report["result"]
+                            if self.report["request"] == "initialize"
+                            else self._initialization_error(self.feedback.get_status()) or ""
+                        )
+                    )
         finally:
             self.closing = True
             if self.edit_callback is not None:
@@ -546,6 +774,8 @@ class GripperPanel:
                 self.edit_callback = None
             for button in self.buttons + self.position_widgets:
                 button.enabled = False
+            if self.initialize_button is not None:
+                self.initialize_button.enabled = False
             try:
                 if self.action:
                     await self.action

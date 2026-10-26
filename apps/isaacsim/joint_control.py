@@ -1,7 +1,7 @@
 """Arm and gripper control in the existing Isaac Sim / Olares process.
 
-Run in Script Editor or with Kit --exec. Opening the panel only reads feedback.
-Buttons send commands only when clicked. The viewport shows measured angles.
+Run in Script Editor or with Kit --exec. Gripper initialization is manual by default.
+Arm commands require user input. The viewport shows measured angles.
 """
 
 import asyncio
@@ -33,6 +33,7 @@ REPORT = data_path("isaacsim/control_status.json")
 ROBOT_CONFIG = ROOT / "config/robot.toml"
 HOME_JOINTS_DEG = (0.0, 0.0, 0.0, 0.0)
 GRIPPER_SINGLETON = "_mg400_isaac_real_gripper"
+AUTO_INITIALIZE_GRIPPER = globals().get("AUTO_INITIALIZE_GRIPPER", False)
 JOG_KEYS = frozenset("WASDQERFZX")
 # Shift/Control/Alt/Super only; ignore lock states and omni.ui event flags.
 SHORTCUT_MODIFIERS = 0x0F
@@ -84,7 +85,11 @@ class ControlPanel:
         self.keyboard_generation = 0
         self.active_key = self.jog_released = None
         self.held_keys = set()
-        self.report = {"status": "starting", "motion_sent_by_startup": False}
+        self.report = {
+            "status": "starting",
+            "motion_sent_by_startup": False,
+            "gripper_auto_initialize_on_open": AUTO_INITIALIZE_GRIPPER,
+        }
 
     def feedback_snapshot(self):
         with self.mirror.lock:
@@ -667,7 +672,11 @@ class ControlPanel:
         context = omni.usd.get_context()
         stage = context.get_stage()
         timeline = omni.timeline.get_timeline_interface()
-        self.window = ui.Window("MG400 Control", width=560, height=450)
+        self.window = ui.Window(
+            "MG400 Control",
+            width=560,
+            height=560 if self.gripper is not None else 450,
+        )
         self.window.setPosition(15, 15)
         self.window.set_focused_changed_fn(
             lambda focused: (
@@ -1199,6 +1208,7 @@ async def replace_panel():
     gripper = namespace["GripperPanel"](
         feedback_path=str(data_path("work/gripper_olares_feedback.json"))
     )
+    gripper.auto_initialize_pending = AUTO_INITIALIZE_GRIPPER
     panel = ControlPanel(mirror, gripper)
     setattr(builtins, GRIPPER_SINGLETON, gripper)
     setattr(builtins, SINGLETON, panel)

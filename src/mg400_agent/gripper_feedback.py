@@ -3,6 +3,7 @@
 import json
 import math
 import time
+from copy import deepcopy
 from pathlib import Path
 from uuid import UUID
 
@@ -55,7 +56,7 @@ class FeedbackState:
         if control is not None:
             if not isinstance(control, dict) or type(control.get("protocol")) is not int:
                 return False
-            if control["protocol"] != 1:
+            if control["protocol"] not in (1, 2, 3):
                 return False
             if any(type(control.get(key)) is not bool for key in ("ack", "locked")):
                 return False
@@ -64,15 +65,23 @@ class FeedbackState:
             ):
                 return False
             command_id, target = control.get("command_id"), control.get("target")
+            operation = control.get("operation") if control["protocol"] == 3 else "position"
             if command_id is not None:
                 try:
                     if not isinstance(command_id, str) or str(UUID(command_id)) != command_id:
                         return False
                 except ValueError:
                     return False
-                if type(target) is not int or not 0 <= target <= 1000:
+                if operation not in ("position", "initialize"):
+                    return False
+                if operation == "initialize":
+                    if target is not None:
+                        return False
+                elif type(target) is not int or not 0 <= target <= 1000:
                     return False
             elif target is not None or control["ack"]:
+                return False
+            elif control["protocol"] == 3 and operation is not None:
                 return False
             if control.get("error") is not None and not isinstance(control["error"], str):
                 return False
@@ -82,17 +91,18 @@ class FeedbackState:
             self._session = session
         self._sequence = sequence
         self._received = time.monotonic()
-        if payload["init"] != 1:
-            self._diagnostic = (
-                "The gripper is not initialized."
-                if payload["init"] == 0 else "Gripper initialization is in progress."
-            )
-            return False
         self._latest = {
             key: payload[key] for key in ("session", "seq", "sent_at", "init", "state", "position")
         }
         if control is not None:
-            self._latest["control"] = control.copy()
+            self._latest["control"] = deepcopy(control)
+        if payload["init"] != 1:
+            self._diagnostic = (
+                "The gripper is not initialized."
+                if payload["init"] == 0
+                else "Gripper initialization is in progress."
+            )
+            return False
         return True
 
     def diagnostic(self, now=None):
@@ -106,17 +116,21 @@ class FeedbackState:
         return self._diagnostic
 
     def get(self, now=None):
-        """Return a sample copy only while its monotonic age is at most 0.75 seconds."""
+        """Return a fresh position sample only after initialization completes."""
+        sample = self.get_status(now)
+        if sample is None or sample["init"] != 1:
+            return None
+        return sample
+
+    def get_status(self, now=None):
+        """Return a status copy, including initialization, while its age is at most 0.75 seconds."""
         if self._latest is None:
             return None
         if now is None:
             now = time.monotonic()
         if not 0 <= now - self._received <= 0.75:
             return None
-        sample = self._latest.copy()
-        if "control" in sample:
-            sample["control"] = sample["control"].copy()
-        return sample
+        return deepcopy(self._latest)
 
 
 class FileFeedback:

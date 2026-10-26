@@ -1,8 +1,8 @@
 import json
 import math
 import socket
+import sys
 from contextlib import nullcontext
-from importlib.resources import files
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +17,21 @@ np = pytest.importorskip("numpy")
 @pytest.fixture
 def robot():
     return DynamicModel()
+
+
+@pytest.fixture
+def trajectory_path(tmp_path):
+    path = tmp_path / "trajectory.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"time_s": 0, "joints_deg": [0, 0, 0, 0]},
+                {"time_s": 1.5, "joints_deg": [12, 4, 8, -6]},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_actuator_target_does_not_teleport_and_physics_advances(robot):
@@ -62,9 +77,7 @@ def test_holds_pose_under_gravity_with_level_flange_and_coupled_joints(robot, po
 
 
 def test_j4_joint_and_actuator_allow_manufacturer_range(robot):
-    np.testing.assert_allclose(
-        robot.model.joint("mg400_j5").range, np.deg2rad((-360, 360))
-    )
+    np.testing.assert_allclose(robot.model.joint("mg400_j5").range, np.deg2rad((-360, 360)))
     np.testing.assert_allclose(
         robot.model.actuator("mg400_q4_position").ctrlrange, np.deg2rad((-360, 360))
     )
@@ -125,26 +138,30 @@ def test_entire_trajectory_is_validated_before_model_or_viewer(tmp_path, monkeyp
     assert "J2" in capsys.readouterr().err
 
 
-def test_dynamic_demo_uses_physics_without_network_and_reports_measured_error(monkeypatch, capsys):
+def test_dynamic_replay_uses_user_trajectory_and_reports_measured_error(
+    trajectory_path, monkeypatch, capsys
+):
     def forbidden(*args, **kwargs):
         pytest.fail("Offline dynamics must not connect to hardware")
 
     monkeypatch.setattr(socket, "create_connection", forbidden)
-    assert main(["--dynamics"]) == 0
+    monkeypatch.setitem(sys.modules, "mujoco.viewer", None)
+    assert main(["--dynamics", "--trajectory", str(trajectory_path)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["mode"] == "offline_joint_dynamics"
     assert result["completed"] is True
-    assert result["physics_steps"] > 4000
-    assert 8 < result["simulation_time_s"] < 10
+    assert result["physics_steps"] > 750
+    assert 1.5 < result["simulation_time_s"] < 3.5
+    assert result["requested_trajectory_time_s"] == 1.5
+    assert result["target_joints_deg"] == [12, 4, 8, -6]
+    assert result["joints_deg"] == pytest.approx([12, 4, 8, -6], abs=0.25)
     assert 0.01 < result["tracking_error_deg"] < 0.25
     assert result["peak_tracking_error_deg"] < 1
     assert result["peak_linkage_error_deg"] < 0.1
 
 
-def test_display_rate_does_not_change_dynamics():
-    frames = load_trajectory(
-        str(files("mg400_agent").joinpath("assets/mg400/demo_trajectory.json"))
-    )
+def test_display_rate_does_not_change_dynamics(trajectory_path):
+    frames = load_trajectory(trajectory_path)
     slow = run_dynamics(DynamicModel(), frames, 10)
     fast = run_dynamics(DynamicModel(), frames, 60)
     assert slow == fast

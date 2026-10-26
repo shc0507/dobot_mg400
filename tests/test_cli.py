@@ -15,25 +15,33 @@ def isolated_api_environment(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_demo_completes_without_api_key(monkeypatch, capsys):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert main(["demo"]) == 0
-    output = capsys.readouterr().out
-    assert '"backend": "sim"' in output
-    assert '"holding": null' in output
-    assert '"occupied_locations": [' in output
+@pytest.mark.parametrize(
+    "options,error",
+    [
+        (["--backend", "sim", "state"], "invalid choice"),
+        (["--backend", "mg400", "state"], "invalid choice"),
+        (["--config=scene.toml", "state"], "unrecognized arguments"),
+        (["--host=192.0.2.1", "state"], "unrecognized arguments"),
+        (["demo"], "invalid choice"),
+        (["--backend", "mujoco", "--viewer", "demo"], "invalid choice"),
+    ],
+)
+def test_removed_options_fail_before_starting_simulation_or_model(
+    monkeypatch, capsys, options, error
+):
+    session, model = Mock(), Mock()
+    monkeypatch.setitem(sys.modules, "mg400_agent.mujoco_session", session)
+    monkeypatch.setitem(sys.modules, "openai", model)
 
+    with pytest.raises(SystemExit) as caught:
+        main(options)
 
-def test_invalid_destination_rejected_before_pick(capsys):
-    assert main(["demo", "--destination", "missing"]) == 1
-    result = capsys.readouterr()
-    assert result.out == ""
-    assert "Unknown object or destination" in result.err
-
-
-def test_hardware_backend_fails_explicitly_without_connecting(capsys):
-    assert main(["--backend", "mg400", "--host", "192.0.2.1", "demo"]) == 1
-    assert "not implemented" in capsys.readouterr().err
+    assert caught.value.code == 2
+    session.run_session.assert_not_called()
+    model.OpenAI.assert_not_called()
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert error in output.err
 
 
 def test_ask_requires_explicit_model(monkeypatch, capsys):
@@ -50,7 +58,6 @@ def offline_mujoco(monkeypatch):
         pytest.fail("MuJoCo CLI must not connect to hardware, network, or a headless viewer")
 
     monkeypatch.setattr(socket, "create_connection", forbidden)
-    monkeypatch.setattr("mg400_agent.cli.connect_mg400", forbidden)
     monkeypatch.setitem(sys.modules, "mujoco.viewer", None)
 
 
@@ -115,30 +122,11 @@ def feedback(client, call_id):
     pytest.fail(f"Tool feedback for {call_id} was never returned to the model")
 
 
-def test_mujoco_demo_runs_actual_joint_motion_and_home_without_api(
-    offline_mujoco, monkeypatch, capsys
-):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setitem(sys.modules, "openai", None)
-
-    assert main(["--backend", "mujoco", "demo"]) == 0
-
-    lines = capsys.readouterr().out.splitlines()
-    move, home = map(json.loads, lines[:2])
-    assert move["tool"] == "move_joint" and move["ok"]
-    assert move["motion"]["physics_steps"] > 1
-    assert move["state"]["joints_deg"][0] == pytest.approx(20, abs=0.25)
-    assert home["tool"] == "home" and home["ok"]
-    assert home["state"]["joints_deg"] == pytest.approx([0] * 4, abs=0.25)
-    assert home["state"]["simulation_time_s"] > move["state"]["simulation_time_s"]
-    result = json.loads("\n".join(lines[2:]))
+def test_default_state_uses_mujoco(offline_mujoco, capsys):
+    assert main(["state"]) == 0
+    result = json.loads(capsys.readouterr().out)
     assert result["backend"] == "mujoco"
-    assert result["state"]["target_joints_deg"] == [0] * 4
-
-
-def test_mujoco_state_does_not_require_pick_place_config(offline_mujoco, tmp_path, capsys):
-    assert main(["--backend", "mujoco", "--config", str(tmp_path / "missing.toml"), "state"]) == 0
-    state = json.loads(capsys.readouterr().out)["state"]
+    state = result["state"]
     assert state["joints_deg"] == [0] * 4
     assert state["simulation_time_s"] == 0
     assert state["gripper"]["fixed_visual_only"]
@@ -222,11 +210,8 @@ def test_mujoco_chat_exit_and_eof_do_not_call_api(offline_mujoco, monkeypatch, e
 @pytest.mark.parametrize(
     "options,error",
     [
-        (["--backend", "sim", "--viewer", "state"], "--viewer requires"),
-        (["chat", "--model", "test"], "chat requires"),
         (["--backend", "mujoco", "--viewer", "ask", "home"], "OPENAI_MODEL"),
         (["--backend", "mujoco", "--viewer", "chat", "--model", "test"], "OPENAI_API_KEY"),
-        (["--backend", "mujoco", "--viewer", "demo", "--object", "custom"], "joint/home"),
     ],
 )
 def test_invalid_agent_options_are_rejected_before_starting_viewer(

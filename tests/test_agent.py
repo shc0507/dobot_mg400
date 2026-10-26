@@ -1,7 +1,6 @@
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from threading import get_ident
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -9,9 +8,6 @@ from unittest.mock import Mock
 import pytest
 
 from mg400_agent.agent import run_agent
-from mg400_agent.backends import SimArm, SimGripper
-from mg400_agent.config import Config
-from mg400_agent.skills import SkillExecutor
 
 
 def response(*output, text="", status="completed", error=None):
@@ -72,25 +68,35 @@ def test_default_client_bounds_api_timeout_and_disables_retries(executor, monkey
     factory.assert_called_once_with(timeout=30.0, max_retries=0)
 
 
-def test_agent_completes_simulated_pick_and_place():
-    config = Config.load(Path(__file__).resolve().parents[1] / "config/demo.toml")
-    executor = SkillExecutor(config, SimArm(config.home), SimGripper())
+def test_agent_completes_sequential_tools(executor):
+    results = [
+        {"ok": True, "state": {"joints_deg": [0, 0, 0, 0]}},
+        {"ok": True, "state": {"joints_deg": [20, 0, 0, 0]}},
+        {"ok": True, "state": {"joints_deg": [0, 0, 0, 0]}},
+    ]
+    executor.execute.side_effect = results
     client = client_for(
-        response(call("get_scene", "{}", "scene")),
-        response(call("pick", '{"object_id": "red_block"}', "pick")),
-        response(call("place", '{"location_id": "box_a"}', "place")),
-        response(text="Placed red_block in box_a."),
+        response(call("get_robot_state", "{}", "state")),
+        response(call("move_joint", '{"joint": "J1", "angle_deg": 20}', "move")),
+        response(call("home", "{}", "home")),
+        response(text="J1 moved to 20 degrees and returned home."),
     )
 
-    answer = run_agent("Put red_block in box_a", executor, model="test", client=client)
+    answer = run_agent("Move J1 to 20 degrees, then go home", executor, model="test", client=client)
 
-    assert answer == "Placed red_block in box_a."
-    state = executor.state()
-    assert state["objects"]["red_block"] == state["locations"]["box_a"]
-    assert state["holding"] is None
-    assert state["occupied_locations"] == ["box_a"]
-    assert state["stopped"] is False
-    assert state["fault"] is None
+    assert answer == "J1 moved to 20 degrees and returned home."
+    assert [request.args for request in executor.execute.call_args_list] == [
+        ("get_robot_state", {}),
+        ("move_joint", {"joint": "J1", "angle_deg": 20}),
+        ("home", {}),
+    ]
+    tool_outputs = [
+        json.loads(item["output"])
+        for item in client.responses.create.call_args_list[-1].kwargs["input"]
+        if isinstance(item, dict) and item.get("type") == "function_call_output"
+    ]
+    assert tool_outputs == results
+    executor.stop.assert_not_called()
     assert client.responses.create.call_count == 4
 
 
@@ -156,9 +162,10 @@ def test_api_exception_allows_next_turn(executor):
         run_agent("Move", executor, model="test", client=client)
     assert caught.value is error
     executor.stop.assert_not_called()
-    assert run_agent(
-        "Read state", executor, model="test", client=client_for(response(text="Ready."))
-    ) == "Ready."
+    assert (
+        run_agent("Read state", executor, model="test", client=client_for(response(text="Ready.")))
+        == "Ready."
+    )
 
 
 def test_loop_limit_does_not_stop_completed_synchronous_tools(executor):
@@ -251,24 +258,32 @@ def test_api_failure_preserves_completed_tool_history_for_next_turn(executor):
     next_client = client_for(response(text="The previous move completed."))
     run_agent("What happened?", executor, model="test", client=next_client, history=history)
     assert next_client.responses.create.call_args.kwargs["input"] == [
-        *prior, {"role": "user", "content": "What happened?"}
+        *prior,
+        {"role": "user", "content": "What happened?"},
     ]
     executor.execute.assert_called_once()
 
 
-def test_agent_returns_recoverable_rejection_to_model_for_correction():
-    config = Config.load(Path(__file__).resolve().parents[1] / "config/demo.toml")
-    executor = SkillExecutor(config, SimArm(config.home), SimGripper())
+def test_agent_returns_recoverable_rejection_to_model_for_correction(executor):
+    rejection = {"ok": False, "recoverable": True, "error": "Unknown joint: J9"}
+    executor.execute.side_effect = [rejection, {"ok": True}]
     client = client_for(
-        response(call("pick", '{"object_id": "typo"}', "bad")),
-        response(call("pick", '{"object_id": "red_block"}', "corrected")),
-        response(text="Picked red_block."),
+        response(call("move_joint", '{"joint": "J9", "angle_deg": 20}', "bad")),
+        response(call("move_joint", '{"joint": "J1", "angle_deg": 20}', "corrected")),
+        response(text="J1 moved to 20 degrees."),
     )
-    assert run_agent("Pick red_block", executor, model="test", client=client) == "Picked red_block."
+    assert (
+        run_agent("Move J1 to 20 degrees", executor, model="test", client=client)
+        == "J1 moved to 20 degrees."
+    )
     rejected = client.responses.create.call_args_list[1].kwargs["input"][-1]
-    assert json.loads(rejected["output"])["recoverable"]
-    assert executor.holding == "red_block"
-    assert not executor.stopped and executor.fault is None
+    assert json.loads(rejected["output"]) == rejection
+    assert [request.args for request in executor.execute.call_args_list] == [
+        ("move_joint", {"joint": "J9", "angle_deg": 20}),
+        ("move_joint", {"joint": "J1", "angle_deg": 20}),
+    ]
+    executor.stop.assert_not_called()
+    assert client.responses.create.call_count == 3
 
 
 @pytest.mark.parametrize(

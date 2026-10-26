@@ -169,7 +169,7 @@ def launch_macos_viewer(argv: list[str], module: str = "mg400_agent.mujoco_repla
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--trajectory", type=Path, help="JSON keyframes; defaults to bundled demo")
+    parser.add_argument("--trajectory", type=Path, required=True, help="JSON keyframe file")
     parser.add_argument("--viewer", action="store_true", help="Display playback in real time")
     parser.add_argument(
         "--rate",
@@ -183,10 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     try:
-        trajectory = args.trajectory or Path(
-            str(files("mg400_agent").joinpath("assets/mg400/demo_trajectory.json"))
-        )
-        frames = load_trajectory(trajectory)
+        frames = load_trajectory(args.trajectory)
         if args.dynamics:
             from .mujoco_dynamics import DynamicModel, run_dynamics, validate_trajectory
 

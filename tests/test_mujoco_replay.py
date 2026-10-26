@@ -23,6 +23,40 @@ def write_trajectory(tmp_path, data):
     return path
 
 
+@pytest.fixture
+def trajectory_path(tmp_path):
+    return write_trajectory(
+        tmp_path,
+        [
+            {"time_s": 0, "joints_deg": [0, 0, 0, 0]},
+            {"time_s": 1.2, "joints_deg": [0, 0, 0, 15]},
+        ],
+    )
+
+
+@pytest.mark.parametrize("options", [[], ["--viewer"], ["--dynamics"], ["--dynamics", "--viewer"]])
+def test_missing_trajectory_is_rejected_before_model_or_viewer(monkeypatch, capsys, options):
+    def forbidden(*args, **kwargs):
+        pytest.fail("A missing trajectory must fail before model or viewer startup")
+
+    monkeypatch.setattr("mg400_agent.mujoco_replay.load_trajectory", forbidden)
+    monkeypatch.setattr("mg400_agent.mujoco_replay.KinematicModel", forbidden)
+    monkeypatch.setattr("mg400_agent.mujoco_replay.launch_macos_viewer", forbidden)
+    monkeypatch.setitem(
+        sys.modules,
+        "mg400_agent.mujoco_dynamics",
+        SimpleNamespace(
+            DynamicModel=forbidden, run_dynamics=forbidden, validate_trajectory=forbidden
+        ),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        main(options)
+
+    assert caught.value.code == 2
+    assert "required: --trajectory" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -95,15 +129,16 @@ def test_window_close_during_final_wait_cancels_promptly(monkeypatch):
 
 
 @pytest.mark.parametrize("rate", ["0", "-1", "nan", "inf"])
-def test_cli_rejects_invalid_rate(rate):
+def test_cli_rejects_invalid_rate(trajectory_path, capsys, rate):
     with pytest.raises(SystemExit) as caught:
-        main(["--rate", rate])
+        main(["--trajectory", str(trajectory_path), "--rate", rate])
     assert caught.value.code == 2
+    assert "Rate must be positive and finite" in capsys.readouterr().err
 
 
-def test_optional_dependency_error_explains_install(monkeypatch, capsys):
+def test_optional_dependency_error_explains_install(trajectory_path, monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "mujoco", None)
-    assert main([]) == 1
+    assert main(["--trajectory", str(trajectory_path)]) == 1
     assert "uv sync --extra mujoco" in capsys.readouterr().err
 
 
@@ -134,7 +169,9 @@ def test_macos_launcher_uses_real_python_libdir_without_global_environment_chang
     assert os.environ["DYLD_FALLBACK_LIBRARY_PATH"] == "/existing"
 
 
-def test_headless_demo_runs_without_network_viewer_or_physics(monkeypatch, capsys):
+def test_headless_replay_uses_user_trajectory_without_network_viewer_or_physics(
+    trajectory_path, monkeypatch, capsys
+):
     mujoco = pytest.importorskip("mujoco")
 
     def forbidden(*args, **kwargs):
@@ -143,13 +180,14 @@ def test_headless_demo_runs_without_network_viewer_or_physics(monkeypatch, capsy
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(mujoco, "mj_step", forbidden)
     monkeypatch.setitem(sys.modules, "mujoco.viewer", None)
-    assert main([]) == 0
+    assert main(["--trajectory", str(trajectory_path)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["mode"] == "offline_kinematic_playback"
     assert result["completed"] is True
-    assert result["samples"] == 241
-    assert result["trajectory_time_s"] == 8
-    assert result["joints_deg"] == [0, 0, 0, 0]
+    assert result["samples"] == 37
+    assert result["trajectory_time_s"] == 1.2
+    assert result["joints_deg"] == [0, 0, 0, 15]
+    assert result["flange_yaw_deg"] == pytest.approx(15)
     assert result["flange_in_base_mm"] == pytest.approx(
         [278.4487429828484, -0.0001243781102, 353.251164344716]
     )

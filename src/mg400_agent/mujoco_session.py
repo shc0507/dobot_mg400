@@ -53,16 +53,7 @@ def _print_state(executor):
 
 def _run_commands(args, executor, viewer):
     wait = None if viewer is None else lambda callback: wait_with_viewer(callback, viewer)
-    if args.command == "demo":
-        for name, arguments in [
-            ("move_joint", {"joint": "J1", "angle_deg": 20, "relative": False}),
-            ("home", {}),
-        ]:
-            result = executor.execute(name, arguments)
-            print(json.dumps({"tool": name, **result}, ensure_ascii=False), flush=True)
-            if not result["ok"]:
-                raise RuntimeError(result["error"])
-    elif args.command == "ask":
+    if args.command == "ask":
         print(
             run_agent(
                 args.task,

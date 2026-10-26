@@ -20,8 +20,9 @@ def preview(monkeypatch):
     monkeypatch.setattr(
         Path,
         "read_bytes",
-        lambda path: KEY if path == Path("/opt/mg400-camera-preview/preview.key")
-        else read_bytes(path),
+        lambda path: (
+            KEY if path == Path("/opt/mg400-camera-preview/preview.key") else read_bytes(path)
+        ),
     )
     spec = importlib.util.spec_from_file_location(
         "camera_preview_test", Path(__file__).parents[1] / "scripts/camera_preview.py"
@@ -94,11 +95,21 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize("route", [
-    "camera4.jpg", "camera4.mjpeg", "camera1.jpg?src=admin",
-    "camera1.mjpeg?src=admin", "camera1.mjpeg/extra", "api/config",
-    "../api/config", "%2e%2e%2fapi%2fconfig", "http://example.com/", "preview.js?x=1",
-])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "camera4.jpg",
+        "camera4.mjpeg",
+        "camera1.jpg?src=admin",
+        "camera1.mjpeg?src=admin",
+        "camera1.mjpeg/extra",
+        "api/config",
+        "../api/config",
+        "%2e%2e%2fapi%2fconfig",
+        "http://example.com/",
+        "preview.js?x=1",
+    ],
+)
 def test_unknown_routes_cannot_proxy_go2rtc(preview, route):
     module, upstream = preview
     assert request(module, route)[0] == 404
@@ -142,9 +153,7 @@ def multipart(frames, lengths=True):
 
 @pytest.mark.parametrize("lengths", [False, True])
 @pytest.mark.parametrize("chunks", [(1,), (2, 19, 1, 5, 64), (65536,)])
-def test_mjpeg_parser_handles_headers_and_boundaries_across_chunks(
-    preview, lengths, chunks
-):
+def test_mjpeg_parser_handles_headers_and_boundaries_across_chunks(preview, lengths, chunks):
     module, _ = preview
     frames = [
         b"\xff\xd8first\xff\xd9",
@@ -154,18 +163,21 @@ def test_mjpeg_parser_handles_headers_and_boundaries_across_chunks(
     assert list(module.iter_mjpeg(upstream)) == frames
 
 
-@pytest.mark.parametrize("body", [
-    b"",
-    b"--frame\r\nContent-Type: image/jpeg\r\n",
-    b"--frame\r\nContent-Length: 0\r\n\r\n\r\n--frame--\r\n",
-    b"--frame\r\n\r\n\r\n--frame--\r\n",
-    b"--frame\r\nContent-Length: 9\r\n\r\n\xff\xd8cut",
-    b"--frame\r\n\r\n\xff\xd8cut",
-    b"--frame\r\nContent-Length: 6\r\n\r\n\xff\xd8ok\xff\xd9",
-    b"--frame\r\n\r\n\xff\xd8ok\xff\xd9\r\n--fra",
-    b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8ok\xff\xd9\r\n--frame",
-    b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8ok\xff\xd9\r\n--frame\r",
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"",
+        b"--frame\r\nContent-Type: image/jpeg\r\n",
+        b"--frame\r\nContent-Length: 0\r\n\r\n\r\n--frame--\r\n",
+        b"--frame\r\n\r\n\r\n--frame--\r\n",
+        b"--frame\r\nContent-Length: 9\r\n\r\n\xff\xd8cut",
+        b"--frame\r\n\r\n\xff\xd8cut",
+        b"--frame\r\nContent-Length: 6\r\n\r\n\xff\xd8ok\xff\xd9",
+        b"--frame\r\n\r\n\xff\xd8ok\xff\xd9\r\n--fra",
+        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8ok\xff\xd9\r\n--frame",
+        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8ok\xff\xd9\r\n--frame\r",
+    ],
+)
 def test_mjpeg_parser_never_emits_empty_or_truncated_parts(preview, body):
     module, _ = preview
     frames = []
@@ -296,15 +308,11 @@ def test_feed_start_creates_one_reader_for_fixed_local_upstream(preview, monkeyp
     target = thread_factory.call_args.kwargs["target"]
     with pytest.raises(EndReader):
         target()
-    assert upstream.call_args.args == (
-        "http://127.0.0.1:1984/api/stream.mjpeg?src=camera1",
-    )
+    assert upstream.call_args.args == ("http://127.0.0.1:1984/api/stream.mjpeg?src=camera1",)
     assert upstream.call_args.kwargs["timeout"] > 0
 
 
-def test_feed_clears_old_frame_before_retrying_truncated_http_stream(
-    preview, monkeypatch
-):
+def test_feed_clears_old_frame_before_retrying_truncated_http_stream(preview, monkeypatch):
     module, upstream = preview
     response = Mock()
     response.headers = {"Content-Type": "multipart/x-mixed-replace; boundary=frame"}
@@ -326,18 +334,14 @@ def test_feed_clears_old_frame_before_retrying_truncated_http_stream(
 
 
 @pytest.mark.parametrize("camera", [1, 2, 3])
-def test_mjpeg_route_streams_complete_parts_and_closes_connection(
-    preview, monkeypatch, camera
-):
+def test_mjpeg_route_streams_complete_parts_and_closes_connection(preview, monkeypatch, camera):
     module, upstream = preview
     frames = [b"\xff\xd8first\xff\xd9", b"\xff\xd8second\xff\xd9"]
     feed = Mock()
     feed.wait_after.side_effect = [(1, frames[0]), (4, frames[1]), OSError("Disconnected")]
     monkeypatch.setitem(module.FEEDS, f"camera{camera}", feed)
     connection = Mock()
-    status, headers, body = request(
-        module, f"camera{camera}.mjpeg", connection=connection
-    )
+    status, headers, body = request(module, f"camera{camera}.mjpeg", connection=connection)
     assert status == 200
     assert headers["Content-Type"] == "multipart/x-mixed-replace; boundary=frame"
     assert headers["Connection"].lower() == "close"
@@ -345,9 +349,7 @@ def test_mjpeg_route_streams_complete_parts_and_closes_connection(
     assert headers["Cache-Control"] == "no-store"
     assert body == multipart(frames).removesuffix(b"--frame--\r\n")
     connection.settimeout.assert_called_with(1.5)
-    connection.setsockopt.assert_called_once_with(
-        socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024
-    )
+    connection.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
     feed.start.assert_called_once_with()
     assert [call.args[0] for call in feed.wait_after.call_args_list] == [0, 1, 4]
     upstream.assert_not_called()

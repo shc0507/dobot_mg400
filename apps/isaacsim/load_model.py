@@ -63,9 +63,11 @@ async def load_mg400() -> None:
         # Keep runtime edits out of the portable asset's source layers.
         stage.SetEditTarget(stage.GetSessionLayer())
         jaw_mirror = JawMirror(stage)
-        inverse_root = UsdGeom.XformCache().GetLocalToWorldTransform(
-            stage.GetPrimAtPath("/World/MG400")
-        ).GetInverse()
+        inverse_root = (
+            UsdGeom.XformCache()
+            .GetLocalToWorldTransform(stage.GetPrimAtPath("/World/MG400"))
+            .GetInverse()
+        )
         viewport = get_active_viewport()
         if viewport is not None:
             viewport.camera_path = "/World/Camera"

@@ -34,10 +34,16 @@ def render_units(repo, data_dir, python_executable="/usr/bin/python3"):
     python_executable = _path(python_executable)
     work = data_dir / "work"
     mounts = f"{_quote(repo)} {_quote(work)}"
-    command = " ".join(_quote(value, command=True) for value in (
-        python_executable, repo / "scripts/gripper_feedback.py",
-        "--output", work / "gripper_olares_feedback.json", "--commands",
-    ))
+    command = " ".join(
+        _quote(value, command=True)
+        for value in (
+            python_executable,
+            repo / "scripts/gripper_feedback.py",
+            "--output",
+            work / "gripper_olares_feedback.json",
+            "--commands",
+        )
+    )
     request = str(work / "gripper_collector.start").replace("%", "%%")
     return {
         SERVICE: (
@@ -67,7 +73,9 @@ def render_units(repo, data_dir, python_executable="/usr/bin/python3"):
 def managed_pid():
     result = subprocess.run(
         ["systemctl", "show", "--property=LoadState", "--property=MainPID", SERVICE],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     properties = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     if properties.get("LoadState") == "not-found":
@@ -86,8 +94,11 @@ def find_unmanaged_collectors(collector, managed_pid, proc_root=None):
         if not process.name.isdecimal() or int(process.name) == managed_pid:
             continue
         try:
-            arguments = [os.fsdecode(value) for value in process.joinpath("cmdline").read_bytes()
-                         .split(b"\0") if value]
+            arguments = [
+                os.fsdecode(value)
+                for value in process.joinpath("cmdline").read_bytes().split(b"\0")
+                if value
+            ]
             if not arguments or not Path(arguments[0]).name.startswith("python"):
                 continue
             for argument in arguments[1:]:
@@ -133,7 +144,10 @@ def main(argv=None):
             temporary = None
             try:
                 with tempfile.NamedTemporaryFile(
-                    mode="w", dir=UNIT_DIR, prefix=name + ".", delete=False,
+                    mode="w",
+                    dir=UNIT_DIR,
+                    prefix=name + ".",
+                    delete=False,
                 ) as stream:
                     temporary = Path(stream.name)
                     os.fchmod(stream.fileno(), 0o644)
@@ -147,8 +161,10 @@ def main(argv=None):
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"Collector installation failed: {error}", file=sys.stderr)
         return 1
-    print("Installed the collector service and request watcher. "
-          "Open the MG400 Control panel to request startup.")
+    print(
+        "Installed the collector service and request watcher. "
+        "Open the MG400 Control panel to request startup."
+    )
     return 0
 
 

@@ -20,11 +20,7 @@ def _frame(joint, index):
 def _set_transform(prim, matrix):
     xform = UsdGeom.Xformable(prim)
     attribute = prim.GetAttribute("xformOp:transform:mg400Mirror")
-    op = (
-        UsdGeom.XformOp(attribute)
-        if attribute
-        else xform.AddTransformOp(opSuffix="mg400Mirror")
-    )
+    op = UsdGeom.XformOp(attribute) if attribute else xform.AddTransformOp(opSuffix="mg400Mirror")
     op.Set(matrix)
     xform.SetXformOpOrder([op])
 

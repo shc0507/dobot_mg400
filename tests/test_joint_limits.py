@@ -156,7 +156,6 @@ def test_measured_angles_require_finite_numbers(value):
         validate_measured_joints((value, 0, 0, 0))
 
 
-
 @pytest.mark.parametrize("j4", [-358.95, -227.81, -200.71, 200.71, 227.81, 358.95])
 def test_j4_uses_manufacturer_range_without_normalizing_angles(j4):
     joints = (0, 14, 9, j4)
@@ -164,14 +163,17 @@ def test_j4_uses_manufacturer_range_without_normalizing_angles(j4):
     assert validate_measured_joints(joints) == joints
 
 
-@pytest.mark.parametrize("start, target", [
-    ((0, 14, 9, 359), (0, 14, 9, 358)),
-    ((0, 14, 9, -360), (0, 14, 9, -358)),
-    ((159, 14, 9, 0), (158, 14, 9, 0)),
-    ((-160, 14, 9, 0), (-158, 14, 9, 0)),
-    ((0, -19, 0, 0), (0, -17, 0, 0)),
-    ((0, 0, 59.5, 0), (0, 0, 58, 0)),
-])
+@pytest.mark.parametrize(
+    "start, target",
+    [
+        ((0, 14, 9, 359), (0, 14, 9, 358)),
+        ((0, 14, 9, -360), (0, 14, 9, -358)),
+        ((159, 14, 9, 0), (158, 14, 9, 0)),
+        ((-160, 14, 9, 0), (-158, 14, 9, 0)),
+        ((0, -19, 0, 0), (0, -17, 0, 0)),
+        ((0, 0, 59.5, 0), (0, 0, 58, 0)),
+    ],
+)
 def test_measured_start_may_move_out_of_target_margin(start, target):
     validate_measured_joints(start)
     with pytest.raises(ValueError):
@@ -181,12 +183,15 @@ def test_measured_start_may_move_out_of_target_margin(start, target):
         validate_joint_segment(target, start)
 
 
-@pytest.mark.parametrize("start", [
-    (0, 14, 9, 360.01),
-    (-160.01, 14, 9, 0),
-    (0, -19.01, 0, 0),
-    (0, 0, 60.01, 0),
-])
+@pytest.mark.parametrize(
+    "start",
+    [
+        (0, 14, 9, 360.01),
+        (-160.01, 14, 9, 0),
+        (0, -19.01, 0, 0),
+        (0, 0, 60.01, 0),
+    ],
+)
 def test_segment_still_rejects_a_start_outside_raw_ranges(start):
     with pytest.raises(ValueError):
         validate_joint_segment(start, (0, 0, 0, 0))

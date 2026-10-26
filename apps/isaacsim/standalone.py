@@ -68,9 +68,11 @@ def main() -> None:
         jaw_mirror = None
         if world.stage.GetPrimAtPath("/World/MG400/pgea_housing"):
             jaw_mirror = JawMirror(world.stage)
-            inverse_root = UsdGeom.XformCache().GetLocalToWorldTransform(
-                world.stage.GetPrimAtPath("/World/MG400")
-            ).GetInverse()
+            inverse_root = (
+                UsdGeom.XformCache()
+                .GetLocalToWorldTransform(world.stage.GetPrimAtPath("/World/MG400"))
+                .GetInverse()
+            )
             flange_view = world.physics_sim_view.create_rigid_body_view(
                 "/World/MG400/mg400_end_effector_flange"
             )

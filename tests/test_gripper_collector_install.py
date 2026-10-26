@@ -67,9 +67,9 @@ def test_unit_paths_preserve_spaces_quotes_backslashes_and_systemd_expansions(mo
         data / "work/gripper_collector.start"
     ).replace("%", "%%")
     for text in units.values():
-        mounts = [value.replace("%%", "%") for value in shlex.split(unit_value(
-            text, "RequiresMountsFor"
-        ))]
+        mounts = [
+            value.replace("%%", "%") for value in shlex.split(unit_value(text, "RequiresMountsFor"))
+        ]
         assert str(repo) in mounts
         assert str(data / "work") in mounts
 
@@ -130,9 +130,11 @@ def installation(module, monkeypatch, tmp_path):
         monkeypatch.setitem(module.main.__globals__, name, value)
     monkeypatch.setattr(module.sys, "platform", "linux")
     monkeypatch.setattr(module.os, "geteuid", lambda: 0)
-    run = Mock(return_value=SimpleNamespace(
-        returncode=0, stdout="LoadState=not-found\nMainPID=0\n", stderr=""
-    ))
+    run = Mock(
+        return_value=SimpleNamespace(
+            returncode=0, stdout="LoadState=not-found\nMainPID=0\n", stderr=""
+        )
+    )
     monkeypatch.setattr(subprocess, "run", run)
     return SimpleNamespace(module=module, repo=repo, units=units, proc=proc, run=run)
 
@@ -145,22 +147,31 @@ def test_installation_is_repeatable_and_enables_only_the_request_watcher(install
         assert setup.module.main([]) == 0
         assert {path.name: path.read_text() for path in setup.units.iterdir()} == expected
     assert list((data / "work").iterdir()) == []
-    assert setup.run.call_args_list == [
-        call(
-            ["systemctl", "show", "--property=LoadState", "--property=MainPID",
-             setup.module.SERVICE],
-            capture_output=True, text=True, check=False,
-        ),
-        call(["systemctl", "daemon-reload"], check=True),
-        call(["systemctl", "enable", "--now", setup.module.PATH_UNIT], check=True),
-    ] * 2
+    assert (
+        setup.run.call_args_list
+        == [
+            call(
+                [
+                    "systemctl",
+                    "show",
+                    "--property=LoadState",
+                    "--property=MainPID",
+                    setup.module.SERVICE,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            ),
+            call(["systemctl", "daemon-reload"], check=True),
+            call(["systemctl", "enable", "--now", setup.module.PATH_UNIT], check=True),
+        ]
+        * 2
+    )
 
 
 def test_independent_collector_blocks_installation_before_any_writes(installation, capsys):
     setup = installation
-    process(
-        setup.proc, 123, ["python3", "scripts/gripper_feedback.py", "--commands"], setup.repo
-    )
+    process(setup.proc, 123, ["python3", "scripts/gripper_feedback.py", "--commands"], setup.repo)
     data = setup.repo.parent / "custom data"
     assert setup.module.main(["--data-dir", str(data)]) == 1
     assert "123" in capsys.readouterr().err

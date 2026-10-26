@@ -16,7 +16,8 @@ if len(KEY) < 32:
 STREAMS = {f"camera{i}.jpg": f"camera{i}" for i in range(1, 4)}
 MAX_FRAME = 4 * 1024 * 1024
 SCRIPT = Path(__file__).with_suffix(".js").read_bytes()
-PAGE = """<!doctype html>
+PAGE = (
+    """<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Olares 摄像头</title>
@@ -33,12 +34,17 @@ figcaption{padding:16px}small{display:block;color:#a6b5c6;margin-top:6px}
 footer{margin-top:24px;color:#a6b5c6;font-size:14px}
 </style>
 <h1>Olares 摄像头</h1><p>AC410 · 每路最高 30 帧/秒 · 下方显示实际更新帧率和分辨率</p><main>
-""" + "".join(
-    f'<figure><img data-source="camera{i}.mjpeg" alt="摄像头 {i} 暂无画面">'
-    f'<figcaption>摄像头 {i}<small>正在连接…</small></figcaption></figure>'
-    for i in range(1, 4)
-) + ('</main><footer>观看时保持 LarePass VPN 连接。</footer>'
-     '<script src="preview.js" defer></script></html>')
+"""
+    + "".join(
+        f'<figure><img data-source="camera{i}.mjpeg" alt="摄像头 {i} 暂无画面">'
+        f"<figcaption>摄像头 {i}<small>正在连接…</small></figcaption></figure>"
+        for i in range(1, 4)
+    )
+    + (
+        "</main><footer>观看时保持 LarePass VPN 连接。</footer>"
+        '<script src="preview.js" defer></script></html>'
+    )
+)
 
 
 def iter_mjpeg(upstream):
@@ -48,7 +54,10 @@ def iter_mjpeg(upstream):
     boundary = content_type.get_param("boundary")
     if (
         content_type.get_content_type() != "multipart/x-mixed-replace"
-        or not boundary or len(boundary) > 70 or "\r" in boundary or "\n" in boundary
+        or not boundary
+        or len(boundary) > 70
+        or "\r" in boundary
+        or "\n" in boundary
     ):
         raise ValueError("Invalid MJPEG boundary")
     marker = b"--" + boundary.encode("ascii")
@@ -74,7 +83,7 @@ def iter_mjpeg(upstream):
                 break
             if headers_end > 8192:
                 raise ValueError("MJPEG headers are too large")
-            if buffer[len(marker):len(marker) + 2] != b"\r\n":
+            if buffer[len(marker) : len(marker) + 2] != b"\r\n":
                 raise ValueError("Invalid MJPEG boundary line")
             body_start = headers_end + 4
             next_part = buffer.find(b"\r\n" + marker, body_start)
@@ -83,14 +92,14 @@ def iter_mjpeg(upstream):
                 if len(buffer) < suffix + 2:
                     next_part = -1
                     break
-                if buffer[suffix:suffix + 2] in (b"\r\n", b"--"):
+                if buffer[suffix : suffix + 2] in (b"\r\n", b"--"):
                     break
                 next_part = buffer.find(b"\r\n" + marker, suffix)
             if next_part < 0:
                 if len(buffer) - body_start > MAX_FRAME + len(marker) + 4:
                     raise ValueError("MJPEG frame is too large")
                 break
-            header_lines = bytes(buffer[len(marker) + 2:headers_end]).decode("ascii")
+            header_lines = bytes(buffer[len(marker) + 2 : headers_end]).decode("ascii")
             headers = Message()
             for line in header_lines.split("\r\n"):
                 name, value = line.split(":", 1)
@@ -99,12 +108,15 @@ def iter_mjpeg(upstream):
             if (
                 headers.get_content_type() != "image/jpeg"
                 or not 4 <= len(frame) <= MAX_FRAME
-                or not frame.startswith(b"\xff\xd8") or not frame.endswith(b"\xff\xd9")
-                or (headers.get("Content-Length") is not None
-                    and int(headers["Content-Length"]) != len(frame))
+                or not frame.startswith(b"\xff\xd8")
+                or not frame.endswith(b"\xff\xd9")
+                or (
+                    headers.get("Content-Length") is not None
+                    and int(headers["Content-Length"]) != len(frame)
+                )
             ):
                 raise ValueError("Invalid or incomplete JPEG frame")
-            del buffer[:next_part + 2]
+            del buffer[: next_part + 2]
             yield frame
 
 
@@ -143,9 +155,13 @@ class CameraFeed:
     def wait_after(self, sequence, timeout=1.5):
         with self.condition:
             ready = self.condition.wait_for(
-                lambda: self.error or (
-                    self.frame is not None and self.sequence != sequence
-                    and 0 <= time.monotonic() - self.received <= 1.5
+                lambda: (
+                    self.error
+                    or (
+                        self.frame is not None
+                        and self.sequence != sequence
+                        and 0 <= time.monotonic() - self.received <= 1.5
+                    )
                 ),
                 timeout,
             )
@@ -233,7 +249,10 @@ class Preview(BaseHTTPRequestHandler):
             while True:
                 self.wfile.write(
                     b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                    + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
+                    + str(len(frame)).encode()
+                    + b"\r\n\r\n"
+                    + frame
+                    + b"\r\n"
                 )
                 time.sleep(1 / 30)
                 sequence, frame = feed.wait_after(sequence)

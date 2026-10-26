@@ -84,8 +84,7 @@ def test_articulation_topology_mass_and_drives(stage):
     assert {
         prim.GetName()
         for prim in stage.Traverse()
-        if prim.IsA(UsdPhysics.FixedJoint)
-        and UsdPhysics.Joint(prim).GetJointEnabledAttr().Get()
+        if prim.IsA(UsdPhysics.FixedJoint) and UsdPhysics.Joint(prim).GetJointEnabledAttr().Get()
     } == {"fixed_mg400_base_link", "fixed_mg400_link5", "fixed_mg400_link4_3"}
     for joint in joints:
         assert joint.GetJointEnabledAttr().Get() is True

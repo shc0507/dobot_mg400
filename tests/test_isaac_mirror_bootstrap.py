@@ -100,8 +100,10 @@ def test_bootstrap_uses_default_or_explicit_scene_and_preserves_existing_robot(
         backups = list((data_directory / "isaacsim").glob("before_mirror_load_*.usda"))
         assert len(backups) == 1
         assert UsdUtils.ComputeAllDependencies(str(backups[0]))[2] == []
-    assert mirror_runs == [(
-        str(ROOT / "apps/isaacsim/mirror.py"),
-        {"init_globals": {"SHOW_WINDOW": show_window is not False}},
-    )]
+    assert mirror_runs == [
+        (
+            str(ROOT / "apps/isaacsim/mirror.py"),
+            {"init_globals": {"SHOW_WINDOW": show_window is not False}},
+        )
+    ]
     connection.assert_not_called()

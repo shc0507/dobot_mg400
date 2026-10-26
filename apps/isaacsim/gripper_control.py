@@ -37,6 +37,7 @@ class GripperPanel:
         self.compact = False
         self.edit_callback = None
         self.mirror_task = None
+        self.render_warning = None
         self.auto_initialize_pending = False
         self.initialize_button = self.initialization_status = None
         self.report = {
@@ -67,34 +68,35 @@ class GripperPanel:
                 temporary.unlink(missing_ok=True)
 
     async def mirror(self):
-        import carb.eventdispatcher
         import omni.kit.app
-        import omni.timeline
-        import omni.usd
 
         from mg400_agent.gripper_feedback import FileFeedback
-        from mg400_agent.gripper_mirror import JawMirror
 
         app = omni.kit.app.get_app()
         feedback = self.feedback
         subscription = None
         file_feedback = None
-        if self.feedback_path is not None:
-            file_feedback = FileFeedback(self.feedback_path, feedback)
-        else:
-            manager = app.get_extension_manager()
-            name = "omni.kit.livestream.messaging"
-            if not manager.is_extension_enabled(name):
-                manager.set_extension_enabled_immediate(name, True)
-            subscription = carb.eventdispatcher.get_eventdispatcher().observe_event(
-                event_name="mg400.gripper.feedback",
-                on_event=lambda event: feedback.receive(dict(event.payload)),
-            )
         mirror = None
         next_file_read = 0
+        next_render_retry = 0
         try:
+            if self.feedback_path is not None:
+                file_feedback = FileFeedback(self.feedback_path, feedback)
+            else:
+                import carb.eventdispatcher
+
+                manager = app.get_extension_manager()
+                name = "omni.kit.livestream.messaging"
+                if not manager.is_extension_enabled(name):
+                    manager.set_extension_enabled_immediate(name, True)
+                subscription = carb.eventdispatcher.get_eventdispatcher().observe_event(
+                    event_name="mg400.gripper.feedback",
+                    on_event=lambda event: feedback.receive(dict(event.payload)),
+                )
             while not self.closed:
                 await app.next_update_async()
+                if self.closed:
+                    break
                 if file_feedback is not None and time.monotonic() >= next_file_read:
                     file_feedback.poll()
                     next_file_read = time.monotonic() + 0.05
@@ -102,42 +104,65 @@ class GripperPanel:
                 if sample is None:
                     self.report["mirror"]["status"] = (
                         feedback.diagnostic() or "Feedback stale or invalid."
-                    ) + " Holding last position."
+                    ) + (
+                        " Scene update unavailable."
+                        if self.report["mirror"].get("error")
+                        else " Holding last position."
+                    )
                     continue
                 if self.owner is not None and not getattr(self.owner, "sync_enabled", True):
                     self.report["mirror"]["status"] = "Scene synchronization stopped."
                     continue
-                if not omni.timeline.get_timeline_interface().is_stopped():
-                    self.report["mirror"]["status"] = (
-                        "Stop the simulation timeline to mirror the gripper."
-                    )
+                if time.monotonic() < next_render_retry:
                     continue
-                stage = omni.usd.get_context().get_stage()
-                if mirror is None or mirror.stage != stage:
-                    mirror = JawMirror(stage)
-                arm = getattr(builtins, "_mg400_isaac_feedback_mirror", None)
-                pose = getattr(arm, "pose_mirror", None)
-                if arm is not None and not arm.stop_event.is_set() and pose is None:
-                    self.report["mirror"]["status"] = (
-                        "Restart the arm mirror with the updated script. Holding last position."
-                    )
-                    continue
-                result = mirror.apply(sample["position"])
-                if pose is not None and pose.stage == stage:
-                    pose.jaws.update(pgea_left_slide=result["q_m"], pgea_right_slide=result["q_m"])
-                self.report["mirror"] = {
-                    "status": (
-                        "Object dropped. Following measured USB position."
-                        if sample["state"] == 3
-                        else "Following measured USB position."
-                    ),
-                    **sample,
-                    **result,
-                }
+                try:
+                    import omni.timeline
+                    import omni.usd
+
+                    from mg400_agent.gripper_mirror import JawMirror
+
+                    if not omni.timeline.get_timeline_interface().is_stopped():
+                        self.report["mirror"]["status"] = (
+                            "Stop the simulation timeline to mirror the gripper."
+                        )
+                        continue
+                    stage = omni.usd.get_context().get_stage()
+                    if mirror is None or mirror.stage != stage:
+                        mirror = JawMirror(stage)
+                    arm = getattr(builtins, "_mg400_isaac_feedback_mirror", None)
+                    pose = getattr(arm, "pose_mirror", None)
+                    if arm is not None and not arm.stop_event.is_set() and pose is None:
+                        self.report["mirror"]["status"] = (
+                            "Restart the arm mirror with the updated script. Scene update paused."
+                        )
+                        continue
+                    result = mirror.apply(sample["position"])
+                    if pose is not None and pose.stage == stage:
+                        pose.jaws.update(
+                            pgea_left_slide=result["q_m"],
+                            pgea_right_slide=result["q_m"],
+                        )
+                    self.report["mirror"] = {
+                        "status": (
+                            "Object dropped. Following measured USB position."
+                            if sample["state"] == 3
+                            else "Following measured USB position."
+                        ),
+                        **sample,
+                        **result,
+                    }
+                except Exception as error:
+                    mirror = None
+                    next_render_retry = time.monotonic() + 1.0
+                    self.report["mirror"] = {
+                        "status": "Scene update paused.",
+                        "error": str(error) or type(error).__name__,
+                    }
         except Exception as error:
-            self.report["mirror"]["status"] = f"Mirror stopped: {error}"
+            self.report["mirror"]["status"] = f"Feedback loop stopped: {error}"
         finally:
-            del subscription
+            if subscription is not None:
+                subscription.reset()
 
     @property
     def busy(self):
@@ -636,6 +661,7 @@ class GripperPanel:
                 word_wrap=True,
                 height=50,
             )
+            self.render_warning = ui.Label("", word_wrap=True, height=32, visible=False)
             if self.feedback_path is not None:
                 self.build_initialization_controls()
 
@@ -682,6 +708,7 @@ class GripperPanel:
                 tooltip="Double-click to type an opening. Editing turns keyboard control off.",
             )
         self.position_widgets = [self.target, field]
+        self.render_warning = ui.Label("", word_wrap=True, height=32, visible=False)
         self.build_initialization_controls()
 
     async def run(self, window=None):
@@ -694,7 +721,7 @@ class GripperPanel:
             window = ui.Window(
                 "MG400 Real Gripper",
                 width=460,
-                height=520 if self.feedback_path is not None else 260,
+                height=520 if self.feedback_path is not None else 300,
             )
             with window.frame:
                 self.build_ui()
@@ -748,11 +775,18 @@ class GripperPanel:
                     self.status.text = self.report.get("read_error") or self.report["result"]
                     measured = self.report["mirror"]
                     self.mirror_status.text = measured["status"]
-                    if "position" in measured:
-                        self.mirror_status.text += (
-                            f"\nActual: {measured['position']} / 1000 | "
-                            f"Each jaw: {measured['q_m'] * 1000:.2f} mm"
-                        )
+                    position = self.measured_position()
+                    self.mirror_status.text += (
+                        f"\nActual: {'--' if position is None else position} / 1000"
+                    )
+                    if position is not None and measured.get("position") == position:
+                        self.mirror_status.text += f" | Each jaw: {measured['q_m'] * 1000:.2f} mm"
+                render_error = self.report["mirror"].get("error")
+                self.render_warning.text = (
+                    f"Scene update paused: {render_error}" if render_error else ""
+                )
+                self.render_warning.tooltip = self.render_warning.text
+                self.render_warning.visible = bool(render_error)
                 for button in self.buttons + self.position_widgets:
                     button.enabled = self.target_edit_enabled
                 if self.initialize_button is not None:

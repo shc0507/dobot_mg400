@@ -7,6 +7,7 @@ import runpy
 import socket
 import sys
 import threading
+import weakref
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -733,6 +734,7 @@ def install_embedded_ui(monkeypatch, next_update):
         def __init__(self, text=None, *args, **kwargs):
             self.text = text
             self.enabled = kwargs.get("enabled", True)
+            self.visible = kwargs.get("visible", True)
             self.clicked_fn = kwargs.get("clicked_fn")
             self.model = kwargs.get("model", IntModel())
             widgets.append(self)
@@ -770,6 +772,34 @@ def gripper_owner(**changes):
             control=SimpleNamespace(stopped=False, read_state=Mock()),
         )
         | changes
+    )
+
+
+def install_mirror_kit(monkeypatch, next_update):
+    install_embedded_ui(monkeypatch, next_update)
+    for name in (
+        "carb",
+        "carb.eventdispatcher",
+        "omni.timeline",
+        "omni.usd",
+        "mg400_agent.gripper_mirror",
+    ):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    sys.modules["carb"].eventdispatcher = sys.modules["carb.eventdispatcher"]
+    sys.modules["omni"].timeline = sys.modules["omni.timeline"]
+    sys.modules["omni"].usd = sys.modules["omni.usd"]
+    stage = object()
+    timeline = SimpleNamespace(is_stopped=Mock(return_value=True))
+    get_stage = Mock(return_value=stage)
+    jaw = Mock(stage=stage)
+    jaw.apply.return_value = {"q_m": 0.0025, "gap_m": 0.005}
+    factory = Mock(return_value=jaw)
+    sys.modules["omni.timeline"].get_timeline_interface = lambda: timeline
+    sys.modules["omni.usd"].get_context = lambda: SimpleNamespace(get_stage=get_stage)
+    sys.modules["mg400_agent.gripper_mirror"].JawMirror = factory
+    monkeypatch.setattr(builtins, "_mg400_isaac_feedback_mirror", None, raising=False)
+    return SimpleNamespace(
+        stage=stage, timeline=timeline, get_stage=get_stage, jaw=jaw, factory=factory
     )
 
 
@@ -987,6 +1017,353 @@ def test_mirror_displays_object_drop_and_keeps_measured_position(module, monkeyp
     assert not panel.report["contact_observed"]
     jaw.apply.assert_called_with(1000)
     socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("fault", ["constructor", "apply", "import", "stage"])
+def test_render_failure_keeps_polling_and_retries_with_latest_measurement(
+    module, monkeypatch, tmp_path, fault
+):
+    path = tmp_path / "feedback.json"
+    panel = module.GripperPanel(str(path))
+    clock, frames = [0.0], [0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    times = [0.0, 0.1, 0.5, 0.9, 1.05, 1.1]
+
+    async def next_update():
+        index = frames[0]
+        frames[0] += 1
+        if index:
+            assert panel.feedback.get()["seq"] == index
+        if 1 <= index <= 4:
+            assert panel.report["mirror"]["error"] == "Broken scene"
+            assert failed.call_count == 1
+            assert not panel.failed
+        if index == 5:
+            assert "error" not in panel.report["mirror"]
+            assert kit.jaw.apply.call_args_list[0].args == (540,)
+            panel.closed = True
+        clock[0] = times[index]
+        path.write_text(
+            json.dumps(
+                position_feedback(
+                    sent_at=module.time.time(),
+                    seq=index + 1,
+                    position=500 + index * 10,
+                )
+            )
+        )
+
+    kit = install_mirror_kit(monkeypatch, next_update)
+    if fault == "constructor":
+        kit.factory.side_effect = [RuntimeError("Broken scene"), kit.jaw]
+        failed = kit.factory
+    elif fault == "apply":
+        broken = Mock(stage=kit.stage)
+        broken.apply.side_effect = RuntimeError("Broken scene")
+        kit.factory.side_effect = [broken, kit.jaw]
+        failed = broken.apply
+    elif fault == "stage":
+        kit.get_stage.side_effect = [RuntimeError("Broken scene"), kit.stage, kit.stage]
+        failed = kit.get_stage
+    else:
+        original_import = builtins.__import__
+        failed = Mock()
+
+        def import_module(name, *args, **kwargs):
+            if name == "mg400_agent.gripper_mirror":
+                failed()
+                if failed.call_count == 1:
+                    raise ImportError("Broken scene")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", import_module)
+    asyncio.run(panel.mirror())
+    assert frames[0] == len(times)
+    assert not panel.failed
+    assert "error" not in panel.report["mirror"]
+    assert kit.jaw.apply.call_args_list[0].args == (540,)
+    socket.create_connection.assert_not_called()
+
+
+def test_render_retry_does_not_revive_unchanged_feedback(module, monkeypatch, tmp_path):
+    path = tmp_path / "feedback.json"
+    path.write_text(json.dumps(position_feedback(sent_at=module.time.time())))
+    panel = module.GripperPanel(str(path))
+    clock, frames = [0.0], [0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    async def next_update():
+        frames[0] += 1
+        if frames[0] == 2:
+            assert panel.measured_position() == 500
+            clock[0] = 0.751
+        elif frames[0] == 3:
+            assert panel.measured_position() is None
+            clock[0] = 1.1
+        elif frames[0] == 4:
+            assert panel.feedback.get_status() is None
+            assert "stale or invalid" in panel.report["mirror"]["status"]
+            assert panel.report["mirror"]["error"] == "Broken scene"
+            kit.factory.assert_called_once()
+            panel.closed = True
+
+    kit = install_mirror_kit(monkeypatch, next_update)
+    kit.factory.side_effect = RuntimeError("Broken scene")
+    asyncio.run(panel.mirror())
+    assert frames[0] == 4
+    kit.factory.assert_called_once()
+    assert panel.feedback.get_status() is None
+    kit.jaw.apply.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("gate", ["sync", "timeline"])
+def test_render_recovery_respects_scene_gates_while_feedback_continues(
+    module, monkeypatch, tmp_path, gate
+):
+    path = tmp_path / "feedback.json"
+    panel = module.GripperPanel(str(path))
+    panel.owner = gripper_owner()
+    clock, frames = [0.0], [0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    async def next_update():
+        frames[0] += 1
+        if frames[0] == 2:
+            assert panel.report["mirror"]["error"] == "Broken scene"
+            clock[0] = 1.1
+            if gate == "sync":
+                panel.owner.sync_enabled = False
+            else:
+                kit.timeline.is_stopped.return_value = False
+        elif frames[0] == 3:
+            assert panel.measured_position() == 520
+            assert panel.report["mirror"]["error"] == "Broken scene"
+            kit.factory.assert_called_once()
+            panel.owner.sync_enabled = True
+            kit.timeline.is_stopped.return_value = True
+            clock[0] = 1.2
+        elif frames[0] == 4:
+            assert "error" not in panel.report["mirror"]
+            panel.closed = True
+        path.write_text(
+            json.dumps(
+                position_feedback(
+                    seq=frames[0],
+                    sent_at=module.time.time(),
+                    position=500 + 10 * frames[0],
+                )
+            )
+        )
+
+    kit = install_mirror_kit(monkeypatch, next_update)
+    kit.factory.side_effect = [RuntimeError("Broken scene"), kit.jaw]
+    asyncio.run(panel.mirror())
+    assert frames[0] == 4
+    assert "error" not in panel.report["mirror"]
+    assert kit.jaw.apply.call_args_list[0].args == (530,)
+    socket.create_connection.assert_not_called()
+
+
+def test_update_stream_failure_is_not_reported_as_render_failure(module, monkeypatch, tmp_path):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+
+    async def next_update():
+        raise RuntimeError("Update stream ended")
+
+    kit = install_mirror_kit(monkeypatch, next_update)
+    asyncio.run(panel.mirror())
+    assert "Update stream ended" in panel.report["mirror"]["status"]
+    assert "error" not in panel.report["mirror"]
+    assert panel.feedback.get_status() is None
+    kit.factory.assert_not_called()
+    socket.create_connection.assert_not_called()
+
+
+def test_webrtc_subscription_survives_render_failure_until_close(module, monkeypatch):
+    panel = module.GripperPanel()
+    clock, frames = [0.0], [0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    observed = SimpleNamespace(callback=None, count=0, subscription=None, resets=0)
+
+    class Subscription:
+        def reset(self):
+            observed.resets += 1
+
+    def observe_event(*, event_name, on_event):
+        assert event_name == "mg400.gripper.feedback"
+        observed.count += 1
+        observed.callback = on_event
+        subscription = Subscription()
+        observed.subscription = weakref.ref(subscription)
+        return subscription
+
+    async def next_update():
+        frames[0] += 1
+        if frames[0] > 1:
+            assert panel.measured_position() == 500 + frames[0] - 1
+            assert panel.report["mirror"]["error"] == "Broken scene"
+            assert observed.subscription() is not None
+            assert observed.count == 1
+            assert observed.resets == 0
+        clock[0] += 0.1
+        observed.callback(
+            SimpleNamespace(
+                payload=position_feedback(
+                    seq=frames[0],
+                    sent_at=module.time.time(),
+                    position=500 + frames[0],
+                )
+            )
+        )
+        if frames[0] == 3:
+            panel.closed = True
+
+    kit = install_mirror_kit(monkeypatch, next_update)
+    kit.factory.side_effect = RuntimeError("Broken scene")
+    manager = SimpleNamespace(is_extension_enabled=lambda name: True)
+    sys.modules["omni.kit.app"].get_app = lambda: SimpleNamespace(
+        next_update_async=next_update,
+        get_extension_manager=lambda: manager,
+    )
+    sys.modules["carb.eventdispatcher"].get_eventdispatcher = lambda: SimpleNamespace(
+        observe_event=observe_event,
+    )
+    asyncio.run(panel.mirror())
+    assert frames[0] == 3 and observed.count == 1
+    assert observed.resets == 1
+    socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("compact", [False, True])
+@pytest.mark.parametrize("result", [None, "position", "initialize"])
+def test_render_warning_is_visible_without_changing_control_status(
+    module, monkeypatch, tmp_path, compact, result
+):
+    panel = module.GripperPanel(str(tmp_path / "feedback.json"))
+    panel.owner = gripper_owner()
+    panel.feedback.get = lambda: position_feedback()
+    panel.mirror = AsyncMock()
+    panel.report["mirror"].update(error="Broken scene", status="Scene update paused: Broken scene")
+    message = "Control is locked. The device reply is missing."
+    if result is not None:
+        panel.failed = True
+        panel.report.update(request=result, result=message)
+    window = SimpleNamespace(visible=True)
+    frames = [0]
+
+    async def next_update():
+        frames[0] += 1
+        if frames[0] == 2:
+            assert panel.render_warning.visible
+            assert panel.render_warning.text == "Scene update paused: Broken scene"
+            if compact:
+                assert panel.actual_label.text == "500"
+            else:
+                assert "Actual: 500 / 1000" in panel.mirror_status.text
+            if result is None:
+                assert panel.manual_enabled
+                assert all(widget.enabled for widget in panel.buttons + panel.position_widgets)
+                assert panel.report["result"].startswith("Ready.")
+            else:
+                assert not panel.manual_enabled
+                assert panel.report["result"] == message
+                assert panel.initialization_status.text == message
+                if not compact:
+                    assert panel.status.text == message
+            panel.report["mirror"].pop("error")
+        elif frames[0] == 3:
+            assert not panel.render_warning.visible
+            if result is not None:
+                assert panel.report["result"] == message
+                assert panel.failed and not panel.manual_enabled
+            window.visible = False
+
+    install_embedded_ui(monkeypatch, next_update)
+    if compact:
+        panel.build_compact_row()
+    else:
+        panel.build_ui()
+    asyncio.run(panel.run(window=window))
+    assert not list(tmp_path.glob("*.command.json*"))
+    socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["position", "initialize"])
+def test_render_failure_preserves_action_feedback_during_panel_close(
+    module, monkeypatch, tmp_path, operation
+):
+    async def exercise():
+        path = tmp_path / "feedback.json"
+        path.write_text(json.dumps(position_feedback(sent_at=module.time.time())))
+        panel = module.GripperPanel(str(path))
+        panel.owner = gripper_owner()
+        window = SimpleNamespace(visible=True)
+        clock = [0.0]
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+        original_sleep = asyncio.sleep
+
+        async def tick(*args):
+            await original_sleep(0)
+
+        async def until(predicate):
+            for _ in range(100):
+                if predicate():
+                    return
+                await original_sleep(0)
+            raise AssertionError("The panel did not reach the expected state.")
+
+        monkeypatch.setattr(asyncio, "sleep", tick)
+        kit = install_mirror_kit(monkeypatch, tick)
+        kit.factory.side_effect = RuntimeError("Broken scene")
+        panel.build_compact_row()
+        task = asyncio.create_task(panel.run(window=window))
+        await until(lambda: "error" in panel.report["mirror"])
+        if operation == "initialize":
+            path.write_text(json.dumps(initialization_feedback(module, seq=2)))
+            clock[0] = 0.1
+            await until(lambda: panel.feedback.get_status()["init"] == 0)
+            action = panel.submit_initialization()
+        else:
+            action = panel.submit_position(525)
+        assert action is not None
+        command = path.with_name(path.name + ".command.json")
+        await until(command.exists)
+        window.visible = False
+        await until(lambda: panel.closing)
+        assert not task.done() and not panel.mirror_task.done()
+        assert not action.done()
+        request = json.loads(command.read_text())
+        path.write_text(
+            json.dumps(
+                position_feedback(
+                    seq=3,
+                    sent_at=module.time.time(),
+                    position=525 if operation == "position" else 1000,
+                    control=dict(
+                        protocol=3,
+                        operation=operation,
+                        command_id=request["id"],
+                        target=525 if operation == "position" else None,
+                        ack=True,
+                        locked=False,
+                        error=None,
+                        io_mode=0,
+                    ),
+                )
+            )
+        )
+        clock[0] = 0.2
+        await until(task.done)
+        await task
+        assert panel.closed and panel.mirror_task.done() and action.done()
+        assert panel.report["ack"] and panel.report["arrival_observed"]
+        assert not panel.failed
+        assert panel.report["mirror"]["error"] == "Broken scene"
+        assert json.loads(command.read_text()) == request
+        socket.create_connection.assert_not_called()
+
+    asyncio.run(exercise())
 
 
 def test_fresh_feedback_restores_controls_after_collector_request_failure(

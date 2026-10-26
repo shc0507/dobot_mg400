@@ -37,3 +37,23 @@ This document provides permanent information/instructions for the convenience of
 - Keep documentation concise. Use clear headings, bullet points, and numbered lists where they help the reader.
 - Use Simplified Technical English skill for writing in English.
 - Use jianming-zhongwen skill for writing in Chinese.
+
+## UX design
+
+- Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
+
+## Agent skills
+
+Local skills are in `.agents/skills/<skill-name>/SKILL.md`, relative to the repository root.
+
+### Issue tracker
+
+Issues and specs use GitHub Issues. Before issue operations, read [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+Before triage, read the label mapping in [docs/agents/triage-labels.md](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Use one root glossary and one ADR directory. Before exploring the codebase, read [docs/agents/domain.md](docs/agents/domain.md).

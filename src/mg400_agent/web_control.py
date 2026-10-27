@@ -107,6 +107,7 @@ class RobotPanelState:
                 "message": self._message,
                 "busy": self._busy or bool(self._safety_workers),
                 "locked": self._locked or bool(self._grip.get("locked")),
+                "stop_unconfirmed": self._fault,
                 "gripper_available": bool(self._grip.get("available")),
                 "gripper_can_initialize": bool(self._grip.get("can_initialize")),
                 "gripper_busy": self._gripper_active or bool(self._grip.get("busy")),
@@ -170,12 +171,20 @@ class RobotPanelState:
             "home",
             "execute",
             "stop",
+            "grip",
             "initialize_gripper",
         }:
             raise ValueError("Unknown action")
-        if set(payload) != ({"action", "targets"} if action == "execute" else {"action"}):
+        fields = {"action"}
+        if action == "execute":
+            fields.add("targets")
+        elif action == "grip":
+            fields.add("position")
+        if set(payload) != fields:
             raise ValueError("Unexpected command fields")
         targets = self._targets(payload["targets"]) if action == "execute" else None
+        if action == "grip":
+            targets = (None, self._gripper_target(payload["position"]))
         with self._lock:
             if self._closing:
                 raise RuntimeError("The panel is closing")
@@ -211,6 +220,8 @@ class RobotPanelState:
                             raise RuntimeError(
                                 "The robot must be idle before gripper initialization"
                             )
+                        if action == "grip" and self._sample.mode not in {4, 5}:
+                            raise RuntimeError("The robot must be idle before a gripper command")
                         if targets and targets[1] is not None and not self._grip.get("available"):
                             raise RuntimeError("Gripper control is unavailable")
                         if self._grip.get("locked"):
@@ -233,9 +244,17 @@ class RobotPanelState:
             grip = finite_number(values["grip"]) if "grip" in values else None
         except OverflowError as error:
             raise ValueError("Targets must contain finite numbers") from error
-        if grip is not None and (not grip.is_integer() or not 0 <= grip <= 1000):
+        return pose, RobotPanelState._gripper_target(grip) if grip is not None else None
+
+    @staticmethod
+    def _gripper_target(value):
+        try:
+            grip = finite_number(value)
+        except OverflowError as error:
+            raise ValueError("Gripper target must be an integer from 0 to 1000") from error
+        if not grip.is_integer() or not 0 <= grip <= 1000:
             raise ValueError("Gripper target must be an integer from 0 to 1000")
-        return pose, int(grip) if grip is not None else None
+        return int(grip)
 
     def _start_sync(self):
         if self._syncing:
@@ -376,6 +395,8 @@ class RobotPanelState:
             self._control.move_linear(pose)
             if grip is not None:
                 self._move_gripper(grip)
+        elif action == "grip":
+            self._move_gripper(targets[1])
         else:
             self._move_gripper(None)
 

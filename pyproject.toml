@@ -21,6 +21,7 @@ usd = ["usd-core==26.8", "numpy>=2,<3"]
 
 [project.scripts]
 mg400-agent = "mg400_agent.cli:main"
+mg400-robot = "mg400_agent.terminal_control:main"
 mg400-mujoco = "mg400_agent.mujoco_replay:main"
 
 [tool.pytest.ini_options]

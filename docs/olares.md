@@ -3,7 +3,7 @@
 [项目首页](../README.md) · [连接配置](#连接环境) · [代码更新](#代码与运行数据) · [USB 夹爪](#usb-接在-olares) · [摄像头](#usb-摄像头预览)
 
 本页供安装、更新和排障时查阅。
-日常操作见 [Isaac Sim](isaacsim.md) 或 [网页控制面板](control-panel.md)。
+日常操作见 [交互终端](terminal-control.md)、[Isaac Sim](isaacsim.md) 或 [网页控制面板](control-panel.md)。
 命令分别在本地项目、Olares 主机或 Isaac 容器运行，各节会标明位置。
 
 ## 连接环境
@@ -43,6 +43,7 @@ IsaacLab 容器内直接连接机器人，不要绑定宿主机的源 IP。
 ## 面板连接锁
 
 Isaac 反馈镜像和网页面板在真机连接前取得文件锁。
+交互终端使用同一文件锁，配置要求见下文。
 网页的 `read-only` 模式也使用此锁。
 另一个面板持锁时，新连接返回 `Robot controlled by another panel`。
 正常断开后，面板等待反馈线程和命令任务结束，再释放锁。

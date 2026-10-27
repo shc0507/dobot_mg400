@@ -859,13 +859,101 @@ def test_initialize_gripper_accepts_disabled_idle_robot(rig):
     assert controls[0].calls == []
 
 
+@pytest.mark.parametrize("mode", [4, 5])
+@pytest.mark.parametrize("position", [0, 1000])
+def test_grip_moves_only_gripper_on_idle_robot(rig, mode, position):
+    state, feed, controls = rig
+    feed.sample = Feedback((1, 2, 3, 4), mode, 0, False)
+    gripper = add_gripper(state)
+    connect(state)
+    state.command({"action": "grip", "position": position}, "browser-a")
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert gripper.commands == [position]
+    assert controls[0].calls == []
+    assert state.snapshot()["actual"][4] == position
+
+
+@pytest.mark.parametrize(
+    "position", [-1, 1001, 0.5, float("nan"), float("inf"), True, "500", None, 10**400]
+)
+def test_invalid_grip_position_never_connects_or_sends(rig, position):
+    state, feed, controls = rig
+    gripper = add_gripper(state)
+    with pytest.raises(ValueError):
+        state.command({"action": "grip", "position": position}, "browser-a")
+    assert feed.connections == 0
+    assert gripper.commands == []
+    assert controls[0].calls == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"action": "grip"},
+        {"action": "grip", "targets": {"grip": 500}},
+        {"action": "grip", "position": 500, "extra": True},
+    ],
+)
+def test_grip_requires_only_position_field(rig, payload):
+    state, feed, controls = rig
+    with pytest.raises(ValueError, match="Unexpected command fields"):
+        state.command(payload, "browser-a")
+    assert feed.connections == 0
+    assert controls[0].calls == []
+
+
+def test_grip_requires_connected_owner_and_available_adapter(rig):
+    state, feed, controls = rig
+    payload = {"action": "grip", "position": 500}
+    with pytest.raises(PermissionError, match="Start sync"):
+        state.command(payload, "browser-a")
+    connect(state)
+    with pytest.raises(PermissionError, match="Another browser"):
+        state.command(payload, "browser-b")
+    with pytest.raises(RuntimeError, match="Gripper control is unavailable"):
+        state.command(payload, "browser-a")
+    assert controls[0].calls == []
+
+
+def test_grip_rejects_moving_robot_before_queue(rig):
+    state, feed, controls = rig
+    feed.sample = Feedback((1, 2, 3, 4), 7, 0, False)
+    gripper = add_gripper(state)
+    connect(state)
+    with pytest.raises(RuntimeError, match="must be idle"):
+        state.command({"action": "grip", "position": 500}, "browser-a")
+    assert gripper.commands == []
+    assert controls[0].calls == []
+    assert not state.snapshot()["busy"]
+
+
+@pytest.mark.parametrize("action", ["stop", "disable"])
+def test_stop_or_disable_prevents_queued_grip(rig, action):
+    state, feed, controls = rig
+    control = controls[0]
+    control.release_pose.clear()
+    gripper = add_gripper(state)
+    connect(state)
+    assert control.pose_entered.wait(1)
+    state.command({"action": "grip", "position": 500}, "browser-a")
+    state.command({"action": action}, "browser-b")
+    control.release_pose.set()
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert gripper.commands == []
+    assert not gripper.preparing.is_set()
+
+
 @pytest.mark.parametrize("action", ["stop", "disable", "lease_expiry"])
-def test_stop_or_expired_lease_prevents_gripper_publication(rig, action):
+@pytest.mark.parametrize("command", ["execute", "grip"])
+def test_stop_or_expired_lease_prevents_gripper_publication(rig, action, command):
     state, feed, controls = rig
     gripper = add_gripper(state)
     gripper.publish.clear()
     connect(state)
-    execute(state, grip=500)
+    if command == "execute":
+        execute(state, grip=500)
+    else:
+        state.command({"action": "grip", "position": 500}, "browser-a")
     assert gripper.preparing.wait(1)
     if action == "lease_expiry":
         with state._lock:

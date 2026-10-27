@@ -1395,6 +1395,17 @@ def test_failed_jog_connection_cannot_reconnect(rig, monkeypatch):
     active.finish_operation()
 
 
+def test_jog_connection_rejects_extra_reply_before_matching_echo(rig, monkeypatch):
+    control, _, _, _ = rig
+    active = control.begin_operation()
+    connection = socket_for(monkeypatch, [b"0,{},Other();0,{},MoveJog();"])
+    with pytest.raises(RuntimeError, match="multiple controller responses"):
+        active._command("MoveJog()", port=30003)
+    assert active._jog_connection_failed
+    connection.close.assert_called_once()
+    active.finish_operation()
+
+
 def test_release_during_initial_jog_connection_sends_no_motion_and_keeps_parent_ready(
     rig, monkeypatch
 ):

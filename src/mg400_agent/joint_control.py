@@ -550,6 +550,8 @@ class JointControl:
                     raise ValueError("Oversized controller response")
             if query is not None and query["cancelled"].is_set():
                 raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
+            if text.startswith("MoveJog(") and packet.count(b";") != 1:
+                raise RuntimeError("MoveJog received multiple controller responses")
             value = parse_controller_response(packet, text)
         if query is not None and query["cancelled"].is_set():
             raise DashboardQueryCancelledError("Dashboard query cancelled for stop")

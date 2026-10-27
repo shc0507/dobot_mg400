@@ -7,6 +7,7 @@ import pytest
 
 from mg400_agent import keyboard_jog
 from mg400_agent.feedback import Feedback
+from mg400_agent.joint_control import JointControl
 from mg400_agent.keyboard_jog import KeyboardJogSession
 
 START = (30.0, 0.0, 10.0, 0.0)
@@ -47,6 +48,8 @@ class OneTick:
 
 
 class Operation:
+    _four_values = staticmethod(JointControl._four_values)
+
     def __init__(self, control, send_guard):
         self.control, self.send_guard = control, send_guard
         self.cancelled = False
@@ -74,7 +77,21 @@ class Operation:
     def _read_pose_measurement(self, modes):
         self._fresh(modes)
         self.control.pose_reads += 1
-        return SimpleNamespace(pose=POSE, requested_at=self.control.now)
+        return SimpleNamespace(pose=self.control.pose, requested_at=self.control.now)
+
+    @staticmethod
+    def _near(first, second, tolerance=0.1):
+        return all(abs(a - b) <= tolerance for a, b in zip(first, second, strict=True))
+
+    def solve_pose(self, pose):
+        return self.control.sample.joints_deg
+
+    def _query(self, text):
+        self.control.before_query(text)
+        self.control.exchanges.append(text)
+        assert text in ("CalcUser(0,1,{0,0,0,0})", "CalcUser(8,1,{0,0,0,0})")
+        index = int(text.split("(")[1].split(",")[0])
+        return ",".join(str(value) for value in self.control.frames[index])
 
     def _guarded_command(self, text, **kwargs):
         self.control.before_send(text)
@@ -82,6 +99,7 @@ class Operation:
             self.send_guard()
         self._fresh(kwargs["send_modes"])
         self.control.commands.append(text)
+        self.control.exchanges.append(text)
         if text.startswith("SpeedFactor("):
             self.control.speed_ack = self.control.now
             self.control.sample = replace(
@@ -89,6 +107,12 @@ class Operation:
             )
         elif text.startswith("MoveJog("):
             self.control.sample = replace(self.control.sample, mode=11)
+        elif text.startswith("SetUser(8,{"):
+            self.control.frames[8] = tuple(
+                float(value) for value in text.split("{")[1][:-2].split(",")
+            )
+        elif text.startswith("MovL("):
+            self.control.pose = tuple(float(value) for value in text[5:].split(",")[:4])
         else:
             raise AssertionError(f"Unexpected movement: {text}")
 
@@ -98,7 +122,12 @@ class Operation:
     def stop_after_command(self, *, jog, on_error, jog_speed_percent=1):
         self.control.stop_calls.append(jog)
         self.control.stop_speeds.append(jog_speed_percent)
-        normal_jog = jog and not self.stopped
+        normal_jog = (
+            jog
+            and not self.stopped
+            and bool(self.control.commands)
+            and self.control.commands[-1].startswith("MoveJog(")
+        )
         self.control.commands.append("MoveJog()" if normal_jog else "ResetRobot()")
         self.control.sample = replace(self.control.sample, mode=5)
         return self.control.stop_result
@@ -114,14 +143,18 @@ def rig(monkeypatch):
             self.now = 10.0
             self.sample = Feedback(START, 5, 0, False, 1)
             self.commands, self.stop_calls, self.receipts = [], [], []
+            self.exchanges = []
             self.stop_speeds = []
             self.pose_reads = self.ticks = 0
+            self.pose = POSE
+            self.frames = {0: (0, 0, 0, 0), 8: (0, 0, 0, 0)}
             self.stopped = self.busy = False
             self.feedback_error = None
             self.speed_ack = None
             self.scaling_after_ack = 1
             self.receipt = lambda now: now
             self.before_send = lambda text: None
+            self.before_query = lambda text: None
             self.on_tick = lambda: self.session.release() if self.ticks == 20 else None
             self.stop_result = {"ok": True, "stationary_verified": True}
             self.session = KeyboardJogSession(self)
@@ -230,6 +263,174 @@ def test_six_keys_send_one_continuous_command_and_stop_without_pose_queries(rig,
     assert rig.pose_reads == reads
     assert rig.stop_calls == [True]
     assert rig.session.ready and not rig.stopped and not rig.busy
+
+
+@pytest.mark.parametrize("heading", [30.0, -40.0, 90.0])
+@pytest.mark.parametrize("key,axis", [("W", "X+"), ("S", "X-")])
+def test_radial_long_hold_uses_one_user8_jog_instead_of_finite_segments(rig, key, axis, heading):
+    rig.sample = replace(rig.sample, joints_deg=(heading, *START[1:]))
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.exchanges.clear()
+    reads = rig.pose_reads
+    rig.on_tick = lambda: rig.session.release() if rig.ticks == 1000 else None
+    rig.session.run(key, threading.Event())
+    movement = [text for text in rig.commands if text.startswith(("MoveJog(", "MovL("))]
+    assert movement == [f"MoveJog({axis},CoordType=0,User=8,Tool=0)", "MoveJog()"], (
+        f"Expected one continuous radial jog, got {len(movement)} motion/stop commands"
+    )
+    assert rig.exchanges[:2] == ["CalcUser(0,1,{0,0,0,0})", "CalcUser(8,1,{0,0,0,0})"]
+    assert rig.exchanges[2].startswith("SetUser(8,{")
+    assert rig.frames[8] == (0, 0, 0, heading)
+    assert rig.exchanges[3] == "CalcUser(8,1,{0,0,0,0})"
+    assert rig.pose_reads == reads
+    assert rig.ticks == 1000 and rig.stop_calls == [True]
+    assert rig.session.ready and not rig.stopped and not rig.busy
+
+
+def test_radial_frame_already_aligned_is_read_back_without_rewriting(rig):
+    rig.frames[8] = (0, 0, 0, START[0])
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.exchanges.clear()
+    rig.session.run("W", threading.Event())
+    assert rig.commands == ["MoveJog(X+,CoordType=0,User=8,Tool=0)", "MoveJog()"]
+    assert rig.exchanges[:2] == [
+        "CalcUser(0,1,{0,0,0,0})",
+        "CalcUser(8,1,{0,0,0,0})",
+    ]
+
+
+@pytest.mark.parametrize("phase", ["before_run", "query", "set_user", "jog_send"])
+def test_radial_release_before_send_never_starts_movement(rig, phase):
+    rig.session.prepare()
+    rig.commands.clear()
+    released = threading.Event()
+    if phase == "before_run":
+        released.set()
+    elif phase == "query":
+        rig.before_query = lambda text: released.set()
+    else:
+
+        def release_at_send(text):
+            if text.startswith("SetUser(" if phase == "set_user" else "MoveJog("):
+                released.set()
+
+        rig.before_send = release_at_send
+    rig.session.run("W", released)
+    assert not any(text.startswith(("MovL(", "MoveJog(X")) for text in rig.commands)
+    if phase != "jog_send":
+        assert not any(text.startswith("SetUser(") for text in rig.commands)
+    assert rig.session.fault is None and not rig.busy
+
+
+@pytest.mark.parametrize("outcome", ["ack_failure", "released_after_ack"])
+def test_radial_set_user_completion_cannot_start_a_cancelled_hold(rig, monkeypatch, outcome):
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.exchanges.clear()
+    released = threading.Event()
+    original = Operation._guarded_command
+
+    def complete_set_user(operation, text, **kwargs):
+        original(operation, text, **kwargs)
+        if text.startswith("SetUser("):
+            if outcome == "ack_failure":
+                raise TimeoutError("SetUser acknowledgement lost")
+            released.set()
+
+    monkeypatch.setattr(Operation, "_guarded_command", complete_set_user)
+    if outcome == "ack_failure":
+        with pytest.raises(RuntimeError, match="acknowledgement lost"):
+            rig.session.run("W", released)
+        assert rig.stopped and rig.session.fault
+    else:
+        rig.session.run("W", released)
+        assert not rig.stopped and rig.session.fault is None
+    assert len(rig.exchanges) == 3
+    assert rig.exchanges[-1].startswith("SetUser(8,{")
+    assert rig.commands[-1] == "ResetRobot()"
+    assert not any(text.startswith(("MoveJog(X", "MovL(")) for text in rig.commands)
+
+
+def test_radial_release_during_post_set_user_readback_never_starts_movement(rig):
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.exchanges.clear()
+    released = threading.Event()
+
+    def release_during_readback(text):
+        if text.startswith("CalcUser(8,") and any(
+            command.startswith("SetUser(") for command in rig.commands
+        ):
+            released.set()
+
+    rig.before_query = release_during_readback
+    rig.session.run("W", released)
+    assert released.is_set()
+    assert len(rig.exchanges) == 4
+    assert rig.exchanges[2].startswith("SetUser(8,{")
+    assert rig.exchanges[3] == "CalcUser(8,1,{0,0,0,0})"
+    assert not any(text.startswith(("MoveJog(X", "MovL(")) for text in rig.commands)
+    assert rig.commands[-1] == "ResetRobot()"
+    assert rig.session.fault is None and not rig.stopped and not rig.busy
+
+
+def test_radial_next_hold_reads_and_realigns_the_reserved_frame(rig):
+    rig.session.prepare()
+    rig.session.run("W", threading.Event())
+    rig.ticks = 0
+    rig.commands.clear()
+    rig.exchanges.clear()
+    rig.sample = replace(rig.sample, joints_deg=(40.0, *START[1:]))
+    rig.session.run("S", threading.Event())
+    assert rig.frames[8] == (0, 0, 0, 40.0)
+    assert rig.exchanges[2].startswith("SetUser(8,{")
+    assert rig.commands[-2:] == ["MoveJog(X-,CoordType=0,User=8,Tool=0)", "MoveJog()"]
+    assert rig.session.ready and not rig.stopped
+
+
+@pytest.mark.parametrize("fault", ["user0", "readback", "nonfinite_readback"])
+def test_radial_invalid_frame_prevents_movement_and_revokes_readiness(rig, fault):
+    rig.session.prepare()
+    rig.commands.clear()
+    if fault == "user0":
+        rig.frames[0] = (1, 0, 0, 0)
+    else:
+
+        def corrupt_readback(text):
+            if text.startswith("CalcUser(8,") and any(
+                command.startswith("SetUser(") for command in rig.commands
+            ):
+                rig.frames[8] = (0, 0, 0, 31 if fault == "readback" else float("nan"))
+
+        rig.before_query = corrupt_readback
+    with pytest.raises(RuntimeError):
+        rig.session.run("W", threading.Event())
+    assert not any(text.startswith(("MovL(", "MoveJog(X")) for text in rig.commands)
+    if fault == "user0":
+        assert not any(text.startswith("SetUser(") for text in rig.commands)
+    assert rig.stopped and rig.session.fault and not rig.session.ready
+
+
+@pytest.mark.parametrize("when", ["before_jog", "during_hold"])
+def test_radial_j1_change_rejects_or_stops_the_stale_frame(rig, when):
+    rig.session.prepare()
+    rig.commands.clear()
+
+    def turn_base():
+        rig.sample = replace(rig.sample, joints_deg=(START[0] + 0.11, *START[1:]))
+
+    if when == "before_jog":
+        rig.before_send = lambda text: turn_base() if text.startswith("MoveJog(X") else None
+    else:
+        rig.on_tick = lambda: turn_base() if rig.ticks == 3 else None
+    with pytest.raises(RuntimeError):
+        rig.session.run("W", threading.Event())
+    jogs = [text for text in rig.commands if text.startswith("MoveJog(X")]
+    assert len(jogs) == (0 if when == "before_jog" else 1)
+    assert rig.commands[-1] == "ResetRobot()"
+    assert rig.stopped and rig.session.fault and not rig.session.ready
 
 
 @pytest.mark.parametrize("cancel", ["release_event", "close", "parent_stop"])

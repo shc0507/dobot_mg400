@@ -11,7 +11,10 @@ from .joint_limits import validate_joint_segment, validate_joints, validate_meas
 SEGMENT_DISTANCE_MM = 50.0
 SEGMENT_ANGLE_DEG = 10.0
 KEYS = frozenset("WASDRFQE")
+RADIAL_USER = 8
 MOVEJOG_COMMANDS = {
+    "W": f"MoveJog(X+,CoordType=0,User={RADIAL_USER},Tool=0)",
+    "S": f"MoveJog(X-,CoordType=0,User={RADIAL_USER},Tool=0)",
     "A": "MoveJog(J1+)",
     "D": "MoveJog(J1-)",
     "Q": "MoveJog(J4+)",
@@ -50,6 +53,7 @@ class KeyboardJogSession:
         self.fault = None
         self.limit_reason = None
         self._continuous = False
+        self._radial_j1 = None
 
     @property
     def speed_percent(self):
@@ -93,6 +97,7 @@ class KeyboardJogSession:
             self._stop_thread = self._stop_result = None
             self.limit_reason = None
             self._continuous = False
+            self._radial_j1 = None
             return active
 
     def _stop(self, active):
@@ -242,6 +247,7 @@ class KeyboardJogSession:
         sample, _ = active._fresh({5})
         if sample.speed_scaling_raw != self.speed_percent:
             raise RuntimeError("Keyboard jogging speed changed")
+        self._check_radial_direction(sample.joints_deg)
         if self._continuous:
             try:
                 validate_joints(sample.joints_deg)
@@ -256,6 +262,7 @@ class KeyboardJogSession:
                 validate_measured_joints(sample.joints_deg)
                 if sample.speed_scaling_raw != self.speed_percent:
                     raise RuntimeError("Keyboard jogging speed changed")
+                self._check_radial_direction(sample.joints_deg)
                 if self._continuous:
                     try:
                         validate_joints(sample.joints_deg)
@@ -268,6 +275,41 @@ class KeyboardJogSession:
                 if not self._revoked.is_set():
                     self._revoke(error=error)
                 return
+
+    def _check_radial_direction(self, joints):
+        if self._radial_j1 is not None and abs(joints[0] - self._radial_j1) > 0.1:
+            raise RuntimeError("J1 changed during radial keyboard jogging")
+
+    def _prepare_radial_frame(self, active, joints):
+        """Align the reserved user frame while idle; never change the active User."""
+
+        def read_frame(index):
+            self._check_hold(active, self._released)
+            payload = active._query(f"CalcUser({index},1,{{0,0,0,0}})")
+            values = active._four_values(tuple(float(value) for value in payload.split(",")))
+            self._check_hold(active, self._released)
+            active._fresh({5})
+            return values
+
+        def matches(actual, expected):
+            return all(abs(a - b) <= 0.00001 for a, b in zip(actual, expected, strict=True))
+
+        if not matches(read_frame(0), (0.0, 0.0, 0.0, 0.0)):
+            raise RuntimeError("Radial keyboard jogging requires an unchanged User 0")
+        target = (0.0, 0.0, 0.0, joints[0])
+        frame = read_frame(RADIAL_USER)
+        if not matches(frame, target):
+            values = ",".join(f"{value:.6f}" for value in target)
+            active._guarded_command(
+                f"SetUser({RADIAL_USER},{{{values}}})",
+                modes={5},
+                send_modes={5},
+                expected=joints,
+            )
+            frame = read_frame(RADIAL_USER)
+        if not matches(frame, target):
+            raise RuntimeError("Radial keyboard User 8 readback does not match J1")
+        self._radial_j1 = joints[0]
 
     def reusable_pose(self, measurement, *, active=None):
         """Check a measured pose against its source, request time, and idle feedback."""
@@ -383,7 +425,7 @@ class KeyboardJogSession:
             time.sleep(0.01)
 
     def run(self, key, released, initial_pose=None):
-        """Jog until release or a guard. Keep radial motion on checked trajectories."""
+        """Jog until release or a guard, with finite inward moves at the margin."""
         if key not in KEYS:
             raise ValueError("Expected one keyboard movement key")
         active = self._start("running", released)
@@ -412,6 +454,8 @@ class KeyboardJogSession:
             if sample.speed_scaling_raw != self.speed_percent:
                 raise RuntimeError("Keyboard jogging speed changed")
             if self._continuous:
+                if key in "WS":
+                    self._prepare_radial_frame(active, sample.joints_deg)
                 active._guarded_command(
                     MOVEJOG_COMMANDS[key],
                     modes={5, 7, 11},

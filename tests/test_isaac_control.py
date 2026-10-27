@@ -1279,7 +1279,7 @@ def test_keyboard_receives_measurement_returned_by_pose_task(panel):
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("key", tuple("ADRFQE"))
+@pytest.mark.parametrize("key", tuple("WASDRFQE"))
 def test_continuous_jog_does_not_wait_for_pending_pose_query(panel, key):
     async def exercise():
         session = await arm_keyboard(panel)
@@ -1310,6 +1310,7 @@ def test_fresh_pose_cache_skips_pending_pose_query(panel, key):
             assert not panel.pose_task.done()
             assert session.initial_poses == [measurement]
             assert session.initial_poses[0] is panel.pose_measurement
+            assert session.reusable_checks == []
         finally:
             panel.key_event(key, False)
             await asyncio.wait_for(panel.action, 1)
@@ -1318,41 +1319,44 @@ def test_fresh_pose_cache_skips_pending_pose_query(panel, key):
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("result_available", [True, False])
-def test_stale_pose_cache_waits_for_existing_query_result(panel, result_available):
+@pytest.mark.parametrize("key", tuple("WS"))
+def test_stale_pose_cache_does_not_delay_continuous_jog(panel, key):
     async def exercise():
         session = await arm_keyboard(panel)
         stale = await panel.refresh_pose()
         stale.requested_at = time.monotonic() - 1
         panel.pose_task = asyncio.get_running_loop().create_future()
-        panel.key_event("W", True)
-        await asyncio.sleep(0)
-        assert session.reusable_checks == [stale]
-        assert session.run_calls == []
-        result = panel.control.read_pose_measurement() if result_available else None
-        panel.pose_task.set_result(result)
-        await asyncio.wait_for(session.run_started.wait(), 1)
-        assert session.initial_poses == [result]
-        panel.key_event("W", False)
-        await asyncio.wait_for(panel.action, 1)
+        panel.key_event(key, True)
+        try:
+            await asyncio.wait_for(session.run_started.wait(), 1)
+            assert not panel.pose_task.done()
+            assert session.reusable_checks == []
+            assert session.initial_poses == [stale]
+        finally:
+            panel.key_event(key, False)
+            await asyncio.wait_for(panel.action, 1)
+            panel.pose_task.cancel()
 
     asyncio.run(exercise())
 
 
-def test_release_while_waiting_for_pose_read_does_not_start_motion(panel):
+def test_release_with_pending_pose_query_does_not_start_delayed_motion(panel):
     async def exercise():
         session = await arm_keyboard(panel)
         measurement = panel.control.read_pose_measurement()
         panel.pose_task = asyncio.get_running_loop().create_future()
         panel.key_event("W", True)
-        await asyncio.sleep(0)
         assert panel.busy
         assert session.run_calls == []
         panel.key_event("W", False)
         assert panel.jog_released.is_set()
-        panel.pose_task.set_result(measurement)
         await asyncio.wait_for(panel.action, 1)
-        assert session.initial_poses == [measurement]
+        assert not panel.pose_task.done()
+        assert session.initial_poses == [None]
+        assert session.reusable_checks == []
+        panel.pose_task.set_result(measurement)
+        await asyncio.sleep(0)
+        assert session.run_calls == ["W"]
         assert session.movements == []
         assert panel.held_keys == set()
         assert panel.control.calls == []

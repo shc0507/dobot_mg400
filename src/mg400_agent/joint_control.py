@@ -352,6 +352,7 @@ class JointControl:
                 "RobotMode",
                 "GetErrorID",
                 "GetAngle",
+                "CalcUser",
             }
         )
         pose_query = readonly and text.startswith("GetPose(")

@@ -122,12 +122,8 @@ async def run_keyboard_hold(
     if key in "ZX":
         expired = await _jog_gripper(session.control, gripper, key, released)
         return None, expired
-    initial_pose = None
-    if key in "WS":
-        if session.reusable_pose(pose_measurement):
-            initial_pose = pose_measurement
-        elif pose_task:
-            initial_pose = await pose_task
+    # The finite fallback validates this measurement before it uses the pose.
+    initial_pose = pose_measurement if key in "WS" else None
     pose = await asyncio.to_thread(session.run, key, released, initial_pose=initial_pose)
     return pose, False
 

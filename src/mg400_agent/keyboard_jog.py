@@ -237,7 +237,7 @@ class KeyboardJogSession:
             self._finish(active)
 
     def _check_hold(self, active, released):
-        if released.is_set():
+        if released.is_set() or self._closed:
             self._revoke()
         if self._revoked.is_set() or active.stopped:
             raise RuntimeError("Keyboard hold cancelled")
@@ -258,12 +258,17 @@ class KeyboardJogSession:
         while not finished.wait(0.01):
             try:
                 self._check_hold(active, released)
-                sample = active._fresh({5, 7, 11} if self._continuous else {5, 7})[0]
+                continuous = self._continuous
+                sample = active._fresh({5, 7, 11})[0]
+                # Promotion can occur during this read. Accept its first jog
+                # frame, but do not apply inner limits to an older retreat frame.
+                if sample.mode == 11 and not self._continuous:
+                    raise RuntimeError("Unexpected jog state during finite keyboard movement")
                 validate_measured_joints(sample.joints_deg)
                 if sample.speed_scaling_raw != self.speed_percent:
                     raise RuntimeError("Keyboard jogging speed changed")
                 self._check_radial_direction(sample.joints_deg)
-                if self._continuous:
+                if continuous:
                     try:
                         validate_joints(sample.joints_deg)
                     except ValueError as error:
@@ -345,6 +350,8 @@ class KeyboardJogSession:
         joints = validate_measured_joints(sample.joints_deg)
         distance = SEGMENT_DISTANCE_MM if key in "WSRF" else SEGMENT_ANGLE_DEG
         minimum = 0.1
+        recovery_distance = 2.0 if key in "WSRF" else 1.0
+        recovery_target = None
         while True:
             self._check_hold(active, self._released)
             try:
@@ -370,8 +377,15 @@ class KeyboardJogSession:
                     validate_joint_segment(joints, target_joints)
                 except ValueError as error:
                     raise TargetRejectedError(str(error)) from error
-                break
+                if key not in MOVEJOG_COMMANDS or distance <= recovery_distance:
+                    break
+                # Use a short checked retreat before resuming continuous jogging.
+                recovery_target = target_pose, target_joints, distance
+                distance /= 2
             except TargetRejectedError:
+                if recovery_target is not None:
+                    target_pose, target_joints, distance = recovery_target
+                    break
                 # Only rejected targets can shorten the hold. No movement has
                 # been sent. Query failures do not shorten the target.
                 if distance <= minimum:
@@ -449,28 +463,41 @@ class KeyboardJogSession:
         watcher.start()
         read_pose = not self._continuous
         try:
-            self._check_hold(active, released)
-            sample, _ = active._fresh({5})
-            if sample.speed_scaling_raw != self.speed_percent:
-                raise RuntimeError("Keyboard jogging speed changed")
-            if self._continuous:
-                if key in "WS":
-                    self._prepare_radial_frame(active, sample.joints_deg)
-                active._guarded_command(
-                    MOVEJOG_COMMANDS[key],
-                    modes={5, 7, 11},
-                    send_modes={5},
-                    expected=sample.joints_deg,
-                    port=30003,
-                )
-                while True:
-                    self._check_hold(active, released)
-                    time.sleep(0.005)
-            else:
-                while True:
-                    self._step(active, key, initial_pose)
-                    self._check_hold(active, released)
-                    initial_pose = self._measurement if key not in "AD" else None
+            while True:
+                self._check_hold(active, released)
+                sample, _ = active._fresh({5})
+                if sample.speed_scaling_raw != self.speed_percent:
+                    raise RuntimeError("Keyboard jogging speed changed")
+                if self._continuous:
+                    if key in "WS":
+                        self._prepare_radial_frame(active, sample.joints_deg)
+                    active._guarded_command(
+                        MOVEJOG_COMMANDS[key],
+                        modes={5, 7, 11},
+                        send_modes={5},
+                        expected=sample.joints_deg,
+                        port=30003,
+                    )
+                    while True:
+                        self._check_hold(active, released)
+                        time.sleep(0.005)
+                self._step(active, key, initial_pose)
+                self._check_hold(active, released)
+                initial_pose = self._measurement if key not in "AD" else None
+                if key in MOVEJOG_COMMANDS:
+                    try:
+                        validate_joints(active._fresh({5})[0].joints_deg)
+                    except ValueError:
+                        continue
+                    with self._lock:
+                        if (
+                            self._active is active
+                            and self._stop_thread is None
+                            and not self._closed
+                            and not (self._revoked.is_set() or released.is_set() or active.stopped)
+                        ):
+                            self._continuous = True
+                            read_pose = False
         except (TargetRejectedError, joint_control.PreparationRejectedError) as error:
             if isinstance(error, joint_control.PreparationRejectedError):
                 read_pose = False

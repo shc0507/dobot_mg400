@@ -8,6 +8,7 @@ import pytest
 from mg400_agent import keyboard_jog
 from mg400_agent.feedback import Feedback
 from mg400_agent.joint_control import JointControl
+from mg400_agent.joint_limits import validate_joints
 from mg400_agent.keyboard_jog import KeyboardJogSession
 
 START = (30.0, 0.0, 10.0, 0.0)
@@ -113,6 +114,9 @@ class Operation:
             )
         elif text.startswith("MovL("):
             self.control.pose = tuple(float(value) for value in text[5:].split(",")[:4])
+        elif text.startswith("JointMovJ("):
+            joints = tuple(float(value) for value in text[10:].split(",")[:4])
+            self.control.sample = replace(self.control.sample, joints_deg=joints, mode=5)
         else:
             raise AssertionError(f"Unexpected movement: {text}")
 
@@ -492,6 +496,161 @@ def test_soft_limit_stops_without_a_fault_and_requires_release(rig):
         rig.session.run("D", threading.Event())
     rig.session.release()
     assert released.is_set()
+
+
+@pytest.mark.parametrize("start,key", [(159.2, "D"), (-159.2, "A")])
+def test_inward_retreat_switches_to_one_continuous_jog_in_the_same_hold(rig, start, key):
+    rig.sample = replace(rig.sample, joints_deg=(start, *START[1:]))
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.session.run(key, threading.Event())
+    finite = [text for text in rig.commands if text.startswith("JointMovJ(")]
+    assert len(finite) == 1, f"Expected one finite retreat before jog, got {len(finite)}"
+    target = tuple(float(value) for value in finite[0][10:].split(",")[:4])
+    validate_joints(target)
+    assert abs(target[0] - start) <= 1
+    assert rig.commands == [finite[0], COMMANDS[key], "MoveJog()"]
+    assert rig.stop_calls == [True]
+    assert rig.session.ready and not rig.stopped and not rig.busy
+
+
+def test_retreat_keeps_last_valid_target_when_next_half_is_inside_margin(rig):
+    rig.sample = replace(rig.sample, joints_deg=(159.9, *START[1:]))
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.session.run("D", threading.Event())
+    finite = [text for text in rig.commands if text.startswith("JointMovJ(")]
+    assert len(finite) == 1
+    target = tuple(float(value) for value in finite[0][10:].split(",")[:4])
+    validate_joints(target)
+    assert target[0] == pytest.approx(159.9 - 1.25)
+    with pytest.raises(ValueError):
+        validate_joints((159.9 - 0.625, *START[1:]))
+    assert rig.commands == [finite[0], COMMANDS["D"], "MoveJog()"]
+    assert rig.session.ready and not rig.stopped
+
+
+def test_retreat_ik_query_failure_does_not_send_previous_valid_target(rig, monkeypatch):
+    rig.sample = replace(rig.sample, joints_deg=(30.0, 84.5, 30.0, 0.0))
+    queried = []
+
+    def solve_then_fail(operation, pose):
+        queried.append(pose)
+        if len(queried) == 1:
+            return (30.0, 83.0, 30.0, 0.0)
+        raise TimeoutError("Inverse kinematics query failed during retreat refinement")
+
+    monkeypatch.setattr(Operation, "solve_pose", solve_then_fail)
+    rig.session.prepare()
+    rig.commands.clear()
+    with pytest.raises(RuntimeError, match="query failed during retreat refinement"):
+        rig.session.run("W", threading.Event())
+    assert len(queried) == 2
+    assert rig.commands == ["ResetRobot()"]
+    assert rig.stopped and rig.session.fault and not rig.session.ready
+
+
+@pytest.mark.parametrize("phase", ["finite_arrival", "jog_send", "close_window"])
+def test_release_during_retreat_handoff_prevents_continuous_jog(rig, phase):
+    rig.sample = replace(rig.sample, joints_deg=(159.2, *START[1:]))
+    rig.session.prepare()
+    rig.commands.clear()
+    released = threading.Event()
+    if phase == "finite_arrival":
+        rig.on_tick = lambda: released.set() if rig.ticks == 1 else None
+    elif phase == "close_window":
+        rig.before_send = lambda text: (
+            setattr(rig.session, "_closed", True) if text == COMMANDS["D"] else None
+        )
+    else:
+        rig.before_send = lambda text: released.set() if text == COMMANDS["D"] else None
+    rig.session.run("D", released)
+    finite = [text for text in rig.commands if text.startswith("JointMovJ(")]
+    assert len(finite) == 1
+    assert released.is_set() or rig.session._closed
+    assert rig.commands == [finite[0], "ResetRobot()"]
+    assert rig.session.fault is None and not rig.stopped and not rig.busy
+
+
+@pytest.mark.parametrize("fault", ["mode7", "stale"])
+def test_retreat_handoff_requires_fresh_idle_feedback(rig, monkeypatch, fault):
+    rig.sample = replace(rig.sample, joints_deg=(159.2, *START[1:]))
+    rig.session.prepare()
+    rig.commands.clear()
+    original = Operation._fresh
+
+    def reject_handoff(operation, modes):
+        if modes == {5} and any(text.startswith("JointMovJ(") for text in rig.commands):
+            if fault == "mode7":
+                rig.sample = replace(rig.sample, mode=7)
+            else:
+                rig.feedback_error = "Feedback is stale"
+        return original(operation, modes)
+
+    monkeypatch.setattr(Operation, "_fresh", reject_handoff)
+    with pytest.raises(RuntimeError):
+        rig.session.run("D", threading.Event())
+    assert sum(text.startswith("JointMovJ(") for text in rig.commands) == 1
+    assert not any(text.startswith("MoveJog(") for text in rig.commands)
+    assert rig.stopped and rig.session.fault and not rig.session.ready
+
+
+@pytest.mark.parametrize("key,axis", [("W", "X+"), ("S", "X-")])
+def test_radial_retreat_prepares_user8_then_resumes_continuous_hold(rig, monkeypatch, key, axis):
+    rig.sample = replace(rig.sample, joints_deg=(30.0, 84.5, 30.0, 0.0))
+    target_joints = (30.0, 83.0, 30.0, 0.0)
+    monkeypatch.setattr(Operation, "solve_pose", lambda operation, pose: target_joints)
+    original = Operation._guarded_command
+
+    def complete_cartesian_retreat(operation, text, **kwargs):
+        original(operation, text, **kwargs)
+        if text.startswith("MovL("):
+            rig.sample = replace(rig.sample, joints_deg=target_joints)
+
+    monkeypatch.setattr(Operation, "_guarded_command", complete_cartesian_retreat)
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.exchanges.clear()
+    rig.session.run(key, threading.Event())
+    finite = [text for text in rig.commands if text.startswith("MovL(")]
+    assert len(finite) == 1
+    target_pose = tuple(float(value) for value in finite[0][5:].split(",")[:4])
+    distance = sum((a - b) ** 2 for a, b in zip(target_pose[:3], POSE[:3], strict=True)) ** 0.5
+    assert 0 < distance <= 2
+    assert rig.exchanges[0] == finite[0]
+    assert rig.exchanges[1:3] == ["CalcUser(0,1,{0,0,0,0})", "CalcUser(8,1,{0,0,0,0})"]
+    assert rig.exchanges[3].startswith("SetUser(8,{")
+    assert rig.exchanges[4] == "CalcUser(8,1,{0,0,0,0})"
+    assert rig.commands[-2:] == [f"MoveJog({axis},CoordType=0,User=8,Tool=0)", "MoveJog()"]
+    assert rig.stop_calls == [True] and rig.session.ready and not rig.stopped
+
+
+@pytest.mark.parametrize("case", ["promoted_jog", "promoted_old_margin", "unpromoted_jog"])
+def test_watcher_handles_feedback_that_overlaps_retreat_promotion(rig, monkeypatch, case):
+    rig.session.prepare()
+    released = threading.Event()
+    active = rig.session._start("running", released)
+    assert not rig.session._continuous
+    original = Operation._fresh
+
+    def promotion_during_read(operation, modes):
+        assert modes == {5, 7, 11}
+        rig.session._continuous = case != "unpromoted_jog"
+        rig.sample = replace(
+            rig.sample,
+            mode=7 if case == "promoted_old_margin" else 11,
+            joints_deg=(159.2, *START[1:]) if case == "promoted_old_margin" else START,
+        )
+        return original(operation, modes)
+
+    monkeypatch.setattr(Operation, "_fresh", promotion_during_read)
+    rig.session._watch(active, released, OneTick())
+    if case == "unpromoted_jog":
+        assert rig.session.fault and rig.stopped and rig.session._revoked.is_set()
+    else:
+        assert rig.session.fault is None and not rig.stopped
+        assert rig.session.limit_reason is None and not rig.session._revoked.is_set()
+    rig.session._finish(active)
 
 
 @pytest.mark.parametrize("when", ["before_run", "before_send"])

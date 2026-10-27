@@ -16,16 +16,19 @@
 
 ## 开发检查
 
+安装 Python 3.11+、uv 和 Node.js 22+。
 在项目根目录运行：
 
 ```bash
 uv sync --all-extras --group usd
 uv run --all-extras --group usd pytest -ra
+node --test tests/*.mjs
 uv run ruff check .
 uv run ruff format --check .
 ```
 
 测试不消耗模型额度，不连接机械臂，也不启动 Isaac Sim。
+`pytest` 运行 Python 测试，`node --test` 运行摄像头预览和客户端测试。
 `--all-extras` 安装 MuJoCo 等可选依赖。
 `--group usd` 安装 USD 检查依赖，包含 `pxr` 和 NumPy。
 只运行 `uv run pytest` 时，缺少依赖的模型测试会跳过。
@@ -47,7 +50,7 @@ uv run ruff format --check .
 | `src/mg400_agent/` | agent、后端、控制协议和反馈处理 |
 | `scripts/` | 模型构建、Olares 启动、客户端操作和 USB 采集 |
 | `examples/` | 单文件教学、受限 J4 试验和 notebook |
-| `tests/` | 离线测试 |
+| `tests/` | Python 和 JavaScript 离线测试 |
 
 `cli.py` 提供 MuJoCo 的 `state`、`ask` 和 `chat` 命令。
 `terminal_control.py` 提供 `mg400-robot` 真机交互终端。

@@ -13,11 +13,13 @@ This document provides permanent information/instructions for the convenience of
 
 ## Local streaming client automation
 
-- Bind Computer Use to `/Applications/Isaac Sim WebRTC Streaming Client.app` by full path; a mounted installer contains another app with the same bundle ID.
-- For remote clicks, use `scripts/isaac_client_click.mjs` with Node.js 22+ and follow `docs/isaacsim.md` → “WebRTC 客户端自动点击 SOP”. The user authorized its temporary loopback inspector for this project. The script sends the complete click without activating the window or moving the system pointer. Do not follow it with `app.click`.
-- Keep the running client in the background and unminimized. Do not automatically activate, raise, or restart it after an error. Do not use `scripts/isaac_client_move.swift` unless the user explicitly permits foreground operation and system pointer movement.
-- Batch short, deterministic actions whose targets and expected transitions are already known, then read AX state and take one screenshot to verify the batch. Capture sooner when the next action depends on an unseen menu/dialog, layout changes, or an unexpected result. Reuse the verified result screenshot for the next batch; do not require a screenshot after every click.
-- Keep the client window unchanged between capture and click. Use menus or tabs for calibration, never robot action buttons.
+- Before reading client state, capturing images, or sending input, read [the client procedure](docs/agents/isaac-client.md). Use `scripts/isaac_client.mjs` with Node.js 22+.
+- Target `/Applications/Isaac Sim WebRTC Streaming Client.app`. A mounted installer contains another app with the same bundle ID. The user authorized the temporary loopback inspector for this project. Client operations share a lock.
+- Preserve the current macOS focus and system pointer. You can operate a focused client. Do not ask the user to switch applications just to satisfy a background requirement. Capture and input require a visible, unminimized client. Do not automatically activate, raise, restore, or restart the client.
+- Send clicks, keys, and text only through the CLI. Do not use `app.click`, OS `pressKey` or `paste`, Quartz input, or `scripts/isaac_client_move.swift`.
+- Capture images contain only the remote video. The CLI does not capture the macOS screen. The image excludes client overlays. The CLI rejects clicks on targets covered by client overlays.
+- Use the latest capture and its token for each batch. Keep the window geometry unchanged. Batch only actions with known targets and transitions. Inspect the returned image to verify the remote result before reporting success. Use menus or tabs for calibration, never robot action buttons.
+- If the CLI returns `CLEANUP_UNCONFIRMED`, stop. Report the error. The client session blocks later calls while this state remains. Do not automatically retry or clear this state.
 
 ## Temporary screenshot cleanup
 

@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { acquireClientLock } from './isaac_client_transport.mjs';
 
 const action = process.argv[2] || 'start';
 if (!['start', 'stop', 'status'].includes(action)) throw new Error('Use start, stop, or status.');
@@ -24,8 +25,6 @@ function portInUse() {
     return false;
   }
 }
-if (portInUse()) throw new Error('Port 9229 is already in use. No signal sent.');
-
 let ws;
 let nextID = 0;
 let identityConfirmed = false;
@@ -163,7 +162,14 @@ async function bridgeClient({action, script, python, statusFile}) {
   } finally { c.debugger.detach(); }
 }
 
-process.kill(pid, 'SIGUSR1');
+const releaseClientLock = await acquireClientLock();
+try {
+  if (portInUse()) throw new Error('Port 9229 is already in use. No signal sent.');
+  process.kill(pid, 'SIGUSR1');
+} catch (error) {
+  releaseClientLock();
+  throw error;
+}
 try {
   for (let attempt = 0; attempt < 30; attempt++) {
     try { await connect(); break; }
@@ -192,5 +198,7 @@ try {
   } catch (error) {
     ws?.close();
     throw new Error(`Cannot confirm inspector cleanup: ${error.message}`);
+  } finally {
+    releaseClientLock();
   }
 }

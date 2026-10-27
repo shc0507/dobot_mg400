@@ -483,7 +483,7 @@ Isaac 日志位于 `/root/.nvidia-omniverse/logs/Kit/`。
 路径参考：[MG400 日志导出说明](https://techshare.co.jp/faq/dobot/mg400/support.html)。
 报警码参考：[Dobot 四轴报警表](https://raw.githubusercontent.com/Dobot-Arm/TCP-IP-4Axis-Python/main/files/alarm_controller.json)。
 
-## WebRTC 客户端自动点击
+## WebRTC 客户端自动操作
 
-自动操作客户端时，按 [后台点击流程](agents/isaac-client.md) 执行。
-该流程包括完整路径绑定、截图坐标、批量点击和异常处理。
+自动操作客户端时，按 [客户端操作流程](agents/isaac-client.md) 执行。
+该流程包括状态查询、视频截图、点击、键盘输入和异常处理。

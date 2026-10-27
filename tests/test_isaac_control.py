@@ -1194,8 +1194,8 @@ def test_keyboard_receives_measurement_returned_by_pose_task(panel):
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("key", tuple("AD"))
-def test_base_turn_does_not_wait_for_pending_pose_query(panel, key):
+@pytest.mark.parametrize("key", tuple("ADRFQE"))
+def test_continuous_jog_does_not_wait_for_pending_pose_query(panel, key):
     async def exercise():
         session = await arm_keyboard(panel)
         panel.pose_task = asyncio.get_running_loop().create_future()
@@ -1213,7 +1213,7 @@ def test_base_turn_does_not_wait_for_pending_pose_query(panel, key):
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("key", tuple("WSRFQE"))
+@pytest.mark.parametrize("key", tuple("WS"))
 def test_fresh_pose_cache_skips_pending_pose_query(panel, key):
     async def exercise():
         session = await arm_keyboard(panel)
@@ -2966,6 +2966,9 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     feedback = sys.modules["mg400_agent.feedback"]
     source_dir = tmp_path / "src/mg400_agent"
     source_dir.mkdir(parents=True)
+    (source_dir / "feedback.py").write_bytes(
+        (Path(__file__).resolve().parents[1] / "src/mg400_agent/feedback.py").read_bytes()
+    )
     for name, source in sources.items():
         (source_dir / f"{name}.py").write_text(source)
         cached = ModuleType(f"mg400_agent.{name}")

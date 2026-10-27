@@ -1242,6 +1242,210 @@ def test_stop_ack_does_not_prove_stillness(rig, monkeypatch):
     assert commands == [("ResetRobot()", 29999)]
 
 
+def test_jog_release_reuses_child_connection_until_finish(rig, monkeypatch):
+    control, sample, now, _ = rig
+    sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=1)
+    connection = socket_for(monkeypatch, [b"0,{},MoveJog(J4+);", b"0,{},MoveJog();"])
+    active = control.begin_operation()
+    active._guarded_command(
+        "MoveJog(J4+)", modes={5, 11}, send_modes={5}, expected=START, port=30003
+    )
+    sample[0] = Feedback(START, 11, 0, False, speed_scaling_raw=1)
+
+    def reply(size):
+        now[0] += 0.185
+        sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=1)
+        return b"0,{},MoveJog();"
+
+    connection.recv.side_effect = reply
+    before = now[0]
+    result = active.stop_after_command(jog=True)
+    assert result["ok"]
+    assert 0.24 <= now[0] - before < 0.26
+    assert active.stop(jog=True) is result
+    assert connection.sendall.call_args_list == [call(b"MoveJog(J4+)"), call(b"MoveJog()")]
+    assert socket.create_connection.call_count == 1
+    connection.close.assert_not_called()
+    active.finish_operation()
+    connection.close.assert_called_once()
+    assert not control.stopped
+    assert control.feedback_retention_reason() is None
+
+
+@pytest.mark.parametrize("fault", ["cancelled", "unknown_ack"])
+def test_jog_fault_uses_reset_and_never_short_stop(rig, monkeypatch, fault):
+    control, _, now, commands = rig
+    active = control.begin_operation()
+    monkeypatch.setattr(active, "_command", control._command)
+    if fault == "unknown_ack":
+        pending = {"done": threading.Event(), "sent": True, "ok": False}
+        pending["done"].set()
+        active._pending = pending
+    else:
+        active.cancel()
+    result = active.stop_after_command(jog=True)
+    assert commands == [("ResetRobot()", 29999)]
+    if fault == "cancelled":
+        assert result["ok"] and now[0] >= 10.4
+    else:
+        assert not result["ok"] and "unknown" in result["error"]
+    active.finish_operation()
+
+
+@pytest.mark.parametrize("fault", ["lost_ack", "speed", "mode"])
+def test_jog_stop_failure_requests_reset_but_keeps_parent_locked(rig, monkeypatch, fault):
+    control, sample, _, commands = rig
+    sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=1)
+    active = control.begin_operation()
+    active._pending = {
+        "command": "MoveJog(J4+)",
+        "port": 30003,
+        "sent": True,
+        "ok": True,
+        "done": threading.Event(),
+    }
+    active._pending["done"].set()
+
+    def command(text, port=29999, **kwargs):
+        commands.append((text, port))
+        if text == "MoveJog()":
+            if fault == "lost_ack":
+                raise TimeoutError("Lost jog stop acknowledgement")
+            sample[0] = Feedback(START, 11 if fault == "mode" else 5, 0, False, 2)
+            if fault == "mode":
+                sample[0] = Feedback(START, 11, 0, False, 1)
+        else:
+            assert text == "ResetRobot()"
+            sample[0] = Feedback(START, 5, 0, False, 1)
+        return ""
+
+    monkeypatch.setattr(active, "_command", command)
+    result = active.stop_after_command(jog=True)
+    assert not result["ok"]
+    assert commands == [("MoveJog()", 30003), ("ResetRobot()", 29999)]
+    assert active.stop(jog=True) is result
+    active.finish_operation()
+    assert control.feedback_retention_reason() is not None
+    assert control._stop_uncertain is (fault == "lost_ack")
+
+
+def test_jog_stop_cannot_accept_ack_that_arrives_during_cancellation(rig, monkeypatch):
+    control, _, _, commands = rig
+    active = control.begin_operation()
+    pending = {"done": threading.Event(), "sent": True, "ok": False}
+    active._pending = pending
+    cancel = active.cancel
+
+    def late_ack():
+        cancel()
+        pending["ok"] = True
+        pending["done"].set()
+
+    monkeypatch.setattr(active, "cancel", late_ack)
+    monkeypatch.setattr(active, "_command", control._command)
+    assert not active.stop(jog=True)["ok"]
+    assert commands == [("ResetRobot()", 29999)]
+    assert control._stop_uncertain
+    active.finish_operation()
+    assert control.feedback_retention_reason() is not None
+
+
+@pytest.mark.parametrize("case", ["pre_ack", "repeat", "gap", "drift", "jog_mode"])
+def test_short_jog_stop_requires_post_ack_dense_fresh_idle_feedback(rig, monkeypatch, case):
+    control, _, now, _ = rig
+
+    def fresh(modes):
+        elapsed = now[0] - 10.0
+        receipt = 10.0 + int((elapsed + 1e-9) / 0.008) * 0.008
+        mode, offset = 5, 0
+        if case == "pre_ack" and elapsed < 0.06:
+            receipt = 9.99
+        elif case == "repeat":
+            receipt = 10.001
+        elif case == "gap" and 0.025 <= elapsed < 0.064:
+            receipt = 10.024
+        elif case == "drift" and elapsed >= 0.04:
+            offset = 0.03
+        elif case == "jog_mode" and elapsed < 0.032:
+            mode = 11
+        return Feedback((*START[:3], START[3] + offset), mode, 0, False, 1), receipt
+
+    monkeypatch.setattr(control, "_fresh", fresh)
+    if case == "repeat":
+        with pytest.raises(TimeoutError):
+            control._wait_stable(modes={5, 11}, final_modes={5}, timeout=0.2, jog_stop_ack=10.0)
+        return
+    result = control._wait_stable(modes={5, 11}, final_modes={5}, timeout=0.2, jog_stop_ack=10.0)
+    assert result.mode == 5
+    minimum = {"pre_ack": 10.112, "gap": 10.12, "drift": 10.096, "jog_mode": 10.088}
+    assert now[0] >= minimum[case]
+
+
+def test_failed_jog_connection_cannot_reconnect(rig, monkeypatch):
+    control, _, _, _ = rig
+    connection = socket_for(monkeypatch, [b"0,{},OtherCommand();"])
+    active = control.begin_operation()
+    with pytest.raises(RuntimeError, match="Unexpected controller response"):
+        active._command("MoveJog(J4+)", port=30003)
+    with pytest.raises(RuntimeError, match="new command is prohibited"):
+        active._command("MoveJog(J4-)", port=30003)
+    assert socket.create_connection.call_count == 1
+    assert connection.sendall.call_args_list == [call(b"MoveJog(J4+)")]
+    connection.close.assert_called_once()
+    active.finish_operation()
+
+
+def test_release_during_initial_jog_connection_sends_no_motion_and_keeps_parent_ready(
+    rig, monkeypatch
+):
+    control, sample, _, _ = rig
+    sample[0] = Feedback(START, 5, 0, False, 1)
+    released = threading.Event()
+    motion = Mock()
+    stop_socket = socket_for(monkeypatch, [b"0,{},ResetRobot();"])
+
+    def connect(address, **kwargs):
+        if address[1] == 30003:
+            released.set()
+            return motion
+        return stop_socket
+
+    def guard():
+        if released.is_set():
+            raise RuntimeError("Keyboard hold cancelled")
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    active = control.begin_operation(send_guard=guard)
+    with pytest.raises(RuntimeError, match="hold cancelled"):
+        active._guarded_command(
+            "MoveJog(J4+)", modes={5, 11}, send_modes={5}, expected=START, port=30003
+        )
+    assert not active._pending["sent"]
+    assert active.stop_after_command(jog=True)["ok"]
+    motion.sendall.assert_not_called()
+    assert stop_socket.sendall.call_args_list == [call(b"ResetRobot()")]
+    active.finish_operation()
+    assert not control.stopped
+    assert control.feedback_retention_reason() is None
+
+
+@pytest.mark.parametrize("action", ["stop", "disable"])
+def test_stop_and_disable_allow_jog_mode_only_during_deceleration(rig, monkeypatch, action):
+    control, sample, now, _ = rig
+    final_mode = 4 if action == "disable" else 5
+
+    def snapshot():
+        sample[0] = Feedback(START, 11 if now[0] < 10.03 else final_mode, 0, False, 1)
+        return sample[0], now[0]
+
+    monkeypatch.setattr(control, "feedback_snapshot", snapshot)
+    result = getattr(control, action)()
+    if action == "stop":
+        assert result["ok"] and now[0] >= 10.43
+    else:
+        assert result.mode == 4 and now[0] >= 10.03
+
+
 def test_fault_during_pending_ack_requests_stop_without_retry(rig, monkeypatch):
     control, _, _, _ = rig
     entered, release = threading.Event(), threading.Event()

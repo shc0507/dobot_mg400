@@ -123,7 +123,7 @@ async def run_keyboard_hold(
         expired = await _jog_gripper(session.control, gripper, key, released)
         return None, expired
     initial_pose = None
-    if key not in "AD":
+    if key in "WS":
         if session.reusable_pose(pose_measurement):
             initial_pose = pose_measurement
         elif pose_task:

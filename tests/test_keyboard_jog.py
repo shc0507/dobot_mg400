@@ -17,6 +17,10 @@ POSE = (250.0, 10.0, 40.0, 30.0)
 
 @pytest.fixture
 def rig(monkeypatch):
+    # Exercise the retained finite-trajectory fallback. Continuous jogging has
+    # separate transport, cancellation, and feedback tests.
+    monkeypatch.setattr("mg400_agent.keyboard_jog.MOVEJOG_COMMANDS", {})
+
     class Rig:
         def __init__(self):
             self.now = 10.0
@@ -62,6 +66,9 @@ def rig(monkeypatch):
                 return "[[],[],[],[],[]]"
             if text == "GetAngle()":
                 return ",".join(map(str, self.sample.joints_deg))
+            if text == "SpeedFactor(1)":
+                self.sample = replace(self.sample, speed_scaling_raw=1.0)
+                return ""
             if text == "GetPose(0,0)":
                 if self.release_after and len(self.moves) >= self.release_after:
                     self.session.release()
@@ -183,16 +190,22 @@ def finish_thread(thread, outcome):
     return outcome[0]
 
 
-def test_prepare_is_read_only_and_shares_controller_locks(rig):
+def test_prepare_sets_low_speed_without_motion_and_shares_controller_locks(rig):
     assert not rig.session.ready
     assert not rig.commands
     assert rig.session.prepare() == POSE
     assert rig.session.ready
-    assert rig.commands == ["RobotMode()", "GetErrorID()", "GetAngle()", "GetPose(0,0)"]
+    assert rig.commands == [
+        "RobotMode()",
+        "GetErrorID()",
+        "GetAngle()",
+        "GetPose(0,0)",
+        "SpeedFactor(1)",
+    ]
     rig.session.release()
     rig.session.release()
     assert rig.session.ready
-    assert len(rig.commands) == 4
+    assert len(rig.commands) == 5
 
 
 @pytest.mark.parametrize(
@@ -424,6 +437,7 @@ def test_release_during_ik_prevents_send(rig, reuse_pose):
 
 def test_release_before_pending_registration_blocks_delayed_registration(rig, monkeypatch):
     rig.session.prepare()
+    preparation_pending = rig.session.control._pending
     original = JointControl._guarded_command
 
     def guarded(active, *args, **kwargs):
@@ -433,7 +447,7 @@ def test_release_before_pending_registration_blocks_delayed_registration(rig, mo
     monkeypatch.setattr(JointControl, "_guarded_command", guarded)
     rig.session.run("W", threading.Event())
     assert not rig.moves
-    assert rig.session.control._pending is None
+    assert rig.session.control._pending is preparation_pending
     assert rig.commands.count("ResetRobot()") == 1
     assert rig.session.ready
 
@@ -996,7 +1010,13 @@ def test_prepare_accepts_j4_within_manufacturer_target_range_without_motion(rig,
     assert rig.session.prepare() == rig.pose
     assert rig.session.ready
     assert not rig.moves
-    assert rig.commands == ["RobotMode()", "GetErrorID()", "GetAngle()", "GetPose(0,0)"]
+    assert rig.commands == [
+        "RobotMode()",
+        "GetErrorID()",
+        "GetAngle()",
+        "GetPose(0,0)",
+        "SpeedFactor(1)",
+    ]
 
 
 @pytest.mark.parametrize("when", ["before", "preflight"])

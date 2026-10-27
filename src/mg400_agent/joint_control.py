@@ -11,7 +11,7 @@ import select
 import socket
 import threading
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 from .config import finite_number
@@ -82,6 +82,9 @@ class JointControl:
         self._preparing = False
         self._preparation_pending = None
         self._preparation_baseline = None
+        self._jog_connection = None
+        self._jog_connection_failed = False
+        self._jog_connection_lock = threading.Lock()
 
     @property
     def busy(self):
@@ -159,9 +162,11 @@ class JointControl:
                     self._parent.cancel()
             self._preparing = False
             self._operation_open = False
+            if not self.command_pending:
+                self._close_jog_connection()
             self._operation_lock.release()
 
-    def stop_after_command(self, *, on_error=None):
+    def stop_after_command(self, *, on_error=None, jog=False):
         """Stop a revoked hold after its bounded acknowledgement wait.
 
         The caller must revoke input before calling. A wait failure cancels the
@@ -175,7 +180,7 @@ class JointControl:
                 while not pending["done"].wait(0.01):
                     if self.stopped:
                         break
-                    self._fresh({5, 7})
+                    self._fresh({5, 7, 11} if jog else {5, 7})
                     if time.monotonic() >= deadline and not pending["done"].is_set():
                         raise TimeoutError(
                             "Keyboard command acknowledgement did not finish before stopping"
@@ -186,7 +191,7 @@ class JointControl:
                     self._parent.cancel()
                 if on_error is not None:
                     on_error(error)
-        return self.stop()
+        return self.stop(jog=jog)
 
     def cancel(self, *, disabling=False):
         """Immediately latch cancellation from the UI, without waiting or networking.
@@ -467,11 +472,46 @@ class JointControl:
                 failure = error
         raise failure
 
+    def _close_jog_connection(self):
+        with self._jog_connection_lock:
+            connection, self._jog_connection = self._jog_connection, None
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+
+    @contextmanager
+    def _command_connection(self, text, port, deadline, query):
+        if self._parent is None or port != 30003 or not text.startswith("MoveJog("):
+            with self._connect(port, deadline, query) as connection:
+                yield connection
+            return
+        if not self._jog_connection_lock.acquire(timeout=self._command_timeout):
+            raise TimeoutError("MoveJog connection is busy")
+        try:
+            if self._jog_connection_failed:
+                raise RuntimeError("MoveJog connection failed; a new command is prohibited")
+            if self._jog_connection is None:
+                self._jog_connection = self._connect(port, deadline, query)
+            yield self._jog_connection
+        except Exception:
+            self._jog_connection_failed = True
+            connection, self._jog_connection = self._jog_connection, None
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+            raise
+        finally:
+            self._jog_connection_lock.release()
+
     def _exchange(self, text, port, *, pending=None, stopping=False, query=None):
         deadline = time.monotonic() + self._command_timeout
         if query is not None and text.startswith("GetPose(") and self._pose_query_cancelled():
             raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
-        with self._connect(port, deadline, query) as connection:
+        with self._command_connection(text, port, deadline, query) as connection:
             with self._send_lock if query is None else nullcontext():
                 if query is not None and (
                     query["cancelled"].is_set()
@@ -508,9 +548,12 @@ class JointControl:
                 packet.extend(part)
                 if len(packet) >= 4096:
                     raise ValueError("Oversized controller response")
+            if query is not None and query["cancelled"].is_set():
+                raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
+            value = parse_controller_response(packet, text)
         if query is not None and query["cancelled"].is_set():
             raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
-        return parse_controller_response(packet, text)
+        return value
 
     def _dashboard_state(self):
         mode = int(self._query("RobotMode()"))
@@ -529,8 +572,13 @@ class JointControl:
             raise ValueError("Invalid actual joint angles")
         return mode, joints[:4]
 
-    def _wait_stable(self, target=None, *, modes, final_modes, timeout=5.0, stopping=False):
+    def _wait_stable(
+        self, target=None, *, modes, final_modes, timeout=5.0, stopping=False, jog_stop_ack=None
+    ):
         deadline = time.monotonic() + timeout
+        jog_stop = jog_stop_ack is not None
+        stable_seconds = 0.05 if jog_stop else 0.4
+        poll_seconds = 0.005 if jog_stop else 0.01
         previous_received = None
         anchor = stable_since = None
         count = 0
@@ -541,7 +589,20 @@ class JointControl:
             if self.stopped and not stopping:
                 raise RuntimeError("Control has been stopped; reopen the panel")
             sample, received = self._fresh(modes)
+            if jog_stop:
+                if getattr(sample, "speed_scaling_raw", None) != 1:
+                    raise RuntimeError("MoveJog stop requires speed scaling feedback of 1")
+                if received <= jog_stop_ack:
+                    time.sleep(poll_seconds)
+                    continue
             if received != previous_received:
+                if (
+                    jog_stop
+                    and previous_received is not None
+                    and not (0 < received - previous_received <= stable_seconds / 3)
+                ):
+                    anchor = stable_since = None
+                    count = 0
                 previous_received = received
                 samples += 1
                 if samples == 1:
@@ -560,14 +621,14 @@ class JointControl:
                 else:
                     count += 1
                     longest_stable = max(longest_stable, received - stable_since)
-                    if count >= 3 and received - stable_since >= 0.4:
+                    if count >= 3 and received - stable_since >= stable_seconds:
                         return sample
-            time.sleep(0.01)
+            time.sleep(poll_seconds)
         span = tuple(round(high - low, 6) for low, high in zip(minimum, maximum, strict=True))
         raise _StationaryTimeoutError(
             "Robot did not reach a fresh, verified stationary state "
             f"(samples={samples}, joint_span_deg={span}, "
-            f"longest_stable_s={longest_stable:.3f}, required_stable_s=0.4, "
+            f"longest_stable_s={longest_stable:.3f}, required_stable_s={stable_seconds}, "
             "tolerance_deg=0.025)"
         )
 
@@ -633,6 +694,8 @@ class JointControl:
         self._fresh(send_modes)
         self._preparing = False
         pending = {
+            "command": text,
+            "port": port,
             "done": threading.Event(),
             "sent": False,
             "ok": False,
@@ -663,6 +726,8 @@ class JointControl:
                     if self._parent is not None:
                         self._parent._stop_uncertain = True
                 pending["done"].set()
+                if not self._operation_open:
+                    self._close_jog_connection()
 
         threading.Thread(target=send, name="MG400-command", daemon=True).start()
         while not pending["done"].wait(0.01):
@@ -873,7 +938,7 @@ class JointControl:
                     )
                 deadline = acknowledged_at + 5.0
                 while time.monotonic() < deadline:
-                    sample, received = self._fresh({4, 5, 7})
+                    sample, received = self._fresh({4, 5, 7, 11})
                     if sample.mode == 4 and received > acknowledged_at:
                         break
                     time.sleep(0.01)
@@ -900,12 +965,16 @@ class JointControl:
         """
         return self._wait_stable(modes={4, 5}, final_modes={4, 5}, stopping=True)
 
-    def stop(self):
+    def stop(self, *, jog=False):
         """Permanently cancel this instance, request a controlled stop, verify rest.
 
         An unresolved mutation ACK makes ordering across connections unknown;
         even a later successful ACK cannot establish a confirmed stop.
         """
+        normal_jog = jog and not self.stopped and not self._stop_uncertain
+        if self._parent is not None and self._parent._stop_uncertain:
+            self._stop_uncertain = True
+            normal_jog = False
         self.cancel()
         with self._send_lock:
             pending = self._pending
@@ -916,23 +985,63 @@ class JointControl:
             )
             if uncertain:
                 self._stop_uncertain = True
+            normal_jog = (
+                normal_jog
+                and not self._stop_uncertain
+                and pending is not None
+                and pending["sent"]
+                and pending["done"].is_set()
+                and pending["ok"]
+                and pending.get("command", "").startswith("MoveJog(")
+                and pending.get("port") == 30003
+            )
         with self._stop_lock:
             if self._stop_result is not None:
                 return self._stop_result
+            if self._parent is not None and self._parent.stopped:
+                normal_jog = False
             try:
-                self._command("ResetRobot()", stopping=True)
+                if normal_jog:
+                    try:
+                        self._command("MoveJog()", port=30003, stopping=True)
+                    except Exception:
+                        self._stop_uncertain = True
+                        if self._parent is not None:
+                            self._parent._stop_uncertain = True
+                        raise
+                    jog_stop_ack = time.monotonic()
+                else:
+                    self._command("ResetRobot()", stopping=True)
+                    jog_stop_ack = None
                 if self._stop_uncertain:
                     raise RuntimeError(
                         "Mutation acknowledgement was unresolved or failed when stopping; "
                         "command ordering remains unknown"
                     )
-                self._wait_stable(modes={4, 5, 7}, final_modes={4, 5}, timeout=3, stopping=True)
+                self._wait_stable(
+                    modes={4, 5, 7, 11},
+                    final_modes={5} if normal_jog else {4, 5},
+                    timeout=3,
+                    stopping=True,
+                    jog_stop_ack=jog_stop_ack,
+                )
                 self._stop_result = {
                     "ok": True,
                     "stationary_verified": True,
                     "physical_stop_requested": True,
                 }
             except Exception as error:
+                if normal_jog:
+                    try:
+                        self._command("ResetRobot()", stopping=True)
+                        self._wait_stable(
+                            modes={4, 5, 7, 11},
+                            final_modes={4, 5},
+                            timeout=3,
+                            stopping=True,
+                        )
+                    except Exception as rescue_error:
+                        error = RuntimeError(f"{error}; ResetRobot stop failed: {rescue_error}")
                 self._stop_result = {
                     "ok": False,
                     "stationary_verified": False,

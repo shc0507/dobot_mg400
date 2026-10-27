@@ -21,6 +21,7 @@ class Feedback:
     # or a reliable freshness signal. Receipt deadlines use local monotonic time.
     timestamp: int
     error_status: bool
+    speed_scaling_raw: float | None = None
 
 
 def decode_feedback(data: bytes) -> Feedback:
@@ -42,6 +43,7 @@ def decode_feedback(data: bytes) -> Feedback:
         mode=struct.unpack_from("<Q", data, 24)[0],
         timestamp=struct.unpack_from("<Q", data, 32)[0],
         error_status=bool(data[1029]),
+        speed_scaling_raw=struct.unpack_from("<d", data, 64)[0],
     )
 
 

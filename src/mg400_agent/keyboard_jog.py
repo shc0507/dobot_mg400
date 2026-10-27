@@ -1,4 +1,4 @@
-"""Keyboard movement with one checked, finite trajectory at a time."""
+"""Single-key jogging with checked feedback and explicit stop confirmation."""
 
 import math
 import threading
@@ -11,6 +11,14 @@ from .joint_limits import validate_joint_segment, validate_joints, validate_meas
 SEGMENT_DISTANCE_MM = 50.0
 SEGMENT_ANGLE_DEG = 10.0
 KEYS = frozenset("WASDRFQE")
+MOVEJOG_COMMANDS = {
+    "A": "MoveJog(J1+)",
+    "D": "MoveJog(J1-)",
+    "Q": "MoveJog(J4+)",
+    "E": "MoveJog(J4-)",
+    "R": "MoveJog(Z+,CoordType=0,User=0,Tool=0)",
+    "F": "MoveJog(Z-,CoordType=0,User=0,Tool=0)",
+}
 
 
 class KeyboardJogSession:
@@ -18,7 +26,7 @@ class KeyboardJogSession:
 
     release() and close() are nonblocking UI calls. A normal release preserves
     readiness after the stop is verified. Any uncertain stop locks both this
-    session and its parent control. No motion is sent by construction/prepare.
+    session and its parent control. Preparation sets SpeedFactor(1) without motion.
     """
 
     def __init__(self, control):
@@ -38,6 +46,7 @@ class KeyboardJogSession:
         self._measurement = None
         self.fault = None
         self.limit_reason = None
+        self._continuous = False
 
     @property
     def busy(self):
@@ -67,7 +76,7 @@ class KeyboardJogSession:
                 raise RuntimeError("Release the current key before another hold")
             active = self.control.begin_operation(
                 command_timeout=0.5,
-                send_guard=(lambda: self._check_hold(active, released))
+                send_guard=(lambda: self._check_send(active, released))
                 if phase == "running"
                 else None,
             )
@@ -76,11 +85,15 @@ class KeyboardJogSession:
             self._released = released
             self._stop_thread = self._stop_result = None
             self.limit_reason = None
+            self._continuous = False
             return active
 
     def _stop(self, active):
         try:
-            result = active.stop_after_command(on_error=lambda error: self._revoke(error=error))
+            result = active.stop_after_command(
+                jog=self._continuous,
+                on_error=lambda error: self._revoke(error=error),
+            )
         except Exception as error:
             result = {"ok": False, "error": str(error)}
         with self._lock:
@@ -166,13 +179,31 @@ class KeyboardJogSession:
                 return
 
     def prepare(self):
-        """Verify enabled idle state once and return measured User=0/Tool=0 pose."""
+        """Verify enabled idle state and set the low jogging speed without motion."""
         active = self._start("preparing")
         try:
             validate_measured_joints(active._fresh({5})[0].joints_deg)
             _, joints = active._preflight({5})
             validate_measured_joints(joints)
             pose = self._read_measured_pose(active, {5})
+            if self._revoked.is_set() or active.stopped:
+                raise RuntimeError("Keyboard preparation cancelled")
+            active._guarded_command("SpeedFactor(1)", modes={5}, send_modes={5}, expected=joints)
+            acknowledged_at = time.monotonic()
+            receipts = set()
+            while len(receipts) < 3:
+                if self._revoked.is_set() or active.stopped:
+                    raise RuntimeError("Keyboard preparation cancelled")
+                sample, received = active._fresh({5})
+                if received > acknowledged_at:
+                    if sample.speed_scaling_raw != 1:
+                        raise RuntimeError(
+                            "Keyboard speed feedback does not confirm SpeedFactor(1)"
+                        )
+                    receipts.add(received)
+                if time.monotonic() - acknowledged_at > 0.5:
+                    raise TimeoutError("Keyboard speed feedback was not confirmed")
+                time.sleep(0.005)
             with self._lock:
                 if self._revoked.is_set() or active.stopped or self._closed:
                     raise RuntimeError("Keyboard preparation cancelled")
@@ -195,11 +226,33 @@ class KeyboardJogSession:
         if self._revoked.is_set() or active.stopped:
             raise RuntimeError("Keyboard hold cancelled")
 
+    def _check_send(self, active, released):
+        self._check_hold(active, released)
+        if self._continuous:
+            sample, _ = active._fresh({5})
+            if sample.speed_scaling_raw != 1:
+                raise RuntimeError("Keyboard jogging speed changed")
+            try:
+                validate_joints(sample.joints_deg)
+            except ValueError as error:
+                raise TargetRejectedError(str(error)) from error
+
     def _watch(self, active, released, finished):
         while not finished.wait(0.01):
             try:
                 self._check_hold(active, released)
-                validate_measured_joints(active._fresh({5, 7})[0].joints_deg)
+                sample = active._fresh({5, 7, 11} if self._continuous else {5, 7})[0]
+                validate_measured_joints(sample.joints_deg)
+                if self._continuous:
+                    if sample.speed_scaling_raw != 1:
+                        raise RuntimeError("Keyboard jogging speed changed")
+                    try:
+                        validate_joints(sample.joints_deg)
+                    except ValueError as error:
+                        self.limit_reason = str(error)
+                        self._release_gate = released
+                        self._revoke()
+                        return
             except Exception as error:
                 if not self._revoked.is_set():
                     self._revoke(error=error)
@@ -319,10 +372,20 @@ class KeyboardJogSession:
             time.sleep(0.01)
 
     def run(self, key, released, initial_pose=None):
-        """Continue checked trajectories until release, a limit, or a fault."""
+        """Jog until release or a guard. Keep radial motion on checked trajectories."""
         if key not in KEYS:
             raise ValueError("Expected one keyboard movement key")
         active = self._start("running", released)
+        if key in MOVEJOG_COMMANDS:
+            try:
+                validate_joints(active._fresh({5})[0].joints_deg)
+            except ValueError:
+                # Preserve finite inward moves from the target margin band.
+                pass
+            except Exception as error:
+                self._revoke(error=error)
+            else:
+                self._continuous = True
         finished = threading.Event()
         watcher = threading.Thread(
             target=self._watch,
@@ -331,13 +394,28 @@ class KeyboardJogSession:
             daemon=True,
         )
         watcher.start()
-        read_pose = True
+        read_pose = not self._continuous
         try:
             self._check_hold(active, released)
-            while True:
-                self._step(active, key, initial_pose)
-                self._check_hold(active, released)
-                initial_pose = self._measurement if key not in "AD" else None
+            if self._continuous:
+                sample, _ = active._fresh({5})
+                if sample.speed_scaling_raw != 1:
+                    raise RuntimeError("Keyboard jogging speed changed")
+                active._guarded_command(
+                    MOVEJOG_COMMANDS[key],
+                    modes={5, 7, 11},
+                    send_modes={5},
+                    expected=sample.joints_deg,
+                    port=30003,
+                )
+                while True:
+                    self._check_hold(active, released)
+                    time.sleep(0.005)
+            else:
+                while True:
+                    self._step(active, key, initial_pose)
+                    self._check_hold(active, released)
+                    initial_pose = self._measurement if key not in "AD" else None
         except (TargetRejectedError, joint_control.PreparationRejectedError) as error:
             if isinstance(error, joint_control.PreparationRejectedError):
                 read_pose = False
@@ -363,4 +441,6 @@ class KeyboardJogSession:
             raise RuntimeError(self.fault)
         if self.control.stopped:
             raise RuntimeError("Parent control stopped during keyboard movement")
-        return self._pose
+        # The panel refreshes Cartesian coordinates after the hold. A dashboard
+        # query here would delay the next key after stop confirmation.
+        return None if self._continuous else self._pose

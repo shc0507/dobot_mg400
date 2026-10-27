@@ -264,7 +264,7 @@ for function, name in (
     assert Path(function.__code__.co_filename) == root / "src/mg400_agent" / f"{name}.py"
 
 control_class = state["JointControl"]
-sample = feedback.Feedback((0.0, 0.0, 0.0, 0.0), 5, 0, False)
+sample = feedback.Feedback((0.0, 0.0, 0.0, 0.0), 5, 0, False, speed_scaling_raw=1)
 snapshot = lambda: (sample, time.monotonic())
 parent = control_class("robot.test", snapshot)
 child = control_class("robot.test", snapshot, parent=parent, command_timeout=0.5)
@@ -284,6 +284,10 @@ def preflight(active, modes):
     prepared.append(active)
     return sample, sample.joints_deg
 control_class._preflight = preflight
+def set_speed(active, command, **kwargs):
+    assert command == "SpeedFactor(1)"
+    assert kwargs == dict(modes={5}, send_modes={5}, expected=sample.joints_deg)
+control_class._guarded_command = set_speed
 control_class._read_pose_measurement = lambda active, modes: state["backend"].PoseMeasurement(
     control=active, pose=pose, requested_at=time.monotonic(), before=sample, after=sample
 )

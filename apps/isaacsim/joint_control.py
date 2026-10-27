@@ -1040,6 +1040,7 @@ def _reload_control_modules():
     global GripperUnavailableError, run_keyboard_hold
     modules = []
     for name in (
+        "feedback",
         "controller_protocol",
         "joint_limits",
         "joint_control",
@@ -1062,7 +1063,7 @@ def _reload_control_modules():
         # Read source directly. Kit loaders and old package paths can retain old code.
         exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
         modules.append(module)
-    protocol_module, limits, control_module, jog_module, keyboard_module, _ = modules
+    _, protocol_module, limits, control_module, jog_module, keyboard_module, _ = modules
     control_module.ControllerCommandError = protocol_module.ControllerCommandError
     control_module.parse_controller_response = protocol_module.parse_controller_response
     jog_module.TargetRejectedError = control_module.TargetRejectedError

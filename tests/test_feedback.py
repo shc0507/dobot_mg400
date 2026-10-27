@@ -50,7 +50,10 @@ def connection_for(monkeypatch, receiver, **kwargs):
 
 def test_decodes_controller_state_and_preserves_raw_timestamp():
     assert decode_feedback(frame(error=True, mode=9)) == Feedback(
-        joints_deg=(10, -20, 30, 40), mode=9, timestamp=12345, error_status=True,
+        joints_deg=(10, -20, 30, 40),
+        mode=9,
+        timestamp=12345,
+        error_status=True,
         speed_scaling_raw=0.0,
     )
     assert decode_feedback(frame(timestamp=0)).timestamp == 0

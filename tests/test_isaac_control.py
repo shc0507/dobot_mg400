@@ -29,6 +29,10 @@ class FloatModel:
     def set_value(self, value):
         self.as_float = value
 
+    @property
+    def as_int(self):
+        return int(self.as_float)
+
     def add_begin_edit_fn(self, callback):
         token = len(self.begin_callbacks) + 1
         self.begin_callbacks[token] = callback
@@ -173,8 +177,9 @@ def panel_module(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, backend.__name__, backend)
 
     class KeyboardSession:
-        def __init__(self, control):
+        def __init__(self, control, *, speed_percent=1):
             self.control = control
+            self.speed_percent = speed_percent
             self.ready = self.closed = False
             self.fault = None
             self.limit_reason = None
@@ -384,6 +389,8 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
             self.frame = self
             self.tooltip = kwargs.get("tooltip")
             self.model = kwargs.get("model", text if isinstance(text, FloatModel) else None)
+            if type(self).__name__ == "IntSlider" and self.model is None:
+                self.model = FloatModel(0)
             widgets.append(self)
 
         def __enter__(self):
@@ -532,7 +539,17 @@ def install_ui(panel_module, panel, monkeypatch, next_update):
     modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(
         is_stopped=lambda: True
     )
-    for name in ("Window", "VStack", "HStack", "Label", "FloatField", "FloatSlider", "Button"):
+    for name in (
+        "Window",
+        "VStack",
+        "HStack",
+        "Label",
+        "FloatField",
+        "FloatSlider",
+        "IntField",
+        "IntSlider",
+        "Button",
+    ):
         setattr(modules["omni.ui"], name, type(name, (Widget,), {}))
     modules["omni.ui"].SimpleFloatModel = FloatModel
     for name, module in modules.items():
@@ -1115,6 +1132,74 @@ def test_keyboard_starts_disabled_and_ignores_unarmed_keys(panel):
     assert panel.action is None
     assert panel.held_keys == set()
     assert panel.control.calls == []
+
+
+def test_speed_edit_closes_session_and_next_keyboard_uses_selected_speed(panel):
+    panel.window = SimpleNamespace(exclusive_keyboard=True)
+
+    async def exercise():
+        old = await arm_keyboard(panel)
+        panel.keyboard_speed_model = FloatModel(10)
+        panel.begin_speed_edit()
+        assert old.closed and not panel.keyboard_enabled
+        assert not panel.window.exclusive_keyboard
+        assert panel.control.calls == []
+        new = await arm_keyboard(panel)
+        assert new is not old and new.speed_percent == 10
+        panel.keyboard_speed_model.set_value(20)
+        assert new.speed_percent == 10
+
+    asyncio.run(exercise())
+
+
+def test_speed_edit_cancels_preparation_waiting_for_pose(panel):
+    panel.window = SimpleNamespace(exclusive_keyboard=False)
+
+    async def exercise():
+        waiting = asyncio.Event()
+        panel.pose_task = asyncio.create_task(waiting.wait())
+        panel.request_keyboard()
+        old = panel.keyboard_session
+        await asyncio.sleep(0)
+        panel.begin_speed_edit()
+        waiting.set()
+        await panel.keyboard_task
+        assert old.closed and not old.prepare_started.is_set()
+        assert not panel.keyboard_enabled
+        assert panel.control.calls == []
+
+    asyncio.run(exercise())
+
+
+def test_speed_controls_disable_during_keyboard_hold(panel_module, panel, monkeypatch):
+    frames = 0
+
+    async def next_update():
+        nonlocal frames
+        frames += 1
+        panel.mirror.latest = panel.control.read_state(), time.monotonic()
+        controls = [
+            widget for widget in widgets if type(widget).__name__ in ("IntSlider", "IntField")
+        ]
+        if frames == 2:
+            assert len(controls) == 2 and all(widget.enabled for widget in controls)
+            assert controls[0].model is controls[1].model is panel.keyboard_speed_model
+            panel.keyboard_speed_model.begin_edit()
+            panel.keyboard_speed_model.set_value(10)
+            session = await arm_keyboard(panel)
+            assert session.speed_percent == 10
+            panel.key_event("Q", True)
+            await session.run_started.wait()
+        elif frames == 3:
+            assert all(not widget.enabled for widget in controls)
+            panel.key_event("Q", False)
+            await panel.action
+            panel.window.visible = False
+
+    widgets = install_ui(panel_module, panel, monkeypatch, next_update)
+    asyncio.run(panel.run())
+    assert frames == 3
+    assert not panel.keyboard_speed_model.begin_callbacks
 
 
 @pytest.mark.parametrize("j4", (-360.0, -359.0, -220.0, 220.0, 359.0, 360.0))

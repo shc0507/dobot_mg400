@@ -26,11 +26,14 @@ class KeyboardJogSession:
 
     release() and close() are nonblocking UI calls. A normal release preserves
     readiness after the stop is verified. Any uncertain stop locks both this
-    session and its parent control. Preparation sets SpeedFactor(1) without motion.
+    session and its parent control. Preparation sets the selected speed without motion.
     """
 
-    def __init__(self, control):
+    def __init__(self, control, *, speed_percent=1):
+        if type(speed_percent) is not int or not 1 <= speed_percent <= 100:
+            raise ValueError("Keyboard speed must be an integer from 1 to 100")
         self.control = control
+        self._speed_percent = speed_percent
         self._lock = threading.Lock()
         self._active = None
         self._phase = None
@@ -47,6 +50,10 @@ class KeyboardJogSession:
         self.fault = None
         self.limit_reason = None
         self._continuous = False
+
+    @property
+    def speed_percent(self):
+        return self._speed_percent
 
     @property
     def busy(self):
@@ -92,6 +99,7 @@ class KeyboardJogSession:
         try:
             result = active.stop_after_command(
                 jog=self._continuous,
+                jog_speed_percent=self.speed_percent,
                 on_error=lambda error: self._revoke(error=error),
             )
         except Exception as error:
@@ -179,7 +187,7 @@ class KeyboardJogSession:
                 return
 
     def prepare(self):
-        """Verify enabled idle state and set the low jogging speed without motion."""
+        """Verify enabled idle state and set the selected speed without motion."""
         active = self._start("preparing")
         try:
             validate_measured_joints(active._fresh({5})[0].joints_deg)
@@ -188,7 +196,9 @@ class KeyboardJogSession:
             pose = self._read_measured_pose(active, {5})
             if self._revoked.is_set() or active.stopped:
                 raise RuntimeError("Keyboard preparation cancelled")
-            active._guarded_command("SpeedFactor(1)", modes={5}, send_modes={5}, expected=joints)
+            active._guarded_command(
+                f"SpeedFactor({self.speed_percent})", modes={5}, send_modes={5}, expected=joints
+            )
             acknowledged_at = time.monotonic()
             receipts = set()
             while len(receipts) < 3:
@@ -196,9 +206,10 @@ class KeyboardJogSession:
                     raise RuntimeError("Keyboard preparation cancelled")
                 sample, received = active._fresh({5})
                 if received > acknowledged_at:
-                    if sample.speed_scaling_raw != 1:
+                    if sample.speed_scaling_raw != self.speed_percent:
                         raise RuntimeError(
-                            "Keyboard speed feedback does not confirm SpeedFactor(1)"
+                            "Keyboard speed feedback does not confirm "
+                            f"SpeedFactor({self.speed_percent})"
                         )
                     receipts.add(received)
                 if time.monotonic() - acknowledged_at > 0.5:
@@ -228,10 +239,10 @@ class KeyboardJogSession:
 
     def _check_send(self, active, released):
         self._check_hold(active, released)
+        sample, _ = active._fresh({5})
+        if sample.speed_scaling_raw != self.speed_percent:
+            raise RuntimeError("Keyboard jogging speed changed")
         if self._continuous:
-            sample, _ = active._fresh({5})
-            if sample.speed_scaling_raw != 1:
-                raise RuntimeError("Keyboard jogging speed changed")
             try:
                 validate_joints(sample.joints_deg)
             except ValueError as error:
@@ -243,9 +254,9 @@ class KeyboardJogSession:
                 self._check_hold(active, released)
                 sample = active._fresh({5, 7, 11} if self._continuous else {5, 7})[0]
                 validate_measured_joints(sample.joints_deg)
+                if sample.speed_scaling_raw != self.speed_percent:
+                    raise RuntimeError("Keyboard jogging speed changed")
                 if self._continuous:
-                    if sample.speed_scaling_raw != 1:
-                        raise RuntimeError("Keyboard jogging speed changed")
                     try:
                         validate_joints(sample.joints_deg)
                     except ValueError as error:
@@ -397,10 +408,10 @@ class KeyboardJogSession:
         read_pose = not self._continuous
         try:
             self._check_hold(active, released)
+            sample, _ = active._fresh({5})
+            if sample.speed_scaling_raw != self.speed_percent:
+                raise RuntimeError("Keyboard jogging speed changed")
             if self._continuous:
-                sample, _ = active._fresh({5})
-                if sample.speed_scaling_raw != 1:
-                    raise RuntimeError("Keyboard jogging speed changed")
                 active._guarded_command(
                     MOVEJOG_COMMANDS[key],
                     modes={5, 7, 11},

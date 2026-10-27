@@ -1242,24 +1242,25 @@ def test_stop_ack_does_not_prove_stillness(rig, monkeypatch):
     assert commands == [("ResetRobot()", 29999)]
 
 
-def test_jog_release_reuses_child_connection_until_finish(rig, monkeypatch):
+@pytest.mark.parametrize("speed", [1, 25, 100])
+def test_jog_release_reuses_child_connection_until_finish(rig, monkeypatch, speed):
     control, sample, now, _ = rig
-    sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=1)
+    sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=speed)
     connection = socket_for(monkeypatch, [b"0,{},MoveJog(J4+);", b"0,{},MoveJog();"])
     active = control.begin_operation()
     active._guarded_command(
         "MoveJog(J4+)", modes={5, 11}, send_modes={5}, expected=START, port=30003
     )
-    sample[0] = Feedback(START, 11, 0, False, speed_scaling_raw=1)
+    sample[0] = Feedback(START, 11, 0, False, speed_scaling_raw=speed)
 
     def reply(size):
         now[0] += 0.185
-        sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=1)
+        sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=speed)
         return b"0,{},MoveJog();"
 
     connection.recv.side_effect = reply
     before = now[0]
-    result = active.stop_after_command(jog=True)
+    result = active.stop_after_command(jog=True, jog_speed_percent=speed)
     assert result["ok"]
     assert 0.24 <= now[0] - before < 0.26
     assert active.stop(jog=True) is result
@@ -1292,10 +1293,11 @@ def test_jog_fault_uses_reset_and_never_short_stop(rig, monkeypatch, fault):
     active.finish_operation()
 
 
+@pytest.mark.parametrize("speed", [1, 25])
 @pytest.mark.parametrize("fault", ["lost_ack", "speed", "mode"])
-def test_jog_stop_failure_requests_reset_but_keeps_parent_locked(rig, monkeypatch, fault):
+def test_jog_stop_failure_requests_reset_but_keeps_parent_locked(rig, monkeypatch, fault, speed):
     control, sample, _, commands = rig
-    sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=1)
+    sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=speed)
     active = control.begin_operation()
     active._pending = {
         "command": "MoveJog(J4+)",
@@ -1313,14 +1315,14 @@ def test_jog_stop_failure_requests_reset_but_keeps_parent_locked(rig, monkeypatc
                 raise TimeoutError("Lost jog stop acknowledgement")
             sample[0] = Feedback(START, 11 if fault == "mode" else 5, 0, False, 2)
             if fault == "mode":
-                sample[0] = Feedback(START, 11, 0, False, 1)
+                sample[0] = Feedback(START, 11, 0, False, speed)
         else:
             assert text == "ResetRobot()"
             sample[0] = Feedback(START, 5, 0, False, 1)
         return ""
 
     monkeypatch.setattr(active, "_command", command)
-    result = active.stop_after_command(jog=True)
+    result = active.stop_after_command(jog=True, jog_speed_percent=speed)
     assert not result["ok"]
     assert commands == [("MoveJog()", 30003), ("ResetRobot()", 29999)]
     assert active.stop(jog=True) is result

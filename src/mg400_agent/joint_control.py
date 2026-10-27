@@ -166,7 +166,7 @@ class JointControl:
                 self._close_jog_connection()
             self._operation_lock.release()
 
-    def stop_after_command(self, *, on_error=None, jog=False):
+    def stop_after_command(self, *, on_error=None, jog=False, jog_speed_percent=1):
         """Stop a revoked hold after its bounded acknowledgement wait.
 
         The caller must revoke input before calling. A wait failure cancels the
@@ -191,7 +191,7 @@ class JointControl:
                     self._parent.cancel()
                 if on_error is not None:
                     on_error(error)
-        return self.stop(jog=jog)
+        return self.stop(jog=jog, jog_speed_percent=jog_speed_percent)
 
     def cancel(self, *, disabling=False):
         """Immediately latch cancellation from the UI, without waiting or networking.
@@ -575,7 +575,15 @@ class JointControl:
         return mode, joints[:4]
 
     def _wait_stable(
-        self, target=None, *, modes, final_modes, timeout=5.0, stopping=False, jog_stop_ack=None
+        self,
+        target=None,
+        *,
+        modes,
+        final_modes,
+        timeout=5.0,
+        stopping=False,
+        jog_stop_ack=None,
+        jog_speed_percent=1,
     ):
         deadline = time.monotonic() + timeout
         jog_stop = jog_stop_ack is not None
@@ -592,8 +600,10 @@ class JointControl:
                 raise RuntimeError("Control has been stopped; reopen the panel")
             sample, received = self._fresh(modes)
             if jog_stop:
-                if getattr(sample, "speed_scaling_raw", None) != 1:
-                    raise RuntimeError("MoveJog stop requires speed scaling feedback of 1")
+                if getattr(sample, "speed_scaling_raw", None) != jog_speed_percent:
+                    raise RuntimeError(
+                        f"MoveJog stop requires speed scaling feedback of {jog_speed_percent}"
+                    )
                 if received <= jog_stop_ack:
                     time.sleep(poll_seconds)
                     continue
@@ -967,7 +977,7 @@ class JointControl:
         """
         return self._wait_stable(modes={4, 5}, final_modes={4, 5}, stopping=True)
 
-    def stop(self, *, jog=False):
+    def stop(self, *, jog=False, jog_speed_percent=1):
         """Permanently cancel this instance, request a controlled stop, verify rest.
 
         An unresolved mutation ACK makes ordering across connections unknown;
@@ -1026,6 +1036,7 @@ class JointControl:
                     timeout=3,
                     stopping=True,
                     jog_stop_ack=jog_stop_ack,
+                    jog_speed_percent=jog_speed_percent,
                 )
                 self._stop_result = {
                     "ok": True,

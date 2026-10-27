@@ -82,7 +82,7 @@ class Operation:
             self.send_guard()
         self._fresh(kwargs["send_modes"])
         self.control.commands.append(text)
-        if text == "SpeedFactor(1)":
+        if text.startswith("SpeedFactor("):
             self.control.speed_ack = self.control.now
             self.control.sample = replace(
                 self.control.sample, speed_scaling_raw=self.control.scaling_after_ack
@@ -95,8 +95,9 @@ class Operation:
     def wait_for_command(self):
         return True
 
-    def stop_after_command(self, *, jog, on_error):
+    def stop_after_command(self, *, jog, on_error, jog_speed_percent=1):
         self.control.stop_calls.append(jog)
+        self.control.stop_speeds.append(jog_speed_percent)
         normal_jog = jog and not self.stopped
         self.control.commands.append("MoveJog()" if normal_jog else "ResetRobot()")
         self.control.sample = replace(self.control.sample, mode=5)
@@ -113,6 +114,7 @@ def rig(monkeypatch):
             self.now = 10.0
             self.sample = Feedback(START, 5, 0, False, 1)
             self.commands, self.stop_calls, self.receipts = [], [], []
+            self.stop_speeds = []
             self.pose_reads = self.ticks = 0
             self.stopped = self.busy = False
             self.feedback_error = None
@@ -167,6 +169,37 @@ def test_prepare_sends_only_speed_and_requires_three_post_ack_receipts(rig):
     assert rig.session.ready and not rig.busy
 
 
+@pytest.mark.parametrize("speed", [0, 101, -1, True, 1.0, 1.5, "25", None, float("nan")])
+def test_invalid_selected_speed_is_rejected_before_any_command(rig, speed):
+    with pytest.raises(ValueError, match="integer from 1 to 100"):
+        KeyboardJogSession(rig, speed_percent=speed)
+    assert not rig.commands and not rig.busy
+
+
+@pytest.mark.parametrize("speed", [25, 100])
+def test_selected_speed_is_confirmed_and_passed_to_stop(rig, speed):
+    rig.session = KeyboardJogSession(rig, speed_percent=speed)
+    rig.scaling_after_ack = speed
+    rig.session.prepare()
+    assert rig.commands == [f"SpeedFactor({speed})"]
+    with pytest.raises(AttributeError):
+        rig.session.speed_percent = 1
+    rig.session.run("Q", threading.Event())
+    assert rig.commands == [f"SpeedFactor({speed})", COMMANDS["Q"], "MoveJog()"]
+    assert rig.stop_speeds == [speed]
+    assert rig.session.ready and not rig.stopped
+
+
+def test_selected_speed_mismatch_blocks_preparation_and_movement(rig):
+    rig.session = KeyboardJogSession(rig, speed_percent=25)
+    with pytest.raises(RuntimeError, match=r"SpeedFactor\(25\)"):
+        rig.session.prepare()
+    assert rig.commands == ["SpeedFactor(25)"]
+    assert not rig.session.ready and rig.stopped
+    with pytest.raises(RuntimeError):
+        rig.session.run("Q", threading.Event())
+
+
 @pytest.mark.parametrize("receipt", ["pre_ack", "one_post_ack"])
 def test_prepare_rejects_old_or_repeated_speed_feedback(rig, receipt):
     rig.receipt = lambda now: 10.0 if receipt == "pre_ack" else min(now, 10.005)
@@ -216,8 +249,11 @@ def test_cancellation_stops_the_active_hold(rig, cancel):
     assert rig.session.ready is (cancel == "release_event")
 
 
+@pytest.mark.parametrize("speed", [1, 25])
 @pytest.mark.parametrize("fault", ["feedback", "speed", "alarm"])
-def test_feedback_faults_stop_and_revoke_readiness(rig, fault):
+def test_feedback_faults_stop_and_revoke_readiness(rig, fault, speed):
+    rig.session = KeyboardJogSession(rig, speed_percent=speed)
+    rig.scaling_after_ack = speed
     rig.session.prepare()
 
     def inject():

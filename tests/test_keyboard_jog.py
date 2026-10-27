@@ -66,8 +66,8 @@ def rig(monkeypatch):
                 return "[[],[],[],[],[]]"
             if text == "GetAngle()":
                 return ",".join(map(str, self.sample.joints_deg))
-            if text == "SpeedFactor(1)":
-                self.sample = replace(self.sample, speed_scaling_raw=1.0)
+            if text.startswith("SpeedFactor("):
+                self.sample = replace(self.sample, speed_scaling_raw=float(text[12:-1]))
                 return ""
             if text == "GetPose(0,0)":
                 if self.release_after and len(self.moves) >= self.release_after:
@@ -91,14 +91,14 @@ def rig(monkeypatch):
                     joints = target
                     self.pose = (*self.pose[:3], joints[0] + joints[3])
                 if self.finish_moves:
-                    self.sample = Feedback(joints, 5, 0, False)
+                    self.sample = replace(self.sample, joints_deg=joints, mode=5)
                 else:
-                    self.sample = Feedback(self.sample.joints_deg, 7, 0, False)
+                    self.sample = replace(self.sample, mode=7)
                 return ""
             if text == "ResetRobot()":
                 if self.reset_failure:
                     raise ConnectionError("Lost stop acknowledgement")
-                self.sample = Feedback(self.sample.joints_deg, 5, 0, False)
+                self.sample = replace(self.sample, mode=5)
                 return ""
             raise AssertionError(f"Unexpected command: {text}")
 
@@ -206,6 +206,56 @@ def test_prepare_sets_low_speed_without_motion_and_shares_controller_locks(rig):
     rig.session.release()
     assert rig.session.ready
     assert len(rig.commands) == 5
+
+
+@pytest.mark.parametrize("key", ["W", "S"])
+@pytest.mark.parametrize("speed", [25, 100])
+def test_finite_radial_motion_uses_the_confirmed_selected_speed(rig, key, speed):
+    rig.session = KeyboardJogSession(rig.session.control, speed_percent=speed)
+    rig.session.prepare()
+    rig.session.run(key, threading.Event())
+    assert f"SpeedFactor({speed})" in rig.commands
+    assert len(rig.moves) == 1
+    assert rig.moves[0].endswith("User=0,Tool=0,SpeedL=2,AccL=20)")
+    assert rig.sample.speed_scaling_raw == speed
+    assert rig.session.ready and not rig.session.control.stopped
+
+
+@pytest.mark.parametrize("when", ["before_run", "before_send"])
+def test_finite_speed_mismatch_prevents_movement(rig, when):
+    rig.session = KeyboardJogSession(rig.session.control, speed_percent=25)
+    rig.session.prepare()
+
+    def mismatch():
+        rig.sample = replace(rig.sample, speed_scaling_raw=1)
+
+    if when == "before_run":
+        mismatch()
+    else:
+        rig.connect_hook = lambda port: mismatch() if port == 30003 else None
+    with pytest.raises(RuntimeError, match="speed changed"):
+        rig.session.run("W", threading.Event())
+    assert not rig.moves
+    assert rig.session.control.stopped and not rig.session.ready
+
+
+def test_finite_speed_change_during_movement_stops_and_revokes_readiness(rig, monkeypatch):
+    rig.session = KeyboardJogSession(rig.session.control, speed_percent=25)
+    rig.session.prepare()
+    rig.release_after = None
+    rig.finish_moves = False
+    sleep = rig.sleep
+
+    def change_speed(duration):
+        if rig.moves:
+            rig.sample = replace(rig.sample, speed_scaling_raw=1)
+        sleep(duration)
+
+    monkeypatch.setattr("mg400_agent.keyboard_jog.time.sleep", change_speed)
+    with pytest.raises(RuntimeError, match="speed changed"):
+        rig.session.run("W", threading.Event())
+    assert rig.moves and "ResetRobot()" in rig.commands
+    assert rig.session.control.stopped and not rig.session.ready
 
 
 @pytest.mark.parametrize(
@@ -872,7 +922,7 @@ def test_target_rejection_does_not_bypass_concurrent_stop_or_fault(rig, monkeypa
 
 def test_invalid_measured_joints_remain_a_fault(rig):
     rig.session.prepare()
-    rig.sample = Feedback((200, *START[1:]), 5, 0, False)
+    rig.sample = replace(rig.sample, joints_deg=(200, *START[1:]))
     with pytest.raises(RuntimeError, match="outside"):
         rig.session.run("D", threading.Event())
     assert rig.session.control.stopped

@@ -24,8 +24,74 @@ J4 命令行试验通过 `--host` 和 `--source-host` 指定网络地址。
 上述 Python README 标注控制器 V1.5.6.0+。
 故障排查建议尝试 V1.6.0.0+。
 最终以本机固件对应的官方手册为准。
-在 DobotStudio Pro 中选择 TCP/IP 二次开发模式。
+控制前，进入 TCP/IP 二次开发模式。
+可在 DobotStudio Pro 中选择，也可使用下文脚本。
 不要混用六轴机器人 SDK。
+
+### 从服务器切换 TCP/IP 模式
+
+[`scripts/mg400_control_mode.py`](../scripts/mg400_control_mode.py) 默认只读。
+它通过 SMB（网络文件共享）读取模式，通过 HTTP 读取运行状态。
+`configured_mode` 为保存的配置，不能单独证明模式已生效。
+`tp` 表示在线模式，`tcp` 表示 TCP/IP 模式。
+
+脚本要求 Python 3.11+ 和 `pysmb`。
+服务器须能访问机械臂的 TCP `445`、`22000` 和 `29999`。
+以下命令在 Olares 的 Isaac 容器中运行。
+使用 `UID:GID 1000:1000`。
+独立入口默认只读：
+
+```sh
+sh /root/Documents/mg400-tools/control-mode/run.sh
+```
+
+切换前，下使能机械臂并停止运行中的程序。
+关闭其他控制客户端，释放[面板连接锁](olares.md#面板连接锁)。
+然后执行：
+
+```sh
+sh /root/Documents/mg400-tools/control-mode/run.sh --switch-to-tcp
+```
+
+入口自动设置 `PYTHONPATH=/root/Documents/mg400-tools/mode-deps`。
+它还设置 `MG400_CONTROLLER_LOCK_DIR=/root/Documents/mg400-data/controller-locks`。
+备份写入 `/root/Documents/mg400-data/control-mode`。
+工具使用独立代码副本，不修改正在运行的 `/root/Documents/mg400-isaac`。
+仓库脚本更新后，须同步更新 `/root/Documents/mg400-tools/control-mode` 内的工具副本。
+
+若直接运行仓库版本，先按[代码更新流程](olares.md#代码与运行数据)部署。
+首次使用时，将依赖装入独立目录。
+不要覆盖 Kit 的 Python 依赖：
+
+```sh
+/isaac-sim/python.sh -m pip install --target /root/Documents/mg400-tools/mode-deps pysmb
+```
+
+每次从仓库运行时，设置依赖和共享锁目录：
+
+```sh
+export PYTHONPATH="/root/Documents/mg400-tools/mode-deps${PYTHONPATH:+:$PYTHONPATH}"
+export MG400_CONTROLLER_LOCK_DIR=/root/Documents/mg400-data/controller-locks
+cd /root/Documents/mg400-isaac
+/isaac-sim/python.sh scripts/mg400_control_mode.py
+```
+
+从仓库切换时，在命令末尾加 `--switch-to-tcp`。
+脚本默认读取 `config/robot.toml`，可用 `--host` 指定地址。
+切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止及无报警状态。
+脚本先备份配置，再写入 `project` 共享内的 `/settings/function/remoteControl.json`。
+随后向 `22000` 端口的 `/settings/function/remoteControl` POST 同一配置。
+目标字段为 `{"mode":"tcp","name":""}`，其他字段保持原值。
+此顺序来自 [DobotLink 源码](https://github.com/Dobot-Arm/DobotLink/blob/80c6ad78010721648ad671cc47320604d303f1d9/Plugins/IndustrialRobotPlugin/Device.cpp#L3239)。
+
+成功要求 HTTP 返回 `status: true`、配置读回一致且 `RobotMode()` 成功返回 `4`。
+脚本不使能、不清除报警，也不发送运动命令。
+直接运行仓库脚本时，备份默认存入 `work/control-mode/`。
+可用 `--backup-dir` 修改备份目录。
+写入后发生错误时，控制器状态可能已改变。
+脚本会报告备份路径，不会自动重发切换请求或回滚。
+先核对状态和报错，再决定是否重新执行。
+该流程依赖官方客户端使用的接口，固件升级后须重新核对兼容性。
 
 ### 官方 SDK 接口
 

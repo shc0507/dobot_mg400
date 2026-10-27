@@ -46,11 +46,20 @@ uv run ruff format --check .
 | `config/robot.toml` | 真机面板与姿态镜像的机器人地址 |
 | `apps/control_panel/` | 独立 Python 网页服务和界面 |
 | `apps/isaacsim/` | Isaac 姿态镜像、统一控制面板和模型检查入口 |
+| `apps/layout-studio/` | 离线布局编辑器，使用模拟数据，不发送控制命令 |
+| `config/camera_preview/` | 摄像头预览配置和 systemd 服务 |
 | `isaacsim/`、`00_OPEN_MG400.usda` | USD 模型、工作场景和日常场景入口 |
 | `src/mg400_agent/` | agent、后端、控制协议和反馈处理 |
 | `scripts/` | 模型构建、Olares 启动、客户端操作和 USB 采集 |
 | `examples/` | 单文件教学、受限 J4 试验和 notebook |
 | `tests/` | Python 和 JavaScript 离线测试 |
+| `downloads/` | 已纳入 Git 的 CAD 来源文件，夹爪构建脚本读取其中的 ZIP |
+| `docs/` | 操作、部署和开发指南，`docs/agents/` 保存代理操作规程 |
+| `work/` | 本地运行数据、备份和临时文件，不纳入 Git |
+
+用浏览器打开 [布局编辑器](../apps/layout-studio/index.html)，可编辑并导出界面布局。
+`MG400_DATA_DIR` 可指定运行数据目录，配置见 [代码与运行数据](olares.md#代码与运行数据)。
+`downloads/` 是模型来源目录，不是下载缓存。
 
 `cli.py` 提供 MuJoCo 的 `state`、`ask` 和 `chat` 命令。
 `terminal_control.py` 提供 `mg400-robot` 真机交互终端。

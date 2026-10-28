@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from mg400_agent import controller_ownership
 from mg400_agent.controller_ownership import ControllerOwnership
 
 
@@ -120,3 +121,14 @@ def test_relative_directory_is_rejected_before_connection(monkeypatch, tmp_path)
     with pytest.raises(RuntimeError, match="absolute"):
         owner.acquire()
     assert not owner.held
+
+
+def test_root_refuses_a_lock_directory_that_another_user_owns(tmp_path, monkeypatch):
+    if os.geteuid() == 0:
+        os.chown(tmp_path, 1000, 1000)
+    monkeypatch.setattr(controller_ownership.os, "geteuid", lambda: 0)
+    lease = ControllerOwnership("192.168.1.6", directory=tmp_path)
+    with pytest.raises(RuntimeError, match=f"Run as UID {tmp_path.stat().st_uid}"):
+        lease.acquire()
+    assert not lease.held
+    assert list(tmp_path.iterdir()) == []

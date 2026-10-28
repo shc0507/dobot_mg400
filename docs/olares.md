@@ -93,7 +93,6 @@ DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/d
 代码通过 GitHub 管理，Olares 运行选定提交。
 `apps/`、`config/`、`src/` 和 `scripts/` 随同一提交更新，不要只覆盖其中的几个脚本。
 更新后，重启对应服务。
-不必上传 `.env` 或 API key，也不必安装模型 API 依赖。
 
 Olares 未配置 GitHub 读取凭据时，通过 Git bundle 导入目标版本。
 在本地项目根目录生成包含完整 Git 历史的 bundle，并记录目标提交：

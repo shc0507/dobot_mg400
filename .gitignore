@@ -8,6 +8,5 @@ dist/
 build/
 .env
 .env.*
-!.env.example
 .DS_Store
 work

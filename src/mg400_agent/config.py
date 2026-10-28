@@ -1,4 +1,4 @@
-"""Numeric input validation for control and simulation."""
+"""Numeric input validation for robot control."""
 
 import math
 

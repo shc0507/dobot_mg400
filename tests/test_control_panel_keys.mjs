@@ -1671,3 +1671,17 @@ test("Clear alarm shows only during an alarm, lists the alarms and sends clear_a
   assert.equal(page.$("clearAlarm").hidden, true);
   assert.equal(page.$("alarms").hidden, true);
 });
+
+test("the alarm button reads Recover when the alarm cleared elsewhere and the latch is recoverable", async () => {
+  const page = await ready({ locked: true, stop_unconfirmed: true, recoverable: false, robot_mode: 4 });
+  assert.equal(page.$("clearAlarm").hidden, true);
+  await page.push(page.snapshot({ locked: true, stop_unconfirmed: true, recoverable: true, robot_mode: 4 }));
+  assert.equal(page.$("clearAlarm").hidden, false);
+  assert.equal(page.$("clearAlarm").textContent, "Recover");
+  assert.equal(page.$("clearAlarm").disabled, false);
+  assert.equal(page.$("alarms").hidden, true);
+  await page.click("clearAlarm");
+  assert.deepEqual(page.commands("clear_alarm")[0].body, { action: "clear_alarm" });
+  await page.push(page.snapshot({ robot_mode: 9, robot_error: true, locked: true, recoverable: false }));
+  assert.equal(page.$("clearAlarm").textContent, "Clear alarm");
+});

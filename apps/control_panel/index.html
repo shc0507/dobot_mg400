@@ -119,7 +119,10 @@
       $('speedField').title = speedTitle + (robot && data.speed_factor != null ? ` Controller ratio: ${data.speed_factor}%.` : '');
       $('joints').innerHTML = [0,1,2,3].map(i => `<span>J${i+1} <b>${data.joints ? data.joints[i].toFixed(2)+'°' : '—'}</b></span>`).join('');
       const alarm = robot && (data.robot_mode === 9 || !!data.robot_error);
-      $('clearAlarm').hidden = !alarm;
+      const recover = robot && !alarm && !!data.recoverable;
+      $('clearAlarm').hidden = !alarm && !recover;
+      $('clearAlarm').textContent = recover ? 'Recover' : 'Clear alarm';
+      $('clearAlarm').title = recover ? 'Confirms disable and rest, then unlocks control.' : 'Sends ClearError() only. Motion does not resume.';
       $('clearAlarm').disabled = !active || !owner || !data.feedback_fresh;
       $('alarms').hidden = !alarm || !data.alarms?.length;
       $('alarms').textContent = alarm ? (data.alarms || []).map(item => `Alarm ${item.id}${item.source === 'controller' ? '' : ' · '+item.source}: ${item.description}${item.solution ? '. '+item.solution : ''}`).join('\n') : '';

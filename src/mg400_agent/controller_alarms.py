@@ -589,7 +589,7 @@ def describe_alarms(groups):
         table = CONTROLLER_ALARMS if index < servos else SERVO_ALARMS
         for alarm in group:
             if alarm == -2 and index < servos:
-                description, solution = "Collision detected", ""
+                description, solution = "Collision detected", "Check the arm for contact"
             else:
                 description, solution = table.get(alarm, ("Unknown alarm", ""))
             alarms.append(

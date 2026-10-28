@@ -71,6 +71,8 @@ class RobotPanelState:
         self._locked = False
         self._fault = False
         self._faults = 0
+        # Set when a stop or disable failed while the controller reported no alarm.
+        self._non_alarm_fault = False
         self._disable_verified = False
         self._safety_workers = 0
         self._safety_actions = set()
@@ -163,6 +165,7 @@ class RobotPanelState:
                 or self._kb_thread is not None,
                 "locked": self._locked or bool(self._grip.get("locked")),
                 "stop_unconfirmed": self._fault,
+                "recoverable": self._recoverable(),
                 "gripper_available": bool(self._grip.get("available")),
                 "gripper_can_initialize": bool(self._grip.get("can_initialize")),
                 "gripper_busy": self._gripper_active or bool(self._grip.get("busy")),
@@ -494,8 +497,7 @@ class RobotPanelState:
             self._safety_workers -= 1
             self._safety_actions.discard(disabling)
             self._control.cancel(disabling=disabling)
-            self._fault = True
-            self._faults += 1
+            self._record_fault()
             self._message = f"Robot stop could not start: {error} Use the physical emergency stop."
             return
         self._safety_threads.append(thread)
@@ -522,12 +524,17 @@ class RobotPanelState:
                     if disabling
                     else "Robot stop is confirmed. Disable the robot before recovery."
                 )
+                if self._fault:
+                    # A later success must not hide an earlier unconfirmed verdict.
+                    self._message = (
+                        "Control stays locked: an earlier stop or disable is unconfirmed. "
+                        + self._recovery_hint()
+                    )
                 if self._gripper_active:
                     self._message += " The gripper command is still active."
         except Exception as error:
             with self._lock:
-                self._fault = True
-                self._faults += 1
+                self._record_fault()
                 self._message = f"Robot stop or disable is unconfirmed: {error}"
         finally:
             with self._lock:
@@ -539,6 +546,32 @@ class RobotPanelState:
                     self._owner = None
                     self._disconnect_requested = False
                 self._recover_disabled()
+
+    def _alarm_now(self):
+        return self._fresh() and (self._sample.mode == 9 or self._sample.error_status)
+
+    def _record_fault(self):
+        self._fault = True
+        self._faults += 1
+        if not self._alarm_now():
+            self._non_alarm_fault = True
+
+    def _recoverable(self):
+        """Whether Recover may confirm rest after the alarm behind the fault cleared elsewhere."""
+        return (
+            self._fault
+            and not self._non_alarm_fault
+            and not self._clearing
+            and self._fresh()
+            and not self._alarm_now()
+        )
+
+    def _recovery_hint(self):
+        if self._non_alarm_fault:
+            return "Check the robot, then restart the panel service."
+        if self._alarm_now():
+            return "Fix the alarm cause, then click Clear alarm."
+        return "Check the robot, then click Recover."
 
     def _recover_disabled(self):
         if (
@@ -561,19 +594,22 @@ class RobotPanelState:
     def _start_alarm_clear(self):
         if not self._fresh():
             raise RuntimeError("Robot feedback is absent or stale")
-        if self._sample.mode != 9 and not self._sample.error_status:
+        alarm = self._alarm_now()
+        if not alarm and not self._recoverable():
             raise RuntimeError("The robot reports no alarm")
         if self._busy or self._safety_workers or self._clearing or self._kb_thread is not None:
             raise RuntimeError("Another robot operation is in progress")
         self._kb_disarm(None)
         thread = threading.Thread(
             target=self._clear_alarm,
-            args=(self._control,),
+            args=(self._control, alarm),
             name="MG400-alarm-clear",
             daemon=True,
         )
         self._clearing = True
-        self._message = "Clearing the robot alarm."
+        self._message = (
+            "Clearing the robot alarm." if alarm else "Confirming robot disable and rest."
+        )
         try:
             thread.start()
         except Exception:
@@ -581,15 +617,17 @@ class RobotPanelState:
             raise
         self._safety_threads.append(thread)
 
-    def _clear_alarm(self, control):
+    def _clear_alarm(self, control, clear):
         """Clear the alarm, then confirm a disable and rest on a new control instance.
 
         In an alarm the controller refuses DisableRobot() and has already halted motion.
         A verified disable and rest after the alarm clears replace the stop that the
-        alarm prevented. Unknown command ordering still keeps control locked.
+        alarm prevented. clear is False when the alarm already cleared elsewhere, for
+        example with Collision Resume on the arm. Unknown command ordering, or a stop
+        that failed without an alarm, still keeps control locked.
         """
         try:
-            alarms = describe_alarms(control.clear_alarms())
+            alarms = describe_alarms(control.clear_alarms() if clear else ())
             with self._lock:
                 self._alarms, self._alarms_read = alarms or None, time.monotonic()
                 cleared = self._fresh() and self._sample.mode != 9 and not self._sample.error_status
@@ -604,6 +642,12 @@ class RobotPanelState:
                 if control.ordering_unknown or control.command_pending:
                     self._message = (
                         "The alarm is cleared, but command ordering remains unknown. "
+                        "Check the robot, then restart the panel service."
+                    )
+                    return
+                if self._non_alarm_fault:
+                    self._message = (
+                        "The alarm is cleared, but an earlier stop failed without an alarm. "
                         "Check the robot, then restart the panel service."
                     )
                     return

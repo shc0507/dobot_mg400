@@ -38,4 +38,5 @@ def test_describe_maps_the_last_four_lists_to_the_servos(groups):
     assert alarms[0]["description"] == "Parallelogram positive limit"
     assert alarms[0]["solution"] == "Reverse jog out of limit"
     assert alarms[1]["description"] == "Collision detected"
+    assert alarms[1]["solution"] == "Check the arm for contact"
     assert alarms[2]["description"] == "Unknown alarm"

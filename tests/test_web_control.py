@@ -1086,3 +1086,64 @@ def test_clear_alarm_requires_an_alarm_and_the_controlling_browser(rig):
     with pytest.raises(PermissionError):
         state.command({"action": "clear_alarm"}, "browser-b")
     assert "clear_alarms" not in controls[0].calls
+
+
+def latched_alarm_rig(rig):
+    """The alarm makes the controller refuse the stop, so the panel latches."""
+    state, feed, controls = rig
+    connect(state)
+    controls[0].stop_ok = False
+    feed.sample = Feedback((1, 2, 3, 4), 9, 0, True)
+    wait_for(lambda: state.snapshot()["stop_unconfirmed"] and not state.snapshot()["busy"])
+    return state, feed, controls
+
+
+def test_recover_confirms_rest_after_the_alarm_cleared_elsewhere(rig):
+    state, feed, controls = latched_alarm_rig(rig)
+    assert not state.snapshot()["recoverable"]
+    # Collision Resume on the arm clears the alarm outside the panel.
+    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+    wait_for(lambda: state.snapshot()["recoverable"])
+    state.command({"action": "clear_alarm"}, "browser-a")
+    wait_for(lambda: not state.snapshot()["locked"])
+    assert "clear_alarms" not in controls[0].calls
+    assert controls[1].calls[:2] == ["disable", "stationary"]
+    snapshot = state.snapshot()
+    assert not snapshot["stop_unconfirmed"] and not snapshot["recoverable"]
+
+
+def test_a_stop_that_failed_without_an_alarm_is_not_recoverable(rig):
+    state, feed, controls = rig
+    connect(state)
+    controls[0].stop_ok = False
+    state.command({"action": "stop"}, "browser-a")
+    wait_for(lambda: state.snapshot()["stop_unconfirmed"] and not state.snapshot()["busy"])
+    assert not state.snapshot()["recoverable"]
+    with pytest.raises(RuntimeError, match="no alarm"):
+        state.command({"action": "clear_alarm"}, "browser-a")
+    # A later alarm can be cleared, but the earlier verdict keeps the lock.
+    controls[0].alarm_ids = ((), (), (), (), (), ())
+    controls[0].on_clear = lambda: setattr(feed, "sample", Feedback((1, 2, 3, 4), 4, 0, False))
+    feed.sample = Feedback((1, 2, 3, 4), 9, 0, True)
+    wait_for(lambda: state.snapshot()["robot_mode"] == 9)
+    state.command({"action": "clear_alarm"}, "browser-a")
+    wait_for(
+        lambda: not state.snapshot()["busy"] and "without an alarm" in state.snapshot()["message"]
+    )
+    assert state.snapshot()["locked"] and state.snapshot()["stop_unconfirmed"]
+    assert len(controls) == 1
+
+
+def test_a_later_confirmed_stop_does_not_hide_the_unconfirmed_one(rig):
+    state, feed, controls = latched_alarm_rig(rig)
+    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+    wait_for(lambda: state.snapshot()["robot_mode"] == 4)
+    controls[0].stop_ok = True
+    state.command({"action": "stop"}, "browser-a")
+    wait_for(lambda: not state.snapshot()["busy"])
+    snapshot = state.snapshot()
+    assert snapshot["stop_unconfirmed"] and snapshot["locked"]
+    assert snapshot["message"] == (
+        "Control stays locked: an earlier stop or disable is unconfirmed. "
+        "Check the robot, then click Recover."
+    )

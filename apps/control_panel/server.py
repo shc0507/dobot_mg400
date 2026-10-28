@@ -412,8 +412,10 @@ class SocketSession:
                 now = time.monotonic()
                 # Skip a push while frames wait, so a slow reader gets the latest state later.
                 if not self._connection.backlog:
+                    # Clear only a flag that was seen, so a reply landing now gets the next push.
                     replied = self._replied.is_set()
-                    self._replied.clear()
+                    if replied:
+                        self._replied.clear()
                     snapshot = self.server.state.snapshot()
                     content = {key: value for key, value in snapshot.items() if key != "version"}
                     if replied or content != last or now - sent >= self.KEEPALIVE_SECONDS:
@@ -698,6 +700,10 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+        if path == self.server.base_path + "api/keys":
+            # A page loaded before a service update still posts key updates here.
+            self._send(404, {"error": "The robot service was updated. Reload the page."})
+            return
         if path not in {
             self.server.base_path + "api/command",
             self.server.base_path + "api/heartbeat",

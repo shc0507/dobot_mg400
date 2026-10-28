@@ -279,6 +279,25 @@ def test_remote_bind_requires_access_token(monkeypatch):
     assert error.value.code == 2
 
 
+@pytest.mark.parametrize("bind", ["127.0.0.1", "0.0.0.0"])
+def test_access_token_must_be_ascii(monkeypatch, bind):
+    # Browsers cannot send other characters in the Authorization header.
+    monkeypatch.setenv("MG400_PANEL_TOKEN", "é" * 30)
+    with pytest.raises(SystemExit) as error:
+        PANEL["main"](["--bind", bind])
+    assert error.value.code == 2
+
+
+def test_non_ascii_authorization_header_gets_401():
+    state = RecordingState()
+    # The server decodes header bytes as Latin-1, so a UTF-8 é arrives as non-ASCII text.
+    raw = http11("GET", "/api/state", b"", ["Authorization: Bearer tést-token"])
+    with running_panel(state) as server:
+        code, headers, _ = exchange(server, raw)
+    assert code == 401
+    assert headers.get("connection", "").lower() == "close"
+
+
 def test_cli_defaults_to_robot_without_starting_sync(monkeypatch):
     main = PANEL["main"]
     state = Mock()

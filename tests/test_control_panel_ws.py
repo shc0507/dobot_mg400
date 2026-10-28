@@ -758,10 +758,13 @@ def test_first_message_must_be_hello(losing):
     assert state.calls == []
 
 
-@pytest.mark.parametrize("token", ["wrong", "", TOKEN + "x", TOKEN[:-1], "tést-token"])
+@pytest.mark.parametrize(
+    "token", ["wrong", "", TOKEN + "x", TOKEN[:-1], "tést-token", "\ud800test-token"]
+)
 def test_hello_with_a_wrong_or_missing_token_gets_401_and_close_4401(losing, token):
     server, state = losing
     client = WsClient(server)
+    # json.dumps escapes a lone surrogate, and the service's JSON parser accepts it.
     client.send_json(hello_message(token=token))
     error, code = client.refused()
     assert error == {"type": "error", "status": 401, "error": "Enter the panel access token"}
@@ -1077,6 +1080,8 @@ def test_request_ids_cover_zero_to_two_to_the_53(losing):
         json.dumps({"type": "heartbeat", "id": True, "body": {}}),
         json.dumps({"type": "heartbeat", "id": "1", "body": {}}),
         json.dumps(hello_message()),
+        json.dumps({"type": [], "id": 1, "body": {}}),
+        json.dumps({"type": {"command": 1}, "id": 1, "body": {}}),
     ],
     ids=[
         "not-json",
@@ -1091,6 +1096,8 @@ def test_request_ids_cover_zero_to_two_to_the_53(losing):
         "boolean-id",
         "string-id",
         "second-hello",
+        "list-type",
+        "object-type",
     ],
 )
 def test_bad_envelope_gets_400_and_close_4400(losing, text):
@@ -1266,8 +1273,22 @@ def test_service_pushes_while_it_pings_on_its_interval(losing, monkeypatch):
     server, _ = losing
     assert SocketSession.PING_SECONDS == 5.0
     monkeypatch.setattr(SocketSession, "PING_SECONDS", 0.1)
+    monkeypatch.setattr(SocketSession, "KEEPALIVE_SECONDS", 0.05)
     client = opened(server)
     assert client.wait(lambda e: e[0] == "ping", 1, "ping") == ("ping", b"")
+    client.state(1)
+    assert client.wait(lambda e: e[0] == "ping", 1, "second ping") == ("ping", b"")
+    client.state(1)
+
+
+def test_hello_deadline_ends_once_hello_succeeds(losing, monkeypatch):
+    server, state = losing
+    monkeypatch.setattr(SocketSession, "HELLO_SECONDS", 0.2)
+    client = opened(server)
+    time.sleep(0.6)
+    assert client.request("heartbeat", {})["status"] == 200
+    client.state(1)
+    assert state.losses() == 0
 
 
 # Ping, pong, close and loss
@@ -1489,6 +1510,89 @@ def test_stop_sockets_sends_a_final_state_and_close_1001(losing):
         assert final[0] == "message"
         assert client.closed_by_service() == (1001, "The robot service stopped")
     wait_for(lambda: state.losses("browser-a") == state.losses("browser-b") == 1)
+
+
+def test_stop_sockets_returns_only_after_the_final_frames_are_written(losing):
+    server, _ = losing
+    client = opened(server)
+    session = next(iter(server._sessions.values()))
+    connection = session._connection
+    original = connection._wfile.write
+
+    def slow_write(data):
+        time.sleep(0.2)
+        return original(data)
+
+    # The service exits right after stop_sockets(), and its writer threads are daemons.
+    connection._wfile.write = slow_write
+    server.stop_sockets()
+    assert connection.close_written.is_set()
+    assert client.closed_by_service() == (1001, "The robot service stopped")
+
+
+def test_stop_sockets_waits_at_most_its_timeout_for_a_stuck_writer(losing):
+    server, _ = losing
+    opened(server)
+    session = next(iter(server._sessions.values()))
+    blocked = threading.Event()
+    session._connection._wfile.write = lambda data: blocked.wait(5)
+    started = time.monotonic()
+    try:
+        server.stop_sockets(timeout=0.3)
+        assert time.monotonic() - started < 1.0
+    finally:
+        blocked.set()
+
+
+class ArmGateState(LosingState):
+    """Hold a keyboard command at the state, as a busy state lock does."""
+
+    def __init__(self):
+        super().__init__()
+        self.armed = False
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+
+    def command(self, payload, client_id=None):
+        if payload.get("action") == "keyboard":
+            self.entered.set()
+            self.gate.wait(5)
+            self.armed = payload["enabled"]
+        return super().command(payload, client_id)
+
+    def connection_lost(self, client_id):
+        self.armed = False
+        return super().connection_lost(client_id)
+
+
+def test_replacement_revokes_after_an_arm_already_in_dispatch():
+    state = ArmGateState()
+    with running(state) as server:
+        older = opened(server)
+        older.send_request("command", {"action": "keyboard", "enabled": True, "seq": 1})
+        assert state.entered.wait(2)
+        replacing = threading.Thread(target=lambda: opened(server), daemon=True)
+        replacing.start()
+        # The newer hello waits until the arm finishes, then revokes it.
+        time.sleep(0.2)
+        assert state.losses() == 0
+        state.gate.set()
+        replacing.join(3)
+        wait_for(lambda: state.losses() == 1)
+        assert state.armed is False
+
+
+def test_replaced_connection_dispatches_nothing_after_the_revocation():
+    state = ArmGateState()
+    state.gate.set()
+    with running(state) as server:
+        older = opened(server)
+        newer = opened(server)
+        wait_for(lambda: state.losses() == 1)
+        older.send_request("command", {"action": "keyboard", "enabled": True, "seq": 2})
+        assert newer.request("heartbeat", {})["status"] == 200
+        time.sleep(0.2)
+        assert not state.entered.is_set() and state.armed is False
 
 
 # Interoperability

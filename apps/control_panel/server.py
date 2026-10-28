@@ -280,7 +280,6 @@ class SocketSession:
         self._registered = False
         self._done = threading.Event()
         self._replied = threading.Event()
-        self._replaced = threading.Event()
         self._pusher = None
 
     def run(self):
@@ -309,7 +308,7 @@ class SocketSession:
         except (_Refused, EOFError, OSError, ConnectionClosed):
             pass
         except Exception as error:
-            self.server.report_error(f"WebSocket session failed: {error!r}")
+            self.server.report_error(f"WebSocket session failed: {repr(error)[:200]}")
             self._close(1011, None, "The robot service failed")
         finally:
             self._done.set()
@@ -350,16 +349,14 @@ class SocketSession:
         if message["protocol"] != PROTOCOL:
             self._refuse(4426, 426, f"The robot service uses protocol {PROTOCOL}. Reload the page.")
         expected = self.server.token
+        # surrogatepass: JSON can carry a lone surrogate, which must compare as unequal.
         if expected and not hmac.compare_digest(
-            message["token"].encode("utf-8"), expected.encode("utf-8")
+            message["token"].encode("utf-8", "surrogatepass"), expected.encode("utf-8")
         ):
             self._refuse(4401, 401, "Enter the panel access token")
         return message["client"]
 
     def _request(self, text):
-        if self._replaced.is_set():
-            # Requests still buffered on a replaced connection are stale.
-            raise _Refused
         try:
             message = json.loads(text)
         except (ValueError, RecursionError):
@@ -367,6 +364,7 @@ class SocketSession:
         if (
             not isinstance(message, dict)
             or set(message) != {"type", "id", "body"}
+            or not isinstance(message["type"], str)
             or message["type"] not in {"command", "heartbeat", "keys"}
             or type(message["id"]) is not int
             or not 0 <= message["id"] <= MAX_SEQUENCE
@@ -374,10 +372,11 @@ class SocketSession:
             self._refuse(4400, 400, "Send requests as JSON objects with type, id and body")
         reply = {"type": "reply", "id": message["id"]}
         try:
-            reply["state"] = dispatch(
-                self.server.state, message["type"], message["body"], self.client
-            )
+            reply["state"] = self.server.dispatch_live(self, message["type"], message["body"])
             reply["status"] = 200
+        except _Replaced:
+            # Requests still buffered on a replaced connection are stale.
+            raise _Refused from None
         except Exception as error:
             status = refusal_status(error)
             if status is None:
@@ -433,7 +432,6 @@ class SocketSession:
 
     def replace(self):
         """End this connection because the same client opened a newer one."""
-        self._replaced.set()
         self._connection.close(4409, "Replaced by a newer connection")
         deadline = threading.Timer(self.DRAIN_SECONDS, self._connection.abort)
         deadline.daemon = True
@@ -450,6 +448,9 @@ class SocketSession:
         except Exception:
             pass
         self._connection.close(1001, "The robot service stopped")
+
+    def wait_stopped(self, timeout):
+        self._connection.close_written.wait(timeout)
 
     def _close(self, code, status, error):
         if status is not None:
@@ -494,6 +495,10 @@ class SocketSession:
 
 class _Refused(Exception):
     """The session queued its refusal and a close frame."""
+
+
+class _Replaced(Exception):
+    """A newer connection of the same client replaced this session."""
 
 
 class PanelServer(ThreadingHTTPServer):
@@ -549,6 +554,17 @@ class PanelServer(ThreadingHTTPServer):
             old.replace()
         return True
 
+    def dispatch_live(self, session, kind, payload):
+        """Dispatch only while session is its client's live connection.
+
+        The registry lock makes the check and the dispatch atomic with a replacement,
+        so a request from a replaced connection cannot arm keys after the revocation.
+        """
+        with self._sockets_lock:
+            if self._sessions.get(session.client) is not session:
+                raise _Replaced
+            return dispatch(self.state, kind, payload, session.client)
+
     def unregister_socket(self, session):
         """Revoke the keys of a client whose live connection ended.
 
@@ -570,11 +586,18 @@ class PanelServer(ThreadingHTTPServer):
             except Exception as error:
                 self.report_error(f"Keyboard revocation after a lost connection failed: {error!r}")
 
-    def stop_sockets(self):
+    def stop_sockets(self, timeout=1.0):
+        """Send each page the final state and a 1001 close. Wait at most timeout in total.
+
+        The writers are daemon threads, so the process must not exit before they write.
+        """
         with self._sockets_lock:
             sessions = list(self._sessions.values())
         for session in sessions:
             session.stop_service()
+        deadline = time.monotonic() + timeout
+        for session in sessions:
+            session.wait_stopped(max(0.0, deadline - time.monotonic()))
 
     def report_error(self, text):
         # A blocked stderr must not hold a connection or the registry lock.
@@ -625,7 +648,8 @@ class PanelHandler(BaseHTTPRequestHandler):
     def _authorized(self):
         expected = self.server.token
         if expected and not hmac.compare_digest(
-            self.headers.get("Authorization", ""), f"Bearer {expected}"
+            self.headers.get("Authorization", "").encode("latin-1", "replace"),
+            f"Bearer {expected}".encode("latin-1", "replace"),
         ):
             self._send(401, {"error": "Enter the panel access token"})
             return False
@@ -797,6 +821,9 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     token = os.environ.get("MG400_PANEL_TOKEN")
+    if token and not token.isascii():
+        # Browsers cannot send other characters in the Authorization header.
+        parser.error("MG400_PANEL_TOKEN must contain only ASCII characters")
     try:
         loopback = ipaddress.ip_address(args.bind).is_loopback
     except ValueError:

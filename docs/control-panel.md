@@ -176,7 +176,9 @@ Z/X 命令结果未知时，服务锁定夹爪并关闭键盘控制。
 页面 3 秒内重连成功时，保留控制权，键盘控制保持关闭。
 网络中断超过 3 秒时，服务停止机械臂并锁定控制。
 
-连接中断时，页面保留最后收到的状态，停用依赖连接的控制。
+连接中断时，页面停用依赖连接的控制。
+每次连接关闭后，页面经 HTTP 读取一次状态。
+没有读到时，页面保留最后收到的状态。
 `Stop arm` 和 `Disable robot` 同时经 WebSocket 连接和单独的 HTTP 请求发送。
 连接中断时，这两个按钮和 Esc 仍可用。
 
@@ -233,7 +235,7 @@ sudo systemctl status mg400-web-panel.service --no-pager
 反向代理必须满足以下要求：
 
 - 用 HTTP/1.1 转发 `api/ws`，并转发 `Upgrade` 和 `Connection` 请求头。
-- 保留原 `Host` 请求头，或在 `X-Forwarded-Host` 中传递原主机名。
+- 保留浏览器发送的 `Host` 值（含端口），或在 `X-Forwarded-Host` 中传递该值。nginx 用 `$http_host`，不用 `$host`。
 - 读取超时大于 5 秒。服务每秒至少推送一次状态，每 5 秒发送一次 ping。
 - 服务监听回环地址时，也设置 `MG400_PANEL_TOKEN`。
 
@@ -241,5 +243,6 @@ sudo systemctl status mg400-web-panel.service --no-pager
 
 更新服务代码时，将 `apps/` 和 `src/` 更新到同一提交，再重启服务。
 `server.py` 依赖 `src/mg400_agent/` 中的模块。
-重启后，重新加载已打开的面板页面。
-页面与服务版本不一致时，页面提示重新加载，不再重连。
+重启后，必须重新加载已打开的面板页面。
+页面的消息格式版本与服务不一致时，页面提示重新加载，不再重连。
+版本相同的旧页面不提示。

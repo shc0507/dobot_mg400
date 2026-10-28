@@ -1445,3 +1445,88 @@ test("the fake socket refuses the frames that the service refuses", async () => 
   const found = violations.splice(0);
   assert.equal(found.length, refused.length + 1 + hellos.length, found.join("\n"));
 });
+
+test("without a socket the page reads the state over HTTP, so Stop arm and Disable robot work", async () => {
+  // Every slot is taken: the service refuses this page's socket before any state push.
+  const page = browser();
+  await page.open();
+  await page.message({ type: "error", status: 503, error: "Too many open panel connections" });
+  await page.serverClose(1013);
+  const read = page.http().find(request => request.path === "api/state");
+  assert.ok(read, "the page did not read the state over HTTP");
+  assert.equal(read.options.method ?? "GET", "GET");
+  assert.equal(read.options.headers["X-MG400-Client"], page.clientId);
+  assert.equal(read.timeout, 2500);
+  await page.respond(read, page.snapshot({ controller_id: "other-page", busy: true }));
+  assert.equal(page.evaluate("connected"), false);
+  assert.equal(page.$("stop").hidden, false);
+  assert.equal(page.$("stop").disabled, false);
+  assert.equal(page.$("disable").disabled, false);
+  for (const id of ["home", "execute", "enable", "startSync", "stopSync", "keyboard"]) {
+    assert.equal(page.$(id).disabled, true, `${id} is enabled without a socket`);
+  }
+  assert.equal(page.$("syncState").textContent, "Reconnecting…");
+  await page.click("stop");
+  assertPanelPost(page.commands("stop").at(-1), "stop");
+  // A late HTTP state never replaces a live socket state.
+  await page.advance(500);
+  await page.open();
+  await page.push(page.snapshot({ message: "Live." }));
+  const late = page.http().filter(request => request.path === "api/state");
+  assert.equal(late.length, 1);
+  assert.equal(page.$("status").textContent, "Live.");
+});
+
+test("a failed Stop arm stays visible across a reconnect; a connection error does not", async () => {
+  const page = await ready({ busy: true, message: "Robot operation started: home." });
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, "Connection lost. Reconnecting…");
+  await page.click("stop");
+  await page.fail(page.commands("stop").at(-1), new Error("Failed to fetch"));
+  assert.equal(page.$("status").textContent, "Failed to fetch");
+  await page.advance(500);
+  await page.open();
+  await page.push(page.snapshot({ busy: true, message: "Robot operation started: home." }));
+  assert.equal(page.$("status").textContent, "Failed to fetch", "the failed stop was hidden at once");
+  assert.equal(page.$("status").classList.contains("error"), true);
+  // A plain connection error clears as soon as the page is back.
+  await page.serverClose(1006);
+  await page.advance(1000);
+  await page.open();
+  await page.push(page.snapshot({ message: "Back." }));
+  assert.equal(page.$("status").textContent, "Back.");
+});
+
+test("a requested disarm waits for the socket and never hides a failed Stop arm", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  await page.serverClose(1006);
+  await page.fire("blur");
+  assert.equal(page.disarms().length, 0, "a disarm was attempted without a socket");
+  page.setFocus(true);
+  await page.click("stop");
+  await page.fail(page.commands("stop").at(-1), new Error("Failed to fetch"));
+  assert.equal(page.$("status").textContent, "Failed to fetch");
+  // Any render while keys still show ON retries the disarm. Without a socket it must wait.
+  page.evaluate("render(state)");
+  await page.advance(0);
+  assert.equal(page.$("status").textContent, "Failed to fetch");
+  assert.equal(page.disarms().length, 0);
+  await page.advance(500);
+  await page.open();
+  // The service still shows keys ON (a replaced socket), so the page sends the disarm now.
+  await page.push(page.snapshot({ keyboard_enabled: true }));
+  assertDisarm(page.disarms().at(-1), "focus");
+});
+
+test("pageshow from the back/forward cache shows the disconnected view at once", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  assert.equal(page.$("home").disabled, false);
+  await page.fire("pageshow", { persisted: true });
+  assert.equal(page.$("syncState").textContent, "Reconnecting…");
+  assert.equal(page.$("syncDot").classList.contains("on"), false);
+  for (const id of ["home", "execute", "keyboard", "stopSync"]) {
+    assert.equal(page.$(id).disabled, true, `${id} stayed enabled after pageshow`);
+  }
+  assert.equal(page.$("stop").disabled, false);
+  assert.equal(page.$("disable").disabled, false);
+});

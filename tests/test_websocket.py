@@ -304,6 +304,19 @@ def test_message_reader_limits_the_assembled_message_before_reading_the_last_fra
     assert caught.value.code == 1009
 
 
+def test_message_reader_limits_the_fragment_count_even_for_empty_fragments():
+    fragments = [(TEXT, b"", False), *[(CONTINUATION, b"", False)] * 200]
+    assert refusal(client_frames(*fragments)) == 1009
+    # 128 fragments, the limit, still form one message.
+    allowed = [(TEXT, b"a", False), *[(CONTINUATION, b"b", False)] * 126, (CONTINUATION, b"", True)]
+    assert messages(client_frames(*allowed), 1) == [("text", "a" + "b" * 126)]
+
+
+def test_message_reader_resets_its_size_count_after_each_message():
+    half = [(TEXT, b"x" * 2048, False), (CONTINUATION, b"y" * 2048, True)]
+    assert messages(client_frames(*half, *half), 2) == [("text", "x" * 2048 + "y" * 2048)] * 2
+
+
 def close_frame(payload):
     return encode_frame(CLOSE, payload, mask=True)
 

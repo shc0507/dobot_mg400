@@ -18,6 +18,8 @@ CONTINUATION, TEXT, BINARY, CLOSE, PING, PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
 OPCODES = frozenset({CONTINUATION, TEXT, BINARY, CLOSE, PING, PONG})
 MAX_MESSAGE_BYTES = 4096
 MAX_CONTROL_BYTES = 125
+# Empty fragments add no bytes, so the byte limit alone cannot bound a message.
+MAX_FRAGMENTS = 128
 # Close codes that a peer may send. 1005, 1006 and 1015 must never appear on the wire.
 VALID_CLOSE_CODES = frozenset({1000, 1001, 1002, 1003, *range(1007, 1015), *range(3000, 5000)})
 
@@ -139,12 +141,12 @@ class MessageReader:
         self._masked = masked
         self._max = max_bytes
         self._parts = None
+        self._buffered = 0
 
     def next(self):
         while True:
-            buffered = sum(map(len, self._parts)) if self._parts is not None else 0
             fin, opcode, payload = read_frame(
-                self._read, masked=self._masked, max_payload=self._max - buffered
+                self._read, masked=self._masked, max_payload=self._max - self._buffered
             )
             if opcode == PING:
                 return "ping", payload
@@ -160,10 +162,13 @@ class MessageReader:
                 self._parts = [payload]
             elif self._parts is None:
                 raise ProtocolError(1002, "A continuation frame has no message to continue")
+            elif len(self._parts) >= MAX_FRAGMENTS:
+                raise ProtocolError(1009, "The message has too many fragments")
             else:
                 self._parts.append(payload)
+            self._buffered += len(payload)
             if fin:
-                data, self._parts = b"".join(self._parts), None
+                data, self._parts, self._buffered = b"".join(self._parts), None, 0
                 try:
                     return "text", data.decode("utf-8")
                 except UnicodeDecodeError as error:

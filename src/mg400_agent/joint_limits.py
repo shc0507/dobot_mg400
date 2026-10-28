@@ -24,11 +24,9 @@ from .config import finite_number
 MARGIN_DEG = 1.05
 
 
-def validate_joints(
-    joints_deg: Sequence[float], margin: float = MARGIN_DEG
-) -> tuple[float, float, float, float]:
-    """Check four finite controller angles against project guards with a margin in degrees."""
-    return _validate_joints(joints_deg, margin)
+def validate_joints(joints_deg: Sequence[float]) -> tuple[float, float, float, float]:
+    """Check four finite controller angles against project guards with a 1.05-degree margin."""
+    return _validate_joints(joints_deg, MARGIN_DEG)
 
 
 def validate_measured_joints(joints_deg: Sequence[float]) -> tuple[float, float, float, float]:
@@ -36,23 +34,44 @@ def validate_measured_joints(joints_deg: Sequence[float]) -> tuple[float, float,
     return _validate_joints(joints_deg, 0.0)
 
 
-def _validate_joints(
-    joints_deg: Sequence[float], margin: float
-) -> tuple[float, float, float, float]:
+def limit_distances(joints_deg: Sequence[float]):
+    """Return (name, side, value, limit, distance) for each guard bound, without a margin.
+
+    A negative distance means the value is outside that bound.
+    """
+    bounds = []
+    for name, value, lower, upper in _limits(_four(joints_deg)):
+        bounds.append((name, "lower", value, lower, value - lower))
+        bounds.append((name, "upper", value, upper, upper - value))
+    return tuple(bounds)
+
+
+def _four(joints_deg: Sequence[float]) -> tuple[float, float, float, float]:
     if not isinstance(joints_deg, Sequence) or len(joints_deg) != 4:
         raise ValueError("Expected four joint angles in degrees")
     try:
         j1, j2, j3, j4 = (finite_number(value) for value in joints_deg)
     except OverflowError as error:
         raise ValueError("Expected a finite number") from error
-    limits = (
+    return j1, j2, j3, j4
+
+
+def _limits(joints):
+    j1, j2, j3, j4 = joints
+    return (
         ("J1", j1, -160, 160),
         ("J2", j2, -25 if j3 > 0 else -19, 85),
         ("J3", j3, -25, 105),
         ("J4", j4, -360, 360),
         ("J3-J2", j3 - j2, -60, 60),
     )
-    for name, value, lower, upper in limits:
+
+
+def _validate_joints(
+    joints_deg: Sequence[float], margin: float
+) -> tuple[float, float, float, float]:
+    joints = _four(joints_deg)
+    for name, value, lower, upper in _limits(joints):
         lower += margin
         upper -= margin
         if not lower <= value <= upper:
@@ -60,7 +79,7 @@ def _validate_joints(
                 f"{name}={value:g} degrees outside uncalibrated reference range "
                 f"[{lower:g}, {upper:g}]"
             )
-    return j1, j2, j3, j4
+    return joints
 
 
 def validate_joint_segment(start: Sequence[float], end: Sequence[float]) -> None:

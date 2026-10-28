@@ -715,13 +715,63 @@ def test_continuous_soft_limit_margin_grows_with_speed(rig, speed, limited):
     assert rig.session.fault is None and not rig.stopped
 
 
-@pytest.mark.parametrize("speed,continuous", [(1, True), (40, False)])
-def test_fast_hold_inside_the_speed_band_never_starts_a_continuous_jog(rig, speed, continuous):
-    rig.sample = replace(rig.sample, joints_deg=(157.0, *START[1:]))
+def fast_session(rig, joints, speed=40):
+    rig.sample = replace(rig.sample, joints_deg=joints)
     rig.session = KeyboardJogSession(rig, speed_percent=speed)
     rig.scaling_after_ack = speed
     rig.session.prepare()
     rig.commands.clear()
-    rig.session.run("A", threading.Event())
-    assert (COMMANDS["A"] in rig.commands) is continuous
+
+
+@pytest.mark.parametrize("key,step,limited", [("A", 0.1, True), ("D", -0.1, False)])
+def test_hold_inside_the_speed_band_stops_only_when_closing_on_the_bound(rig, key, step, limited):
+    fast_session(rig, (157.0, *START[1:]))
+
+    def move():
+        if 3 <= rig.ticks <= 6:
+            joints = rig.sample.joints_deg
+            rig.sample = replace(rig.sample, joints_deg=(joints[0] + step, *joints[1:]))
+        elif rig.ticks == 20:
+            rig.session.release()
+
+    rig.on_tick = move
+    rig.session.run(key, threading.Event())
+    # The hold starts as one continuous jog in either direction.
+    assert rig.commands == [COMMANDS[key], "MoveJog()"]
+    assert bool(rig.session.limit_reason) is limited
+    if limited:
+        assert "closing on its reference limit 160" in rig.session.limit_reason
     assert rig.session.fault is None and not rig.stopped
+
+
+def test_hold_near_another_bound_is_not_limited_by_the_speed_band(rig):
+    # J3 is 3 degrees above its lower bound, inside the 4.25-degree band at 40%.
+    fast_session(rig, (30.0, 0.0, -22.0, 0.0))
+
+    def turn_base():
+        if 3 <= rig.ticks <= 10:
+            joints = rig.sample.joints_deg
+            rig.sample = replace(rig.sample, joints_deg=(joints[0] + 1, *joints[1:]))
+        elif rig.ticks == 20:
+            rig.session.release()
+
+    rig.on_tick = turn_base
+    rig.session.run("A", threading.Event())
+    assert rig.commands == [COMMANDS["A"], "MoveJog()"]
+    assert rig.session.limit_reason is None
+    assert rig.session.fault is None and not rig.stopped
+
+
+def test_slow_closing_counts_once_the_total_exceeds_the_noise(rig):
+    fast_session(rig, (157.0, *START[1:]))
+
+    def creep():
+        if 3 <= rig.ticks <= 12:
+            joints = rig.sample.joints_deg
+            rig.sample = replace(rig.sample, joints_deg=(joints[0] + 0.005, *joints[1:]))
+        elif rig.ticks == 30:
+            rig.session.release()
+
+    rig.on_tick = creep
+    rig.session.run("A", threading.Event())
+    assert rig.session.limit_reason

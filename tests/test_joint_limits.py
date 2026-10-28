@@ -1,6 +1,7 @@
 import pytest
 
 from mg400_agent.joint_limits import (
+    limit_distances,
     validate_joint_segment,
     validate_joints,
     validate_measured_joints,
@@ -200,3 +201,20 @@ def test_segment_still_rejects_a_start_outside_raw_ranges(start):
 def test_segment_crossing_uses_raw_conditional_range():
     # The crossing is J2=-19, J3=0. Both commanded endpoints retain their margins.
     assert validate_joint_segment((0, -21, 5, 0), (0, -17, -5, 0)) is None
+
+
+def test_limit_distances_report_each_raw_bound():
+    distances = {
+        (name, side): (limit, distance)
+        for name, side, _, limit, distance in limit_distances((157, 10, -22, 0))
+    }
+    assert distances[("J1", "upper")] == (160, 3)
+    assert distances[("J1", "lower")] == (-160, 317)
+    # J3 <= 0 uses the stricter J2 lower bound.
+    assert distances[("J2", "lower")] == (-19, 29)
+    assert distances[("J3", "lower")] == (-25, 3)
+    assert distances[("J3-J2", "lower")] == (-60, 28)
+    assert distances[("J3-J2", "upper")] == (60, 92)
+    assert len(distances) == 10
+    with pytest.raises(ValueError):
+        limit_distances((0, 0, float("nan"), 0))

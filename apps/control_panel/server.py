@@ -821,9 +821,9 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     token = os.environ.get("MG400_PANEL_TOKEN")
-    if token and not token.isascii():
-        # Browsers cannot send other characters in the Authorization header.
-        parser.error("MG400_PANEL_TOKEN must contain only ASCII characters")
+    if token and not all("!" <= char <= "~" for char in token):
+        # A browser cannot send other characters, and it strips spaces at either end.
+        parser.error("MG400_PANEL_TOKEN must contain only printable ASCII characters, no spaces")
     try:
         loopback = ipaddress.ip_address(args.bind).is_loopback
     except ValueError:

@@ -280,9 +280,14 @@ def test_remote_bind_requires_access_token(monkeypatch):
 
 
 @pytest.mark.parametrize("bind", ["127.0.0.1", "0.0.0.0"])
-def test_access_token_must_be_ascii(monkeypatch, bind):
-    # Browsers cannot send other characters in the Authorization header.
-    monkeypatch.setenv("MG400_PANEL_TOKEN", "é" * 30)
+@pytest.mark.parametrize(
+    "token",
+    ["é" * 30, "a" * 30 + " ", " " + "a" * 30, "a" * 15 + " " + "a" * 15, "a" * 30 + "\t"],
+    ids=["non-ascii", "trailing-space", "leading-space", "inner-space", "tab"],
+)
+def test_access_token_must_be_printable_ascii_without_spaces(monkeypatch, bind, token):
+    # A browser cannot send other characters, and it strips spaces at either end.
+    monkeypatch.setenv("MG400_PANEL_TOKEN", token)
     with pytest.raises(SystemExit) as error:
         PANEL["main"](["--bind", bind])
     assert error.value.code == 2

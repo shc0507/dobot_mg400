@@ -1490,6 +1490,7 @@ test("a failed Stop arm stays visible across a reconnect; a connection error doe
   assert.equal(page.$("status").textContent, "Failed to fetch", "the failed stop was hidden at once");
   assert.equal(page.$("status").classList.contains("error"), true);
   // A plain connection error clears as soon as the page is back.
+  await page.advance(3000);
   await page.serverClose(1006);
   await page.advance(1000);
   await page.open();
@@ -1529,4 +1530,67 @@ test("pageshow from the back/forward cache shows the disconnected view at once",
   }
   assert.equal(page.$("stop").disabled, false);
   assert.equal(page.$("disable").disabled, false);
+});
+
+test("a failed Stop arm stays visible through failed reconnect attempts for its 3 s", async () => {
+  const page = await ready({ busy: true, message: "Robot operation started: home." });
+  await page.serverClose(1006);
+  await page.click("disable");
+  await page.fail(page.commands("disable").at(-1), new Error("Failed to fetch"));
+  await page.advance(500);
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, "Failed to fetch", "a refused retry hid the failed disable");
+  await page.advance(1000);
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, "Failed to fetch");
+  await page.advance(1500);
+  assert.equal(page.$("status").textContent, "Connection lost. Reconnecting…");
+});
+
+test("without a socket the page polls the state every second, one read at a time, until state arrives", async () => {
+  const page = await ready();
+  await page.serverClose(1006);
+  const reads = () => page.http().filter(request => request.path === "api/state");
+  assert.equal(reads().length, 1);
+  await page.advance(1000);
+  assert.equal(reads().length, 1, "a second read started while the first was in flight");
+  await page.respond(reads()[0], page.snapshot({ syncing: false }));
+  assert.equal(page.$("stop").disabled, true);
+  await page.advance(1000);
+  assert.equal(reads().length, 2);
+  // Another client starts motion; the next read enables Stop arm within a second.
+  await page.respond(reads()[1], page.snapshot({ syncing: true, controller_id: "other-page" }));
+  assert.equal(page.$("stop").disabled, false);
+  // Once the socket delivers state, polling stops.
+  await page.advance(1000);
+  await page.respond(reads()[2], page.snapshot());
+  await page.open(page.sockets.at(-1));
+  await page.push(page.snapshot({ message: "Live." }));
+  const count = reads().length;
+  await page.advance(5000);
+  assert.equal(reads().length, count);
+});
+
+test("a refused handshake with a missing token shows the token form from the HTTP read", async () => {
+  const page = browser();
+  await page.serverClose(1006);
+  const read = page.http().find(request => request.path === "api/state");
+  await page.respond(read, { error: "Enter the panel access token" }, 401);
+  assert.equal(page.$("auth").hidden, false);
+  page.$("token").value = "secret-token-1234567890abc";
+  await page.submit("auth");
+  await page.advance(1000);
+  const next = page.http().filter(request => request.path === "api/state").at(-1);
+  assert.equal(next.options.headers.Authorization, "Bearer secret-token-1234567890abc");
+});
+
+test("pagehide stops the state polling", async () => {
+  const page = await ready();
+  await page.serverClose(1006);
+  const reads = () => page.http().filter(request => request.path === "api/state");
+  await page.respond(reads()[0], page.snapshot());
+  await page.fire("pagehide");
+  const count = reads().length;
+  await page.advance(5000);
+  assert.equal(reads().length, count);
 });

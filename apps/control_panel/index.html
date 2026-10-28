@@ -197,12 +197,24 @@
       // Only a reload recovers from another protocol version.
       if(outdated) {}
       else if(authWait) $('auth').hidden = false;
-      else {retryTimer = setTimeout(connect,refused >= 3 ? 5000 : [500,1000,2000][retry]);retry = Math.min(retry+1,2);fetchState();}
-      showError(new Error(offline));
+      else {retryTimer = setTimeout(connect,refused >= 3 ? 5000 : [500,1000,2000][retry]);retry = Math.min(retry+1,2);pollState();}
+      // A failed Stop arm or Disable robot stays visible through failed reconnect attempts.
+      if(interruptError && errorTimer && !outdated && !authWait) {if(state) render(state);}
+      else showError(new Error(offline));
     }
-    // Without the socket, read the state over HTTP, so Stop arm and Disable robot stay usable.
-    function fetchState() {
-      fetch('api/state',{headers:headers(),signal:AbortSignal.timeout(2500)}).then(response => response.ok ? response.json() : null).then(data => {if(data && !connected) apply(data);}).catch(() => {});
+    let stateTimer = null, stateReading = false;
+    // Without the socket, poll the state over HTTP, so Stop arm and Disable robot stay usable.
+    function pollState() {
+      clearTimeout(stateTimer);stateTimer = null;
+      if(connected || authWait || outdated) return;
+      stateTimer = setTimeout(pollState,1000);
+      if(stateReading) return;
+      stateReading = true;
+      fetch('api/state',{headers:headers(),signal:AbortSignal.timeout(2500)}).then(response => {
+        // A refused handshake never reaches hello, so only this read can ask for the token.
+        if(response.status === 401 && !connected) $('auth').hidden = false;
+        return response.ok ? response.json() : null;
+      }).then(data => {if(data && !connected) apply(data);}).catch(() => {}).finally(() => {stateReading = false;});
     }
     const retired = new Set();
     function newer(data) {
@@ -214,13 +226,14 @@
       return data.version >= state.version;
     }
     function apply(data) {if(newer(data)) render(data);}
-    let errorTimer = null, linkError = false;
+    let errorTimer = null, linkError = false, interruptError = false;
     function showStatus(text, error) {
       if($('status').textContent !== text) $('status').textContent = text;
       $('status').classList.toggle('error',error);
     }
-    function showError(error) {
+    function showError(error, interrupt = false) {
       linkError = !connected && error.message === offline;
+      interruptError = interrupt;
       // Keep the error readable for 3 s, although state pushes arrive in between.
       clearTimeout(errorTimer);
       errorTimer = setTimeout(() => {errorTimer = null;if(state) render(state);},3000);
@@ -260,7 +273,7 @@
         }
         if(action === 'execute') gripEdited = false;
       } catch(error) {failure = error;}
-      finally {if(!interrupt) busy = false;render(state);if(failure) showError(failure);}
+      finally {if(!interrupt) busy = false;render(state);if(failure) showError(failure,interrupt);}
     }
     ['enable','disable','home','stop'].forEach(id => $(id).addEventListener('click',() => command(id)));
     $('execute').addEventListener('click',() => command('execute'));
@@ -347,7 +360,7 @@
     window.addEventListener('pagehide',() => {
       if(state?.mode === 'robot' && state.syncing && state.controller_id === clientId) fetch('api/command',{method:'POST',headers:headers(),body:JSON.stringify({action:'stop'}),keepalive:true}).catch(() => {});
       // A hidden page keeps no connection and does not reconnect.
-      clearTimeout(retryTimer);
+      clearTimeout(retryTimer);clearTimeout(stateTimer);
       offline = 'Not connected';
       drop(1000);
     });

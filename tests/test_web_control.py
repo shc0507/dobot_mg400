@@ -641,6 +641,7 @@ class Gripper:
     def __init__(self):
         self.position = 1000
         self.commands = []
+        self.collector_requests = 0
         self.preparing = threading.Event()
         self.publish = threading.Event()
         self.publish.set()
@@ -657,6 +658,9 @@ class Gripper:
 
     def poll(self):
         pass
+
+    def request_collector(self):
+        self.collector_requests += 1
 
     def move(self, target):
         self.preparing.set()
@@ -680,6 +684,15 @@ def add_gripper(state):
         state._grip = gripper.snapshot()
         gripper.publication_guard = state._gripper_publication_guard
     return gripper
+
+
+def test_connect_requests_collector_without_gripper_commands(rig):
+    state, feed, controls = rig
+    gripper = add_gripper(state)
+    connect(state)
+    assert gripper.collector_requests == 1
+    assert gripper.commands == []
+    assert controls[0].calls == []
 
 
 def test_execute_always_sends_explicit_gripper_target(rig):

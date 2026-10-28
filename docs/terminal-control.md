@@ -78,23 +78,23 @@ X/Y/Z 单位为 mm，R 单位为度。
 ## 控制夹爪
 
 夹爪使用现有 USB 采集服务。
-先按 [USB 接在 Olares](olares.md#usb-接在-olares) 启动采集服务。
+先按 [USB 接在 Olares](olares.md#usb-接在-olares) 安装采集服务。
 采集程序必须带 `--commands`。
 终端与采集程序必须在同一主机。
 两者必须共用单调时钟（计算时间间隔的时钟）。
 夹爪命令不支持跨主机传递。
 
 用 `--gripper-feedback` 指定反馈文件。
-以下示例使用 Olares 容器内的路径：
+以下示例使用 Olares 宿主机的路径：
 
 ```sh
 python3 scripts/mg400_robot.py \
-  --gripper-feedback /root/Documents/mg400-data/work/gripper_olares_feedback.json
+  --gripper-feedback /olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/work/gripper_olares_feedback.json
 ```
 
 该路径必须能由终端进程读取。
-在 Olares 宿主机运行时，按 [USB 配置](olares.md#usb-接在-olares) 改写路径。
-终端不会自动启动采集服务或初始化夹爪。
+`connect` 连接机械臂时，终端请求启动采集服务。
+终端不会自动初始化夹爪。
 未指定夹爪反馈文件时，仍可单独控制机械臂。
 
 夹爪命令必须先用 `connect` 连接机械臂。

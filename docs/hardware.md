@@ -34,19 +34,31 @@
 
 脚本要求 Python 3.11+ 和 `pysmb`。
 服务器须能访问机械臂的 TCP `445`、`22000` 和 `29999`。
-在能访问机械臂的主机运行，例如 Olares 宿主机，使用 `UID:GID 1000:1000`。
-首次使用时，将 `pysmb` 装入独立目录：
+在 Olares 宿主机的 Control Hub 终端运行。
+该终端默认使用 root。
+脚本必须以 UID 1000 运行，与网页服务共用[面板连接锁](olares.md#面板连接锁)。
+以 root 运行时，脚本拒绝取得连接锁，不连接控制器。
+
+先以 root 确认 pip 可用，再进入 UID 1000 的 shell：
 
 ```sh
-python3 -m pip install --target "$HOME/mg400-mode-deps" pysmb
+python3 -m pip --version || apt-get install -y python3-pip
+export DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
+setpriv --reuid=1000 --regid=1000 --init-groups bash
 ```
 
-每次运行前，设置依赖目录和共享锁目录，再在项目根目录运行。
-锁目录与网页服务一致，见[面板连接锁](olares.md#面板连接锁)：
+首次使用时，在该 shell 中将 `pysmb` 装入数据目录：
 
 ```sh
-export PYTHONPATH="$HOME/mg400-mode-deps${PYTHONPATH:+:$PYTHONPATH}"
-export MG400_CONTROLLER_LOCK_DIR=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/controller-locks
+python3 -m pip install --no-cache-dir --target "$DOCS/mg400-data/work/mode-deps" pysmb
+```
+
+每次运行时，在该 shell 中设置依赖目录和锁目录，再在代码目录运行：
+
+```sh
+export PYTHONPATH="$DOCS/mg400-data/work/mode-deps"
+export MG400_CONTROLLER_LOCK_DIR="$DOCS/mg400-data/controller-locks"
+cd "$DOCS/mg400-isaac"
 python3 scripts/mg400_control_mode.py
 ```
 
@@ -134,8 +146,8 @@ SMB 使用 TCP `445`，共享为 `project`，日志目录为 `/logs`。
 如果时间范围不足，按目录清单选择旧日志。
 文件修改时间只用于筛选，事件时间以日志内容为准。
 
-缺少 SMB 客户端时，将 `pysmb` 装入临时目录。
-下列命令匿名连接共享，列出文件并保存两个日志副本：
+下列命令将 `pysmb` 装入临时目录，匿名连接共享，列出文件并保存两个日志副本。
+如果提示 `No module named pip`，先运行 `apt-get install -y python3-pip`。
 
 ```sh
 export MG400_LOG_DEPS=$(mktemp -d /tmp/mg400-smb.XXXXXX)
@@ -166,8 +178,8 @@ try:
 finally:
     connection.close()
 PY
-rg -n -C 2 'collision!|collisionStatus|碰撞检测|alarm ID:' "$MG400_LOG_DIR"
-rg -n -A 14 'func = geterrorid' "$MG400_LOG_DIR"
+grep -rn -C 2 -E 'collision!|collisionStatus|碰撞检测|alarm ID:' "$MG400_LOG_DIR"
+grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 ```
 
 根据目录清单修改 `source` 列表，可读取旧日志或补充日志。

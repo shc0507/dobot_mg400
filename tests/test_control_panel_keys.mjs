@@ -1622,3 +1622,22 @@ test("requests that a closed socket rejects do not hide a failed Stop arm", asyn
   await page.advance(1);
   assert.equal(page.$("status").textContent, "Back.");
 });
+
+test("a pasted token is trimmed, and only the token a read sent is saved", async () => {
+  const page = browser();
+  await page.serverClose(1006);
+  await page.respond(page.http().find(request => request.path === "api/state"), { error: "Enter the panel access token" }, 401);
+  page.$("token").value = "  secret-token-1234567890abc \t";
+  await page.submit("auth");
+  const reads = () => page.http().filter(request => request.path === "api/state");
+  await page.advance(1000);
+  const first = reads().at(-1);
+  assert.equal(first.options.headers.Authorization, "Bearer secret-token-1234567890abc");
+  // A newer token submitted while this read runs is not saved by its answer.
+  page.$("token").value = "other-token-1234567890abcd";
+  await page.submit("auth");
+  await page.respond(first, page.snapshot());
+  assert.deepEqual(page.stored, []);
+  await page.open();
+  assert.deepEqual(page.socket.sent[0].token, "other-token-1234567890abcd");
+});

@@ -211,11 +211,12 @@
       stateTimer = setTimeout(pollState,1000);
       if(stateReading) return;
       stateReading = true;
+      const sent = token;
       fetch('api/state',{headers:headers(),signal:AbortSignal.timeout(2500)}).then(response => {
         // A refused handshake never reaches hello, so only this read can ask for the token.
         if(response.status === 401 && !connected) $('auth').hidden = false;
         // Only HTTP may work, for example behind a proxy that refuses the socket.
-        if(response.ok && !connected && !authWait) tokenAccepted();
+        if(response.ok && !connected && !authWait && sent === token) tokenAccepted();
         return response.ok ? response.json() : null;
       }).then(data => {if(data && !connected) apply(data);}).catch(() => {}).finally(() => {stateReading = false;});
     }
@@ -291,7 +292,7 @@
     $('initializeGripper').addEventListener('click',() => command('initialize_gripper'));
     $('startSync').addEventListener('click',() => command('start_sync'));
     $('stopSync').addEventListener('click',() => command('stop_sync'));
-    $('auth').addEventListener('submit',event => {event.preventDefault();token = $('token').value;submitted = true;authWait = false;if(socket) closed();connect();});
+    $('auth').addEventListener('submit',event => {event.preventDefault();token = $('token').value.trim();submitted = true;authWait = false;if(socket) closed();connect();});
     const keyName = event => event.code.startsWith('Key') ? event.code.slice(3) : event.code;
     const owns = () => state?.mode === 'robot' && state.controller_id === clientId;
     const keysOn = () => owns() && !!state.keyboard_enabled;

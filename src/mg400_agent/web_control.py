@@ -8,6 +8,20 @@ from .config import finite_number
 from .controller_ownership import ControllerOwnership
 from .feedback import FeedbackConnection
 from .joint_control import JointControl, PreparationRejectedError, TargetRejectedError
+from .joint_limits import validate_measured_joints
+from .keyboard_jog import KeyboardJogSession
+from .web_keyboard import (
+    DISARM_REASONS,
+    GRIPPER_HOLD_SECONDS,
+    GRIPPER_KEYS,
+    KEY_LEASE_SECONDS,
+    KEYBOARD_JOIN_SECONDS,
+    GripperUnavailableError,
+    held_keys,
+    run_gripper_steps,
+    sequence_number,
+    speed_percent,
+)
 
 
 class RobotPanelState:
@@ -17,6 +31,9 @@ class RobotPanelState:
     LEASE_SECONDS = 3.0
     FEEDBACK_SECONDS = 0.25
     CONNECT_SECONDS = 1.5
+    KEY_LEASE_SECONDS = KEY_LEASE_SECONDS
+    KEYBOARD_JOIN_SECONDS = KEYBOARD_JOIN_SECONDS
+    GRIPPER_HOLD_SECONDS = GRIPPER_HOLD_SECONDS
 
     def __init__(
         self,
@@ -25,11 +42,13 @@ class RobotPanelState:
         gripper=None,
         connection_factory=FeedbackConnection,
         control_factory=JointControl,
+        session_factory=KeyboardJogSession,
     ):
         self.robot_host = host
         self._gripper = gripper
         self._connection_factory = connection_factory
         self._control_factory = control_factory
+        self._session_factory = session_factory
         self._ownership = ControllerOwnership(host)
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -55,6 +74,23 @@ class RobotPanelState:
         self._gripper_active = False
         self._closing = False
         self._message = "Start sync to connect to the robot."
+        self._version = 0
+        # Keyboard state. _kb_thread is the one preparation or hold worker in flight.
+        self._kb_on = False
+        self._kb_arming = False
+        self._kb_thread = None
+        self._kb_kind = None
+        self._kb_session = None
+        self._kb_generation = 0
+        self._kb_speed = 1
+        self._kb_reason = None
+        self._kb_seq = 0
+        self._kb_seq_client = None
+        self._kb_held = frozenset()
+        self._kb_pending = set()
+        self._kb_active = None
+        self._kb_released = None
+        self._kb_renewed = 0.0
         self._grip = self._gripper.snapshot() if self._gripper else {}
         if self._gripper is not None:
             self._gripper.publication_guard = self._gripper_publication_guard
@@ -72,7 +108,7 @@ class RobotPanelState:
         return self._control_factory(
             self.robot_host,
             self._feedback_snapshot,
-            send_guard=self._guard_send,
+            send_guard=self._guard_control_send,
         )
 
     def _feedback_snapshot(self):
@@ -91,11 +127,14 @@ class RobotPanelState:
     def snapshot(self):
         with self._lock:
             sample = self._sample
+            self._version += 1
+            moving = self._busy or self._kb_kind in {"prepare", "arm"}
             return {
                 "mode": "robot",
+                "version": self._version,
                 "robot_host": self.robot_host,
                 "actual": [
-                    *([None] * 4 if self._busy else self._pose),
+                    *([None] * 4 if moving else self._pose),
                     None if self._gripper_active else self._grip.get("position"),
                 ],
                 "joints": list(sample.joints_deg) if sample else None,
@@ -104,8 +143,9 @@ class RobotPanelState:
                 "feedback_fresh": self._fresh(),
                 "robot_mode": sample.mode if sample else None,
                 "robot_error": sample.error_status if sample else None,
+                "speed_factor": getattr(sample, "speed_scaling_raw", None) if sample else None,
                 "message": self._message,
-                "busy": self._busy or bool(self._safety_workers),
+                "busy": self._busy or bool(self._safety_workers) or self._kb_thread is not None,
                 "locked": self._locked or bool(self._grip.get("locked")),
                 "stop_unconfirmed": self._fault,
                 "gripper_available": bool(self._grip.get("available")),
@@ -113,6 +153,11 @@ class RobotPanelState:
                 "gripper_busy": self._gripper_active or bool(self._grip.get("busy")),
                 "gripper_message": self._grip.get("message", "Gripper is not configured."),
                 "controller_id": self._owner,
+                "keyboard_enabled": self._kb_on,
+                "keyboard_arming": self._kb_arming,
+                "keyboard_active_key": self._kb_active if self._kb_thread is not None else None,
+                "keyboard_speed_percent": self._kb_speed,
+                "keyboard_disarm_reason": self._kb_reason,
             }
 
     @staticmethod
@@ -131,6 +176,7 @@ class RobotPanelState:
     def _expire_lease(self):
         if self._owner is not None and time.monotonic() - self._heartbeat > self.LEASE_SECONDS:
             self._owner = None
+            self._kb_disarm("browser control lease expired.")
             if self._syncing and not self._locked:
                 if self._sample is None and not self._busy:
                     self._syncing = False
@@ -149,6 +195,14 @@ class RobotPanelState:
                 raise RuntimeError("Robot feedback is absent or stale")
             if self._sample.error_status or self._sample.mode not in {4, 5, 7}:
                 raise RuntimeError("Robot feedback reports an error or an unsupported mode")
+
+    def _guard_control_send(self):
+        """Check every controller mutation, including keyboard child operations."""
+        with self._lock:
+            if self._kb_kind == "prepare" and not self._kb_arming:
+                # A preparation that lost its arming request must not change SpeedFactor.
+                raise PreparationRejectedError("Keyboard preparation cancelled.")
+            self._guard_send()
 
     @contextmanager
     def _gripper_publication_guard(self):
@@ -173,6 +227,7 @@ class RobotPanelState:
             "stop",
             "grip",
             "initialize_gripper",
+            "keyboard",
         }:
             raise ValueError("Unknown action")
         fields = {"action"}
@@ -180,11 +235,21 @@ class RobotPanelState:
             fields.add("targets")
         elif action == "grip":
             fields.add("position")
+        elif action == "keyboard":
+            if type(payload.get("enabled")) is not bool:
+                raise ValueError("Keyboard enabled must be true or false")
+            fields |= {"enabled", "seq", "speed" if payload["enabled"] else "reason"}
         if set(payload) != fields:
             raise ValueError("Unexpected command fields")
         targets = self._targets(payload["targets"]) if action == "execute" else None
         if action == "grip":
             targets = (None, self._gripper_target(payload["position"]))
+        if action == "keyboard":
+            seq = sequence_number(payload["seq"])
+            if payload["enabled"]:
+                speed = speed_percent(payload["speed"])
+            elif not isinstance(payload["reason"], str) or payload["reason"] not in DISARM_REASONS:
+                raise ValueError("Unknown keyboard reason")
         with self._lock:
             if self._closing:
                 raise RuntimeError("The panel is closing")
@@ -196,6 +261,9 @@ class RobotPanelState:
                     raise PermissionError("Another browser controls the robot")
                 if action == "start_sync":
                     self._start_sync()
+                    if self._owner is None and self._kb_seq_client != client_id:
+                        # Each page numbers its keyboard messages from 1.
+                        self._kb_seq, self._kb_seq_client = 0, client_id
                     self._owner = client_id
                     self._heartbeat = time.monotonic()
                 else:
@@ -207,9 +275,17 @@ class RobotPanelState:
                             disabling=self._fresh() and self._sample.mode == 4,
                             disconnect=True,
                         )
+                    elif action == "keyboard":
+                        # Arm, disarm and key updates share one order. Ignore stale messages.
+                        if seq > self._kb_seq:
+                            self._kb_seq = seq
+                            if payload["enabled"]:
+                                self._kb_arm(speed)
+                            else:
+                                self._kb_disarm(DISARM_REASONS[payload["reason"]])
                     else:
                         self._guard_send()
-                        if self._busy or self._safety_workers:
+                        if self._busy or self._safety_workers or self._kb_thread is not None:
                             raise RuntimeError("Another robot operation is in progress")
                         if action in {"home", "execute"}:
                             if self._sample.mode != 5:
@@ -226,11 +302,36 @@ class RobotPanelState:
                             raise RuntimeError("Gripper control is unavailable")
                         if self._grip.get("locked"):
                             raise RuntimeError("Gripper control is locked")
+                        # A button command replaces keyboard control.
+                        self._kb_disarm(None)
                         self._busy = True
                         self._pose = [None] * 4
                         self._job = (action, targets)
                         self._message = f"Robot operation started: {action}."
                         self._wake.set()
+        return self.snapshot()
+
+    def keys(self, payload, client_id):
+        """Apply the held-key set of one browser update. Ignore stale updates."""
+        self._client(client_id)
+        if not isinstance(payload, dict) or set(payload) != {"seq", "held"}:
+            raise ValueError("Key input must contain only seq and held")
+        seq = sequence_number(payload["seq"])
+        held = held_keys(payload["held"])
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("The panel is closing")
+            self._expire_lease()
+            if self._owner != client_id:
+                raise PermissionError("Start sync in this browser before issuing commands")
+            if seq > self._kb_seq:
+                self._kb_seq = seq
+                self._heartbeat = time.monotonic()
+                if self._kb_on:
+                    self._kb_input(held)
+                else:
+                    # Track keys while off, so a key held across arming needs a new press.
+                    self._kb_held = held
         return self.snapshot()
 
     @staticmethod
@@ -286,6 +387,7 @@ class RobotPanelState:
             or self._working
             or self._job
             or self._safety_workers
+            or self._kb_thread is not None
             or any(thread.is_alive() for thread in self._safety_threads)
             or (self._reader is not None and self._reader.is_alive())
             or self._control.feedback_retention_reason() is not None
@@ -315,10 +417,19 @@ class RobotPanelState:
                         self._request_stop(reason=f"Robot feedback failed: {error}")
 
     def _request_stop(self, *, disabling=False, disconnect=False, reason=None):
-        """Latch cancellation before a separate worker sends the stop command."""
+        """Latch cancellation before a separate worker sends the stop command.
+
+        An arm hold stops itself when its input is revoked here, and a preparation
+        sends no further command. The worker cancels the parent control after that
+        keyboard worker exits, so the stops never overlap.
+        """
         self._ownership.acquire()
         self._locked = True
-        self._control.cancel(disabling=disabling)
+        self._kb_disarm(None)
+        keyboard = self._kb_thread
+        if keyboard is None or self._kb_kind == "gripper" or not keyboard.is_alive():
+            keyboard = None
+            self._control.cancel(disabling=disabling)
         self._disconnect_requested |= disconnect
         if disabling in self._safety_actions:
             return
@@ -330,15 +441,28 @@ class RobotPanelState:
         self._safety_actions.add(disabling)
         thread = threading.Thread(
             target=self._stop,
-            args=(self._control, disabling),
+            args=(self._control, disabling, keyboard),
             daemon=True,
         )
         self._safety_threads = [worker for worker in self._safety_threads if worker.is_alive()]
-        self._safety_threads.append(thread)
-        thread.start()
-
-    def _stop(self, control, disabling):
         try:
+            thread.start()
+        except Exception as error:
+            self._safety_workers -= 1
+            self._safety_actions.discard(disabling)
+            self._control.cancel(disabling=disabling)
+            self._fault = True
+            self._message = f"Robot stop could not start: {error} Use the physical emergency stop."
+            return
+        self._safety_threads.append(thread)
+
+    def _stop(self, control, disabling, keyboard=None):
+        try:
+            if keyboard is not None:
+                # The guard refuses new keyboard sends while the session stops itself.
+                if keyboard.ident is not None:
+                    keyboard.join(self.KEYBOARD_JOIN_SECONDS)
+                control.cancel(disabling=disabling)
             if disabling:
                 control.disable()
                 control.verify_stationary()
@@ -379,10 +503,14 @@ class RobotPanelState:
             and not self._working
             and not self._safety_workers
             and not self._closing
+            and self._kb_thread is None
         ):
+            # A verified disable and rest check supersede an earlier keyboard stop verdict.
             self._control = self._new_control()
             self._locked = False
             self._disable_verified = False
+            if self._kb_session is not None:
+                self._kb_close(self._kb_session)
 
     def _operate(self, action, targets):
         self._guard_send()
@@ -428,6 +556,7 @@ class RobotPanelState:
                     and not self._fault
                     and not self._disconnect_requested
                     and not self._control.stopped
+                    and self._kb_thread is None
                 )
             try:
                 if job:
@@ -458,42 +587,404 @@ class RobotPanelState:
                     if job:
                         self._busy = False
                     self._recover_disabled()
+                    # A key pressed during this poll starts now.
+                    self._kb_reconcile()
 
     def _watch(self):
         while not self._closing:
             time.sleep(0.05)
-            with self._lock:
-                self._release_ownership_if_idle()
-                if self._owner is None:
-                    continue
-                now = time.monotonic()
-                if now - self._heartbeat > self.LEASE_SECONDS:
-                    self._expire_lease()
-                elif self._syncing and not self._locked:
-                    expired = now - self._started > self.CONNECT_SECONDS and not self._fresh()
-                    failed = self._sample is not None and (
-                        self._sample.error_status or self._sample.mode not in {4, 5, 7}
+            try:
+                with self._lock:
+                    self._watch_once()
+            except Exception as error:
+                # The watchdog must keep running. Treat its own failure as a reason to stop.
+                try:
+                    with self._lock:
+                        if not self._closing and not self._locked:
+                            self._request_stop(reason=f"Panel watchdog failed: {error}")
+                except Exception:
+                    pass
+
+    def _watch_once(self):
+        self._release_ownership_if_idle()
+        self._kb_watch()
+        if self._owner is None:
+            return
+        now = time.monotonic()
+        if now - self._heartbeat > self.LEASE_SECONDS:
+            self._expire_lease()
+        elif self._syncing and not self._locked:
+            expired = now - self._started > self.CONNECT_SECONDS and not self._fresh()
+            failed = self._sample is not None and (
+                self._sample.error_status
+                or (
+                    self._sample.mode not in {4, 5, 7}
+                    # Continuous jogging reports mode 11 until its stop is verified.
+                    and not (self._sample.mode == 11 and self._kb_kind == "arm")
+                )
+            )
+            if expired or failed:
+                if self._sample is None and not self._busy:
+                    self._syncing = False
+                    self._reader_stop.set()
+                    self._message = "Robot feedback did not connect. Retry Start sync."
+                else:
+                    self._request_stop(reason="Robot feedback is stale or reports an error.")
+
+    # Keyboard control. Call the _kb_* helpers with self._lock held, except the workers.
+
+    def _kb_arm(self, speed):
+        if self._kb_on or self._kb_arming:
+            if speed != self._kb_speed:
+                raise RuntimeError(
+                    f"Keyboard is on at {self._kb_speed}%. Turn it off to change the speed."
+                )
+            return
+        self._guard_send()
+        if (
+            self._busy
+            or self._safety_workers
+            or self._kb_thread is not None
+            or self._gripper_active
+        ):
+            raise RuntimeError("Another robot operation is in progress")
+        if self._sample.mode != 5:
+            raise RuntimeError("Enable the robot before keyboard control")
+        if self._grip.get("locked"):
+            raise RuntimeError("Gripper control is locked")
+        try:
+            validate_measured_joints(self._sample.joints_deg)
+        except ValueError as error:
+            raise RuntimeError(f"Keyboard unavailable: {error}") from error
+        reason = self._control.feedback_retention_reason()
+        if reason is not None:
+            raise RuntimeError(f"Keyboard unavailable: {reason}")
+        session = self._session_factory(self._control, speed_percent=speed)
+        self._kb_generation += 1
+        self._kb_session = session
+        self._kb_arming = True
+        self._kb_speed = speed
+        self._kb_reason = None
+        self._kb_held = frozenset()
+        self._kb_pending.clear()
+        self._kb_active = self._kb_released = None
+        try:
+            self._kb_start("prepare", self._kb_prepare, (session, self._kb_generation))
+        except Exception:
+            self._kb_arming = False
+            self._kb_close(session)
+            raise
+        self._message = "Checking keyboard control..."
+
+    def _kb_start(self, kind, target, args):
+        thread = threading.Thread(
+            target=target, args=args, name=f"MG400-keyboard-{kind}", daemon=True
+        )
+        # Register the worker before it runs; it clears these fields when it finishes.
+        self._kb_thread, self._kb_kind = thread, kind
+        try:
+            thread.start()
+        except Exception:
+            self._kb_thread = self._kb_kind = None
+            raise
+
+    def _kb_preparation_current(self, generation):
+        return (
+            generation == self._kb_generation
+            and self._syncing
+            and not self._locked
+            and not self._fault
+            and not self._closing
+        )
+
+    def _kb_prepare(self, session, generation):
+        error = None
+        started = False
+        try:
+            # Let a pose query finish before preparation uses the dashboard connection.
+            while True:
+                with self._lock:
+                    if not self._kb_preparation_current(generation):
+                        break
+                    if not self._working:
+                        started = True
+                        break
+                time.sleep(0.005)
+            if started:
+                session.prepare()
+        except Exception as caught:
+            error = caught
+        with self._lock:
+            self._kb_thread = self._kb_kind = None
+            current = generation == self._kb_generation and session is self._kb_session
+            if current:
+                self._kb_arming = False
+            if started and error is None and current and self._kb_may_enable():
+                self._kb_on = True
+                self._kb_renewed = time.monotonic()
+                self._kb_message("Keyboard ready. Hold one key; release requests a stop.")
+            else:
+                self._kb_close(session)
+                if current and isinstance(error, PreparationRejectedError):
+                    self._kb_message(
+                        f"Keyboard preparation deferred: {error} Click Keyboard to retry."
                     )
-                    if expired or failed:
-                        if self._sample is None and not self._busy:
-                            self._syncing = False
-                            self._reader_stop.set()
-                            self._message = "Robot feedback did not connect. Retry Start sync."
-                        else:
-                            self._request_stop(
-                                reason="Robot feedback is stale or reports an error."
-                            )
+                elif (current and error is not None) or session.fault is not None:
+                    self._kb_message(f"ERROR: {session.fault or error}")
+                elif current:
+                    self._kb_reason = "robot state changed during preparation."
+                    self._kb_message(f"Keyboard off: {self._kb_reason}")
+            self._kb_check_control(session.fault or error)
+            self._recover_disabled()
+            self._wake.set()
+
+    def _kb_may_enable(self):
+        return (
+            not self._locked
+            and not self._fault
+            and not self._closing
+            and self._owner is not None
+            and self._fresh()
+            and not self._sample.error_status
+            and self._sample.mode == 5
+            and not self._control.stopped
+        )
+
+    def _kb_message(self, message):
+        if not self._locked and not self._fault and not self._closing:
+            self._message = message
+
+    def _kb_close(self, session):
+        try:
+            session.close()
+        except Exception:
+            pass
+        if session is self._kb_session:
+            self._kb_session = None
+
+    def _kb_check_control(self, detail):
+        """Turn a keyboard fault in the shared control into a verified stop and a lock."""
+        if self._locked or self._closing:
+            return
+        reason = self._control.feedback_retention_reason()
+        if self._control.stopped or reason is not None:
+            self._request_stop(
+                reason=f"Keyboard control failed: {detail or reason or 'control stopped'}"
+            )
+
+    def _kb_disarm(self, reason):
+        """Revoke keyboard input without blocking or raising."""
+        active = self._kb_on or self._kb_arming
+        self._kb_on = self._kb_arming = False
+        self._kb_generation += 1
+        self._kb_held = frozenset()
+        self._kb_pending.clear()
+        if self._kb_released is not None:
+            self._kb_released.set()
+        session = self._kb_session
+        if session is not None:
+            try:
+                if self._kb_kind == "prepare":
+                    # Cut a preparation short unless its SpeedFactor acknowledgement is
+                    # pending; cancelling then would leave command ordering unknown.
+                    if not self._control.command_pending:
+                        session.close()
+                elif self._kb_thread is not None:
+                    session.release()
+                else:
+                    self._kb_close(session)
+            except Exception as error:
+                reason = reason or f"keyboard session cleanup failed: {error}"
+        self._kb_active = None
+        if active and reason is not None:
+            self._kb_reason = reason
+            self._kb_message(f"Keyboard off: {reason}")
+
+    def _kb_release(self):
+        """Release the active hold (or open its release gate) without discarding other input."""
+        if self._kb_released is not None:
+            self._kb_released.set()
+        if self._kb_session is not None and self._kb_kind != "prepare":
+            try:
+                self._kb_session.release()
+            except Exception as error:
+                self._kb_disarm(f"keyboard release failed: {error}")
+
+    def _kb_input(self, held):
+        released, pressed = self._kb_held - held, held - self._kb_held
+        self._kb_held = held
+        if held:
+            self._kb_renewed = time.monotonic()
+        self._kb_pending -= released
+        if self._kb_active in released:
+            self._kb_active = None
+            self._kb_release()
+        if pressed and self._kb_on:
+            self._kb_pending |= pressed
+            # Several held keys stop the active hold and start nothing.
+            if len(held) != 1:
+                self._kb_release()
+        self._kb_reconcile()
+
+    def _kb_can_start(self):
+        now = time.monotonic()
+        if (
+            not self._kb_on
+            or self._closing
+            or not self._syncing
+            or self._owner is None
+            or now - self._heartbeat > self.LEASE_SECONDS
+            or self._busy
+            or self._working
+            or self._safety_workers
+            or self._locked
+            or self._fault
+            or self._control.stopped
+            or self._gripper_active
+            or self._grip.get("locked")
+            or not self._fresh()
+            or self._sample.error_status
+            or self._sample.mode != 5
+        ):
+            return False
+        if now - self._kb_renewed > self.KEY_LEASE_SECONDS:
+            self._kb_disarm("key updates stopped.")
+            return False
+        if self._kb_session is None or not self._kb_session.ready:
+            self._kb_disarm("session is not ready. Click Keyboard to retry.")
+            return False
+        return True
+
+    def _kb_reconcile(self):
+        """Start a hold for one newly pressed key when control permits it. Never raises."""
+        if not self._kb_on or self._kb_thread is not None or len(self._kb_held) != 1:
+            return
+        key = next(iter(self._kb_held))
+        try:
+            if key not in self._kb_pending or not self._kb_can_start():
+                return
+            self._kb_pending.discard(key)
+            self._kb_active = key
+            released = self._kb_released = threading.Event()
+            kind = "gripper" if key in GRIPPER_KEYS else "arm"
+            self._kb_start(
+                kind,
+                self._kb_hold,
+                (self._kb_session, self._control, key, released, self._kb_generation),
+            )
+        except Exception as error:
+            self._kb_disarm(f"keyboard worker could not start: {error}")
+            return
+        if kind == "arm":
+            self._pose = [None] * 4
+        self._kb_message("Jogging... Release the key to stop.")
+
+    def _kb_hold(self, session, control, key, released, generation):
+        pose = outcome = error = None
+        with self._lock:
+            # A release or disarm before this point needs no robot command.
+            skipped = released.is_set() or generation != self._kb_generation
+        if not skipped:
+            try:
+                if key in GRIPPER_KEYS:
+                    outcome = run_gripper_steps(
+                        self._gripper,
+                        control.read_state,
+                        key,
+                        released,
+                        set_active=self._kb_gripper_active,
+                        hold_seconds=self.GRIPPER_HOLD_SECONDS,
+                    )
+                else:
+                    pose = session.run(key, released)
+            except Exception as caught:
+                error = caught
+        with self._lock:
+            self._kb_thread = self._kb_kind = None
+            current = self._kb_on and session is self._kb_session
+            if not current:
+                self._kb_close(session)
+            if pose is not None and not self._busy:
+                self._pose = list(pose)
+            if isinstance(error, GripperUnavailableError):
+                # After keys turn off, keep the message that says why.
+                if self._kb_on:
+                    self._kb_message(f"Gripper unavailable: {error} Arm keys remain ready.")
+            elif error is not None:
+                if self._kb_on:
+                    self._kb_disarm(None)
+                self._kb_message(f"ERROR: {session.fault or error}")
+            elif current:
+                if not skipped and key not in GRIPPER_KEYS and session.limit_reason:
+                    self._kb_message(
+                        f"{session.limit_reason} Release the key and choose another direction."
+                    )
+                elif outcome == "contact":
+                    self._kb_message(
+                        "The gripper reports object contact before the target. "
+                        "Release the key before pressing again."
+                    )
+                elif outcome == "expired":
+                    self._kb_message("Hold limit reached. Release the key before pressing again.")
+                else:
+                    self._kb_message("Stopped. Hold a key for the next move.")
+            self._kb_check_control(session.fault or error)
+            self._recover_disabled()
+            self._kb_reconcile()
+            self._wake.set()
+
+    def _kb_gripper_active(self, active):
+        with self._lock:
+            self._gripper_active = active
+            if not active:
+                self._grip = self._gripper.snapshot()
+
+    def _kb_watch(self):
+        """Turn keys off when feedback, control state, or key updates no longer permit them."""
+        if not (self._kb_on or self._kb_arming):
+            return
+        sample = self._sample
+        reason = None
+        if self._closing or not self._syncing:
+            reason = "synchronization stopped."
+        elif not self._fresh() or sample.error_status:
+            reason = "robot feedback is stale, unavailable, or reports a fault."
+        elif self._locked or self._fault or self._control.stopped:
+            reason = "robot control is stopped."
+        elif self._grip.get("locked"):
+            reason = "gripper control is locked."
+        else:
+            try:
+                validate_measured_joints(sample.joints_deg)
+            except ValueError:
+                reason = "joint feedback is outside the allowed range."
+            else:
+                if self._kb_on and self._kb_thread is None and sample.mode != 5:
+                    reason = "the robot is not enabled and idle."
+                elif (
+                    self._kb_on
+                    and self._kb_held
+                    and time.monotonic() - self._kb_renewed > self.KEY_LEASE_SECONDS
+                ):
+                    reason = "key updates stopped."
+        if reason is not None:
+            self._kb_disarm(reason)
 
     def close(self):
         with self._lock:
             if self._closing:
                 return
             self._closing = True
-            if self._syncing or self._busy:
+            self._kb_disarm(None)
+            if self._syncing or self._busy or self._kb_thread is not None:
                 self._request_stop(disconnect=True, reason="The panel is closing.")
             self._wake.set()
         for thread in self._safety_threads:
-            thread.join(timeout=6)
+            thread.join(timeout=6 + self.KEYBOARD_JOIN_SECONDS + 2)
+        with self._lock:
+            keyboard = self._kb_thread
+        if keyboard is not None and keyboard.ident is not None:
+            keyboard.join(timeout=self.KEYBOARD_JOIN_SECONDS)
         self._reader_stop.set()
         self._syncing = False
         self._worker.join(timeout=1)

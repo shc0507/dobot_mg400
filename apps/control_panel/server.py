@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -87,8 +88,11 @@ class ReadOnlyPanelState:
             "execute",
             "stop",
             "initialize_gripper",
+            "keyboard",
         }:
             raise ValueError("Unknown action")
+        if action == "keyboard":
+            raise PermissionError("Keyboard control is unavailable in read-only mode")
         if set(payload) != ({"action", "targets"} if action == "execute" else {"action"}):
             raise ValueError("Unexpected command fields")
         with self._lock:
@@ -161,6 +165,10 @@ class PanelServer(ThreadingHTTPServer):
 
 
 class PanelHandler(BaseHTTPRequestHandler):
+    # Keep-alive avoids a new TCP connection for each key update.
+    protocol_version = "HTTP/1.1"
+    timeout = 15
+
     def _send(self, status, body, content_type="application/json; charset=utf-8"):
         data = json.dumps(body, allow_nan=False).encode() if isinstance(body, dict) else body
         self.send_response(status)
@@ -168,6 +176,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if status >= 400:
+            # An early error can leave the request body unread on this connection.
+            self.close_connection = True
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 
@@ -203,6 +215,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         if path not in {
             self.server.base_path + "api/command",
             self.server.base_path + "api/heartbeat",
+            self.server.base_path + "api/keys",
         }:
             self._send(404, {"error": "Not found"})
             return
@@ -229,10 +242,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                     if payload != {}:
                         raise ValueError("Heartbeat must be an empty JSON object")
                     result = state.heartbeat(client)
+                elif path.endswith("/keys"):
+                    result = state.keys(payload, client)
                 else:
                     result = state.command(payload, client_id=client)
             elif path.endswith("/heartbeat"):
                 raise ValueError("Heartbeat is only available in robot mode")
+            elif path.endswith("/keys"):
+                raise PermissionError("Keyboard control is unavailable in read-only mode")
             else:
                 result = state.command(payload)
         except (ValueError, UnicodeError) as error:
@@ -246,9 +263,12 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Keep tokens and request bodies out of the request log.
+        if format.startswith("Request timed out"):
+            return
         polls = (
             f"GET {self.server.base_path}api/state ",
             f"POST {self.server.base_path}api/heartbeat ",
+            f"POST {self.server.base_path}api/keys ",
         )
         if (
             len(args) > 1
@@ -300,14 +320,47 @@ def main(argv=None):
         f"MG400 panel: http://{args.bind}:{server.server_port}{args.base_path} ({args.mode})",
         flush=True,
     )
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    previous = {signum: signal.getsignal(signum) for signum in signals}
+
+    def interrupted(signum, frame):
+        # Repeated signals must not interrupt the bounded stop attempt.
+        for number in signals:
+            signal.signal(number, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    # Ctrl+C, systemctl stop and a closed SSH session must all stop a running jog.
+    for signum in signals:
+        if previous[signum] != signal.SIG_IGN:
+            signal.signal(signum, interrupted)
+    exit_code = 0
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
-        state.close()
+        for signum in signals:
+            signal.signal(signum, signal.SIG_IGN)
+        try:
+            print("Stopping robot control before exit.", file=sys.stderr, flush=True)
+            server.server_close()
+            state.close()
+            snapshot = state.snapshot()
+            print(snapshot.get("message", ""), file=sys.stderr)
+            if snapshot.get("stop_unconfirmed") or snapshot.get("busy"):
+                exit_code = 1
+                print(
+                    "Robot rest is unconfirmed. Use the physical emergency stop.",
+                    file=sys.stderr,
+                )
+        except Exception as error:
+            exit_code = 1
+            print(f"Cleanup failed: {error}. Use the physical emergency stop.", file=sys.stderr)
+        finally:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

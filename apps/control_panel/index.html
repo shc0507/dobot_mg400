@@ -12,7 +12,7 @@
     header,footer{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#202a35}header h1{font-size:14px;font-weight:650;margin:0}header .mode{margin-left:auto;font-size:10px;letter-spacing:.08em;border:1px solid #49657c;color:#b2cee6;padding:3px 6px;border-radius:4px}
     main{padding:8px;display:grid;gap:8px}.sync{display:flex;align-items:center;gap:6px;min-height:32px;color:#9caebf;font-size:11px}.sync .dot{width:6px;height:6px;border-radius:50%;background:#758392}.sync .dot.on{background:#72c7ad}.sync .state{margin-right:auto}.sync button{font-size:11px;padding:4px 8px}
     .motion{border:1px solid #3b4c5f;border-radius:6px;background:#222d39;padding:10px}.motion h2{font-size:12px;margin:0 0 10px;display:inline-block;cursor:help}.columns,.row{display:grid;grid-template-columns:60px 82px minmax(0,1fr);gap:6px;align-items:center}.columns{font-size:10px;color:#8fa1b4;padding-bottom:5px}.row{min-height:37px}.label{font-weight:600;font-size:12px}.unit{display:block;color:#8295a7;font-weight:400;font-size:9px}.actual{font:12px ui-monospace,SFMono-Regular,monospace;color:#b0becc}.compound{display:flex;align-items:center;gap:6px;border:1px solid #42566a;border-radius:5px;background:#17212c;padding:3px 5px;height:30px;min-width:0}.compound input[type=range]{min-width:16px;width:100%;flex:1;accent-color:#86b6e1;height:18px}.compound input[type=number]{appearance:textfield;-moz-appearance:textfield;width:76px;border:0;border-left:1px solid #3c4c5d;background:transparent;color:#edf4fa;text-align:right;padding:2px 0 2px 5px;font:12px ui-monospace,SFMono-Regular,monospace}.compound input::-webkit-inner-spin-button{appearance:none}.actions{display:flex;justify-content:space-between;margin-top:10px}.primary{background:#7fb3df;color:#102034;border-color:#7fb3df;font-weight:650}.primary:hover:enabled{background:#9dc9ed}
-    .aux{display:flex;align-items:center;gap:16px;min-height:26px;color:#8295a7;font-size:10px}.joints{display:flex;gap:12px;margin-left:auto;flex-wrap:wrap;font-family:ui-monospace,SFMono-Regular,monospace}.joints span{white-space:nowrap}.joints b{color:#b6c4d1;font-weight:400}.status{font-size:11px;color:#91a4b7;line-height:1.45;min-height:16px;overflow-wrap:anywhere}.status.error{color:#f3b8b0}footer .robot-state{font-size:11px;color:#9cabb9;margin-right:auto}footer button{font-size:11px;padding:5px 8px}footer .disable{border-color:#76514f;background:#372c31;color:#f2c4bf}.connection{width:min(580px,100%);font-size:11px;color:#72869a;margin-top:10px;line-height:1.5}.auth{display:flex;gap:8px;margin:8px 0}.auth input{min-width:0;flex:1;border:1px solid #42566a;border-radius:5px;background:#111b25;color:#edf4fa;padding:7px}.auth[hidden]{display:none}
+    .aux{display:flex;align-items:center;gap:10px;min-height:26px;color:#8295a7;font-size:10px}.aux button{font-size:10px;padding:3px 7px}.aux button.on{border-color:#72c7ad;color:#bfeadb}.speed{display:flex;align-items:center;gap:4px}.speed input{width:46px;border:1px solid #42566a;border-radius:4px;background:#17212c;color:#edf4fa;text-align:right;padding:2px 4px;font:11px ui-monospace,SFMono-Regular,monospace}.speed[hidden],.aux button[hidden]{display:none}.joints{display:flex;gap:12px;margin-left:auto;flex-wrap:wrap;font-family:ui-monospace,SFMono-Regular,monospace}.joints span{white-space:nowrap}.joints b{color:#b6c4d1;font-weight:400}.status{font-size:11px;color:#91a4b7;line-height:1.45;min-height:16px;overflow-wrap:anywhere}.status.error{color:#f3b8b0}footer .robot-state{font-size:11px;color:#9cabb9;margin-right:auto}footer button{font-size:11px;padding:5px 8px}footer .disable{border-color:#76514f;background:#372c31;color:#f2c4bf}.connection{width:min(580px,100%);font-size:11px;color:#72869a;margin-top:10px;line-height:1.5}.auth{display:flex;gap:8px;margin:8px 0}.auth input{min-width:0;flex:1;border:1px solid #42566a;border-radius:5px;background:#111b25;color:#edf4fa;padding:7px}.auth[hidden]{display:none}
     @media(max-width:460px){body{padding:16px 8px}.columns,.row{grid-template-columns:44px 65px minmax(0,1fr);gap:4px}.motion{padding:8px}.compound{gap:2px}.compound input[type=number]{width:67px}.aux{gap:8px;flex-wrap:wrap}.joints{gap:10px;margin-left:0}.sync button{padding:4px 6px}.connection{padding:0 4px}}
   </style>
 </head>
@@ -30,7 +30,7 @@
         <div class="actions"><button id="initializeGripper" title="Initialization opens the jaws. Remove held objects first." hidden disabled>Initialize gripper</button><button id="stop" class="disable" hidden disabled>Stop arm</button></div>
         <div class="status" id="gripperStatus" hidden></div>
       </section>
-      <div class="aux"><span title="Keyboard jogging is not available in this web panel.">Keyboard · unavailable</span><div class="joints" id="joints"></div></div>
+      <div class="aux"><button id="keyboard" title="Hold one key; release requests a stop. W/S: reach. A/D: base turn. R/F: up/down. Q/E: flange yaw. Z/X: gripper open/close. Esc: disable robot. Leaving the page or pressing Shift/Ctrl/Alt/Meta turns keys off." hidden disabled>Keyboard: OFF</button><label class="speed" id="speedField" title="Global robot speed ratio, 1–100%. Click Keyboard to apply. It also affects Home and Execute targets, not the gripper." hidden>Speed <input id="speed" type="number" min="1" max="100" step="1" value="1" aria-label="Keyboard speed percent">%</label><div class="joints" id="joints"></div></div>
       <div class="status" id="status" role="status" aria-live="polite">Connecting to the Python server…</div>
     </main>
     <footer><span class="robot-state" id="robotState">—</span><button id="enable" disabled>Enable robot</button><button class="disable" id="disable" disabled>Disable robot</button></footer>
@@ -40,6 +40,11 @@
     const $ = id => document.getElementById(id);
     const axes = [{id:'x',label:'X',unit:'mm'},{id:'y',label:'Y',unit:'mm'},{id:'z',label:'Z',unit:'mm'},{id:'r',label:'R',unit:'deg'},{id:'grip',label:'Gripper',unit:'/ 1000'}];
     let state, initialized = false, busy = false, connected = false, gripEdited = false;
+    const jogKeys = new Set('WASDQERFZX');
+    const modifierCodes = new Set(['ShiftLeft','ShiftRight','ControlLeft','ControlRight','AltLeft','AltRight','MetaLeft','MetaRight','OSLeft','OSRight']);
+    const speedTitle = 'Global robot speed ratio, 1–100%. Click Keyboard to apply. It also affects Home and Execute targets, not the gripper.';
+    let keySeq = 0, renewTimer = null, renewals = 0, offReason = null, offSending = false, arming = false;
+    const held = new Set();
     const clientId = Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2,'0')).join('');
     let token = '';
     try { token = sessionStorage.getItem('mg400-panel-token') || ''; } catch {}
@@ -99,15 +104,26 @@
         $(axis.id+'Actual').textContent = formatted(data.actual[i],axis.id);
         if(robot) $(axis.id+'Range').disabled = $(axis.id+'Target').disabled = !control || (axis.id === 'grip' ? !data.gripper_available : $(axis.id+'Target').value === '');
       });
+      const keysShown = robot && owner && !!(data.keyboard_enabled || data.keyboard_arming);
+      // Renew only keys that this page still sees as ON; the server dead-man covers the rest.
+      if(!(robot && owner && data.keyboard_enabled)) {held.clear();stopRenew();}
+      if(!keysShown) offReason = null;
+      else if(offReason) sendOff();
+      $('keyboard').hidden = $('speedField').hidden = !robot;
+      $('keyboard').disabled = !robot || !owner || !(keysShown || (connected && data.syncing && data.feedback_fresh && !data.locked && data.robot_mode === 5 && !data.busy && !data.gripper_busy));
+      $('keyboard').textContent = robot && data.keyboard_arming ? 'Keyboard: CHECKING…' : robot && data.keyboard_enabled ? `Keyboard: ON ${data.keyboard_speed_percent}%` : 'Keyboard: OFF';
+      $('keyboard').classList.toggle('on',!!(robot && data.keyboard_enabled));
+      $('speed').disabled = !robot || !owner || !data.syncing || !!data.busy || !!data.keyboard_arming;
+      $('speedField').title = speedTitle + (robot && data.speed_factor != null ? ` Controller ratio: ${data.speed_factor}%.` : '');
       $('joints').innerHTML = [0,1,2,3].map(i => `<span>J${i+1} <b>${data.joints ? data.joints[i].toFixed(2)+'°' : '—'}</b></span>`).join('');
       $('robotState').textContent = data.robot_mode == null ? 'No feedback' : `Mode ${data.robot_mode}${data.robot_error ? ' · error' : ''}${data.feedback_fresh ? '' : ' · stale'}${data.locked ? ' · LOCKED' : ''}`;
-      $('connection').textContent = robot ? `Real robot · ${data.robot_host} · XYZ/R use the robot base and flange. Home moves all four joints to 0°. Stop arm does not stop a gripper command already sent. If stop is unconfirmed, use the physical emergency stop.` : `Read-only · ${data.robot_host} · Joint feedback only. Pose, gripper, keyboard jogging, and robot commands are unavailable.`;
+      $('connection').textContent = robot ? `Real robot · ${data.robot_host} · XYZ/R use the robot base and flange. Home moves all four joints to 0°. Stop arm does not stop a gripper command already sent. Continuous jogging needs a person at the physical emergency stop. If stop is unconfirmed, use the physical emergency stop.` : `Read-only · ${data.robot_host} · Joint feedback only. Pose, gripper, keyboard jogging, and robot commands are unavailable.`;
       $('status').classList.toggle('error',!!data.locked);
       $('status').textContent = data.message;
     }
     function headers() {return {'Authorization':token ? 'Bearer '+token:'','Content-Type':'application/json','X-MG400-Panel':'1','X-MG400-Client':clientId};}
-    async function api(path, payload) {
-      const response = await fetch(path,{method:payload ? 'POST':'GET',headers:headers(),signal:AbortSignal.timeout(2500),...(payload ? {body:JSON.stringify(payload)} : {})});
+    async function api(path, payload, timeout = 2500) {
+      const response = await fetch(path,{method:payload ? 'POST':'GET',headers:headers(),signal:AbortSignal.timeout(timeout),...(payload ? {body:JSON.stringify(payload)} : {})});
       const data = await response.json();
       if(response.status === 401) {$('auth').hidden = false;connected = false;}
       if(!response.ok) throw new Error(data.error || 'Request failed');
@@ -115,13 +131,18 @@
       connected = true;
       return data;
     }
+    function apply(data) {
+      // Requests can finish out of order. Never render an older server snapshot.
+      if(data?.version != null && state?.version != null && data.version < state.version) return;
+      render(data);
+    }
     function showError(error) {
       if(state) render(state);
       $('status').textContent = error.message;
       $('status').classList.add('error');
     }
     async function poll() {
-      try {render(await api('api/state'));} catch(error) {connected = false;showError(error);}
+      try {apply(await api('api/state'));} catch(error) {connected = false;showError(error);}
       setTimeout(poll,500);
     }
     async function heartbeat() {
@@ -146,7 +167,8 @@
             return [axis.id,Number(input.value)];
           }));
         }
-        state = await api('api/command',payload);
+        const data = await api('api/command',payload);
+        if(data.version == null || state?.version == null || data.version >= state.version) state = data;
         if(action === 'execute') gripEdited = false;
       } catch(error) {failure = error;}
       finally {if(!interrupt) busy = false;render(state);if(failure) showError(failure);}
@@ -157,7 +179,73 @@
     $('initializeGripper').addEventListener('click',() => command('initialize_gripper'));
     $('startSync').addEventListener('click',() => command('start_sync'));
     $('stopSync').addEventListener('click',() => command('stop_sync'));
-    $('auth').addEventListener('submit',async event => {event.preventDefault();token = $('token').value;try {render(await api('api/state'));try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value='';} catch(error) {showError(error);}});
+    $('auth').addEventListener('submit',async event => {event.preventDefault();token = $('token').value;try {apply(await api('api/state'));try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value='';} catch(error) {showError(error);}});
+    const keyName = event => event.code.startsWith('Key') ? event.code.slice(3) : event.code;
+    const owns = () => state?.mode === 'robot' && state.controller_id === clientId;
+    const keysOn = () => owns() && !!state.keyboard_enabled;
+    const keysArmed = () => owns() && !!(state.keyboard_enabled || state.keyboard_arming);
+    function stopRenew() {clearInterval(renewTimer);renewTimer = null;}
+    async function sendKeys(renewal = false) {
+      if(renewal) renewals++;
+      try {apply(await api('api/keys',{seq:++keySeq,held:[...held]},1000));}
+      catch(error) {held.clear();stopRenew();showError(error);}
+      finally {if(renewal) renewals--;}
+    }
+    function renew() {
+      if(!held.size) {stopRenew();return;}
+      if(!document.hasFocus() || document.visibilityState !== 'visible') {dropKeys('focus');return;}
+      // At most two renewals in flight, so a release never waits behind a backlog.
+      if(renewals < 2) sendKeys(true);
+    }
+    function keysChanged() {
+      sendKeys();
+      if(!held.size) stopRenew();
+      else if(!renewTimer) renewTimer = setInterval(renew,100);
+    }
+    function dropKeys(reason) {
+      const releasing = held.size > 0;
+      held.clear();stopRenew();
+      if(releasing) sendKeys();
+      // A disarm sent while the arm request is in flight carries a newer seq and wins.
+      if(reason && (keysArmed() || arming)) {offReason = reason;sendOff();}
+    }
+    async function sendOff() {
+      if(offSending || !offReason) return;
+      offSending = true;
+      try {apply(await api('api/command',{action:'keyboard',enabled:false,reason:offReason,seq:++keySeq}));}
+      catch(error) {showError(error);}
+      finally {offSending = false;}
+    }
+    async function keyboardOn() {
+      dropKeys(null);
+      offReason = null;
+      const speed = Number($('speed').value);
+      if(!Number.isInteger(speed) || speed < 1 || speed > 100) {showError(new Error('Enter a keyboard speed from 1 to 100'));return;}
+      arming = true;
+      try {apply(await api('api/command',{action:'keyboard',enabled:true,speed,seq:++keySeq}));} catch(error) {showError(error);} finally {arming = false;}
+    }
+    $('keyboard').addEventListener('click',() => keysArmed() ? dropKeys('user') : keyboardOn());
+    window.addEventListener('keydown',event => {
+      if(!owns()) return;
+      const key = keyName(event);
+      if(key === 'Escape') {
+        if(keysArmed() || held.size || arming) {event.preventDefault();dropKeys(null);command('disable');}
+        return;
+      }
+      if(!keysArmed() && !held.size && !arming) return;
+      if(event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || modifierCodes.has(event.code)) {dropKeys('modifier');return;}
+      if(!jogKeys.has(key) || event.target instanceof HTMLInputElement) return;
+      event.preventDefault();
+      if(event.repeat || event.isComposing || !keysOn() || held.has(key)) return;
+      held.add(key);
+      keysChanged();
+    });
+    window.addEventListener('keyup',event => {if(held.delete(keyName(event))) keysChanged();});
+    window.addEventListener('blur',() => dropKeys('focus'));
+    window.addEventListener('contextmenu',() => dropKeys('focus'));
+    window.addEventListener('dragstart',() => dropKeys('focus'));
+    document.addEventListener('visibilitychange',() => {if(document.visibilityState !== 'visible') dropKeys('focus');});
+    document.addEventListener('focusin',event => {if(event.target instanceof HTMLInputElement) dropKeys(event.target.id === 'speed' ? 'speed' : 'edit');});
     window.addEventListener('pagehide',() => {
       if(state?.mode === 'robot' && state.syncing && state.controller_id === clientId) fetch('api/command',{method:'POST',headers:headers(),body:JSON.stringify({action:'stop'}),keepalive:true}).catch(() => {});
     });

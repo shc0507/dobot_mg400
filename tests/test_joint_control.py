@@ -2,6 +2,7 @@ import errno
 import socket
 import threading
 import time
+from dataclasses import replace
 from unittest.mock import Mock, call
 
 import pytest
@@ -14,6 +15,7 @@ from mg400_agent.joint_control import (
     PreparationRejectedError,
     TargetRejectedError,
 )
+from mg400_agent.keyboard_jog import KeyboardJogSession
 
 START = (0.7, 0.04, 0.52, 23.08)
 TARGET = (*START[:3], START[3] + 2)
@@ -2414,3 +2416,326 @@ def test_linear_move_accepts_measured_start_outside_target_margin(cartesian_rig,
     assert control.move_linear(LINEAR_TARGET).joints_deg == TARGET
     assert (LINEAR_MOVE, 30003) in commands
     assert not control.stopped
+
+
+class _WireConnection:
+    """Answer one fake controller socket and record each command."""
+
+    def __init__(self, wire):
+        self._wire = wire
+        self._reply = b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def settimeout(self, timeout):
+        pass
+
+    def setblocking(self, flag):
+        pass
+
+    def connect_ex(self, address):
+        return 0
+
+    def shutdown(self, how):
+        pass
+
+    def close(self):
+        pass
+
+    def sendall(self, data):
+        text = data.decode("ascii")
+        self._wire.sent.append(text)
+        self._wire.on_send(text)
+        self._reply = f"0,{{{self._wire.answer(text)}}},{text};".encode("ascii")
+
+    def recv(self, size):
+        reply, self._reply = self._reply, b""
+        return reply
+
+
+class _Wire:
+    """Fake controller behind the real JointControl transport, with a fake clock."""
+
+    def __init__(self):
+        self.now = 10.0
+        self.sample = Feedback(START, 5, 0, False, 1)
+        self.sent = []
+        self.on_connect = lambda port: None
+        self.on_send = lambda text: None
+
+    def feedback(self):
+        return self.sample, self.now
+
+    def sleep(self, duration):
+        self.now += duration
+
+    def answer(self, text):
+        if text == "RobotMode()":
+            return str(self.sample.mode)
+        if text == "GetErrorID()":
+            return "[[],[],[],[],[]]"
+        if text == "GetAngle()":
+            return ",".join(map(str, (*self.sample.joints_deg, 0, 0)))
+        if text == "GetPose(0,0)":
+            return ",".join(map(str, POSE))
+        if text.startswith("SpeedFactor("):
+            speed = int(text[len("SpeedFactor(") : -1])
+            self.sample = replace(self.sample, speed_scaling_raw=speed)
+            return ""
+        if text.startswith(("MoveJog(", "JointMovJ(")):
+            return ""
+        if text == "ResetRobot()":
+            self.sample = replace(self.sample, mode=5)
+            return ""
+        if text == "DisableRobot()":
+            self.sample = replace(self.sample, mode=4)
+            return ""
+        raise AssertionError(f"Unexpected command: {text}")
+
+
+@pytest.fixture
+def wire(monkeypatch):
+    robot = _Wire()
+    monkeypatch.setattr("mg400_agent.joint_control.time.monotonic", lambda: robot.now)
+    monkeypatch.setattr("mg400_agent.joint_control.time.sleep", robot.sleep)
+
+    def create_connection(address, timeout=None, **kwargs):
+        # Only mutations and stop commands open connections this way.
+        robot.on_connect(address[1])
+        return _WireConnection(robot)
+
+    monkeypatch.setattr(socket, "create_connection", create_connection)
+    monkeypatch.setattr(socket, "socket", lambda *args, **kwargs: _WireConnection(robot))
+    return robot
+
+
+# A dashboard mutation, the reused jog connection, and a motion command on its own connection.
+GUARDED_MUTATIONS = [
+    ("SpeedFactor(50)", 29999, {5}),
+    ("MoveJog(J4+)", 30003, {5, 11}),
+    (MOVE, 30003, {5, 7}),
+]
+
+
+@pytest.mark.parametrize("text,port,modes", GUARDED_MUTATIONS)
+@pytest.mark.parametrize("child_guarded", [True, False])
+def test_child_mutation_checks_own_guard_then_parent_guard_at_enqueue_and_send(
+    wire, text, port, modes, child_guarded
+):
+    calls = []
+
+    def guard(name):
+        def check():
+            pending = child._pending
+            calls.append(
+                (
+                    name,
+                    pending is not None,
+                    pending is not None and pending["sent"],
+                    child._send_lock.locked(),
+                )
+            )
+
+        return check
+
+    parent = JointControl("robot.test", wire.feedback, send_guard=guard("parent"))
+    child = parent.begin_operation(send_guard=guard("child") if child_guarded else None)
+    wire.on_send = lambda sent: calls.append(("send", sent))
+    try:
+        child._guarded_command(text, modes=modes, send_modes={5}, expected=START, port=port)
+    finally:
+        child.finish_operation()
+    names = ["child", "parent"] if child_guarded else ["parent"]
+    # Enqueue: under the send lock, before the command is registered.
+    # Send time: under the send lock, while the registered command is still unsent.
+    assert calls == [
+        *[(name, False, False, True) for name in names],
+        *[(name, True, False, True) for name in names],
+        ("send", text),
+    ]
+    assert wire.sent == [text]
+    assert not parent.stopped
+
+
+@pytest.mark.parametrize("state", ["ready", "stopped", "stale"])
+def test_send_time_guards_run_before_stop_and_feedback_checks(wire, state):
+    events = []
+    refusal = RuntimeError("The browser control lease expired")
+
+    def parent_guard():
+        events.append("parent")
+        if state != "ready":
+            raise refusal
+
+    def feedback():
+        events.append("fresh")
+        return wire.sample, wire.now - (1.0 if state == "stale" else 0.0)
+
+    parent = JointControl("robot.test", feedback, send_guard=parent_guard)
+    child = JointControl(
+        "robot.test",
+        feedback,
+        parent=parent,
+        command_timeout=0.5,
+        send_guard=lambda: events.append("child"),
+    )
+    if state == "stopped":
+        child.cancel()
+    wire.on_send = events.append
+    pending = {"sent": False, "send_modes": {5}, "expected": START}
+    if state == "ready":
+        assert child._command("SpeedFactor(50)", pending=pending) == ""
+        assert events == ["child", "parent", "fresh", "SpeedFactor(50)"]
+        assert pending["sent"]
+        return
+    with pytest.raises(RuntimeError) as raised:
+        child._command("SpeedFactor(50)", pending=pending)
+    assert raised.value is refusal
+    assert events == ["child", "parent"]
+    assert not pending["sent"]
+    assert not wire.sent
+
+
+def test_send_guards_cover_every_ancestor_and_skip_controls_without_a_guard(wire):
+    events = []
+    root = JointControl("robot.test", wire.feedback, send_guard=lambda: events.append("root"))
+    middle = JointControl("robot.test", wire.feedback, parent=root, command_timeout=0.5)
+    leaf = JointControl(
+        "robot.test",
+        wire.feedback,
+        parent=middle,
+        command_timeout=0.5,
+        send_guard=lambda: events.append("leaf"),
+    )
+    wire.on_send = events.append
+    pending = {"sent": False, "send_modes": {5}, "expected": START}
+    assert leaf._command("SpeedFactor(10)", pending=pending) == ""
+    assert events == ["leaf", "root", "SpeedFactor(10)"]
+
+
+@pytest.mark.parametrize("text,port,modes", GUARDED_MUTATIONS)
+@pytest.mark.parametrize("when", ["enqueue", "send"])
+def test_parent_guard_refusal_leaves_child_command_unsent_and_parent_recoverable(
+    wire, text, port, modes, when
+):
+    refused = threading.Event()
+    checks = []
+
+    def parent_guard():
+        checks.append(refused.is_set())
+        if refused.is_set():
+            raise RuntimeError("The browser control lease expired")
+
+    if when == "enqueue":
+        refused.set()
+    else:
+        # The lease expires after the enqueue check, while the command connects.
+        wire.on_connect = lambda port: refused.set()
+    parent = JointControl("robot.test", wire.feedback, send_guard=parent_guard)
+    child = parent.begin_operation()
+    try:
+        with pytest.raises(RuntimeError, match="lease expired"):
+            child._guarded_command(text, modes=modes, send_modes={5}, expected=START, port=port)
+        if when == "enqueue":
+            assert checks == [True]
+            assert child._pending is None
+        else:
+            assert checks == [False, True]
+            assert child._pending["sent"] is False
+        assert not wire.sent
+        assert not child._stop_uncertain and not parent._stop_uncertain
+        assert not parent.stopped
+        assert child.stop_after_command(jog=text.startswith("MoveJog("))["ok"]
+        assert not child._stop_uncertain and not parent._stop_uncertain
+    finally:
+        child.finish_operation()
+    assert not parent.stopped
+    assert parent.feedback_retention_reason() is None
+    # The panel then stops and disables the parent. Neither may report unknown ordering.
+    assert parent.stop()["ok"]
+    assert parent.feedback_retention_reason() is None
+    assert parent.disable().mode == 4
+    assert parent.feedback_retention_reason() is None
+    assert not parent._stop_uncertain
+    assert text not in wire.sent
+    assert wire.sent[:3] == ["ResetRobot()", "ResetRobot()", "DisableRobot()"]
+
+
+@pytest.mark.parametrize("when", ["enqueue", "send"])
+def test_parent_preparation_rejection_leaves_real_keyboard_session_unfaulted(wire, when):
+    cancelled = threading.Event()
+
+    def parent_guard():
+        if cancelled.is_set():
+            raise PreparationRejectedError("Keyboard preparation cancelled.")
+
+    if when == "enqueue":
+        # The arming request is withdrawn during the read-only preflight.
+        wire.on_send = lambda text: cancelled.set() if text == "GetPose(0,0)" else None
+    else:
+        # It is withdrawn after the enqueue check, while SpeedFactor connects.
+        wire.on_connect = lambda port: cancelled.set()
+    parent = JointControl("robot.test", wire.feedback, send_guard=parent_guard)
+    session = KeyboardJogSession(parent, speed_percent=50)
+    with pytest.raises(PreparationRejectedError, match="Keyboard preparation cancelled"):
+        session.prepare()
+    assert session.fault is None
+    assert not parent.stopped
+    assert not session.ready and not parent.busy
+    assert wire.sent == ["RobotMode()", "GetErrorID()", "GetAngle()", "GetPose(0,0)"]
+    if when == "enqueue":
+        assert parent._pending is None
+    else:
+        assert parent._pending["sent"] is False
+    assert not parent._stop_uncertain
+    assert parent.feedback_retention_reason() is None
+    # The parent stays usable for the next arming request.
+    cancelled.clear()
+    wire.on_send = wire.on_connect = lambda value: None
+    retry = KeyboardJogSession(parent, speed_percent=50)
+    try:
+        assert retry.prepare() == POSE
+        assert retry.ready
+    finally:
+        retry.close()
+    assert wire.sent[-1] == "SpeedFactor(50)"
+    assert not parent.stopped
+
+
+def test_without_parent_guard_child_guard_runs_once_at_enqueue_and_once_at_send(wire):
+    # Isaac parents have no send guard. The child guard keeps its calls and errors.
+    parent = JointControl("robot.test", wire.feedback)
+    child_guard = Mock()
+    child = parent.begin_operation(send_guard=child_guard)
+    try:
+        child._guarded_command(
+            "MoveJog(J4+)", modes={5, 11}, send_modes={5}, expected=START, port=30003
+        )
+        assert child_guard.call_args_list == [call(), call()]
+        assert child.stop_after_command(jog=True)["ok"]
+        # Stop commands are never guarded.
+        assert child_guard.call_count == 2
+    finally:
+        child.finish_operation()
+    assert wire.sent == ["MoveJog(J4+)", "MoveJog()"]
+
+    refusal = RuntimeError("Keyboard hold cancelled")
+    refusing = Mock(side_effect=refusal)
+    child = parent.begin_operation(send_guard=refusing)
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            child._guarded_command(
+                "MoveJog(J4-)", modes={5, 11}, send_modes={5}, expected=START, port=30003
+            )
+        assert raised.value is refusal
+        refusing.assert_called_once_with()
+        assert child._pending is None
+    finally:
+        child.finish_operation()
+    assert wire.sent == ["MoveJog(J4+)", "MoveJog()"]
+    assert not parent.stopped
+    assert parent.feedback_retention_reason() is None

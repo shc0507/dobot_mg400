@@ -1,8 +1,11 @@
 """Check the independent browser panel without robot connections."""
 
+import contextlib
 import http.client
 import json
 import runpy
+import signal
+import socket
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +18,13 @@ from mg400_agent.controller_ownership import ControllerOwnership
 PANEL = runpy.run_path(str(Path(__file__).resolve().parents[1] / "apps/control_panel/server.py"))
 ReadOnlyPanelState = PANEL["ReadOnlyPanelState"]
 PanelServer = PANEL["PanelServer"]
+PANEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+ROBOT_HEADERS = {
+    "Authorization": "Bearer test-token",
+    "Content-Type": "application/json",
+    "X-MG400-Panel": "1",
+    "X-MG400-Client": "browser-a",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -269,19 +279,27 @@ def test_remote_bind_requires_access_token(monkeypatch):
 def test_cli_defaults_to_robot_without_starting_sync(monkeypatch):
     main = PANEL["main"]
     state = Mock()
+    state.snapshot.return_value = {
+        "message": "Disconnected.",
+        "stop_unconfirmed": False,
+        "busy": False,
+    }
     robot = Mock(return_value=state)
     server = Mock(server_port=8766)
     host_loader = Mock(return_value="robot.test")
     monkeypatch.setitem(main.__globals__, "RobotPanelState", robot)
     monkeypatch.setitem(main.__globals__, "PanelServer", Mock(return_value=server))
     monkeypatch.setitem(main.__globals__, "load_robot_host", host_loader)
+    handlers = {signum: signal.getsignal(signum) for signum in PANEL_SIGNALS}
 
-    main([])
+    assert main([]) == 0
 
     host_loader.assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
     robot.assert_called_once_with("robot.test", gripper=None)
     state.command.assert_not_called()
     state.close.assert_called_once_with()
+    # main() must not leak its signal handlers into the calling process.
+    assert {signum: signal.getsignal(signum) for signum in PANEL_SIGNALS} == handlers
 
 
 def test_cli_rejects_demo_before_constructing_a_backend(monkeypatch, capsys):
@@ -378,3 +396,409 @@ def test_robot_http_starts_without_connecting_and_rejects_motion_before_ownershi
     finally:
         server.state = original
         robot.close()
+
+
+class KeysState:
+    """Record what the HTTP handler passes to a robot-mode panel state."""
+
+    mode = "robot"
+
+    def __init__(self):
+        self.calls = []
+        self.failure = None
+
+    def snapshot(self):
+        return {"mode": "robot", "busy": False}
+
+    def heartbeat(self, client_id):
+        self.calls.append(("heartbeat", client_id))
+        return self.snapshot()
+
+    def command(self, payload, client_id=None):
+        self.calls.append(("command", payload, client_id))
+        return self.snapshot()
+
+    def keys(self, payload, client_id):
+        self.calls.append(("keys", payload, client_id))
+        if self.failure is not None:
+            raise self.failure
+        return {"mode": "robot", "keyboard_enabled": True}
+
+    def close(self):
+        pass
+
+
+@contextlib.contextmanager
+def running_panel(state, base_path="/"):
+    instance = PanelServer(("127.0.0.1", 0), state, token="test-token", base_path=base_path)
+    # A short poll interval keeps shutdown() fast.
+    thread = threading.Thread(
+        target=instance.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+    )
+    thread.start()
+    try:
+        yield instance
+    finally:
+        instance.shutdown()
+        instance.server_close()
+        thread.join(timeout=2)
+
+
+def test_api_keys_passes_held_keys_and_browser_identity_to_the_state():
+    state = KeysState()
+    with running_panel(state) as server:
+        body = json.dumps({"seq": 7, "held": ["W", "Z"]})
+        status, data = request(server, "POST", "/api/keys", body, ROBOT_HEADERS)
+    assert status == 200
+    assert json.loads(data) == {"mode": "robot", "keyboard_enabled": True}
+    # Key updates use their own endpoint; they never reach command() or heartbeat().
+    assert state.calls == [("keys", {"seq": 7, "held": ["W", "Z"]}, "browser-a")]
+
+
+@pytest.mark.parametrize(
+    ("change", "status"),
+    [
+        ({"Authorization": None}, 401),
+        ({"Authorization": "Bearer wrong-token"}, 401),
+        ({"Content-Type": None}, 403),
+        ({"Content-Type": "text/plain"}, 403),
+        ({"X-MG400-Panel": None}, 403),
+        ({"Sec-Fetch-Site": "cross-site"}, 403),
+        ({"X-MG400-Client": None}, 400),
+        ({"X-MG400-Client": "x" * 129}, 400),
+    ],
+    ids=[
+        "no-token",
+        "wrong-token",
+        "no-content-type",
+        "text-content-type",
+        "no-panel-header",
+        "cross-site",
+        "no-client-id",
+        "long-client-id",
+    ],
+)
+def test_api_keys_requires_the_panel_request_guard(change, status):
+    state = KeysState()
+    headers = {
+        name: value for name, value in {**ROBOT_HEADERS, **change}.items() if value is not None
+    }
+    with running_panel(state) as server:
+        body = json.dumps({"seq": 1, "held": ["W"]})
+        assert request(server, "POST", "/api/keys", body, headers)[0] == status
+    assert state.calls == []
+
+
+def test_api_keys_routes_under_the_base_path():
+    state = KeysState()
+    # The --base-path value without a trailing slash, as an operator types it.
+    with running_panel(state, base_path="/mg400-panel") as server:
+        body = json.dumps({"seq": 3, "held": []})
+        assert request(server, "POST", "/mg400-panel/api/keys", body, ROBOT_HEADERS)[0] == 200
+        assert request(server, "POST", "/api/keys", body, ROBOT_HEADERS)[0] == 404
+        assert request(server, "POST", "/mg400-panelapi/keys", body, ROBOT_HEADERS)[0] == 404
+    assert state.calls == [("keys", {"seq": 3, "held": []}, "browser-a")]
+
+
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        (ValueError("Held keys must be a list of unique keyboard keys"), 400),
+        (PermissionError("Start sync in this browser before issuing commands"), 403),
+        (RuntimeError("The panel is closing"), 409),
+    ],
+    ids=["invalid", "not-owner", "conflict"],
+)
+def test_api_keys_reports_state_errors_with_their_http_status(failure, status):
+    state = KeysState()
+    state.failure = failure
+    with running_panel(state) as server:
+        body = json.dumps({"seq": 1, "held": ["Q"]})
+        code, data = request(server, "POST", "/api/keys", body, ROBOT_HEADERS)
+    assert code == status
+    assert json.loads(data) == {"error": str(failure)}
+
+
+@pytest.mark.parametrize(
+    "body", ["{", "", "[" + " " * 4096 + "]"], ids=["bad-json", "empty", "too-large"]
+)
+def test_api_keys_rejects_malformed_bodies_before_the_state(body):
+    state = KeysState()
+    with running_panel(state) as server:
+        assert request(server, "POST", "/api/keys", body, ROBOT_HEADERS)[0] == 400
+    assert state.calls == []
+
+
+@pytest.mark.parametrize("base_path", ["/", "/mg400-panel/"])
+def test_successful_key_updates_stay_out_of_the_request_log(capsys, base_path):
+    state = KeysState()
+    with running_panel(state, base_path=base_path) as server:
+        keys = f"{server.base_path}api/keys"
+        body = json.dumps({"seq": 1, "held": ["W"]})
+        for _ in range(3):
+            assert request(server, "POST", keys, body, ROBOT_HEADERS)[0] == 200
+        command = json.dumps({"action": "stop"})
+        assert (
+            request(server, "POST", f"{server.base_path}api/command", command, ROBOT_HEADERS)[0]
+            == 200
+        )
+        state.failure = RuntimeError("Another robot operation is in progress")
+        assert request(server, "POST", keys, body, ROBOT_HEADERS)[0] == 409
+        wrong = {**ROBOT_HEADERS, "Authorization": "Bearer wrong-token"}
+        assert request(server, "POST", keys, body, wrong)[0] == 401
+    log = capsys.readouterr().err
+    assert f'"POST {keys} HTTP/1.1" 200' not in log
+    assert f'"POST {keys} HTTP/1.1" 409' in log
+    assert f'"POST {keys} HTTP/1.1" 401' in log
+    # Only key updates are quiet. Robot commands stay in the request log.
+    assert f'"POST {server.base_path}api/command HTTP/1.1" 200' in log
+
+
+def test_read_only_mode_refuses_keyboard_control(server):
+    headers = dict(ROBOT_HEADERS)
+    keys = json.dumps({"seq": 1, "held": ["W"]})
+    status, body = request(server, "POST", "/api/keys", keys, headers)
+    assert status == 403 and json.loads(body)["error"]
+    for payload in (
+        {"action": "keyboard", "enabled": True, "speed": 5, "seq": 2},
+        {"action": "keyboard", "enabled": False, "reason": "user", "seq": 3},
+    ):
+        status, body = request(server, "POST", "/api/command", json.dumps(payload), headers)
+        assert status == 403 and json.loads(body)["error"]
+        with pytest.raises(PermissionError):
+            server.state.command(payload)
+    # Read-only pages do not send a client ID; the refusal must not depend on it.
+    del headers["X-MG400-Client"]
+    assert request(server, "POST", "/api/keys", keys, headers)[0] == 403
+    assert not server.state.snapshot()["syncing"]
+
+
+def test_successful_responses_keep_the_connection_open():
+    state = KeysState()
+    with running_panel(state) as server:
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        try:
+            sockets = []
+            for seq in (1, 2):
+                body = json.dumps({"seq": seq, "held": ["W"]})
+                connection.request("POST", "/api/keys", body, ROBOT_HEADERS)
+                response = connection.getresponse()
+                response.read()
+                assert response.status == 200
+                assert response.version == 11
+                assert not response.will_close
+                sockets.append(connection.sock)
+        finally:
+            connection.close()
+    # The second key update reused the first TCP connection.
+    assert sockets[0] is not None and sockets[1] is sockets[0]
+    assert [call[1]["seq"] for call in state.calls] == [1, 2]
+
+
+def http11(method, path, body=b"", headers=()):
+    lines = [f"{method} {path} HTTP/1.1", "Host: panel.test", *headers]
+    if body:
+        lines.append(f"Content-Length: {len(body)}")
+    return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
+
+
+def exchange(server, raw):
+    """Send raw bytes and read until the server closes the connection."""
+    received = b""
+    with socket.create_connection(server.server_address, timeout=2) as client:
+        client.sendall(raw)
+        try:
+            while chunk := client.recv(65536):
+                received += chunk
+        except ConnectionResetError:
+            pass
+        except TimeoutError:
+            pytest.fail(f"The server kept the connection open after {received[:40]!r}")
+    head, _, body = received.partition(b"\r\n\r\n")
+    status_line, *lines = head.decode("latin-1").split("\r\n")
+    headers = {}
+    for line in lines:
+        name, _, value = line.partition(":")
+        headers[name.strip().lower()] = value.strip()
+    return int(status_line.split()[1]), headers, body
+
+
+KEYS_BODY = b'{"seq": 1, "held": ["W"]}'
+AUTH = "Authorization: Bearer test-token"
+JSON_TYPE = "Content-Type: application/json"
+PANEL_HEADER = "X-MG400-Panel: 1"
+CLIENT = "X-MG400-Client: browser-a"
+
+
+@pytest.mark.parametrize(
+    ("raw", "status"),
+    [
+        (http11("POST", "/api/keys", KEYS_BODY, [JSON_TYPE, PANEL_HEADER, CLIENT]), 401),
+        (http11("POST", "/api/keys", KEYS_BODY, [AUTH, JSON_TYPE, CLIENT]), 403),
+        (http11("POST", "/api/other", KEYS_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 404),
+        (http11("POST", "/api/keys", b"{", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 400),
+        (http11("POST", "/api/keys", KEYS_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 409),
+        (http11("GET", "/missing"), 404),
+    ],
+    ids=["401-unread-body", "403-unread-body", "404-unread-body", "400", "409", "404-get"],
+)
+def test_error_responses_close_the_connection(raw, status):
+    state = KeysState()
+    state.failure = RuntimeError("Another robot operation is in progress")
+    with running_panel(state) as server:
+        code, headers, body = exchange(server, raw)
+    assert code == status
+    assert headers.get("connection", "").lower() == "close"
+    # Nothing follows the error: an unread request body is never parsed as a request.
+    assert len(body) == int(headers["content-length"])
+
+
+def test_handler_speaks_http11_with_the_specified_idle_timeout():
+    handler = PANEL["PanelHandler"]
+    assert handler.protocol_version == "HTTP/1.1"
+    assert handler.timeout == 15
+
+
+@pytest.fixture
+def signal_table(monkeypatch):
+    """Replace the process handlers of the panel signals with a dict."""
+    real_signal, real_getsignal = signal.signal, signal.getsignal
+    table = {signum: object() for signum in PANEL_SIGNALS}
+
+    def set_handler(signum, handler):
+        if signum not in table:
+            return real_signal(signum, handler)
+        previous, table[signum] = table[signum], handler
+        return previous
+
+    def get_handler(signum):
+        return table[signum] if signum in table else real_getsignal(signum)
+
+    monkeypatch.setattr(signal, "signal", set_handler)
+    monkeypatch.setattr(signal, "getsignal", get_handler)
+    return table
+
+
+def closing_state(snapshot=None, close=None):
+    state = Mock()
+    state.snapshot.return_value = {
+        "message": "Disconnected.",
+        "stop_unconfirmed": False,
+        "busy": False,
+        **(snapshot or {}),
+    }
+    if close is not None:
+        state.close.side_effect = close
+    return state
+
+
+def run_panel(monkeypatch, state, serve_forever=None):
+    main = PANEL["main"]
+    server = Mock(server_port=8766)
+    if serve_forever is not None:
+        server.serve_forever.side_effect = serve_forever
+    monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock(return_value=state))
+    monkeypatch.setitem(main.__globals__, "PanelServer", Mock(return_value=server))
+    monkeypatch.setitem(main.__globals__, "load_robot_host", Mock(return_value="robot.test"))
+    return main([]), server
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["SIGTERM", "SIGHUP"])
+def test_termination_signals_stop_the_robot_before_exit(monkeypatch, signal_table, signum):
+    original = dict(signal_table)
+    ignored = dict.fromkeys(PANEL_SIGNALS, signal.SIG_IGN)
+    while_serving, after_signal, during_close = {}, {}, []
+
+    def serve_forever():
+        while_serving.update(signal_table)
+        try:
+            signal_table[signum](signum, None)
+        except KeyboardInterrupt:
+            after_signal.update(signal_table)
+            raise
+        raise AssertionError("The panel signal handler must interrupt serve_forever")
+
+    state = closing_state(close=lambda: during_close.append(dict(signal_table)))
+    code, server = run_panel(monkeypatch, state, serve_forever)
+
+    assert code == 0
+    for installed in (signal.SIGTERM, signal.SIGHUP):
+        assert callable(while_serving[installed])
+        assert while_serving[installed] is not original[installed]
+    # The first signal ignores repeats at once, so they cannot abort the stop.
+    assert after_signal == ignored
+    state.close.assert_called_once_with()
+    assert during_close == [ignored]
+    server.server_close.assert_called_once_with()
+    assert signal_table == original
+
+
+def test_an_ignored_sighup_stays_ignored_while_serving(monkeypatch, signal_table):
+    signal_table[signal.SIGHUP] = signal.SIG_IGN
+    original = dict(signal_table)
+    while_serving = {}
+    state = closing_state()
+
+    code, _ = run_panel(monkeypatch, state, lambda: while_serving.update(signal_table))
+
+    assert code == 0
+    assert while_serving[signal.SIGHUP] == signal.SIG_IGN
+    assert callable(while_serving[signal.SIGTERM])
+    state.close.assert_called_once_with()
+    assert signal_table == original
+
+
+@pytest.mark.parametrize("flag", ["stop_unconfirmed", "busy"])
+def test_unconfirmed_rest_after_close_exits_non_zero(monkeypatch, capsys, signal_table, flag):
+    original = dict(signal_table)
+    message = "Robot stop or disable is unconfirmed: test transport failed."
+    state = closing_state({"message": message, flag: True})
+
+    code, _ = run_panel(monkeypatch, state)
+
+    output = capsys.readouterr()
+    assert code == 1
+    assert "Robot rest is unconfirmed. Use the physical emergency stop." in output.err + output.out
+    assert message in output.err + output.out
+    state.close.assert_called_once_with()
+    assert signal_table == original
+
+
+def test_cleanup_failure_exits_non_zero_and_restores_handlers(monkeypatch, capsys, signal_table):
+    original = dict(signal_table)
+    during_close = []
+
+    def close():
+        during_close.append(dict(signal_table))
+        raise RuntimeError("Stop transport failed")
+
+    code, _ = run_panel(monkeypatch, closing_state(close=close))
+
+    output = capsys.readouterr()
+    assert code == 1
+    assert "Cleanup failed: Stop transport failed" in output.err + output.out
+    assert "Use the physical emergency stop." in output.err + output.out
+    assert during_close == [dict.fromkeys(PANEL_SIGNALS, signal.SIG_IGN)]
+    assert signal_table == original
+
+
+def test_main_announces_the_robot_stop_on_stderr_before_closing(monkeypatch, capsys, signal_table):
+    before_close = []
+    state = closing_state(close=lambda: before_close.append(capsys.readouterr().err))
+
+    code, _ = run_panel(monkeypatch, state)
+
+    assert code == 0
+    assert len(before_close) == 1
+    assert "Stopping robot control before exit." in before_close[0]
+
+
+def test_read_only_exit_reads_a_snapshot_without_robot_fields(monkeypatch, capsys, signal_table):
+    main = PANEL["main"]
+    monkeypatch.setitem(main.__globals__, "PanelServer", Mock(return_value=Mock(server_port=1)))
+
+    assert main(["--mode", "read-only", "--robot-host", "robot.test"]) == 0
+
+    output = capsys.readouterr()
+    assert "Cleanup failed" not in output.err + output.out
+    assert "physical emergency stop" not in output.err + output.out

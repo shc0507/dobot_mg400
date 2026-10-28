@@ -519,8 +519,8 @@ class JointControl:
                     or (text.startswith("GetPose(") and self._pose_query_cancelled())
                 ):
                     raise DashboardQueryCancelledError("Dashboard query cancelled for stop")
-                if pending is not None and self._send_guard is not None:
-                    self._send_guard()
+                if pending is not None:
+                    self._check_send_guards()
                 if pending is not None and self.stopped and not stopping:
                     raise RuntimeError("Control stopped before command was sent")
                 if pending is not None:
@@ -703,6 +703,14 @@ class JointControl:
                 ) from error
         return mode, stationary.joints_deg
 
+    def _check_send_guards(self):
+        """Run this operation's guard, then each parent's guard, before a mutation."""
+        control = self
+        while control is not None:
+            if control._send_guard is not None:
+                control._send_guard()
+            control = control._parent
+
     def _guarded_command(self, text, *, modes, send_modes, expected, port=29999):
         self._fresh(send_modes)
         self._preparing = False
@@ -717,8 +725,7 @@ class JointControl:
             "expected": expected,
         }
         with self._send_lock:
-            if self._send_guard is not None:
-                self._send_guard()
+            self._check_send_guards()
             if self.stopped:
                 raise RuntimeError("Control has been stopped; reopen the panel")
             self._pending = pending

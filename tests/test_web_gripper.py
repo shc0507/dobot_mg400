@@ -417,3 +417,286 @@ def test_publication_holds_guard_until_replace_finishes(rig, monkeypatch):
     monkeypatch.setattr(Path, "replace", publish)
     assert gripper.move(525)
     assert not guarded[0]
+
+
+def fail_temporary(monkeypatch, operation):
+    """Make one file operation on the temporary command file raise OSError."""
+    original = getattr(Path, operation)
+
+    def fail(path, *args, **kwargs):
+        if path.name.endswith(".command.json.tmp"):
+            raise OSError("Disk failure.")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, fail)
+
+
+def test_typed_errors_are_distinct_runtime_errors():
+    assert issubclass(web_gripper.GripperNotSentError, RuntimeError)
+    assert issubclass(web_gripper.GripperLockedError, RuntimeError)
+    assert not issubclass(web_gripper.GripperNotSentError, web_gripper.GripperLockedError)
+    assert not issubclass(web_gripper.GripperLockedError, web_gripper.GripperNotSentError)
+
+
+def test_publication_guard_refusal_raises_not_sent_without_lock(rig):
+    rig.emit()
+    refuse = [True]
+
+    @contextlib.contextmanager
+    def guard():
+        if refuse[0]:
+            raise RuntimeError("The panel cancelled the command.")
+        yield
+
+    rig.gripper.publication_guard = guard
+    with pytest.raises(web_gripper.GripperNotSentError) as raised:
+        rig.gripper.move(525)
+    assert str(raised.value) == "No command sent. The panel cancelled the command."
+    assert not isinstance(raised.value, web_gripper.GripperLockedError)
+    assert not rig.gripper.failed
+    assert not rig.gripper.snapshot()["locked"]
+    assert rig.gripper.last_outcome is None
+    assert not rig.command_path.exists()
+    refuse[0] = False
+    assert rig.gripper.move(525) is True
+    assert rig.gripper.last_outcome == "arrived"
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [
+        "absent",
+        "stale",
+        "uninitialized",
+        "initializing",
+        "collector_locked",
+        "old_collector",
+        "write_failure",
+        "session_change",
+        "closed",
+    ],
+)
+def test_command_that_publishes_nothing_raises_not_sent_without_lock(rig, monkeypatch, cause):
+    if cause != "absent":
+        rig.emit()
+    if cause == "stale":
+        # The sample was received, and the unchanged file then ages.
+        rig.gripper.poll()
+        rig.now[0] += 0.8
+    elif cause == "uninitialized":
+        rig.emit(init=0)
+    elif cause == "initializing":
+        rig.emit(init=2)
+    elif cause == "collector_locked":
+        rig.sample["control"].update(locked=True, error="Write reply lost.")
+        rig.emit()
+    elif cause == "old_collector":
+        rig.sample["control"]["protocol"] = 1
+        rig.emit()
+    elif cause == "write_failure":
+        fail_temporary(monkeypatch, "write_text")
+    elif cause in {"session_change", "closed"}:
+        original = Path.write_text
+
+        def prepare(path, *args, **kwargs):
+            result = original(path, *args, **kwargs)
+            if path.name.endswith(".command.json.tmp"):
+                if cause == "session_change":
+                    rig.emit(session=str(uuid4()))
+                else:
+                    rig.gripper.close()
+            return result
+
+        monkeypatch.setattr(Path, "write_text", prepare)
+    with pytest.raises(web_gripper.GripperNotSentError) as raised:
+        rig.gripper.move(525)
+    assert str(raised.value).startswith("No command sent. ")
+    assert not isinstance(raised.value, web_gripper.GripperLockedError)
+    assert not rig.gripper.failed
+    assert rig.gripper.snapshot()["locked"] is (cause == "collector_locked")
+    assert rig.gripper.last_outcome is None
+    assert not rig.command_path.exists()
+    assert not rig.requests
+
+
+@pytest.mark.parametrize("cause", ["replace", "timeout", "close"])
+def test_unknown_result_raises_locked_error_and_keeps_rejecting_commands(rig, monkeypatch, cause):
+    rig.emit()
+    if cause == "replace":
+        fail_temporary(monkeypatch, "replace")
+    elif cause == "timeout":
+        monkeypatch.setattr(
+            web_gripper.time, "sleep", lambda delay: rig.now.__setitem__(0, rig.now[0] + 5)
+        )
+    else:
+        monkeypatch.setattr(web_gripper.time, "sleep", lambda delay: rig.gripper.close())
+    with pytest.raises(web_gripper.GripperLockedError) as raised:
+        rig.gripper.move(525)
+    message = str(raised.value)
+    assert message.startswith("Control is locked. Check the gripper. ")
+    assert not isinstance(raised.value, web_gripper.GripperNotSentError)
+    assert rig.gripper.failed
+    assert rig.gripper.closed is (cause == "close")
+    assert rig.gripper.snapshot()["locked"]
+    assert rig.gripper.last_outcome is None
+    published = rig.command_path.read_text() if rig.command_path.exists() else None
+    assert (published is None) is (cause == "replace")
+    # Fresh feedback does not clear the latch. The adapter publishes nothing more.
+    rig.emit()
+    with pytest.raises(web_gripper.GripperLockedError) as again:
+        rig.gripper.move(550)
+    assert str(again.value) == message
+    assert (rig.command_path.read_text() if rig.command_path.exists() else None) == published
+    assert rig.gripper.failed
+    assert rig.gripper.last_outcome is None
+
+
+def test_last_outcome_reports_only_the_current_confirmed_result(rig, monkeypatch):
+    rig.emit()
+    assert rig.gripper.last_outcome is None
+    assert rig.gripper.move(525) is True
+    assert rig.gripper.last_outcome == "arrived"
+    seen_while_waiting = []
+
+    def contact(delay):
+        seen_while_waiting.append(rig.gripper.last_outcome)
+        rig.acknowledge(delay)
+        rig.emit(state=2, position=510)
+
+    monkeypatch.setattr(web_gripper.time, "sleep", contact)
+    assert rig.gripper.move(550) is True
+    # A new command clears the previous outcome before its own result arrives.
+    assert seen_while_waiting[0] is None
+    assert rig.gripper.last_outcome == "contact"
+
+    def arrive(delay):
+        seen_while_waiting.append(rig.gripper.last_outcome)
+        rig.acknowledge(delay)
+
+    seen_while_waiting.clear()
+    monkeypatch.setattr(web_gripper.time, "sleep", arrive)
+    assert rig.gripper.move(600) is True
+    assert seen_while_waiting[0] is None
+    assert rig.gripper.last_outcome == "arrived"
+
+    @contextlib.contextmanager
+    def refuse():
+        raise RuntimeError("The panel cancelled the command.")
+        yield
+
+    rig.gripper.publication_guard = refuse
+    with pytest.raises(web_gripper.GripperNotSentError):
+        rig.gripper.move(625)
+    assert rig.gripper.last_outcome is None
+
+
+@pytest.mark.parametrize("position", [0, 25, 500, 1000])
+def test_measure_reads_new_feedback_and_returns_any_measured_position(rig, position):
+    rig.emit(position=position)
+    assert rig.gripper.measure() == (position, None)
+    rig.emit(position=1000 - position)
+    assert rig.gripper.measure() == (1000 - position, None)
+    assert rig.gripper.snapshot()["position"] == 1000 - position
+    assert not rig.command_path.exists()
+    assert not rig.gripper.failed
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("absent", "stale or unavailable"),
+        ("stale", "stale or unavailable"),
+        ("uninitialized", "not initialized"),
+        ("initializing", "initialization is in progress"),
+        ("collector_locked", "Write reply lost."),
+        ("adapter_locked", "Control is locked. Check the gripper."),
+        ("closed", "closed"),
+    ],
+)
+def test_measure_returns_no_position_and_the_reason(rig, monkeypatch, case, reason):
+    if case != "absent":
+        rig.emit(position=500)
+    if case == "stale":
+        # The sample was received, and the unchanged file then ages.
+        assert rig.gripper.measure() == (500, None)
+        rig.now[0] += 0.8
+    elif case == "uninitialized":
+        rig.emit(init=0, position=500)
+    elif case == "initializing":
+        rig.emit(init=2, position=500)
+    elif case == "collector_locked":
+        rig.sample["control"].update(locked=True, error="Write reply lost.")
+        rig.emit()
+    elif case == "adapter_locked":
+        fail_temporary(monkeypatch, "replace")
+        with pytest.raises(web_gripper.GripperLockedError):
+            rig.gripper.move(525)
+        rig.emit()
+    elif case == "closed":
+        rig.gripper.close()
+    position, explanation = rig.gripper.measure()
+    assert position is None
+    assert isinstance(explanation, str) and reason in explanation
+    assert rig.gripper.failed is (case == "adapter_locked")
+
+
+def test_closed_and_failed_report_close_and_adapter_latch_only(rig, monkeypatch):
+    assert rig.gripper.closed is False
+    assert rig.gripper.failed is False
+    rig.sample["control"].update(locked=True, error="Write reply lost.")
+    rig.emit()
+    rig.gripper.poll()
+    # A collector lock blocks commands, but it is not an adapter failure.
+    assert rig.gripper.snapshot()["locked"]
+    assert rig.gripper.failed is False
+    with pytest.raises(web_gripper.GripperNotSentError):
+        rig.gripper.move(525)
+    assert rig.gripper.failed is False
+    rig.sample["control"].update(locked=False, error=None)
+    rig.emit()
+    fail_temporary(monkeypatch, "replace")
+    with pytest.raises(web_gripper.GripperLockedError):
+        rig.gripper.move(525)
+    assert rig.gripper.failed is True
+    assert rig.gripper.closed is False
+    rig.gripper.close()
+    assert rig.gripper.closed is True
+    assert rig.gripper.failed is True
+
+
+def test_close_without_a_command_does_not_mark_the_adapter_failed(rig):
+    rig.emit()
+    rig.gripper.close()
+    assert rig.gripper.closed is True
+    assert rig.gripper.failed is False
+    assert rig.gripper.measure() == (None, "Gripper control is closed.")
+
+
+def test_initialization_failures_use_the_same_typed_errors(rig, monkeypatch):
+    rig.emit()
+    assert rig.gripper.move(525) is True
+    assert rig.gripper.last_outcome == "arrived"
+    rig.emit(init=0)
+    refuse = [True]
+
+    @contextlib.contextmanager
+    def guard():
+        if refuse[0]:
+            raise RuntimeError("The panel cancelled the command.")
+        yield
+
+    rig.gripper.publication_guard = guard
+    with pytest.raises(web_gripper.GripperNotSentError) as raised:
+        rig.gripper.initialize()
+    assert str(raised.value) == "No command sent. The panel cancelled the command."
+    assert rig.gripper.last_outcome is None
+    assert not rig.gripper.failed
+    refuse[0] = False
+    monkeypatch.setattr(
+        web_gripper.time, "sleep", lambda delay: rig.now.__setitem__(0, rig.now[0] + 15)
+    )
+    with pytest.raises(web_gripper.GripperLockedError) as raised:
+        rig.gripper.initialize()
+    assert str(raised.value).startswith("Control is locked. Check the gripper. ")
+    assert rig.gripper.failed
+    assert rig.gripper.last_outcome is None

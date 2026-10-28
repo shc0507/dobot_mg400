@@ -10,6 +10,14 @@ from uuid import uuid4
 from mg400_agent.gripper_feedback import FeedbackState, FileFeedback
 
 
+class GripperNotSentError(RuntimeError):
+    """The adapter sent no command and did not lock."""
+
+
+class GripperLockedError(RuntimeError):
+    """The command failed after publication, or the adapter is locked."""
+
+
 class WebGripper:
     """Send explicit commands. Never start the collector or initialize automatically."""
 
@@ -23,6 +31,24 @@ class WebGripper:
         self._busy = self._locked = self._closed = False
         self._published = False
         self._message = ""
+        self._outcome = None
+
+    @property
+    def closed(self):
+        with self._state_lock:
+            return self._closed
+
+    @property
+    def failed(self):
+        """Whether an uncertain command result locked this adapter."""
+        with self._state_lock:
+            return self._locked
+
+    @property
+    def last_outcome(self):
+        """Return "arrived" or "contact" for the last confirmed position command."""
+        with self._state_lock:
+            return self._outcome
 
     def poll(self):
         """Read feedback without sending a command."""
@@ -55,6 +81,16 @@ class WebGripper:
         if operation == "position" and sample["init"] != 1:
             return "The gripper is not initialized."
         return None
+
+    def measure(self):
+        """Read feedback once. Return the position and the reason when it is unavailable."""
+        with self._state_lock:
+            self.poll()
+            sample = self.feedback.get_status()
+            error = self._request_error(sample, "position")
+            if error is None:
+                return sample["position"], None
+            return None, error
 
     def snapshot(self):
         """Return current measurements and permitted gripper actions."""
@@ -93,6 +129,7 @@ class WebGripper:
         try:
             with self._state_lock:
                 self._published = False
+                self._outcome = None
                 self.poll()
                 initial = self.feedback.get_status()
                 error = self._request_error(initial, operation)
@@ -138,13 +175,15 @@ class WebGripper:
             return self._wait(operation, position, initial, request_id, deadline)
         except Exception as error:
             with self._state_lock:
+                failure = GripperLockedError
                 if self._published is not False:
                     self._locked = True
                     self._message = f"Control is locked. Check the gripper. {error}"
                 elif not self._locked:
                     self._message = f"No command sent. {error}"
+                    failure = GripperNotSentError
                 message = self._message
-            raise RuntimeError(message) from error
+            raise failure(message) from error
         finally:
             if temporary is not None:
                 with contextlib.suppress(OSError):
@@ -191,9 +230,11 @@ class WebGripper:
                 elif control["target"] == position:
                     if sample["state"] == 1 and abs(sample["position"] - position) <= 5:
                         self._message = "Measured position is within 5 / 1000 of the target."
+                        self._outcome = "arrived"
                         return True
                     if sample["state"] == 2:
                         self._message = "The gripper reports object contact before the target."
+                        self._outcome = "contact"
                         return True
         raise TimeoutError("The gripper command result is not confirmed.")
 

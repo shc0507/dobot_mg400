@@ -11,7 +11,7 @@ MuJoCo 用于离线关节控制和轨迹回放。
 | 我想做什么 | 入口与说明 | 连接真机 | 大模型服务 |
 | --- | --- | --- | --- |
 | 在终端查看状态并输入命令控制 | [交互终端](docs/terminal-control.md)，运行 `uv run mg400-robot` | 连接 | 不需要 |
-| 用网页控制或查看机械臂和夹爪 | [网页面板](docs/control-panel.md)，不依赖 Isaac Sim | 连接 | 不需要 |
+| 用网页或键盘控制机械臂和夹爪，或只读查看 | [网页面板](docs/control-panel.md)，不依赖 Isaac Sim | 连接 | 不需要 |
 | 查看真机姿态，用面板或键盘控制 | [Isaac Sim](docs/isaacsim.md)，在 Olares 运行 | 连接 | 不需要 |
 | 离线控制四轴或回放轨迹 | [MuJoCo](docs/mujoco.md) | 不连接 | 仅自然语言控制需要 |
 

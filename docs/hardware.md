@@ -7,11 +7,10 @@
 日常操作请使用对应指南：
 
 - [网页面板](control-panel.md)：独立网页真机控制。
-- [Isaac 法兰面板](isaacsim.md#控制机械臂与夹爪)：法兰运动与实际姿态同步。
-- [Isaac 夹爪控制](isaacsim.md#初始化夹爪)：USB 位置反馈与[MG400 I/O 开合](isaacsim.md#使用-io-开合夹爪)。
+- [交互终端](terminal-control.md)：终端命令控制机械臂和夹爪。
 - [自然语言 J4 受限试验](agent.md#自然语言-j4-受限试验)：仅接受预设的转出和回位动作。
 
-Isaac 真机入口共用[机器人地址配置](olares.md#机器人地址与端口)。
+网页面板和交互终端共用[机器人地址配置](olares.md#机器人地址与端口)。
 J4 命令行试验通过 `--host` 和 `--source-host` 指定网络地址。
 
 ## 直接 TCP 接口
@@ -37,46 +36,25 @@ J4 命令行试验通过 `--host` 和 `--source-host` 指定网络地址。
 
 脚本要求 Python 3.11+ 和 `pysmb`。
 服务器须能访问机械臂的 TCP `445`、`22000` 和 `29999`。
-以下命令在 Olares 的 Isaac 容器中运行。
-使用 `UID:GID 1000:1000`。
-独立入口默认只读：
+在能访问机械臂的主机运行，例如 Olares 宿主机，使用 `UID:GID 1000:1000`。
+首次使用时，将 `pysmb` 装入独立目录：
 
 ```sh
-sh /root/Documents/mg400-tools/control-mode/run.sh
+python3 -m pip install --target "$HOME/mg400-mode-deps" pysmb
+```
+
+每次运行前，设置依赖目录和共享锁目录，再在项目根目录运行。
+锁目录与网页服务一致，见[面板连接锁](olares.md#面板连接锁)：
+
+```sh
+export PYTHONPATH="$HOME/mg400-mode-deps${PYTHONPATH:+:$PYTHONPATH}"
+export MG400_CONTROLLER_LOCK_DIR=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/controller-locks
+python3 scripts/mg400_control_mode.py
 ```
 
 切换前，下使能机械臂并停止运行中的程序。
 关闭其他控制客户端，释放[面板连接锁](olares.md#面板连接锁)。
-然后执行：
-
-```sh
-sh /root/Documents/mg400-tools/control-mode/run.sh --switch-to-tcp
-```
-
-入口自动设置 `PYTHONPATH=/root/Documents/mg400-tools/mode-deps`。
-它还设置 `MG400_CONTROLLER_LOCK_DIR=/root/Documents/mg400-data/controller-locks`。
-备份写入 `/root/Documents/mg400-data/control-mode`。
-工具使用独立代码副本，不修改正在运行的 `/root/Documents/mg400-isaac`。
-仓库脚本更新后，须同步更新 `/root/Documents/mg400-tools/control-mode` 内的工具副本。
-
-若直接运行仓库版本，先按[代码更新流程](olares.md#代码与运行数据)部署。
-首次使用时，将依赖装入独立目录。
-不要覆盖 Kit 的 Python 依赖：
-
-```sh
-/isaac-sim/python.sh -m pip install --target /root/Documents/mg400-tools/mode-deps pysmb
-```
-
-每次从仓库运行时，设置依赖和共享锁目录：
-
-```sh
-export PYTHONPATH="/root/Documents/mg400-tools/mode-deps${PYTHONPATH:+:$PYTHONPATH}"
-export MG400_CONTROLLER_LOCK_DIR=/root/Documents/mg400-data/controller-locks
-cd /root/Documents/mg400-isaac
-/isaac-sim/python.sh scripts/mg400_control_mode.py
-```
-
-从仓库切换时，在命令末尾加 `--switch-to-tcp`。
+切换时，在命令末尾加 `--switch-to-tcp`。
 脚本默认读取 `config/robot.toml`，可用 `--host` 指定地址。
 切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止及无报警状态。
 脚本先备份配置，再写入 `project` 共享内的 `/settings/function/remoteControl.json`。
@@ -86,7 +64,7 @@ cd /root/Documents/mg400-isaac
 
 成功要求 HTTP 返回 `status: true`、配置读回一致且 `RobotMode()` 成功返回 `4`。
 脚本不使能、不清除报警，也不发送运动命令。
-直接运行仓库脚本时，备份默认存入 `work/control-mode/`。
+备份默认存入 `work/control-mode/`。
 可用 `--backup-dir` 修改备份目录。
 写入后发生错误时，控制器状态可能已改变。
 脚本会报告备份路径，不会自动重发切换请求或回滚。
@@ -129,6 +107,91 @@ TCP 响应 `ErrorID,{values},Command(...);` 中的成功码只表示命令成功
 闭爪后，读取夹持到物体的反馈。
 单纯“闭爪完成”不能证明已抓住物体。
 无夹持检测时，需增加外部检测或明确保留未验证状态。
+
+## 报警与历史日志
+
+`mode=9, error=True` 只表示故障状态，不含具体报警码。
+`GetErrorID()` 只读取当前报警，不能还原最初故障。
+`control_status.json` 会反复覆盖，也不能作为历史记录。
+
+查询最初故障时，按以下顺序排查：
+
+1. 在能访问控制器的主机打开终端，例如 Olares 宿主机。
+2. 通过 SMB（网络文件共享）读取控制器日志。
+3. 按日志顺序核对碰撞、暂停和急停记录。
+
+控制器地址见 `config/robot.toml`，当前为 `192.168.1.6`。
+SMB 使用 TCP `445`，共享为 `project`，日志目录为 `/logs`。
+此路径独立于 dashboard 查询，不必关闭网页面板。
+只读排查期间，不清除报警、不使能、不发送运动命令。
+
+| 控制器共享内的路径 | 用途 |
+| --- | --- |
+| `/logs/channel_0` | 控制器事件、报警状态和命令返回值 |
+| `/logs/algs/algs_info` | 运动算法事件，含带时间戳的碰撞检测记录 |
+| `/logs/gcontrol/log`、`/logs/codesys/log` | 补充核对控制程序记录 |
+| 同目录下带 `.1`、`.2` 等后缀的文件 | 轮转日志，即分卷保存的旧日志 |
+
+先读取前两个文件。
+如果时间范围不足，按目录清单选择旧日志。
+文件修改时间只用于筛选，事件时间以日志内容为准。
+
+缺少 SMB 客户端时，将 `pysmb` 装入临时目录。
+下列命令匿名连接共享，列出文件并保存两个日志副本：
+
+```sh
+export MG400_LOG_DEPS=$(mktemp -d /tmp/mg400-smb.XXXXXX)
+export MG400_LOG_DIR=$(mktemp -d /tmp/mg400-logs.XXXXXX)
+python3 -m pip install --target "$MG400_LOG_DEPS" pysmb
+PYTHONPATH="$MG400_LOG_DEPS" python3 - <<'PY'
+import os
+from pathlib import Path
+from smb.SMBConnection import SMBConnection
+
+robot_ip = "192.168.1.6"  # 与 config/robot.toml 保持一致
+output = Path(os.environ["MG400_LOG_DIR"])
+connection = SMBConnection(
+    "", "", "mg400logreader", "MG400",
+    use_ntlm_v2=True, is_direct_tcp=True,
+)
+try:
+    assert connection.connect(robot_ip, 445, timeout=8)
+    for directory in ("/logs", "/logs/algs"):
+        for entry in connection.listPath("project", directory, timeout=15):
+            if not entry.isDirectory:
+                print(directory, entry.filename, entry.file_size, entry.last_write_time)
+    for source in ("/logs/channel_0", "/logs/algs/algs_info"):
+        destination = output / source.strip("/").replace("/", "__")
+        with destination.open("wb") as stream:
+            connection.retrieveFile("project", source, stream, timeout=20)
+        print(destination)
+finally:
+    connection.close()
+PY
+rg -n -C 2 'collision!|collisionStatus|碰撞检测|alarm ID:' "$MG400_LOG_DIR"
+rg -n -A 14 'func = geterrorid' "$MG400_LOG_DIR"
+```
+
+根据目录清单修改 `source` 列表，可读取旧日志或补充日志。
+匿名认证失败时，可用空密码和用户名 `Guest` 重试。
+查询结束后，仅清理本次创建的临时目录。
+需保留的证据存入数据目录的 `work/`，不写入操作文档。
+
+判断时保留以下区别：
+
+- `collision!`、`collisionStatus` 和“碰撞检测 Pause”用于核对碰撞检测及暂停。
+  出现这些记录，不等于读到了数值报警码。
+- 报警 `85` 表示硬件急停按钮按下或软件急停触发。
+  后出现的 `85` 不能替代最初事件。
+- 控制器时钟与面板日志时钟可能不同。
+  保留原始时间，先比较同一控制器内的顺序和间隔。
+  跨日志对齐前，核对时区和时钟偏差。
+
+查询当前报警码时，先断开网页面板和交互终端，再独立连接 `29999` 调用 `GetErrorID()`。
+面板轮询与外部查询可能互相断开连接。
+
+路径参考：[MG400 日志导出说明](https://techshare.co.jp/faq/dobot/mg400/support.html)。
+报警码参考：[Dobot 四轴报警表](https://raw.githubusercontent.com/Dobot-Arm/TCP-IP-4Axis-Python/main/files/alarm_controller.json)。
 
 ## 真机验证
 

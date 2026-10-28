@@ -2707,7 +2707,7 @@ def test_parent_preparation_rejection_leaves_real_keyboard_session_unfaulted(wir
 
 
 def test_without_parent_guard_child_guard_runs_once_at_enqueue_and_once_at_send(wire):
-    # Isaac parents have no send guard. The child guard keeps its calls and errors.
+    # The parent has no send guard. The child guard keeps its calls and errors.
     parent = JointControl("robot.test", wire.feedback)
     child_guard = Mock()
     child = parent.begin_operation(send_guard=child_guard)

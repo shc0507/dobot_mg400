@@ -1306,7 +1306,7 @@ def test_sequence_restarts_only_for_a_new_owner_page(rig, client):
     wait_for(lambda: rig.snapshot()["keyboard_enabled"])
 
 
-# Dispatch: one hold at a time (Isaac KeyboardController semantics)
+# Dispatch: one hold at a time
 
 
 def test_keys_while_off_start_nothing(rig):

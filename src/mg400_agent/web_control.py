@@ -1,5 +1,7 @@
 """Control the robot from the web panel without a simulator dependency."""
 
+import math
+import secrets
 import threading
 import time
 from contextlib import contextmanager
@@ -74,6 +76,8 @@ class RobotPanelState:
         self._gripper_active = False
         self._closing = False
         self._message = "Start sync to connect to the robot."
+        # Snapshot versions order replies within one process. A restart starts a new instance.
+        self._instance = secrets.token_hex(8)
         self._version = 0
         # Keyboard state. _kb_thread is the one preparation or hold worker in flight.
         self._kb_on = False
@@ -131,6 +135,7 @@ class RobotPanelState:
             moving = self._busy or self._kb_kind in {"prepare", "arm"}
             return {
                 "mode": "robot",
+                "instance": self._instance,
                 "version": self._version,
                 "robot_host": self.robot_host,
                 "actual": [
@@ -143,7 +148,7 @@ class RobotPanelState:
                 "feedback_fresh": self._fresh(),
                 "robot_mode": sample.mode if sample else None,
                 "robot_error": sample.error_status if sample else None,
-                "speed_factor": getattr(sample, "speed_scaling_raw", None) if sample else None,
+                "speed_factor": self._speed_factor(sample),
                 "message": self._message,
                 "busy": self._busy or bool(self._safety_workers) or self._kb_thread is not None,
                 "locked": self._locked or bool(self._grip.get("locked")),
@@ -159,6 +164,12 @@ class RobotPanelState:
                 "keyboard_speed_percent": self._kb_speed,
                 "keyboard_disarm_reason": self._kb_reason,
             }
+
+    @staticmethod
+    def _speed_factor(sample):
+        value = getattr(sample, "speed_scaling_raw", None)
+        # A non-finite raw value would make the JSON response invalid.
+        return value if isinstance(value, (int, float)) and math.isfinite(value) else None
 
     @staticmethod
     def _client(client_id):
@@ -210,6 +221,14 @@ class RobotPanelState:
             self._guard_send()
             if self._sample.mode not in {4, 5}:
                 raise RuntimeError("The robot must be idle before a gripper command")
+            if (
+                self._kb_kind == "gripper"
+                and threading.current_thread() is self._kb_thread
+                and self._kb_released is not None
+                and self._kb_released.is_set()
+            ):
+                # The key was released after this step began. Publish nothing.
+                raise RuntimeError("The keyboard hold ended before the gripper step was sent.")
             yield
 
     def command(self, payload, client_id=None):

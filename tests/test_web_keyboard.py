@@ -4,6 +4,7 @@ A fake KeyboardJogSession, a fake JointControl and a fake WebGripper stand in fo
 the robot, so no test opens a network connection.
 """
 
+import json
 import socket
 import threading
 import time
@@ -288,16 +289,18 @@ class Gripper:
 
     def move(self, target):
         self.last_outcome = None
+        if self.move_error is None:
+            # Like WebGripper: publish first, then wait for arrival or contact.
+            try:
+                with self.publication_guard():
+                    self.commands.append(target)
+            except Exception as error:
+                raise GripperNotSentError(f"No command sent. {error}") from error
         self.move_entered.set()
         self.release_move.wait(5)
         time.sleep(0.002)
         if self.move_error is not None:
             raise self.move_error
-        try:
-            with self.publication_guard():
-                self.commands.append(target)
-        except Exception as error:
-            raise GripperNotSentError(f"No command sent. {error}") from error
         if self.outcome == "arrived":
             self.position = target
         self.last_outcome = self.outcome
@@ -550,6 +553,24 @@ def test_speed_factor_reports_the_measured_controller_ratio(rig):
     wait_for(lambda: rig.snapshot()["speed_factor"] == 37.0)
     rig.feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, 5.0)
     wait_for(lambda: rig.snapshot()["speed_factor"] == 5.0)
+
+
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf")])
+def test_speed_factor_hides_a_non_finite_controller_value(rig, raw):
+    rig.feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, raw)
+    rig.connect()
+    snapshot = rig.snapshot()
+    assert snapshot["speed_factor"] is None
+    # Every API response must stay valid JSON.
+    json.dumps(snapshot, allow_nan=False)
+
+
+def test_snapshot_instance_is_stable_and_new_for_each_panel_process(make_rig):
+    first, second = make_rig(), make_rig()
+    before, after = first.snapshot(), first.snapshot()
+    assert isinstance(before["instance"], str) and before["instance"]
+    assert after["instance"] == before["instance"] and after["version"] > before["version"]
+    assert second.snapshot()["instance"] != before["instance"]
 
 
 def test_speed_percent_reports_the_current_or_last_armed_session(rig):
@@ -868,7 +889,7 @@ def test_arm_refuses_while_a_job_runs(rig):
     assert_not_armed(rig)
 
 
-def test_arm_refuses_while_a_safety_worker_runs(rig):
+def test_arm_refuses_while_a_stop_runs(rig):
     rig.connect()
     entered, release = threading.Event(), threading.Event()
 
@@ -881,11 +902,27 @@ def test_arm_refuses_while_a_safety_worker_runs(rig):
     try:
         rig.browser.command("stop")
         assert entered.wait(1)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="locked"):
             rig.browser.arm()
         assert_not_armed(rig)
     finally:
         release.set()
+
+
+@pytest.mark.parametrize("field", ["_safety_workers", "_gripper_active"])
+def test_arm_refuses_while_a_safety_worker_or_gripper_command_runs(rig, field):
+    rig.connect()
+    # A stop normally also locks the panel. Set only this condition, so its own
+    # check refuses the arm.
+    with rig.state._lock:
+        setattr(rig.state, field, 1 if field == "_safety_workers" else True)
+    try:
+        with pytest.raises(RuntimeError, match=BUSY):
+            rig.browser.arm()
+        assert_not_armed(rig)
+    finally:
+        with rig.state._lock:
+            setattr(rig.state, field, 0 if field == "_safety_workers" else False)
 
 
 def test_arm_refuses_while_a_keyboard_worker_still_runs(rig):

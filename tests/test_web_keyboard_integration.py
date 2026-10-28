@@ -1346,3 +1346,42 @@ def test_close_during_gripper_step_closes_the_adapter_only_after_the_step(grippe
     assert rig.gripper.closed and not rig.gripper.failed
     assert collector.targets("answered") == [525]
     assert rig.controller.motion() == ["ResetRobot()"]
+
+
+def test_continuous_hold_does_not_leave_the_pre_hold_pose_visible(rig):
+    rig.connect()
+    rig.wait(lambda snapshot: snapshot["actual"][:4] == list(POSE))
+    rig.arm_ready()
+    rig.hold("A")
+    # Block the pose query after the hold, so only the hold decides what the panel shows.
+    gate = rig.controller.block("GetPose(0,0)")
+    rig.keys()
+    rig.wait_idle(NEXT)
+    try:
+        assert gate.entered.wait(2)
+        assert rig.snapshot()["actual"][:4] == [None] * 4
+    finally:
+        gate.open()
+
+
+def test_release_before_publication_sends_no_gripper_step(gripper_rig, monkeypatch):
+    rig, collector = gripper_rig, gripper_rig.collector
+    move = WebGripper.move
+    released = []
+
+    def release_then_move(gripper, position):
+        # The key-up arrives after the step checked its release and before it publishes.
+        if not released:
+            released.append(rig.keys())
+        return move(gripper, position)
+
+    monkeypatch.setattr(WebGripper, "move", release_then_move)
+    rig.keys("X")
+    rig.wait_idle(NEXT)
+    assert released
+    assert collector.targets("published") == []
+    assert not collector.command_path.exists()
+    assert not rig.gripper.failed
+    snapshot = rig.snapshot()
+    assert snapshot["keyboard_enabled"] and not snapshot["locked"]
+    assert snapshot["actual"][4] == 500

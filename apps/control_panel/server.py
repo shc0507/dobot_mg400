@@ -165,9 +165,11 @@ class PanelServer(ThreadingHTTPServer):
 
 
 class PanelHandler(BaseHTTPRequestHandler):
-    # Keep-alive avoids a new TCP connection for each key update.
+    # Keep-alive avoids a new TCP connection for each key update. Without Nagle,
+    # small responses do not wait for the client's delayed acknowledgement.
     protocol_version = "HTTP/1.1"
     timeout = 15
+    disable_nagle_algorithm = True
 
     def _send(self, status, body, content_type="application/json; charset=utf-8"):
         data = json.dumps(body, allow_nan=False).encode() if isinstance(body, dict) else body
@@ -193,6 +195,11 @@ class PanelHandler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        # An unread body would be parsed as the next request on this connection.
+        length = self.headers.get("Content-Length")
+        if self.headers.get("Transfer-Encoding") is not None or length not in (None, "0"):
+            self._send(400, {"error": "GET requests must not have a body"})
+            return
         path = urlsplit(self.path).path
         base = self.server.base_path.rstrip("/")
         if base and path == base:
@@ -218,6 +225,9 @@ class PanelHandler(BaseHTTPRequestHandler):
             self.server.base_path + "api/keys",
         }:
             self._send(404, {"error": "Not found"})
+            return
+        if self.headers.get("Transfer-Encoding") is not None:
+            self._send(400, {"error": "Send the request body with Content-Length"})
             return
         if not self._authorized():
             return
@@ -278,6 +288,29 @@ class PanelHandler(BaseHTTPRequestHandler):
         ):
             return
         super().log_message(format, *args)
+
+
+def report(text, *, wait=None):
+    """Write a message to stderr if it works. Output must never skip or delay a stop.
+
+    With wait, write on a helper thread and continue after at most wait seconds.
+    """
+
+    def write():
+        try:
+            print(text, file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+
+    if wait is None:
+        write()
+        return
+    try:
+        writer = threading.Thread(target=write, daemon=True)
+        writer.start()
+        writer.join(wait)
+    except RuntimeError:
+        pass
 
 
 def main(argv=None):
@@ -342,20 +375,20 @@ def main(argv=None):
         for signum in signals:
             signal.signal(signum, signal.SIG_IGN)
         try:
-            print("Stopping robot control before exit.", file=sys.stderr, flush=True)
-            server.server_close()
-            state.close()
+            # A hung-up terminal or a closed pipe must not prevent the stop.
+            report("Stopping robot control before exit.", wait=0.2)
+            try:
+                server.server_close()
+            finally:
+                state.close()
             snapshot = state.snapshot()
-            print(snapshot.get("message", ""), file=sys.stderr)
+            report(snapshot.get("message", ""))
             if snapshot.get("stop_unconfirmed") or snapshot.get("busy"):
                 exit_code = 1
-                print(
-                    "Robot rest is unconfirmed. Use the physical emergency stop.",
-                    file=sys.stderr,
-                )
+                report("Robot rest is unconfirmed. Use the physical emergency stop.")
         except Exception as error:
             exit_code = 1
-            print(f"Cleanup failed: {error}. Use the physical emergency stop.", file=sys.stderr)
+            report(f"Cleanup failed: {error}. Use the physical emergency stop.")
         finally:
             for signum, handler in previous.items():
                 signal.signal(signum, handler)

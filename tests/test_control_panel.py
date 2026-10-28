@@ -1,12 +1,15 @@
 """Check the independent browser panel without robot connections."""
 
 import contextlib
+import errno
 import http.client
 import json
 import runpy
 import signal
 import socket
+import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -657,6 +660,38 @@ def test_handler_speaks_http11_with_the_specified_idle_timeout():
     handler = PANEL["PanelHandler"]
     assert handler.protocol_version == "HTTP/1.1"
     assert handler.timeout == 15
+    # Small keep-alive responses must not wait for a delayed acknowledgement.
+    assert handler.disable_nagle_algorithm is True
+
+
+SMUGGLED = http11("POST", "/api/keys", KEYS_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT])
+
+
+@pytest.mark.parametrize(
+    ("base_path", "path"),
+    [("/", "/"), ("/", "/api/state"), ("/mg400-panel/", "/mg400-panel")],
+    ids=["page", "state", "redirect"],
+)
+def test_get_with_a_body_is_refused_and_cannot_smuggle_a_request(base_path, path):
+    state = KeysState()
+    raw = http11("GET", path, SMUGGLED, [AUTH])
+    with running_panel(state, base_path) as server:
+        code, headers, _ = exchange(server, raw)
+    assert code == 400
+    assert headers.get("connection", "").lower() == "close"
+    assert state.calls == []
+
+
+def test_post_with_transfer_encoding_is_refused_before_the_state_sees_it():
+    state = KeysState()
+    # A valid JSON prefix covered by Content-Length, then a second request in the same body.
+    framing = [f"Content-Length: {len(KEYS_BODY)}", "Transfer-Encoding: chunked"]
+    raw = http11("POST", "/api/keys", b"", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT, *framing])
+    with running_panel(state) as server:
+        code, headers, _ = exchange(server, raw + KEYS_BODY + SMUGGLED)
+    assert code == 400
+    assert headers.get("connection", "").lower() == "close"
+    assert state.calls == []
 
 
 @pytest.fixture
@@ -779,6 +814,80 @@ def test_cleanup_failure_exits_non_zero_and_restores_handlers(monkeypatch, capsy
     assert "Cleanup failed: Stop transport failed" in output.err + output.out
     assert "Use the physical emergency stop." in output.err + output.out
     assert during_close == [dict.fromkeys(PANEL_SIGNALS, signal.SIG_IGN)]
+    assert signal_table == original
+
+
+class BrokenStderr:
+    """A hung-up terminal or a pipe without a reader."""
+
+    def write(self, text):
+        raise OSError(errno.EIO, "Input/output error")
+
+    def flush(self):
+        raise OSError(errno.EIO, "Input/output error")
+
+
+@pytest.mark.parametrize("signum", PANEL_SIGNALS, ids=["SIGINT", "SIGTERM", "SIGHUP"])
+def test_a_broken_stderr_cannot_skip_the_stop(monkeypatch, signal_table, signum):
+    original = dict(signal_table)
+
+    def serve_forever():
+        monkeypatch.setattr(sys, "stderr", BrokenStderr())
+        signal_table[signum](signum, None)
+
+    state = closing_state()
+    code, server = run_panel(monkeypatch, state, serve_forever)
+
+    assert code == 0
+    server.server_close.assert_called_once_with()
+    state.close.assert_called_once_with()
+    assert signal_table == original
+
+
+def test_a_blocked_stderr_delays_the_stop_only_briefly(monkeypatch, signal_table):
+    unblock, interrupted, closed = threading.Event(), [], []
+
+    class BlockedStderr:
+        def write(self, text):
+            unblock.wait(5)
+            return len(text)
+
+        def flush(self):
+            pass
+
+    def serve_forever():
+        monkeypatch.setattr(sys, "stderr", BlockedStderr())
+        interrupted.append(time.monotonic())
+        signal_table[signal.SIGTERM](signal.SIGTERM, None)
+
+    def close():
+        closed.append(time.monotonic())
+        unblock.set()
+
+    try:
+        code, _ = run_panel(monkeypatch, closing_state(close=close), serve_forever)
+    finally:
+        unblock.set()
+    assert code == 0
+    assert closed and closed[0] - interrupted[0] < 1.0
+
+
+def test_the_state_closes_even_if_the_http_server_cannot(monkeypatch, capsys, signal_table):
+    original = dict(signal_table)
+    main = PANEL["main"]
+    server = Mock(server_port=8766)
+    server.server_close.side_effect = OSError("Socket failure")
+    state = closing_state()
+    monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock(return_value=state))
+    monkeypatch.setitem(main.__globals__, "PanelServer", Mock(return_value=server))
+    monkeypatch.setitem(main.__globals__, "load_robot_host", Mock(return_value="robot.test"))
+
+    code = main([])
+
+    output = capsys.readouterr()
+    assert code == 1
+    state.close.assert_called_once_with()
+    assert "Cleanup failed: Socket failure" in output.err
     assert signal_table == original
 
 

@@ -78,6 +78,8 @@ def run_gripper_steps(
         try:
             gripper.move(target)
         except GripperNotSentError as error:
+            if released.is_set():
+                return "stopped"
             raise GripperUnavailableError(str(error)) from error
         finally:
             set_active(False)

@@ -64,9 +64,11 @@ uv run ruff format --check .
 `cli.py` 提供 MuJoCo 的 `state`、`ask` 和 `chat` 命令。
 `terminal_control.py` 提供 `mg400-robot` 真机交互终端。
 它复用 `web_control.py` 的连接锁、反馈检查和动作执行，不启动 HTTP 服务。
+
 网页键盘点动由 `web_control.py` 调度，机械臂长按复用 `keyboard_jog.py`。
 `web_keyboard.py` 校验按键输入并执行夹爪小步。
 网页点动不使用 Isaac 的 `keyboard_control.py`。
+
 `agent.py` 实现模型工具调用，API 配置见 [自然语言控制](agent.md#模型-api-配置)。
 MuJoCo 通过关节工具执行动力学运动。
 `mujoco_skills.py` 检查范围和到位状态。

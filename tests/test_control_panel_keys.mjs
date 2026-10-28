@@ -623,3 +623,68 @@ test("read-only mode hides the Keyboard button and sends no key input", async ()
   assert.equal(page.keyUpdates().length, 0);
   assert.equal(page.commands().length, 0);
 });
+
+test("a restarted server renders although its version is lower, and the old process cannot overwrite it", async () => {
+  const page = browser();
+  await page.respond(page.lastPoll(), page.snapshot({ instance: "old", version: 5000, keyboard_enabled: true }));
+  assert.equal(page.$("keyboard").textContent, "Keyboard: ON 1%");
+  await page.advance(500);
+  const restarted = { instance: "new", version: 1, syncing: false, controller_id: null, message: "Start sync." };
+  await page.respond(page.lastPoll(), page.snapshot(restarted));
+  assert.equal(page.$("status").textContent, "Start sync.");
+  assert.equal(page.$("keyboard").textContent, "Keyboard: OFF");
+  assert.equal(page.$("startSync").disabled, false);
+  await page.advance(500);
+  await page.respond(page.lastPoll(), page.snapshot({ instance: "old", version: 5001, message: "Late reply." }));
+  assert.equal(page.$("status").textContent, "Start sync.");
+  // The rendered state says that this page controls nothing, so leaving sends no stop.
+  await page.fire("pagehide");
+  assert.equal(page.commands("stop").length, 0);
+});
+
+test("a requested disarm wins over a new key press", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  await page.click("keyboard");
+  assertDisarm(page.disarms()[0], "user");
+  const down = await page.key("keydown", "KeyW");
+  assert.equal(down.defaultPrevented, true);
+  await page.advance(300);
+  assert.equal(page.keyUpdates().length, 0);
+  await page.respond(page.disarms()[0], page.snapshot());
+  await page.key("keydown", "KeyA");
+  assert.equal(page.keyUpdates().length, 0);
+});
+
+test("a failed disarm sent during the arm request is sent again when the arm reply renders", async () => {
+  const page = await ready();
+  await page.click("keyboard");
+  const arm = page.arms()[0];
+  await page.fire("blur");
+  assertDisarm(page.disarms()[0], "focus");
+  await page.fail(page.disarms()[0]);
+  await page.respond(arm, page.snapshot({ keyboard_arming: true }));
+  assert.equal(page.disarms().length, 2);
+  assertDisarm(page.disarms()[1], "focus");
+  assertSequenced(page);
+});
+
+test("clicks during the arm request send one arm", async () => {
+  const page = await ready();
+  await page.click("keyboard");
+  await page.click("keyboard");
+  assert.equal(page.arms().length, 1);
+});
+
+for (const [name, hide] of [
+  ["without focus", page => page.setFocus(false)],
+  ["while hidden", page => page.setVisibility("hidden")],
+]) {
+  test(`a snapshot that shows keys on ${name} turns keys off`, async () => {
+    const page = await ready();
+    hide(page);
+    await page.advance(500);
+    await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true }));
+    assert.equal(page.disarms().length, 1);
+    assertDisarm(page.disarms()[0], "focus");
+  });
+}

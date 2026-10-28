@@ -90,6 +90,28 @@ def test_construction_and_snapshot_do_not_read_or_start_collector(monkeypatch, t
     assert list(tmp_path.iterdir()) == []
 
 
+def test_collector_request_replaces_start_file_without_commands(rig):
+    request = rig.feedback_path.with_name("gripper_collector.start")
+    rig.gripper.request_collector()
+    first = request.read_text()
+    rig.gripper.request_collector()
+    assert request.read_text() != first
+    assert sorted(path.name for path in request.parent.iterdir()) == [request.name]
+    assert not rig.command_path.exists()
+
+
+def test_failed_collector_request_explains_missing_feedback(rig, monkeypatch):
+    replace = Path.replace
+    monkeypatch.setattr(Path, "replace", Mock(side_effect=PermissionError("denied")))
+    rig.gripper.request_collector()
+    message = rig.gripper.snapshot()["message"]
+    assert message == "Could not request the USB collector: denied"
+    assert not rig.feedback_path.with_name("gripper_collector.start.tmp").exists()
+    monkeypatch.setattr(Path, "replace", replace)
+    rig.gripper.request_collector()
+    assert rig.gripper.snapshot()["message"].startswith("USB feedback is stale")
+
+
 def test_poll_exposes_measured_position_but_unchanged_file_becomes_stale(rig):
     rig.emit()
     rig.gripper.poll()

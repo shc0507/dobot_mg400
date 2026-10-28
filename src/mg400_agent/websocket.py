@@ -211,6 +211,11 @@ class Connection:
         self._writer.start()
 
     @property
+    def aborted(self):
+        with self._changed:
+            return self._aborted
+
+    @property
     def backlog(self):
         """Return the number of queued frames that the writer has not written yet."""
         with self._changed:

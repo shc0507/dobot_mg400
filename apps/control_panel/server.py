@@ -35,6 +35,8 @@ from mg400_agent.websocket import (  # noqa: E402
 
 ASSETS = Path(__file__).resolve().parent
 MAX_SEQUENCE = 2**53
+# The WebSocket message format. Change it when a message changes incompatibly.
+PROTOCOL = 1
 
 
 def normalize_base_path(value):
@@ -48,7 +50,14 @@ def normalize_base_path(value):
 
 
 def valid_client(value):
-    return isinstance(value, str) and 0 < len(value) <= 128 and value.isascii() and value.strip()
+    """Accept 1 to 128 printable ASCII characters. The ID appears in the service log."""
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 128
+        and value.isascii()
+        and value.isprintable()
+        and bool(value.strip())
+    )
 
 
 def dispatch(state, kind, payload, client):
@@ -262,14 +271,16 @@ class SocketSession:
     PING_SECONDS = 5.0
     DRAIN_SECONDS = 2.0
 
-    def __init__(self, server, sock, connection):
+    def __init__(self, server, sock, connection, log=None):
         self.server = server
         self.client = None
+        self._log = log
         self._socket = sock
         self._connection = connection
         self._registered = False
         self._done = threading.Event()
         self._replied = threading.Event()
+        self._replaced = threading.Event()
         self._pusher = None
 
     def run(self):
@@ -327,12 +338,17 @@ class SocketSession:
             message = None
         if (
             not isinstance(message, dict)
-            or set(message) != {"type", "client", "token"}
+            or set(message) != {"type", "protocol", "client", "token"}
             or message["type"] != "hello"
+            or type(message["protocol"]) is not int
             or not isinstance(message["token"], str)
             or not valid_client(message["client"])
         ):
-            self._refuse(4400, 400, "Send hello with a client ID and the access token first")
+            self._refuse(
+                4400, 400, "Send hello with the protocol, a client ID and the access token first"
+            )
+        if message["protocol"] != PROTOCOL:
+            self._refuse(4426, 426, f"The robot service uses protocol {PROTOCOL}. Reload the page.")
         expected = self.server.token
         if expected and not hmac.compare_digest(
             message["token"].encode("utf-8"), expected.encode("utf-8")
@@ -341,6 +357,9 @@ class SocketSession:
         return message["client"]
 
     def _request(self, text):
+        if self._replaced.is_set():
+            # Requests still buffered on a replaced connection are stale.
+            raise _Refused
         try:
             message = json.loads(text)
         except (ValueError, RecursionError):
@@ -365,9 +384,21 @@ class SocketSession:
                 self.server.report_error(f"WebSocket {message['type']} request failed: {error!r}")
                 status, error = 500, "The robot service failed to handle the request"
             reply.update(status=status, error=str(error))
+        if message["type"] == "command" and self._log is not None:
+            self._log_command(message["body"], reply)
         self._send(reply)
         # The reply may carry a state the pusher has not seen. Push the current one next.
         self._replied.set()
+
+    def _log_command(self, body, reply):
+        """Log robot commands like HTTP requests. Keys, heartbeats and pushes stay quiet."""
+        action = body.get("action") if isinstance(body, dict) else None
+        action = action if isinstance(action, str) and action.isidentifier() else "invalid"
+        detail = f" {reply['error']}" if reply["status"] != 200 else ""
+        # A short client prefix tells pages apart without a long ID in every line.
+        self._log(
+            '"WS command %s" %s client=%s%s', action, reply["status"], self.client[:8], detail
+        )
 
     def _send(self, message):
         self._connection.send_text(json.dumps(message, allow_nan=False))
@@ -400,6 +431,14 @@ class SocketSession:
 
     def replace(self):
         """End this connection because the same client opened a newer one."""
+        self._replaced.set()
+        self._connection.close(4409, "Replaced by a newer connection")
+        deadline = threading.Timer(self.DRAIN_SECONDS, self._connection.abort)
+        deadline.daemon = True
+        deadline.start()
+
+    def evict(self):
+        """End a connection that has not sent hello, to free its slot."""
         self._connection.abort()
 
     def stop_service(self):
@@ -431,6 +470,9 @@ class SocketSession:
         """
         connection = self._connection
         connection.close(1000)
+        if connection.aborted:
+            connection.join()
+            return
         deadline = threading.Timer(self.DRAIN_SECONDS, connection.abort)
         deadline.daemon = True
         deadline.start()
@@ -477,7 +519,7 @@ class PanelServer(ThreadingHTTPServer):
             del self._pending[: len(evicted)]
             self._pending.append(session)
         for old in evicted:
-            old.replace()
+            old.evict()
 
     def discharge_socket(self, session):
         with self._sockets_lock:
@@ -566,7 +608,14 @@ class PanelHandler(BaseHTTPRequestHandler):
         A DNS rebinding page reaches a loopback server under its own host name, so its
         requests look same-origin. A token protects the other binds.
         """
-        if self.server.token or loopback_host(self.headers.get("Host", "")):
+        if self.server.token:
+            return True
+        # A proxy on this host can rewrite Host to a loopback name. Proxies need a token.
+        forwarded = any(
+            self.headers.get(name) is not None
+            for name in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")
+        )
+        if not forwarded and loopback_host(self.headers.get("Host", "")):
             return True
         self._send(403, {"error": "Open the panel at 127.0.0.1 or localhost"})
         return False
@@ -636,7 +685,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         # The connection now carries WebSocket frames, never another HTTP request.
         self.close_connection = True
         session = SocketSession(
-            self.server, self.connection, Connection(self.connection, self.rfile, self.wfile)
+            self.server,
+            self.connection,
+            Connection(self.connection, self.rfile, self.wfile),
+            log=self.log_message,
         )
         self.server.admit_socket(session)
         try:

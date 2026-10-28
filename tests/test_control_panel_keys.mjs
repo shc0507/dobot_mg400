@@ -1641,3 +1641,33 @@ test("a pasted token is trimmed, and only the token a read sent is saved", async
   await page.open();
   assert.deepEqual(page.socket.sent[0].token, "other-token-1234567890abcd");
 });
+
+test("Clear alarm shows only during an alarm, lists the alarms and sends clear_alarm on the socket", async () => {
+  const page = await ready();
+  assert.equal(page.$("clearAlarm").hidden, true);
+  assert.equal(page.$("alarms").hidden, true);
+  const alarms = [
+    { id: 72, source: "controller", description: "Parallelogram positive limit", solution: "Reverse jog out of limit" },
+    { id: 8, source: "J2", description: "Overcurrent", solution: "" },
+  ];
+  await page.push(page.snapshot({ robot_mode: 9, robot_error: true, locked: true, enabled: false, alarms }));
+  assert.equal(page.$("clearAlarm").hidden, false);
+  assert.equal(page.$("clearAlarm").disabled, false);
+  assert.equal(page.$("alarms").hidden, false);
+  assert.equal(
+    page.$("alarms").textContent,
+    "Alarm 72: Parallelogram positive limit. Reverse jog out of limit\nAlarm 8 · J2: Overcurrent",
+  );
+  for (const blocked of [{ busy: true }, { feedback_fresh: false }, { controller_id: "another-page" }]) {
+    await page.push(page.snapshot({ robot_mode: 9, robot_error: true, locked: true, alarms, ...blocked }));
+    assert.equal(page.$("clearAlarm").disabled, true, JSON.stringify(blocked));
+  }
+  await page.push(page.snapshot({ robot_mode: 9, robot_error: true, locked: true, alarms }));
+  await page.click("clearAlarm");
+  const [clear] = page.commands("clear_alarm");
+  assert.equal(clear.via, "socket");
+  assert.deepEqual(clear.body, { action: "clear_alarm" });
+  await page.push(page.snapshot({ robot_mode: 4, robot_error: false, alarms: null }));
+  assert.equal(page.$("clearAlarm").hidden, true);
+  assert.equal(page.$("alarms").hidden, true);
+});

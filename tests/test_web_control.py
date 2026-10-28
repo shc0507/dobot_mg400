@@ -60,9 +60,28 @@ class Control:
         self.failure = None
         self.stop_ok = True
         self.stop_entered = threading.Event()
+        self.alarm_ids = ((72,), (), (), (), (), ())
+        self.on_clear = lambda: None
+        self.ordering_unknown = False
+        self.command_pending = False
+        self.release_disable = threading.Event()
+        self.release_disable.set()
 
     def cancel(self, *, disabling=False):
         self.stopped = True
+
+    def read_alarms(self):
+        self.calls.append("read_alarms")
+        return self.alarm_ids
+
+    def clear_alarms(self):
+        self.calls.append("clear_alarms")
+        self.on_clear()
+        # Like JointControl, wait briefly for feedback without the alarm.
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and self.feedback()[0].mode == 9:
+            time.sleep(0.005)
+        return self.alarm_ids
 
     def read_pose(self):
         self.pose_entered.set()
@@ -97,6 +116,7 @@ class Control:
 
     def disable(self):
         self.calls.append("disable")
+        self.release_disable.wait(2)
 
     def verify_stationary(self):
         self.calls.append("stationary")
@@ -964,3 +984,105 @@ def test_stop_or_expired_lease_prevents_gripper_publication(rig, action, command
     gripper.publish.set()
     wait_for(lambda: not state.snapshot()["busy"])
     assert gripper.commands == []
+
+
+def alarm_rig(rig):
+    """Connect, then let the controller raise alarm 72 so the panel locks."""
+    state, feed, controls = rig
+    connect(state)
+    feed.sample = Feedback((1, 2, 3, 4), 9, 0, True)
+    wait_for(lambda: state.snapshot()["locked"] and not state.snapshot()["busy"])
+    return state, feed, controls
+
+
+def test_alarm_ids_are_shown_with_names_and_cleared_with_the_alarm(rig):
+    state, feed, controls = alarm_rig(rig)
+    wait_for(lambda: state.snapshot()["alarms"])
+    assert state.snapshot()["alarms"] == [
+        {
+            "id": 72,
+            "source": "controller",
+            "description": "Parallelogram positive limit",
+            "solution": "Reverse jog out of limit",
+        }
+    ]
+    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+    wait_for(lambda: state.snapshot()["alarms"] is None)
+
+
+def test_clear_alarm_keeps_the_lock_while_the_alarm_remains(rig):
+    state, feed, controls = alarm_rig(rig)
+    state.command({"action": "clear_alarm"}, "browser-a")
+    wait_for(lambda: not state.snapshot()["busy"])
+    snapshot = state.snapshot()
+    assert "clear_alarms" in controls[0].calls
+    assert snapshot["locked"]
+    assert snapshot["message"] == (
+        "The alarm remains: 72 Parallelogram positive limit (Reverse jog out of limit)."
+    )
+    assert len(controls) == 1
+
+
+def test_clear_alarm_confirms_disable_and_rest_before_unlocking(rig):
+    state, feed, controls = alarm_rig(rig)
+    controls[0].stop_ok = False
+    controls[0].alarm_ids = ((), (), (), (), (), ())
+
+    def cleared():
+        feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+
+    controls[0].on_clear = cleared
+    state.command({"action": "clear_alarm"}, "browser-a")
+    wait_for(lambda: not state.snapshot()["locked"])
+    recovery = controls[1]
+    assert recovery.calls[:2] == ["disable", "stationary"]
+    assert "Continue" not in str(controls[0].calls)
+    assert not state.snapshot()["stop_unconfirmed"]
+    assert state.snapshot()["alarms"] is None
+
+
+def test_clear_alarm_keeps_the_lock_when_command_ordering_is_unknown(rig):
+    state, feed, controls = alarm_rig(rig)
+    controls[0].alarm_ids = ((), (), (), (), (), ())
+    controls[0].ordering_unknown = True
+    controls[0].on_clear = lambda: setattr(feed, "sample", Feedback((1, 2, 3, 4), 5, 0, False))
+    state.command({"action": "clear_alarm"}, "browser-a")
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert state.snapshot()["locked"]
+    assert "ordering remains unknown" in state.snapshot()["message"]
+    assert len(controls) == 1
+
+
+def test_stop_failure_during_alarm_recovery_keeps_the_lock(rig):
+    state, feed, controls = alarm_rig(rig)
+    controls[0].alarm_ids = ((), (), (), (), (), ())
+    controls[0].on_clear = lambda: setattr(feed, "sample", Feedback((1, 2, 3, 4), 4, 0, False))
+    original_factory = state._control_factory
+
+    def factory(*args, **kwargs):
+        control = original_factory(*args, **kwargs)
+        control.release_disable.clear()
+        control.stop_ok = False
+        return control
+
+    state._control_factory = factory
+    state.command({"action": "clear_alarm"}, "browser-a")
+    wait_for(lambda: len(controls) == 2 and "disable" in controls[1].calls)
+    state.command({"action": "stop"}, "browser-a")
+    wait_for(lambda: controls[1].stop_entered.is_set())
+    wait_for(lambda: state.snapshot()["stop_unconfirmed"] and not state._safety_workers)
+    controls[1].release_disable.set()
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert state.snapshot()["locked"] and state.snapshot()["stop_unconfirmed"]
+
+
+def test_clear_alarm_requires_an_alarm_and_the_controlling_browser(rig):
+    state, feed, controls = rig
+    connect(state)
+    with pytest.raises(RuntimeError, match="no alarm"):
+        state.command({"action": "clear_alarm"}, "browser-a")
+    feed.sample = Feedback((1, 2, 3, 4), 9, 0, True)
+    wait_for(lambda: state.snapshot()["locked"] and not state.snapshot()["busy"])
+    with pytest.raises(PermissionError):
+        state.command({"action": "clear_alarm"}, "browser-b")
+    assert "clear_alarms" not in controls[0].calls

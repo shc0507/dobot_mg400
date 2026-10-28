@@ -1080,6 +1080,7 @@ def _reload_control_modules():
     for name in (
         "feedback",
         "controller_protocol",
+        "controller_alarms",
         "joint_limits",
         "joint_control",
         "keyboard_jog",
@@ -1101,9 +1102,12 @@ def _reload_control_modules():
         # Read source directly. Kit loaders and old package paths can retain old code.
         exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
         modules.append(module)
-    _, protocol_module, limits, control_module, jog_module, keyboard_module, _ = modules
+    _, protocol_module, alarms_module, limits, control_module, jog_module, keyboard_module, _ = (
+        modules
+    )
     control_module.ControllerCommandError = protocol_module.ControllerCommandError
     control_module.parse_controller_response = protocol_module.parse_controller_response
+    control_module.parse_alarm_ids = alarms_module.parse_alarm_ids
     jog_module.TargetRejectedError = control_module.TargetRejectedError
     inspect.signature(control_module.JointControl).bind(
         "unused",

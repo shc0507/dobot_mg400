@@ -8,7 +8,7 @@ import pytest
 from mg400_agent import keyboard_jog
 from mg400_agent.feedback import Feedback
 from mg400_agent.joint_control import JointControl
-from mg400_agent.joint_limits import validate_joints
+from mg400_agent.joint_limits import MARGIN_DEG, validate_joints
 from mg400_agent.keyboard_jog import KeyboardJogSession
 
 START = (30.0, 0.0, 10.0, 0.0)
@@ -691,3 +691,37 @@ def test_unconfirmed_stop_blocks_following_holds(rig):
     assert rig.stopped and not rig.session.ready and not rig.busy
     with pytest.raises(RuntimeError):
         rig.session.run("E", threading.Event())
+
+
+@pytest.mark.parametrize("speed,limited", [(1, False), (40, True)])
+def test_continuous_soft_limit_margin_grows_with_speed(rig, speed, limited):
+    rig.session = KeyboardJogSession(rig, speed_percent=speed)
+    rig.scaling_after_ack = speed
+    rig.session.prepare()
+    assert rig.session.continuous_margin == pytest.approx(
+        MARGIN_DEG + keyboard_jog.CONTINUOUS_MARGIN_DEG_PER_PERCENT * speed
+    )
+
+    def reach_band():
+        if rig.ticks == 3:
+            rig.sample = replace(rig.sample, joints_deg=(156.0, *START[1:]))
+        elif rig.ticks == 20:
+            rig.session.release()
+
+    rig.on_tick = reach_band
+    rig.session.run("A", threading.Event())
+    assert rig.stop_calls == [True]
+    assert bool(rig.session.limit_reason) is limited
+    assert rig.session.fault is None and not rig.stopped
+
+
+@pytest.mark.parametrize("speed,continuous", [(1, True), (40, False)])
+def test_fast_hold_inside_the_speed_band_never_starts_a_continuous_jog(rig, speed, continuous):
+    rig.sample = replace(rig.sample, joints_deg=(157.0, *START[1:]))
+    rig.session = KeyboardJogSession(rig, speed_percent=speed)
+    rig.scaling_after_ack = speed
+    rig.session.prepare()
+    rig.commands.clear()
+    rig.session.run("A", threading.Event())
+    assert (COMMANDS["A"] in rig.commands) is continuous
+    assert rig.session.fault is None and not rig.stopped

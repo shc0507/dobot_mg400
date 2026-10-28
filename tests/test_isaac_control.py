@@ -3021,12 +3021,14 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
             "class ControllerCommandError(RuntimeError): pass\n"
             "def parse_controller_response(packet, command): return 'current'\n"
         ),
+        "controller_alarms": "def parse_alarm_ids(payload): return ((),)\n",
         "joint_limits": (
             "def validate_joints(joints): return joints\n"
             "def validate_measured_joints(joints): return joints\n"
         ),
         "joint_control": (
             "from .controller_protocol import ControllerCommandError, parse_controller_response\n"
+            "from .controller_alarms import parse_alarm_ids\n"
             "class JointControl:\n"
             "    def __init__(self, host, snapshot, *, parent=None, command_timeout=2, "
             "send_guard=None):\n"
@@ -3067,7 +3069,7 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     globals_ = panel_module._reload_control_modules.__globals__
     monkeypatch.setitem(globals_, "ROOT", tmp_path)
     panel_module._reload_control_modules()
-    protocol, limits, control, jog, gripper, keyboard = (
+    protocol, alarms, limits, control, jog, gripper, keyboard = (
         sys.modules[f"mg400_agent.{name}"] for name in sources
     )
     assert globals_["limits"] is limits
@@ -3080,6 +3082,7 @@ def test_reload_control_modules_loads_source_and_binds_matching_dependencies(
     assert globals_["GripperUnavailableError"] is keyboard.GripperUnavailableError
     assert control.ControllerCommandError is protocol.ControllerCommandError
     assert control.parse_controller_response is protocol.parse_controller_response
+    assert control.parse_alarm_ids is alarms.parse_alarm_ids
     assert jog.joint_control is control
     assert jog.TargetRejectedError is control.TargetRejectedError
     assert control.JointControl("robot.test", lambda: None, parent="parent").parent == "parent"

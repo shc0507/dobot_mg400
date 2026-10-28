@@ -2739,3 +2739,27 @@ def test_without_parent_guard_child_guard_runs_once_at_enqueue_and_once_at_send(
     assert wire.sent == ["MoveJog(J4+)", "MoveJog()"]
     assert not parent.stopped
     assert parent.feedback_retention_reason() is None
+
+
+@pytest.mark.parametrize("remains", [True, False])
+def test_clear_alarms_sends_clear_error_only_and_reads_the_remaining_ids(rig, monkeypatch, remains):
+    control, sample, _, _ = rig
+    sample[0] = Feedback(START, 9, 0, True)
+    # The panel clears on the stopped instance whose disable the alarm refused.
+    control.cancel(disabling=True)
+    original = control._command
+    calls = []
+
+    def command(text, port=29999, *, pending=None, stopping=False):
+        calls.append((text, stopping))
+        if text == "ClearError()":
+            sample[0] = Feedback(START, 9, 0, True) if remains else Feedback(START, 5, 0, False)
+            return ""
+        if text == "GetErrorID()":
+            return "[[72],[],[],[],[],[]]" if remains else "[[],[],[],[],[],[]]"
+        return original(text, port, pending=pending, stopping=stopping)
+
+    monkeypatch.setattr(control, "_command", command)
+    expected = ((72,) if remains else (), (), (), (), (), ())
+    assert control.clear_alarms() == expected
+    assert calls == [("ClearError()", True), ("GetErrorID()", False)]

@@ -198,6 +198,7 @@ class ReadOnlyPanelState:
             "stop",
             "initialize_gripper",
             "keyboard",
+            "clear_alarm",
         }:
             raise ValueError("Unknown action")
         if action == "keyboard":

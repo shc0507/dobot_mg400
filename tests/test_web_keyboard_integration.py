@@ -21,7 +21,8 @@ import pytest
 from mg400_agent.controller_ownership import ControllerOwnership
 from mg400_agent.feedback import Feedback
 from mg400_agent.joint_control import JointControl, _StationaryTimeoutError
-from mg400_agent.joint_limits import validate_joints
+from mg400_agent.joint_limits import MARGIN_DEG, validate_joints
+from mg400_agent.keyboard_jog import CONTINUOUS_MARGIN_DEG_PER_PERCENT
 from mg400_agent.web_control import RobotPanelState
 from mg400_agent.web_gripper import WebGripper
 
@@ -855,7 +856,7 @@ def test_unconfirmed_speed_factor_becomes_a_verified_stop_that_disable_recovers(
 
 
 def test_joint_limit_keeps_keys_on_and_a_new_direction_starts_with_an_inward_step(rig):
-    # J1 starts 0.15 degrees inside the target limit and turns while A is held.
+    # J1 starts just inside the 1% continuous-jog limit and turns while A is held.
     rig.controller.update(joints_deg=(158.8, *START[1:]))
     rig.controller.jog_rate = 0.005
     rig.connect()
@@ -870,7 +871,7 @@ def test_joint_limit_keeps_keys_on_and_a_new_direction_starts_with_an_inward_ste
     assert snapshot["message"].startswith("J1=")
     assert snapshot["keyboard_enabled"] and not snapshot["locked"]
     limit = rig.controller.sample.joints_deg[0]
-    assert 158.95 < limit < 160
+    assert 160 - (MARGIN_DEG + CONTINUOUS_MARGIN_DEG_PER_PERCENT) < limit < 160
     assert rig.controller.mutations() == ["SpeedFactor(1)", "MoveJog(J1+)", "MoveJog()"]
     # After the release, the other direction first moves a short checked step inward.
     rig.keys()

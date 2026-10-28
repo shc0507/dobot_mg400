@@ -45,7 +45,15 @@ def test_read_only_mode_is_inert_until_sync_and_has_no_hardware_commands():
     panel = ReadOnlyPanelState("test-host", connection_factory=forbidden)
     assert panel.snapshot()["actual"] == [None] * 5
     assert calls == []
-    for action in ("enable", "disable", "home", "execute", "stop", "initialize_gripper"):
+    for action in (
+        "enable",
+        "disable",
+        "home",
+        "execute",
+        "stop",
+        "initialize_gripper",
+        "clear_alarm",
+    ):
         command = {"action": action}
         if action == "execute":
             command["targets"] = {"x": 250, "y": 0, "z": 100, "r": 0, "grip": 500}

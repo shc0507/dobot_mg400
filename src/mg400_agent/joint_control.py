@@ -15,6 +15,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 from .config import finite_number
+from .controller_alarms import parse_alarm_ids
 from .controller_protocol import ControllerCommandError, parse_controller_response
 from .feedback import Feedback
 from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
@@ -99,6 +100,11 @@ class JointControl:
         """Whether a registered command worker has not finished."""
         pending = self._pending
         return pending is not None and not pending["done"].is_set()
+
+    @property
+    def ordering_unknown(self):
+        """Whether an unresolved mutation acknowledgement left command ordering unknown."""
+        return self._stop_uncertain or (self._parent is not None and self._parent.ordering_unknown)
 
     def feedback_retention_reason(self):
         """Return why command state requires feedback to remain connected.
@@ -229,6 +235,26 @@ class JointControl:
     def read_state(self) -> Feedback:
         """Read fresh idle feedback without sending any controller command."""
         return self._fresh({4, 5})[0]
+
+    def read_alarms(self):
+        """Read the current GetErrorID() alarm IDs. Any mode; a stopped instance may read."""
+        return parse_alarm_ids(self._command("GetErrorID()"))
+
+    def clear_alarms(self):
+        """Send ClearError() only, then return the alarm IDs that remain.
+
+        This never sends Continue(), so a motion queue halted by the alarm stays halted.
+        A stopped instance may clear. Some alarms return at once until their cause is fixed.
+        """
+        self._command("ClearError()", stopping=True)
+        acknowledged_at = time.monotonic()
+        deadline = acknowledged_at + 1.0
+        while time.monotonic() < deadline:
+            sample, received = self.feedback_snapshot()
+            if received > acknowledged_at and sample.mode != 9 and not sample.error_status:
+                break
+            time.sleep(0.01)
+        return self.read_alarms()
 
     @staticmethod
     def _four_values(values):

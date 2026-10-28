@@ -198,7 +198,7 @@ Olares 代码目录下的 `work` 使用相对链接 `../mg400-data/work`，供�
 如果被引用的外部资产含未保存的修改，脚本会拒绝备份，以免重开快照后恢复旧值。
 先保存这些资产，再运行会自动备份的入口。脚本不会自动覆盖源资产。
 统一控制入口会在旧操作结束后重载控制模块。
-这些模块为 `feedback`、`controller_protocol`、`joint_limits`、`joint_control`、`keyboard_jog`、`keyboard_control` 和 `gripper_feedback`。
+这些模块为 `feedback`、`controller_protocol`、`controller_alarms`、`joint_limits`、`joint_control`、`keyboard_jog`、`keyboard_control` 和 `gripper_feedback`。
 面板忙或仍有未决命令应答时，入口拒绝重载。
 其他 `src/` 模块修改后必须完整重启 Isaac Sim。
 Script Editor、自定义启动脚本和 `--exec` 均使用 [Isaac 操作页](isaacsim.md) 的当前入口。

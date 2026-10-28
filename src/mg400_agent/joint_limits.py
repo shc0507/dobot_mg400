@@ -24,9 +24,11 @@ from .config import finite_number
 MARGIN_DEG = 1.05
 
 
-def validate_joints(joints_deg: Sequence[float]) -> tuple[float, float, float, float]:
-    """Check four finite controller angles against project guards with a 1.05-degree margin."""
-    return _validate_joints(joints_deg, MARGIN_DEG)
+def validate_joints(
+    joints_deg: Sequence[float], margin: float = MARGIN_DEG
+) -> tuple[float, float, float, float]:
+    """Check four finite controller angles against project guards with a margin in degrees."""
+    return _validate_joints(joints_deg, margin)
 
 
 def validate_measured_joints(joints_deg: Sequence[float]) -> tuple[float, float, float, float]:

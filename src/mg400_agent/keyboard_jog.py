@@ -6,11 +6,21 @@ import time
 
 from . import joint_control
 from .joint_control import TargetRejectedError
-from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
+from .joint_limits import (
+    MARGIN_DEG,
+    validate_joint_segment,
+    validate_joints,
+    validate_measured_joints,
+)
 
 SEGMENT_DISTANCE_MM = 50.0
 SEGMENT_ANGLE_DEG = 10.0
 KEYS = frozenset("WASDRFQE")
+# A continuous jog moves on after the guard trips. At 40% speed a W hold passed the
+# 1.05-degree J3-J2 margin by 1.9 degrees and raised controller alarm 72. Stopping
+# distance grows linearly with SpeedFactor, which scales velocity and acceleration.
+# Finite inward steps keep MARGIN_DEG, because their endpoints are exact.
+CONTINUOUS_MARGIN_DEG_PER_PERCENT = 0.08
 RADIAL_USER = 8
 MOVEJOG_COMMANDS = {
     "W": f"MoveJog(X+,CoordType=0,User={RADIAL_USER},Tool=0)",
@@ -58,6 +68,11 @@ class KeyboardJogSession:
     @property
     def speed_percent(self):
         return self._speed_percent
+
+    @property
+    def continuous_margin(self):
+        """Joint guard margin in degrees for continuous jogging at this speed."""
+        return MARGIN_DEG + CONTINUOUS_MARGIN_DEG_PER_PERCENT * self._speed_percent
 
     @property
     def busy(self):
@@ -250,7 +265,7 @@ class KeyboardJogSession:
         self._check_radial_direction(sample.joints_deg)
         if self._continuous:
             try:
-                validate_joints(sample.joints_deg)
+                validate_joints(sample.joints_deg, self.continuous_margin)
             except ValueError as error:
                 raise TargetRejectedError(str(error)) from error
 
@@ -270,7 +285,7 @@ class KeyboardJogSession:
                 self._check_radial_direction(sample.joints_deg)
                 if continuous:
                     try:
-                        validate_joints(sample.joints_deg)
+                        validate_joints(sample.joints_deg, self.continuous_margin)
                     except ValueError as error:
                         self.limit_reason = str(error)
                         self._release_gate = released
@@ -445,7 +460,7 @@ class KeyboardJogSession:
         active = self._start("running", released)
         if key in MOVEJOG_COMMANDS:
             try:
-                validate_joints(active._fresh({5})[0].joints_deg)
+                validate_joints(active._fresh({5})[0].joints_deg, self.continuous_margin)
             except ValueError:
                 # Preserve finite inward moves from the target margin band.
                 pass
@@ -486,7 +501,7 @@ class KeyboardJogSession:
                 initial_pose = self._measurement if key not in "AD" else None
                 if key in MOVEJOG_COMMANDS:
                     try:
-                        validate_joints(active._fresh({5})[0].joints_deg)
+                        validate_joints(active._fresh({5})[0].joints_deg, self.continuous_margin)
                     except ValueError:
                         continue
                     with self._lock:

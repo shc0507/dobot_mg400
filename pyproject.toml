@@ -5,24 +5,17 @@ build-backend = "hatchling.build"
 [project]
 name = "mg400-agent"
 version = "0.1.0"
-description = "Simulation-first agent scaffold for a Dobot MG400 and electric gripper"
+description = "Real-robot control for a Dobot MG400 and electric gripper"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
-[project.optional-dependencies]
-llm = ["openai>=2,<3"]
-mujoco = ["mujoco>=3.3,<4"]
-
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1", "websockets>=15,<18"]
 notebook = ["ipykernel==7.4.0"]
-usd = ["usd-core==26.8", "numpy>=2,<3"]
 
 [project.scripts]
-mg400-agent = "mg400_agent.cli:main"
 mg400-robot = "mg400_agent.terminal_control:main"
-mg400-mujoco = "mg400_agent.mujoco_replay:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

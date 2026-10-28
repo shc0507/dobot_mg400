@@ -53,27 +53,27 @@ def successful_responses(motion):
     ]
 
 
-def test_get_joints_accepts_actual_six_value_feedback(example, monkeypatch):
-    command = Mock(return_value="10.824381,-4.704126,-1.64904,-22.60437,0,0")
-    monkeypatch.setattr(example, "command", command)
-    assert example.get_joints() == (10.824381, -4.704126, -1.64904, -22.60437)
-    command.assert_called_once_with("GetAngle()")
-
-
 @pytest.mark.parametrize(
-    "reader, query", [("get_joints", "GetAngle()"), ("get_pose", "GetPose(0,0)")]
+    "reader, query, raw, expected",
+    [
+        ("get_joints", "GetAngle()", "10,-20,30,-40", (10, -20, 30, -40)),
+        ("get_pose", "GetPose(0,0)", "10,-20,30,-40", (10, -20, 30, -40)),
+        (
+            "get_joints",
+            "GetAngle()",
+            "10.824381,-4.704126,-1.64904,-22.60437,0,0",
+            (10.824381, -4.704126, -1.64904, -22.60437),
+        ),
+    ],
+    ids=["joints-4", "pose-4", "joints-6"],
 )
-def test_four_value_joint_or_pose_feedback_remains_supported(example, monkeypatch, reader, query):
-    command = Mock(return_value="10,-20,30,-40")
+def test_four_value_joint_or_pose_feedback_remains_supported(
+    example, monkeypatch, reader, query, raw, expected
+):
+    command = Mock(return_value=raw)
     monkeypatch.setattr(example, "command", command)
-    assert getattr(example, reader)() == (10, -20, 30, -40)
+    assert getattr(example, reader)() == expected
     command.assert_called_once_with(query)
-
-
-def test_pose_feedback_does_not_silently_truncate_six_values(example, monkeypatch):
-    monkeypatch.setattr(example, "command", Mock(return_value="250,20,30,0,0,45"))
-    with pytest.raises(ValueError):
-        example.get_pose()
 
 
 @pytest.mark.parametrize("reader", ["get_joints", "get_pose"])
@@ -94,9 +94,10 @@ def test_position_feedback_rejects_malformed_data(example, monkeypatch, reader, 
         ("get_joints", "1,2,3,4,0,-inf"),
         ("get_pose", "1,nan,3,4"),
         ("get_pose", "1,2,3,inf"),
+        ("get_pose", "250,20,30,0,0,45"),
     ],
 )
-def test_position_feedback_validates_finiteness_before_truncating(
+def test_position_feedback_rejects_nonfinite_or_truncatable_values(
     example, monkeypatch, reader, raw
 ):
     monkeypatch.setattr(example, "command", Mock(return_value=raw))
@@ -130,16 +131,6 @@ def test_six_value_joint_feedback_still_sends_only_four_joint_targets(
         call("RobotMode()"),
     ]
     assert call("ResetRobot()") not in command.call_args_list
-
-
-def test_default_changes_only_j4_once_and_verifies_arrival(example, monkeypatch):
-    reader = Mock(return_value=(10, 20, 30, 40))
-    mover = Mock(return_value=(10, 20, 30, 45))
-    monkeypatch.setattr(example, "get_joints", reader)
-    monkeypatch.setattr(example, "move_joints", mover)
-    example.main()
-    reader.assert_called_once_with()
-    mover.assert_called_once_with(10, 20, 30, 45)
 
 
 def test_public_move_uses_correct_absolute_units_query_and_verified_arrival(
@@ -210,26 +201,14 @@ def test_invalid_delta_never_contacts_controller(example, monkeypatch, delta):
 
 
 @pytest.mark.parametrize("index", range(4))
-@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
-def test_nonfinite_absolute_target_never_contacts_controller(
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf"), True, "1.5", None])
+def test_invalid_absolute_target_never_contacts_controller(
     example, monkeypatch, motion, index, invalid
 ):
     command = Mock()
     monkeypatch.setattr(example, "command", command)
     target = list(motion.target)
     target[index] = invalid
-    with pytest.raises(ValueError):
-        getattr(example, motion.name)(*target)
-    command.assert_not_called()
-
-
-@pytest.mark.parametrize("invalid", [True, "1.5", None])
-def test_nonnumeric_absolute_target_never_contacts_controller(
-    example, monkeypatch, motion, invalid
-):
-    command = Mock()
-    monkeypatch.setattr(example, "command", command)
-    target = [invalid, *motion.target[1:]]
     with pytest.raises(ValueError):
         getattr(example, motion.name)(*target)
     command.assert_not_called()

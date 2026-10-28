@@ -2,6 +2,8 @@ import pytest
 
 from mg400_agent.controller_protocol import ControllerCommandError, parse_controller_response
 
+CALC_USER = "CalcUser(9,1,{0,0,0,0})"
+
 
 @pytest.mark.parametrize(
     "packet, command, payload",
@@ -18,6 +20,7 @@ from mg400_agent.controller_protocol import ControllerCommandError, parse_contro
             " JointMovJ(1,2,3,4,SpeedJ=5)\t",
             "",
         ),
+        (b"0,{},1,2,3,4,CalcUser( 9, 1, {0, 0, 0, 0} );", CALC_USER, "1,2,3,4"),
     ],
 )
 def test_success_returns_payload_with_existing_whitespace_rules(packet, command, payload):
@@ -25,19 +28,20 @@ def test_success_returns_payload_with_existing_whitespace_rules(packet, command,
 
 
 @pytest.mark.parametrize(
-    "packet",
+    "packet, command",
     [
-        b"0,{},EnableRobot()",
-        b"0,{},DisableRobot();",
-        b"0,{},enablerobot();",
-        b"0,{},EnableRobot();trailing",
-        b"bad,{},EnableRobot();",
-        b"-1,{},DisableRobot();",
+        (b"0,{},EnableRobot()", "EnableRobot()"),
+        (b"0,{},DisableRobot();", "EnableRobot()"),
+        (b"0,{},enablerobot();", "EnableRobot()"),
+        (b"0,{},EnableRobot();trailing", "EnableRobot()"),
+        (b"bad,{},EnableRobot();", "EnableRobot()"),
+        (b"-1,{},DisableRobot();", "EnableRobot()"),
+        (b"0,{},1,2,3,4,GetPose(0,0);", "GetPose(0,0)"),
     ],
 )
-def test_invalid_reply_or_echo_preserves_error_text(packet):
+def test_invalid_reply_or_echo_preserves_error_text(packet, command):
     with pytest.raises(RuntimeError) as error:
-        parse_controller_response(packet, "EnableRobot()")
+        parse_controller_response(packet, command)
     assert str(error.value) == f"Unexpected controller response: {packet.decode('ascii')}"
     assert not isinstance(error.value, ControllerCommandError)
 
@@ -52,6 +56,7 @@ def test_invalid_reply_or_echo_preserves_error_text(packet):
             "InverseSolution(406.817825,9.647012,112.928917,1.446726,0,0)",
             -1,
         ),
+        (f"-1,{{}},{CALC_USER};".encode(), CALC_USER, -1),
     ],
 )
 def test_controller_rejection_preserves_error_text_and_command_details(packet, command, code):
@@ -67,9 +72,6 @@ def test_controller_rejection_preserves_error_text_and_command_details(packet, c
 def test_non_ascii_reply_preserves_decode_error():
     with pytest.raises(UnicodeDecodeError):
         parse_controller_response(b"0,{\xff},EnableRobot();", "EnableRobot()")
-
-
-CALC_USER = "CalcUser(9,1,{0,0,0,0})"
 
 
 @pytest.mark.parametrize(
@@ -90,11 +92,6 @@ CALC_USER = "CalcUser(9,1,{0,0,0,0})"
 def test_calc_user_accepts_four_finite_coordinates_in_both_firmware_formats(body, payload):
     packet = f"0,{body},{CALC_USER};".encode("ascii")
     assert parse_controller_response(packet, CALC_USER) == payload
-
-
-def test_calc_user_preserves_whitespace_insensitive_exact_echo():
-    packet = b"0,{},1,2,3,4,CalcUser( 9, 1, {0, 0, 0, 0} );"
-    assert parse_controller_response(packet, CALC_USER) == "1,2,3,4"
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -125,14 +122,3 @@ def test_calc_user_rejects_mixed_payloads_wrong_echoes_and_extra_frames(packet):
     with pytest.raises(RuntimeError) as error:
         parse_controller_response(packet.encode("ascii"), CALC_USER)
     assert not isinstance(error.value, ControllerCommandError)
-
-
-def test_calc_user_controller_rejection_keeps_its_error_code():
-    with pytest.raises(ControllerCommandError) as error:
-        parse_controller_response(f"-1,{{}},{CALC_USER};".encode("ascii"), CALC_USER)
-    assert error.value.code == -1 and error.value.command == CALC_USER
-
-
-def test_calc_user_external_coordinates_do_not_change_other_commands():
-    with pytest.raises(RuntimeError):
-        parse_controller_response(b"0,{},1,2,3,4,GetPose(0,0);", "GetPose(0,0)")

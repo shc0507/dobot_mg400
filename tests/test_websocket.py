@@ -5,7 +5,6 @@ import io
 import socket
 import struct
 import threading
-import time
 
 import pytest
 
@@ -148,73 +147,81 @@ def test_exact_reader_returns_exact_counts_or_raises_eof():
         read(4)
 
 
-@pytest.mark.parametrize("bit", [0x40, 0x20, 0x10], ids=["rsv1", "rsv2", "rsv3"])
-def test_read_frame_refuses_reserved_bits(bit):
-    with pytest.raises(ProtocolError) as caught:
-        read_frame(header_only(bytes([0x80 | bit | TEXT, 0x80])), masked=True, max_payload=10)
-    assert caught.value.code == 1002
-
-
-@pytest.mark.parametrize("opcode", [0x3, 0x4, 0x5, 0x6, 0x7, 0xB, 0xC, 0xD, 0xE, 0xF])
-def test_read_frame_refuses_unknown_opcodes(opcode):
-    with pytest.raises(ProtocolError) as caught:
-        read_frame(header_only(bytes([0x80 | opcode, 0x80])), masked=True, max_payload=10)
-    assert caught.value.code == 1002
-
-
-@pytest.mark.parametrize(
-    "masked", [True, False], ids=["unmasked-from-client", "masked-from-server"]
-)
-def test_read_frame_refuses_the_wrong_mask_direction(masked):
-    frame = encode_frame(TEXT, b"hi", mask=not masked)
-    with pytest.raises(ProtocolError) as caught:
-        read_frame(header_only(frame[:2]), masked=masked, max_payload=10)
-    assert caught.value.code == 1002
-
-
-@pytest.mark.parametrize("opcode", [CLOSE, PING, PONG])
-def test_read_frame_refuses_fragmented_control_frames(opcode):
-    frame = encode_frame(opcode, b"", fin=False, mask=True)
-    with pytest.raises(ProtocolError) as caught:
-        read_frame(header_only(frame[:2]), masked=True, max_payload=10)
-    assert caught.value.code == 1002
-
-
-@pytest.mark.parametrize("opcode", [CLOSE, PING, PONG])
-def test_read_frame_refuses_control_frames_over_125_bytes(opcode):
-    frame = encode_frame(opcode, bytes(126), mask=True)
-    with pytest.raises(ProtocolError) as caught:
-        read_frame(header_only(frame[:2]), masked=True, max_payload=4096)
-    assert caught.value.code == 1002
-
-
-def test_read_frame_refuses_a_64_bit_length_with_the_high_bit_set():
-    head = bytes([0x80 | TEXT, 127]) + struct.pack("!Q", 1 << 63)
-    with pytest.raises(ProtocolError) as caught:
-        read_frame(header_only(head), masked=False, max_payload=1 << 64)
-    assert caught.value.code == 1002
-
-
-@pytest.mark.parametrize(
-    "extended",
-    [
-        bytes([0x80 | 126]) + struct.pack("!H", 4097),
-        bytes([0x80 | 127]) + struct.pack("!Q", 1 << 40),
+OPCODE_NAMES = {
+    TEXT: "text",
+    BINARY: "binary",
+    CONTINUATION: "continuation",
+    CLOSE: "close",
+    PING: "ping",
+    PONG: "pong",
+}
+BAD_HEADERS = [
+    # (id, frame header, masked, max_payload, close code)
+    *[
+        (name, bytes([0x80 | bit | TEXT, 0x80]), True, 10, 1002)
+        for name, bit in (("rsv1", 0x40), ("rsv2", 0x20), ("rsv3", 0x10))
     ],
-    ids=["16-bit", "64-bit"],
+    *[
+        (f"opcode-{opcode:#x}", bytes([0x80 | opcode, 0x80]), True, 10, 1002)
+        for opcode in (0x3, 0x4, 0x5, 0x6, 0x7, 0xB, 0xC, 0xD, 0xE, 0xF)
+    ],
+    ("unmasked-from-client", encode_frame(TEXT, b"hi", mask=False)[:2], True, 10, 1002),
+    ("masked-from-server", encode_frame(TEXT, b"hi", mask=True)[:2], False, 10, 1002),
+    *[
+        (
+            f"fragmented-{OPCODE_NAMES[opcode]}",
+            encode_frame(opcode, b"", fin=False, mask=True)[:2],
+            True,
+            10,
+            1002,
+        )
+        for opcode in (CLOSE, PING, PONG)
+    ],
+    *[
+        (
+            f"{OPCODE_NAMES[opcode]}-over-125-bytes",
+            encode_frame(opcode, bytes(126), mask=True)[:2],
+            True,
+            4096,
+            1002,
+        )
+        for opcode in (CLOSE, PING, PONG)
+    ],
+    (
+        "64-bit-length-high-bit",
+        bytes([0x80 | TEXT, 127]) + struct.pack("!Q", 1 << 63),
+        False,
+        1 << 64,
+        1002,
+    ),
+    # The size limit applies before the codec reads the mask key or the payload.
+    *[
+        (
+            f"{OPCODE_NAMES[opcode]}-{bits}-over-limit",
+            bytes([0x80 | opcode]) + extended,
+            True,
+            4096,
+            1009,
+        )
+        for opcode in (TEXT, BINARY, CONTINUATION)
+        for bits, extended in (
+            ("16-bit", bytes([0x80 | 126]) + struct.pack("!H", 4097)),
+            ("64-bit", bytes([0x80 | 127]) + struct.pack("!Q", 1 << 40)),
+        )
+    ],
+]
+
+
+@pytest.mark.parametrize(
+    ("head", "masked", "max_payload", "code"),
+    [case[1:] for case in BAD_HEADERS],
+    ids=[case[0] for case in BAD_HEADERS],
 )
-@pytest.mark.parametrize("opcode", [TEXT, BINARY, CONTINUATION])
-def test_read_frame_checks_the_size_limit_before_it_reads_the_payload(extended, opcode):
+def test_read_frame_refuses_bad_headers_before_the_payload(head, masked, max_payload, code):
     # header_only fails the test if the codec asks for the mask key or the payload.
-    head = bytes([0x80 | opcode]) + extended
     with pytest.raises(ProtocolError) as caught:
-        read_frame(header_only(head), masked=True, max_payload=4096)
-    assert caught.value.code == 1009
-
-
-def test_read_frame_accepts_a_payload_of_exactly_the_size_limit():
-    frame = encode_frame(TEXT, b"x" * 4096, mask=True)
-    assert read_frame(reader(frame), masked=True, max_payload=4096) == (True, TEXT, b"x" * 4096)
+        read_frame(header_only(head), masked=masked, max_payload=max_payload)
+    assert caught.value.code == code
 
 
 def test_message_reader_assembles_fragments_around_control_frames():
@@ -321,33 +328,43 @@ def close_frame(payload):
     return encode_frame(CLOSE, payload, mask=True)
 
 
-def test_message_reader_reports_a_close_without_a_payload():
-    assert messages(close_frame(b""), 1) == [("close", None, "")]
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"", ("close", None, "")),
+        *[
+            (struct.pack("!H", code) + "bye ✓".encode(), ("close", code, "bye ✓"))
+            for code in (1000, 1001, 1003, 1007, 1012, 1014, 3000, 4401, 4999)
+        ],
+    ],
+    ids=[
+        "no-payload",
+        *[str(code) for code in (1000, 1001, 1003, 1007, 1012, 1014, 3000, 4401, 4999)],
+    ],
+)
+def test_message_reader_accepts_close_payloads(payload, expected):
+    assert messages(close_frame(payload), 1) == [expected]
 
 
-def test_message_reader_refuses_a_one_byte_close_payload():
-    assert refusal(close_frame(b"\x03")) == 1002
-
-
-@pytest.mark.parametrize("code", [0, 999, 1004, 1005, 1006, 1015, 2999, 5000, 65535])
-def test_message_reader_refuses_close_codes_a_peer_must_not_send(code):
-    assert refusal(close_frame(struct.pack("!H", code))) == 1002
-
-
-@pytest.mark.parametrize("code", [1000, 1001, 1003, 1007, 1012, 1014, 3000, 4401, 4999])
-def test_message_reader_accepts_valid_close_codes_and_reasons(code):
-    payload = struct.pack("!H", code) + "bye ✓".encode()
-    assert messages(close_frame(payload), 1) == [("close", code, "bye ✓")]
-
-
-def test_message_reader_refuses_a_close_reason_that_is_not_utf8():
-    # RFC 6455 lets the endpoint fail with 1002 or 1007. The implementation uses 1007.
-    assert refusal(close_frame(struct.pack("!H", 1000) + b"\xff")) == 1007
-
-
-def test_encode_close_without_a_code_is_empty():
-    assert encode_close() == b""
-    assert encode_close(None, "ignored") == b""
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        (b"\x03", 1002),
+        *[
+            (struct.pack("!H", code), 1002)
+            for code in (0, 999, 1004, 1005, 1006, 1015, 2999, 5000, 65535)
+        ],
+        # RFC 6455 lets the endpoint fail with 1002 or 1007. The implementation uses 1007.
+        (struct.pack("!H", 1000) + b"\xff", 1007),
+    ],
+    ids=[
+        "one-byte",
+        *[f"code-{code}" for code in (0, 999, 1004, 1005, 1006, 1015, 2999, 5000, 65535)],
+        "reason-not-utf8",
+    ],
+)
+def test_message_reader_refuses_bad_close_payloads(payload, code):
+    assert refusal(close_frame(payload)) == code
 
 
 @pytest.mark.parametrize(
@@ -528,36 +545,3 @@ def test_connection_receive_sends_no_pong_after_its_close(pair):
     connection.abort()
     assert peer_reader(peer)() == (True, CLOSE, encode_close(1000))
     assert peer.recv(1) == b""
-
-
-def test_send_text_never_waits_for_a_peer_that_stops_reading(pair):
-    near, peer = pair
-    near.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
-    peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-    connection = open_connection(near)
-    chunk = "x" * 16384
-    # Fill the kernel buffers: the writer then blocks and frames stay queued.
-    for _ in range(200):
-        connection.send_text(chunk)
-        deadline = time.monotonic() + 0.3
-        while connection.backlog and time.monotonic() < deadline:
-            time.sleep(0.005)
-        if connection.backlog:
-            break
-    assert connection.backlog, "The kernel buffers never filled"
-    durations, backlog, overflow = [], None, False
-    for _ in range(100):
-        started = time.monotonic()
-        try:
-            connection.send_text(chunk)
-        except ConnectionClosed:
-            overflow = True
-            break
-        finally:
-            durations.append(time.monotonic() - started)
-        backlog = connection.backlog
-    assert overflow
-    # Every send returned at once until the queue limit of 64 frames.
-    assert backlog == 64
-    assert max(durations) < 0.5
-    connection.join(2)

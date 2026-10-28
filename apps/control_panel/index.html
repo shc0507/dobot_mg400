@@ -21,7 +21,7 @@
     <header><h1>MG400 Control</h1><span class="mode" id="mode">CONNECTING</span></header>
     <main>
       <form class="auth" id="auth" hidden><input id="token" type="password" placeholder="Panel access token" aria-label="Panel access token" autocomplete="off"><button type="submit">Connect</button></form>
-      <div class="sync" title="Sync reads feedback into this page. It does not synchronize Isaac Sim."><i class="dot" id="syncDot"></i><span class="state" id="syncState">Not connected</span><button id="startSync" disabled>Start sync</button><button id="stopSync" disabled>Stop sync</button></div>
+      <div class="sync" title="Sync reads robot feedback into this page."><i class="dot" id="syncDot"></i><span class="state" id="syncState">Not connected</span><button id="startSync" disabled>Start sync</button><button id="stopSync" disabled>Stop sync</button></div>
       <section class="motion">
         <h2 title="Pose: robot base to flange. User=0, Tool=0. Slider ranges are not hardware limits.">Coordinates &amp; Motion</h2>
         <div class="columns"><span>Axis</span><span>Actual</span><span>Target</span></div>
@@ -36,7 +36,7 @@
     </main>
     <footer><span class="robot-state" id="robotState">—</span><button id="clearAlarm" title="Sends ClearError() only. Motion does not resume." hidden disabled>Clear alarm</button><button id="enable" disabled>Enable robot</button><button class="disable" id="disable" disabled>Disable robot</button></footer>
   </div>
-  <div class="connection" id="connection">Python panel · No connection to Isaac Sim.</div>
+  <div class="connection" id="connection">Python panel</div>
   <script>
     const $ = id => document.getElementById(id);
     const axes = [{id:'x',label:'X',unit:'mm'},{id:'y',label:'Y',unit:'mm'},{id:'z',label:'Z',unit:'mm'},{id:'r',label:'R',unit:'deg'},{id:'grip',label:'Gripper',unit:'/ 1000'}];

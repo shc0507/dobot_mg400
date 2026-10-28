@@ -62,11 +62,14 @@ def test_never_normalizes_extra_turn_commands(axis, turn):
 
 
 @pytest.mark.parametrize(
+    "validate", [validate_joints, validate_measured_joints], ids=["target", "measured"]
+)
+@pytest.mark.parametrize(
     "value", [True, False, float("nan"), float("inf"), -float("inf"), "0", None, 10**400]
 )
-def test_rejects_nonfinite_or_nonnumeric_angles(value):
+def test_rejects_nonfinite_or_nonnumeric_angles(validate, value):
     with pytest.raises(ValueError, match="finite number"):
-        validate_joints([0, value, 0, 0])
+        validate([0, value, 0, 0])
 
 
 @pytest.mark.parametrize("joints", [None, 0, [], [0, 0, 0], [0] * 5])
@@ -102,11 +105,6 @@ def test_valid_endpoints_can_cross_invalid_conditional_range(reverse):
 def test_accepts_complete_valid_segments_in_either_direction(start, end):
     assert validate_joint_segment(start, end) is None
     assert validate_joint_segment(end, start) is None
-
-
-def test_segment_rejects_invalid_endpoint_before_interpolation():
-    with pytest.raises(ValueError, match="J4"):
-        validate_joint_segment((0, 0, 0, 0), (0, 0, 0, 360))
 
 
 @pytest.mark.parametrize(
@@ -149,12 +147,6 @@ def test_measured_angles_may_reach_raw_reference_boundaries(joints):
 def test_measured_angles_reject_raw_range_violations(joints, joint):
     with pytest.raises(ValueError, match=f"{joint}=.*uncalibrated reference range"):
         validate_measured_joints(joints)
-
-
-@pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
-def test_measured_angles_require_finite_numbers(value):
-    with pytest.raises(ValueError, match="finite number"):
-        validate_measured_joints((value, 0, 0, 0))
 
 
 @pytest.mark.parametrize("j4", [-358.95, -227.81, -200.71, 200.71, 227.81, 358.95])

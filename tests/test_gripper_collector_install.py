@@ -28,64 +28,70 @@ def unit_value(text, key):
     return values[0]
 
 
-def test_units_watch_one_request_and_start_one_command_capable_collector(module, tmp_path):
-    repo, data = tmp_path / "repo", tmp_path / "data"
-    units = module.render_units(repo, data)
+@pytest.mark.parametrize(
+    "component", ("", 'space "quote" \\path %name $HOME'), ids=("plain", "special")
+)
+def test_units_watch_one_request_and_start_one_command_capable_collector(
+    module, tmp_path, component
+):
+    prefix = component + " " if component else ""
+    repo, data = tmp_path / (prefix + "repo"), tmp_path / (prefix + "data")
+    if component:
+        python = str(tmp_path / (component + " python"))
+        units = module.render_units(repo, data, python)
+    else:
+        python = "/usr/bin/python3"
+        units = module.render_units(repo, data)
     assert set(units) == {module.SERVICE, module.PATH_UNIT}
     service, watch = units[module.SERVICE], units[module.PATH_UNIT]
     assert unit_value(service, "Type") == "exec"
     assert unit_value(service, "Restart") == "on-failure"
     assert unit_value(service, "RestartSec") == "2s"
     assert unit_value(service, "StartLimitIntervalSec") == "0"
-    command = shlex.split(unit_value(service, "ExecStart"))
-    assert command[0] == "/usr/bin/python3"
-    assert str(repo / "scripts/gripper_feedback.py") in command
-    assert "--commands" in command
-    assert command[command.index("--output") + 1] == str(data / "work/gripper_olares_feedback.json")
-    assert unit_value(watch, "PathChanged") == str(data / "work/gripper_collector.start")
-    assert unit_value(watch, "Unit") == module.SERVICE
-    for text in units.values():
-        mounts = shlex.split(unit_value(text, "RequiresMountsFor"))
-        assert str(repo) in mounts
-        assert str(data / "work") in mounts
-    subprocess.run.assert_not_called()
-
-
-def test_unit_paths_preserve_spaces_quotes_backslashes_and_systemd_expansions(module, tmp_path):
-    component = 'space "quote" \\path %name $HOME'
-    repo, data = tmp_path / (component + " repo"), tmp_path / (component + " data")
-    python = str(tmp_path / (component + " python"))
-    units = module.render_units(repo, data, python)
     command = [
         value.replace("%%", "%").replace("$$", "$")
-        for value in shlex.split(unit_value(units[module.SERVICE], "ExecStart"))
+        for value in shlex.split(unit_value(service, "ExecStart"))
     ]
     assert command[0] == python
     assert str(repo / "scripts/gripper_feedback.py") in command
+    assert "--commands" in command
     assert command[command.index("--output") + 1] == str(data / "work/gripper_olares_feedback.json")
-    assert unit_value(units[module.PATH_UNIT], "PathChanged") == str(
-        data / "work/gripper_collector.start"
-    ).replace("%", "%%")
+    assert unit_value(watch, "PathChanged") == str(data / "work/gripper_collector.start").replace(
+        "%", "%%"
+    )
+    assert unit_value(watch, "Unit") == module.SERVICE
     for text in units.values():
         mounts = [
             value.replace("%%", "%") for value in shlex.split(unit_value(text, "RequiresMountsFor"))
         ]
         assert str(repo) in mounts
         assert str(data / "work") in mounts
+    subprocess.run.assert_not_called()
 
 
-@pytest.mark.parametrize("field", ("repo", "data", "python"))
-def test_unit_rendering_rejects_relative_paths(module, tmp_path, field):
+CONTROL_CHARACTERS = ("\0", "\n", "\r", "\t", "\x1f", "\x7f")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("repo", Path("relative")),
+        ("data", Path("relative")),
+        ("python", "relative"),
+        *(("repo", "repo" + character) for character in CONTROL_CHARACTERS),
+    ),
+    ids=(
+        "relative_repo",
+        "relative_data",
+        "relative_python",
+        *(f"repo_control_{ord(character):#04x}" for character in CONTROL_CHARACTERS),
+    ),
+)
+def test_unit_rendering_rejects_unsafe_paths(module, tmp_path, field, value):
     values = {"repo": tmp_path / "repo", "data": tmp_path / "data", "python": "/usr/bin/python3"}
-    values[field] = Path("relative") if field != "python" else "relative"
+    values[field] = value if field == "python" or isinstance(value, Path) else tmp_path / value
     with pytest.raises(ValueError):
         module.render_units(values["repo"], values["data"], values["python"])
-
-
-@pytest.mark.parametrize("character", ("\0", "\n", "\r", "\t", "\x1f", "\x7f"))
-def test_unit_rendering_rejects_control_characters(module, tmp_path, character):
-    with pytest.raises(ValueError):
-        module.render_units(tmp_path / ("repo" + character), tmp_path / "data")
 
 
 def process(proc_root, pid, arguments, cwd):

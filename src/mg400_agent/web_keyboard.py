@@ -1,7 +1,4 @@
-"""Keyboard input rules for the shared panel core.
-
-The frozen Isaac panel does not import this module.
-"""
+"""Keyboard input rules for the shared panel core."""
 
 import time
 

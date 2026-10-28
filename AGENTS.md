@@ -5,21 +5,11 @@ This document provides permanent information/instructions for the convenience of
 ## The Workflow
 
 - 操作 Chrome 时只控制需要的 page，不要再申请整个 Chrome 应用的权限。
-- Isaac Sim is located on Olares. It is a cloud platform for computing and simulation. It is used to run Isaac Sim, and the agents can control it through a web interface. Check the Chrome browser for already opened tabs. If there are no tabs open, ask the user to open Olares web interface and log in. The URL is: [https://desktop.qumusphusis.olares.com/](https://desktop.qumusphusis.olares.com/)
-- The GUI can be accessed locally with Isaac Sim WebRTC Streaming Client application. The server is 100.64.0.1, ports are 49100 (signal) and 47998 (stream). Note that VPN is required to access the server on Olares in this way. It can be turned on through LarePass application.
+- Olares is a cloud host. It runs the web control panel, the USB gripper collector, and the camera preview. Agents can control Olares through its web interface. Check the Chrome browser for tabs that are already open. If no tab is open, ask the user to open the Olares web interface and log in. The URL is: [https://desktop.qumusphusis.olares.com/](https://desktop.qumusphusis.olares.com/)
+- VPN is necessary to access services on Olares (`100.64.0.1`). Turn it on with the LarePass application.
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
-- 排查真机报警或碰撞时，先读 [报警与历史日志](docs/isaacsim.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
+- 排查真机报警或碰撞时，先读 [报警与历史日志](docs/hardware.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
 - When git-committing a task, also write a brief description of what was done.
-
-## Local streaming client automation
-
-- Before reading client state, capturing images, or sending input, read [the client procedure](docs/agents/isaac-client.md). Use `scripts/isaac_client.mjs` with Node.js 22+.
-- Target `/Applications/Isaac Sim WebRTC Streaming Client.app`. A mounted installer contains another app with the same bundle ID. The user authorized the temporary loopback inspector for this project. Client operations share a lock.
-- Preserve the current macOS focus and system pointer. You can operate a focused client. Do not ask the user to switch applications just to satisfy a background requirement. Capture and input require a visible, unminimized client. Do not automatically activate, raise, restore, or restart the client.
-- Send clicks, keys, and text only through the CLI. Do not use `app.click`, OS `pressKey` or `paste`, Quartz input, or `scripts/isaac_client_move.swift`.
-- Capture images contain only the remote video. The CLI does not capture the macOS screen. The image excludes client overlays. The CLI rejects clicks on targets covered by client overlays.
-- Use the latest capture and its token for each batch. Keep the window geometry unchanged. Batch only actions with known targets and transitions. Inspect the returned image to verify the remote result before reporting success. Use menus or tabs for calibration, never robot action buttons.
-- If the CLI returns `CLEANUP_UNCONFIRMED`, stop. Report the error. The client session blocks later calls while this state remains. Do not automatically retry or clear this state.
 
 ## Temporary screenshot cleanup
 
@@ -30,7 +20,7 @@ This document provides permanent information/instructions for the convenience of
 
 ## Documenting
 
-- Use instruction documents only for current procedures, interfaces, configuration requirements, and known limitations. This includes `AGENTS.md`, `README.md`, and instruction pages such as `docs/isaacsim.md`.
+- Use instruction documents only for current procedures, interfaces, configuration requirements, and known limitations. This includes `AGENTS.md`, `README.md`, and instruction pages such as `docs/control-panel.md`.
 - Do not add records of individual tasks or experiments to instruction documents. Do not add test dates, execution histories, troubleshooting attempts, or raw output from individual runs. Do not add test counts, measurements, operator confirmations, or final session states from individual runs. Do not add completion notes or links to individual run reports.
 - "Useful for future reference," traceability, and task completion do not justify exceptions. Existing logs in an instruction document do not authorize more logs.
 - When a verified change affects future use, update the relevant instructions in place. Extract the reusable procedure, interface, configuration requirement, or limitation. Omit the experiment narrative and evidence. Keep configuration values that future users must use to operate the system.

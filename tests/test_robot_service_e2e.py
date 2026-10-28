@@ -1,7 +1,7 @@
 """Drive the real panel state through the robot service WebSocket.
 
 The real PanelServer, RobotPanelState and keyboard stack control the simulated MG400 of
-test_web_keyboard_integration. A raw WebSocket client plays the page.
+sim_mg400. A raw WebSocket client plays the page.
 """
 
 import itertools
@@ -10,27 +10,15 @@ import threading
 import time
 
 import pytest
-from test_control_panel_ws import (  # noqa: F401
-    PanelServer,
-    RealSocket,
-    WsClient,
-    closed_clients,
-    running,
-)
-from test_web_keyboard_integration import (  # noqa: F401
-    CLIENT,
-    JOGS,
-    RADIAL_FRAME,
-    READY,
-    isolated_controller_locks,
-    make_rig,
-    wait_for,
-)
+from panel_ws import PanelServer, RealSocket, WsClient, running
+from sim_mg400 import CLIENT, JOGS, RADIAL_FRAME, READY, wait_for
 
 from mg400_agent.web_control import RobotPanelState
 
 TOKEN = "e2e-test-token"
 CLOSED = "browser connection closed."
+
+pytestmark = pytest.mark.usefixtures("closed_clients", "isolated_controller_locks")
 
 
 class SimulatedNetworkServer(PanelServer):
@@ -46,7 +34,7 @@ class SimulatedNetworkServer(PanelServer):
 
 @pytest.fixture
 def service():
-    # The listener must exist before make_rig replaces socket.socket.
+    # The listener must exist before make_sim_rig replaces socket.socket.
     assert socket.socket is RealSocket
     with running(None, token=TOKEN, server_class=SimulatedNetworkServer) as server:
         yield server
@@ -54,8 +42,8 @@ def service():
 
 @pytest.fixture
 def rig(service, request):
-    # Request make_rig only now, after the listener exists.
-    rig = request.getfixturevalue("make_rig")()
+    # Request make_sim_rig only now, after the listener exists.
+    rig = request.getfixturevalue("make_sim_rig")()
     service.state = rig.state
     return rig
 

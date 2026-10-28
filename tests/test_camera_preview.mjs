@@ -117,6 +117,13 @@ function browser(count = 1) {
   };
 }
 
+async function showing(page, wait = 1000, label = "visible") {
+  await page.respond(0);
+  await page.push(0, part(jpeg(label)));
+  page.decodes[0].resolve();
+  await page.advance(wait);
+}
+
 test("three cameras use one persistent authenticated relative request each", async () => {
   const page = browser(3);
   assert.equal(page.requests.length, 3);
@@ -179,10 +186,7 @@ test("complete-frame heartbeats keep a long request alive and display measured u
 
 test("incomplete bytes do not reset heartbeat and timeout retains the last frame for five seconds", async () => {
   const page = browser();
-  await page.respond(0);
-  await page.push(0, part(jpeg("visible")));
-  page.decodes[0].resolve();
-  await page.advance(1000);
+  await showing(page);
   await page.push(0, part(jpeg("partial")).subarray(0, 30));
   await page.advance(499);
   assert.equal(page.requests[0].options.signal.aborted, false);
@@ -204,10 +208,7 @@ test("incomplete bytes do not reset heartbeat and timeout retains the last frame
 
 test("repeated disconnects do not extend the last frame retention deadline", async () => {
   const page = browser();
-  await page.respond(0);
-  await page.push(0, part(jpeg("visible")));
-  page.decodes[0].resolve();
-  await page.advance(1000);
+  await showing(page);
   await page.finish(0);
   assert.equal(page.images[0].src, page.decodes[0].url);
   assert.equal(page.images[0].figure.dataset.paused, "true");
@@ -231,10 +232,7 @@ test("repeated disconnects do not extend the last frame retention deadline", asy
 
 test("decode failure retains the previous frame but revokes the failed frame", async () => {
   const page = browser();
-  await page.respond(0);
-  await page.push(0, part(jpeg("visible")));
-  page.decodes[0].resolve();
-  await page.advance(1000);
+  await showing(page);
   await page.push(0, part(jpeg("invalid")));
   page.decodes[1].reject(new Error("Cannot decode JPEG"));
   await page.advance(0);
@@ -252,10 +250,7 @@ test("decode failure retains the previous frame but revokes the failed frame", a
 
 test("a fresh frame restores live status and sets expiry from arrival rather than decode completion", async () => {
   const page = browser();
-  await page.respond(0);
-  await page.push(0, part(jpeg("first")));
-  page.decodes[0].resolve();
-  await page.advance(1000);
+  await showing(page, 1000, "first");
   await page.finish(0);
   await page.advance(500);
   await page.respond(1);
@@ -278,10 +273,7 @@ test("a fresh frame restores live status and sets expiry from arrival rather tha
 
 test("complete frames cannot hide a stalled decoder or extend the displayed frame lifetime", async () => {
   const page = browser();
-  await page.respond(0);
-  await page.push(0, part(jpeg("visible")));
-  page.decodes[0].resolve();
-  await page.advance(1000);
+  await showing(page);
   await page.push(0, part(jpeg("slow")));
   await page.advance(499);
   assert.equal(page.images[0].figure.dataset.paused, undefined);
@@ -315,10 +307,7 @@ test("complete frames cannot hide a stalled decoder or extend the displayed fram
 
 test("a decode from a disconnected session cannot replace the retained frame", async () => {
   const page = browser();
-  await page.respond(0);
-  await page.push(0, part(jpeg("visible")));
-  page.decodes[0].resolve();
-  await page.advance(500);
+  await showing(page, 500);
   await page.push(0, part(jpeg("old session")));
   await page.finish(0);
   await page.advance(500);
@@ -336,10 +325,7 @@ test("a decode from a disconnected session cannot replace the retained frame", a
 
 test("hidden pages abort streams, clear frames, and never display an old pending decode", async () => {
   const page = browser();
-  await page.respond(0);
-  await page.push(0, part(jpeg("visible")));
-  page.decodes[0].resolve();
-  await page.advance(0);
+  await showing(page, 0);
   const first = page.images[0].src;
   await page.push(0, part(jpeg("pending")));
   await page.visible(false);

@@ -230,6 +230,8 @@ def test_mjpeg_parser_accepts_frame_at_four_mib_limit(preview, lengths):
 def test_feed_keeps_only_latest_frame_for_slow_consumer(preview):
     module, _ = preview
     feed = module.CameraFeed("camera1")
+    with pytest.raises(OSError):
+        feed.wait_after(0, timeout=0.01)
     feed.publish(b"first")
     sequence, frame = feed.wait_after(0)
     assert (sequence, frame) == (1, b"first")
@@ -238,13 +240,6 @@ def test_feed_keeps_only_latest_frame_for_slow_consumer(preview):
     assert feed.wait_after(sequence) == (3, b"third")
     with pytest.raises(OSError):
         feed.wait_after(3, timeout=0.01)
-
-
-def test_feed_times_out_without_first_frame(preview):
-    module, _ = preview
-    feed = module.CameraFeed("camera1")
-    with pytest.raises(OSError):
-        feed.wait_after(0, timeout=0.01)
 
 
 def test_feed_rejects_stale_frame_until_new_frame_arrives(preview, monkeypatch):

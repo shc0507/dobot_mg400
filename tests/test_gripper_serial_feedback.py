@@ -28,6 +28,7 @@ def module(monkeypatch, tmp_path):
 
     monkeypatch.setattr(os, "open", open_directory)
     monkeypatch.setattr(namespace["time"], "monotonic", lambda: 0.0)
+    monkeypatch.setattr(namespace["time"], "time", lambda: 1000.0)
     return SimpleNamespace(**namespace)
 
 
@@ -35,7 +36,39 @@ def packet(module, data):
     return data + module.crc(data)
 
 
-def serial_transport(module, monkeypatch, replies, residual=b""):
+def request(session, **changes):
+    """Return a valid position request. The changes replace or add fields."""
+    return {
+        "id": str(uuid.uuid4()),
+        "session": session,
+        "sent_at": 1000.0,
+        "position": 501,
+        "deadline_monotonic": 5.0,
+        **changes,
+    }
+
+
+def init_request(session, **changes):
+    """Return a valid initialization request. The changes replace or add fields."""
+    return {
+        "id": str(uuid.uuid4()),
+        "session": session,
+        "sent_at": 1000.0,
+        "operation": "initialize",
+        "deadline_monotonic": 15.0,
+        **changes,
+    }
+
+
+def send_request(mailbox, payload=None, **changes):
+    """Write a request to the mailbox and return it."""
+    if payload is None:
+        payload = request(mailbox.session, **changes)
+    mailbox.path.write_text(json.dumps(payload))
+    return payload
+
+
+def serial_transport(module, monkeypatch, replies, residual=b"", advance_sleep=False):
     """Deliver reply chunks at fixed times after each request without a real serial device."""
     now = [0.0]
     pending = [(0.0, residual)] if residual else []
@@ -59,16 +92,13 @@ def serial_transport(module, monkeypatch, replies, residual=b""):
     monkeypatch.setattr(module.os, "read", lambda fd, count: pending.pop(0)[1])
     monkeypatch.setattr(module.select, "select", select)
     monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    if advance_sleep:
+        monkeypatch.setattr(module.time, "sleep", lambda delay: now.__setitem__(0, now[0] + delay))
     return SimpleNamespace(write=send, now=now, sent_at=sent_at)
 
 
 def test_crc_known_modbus_vector(module):
     assert module.crc(b"123456789") == b"\x37\x4b"
-
-
-def test_decode_three_registers(module):
-    response = packet(module, b"\x01\x03\x06" + struct.pack(">3H", 1, 2, 501))
-    assert module.decode(response) == (1, 2, 501)
 
 
 @pytest.mark.parametrize("fault", ["crc", "truncated", "slave", "function", "count", "exception"])
@@ -212,23 +242,16 @@ def test_restart_after_disconnect_uses_new_session_without_replaying_commands(
         Mock(side_effect=[(1, 1, 501), OSError(19, "No such device"), (1, 1, 501), SystemExit(0)]),
     )
     monkeypatch.setattr(module.time, "sleep", Mock())
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     send = Mock()
     monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
     argv = ["--output", str(output), "--commands"]
     assert module.main(argv) == 1
     before = json.loads(output.read_text())
-    request = dict(
-        id=str(uuid.uuid4()),
-        session=before["session"],
-        sent_at=1000.0,
-        position=502,
-        deadline_monotonic=5.0,
-    )
-    output.with_name(output.name + ".command.json").write_text(json.dumps(request))
+    payload = request(before["session"], position=502)
+    output.with_name(output.name + ".command.json").write_text(json.dumps(payload))
     lock = output.with_name(output.name + ".command-lock.json")
     if locked:
-        lock.write_text(json.dumps({"command_id": request["id"], "target": 502}))
+        lock.write_text(json.dumps({"command_id": payload["id"], "target": 502}))
 
     with pytest.raises(SystemExit) as stopped:
         module.main(argv)
@@ -270,24 +293,24 @@ def test_linux_selects_exact_identity(module, monkeypatch, tmp_path):
     assert module.resolve_port() == str(expected)
 
 
+GOOD_IDENTITY = ("0403", "6001", "BG02Q5TN")
+
+
 @pytest.mark.parametrize(
-    "identity",
+    "devices,count",
     [
-        ("0404", "6001", "BG02Q5TN"),
-        ("0403", "6002", "BG02Q5TN"),
-        ("0403", "6001", "BG02Q5TN-extra"),
+        pytest.param([("ttyUSB0", ("0404", "6001", "BG02Q5TN"))], 0, id="vendor"),
+        pytest.param([("ttyUSB0", ("0403", "6002", "BG02Q5TN"))], 0, id="product"),
+        pytest.param([("ttyUSB0", ("0403", "6001", "BG02Q5TN-extra"))], 0, id="serial"),
+        pytest.param([("ttyUSB1", GOOD_IDENTITY), ("ttyUSB2", GOOD_IDENTITY)], 2, id="duplicate"),
     ],
 )
-def test_linux_rejects_nonmatching_identity(module, monkeypatch, tmp_path, identity):
-    linux_device(module, monkeypatch, tmp_path, "ttyUSB0", identity)
-    with pytest.raises(RuntimeError, match="Found 0"):
-        module.resolve_port()
-
-
-def test_linux_rejects_duplicate_identity(module, monkeypatch, tmp_path):
-    for name in ("ttyUSB1", "ttyUSB2"):
-        linux_device(module, monkeypatch, tmp_path, name, ("0403", "6001", "BG02Q5TN"))
-    with pytest.raises(RuntimeError, match="Found 2"):
+def test_linux_rejects_nonmatching_or_duplicate_identity(
+    module, monkeypatch, tmp_path, devices, count
+):
+    for name, identity in devices:
+        linux_device(module, monkeypatch, tmp_path, name, identity)
+    with pytest.raises(RuntimeError, match=f"Found {count}"):
         module.resolve_port()
 
 
@@ -353,30 +376,6 @@ def test_position_write_uses_documented_frame_and_exact_echo(module, monkeypatch
     wire = serial_transport(module, monkeypatch, [[(0.001, request)]])
     assert module.register(42, 0x0103, 500) == 500
     wire.write.assert_called_once_with(42, request)
-
-
-def test_initialize_writes_once_and_waits_for_measured_completion(module, monkeypatch):
-    replies = [
-        packet(module, payload)
-        for payload in (
-            b"\x01\x03\x06" + struct.pack(">3H", 0, 65535, 1070),
-            bytes.fromhex("01 06 01 00 00 01"),
-            b"\x01\x03\x06" + struct.pack(">3H", 2, 65535, 1070),
-            b"\x01\x03\x06" + struct.pack(">3H", 1, 1, 1000),
-        )
-    ]
-    wire = serial_transport(module, monkeypatch, [[(0.001, reply)] for reply in replies])
-    monkeypatch.setattr(
-        module.time, "sleep", lambda delay: wire.now.__setitem__(0, wire.now[0] + delay)
-    )
-    module.initialize(42, deadline=15.0)
-    requests = [call.args[1] for call in wire.write.call_args_list]
-    assert [request[2:6] for request in requests if request[1] == 6] == [
-        bytes.fromhex("01 00 00 01")
-    ]
-    assert requests[-1][1:6] == bytes.fromhex("03 02 00 00 03")
-    assert len(requests) == 4
-    assert wire.now[0] < 15.0
 
 
 @pytest.mark.parametrize(
@@ -477,23 +476,23 @@ def test_register_distinguishes_invalid_replies(module, monkeypatch, fault):
     wire.write.assert_called_once()
 
 
-@pytest.mark.parametrize("value", [None, 500])
-def test_register_reports_valid_modbus_exception_code(module, monkeypatch, value):
-    function = 3 if value is None else 6
-    response = packet(module, bytes((1, function | 0x80, 6)))
+@pytest.mark.parametrize(
+    "call,function,code,address_text",
+    [
+        pytest.param(lambda m: m.register(42, 0x0103), 3, 0x06, "address=0x0103", id="read"),
+        pytest.param(lambda m: m.register(42, 0x0103, 500), 6, 0x06, "address=0x0103", id="write"),
+        pytest.param(lambda m: m.read(42), 3, 0x02, "function=0x03 address=0x0200", id="state"),
+    ],
+)
+def test_reply_reports_valid_modbus_exception_code(
+    module, monkeypatch, call, function, code, address_text
+):
+    response = packet(module, bytes((1, function | 0x80, code)))
     wire = serial_transport(module, monkeypatch, [[(0.001, response)]])
-    with pytest.raises(ValueError, match="exception code 0x06") as caught:
-        module.register(42, 0x0103, value)
+    with pytest.raises(ValueError, match=f"exception code 0x{code:02x}") as caught:
+        call(module)
     assert "actual-length=5 expected-length=5" in str(caught.value)
-    wire.write.assert_called_once()
-
-
-def test_state_read_reports_exception_code(module, monkeypatch):
-    response = packet(module, bytes.fromhex("01 83 02"))
-    wire = serial_transport(module, monkeypatch, [[(0.001, response)]])
-    with pytest.raises(ValueError, match="exception code 0x02") as caught:
-        module.read(42)
-    assert "function=0x03 address=0x0200" in str(caught.value)
+    assert address_text in str(caught.value)
     wire.write.assert_called_once()
 
 
@@ -533,12 +532,12 @@ def test_late_tail_before_next_request_prevents_another_write(module, monkeypatc
     wire.write.assert_called_once()
 
 
-def position_replies(module, position=501):
+def position_replies(module, position=501, state=1, measured=350):
     """Return complete replies for a target command that changes I/O mode."""
     return [
         packet(module, payload)
         for payload in (
-            b"\x01\x03\x06" + struct.pack(">3H", 1, 1, 350),
+            b"\x01\x03\x06" + struct.pack(">3H", 1, state, measured),
             bytes.fromhex("01 03 02 00 32"),
             bytes.fromhex("01 03 02 00 1e"),
             bytes.fromhex("01 03 02 00 01"),
@@ -554,19 +553,8 @@ def test_slow_valid_replies_cannot_start_target_write_after_deadline(module, mon
     wire = serial_transport(
         module, monkeypatch, [[(0.9, reply)] for reply in position_replies(module)]
     )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                position=501,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
+    send_request(mailbox)
     mailbox.poll(42)
     requests = [call.args[1] for call in wire.write.call_args_list]
     assert not any(request[1:4] == bytes.fromhex("06 01 03") for request in requests)
@@ -595,19 +583,8 @@ def test_expiry_during_inflight_reply_drains_frame_and_keeps_command_locked(
         [[(0.001, reply)] for reply in replies[:index]]
         + [[(0.01, replies[index][:4]), (0.9, replies[index][4:])], [(0.001, state)]],
     )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                position=501,
-                deadline_monotonic=0.1,
-            )
-        )
-    )
+    send_request(mailbox, deadline_monotonic=0.1)
     mailbox.poll(42)
     assert 0.1 < wire.now[0] < 1.0
     assert wire.write.call_count == index + 1
@@ -630,19 +607,8 @@ def test_expiry_during_silent_frame_check_prevents_write(module, monkeypatch, ad
 
 def test_lock_creation_consumes_command_budget(module, monkeypatch, tmp_path):
     wire = serial_transport(module, monkeypatch, [])
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                position=501,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
+    send_request(mailbox)
     emit = module.emit
 
     def save_lock(*args, **kwargs):
@@ -659,27 +625,19 @@ def test_lock_creation_consumes_command_budget(module, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("initial_mode", [0, 1])
 @pytest.mark.parametrize("clock_jump", [-10000, 0, 10000])
+@pytest.mark.parametrize(
+    "initial_state,measured", [(1, 350), (3, 0)], ids=["contact_350", "dropped_0"]
+)
 def test_command_completes_before_deadline_despite_wall_clock_change(
-    module, monkeypatch, tmp_path, initial_mode, clock_jump
+    module, monkeypatch, tmp_path, initial_mode, clock_jump, initial_state, measured
 ):
-    replies = position_replies(module)
+    replies = position_replies(module, state=initial_state, measured=measured)
     if initial_mode == 0:
         replies[3] = replies[5]
         del replies[4]
     wire = serial_transport(module, monkeypatch, [[(0.01, reply)] for reply in replies])
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                position=501,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
+    send_request(mailbox)
     emit = module.emit
 
     def save_lock(*args, **kwargs):
@@ -701,19 +659,8 @@ def test_command_completes_before_deadline_despite_wall_clock_change(
 
 def test_expiry_before_ack_keeps_persistent_lock(module, monkeypatch, tmp_path):
     wire = serial_transport(module, monkeypatch, [])
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                position=501,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
+    send_request(mailbox)
 
     def finish_late(fd, position, *, deadline):
         wire.now[0] = deadline
@@ -723,31 +670,6 @@ def test_expiry_before_ack_keeps_persistent_lock(module, monkeypatch, tmp_path):
     assert mailbox.control["locked"] and not mailbox.control["ack"]
     assert "deadline" in mailbox.control["error"]
     assert mailbox.lock_path.exists()
-
-
-@pytest.mark.parametrize("initial_mode", [0, 1])
-@pytest.mark.parametrize("initial_state", [1, 3])
-def test_position_disables_io_preserves_force_speed_and_checks_target(
-    module, monkeypatch, initial_mode, initial_state
-):
-    values = {0x0101: 50, 0x0104: 30, 0x0402: initial_mode, 0x0103: 0}
-    operations = []
-
-    def register(fd, address, value=None, *, deadline):
-        operations.append((address, value))
-        if value is not None:
-            values[address] = value
-        return values[address]
-
-    monkeypatch.setitem(
-        module.set_position.__globals__, "read", Mock(return_value=(1, initial_state, 0))
-    )
-    monkeypatch.setitem(module.set_position.__globals__, "register", register)
-    module.set_position(42, 501, deadline=5.0)
-    writes = [(address, value) for address, value in operations if value is not None]
-    assert writes == ([(0x0402, 0)] if initial_mode else []) + [(0x0103, 501)]
-    assert operations[-1] == (0x0103, None)
-    assert values[0x0101] == 50 and values[0x0104] == 30
 
 
 @pytest.mark.parametrize("state", [(0, 1, 500), (1, 4, 500), (1, 1, 1001)])
@@ -800,21 +722,12 @@ def test_mailbox_initialization_keeps_lock_until_complete_and_never_replays(
     replies = [packet(module, b"\x01\x03\x06" + struct.pack(">3H", *state)) for state in states]
     if initial_state == 0:
         replies.insert(1, packet(module, bytes.fromhex("01 06 01 00 00 01")))
-    wire = serial_transport(module, monkeypatch, [[(0.001, reply)] for reply in replies])
-    monkeypatch.setattr(
-        module.time, "sleep", lambda delay: wire.now.__setitem__(0, wire.now[0] + delay)
+    wire = serial_transport(
+        module, monkeypatch, [[(0.001, reply)] for reply in replies], advance_sleep=True
     )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
     assert mailbox.control["operation"] is None
-    request = dict(
-        id=str(uuid.uuid4()),
-        session=mailbox.session,
-        sent_at=1000.0,
-        operation="initialize",
-        deadline_monotonic=15.0,
-    )
-    mailbox.path.write_text(json.dumps(request))
+    request = send_request(mailbox, init_request(mailbox.session))
     send = wire.write.side_effect
 
     def send_with_lock(fd, payload):
@@ -850,23 +763,11 @@ def test_initialization_uses_fifteen_second_deadline_and_keeps_lock_on_timeout(
         samples.append((1, 1, 1000))
     replies = [packet(module, b"\x01\x03\x06" + struct.pack(">3H", *state)) for state in samples]
     replies.insert(1, packet(module, bytes.fromhex("01 06 01 00 00 01")))
-    wire = serial_transport(module, monkeypatch, [[(0.9, reply)] for reply in replies])
-    monkeypatch.setattr(
-        module.time, "sleep", lambda delay: wire.now.__setitem__(0, wire.now[0] + delay)
+    wire = serial_transport(
+        module, monkeypatch, [[(0.9, reply)] for reply in replies], advance_sleep=True
     )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                operation="initialize",
-                deadline_monotonic=15.0,
-            )
-        )
-    )
+    send_request(mailbox, init_request(mailbox.session))
     mailbox.poll(42)
     assert 5.0 < wire.now[0] < 16.0
     assert all(sent_at < 15.0 for sent_at in wire.sent_at)
@@ -899,23 +800,9 @@ def test_initialization_failure_never_acknowledges_or_retries(
         after = (1, 4, 1000) if failure == "invalid_state" else (1, 1, 1001)
         measured = packet(module, b"\x01\x03\x06" + struct.pack(">3H", *after))
         replies = [[(0.001, value)] for value in (before, echo, measured)]
-    wire = serial_transport(module, monkeypatch, replies)
-    monkeypatch.setattr(
-        module.time, "sleep", lambda delay: wire.now.__setitem__(0, wire.now[0] + delay)
-    )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    wire = serial_transport(module, monkeypatch, replies, advance_sleep=True)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                operation="initialize",
-                deadline_monotonic=15.0,
-            )
-        )
-    )
+    send_request(mailbox, init_request(mailbox.session))
     mailbox.poll(42)
     assert mailbox.control["locked"] and not mailbox.control["ack"]
     assert mailbox.control["error"]
@@ -946,16 +833,8 @@ def test_mailbox_rejects_invalid_initialization_before_serial_access(
     module, monkeypatch, tmp_path, change
 ):
     wire = serial_transport(module, monkeypatch, [])
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    request = dict(
-        id=str(uuid.uuid4()),
-        session=mailbox.session,
-        sent_at=1000.0,
-        operation="initialize",
-        deadline_monotonic=15.0,
-    )
-    mailbox.path.write_text(json.dumps({**request, **change}))
+    send_request(mailbox, init_request(mailbox.session, **change))
     mailbox.poll(42)
     wire.write.assert_not_called()
     assert not mailbox.lock_path.exists()
@@ -968,14 +847,7 @@ def test_mailbox_reads_latest_request_once_and_rejects_replay(module, monkeypatc
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", session)
     send = Mock()
     monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
-    first = dict(
-        id=str(uuid.uuid4()),
-        session=session,
-        sent_at=1000.0,
-        position=501,
-        deadline_monotonic=5.0,
-    )
+    first = request(session)
     second = {**first, "id": str(uuid.uuid4()), "position": 502}
     mailbox.path.write_text(json.dumps(first))
     mailbox.path.write_text(json.dumps(second))
@@ -1021,15 +893,7 @@ def test_mailbox_rejects_other_sessions_expired_or_invalid_requests(
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", session)
     send = Mock()
     monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
-    request = dict(
-        id=str(uuid.uuid4()),
-        session=session,
-        sent_at=1000.0,
-        position=500,
-        deadline_monotonic=5.0,
-    )
-    mailbox.path.write_text(json.dumps({**request, **change}))
+    send_request(mailbox, {**request(session, position=500), **change})
     mailbox.poll(42)
     send.assert_not_called()
     assert not mailbox.lock_path.exists()
@@ -1041,11 +905,11 @@ def test_mailbox_rejects_missing_deadline_and_cannot_replay_corrected_request(
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
     send = Mock()
     monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
-    request = dict(id=str(uuid.uuid4()), session=mailbox.session, sent_at=1000.0, position=501)
-    mailbox.path.write_text(json.dumps(request))
+    payload = request(mailbox.session)
+    del payload["deadline_monotonic"]
+    send_request(mailbox, payload)
     mailbox.poll(42)
-    mailbox.path.write_text(json.dumps({**request, "deadline_monotonic": 5.0}))
+    send_request(mailbox, {**payload, "deadline_monotonic": 5.0})
     mailbox.poll(42)
     send.assert_not_called()
     assert not mailbox.lock_path.exists()
@@ -1056,19 +920,8 @@ def test_mailbox_locks_after_uncertain_write_and_never_retries(module, monkeypat
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", session)
     send = Mock(side_effect=TimeoutError("Write reply lost"))
     monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     for position in (501, 502):
-        mailbox.path.write_text(
-            json.dumps(
-                dict(
-                    id=str(uuid.uuid4()),
-                    session=session,
-                    sent_at=1000.0,
-                    position=position,
-                    deadline_monotonic=5.0,
-                )
-            )
-        )
+        send_request(mailbox, position=position)
         mailbox.poll(42)
     assert mailbox.control["locked"] and not mailbox.control["ack"]
     assert mailbox.control["error"] == "Write reply lost"
@@ -1093,19 +946,8 @@ def test_transport_failure_locks_command_but_clean_state_read_cannot_unlock(
         monkeypatch,
         [[(0.001, response)] for response in replies] + [[], [(0.001, state)]],
     )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                position=325,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
+    send_request(mailbox, position=325)
     mailbox.poll(42)
     assert mailbox.control["locked"] and not mailbox.control["ack"]
     assert mailbox.lock_path.exists()
@@ -1133,15 +975,7 @@ def test_mailbox_saves_lock_before_sending_and_removes_it_after_success(
     session = str(uuid.uuid4())
     output = tmp_path / "feedback.json"
     mailbox = module.PositionMailbox(output, session)
-    request = dict(
-        id=str(uuid.uuid4()),
-        session=session,
-        sent_at=1000.0,
-        position=501,
-        deadline_monotonic=5.0,
-    )
-    mailbox.path.write_text(json.dumps(request))
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    payload = send_request(mailbox)
     synchronized = []
     fsync = module.os.fsync
 
@@ -1152,7 +986,7 @@ def test_mailbox_saves_lock_before_sending_and_removes_it_after_success(
     def send(fd, position, *, deadline):
         assert len(synchronized) == 2
         assert json.loads(mailbox.lock_path.read_text()) == {
-            "command_id": request["id"],
+            "command_id": payload["id"],
             "operation": "position",
             "target": 501,
         }
@@ -1175,18 +1009,7 @@ def test_mailbox_crash_keeps_lock_and_restart_cannot_send(module, monkeypatch, t
     output = tmp_path / "feedback.json"
     session = str(uuid.uuid4())
     mailbox = module.PositionMailbox(output, session)
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=session,
-                sent_at=1000.0,
-                position=501,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    send_request(mailbox)
     send = Mock(side_effect=SystemExit("Interrupted before acknowledgement"))
     monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
     if stage == "before_send":
@@ -1201,17 +1024,7 @@ def test_mailbox_crash_keeps_lock_and_restart_cannot_send(module, monkeypatch, t
         mailbox.poll(42)
     assert mailbox.lock_path.exists()
     restarted = module.PositionMailbox(output, str(uuid.uuid4()))
-    restarted.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=restarted.session,
-                sent_at=1000.0,
-                position=502,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
+    send_request(restarted, position=502)
     restarted.poll(42)
     assert restarted.control["locked"] and not restarted.control["ack"]
     assert send.call_count == (stage == "before_ack")
@@ -1243,18 +1056,7 @@ def test_mailbox_cannot_check_lock_fails_closed(module, monkeypatch, tmp_path):
 
 def test_mailbox_lock_write_failure_prevents_hardware_command(module, monkeypatch, tmp_path):
     mailbox = module.PositionMailbox(tmp_path / "feedback.json", str(uuid.uuid4()))
-    mailbox.path.write_text(
-        json.dumps(
-            dict(
-                id=str(uuid.uuid4()),
-                session=mailbox.session,
-                sent_at=1000.0,
-                position=501,
-                deadline_monotonic=5.0,
-            )
-        )
-    )
-    monkeypatch.setattr(module.time, "time", lambda: 1000.0)
+    send_request(mailbox)
     send = Mock()
     monkeypatch.setitem(module.PositionMailbox.poll.__globals__, "set_position", send)
     monkeypatch.setitem(

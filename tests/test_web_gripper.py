@@ -10,13 +10,14 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from helpers import block_network
 
 from mg400_agent import web_gripper
 
 
 @pytest.fixture
 def rig(monkeypatch, tmp_path):
-    monkeypatch.setattr(socket, "create_connection", Mock(side_effect=AssertionError("No network")))
+    block_network(monkeypatch, "create_connection", message="No network")
     now = [10.0]
     monkeypatch.setattr(web_gripper.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(web_gripper.time, "time", lambda: 1000.0 + now[0])
@@ -156,25 +157,6 @@ def test_initialization_requires_explicit_call_and_protocol_three(rig):
 
 
 @pytest.mark.parametrize(
-    "operation,protocol,initialized",
-    [
-        ("move", 1, 1),
-        ("initialize", 2, 0),
-        ("initialize", 3, 1),
-        ("initialize", 3, 2),
-        ("move", 3, 2),
-    ],
-)
-def test_invalid_collector_state_cannot_publish(rig, operation, protocol, initialized):
-    rig.sample["control"]["protocol"] = protocol
-    rig.emit(init=initialized)
-    with pytest.raises(RuntimeError):
-        rig.gripper.move(525) if operation == "move" else rig.gripper.initialize()
-    assert not rig.command_path.exists()
-    assert not rig.gripper.snapshot()["locked"]
-
-
-@pytest.mark.parametrize(
     "fault",
     [
         "stale",
@@ -238,31 +220,6 @@ def test_result_at_deadline_is_not_success(rig, monkeypatch, operation):
     assert rig.gripper.snapshot()["locked"]
 
 
-@pytest.mark.parametrize("operation", ["write_text", "replace"])
-def test_write_failure_before_publication_can_retry_but_uncertain_replace_locks(
-    rig,
-    monkeypatch,
-    operation,
-):
-    rig.emit()
-    original = getattr(Path, operation)
-
-    def fail_temporary(path, *args, **kwargs):
-        if path.name.endswith(".command.json.tmp"):
-            raise OSError("Disk failure.")
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, operation, fail_temporary)
-    with pytest.raises(RuntimeError, match="Disk failure"):
-        rig.gripper.move(525)
-    assert rig.gripper.snapshot()["locked"] is (operation == "replace")
-    assert not rig.command_path.exists()
-    assert not rig.command_path.with_name(rig.command_path.name + ".tmp").exists()
-    if operation == "write_text":
-        monkeypatch.setattr(Path, operation, original)
-        assert rig.gripper.move(525)
-
-
 def test_snapshot_and_duplicate_request_during_move_are_thread_safe(rig, monkeypatch):
     rig.emit()
     entered, release = threading.Event(), threading.Event()
@@ -290,19 +247,6 @@ def test_snapshot_and_duplicate_request_during_move_are_thread_safe(rig, monkeyp
     assert result == [True]
 
 
-def test_close_during_wait_reports_unknown_result_and_never_sends_stop(rig, monkeypatch):
-    rig.emit()
-    monkeypatch.setattr(web_gripper.time, "sleep", lambda delay: rig.gripper.close())
-    with pytest.raises(RuntimeError, match="closed before the result was confirmed"):
-        rig.gripper.move(525)
-    published = rig.command_path.read_text()
-    assert rig.gripper.snapshot()["locked"]
-    with pytest.raises(RuntimeError):
-        rig.gripper.initialize()
-    assert rig.command_path.read_text() == published
-    socket.create_connection.assert_not_called()
-
-
 @pytest.mark.parametrize("fault", ["session", "locked", "wrong_operation", "in_progress"])
 def test_initialization_requires_matching_completion(rig, monkeypatch, fault):
     rig.emit(init=0)
@@ -324,27 +268,6 @@ def test_initialization_requires_matching_completion(rig, monkeypatch, fault):
     with pytest.raises(RuntimeError, match="Control is locked"):
         rig.gripper.initialize()
     assert rig.gripper.snapshot()["locked"]
-
-
-@pytest.mark.parametrize("change", ["session", "close"])
-def test_feedback_revalidation_before_publication_cancels_without_lock(rig, monkeypatch, change):
-    rig.emit()
-    original = Path.write_text
-
-    def prepare(path, *args, **kwargs):
-        result = original(path, *args, **kwargs)
-        if path.name.endswith(".command.json.tmp"):
-            if change == "session":
-                rig.emit(session=str(uuid4()))
-            else:
-                rig.gripper.close()
-        return result
-
-    monkeypatch.setattr(Path, "write_text", prepare)
-    with pytest.raises(RuntimeError, match="No command sent"):
-        rig.gripper.move(525)
-    assert not rig.command_path.exists()
-    assert not rig.gripper.snapshot()["locked"]
 
 
 @pytest.mark.parametrize("operation", ["move", "initialize"])
@@ -431,13 +354,6 @@ def fail_temporary(monkeypatch, operation):
     monkeypatch.setattr(Path, operation, fail)
 
 
-def test_typed_errors_are_distinct_runtime_errors():
-    assert issubclass(web_gripper.GripperNotSentError, RuntimeError)
-    assert issubclass(web_gripper.GripperLockedError, RuntimeError)
-    assert not issubclass(web_gripper.GripperNotSentError, web_gripper.GripperLockedError)
-    assert not issubclass(web_gripper.GripperLockedError, web_gripper.GripperNotSentError)
-
-
 def test_publication_guard_refusal_raises_not_sent_without_lock(rig):
     rig.emit()
     refuse = [True]
@@ -474,6 +390,9 @@ def test_publication_guard_refusal_raises_not_sent_without_lock(rig):
         "write_failure",
         "session_change",
         "closed",
+        "init_old_protocol",
+        "init_already",
+        "init_in_progress",
     ],
 )
 def test_command_that_publishes_nothing_raises_not_sent_without_lock(rig, monkeypatch, cause):
@@ -493,6 +412,11 @@ def test_command_that_publishes_nothing_raises_not_sent_without_lock(rig, monkey
     elif cause == "old_collector":
         rig.sample["control"]["protocol"] = 1
         rig.emit()
+    elif cause == "init_old_protocol":
+        rig.sample["control"]["protocol"] = 2
+        rig.emit(init=0)
+    elif cause == "init_in_progress":
+        rig.emit(init=2)
     elif cause == "write_failure":
         fail_temporary(monkeypatch, "write_text")
     elif cause in {"session_change", "closed"}:
@@ -509,7 +433,10 @@ def test_command_that_publishes_nothing_raises_not_sent_without_lock(rig, monkey
 
         monkeypatch.setattr(Path, "write_text", prepare)
     with pytest.raises(web_gripper.GripperNotSentError) as raised:
-        rig.gripper.move(525)
+        if cause in {"init_old_protocol", "init_already", "init_in_progress"}:
+            rig.gripper.initialize()
+        else:
+            rig.gripper.move(525)
     assert str(raised.value).startswith("No command sent. ")
     assert not isinstance(raised.value, web_gripper.GripperLockedError)
     assert not rig.gripper.failed
@@ -532,8 +459,15 @@ def test_unknown_result_raises_locked_error_and_keeps_rejecting_commands(rig, mo
         monkeypatch.setattr(web_gripper.time, "sleep", lambda delay: rig.gripper.close())
     with pytest.raises(web_gripper.GripperLockedError) as raised:
         rig.gripper.move(525)
+    assert not rig.command_path.with_name(rig.command_path.name + ".tmp").exists()
     message = str(raised.value)
     assert message.startswith("Control is locked. Check the gripper. ")
+    suffix = {
+        "replace": "Disk failure.",
+        "timeout": "not confirmed",
+        "close": "closed before the result was confirmed",
+    }[cause]
+    assert suffix in message
     assert not isinstance(raised.value, web_gripper.GripperNotSentError)
     assert rig.gripper.failed
     assert rig.gripper.closed is (cause == "close")
@@ -547,8 +481,14 @@ def test_unknown_result_raises_locked_error_and_keeps_rejecting_commands(rig, mo
         rig.gripper.move(550)
     assert str(again.value) == message
     assert (rig.command_path.read_text() if rig.command_path.exists() else None) == published
+    # Initialization cannot bypass the latch.
+    rig.emit(init=0)
+    with pytest.raises(web_gripper.GripperLockedError):
+        rig.gripper.initialize()
+    assert (rig.command_path.read_text() if rig.command_path.exists() else None) == published
     assert rig.gripper.failed
     assert rig.gripper.last_outcome is None
+    socket.create_connection.assert_not_called()
 
 
 def test_last_outcome_reports_only_the_current_confirmed_result(rig, monkeypatch):
@@ -610,7 +550,7 @@ def test_measure_reads_new_feedback_and_returns_any_measured_position(rig, posit
         ("initializing", "initialization is in progress"),
         ("collector_locked", "Write reply lost."),
         ("adapter_locked", "Control is locked. Check the gripper."),
-        ("closed", "closed"),
+        ("closed", "Gripper control is closed."),
     ],
 )
 def test_measure_returns_no_position_and_the_reason(rig, monkeypatch, case, reason):
@@ -638,6 +578,7 @@ def test_measure_returns_no_position_and_the_reason(rig, monkeypatch, case, reas
     assert position is None
     assert isinstance(explanation, str) and reason in explanation
     assert rig.gripper.failed is (case == "adapter_locked")
+    assert rig.gripper.closed is (case == "closed")
 
 
 def test_closed_and_failed_report_close_and_adapter_latch_only(rig, monkeypatch):
@@ -662,14 +603,6 @@ def test_closed_and_failed_report_close_and_adapter_latch_only(rig, monkeypatch)
     rig.gripper.close()
     assert rig.gripper.closed is True
     assert rig.gripper.failed is True
-
-
-def test_close_without_a_command_does_not_mark_the_adapter_failed(rig):
-    rig.emit()
-    rig.gripper.close()
-    assert rig.gripper.closed is True
-    assert rig.gripper.failed is False
-    assert rig.gripper.measure() == (None, "Gripper control is closed.")
 
 
 def test_initialization_failures_use_the_same_typed_errors(rig, monkeypatch):

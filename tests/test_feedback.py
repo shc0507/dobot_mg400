@@ -66,24 +66,29 @@ def test_preserves_raw_speed_scaling(value):
     assert decode_feedback(bytes(data)).speed_scaling_raw == value
 
 
-@pytest.mark.parametrize("data", [b"", frame()[:-1], frame() + b"x"])
-def test_rejects_incorrect_frame_size(data):
-    with pytest.raises(ValueError, match="feedback bytes"):
-        decode_feedback(data)
-
-
-@pytest.mark.parametrize("offset, message", [(0, "length field"), (48, "magic")])
-def test_rejects_invalid_frame_header(offset, message):
-    data = bytearray(frame())
+def flip(data, offset):
+    data = bytearray(data)
     data[offset] ^= 1
+    return data
+
+
+@pytest.mark.parametrize(
+    "data, message",
+    [
+        (b"", "feedback bytes"),
+        (frame()[:-1], "feedback bytes"),
+        (frame() + b"x", "feedback bytes"),
+        (flip(frame(), 0), "length field"),
+        (flip(frame(), 48), "magic"),
+        (frame((10, float("nan"), 30, 40)), "finite"),
+        (frame((10, float("inf"), 30, 40)), "finite"),
+        (frame((10, -float("inf"), 30, 40)), "finite"),
+    ],
+    ids=["empty", "short", "long", "length", "magic", "nan", "inf", "-inf"],
+)
+def test_decode_rejects_invalid_frames(data, message):
     with pytest.raises(ValueError, match=message):
         decode_feedback(data)
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
-def test_rejects_nonfinite_active_joint_angles(value):
-    with pytest.raises(ValueError, match="finite"):
-        decode_feedback(frame((10, value, 30, 40)))
 
 
 def test_fragmented_and_coalesced_frames_return_latest_and_preserve_tail(monkeypatch):

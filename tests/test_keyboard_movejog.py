@@ -227,12 +227,18 @@ def test_selected_speed_is_confirmed_and_passed_to_stop(rig, speed):
     assert rig.session.ready and not rig.stopped
 
 
-def test_selected_speed_mismatch_blocks_preparation_and_movement(rig):
-    rig.session = KeyboardJogSession(rig, speed_percent=25)
-    with pytest.raises(RuntimeError, match=r"SpeedFactor\(25\)"):
+@pytest.mark.parametrize(
+    "speed,after",
+    [(25, 1), (1, None), (1, 68), (1, float("nan"))],
+    ids=["selected_25_reads_1", "missing", "reads_68", "nan"],
+)
+def test_unconfirmed_speed_blocks_preparation_and_movement(rig, speed, after):
+    rig.session = KeyboardJogSession(rig, speed_percent=speed)
+    rig.scaling_after_ack = after
+    with pytest.raises(RuntimeError, match=rf"SpeedFactor\({speed}\)"):
         rig.session.prepare()
-    assert rig.commands == ["SpeedFactor(25)"]
-    assert not rig.session.ready and rig.stopped
+    assert rig.commands == [f"SpeedFactor({speed})"]
+    assert rig.stopped and not rig.session.ready
     with pytest.raises(RuntimeError):
         rig.session.run("Q", threading.Event())
 
@@ -243,15 +249,6 @@ def test_prepare_rejects_old_or_repeated_speed_feedback(rig, receipt):
     with pytest.raises(TimeoutError, match="speed feedback"):
         rig.session.prepare()
     assert not rig.session.ready and rig.stopped
-    assert rig.commands == ["SpeedFactor(1)"]
-
-
-@pytest.mark.parametrize("speed", [None, 68, float("nan")])
-def test_prepare_rejects_unconfirmed_speed(rig, speed):
-    rig.scaling_after_ack = speed
-    with pytest.raises(RuntimeError, match="SpeedFactor"):
-        rig.session.prepare()
-    assert rig.stopped and not rig.session.ready
     assert rig.commands == ["SpeedFactor(1)"]
 
 
@@ -305,15 +302,25 @@ def test_radial_frame_already_aligned_is_read_back_without_rewriting(rig):
     ]
 
 
-@pytest.mark.parametrize("phase", ["before_run", "query", "set_user", "jog_send"])
+@pytest.mark.parametrize("phase", ["before_run", "query", "set_user", "readback", "jog_send"])
 def test_radial_release_before_send_never_starts_movement(rig, phase):
     rig.session.prepare()
     rig.commands.clear()
+    rig.exchanges.clear()
     released = threading.Event()
     if phase == "before_run":
         released.set()
     elif phase == "query":
         rig.before_query = lambda text: released.set()
+    elif phase == "readback":
+
+        def release_during_readback(text):
+            if text.startswith("CalcUser(8,") and any(
+                command.startswith("SetUser(") for command in rig.commands
+            ):
+                released.set()
+
+        rig.before_query = release_during_readback
     else:
 
         def release_at_send(text):
@@ -323,8 +330,15 @@ def test_radial_release_before_send_never_starts_movement(rig, phase):
         rig.before_send = release_at_send
     rig.session.run("W", released)
     assert not any(text.startswith(("MovL(", "MoveJog(X")) for text in rig.commands)
-    if phase != "jog_send":
+    if phase not in ("jog_send", "readback"):
         assert not any(text.startswith("SetUser(") for text in rig.commands)
+    if phase == "readback":
+        assert released.is_set()
+        assert len(rig.exchanges) == 4
+        assert rig.exchanges[2].startswith("SetUser(8,{")
+        assert rig.exchanges[3] == "CalcUser(8,1,{0,0,0,0})"
+        assert rig.commands[-1] == "ResetRobot()"
+        assert not rig.stopped
     assert rig.session.fault is None and not rig.busy
 
 
@@ -355,29 +369,6 @@ def test_radial_set_user_completion_cannot_start_a_cancelled_hold(rig, monkeypat
     assert rig.exchanges[-1].startswith("SetUser(8,{")
     assert rig.commands[-1] == "ResetRobot()"
     assert not any(text.startswith(("MoveJog(X", "MovL(")) for text in rig.commands)
-
-
-def test_radial_release_during_post_set_user_readback_never_starts_movement(rig):
-    rig.session.prepare()
-    rig.commands.clear()
-    rig.exchanges.clear()
-    released = threading.Event()
-
-    def release_during_readback(text):
-        if text.startswith("CalcUser(8,") and any(
-            command.startswith("SetUser(") for command in rig.commands
-        ):
-            released.set()
-
-    rig.before_query = release_during_readback
-    rig.session.run("W", released)
-    assert released.is_set()
-    assert len(rig.exchanges) == 4
-    assert rig.exchanges[2].startswith("SetUser(8,{")
-    assert rig.exchanges[3] == "CalcUser(8,1,{0,0,0,0})"
-    assert not any(text.startswith(("MoveJog(X", "MovL(")) for text in rig.commands)
-    assert rig.commands[-1] == "ResetRobot()"
-    assert rig.session.fault is None and not rig.stopped and not rig.busy
 
 
 def test_radial_next_hold_reads_and_realigns_the_reserved_frame(rig):
@@ -653,34 +644,25 @@ def test_watcher_handles_feedback_that_overlaps_retreat_promotion(rig, monkeypat
     rig.session._finish(active)
 
 
+@pytest.mark.parametrize("selected,changed", [(1, 68), (25, 1)])
 @pytest.mark.parametrize("when", ["before_run", "before_send"])
-def test_released_input_never_sends_directional_jog(rig, when):
-    rig.session.prepare()
-    released = threading.Event()
-    if when == "before_run":
-        released.set()
-    else:
-        rig.before_send = lambda text: released.set()
-    rig.session.run("Q", released)
-    assert not any(command in COMMANDS.values() for command in rig.commands)
-    assert rig.session.fault is None and not rig.busy
-
-
-@pytest.mark.parametrize("when", ["before_run", "before_send"])
-def test_speed_change_before_send_prevents_directional_jog(rig, when):
+def test_speed_change_before_send_prevents_directional_jog(rig, when, selected, changed):
+    rig.session = KeyboardJogSession(rig, speed_percent=selected)
+    rig.scaling_after_ack = selected
     rig.session.prepare()
     if when == "before_run":
-        rig.sample = replace(rig.sample, speed_scaling_raw=68)
+        rig.sample = replace(rig.sample, speed_scaling_raw=changed)
     else:
 
         def change_speed(text):
-            rig.sample = replace(rig.sample, speed_scaling_raw=68)
+            rig.sample = replace(rig.sample, speed_scaling_raw=changed)
 
         rig.before_send = change_speed
     with pytest.raises(RuntimeError, match="speed changed"):
         rig.session.run("Q", threading.Event())
     assert not any(command in COMMANDS.values() for command in rig.commands)
     assert rig.stop_calls == [True] and rig.commands[-1] == "ResetRobot()" and rig.stopped
+    assert not rig.session.ready
 
 
 def test_unconfirmed_stop_blocks_following_holds(rig):
@@ -693,28 +675,6 @@ def test_unconfirmed_stop_blocks_following_holds(rig):
         rig.session.run("E", threading.Event())
 
 
-@pytest.mark.parametrize("speed,limited", [(1, False), (40, True)])
-def test_continuous_soft_limit_margin_grows_with_speed(rig, speed, limited):
-    rig.session = KeyboardJogSession(rig, speed_percent=speed)
-    rig.scaling_after_ack = speed
-    rig.session.prepare()
-    assert rig.session.continuous_margin == pytest.approx(
-        MARGIN_DEG + keyboard_jog.CONTINUOUS_MARGIN_DEG_PER_PERCENT * speed
-    )
-
-    def reach_band():
-        if rig.ticks == 3:
-            rig.sample = replace(rig.sample, joints_deg=(156.0, *START[1:]))
-        elif rig.ticks == 20:
-            rig.session.release()
-
-    rig.on_tick = reach_band
-    rig.session.run("A", threading.Event())
-    assert rig.stop_calls == [True]
-    assert bool(rig.session.limit_reason) is limited
-    assert rig.session.fault is None and not rig.stopped
-
-
 def fast_session(rig, joints, speed=40):
     rig.sample = replace(rig.sample, joints_deg=joints)
     rig.session = KeyboardJogSession(rig, speed_percent=speed)
@@ -723,55 +683,42 @@ def fast_session(rig, joints, speed=40):
     rig.commands.clear()
 
 
-@pytest.mark.parametrize("key,step,limited", [("A", 0.1, True), ("D", -0.1, False)])
-def test_hold_inside_the_speed_band_stops_only_when_closing_on_the_bound(rig, key, step, limited):
-    fast_session(rig, (157.0, *START[1:]))
+NEAR_J1 = (157.0, *START[1:])
+
+
+@pytest.mark.parametrize(
+    "speed,start,key,step,last_tick,release_tick,limited",
+    [
+        pytest.param(1, START, "A", 126.0, 3, 20, False, id="band_small_at_1pct"),
+        pytest.param(40, START, "A", 126.0, 3, 20, True, id="band_grows_at_40pct"),
+        pytest.param(40, NEAR_J1, "A", 0.1, 6, 20, True, id="closing_on_bound"),
+        pytest.param(40, NEAR_J1, "D", -0.1, 6, 20, False, id="leaving_bound"),
+        # J3 is 3 degrees above its lower bound, inside the 4.25-degree band at 40%.
+        pytest.param(40, (30.0, 0.0, -22.0, 0.0), "A", 1.0, 10, 20, False, id="other_bound"),
+        pytest.param(40, NEAR_J1, "A", 0.005, 12, 30, True, id="slow_closing_over_noise"),
+    ],
+)
+def test_continuous_soft_limit_band(rig, speed, start, key, step, last_tick, release_tick, limited):
+    fast_session(rig, start, speed)
+    assert rig.session.continuous_margin == pytest.approx(
+        MARGIN_DEG + keyboard_jog.CONTINUOUS_MARGIN_DEG_PER_PERCENT * speed
+    )
 
     def move():
-        if 3 <= rig.ticks <= 6:
+        if 3 <= rig.ticks <= last_tick:
             joints = rig.sample.joints_deg
             rig.sample = replace(rig.sample, joints_deg=(joints[0] + step, *joints[1:]))
-        elif rig.ticks == 20:
+        elif rig.ticks == release_tick:
             rig.session.release()
 
     rig.on_tick = move
     rig.session.run(key, threading.Event())
     # The hold starts as one continuous jog in either direction.
     assert rig.commands == [COMMANDS[key], "MoveJog()"]
+    assert rig.stop_calls == [True]
     assert bool(rig.session.limit_reason) is limited
     if limited:
         assert "closing on its reference limit 160" in rig.session.limit_reason
+    else:
+        assert rig.session.limit_reason is None
     assert rig.session.fault is None and not rig.stopped
-
-
-def test_hold_near_another_bound_is_not_limited_by_the_speed_band(rig):
-    # J3 is 3 degrees above its lower bound, inside the 4.25-degree band at 40%.
-    fast_session(rig, (30.0, 0.0, -22.0, 0.0))
-
-    def turn_base():
-        if 3 <= rig.ticks <= 10:
-            joints = rig.sample.joints_deg
-            rig.sample = replace(rig.sample, joints_deg=(joints[0] + 1, *joints[1:]))
-        elif rig.ticks == 20:
-            rig.session.release()
-
-    rig.on_tick = turn_base
-    rig.session.run("A", threading.Event())
-    assert rig.commands == [COMMANDS["A"], "MoveJog()"]
-    assert rig.session.limit_reason is None
-    assert rig.session.fault is None and not rig.stopped
-
-
-def test_slow_closing_counts_once_the_total_exceeds_the_noise(rig):
-    fast_session(rig, (157.0, *START[1:]))
-
-    def creep():
-        if 3 <= rig.ticks <= 12:
-            joints = rig.sample.joints_deg
-            rig.sample = replace(rig.sample, joints_deg=(joints[0] + 0.005, *joints[1:]))
-        elif rig.ticks == 30:
-            rig.session.release()
-
-    rig.on_tick = creep
-    rig.session.run("A", threading.Event())
-    assert rig.session.limit_reason

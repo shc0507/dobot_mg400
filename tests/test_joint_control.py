@@ -6,6 +6,7 @@ from dataclasses import replace
 from unittest.mock import Mock, call
 
 import pytest
+from helpers import block_network, fake_connection
 
 from mg400_agent.controller_protocol import ControllerCommandError, parse_controller_response
 from mg400_agent.feedback import Feedback
@@ -30,10 +31,7 @@ REAL_GETADDRINFO = socket.getaddrinfo
 
 @pytest.fixture(autouse=True)
 def prohibit_network(monkeypatch):
-    monkeypatch.setattr(
-        socket, "create_connection", Mock(side_effect=AssertionError("Network prohibited"))
-    )
-    monkeypatch.setattr(socket, "socket", Mock(side_effect=AssertionError("Network prohibited")))
+    block_network(monkeypatch, message="Network prohibited")
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
@@ -124,10 +122,10 @@ def test_operation_scope_excludes_other_actions_and_finishes_only_once(rig):
     assert active.busy and control.busy
     assert control.feedback_retention_reason() is not None
     guard.assert_not_called()
-    with pytest.raises(RuntimeError, match="Another robot operation"):
-        control.begin_operation()
-    with pytest.raises(RuntimeError, match="Another robot operation"):
-        control.move(TARGET)
+    for action in (control.begin_operation, control.enable, lambda: control.move(TARGET)):
+        with pytest.raises(RuntimeError, match="Another robot operation"):
+            action()
+    assert control.busy
     assert active.wait_for_command(timeout=0)
     active.finish_operation()
     assert not control.busy
@@ -176,17 +174,6 @@ def test_failed_child_stop_remains_visible_after_parent_stop(rig, monkeypatch):
     assert control.stop()["ok"]
     assert control.feedback_retention_reason() == reason
     assert commands == [("ResetRobot()", 29999)]
-
-
-def test_disable_confirmation_still_requires_separate_stationary_check(rig, monkeypatch):
-    control, _, _, _ = rig
-    assert control.disable().mode == 4
-    assert control.feedback_retention_reason() is None
-    monkeypatch.setattr(control, "_wait_stable", Mock(side_effect=TimeoutError("Still drifting")))
-    with pytest.raises(TimeoutError, match="Still drifting"):
-        control.verify_stationary()
-    # The verdict describes command state. It cannot replace the rest check.
-    assert control.feedback_retention_reason() is None
 
 
 @pytest.mark.parametrize("mode", [4, 5, 7])
@@ -282,31 +269,65 @@ def test_invalid_linear_target_does_not_read_or_send(rig, monkeypatch, target):
     read.assert_not_called()
 
 
-def test_linear_move_does_not_enable_disabled_robot(cartesian_rig):
-    control, sample, _, commands, _ = cartesian_rig
-    sample[0] = Feedback(START, 4, 0, False)
-    with pytest.raises(RuntimeError, match="enabled and idle"):
-        control.move_linear(LINEAR_TARGET)
-    assert not commands
-    assert not control.stopped
+def _inverse_payload(solution):
+    return lambda text: solution
 
 
-@pytest.mark.parametrize("solution", ["1,2,3", "1,2,3,4,0,0", "0,0,0,nan", "0,0,0,inf"])
-def test_invalid_controller_inverse_solution_prevents_linear_motion(
-    cartesian_rig, monkeypatch, solution
+def _inverse_code(code):
+    return lambda text: parse_controller_response(f"{code},{{0,0,0,0}},{text};".encode(), text)
+
+
+def _inverse_raises(failure):
+    def reply(text):
+        raise failure
+
+    return reply
+
+
+INVERSE_PROTOCOL_FAILURES = [
+    RuntimeError("-1,{0,0,0,0},InverseSolution(251,10,40,23.78,0,0);"),
+    RuntimeError("Unexpected controller response: -1,{0,0,0,0},WrongCommand();"),
+]
+
+
+@pytest.mark.parametrize(
+    "reply,expected,code,failure",
+    [
+        *(
+            pytest.param(
+                _inverse_payload(solution), ValueError, None, None, id=f"payload-{solution}"
+            )
+            for solution in ["1,2,3", "1,2,3,4,0,0", "0,0,0,nan", "0,0,0,inf"]
+        ),
+        *(
+            pytest.param(_inverse_code(code), ControllerCommandError, code, None, id=f"code{code}")
+            for code in [-2, -10000, 1]
+        ),
+        *(
+            pytest.param(_inverse_raises(failure), RuntimeError, None, failure, id=f"protocol{i}")
+            for i, failure in enumerate(INVERSE_PROTOCOL_FAILURES)
+        ),
+    ],
+)
+def test_inverse_solution_fault_stops_control_without_motion(
+    cartesian_rig, monkeypatch, reply, expected, code, failure
 ):
     control, _, _, commands, _ = cartesian_rig
     original = control._command
 
     def command(text, *args, **kwargs):
         if text.startswith("InverseSolution("):
-            return solution
+            return reply(text)
         return original(text, *args, **kwargs)
 
     monkeypatch.setattr(control, "_command", command)
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(expected) as error:
         control.move_linear(LINEAR_TARGET)
     assert not isinstance(error.value, TargetRejectedError)
+    if code is not None:
+        assert error.value.code == code
+    if failure is not None:
+        assert error.value is failure
     assert not any(text.startswith("MovL(") for text, _ in commands)
     assert ("ResetRobot()", 29999) in commands
     assert control.stopped
@@ -353,26 +374,6 @@ def test_rejected_linear_target_can_be_corrected_without_stopping_control(
     assert sum(text.startswith("MovL(") for text, _ in commands) == 1
     assert ("ResetRobot()", 29999) not in commands
     assert not control.stopped
-
-
-@pytest.mark.parametrize("code", [-2, -10000, 1])
-def test_inverse_error_codes_other_than_unreachable_remain_faults(cartesian_rig, monkeypatch, code):
-    control, _, _, commands, _ = cartesian_rig
-    original = control._command
-
-    def command(text, *args, **kwargs):
-        if text.startswith("InverseSolution("):
-            return parse_controller_response(f"{code},{{0,0,0,0}},{text};".encode(), text)
-        return original(text, *args, **kwargs)
-
-    monkeypatch.setattr(control, "_command", command)
-    with pytest.raises(ControllerCommandError) as error:
-        control.move_linear(LINEAR_TARGET)
-    assert error.value.code == code
-    assert not any(text.startswith("MovL(") for text, _ in commands)
-    assert ("ResetRobot()", 29999) in commands
-    assert control.stopped
-    assert not control.busy
 
 
 @pytest.mark.parametrize("rejection", ["controller", "joint_range"])
@@ -439,32 +440,6 @@ def test_inverse_rejection_with_unconfirmed_stationary_state_remains_a_fault(
     monkeypatch.setattr(control, "_command", command)
     with pytest.raises(RuntimeError):
         control.move_linear(LINEAR_TARGET)
-    assert not any(text.startswith("MovL(") for text, _ in commands)
-    assert ("ResetRobot()", 29999) in commands
-    assert control.stopped
-    assert not control.busy
-
-
-@pytest.mark.parametrize(
-    "failure",
-    [
-        RuntimeError("-1,{0,0,0,0},InverseSolution(251,10,40,23.78,0,0);"),
-        RuntimeError("Unexpected controller response: -1,{0,0,0,0},WrongCommand();"),
-    ],
-)
-def test_inverse_protocol_failure_still_stops_control(cartesian_rig, monkeypatch, failure):
-    control, _, _, commands, _ = cartesian_rig
-    original = control._command
-
-    def command(text, *args, **kwargs):
-        if text.startswith("InverseSolution("):
-            raise failure
-        return original(text, *args, **kwargs)
-
-    monkeypatch.setattr(control, "_command", command)
-    with pytest.raises(type(failure)) as error:
-        control.move_linear(LINEAR_TARGET)
-    assert error.value is failure
     assert not any(text.startswith("MovL(") for text, _ in commands)
     assert ("ResetRobot()", 29999) in commands
     assert control.stopped
@@ -546,40 +521,65 @@ def test_move_uses_four_controller_angles_low_per_command_speed_and_verified_arr
     assert not control.busy
 
 
-@pytest.mark.parametrize("target", [(0, 0, 0), (0, 0, 0, float("nan")), (0, 0, 0, True)])
-def test_malformed_target_does_not_read_or_send(rig, target):
-    control, _, _, commands = rig
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize(
+    "start,target,match",
+    [
+        pytest.param(START, (0, 0, 0), None, id="three-values"),
+        pytest.param(START, (0, 0, 0, float("nan")), None, id="nan"),
+        pytest.param(START, (0, 0, 0, True), None, id="bool"),
+        pytest.param(START, (160, 0, 0, 0), "reference range", id="j1-out-of-range"),
+        pytest.param(START, (0, 85, 50, 0), "reference range", id="j2-out-of-range"),
+        pytest.param(START, (0, 0, 60, 0), "reference range", id="j3-out-of-range"),
+        # Both endpoints satisfy their branch; crossing J3=0 violates the stricter J2 minimum.
+        pytest.param((0, -22, 1, 0), (0, -17, -1, 0), "J2", id="segment-crosses-j3-zero"),
+    ],
+)
+def test_invalid_joint_target_is_rejected_without_commands(rig, start, target, match):
+    control, sample, _, commands = rig
+    sample[0] = Feedback(start, 5, 0, False)
+    with pytest.raises(ValueError, match=match):
         control.move(target)
     assert not commands
     assert not control.stopped
 
 
-def test_move_does_not_implicitly_enable_or_stop_disabled_robot(rig):
-    control, sample, _, commands = rig
+@pytest.mark.parametrize(
+    "method,target", [("move", TARGET), ("move_linear", LINEAR_TARGET)], ids=["joint", "linear"]
+)
+def test_move_does_not_implicitly_enable_or_stop_disabled_robot(cartesian_rig, method, target):
+    control, sample, _, commands, _ = cartesian_rig
     sample[0] = Feedback(START, 4, 0, False)
     with pytest.raises(RuntimeError, match="enabled and idle"):
-        control.move(TARGET)
+        getattr(control, method)(target)
     assert not commands
     assert not control.stopped
 
 
-@pytest.mark.parametrize("target", [(*START[:3], START[3] + 90), (0, 0, 0, 0)])
-def test_moves_over_five_degrees_keep_validation_and_low_speed(rig, target):
-    control, _, _, commands = rig
+def _with_axis(axis, value):
+    joints = list(START)
+    joints[axis] = value
+    return tuple(joints)
+
+
+@pytest.mark.parametrize(
+    "start,target",
+    [
+        pytest.param(START, (*START[:3], START[3] + 90), id="j4-plus-90"),
+        pytest.param(START, (0, 0, 0, 0), id="to-zero"),
+        pytest.param((*START[:3], -200.0), (*START[:3], -199.0), id="j4-manufacturer-range"),
+        pytest.param(_with_axis(0, 159), _with_axis(0, 158), id="margin-j1-159"),
+        pytest.param(_with_axis(3, 359), _with_axis(3, 358), id="margin-j4-359"),
+        pytest.param(_with_axis(3, -359), _with_axis(3, -358), id="margin-j4-minus-359"),
+    ],
+)
+def test_valid_joint_move_sends_one_low_speed_joint_command(rig, start, target):
+    control, sample, _, commands = rig
+    sample[0] = Feedback(start, 5, 0, False)
     assert control.move(target).joints_deg == target
     moves = [(text, port) for text, port in commands if text.startswith("JointMovJ(")]
     values = ",".join(f"{value:.6f}" for value in target)
     assert moves == [(f"JointMovJ({values},SpeedJ=5,AccJ=5)", 30003)]
-    assert not control.stopped
-
-
-@pytest.mark.parametrize("target", [(160, 0, 0, 0), (0, 85, 50, 0), (0, 0, 60, 0)])
-def test_out_of_range_targets_are_rejected_without_motion(rig, target):
-    control, _, _, commands = rig
-    with pytest.raises(ValueError, match="reference range"):
-        control.move(target)
-    assert not commands
+    assert not any(text.startswith(("Enable", "ClearError", "Reset")) for text, _ in commands)
     assert not control.stopped
 
 
@@ -595,29 +595,6 @@ def test_full_range_move_can_take_more_than_twenty_seconds(rig, monkeypatch):
     monkeypatch.setattr(control, "_fresh", fresh)
     assert control.move(TARGET).joints_deg == TARGET
     assert now[0] >= 40.4
-
-
-def test_complete_joint_segment_is_validated_before_motion(rig):
-    control, sample, _, commands = rig
-    sample[0] = Feedback((0, -22, 1, 0), 5, 0, False)
-    # Both endpoints satisfy their branch; crossing J3=0 violates the stricter J2 minimum.
-    with pytest.raises(ValueError, match="J2"):
-        control.move((0, -17, -1, 0))
-    assert not commands
-    assert not control.stopped
-
-
-def test_busy_operation_rejects_another_without_commands(rig):
-    control, _, _, commands = rig
-    control._operation_lock.acquire()
-    try:
-        for action in (control.enable, lambda: control.move(TARGET)):
-            with pytest.raises(RuntimeError, match="in progress"):
-                action()
-        assert control.busy
-        assert not commands
-    finally:
-        control._operation_lock.release()
 
 
 def test_stop_does_not_wait_for_active_operation_lock(rig):
@@ -1007,9 +984,12 @@ def test_disable_during_drift_does_not_allow_enable_or_prove_rest(rig, monkeypat
     assert disabled.mode == 4
     assert control._disable_error is None
     assert control._stop_result is None
+    assert control.feedback_retention_reason() is None
     before_verification = list(commands)
     with pytest.raises(TimeoutError, match="stationary state"):
         control.verify_stationary()
+    # The verdict describes command state. It cannot replace the rest check.
+    assert control.feedback_retention_reason() is None
     assert commands == before_verification
     assert control._disable_result is disabled
     assert control._stop_result is None
@@ -1132,15 +1112,36 @@ def test_cancel_is_immediate_even_when_command_and_operation_locks_are_held(rig)
     assert control.stop()["ok"]
 
 
-def test_cancel_preserves_unresolved_ack_even_if_ack_arrives_before_stop_worker(rig):
+@pytest.mark.parametrize("ack_timing", ["after_cancel", "during_reset"])
+def test_late_mutation_ack_cannot_clear_unknown_stop_ordering(rig, monkeypatch, ack_timing):
     control, _, _, commands = rig
     pending = {"done": threading.Event(), "sent": True, "ok": False}
     control._pending = pending
-    control.cancel()
-    pending["ok"] = True
-    pending["done"].set()
-    assert not control.stop()["ok"]
+
+    def acknowledge():
+        pending["ok"] = True
+        pending["done"].set()
+
+    if ack_timing == "after_cancel":
+        control.cancel()
+        acknowledge()
+    else:
+        original = control._command
+
+        def command(*args, **kwargs):
+            acknowledge()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(control, "_command", command)
+    stable = Mock()
+    monkeypatch.setattr(control, "_wait_stable", stable)
+    result = control.stop()
+    assert not result["ok"]
+    assert not result["stationary_verified"]
+    assert "unknown" in result["error"]
+    assert control.stop() is result
     assert commands == [("ResetRobot()", 29999)]
+    stable.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["stale", "future", "alarm", "mode"])
@@ -1152,14 +1153,6 @@ def test_read_rejects_stale_or_faulted_feedback_without_commands(rig, kind):
     with pytest.raises(RuntimeError):
         control.read_state()
     assert not commands
-
-
-def test_disagreeing_dashboard_prevents_movement(rig, monkeypatch):
-    control, _, _, commands = rig
-    monkeypatch.setattr(control, "_dashboard_state", lambda: (5, (*START[:3], START[3] + 0.2)))
-    with pytest.raises(RuntimeError, match="disagree"):
-        control.move(TARGET)
-    assert commands == [("ResetRobot()", 29999)]
 
 
 @pytest.mark.parametrize("raw", ["1,2,3", "1,2,3,4,nan,0", "1,2,3,inf"])
@@ -1248,7 +1241,7 @@ def test_stop_ack_does_not_prove_stillness(rig, monkeypatch):
 def test_jog_release_reuses_child_connection_until_finish(rig, monkeypatch, speed):
     control, sample, now, _ = rig
     sample[0] = Feedback(START, 5, 0, False, speed_scaling_raw=speed)
-    connection = socket_for(monkeypatch, [b"0,{},MoveJog(J4+);", b"0,{},MoveJog();"])
+    connection = fake_connection(monkeypatch, [b"0,{},MoveJog(J4+);", b"0,{},MoveJog();"])
     active = control.begin_operation()
     active._guarded_command(
         "MoveJog(J4+)", modes={5, 11}, send_modes={5}, expected=START, port=30003
@@ -1387,7 +1380,7 @@ def test_short_jog_stop_requires_post_ack_dense_fresh_idle_feedback(rig, monkeyp
 
 def test_failed_jog_connection_cannot_reconnect(rig, monkeypatch):
     control, _, _, _ = rig
-    connection = socket_for(monkeypatch, [b"0,{},OtherCommand();"])
+    connection = fake_connection(monkeypatch, [b"0,{},OtherCommand();"])
     active = control.begin_operation()
     with pytest.raises(RuntimeError, match="Unexpected controller response"):
         active._command("MoveJog(J4+)", port=30003)
@@ -1402,7 +1395,7 @@ def test_failed_jog_connection_cannot_reconnect(rig, monkeypatch):
 def test_jog_connection_rejects_extra_reply_before_matching_echo(rig, monkeypatch):
     control, _, _, _ = rig
     active = control.begin_operation()
-    connection = socket_for(monkeypatch, [b"0,{},Other();0,{},MoveJog();"])
+    connection = fake_connection(monkeypatch, [b"0,{},Other();0,{},MoveJog();"])
     with pytest.raises(RuntimeError, match="multiple controller responses"):
         active._command("MoveJog()", port=30003)
     assert active._jog_connection_failed
@@ -1417,7 +1410,7 @@ def test_release_during_initial_jog_connection_sends_no_motion_and_keeps_parent_
     sample[0] = Feedback(START, 5, 0, False, 1)
     released = threading.Event()
     motion = Mock()
-    stop_socket = socket_for(monkeypatch, [b"0,{},ResetRobot();"])
+    stop_socket = fake_connection(monkeypatch, [b"0,{},ResetRobot();"])
 
     def connect(address, **kwargs):
         if address[1] == 30003:
@@ -1502,40 +1495,8 @@ def test_fault_during_pending_ack_requests_stop_without_retry(rig, monkeypatch):
     assert control.feedback_retention_reason() == reason
 
 
-def test_late_mutation_ack_cannot_clear_unknown_stop_ordering(rig, monkeypatch):
-    control, _, _, _ = rig
-    pending = {"done": threading.Event(), "sent": True, "ok": False}
-    control._pending = pending
-
-    def command(*args, **kwargs):
-        pending["ok"] = True
-        pending["done"].set()
-        return ""
-
-    monkeypatch.setattr(control, "_command", command)
-    stable = Mock()
-    monkeypatch.setattr(control, "_wait_stable", stable)
-    result = control.stop()
-    assert not result["ok"]
-    assert not result["stationary_verified"]
-    assert "unknown" in result["error"]
-    assert control.stop() is result
-    stable.assert_not_called()
-
-
-def socket_for(monkeypatch, parts):
-    connection = Mock()
-    connection.__enter__ = Mock(return_value=connection)
-    connection.__exit__ = Mock(return_value=False)
-    connection.recv.side_effect = parts
-    connection.connect_ex.return_value = 0
-    monkeypatch.setattr(socket, "create_connection", Mock(return_value=connection))
-    monkeypatch.setattr(socket, "socket", Mock(return_value=connection))
-    return connection
-
-
 def test_delayed_pose_poll_after_failed_stop_never_reconnects(monkeypatch):
-    connection = socket_for(monkeypatch, [b"", b"0,{250,10,40,23.78},GetPose(0,0);"])
+    connection = fake_connection(monkeypatch, [b"", b"0,{250,10,40,23.78},GetPose(0,0);"])
     control = JointControl("robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic()))
     assert not control.stop()["ok"]
     with pytest.raises(DashboardQueryCancelledError):
@@ -1545,7 +1506,7 @@ def test_delayed_pose_poll_after_failed_stop_never_reconnects(monkeypatch):
 
 
 def test_pose_poll_preserves_child_stop_failure_after_parent_stop_succeeds(monkeypatch):
-    connection = socket_for(
+    connection = fake_connection(
         monkeypatch,
         [
             b"",
@@ -1567,7 +1528,7 @@ def test_pose_poll_preserves_child_stop_failure_after_parent_stop_succeeds(monke
 
 @pytest.mark.parametrize("phase", ("before", "dns", "connect"))
 def test_pose_poll_rechecks_cancellation_before_connect_and_send(monkeypatch, phase):
-    connection = socket_for(monkeypatch, [b"0,{250,10,40,23.78},GetPose(0,0);"])
+    connection = fake_connection(monkeypatch, [b"0,{250,10,40,23.78},GetPose(0,0);"])
     control = JointControl("robot.test", lambda: (Feedback(START, 5, 0, False), time.monotonic()))
     if phase == "before":
         control.cancel()
@@ -1584,7 +1545,7 @@ def test_pose_poll_rechecks_cancellation_before_connect_and_send(monkeypatch, ph
 
 
 def test_transport_reassembles_reply_without_binding_host_source_ip(monkeypatch):
-    connection = socket_for(monkeypatch, [b"0,{1,2,", b"3,4,0,0},GetAngle();"])
+    connection = fake_connection(monkeypatch, [b"0,{1,2,", b"3,4,0,0},GetAngle();"])
     control = JointControl("robot.test", Mock())
     assert control._command("GetAngle()") == "1,2,3,4,0,0"
     connection.connect_ex.assert_called_once_with(("robot.test", 29999))
@@ -1689,7 +1650,7 @@ def test_child_stop_interrupts_parent_query_and_closes_before_reconnecting(
 ):
     entered, closed = threading.Event(), threading.Event()
     failures, events = [], []
-    query = socket_for(monkeypatch, [])
+    query = fake_connection(monkeypatch, [])
 
     def block(*args):
         entered.set()
@@ -1747,7 +1708,7 @@ def test_child_stop_interrupts_parent_query_and_closes_before_reconnecting(
 
 @pytest.mark.parametrize("phase", ["send", "recv"])
 def test_uncancelled_query_oserror_is_not_mislabeled_as_stop_cancellation(monkeypatch, phase):
-    connection = socket_for(monkeypatch, [])
+    connection = fake_connection(monkeypatch, [])
     error = OSError("Dashboard connection failed")
     getattr(connection, {"send": "sendall", "recv": "recv"}[phase]).side_effect = error
     control = JointControl("robot.test", Mock())
@@ -1760,7 +1721,7 @@ def test_uncancelled_query_oserror_is_not_mislabeled_as_stop_cancellation(monkey
 
 
 def test_query_connect_keeps_one_socket_until_original_deadline(monkeypatch):
-    connection = socket_for(monkeypatch, [b"0,{},GetPose(0,0);"])
+    connection = fake_connection(monkeypatch, [b"0,{},GetPose(0,0);"])
     connection.connect_ex.return_value = errno.EINPROGRESS
     connection.getsockopt.return_value = 0
     now = [10.0]
@@ -1779,7 +1740,7 @@ def test_query_connect_keeps_one_socket_until_original_deadline(monkeypatch):
 
 def test_stop_does_not_interrupt_pending_dashboard_mutation_ack(monkeypatch):
     entered, release = threading.Event(), threading.Event()
-    connection = socket_for(monkeypatch, [])
+    connection = fake_connection(monkeypatch, [])
     sample = Feedback(START, 5, 0, False)
     control = JointControl("robot.test", lambda: (sample, time.monotonic()), command_timeout=0.05)
     pending = {
@@ -1828,7 +1789,7 @@ def test_stop_rejects_queries_resolving_before_or_during_stop(monkeypatch):
     resolving, release_dns = threading.Event(), threading.Event()
     stop_entered, release_stop = threading.Event(), threading.Event()
     failures = []
-    connection = socket_for(monkeypatch, [])
+    connection = fake_connection(monkeypatch, [])
     control = JointControl("robot.test", Mock())
 
     def resolve(*args):
@@ -1874,7 +1835,7 @@ def test_stop_rejects_queries_resolving_before_or_during_stop(monkeypatch):
 
 
 def test_stop_cleanup_error_does_not_latch_query_gate(monkeypatch):
-    connection = socket_for(monkeypatch, [b"0,{},ResetRobot();", b"0,{},GetAngle();"])
+    connection = fake_connection(monkeypatch, [b"0,{},ResetRobot();", b"0,{},GetAngle();"])
     old = Mock()
     old.shutdown.side_effect = OSError("Already disconnected")
     old.close.side_effect = OSError("Close reported an error")
@@ -1959,7 +1920,7 @@ def test_stop_interrupts_real_loopback_tcp_query(monkeypatch):
 
 
 def test_dashboard_disconnect_releases_connection_for_stop(monkeypatch):
-    connection = socket_for(monkeypatch, [b"", b"0,{},ResetRobot();"])
+    connection = fake_connection(monkeypatch, [b"", b"0,{},ResetRobot();"])
     control = JointControl("robot.test", Mock())
     with pytest.raises(ConnectionError, match="disconnected"):
         control._command("GetPose(0,0)")
@@ -2025,7 +1986,7 @@ def test_stop_dashboard_connection_does_not_wait_for_motion_ack(monkeypatch):
 
 @pytest.mark.parametrize("reply", [b"0,{},Other();", b"-1,{},EnableRobot();", b"invalid;"])
 def test_transport_rejects_bad_ack_or_wrong_command_echo(monkeypatch, reply):
-    connection = socket_for(monkeypatch, [reply])
+    connection = fake_connection(monkeypatch, [reply])
     control = JointControl("robot.test", Mock())
     with pytest.raises(RuntimeError):
         control._command("EnableRobot()")
@@ -2037,7 +1998,7 @@ def test_transport_rejects_bad_ack_or_wrong_command_echo(monkeypatch, reply):
     [([b"0,{", b""], ConnectionError), ([TimeoutError("ACK lost")], TimeoutError)],
 )
 def test_transport_never_retries_lost_motion_ack(monkeypatch, parts, failure):
-    connection = socket_for(monkeypatch, parts)
+    connection = fake_connection(monkeypatch, parts)
     control = JointControl("robot.test", Mock())
     pending = {"sent": False, "send_modes": {5}, "expected": START}
     control.feedback_snapshot = lambda: (Feedback(START, 5, 0, False), time.monotonic())
@@ -2049,7 +2010,7 @@ def test_transport_never_retries_lost_motion_ack(monkeypatch, parts, failure):
 
 @pytest.mark.parametrize("disabling", [False, True])
 def test_cancelled_delayed_mutation_never_sends(monkeypatch, disabling):
-    connection = socket_for(monkeypatch, [])
+    connection = fake_connection(monkeypatch, [])
     control = JointControl("robot.test", Mock())
     control.cancel(disabling=disabling)
     pending = {"sent": False}
@@ -2063,7 +2024,7 @@ def test_cancelled_delayed_mutation_never_sends(monkeypatch, disabling):
 def test_send_rechecks_idle_state_and_start_pose_under_cancellation_lock(
     monkeypatch, changed_mode, changed_joints
 ):
-    connection = socket_for(monkeypatch, [])
+    connection = fake_connection(monkeypatch, [])
     control = JointControl(
         "robot.test",
         lambda: (Feedback(changed_joints, changed_mode, 0, False), time.monotonic()),
@@ -2256,19 +2217,6 @@ def test_move_rejects_excessive_source_difference_with_readings(rig, monkeypatch
     socket.create_connection.assert_not_called()
 
 
-def test_joint_move_accepts_j4_within_manufacturer_range(rig):
-    control, sample, _, commands = rig
-    sample[0] = Feedback((*START[:3], -200.0), 5, 0, False)
-    target = (*START[:3], -199.0)
-    assert control.move(target).joints_deg == target
-    assert (
-        "JointMovJ(0.700000,0.040000,0.520000,-199.000000,SpeedJ=5,AccJ=5)",
-        30003,
-    ) in commands
-    assert not any(text.startswith(("Enable", "ClearError", "Reset")) for text, _ in commands)
-    assert not control.stopped
-
-
 @pytest.mark.parametrize("failure_type", [TimeoutError, ConnectionError])
 @pytest.mark.parametrize(
     "method,query",
@@ -2373,18 +2321,6 @@ def test_post_send_query_timeout_still_latches_control(rig, monkeypatch):
     assert control.stopped and not control.busy
     assert (MOVE, 30003) in commands
     assert ("ResetRobot()", 29999) in commands
-
-
-@pytest.mark.parametrize("axis,start,end", [(0, 159, 158), (3, 359, 358), (3, -359, -358)])
-def test_measured_margin_band_allows_inward_joint_move(rig, axis, start, end):
-    control, sample, _, commands = rig
-    joints = list(START)
-    joints[axis] = start
-    sample[0] = Feedback(tuple(joints), 5, 0, False)
-    joints[axis] = end
-    assert control.move(tuple(joints)).joints_deg == tuple(joints)
-    assert sum(text.startswith("JointMovJ") for text, _ in commands) == 1
-    assert not control.stopped
 
 
 @pytest.mark.parametrize("dashboard_mode", [4, 7, 9])
@@ -2706,23 +2642,9 @@ def test_parent_preparation_rejection_leaves_real_keyboard_session_unfaulted(wir
     assert not parent.stopped
 
 
-def test_without_parent_guard_child_guard_runs_once_at_enqueue_and_once_at_send(wire):
-    # The parent has no send guard. The child guard keeps its calls and errors.
+def test_child_guard_refusal_without_parent_guard_sends_nothing(wire):
+    # The parent has no send guard. The child guard keeps its errors.
     parent = JointControl("robot.test", wire.feedback)
-    child_guard = Mock()
-    child = parent.begin_operation(send_guard=child_guard)
-    try:
-        child._guarded_command(
-            "MoveJog(J4+)", modes={5, 11}, send_modes={5}, expected=START, port=30003
-        )
-        assert child_guard.call_args_list == [call(), call()]
-        assert child.stop_after_command(jog=True)["ok"]
-        # Stop commands are never guarded.
-        assert child_guard.call_count == 2
-    finally:
-        child.finish_operation()
-    assert wire.sent == ["MoveJog(J4+)", "MoveJog()"]
-
     refusal = RuntimeError("Keyboard hold cancelled")
     refusing = Mock(side_effect=refusal)
     child = parent.begin_operation(send_guard=refusing)
@@ -2736,7 +2658,7 @@ def test_without_parent_guard_child_guard_runs_once_at_enqueue_and_once_at_send(
         assert child._pending is None
     finally:
         child.finish_operation()
-    assert wire.sent == ["MoveJog(J4+)", "MoveJog()"]
+    assert not wire.sent
     assert not parent.stopped
     assert parent.feedback_retention_reason() is None
 

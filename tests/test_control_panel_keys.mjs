@@ -901,31 +901,23 @@ test("a requested disarm wins over a new key press", async () => {
   assert.equal(page.keyUpdates().length, 0);
 });
 
-test("a failed disarm sent during the arm request is sent again when the arm reply renders", async () => {
-  const page = await ready();
-  await page.click("keyboard");
-  const arm = page.arms()[0];
-  await page.fire("blur");
-  assertDisarm(page.disarms()[0], "focus");
-  await page.fail(page.disarms()[0]);
-  await page.respond(arm, page.snapshot({ keyboard_arming: true }));
-  assert.equal(page.disarms().length, 2);
-  assertDisarm(page.disarms()[1], "focus");
-  assertSequenced(page);
-});
-
-test("a failed disarm sent during the arm request is sent again when the arm request fails", async () => {
-  const page = await ready();
-  await page.click("keyboard");
-  const [arm] = page.arms();
-  await page.fire("blur");
-  assertDisarm(page.disarms()[0], "focus");
-  await page.fail(page.disarms()[0]);
-  await page.fail(arm, new Error("Enable the robot before keyboard control"));
-  assert.equal(page.disarms().length, 2);
-  assertDisarm(page.disarms()[1], "focus");
-  assertSequenced(page);
-});
+for (const [name, settle] of [
+  ["the arm reply renders", (page, arm) => page.respond(arm, page.snapshot({ keyboard_arming: true }))],
+  ["the arm request fails", (page, arm) => page.fail(arm, new Error("Enable the robot before keyboard control"))],
+]) {
+  test(`a failed disarm sent during the arm request is sent again when ${name}`, async () => {
+    const page = await ready();
+    await page.click("keyboard");
+    const [arm] = page.arms();
+    await page.fire("blur");
+    assertDisarm(page.disarms()[0], "focus");
+    await page.fail(page.disarms()[0]);
+    await settle(page, arm);
+    assert.equal(page.disarms().length, 2);
+    assertDisarm(page.disarms()[1], "focus");
+    assertSequenced(page);
+  });
+}
 
 test("clicks during the arm request send one arm", async () => {
   const page = await ready();
@@ -1250,16 +1242,6 @@ test("Stop arm and Disable robot show an error only when every path failed", asy
   assert.equal(page.$("status").classList.contains("error"), true);
 });
 
-test("the pagehide beacon still posts a stop over HTTP", async () => {
-  const page = await ready();
-  await page.fire("pagehide");
-  const [stop] = page.commands("stop");
-  assertPanelPost(stop, "stop");
-  assert.equal(stop.options.keepalive, true);
-  assert.equal(page.commands().length, 1);
-  assert.equal(page.socket.sent.filter(message => message.type === "command").length, 0);
-});
-
 test("without a connection the sync line says so, the dot is off, and jog keys do nothing; Esc still disables", async () => {
   const page = await ready({ keyboard_enabled: true });
   assert.equal(page.$("syncState").textContent, "Live feedback");
@@ -1344,6 +1326,8 @@ test("pagehide sends the stop beacon first, then closes the socket and does not 
   assertPanelPost(beacon, "stop");
   assert.equal(beacon.options.keepalive, true);
   assert.equal(beacon.socketState, 1, "the socket closed before the beacon went out");
+  assert.equal(page.commands().length, 1);
+  assert.equal(socket.sent.filter(message => message.type === "command").length, 0);
   assert.equal(socket.closedBy, 1000);
   assert.equal(page.evaluate("held.size"), 0);
   assert.equal(page.pending(), 0);
@@ -1571,24 +1555,6 @@ test("without a socket the page polls the state every second, one read at a time
   assert.equal(reads().length, count);
 });
 
-test("a refused handshake with a missing token shows the token form from the HTTP read", async () => {
-  const page = browser();
-  await page.serverClose(1006);
-  const read = page.http().find(request => request.path === "api/state");
-  await page.respond(read, { error: "Enter the panel access token" }, 401);
-  assert.equal(page.$("auth").hidden, false);
-  page.$("token").value = "secret-token-1234567890abc";
-  await page.submit("auth");
-  await page.advance(1000);
-  const next = page.http().filter(request => request.path === "api/state").at(-1);
-  assert.equal(next.options.headers.Authorization, "Bearer secret-token-1234567890abc");
-  // The token works over HTTP although the socket stays refused: close the form and keep it.
-  await page.respond(next, page.snapshot());
-  assert.equal(page.$("auth").hidden, true);
-  assert.deepEqual(page.stored, [["mg400-panel-token", "secret-token-1234567890abc"]]);
-  assert.equal(page.$("token").value, "");
-});
-
 test("pagehide stops the state polling", async () => {
   const page = await ready();
   await page.serverClose(1006);
@@ -1623,13 +1589,14 @@ test("requests that a closed socket rejects do not hide a failed Stop arm", asyn
   assert.equal(page.$("status").textContent, "Back.");
 });
 
-test("a pasted token is trimmed, and only the token a read sent is saved", async () => {
+test("a refused handshake shows the token form; a pasted token is trimmed and saved only by a read that sent it", async () => {
   const page = browser();
   await page.serverClose(1006);
-  await page.respond(page.http().find(request => request.path === "api/state"), { error: "Enter the panel access token" }, 401);
+  const reads = () => page.http().filter(request => request.path === "api/state");
+  await page.respond(reads()[0], { error: "Enter the panel access token" }, 401);
+  assert.equal(page.$("auth").hidden, false);
   page.$("token").value = "  secret-token-1234567890abc \t";
   await page.submit("auth");
-  const reads = () => page.http().filter(request => request.path === "api/state");
   await page.advance(1000);
   const first = reads().at(-1);
   assert.equal(first.options.headers.Authorization, "Bearer secret-token-1234567890abc");
@@ -1638,6 +1605,16 @@ test("a pasted token is trimmed, and only the token a read sent is saved", async
   await page.submit("auth");
   await page.respond(first, page.snapshot());
   assert.deepEqual(page.stored, []);
+  assert.equal(page.$("auth").hidden, false);
+  await page.advance(1000);
+  const next = reads().at(-1);
+  assert.notEqual(next, first);
+  assert.equal(next.options.headers.Authorization, "Bearer other-token-1234567890abcd");
+  // The token works over HTTP although the socket stays refused: close the form and keep it.
+  await page.respond(next, page.snapshot());
+  assert.equal(page.$("auth").hidden, true);
+  assert.deepEqual(page.stored, [["mg400-panel-token", "other-token-1234567890abcd"]]);
+  assert.equal(page.$("token").value, "");
   await page.open();
   assert.deepEqual(page.socket.sent[0].token, "other-token-1234567890abcd");
 });

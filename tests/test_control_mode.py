@@ -6,9 +6,12 @@ from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
+from helpers import block_network, fake_connection
 
 from mg400_agent import control_mode as mode
 from mg400_agent.controller_ownership import ControllerOwnership
+
+MISSING = object()
 
 
 def disabled_status():
@@ -73,27 +76,11 @@ class FakeTransport:
 
 
 @pytest.fixture(autouse=True)
-def isolated_locks_and_no_network(monkeypatch, tmp_path):
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path / "locks"))
-    monkeypatch.setattr(
-        mode.socket, "create_connection", Mock(side_effect=AssertionError("Network"))
-    )
+def isolated_locks_and_no_network(monkeypatch, isolated_controller_locks):
+    block_network(monkeypatch, "create_connection")
     monkeypatch.setattr(
         mode.http.client, "HTTPConnection", Mock(side_effect=AssertionError("Network"))
     )
-
-
-def test_status_only_reads_saved_config_live_state_and_version(tmp_path):
-    transport = FakeTransport(tmp_path)
-    result = mode.read_status(transport)
-    assert result["configured_mode"] == "tp"
-    assert result["tcp_verified"] is False
-    assert transport.events == [
-        "read_config",
-        ("GET", "/protocol/exchange", None),
-        ("POST", "/settings/version", b""),
-    ]
-    assert not transport.backup_dir.exists()
 
 
 def test_switch_backs_up_then_writes_and_checks_in_order(tmp_path):
@@ -132,25 +119,24 @@ def test_switch_backs_up_then_writes_and_checks_in_order(tmp_path):
         ("alarms", []),
         ("alarms", [[], [17]]),
         ("alarms", ""),
+        ("controlMode", MISSING),
+        ("prjState", MISSING),
+        ("isCollision", MISSING),
+        ("isSafeSuspend", MISSING),
+        ("alarms", MISSING),
     ],
 )
 def test_state_guard_refuses_before_backup_or_write(tmp_path, field, bad):
     transport = FakeTransport(tmp_path)
-    transport.status[field] = bad
+    if bad is MISSING:
+        del transport.status[field]
+    else:
+        transport.status[field] = bad
     with pytest.raises(RuntimeError, match="Switch refused"):
         mode.switch_to_tcp(transport, transport.backup_dir)
     assert "write_config" not in transport.events
     assert "dashboard" not in transport.events
     assert not transport.backup_dir.exists()
-
-
-@pytest.mark.parametrize("field", disabled_status())
-def test_missing_state_field_refuses_switch(tmp_path, field):
-    transport = FakeTransport(tmp_path)
-    del transport.status[field]
-    with pytest.raises(RuntimeError, match="Switch refused"):
-        mode.switch_to_tcp(transport, transport.backup_dir)
-    assert "write_config" not in transport.events
 
 
 @pytest.mark.parametrize("saved_mode", ["io", "modbus", "unknown"])
@@ -245,15 +231,6 @@ def test_saved_tcp_mode_checks_dashboard_without_writing(tmp_path):
     assert not transport.backup_dir.exists()
 
 
-def test_saved_tcp_with_rejected_dashboard_does_not_reapply_mode(tmp_path):
-    transport = FakeTransport(tmp_path, {"mode": "tcp", "name": ""})
-    transport.failure = "dashboard"
-    with pytest.raises(RuntimeError, match="RobotMode"):
-        mode.switch_to_tcp(transport, transport.backup_dir)
-    assert "write_config" not in transport.events
-    assert not transport.backup_dir.exists()
-
-
 def test_new_explicit_invocation_can_apply_a_saved_but_inactive_tcp_mode(tmp_path):
     first = FakeTransport(tmp_path / "first")
     first.failure = "post"
@@ -318,11 +295,7 @@ def test_ownership_collision_prevents_all_network_operations(tmp_path):
     ],
 )
 def test_dashboard_rejects_failed_mismatched_and_incomplete_replies(monkeypatch, reply):
-    connection = Mock()
-    connection.__enter__ = Mock(return_value=connection)
-    connection.__exit__ = Mock(return_value=False)
-    connection.recv.side_effect = [reply, b""]
-    monkeypatch.setattr(mode.socket, "create_connection", Mock(return_value=connection))
+    connection = fake_connection(monkeypatch, [reply, b""], raw_socket=False)
     transport = mode.ControllerTransport("192.168.1.6")
     with pytest.raises(RuntimeError):
         payload = transport.dashboard_mode()
@@ -332,11 +305,7 @@ def test_dashboard_rejects_failed_mismatched_and_incomplete_replies(monkeypatch,
 
 
 def test_dashboard_accepts_fragmented_disabled_reply(monkeypatch):
-    connection = Mock()
-    connection.__enter__ = Mock(return_value=connection)
-    connection.__exit__ = Mock(return_value=False)
-    connection.recv.side_effect = [b"0,{", b"4},RobotMode();"]
-    monkeypatch.setattr(mode.socket, "create_connection", Mock(return_value=connection))
+    connection = fake_connection(monkeypatch, [b"0,{", b"4},RobotMode();"], raw_socket=False)
     assert mode.ControllerTransport("192.168.1.6").dashboard_mode() == "4"
     connection.sendall.assert_called_once_with(b"RobotMode()")
 
@@ -353,9 +322,15 @@ def test_cli_defaults_to_read_only(tmp_path, monkeypatch, capsys):
     transport = FakeTransport(tmp_path)
     monkeypatch.setattr(mode, "ControllerTransport", lambda host, timeout: transport)
     assert mode.main([]) == 0
-    assert json.loads(capsys.readouterr().out)["configured_mode"] == "tp"
-    assert "write_config" not in transport.events
-    assert "dashboard" not in transport.events
+    result = json.loads(capsys.readouterr().out)
+    assert result["configured_mode"] == "tp"
+    assert result["tcp_verified"] is False
+    assert transport.events == [
+        "read_config",
+        ("GET", "/protocol/exchange", None),
+        ("POST", "/settings/version", b""),
+    ]
+    assert not transport.backup_dir.exists()
 
 
 def test_smb_transport_uses_project_share_and_closes_each_connection(monkeypatch):

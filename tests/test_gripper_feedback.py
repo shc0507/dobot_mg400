@@ -114,84 +114,78 @@ def test_new_session_restarts_sequence_and_rejects_retired_session(clocks):
     assert feedback.get() == sample(session=RESTART, seq=1)
 
 
-def test_invalid_new_session_does_not_retire_current_session(clocks):
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"sent_at": 998.0},
+        {"sent_at": 1002.0},
+        {"state": 0, "position": 0},
+        {"state": 1, "position": 1000},
+        {"state": 2, "position": 500},
+        {"state": 3, "position": 1000},
+    ],
+    ids=["sent_at_min", "sent_at_max", "state0", "state1", "state2", "state3"],
+)
+def test_valid_samples_are_accepted(clocks, changes):
     feedback = FeedbackState()
-    assert feedback.receive(sample(seq=20))
-    assert not feedback.receive(sample(session=RESTART, init=3))
-    assert feedback.get() is None
-    assert feedback.receive(sample(seq=21))
-    assert feedback.receive(sample(session=RESTART))
+    payload = sample(**changes)
+    assert feedback.receive(payload)
+    assert feedback.get() == payload
 
 
-@pytest.mark.parametrize("offset", [-2.0, 2.0])
-def test_timestamp_limit_is_inclusive(clocks, offset):
-    feedback = FeedbackState()
-    assert feedback.receive(sample(sent_at=1000.0 + offset))
+INVALID_VALUES = [
+    ("session", "not-a-uuid"),
+    ("session", UUID(SESSION)),
+    ("seq", -1),
+    ("seq", True),
+    ("seq", 1.0),
+    ("sent_at", True),
+    ("sent_at", "1000"),
+    ("sent_at", float("nan")),
+    ("sent_at", float("inf")),
+    ("sent_at", -float("inf")),
+    ("sent_at", 10**1000),
+    ("sent_at", 997.999),
+    ("sent_at", 1002.001),
+    ("init", 0),
+    ("init", 2),
+    ("init", True),
+    ("init", 1.0),
+    ("state", -1),
+    ("state", 4),
+    ("state", True),
+    ("state", 1.0),
+    ("position", -1),
+    ("position", 1001),
+    ("position", True),
+    ("position", 0.0),
+    ("position", float("nan")),
+]
+
+
+def without(field):
+    payload = sample(seq=1)
+    del payload[field]
+    return payload
 
 
 @pytest.mark.parametrize(
-    "field,value",
+    "payload",
     [
-        ("session", "not-a-uuid"),
-        ("session", UUID(SESSION)),
-        ("seq", -1),
-        ("seq", True),
-        ("seq", 1.0),
-        ("sent_at", True),
-        ("sent_at", "1000"),
-        ("sent_at", float("nan")),
-        ("sent_at", float("inf")),
-        ("sent_at", -float("inf")),
-        ("sent_at", 10**1000),
-        ("sent_at", 997.999),
-        ("sent_at", 1002.001),
-        ("init", 0),
-        ("init", 2),
-        ("init", True),
-        ("init", 1.0),
-        ("state", -1),
-        ("state", 4),
-        ("state", True),
-        ("state", 1.0),
-        ("position", -1),
-        ("position", 1001),
-        ("position", True),
-        ("position", 0.0),
-        ("position", float("nan")),
+        *(
+            pytest.param(sample(**{"seq": 1, field: value}), id=f"{field}={value!r}"[:40])
+            for field, value in INVALID_VALUES
+        ),
+        *(pytest.param(without(field), id=f"missing_{field}") for field in sample()),
+        *(pytest.param(value, id=f"non_object={value!r}") for value in (None, [], "", False)),
     ],
 )
-def test_invalid_sample_stops_updates_until_new_valid_sample(clocks, field, value):
+def test_invalid_sample_stops_updates_until_new_valid_sample(clocks, payload):
     feedback = FeedbackState()
     assert feedback.receive(sample())
-    assert not feedback.receive(sample(**{"seq": 1, field: value}))
+    assert not feedback.receive(payload)
     assert feedback.get() is None
     assert feedback.receive(sample(seq=2))
-
-
-@pytest.mark.parametrize("field", list(sample()))
-def test_missing_field_invalidates_freshness(clocks, field):
-    feedback = FeedbackState()
-    assert feedback.receive(sample())
-    payload = sample(seq=1)
-    del payload[field]
-    assert not feedback.receive(payload)
-    assert feedback.get() is None
-
-
-@pytest.mark.parametrize("payload", [None, [], "", False])
-def test_non_object_message_invalidates_freshness(clocks, payload):
-    feedback = FeedbackState()
-    assert feedback.receive(sample())
-    assert not feedback.receive(payload)
-    assert feedback.get() is None
-
-
-@pytest.mark.parametrize("state,position", [(0, 0), (1, 1000), (2, 500), (3, 1000)])
-def test_valid_motion_contact_and_drop_states_are_accepted(clocks, state, position):
-    feedback = FeedbackState()
-    payload = sample(state=state, position=position)
-    assert feedback.receive(payload)
-    assert feedback.get() == payload
 
 
 def control_sample(**changes):
@@ -247,17 +241,6 @@ def test_initialization_diagnostic_enforces_sequence_and_session_order(clocks):
     assert feedback.receive(sample(session=RESTART, seq=1))
 
 
-def test_repeated_diagnostic_does_not_refresh_expiry(clocks):
-    feedback = FeedbackState()
-    assert not feedback.receive(sample(init=0))
-    clocks["monotonic"] = 10.5
-    assert not feedback.receive(sample(init=0))
-    assert feedback.diagnostic() == "The gripper is not initialized."
-    clocks["monotonic"] = 10.751
-    assert not feedback.receive(sample(init=0))
-    assert feedback.diagnostic() is None
-
-
 @pytest.mark.parametrize(
     "changes",
     [
@@ -276,47 +259,42 @@ def test_repeated_diagnostic_does_not_refresh_expiry(clocks):
         {"control": {}},
     ],
 )
-def test_bad_diagnostic_sample_clears_status(clocks, changes):
+def test_invalid_packet_clears_status_without_retiring_or_registering_session(clocks, changes):
     feedback = FeedbackState()
-    assert not feedback.receive(sample(init=0))
+    assert not feedback.receive(sample(seq=20, init=0))
     assert feedback.diagnostic() is not None
-    payload = sample(seq=1, init=2, state=65535, position=1070)
+    assert feedback.get_status() is not None
+    payload = sample(session=RESTART, seq=0, init=2, state=65535, position=1070)
     payload.update(changes)
     assert not feedback.receive(payload)
     assert feedback.get() is None
+    assert feedback.get_status() is None
     assert feedback.diagnostic() is None
+    assert feedback.receive(sample(seq=21))
+    assert feedback.get_status() == sample(seq=21)
+    assert feedback.receive(sample(session=RESTART))
 
 
-def test_unchanged_file_does_not_refresh_initialization_diagnostic(tmp_path, clocks):
+def test_unchanged_file_does_not_refresh_status_or_diagnostic(tmp_path, clocks):
     path = tmp_path / "sample.json"
     path.write_text(json.dumps(sample(init=0, state=65535, position=1070)))
     feedback = FeedbackState()
     source = FileFeedback(path, feedback)
     source.poll()
     assert feedback.diagnostic() == "The gripper is not initialized."
+    assert feedback.get_status()["init"] == 0
     clocks["monotonic"] += 0.751
     source.poll()
     assert feedback.diagnostic() is None
+    assert feedback.get_status() is None
     path.write_text(json.dumps(sample(seq=1, init=2)))
     source.poll()
     assert feedback.diagnostic() == "Gripper initialization is in progress."
+    assert feedback.get_status()["init"] == 2
     path.write_text("{")
     source.poll()
     assert feedback.diagnostic() is None
-
-
-@pytest.mark.parametrize("protocol", [1, 2])
-def test_control_feedback_is_copied_and_expires_with_measurement(clocks, protocol):
-    feedback = FeedbackState()
-    control = {**control_sample(), "protocol": protocol}
-    assert feedback.receive(sample(control=control))
-    control["locked"] = True
-    result = feedback.get()
-    assert result["control"]["locked"] is False
-    result["control"]["locked"] = True
-    assert feedback.get()["control"]["locked"] is False
-    clocks["monotonic"] += 0.751
-    assert feedback.get() is None
+    assert feedback.get_status() is None
 
 
 @pytest.mark.parametrize(
@@ -404,68 +382,28 @@ def test_old_packets_preserve_raw_status_without_refreshing_age(clocks, older):
 
 
 @pytest.mark.parametrize(
-    "changes",
+    "protocol,operation,command_id,target,ack",
     [
-        {"session": "bad"},
-        {"seq": True},
-        {"sent_at": 997.999},
-        {"init": 3},
-        {"state": 65536},
-        {"position": -1},
-        {"control": {**control_sample(), "locked": 0}},
+        (1, None, None, None, False),
+        (2, None, None, None, False),
+        (3, None, None, None, False),
+        (3, "position", SESSION, 0, False),
+        (3, "position", SESSION, 1000, True),
+        (3, "initialize", SESSION, None, False),
+        (3, "initialize", SESSION, None, True),
     ],
 )
-def test_invalid_packet_clears_raw_status_without_retiring_session(clocks, changes):
-    feedback = FeedbackState()
-    assert not feedback.receive(sample(seq=20, init=0))
-    assert feedback.get_status() is not None
-    payload = sample(session=RESTART, seq=0, init=2)
-    payload.update(changes)
-    assert not feedback.receive(payload)
-    assert feedback.get_status() is None
-    assert feedback.diagnostic() is None
-    assert feedback.receive(sample(seq=21))
-    assert feedback.get_status() == sample(seq=21)
-
-
-def test_unchanged_file_does_not_refresh_raw_status(tmp_path, clocks):
-    path = tmp_path / "sample.json"
-    path.write_text(json.dumps(sample(init=2, state=65535, position=1070)))
-    feedback = FeedbackState()
-    source = FileFeedback(path, feedback)
-    source.poll()
-    assert feedback.get_status()["init"] == 2
-    clocks["monotonic"] += 0.751
-    source.poll()
-    assert feedback.get_status() is None
-    path.write_text(json.dumps(sample(seq=1, init=0)))
-    source.poll()
-    assert feedback.get_status()["init"] == 0
-    path.write_text("{")
-    source.poll()
-    assert feedback.get_status() is None
-
-
-@pytest.mark.parametrize(
-    "operation,command_id,target,ack",
-    [
-        (None, None, None, False),
-        ("position", SESSION, 0, False),
-        ("position", SESSION, 1000, True),
-        ("initialize", SESSION, None, False),
-        ("initialize", SESSION, None, True),
-    ],
-)
-def test_protocol_three_accepts_valid_operations(clocks, operation, command_id, target, ack):
+def test_valid_control_feedback_is_accepted(clocks, protocol, operation, command_id, target, ack):
     feedback = FeedbackState()
     control = {
         **control_sample(),
-        "protocol": 3,
-        "operation": operation,
+        "protocol": protocol,
         "command_id": command_id,
         "target": target,
         "ack": ack,
     }
+    if protocol == 3:
+        control["operation"] = operation
     payload = sample(control=control)
     assert feedback.receive(payload)
     assert feedback.get() == payload

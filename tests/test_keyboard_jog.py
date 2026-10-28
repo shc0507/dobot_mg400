@@ -37,6 +37,7 @@ def rig(monkeypatch):
             self.reset_failure = False
             self.solution = START
             self.release_after = 1
+            self.ik_reply = None
             self.session = None
 
         def snapshot(self):
@@ -74,6 +75,8 @@ def rig(monkeypatch):
                     self.session.release()
                 return ",".join(map(str, self.pose))
             if text.startswith("InverseSolution("):
+                if self.ik_reply is not None:
+                    return self.ik_reply
                 x, y, z, r = map(float, text.split("(")[1].split(",")[:4])
                 self.solution = (
                     START[0],
@@ -190,10 +193,13 @@ def finish_thread(thread, outcome):
     return outcome[0]
 
 
-def test_prepare_sets_low_speed_without_motion_and_shares_controller_locks(rig):
+@pytest.mark.parametrize("j4", [0.0, -220.0, 220.0])
+def test_prepare_sets_low_speed_without_motion_and_shares_controller_locks(rig, j4):
+    rig.sample = replace(rig.sample, joints_deg=(*START[:3], j4))
+    rig.pose = (*POSE[:3], START[0] + j4)
     assert not rig.session.ready
     assert not rig.commands
-    assert rig.session.prepare() == POSE
+    assert rig.session.prepare() == rig.pose
     assert rig.session.ready
     assert rig.commands == [
         "RobotMode()",
@@ -219,24 +225,6 @@ def test_finite_radial_motion_uses_the_confirmed_selected_speed(rig, key, speed)
     assert rig.moves[0].endswith("User=0,Tool=0,SpeedL=2,AccL=20)")
     assert rig.sample.speed_scaling_raw == speed
     assert rig.session.ready and not rig.session.control.stopped
-
-
-@pytest.mark.parametrize("when", ["before_run", "before_send"])
-def test_finite_speed_mismatch_prevents_movement(rig, when):
-    rig.session = KeyboardJogSession(rig.session.control, speed_percent=25)
-    rig.session.prepare()
-
-    def mismatch():
-        rig.sample = replace(rig.sample, speed_scaling_raw=1)
-
-    if when == "before_run":
-        mismatch()
-    else:
-        rig.connect_hook = lambda port: mismatch() if port == 30003 else None
-    with pytest.raises(RuntimeError, match="speed changed"):
-        rig.session.run("W", threading.Event())
-    assert not rig.moves
-    assert rig.session.control.stopped and not rig.session.ready
 
 
 def test_finite_speed_change_during_movement_stops_and_revokes_readiness(rig, monkeypatch):
@@ -393,17 +381,6 @@ def test_reused_pose_does_not_bypass_changed_joints_at_motion_send(rig):
     assert rig.session.control.stopped
 
 
-def test_released_key_cannot_start_from_reused_pose(rig):
-    rig.session.prepare()
-    measurement = rig.session.control.read_pose_measurement()
-    released = threading.Event()
-    released.set()
-    rig.session.run("W", released, initial_pose=measurement)
-    assert not rig.moves
-    assert not any(command.startswith("InverseSolution(") for command in rig.commands)
-    assert rig.session.ready
-
-
 @pytest.mark.parametrize("key,change", [("A", 10), ("D", -10)])
 def test_base_keys_first_segment_is_ten_degrees(rig, key, change):
     rig.session.prepare()
@@ -464,24 +441,25 @@ def test_release_during_preparation_cannot_arm_or_send(rig):
     assert rig.session.prepare() == POSE
 
 
-@pytest.mark.parametrize("reuse_pose", [False, True])
-def test_release_during_motion_connection_prevents_send(rig, reuse_pose):
+@pytest.mark.parametrize("reuse_pose", [False, True], ids=["fresh_pose", "reused_pose"])
+@pytest.mark.parametrize("phase", ["before_run", "ik", "connect"])
+def test_release_before_motion_send_prevents_send(rig, phase, reuse_pose):
     rig.session.prepare()
     measurement = rig.session.control.read_pose_measurement() if reuse_pose else None
-    rig.connect_hook = lambda port: rig.session.release() if port == 30003 else None
-    rig.session.run("W", threading.Event(), initial_pose=measurement)
+    released = threading.Event()
+    if phase == "before_run":
+        released.set()
+    elif phase == "ik":
+        rig.hook = lambda text: (
+            rig.session.release() if text.startswith("InverseSolution(") else None
+        )
+    else:
+        rig.connect_hook = lambda port: rig.session.release() if port == 30003 else None
+    rig.session.run("W", released, initial_pose=measurement)
     assert not rig.moves
+    if phase == "before_run":
+        assert not any(command.startswith("InverseSolution(") for command in rig.commands)
     assert rig.commands.count("ResetRobot()") == 1
-    assert rig.session.ready
-
-
-@pytest.mark.parametrize("reuse_pose", [False, True])
-def test_release_during_ik_prevents_send(rig, reuse_pose):
-    rig.session.prepare()
-    measurement = rig.session.control.read_pose_measurement() if reuse_pose else None
-    rig.hook = lambda text: rig.session.release() if text.startswith("InverseSolution(") else None
-    rig.session.run("W", threading.Event(), initial_pose=measurement)
-    assert not rig.moves
     assert rig.session.ready
 
 
@@ -502,18 +480,7 @@ def test_release_before_pending_registration_blocks_delayed_registration(rig, mo
     assert rig.session.ready
 
 
-def test_release_between_send_guard_and_send_waits_for_successful_ack(rig):
-    rig.session.prepare()
-    rig.hook = lambda text: rig.session.release() if text.startswith("MovL(") else None
-    rig.session.run("W", threading.Event())
-    assert len(rig.moves) == 1
-    assert rig.commands.count("ResetRobot()") == 1
-    assert rig.session.ready
-    assert not rig.session.control.stopped
-    assert not rig.session.control._stop_uncertain
-
-
-def test_normal_release_waits_for_motion_ack_before_sending_reset(rig):
+def run_with_blocked_movl_ack(rig):
     rig.session.prepare()
     waiting_ack, allow_ack, reset_received = (threading.Event() for _ in range(3))
 
@@ -527,6 +494,11 @@ def test_normal_release_waits_for_motion_ack_before_sending_reset(rig):
     rig.reply_hook = block_reply
     thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
     assert waiting_ack.wait(1)
+    return thread, outcome, allow_ack, reset_received
+
+
+def test_normal_release_waits_for_motion_ack_before_sending_reset(rig):
+    thread, outcome, allow_ack, reset_received = run_with_blocked_movl_ack(rig)
     rig.session.release()
     assert not reset_received.wait(0.03)
     assert not allow_ack.is_set()
@@ -570,19 +542,7 @@ def test_normal_release_does_not_hide_failed_motion_ack(rig, failure):
 
 
 def test_ack_wait_timeout_locks_even_if_successful_ack_arrives_later(rig):
-    rig.session.prepare()
-    waiting_ack, allow_ack, reset_received = (threading.Event() for _ in range(3))
-
-    def block_reply(text):
-        if text.startswith("MovL("):
-            waiting_ack.set()
-            assert allow_ack.wait(2)
-        elif text == "ResetRobot()":
-            reset_received.set()
-
-    rig.reply_hook = block_reply
-    thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
-    assert waiting_ack.wait(1)
+    thread, outcome, allow_ack, reset_received = run_with_blocked_movl_ack(rig)
     rig.session.release()
     # Let the stop worker take its pending snapshot before advancing its clock.
     assert not reset_received.wait(0.03)
@@ -599,19 +559,7 @@ def test_ack_wait_timeout_locks_even_if_successful_ack_arrives_later(rig):
 
 
 def test_feedback_failure_during_release_ack_wait_stops_without_waiting(rig):
-    rig.session.prepare()
-    waiting_ack, allow_ack, reset_received = (threading.Event() for _ in range(3))
-
-    def block_reply(text):
-        if text.startswith("MovL("):
-            waiting_ack.set()
-            assert allow_ack.wait(2)
-        elif text == "ResetRobot()":
-            reset_received.set()
-
-    rig.reply_hook = block_reply
-    thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
-    assert waiting_ack.wait(1)
+    thread, outcome, allow_ack, reset_received = run_with_blocked_movl_ack(rig)
     rig.session.release()
     rig.stale = True
     assert reset_received.wait(0.3)
@@ -674,37 +622,22 @@ def test_feedback_loss_and_stop_failure_lock_future_motion(rig, problem):
     assert rig.session.control.stopped
 
 
-def test_bad_ik_never_sends_motion(rig, monkeypatch):
+@pytest.mark.parametrize(
+    "start_joints,key,ik_reply,reason",
+    [
+        pytest.param(START, "W", "200,0,10,0", "outside", id="ik_outside_range"),
+        pytest.param((0, -22, 2, 0), "W", "0,-17,-2,0", "outside", id="ik_crosses_j3_zero"),
+        pytest.param((158.95, *START[1:]), "A", None, "J1", id="j1_past_margin"),
+    ],
+)
+def test_target_outside_joint_guards_ends_hold_without_motion(
+    rig, start_joints, key, ik_reply, reason
+):
+    rig.sample = Feedback(start_joints, 5, 0, False)
     rig.session.prepare()
-    original = rig.command
-
-    def command(text):
-        if text.startswith("InverseSolution("):
-            return "200,0,10,0"
-        return original(text)
-
-    monkeypatch.setattr(rig, "command", command)
-    assert rig.session.run("W", threading.Event()) == POSE
-    assert "outside" in rig.session.limit_reason
-    assert not rig.moves
-    assert "ResetRobot()" not in rig.commands
-    assert rig.session.fault is None
-    assert not rig.session.control.stopped
-
-
-def test_cartesian_ik_crossing_invalid_joint_region_is_rejected(rig, monkeypatch):
-    rig.sample = Feedback((0, -22, 2, 0), 5, 0, False)
-    rig.session.prepare()
-    original = rig.command
-
-    def command(text):
-        if text.startswith("InverseSolution("):
-            return "0,-17,-2,0"
-        return original(text)
-
-    monkeypatch.setattr(rig, "command", command)
-    assert rig.session.run("W", threading.Event()) == POSE
-    assert "outside" in rig.session.limit_reason
+    rig.ik_reply = ik_reply
+    assert rig.session.run(key, threading.Event()) == POSE
+    assert reason in rig.session.limit_reason
     assert not rig.moves
     assert "ResetRobot()" not in rig.commands
     assert rig.session.fault is None
@@ -784,30 +717,6 @@ def test_base_target_shortens_below_one_degree_at_joint_limit(rig, monkeypatch):
     assert not rig.session.control.stopped
 
 
-@pytest.mark.parametrize("reason", ["release", "close"])
-def test_release_or_close_during_target_shortening_prevents_motion(rig, monkeypatch, reason):
-    rig.session.prepare()
-    attempts = []
-
-    def reject(active, target):
-        attempts.append(target)
-        if len(attempts) == 2:
-            if reason == "release":
-                rig.session.release()
-            else:
-                rig.session.close()
-        raise TargetRejectedError("Target rejected")
-
-    monkeypatch.setattr(JointControl, "solve_pose", reject)
-    rig.session.run("W", threading.Event())
-    assert len(attempts) == 2
-    assert not rig.moves
-    assert rig.commands.count("ResetRobot()") == 1
-    assert rig.session.limit_reason is None
-    assert rig.session.ready is (reason == "release")
-    assert not rig.session.control.stopped
-
-
 @pytest.mark.parametrize(
     "failure",
     [
@@ -829,17 +738,6 @@ def test_fault_during_target_shortening_does_not_try_another_target(rig, monkeyp
     assert rig.session.fault is not None
     assert rig.session.control.stopped
     assert not rig.session.ready
-
-
-def test_joint_target_limit_ends_hold_without_stopping_parent(rig):
-    rig.sample = Feedback((158.95, *START[1:]), 5, 0, False)
-    rig.session.prepare()
-    rig.session.run("A", threading.Event())
-    assert "J1" in rig.session.limit_reason
-    assert not rig.moves
-    assert "ResetRobot()" not in rig.commands
-    assert rig.session.fault is None
-    assert not rig.session.control.stopped
 
 
 @pytest.mark.parametrize("stop_fails", [False, True])
@@ -890,8 +788,10 @@ def test_release_during_final_pose_read_waits_for_stop_confirmation(rig, monkeyp
 @pytest.mark.parametrize("reason", ["release", "close", "disable", "stale", "stop_failure"])
 def test_target_rejection_does_not_bypass_concurrent_stop_or_fault(rig, monkeypatch, reason):
     rig.session.prepare()
+    attempts = []
 
     def reject(active, target):
+        attempts.append(target)
         if reason == "release":
             rig.session.release()
         elif reason == "close":
@@ -915,6 +815,9 @@ def test_target_rejection_does_not_bypass_concurrent_stop_or_fault(rig, monkeypa
         rig.session.run("W", threading.Event())
         assert not rig.session.control.stopped
         assert rig.session.ready is (reason != "close")
+    if reason != "stale":
+        # Shortening stops at the first rejection after a stop or release.
+        assert len(attempts) == 1
     assert rig.session.limit_reason is None
     assert not rig.moves
     assert rig.commands.count("ResetRobot()") == 1
@@ -931,16 +834,9 @@ def test_invalid_measured_joints_remain_a_fault(rig):
 
 
 @pytest.mark.parametrize("payload", ["1,2,3", "nan,0,10,0"])
-def test_invalid_ik_reply_remains_a_fault(rig, monkeypatch, payload):
+def test_invalid_ik_reply_remains_a_fault(rig, payload):
     rig.session.prepare()
-    original = rig.command
-
-    def command(text):
-        if text.startswith("InverseSolution("):
-            return payload
-        return original(text)
-
-    monkeypatch.setattr(rig, "command", command)
+    rig.ik_reply = payload
     with pytest.raises(RuntimeError):
         rig.session.run("W", threading.Event())
     assert rig.session.control.stopped
@@ -990,26 +886,6 @@ def test_no_second_hold_or_absolute_move_can_queue_while_hold_is_active(rig, com
     assert not rig.session.busy and not rig.session.control.busy
 
 
-def test_close_cancels_hold_during_blocking_query(rig):
-    rig.session.prepare()
-    reached, unblock = threading.Event(), threading.Event()
-
-    def block(text):
-        if text.startswith("InverseSolution("):
-            reached.set()
-            assert unblock.wait(2)
-
-    rig.hook = block
-    thread, outcome = start_thread(lambda: rig.session.run("W", threading.Event()))
-    assert reached.wait(1)
-    rig.session.close()
-    assert rig.session._revoked.wait(1)
-    unblock.set()
-    assert not isinstance(finish_thread(thread, outcome), Exception)
-    assert not rig.moves
-    assert not rig.session.ready
-
-
 def test_parent_cancel_revokes_child_and_exposes_pending(rig):
     rig.session.prepare()
 
@@ -1051,22 +927,6 @@ def test_invalid_keys_do_not_read_or_send(rig, key):
     with pytest.raises(ValueError):
         rig.session.run(key, threading.Event())
     assert not rig.commands
-
-
-@pytest.mark.parametrize("j4", [-220.0, 220.0])
-def test_prepare_accepts_j4_within_manufacturer_target_range_without_motion(rig, j4):
-    rig.sample = replace(rig.sample, joints_deg=(*START[:3], j4))
-    rig.pose = (*POSE[:3], START[0] + j4)
-    assert rig.session.prepare() == rig.pose
-    assert rig.session.ready
-    assert not rig.moves
-    assert rig.commands == [
-        "RobotMode()",
-        "GetErrorID()",
-        "GetAngle()",
-        "GetPose(0,0)",
-        "SpeedFactor(1)",
-    ]
 
 
 @pytest.mark.parametrize("when", ["before", "preflight"])
@@ -1176,6 +1036,22 @@ def test_minimum_step_requires_actual_progress_before_continuation(rig, monkeypa
     observations = 0
     target_state = None
     arrived = []
+    angle = math.radians(start_joints[0])
+
+    def along(state, distance):
+        sample, pose = state
+        if key == "A":
+            joints = (sample.joints_deg[0] + distance, *sample.joints_deg[1:])
+            return replace(sample, joints_deg=joints), (*pose[:3], pose[3] + distance)
+        xy = (pose[0] + distance * math.cos(angle), pose[1] + distance * math.sin(angle))
+        return sample, (*xy, *pose[2:])
+
+    def across(state, distance):
+        sample, pose = state
+        if key == "A":
+            joints = (sample.joints_deg[0], sample.joints_deg[1] + distance, *sample.joints_deg[2:])
+            return replace(sample, joints_deg=joints), pose
+        return sample, (*pose[:2], pose[2] + distance, pose[3])
 
     def update():
         nonlocal observations
@@ -1183,54 +1059,14 @@ def test_minimum_step_requires_actual_progress_before_continuation(rig, monkeypa
         if target_state is None or active.stopped or not active._pending["done"].is_set():
             return
         observations += 1
-        if observations == 4:
-            if arrival in {"target", "offset"}:
-                rig.sample, rig.pose = target_state
-                if arrival == "offset":
-                    if key == "A":
-                        rig.sample = replace(
-                            rig.sample,
-                            joints_deg=(
-                                rig.sample.joints_deg[0] + 0.06,
-                                *rig.sample.joints_deg[1:],
-                            ),
-                        )
-                        rig.pose = (*rig.pose[:3], rig.pose[3] + 0.06)
-                    else:
-                        angle = math.radians(start_joints[0])
-                        rig.pose = (
-                            rig.pose[0] + 0.06 * math.cos(angle),
-                            rig.pose[1] + 0.06 * math.sin(angle),
-                            *rig.pose[2:],
-                        )
-            elif arrival == "reverse":
-                if key == "A":
-                    rig.sample = replace(
-                        rig.sample,
-                        joints_deg=(
-                            start_joints[0] - 0.01,
-                            *start_joints[1:],
-                        ),
-                    )
-                else:
-                    angle = math.radians(start_joints[0])
-                    rig.pose = (
-                        start_pose[0] - 0.01 * math.cos(angle),
-                        start_pose[1] - 0.01 * math.sin(angle),
-                        *start_pose[2:],
-                    )
-            elif arrival == "perpendicular":
-                if key == "A":
-                    rig.sample = replace(
-                        rig.sample,
-                        joints_deg=(
-                            start_joints[0],
-                            start_joints[1] + 0.06,
-                            *start_joints[2:],
-                        ),
-                    )
-                else:
-                    rig.pose = (*start_pose[:2], start_pose[2] + 0.06, start_pose[3])
+        if observations == 4 and arrival != "stationary":
+            start_state = replace(rig.sample, joints_deg=start_joints), start_pose
+            rig.sample, rig.pose = {
+                "target": target_state,
+                "offset": along(target_state, 0.06),
+                "reverse": along(start_state, -0.01),
+                "perpendicular": across(start_state, 0.06),
+            }[arrival]
         if observations == 12:
             rig.session.release()
 

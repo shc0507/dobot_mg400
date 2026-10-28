@@ -31,6 +31,10 @@ uv run ruff format --check .
 `pytest` 运行 Python 测试，`node --test` 运行摄像头预览和网页按键测试。
 离线检查不能替代真机验证。
 
+测试共用的 fixture 位于 `tests/conftest.py`。
+模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_ws.py`。
+新增测试时复用这些模块，不得在测试文件中另写副本。
+
 使用 `examples/test.ipynb` 时，给同步命令加 `--group notebook`。
 如需保留其他手工安装的包，再加 `--inexact`。
 

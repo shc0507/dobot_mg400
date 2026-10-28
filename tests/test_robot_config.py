@@ -1,17 +1,15 @@
 import socket
 import tomllib
-from unittest.mock import Mock
 
 import pytest
+from helpers import block_network
 
 from mg400_agent.robot_config import load_robot_host
 
 
 @pytest.fixture(autouse=True)
 def prohibit_network(monkeypatch):
-    monkeypatch.setattr(
-        socket, "create_connection", Mock(side_effect=AssertionError("Network prohibited"))
-    )
+    block_network(monkeypatch, "create_connection", message="Network prohibited")
 
 
 def test_reads_requested_file_without_network(tmp_path):

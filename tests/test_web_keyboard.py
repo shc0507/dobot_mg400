@@ -5,13 +5,12 @@ the robot, so no test opens a network connection.
 """
 
 import json
-import socket
 import threading
 import time
 from contextlib import contextmanager
-from unittest.mock import Mock
 
 import pytest
+from helpers import Feed, block_network, idle_lock, wait_for
 
 from mg400_agent.feedback import Feedback
 from mg400_agent.joint_control import PreparationRejectedError
@@ -30,15 +29,7 @@ JOGGING = "Jogging... Release the key to stop."
 STOPPED = "Stopped. Hold a key for the next move."
 DEAD_MAN = "key updates stopped."
 MISSING = object()
-
-
-def wait_for(predicate, timeout=2):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.005)
-    assert predicate()
+pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
 
 def request(base, **changes):
@@ -49,32 +40,6 @@ def request(base, **changes):
 
 ARM = {"action": "keyboard", "enabled": True, "speed": 5, "seq": 1}
 DISARM = {"action": "keyboard", "enabled": False, "reason": "focus", "seq": 1}
-
-
-class Feed:
-    """Deliver the current sample about every 10 ms."""
-
-    def __init__(self):
-        self.sample = Feedback((1, 2, 3, 4), 5, 0, False)
-        self.connections = 0
-        self.read = threading.Event()
-        self.read.set()
-
-    def __call__(self, host, timeout_s):
-        assert host == "robot.test"
-        return self
-
-    def __enter__(self):
-        self.connections += 1
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-    def read_latest(self):
-        self.read.wait(0.6)
-        time.sleep(0.01)
-        return self.sample
 
 
 class Control:
@@ -347,9 +312,7 @@ class Browser:
 
 class Rig:
     def __init__(self, monkeypatch, *, gripper=None, watch=True):
-        network = AssertionError("Network")
-        monkeypatch.setattr(socket, "create_connection", Mock(side_effect=network))
-        monkeypatch.setattr(socket, "socket", Mock(side_effect=network))
+        block_network(monkeypatch)
         if not watch:
             monkeypatch.setattr(RobotPanelState, "_watch", lambda self: None)
         self.log = []
@@ -431,11 +394,6 @@ class Rig:
         self.state.close()
 
 
-@pytest.fixture(autouse=True)
-def isolated_controller_locks(monkeypatch, tmp_path):
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path))
-
-
 @pytest.fixture
 def make_rig(monkeypatch):
     rigs = []
@@ -460,27 +418,6 @@ def block_pose_query(control):
     control.pose_blocked.clear()
     control.release_pose.clear()
     assert control.pose_blocked.wait(1)
-
-
-@contextmanager
-def lock_between_pose_queries(rig):
-    """Hold the panel lock while no pose query runs.
-
-    A press then starts its hold at once, and the hold worker cannot pass its
-    start check until the lock is released.
-    """
-    deadline = time.monotonic() + 2
-    while True:
-        rig.state._lock.acquire()
-        if not rig.state._working:
-            break
-        rig.state._lock.release()
-        assert time.monotonic() < deadline
-        time.sleep(0.002)
-    try:
-        yield
-    finally:
-        rig.state._lock.release()
 
 
 def settle(rig):
@@ -510,6 +447,18 @@ def start_sync(rig, client):
 
     wait_for(attempt)
     wait_for(lambda: rig.snapshot()["feedback_fresh"])
+
+
+def press_behind_stopping_hold(rig, key, *, release=True):
+    """Arm, start a W hold, slow its stop, then press a key behind it."""
+    session = rig.arm()
+    rig.browser.keys("W")
+    first = rig.hold(1)
+    session.stop_gate.clear()
+    if release:
+        rig.browser.keys()
+    response = rig.browser.keys(key)
+    return session, first, response
 
 
 # Construction and snapshot fields
@@ -546,23 +495,28 @@ def test_snapshot_version_increases_with_each_snapshot_and_response(rig):
     assert rig.state.heartbeat(CLIENT)["version"] > response["version"]
 
 
-def test_speed_factor_reports_the_measured_controller_ratio(rig):
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        pytest.param(37.0, 37.0, id="finite"),
+        pytest.param(float("nan"), None, id="nan"),
+        pytest.param(float("inf"), None, id="inf"),
+        pytest.param(float("-inf"), None, id="-inf"),
+    ],
+)
+def test_speed_factor_reports_only_a_finite_controller_ratio(rig, raw, shown):
     rig.connect()
     assert rig.snapshot()["speed_factor"] is None
-    rig.feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, 37.0)
-    wait_for(lambda: rig.snapshot()["speed_factor"] == 37.0)
-    rig.feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, 5.0)
-    wait_for(lambda: rig.snapshot()["speed_factor"] == 5.0)
-
-
-@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf")])
-def test_speed_factor_hides_a_non_finite_controller_value(rig, raw):
-    rig.feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, raw)
-    rig.connect()
+    sample = Feedback((1, 2, 3, 4), 5, 0, False, raw)
+    rig.feed.sample = sample
+    wait_for(lambda: rig.state._sample is sample)
     snapshot = rig.snapshot()
-    assert snapshot["speed_factor"] is None
+    assert snapshot["speed_factor"] == shown
     # Every API response must stay valid JSON.
     json.dumps(snapshot, allow_nan=False)
+    if shown is not None:
+        rig.feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, 5.0)
+        wait_for(lambda: rig.snapshot()["speed_factor"] == 5.0)
 
 
 def test_snapshot_instance_is_stable_and_new_for_each_panel_process(make_rig):
@@ -571,16 +525,6 @@ def test_snapshot_instance_is_stable_and_new_for_each_panel_process(make_rig):
     assert isinstance(before["instance"], str) and before["instance"]
     assert after["instance"] == before["instance"] and after["version"] > before["version"]
     assert second.snapshot()["instance"] != before["instance"]
-
-
-def test_speed_percent_reports_the_current_or_last_armed_session(rig):
-    rig.connect()
-    rig.prepare_gate.clear()
-    assert rig.browser.arm(42)["keyboard_speed_percent"] == 42
-    rig.prepare_gate.set()
-    wait_for(lambda: rig.snapshot()["keyboard_enabled"])
-    assert rig.snapshot()["keyboard_speed_percent"] == 42
-    assert rig.browser.disarm("focus")["keyboard_speed_percent"] == 42
 
 
 def test_snapshot_reports_an_arm_hold(rig):
@@ -611,17 +555,6 @@ def test_snapshot_reports_an_arm_hold(rig):
     assert snapshot["message"] == STOPPED
     # Pose queries continue after the hold.
     wait_for(lambda: rig.snapshot()["actual"][:4] == list(POSE))
-
-
-def test_active_key_is_cleared_when_a_hold_ends_while_its_key_is_held(rig):
-    rig.connect()
-    rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1).finish.set()
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_active_key"] is None
-    assert snapshot["keyboard_enabled"] is True
 
 
 # Request validation and ownership
@@ -704,9 +637,11 @@ DISARM_TEXT = [
 @pytest.mark.parametrize(("reason", "text"), DISARM_TEXT)
 def test_disarm_turns_keys_off_with_the_client_reason(rig, reason, text):
     rig.connect()
-    session = rig.arm()
+    session = rig.arm(42)
     snapshot = rig.browser.disarm(reason)
     assert snapshot["keyboard_enabled"] is False
+    # The panel still reports the speed of the last armed session.
+    assert snapshot["keyboard_speed_percent"] == 42
     assert snapshot["keyboard_disarm_reason"] == text
     assert snapshot["message"] == (f"Keyboard off: {text}" if text else READY)
     assert "close" in session.calls
@@ -860,21 +795,72 @@ def test_arm_after_lease_expiry_is_refused(rig):
     assert rig.snapshot()["controller_id"] is None
 
 
-def test_arm_refuses_stale_feedback(rig):
+@contextmanager
+def connected(make_rig, *, sample=None, gripper=None, retention=None):
+    rig = make_rig(gripper=gripper)
+    if sample is not None:
+        rig.feed.sample = sample
     rig.connect()
-    with rig.state._lock:
-        rig.state._received -= 1
-        with pytest.raises(RuntimeError, match="stale"):
-            rig.browser.arm()
-    assert_not_armed(rig)
+    rig.control.retention = retention
+    yield rig
 
 
-def test_arm_refuses_feedback_that_reports_an_error(rig):
-    rig.connect()
-    with rig.state._lock:
-        rig.state._sample = Feedback((1, 2, 3, 4), 5, 0, True)
-        rig.state._received = time.monotonic()
-        with pytest.raises(RuntimeError, match="error"):
+@contextmanager
+def connected_under_lock(make_rig, change):
+    """Connect, then hold the panel lock after the change, so the watchdog cannot act."""
+    with connected(make_rig) as rig, rig.state._lock:
+        change(rig.state)
+        yield rig
+
+
+def age_feedback(state):
+    state._received -= 1
+
+
+def receive_feedback_error(state):
+    state._sample = Feedback((1, 2, 3, 4), 5, 0, True)
+    state._received = time.monotonic()
+
+
+def locked_gripper():
+    gripper = Gripper()
+    gripper.locked = True
+    return gripper
+
+
+ARM_REFUSALS = [
+    pytest.param(lambda m: connected_under_lock(m, age_feedback), "stale", id="stale"),
+    pytest.param(lambda m: connected_under_lock(m, receive_feedback_error), "error", id="error"),
+    *[
+        pytest.param(
+            lambda m, mode=mode: connected(m, sample=Feedback((1, 2, 3, 4), mode, 0, False)),
+            "Enable the robot before keyboard control",
+            id=f"mode-{mode}",
+        )
+        for mode in (4, 7)
+    ],
+    pytest.param(
+        lambda m: connected(m, gripper=locked_gripper()),
+        "Gripper control is locked",
+        id="gripper-locked",
+    ),
+    pytest.param(
+        lambda m: connected(m, sample=Feedback((170, 2, 3, 4), 5, 0, False)),
+        "Keyboard unavailable: J1=170",
+        id="joints",
+    ),
+    pytest.param(
+        lambda m: connected(m, retention="A controller acknowledgement is pending."),
+        "Keyboard unavailable: A controller acknowledgement is pending.",
+        id="retention",
+    ),
+]
+
+
+@pytest.mark.parametrize(("setup", "match"), ARM_REFUSALS)
+def test_arm_refusals(make_rig, setup, match):
+    with setup(make_rig) as rig:
+        with pytest.raises(RuntimeError, match=match):
             rig.browser.arm()
     assert_not_armed(rig)
 
@@ -887,26 +873,6 @@ def test_arm_refuses_while_a_job_runs(rig):
     with pytest.raises(RuntimeError, match=BUSY):
         rig.browser.arm()
     assert_not_armed(rig)
-
-
-def test_arm_refuses_while_a_stop_runs(rig):
-    rig.connect()
-    entered, release = threading.Event(), threading.Event()
-
-    def stop():
-        entered.set()
-        release.wait(2)
-        return {"ok": True}
-
-    rig.control.stop = stop
-    try:
-        rig.browser.command("stop")
-        assert entered.wait(1)
-        with pytest.raises(RuntimeError, match="locked"):
-            rig.browser.arm()
-        assert_not_armed(rig)
-    finally:
-        release.set()
 
 
 @pytest.mark.parametrize("field", ["_safety_workers", "_gripper_active"])
@@ -931,8 +897,12 @@ def test_arm_refuses_while_a_keyboard_worker_still_runs(rig):
     session.stop_gate.clear()
     rig.browser.keys("W")
     hold = rig.hold(1)
-    snapshot = rig.browser.disarm("focus")
+    snapshot = rig.browser.disarm("edit")
     assert hold.released.is_set()
+    # The disarm releases the hold at once, but closes the session only after it ends.
+    assert "release" in session.calls
+    assert "close" not in session.calls
+    assert snapshot["message"] == "Keyboard off: target editing."
     assert snapshot["busy"] is True
     assert snapshot["keyboard_enabled"] is False
     with pytest.raises(RuntimeError, match=BUSY):
@@ -944,44 +914,9 @@ def test_arm_refuses_while_a_keyboard_worker_still_runs(rig):
     assert rig.control.calls == []
     session.stop_gate.set()
     rig.idle()
+    assert "close" in session.calls
+    assert rig.snapshot()["message"] == "Keyboard off: target editing."
     rig.arm()
-
-
-@pytest.mark.parametrize("mode", [4, 7])
-def test_arm_requires_an_enabled_idle_robot(rig, mode):
-    rig.feed.sample = Feedback((1, 2, 3, 4), mode, 0, False)
-    rig.connect()
-    with pytest.raises(RuntimeError, match="Enable the robot before keyboard control"):
-        rig.browser.arm()
-    assert_not_armed(rig)
-
-
-def test_arm_refuses_a_locked_gripper(make_rig):
-    gripper = Gripper()
-    gripper.locked = True
-    rig = make_rig(gripper=gripper)
-    rig.connect()
-    with pytest.raises(RuntimeError, match="Gripper control is locked"):
-        rig.browser.arm()
-    assert_not_armed(rig)
-
-
-def test_arm_refuses_joints_outside_the_allowed_range(rig):
-    rig.feed.sample = Feedback((170, 2, 3, 4), 5, 0, False)
-    rig.connect()
-    with pytest.raises(RuntimeError, match="Keyboard unavailable: J1=170"):
-        rig.browser.arm()
-    assert_not_armed(rig)
-
-
-def test_arm_refuses_control_that_must_keep_feedback(rig):
-    rig.connect()
-    rig.control.retention = "A controller acknowledgement is pending."
-    with pytest.raises(
-        RuntimeError, match="Keyboard unavailable: A controller acknowledgement is pending."
-    ):
-        rig.browser.arm()
-    assert_not_armed(rig)
 
 
 # Arming and preparation
@@ -1057,79 +992,36 @@ def test_arm_while_on_or_arming_keeps_the_session_speed(rig):
     assert session.calls == ["prepare"]
 
 
-def test_deferred_preparation_turns_keys_off_without_a_stop(rig):
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        pytest.param(
+            PreparationRejectedError("Robot is not at rest."),
+            "Keyboard preparation deferred: Robot is not at rest. Click Keyboard to retry.",
+            id="deferred",
+        ),
+        pytest.param(
+            RuntimeError("Keyboard speed feedback was not confirmed"),
+            "ERROR: Keyboard speed feedback was not confirmed",
+            id="failed",
+        ),
+    ],
+)
+def test_preparation_error_turns_keys_off_without_a_stop(rig, error, message):
     rig.connect()
-    rig.prepare_error = PreparationRejectedError("Robot is not at rest.")
+    rig.prepare_error = error
     rig.browser.arm()
     rig.idle()
     snapshot = rig.snapshot()
     assert snapshot["keyboard_enabled"] is False
     assert snapshot["keyboard_arming"] is False
-    assert snapshot["message"] == (
-        "Keyboard preparation deferred: Robot is not at rest. Click Keyboard to retry."
-    )
+    assert snapshot["message"] == message
+    # The parent control was not cancelled, so no stop is needed.
     assert snapshot["locked"] is False
     assert rig.control.calls == []
     assert "close" in rig.session.calls
     rig.prepare_error = None
     rig.arm()
-
-
-def test_failed_current_preparation_reports_the_error_without_a_stop(rig):
-    rig.connect()
-    rig.prepare_error = RuntimeError("Keyboard speed feedback was not confirmed")
-    rig.browser.arm()
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is False
-    assert snapshot["keyboard_arming"] is False
-    assert snapshot["message"] == "ERROR: Keyboard speed feedback was not confirmed"
-    # The parent control was not cancelled, so no stop is needed.
-    assert snapshot["locked"] is False
-    assert rig.control.calls == []
-    assert "close" in rig.session.calls
-
-
-def test_faulted_preparation_stops_and_locks_until_a_verified_disable(rig):
-    rig.connect()
-    rig.prepare_fault = "Keyboard speed feedback does not confirm SpeedFactor(5)"
-    rig.browser.arm(5)
-    first = rig.control
-    wait_for(lambda: "stop" in first.calls)
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["locked"] is True
-    assert snapshot["keyboard_enabled"] is False
-    assert snapshot["keyboard_arming"] is False
-    assert "close" in rig.session.calls
-    with pytest.raises(RuntimeError, match="locked"):
-        rig.browser.arm(5)
-    assert len(rig.sessions) == 1
-    rig.browser.command("disable")
-    wait_for(lambda: len(rig.controls) == 2 and not rig.snapshot()["locked"])
-    assert first.calls[-2:] == ["disable", "stationary"]
-    rig.prepare_fault = None
-    session = rig.arm(5)
-    assert session.control is rig.controls[1]
-
-
-def test_disarm_while_preparation_waits_for_a_pose_query_never_prepares(rig):
-    rig.connect()
-    block_pose_query(rig.control)
-    rig.browser.arm()
-    [session] = rig.sessions
-    snapshot = rig.browser.disarm("focus")
-    assert snapshot["keyboard_arming"] is False
-    # The worker leaves its wait although the pose query still runs.
-    rig.idle()
-    rig.control.release_pose.set()
-    snapshot = rig.snapshot()
-    assert "prepare" not in session.calls
-    assert "close" in session.calls
-    assert snapshot["message"] == "Keyboard off: window lost focus."
-    assert snapshot["keyboard_disarm_reason"] == "window lost focus."
-    assert snapshot["locked"] is False
-    assert rig.control.calls == []
 
 
 @pytest.mark.parametrize("pending", [False, True])
@@ -1162,28 +1054,6 @@ def test_disarm_during_preparation_closes_the_session_only_without_a_pending_com
     assert snapshot["locked"] is False
     assert rig.control.calls == []
     assert len(rig.sessions) == 1
-
-
-def test_control_send_guard_refuses_a_preparation_after_its_disarm(rig):
-    rig.connect()
-    rig.prepare_gate.clear()
-    rig.browser.arm()
-    [session] = rig.sessions
-    assert session.prepare_entered.wait(1)
-    control = rig.control
-    # The current preparation may send SpeedFactor.
-    control.send_guard()
-    # Keep the session open, so the worker stays in prepare().
-    control.command_pending = True
-    rig.browser.disarm("focus")
-    with pytest.raises(PreparationRejectedError, match="Keyboard preparation cancelled."):
-        control.send_guard()
-    control.command_pending = False
-    rig.prepare_gate.set()
-    rig.idle()
-    # Later commands use the normal guard again.
-    control.send_guard()
-    assert rig.snapshot()["locked"] is False
 
 
 def test_watchdog_cancels_arming_with_a_reason(rig):
@@ -1267,21 +1137,6 @@ def test_arm_disarm_and_key_input_share_one_sequence(rig):
     assert len(rig.sessions) == 2
 
 
-def test_stale_arm_after_a_newer_disarm_during_checking_is_ignored(rig):
-    rig.connect()
-    rig.prepare_gate.clear()
-    rig.state.command(request(ARM, seq=1), CLIENT)
-    [session] = rig.sessions
-    assert session.prepare_entered.wait(1)
-    assert rig.state.command(request(DISARM, seq=3), CLIENT)["keyboard_arming"] is False
-    rig.idle()
-    snapshot = rig.state.command(request(ARM, seq=2), CLIENT)
-    assert snapshot["keyboard_arming"] is False
-    assert snapshot["keyboard_enabled"] is False
-    assert snapshot["message"] == "Keyboard off: window lost focus."
-    assert len(rig.sessions) == 1
-
-
 @pytest.mark.parametrize("client", [CLIENT, OTHER])
 def test_sequence_restarts_only_for_a_new_owner_page(rig, client):
     rig.connect()
@@ -1349,11 +1204,7 @@ def test_arm_forgets_keys_reported_before_arming(rig):
 
 def test_direction_change_waits_for_the_stop(rig):
     rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    first = rig.hold(1)
-    session.stop_gate.clear()
-    snapshot = rig.browser.keys("S")
+    session, first, snapshot = press_behind_stopping_hold(rig, "S", release=False)
     assert first.released.is_set()
     assert "release" in session.calls
     assert snapshot["keyboard_active_key"] is None
@@ -1368,12 +1219,7 @@ def test_direction_change_waits_for_the_stop(rig):
 
 def test_release_and_new_press_while_stopping_starts_a_fresh_hold(rig):
     rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("W")
+    session, _, _ = press_behind_stopping_hold(rig, "W")
     rig.browser.keys("W")
     assert len(session.holds) == 1
     session.stop_gate.set()
@@ -1382,31 +1228,9 @@ def test_release_and_new_press_while_stopping_starts_a_fresh_hold(rig):
     assert not second.released.is_set()
 
 
-def test_key_released_before_its_turn_never_starts(rig):
-    rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("S")
-    rig.browser.keys()
-    session.stop_gate.set()
-    rig.idle()
-    assert [hold.key for hold in session.holds] == ["W"]
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is True
-    assert snapshot["keyboard_active_key"] is None
-
-
 def test_only_the_remaining_fresh_key_starts_after_the_stop(rig):
     rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("S")
+    session, _, _ = press_behind_stopping_hold(rig, "S")
     rig.browser.keys()
     rig.browser.keys("A")
     session.stop_gate.set()
@@ -1416,7 +1240,8 @@ def test_only_the_remaining_fresh_key_starts_after_the_stop(rig):
     assert [hold.key for hold in session.holds] == ["W", "A"]
 
 
-def test_second_key_stops_the_hold_and_starts_nothing_until_one_key_remains(rig):
+@pytest.mark.parametrize("remaining", ["S", "W"])
+def test_second_key_stops_the_hold_and_only_a_fresh_key_starts(rig, remaining):
     rig.connect()
     session = rig.arm()
     rig.browser.keys("W")
@@ -1424,25 +1249,21 @@ def test_second_key_stops_the_hold_and_starts_nothing_until_one_key_remains(rig)
     rig.browser.keys("W", "S")
     assert first.released.is_set()
     assert "release" in session.calls
-    rig.idle()
-    assert len(session.holds) == 1
-    rig.browser.keys("S")
-    assert rig.hold(2).key == "S"
-
-
-def test_releasing_the_second_key_does_not_restart_a_consumed_key(rig):
-    rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    rig.browser.keys("W", "S")
-    rig.browser.keys("W")
-    rig.idle()
-    assert rig.browser.keys("W")["busy"] is False
-    assert len(session.holds) == 1
-    rig.browser.keys()
-    rig.browser.keys("W")
-    assert rig.hold(2).key == "W"
+    if remaining == "S":
+        # Nothing starts while two keys are held.
+        rig.idle()
+        assert len(session.holds) == 1
+        rig.browser.keys("S")
+        assert rig.hold(2).key == "S"
+    else:
+        # Releasing the second key does not restart the consumed W.
+        rig.browser.keys("W")
+        rig.idle()
+        assert rig.browser.keys("W")["busy"] is False
+        assert len(session.holds) == 1
+        rig.browser.keys()
+        rig.browser.keys("W")
+        assert rig.hold(2).key == "W"
 
 
 def test_completed_hold_needs_a_new_press(rig):
@@ -1451,6 +1272,9 @@ def test_completed_hold_needs_a_new_press(rig):
     rig.browser.keys("W")
     rig.hold(1).finish.set()
     rig.idle()
+    snapshot = rig.snapshot()
+    assert snapshot["keyboard_active_key"] is None
+    assert snapshot["keyboard_enabled"] is True
     assert rig.browser.keys("W")["busy"] is False
     assert len(session.holds) == 1
     rig.browser.keys()
@@ -1460,12 +1284,7 @@ def test_completed_hold_needs_a_new_press(rig):
 
 def test_disarm_clears_held_and_pending_keys(rig):
     rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    first = rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("S")
+    session, first, _ = press_behind_stopping_hold(rig, "S")
     rig.browser.disarm()
     assert first.released.is_set()
     session.stop_gate.set()
@@ -1477,31 +1296,9 @@ def test_disarm_clears_held_and_pending_keys(rig):
     assert rig.hold(1, second).key == "S"
 
 
-def test_disarm_during_a_hold_releases_it_and_closes_the_session_after_it_ends(rig):
-    rig.connect()
-    session = rig.arm()
-    session.stop_gate.clear()
-    rig.browser.keys("W")
-    hold = rig.hold(1)
-    snapshot = rig.browser.disarm("edit")
-    assert hold.released.is_set()
-    assert "release" in session.calls
-    assert "close" not in session.calls
-    assert snapshot["message"] == "Keyboard off: target editing."
-    session.stop_gate.set()
-    rig.idle()
-    assert "close" in session.calls
-    assert rig.snapshot()["message"] == "Keyboard off: target editing."
-
-
 def test_start_conditions_are_checked_again_before_a_pending_key_starts(rig):
     rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("S")
+    session, _, _ = press_behind_stopping_hold(rig, "S")
     rig.feed.sample = Feedback((1, 2, 3, 4), 7, 0, False)
     wait_for(lambda: rig.snapshot()["robot_mode"] == 7)
     session.stop_gate.set()
@@ -1523,19 +1320,27 @@ def test_hold_waits_for_an_in_flight_pose_query(rig):
 
 
 @pytest.mark.parametrize("revoke", ["release", "disarm"])
-def test_hold_revoked_before_its_worker_runs_never_calls_the_session(rig, revoke):
+@pytest.mark.parametrize("key", ["W", "Z"])
+def test_hold_revoked_before_its_worker_runs_never_starts(make_rig, key, revoke):
+    gripper = Gripper()
+    rig = make_rig(gripper=gripper)
     rig.connect()
     session = rig.arm()
-    with lock_between_pose_queries(rig):
+    with idle_lock(rig.state):
         # The hold is registered, but its worker waits for this lock.
-        assert rig.browser.keys("W")["keyboard_active_key"] == "W"
+        assert rig.browser.keys(key)["keyboard_active_key"] == key
         if revoke == "release":
             rig.browser.keys()
         else:
             rig.browser.disarm("focus")
     rig.idle()
-    assert session.holds == []
-    assert ("run", "W") not in session.calls
+    if key == "W":
+        assert session.holds == []
+        assert ("run", "W") not in session.calls
+    else:
+        assert gripper.closed_checks == 0
+        assert gripper.commands == []
+        assert not gripper.move_entered.is_set()
     assert rig.snapshot()["keyboard_enabled"] is (revoke == "release")
 
 
@@ -1624,13 +1429,8 @@ def test_dead_man_ignores_keys_that_are_on_with_no_key_held(rig):
 def test_can_start_refuses_a_press_that_was_not_renewed(make_rig):
     rig = make_rig(watch=False)
     rig.connect()
-    session = rig.arm()
     rig.state.KEY_LEASE_SECONDS = 0.1
-    rig.browser.keys("W")
-    rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("A")
+    session, _, _ = press_behind_stopping_hold(rig, "A")
     renewed = time.monotonic()
     # No watchdog runs, so only the start check can notice the stale press.
     wait_for(lambda: time.monotonic() - renewed > 0.15)
@@ -1645,12 +1445,7 @@ def test_can_start_refuses_a_press_that_was_not_renewed(make_rig):
 def test_can_start_refuses_a_pending_press_after_the_browser_lease_lapsed(make_rig):
     rig = make_rig(gripper=Gripper(), watch=False)
     rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("A")
+    session, _, _ = press_behind_stopping_hold(rig, "A")
     with rig.state._lock:
         rig.state._heartbeat -= rig.state.LEASE_SECONDS + 1
     session.stop_gate.set()
@@ -1664,12 +1459,7 @@ def test_can_start_refuses_a_pending_press_while_the_gripper_is_locked(make_rig)
     gripper = Gripper()
     rig = make_rig(gripper=gripper, watch=False)
     rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("A")
+    session, _, _ = press_behind_stopping_hold(rig, "A")
     gripper.locked = True
     wait_for(lambda: rig.snapshot()["locked"])
     session.stop_gate.set()
@@ -1784,34 +1574,31 @@ JOBS = [
 
 
 @pytest.mark.parametrize("job", JOBS)
-def test_jobs_are_refused_while_a_preparation_runs(rig, job):
+@pytest.mark.parametrize("phase", ["preparation", "hold"])
+def test_jobs_are_refused_while_a_keyboard_worker_runs(rig, phase, job):
     rig.connect()
-    rig.prepare_gate.clear()
-    rig.browser.arm()
-    [session] = rig.sessions
-    assert session.prepare_entered.wait(1)
+    if phase == "preparation":
+        rig.prepare_gate.clear()
+        rig.browser.arm()
+        [session] = rig.sessions
+        assert session.prepare_entered.wait(1)
+    else:
+        rig.arm()
+        rig.browser.keys("W")
+        hold = rig.hold(1)
     with pytest.raises(RuntimeError, match=BUSY):
         rig.state.command(job, CLIENT)
-    assert rig.snapshot()["keyboard_arming"] is True
-    assert session.calls == ["prepare"]
     assert rig.control.calls == []
-    rig.prepare_gate.set()
-    wait_for(lambda: rig.snapshot()["keyboard_enabled"])
-
-
-@pytest.mark.parametrize("job", JOBS)
-def test_jobs_are_refused_while_a_hold_runs(rig, job):
-    rig.connect()
-    rig.arm()
-    rig.browser.keys("W")
-    hold = rig.hold(1)
-    with pytest.raises(RuntimeError, match=BUSY):
-        rig.state.command(job, CLIENT)
     snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is True
-    assert snapshot["keyboard_active_key"] == "W"
-    assert not hold.released.is_set()
-    assert rig.control.calls == []
+    if phase == "preparation":
+        assert snapshot["keyboard_arming"] is True
+        assert session.calls == ["prepare"]
+        rig.prepare_gate.set()
+        wait_for(lambda: rig.snapshot()["keyboard_enabled"])
+    else:
+        assert snapshot["keyboard_enabled"] is True
+        assert snapshot["keyboard_active_key"] == "W"
+        assert not hold.released.is_set()
 
 
 @pytest.mark.parametrize(
@@ -1851,19 +1638,6 @@ def test_refused_job_leaves_keys_on(rig):
 # Hold outcomes
 
 
-def test_released_arm_hold_reports_a_normal_stop(rig):
-    rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    rig.hold(1)
-    rig.browser.keys()
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is True
-    assert snapshot["message"] == STOPPED
-    assert "close" not in session.calls
-
-
 def test_finite_hold_reports_its_measured_pose(rig):
     rig.connect()
     rig.arm()
@@ -1878,36 +1652,29 @@ def test_finite_hold_reports_its_measured_pose(rig):
     assert rig.snapshot()["actual"][:4] == [260, 1, 31, 2]
 
 
-def test_limit_stop_keeps_keys_on_and_reports_the_limit(rig):
+@pytest.mark.parametrize(
+    ("fault", "shown"),
+    [
+        pytest.param(None, "ERROR: Stop was not confirmed", id="error"),
+        pytest.param(
+            "Keyboard jogging speed changed",
+            "ERROR: Keyboard jogging speed changed",
+            id="session-fault",
+        ),
+    ],
+)
+def test_failed_hold_turns_keys_off_drops_pending_keys_and_needs_a_new_arming(rig, fault, shown):
     rig.connect()
-    rig.arm()
-    rig.browser.keys("W")
-    hold = rig.hold(1)
-    hold.limit_reason = "J2=84 degrees is at the keyboard margin."
-    hold.finish.set()
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is True
-    assert snapshot["message"] == (
-        "J2=84 degrees is at the keyboard margin. Release the key and choose another direction."
-    )
-
-
-def test_failed_hold_turns_keys_off_drops_pending_keys_and_needs_a_new_arming(rig):
-    rig.connect()
-    session = rig.arm()
-    rig.browser.keys("W")
-    first = rig.hold(1)
-    session.stop_gate.clear()
-    rig.browser.keys()
-    rig.browser.keys("S")
+    session, first, _ = press_behind_stopping_hold(rig, "S")
     first.error = RuntimeError("Stop was not confirmed")
+    # A session fault replaces the error text in the message.
+    first.fault = fault
     session.stop_gate.set()
     rig.idle()
     snapshot = rig.snapshot()
     assert [hold.key for hold in session.holds] == ["W"]
     assert snapshot["keyboard_enabled"] is False
-    assert snapshot["message"] == "ERROR: Stop was not confirmed"
+    assert snapshot["message"] == shown
     assert snapshot["keyboard_disarm_reason"] is None
     assert snapshot["locked"] is False
     assert "close" in session.calls
@@ -1915,39 +1682,6 @@ def test_failed_hold_turns_keys_off_drops_pending_keys_and_needs_a_new_arming(ri
     assert second.holds == []
     rig.browser.keys("S")
     assert rig.hold(1, second).key == "S"
-
-
-def test_failed_hold_reports_the_session_fault(rig):
-    rig.connect()
-    rig.arm()
-    rig.browser.keys("W")
-    hold = rig.hold(1)
-    hold.fault = "Keyboard jogging speed changed"
-    hold.error = RuntimeError("Keyboard hold failed")
-    hold.finish.set()
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is False
-    assert snapshot["message"] == "ERROR: Keyboard jogging speed changed"
-
-
-def test_faulted_hold_that_cancelled_the_parent_stops_and_locks(rig):
-    rig.connect()
-    rig.arm()
-    first = rig.control
-    rig.browser.keys("W")
-    hold = rig.hold(1)
-    hold.fault = "Keyboard stop unconfirmed: no reply"
-    hold.cancel_parent = True
-    hold.error = RuntimeError(hold.fault)
-    hold.finish.set()
-    wait_for(lambda: "stop" in first.calls)
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["locked"] is True
-    assert snapshot["keyboard_enabled"] is False
-    rig.browser.command("disable")
-    wait_for(lambda: len(rig.controls) == 2 and not rig.snapshot()["locked"])
 
 
 def test_gripper_key_without_a_gripper_keeps_arm_keys_ready(rig):
@@ -1991,72 +1725,3 @@ def test_gripper_step_keeps_the_arm_pose_visible(make_rig):
     assert snapshot["message"] == STOPPED
     assert snapshot["actual"][4] == 525
     assert session.holds == []
-
-
-def test_gripper_contact_keeps_keys_on_and_needs_a_new_press(make_rig):
-    gripper = Gripper(position=500)
-    gripper.outcome = "contact"
-    rig = make_rig(gripper=gripper)
-    rig.connect()
-    rig.arm()
-    rig.browser.keys("X")
-    # X closes by one step and stops at contact.
-    wait_for(lambda: gripper.commands == [475])
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is True
-    assert snapshot["message"].endswith("Release the key before pressing again.")
-    assert rig.browser.keys("X")["busy"] is False
-    settle(rig)
-    assert gripper.commands == [475]
-    rig.browser.keys()
-    rig.browser.keys("X")
-    wait_for(lambda: gripper.commands == [475, 475])
-
-
-def test_gripper_hold_limit_keeps_keys_on(make_rig):
-    gripper = Gripper(position=500)
-    # Each step ends without a new measured position, so the hold limit ends the hold.
-    gripper.outcome = "stalled"
-    rig = make_rig(gripper=gripper)
-    rig.state.GRIPPER_HOLD_SECONDS = 0.1
-    rig.connect()
-    rig.arm()
-    rig.browser.keys("Z")
-    limit = "Hold limit reached. Release the key before pressing again."
-    wait_for(lambda: rig.snapshot()["message"] == limit)
-    rig.idle()
-    assert gripper.commands
-    assert rig.snapshot()["keyboard_enabled"] is True
-
-
-def test_gripper_hold_released_before_its_worker_runs_never_steps(make_rig):
-    gripper = Gripper()
-    rig = make_rig(gripper=gripper)
-    rig.connect()
-    rig.arm()
-    with lock_between_pose_queries(rig):
-        assert rig.browser.keys("Z")["keyboard_active_key"] == "Z"
-        rig.browser.keys()
-    rig.idle()
-    assert gripper.closed_checks == 0
-    assert gripper.commands == []
-    assert not gripper.move_entered.is_set()
-
-
-def test_unavailable_gripper_step_after_keys_turned_off_keeps_the_off_message(make_rig):
-    gripper = Gripper()
-    rig = make_rig(gripper=gripper)
-    rig.connect()
-    rig.arm()
-    gripper.release_move.clear()
-    rig.browser.keys("Z")
-    assert gripper.move_entered.wait(1)
-    rig.browser.disarm("focus")
-    gripper.move_error = GripperNotSentError("No command sent. The panel cancelled the command.")
-    gripper.release_move.set()
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["keyboard_enabled"] is False
-    # Keys are no longer ON, so the "Gripper unavailable" outcome sets no message.
-    assert snapshot["message"] == "Keyboard off: window lost focus."

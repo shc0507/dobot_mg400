@@ -5,12 +5,11 @@ session release, the hold exit, the parent cancel, and the stop or disable.
 """
 
 import contextlib
-import socket
 import threading
 import time
-from unittest.mock import Mock
 
 import pytest
+from helpers import Feed, block_network, idle_lock, wait_for
 
 from mg400_agent import web_control
 from mg400_agent.controller_ownership import ControllerOwnership
@@ -21,17 +20,9 @@ from mg400_agent.web_gripper import GripperNotSentError
 
 OWNER = "browser-a"
 OTHER = "browser-b"
-ENABLED = Feedback((1, 2, 3, 4), 5, 0, False)
 JOGGING = Feedback((1, 2, 3, 4), 11, 0, False)
 
-
-def wait_for(predicate, timeout=2):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.005)
-    assert predicate()
+pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
 
 def stays(predicate, duration=0.1):
@@ -65,23 +56,6 @@ def acquired(ownership):
     return True
 
 
-@contextlib.contextmanager
-def idle_lock(state):
-    """Hold the panel lock between worker iterations, so a key press starts its hold at once."""
-    deadline = time.monotonic() + 2
-    while True:
-        state._lock.acquire()
-        if not state._working:
-            break
-        state._lock.release()
-        assert time.monotonic() < deadline, "The panel worker did not become idle"
-        time.sleep(0.002)
-    try:
-        yield
-    finally:
-        state._lock.release()
-
-
 class Log:
     """Record calls from all threads in one order."""
 
@@ -111,28 +85,6 @@ class Log:
             assert entry in entries, f"{entry!r} is missing from {entries}"
         positions = [entries.index(entry) for entry in expected]
         assert positions == sorted(set(positions)), f"Expected {expected} in {entries}"
-
-
-class Feed:
-    def __init__(self):
-        self.sample = ENABLED
-        self.read = threading.Event()
-        self.read.set()
-
-    def __call__(self, host, timeout_s):
-        assert host == "robot.test"
-        return self
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-    def read_latest(self):
-        self.read.wait(0.6)
-        time.sleep(0.01)
-        return self.sample
 
 
 class Control:
@@ -441,15 +393,9 @@ class Rig:
         self.feed.read.set()
 
 
-@pytest.fixture(autouse=True)
-def isolated_controller_locks(monkeypatch, tmp_path):
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path))
-
-
 @pytest.fixture
 def rig(monkeypatch):
-    monkeypatch.setattr(socket, "create_connection", Mock(side_effect=AssertionError("Network")))
-    monkeypatch.setattr(socket, "socket", Mock(side_effect=AssertionError("Network")))
+    block_network(monkeypatch)
     rig = Rig()
     try:
         yield rig
@@ -512,7 +458,10 @@ def test_stop_during_arm_hold_releases_at_once_and_cancels_after_hold_exits(rig)
     assert snapshot["message"].startswith("Robot stop is confirmed")
 
 
-def test_disable_during_arm_hold_disables_after_hold_exits_and_recovers(rig):
+@pytest.mark.parametrize(
+    "actions", [["disable"], ["stop", "disable"]], ids=["disable", "stop-disable"]
+)
+def test_disable_during_arm_hold_waits_for_hold_exit_and_recovers(rig, actions):
     state = rig.state
     rig.connect()
     session = rig.arm_ready()
@@ -521,13 +470,20 @@ def test_disable_during_arm_hold_disables_after_hold_exits_and_recovers(rig):
     control = rig.controls[0]
     alive_at_cancel = record_alive_at_cancel(control, worker)
 
-    snapshot = state.command({"action": "disable"}, OTHER)
+    for action in actions:
+        snapshot = state.command({"action": action}, OTHER)
 
     assert "session1.release" in rig.log
     assert snapshot["locked"]
     assert not snapshot["keyboard_enabled"]
     assert not control.stopped
-    stays(lambda: "control1.cancel:disable" not in rig.log and "control1.disable" not in rig.log)
+    stays(
+        lambda: (
+            not control.stopped
+            and "control1.cancel:disable" not in rig.log
+            and "control1.disable" not in rig.log
+        )
+    )
     assert len(rig.controls) == 1
 
     session.exit_gate.set()
@@ -540,38 +496,17 @@ def test_disable_during_arm_hold_disables_after_hold_exits_and_recovers(rig):
         "control1.disable",
         "control1.stationary",
     )
-    assert alive_at_cancel == [False]
-    assert "control1.stop" not in rig.log
+    if "stop" in actions:
+        rig.log.assert_order("session1.run.exit", "control1.cancel", "control1.stop")
+    else:
+        assert "control1.stop" not in rig.log
+    assert alive_at_cancel == [False] * len(actions)
     snapshot = state.snapshot()
     assert not snapshot["locked"]
     assert not snapshot["stop_unconfirmed"]
     assert not snapshot["keyboard_enabled"]
     # The recovered panel prepares keyboard control on the new control.
     assert rig.arm_ready().control is rig.controls[1]
-
-
-def test_stop_then_disable_during_arm_hold_both_wait_for_hold_exit(rig):
-    state = rig.state
-    rig.connect()
-    session = rig.arm_ready()
-    session.exit_gate.clear()
-    worker = rig.hold("W")
-    control = rig.controls[0]
-    alive_at_cancel = record_alive_at_cancel(control, worker)
-
-    state.command({"action": "stop"}, OTHER)
-    state.command({"action": "disable"}, OTHER)
-
-    stays(lambda: not control.stopped)
-    session.exit_gate.set()
-    wait_for(lambda: len(rig.controls) == 2)
-    wait_for(lambda: not state.snapshot()["busy"])
-    rig.log.assert_order("session1.run.exit", "control1.cancel", "control1.stop")
-    rig.log.assert_order(
-        "session1.run.exit", "control1.cancel:disable", "control1.disable", "control1.stationary"
-    )
-    assert alive_at_cancel == [False, False]
-    assert not state.snapshot()["locked"]
 
 
 @pytest.mark.parametrize("confirmed", [True, False])
@@ -610,42 +545,18 @@ def test_stop_sync_during_arm_hold_disconnects_only_after_confirmed_stop(rig, co
         assert snapshot["stop_unconfirmed"]
 
 
-@pytest.mark.parametrize("trigger", ["watchdog", "heartbeat", "keys"])
-def test_lease_expiry_during_arm_hold_turns_keys_off_and_defers_stop(rig, trigger):
-    state = rig.state
-    rig.connect()
-    session = rig.arm_ready()
-    session.exit_gate.clear()
-    worker = rig.hold("W")
-    control = rig.controls[0]
-    alive_at_cancel = record_alive_at_cancel(control, worker)
-
-    with state._lock:
-        state._heartbeat -= state.LEASE_SECONDS + 1
-        if trigger == "heartbeat":
-            assert state.heartbeat(OWNER)["controller_id"] is None
-        elif trigger == "keys":
-            # A late renewal can neither revive the lease nor keep the hold.
-            with pytest.raises(PermissionError):
-                rig.keys("W")
-    wait_for(lambda: state.snapshot()["controller_id"] is None)
-
-    snapshot = state.snapshot()
-    assert not snapshot["keyboard_enabled"]
-    assert snapshot["keyboard_disarm_reason"] == "browser control lease expired."
-    assert snapshot["locked"]
-    assert "session1.release" in rig.log
-    stays(lambda: "control1.cancel" not in rig.log)
-    assert worker.is_alive()
-    session.exit_gate.set()
-    wait_for(lambda: "control1.stop" in rig.log)
-    rig.log.assert_order(
-        "session1.release", "session1.run.exit", "control1.cancel", "control1.stop"
-    )
-    assert alive_at_cancel == [False]
+LEASE_TRIGGERS = ("watchdog", "heartbeat", "keys")
+INTERNAL_STOP_REASONS = {
+    "watchdog": "browser control lease expired.",
+    "heartbeat": "browser control lease expired.",
+    "keys": "browser control lease expired.",
+    "robot-error": "robot feedback is stale, unavailable, or reports a fault.",
+}
 
 
-@pytest.mark.parametrize("trigger", ["feedback-failure", "robot-error"])
+@pytest.mark.parametrize(
+    "trigger", ["watchdog", "heartbeat", "keys", "feedback-failure", "robot-error"]
+)
 def test_internal_stop_during_arm_hold_waits_for_hold_exit(rig, trigger):
     state = rig.state
     rig.connect()
@@ -655,23 +566,34 @@ def test_internal_stop_during_arm_hold_waits_for_hold_exit(rig, trigger):
     control = rig.controls[0]
     alive_at_cancel = record_alive_at_cancel(control, worker)
 
-    if trigger == "feedback-failure":
+    if trigger in LEASE_TRIGGERS:
+        with state._lock:
+            state._heartbeat -= state.LEASE_SECONDS + 1
+            if trigger == "heartbeat":
+                assert state.heartbeat(OWNER)["controller_id"] is None
+            elif trigger == "keys":
+                # A late renewal can neither revive the lease nor keep the hold.
+                with pytest.raises(PermissionError):
+                    rig.keys("W")
+        wait_for(lambda: state.snapshot()["controller_id"] is None)
+    elif trigger == "feedback-failure":
 
         def fail():
             raise ConnectionError("Feedback connection reset")
 
         rig.feed.read_latest = fail
+        wait_for(lambda: state.snapshot()["locked"])
     else:
         rig.feed.sample = Feedback((1, 2, 3, 4), 9, 0, True)
+        wait_for(lambda: state.snapshot()["locked"])
 
-    wait_for(lambda: state.snapshot()["locked"])
     snapshot = state.snapshot()
     assert not snapshot["keyboard_enabled"]
-    if trigger == "robot-error":
-        reason = "robot feedback is stale, unavailable, or reports a fault."
-        assert snapshot["keyboard_disarm_reason"] == reason
+    if trigger in INTERNAL_STOP_REASONS:
+        assert snapshot["keyboard_disarm_reason"] == INTERNAL_STOP_REASONS[trigger]
+    assert snapshot["locked"]
     assert "session1.release" in rig.log
-    stays(lambda: not control.stopped)
+    stays(lambda: "control1.cancel" not in rig.log and not control.stopped)
     assert worker.is_alive()
     session.exit_gate.set()
     wait_for(lambda: "control1.stop" in rig.log)
@@ -1449,34 +1371,6 @@ def test_disconnect_keeps_ownership_until_keyboard_worker_exits(rig):
 
 
 # A closed live connection of the owner.
-
-
-def test_closed_owner_connection_releases_the_hold_at_once_and_keeps_the_lease(rig):
-    state = rig.state
-    rig.connect()
-    session = rig.arm_ready()
-    session.exit_gate.clear()
-    worker = rig.hold("W")
-
-    state.connection_lost(OWNER)
-
-    # The session sends its own jog stop; no core stop or lock follows.
-    assert "session1.release" in rig.log
-    snapshot = state.snapshot()
-    assert not snapshot["keyboard_enabled"]
-    assert snapshot["keyboard_disarm_reason"] == "browser connection closed."
-    assert snapshot["message"] == "Keyboard off: browser connection closed."
-    assert snapshot["controller_id"] == OWNER
-    assert not snapshot["locked"]
-    session.exit_gate.set()
-    wait_for(lambda: not worker.is_alive())
-    stays(lambda: "control1.cancel" not in rig.log and "control1.stop" not in rig.log)
-    snapshot = state.snapshot()
-    assert not snapshot["busy"] and not snapshot["locked"]
-    assert snapshot["controller_id"] == OWNER
-    # A page that reconnects within the lease arms again with a new session.
-    rig.arm_ready()
-    assert len(rig.sessions) == 2
 
 
 def test_closed_connection_of_another_client_changes_nothing(rig):

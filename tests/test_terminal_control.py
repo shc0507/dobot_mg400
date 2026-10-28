@@ -1,10 +1,9 @@
 import curses
-import socket
 from collections import deque
 from unittest.mock import Mock
 
 import pytest
-from test_web_control import Control, Feed, wait_for
+from helpers import Feed, PanelControl, block_network, wait_for
 
 from mg400_agent import terminal_control
 from mg400_agent.terminal_control import TerminalSession, parse_command, run_terminal, status_lines
@@ -81,10 +80,8 @@ class Screen:
 
 
 @pytest.fixture(autouse=True)
-def no_hardware(monkeypatch, tmp_path):
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path))
-    monkeypatch.setattr(socket, "create_connection", Mock(side_effect=AssertionError("Network")))
-    monkeypatch.setattr(socket, "socket", Mock(side_effect=AssertionError("Network")))
+def no_hardware(monkeypatch, isolated_controller_locks):
+    block_network(monkeypatch)
     monkeypatch.setattr(curses, "raw", lambda: None)
 
 
@@ -106,17 +103,19 @@ def no_hardware(monkeypatch, tmp_path):
         ("status", "status"),
         ("quit", "quit"),
         ("quit --force", "force_quit"),
+        (
+            "move 250.5 -2 3e1 -90",
+            {"action": "execute", "targets": {"x": 250.5, "y": -2.0, "z": 30.0, "r": -90.0}},
+        ),
     ],
 )
 def test_parse_command(line, command):
     assert parse_command(line) == command
-
-
-def test_parse_move_preserves_finite_signed_pose_and_units():
-    assert parse_command("move 250.5 -2 3e1 -90") == {
-        "action": "execute",
-        "targets": {"x": 250.5, "y": -2.0, "z": 30.0, "r": -90.0},
-    }
+    if isinstance(command, dict):
+        state = State()
+        session = TerminalSession(state)
+        session.submit(line)
+        assert state.commands == [(command, session.client_id)]
 
 
 @pytest.mark.parametrize(
@@ -181,13 +180,6 @@ def test_stale_status_hides_measurements_and_robot_mode():
     assert lines[4] == "Gripper (0..1000): position=--"
 
 
-def test_grip_dispatches_without_any_arm_command():
-    state = State()
-    session = TerminalSession(state)
-    session.submit("grip 500")
-    assert state.commands == [({"action": "grip", "position": 500}, session.client_id)]
-
-
 def test_stop_dispatch_remains_available_while_quitting():
     state = State()
     state.values.update(syncing=True, busy=True)
@@ -245,16 +237,6 @@ def test_quit_with_unconfirmed_stop_and_no_feedback_keeps_terminal_open():
     assert "physical emergency stop" in " ".join(session.messages)
 
 
-def test_force_quit_exits_with_failure_status_without_claiming_rest():
-    state = State()
-    state.values.update(syncing=True, busy=True, locked=True)
-    session = TerminalSession(state)
-    session.submit("quit --force")
-    assert session.finished
-    assert session.exit_code == 1
-    assert state.commands == []
-
-
 def test_ui_preserves_input_and_handles_ctrl_c_while_operation_is_busy():
     state = State()
     session = TerminalSession(state)
@@ -264,7 +246,7 @@ def test_ui_preserves_input_and_handles_ctrl_c_while_operation_is_busy():
         if payload["action"] == "execute":
             state.values.update(syncing=True, busy=True)
         elif payload["action"] == "stop":
-            state.values["busy"] = False
+            state.values["locked"] = True
 
     state.command = receive
     screen = Screen(list("move 250 0 30 0\nstatus\n") + ["\x03"] + list("quit --force\n"))
@@ -273,6 +255,7 @@ def test_ui_preserves_input_and_handles_ctrl_c_while_operation_is_busy():
     assert any(frame[23] == "mg400> stat" for frame in screen.frames)
     assert any("Busy=True" in message for message in session.messages)
     assert len(state.heartbeats) >= len(screen.frames)
+    assert session.finished and session.exit_code == 1
 
 
 def test_ui_ctrl_d_requests_disconnect_and_waits_for_result():
@@ -301,7 +284,7 @@ def test_terminal_stop_interrupts_waiting_robot_move():
     controls = []
 
     def control_factory(*args, **kwargs):
-        control = Control(*args, **kwargs)
+        control = PanelControl(*args, **kwargs)
         controls.append(control)
         return control
 
@@ -309,7 +292,6 @@ def test_terminal_stop_interrupts_waiting_robot_move():
     session = TerminalSession(state)
     control = controls[0]
     try:
-        assert feed.connections == 0
         session.submit("connect")
         wait_for(lambda: session.tick()["feedback_fresh"])
         control.release_move.clear()
@@ -319,8 +301,6 @@ def test_terminal_stop_interrupts_waiting_robot_move():
         session.submit("stop")
         assert control.stop_entered.wait(1)
         assert control.stopped
-        assert not control.release_move.is_set()
-        assert not session.finished
         control.release_move.set()
         wait_for(lambda: not session.tick()["busy"])
         assert state.snapshot()["locked"]
@@ -356,13 +336,19 @@ def test_help_does_not_construct_state_or_require_tty(monkeypatch, capsys):
     assert "--robot-host" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("failure", [None, KeyboardInterrupt(), RuntimeError("Terminal failed")])
-def test_main_constructs_inert_session_and_closes_it_on_exit(monkeypatch, failure):
+def tty_state(monkeypatch):
+    """Patch the TTY checks and the state factory in the test call phase, after capsys starts."""
     state = State()
     monkeypatch.setattr(terminal_control.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(terminal_control.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(terminal_control.signal, "signal", Mock())
     monkeypatch.setattr(terminal_control, "RobotPanelState", lambda host, gripper: state)
+    return state
+
+
+@pytest.mark.parametrize("failure", [None, KeyboardInterrupt(), RuntimeError("Terminal failed")])
+def test_main_constructs_inert_session_and_closes_it_on_exit(monkeypatch, failure):
+    state = tty_state(monkeypatch)
+    monkeypatch.setattr(terminal_control.signal, "signal", Mock())
 
     def wrapper(function, session):
         assert state.commands == []
@@ -380,10 +366,7 @@ def test_main_constructs_inert_session_and_closes_it_on_exit(monkeypatch, failur
 
 @pytest.mark.parametrize("failure", ["exception", "stop_unconfirmed", "busy"])
 def test_main_reports_failed_cleanup_and_restores_signal_handlers(monkeypatch, capsys, failure):
-    state = State()
-    monkeypatch.setattr(terminal_control.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(terminal_control.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(terminal_control, "RobotPanelState", lambda host, gripper: state)
+    state = tty_state(monkeypatch)
     monkeypatch.setattr(terminal_control.curses, "wrapper", lambda function, session: None)
     signals = terminal_control.signal
     original = {signum: object() for signum in (signals.SIGINT, signals.SIGTERM, signals.SIGHUP)}

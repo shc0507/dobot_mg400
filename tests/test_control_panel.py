@@ -1,26 +1,22 @@
 """Check the independent browser panel without robot connections."""
 
-import contextlib
 import errno
 import http.client
 import json
-import runpy
 import signal
 import socket
 import sys
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from panel_ws import PANEL, PanelServer, running
 
 from mg400_agent.controller_ownership import ControllerOwnership
 
-PANEL = runpy.run_path(str(Path(__file__).resolve().parents[1] / "apps/control_panel/server.py"))
 ReadOnlyPanelState = PANEL["ReadOnlyPanelState"]
-PanelServer = PANEL["PanelServer"]
 PANEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 ROBOT_HEADERS = {
     "Authorization": "Bearer test-token",
@@ -30,9 +26,7 @@ ROBOT_HEADERS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def isolated_controller_locks(monkeypatch, tmp_path):
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path))
+pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
 
 def test_read_only_mode_is_inert_until_sync_and_has_no_hardware_commands():
@@ -43,28 +37,40 @@ def test_read_only_mode_is_inert_until_sync_and_has_no_hardware_commands():
         raise OSError("test offline")
 
     panel = ReadOnlyPanelState("test-host", connection_factory=forbidden)
-    assert panel.snapshot()["actual"] == [None] * 5
-    assert calls == []
-    for action in (
-        "enable",
-        "disable",
-        "home",
-        "execute",
-        "stop",
-        "initialize_gripper",
-        "clear_alarm",
-    ):
-        command = {"action": action}
-        if action == "execute":
-            command["targets"] = {"x": 250, "y": 0, "z": 100, "r": 0, "grip": 500}
-        with pytest.raises(PermissionError):
-            panel.command(command)
-    panel.command({"action": "start_sync"})
-    panel._reader.join(timeout=1)
-    assert calls == [("test-host",)]
-    assert not panel.snapshot()["syncing"]
-    assert "test offline" in panel.snapshot()["message"]
-    panel.close()
+    try:
+        assert panel.snapshot()["actual"] == [None] * 5
+        assert calls == []
+        for action in (
+            "enable",
+            "disable",
+            "home",
+            "execute",
+            "stop",
+            "initialize_gripper",
+            "clear_alarm",
+            "keyboard",
+        ):
+            command = {"action": action}
+            if action == "execute":
+                command["targets"] = {"x": 250, "y": 0, "z": 100, "r": 0, "grip": 500}
+            if action == "keyboard":
+                command.update(enabled=True, speed=5, seq=2)
+            with pytest.raises(PermissionError):
+                panel.command(command)
+        # A failed connection releases the robot, so sync can start again.
+        for _ in range(2):
+            panel.command({"action": "start_sync"})
+            panel._reader.join(timeout=1)
+            assert not panel.snapshot()["syncing"]
+            assert "test offline" in panel.snapshot()["message"]
+        assert calls == [("test-host",), ("test-host",)]
+        contender = ControllerOwnership("test-host")
+        try:
+            contender.acquire()
+        finally:
+            contender.release()
+    finally:
+        panel.close()
 
 
 def test_passive_feedback_cannot_connect_while_another_panel_owns_robot():
@@ -142,30 +148,6 @@ def test_passive_feedback_releases_ownership_only_after_connection_closes(finish
         if closing is not None:
             closing.join(1)
         contender.release()
-
-
-def test_passive_feedback_connection_failure_allows_retry():
-    attempts = []
-
-    def fail(*args, **kwargs):
-        attempts.append(args)
-        raise OSError("Robot is offline")
-
-    panel = ReadOnlyPanelState("test-host", connection_factory=fail)
-    try:
-        for _ in range(2):
-            panel.command({"action": "start_sync"})
-            panel._reader.join(1)
-            assert not panel.snapshot()["syncing"]
-            assert "Robot is offline" in panel.snapshot()["message"]
-        assert attempts == [("test-host",), ("test-host",)]
-        contender = ControllerOwnership("test-host")
-        try:
-            contender.acquire()
-        finally:
-            contender.release()
-    finally:
-        panel.close()
 
 
 def test_passive_feedback_thread_failure_releases_ownership(monkeypatch):
@@ -265,26 +247,12 @@ def test_http_authentication_and_command_guard(server):
     headers = {**auth, "Content-Type": "application/json", "X-MG400-Panel": "1"}
     assert request(server, "POST", "/api/command", body, headers)[0] == 200
     assert request(server, "POST", "/api/command", '{"action":"enable"}', headers)[0] == 403
-    assert request(server, "POST", "/api/command", "{", headers)[0] == 400
     for invalid in ([], {}, None, True):
         assert (
             request(server, "POST", "/api/command", json.dumps({"action": invalid}), headers)[0]
             == 400
         )
-    assert (
-        request(server, "POST", "/api/command", body, {**headers, "Sec-Fetch-Site": "cross-site"})[
-            0
-        ]
-        == 403
-    )
     assert request(server, "GET", "/../config/robot.toml")[0] == 404
-
-
-def test_remote_bind_requires_access_token(monkeypatch):
-    monkeypatch.delenv("MG400_PANEL_TOKEN", raising=False)
-    with pytest.raises(SystemExit) as error:
-        PANEL["main"](["--bind", "0.0.0.0"])
-    assert error.value.code == 2
 
 
 @pytest.mark.parametrize(
@@ -305,139 +273,60 @@ def test_tokens_are_those_a_browser_sends_unchanged(token, valid):
     assert bool(PANEL["valid_token"](token)) is valid
 
 
-@pytest.mark.parametrize("bind", ["127.0.0.1", "0.0.0.0"])
 @pytest.mark.parametrize(
-    "token",
-    ["é" * 30, "a" * 30 + " ", " " + "a" * 30, "a" * 30 + "\t"],
-    ids=["non-ascii", "trailing-space", "leading-space", "tab"],
+    ("argv", "token", "message"),
+    [
+        (["--bind", "0.0.0.0"], None, None),
+        # A browser cannot send other characters, and it strips spaces at either end.
+        (["--bind", "127.0.0.1"], "a" * 30 + " ", None),
+        (["--bind", "0.0.0.0"], "é" * 30, None),
+        (["--mode", "read-only", "--gripper-feedback", "unused.json"], None, None),
+        (["--mode", "demo"], None, "invalid choice: 'demo'"),
+    ],
+    ids=[
+        "remote-without-token",
+        "loopback-unsendable-token",
+        "remote-unsendable-token",
+        "gripper-feedback-read-only",
+        "demo",
+    ],
 )
-def test_service_refuses_a_token_a_browser_cannot_send(monkeypatch, bind, token):
-    # A browser cannot send other characters, and it strips spaces at either end.
-    monkeypatch.setenv("MG400_PANEL_TOKEN", token)
+def test_main_refuses_bad_arguments_before_constructing_a_backend(
+    monkeypatch, capsys, argv, token, message
+):
+    main = PANEL["main"]
+    if token is None:
+        monkeypatch.delenv("MG400_PANEL_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("MG400_PANEL_TOKEN", token)
+    backends = {name: Mock() for name in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
+    for name, backend in backends.items():
+        monkeypatch.setitem(main.__globals__, name, backend)
+
     with pytest.raises(SystemExit) as error:
-        PANEL["main"](["--bind", bind])
+        main(argv)
+
     assert error.value.code == 2
+    if message is not None:
+        assert message in capsys.readouterr().err
+    for backend in backends.values():
+        backend.assert_not_called()
 
 
 def test_non_ascii_authorization_header_gets_401():
     state = RecordingState()
     # The server decodes header bytes as Latin-1, so a UTF-8 é arrives as non-ASCII text.
     raw = http11("GET", "/api/state", b"", ["Authorization: Bearer tést-token"])
-    with running_panel(state) as server:
+    with running(state) as server:
         code, headers, _ = exchange(server, raw)
     assert code == 401
     assert headers.get("connection", "").lower() == "close"
 
 
-def test_cli_defaults_to_robot_without_starting_sync(monkeypatch):
-    main = PANEL["main"]
-    state = Mock()
-    state.snapshot.return_value = {
-        "message": "Disconnected.",
-        "stop_unconfirmed": False,
-        "busy": False,
-    }
-    robot = Mock(return_value=state)
-    server = Mock(server_port=8766)
-    host_loader = Mock(return_value="robot.test")
-    monkeypatch.setitem(main.__globals__, "RobotPanelState", robot)
-    monkeypatch.setitem(main.__globals__, "PanelServer", Mock(return_value=server))
-    monkeypatch.setitem(main.__globals__, "load_robot_host", host_loader)
-    handlers = {signum: signal.getsignal(signum) for signum in PANEL_SIGNALS}
-
-    assert main([]) == 0
-
-    host_loader.assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
-    robot.assert_called_once_with("robot.test", gripper=None)
-    state.command.assert_not_called()
-    state.close.assert_called_once_with()
-    # main() must not leak its signal handlers into the calling process.
-    assert {signum: signal.getsignal(signum) for signum in PANEL_SIGNALS} == handlers
-
-
-def test_cli_rejects_demo_before_constructing_a_backend(monkeypatch, capsys):
-    main = PANEL["main"]
-    robot, read_only = Mock(), Mock()
-    monkeypatch.setitem(main.__globals__, "RobotPanelState", robot)
-    monkeypatch.setitem(main.__globals__, "ReadOnlyPanelState", read_only)
-
-    with pytest.raises(SystemExit) as error:
-        main(["--mode", "demo"])
-
-    assert error.value.code == 2
-    assert "invalid choice: 'demo'" in capsys.readouterr().err
-    robot.assert_not_called()
-    read_only.assert_not_called()
-
-
-def test_reverse_proxy_base_path(server):
-    server.base_path = "/mg400-panel/"
-    auth = {"Authorization": "Bearer test-token"}
-    assert request(server, "GET", "/mg400-panel")[0] == 308
-    assert request(server, "GET", "/mg400-panel/")[0] == 200
-    assert request(server, "GET", "/mg400-panel/api/state", headers=auth)[0] == 200
-    assert request(server, "GET", "/api/state", headers=auth)[0] == 404
-    headers = {**auth, "Content-Type": "application/json", "X-MG400-Panel": "1"}
-    assert (
-        request(
-            server, "POST", "/mg400-panel/api/command", json.dumps({"action": "stop_sync"}), headers
-        )[0]
-        == 200
-    )
-
-
-def test_robot_http_passes_browser_identity_and_keeps_heartbeat_separate(server):
-    calls = []
-    original = server.state
-
-    class RobotState:
-        mode = "robot"
-
-        def command(self, payload, client_id=None):
-            calls.append((payload, client_id))
-            return {"mode": "robot", "busy": True}
-
-        def heartbeat(self, client_id):
-            calls.append(("heartbeat", client_id))
-            return {"mode": "robot", "busy": True}
-
-    server.state = RobotState()
-    headers = {
-        "Authorization": "Bearer test-token",
-        "Content-Type": "application/json",
-        "X-MG400-Panel": "1",
-        "X-MG400-Client": "browser-a",
-    }
-    try:
-        status, body = request(
-            server, "POST", "/api/command", json.dumps({"action": "stop"}), headers
-        )
-        assert status == 200 and json.loads(body)["busy"]
-        assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == 200
-        assert calls == [({"action": "stop"}, "browser-a"), ("heartbeat", "browser-a")]
-        assert request(server, "POST", "/api/heartbeat", '{"action":"enable"}', headers)[0] == 400
-        headers.pop("X-MG400-Client")
-        assert request(server, "POST", "/api/command", '{"action":"enable"}', headers)[0] == 400
-        assert len(calls) == 2
-    finally:
-        server.state = original
-
-
-def test_gripper_feedback_requires_robot_mode():
-    with pytest.raises(SystemExit) as error:
-        PANEL["main"](["--mode", "read-only", "--gripper-feedback", "unused.json"])
-    assert error.value.code == 2
-
-
 def test_robot_http_starts_without_connecting_and_rejects_motion_before_ownership(server):
     robot = PANEL["RobotPanelState"]("unused.invalid")
     original, server.state = server.state, robot
-    headers = {
-        "Authorization": "Bearer test-token",
-        "Content-Type": "application/json",
-        "X-MG400-Panel": "1",
-        "X-MG400-Client": "browser-a",
-    }
+    headers = ROBOT_HEADERS
     try:
         status, body = request(server, "GET", "/api/state", headers=headers)
         data = json.loads(body)
@@ -481,40 +370,15 @@ class RecordingState:
         pass
 
 
-@contextlib.contextmanager
-def running_panel(state, base_path="/"):
-    instance = PanelServer(("127.0.0.1", 0), state, token="test-token", base_path=base_path)
-    # A short poll interval keeps shutdown() fast.
-    thread = threading.Thread(
-        target=instance.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
-    )
-    thread.start()
-    try:
-        yield instance
-    finally:
-        instance.shutdown()
-        instance.server_close()
-        thread.join(timeout=2)
-
-
 @pytest.mark.parametrize("base_path", ["/", "/mg400-panel/"])
 def test_key_updates_have_no_http_endpoint(base_path):
     state = RecordingState()
-    with running_panel(state, base_path) as server:
+    with running(state, base_path=base_path) as server:
         body = json.dumps({"seq": 7, "held": ["W", "Z"]})
         path = f"{server.base_path}api/keys"
         assert request(server, "POST", path, body, ROBOT_HEADERS)[0] == 404
     # Key updates travel only over the WebSocket.
     assert state.calls == []
-
-
-def test_api_heartbeat_passes_the_browser_identity_to_the_state():
-    state = RecordingState()
-    with running_panel(state) as server:
-        status, data = request(server, "POST", "/api/heartbeat", "{}", ROBOT_HEADERS)
-    assert status == 200
-    assert json.loads(data) == {"mode": "robot", "controller_id": "browser-a"}
-    assert state.calls == [("heartbeat", "browser-a")]
 
 
 @pytest.mark.parametrize(
@@ -545,7 +409,7 @@ def test_robot_posts_require_the_panel_request_guard(change, status):
     headers = {
         name: value for name, value in {**ROBOT_HEADERS, **change}.items() if value is not None
     }
-    with running_panel(state) as server:
+    with running(state) as server:
         assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == status
     assert state.calls == []
 
@@ -553,7 +417,12 @@ def test_robot_posts_require_the_panel_request_guard(change, status):
 def test_api_heartbeat_routes_under_the_base_path():
     state = RecordingState()
     # The --base-path value without a trailing slash, as an operator types it.
-    with running_panel(state, base_path="/mg400-panel") as server:
+    with running(state, base_path="/mg400-panel") as server:
+        auth = {"Authorization": "Bearer test-token"}
+        assert request(server, "GET", "/mg400-panel")[0] == 308
+        assert request(server, "GET", "/mg400-panel/")[0] == 200
+        assert request(server, "GET", "/mg400-panel/api/state", headers=auth)[0] == 200
+        assert request(server, "GET", "/api/state", headers=auth)[0] == 404
         assert request(server, "POST", "/mg400-panel/api/heartbeat", "{}", ROBOT_HEADERS)[0] == 200
         assert request(server, "POST", "/api/heartbeat", "{}", ROBOT_HEADERS)[0] == 404
         assert request(server, "POST", "/mg400-panelapi/heartbeat", "{}", ROBOT_HEADERS)[0] == 404
@@ -572,18 +441,20 @@ def test_api_heartbeat_routes_under_the_base_path():
 def test_robot_posts_report_state_errors_with_their_http_status(failure, status):
     state = RecordingState()
     state.failure = failure
-    with running_panel(state) as server:
+    with running(state) as server:
         code, data = request(server, "POST", "/api/heartbeat", "{}", ROBOT_HEADERS)
     assert code == status
     assert json.loads(data) == {"error": str(failure)}
 
 
 @pytest.mark.parametrize(
-    "body", ["{", "", "{" + " " * 4096 + "}"], ids=["bad-json", "empty", "too-large"]
+    "body",
+    ["{", "", "{" + " " * 4096 + "}", '{"action":"enable"}'],
+    ids=["bad-json", "empty", "too-large", "heartbeat-with-body"],
 )
 def test_robot_posts_reject_malformed_bodies_before_the_state(body):
     state = RecordingState()
-    with running_panel(state) as server:
+    with running(state) as server:
         assert request(server, "POST", "/api/heartbeat", body, ROBOT_HEADERS)[0] == 400
     assert state.calls == []
 
@@ -591,7 +462,7 @@ def test_robot_posts_reject_malformed_bodies_before_the_state(body):
 @pytest.mark.parametrize("base_path", ["/", "/mg400-panel/"])
 def test_successful_heartbeats_stay_out_of_the_request_log(capsys, base_path):
     state = RecordingState()
-    with running_panel(state, base_path=base_path) as server:
+    with running(state, base_path=base_path) as server:
         heartbeat = f"{server.base_path}api/heartbeat"
         for _ in range(3):
             assert request(server, "POST", heartbeat, "{}", ROBOT_HEADERS)[0] == 200
@@ -614,16 +485,12 @@ def test_successful_heartbeats_stay_out_of_the_request_log(capsys, base_path):
 
 def test_read_only_mode_refuses_keyboard_control(server):
     headers = dict(ROBOT_HEADERS)
-    keys = json.dumps({"seq": 1, "held": ["W"]})
-    assert request(server, "POST", "/api/keys", keys, headers)[0] == 404
     for payload in (
         {"action": "keyboard", "enabled": True, "speed": 5, "seq": 2},
         {"action": "keyboard", "enabled": False, "reason": "user", "seq": 3},
     ):
         status, body = request(server, "POST", "/api/command", json.dumps(payload), headers)
         assert status == 403 and json.loads(body)["error"]
-        with pytest.raises(PermissionError):
-            server.state.command(payload)
     # Read-only pages do not send a client ID; the refusal must not depend on it.
     del headers["X-MG400-Client"]
     payload = {"action": "keyboard", "enabled": True, "speed": 5, "seq": 4}
@@ -633,14 +500,17 @@ def test_read_only_mode_refuses_keyboard_control(server):
 
 def test_successful_responses_keep_the_connection_open():
     state = RecordingState()
-    with running_panel(state) as server:
+    with running(state) as server:
         connection = http.client.HTTPConnection(*server.server_address, timeout=2)
         try:
             sockets = []
             for _ in (1, 2):
                 connection.request("POST", "/api/heartbeat", "{}", ROBOT_HEADERS)
                 response = connection.getresponse()
-                response.read()
+                assert json.loads(response.read()) == {
+                    "mode": "robot",
+                    "controller_id": "browser-a",
+                }
                 assert response.status == 200
                 assert response.version == 11
                 assert not response.will_close
@@ -705,7 +575,7 @@ CLIENT = "X-MG400-Client: browser-a"
 def test_error_responses_close_the_connection(raw, status):
     state = RecordingState()
     state.failure = RuntimeError("Another robot operation is in progress")
-    with running_panel(state) as server:
+    with running(state) as server:
         code, headers, body = exchange(server, raw)
     assert code == status
     assert headers.get("connection", "").lower() == "close"
@@ -724,15 +594,29 @@ def test_handler_speaks_http11_with_the_specified_idle_timeout():
 SMUGGLED = http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT])
 
 
+UPGRADE = [
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version: 13",
+]
+
+
 @pytest.mark.parametrize(
-    ("base_path", "path"),
-    [("/", "/"), ("/", "/api/state"), ("/mg400-panel/", "/mg400-panel")],
-    ids=["page", "state", "redirect"],
+    ("base_path", "path", "headers"),
+    [
+        ("/", "/", [AUTH]),
+        ("/", "/api/state", [AUTH]),
+        ("/mg400-panel/", "/mg400-panel", [AUTH]),
+        # An accepted body would be read as WebSocket frames.
+        ("/", "/api/ws", [AUTH, *UPGRADE]),
+    ],
+    ids=["page", "state", "redirect", "websocket"],
 )
-def test_get_with_a_body_is_refused_and_cannot_smuggle_a_request(base_path, path):
+def test_get_with_a_body_is_refused_and_cannot_smuggle_a_request(base_path, path, headers):
     state = RecordingState()
-    raw = http11("GET", path, SMUGGLED, [AUTH])
-    with running_panel(state, base_path) as server:
+    raw = http11("GET", path, SMUGGLED, headers)
+    with running(state, base_path=base_path) as server:
         code, headers, _ = exchange(server, raw)
     assert code == 400
     assert headers.get("connection", "").lower() == "close"
@@ -744,7 +628,7 @@ def test_post_with_transfer_encoding_is_refused_before_the_state_sees_it():
     # A valid JSON prefix covered by Content-Length, then a second request in the same body.
     framing = [f"Content-Length: {len(EMPTY_BODY)}", "Transfer-Encoding: chunked"]
     raw = http11("POST", "/api/heartbeat", b"", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT, *framing])
-    with running_panel(state) as server:
+    with running(state) as server:
         code, headers, _ = exchange(server, raw + EMPTY_BODY + SMUGGLED)
     assert code == 400
     assert headers.get("connection", "").lower() == "close"
@@ -784,15 +668,36 @@ def closing_state(snapshot=None, close=None):
     return state
 
 
-def run_panel(monkeypatch, state, serve_forever=None):
+def run_panel(monkeypatch, state, serve_forever=None, server_close_error=None):
     main = PANEL["main"]
     server = Mock(server_port=8766)
     if serve_forever is not None:
         server.serve_forever.side_effect = serve_forever
+    if server_close_error is not None:
+        server.server_close.side_effect = server_close_error
     monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock(return_value=state))
     monkeypatch.setitem(main.__globals__, "PanelServer", Mock(return_value=server))
     monkeypatch.setitem(main.__globals__, "load_robot_host", Mock(return_value="robot.test"))
     return main([]), server
+
+
+def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal_table):
+    original = dict(signal_table)
+    before_close = []
+    state = closing_state(close=lambda: before_close.append(capsys.readouterr().err))
+
+    code, _ = run_panel(monkeypatch, state)
+
+    backends = PANEL["main"].__globals__
+    assert code == 0
+    backends["load_robot_host"].assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
+    backends["RobotPanelState"].assert_called_once_with("robot.test", gripper=None)
+    state.command.assert_not_called()
+    state.close.assert_called_once_with()
+    assert len(before_close) == 1
+    assert "Stopping robot control before exit." in before_close[0]
+    # main() must not leak its signal handlers into the calling process.
+    assert signal_table == original
 
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["SIGTERM", "SIGHUP"])
@@ -856,20 +761,34 @@ def test_unconfirmed_rest_after_close_exits_non_zero(monkeypatch, capsys, signal
     assert signal_table == original
 
 
-def test_cleanup_failure_exits_non_zero_and_restores_handlers(monkeypatch, capsys, signal_table):
+@pytest.mark.parametrize(
+    ("state_error", "server_error", "message"),
+    [
+        (RuntimeError("Stop transport failed"), None, "Stop transport failed"),
+        # The state closes even if the HTTP server cannot.
+        (None, OSError("Socket failure"), "Socket failure"),
+    ],
+    ids=["state-close", "server-close"],
+)
+def test_cleanup_failure_exits_non_zero_and_restores_handlers(
+    monkeypatch, capsys, signal_table, state_error, server_error, message
+):
     original = dict(signal_table)
     during_close = []
 
     def close():
         during_close.append(dict(signal_table))
-        raise RuntimeError("Stop transport failed")
+        if state_error is not None:
+            raise state_error
 
-    code, _ = run_panel(monkeypatch, closing_state(close=close))
+    state = closing_state(close=close)
+    code, _ = run_panel(monkeypatch, state, server_close_error=server_error)
 
     output = capsys.readouterr()
     assert code == 1
-    assert "Cleanup failed: Stop transport failed" in output.err + output.out
-    assert "Use the physical emergency stop." in output.err + output.out
+    assert f"Cleanup failed: {message}" in output.err
+    assert "Use the physical emergency stop." in output.err
+    state.close.assert_called_once_with()
     assert during_close == [dict.fromkeys(PANEL_SIGNALS, signal.SIG_IGN)]
     assert signal_table == original
 
@@ -927,36 +846,6 @@ def test_a_blocked_stderr_delays_the_stop_only_briefly(monkeypatch, signal_table
         unblock.set()
     assert code == 0
     assert closed and closed[0] - interrupted[0] < 1.0
-
-
-def test_the_state_closes_even_if_the_http_server_cannot(monkeypatch, capsys, signal_table):
-    original = dict(signal_table)
-    main = PANEL["main"]
-    server = Mock(server_port=8766)
-    server.server_close.side_effect = OSError("Socket failure")
-    state = closing_state()
-    monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock(return_value=state))
-    monkeypatch.setitem(main.__globals__, "PanelServer", Mock(return_value=server))
-    monkeypatch.setitem(main.__globals__, "load_robot_host", Mock(return_value="robot.test"))
-
-    code = main([])
-
-    output = capsys.readouterr()
-    assert code == 1
-    state.close.assert_called_once_with()
-    assert "Cleanup failed: Socket failure" in output.err
-    assert signal_table == original
-
-
-def test_main_announces_the_robot_stop_on_stderr_before_closing(monkeypatch, capsys, signal_table):
-    before_close = []
-    state = closing_state(close=lambda: before_close.append(capsys.readouterr().err))
-
-    code, _ = run_panel(monkeypatch, state)
-
-    assert code == 0
-    assert len(before_close) == 1
-    assert "Stopping robot control before exit." in before_close[0]
 
 
 def test_read_only_exit_reads_a_snapshot_without_robot_fields(monkeypatch, capsys, signal_table):

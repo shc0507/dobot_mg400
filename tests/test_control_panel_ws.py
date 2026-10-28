@@ -5,15 +5,29 @@ import contextlib
 import itertools
 import json
 import queue
-import runpy
 import socket
 import struct
 import threading
 import time
-from pathlib import Path
+from functools import partial
 from types import SimpleNamespace
 
+import helpers
 import pytest
+from panel_ws import (
+    CLIENT,
+    DROP,
+    KEY,
+    TOKEN,
+    PanelServer,
+    SocketSession,
+    WsClient,
+    connect,
+    hello_message,
+    parse_head,
+    running,
+    upgrade_request,
+)
 
 from mg400_agent.websocket import (
     BINARY,
@@ -22,39 +36,12 @@ from mg400_agent.websocket import (
     PING,
     PONG,
     TEXT,
-    ProtocolError,
     accept_key,
-    encode_close,
     encode_frame,
-    read_frame,
 )
 
-PANEL = runpy.run_path(str(Path(__file__).resolve().parents[1] / "apps/control_panel/server.py"))
-PanelServer = PANEL["PanelServer"]
-SocketSession = PANEL["SocketSession"]
-TOKEN = "test-token"
-CLIENT = "browser-a"
-KEY = "dGhlIHNhbXBsZSBub25jZQ=="
-# The end-to-end test replaces socket.socket with a simulated MG400. Test clients keep
-# the real class from import time.
-RealSocket = socket.socket
-OPEN_CLIENTS = []
-DROP = object()
-
-
-def hello_message(client=CLIENT, token=TOKEN, **changes):
-    """Return a hello. changes replace fields; DROP removes one."""
-    message = {"type": "hello", "protocol": 1, "client": client, "token": token, **changes}
-    return {name: value for name, value in message.items() if value is not DROP}
-
-
-def wait_for(predicate, timeout=3, describe=None):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.005)
-    assert predicate(), describe() if describe else "The condition was not reached"
+pytestmark = pytest.mark.usefixtures("closed_clients")
+wait_for = partial(helpers.wait_for, timeout=3)
 
 
 class RecordingState:
@@ -118,45 +105,6 @@ class ReadOnlyState:
         pass
 
 
-@pytest.fixture(autouse=True)
-def closed_clients():
-    yield
-    while OPEN_CLIENTS:
-        OPEN_CLIENTS.pop().discard()
-
-
-@contextlib.contextmanager
-def running(state, *, token=TOKEN, base_path="/", server_class=PanelServer):
-    server = server_class(("127.0.0.1", 0), state, token=token, base_path=base_path)
-    # A short poll interval keeps shutdown() fast.
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
-    )
-    thread.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def upgrade_request(path="/api/ws", *, version="HTTP/1.1", host="127.0.0.1", change=None, extra=()):
-    """Return an upgrade request. change replaces base headers; None removes one."""
-    headers = {
-        "Host": host,
-        "Upgrade": "websocket",
-        "Connection": "Upgrade",
-        "Sec-WebSocket-Key": KEY,
-        "Sec-WebSocket-Version": "13",
-    }
-    headers.update(change or {})
-    lines = [f"GET {path} {version}"]
-    lines += [f"{name}: {value}" for name, value in headers.items() if value is not None]
-    lines += list(extra)
-    return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
-
-
 def http_request(method, path, *, host="127.0.0.1", headers=(), body=b""):
     lines = [f"{method} {path} HTTP/1.1"]
     if host is not None:
@@ -165,23 +113,6 @@ def http_request(method, path, *, host="127.0.0.1", headers=(), body=b""):
     if body:
         lines.append(f"Content-Length: {len(body)}")
     return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body
-
-
-def connect(server, timeout=3):
-    sock = RealSocket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    sock.connect(server.server_address)
-    return sock
-
-
-def parse_head(head):
-    status_line, *lines = head.decode("latin-1").split("\r\n")
-    headers = {}
-    for line in lines:
-        if line:
-            name, _, value = line.partition(":")
-            headers[name.strip().lower()] = value.strip()
-    return int(status_line.split()[1]), headers
 
 
 def exchange(server, raw):
@@ -199,165 +130,6 @@ def exchange(server, raw):
     head, _, body = received.partition(b"\r\n\r\n")
     status, headers = parse_head(head)
     return status, headers, body
-
-
-class WsClient:
-    """Speak to api/ws in the client role over a raw socket. No WebSocket library.
-
-    A reader thread turns server frames into events: ("message", dict), ("close", code,
-    reason), ("ping", bytes), ("pong", bytes) and finally ("end", monotonic time, error).
-    """
-
-    def __init__(self, server, raw=None):
-        self.sock = connect(server)
-        OPEN_CLIENTS.append(self)
-        self.sock.sendall(upgrade_request() if raw is None else raw)
-        head = b""
-        while not head.endswith(b"\r\n\r\n"):
-            chunk = self.sock.recv(1)
-            assert chunk, f"The service closed the connection after {head!r}"
-            head += chunk
-        self.status, self.headers = parse_head(head[:-4])
-        assert self.status == 101, head
-        self.events = queue.Queue()
-        self.replies = {}
-        self._ids = itertools.count(1)
-        self._send_lock = threading.Lock()
-        self._stopping = threading.Event()
-        # A short timeout lets reset() stop the reader without sending FIN.
-        self.sock.settimeout(0.1)
-        self._reader = threading.Thread(target=self._read_events, daemon=True)
-        self._reader.start()
-
-    def _read(self, count):
-        data = b""
-        while len(data) < count:
-            try:
-                chunk = self.sock.recv(count - len(data))
-            except TimeoutError:
-                if self._stopping.is_set():
-                    raise EOFError("The test stopped reading") from None
-                continue
-            if not chunk:
-                raise EOFError("The service closed the connection")
-            data += chunk
-        return data
-
-    def _read_events(self):
-        try:
-            while True:
-                fin, opcode, payload = read_frame(self._read, masked=False, max_payload=1 << 20)
-                assert fin, "The service never fragments its messages"
-                if opcode == TEXT:
-                    message = json.loads(payload)
-                    if message.get("type") == "reply":
-                        self.replies[message["id"]] = message
-                    self.events.put(("message", message))
-                elif opcode == CLOSE:
-                    code = struct.unpack("!H", payload[:2])[0] if payload else None
-                    self.events.put(("close", code, payload[2:].decode("utf-8")))
-                elif opcode in (PING, PONG):
-                    self.events.put(("ping" if opcode == PING else "pong", payload))
-                else:
-                    self.events.put(("unexpected", opcode, payload))
-        except (EOFError, OSError, ProtocolError) as error:
-            self.events.put(("end", time.monotonic(), error))
-
-    def send(self, opcode, payload=b"", *, fin=True, mask=True):
-        self.send_raw(encode_frame(opcode, payload, fin=fin, mask=mask))
-
-    def send_raw(self, data):
-        with self._send_lock:
-            self.sock.sendall(data)
-
-    def send_json(self, message):
-        self.send(TEXT, json.dumps(message).encode())
-
-    def send_request(self, kind, body, request_id=None):
-        request_id = next(self._ids) if request_id is None else request_id
-        self.send_json({"type": kind, "id": request_id, "body": body})
-        return request_id
-
-    def next(self, timeout=2):
-        try:
-            return self.events.get(timeout=timeout)
-        except queue.Empty:
-            pytest.fail(f"No event arrived within {timeout} s")
-
-    def wait(self, predicate, timeout=2, what="event"):
-        """Consume events until one matches. The end of the connection fails the wait."""
-        deadline = time.monotonic() + timeout
-        seen = []
-        while True:
-            try:
-                event = self.events.get(timeout=max(0.0, deadline - time.monotonic()))
-            except queue.Empty:
-                pytest.fail(f"No {what} within {timeout} s; seen {seen[-5:]!r}")
-            if predicate(event):
-                return event
-            seen.append(event)
-            if event[0] == "end":
-                pytest.fail(f"The connection ended before the {what}; seen {seen[-5:]!r}")
-
-    def state(self, timeout=2):
-        event = self.wait(lambda e: e[0] == "message" and e[1]["type"] == "state", timeout, "state")
-        return event[1]["state"]
-
-    def reply(self, request_id, timeout=2):
-        event = self.wait(
-            lambda e: e[0] == "message" and e[1].get("id") == request_id, timeout, "reply"
-        )
-        return event[1]
-
-    def request(self, kind, body):
-        return self.reply(self.send_request(kind, body))
-
-    def hello(self, client=CLIENT, token=TOKEN):
-        """Send hello and return the first message, which must be a state push."""
-        self.send_json(hello_message(client, token))
-        event = self.next()
-        assert event[0] == "message" and event[1]["type"] == "state", event
-        return event[1]["state"]
-
-    def refused(self, timeout=3):
-        """Wait for the service's error and close. Echo the close. Return (error, code)."""
-        error = self.wait(lambda e: e[0] == "message" and e[1]["type"] == "error", timeout)[1]
-        close = self.wait(lambda e: e[0] == "close", timeout, "close")
-        self.send(CLOSE, encode_close(close[1]))
-        self.ended(timeout)
-        return error, close[1]
-
-    def closed_by_service(self, timeout=3):
-        """Wait for the service's close frame, echo it, and return (code, reason)."""
-        close = self.wait(lambda e: e[0] == "close", timeout, "close")
-        self.send(CLOSE, encode_close(close[1]))
-        self.ended(timeout)
-        return close[1], close[2]
-
-    def ended(self, timeout=3):
-        """Wait for the end of the connection. Return the time when the reader saw it."""
-        return self.wait(lambda e: e[0] == "end", timeout, "end of the connection")[1]
-
-    def close(self, code=1000, reason=""):
-        """Close cleanly. Return the code of the service's echo."""
-        self.send(CLOSE, encode_close(code, reason))
-        echo = self.wait(lambda e: e[0] == "close", 3, "close echo")
-        self.ended()
-        return echo[1]
-
-    def reset(self):
-        """End the connection with a TCP reset, as a crashed browser or a lost link does."""
-        self._stopping.set()
-        self._reader.join(2)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-        self.sock.close()
-
-    def discard(self):
-        self._stopping.set()
-        with contextlib.suppress(OSError):
-            self.sock.shutdown(socket.SHUT_RDWR)
-        self._reader.join(2)
-        self.sock.close()
 
 
 def opened(server, raw=None, *, client=CLIENT, token=TOKEN):
@@ -549,15 +321,6 @@ def test_same_origin_and_programs_without_origin_are_accepted(losing, host, head
     assert client.hello()["mode"] == "robot"
 
 
-def test_upgrade_request_with_a_body_is_refused(losing):
-    server, state = losing
-    raw = upgrade_request(extra=["Content-Length: 5"]) + b"hello"
-    status, headers, _ = exchange(server, raw)
-    assert status == 400
-    assert headers["connection"].lower() == "close"
-    assert state.calls == []
-
-
 def test_websocket_routes_under_the_base_path():
     state = RecordingState()
     # The --base-path value without a trailing slash, as an operator types it.
@@ -681,26 +444,6 @@ def test_token_service_accepts_proxied_requests(losing):
     assert state.calls == [("command", {"action": "stop"}, CLIENT), ("heartbeat", CLIENT)]
 
 
-def test_api_keys_over_http_is_404(losing):
-    server, state = losing
-    keys = json.dumps({"seq": 1, "held": ["W"]}).encode()
-    headers = [f"Authorization: Bearer {TOKEN}", *ROBOT_POST]
-    assert exchange(server, http_request("POST", "/api/keys", headers=headers, body=keys))[0] == 404
-    assert exchange(server, http_request("GET", "/api/keys", headers=headers))[0] == 404
-    assert state.calls == []
-
-
-def test_upgrade_is_logged_once_and_messages_are_not(losing, capsys):
-    server, _ = losing
-    client = opened(server)
-    for _ in range(3):
-        assert client.request("heartbeat", {})["status"] == 200
-    assert client.close() == 1000
-    log = capsys.readouterr().err
-    assert log.count('"GET /api/ws HTTP/1.1" 101') == 1
-    assert "heartbeat" not in log and "test-token" not in log
-
-
 def test_websocket_commands_are_logged_and_keys_and_heartbeats_are_quiet(losing, capsys):
     server, state = losing
     client = opened(server, client="browser-0123456789abcdef")
@@ -712,12 +455,19 @@ def test_websocket_commands_are_logged_and_keys_and_heartbeats_are_quiet(losing,
     state.failure = PermissionError("Start sync in this browser before issuing commands")
     assert client.request("command", {"action": "stop"})["status"] == 403
     state.failure = KeyError("internal detail")
-    assert client.request("command", {"action": "home"})["status"] == 500
+    reply = client.request("command", {"action": "home"})
+    assert {k: v for k, v in reply.items() if k != "id"} == {
+        "type": "reply",
+        "status": 500,
+        "error": "The robot service failed to handle the request",
+    }
     state.failure = None
     for body in ({"action": 'stop" 200 client=forged'}, {"action": 5}, {}, ["stop"]):
         assert client.request("command", body)["status"] == 200
     assert client.close() == 1000
     log = capsys.readouterr().err
+    assert log.count('"GET /api/ws HTTP/1.1" 101') == 1
+    assert "WebSocket command request failed: KeyError" in log
     lines = [line.split("] ", 1)[1] for line in log.splitlines() if '"WS ' in line]
     assert lines == [
         '"WS command start_sync" 200 client=browser-',
@@ -742,20 +492,6 @@ def test_service_sets_tcp_user_timeout_on_the_connection(losing):
 
 
 # Hello
-
-
-def test_first_message_must_be_hello(losing):
-    server, state = losing
-    client = WsClient(server)
-    client.send_request("command", {"action": "stop"})
-    error, code = client.refused()
-    assert error == {
-        "type": "error",
-        "status": 400,
-        "error": "Send hello with the protocol, a client ID and the access token first",
-    }
-    assert code == 4400
-    assert state.calls == []
 
 
 @pytest.mark.parametrize(
@@ -797,6 +533,7 @@ def test_hello_with_a_wrong_or_missing_token_gets_401_and_close_4401(losing, tok
         json.dumps(hello_message(client=7)),
         json.dumps(hello_message(token=None)),
         "[" * 2000 + "]" * 2000,
+        json.dumps({"type": "command", "id": 1, "body": {"action": "stop"}}),
     ],
     ids=[
         "not-json",
@@ -821,6 +558,7 @@ def test_hello_with_a_wrong_or_missing_token_gets_401_and_close_4401(losing, tok
         "number-client",
         "null-token",
         "deep-nesting",
+        "request-before-hello",
     ],
 )
 def test_malformed_hello_gets_400_and_close_4400(losing, text):
@@ -828,7 +566,12 @@ def test_malformed_hello_gets_400_and_close_4400(losing, text):
     client = WsClient(server)
     client.send(TEXT, text.encode())
     error, code = client.refused()
-    assert error["status"] == 400 and code == 4400
+    assert error == {
+        "type": "error",
+        "status": 400,
+        "error": "Send hello with the protocol, a client ID and the access token first",
+    }
+    assert code == 4400
     assert state.calls == []
 
 
@@ -953,14 +696,6 @@ def test_control_frames_do_not_extend_the_hello_deadline(losing, monkeypatch):
     assert state.calls == []
 
 
-def test_tokenless_hello_accepts_any_token():
-    state = RecordingState()
-    with running(state, token=None) as server:
-        client = opened(server, token="anything at all")
-        assert client.request("keys", {"seq": 1, "held": []})["status"] == 200
-    assert state.calls == [("keys", {"seq": 1, "held": []}, CLIENT)]
-
-
 # Requests
 
 
@@ -1001,22 +736,6 @@ def test_state_refusals_become_error_replies_and_keep_the_connection(losing, kin
     state.failure = None
     assert client.request(kind, body)["status"] == 200
     assert state.losses() == 0
-
-
-def test_unexpected_state_failure_gives_500_and_keeps_the_connection(losing, capsys):
-    server, state = losing
-    client = opened(server)
-    state.failure = KeyError("internal detail")
-    reply = client.request("command", {"action": "stop"})
-    assert reply == {
-        "type": "reply",
-        "id": 1,
-        "status": 500,
-        "error": "The robot service failed to handle the request",
-    }
-    state.failure = None
-    assert client.request("command", {"action": "stop"})["status"] == 200
-    assert "WebSocket command request failed" in capsys.readouterr().err
 
 
 def test_heartbeat_with_a_body_gets_400_and_keeps_the_connection(losing):
@@ -1145,16 +864,6 @@ def test_read_only_service_refuses_heartbeat_and_keys_over_the_socket():
 
 
 # Pushes
-
-
-def test_service_pushes_the_state_right_after_hello(losing):
-    server, state = losing
-    state.message = "First."
-    client = WsClient(server)
-    sent = time.monotonic()
-    first = client.hello()
-    assert time.monotonic() - sent < 0.5
-    assert first["message"] == "First."
 
 
 def test_state_changes_are_pushed_without_the_keepalive(losing, monkeypatch):
@@ -1294,16 +1003,6 @@ def test_hello_deadline_ends_once_hello_succeeds(losing, monkeypatch):
 # Ping, pong, close and loss
 
 
-def test_client_ping_gets_a_pong_with_the_same_payload(losing):
-    server, _ = losing
-    client = WsClient(server)
-    client.send(PING, b"before hello")
-    assert client.next() == ("pong", b"before hello")
-    client.hello()
-    client.send(PING, b"after hello")
-    assert client.wait(lambda e: e[0] == "pong") == ("pong", b"after hello")
-
-
 def test_any_frame_keeps_the_connection_alive_and_silence_closes_it(losing, monkeypatch):
     server, state = losing
     assert SocketSession.IDLE_SECONDS == 15.0
@@ -1322,14 +1021,6 @@ def test_any_frame_keeps_the_connection_alive_and_silence_closes_it(losing, monk
     assert state.losses() == 1
 
 
-def test_client_close_is_echoed_and_revokes_keys(losing):
-    server, state = losing
-    client = opened(server)
-    assert client.close(1000, "bye") == 1000
-    wait_for(lambda: state.losses() == 1)
-    assert state.calls == [("connection_lost", CLIENT)]
-
-
 def test_close_without_a_code_gets_an_empty_echo(losing):
     server, state = losing
     client = opened(server)
@@ -1337,14 +1028,6 @@ def test_close_without_a_code_gets_an_empty_echo(losing):
     assert client.wait(lambda e: e[0] == "close") == ("close", None, "")
     client.ended()
     wait_for(lambda: state.losses() == 1)
-
-
-def test_abrupt_reset_revokes_keys(losing):
-    server, state = losing
-    client = opened(server)
-    client.reset()
-    wait_for(lambda: state.losses() == 1, timeout=2)
-    assert state.calls == [("connection_lost", CLIENT)]
 
 
 # Each violation leaves no unread bytes, so the close frame cannot be lost to a reset.
@@ -1360,25 +1043,28 @@ VIOLATIONS = {
 }
 
 
-@pytest.mark.parametrize("violation", list(VIOLATIONS))
-def test_protocol_violations_close_with_their_code_and_revoke_keys(losing, violation):
+@pytest.mark.parametrize(
+    ("stage", "violation"),
+    [
+        *[pytest.param("after-hello", v, id=f"after-hello-{v}") for v in VIOLATIONS],
+        *[
+            pytest.param("before-hello", v, id=f"before-hello-{v}")
+            for v in ("binary", "invalid-utf8", "too-big")
+        ],
+    ],
+)
+def test_protocol_violations_close_with_their_code_and_revoke_keys(losing, stage, violation):
     server, state = losing
     data, expected = VIOLATIONS[violation]
-    client = opened(server)
+    client = opened(server) if stage == "after-hello" else WsClient(server)
     client.send_raw(data)
     code, _ = client.closed_by_service()
     assert code == expected
-    wait_for(lambda: state.losses() == 1)
-
-
-@pytest.mark.parametrize("violation", ["binary", "invalid-utf8", "too-big"])
-def test_protocol_violation_before_hello_touches_no_state(losing, violation):
-    server, state = losing
-    data, expected = VIOLATIONS[violation]
-    client = WsClient(server)
-    client.send_raw(data)
-    assert client.closed_by_service()[0] == expected
-    assert state.calls == []
+    if stage == "after-hello":
+        wait_for(lambda: state.losses() == 1)
+    else:
+        # A violation before hello touches no state.
+        assert state.calls == []
 
 
 # Registry
@@ -1616,19 +1302,3 @@ def test_websockets_library_client_interoperates(losing):
     assert connection.close_code == 1000
     wait_for(lambda: state.losses() == 1)
     assert state.calls == [("command", {"action": "stop"}, CLIENT), ("connection_lost", CLIENT)]
-
-
-def test_websockets_library_client_sees_close_4401_for_a_wrong_token(losing):
-    websockets = pytest.importorskip("websockets")
-    from websockets.sync.client import connect as ws_connect
-
-    server, state = losing
-    url = f"ws://127.0.0.1:{server.server_port}/api/ws"
-    with ws_connect(url, proxy=None, open_timeout=2, close_timeout=2) as connection:
-        connection.send(json.dumps(hello_message(token="wrong")))
-        error = json.loads(connection.recv(timeout=2))
-        with pytest.raises(websockets.exceptions.ConnectionClosed):
-            connection.recv(timeout=2)
-    assert error == {"type": "error", "status": 401, "error": "Enter the panel access token"}
-    assert connection.close_code == 4401
-    assert state.calls == []

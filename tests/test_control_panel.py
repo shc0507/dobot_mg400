@@ -279,13 +279,31 @@ def test_remote_bind_requires_access_token(monkeypatch):
     assert error.value.code == 2
 
 
+@pytest.mark.parametrize(
+    ("token", "valid"),
+    [
+        ("a" * 30, True),
+        ("lab panel key for the mg400 arm", True),
+        ("!~" * 15, True),
+        ("é" * 30, False),
+        ("a" * 30 + " ", False),
+        (" " + "a" * 30, False),
+        ("a" * 15 + "\t" + "a" * 15, False),
+        ("a" * 30 + "\n", False),
+    ],
+    ids=["plain", "inner-spaces", "symbols", "non-ascii", "trailing", "leading", "tab", "newline"],
+)
+def test_tokens_are_those_a_browser_sends_unchanged(token, valid):
+    assert bool(PANEL["valid_token"](token)) is valid
+
+
 @pytest.mark.parametrize("bind", ["127.0.0.1", "0.0.0.0"])
 @pytest.mark.parametrize(
     "token",
-    ["é" * 30, "a" * 30 + " ", " " + "a" * 30, "a" * 15 + " " + "a" * 15, "a" * 30 + "\t"],
-    ids=["non-ascii", "trailing-space", "leading-space", "inner-space", "tab"],
+    ["é" * 30, "a" * 30 + " ", " " + "a" * 30, "a" * 30 + "\t"],
+    ids=["non-ascii", "trailing-space", "leading-space", "tab"],
 )
-def test_access_token_must_be_printable_ascii_without_spaces(monkeypatch, bind, token):
+def test_service_refuses_a_token_a_browser_cannot_send(monkeypatch, bind, token):
     # A browser cannot send other characters, and it strips spaces at either end.
     monkeypatch.setenv("MG400_PANEL_TOKEN", token)
     with pytest.raises(SystemExit) as error:

@@ -163,9 +163,8 @@
       if(message?.type === 'state') {
         if(!connected) {
           // The connection error no longer applies. A failed Stop or Disable stays visible.
-          connected = true;retry = refused = 0;$('auth').hidden = true;
+          connected = true;retry = refused = 0;tokenAccepted();
           if(linkError) {clearTimeout(errorTimer);errorTimer = null;}
-          if(submitted) {submitted = false;try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value = '';}
         }
         apply(message.state);
       } else if(message?.type === 'reply' && pending.has(message.id)) {
@@ -178,6 +177,10 @@
         if(message.status === 426) outdated = true;
         showError(new Error(notice));
       }
+    }
+    function tokenAccepted() {
+      $('auth').hidden = true;
+      if(submitted) {submitted = false;try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value = '';}
     }
     function drop(code) {
       const ws = socket;
@@ -198,9 +201,7 @@
       if(outdated) {}
       else if(authWait) $('auth').hidden = false;
       else {retryTimer = setTimeout(connect,refused >= 3 ? 5000 : [500,1000,2000][retry]);retry = Math.min(retry+1,2);pollState();}
-      // A failed Stop arm or Disable robot stays visible through failed reconnect attempts.
-      if(interruptError && errorTimer && !outdated && !authWait) {if(state) render(state);}
-      else showError(new Error(offline));
+      showError(new Error(offline));
     }
     let stateTimer = null, stateReading = false;
     // Without the socket, poll the state over HTTP, so Stop arm and Disable robot stay usable.
@@ -213,6 +214,8 @@
       fetch('api/state',{headers:headers(),signal:AbortSignal.timeout(2500)}).then(response => {
         // A refused handshake never reaches hello, so only this read can ask for the token.
         if(response.status === 401 && !connected) $('auth').hidden = false;
+        // Only HTTP may work, for example behind a proxy that refuses the socket.
+        if(response.ok && !connected && !authWait) tokenAccepted();
         return response.ok ? response.json() : null;
       }).then(data => {if(data && !connected) apply(data);}).catch(() => {}).finally(() => {stateReading = false;});
     }
@@ -232,6 +235,13 @@
       $('status').classList.toggle('error',error);
     }
     function showError(error, interrupt = false) {
+      // A failed Stop arm or Disable robot stays visible for its 3 s through connection
+      // errors, including requests that the closed socket rejects after the failure.
+      const connectionError = error.message === offline || error.message === 'Request timed out';
+      if(!interrupt && interruptError && errorTimer && connectionError && !authWait && !outdated) {
+        if(state) render(state);
+        return;
+      }
       linkError = !connected && error.message === offline;
       interruptError = interrupt;
       // Keep the error readable for 3 s, although state pushes arrive in between.

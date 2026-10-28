@@ -1582,6 +1582,11 @@ test("a refused handshake with a missing token shows the token form from the HTT
   await page.advance(1000);
   const next = page.http().filter(request => request.path === "api/state").at(-1);
   assert.equal(next.options.headers.Authorization, "Bearer secret-token-1234567890abc");
+  // The token works over HTTP although the socket stays refused: close the form and keep it.
+  await page.respond(next, page.snapshot());
+  assert.equal(page.$("auth").hidden, true);
+  assert.deepEqual(page.stored, [["mg400-panel-token", "secret-token-1234567890abc"]]);
+  assert.equal(page.$("token").value, "");
 });
 
 test("pagehide stops the state polling", async () => {
@@ -1593,4 +1598,27 @@ test("pagehide stops the state polling", async () => {
   const count = reads().length;
   await page.advance(5000);
   assert.equal(reads().length, count);
+});
+
+test("requests that a closed socket rejects do not hide a failed Stop arm", async () => {
+  const page = await ready({ busy: true, message: "Robot operation started: home." });
+  page.autoHeartbeat = false;
+  await page.advance(500);
+  assert.ok(page.heartbeats().some(request => !request.settled), "no heartbeat is pending");
+  await page.click("stop");
+  for (const stop of page.commands("stop")) await page.fail(stop, new Error("Stop refused"));
+  assert.equal(page.$("status").textContent, "Stop refused");
+  page.autoHeartbeat = true;
+  await page.serverClose(1006);
+  await page.advance(0);
+  assert.equal(page.$("status").textContent, "Stop refused", "a rejected heartbeat hid the failed stop");
+  await page.advance(500);
+  await page.open();
+  await page.push(page.snapshot({ message: "Back." }));
+  assert.equal(page.$("status").textContent, "Stop refused", "the reconnect hid the failed stop");
+  // The stop failed at 500 ms, so its hold ends at 3500 ms.
+  await page.advance(2499);
+  assert.equal(page.$("status").textContent, "Stop refused");
+  await page.advance(1);
+  assert.equal(page.$("status").textContent, "Back.");
 });

@@ -60,6 +60,14 @@ def valid_client(value):
     )
 
 
+def valid_token(value):
+    """Accept a token that a browser sends unchanged in the Authorization header.
+
+    Browsers send only these characters and strip spaces at either end of a value.
+    """
+    return all(" " <= char <= "~" for char in value) and value == value.strip(" ")
+
+
 def dispatch(state, kind, payload, client):
     """Apply one API request. The HTTP API and the WebSocket share this routing.
 
@@ -821,9 +829,11 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     token = os.environ.get("MG400_PANEL_TOKEN")
-    if token and not all("!" <= char <= "~" for char in token):
-        # A browser cannot send other characters, and it strips spaces at either end.
-        parser.error("MG400_PANEL_TOKEN must contain only printable ASCII characters, no spaces")
+    if token and not valid_token(token):
+        parser.error(
+            "MG400_PANEL_TOKEN must contain only printable ASCII characters "
+            "and must not begin or end with a space"
+        )
     try:
         loopback = ipaddress.ip_address(args.bind).is_loopback
     except ValueError:

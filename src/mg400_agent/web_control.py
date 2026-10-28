@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 
 from .config import finite_number
+from .controller_alarms import describe_alarms
 from .controller_ownership import ControllerOwnership
 from .feedback import FeedbackConnection
 from .joint_control import JointControl, PreparationRejectedError, TargetRejectedError
@@ -33,6 +34,7 @@ class RobotPanelState:
     LEASE_SECONDS = 3.0
     FEEDBACK_SECONDS = 0.25
     CONNECT_SECONDS = 1.5
+    ALARM_READ_SECONDS = 1.0
     KEY_LEASE_SECONDS = KEY_LEASE_SECONDS
     KEYBOARD_JOIN_SECONDS = KEYBOARD_JOIN_SECONDS
     GRIPPER_HOLD_SECONDS = GRIPPER_HOLD_SECONDS
@@ -68,6 +70,9 @@ class RobotPanelState:
         self._job = None
         self._locked = False
         self._fault = False
+        self._faults = 0
+        # Set when a stop or disable failed while the controller reported no alarm.
+        self._non_alarm_fault = False
         self._disable_verified = False
         self._safety_workers = 0
         self._safety_actions = set()
@@ -75,6 +80,9 @@ class RobotPanelState:
         self._safety_threads = []
         self._gripper_active = False
         self._closing = False
+        self._alarms = None
+        self._alarms_read = 0.0
+        self._clearing = False
         self._message = "Start sync to connect to the robot."
         # Snapshot versions order replies within one process. A restart starts a new instance.
         self._instance = secrets.token_hex(8)
@@ -148,11 +156,16 @@ class RobotPanelState:
                 "feedback_fresh": self._fresh(),
                 "robot_mode": sample.mode if sample else None,
                 "robot_error": sample.error_status if sample else None,
+                "alarms": self._alarms,
                 "speed_factor": self._speed_factor(sample),
                 "message": self._message,
-                "busy": self._busy or bool(self._safety_workers) or self._kb_thread is not None,
+                "busy": self._busy
+                or bool(self._safety_workers)
+                or self._clearing
+                or self._kb_thread is not None,
                 "locked": self._locked or bool(self._grip.get("locked")),
                 "stop_unconfirmed": self._fault,
+                "recoverable": self._recoverable(),
                 "gripper_available": bool(self._grip.get("available")),
                 "gripper_can_initialize": bool(self._grip.get("can_initialize")),
                 "gripper_busy": self._gripper_active or bool(self._grip.get("busy")),
@@ -257,6 +270,7 @@ class RobotPanelState:
             "grip",
             "initialize_gripper",
             "keyboard",
+            "clear_alarm",
         }:
             raise ValueError("Unknown action")
         fields = {"action"}
@@ -312,6 +326,8 @@ class RobotPanelState:
                                 self._kb_arm(speed)
                             else:
                                 self._kb_disarm(DISARM_REASONS[payload["reason"]])
+                    elif action == "clear_alarm":
+                        self._start_alarm_clear()
                     else:
                         self._guard_send()
                         if self._busy or self._safety_workers or self._kb_thread is not None:
@@ -416,6 +432,7 @@ class RobotPanelState:
             or self._working
             or self._job
             or self._safety_workers
+            or self._clearing
             or self._kb_thread is not None
             or any(thread.is_alive() for thread in self._safety_threads)
             or (self._reader is not None and self._reader.is_alive())
@@ -480,7 +497,7 @@ class RobotPanelState:
             self._safety_workers -= 1
             self._safety_actions.discard(disabling)
             self._control.cancel(disabling=disabling)
-            self._fault = True
+            self._record_fault()
             self._message = f"Robot stop could not start: {error} Use the physical emergency stop."
             return
         self._safety_threads.append(thread)
@@ -507,11 +524,17 @@ class RobotPanelState:
                     if disabling
                     else "Robot stop is confirmed. Disable the robot before recovery."
                 )
+                if self._fault:
+                    # A later success must not hide an earlier unconfirmed verdict.
+                    self._message = (
+                        "Control stays locked: an earlier stop or disable is unconfirmed. "
+                        + self._recovery_hint()
+                    )
                 if self._gripper_active:
                     self._message += " The gripper command is still active."
         except Exception as error:
             with self._lock:
-                self._fault = True
+                self._record_fault()
                 self._message = f"Robot stop or disable is unconfirmed: {error}"
         finally:
             with self._lock:
@@ -524,6 +547,32 @@ class RobotPanelState:
                     self._disconnect_requested = False
                 self._recover_disabled()
 
+    def _alarm_now(self):
+        return self._fresh() and (self._sample.mode == 9 or self._sample.error_status)
+
+    def _record_fault(self):
+        self._fault = True
+        self._faults += 1
+        if not self._alarm_now():
+            self._non_alarm_fault = True
+
+    def _recoverable(self):
+        """Whether Recover may confirm rest after the alarm behind the fault cleared elsewhere."""
+        return (
+            self._fault
+            and not self._non_alarm_fault
+            and not self._clearing
+            and self._fresh()
+            and not self._alarm_now()
+        )
+
+    def _recovery_hint(self):
+        if self._non_alarm_fault:
+            return "Check the robot, then restart the panel service."
+        if self._alarm_now():
+            return "Fix the alarm cause, then click Clear alarm."
+        return "Check the robot, then click Recover."
+
     def _recover_disabled(self):
         if (
             self._disable_verified
@@ -531,6 +580,7 @@ class RobotPanelState:
             and not self._busy
             and not self._working
             and not self._safety_workers
+            and not self._clearing
             and not self._closing
             and self._kb_thread is None
         ):
@@ -540,6 +590,88 @@ class RobotPanelState:
             self._disable_verified = False
             if self._kb_session is not None:
                 self._kb_close(self._kb_session)
+
+    def _start_alarm_clear(self):
+        if not self._fresh():
+            raise RuntimeError("Robot feedback is absent or stale")
+        alarm = self._alarm_now()
+        if not alarm and not self._recoverable():
+            raise RuntimeError("The robot reports no alarm")
+        if self._busy or self._safety_workers or self._clearing or self._kb_thread is not None:
+            raise RuntimeError("Another robot operation is in progress")
+        self._kb_disarm(None)
+        thread = threading.Thread(
+            target=self._clear_alarm,
+            args=(self._control, alarm),
+            name="MG400-alarm-clear",
+            daemon=True,
+        )
+        self._clearing = True
+        self._message = (
+            "Clearing the robot alarm." if alarm else "Confirming robot disable and rest."
+        )
+        try:
+            thread.start()
+        except Exception:
+            self._clearing = False
+            raise
+        self._safety_threads.append(thread)
+
+    def _clear_alarm(self, control, clear):
+        """Clear the alarm, then confirm a disable and rest on a new control instance.
+
+        In an alarm the controller refuses DisableRobot() and has already halted motion.
+        A verified disable and rest after the alarm clears replace the stop that the
+        alarm prevented. clear is False when the alarm already cleared elsewhere, for
+        example with Collision Resume on the arm. Unknown command ordering, or a stop
+        that failed without an alarm, still keeps control locked.
+        """
+        try:
+            alarms = describe_alarms(control.clear_alarms() if clear else ())
+            with self._lock:
+                self._alarms, self._alarms_read = alarms or None, time.monotonic()
+                cleared = self._fresh() and self._sample.mode != 9 and not self._sample.error_status
+                if alarms or not cleared:
+                    names = "; ".join(
+                        f"{alarm['id']} {alarm['description']}"
+                        + (f" ({alarm['solution']})" if alarm["solution"] else "")
+                        for alarm in alarms
+                    )
+                    self._message = f"The alarm remains: {names or 'robot still reports an error'}."
+                    return
+                if control.ordering_unknown or control.command_pending:
+                    self._message = (
+                        "The alarm is cleared, but command ordering remains unknown. "
+                        "Check the robot, then restart the panel service."
+                    )
+                    return
+                if self._non_alarm_fault:
+                    self._message = (
+                        "The alarm is cleared, but an earlier stop failed without an alarm. "
+                        "Check the robot, then restart the panel service."
+                    )
+                    return
+                recovery = self._control = self._new_control()
+                faults = self._faults
+            recovery.disable()
+            recovery.verify_stationary()
+            with self._lock:
+                # A stop that failed during recovery keeps its unconfirmed verdict.
+                if (
+                    self._control is recovery
+                    and self._faults == faults
+                    and not self._safety_workers
+                ):
+                    self._fault = False
+                    self._disable_verified = True
+                    self._message = "The alarm is cleared. Robot disable and rest are confirmed."
+        except Exception as error:
+            with self._lock:
+                self._message = f"Alarm recovery failed: {error}"
+        finally:
+            with self._lock:
+                self._clearing = False
+                self._recover_disabled()
 
     def _operate(self, action, targets):
         self._guard_send()
@@ -587,6 +719,17 @@ class RobotPanelState:
                     and not self._control.stopped
                     and self._kb_thread is None
                 )
+                alarm = self._fresh() and (self._sample.mode == 9 or self._sample.error_status)
+                if self._fresh() and not alarm:
+                    self._alarms = None
+                read_alarms = (
+                    alarm
+                    and not self._safety_workers
+                    and not self._clearing
+                    and self._kb_thread is None
+                    and time.monotonic() - self._alarms_read >= self.ALARM_READ_SECONDS
+                )
+                control = self._control
             try:
                 if job:
                     self._operate(*job)
@@ -598,6 +741,8 @@ class RobotPanelState:
                     with self._lock:
                         if not self._busy:
                             self._pose = list(pose)
+                elif read_alarms:
+                    self._read_alarms(control)
                 if self._gripper is not None and self._syncing:
                     self._gripper.poll()
                     with self._lock:
@@ -618,6 +763,17 @@ class RobotPanelState:
                     self._recover_disabled()
                     # A key pressed during this poll starts now.
                     self._kb_reconcile()
+
+    def _read_alarms(self, control):
+        """Show the alarm IDs. A failed read keeps the last list and stops nothing."""
+        try:
+            alarms = describe_alarms(control.read_alarms())
+        except Exception:
+            alarms = None
+        with self._lock:
+            self._alarms_read = time.monotonic()
+            if alarms is not None:
+                self._alarms = alarms or None
 
     def _watch(self):
         while not self._closing:

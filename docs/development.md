@@ -142,8 +142,14 @@ POST 请求必须满足以下条件：
 | `grip` | `position`：0–1000 的整数 | 设置夹爪开口 |
 | `initialize_gripper` | 无 | 初始化夹爪，会张开夹指 |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
+| `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
 
 `speed` 是 1–100 的整数。
+`clear_alarm` 在控制器报警且反馈新鲜时可用。
+`recoverable` 为 `true` 时也可用：报警期间的停止未确认已锁定控制，报警已在面板外清除。
+此时服务不发送 `ClearError()`，只下使能并确认静止。
+状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
+每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
 
 ### WebSocket 接口

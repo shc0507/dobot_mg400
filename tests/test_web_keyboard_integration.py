@@ -21,7 +21,8 @@ import pytest
 from mg400_agent.controller_ownership import ControllerOwnership
 from mg400_agent.feedback import Feedback
 from mg400_agent.joint_control import JointControl, _StationaryTimeoutError
-from mg400_agent.joint_limits import validate_joints
+from mg400_agent.joint_limits import MARGIN_DEG, validate_joints
+from mg400_agent.keyboard_jog import CONTINUOUS_MARGIN_DEG_PER_PERCENT
 from mg400_agent.web_control import RobotPanelState
 from mg400_agent.web_gripper import WebGripper
 
@@ -854,8 +855,8 @@ def test_unconfirmed_speed_factor_becomes_a_verified_stop_that_disable_recovers(
     ]
 
 
-def test_joint_limit_keeps_keys_on_and_a_new_direction_starts_with_an_inward_step(rig):
-    # J1 starts 0.15 degrees inside the target limit and turns while A is held.
+def test_joint_limit_keeps_keys_on_and_a_new_direction_jogs_away_at_once(rig):
+    # J1 starts just outside the 1% stop band and turns toward the limit while A is held.
     rig.controller.update(joints_deg=(158.8, *START[1:]))
     rig.controller.jog_rate = 0.005
     rig.connect()
@@ -870,20 +871,23 @@ def test_joint_limit_keeps_keys_on_and_a_new_direction_starts_with_an_inward_ste
     assert snapshot["message"].startswith("J1=")
     assert snapshot["keyboard_enabled"] and not snapshot["locked"]
     limit = rig.controller.sample.joints_deg[0]
-    assert 158.95 < limit < 160
+    assert 160 - (MARGIN_DEG + CONTINUOUS_MARGIN_DEG_PER_PERCENT) < limit < 160
     assert rig.controller.mutations() == ["SpeedFactor(1)", "MoveJog(J1+)", "MoveJog()"]
-    # After the release, the other direction first moves a short checked step inward.
+    # The closing check stops outside the 1.05-degree band, so the other direction
+    # starts one continuous jog without a finite inward step.
+    assert validate_joints(rig.controller.sample.joints_deg)
     rig.keys()
     rig.keys("D")
     rig.wait(lambda s: s["robot_mode"] == 11)
     rig.keys()
     rig.wait_idle(NEXT)
-    mutations = rig.controller.mutations()
-    assert mutations[:3] == ["SpeedFactor(1)", "MoveJog(J1+)", "MoveJog()"]
-    assert mutations[4:] == ["MoveJog(J1-)", "MoveJog()"]
-    assert mutations[3].startswith("JointMovJ(") and mutations[3].endswith(",SpeedJ=5,AccJ=20)")
-    target = tuple(float(value) for value in mutations[3][len("JointMovJ(") :].split(",")[:4])
-    assert validate_joints(target) and target[0] < limit
+    assert rig.controller.mutations() == [
+        "SpeedFactor(1)",
+        "MoveJog(J1+)",
+        "MoveJog()",
+        "MoveJog(J1-)",
+        "MoveJog()",
+    ]
     snapshot = rig.snapshot()
     assert snapshot["keyboard_enabled"] and not snapshot["locked"]
     assert not rig.state._control.stopped

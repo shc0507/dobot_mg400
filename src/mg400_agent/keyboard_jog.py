@@ -6,11 +6,25 @@ import time
 
 from . import joint_control
 from .joint_control import TargetRejectedError
-from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
+from .joint_limits import (
+    MARGIN_DEG,
+    limit_distances,
+    validate_joint_segment,
+    validate_joints,
+    validate_measured_joints,
+)
 
 SEGMENT_DISTANCE_MM = 50.0
 SEGMENT_ANGLE_DEG = 10.0
 KEYS = frozenset("WASDRFQE")
+# A continuous jog moves on after the guard trips. At 40% speed a W hold passed the
+# 1.05-degree J3-J2 margin by 1.9 degrees and raised controller alarm 72. Stopping
+# distance grows linearly with SpeedFactor, which scales velocity and acceleration.
+# A continuous hold therefore stops early when it closes on a bound inside a
+# speed-scaled band. Holds that move away from or along a bound are not limited.
+CONTINUOUS_MARGIN_DEG_PER_PERCENT = 0.08
+# A distance must shrink by more than feedback noise to count as closing on a bound.
+APPROACH_EPSILON_DEG = 0.02
 RADIAL_USER = 8
 MOVEJOG_COMMANDS = {
     "W": f"MoveJog(X+,CoordType=0,User={RADIAL_USER},Tool=0)",
@@ -54,10 +68,33 @@ class KeyboardJogSession:
         self.limit_reason = None
         self._continuous = False
         self._radial_j1 = None
+        self._approach = {}
 
     @property
     def speed_percent(self):
         return self._speed_percent
+
+    @property
+    def continuous_margin(self):
+        """Distance in degrees inside which a continuous hold may not close on a bound."""
+        return MARGIN_DEG + CONTINUOUS_MARGIN_DEG_PER_PERCENT * self._speed_percent
+
+    def _check_approach(self, joints):
+        """Reject a continuous hold that closes on a bound inside the speed-scaled band.
+
+        Each bound keeps the largest distance seen in this hold. A slow hold that
+        closes by less than the noise per sample still counts once the total does.
+        """
+        band = self.continuous_margin
+        for name, side, value, limit, distance in limit_distances(joints):
+            farthest = self._approach.get((name, side))
+            if farthest is None or distance > farthest:
+                self._approach[(name, side)] = distance
+            elif distance < band and distance < farthest - APPROACH_EPSILON_DEG:
+                raise ValueError(
+                    f"{name}={value:g} degrees is closing on its reference limit {limit:g} "
+                    f"inside the {band:g}-degree stop band for {self.speed_percent}% speed"
+                )
 
     @property
     def busy(self):
@@ -98,6 +135,7 @@ class KeyboardJogSession:
             self.limit_reason = None
             self._continuous = False
             self._radial_j1 = None
+            self._approach = {}
             return active
 
     def _stop(self, active):
@@ -271,6 +309,7 @@ class KeyboardJogSession:
                 if continuous:
                     try:
                         validate_joints(sample.joints_deg)
+                        self._check_approach(sample.joints_deg)
                     except ValueError as error:
                         self.limit_reason = str(error)
                         self._release_gate = released

@@ -32,8 +32,9 @@
       </section>
       <div class="aux"><button id="keyboard" title="Hold one key; release requests a stop. W/S: reach. A/D: base turn. R/F: up/down. Q/E: flange yaw. Z/X: gripper open/close. Esc while keys are on: disable robot. Leaving the page or pressing Shift/Ctrl/Alt/Meta turns keys off." hidden disabled>Keyboard: OFF</button><label class="speed" id="speedField" title="Global robot speed ratio, 1–100%. Click Keyboard to apply. It also affects Home and Execute targets, not the gripper." hidden>Speed <input id="speed" type="number" min="1" max="100" step="1" value="1" aria-label="Keyboard speed percent">%</label><div class="joints" id="joints"></div></div>
       <div class="status" id="status" role="status" aria-live="polite">Connecting to the Python server…</div>
+      <div class="status" id="alarms" style="white-space:pre-line" hidden></div>
     </main>
-    <footer><span class="robot-state" id="robotState">—</span><button id="enable" disabled>Enable robot</button><button class="disable" id="disable" disabled>Disable robot</button></footer>
+    <footer><span class="robot-state" id="robotState">—</span><button id="clearAlarm" title="Sends ClearError() only. Motion does not resume." hidden disabled>Clear alarm</button><button id="enable" disabled>Enable robot</button><button class="disable" id="disable" disabled>Disable robot</button></footer>
   </div>
   <div class="connection" id="connection">Python panel</div>
   <script>
@@ -117,6 +118,14 @@
       $('speed').disabled = !robot || !owner || !data.syncing || !!data.busy || !!data.keyboard_arming;
       $('speedField').title = speedTitle + (robot && data.speed_factor != null ? ` Controller ratio: ${data.speed_factor}%.` : '');
       $('joints').innerHTML = [0,1,2,3].map(i => `<span>J${i+1} <b>${data.joints ? data.joints[i].toFixed(2)+'°' : '—'}</b></span>`).join('');
+      const alarm = robot && (data.robot_mode === 9 || !!data.robot_error);
+      const recover = robot && !alarm && !!data.recoverable;
+      $('clearAlarm').hidden = !alarm && !recover;
+      $('clearAlarm').textContent = recover ? 'Recover' : 'Clear alarm';
+      $('clearAlarm').title = recover ? 'Confirms disable and rest, then unlocks control.' : 'Sends ClearError() only. Motion does not resume.';
+      $('clearAlarm').disabled = !active || !owner || !data.feedback_fresh;
+      $('alarms').hidden = !alarm || !data.alarms?.length;
+      $('alarms').textContent = alarm ? (data.alarms || []).map(item => `Alarm ${item.id}${item.source === 'controller' ? '' : ' · '+item.source}: ${item.description}${item.solution ? '. '+item.solution : ''}`).join('\n') : '';
       $('robotState').textContent = data.robot_mode == null ? 'No feedback' : `Mode ${data.robot_mode}${data.robot_error ? ' · error' : ''}${data.feedback_fresh ? '' : ' · stale'}${data.locked ? ' · LOCKED' : ''}`;
       $('connection').textContent = robot ? `Real robot · ${data.robot_host} · XYZ/R use the robot base and flange. Home moves all four joints to 0°. Stop arm does not stop a gripper command already sent. Continuous jogging needs a person at the physical emergency stop. If stop is unconfirmed, use the physical emergency stop.` : `Read-only · ${data.robot_host} · Joint feedback only. Pose, gripper, keyboard jogging, and robot commands are unavailable.`;
       // Without a connection the last state is stale, so show why the page is offline.
@@ -290,6 +299,7 @@
     $('execute').addEventListener('click',() => command('execute'));
     $('copyActual').addEventListener('click',() => copyActual(state));
     $('initializeGripper').addEventListener('click',() => command('initialize_gripper'));
+    $('clearAlarm').addEventListener('click',() => command('clear_alarm'));
     $('startSync').addEventListener('click',() => command('start_sync'));
     $('stopSync').addEventListener('click',() => command('stop_sync'));
     $('auth').addEventListener('submit',event => {event.preventDefault();token = $('token').value.trim();submitted = true;authWait = false;if(socket) closed();connect();});

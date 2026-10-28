@@ -12,6 +12,7 @@
 | 配置依赖并运行离线检查 | [开发检查](#开发检查) |
 | 查找入口与模块 | [代码结构](#代码结构) |
 | 编写机器人服务的客户端 | [机器人服务接口](#机器人服务接口) |
+| 编写位移台面板的客户端 | [位移台面板接口](#位移台面板接口) |
 | 修改关节范围、运动参数或夹爪协议 | [真机控制参考](#真机控制参考) |
 
 ## 开发检查
@@ -27,12 +28,18 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-测试不连接机械臂。
+`uv sync` 默认安装 `dev` 和 `stage` 依赖组。
+`stage` 组含位移台面板使用的 Flask、waitress 和 pySerial。
+机械臂的网页服务和交互终端只用标准库，不依赖 `stage` 组。
+
+测试不连接机械臂或 Arduino。
 `pytest` 运行 Python 测试，`node --test` 运行摄像头预览和网页按键测试。
 离线检查不能替代真机验证。
 
 测试共用的 fixture 位于 `tests/conftest.py`。
+位移台测试的 `stage_rig`、`stage_ports` 和 `stage_usb` 也在此文件，测试按名称引用。
 模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_ws.py`。
+位移台的时钟、串口和串口列表替身位于 `tests/stage_helpers.py`。
 新增测试时复用这些模块，不得在测试文件中另写副本。
 
 使用 `examples/test.ipynb` 时，给同步命令加 `--group notebook`。
@@ -46,7 +53,10 @@ uv run ruff format --check .
 | `apps/control_panel/` | 独立 Python 网页服务和界面 |
 | `apps/layout-studio/` | 离线布局编辑器，使用模拟数据，不发送控制命令 |
 | `config/camera_preview/` | 摄像头预览配置和 systemd 服务 |
+| `config/stage_panel/` | 位移台面板的 systemd 服务，配置从 `/etc/mg400/mg400.env` 读取 |
 | `src/mg400_agent/` | 后端、控制协议和反馈处理 |
+| `src/stage_controller/` | 位移台面板：Flask 服务、串口协议和界面 |
+| `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
 | `scripts/` | 摄像头预览、控制模式切换和 USB 采集 |
 | `examples/` | 单文件教学和 notebook |
 | `tests/` | Python 和 JavaScript 离线测试 |
@@ -70,6 +80,16 @@ uv run ruff format --check .
 `joint_control.py` 执行受限运动，`gripper_feedback.py` 处理夹爪反馈。
 TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 当前没有 ROS 2 后端或视觉感知。
+
+`src/stage_controller/` 是位移台面板，不导入 `mg400_agent`，也不使用机械臂的连接锁。
+`__main__.py` 读取 `MG400_STAGE_*` 环境变量和命令行参数，再启动 waitress。
+收到 SIGINT、SIGTERM 或 SIGHUP 时，它先停止电机并断开串口，再退出。
+`app.py` 提供 HTTP 接口和访问检查。
+`controller.py` 管理串口连接、冷却、长按和活动日志。
+`protocol.py` 实现 Arduino 串口协议和演示模式。
+所有串口命令都在 `MotorController` 的锁内执行，一次移动的命令不与其他请求交错。
+修改串口命令时，同时修改固件和 `DemoTransport`。
+接口说明见 [位移台面板接口](#位移台面板接口)。
 
 ## 机器人服务接口
 
@@ -204,6 +224,61 @@ POST 请求必须满足以下条件：
 连接关闭不终止控制租约。
 服务或代理关闭连接、客户端 3 秒内重连并续期时，保留控制权。
 网络中断时，服务可能检测不到连接关闭，由按键超时和控制租约停止机械臂。
+
+## 位移台面板接口
+
+位移台面板的 HTTP 接口使用 JSON。
+服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
+
+| 接口 | 正文字段 | 用途 |
+| --- | --- | --- |
+| `GET /api/ports` | 无 | 列出可连接的串口，不含夹爪转换器。设置 `MG400_STAGE_SERIAL` 时只列出该设备 |
+| `GET /api/state` | 无 | 读取连接、电机、细分模式和活动日志 |
+| `POST /api/connect` | `port` | 连接 `api/ports` 列出的串口，演示模式只接受 `DEMO` |
+| `POST /api/disconnect` | 无 | 发送 `stop all`，确认后断开 |
+| `POST /api/stop` | 无 | 停止所有电机 |
+| `POST /api/microstep` | `microstep`：1、2、4、8 或 16 | 所有电机静止时设置细分模式 |
+| `POST /api/motors/<电机>/move` | `direction`、`speed`、`steps` | 固定步数移动 |
+| `POST /api/motors/<电机>/hold` | `direction`、`speed`、`hold_id`、`sampled_at` | 开始长按移动 |
+| `POST /api/motors/<电机>/hold/keepalive` | `hold_id` | 续期长按 |
+| `POST /api/motors/<电机>/hold/stop` | `hold_id` | 结束长按 |
+
+`<电机>` 取 `bottom`、`top` 或 `insert`，`direction` 取 `cw` 或 `ccw`。
+`speed` 是 1–1000 的整数，`steps` 是 1–100000 的整数。
+`hold_id` 由客户端生成，长度为 16–64 个字符，只含字母、数字、`_` 和 `-`。
+每次长按必须使用新的 `hold_id`。
+`sampled_at` 取自 `api/state` 的同名字段，必须在服务时钟的最近 2 秒内。
+客户端必须在 1 秒内续期长按，网页每 200 ms 续期一次。
+`hold/stop` 可以重复发送。
+`hold/stop` 先于同一 `hold_id` 的 `hold` 到达时，服务拒绝之后到达的 `hold`。
+
+### 访问检查
+
+设置 `MG400_STAGE_TOKEN` 后，每个 `/api/` 请求都必须带 `Authorization: Bearer <密钥>`。
+此时服务接受任何 `Host` 和转发请求头。
+`/` 和 `/static/` 不要求访问密钥，页面不含串口、日志和电机位置。
+未设置访问密钥时，`Host` 和转发请求头的规则同 [认证与客户端 ID](#认证与客户端-id)。
+
+POST 请求还必须满足以下条件：
+
+1. 带 `Content-Type: application/json`。
+2. 带 `X-Control-Token`，值取自页面的 `<meta name="control-token">`，服务每次启动生成新值。
+3. 有正文字段的接口，正文必须是 JSON 对象，不超过 4096 字节。
+
+成功时返回 200 和状态对象，字段与 `api/state` 相同。
+`api/ports` 返回 `{"ports": [{"device": "...", "description": "..."}]}`。
+状态对象的 `motors` 列出每个电机的 `mode`（`idle`、`moving` 或 `continuous`）、`position`、`cooldown` 和 `available` 等字段。
+拒绝时，正文为 `{"error": "..."}`，状态码如下：
+
+| 状态码 | 含义 |
+| --- | --- |
+| 400 | 请求无效，或串口不在当前列表中 |
+| 401 | 缺少访问密钥或密钥错误 |
+| 403 | `Host`、转发请求头或 `X-Control-Token` 不符合要求 |
+| 409 | 状态冲突，例如未连接、电机仍在运动或冷却 |
+| 413 | 有正文字段的接口收到超过 4096 字节的正文 |
+| 415 | 不是 JSON 请求 |
+| 503 | 串口通信失败，服务已关闭串口连接 |
 
 ## 真机控制参考
 

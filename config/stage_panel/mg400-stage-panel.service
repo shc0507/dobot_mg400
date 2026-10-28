@@ -1,0 +1,17 @@
+[Unit]
+Description=Stage motor panel
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+SupplementaryGroups=dialout
+EnvironmentFile=/etc/mg400/mg400.env
+WorkingDirectory=/opt/mg400
+ExecStart=/opt/mg400/.venv/bin/stage-panel
+Restart=on-failure
+RestartSec=3
+UMask=0077
+TimeoutStopSec=30

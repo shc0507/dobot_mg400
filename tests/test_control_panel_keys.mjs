@@ -1,7 +1,7 @@
-// Check the keyboard rules of the control panel page with a fake browser.
+// Check the keyboard and connection rules of the control panel page with a fake browser.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import vm from "node:vm";
 
 const html = readFileSync(new URL("../apps/control_panel/index.html", import.meta.url), "utf8");
@@ -13,7 +13,38 @@ const KEY_VALUES = {
   ControlRight: "Control", AltLeft: "Alt", AltRight: "Alt", MetaLeft: "Meta", MetaRight: "Meta",
 };
 // The browser fires these at the window only. Other page events bubble through the document.
-const WINDOW_EVENTS = new Set(["blur", "focus", "pagehide"]);
+const WINDOW_EVENTS = new Set(["blur", "focus", "pagehide", "pageshow"]);
+// crypto.getRandomValues fills every byte with 171.
+const CLIENT_ID = "ab".repeat(16);
+const LOST = "Connection lost. Reconnecting…";
+const REFUSED = "The robot service refused the connection. Retrying…";
+const TOKEN_PROMPT = "Enter the panel access token";
+const hello = (token = "") => ({ type: "hello", protocol: 1, client: CLIENT_ID, token });
+
+// Check each frame the way the service does. A refused frame fails the test that sent it.
+const violations = [];
+afterEach(() => assert.deepEqual(violations.splice(0), [], "the page sent frames that the service refuses"));
+function frameProblem(socket, data) {
+  if (typeof data !== "string") return "a frame is not text";
+  if (Buffer.byteLength(data, "utf8") > 4096) return "a frame has more than 4096 UTF-8 bytes";
+  let message;
+  try { message = JSON.parse(data); } catch { return "a frame is not JSON"; }
+  if (!message || typeof message !== "object" || Array.isArray(message)) return "a frame is not a JSON object";
+  const keys = Object.keys(message).sort().join();
+  if (!socket.sent.length) {
+    if (keys !== "client,protocol,token,type" || message.type !== "hello") return `the first frame is not a hello: ${data}`;
+    if (message.protocol !== 1) return `hello has protocol ${JSON.stringify(message.protocol)}`;
+    if (typeof message.token !== "string") return "the hello token is not a string";
+    const client = message.client;
+    if (typeof client !== "string" || !/^[\x20-\x7e]{1,128}$/.test(client) || !client.trim()) return "the hello client is invalid";
+    return null;
+  }
+  if (keys !== "body,id,type") return `a request has the keys ${keys}`;
+  if (!["command", "heartbeat", "keys"].includes(message.type)) return `unknown request type ${message.type}`;
+  if (!Number.isInteger(message.id) || message.id < 0 || message.id > 2 ** 53) return `invalid request id ${message.id}`;
+  if (!message.body || typeof message.body !== "object" || Array.isArray(message.body)) return "a request body is not an object";
+  return null;
+}
 
 class FakeElement {
   constructor(id = "") {
@@ -47,9 +78,10 @@ class FakeElement {
 
 class FakeInput extends FakeElement {}
 
-function browser() {
-  let now = 0, timerId = 0, version = 0, focused = true;
-  const timers = new Map(), requests = [], elements = new Map();
+function browser({ href = "http://panel.test/mg400/", storedToken = null } = {}) {
+  let now = 0, timerId = 0, version = 0, focused = true, lastState = null;
+  // requests holds socket requests (not hello) and HTTP requests in send order.
+  const timers = new Map(), requests = [], sockets = [], stored = [], elements = new Map();
   const listeners = { window: new Map(), document: new Map() };
   const body = new FakeElement("body");
   const element = id => {
@@ -57,6 +89,13 @@ function browser() {
       const node = /^(speed|token)$|(Target|Range)$/.test(id) ? new FakeInput(id) : new FakeElement(id);
       if (id === "speed") node.value = "1";
       if (id === "keyboard") node.hidden = node.disabled = true;
+      if (id === "auth") node.hidden = true;
+      if (id === "status") {
+        // Count writes: the page writes the status line only when its text changes.
+        let text = "";
+        node.writes = 0;
+        Object.defineProperty(node, "textContent", { get: () => text, set: value => { text = value; node.writes++; } });
+      }
       elements.set(id, node);
     }
     return elements.get(id);
@@ -78,11 +117,57 @@ function browser() {
     timers.set(id, { at: now + Math.max(0, Number(delay) || 0), callback, every });
     return id;
   };
+  const deliver = (socket, message) => socket.onmessage?.({ data: JSON.stringify(message) });
+
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    constructor(url) {
+      Object.assign(this, {
+        url, readyState: 0, bufferedAmount: 0, sent: [], closedBy: null,
+        onopen: null, onmessage: null, onclose: null,
+      });
+      sockets.push(this);
+    }
+    send(data) {
+      if (this.readyState === 0) throw new Error("InvalidStateError: the socket is still connecting");
+      // A browser drops data sent after the close started, without an error.
+      if (this.readyState !== 1) return;
+      const problem = frameProblem(this, data);
+      if (problem) violations.push(problem);
+      if (problem?.includes("JSON")) return;
+      const message = JSON.parse(data);
+      this.sent.push(message);
+      if (message.type === "hello") return;
+      const request = {
+        via: "socket", socket: this, message, type: message.type, id: message.id, body: message.body,
+        at: now, settled: false,
+      };
+      requests.push(request);
+      if (message.type === "heartbeat" && page.autoHeartbeat) {
+        request.settled = true;
+        Promise.resolve().then(() => deliver(this, { type: "reply", id: message.id, status: 200, state: lastState }));
+      }
+    }
+    close(code) {
+      if (this.readyState >= 2) return;
+      this.readyState = 2;
+      this.closedBy = code ?? 1005;
+    }
+  }
+
   const context = vm.createContext({
-    window, document, console,
+    window, document, console, URL,
+    location: { href },
+    WebSocket: FakeWebSocket,
     HTMLInputElement: FakeInput,
     crypto: { getRandomValues: array => array.fill(171) },
-    sessionStorage: { getItem: () => null, setItem() {} },
+    sessionStorage: {
+      getItem: key => (key === "mg400-panel-token" ? storedToken : null),
+      setItem: (key, value) => stored.push([key, value]),
+    },
     AbortSignal: { timeout: milliseconds => ({ timeout: milliseconds, aborted: false, addEventListener() {} }) },
     setTimeout: (callback, delay) => schedule(callback, delay, 0),
     setInterval: (callback, delay) => schedule(callback, delay, Math.max(1, Number(delay) || 0)),
@@ -92,17 +177,12 @@ function browser() {
       let settle;
       const promise = new Promise((resolve, reject) => { settle = { resolve, reject }; });
       requests.push({
-        path, options, at: now, settled: false,
+        via: "http", path, options, at: now, settled: false, socketState: sockets.at(-1)?.readyState,
+        type: path === "api/command" ? "command" : path,
         body: options.body === undefined ? undefined : JSON.parse(options.body),
         timeout: options.signal?.timeout,
-        respond(data, status) {
-          this.settled = true;
-          settle.resolve({ status, ok: status >= 200 && status < 300, json: async () => data });
-        },
-        fail(error) {
-          this.settled = true;
-          settle.reject(error);
-        },
+        resolveWith: (data, status) => settle.resolve({ status, ok: status >= 200 && status < 300, json: async () => data }),
+        rejectWith: error => settle.reject(error),
       });
       return promise;
     },
@@ -110,12 +190,15 @@ function browser() {
   vm.runInContext(script, context);
 
   const page = {
-    requests, body, $: element,
-    get clientId() { return requests[0].options.headers["X-MG400-Client"]; },
+    requests, sockets, stored, body, $: element, clientId: CLIENT_ID,
+    // Answer heartbeats at once, like a healthy service.
+    autoHeartbeat: true,
+    get socket() { return sockets.at(-1); },
+    get now() { return now; },
     // A robot snapshot for this page: owner, syncing, fresh, enabled (mode 5), keys OFF.
     snapshot(overrides = {}) {
       return {
-        mode: "robot", robot_host: "robot.test", controller_id: page.clientId,
+        mode: "robot", robot_host: "robot.test", controller_id: CLIENT_ID,
         syncing: true, feedback_fresh: true, enabled: true, robot_mode: 5, robot_error: false,
         locked: false, busy: false, stop_unconfirmed: false, message: "Ready.",
         actual: [250, 0, 100, 0, 500], joints: [0, 0, 0, 0], speed_factor: 1,
@@ -125,14 +208,40 @@ function browser() {
         version: ++version, ...overrides,
       };
     },
-    async respond(request, data, status = 200) {
-      assert.equal(request.settled, false, `${request.path} was already settled`);
-      request.respond(data, status);
+    async open(socket = page.socket) {
+      assert.equal(socket.readyState, 0, "the socket is not connecting");
+      socket.readyState = 1;
+      socket.onopen?.({ type: "open" });
       await flush();
     },
-    async fail(request, error = new Error("Network down")) {
-      assert.equal(request.settled, false, `${request.path} was already settled`);
-      request.fail(error);
+    async message(message, socket = page.socket) {
+      deliver(socket, message);
+      await flush();
+    },
+    push(state, socket = page.socket) {
+      lastState = state;
+      return page.message({ type: "state", state }, socket);
+    },
+    // The browser reports a refused handshake or a dropped connection as 1006.
+    async serverClose(code = 1006, socket = page.socket) {
+      socket.readyState = 3;
+      socket.onclose?.({ type: "close", code, reason: "", wasClean: code !== 1006 });
+      await flush();
+    },
+    async respond(request, data, status = 200) {
+      assert.equal(request.settled, false, `${request.type} ${request.id ?? request.path} was already settled`);
+      request.settled = true;
+      if (request.via === "http") request.resolveWith(data, status);
+      else if (status === 200) deliver(request.socket, { type: "reply", id: request.id, status, state: data });
+      else deliver(request.socket, { type: "reply", id: request.id, status, error: data.error });
+      await flush();
+    },
+    // HTTP: a network error. Socket: an error reply.
+    async fail(request, error = new Error("Network down"), status = 409) {
+      assert.equal(request.settled, false, `${request.type} ${request.id ?? request.path} was already settled`);
+      request.settled = true;
+      if (request.via === "http") request.rejectWith(error);
+      else deliver(request.socket, { type: "reply", id: request.id, status, error: error.message });
       await flush();
     },
     async advance(milliseconds) {
@@ -178,27 +287,31 @@ function browser() {
       for (const listener of target.listeners.get("click") ?? []) listener({ type: "click", target, preventDefault() {} });
       await flush();
     },
+    async submit(id) {
+      const target = element(id);
+      for (const listener of target.listeners.get("submit") ?? []) listener({ type: "submit", target, preventDefault() {} });
+      await flush();
+    },
     setFocus(value) { focused = value; },
     setVisibility(value) { document.visibilityState = value; },
     evaluate: code => vm.runInContext(code, context),
-    keyUpdates: () => requests.filter(request => request.path === "api/keys"),
+    pending: () => vm.runInContext("pending.size", context),
+    keyUpdates: () => requests.filter(request => request.type === "keys"),
     commands: action => requests.filter(
-      request => request.path === "api/command" && (action === undefined || request.body?.action === action),
+      request => request.type === "command" && (action === undefined || request.body?.action === action),
     ),
+    heartbeats: () => requests.filter(request => request.type === "heartbeat"),
+    http: () => requests.filter(request => request.via === "http"),
     arms: () => page.commands("keyboard").filter(request => request.body.enabled === true),
     disarms: () => page.commands("keyboard").filter(request => request.body.enabled === false),
-    lastPoll() {
-      const polls = requests.filter(request => request.path === "api/state" && !request.settled);
-      assert.equal(polls.length, 1, "expected one state poll in flight");
-      return polls[0];
-    },
   };
   return page;
 }
 
 async function ready(overrides = {}) {
   const page = browser();
-  await page.respond(page.lastPoll(), page.snapshot(overrides));
+  await page.open();
+  await page.push(page.snapshot(overrides));
   return page;
 }
 
@@ -223,6 +336,15 @@ async function busyHolding() {
   return page;
 }
 
+// Expect the next socket after exactly delay milliseconds.
+async function reconnectsAfter(page, delay) {
+  const count = page.sockets.length;
+  await page.advance(delay - 1);
+  assert.equal(page.sockets.length, count, `reconnected before ${delay} ms`);
+  await page.advance(1);
+  assert.equal(page.sockets.length, count + 1, `no reconnect after ${delay} ms`);
+}
+
 // Arm, disarm and keys share one server sequence, so the page must send increasing numbers.
 function assertSequenced(page) {
   const numbers = page.requests
@@ -236,18 +358,61 @@ function assertSequenced(page) {
 
 function assertDisarm(request, reason) {
   assert.ok(request, `no ${reason} disarm was sent`);
+  assert.equal(request.via, "socket");
   assert.deepEqual(request.body, { action: "keyboard", enabled: false, reason, seq: request.body.seq });
 }
 
-test("the page has one inline script that starts by reading state only", async () => {
+function assertPanelPost(request, action, token = "") {
+  assert.equal(request.via, "http");
+  assert.equal(request.path, "api/command");
+  assert.equal(request.options.method, "POST");
+  assert.deepEqual(request.body, { action });
+  assert.equal(request.options.headers["Content-Type"], "application/json");
+  assert.equal(request.options.headers["X-MG400-Panel"], "1");
+  assert.equal(request.options.headers["X-MG400-Client"], CLIENT_ID);
+  assert.equal(request.options.headers.Authorization, token ? `Bearer ${token}` : "");
+}
+
+test("the page has one inline script that starts by opening the socket and sending one hello", async () => {
   assert.equal(scripts.length, 1);
   assert.doesNotMatch(scripts[0][1], /\bsrc=/);
   const page = browser();
-  assert.deepEqual(page.requests.map(request => request.path), ["api/state"]);
-  await page.respond(page.lastPoll(), page.snapshot());
+  assert.equal(page.sockets.length, 1);
+  assert.equal(page.socket.url, "ws://panel.test/mg400/api/ws");
+  assert.deepEqual(page.requests, [], "no request before the socket opens");
+  assert.deepEqual(page.socket.sent, []);
+  await page.open();
+  assert.deepEqual(page.socket.sent, [hello()]);
+  await page.push(page.snapshot());
   await page.advance(1000);
+  assert.equal(page.sockets.length, 1);
+  assert.equal(page.socket.sent.filter(message => message.type === "hello").length, 1);
+  assert.equal(page.http().length, 0);
   assert.equal(page.keyUpdates().length, 0);
   assert.equal(page.commands().length, 0);
+  const secure = browser({ href: "https://lab.test/mg400-panel/index.html?view=1#top", storedToken: "stored-token" });
+  assert.equal(secure.socket.url, "wss://lab.test/mg400-panel/api/ws");
+  await secure.open();
+  assert.deepEqual(secure.socket.sent, [hello("stored-token")]);
+  // All timing comes from timers, so the fake clock drives every rule.
+  assert.match(script, /\bconst PROTOCOL = 1\b/);
+  assert.doesNotMatch(script, /\bDate\b|\bperformance\b/);
+});
+
+test("state pushes render, and nothing renders before the first one", async () => {
+  const page = browser();
+  await page.open();
+  assert.equal(page.$("rows").innerHTML, "");
+  await page.push(page.snapshot({ message: "First push.", actual: [250, 1, 100, 2, 500], joints: [1, 2, 3, 4] }));
+  assert.equal(page.$("mode").textContent, "REAL ROBOT");
+  assert.equal(page.$("status").textContent, "First push.");
+  assert.equal(page.$("xActual").textContent, "250.000");
+  assert.match(page.$("joints").innerHTML, /J1 <b>1\.00°<\/b>/);
+  assert.equal(page.$("enable").disabled, true);
+  await page.push(page.snapshot({ message: "Second push.", robot_mode: 4, enabled: false }));
+  assert.equal(page.$("status").textContent, "Second push.");
+  assert.equal(page.$("robotState").textContent, "Mode 4");
+  assert.equal(page.$("enable").disabled, false);
 });
 
 test("key updates go out at once with a strict body and a 1 s timeout", async () => {
@@ -259,16 +424,22 @@ test("key updates go out at once with a strict body and a 1 s timeout", async ()
   await page.key("keyup", "KeyZ");
   assert.deepEqual(page.keyUpdates().map(update => [...update.body.held].sort()), [["W"], ["W", "Z"], ["Z"], []]);
   for (const update of page.keyUpdates()) {
+    assert.equal(update.via, "socket");
+    assert.deepEqual(Object.keys(update.message).sort(), ["body", "id", "type"]);
     assert.deepEqual(Object.keys(update.body).sort(), ["held", "seq"]);
-    assert.equal(update.timeout, 1000);
-    assert.equal(update.options.method, "POST");
-    assert.equal(update.options.headers["X-MG400-Panel"], "1");
-    assert.equal(update.options.headers["X-MG400-Client"], page.clientId);
   }
+  assert.deepEqual(page.keyUpdates().map(update => update.id), [1, 2, 3, 4]);
   assertSequenced(page);
+  await page.advance(999);
+  assert.equal(page.pending(), 4, "a key update gave up before 1 s");
+  assert.equal(page.$("status").classList.contains("error"), false);
+  await page.advance(1);
+  assert.equal(page.pending(), 0, "a key update waited longer than 1 s");
+  assert.equal(page.$("status").textContent, "Request timed out");
+  assert.equal(page.keyUpdates().length, 4, "no keys were held, so no release follows");
 });
 
-test("keyup removes a held key and posts at once from an input or without focus", async () => {
+test("keyup removes a held key and sends at once from an input or without focus", async () => {
   const page = await ready({ keyboard_enabled: true });
   await page.key("keydown", "KeyW");
   await page.key("keydown", "KeyA");
@@ -346,7 +517,7 @@ for (const [name, reason, trigger] of [
     await trigger(page);
     await page.respond(arm, page.snapshot({ keyboard_arming: true, busy: true }));
     await page.advance(500);
-    await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true }));
+    await page.push(page.snapshot({ keyboard_enabled: true }));
     const disarm = page.disarms().find(request => request.body.reason === reason);
     assertDisarm(disarm, reason);
     assert.ok(disarm.body.seq > arm.body.seq, "the disarm must be newer than the arm");
@@ -359,8 +530,12 @@ test("Esc disables at once, before the modifier rule and past a busy command", a
   const event = await page.key("keydown", "Escape", { shiftKey: true, ctrlKey: true });
   assert.equal(event.defaultPrevented, true);
   const sent = page.requests.slice(before);
-  assert.deepEqual(sent.filter(request => request.path === "api/keys").map(request => request.body.held), [[]]);
-  assert.deepEqual(sent.filter(request => request.path === "api/command").map(request => request.body), [{ action: "disable" }]);
+  assert.deepEqual(sent.filter(request => request.type === "keys").map(request => request.body.held), [[]]);
+  const commands = sent.filter(request => request.type === "command");
+  assert.deepEqual(commands.map(request => [request.via, request.body]), [
+    ["http", { action: "disable" }], ["socket", { action: "disable" }],
+  ]);
+  assertPanelPost(commands[0], "disable");
   await page.advance(500);
   assert.equal(page.keyUpdates().length, 3, "renewals continued");
   assertSequenced(page);
@@ -370,7 +545,10 @@ test("Esc disables while keys are CHECKING", async () => {
   const page = await ready({ keyboard_arming: true, busy: true });
   const event = await page.key("keydown", "Escape", { metaKey: true });
   assert.equal(event.defaultPrevented, true);
-  assert.deepEqual(page.commands().map(request => request.body), [{ action: "disable" }]);
+  assert.deepEqual(page.commands().map(request => [request.via, request.body]), [
+    ["http", { action: "disable" }], ["socket", { action: "disable" }],
+  ]);
+  assertPanelPost(page.commands()[0], "disable");
 });
 
 test("Esc is left alone while keys are OFF or another page has control", async () => {
@@ -399,59 +577,110 @@ for (const [name, lose] of [
   });
 }
 
-test("at most two renewals are in flight; key changes and Stop go out at once", async () => {
+test("at most two renewals await replies; key changes and Stop go out at once", async () => {
   const page = await ready({ keyboard_enabled: true });
   await page.key("keydown", "KeyW");
   assert.equal(page.keyUpdates().length, 1);
-  await page.advance(1000);
+  // Stay below the 1 s key timeout, which would end the hold.
+  await page.advance(500);
   assert.equal(page.keyUpdates().length, 3, "the key change and two renewals");
   await page.respond(page.keyUpdates()[1], page.snapshot({ keyboard_enabled: true }));
   await page.advance(100);
   assert.equal(page.keyUpdates().length, 4);
-  await page.advance(500);
+  await page.advance(300);
   assert.equal(page.keyUpdates().length, 4);
   // The key change does not use a renewal slot.
   await page.respond(page.keyUpdates()[0], page.snapshot({ keyboard_enabled: true }));
-  await page.advance(500);
+  await page.advance(250);
   assert.equal(page.keyUpdates().length, 4);
   await page.key("keydown", "KeyA");
   assert.equal(page.keyUpdates().length, 5);
   assert.deepEqual([...page.keyUpdates()[4].body.held].sort(), ["A", "W"]);
   await page.click("stop");
-  assert.equal(page.commands("stop").length, 1);
+  assert.deepEqual(page.commands("stop").map(request => request.via), ["http", "socket"]);
   assert.ok(page.keyUpdates().slice(1, 4).every(update => update.body.held.join() === "W"));
   assertSequenced(page);
 });
 
-for (const [name, fail] of [
-  ["a network error", (page, request) => page.fail(request, new Error("Failed to fetch"))],
-  ["its timeout", (page, request) => {
-    const error = Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
-    return page.fail(request, error);
-  }],
-  ["an HTTP error", (page, request) => page.respond(request, { error: "The panel is closing" }, 409)],
+test("renewals are skipped while the socket has unsent data; key changes are not", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  await page.key("keydown", "KeyW");
+  page.socket.bufferedAmount = 64;
+  await page.advance(300);
+  assert.equal(page.keyUpdates().length, 1, "a renewal joined the backlog");
+  await page.key("keydown", "KeyA");
+  assert.deepEqual(page.keyUpdates().map(update => [...update.body.held].sort()), [["W"], ["A", "W"]]);
+  page.socket.bufferedAmount = 0;
+  await page.advance(100);
+  assert.equal(page.keyUpdates().length, 3);
+  assertSequenced(page);
+});
+
+for (const [name, fail, count] of [
+  ["an error reply", (page, request) => page.respond(request, { error: "The panel is closing" }, 409), 3],
+  ["its timeout", async (page, request) => {
+    // Answer the key change, so that this renewal is the update that times out.
+    await page.respond(page.keyUpdates()[0], page.snapshot({ keyboard_enabled: true }));
+    await page.advance(request.at + 1000 - page.now);
+    assert.equal(page.$("status").textContent, "Request timed out");
+  }, 4],
+  ["a lost connection", page => page.serverClose(1006), 2],
 ]) {
   test(`a key update that fails with ${name} clears held keys and stops renewals`, async () => {
     const page = await holding();
+    const socket = page.socket;
     await fail(page, page.keyUpdates()[1]);
+    assert.equal(page.keyUpdates().length, count);
+    if (socket.readyState === 1) {
+      // A sent press cannot be withdrawn, so exactly one release follows on the same socket.
+      const release = page.keyUpdates().at(-1);
+      assert.deepEqual(release.body.held, []);
+      assert.equal(release.socket, socket);
+    }
     await page.advance(500);
-    assert.equal(page.keyUpdates().length, 2, "renewals continued");
+    assert.equal(page.keyUpdates().length, count, "renewals continued");
     await page.key("keyup", "KeyW");
-    assert.equal(page.keyUpdates().length, 2, "W was still held");
+    assert.equal(page.keyUpdates().length, count, "W was still held");
     assert.equal(page.disarms().length, 0);
-    // A new press starts over.
+    // A new press starts over, on a new socket after a lost connection.
+    if (socket.readyState !== 1) {
+      await page.open();
+      await page.push(page.snapshot({ keyboard_enabled: true }));
+    }
     await page.key("keydown", "KeyW");
     assert.deepEqual(page.keyUpdates().at(-1).body.held, ["W"]);
+    assert.equal(page.keyUpdates().at(-1).socket, page.socket);
+    assertSequenced(page);
   });
 }
 
-test("a failed key change clears held keys like a failed renewal", async () => {
+test("a failed key change clears held keys like a failed renewal and sends one release", async () => {
   const page = await ready({ keyboard_enabled: true });
   await page.key("keydown", "KeyW");
   await page.fail(page.keyUpdates()[0]);
+  assert.deepEqual(page.keyUpdates().map(update => update.body.held), [["W"], []]);
   await page.advance(500);
   await page.key("keyup", "KeyW");
-  assert.equal(page.keyUpdates().length, 1);
+  assert.equal(page.keyUpdates().length, 2);
+  assertSequenced(page);
+});
+
+test("a failing release does not send another release", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  await page.key("keydown", "KeyW");
+  await page.fail(page.keyUpdates()[0]);
+  const [, release] = page.keyUpdates();
+  assert.deepEqual(release.body.held, []);
+  await page.fail(release, new Error("Still closing"));
+  assert.equal(page.keyUpdates().length, 2);
+  assert.equal(page.$("status").textContent, "Still closing");
+  // Timeouts do not loop either: one release after the first timeout, none after its own.
+  await page.key("keydown", "KeyA");
+  const start = page.keyUpdates().length;
+  await page.advance(2500);
+  assert.deepEqual(page.keyUpdates().slice(start - 1).map(update => update.body.held), [["A"], ["A"], ["A"], []]);
+  assert.equal(page.pending(), 0);
+  assertSequenced(page);
 });
 
 for (const [name, overrides] of [
@@ -477,19 +706,16 @@ test("a requested disarm is re-sent on each rendered ON or CHECKING snapshot unt
   await page.fire("blur");
   assert.equal(page.disarms().length, 1);
   // One disarm in flight at a time.
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true }));
+  await page.push(page.snapshot({ keyboard_enabled: true }));
   assert.equal(page.disarms().length, 1);
   await page.fail(page.disarms()[0]);
   assert.ok(inFlight().length <= 1);
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ keyboard_arming: true, busy: true }));
+  await page.push(page.snapshot({ keyboard_arming: true, busy: true }));
   assert.equal(inFlight().length, 1, "a CHECKING snapshot must re-send the disarm");
   // The server can answer with ON when the disarm was stale.
   await page.respond(inFlight()[0], page.snapshot({ keyboard_enabled: true }));
   assert.ok(inFlight().length <= 1);
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true }));
+  await page.push(page.snapshot({ keyboard_enabled: true }));
   assert.equal(inFlight().length, 1, "an ON snapshot must re-send the disarm");
   assert.ok(page.disarms().length >= 3);
   assert.ok(page.disarms().every(request => request.body.reason === "focus"));
@@ -499,19 +725,17 @@ test("a requested disarm is re-sent on each rendered ON or CHECKING snapshot unt
   await page.fire("focus");
   await page.click("keyboard");
   await page.respond(page.arms()[0], page.snapshot({ keyboard_arming: true, busy: true }));
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true }));
+  await page.push(page.snapshot({ keyboard_enabled: true }));
   assert.equal(page.disarms().length, total);
   assertSequenced(page);
 });
 
-test("an older snapshot is never rendered over a newer one", async () => {
+test("a reply older than a push is never rendered over it", async () => {
   const page = await ready({ keyboard_enabled: true, message: "Keys on." });
   await page.key("keydown", "KeyW");
   const [change] = page.keyUpdates();
   const older = page.snapshot({ message: "Older: keys off." });
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true, message: "Newer: keys on." }));
+  await page.push(page.snapshot({ keyboard_enabled: true, message: "Newer: keys on." }));
   await page.respond(change, older);
   assert.equal(page.$("status").textContent, "Newer: keys on.");
   assert.equal(page.$("keyboard").textContent, "Keyboard: ON 1%");
@@ -522,11 +746,30 @@ test("an older snapshot is never rendered over a newer one", async () => {
   // A command reply older than the rendered snapshot is not rendered either.
   await page.click("home");
   const stale = page.snapshot({ message: "Stale command reply.", keyboard_enabled: false });
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true, message: "Newest." }));
+  await page.push(page.snapshot({ keyboard_enabled: true, message: "Newest." }));
   await page.respond(page.commands("home")[0], stale);
   assert.equal(page.$("status").textContent, "Newest.");
   assert.equal(page.$("keyboard").textContent, "Keyboard: ON 1%");
+});
+
+test("a push older than a reply is never rendered over it", async () => {
+  const page = await ready({ keyboard_enabled: true, message: "Keys on." });
+  await page.key("keydown", "KeyW");
+  const older = page.snapshot({ message: "Older push: keys off." });
+  await page.respond(page.keyUpdates()[0], page.snapshot({ keyboard_enabled: true, message: "Newer reply." }));
+  await page.push(older);
+  assert.equal(page.$("status").textContent, "Newer reply.");
+  assert.equal(page.$("keyboard").textContent, "Keyboard: ON 1%");
+  // The older OFF push did not clear the held key, so renewals go on.
+  await page.advance(100);
+  assert.deepEqual(page.keyUpdates().at(-1).body.held, ["W"]);
+  await page.key("keyup", "KeyW");
+  // The same holds for a command reply.
+  await page.click("home");
+  const olderPush = page.snapshot({ message: "Older push before Home." });
+  await page.respond(page.commands("home")[0], page.snapshot({ keyboard_enabled: true, busy: true, message: "Home reply." }));
+  await page.push(olderPush);
+  assert.equal(page.$("status").textContent, "Home reply.");
 });
 
 test("the Keyboard label shows the session speed and the Speed field locks while CHECKING or busy", async () => {
@@ -535,10 +778,7 @@ test("the Keyboard label shows the session speed and the Speed field locks while
   assert.equal(page.$("keyboard").textContent, "Keyboard: OFF");
   assert.equal(page.$("speed").disabled, false);
   assert.match(`${page.$("speedField").title} ${page.$("speed").title}`, /\b25\b/);
-  const show = async overrides => {
-    await page.advance(500);
-    await page.respond(page.lastPoll(), page.snapshot(overrides));
-  };
+  const show = overrides => page.push(page.snapshot(overrides));
   await show({ keyboard_arming: true, keyboard_speed_percent: 37, busy: true });
   assert.equal(page.$("keyboard").textContent, "Keyboard: CHECKING…");
   assert.equal(page.$("speed").disabled, true);
@@ -573,16 +813,15 @@ test("the Keyboard button arms only when the arm preconditions look satisfied", 
     { busy: true }, { locked: true }, { feedback_fresh: false }, { syncing: false }, { robot_mode: 4 },
     { robot_mode: 7 }, { gripper_busy: true }, { controller_id: "another-page" },
   ]) {
-    await page.advance(500);
-    await page.respond(page.lastPoll(), page.snapshot(blocked));
+    await page.push(page.snapshot(blocked));
     assert.equal(page.$("keyboard").disabled, true, JSON.stringify(blocked));
   }
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot());
+  await page.push(page.snapshot());
   page.$("speed").value = "37";
   await page.click("keyboard");
   assert.equal(page.arms().length, 1);
   const [arm] = page.arms();
+  assert.equal(arm.via, "socket");
   assert.deepEqual(arm.body, { action: "keyboard", enabled: true, speed: 37, seq: arm.body.seq });
 });
 
@@ -596,7 +835,7 @@ test("a key held while keys are CHECKING needs a new press after keys turn ON", 
   await page.key("keydown", "KeyW");
   for (let i = 0; i < 3; i++) await page.key("keydown", "KeyW", { repeat: true });
   await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true, keyboard_speed_percent: 5 }));
+  await page.push(page.snapshot({ keyboard_enabled: true, keyboard_speed_percent: 5 }));
   assert.equal(page.$("keyboard").textContent, "Keyboard: ON 5%");
   for (let i = 0; i < 3; i++) await page.key("keydown", "KeyW", { repeat: true });
   await page.advance(300);
@@ -609,7 +848,8 @@ test("a key held while keys are CHECKING needs a new press after keys turn ON", 
 
 test("read-only mode hides the Keyboard button and sends no key input", async () => {
   const page = browser();
-  await page.respond(page.lastPoll(), {
+  await page.open();
+  await page.push({
     mode: "read-only", robot_host: "robot.test", enabled: null, syncing: false,
     actual: [null, null, null, null, null], joints: null, robot_mode: null, robot_error: null,
     feedback_fresh: false, message: "Read-only mode.",
@@ -620,26 +860,32 @@ test("read-only mode hides the Keyboard button and sends no key input", async ()
     await page.key("keyup", code);
   }
   await page.fire("blur");
+  await page.advance(1000);
   assert.equal(page.keyUpdates().length, 0);
   assert.equal(page.commands().length, 0);
+  assert.equal(page.heartbeats().length, 0);
 });
 
 test("a restarted server renders although its version is lower, and the old process cannot overwrite it", async () => {
   const page = browser();
-  await page.respond(page.lastPoll(), page.snapshot({ instance: "old", version: 5000, keyboard_enabled: true }));
+  await page.open();
+  await page.push(page.snapshot({ instance: "old", version: 5000, keyboard_enabled: true }));
   assert.equal(page.$("keyboard").textContent, "Keyboard: ON 1%");
-  await page.advance(500);
+  // The old process answers an HTTP stop late, after the new process took over.
+  await page.click("stop");
   const restarted = { instance: "new", version: 1, syncing: false, controller_id: null, message: "Start sync." };
-  await page.respond(page.lastPoll(), page.snapshot(restarted));
+  await page.push(page.snapshot(restarted));
   assert.equal(page.$("status").textContent, "Start sync.");
   assert.equal(page.$("keyboard").textContent, "Keyboard: OFF");
   assert.equal(page.$("startSync").disabled, false);
-  await page.advance(500);
-  await page.respond(page.lastPoll(), page.snapshot({ instance: "old", version: 5001, message: "Late reply." }));
+  await page.push(page.snapshot({ instance: "old", version: 5001, message: "Late push." }));
+  assert.equal(page.$("status").textContent, "Start sync.");
+  await page.respond(page.commands("stop")[0], page.snapshot({ instance: "old", version: 5002, message: "Late reply." }));
   assert.equal(page.$("status").textContent, "Start sync.");
   // The rendered state says that this page controls nothing, so leaving sends no stop.
+  assert.equal(page.commands("stop").length, 2);
   await page.fire("pagehide");
-  assert.equal(page.commands("stop").length, 0);
+  assert.equal(page.commands("stop").length, 2);
 });
 
 test("a requested disarm wins over a new key press", async () => {
@@ -668,6 +914,19 @@ test("a failed disarm sent during the arm request is sent again when the arm rep
   assertSequenced(page);
 });
 
+test("a failed disarm sent during the arm request is sent again when the arm request fails", async () => {
+  const page = await ready();
+  await page.click("keyboard");
+  const [arm] = page.arms();
+  await page.fire("blur");
+  assertDisarm(page.disarms()[0], "focus");
+  await page.fail(page.disarms()[0]);
+  await page.fail(arm, new Error("Enable the robot before keyboard control"));
+  assert.equal(page.disarms().length, 2);
+  assertDisarm(page.disarms()[1], "focus");
+  assertSequenced(page);
+});
+
 test("clicks during the arm request send one arm", async () => {
   const page = await ready();
   await page.click("keyboard");
@@ -683,8 +942,506 @@ for (const [name, hide] of [
     const page = await ready();
     hide(page);
     await page.advance(500);
-    await page.respond(page.lastPoll(), page.snapshot({ keyboard_enabled: true }));
+    await page.push(page.snapshot({ keyboard_enabled: true }));
     assert.equal(page.disarms().length, 1);
     assertDisarm(page.disarms()[0], "focus");
   });
 }
+
+test("socket requests number ids from 1, and requests other than keys time out after 2.5 s", async () => {
+  const page = await ready();
+  await page.click("home");
+  const [home] = page.commands("home");
+  assert.deepEqual(home.message, { type: "command", id: 1, body: { action: "home" } });
+  await page.advance(2499);
+  assert.equal(page.$("home").disabled, true, "Home gave up before 2.5 s");
+  await page.advance(1);
+  assert.equal(page.$("status").textContent, "Request timed out");
+  assert.equal(page.$("home").disabled, false);
+  const ids = page.requests.filter(request => request.via === "socket").map(request => request.id);
+  assert.ok(ids.length > 1);
+  ids.forEach((id, index) => assert.equal(id, index + 1));
+});
+
+test("heartbeats go over the socket every 500 ms only while this page has control", async () => {
+  const page = await ready();
+  await page.advance(1000);
+  assert.deepEqual(page.heartbeats().map(request => [request.via, request.at, request.body]), [
+    ["socket", 500, {}], ["socket", 1000, {}],
+  ]);
+  await page.push(page.snapshot({ controller_id: "another-page" }));
+  await page.advance(1000);
+  assert.equal(page.heartbeats().length, 2);
+  await page.push(page.snapshot());
+  await page.advance(500);
+  assert.equal(page.heartbeats().length, 3);
+  await page.serverClose(1006);
+  await page.advance(400);
+  assert.equal(page.heartbeats().length, 3, "a heartbeat was sent without a connection");
+});
+
+test("requests reject at once and send nothing until the socket is open and has sent state", async () => {
+  const page = browser();
+  await page.open();
+  assert.equal(await page.evaluate("request('heartbeat',{}).catch(error => error.message)"), "Not connected");
+  await page.push(page.snapshot({ keyboard_enabled: true }));
+  // The close started, but its event has not arrived yet.
+  page.socket.readyState = 2;
+  const sent = page.socket.sent.length;
+  await page.key("keydown", "KeyW");
+  await page.click("home");
+  assert.equal(page.socket.sent.length, sent);
+  assert.equal(page.pending(), 0);
+  assert.equal(page.evaluate("held.size"), 0);
+  assert.equal(page.$("status").classList.contains("error"), true);
+});
+
+test("a closed socket clears held keys, stops renewals, rejects pending requests and disables controls", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  await page.click("home");
+  await page.key("keydown", "KeyW");
+  await page.advance(100);
+  assert.equal(page.pending(), 3);
+  // Both key updates get replies, so only the close can clear the held key.
+  for (const update of page.keyUpdates()) await page.respond(update, page.snapshot({ keyboard_enabled: true }));
+  assert.equal(page.pending(), 1);
+  const socket = page.socket;
+  const sent = socket.sent.length;
+  await page.serverClose(1006);
+  assert.equal(page.evaluate("held.size"), 0);
+  assert.equal(page.evaluate("renewTimer"), null, "renewals did not stop at once");
+  assert.equal(page.pending(), 0);
+  assert.equal(page.evaluate("busy"), false, "the rejected Home must end the busy state");
+  assert.equal(page.$("status").textContent, LOST);
+  assert.equal(page.$("status").classList.contains("error"), true);
+  for (const id of ["startSync", "stopSync", "enable", "home", "execute", "copyActual", "keyboard", "xTarget", "xRange"]) {
+    assert.equal(page.$(id).disabled, true, `${id} is enabled without a connection`);
+  }
+  // Stop arm and Disable robot use HTTP and stay available.
+  assert.equal(page.$("stop").disabled, false);
+  assert.equal(page.$("disable").disabled, false);
+  await page.advance(400);
+  await page.key("keyup", "KeyW");
+  assert.equal(socket.sent.length, sent);
+  assert.equal(page.keyUpdates().length, 2, "a renewal, release or key update followed the close");
+  assert.equal(page.disarms().length, 0);
+});
+
+test("reconnects after 0.5 s, 1 s and 2 s, capped at 2 s, and starts over after a state", async () => {
+  const page = await ready();
+  await page.serverClose(1006);
+  await reconnectsAfter(page, 500);
+  // Too many connections: the service sends the error, then closes with 1013.
+  await page.open();
+  await page.message({ type: "error", status: 503, error: "Too many open panel connections" });
+  await page.serverClose(1013);
+  assert.equal(page.$("status").textContent, "Too many open panel connections");
+  await reconnectsAfter(page, 1000);
+  await page.open();
+  await page.serverClose(1011);
+  assert.equal(page.$("status").textContent, LOST);
+  await reconnectsAfter(page, 2000);
+  await page.open();
+  await page.serverClose(1001);
+  await reconnectsAfter(page, 2000);
+  await page.open();
+  await page.push(page.snapshot({ message: "Back." }));
+  assert.equal(page.$("status").textContent, "Back.");
+  assert.equal(page.$("startSync").disabled, true, "this page owns a syncing robot");
+  assert.equal(page.$("home").disabled, false);
+  await page.serverClose(1006);
+  await reconnectsAfter(page, 500);
+  for (const socket of page.sockets.slice(0, -1)) {
+    assert.deepEqual(socket.sent.filter(message => message.type === "hello"), [hello()]);
+  }
+});
+
+test("three connections closed before open wait 5 s and say the service refused the connection", async () => {
+  const page = await ready();
+  await page.serverClose(1006);
+  await reconnectsAfter(page, 500);
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, LOST);
+  await reconnectsAfter(page, 1000);
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, LOST);
+  await reconnectsAfter(page, 2000);
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, REFUSED);
+  assert.equal(page.$("status").classList.contains("error"), true);
+  await reconnectsAfter(page, 5000);
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, REFUSED);
+  await reconnectsAfter(page, 5000);
+  // An open ends the refused run. The plain backoff goes on until a state arrives.
+  await page.open();
+  await page.serverClose(1006);
+  assert.equal(page.$("status").textContent, LOST);
+  await reconnectsAfter(page, 2000);
+  await page.open();
+  await page.push(page.snapshot());
+  await page.serverClose(1006);
+  await reconnectsAfter(page, 500);
+});
+
+test("three seconds of silence drop the socket and reconnect", async () => {
+  // No page has control, so no heartbeat replies keep the socket alive.
+  const page = await ready({ controller_id: null });
+  const first = page.socket;
+  await page.advance(2900);
+  await page.push(page.snapshot({ controller_id: null }));
+  await page.advance(2999);
+  assert.equal(first.closedBy, null);
+  assert.equal(page.$("startSync").disabled, false);
+  await page.advance(1);
+  assert.notEqual(first.closedBy, null, "the page did not close the silent socket");
+  assert.equal(page.$("status").textContent, LOST);
+  assert.equal(page.$("startSync").disabled, true);
+  await reconnectsAfter(page, 500);
+  // A socket that does not open, or opens without sending state, is dropped after 3 s too.
+  await page.advance(3000);
+  assert.notEqual(page.sockets[1].closedBy, null);
+  await reconnectsAfter(page, 1000);
+  await page.open();
+  await page.advance(3000);
+  assert.notEqual(page.sockets[2].closedBy, null);
+  await reconnectsAfter(page, 2000);
+});
+
+test("events from a superseded socket are ignored", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  const old = page.socket;
+  page.autoHeartbeat = false;
+  await page.advance(3000);
+  assert.notEqual(old.closedBy, null);
+  await reconnectsAfter(page, 500);
+  page.autoHeartbeat = true;
+  const current = page.socket;
+  await page.open(current);
+  await page.push(page.snapshot({ keyboard_enabled: true, message: "Second socket." }), current);
+  await page.key("keydown", "KeyW");
+  const [press] = page.keyUpdates().filter(update => update.socket === current);
+  // A late state, a reply to the current request id, an auth error, and the close that
+  // the service sends when it replaces the old socket all come from the old socket.
+  await page.push(page.snapshot({ message: "Late old socket." }), old);
+  await page.message({ type: "reply", id: press.id, status: 409, error: "Old socket reply." }, old);
+  await page.message({ type: "error", status: 401, error: TOKEN_PROMPT }, old);
+  await page.serverClose(1006, old);
+  assert.equal(page.$("status").textContent, "Second socket.");
+  assert.equal(page.$("keyboard").textContent, "Keyboard: ON 1%");
+  assert.equal(page.$("auth").hidden, true);
+  assert.equal(page.$("home").disabled, false);
+  // The current request is still pending and W is still held.
+  await page.respond(press, page.snapshot({ keyboard_enabled: true, message: "Reply on the current socket." }));
+  assert.equal(page.$("status").textContent, "Reply on the current socket.");
+  await page.advance(100);
+  assert.deepEqual(page.keyUpdates().at(-1).body.held, ["W"]);
+  assert.equal(page.keyUpdates().at(-1).socket, current);
+  await page.key("keyup", "KeyW");
+  await page.advance(2000);
+  assert.equal(page.sockets.length, 2, "the old socket's close scheduled a reconnect");
+  // A late open of the old socket sends no hello and leaves the current liveness check alone.
+  old.readyState = 1;
+  old.onopen?.({ type: "open" });
+  await page.advance(0);
+  assert.equal(old.sent.filter(message => message.type === "hello").length, 1);
+  page.autoHeartbeat = false;
+  await page.advance(3000);
+  assert.notEqual(current.closedBy, null, "the current socket was not dropped after 3 s of silence");
+});
+
+for (const [name, refuse] of [
+  ["a 401 error before close 4401", async page => {
+    await page.message({ type: "error", status: 401, error: TOKEN_PROMPT });
+    assert.equal(page.$("auth").hidden, false);
+    await page.serverClose(4401);
+  }],
+  ["a 4401 close alone", page => page.serverClose(4401)],
+]) {
+  test(`${name} shows the token form and waits for a submit, then reconnects with the new token`, async () => {
+    const page = browser({ storedToken: "old-token" });
+    await page.open();
+    assert.deepEqual(page.socket.sent, [hello("old-token")]);
+    await refuse(page);
+    assert.equal(page.$("auth").hidden, false);
+    assert.equal(page.$("status").textContent, TOKEN_PROMPT);
+    await page.advance(10000);
+    assert.equal(page.sockets.length, 1, "the page reconnected before the submit");
+    page.$("token").value = "new-token";
+    await page.submit("auth");
+    assert.equal(page.sockets.length, 2);
+    await page.open();
+    assert.deepEqual(page.socket.sent, [hello("new-token")]);
+    assert.deepEqual(page.stored, [], "the token was stored before the service accepted it");
+    await page.push(page.snapshot());
+    assert.equal(page.$("auth").hidden, true);
+    assert.deepEqual(page.stored, [["mg400-panel-token", "new-token"]]);
+    assert.equal(page.$("token").value, "");
+    // HTTP commands carry the new token.
+    await page.click("stop");
+    assertPanelPost(page.commands("stop")[0], "stop", "new-token");
+  });
+}
+
+test("Stop arm, Disable robot and Esc use HTTP and the open socket together; Disconnect uses HTTP only", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  for (const id of ["stop", "disable", "stopSync"]) await page.click(id);
+  await page.key("keydown", "Escape");
+  const sent = page.commands();
+  assert.deepEqual(sent.map(request => [request.via, request.body.action]), [
+    ["http", "stop"], ["socket", "stop"], ["http", "disable"], ["socket", "disable"], ["http", "stop_sync"],
+    ["http", "disable"], ["socket", "disable"],
+  ]);
+  for (const request of sent) {
+    if (request.via === "socket") {
+      assert.deepEqual(request.message, { type: "command", id: request.id, body: { action: request.body.action } });
+      continue;
+    }
+    assertPanelPost(request, request.body.action);
+    assert.equal(request.timeout, 2500);
+  }
+  // Each reply renders when it is newer than the rendered state.
+  await page.respond(sent[1], page.snapshot({ keyboard_enabled: true, message: "Stopping (socket)." }));
+  assert.equal(page.$("status").textContent, "Stopping (socket).");
+  await page.respond(sent[0], page.snapshot({ keyboard_enabled: true, message: "Stopping (HTTP)." }));
+  assert.equal(page.$("status").textContent, "Stopping (HTTP).");
+  // Without a connection, Stop arm, Disable robot and Esc use HTTP only. Disconnect waits.
+  await page.serverClose(1006);
+  assert.equal(page.$("stop").disabled, false);
+  assert.equal(page.$("disable").disabled, false);
+  assert.equal(page.$("stopSync").disabled, true);
+  await page.click("stop");
+  await page.click("disable");
+  await page.key("keydown", "Escape");
+  assert.deepEqual(page.commands().slice(sent.length).map(request => [request.via, request.body.action]), [
+    ["http", "stop"], ["http", "disable"], ["http", "disable"],
+  ]);
+  // An HTTP 401 shows the token form.
+  await page.respond(page.commands()[sent.length], { error: TOKEN_PROMPT }, 401);
+  assert.equal(page.$("auth").hidden, false);
+  assert.equal(page.$("status").textContent, TOKEN_PROMPT);
+});
+
+test("Stop arm and Disable robot show an error only when every path failed", async () => {
+  const page = await ready({ message: "Ready." });
+  // The HTTP path fails, the socket path succeeds: no error.
+  await page.click("stop");
+  const [httpStop, socketStop] = page.commands("stop");
+  await page.fail(httpStop, new Error("Failed to fetch"));
+  assert.equal(page.$("status").textContent, "Ready.", "an error showed before the socket answered");
+  await page.respond(socketStop, page.snapshot({ message: "Stopping." }));
+  assert.equal(page.$("status").textContent, "Stopping.");
+  assert.equal(page.$("status").classList.contains("error"), false);
+  // The HTTP path succeeds, the socket path times out: no error.
+  await page.click("disable");
+  const [httpDisable, socketDisable] = page.commands("disable");
+  await page.respond(httpDisable, page.snapshot({ message: "Disabling." }));
+  await page.advance(2500);
+  assert.equal(page.pending(), 0, `${socketDisable.type} ${socketDisable.id} did not time out`);
+  assert.equal(page.$("status").textContent, "Disabling.");
+  assert.equal(page.$("status").classList.contains("error"), false);
+  // Both paths fail: the error shows.
+  await page.click("disable");
+  const [, , httpAgain, socketAgain] = page.commands("disable");
+  await page.respond(socketAgain, { error: "The panel is closing" }, 409);
+  assert.equal(page.$("status").textContent, "Disabling.");
+  await page.fail(httpAgain, new Error("Failed to fetch"));
+  assert.equal(page.$("status").textContent, "Failed to fetch");
+  assert.equal(page.$("status").classList.contains("error"), true);
+});
+
+test("the pagehide beacon still posts a stop over HTTP", async () => {
+  const page = await ready();
+  await page.fire("pagehide");
+  const [stop] = page.commands("stop");
+  assertPanelPost(stop, "stop");
+  assert.equal(stop.options.keepalive, true);
+  assert.equal(page.commands().length, 1);
+  assert.equal(page.socket.sent.filter(message => message.type === "command").length, 0);
+});
+
+test("without a connection the sync line says so, the dot is off, and jog keys do nothing; Esc still disables", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  assert.equal(page.$("syncState").textContent, "Live feedback");
+  assert.equal(page.$("syncDot").classList.contains("on"), true);
+  await page.serverClose(1006);
+  assert.equal(page.$("syncState").textContent, "Reconnecting…");
+  assert.equal(page.$("syncDot").classList.contains("on"), false);
+  assert.equal(page.$("keyboard").textContent, "Keyboard: ON 1%", "the last known state was cleared");
+  const seq = page.evaluate("keySeq");
+  await page.key("keydown", "KeyW");
+  assert.equal(page.evaluate("held.size"), 0);
+  assert.equal(page.evaluate("keySeq"), seq, "a jog key started a key update without a connection");
+  await page.advance(200);
+  await page.key("keyup", "KeyW");
+  assert.equal(page.keyUpdates().length, 0);
+  // Esc works from the last known state, over HTTP.
+  const escape = await page.key("keydown", "Escape");
+  assert.equal(escape.defaultPrevented, true);
+  assert.deepEqual(page.commands().map(request => [request.via, request.body.action]), [["http", "disable"]]);
+  assert.equal(page.$("stop").disabled, false);
+  assert.equal(page.$("disable").disabled, false);
+  // Back online, the sync line shows the feedback again and jog keys work.
+  await page.advance(300);
+  await page.open();
+  await page.push(page.snapshot({ keyboard_enabled: true }));
+  assert.equal(page.$("syncState").textContent, "Live feedback");
+  assert.equal(page.$("syncDot").classList.contains("on"), true);
+  await page.key("keydown", "KeyW");
+  assert.deepEqual(page.keyUpdates().map(update => update.body.held), [["W"]]);
+  await page.key("keyup", "KeyW");
+  // While the page waits for a token, the sync line says Not connected and the status says why.
+  await page.serverClose(1006);
+  await reconnectsAfter(page, 500);
+  await page.open();
+  await page.serverClose(4401);
+  assert.equal(page.$("syncState").textContent, "Not connected");
+  await page.advance(3000);
+  assert.equal(page.$("status").textContent, TOKEN_PROMPT, "the stale state message replaced the reason");
+});
+
+for (const [name, refuse, text] of [
+  ["a 426 error before close 4426", async page => {
+    await page.message({ type: "error", status: 426, error: "The robot service uses protocol 2. Reload the page." });
+    await page.serverClose(4426);
+  }, "The robot service uses protocol 2. Reload the page."],
+  ["a 4426 close alone", page => page.serverClose(4426), "The robot service was updated. Reload the page."],
+  ["a 426 error before a dropped connection", async page => {
+    await page.message({ type: "error", status: 426, error: "The robot service uses protocol 2. Reload the page." });
+    await page.serverClose(1006);
+  }, "The robot service uses protocol 2. Reload the page."],
+]) {
+  test(`${name} asks for a reload and stops reconnecting`, async () => {
+    const page = await ready({ keyboard_enabled: true });
+    await page.serverClose(1006);
+    await reconnectsAfter(page, 500);
+    await page.open();
+    assert.deepEqual(page.socket.sent, [hello()]);
+    await refuse(page);
+    assert.equal(page.$("status").textContent, text);
+    assert.equal(page.$("status").classList.contains("error"), true);
+    assert.equal(page.$("auth").hidden, true);
+    assert.equal(page.$("syncState").textContent, "Not connected");
+    for (const id of ["startSync", "stopSync", "enable", "home", "execute", "keyboard"]) {
+      assert.equal(page.$(id).disabled, true, `${id} is enabled`);
+    }
+    assert.equal(page.$("stop").disabled, false);
+    assert.equal(page.$("disable").disabled, false);
+    await page.advance(30000);
+    assert.equal(page.sockets.length, 2, "the page reconnected to a service with another protocol");
+    assert.equal(page.$("status").textContent, text);
+    await page.fire("pageshow", { persisted: true });
+    assert.equal(page.sockets.length, 2, "a restored page reconnected to a service with another protocol");
+  });
+}
+
+test("pagehide sends the stop beacon first, then closes the socket and does not reconnect", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  const socket = page.socket;
+  await page.key("keydown", "KeyW");
+  await page.fire("pagehide");
+  const [beacon] = page.commands("stop");
+  assertPanelPost(beacon, "stop");
+  assert.equal(beacon.options.keepalive, true);
+  assert.equal(beacon.socketState, 1, "the socket closed before the beacon went out");
+  assert.equal(socket.closedBy, 1000);
+  assert.equal(page.evaluate("held.size"), 0);
+  assert.equal(page.pending(), 0);
+  // The close event and late messages of that socket change nothing.
+  await page.push(page.snapshot({ message: "Late." }), socket);
+  await page.serverClose(1000, socket);
+  await page.advance(30000);
+  assert.equal(page.sockets.length, 1);
+  assert.equal(page.heartbeats().length, 0);
+  assert.deepEqual(page.keyUpdates().map(update => update.body.held), [["W"]]);
+});
+
+test("pageshow from the back/forward cache reconnects at once with held keys cleared", async () => {
+  const page = await ready({ keyboard_enabled: true });
+  await page.fire("pagehide");
+  await page.fire("pageshow", { persisted: false });
+  assert.equal(page.sockets.length, 1, "a normal pageshow reconnected");
+  page.evaluate("held.add('W')");
+  await page.fire("pageshow", { persisted: true });
+  assert.equal(page.sockets.length, 2);
+  assert.equal(page.evaluate("held.size"), 0);
+  assert.equal(page.evaluate("connected"), false);
+  await page.open();
+  assert.deepEqual(page.socket.sent, [hello()]);
+  await page.push(page.snapshot({ keyboard_enabled: true, message: "Restored." }));
+  assert.equal(page.$("status").textContent, "Restored.");
+  await page.key("keydown", "KeyW");
+  assert.deepEqual(page.keyUpdates().at(-1).body.held, ["W"]);
+  assert.equal(page.keyUpdates().at(-1).socket, page.socket);
+  await page.key("keyup", "KeyW");
+});
+
+test("an error stays in the status line for 3 s while pushes arrive, and a newer error restarts the time", async () => {
+  const page = await ready({ message: "Ready." });
+  const failHome = async message => {
+    await page.click("home");
+    await page.respond(page.commands("home").at(-1), { error: message }, 409);
+  };
+  await failHome("Enable the robot before movement");
+  for (let i = 0; i < 2; i++) {
+    await page.advance(50);
+    await page.push(page.snapshot({ message: "Pushed." }));
+  }
+  assert.equal(page.$("status").textContent, "Enable the robot before movement");
+  assert.equal(page.$("status").classList.contains("error"), true);
+  await page.advance(2899);
+  assert.equal(page.$("status").textContent, "Enable the robot before movement");
+  await page.advance(1);
+  assert.equal(page.$("status").textContent, "Pushed.");
+  assert.equal(page.$("status").classList.contains("error"), false);
+  await failHome("First error");
+  await page.advance(2000);
+  await failHome("Second error");
+  await page.advance(2999);
+  assert.equal(page.$("status").textContent, "Second error");
+  assert.equal(page.$("status").classList.contains("error"), true);
+  await page.advance(1);
+  assert.equal(page.$("status").textContent, "Pushed.");
+  // Pushes with the same message do not write the status line again.
+  const writes = page.$("status").writes;
+  await page.push(page.snapshot({ message: "Pushed." }));
+  await page.push(page.snapshot({ message: "Pushed." }));
+  assert.equal(page.$("status").writes, writes);
+});
+
+test("the fake socket refuses the frames that the service refuses", async () => {
+  const page = await ready();
+  const refused = [
+    { type: "keys", id: 1, body: { seq: 1, held: [] }, extra: true },
+    { type: "keys", body: { seq: 1, held: [] } },
+    { type: "keys", id: -1, body: {} },
+    { type: "keys", id: 1.5, body: {} },
+    { type: "keys", id: "1", body: {} },
+    { type: "keys", id: 2 ** 53 + 2, body: {} },
+    { type: "ping", id: 1, body: {} },
+    { type: "keys", id: 1, body: [] },
+    { type: "keys", id: 1, body: null },
+    hello(),
+    { type: "command", id: 1, body: { action: "x".repeat(4100) } },
+  ];
+  for (const message of refused) page.socket.send(JSON.stringify(message));
+  page.socket.send("not json");
+  page.socket.send(JSON.stringify({ type: "keys", id: 2 ** 53, body: { seq: 1, held: [] } }));
+  const hellos = [
+    { type: "hello", client: CLIENT_ID, token: "" },
+    { ...hello(), protocol: "1" },
+    { ...hello(), protocol: 2 },
+    { ...hello(), token: null },
+    { ...hello(), client: "tab\there" },
+    { ...hello(), client: "   " },
+    { ...hello(), client: "x".repeat(129) },
+    { type: "keys", id: 1, body: {} },
+  ];
+  for (const message of hellos) {
+    const fresh = browser();
+    fresh.socket.readyState = 1;
+    fresh.socket.send(JSON.stringify(message));
+  }
+  const found = violations.splice(0);
+  assert.equal(found.length, refused.length + 1 + hellos.length, found.join("\n"));
+});

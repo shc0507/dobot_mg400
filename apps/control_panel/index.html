@@ -82,9 +82,9 @@
       const control = active && robot && owner && data.feedback_fresh && !data.locked;
       if(robot) copyActual(data,true);
       $('mode').textContent = robot ? 'REAL ROBOT' : 'READ ONLY';
-      $('syncState').textContent = data.syncing ? (data.feedback_fresh ? 'Live feedback' : 'Waiting for feedback') : 'Sync stopped';
-      if(robot && data.controller_id && !owner) $('syncState').textContent += ' · Another page has control';
-      $('syncDot').classList.toggle('on',data.syncing && data.feedback_fresh);
+      $('syncState').textContent = !connected ? (authWait || outdated ? 'Not connected' : 'Reconnecting…') : data.syncing ? (data.feedback_fresh ? 'Live feedback' : 'Waiting for feedback') : 'Sync stopped';
+      if(connected && robot && data.controller_id && !owner) $('syncState').textContent += ' · Another page has control';
+      $('syncDot').classList.toggle('on',connected && data.syncing && data.feedback_fresh);
       $('startSync').textContent = robot ? 'Connect & take control' : 'Start sync';
       $('stopSync').textContent = robot ? 'Disconnect' : 'Stop sync';
       $('startSync').disabled = !active || (robot ? !!data.controller_id && (!owner || data.syncing) : data.syncing);
@@ -111,7 +111,7 @@
       else if(!offReason && (!document.hasFocus() || document.visibilityState !== 'visible')) {offReason = 'focus';sendOff();}
       else if(offReason) sendOff();
       $('keyboard').hidden = $('speedField').hidden = !robot;
-      $('keyboard').disabled = !robot || !owner || !(keysShown || (connected && data.syncing && data.feedback_fresh && !data.locked && data.robot_mode === 5 && !data.busy && !data.gripper_busy));
+      $('keyboard').disabled = !robot || !owner || !connected || !(keysShown || (data.syncing && data.feedback_fresh && !data.locked && data.robot_mode === 5 && !data.busy && !data.gripper_busy));
       $('keyboard').textContent = robot && data.keyboard_arming ? 'Keyboard: CHECKING…' : robot && data.keyboard_enabled ? `Keyboard: ON ${data.keyboard_speed_percent}%` : 'Keyboard: OFF';
       $('keyboard').classList.toggle('on',!!(robot && data.keyboard_enabled));
       $('speed').disabled = !robot || !owner || !data.syncing || !!data.busy || !!data.keyboard_arming;
@@ -119,18 +119,85 @@
       $('joints').innerHTML = [0,1,2,3].map(i => `<span>J${i+1} <b>${data.joints ? data.joints[i].toFixed(2)+'°' : '—'}</b></span>`).join('');
       $('robotState').textContent = data.robot_mode == null ? 'No feedback' : `Mode ${data.robot_mode}${data.robot_error ? ' · error' : ''}${data.feedback_fresh ? '' : ' · stale'}${data.locked ? ' · LOCKED' : ''}`;
       $('connection').textContent = robot ? `Real robot · ${data.robot_host} · XYZ/R use the robot base and flange. Home moves all four joints to 0°. Stop arm does not stop a gripper command already sent. Continuous jogging needs a person at the physical emergency stop. If stop is unconfirmed, use the physical emergency stop.` : `Read-only · ${data.robot_host} · Joint feedback only. Pose, gripper, keyboard jogging, and robot commands are unavailable.`;
-      $('status').classList.toggle('error',!!data.locked);
-      $('status').textContent = data.message;
+      // Without a connection the last state is stale, so show why the page is offline.
+      if(!errorTimer) showStatus(connected ? data.message : offline,!connected || !!data.locked);
     }
     function headers() {return {'Authorization':token ? 'Bearer '+token:'','Content-Type':'application/json','X-MG400-Panel':'1','X-MG400-Client':clientId};}
-    async function api(path, payload, timeout = 2500) {
-      const response = await fetch(path,{method:payload ? 'POST':'GET',headers:headers(),signal:AbortSignal.timeout(timeout),...(payload ? {body:JSON.stringify(payload)} : {})});
+    // Stop arm, Disable robot and Disconnect always use HTTP, so they never depend on the live connection.
+    async function post(payload) {
+      const response = await fetch('api/command',{method:'POST',headers:headers(),signal:AbortSignal.timeout(2500),body:JSON.stringify(payload)});
       const data = await response.json();
-      if(response.status === 401) {$('auth').hidden = false;connected = false;}
+      if(response.status === 401) $('auth').hidden = false;
       if(!response.ok) throw new Error(data.error || 'Request failed');
-      $('auth').hidden = true;
-      connected = true;
       return data;
+    }
+    const PROTOCOL = 1, tokenPrompt = 'Enter the panel access token', pending = new Map();
+    let socket = null, opened = false, notice = '', offline = 'Not connected', authWait = false, submitted = false, outdated = false;
+    let requestId = 0, retry = 0, refused = 0, retryTimer = null, liveTimer = null;
+    // A socket that is not open drops sends without an error.
+    const ready = () => connected && socket.readyState === WebSocket.OPEN;
+    function request(type, body, timeout = 2500) {
+      return new Promise((resolve, reject) => {
+        if(!ready()) throw new Error(offline);
+        const id = ++requestId;
+        socket.send(JSON.stringify({type,id,body}));
+        pending.set(id,{resolve,reject,timer:setTimeout(() => {pending.delete(id);reject(new Error('Request timed out'));},timeout)});
+      });
+    }
+    function connect() {
+      clearTimeout(retryTimer);
+      const url = new URL('api/ws',location.href);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = socket = new WebSocket(url.href);
+      opened = false;notice = '';
+      // The service pushes state at least once per second, so silence means a dead connection.
+      const live = () => {clearTimeout(liveTimer);liveTimer = setTimeout(() => {if(ws === socket) closed();},3000);};
+      live();
+      ws.onopen = () => {if(ws !== socket) return;opened = true;refused = 0;live();ws.send(JSON.stringify({type:'hello',protocol:PROTOCOL,client:clientId,token}));};
+      ws.onmessage = event => {if(ws === socket) {live();receive(event.data);}};
+      ws.onclose = event => {if(ws !== socket) return;if(event.code === 4401) authWait = true;if(event.code === 4426) outdated = true;closed();};
+    }
+    function receive(text) {
+      let message;
+      try {message = JSON.parse(text);} catch {return;}
+      if(message?.type === 'state') {
+        if(!connected) {
+          // An error from the lost connection no longer applies.
+          connected = true;retry = refused = 0;$('auth').hidden = true;clearTimeout(errorTimer);errorTimer = null;
+          if(submitted) {submitted = false;try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value = '';}
+        }
+        apply(message.state);
+      } else if(message?.type === 'reply' && pending.has(message.id)) {
+        const entry = pending.get(message.id);
+        pending.delete(message.id);clearTimeout(entry.timer);
+        if(message.status === 200) entry.resolve(message.state); else entry.reject(new Error(message.error || 'Request failed'));
+      } else if(message?.type === 'error') {
+        notice = message.error || 'Request failed';
+        if(message.status === 401) {authWait = true;$('auth').hidden = false;}
+        if(message.status === 426) outdated = true;
+        showError(new Error(notice));
+      }
+    }
+    function drop(code) {
+      const ws = socket;
+      socket = null;connected = false;
+      clearTimeout(liveTimer);
+      try {ws?.close(code);} catch {}
+      // The service turns keys off when this connection ends.
+      held.clear();stopRenew();
+      for(const entry of pending.values()) {clearTimeout(entry.timer);entry.reject(new Error(offline));}
+      pending.clear();
+    }
+    function closed() {
+      if(!opened) refused++;
+      // A refused handshake reaches the page only as a close before open.
+      offline = outdated ? notice || 'The robot service was updated. Reload the page.' : authWait ? tokenPrompt : refused >= 3 ? 'The robot service refused the connection. Retrying…' : notice || 'Connection lost. Reconnecting…';
+      drop();
+      // Only a reload recovers from another protocol version.
+      if(outdated) {}
+      else if(authWait) $('auth').hidden = false;
+      else {retryTimer = setTimeout(connect,refused >= 3 ? 5000 : [500,1000,2000][retry]);retry = Math.min(retry+1,2);}
+      showError(new Error(offline));
     }
     const retired = new Set();
     function newer(data) {
@@ -142,19 +209,20 @@
       return data.version >= state.version;
     }
     function apply(data) {if(newer(data)) render(data);}
+    let errorTimer = null;
+    function showStatus(text, error) {
+      if($('status').textContent !== text) $('status').textContent = text;
+      $('status').classList.toggle('error',error);
+    }
     function showError(error) {
+      // Keep the error readable for 3 s, although state pushes arrive in between.
+      clearTimeout(errorTimer);
+      errorTimer = setTimeout(() => {errorTimer = null;if(state) render(state);},3000);
       if(state) render(state);
-      $('status').textContent = error.message;
-      $('status').classList.add('error');
+      showStatus(error.message,true);
     }
-    async function poll() {
-      try {apply(await api('api/state'));} catch(error) {connected = false;showError(error);}
-      setTimeout(poll,500);
-    }
-    async function heartbeat() {
-      if(state?.mode === 'robot' && state.controller_id === clientId) {
-        try {await api('api/heartbeat',{});} catch(error) {connected = false;showError(error);}
-      }
+    function heartbeat() {
+      if(connected && owns()) request('heartbeat',{}).catch(showError);
       setTimeout(heartbeat,500);
     }
     async function command(action) {
@@ -173,8 +241,17 @@
             return [axis.id,Number(input.value)];
           }));
         }
-        const data = await api('api/command',payload);
-        if(newer(data)) state = data;
+        if(interrupt) {
+          // HTTP covers a socket that died silently. The open socket skips a new TCP handshake.
+          // A repeated stop_sync after the disconnect would be refused, so it uses HTTP only.
+          const paths = [post(payload)];
+          if(action !== 'stop_sync' && ready()) paths.push(request('command',payload));
+          const results = await Promise.allSettled(paths.map(path => path.then(apply)));
+          if(results.every(result => result.status === 'rejected')) throw results[0].reason;
+        } else {
+          const data = await request('command',payload);
+          if(newer(data)) state = data;
+        }
         if(action === 'execute') gripEdited = false;
       } catch(error) {failure = error;}
       finally {if(!interrupt) busy = false;render(state);if(failure) showError(failure);}
@@ -185,7 +262,7 @@
     $('initializeGripper').addEventListener('click',() => command('initialize_gripper'));
     $('startSync').addEventListener('click',() => command('start_sync'));
     $('stopSync').addEventListener('click',() => command('stop_sync'));
-    $('auth').addEventListener('submit',async event => {event.preventDefault();token = $('token').value;try {apply(await api('api/state'));try {sessionStorage.setItem('mg400-panel-token',token);} catch {}$('token').value='';} catch(error) {showError(error);}});
+    $('auth').addEventListener('submit',event => {event.preventDefault();token = $('token').value;submitted = true;authWait = false;if(socket) closed();connect();});
     const keyName = event => event.code.startsWith('Key') ? event.code.slice(3) : event.code;
     const owns = () => state?.mode === 'robot' && state.controller_id === clientId;
     const keysOn = () => owns() && !!state.keyboard_enabled;
@@ -193,15 +270,21 @@
     function stopRenew() {clearInterval(renewTimer);renewTimer = null;}
     async function sendKeys(renewal = false) {
       if(renewal) renewals++;
-      try {apply(await api('api/keys',{seq:++keySeq,held:[...held]},1000));}
-      catch(error) {held.clear();stopRenew();showError(error);}
+      try {apply(await request('keys',{seq:++keySeq,held:[...held]},1000));}
+      catch(error) {
+        const release = held.size > 0 && ready();
+        held.clear();stopRenew();
+        // A sent key frame cannot be withdrawn. One newer release ends a press applied late.
+        if(release) request('keys',{seq:++keySeq,held:[]},1000).then(apply,showError);
+        showError(error);
+      }
       finally {if(renewal) renewals--;}
     }
     function renew() {
       if(!held.size) {stopRenew();return;}
       if(!document.hasFocus() || document.visibilityState !== 'visible') {dropKeys('focus');return;}
-      // At most two renewals in flight, so a release never waits behind a backlog.
-      if(renewals < 2) sendKeys(true);
+      // At most two renewals in flight and none behind unsent data, so a release never waits in a backlog.
+      if(renewals < 2 && !socket?.bufferedAmount) sendKeys(true);
     }
     function keysChanged() {
       sendKeys();
@@ -218,7 +301,7 @@
     async function sendOff() {
       if(offSending || !offReason) return;
       offSending = true;
-      try {apply(await api('api/command',{action:'keyboard',enabled:false,reason:offReason,seq:++keySeq}));}
+      try {apply(await request('command',{action:'keyboard',enabled:false,reason:offReason,seq:++keySeq}));}
       catch(error) {showError(error);}
       finally {offSending = false;}
     }
@@ -229,7 +312,7 @@
       const speed = Number($('speed').value);
       if(!Number.isInteger(speed) || speed < 1 || speed > 100) {showError(new Error('Enter a keyboard speed from 1 to 100'));return;}
       arming = true;
-      try {apply(await api('api/command',{action:'keyboard',enabled:true,speed,seq:++keySeq}));} catch(error) {showError(error);} finally {arming = false;if(offReason) sendOff();}
+      try {apply(await request('command',{action:'keyboard',enabled:true,speed,seq:++keySeq}));} catch(error) {showError(error);} finally {arming = false;if(offReason) sendOff();}
     }
     $('keyboard').addEventListener('click',() => keysArmed() ? dropKeys('user') : keyboardOn());
     window.addEventListener('keydown',event => {
@@ -244,7 +327,7 @@
       if(!jogKeys.has(key) || event.target instanceof HTMLInputElement) return;
       event.preventDefault();
       // A requested disarm wins: new presses wait until the server shows keys OFF.
-      if(event.repeat || event.isComposing || !keysOn() || offReason || held.has(key)) return;
+      if(event.repeat || event.isComposing || !connected || !keysOn() || offReason || held.has(key)) return;
       held.add(key);
       keysChanged();
     });
@@ -256,8 +339,13 @@
     document.addEventListener('focusin',event => {if(event.target instanceof HTMLInputElement) dropKeys(event.target.id === 'speed' ? 'speed' : 'edit');});
     window.addEventListener('pagehide',() => {
       if(state?.mode === 'robot' && state.syncing && state.controller_id === clientId) fetch('api/command',{method:'POST',headers:headers(),body:JSON.stringify({action:'stop'}),keepalive:true}).catch(() => {});
+      // A hidden page keeps no connection and does not reconnect.
+      clearTimeout(retryTimer);
+      offline = 'Not connected';
+      drop(1000);
     });
-    poll();
+    window.addEventListener('pageshow',event => {if(event.persisted && !authWait && !outdated) {drop(1000);connect();}});
+    connect();
     heartbeat();
   </script>
 </body>

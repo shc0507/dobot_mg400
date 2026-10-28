@@ -184,6 +184,16 @@ class RobotPanelState:
                 self._heartbeat = time.monotonic()
         return self.snapshot()
 
+    def connection_lost(self, client_id):
+        """Revoke keyboard input at once when the owner's live connection closes.
+
+        The browser lease is unchanged: a page that reconnects in time keeps control.
+        """
+        self._client(client_id)
+        with self._lock:
+            if self._owner == client_id:
+                self._kb_disarm("browser connection closed.")
+
     def _expire_lease(self):
         if self._owner is not None and time.monotonic() - self._heartbeat > self.LEASE_SECONDS:
             self._owner = None

@@ -1446,3 +1446,92 @@ def test_disconnect_keeps_ownership_until_keyboard_worker_exits(rig):
     finally:
         session.finish_gate.set()
         contender.release()
+
+
+# A closed live connection of the owner.
+
+
+def test_closed_owner_connection_releases_the_hold_at_once_and_keeps_the_lease(rig):
+    state = rig.state
+    rig.connect()
+    session = rig.arm_ready()
+    session.exit_gate.clear()
+    worker = rig.hold("W")
+
+    state.connection_lost(OWNER)
+
+    # The session sends its own jog stop; no core stop or lock follows.
+    assert "session1.release" in rig.log
+    snapshot = state.snapshot()
+    assert not snapshot["keyboard_enabled"]
+    assert snapshot["keyboard_disarm_reason"] == "browser connection closed."
+    assert snapshot["message"] == "Keyboard off: browser connection closed."
+    assert snapshot["controller_id"] == OWNER
+    assert not snapshot["locked"]
+    session.exit_gate.set()
+    wait_for(lambda: not worker.is_alive())
+    stays(lambda: "control1.cancel" not in rig.log and "control1.stop" not in rig.log)
+    snapshot = state.snapshot()
+    assert not snapshot["busy"] and not snapshot["locked"]
+    assert snapshot["controller_id"] == OWNER
+    # A page that reconnects within the lease arms again with a new session.
+    rig.arm_ready()
+    assert len(rig.sessions) == 2
+
+
+def test_closed_connection_of_another_client_changes_nothing(rig):
+    state = rig.state
+    rig.connect()
+    session = rig.arm_ready()
+    worker = rig.hold("W")
+    before = state.snapshot()
+
+    state.connection_lost(OTHER)
+
+    stays(lambda: "session1.release" not in rig.log)
+    assert worker.is_alive()
+    snapshot = state.snapshot()
+    assert snapshot["keyboard_enabled"] and snapshot["keyboard_active_key"] == "W"
+    assert snapshot["message"] == before["message"]
+    rig.keys()
+    wait_for(lambda: not worker.is_alive())
+    assert session.keys == ["W"]
+
+
+def test_closed_owner_connection_cancels_keyboard_preparation(rig):
+    state = rig.state
+    rig.connect()
+    rig.session_setup = lambda session: session.prepare_gate.clear()
+    rig.arm()
+    session = rig.sessions[-1]
+    assert session.prepare_entered.wait(1)
+    assert state.snapshot()["keyboard_arming"]
+
+    state.connection_lost(OWNER)
+
+    snapshot = state.snapshot()
+    assert not snapshot["keyboard_arming"] and not snapshot["keyboard_enabled"]
+    assert snapshot["keyboard_disarm_reason"] == "browser connection closed."
+    wait_for(lambda: state.snapshot()["busy"] is False)
+    assert session.closed.is_set()
+    assert not state.snapshot()["keyboard_enabled"]
+    assert not state.snapshot()["locked"]
+
+
+def test_closed_owner_connection_while_keys_are_off_keeps_the_message(rig):
+    state = rig.state
+    rig.connect()
+    message = state.snapshot()["message"]
+
+    state.connection_lost(OWNER)
+
+    snapshot = state.snapshot()
+    assert snapshot["message"] == message
+    assert snapshot["keyboard_disarm_reason"] is None
+    assert snapshot["controller_id"] == OWNER and not snapshot["locked"]
+
+
+@pytest.mark.parametrize("client", ["", " ", None, "x" * 129])
+def test_connection_lost_requires_a_client_id(rig, client):
+    with pytest.raises(ValueError):
+        rig.state.connection_lost(client)

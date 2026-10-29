@@ -22,7 +22,19 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 
 ## 获取代码
 
-Olares 没有 GitHub 读取凭据，通过 Git bundle 获取代码。
+仓库公开。Olares 通过 HTTPS 从 GitHub 读取代码，不需要凭据。
+按 [主机部署](deploy.md#安装与更新) 获取代码并运行安装器。
+`/opt/mg400` 没有 `origin` 时，先添加：
+
+```sh
+git -C /opt/mg400 remote add origin https://github.com/shc0507/dobot_mg400.git
+```
+
+Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推送到 GitHub。
+
+### 无法访问 GitHub 时
+
+如果 Olares 不能访问 GitHub，通过 Git bundle 获取代码：
 
 1. 在 Olares 宿主机读取已部署的提交：
 

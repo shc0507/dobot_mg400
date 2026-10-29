@@ -1,5 +1,6 @@
 """Control the robot from the web panel without a simulator dependency."""
 
+import logging
 import math
 import secrets
 import threading
@@ -26,6 +27,45 @@ from .web_keyboard import (
     speed_percent,
 )
 
+LOG = logging.getLogger(__name__)
+# Without a configured handler, the panel log stays silent and never writes under the lock.
+LOG.addHandler(logging.NullHandler())
+_UNSET = object()
+
+
+class _Logged:
+    """An attribute that logs describe(value) when key(value) changes.
+
+    The first assignment sets the initial value and logs nothing. A None description
+    logs nothing. Configure a non-blocking handler: assignments happen under the lock.
+    """
+
+    def __init__(self, describe, key=None, level=logging.INFO):
+        self._describe, self._level = describe, level
+        self._key = key or (lambda value: value)
+
+    def __set_name__(self, owner, name):
+        self._name = "_logged" + name
+
+    def __get__(self, state, owner=None):
+        return self if state is None else getattr(state, self._name)
+
+    def __set__(self, state, value):
+        previous = getattr(state, self._name, _UNSET)
+        setattr(state, self._name, value)
+        if previous is not _UNSET and self._key(previous) != self._key(value):
+            text = self._describe(value)
+            if text is not None:
+                LOG.log(self._level, text)
+
+
+def _describe_alarms(alarms):
+    if not alarms:
+        return "Controller alarms cleared."
+    return "Controller alarms: " + "; ".join(
+        f"{alarm['id']} {alarm['description']}" for alarm in alarms
+    )
+
 
 class RobotPanelState:
     """Keep HTTP reads separate from robot operations and stop verification."""
@@ -38,6 +78,32 @@ class RobotPanelState:
     KEY_LEASE_SECONDS = KEY_LEASE_SECONDS
     KEYBOARD_JOIN_SECONDS = KEYBOARD_JOIN_SECONDS
     GRIPPER_HOLD_SECONDS = GRIPPER_HOLD_SECONDS
+
+    # Log every state that explains a lock. The page shows only the latest message.
+    _message = _Logged(lambda message: f"Message: {message}")
+    _locked = _Logged(
+        lambda locked: "Control locked." if locked else "Control unlocked.",
+        level=logging.WARNING,
+    )
+    _fault = _Logged(
+        lambda fault: "Stop or disable unconfirmed." if fault else "Unconfirmed stop cleared.",
+        level=logging.WARNING,
+    )
+    _sample = _Logged(
+        lambda sample: (
+            None if sample is None else (f"Robot mode {sample.mode}, error={sample.error_status}")
+        ),
+        key=lambda sample: None if sample is None else (sample.mode, sample.error_status),
+    )
+    _alarms = _Logged(_describe_alarms, level=logging.WARNING)
+    _kb_reason = _Logged(lambda reason: None if reason is None else f"Keyboard off: {reason}")
+    _grip = _Logged(
+        lambda grip: (
+            f"Gripper locked: {grip.get('message')}" if grip.get("locked") else "Gripper unlocked."
+        ),
+        key=lambda grip: bool(grip.get("locked")),
+        level=logging.WARNING,
+    )
 
     def __init__(
         self,

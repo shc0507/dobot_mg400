@@ -3,6 +3,7 @@
 import errno
 import http.client
 import json
+import logging
 import signal
 import socket
 import sys
@@ -840,6 +841,51 @@ def test_a_blocked_stderr_delays_the_stop_only_briefly(monkeypatch, signal_table
         closed.append(time.monotonic())
         unblock.set()
 
+    try:
+        code, _ = run_panel(monkeypatch, closing_state(close=close), serve_forever)
+    finally:
+        unblock.set()
+    assert code == 0
+    assert closed and closed[0] - interrupted[0] < 1.0
+
+
+def test_panel_events_reach_stderr_and_the_handler_is_removed(monkeypatch, capsys, signal_table):
+    panel_log = logging.getLogger("mg400_agent.web_control")
+    handlers = list(panel_log.handlers)
+
+    def serve_forever():
+        panel_log.info("Control locked.")
+        raise KeyboardInterrupt
+
+    code, _ = run_panel(monkeypatch, closing_state(), serve_forever)
+
+    assert code == 0
+    assert "INFO Control locked." in capsys.readouterr().err
+    assert panel_log.handlers == handlers
+
+
+def test_a_blocked_event_log_cannot_delay_the_stop(monkeypatch, signal_table):
+    unblock, interrupted, closed = threading.Event(), [], []
+
+    class BlockedStderr:
+        def write(self, text):
+            unblock.wait(5)
+            return len(text)
+
+        def flush(self):
+            pass
+
+    def serve_forever():
+        # The time counts from the first event, so a blocking write would fail the check.
+        interrupted.append(time.monotonic())
+        for _ in range(3):
+            logging.getLogger("mg400_agent.web_control").info("Control locked.")
+        signal_table[signal.SIGTERM](signal.SIGTERM, None)
+
+    def close():
+        closed.append(time.monotonic())
+
+    monkeypatch.setattr(sys, "stderr", BlockedStderr())
     try:
         code, _ = run_panel(monkeypatch, closing_state(close=close), serve_forever)
     finally:

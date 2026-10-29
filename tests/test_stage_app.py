@@ -19,6 +19,9 @@ TOKEN = "stage-panel-test-token-0123456789"
 HOST = "100.64.0.1:8767"
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 SETTINGS = ("MG400_STAGE_BIND", "MG400_STAGE_PORT", "MG400_STAGE_TOKEN", "MG400_STAGE_SERIAL")
+SHORT_TOKEN = (
+    "Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -55,8 +58,9 @@ def secured(stage_rig):
 def test_dashboard_assets_ports_and_state_are_served(web):
     client, _ = web
     assert "Motion control" in client.get("/").text
-    assert client.get("/static/app.js").status_code == 200
-    assert client.get("/static/app.css").status_code == 200
+    for path in ("/static/app.js", "/static/app.css"):
+        with client.get(path) as response:
+            assert response.status_code == 200
     assert client.get("/api/ports").json["ports"][0]["device"] == "DEMO"
     assert len(client.get("/api/state").json["motors"]) == 3
 
@@ -83,7 +87,11 @@ def test_api_rejects_invalid_payloads(web, data):
 def test_cross_site_commands_and_untrusted_hosts_are_rejected(web):
     client, headers = web
     assert client.post("/api/stop", json={}).status_code == 403
-    assert client.post("/api/stop", json={}, headers={"X-Control-Token": "bad"}).status_code == 403
+    for control in ("bad", "caf\xe9"):
+        response = client.post("/api/stop", json={}, headers={"X-Control-Token": control})
+        assert response.status_code == 403
+    plain = client.post("/api/stop", data="{}", content_type="text/plain", headers=headers)
+    assert plain.status_code == 415
     assert client.get("/", headers={"Host": "attacker.example"}).status_code == 403
     response = client.get("/")
     assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
@@ -185,7 +193,8 @@ def test_without_token_loopback_hosts_are_served(web, host):
 
 
 @pytest.mark.parametrize(
-    "host", [HOST, "attacker.example", "localhost.attacker.example", "user@localhost", ""]
+    "host",
+    [HOST, "attacker.example", "localhost.attacker.example", "user@localhost", "localhost/x", ""],
 )
 def test_without_token_other_hosts_are_refused(web, host):
     client, headers = web
@@ -209,7 +218,8 @@ def test_without_token_proxied_requests_are_refused(web, name):
 
 
 @pytest.mark.parametrize(
-    "authorization", [None, "", TOKEN, f"Basic {TOKEN}", f"Bearer {TOKEN}x", "Bearer wrong"]
+    "authorization",
+    [None, "", TOKEN, f"Basic {TOKEN}", f"Bearer {TOKEN}x", f"Bearer {TOKEN}\xe9", "Bearer wrong"],
 )
 def test_with_token_every_api_request_needs_the_bearer_token(secured, authorization):
     client, headers = secured
@@ -248,7 +258,17 @@ def test_with_token_page_and_assets_load_without_the_bearer_token(secured):
     assert response.status_code == 200
     assert 'name="control-token"' in response.text
     assert 'aria-label="Panel access token"' in response.text
-    assert client.get("/static/app.js", headers={"Host": HOST}).status_code == 200
+    with client.get("/static/app.js", headers={"Host": HOST}) as asset:
+        assert asset.status_code == 200
+
+
+@pytest.mark.parametrize("control", ["bad", "caf\xe9", "\xff\xfe"])
+@pytest.mark.parametrize("path", ["/", "/static/app.js", "/api/stop"])
+def test_with_token_a_wrong_command_token_is_refused(secured, path, control):
+    client, headers = secured
+    response = client.post(path, json={}, headers={**headers, "X-Control-Token": control})
+    assert response.status_code == 403
+    assert response.json == {"error": "Reload this page before sending another command."}
 
 
 def test_page_without_token_shows_no_ports_or_session_data(stage_ports):
@@ -295,8 +315,17 @@ def test_bind_outside_localhost_needs_a_long_access_token(monkeypatch, capsys, b
     with pytest.raises(SystemExit) as exit_info:
         run_main(monkeypatch, ["--demo", "--bind", bind])
     assert exit_info.value.code == 2
-    message = "Set MG400_STAGE_TOKEN to at least 24 characters before binding outside localhost"
-    assert message in capsys.readouterr().err
+    assert SHORT_TOKEN in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bind", ["127.0.0.1", "localhost", "::1"])
+def test_loopback_bind_refuses_a_short_access_token(monkeypatch, capsys, bind):
+    # With an access token, the panel accepts any host name, also on a loopback bind.
+    monkeypatch.setenv("MG400_STAGE_TOKEN", "x" * 23)
+    with pytest.raises(SystemExit) as exit_info:
+        run_main(monkeypatch, ["--demo", "--bind", bind])
+    assert exit_info.value.code == 2
+    assert SHORT_TOKEN in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("token", [" " + TOKEN, TOKEN + " ", TOKEN + "\n", TOKEN + "é"])
@@ -316,16 +345,18 @@ def test_port_must_be_a_tcp_port(monkeypatch, capsys, port):
     assert "--port must be between 1 and 65535" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("bind", ["127.0.0.1", "localhost", "::1"])
+@pytest.mark.parametrize("bind", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
 def test_loopback_bind_starts_without_token(monkeypatch, capsys, bind):
     started = run_main(monkeypatch, ["--demo", "--bind", bind])
     options = {key: value for key, value in started.items() if key != "app"}
     # waitress must pass proxy headers on: without a token, the app refuses them.
+    # waitress must refuse a large body before it reads the body.
     assert options == {
         "host": bind,
         "port": 8767,
         "threads": 6,
         "clear_untrusted_proxy_headers": False,
+        "max_request_body_size": 4097,
     }
     assert "Stage Controller: http://127.0.0.1:8767" in capsys.readouterr().out
 
@@ -471,6 +502,8 @@ def signalled_server(signum, before_signal=lambda: None):
             try:
                 signal.getsignal(signum)(signum, None)
             except KeyboardInterrupt:
+                # waitress then waits for its workers. A second signal must not stop that wait.
+                assert {signal.getsignal(number) for number in SIGNALS} == {signal.SIG_IGN}
                 return  # Like waitress, return from run() after an interrupt.
             raise AssertionError("The signal handler must interrupt the server")
 
@@ -521,6 +554,24 @@ def test_hung_up_terminal_does_not_prevent_the_stop(monkeypatch, stage_rig, unre
     run_main(monkeypatch, ["--demo"], signalled_server(signal.SIGHUP, hang_up))
     assert transport.commands[-1] == "stop all"
     assert transport.closed
+
+
+def test_an_ignored_signal_stays_ignored(monkeypatch, stage_rig, unreplaced_signals):
+    # Like nohup: a closed terminal must not stop the panel.
+    controller, _, _ = stage_rig
+    monkeypatch.setattr(stage_main, "MotorController", lambda **_: controller)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    during_run = []
+
+    class Server:
+        effective_host, effective_port = "127.0.0.1", 8767
+
+        def run(self):
+            during_run.append(signal.getsignal(signal.SIGHUP))
+
+    run_main(monkeypatch, ["--demo"], Server())
+    assert during_run == [signal.SIG_IGN]
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
 
 
 def http_request(port, method, path, body=None, headers=None):
@@ -595,6 +646,18 @@ def test_service_with_token_accepts_the_vpn_host_with_the_bearer_token(service):
     assert http_request(port, "GET", "/api/state", headers=vpn)[0] == 401
     authorized = {**vpn, "Authorization": f"Bearer {TOKEN}", "X-Forwarded-For": "100.64.0.2"}
     assert http_request(port, "GET", "/api/state", headers=authorized)[0] == 200
+
+
+def test_service_refuses_a_large_body_before_it_reads_the_body(service):
+    _, port = service(TOKEN)
+    # A body of 4096 bytes reaches the access check, which refuses the request without the token.
+    status, _ = http_request(port, "POST", "/api/stop", b"{" + b" " * 4094 + b"}")
+    assert status == 401
+    # A larger body is refused before the access check. Send only the headers:
+    # waitress must answer without waiting for the body.
+    status, body = http_request(port, "POST", "/api/stop", headers={"Content-Length": "4097"})
+    assert status == 413
+    assert "Request Entity Too Large" in body
 
 
 @pytest.mark.parametrize("signum", SIGNALS, ids=["SIGINT", "SIGTERM", "SIGHUP"])

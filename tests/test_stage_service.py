@@ -28,6 +28,8 @@ def test_service_reads_its_settings_from_the_shared_environment_file():
     assert (service["User"], service["Group"]) == (["1000"], ["1000"])
     assert service["SupplementaryGroups"] == ["dialout"]
     assert sections["Unit"]["Wants"] == sections["Unit"]["After"] == ["network-online.target"]
+    # A startup refusal exits with status 2: a configuration error must not restart forever.
+    assert (service["Restart"], service["RestartPreventExitStatus"]) == (["on-failure"], ["2"])
     # The service starts only by hand.
     assert "Install" not in sections
 

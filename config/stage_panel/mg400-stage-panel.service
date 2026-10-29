@@ -13,5 +13,7 @@ WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/stage-panel
 Restart=on-failure
 RestartSec=3
+# A startup refusal (exit status 2) is a configuration error: do not restart.
+RestartPreventExitStatus=2
 UMask=0077
 TimeoutStopSec=30

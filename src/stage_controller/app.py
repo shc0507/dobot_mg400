@@ -26,15 +26,18 @@ def _host_port(value, default_port):
     return parts.hostname.lower(), port or default_port
 
 
+def loopback_name(name):
+    """Check that a host name or IP address names this machine's loopback interface."""
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return name.lower() == "localhost"
+
+
 def loopback_host(value):
     """Check that a Host header names this machine's loopback interface."""
     parts = _host_port(value, 80)
-    if parts is None:
-        return False
-    try:
-        return ipaddress.ip_address(parts[0]).is_loopback
-    except ValueError:
-        return parts[0] == "localhost"
+    return parts is not None and loopback_name(parts[0])
 
 
 def create_app(controller: MotorController | None = None, token: str | None = None):
@@ -60,7 +63,8 @@ def create_app(controller: MotorController | None = None, token: str | None = No
             return jsonify(error="Enter the panel access token"), 401
         if request.method != "GET":
             if not secrets.compare_digest(
-                request.headers.get("X-Control-Token", ""), control_token
+                request.headers.get("X-Control-Token", "").encode("latin-1", "replace"),
+                control_token.encode(),
             ):
                 return jsonify(error="Reload this page before sending another command."), 403
             if not request.is_json:

@@ -1,5 +1,4 @@
 import argparse
-import ipaddress
 import logging
 import os
 import re
@@ -7,7 +6,7 @@ import signal
 
 from waitress import create_server
 
-from .app import create_app
+from .app import create_app, loopback_name
 from .controller import GRIPPER_CONVERTER, MotorController, is_gripper_converter
 
 
@@ -79,13 +78,11 @@ def main(argv=None):
             "MG400_STAGE_TOKEN must contain only printable ASCII characters "
             "and must not begin or end with a space"
         )
-    try:
-        loopback = ipaddress.ip_address(bind).is_loopback
-    except ValueError:
-        loopback = bind == "localhost"
-    if not loopback and (not token or len(token) < 24):
+    # With an access token, the app accepts any host name, also on a loopback bind.
+    if (token or not loopback_name(bind)) and len(token or "") < 24:
         parser.error(
-            "Set MG400_STAGE_TOKEN to at least 24 characters before binding outside localhost"
+            "Set MG400_STAGE_TOKEN to at least 24 characters, "
+            "or leave it unset and bind to localhost"
         )
     logging.basicConfig(level=logging.INFO)
     # Do not open the port here: opening it resets the Arduino.
@@ -97,6 +94,9 @@ def main(argv=None):
         threads=6,
         # Pass proxy headers through unused: without a token, the app refuses proxied requests.
         clear_untrusted_proxy_headers=False,
+        # Refuse a larger body before reading it, as MAX_CONTENT_LENGTH does in the app.
+        # waitress refuses a body of this size or more, and keeps a smaller one in memory.
+        max_request_body_size=4097,
     )
     for url in listen_urls(server):
         print(f"Stage Controller: {url}", flush=True)

@@ -28,18 +28,29 @@
 
 Arduino 接在 Olares 宿主机的 USB 上，必须运行 `firmware/three-motor-demo` 固件。
 上传、接线和串口命令见 [固件说明](../firmware/three-motor-demo/README.md)（英文）。
-上传固件前，在面板点击 `Disconnect`，或停止面板服务。
 面板用文件锁独占串口。
 不加锁的程序仍能同时打开该串口，面板不能发现它。
+
+部署在 Olares 时，在装有 Arduino IDE 的电脑上传固件：
+
+1. 在面板点击 `Stop all motors` 和 `Disconnect`。
+2. 从 Olares 宿主机拔下 Arduino，接到该电脑。
+3. 按固件说明上传固件。
+4. 把 Arduino 接回 Olares 宿主机的 USB。
+5. 在宿主机运行 `ls -l /dev/serial/by-id/`，确认 Arduino 的路径与 `MG400_STAGE_SERIAL` 相同。
+6. 在面板点击 `Connect`。
+
+在本地运行面板时，上传前在面板点击 `Disconnect`。
 
 位移台是开环控制（只发脉冲，不读取实际位置）。
 它没有编码器、回零或限位开关，面板也不限制行程。
 页面计数是 Arduino 复位以来发出的有符号 STEP 脉冲数，不是实测行程。
 移动前，确认该方向有足够行程。
 
-多数 Arduino 在串口打开时复位。
+多数 Arduino 在串口打开时复位，面板每次连接都打开串口。
+复位期间，驱动器可能短时唤醒，电机可能转到 A4988 的 Home 细分位置。
 复位后，计数归零，细分模式（一个脉冲走几分之一整步）恢复整步。
-三个驱动器也进入睡眠。
+固件启动后，三个驱动器进入睡眠。
 
 电机停止后，驱动器保持线圈通电。
 电机停止一段时间后，驱动器进入睡眠，电机不再保持位置。
@@ -218,9 +229,10 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 
 值为空的环境变量等同于未设置。
 
-监听非回环地址时，必须设置至少 24 个字符的 `MG400_STAGE_TOKEN`。
-访问密钥只能包含可打印 ASCII 字符，不得以空格开头或结尾。
+监听非回环地址时，必须设置 `MG400_STAGE_TOKEN`。
+访问密钥至少 24 个字符，只能包含可打印 ASCII 字符，不得以空格开头或结尾。
 不满足时，服务拒绝启动。
+设置访问密钥后，服务接受任何主机名，监听回环地址时也一样。
 未设置访问密钥时，服务只接受 `127.0.0.1`、`localhost` 或 `[::1]` 地址。
 此时服务也拒绝带 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 或 `X-Real-IP` 的请求。
 接口说明见 [位移台面板接口](development.md#位移台面板接口)。
@@ -299,7 +311,8 @@ ls -lL /dev/serial/by-id/
 
 每一项是一个 USB 串口设备，名称通常含厂商、型号和序列号，插拔后不变。
 名称含 `BG02Q5TN` 的一项是夹爪转换器，不是 Arduino。
-`-L` 显示链接指向的设备，确认 Arduino 一项的属组为 `dialout`。
+`-L` 显示链接所指设备的权限和属组，不显示设备名。
+确认 Arduino 一项的属组为 `dialout`。
 
 最后用文本编辑器加入 `MG400_STAGE_BIND`、`MG400_STAGE_PORT` 和 `MG400_STAGE_SERIAL`。
 `MG400_STAGE_SERIAL` 的值是 `/dev/serial/by-id/` 加 Arduino 的名称。
@@ -337,6 +350,7 @@ systemctl stop mg400-stage-panel.service
 设置 `MG400_STAGE_SERIAL` 时，日志还显示 `Serial port:` 和该路径。
 停止服务时，日志记录停止结果，例如 `All motors stopped · disconnected`。
 服务异常退出后，systemd 等待 3 秒再启动服务。
+服务因配置错误拒绝启动时，systemd 不重启服务，状态显示 `failed`。
 重启后，面板未连接 Arduino，在页面重新连接。
 主机重启后，手动启动服务。
 
@@ -353,21 +367,21 @@ systemctl stop mg400-stage-panel.service
 
 ## 故障排查
 
-以下报错显示在页面顶部的提示栏，服务启动失败的报错显示在服务日志中。
+以下报错显示在面板页面上，服务启动失败的报错显示在服务日志中。
 
 | 现象 | 处理 |
 | --- | --- |
 | 串口列表显示 `No serial ports found`，或找不到 Arduino | 在宿主机运行 `ls -l /dev/serial/by-id/`。没有 Arduino 时，检查 USB 数据线和 Arduino 供电，再点击刷新按钮。设置了 `MG400_STAGE_SERIAL` 时，确认它与 Arduino 的路径相同。 |
 | `That port is no longer available. Refresh the port list.` | 点击刷新按钮，再选择串口。 |
 | `Cannot open <串口>: ...`，其中含 `Permission denied` | 服务用户不能读写该串口。确认设备属组为 `dialout`。本地运行时，把用户加入 `dialout` 组并重新登录。 |
-| `<串口> is in use by another program.` | 另一个程序占用该串口。关闭 Arduino IDE 的串口监视器和其他 `stage-panel` 进程。 |
+| `<串口> is in use by another program.` | 另一个程序占用该串口。关闭该程序，例如 Arduino IDE 的串口监视器或另一个 `stage-panel` 进程。 |
 | `Arduino did not reply in time. Check the port and uploaded sketch.` | 确认所选串口是 Arduino，并已上传 `firmware/three-motor-demo`。出错后面板断开连接，修复后再点击 `Connect`。 |
-| `Hold to move was rejected. Upload the updated three-motor-demo sketch.` 或 `Stepping mode unavailable on this firmware` | Arduino 运行旧固件。上传本项目的 `firmware/three-motor-demo`。 |
+| `Hold to move was rejected. Upload the updated three-motor-demo sketch.`，或 `Stepping mode` 区域显示 `Stepping mode unavailable on this firmware` | Arduino 运行旧固件。上传本项目的 `firmware/three-motor-demo`。 |
 | 页面显示 `Panel access token` 输入框，或提示 `Enter the panel access token` | 输入 `/etc/mg400/mg400.env` 中的 `MG400_STAGE_TOKEN`。 |
-| `Open the panel at 127.0.0.1 or localhost` | 服务未设置访问密钥，请求来自其他主机名或代理。在服务主机打开 `127.0.0.1` 地址，或设置 `MG400_STAGE_TOKEN`。 |
+| 浏览器不显示面板，只显示含 `Open the panel at 127.0.0.1 or localhost` 的 JSON | 服务未设置访问密钥，请求来自其他主机名或代理。在服务主机打开 `127.0.0.1` 地址，或设置至少 24 个字符的 `MG400_STAGE_TOKEN`。 |
 | `Reload this page before sending another command.` | 服务已重启。重新加载页面。 |
 | `Cannot reach the stage panel service. Motion status is unknown.` | 检查 VPN 连接，再在宿主机运行 `systemctl status mg400-stage-panel.service --no-pager`。 |
 | 服务日志显示 `Failed to load environment files` | 按 [配置文件](#配置文件) 创建 `/etc/mg400/mg400.env`，再启动服务。 |
-| 服务日志显示 `Set MG400_STAGE_TOKEN to at least 24 characters before binding outside localhost` | 按 [配置文件](#配置文件) 生成访问密钥，再启动服务。 |
+| 服务日志显示 `Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost` | 已有的 `MG400_STAGE_TOKEN` 少于 24 个字符时，先删除该行。按 [配置文件](#配置文件) 生成访问密钥，再启动服务。 |
 | 服务日志显示 `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | 按 [配置文件](#配置文件) 查找 Arduino 的路径，改写 `MG400_STAGE_SERIAL`，再启动服务。 |
 | 服务日志显示 `MG400_STAGE_PORT must be a whole number between 1 and 65535` | 把 `MG400_STAGE_PORT` 改为 1–65535 的整数，再启动服务。 |

@@ -100,8 +100,13 @@ MS1/MS2/MS3 are driven by the shared D10/D9/D8 outputs listed above. Startup set
 all three outputs LOW for full stepping.
 
 The firmware drives the SLEEP outputs. LOW puts a driver to sleep. HIGH wakes it.
-On the Pololu carrier, SLP has a pull-up. While the Arduino resets, its pins do
-not drive SLP, so the drivers can be awake until startup sets SLEEP LOW.
+On the Pololu carrier, SLP has a pull-up. While the Arduino resets, the firmware
+does not control SLP, so the drivers can be awake until startup sets SLEEP LOW.
+On many boards, for example the Uno, D13 (`TopSleep`) also controls the on-board
+LED. After a reset from the serial port or the reset button, the bootloader flashes
+this LED. Thus the Top driver can sleep and wake several times each time the panel
+connects. To prevent this, set `TopSleep` to a pin without an LED, for example `A0`,
+and move the wire.
 
 Do not leave RST floating. The Pololu carrier has no pull resistor on RST. Connect
 RST to the adjacent SLP pin on the carrier, or connect RST to the logic supply (VDD).

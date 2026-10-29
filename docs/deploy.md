@@ -62,7 +62,7 @@
    git -C /opt/mg400 switch --detach origin/main
    ```
 
-   主机不能访问 GitHub 时，用 Git bundle 获取代码，见 [Olares 获取代码](olares.md#获取代码)。
+   主机不能访问 GitHub 时，用 Git bundle 获取代码，见 [Olares 无法访问 GitHub 时](olares.md#无法访问-github-时)。
 
 2. 运行安装器：
 

@@ -200,12 +200,18 @@ function renewHold(hold) {
   }, 200);
 }
 
+// The UUID helper of crypto exists only in secure contexts, and the Olares panel is plain HTTP.
+function newHoldId() {
+  return [...crypto.getRandomValues(new Uint8Array(16))]
+    .map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function beginHold(card, button, input) {
   const motor = card.dataset.motor;
   const number = $('.speed-number', card);
   if (button.disabled || holds.has(motor) || !number.reportValidity()) return;
   const hold = {
-    motor, button, id: crypto.randomUUID(), starting: true, released: false, stopped: false, ...input,
+    motor, button, id: newHoldId(), starting: true, released: false, stopped: false, ...input,
   };
   holds.set(motor, hold);
   button.classList.add('is-held');

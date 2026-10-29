@@ -262,6 +262,14 @@ def test_with_token_page_and_assets_load_without_the_bearer_token(secured):
         assert asset.status_code == 200
 
 
+def test_page_script_avoids_apis_that_plain_http_removes(secured):
+    # Over the VPN the page is http://100.64.0.1:8767, not a secure context.
+    # There crypto.randomUUID is undefined, and every hold failed without a message.
+    client, _ = secured
+    with client.get("/static/app.js", headers={"Host": HOST}) as asset:
+        assert "randomUUID" not in asset.text
+
+
 @pytest.mark.parametrize("control", ["bad", "caf\xe9", "\xff\xfe"])
 @pytest.mark.parametrize("path", ["/", "/static/app.js", "/api/stop"])
 def test_with_token_a_wrong_command_token_is_refused(secured, path, control):

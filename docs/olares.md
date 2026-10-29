@@ -23,29 +23,41 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 ## 获取代码
 
 Olares 没有 GitHub 读取凭据，通过 Git bundle 获取代码。
-在本地项目根目录生成包含完整历史的 bundle，并记录目标提交：
 
-```sh
-git bundle create /tmp/mg400-deploy.bundle --all
-git rev-parse HEAD
-```
+1. 在 Olares 宿主机读取已部署的提交：
 
-通过已登录的 Olares 网页会话上传 bundle。
-下例使用经 IsaacLab 应用存储上传的路径：
+   ```sh
+   git -C /opt/mg400 rev-parse HEAD
+   ```
 
-```sh
-BUNDLE=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/mg400-deploy.bundle
-```
+2. 在本地项目根目录生成 bundle，只包含该提交之后的历史，并记录目标提交。
+   将 `HOST_SHA` 替换为第 1 步的提交：
 
-`/opt/mg400` 不存在时，先运行 `git init -q /opt/mg400`。
-将下列 `COMMIT_SHA` 替换为记录的目标提交：
+   ```sh
+   git bundle create /tmp/mg400-deploy.bundle main ^HOST_SHA
+   git rev-parse main
+   ```
 
-```sh
-git -C /opt/mg400 bundle verify "$BUNDLE"
-git -C /opt/mg400 fetch "$BUNDLE" 'refs/heads/*:refs/remotes/bundle/*'
-git -C /opt/mg400 switch --detach COMMIT_SHA
-git -C /opt/mg400 rev-parse HEAD
-```
+   `/opt/mg400` 不存在时，用 `--all` 代替 `main ^HOST_SHA`，生成包含完整历史的 bundle。
+
+3. 在 Olares 网页的 Files 中，把 bundle 上传到 Drive 的 `Home/Downloads`。
+   该目录在宿主机的路径为：
+
+   ```sh
+   BUNDLE=/olares/rootfs/userspace/pvc-userspace-qumusphusis-8vsdwupyazk45sjv/Home/Downloads/mg400-deploy.bundle
+   ```
+
+4. `/opt/mg400` 不存在时，先运行 `git init -q /opt/mg400`。
+   将下列 `COMMIT_SHA` 替换为第 2 步记录的目标提交：
+
+   ```sh
+   git -C /opt/mg400 bundle verify "$BUNDLE"
+   git -C /opt/mg400 fetch "$BUNDLE" 'refs/heads/*:refs/remotes/bundle/*'
+   git -C /opt/mg400 switch --detach COMMIT_SHA
+   git -C /opt/mg400 rev-parse HEAD
+   ```
+
+   如果 `bundle verify` 报告缺少提交，用 `--all` 重新生成 bundle。
 
 然后按 [主机部署](deploy.md#安装与更新) 运行安装器。
 

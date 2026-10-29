@@ -9,6 +9,7 @@ The installer never starts, stops or restarts a robot service.
 """
 
 import argparse
+import errno
 import os
 import re
 import secrets
@@ -24,7 +25,7 @@ COLLECTOR = "mg400-gripper-collector.service"
 REQUEST_WATCHER = "mg400-gripper-collector.path"
 CAMERA_COUNT = 3
 DEVICE = re.compile(r"/dev/[A-Za-z0-9/._:-]+")
-SETTING = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)")
+KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class Host:
@@ -44,38 +45,61 @@ class Host:
         self.proc = root / "proc"
 
 
+def parse_line(line, number):
+    """Return (key, value), or None for a blank or comment line.
+
+    Read the line as systemd reads EnvironmentFile=: spaces around the key and the
+    value do not count, and one pair of quotes around the value is removed. Refuse
+    the forms where systemd could read another value: no "=", escapes, inner quotes.
+    """
+    stripped = line.strip()
+    if not stripped or stripped[0] in "#;":
+        return None
+    key, equals, value = stripped.partition("=")
+    key, value = key.strip(), value.strip()
+    if not equals or not KEY.fullmatch(key):
+        raise ValueError(f"Settings line {number} is not KEY=VALUE.")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1]
+    if any(character in value for character in "\\'\""):
+        raise ValueError(f"Settings line {number}: remove quotes and backslashes from {key}.")
+    return key, value
+
+
 def parse_settings(text):
-    """Return KEY=VALUE pairs. Blank and comment lines do not match, as in systemd."""
+    """Return the settings. A later line for the same key wins, as in systemd."""
     values = {}
-    for line in text.splitlines():
-        match = SETTING.fullmatch(line.strip())
-        if match:
-            value = match[2].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                value = value[1:-1]
-            values[match[1]] = value
+    for number, line in enumerate(text.splitlines(), 1):
+        if (pair := parse_line(line, number)) is not None:
+            values[pair[0]] = pair[1]
     return values
+
+
+def check_settings(settings):
+    """Refuse settings that would split the robot lock between programs."""
+    if not os.path.isabs(settings.get("MG400_CONTROLLER_LOCK_DIR", "")):
+        raise ValueError("Set MG400_CONTROLLER_LOCK_DIR to an absolute path.")
 
 
 def merge_settings(current, example, token=lambda: secrets.token_urlsafe(32)):
     """Return the new settings text and the changed keys. Keep every nonempty value."""
-    if current is None:
-        lines, present = example.splitlines(), {}
-    else:
-        lines = current.splitlines()
-        present = {match[1] for line in lines if (match := SETTING.fullmatch(line.strip()))}
-    changed = []
-    for index, line in enumerate(lines):
-        match = SETTING.fullmatch(line.strip())
-        if match and match[1].endswith("_TOKEN") and not match[2].strip():
-            lines[index] = f"{match[1]}={token()}"
-            changed.append(match[1])
-    for line in example.splitlines():
-        match = SETTING.fullmatch(line.strip())
-        if current is not None and match and match[1] not in present:
-            value = token() if match[1].endswith("_TOKEN") and not match[2] else match[2]
-            lines.append(f"{match[1]}={value}")
-            changed.append(match[1])
+    lines = (example if current is None else current).splitlines()
+    present, changed = set(), []
+    for number, line in enumerate(lines, 1):
+        if (pair := parse_line(line, number)) is None:
+            continue
+        present.add(pair[0])
+        if pair[0].endswith("_TOKEN") and not pair[1]:
+            lines[number - 1] = f"{pair[0]}={token()}"
+            changed.append(pair[0])
+    if current is not None:
+        for number, line in enumerate(example.splitlines(), 1):
+            pair = parse_line(line, number)
+            if pair is not None and pair[0] not in present:
+                key, value = pair
+                lines.append(f"{key}={token() if key.endswith('_TOKEN') and not value else value}")
+                present.add(key)
+                changed.append(key)
     return "\n".join(lines) + "\n", changed
 
 
@@ -138,23 +162,66 @@ def find_collectors(proc_root, managed_pid):
     return sorted(found)
 
 
-def write_file(path, content, mode, owner=None, chown=os.chown):
-    """Replace a file atomically. Return False if it already has this content and mode."""
+def open_directory(path):
+    """Open a directory without following a symbolic link in its last part."""
+    try:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise RuntimeError(f"{path} is not a directory. Check who replaced it.") from error
+        raise
+
+
+def secure_directory(path, mode, owner, chown):
+    """Create a directory or repair its mode and owner. Refuse a symbolic link."""
+    try:
+        Path(path).mkdir(parents=True)
+    except FileExistsError:
+        pass
+    fd = open_directory(path)
+    try:
+        os.fchmod(fd, mode)
+        chown(fd, *owner)
+    finally:
+        os.close(fd)
+
+
+def write_file(path, content, mode, owner, chown):
+    """Replace a file in a root-owned directory atomically, with this mode and owner."""
     path = Path(path)
     data = content.encode() if isinstance(content, str) else content
-    if path.is_file() and path.read_bytes() == data and (path.stat().st_mode & 0o7777) == mode:
-        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", delete=False) as out:
         temporary = Path(out.name)
+        try:
+            out.write(data)
+            out.flush()
+            os.fchmod(out.fileno(), mode)
+            chown(out.fileno(), *owner)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
     try:
-        temporary.write_bytes(data)
-        os.chmod(temporary, mode)
-        if owner is not None:
-            chown(temporary, *owner)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def create_key(directory, name, owner, chown):
+    """Create a new secret file. Keep any existing entry, even a symbolic link."""
+    fd = open_directory(directory)
+    try:
+        key = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    except FileExistsError:
+        return False
+    finally:
+        os.close(fd)
+    try:
+        os.write(key, (secrets.token_urlsafe(32) + "\n").encode())
+        os.fchmod(key, 0o600)
+        chown(key, *owner)
+    finally:
+        os.close(key)
     return True
 
 
@@ -170,9 +237,7 @@ def install(args, host, run, chown, out):
     def directory(path, mode, owner):
         step(f"ensure {path} ({mode:04o}, {owner[0]}:{owner[1]})")
         if not args.dry_run:
-            path.mkdir(parents=True, exist_ok=True)
-            os.chmod(path, mode)
-            chown(path, *owner)
+            secure_directory(path, mode, owner, chown)
 
     # Read-only checks first: a refusal must leave the host unchanged.
     version = run(
@@ -203,7 +268,10 @@ def install(args, host, run, chown, out):
     current = host.settings.read_text() if host.settings.exists() else None
     merged, changed = merge_settings(current, example)
     settings = parse_settings(merged)
+    check_settings(settings)
     devices = camera_devices(settings.get("MG400_CAMERA_DEVICES", ""))
+    if args.go2rtc is not None and not args.go2rtc.is_file():
+        raise RuntimeError(f"The go2rtc binary does not exist: {args.go2rtc}")
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
 
@@ -216,15 +284,24 @@ def install(args, host, run, chown, out):
             step(f"add to {host.settings}: {', '.join(changed)}")
         if not args.dry_run:
             write_file(host.settings, merged, 0o600, (0, 0), chown)
-    directory(host.data, 0o750, service)
+    elif not args.dry_run:
+        # A copied settings file can arrive with other rights. Only root may read it.
+        fd = os.open(host.settings, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fchmod(fd, 0o600)
+            chown(fd, 0, 0)
+        finally:
+            os.close(fd)
+    # A root-owned data directory stops the service user from replacing its subdirectories.
+    directory(host.data, 0o750, (0, SERVICE_GID))
     directory(host.data / "locks", 0o700, service)
     directory(host.data / "work", 0o750, service)
     directory(host.data / "camera", 0o700, service)
     key = host.data / "camera/preview.key"
-    if not key.exists():
-        step(f"write {key}")
+    if not os.path.lexists(key):
+        step(f"create {key}")
         if not args.dry_run:
-            write_file(key, secrets.token_urlsafe(32) + "\n", 0o600, service, chown)
+            create_key(key.parent, key.name, service, chown)
     directory(host.code, 0o750, (0, SERVICE_GID))
     # The system Python keeps the environment readable for the service user.
     system(
@@ -251,6 +328,10 @@ def install(args, host, run, chown, out):
         step(f"write {host.go2rtc_config}")
         if not args.dry_run:
             write_file(host.go2rtc_config, render_go2rtc(devices), 0o640, (0, SERVICE_GID), chown)
+    elif host.go2rtc_config.exists():
+        step(f"remove {host.go2rtc_config}: cameras are off")
+        if not args.dry_run:
+            host.go2rtc_config.unlink()
     for unit in sorted((host.source / "config/systemd").iterdir()):
         step(f"install {host.units / unit.name}")
         if not args.dry_run:
@@ -265,7 +346,7 @@ def install(args, host, run, chown, out):
     return settings, devices
 
 
-def main(argv=None, *, host=None, run=subprocess.run, chown=os.chown, out=sys.stdout):
+def main(argv=None, *, host=None, run=subprocess.run, chown=os.fchown, out=sys.stdout):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="Print the steps. Change nothing.")
     parser.add_argument("--go2rtc", type=Path, help="go2rtc 1.9.14 binary to install")
@@ -295,10 +376,7 @@ def main(argv=None, *, host=None, run=subprocess.run, chown=os.chown, out=sys.st
         print("Cameras are off: MG400_CAMERA_DEVICES is empty.", file=out)
     if not settings.get("MG400_STAGE_SERIAL"):
         print("The stage panel offers every serial port: MG400_STAGE_SERIAL is empty.", file=out)
-    print(
-        "Running services keep the old code until you restart them: mg400ctl restart NAME",
-        file=out,
-    )
+    print("No service was started, stopped or restarted. Use: mg400ctl start NAME", file=out)
     return 0
 
 

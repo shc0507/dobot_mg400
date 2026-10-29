@@ -64,13 +64,15 @@ git -C /opt/mg400 rev-parse HEAD
 
 迁移只做一次。迁移前，关闭所有面板页面和交互终端，下使能机械臂。
 
-1. 停止旧服务，并备份旧的服务定义：
+1. 停止旧服务，备份旧的服务定义，并停用旧的终端启动脚本。
+   旧脚本使用旧的锁目录，与新面板不互斥：
 
    ```sh
    DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
    systemctl stop mg400-web-panel mg400-stage-panel mg400-camera-preview mg400-gripper-collector.path mg400-gripper-collector
    mkdir -p /root/mg400-old-units
    cp -a /etc/systemd/system/mg400-* /root/mg400-old-units/
+   mv "$DOCS/mg400-tools/start-terminal.sh" "$DOCS/mg400-tools/start-terminal.sh.disabled"
    ```
 
 2. 按 [获取代码](#获取代码) 把 `/opt/mg400` 切换到目标提交。
@@ -94,15 +96,33 @@ git -C /opt/mg400 rev-parse HEAD
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
-6. 按 [网络](#网络) 设置监听地址。
-7. 删除旧网页服务的附加配置，再启动服务：
+   检查夹爪命令锁。该文件存在时，有夹爪命令结果未确认：
 
    ```sh
-   rm -f /etc/systemd/system/mg400-web-panel.service.d/50-controller-ownership.conf
+   ls -l "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json"
+   ```
+
+   文件存在时，先核实夹爪状态，再按新的反馈文件名复制该锁。
+   新采集服务读到该锁后保持锁定，与旧服务一致：
+
+   ```sh
+   install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
+   ```
+
+6. 按 [网络](#网络) 设置监听地址。
+7. 删除旧服务的附加配置和开机自启链接，再启动服务。
+   第 1 步已备份这些文件：
+
+   ```sh
+   rm -rf /etc/systemd/system/mg400-web-panel.service.d
+   rm -f /etc/systemd/system/*.wants/mg400-*.service
    systemctl daemon-reload
+   systemctl is-enabled mg400-web-panel mg400-stage-panel mg400-camera-preview
    mg400ctl start web stage camera
    mg400ctl status
    ```
+
+   `is-enabled` 对三项都显示 `static`，表示服务不会开机自启。
 
 8. 核对以下各项：
    - `mg400ctl camera-url` 的链接能打开三路画面。
@@ -110,7 +130,9 @@ git -C /opt/mg400 rev-parse HEAD
    - 网页面板点击 `Connect & take control` 后，`mg400ctl status` 显示夹爪采集为 `active`。
    - 位移台面板能连接 Arduino。
 
-旧目录保留到核对完成。核对完成前，可用 `/root/mg400-old-units` 中的服务定义恢复旧布局。
+旧目录保留到核对完成。
+要恢复旧布局，先运行 `mg400ctl stop all`，再把 `/root/mg400-old-units` 中的文件复制回 `/etc/systemd/system/` 并运行 `systemctl daemon-reload`。
+然后把 `start-terminal.sh.disabled` 改回原名，恢复旧的终端启动脚本。
 
 ## USB 夹爪转换器
 

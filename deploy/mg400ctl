@@ -6,13 +6,16 @@ terminal and mode run as the service user (UID 1000) with the settings from
 """
 
 import argparse
+import grp
 import os
+import pwd
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from install import SERVICE_GID, SERVICE_UID, Host, parse_settings  # noqa: E402
+from install import SERVICE_GID, SERVICE_UID, Host, check_settings, parse_settings  # noqa: E402
 
 SERVICES = {
     "web": ["mg400-web-panel.service"],
@@ -55,26 +58,28 @@ def status(run, out):
 
 
 def as_service_user(host, settings, command, execvpe):
-    """Replace this process with command, run as the service user from the code directory."""
+    """Replace this process with command, run as the service user from the code directory.
+
+    runuser --pty gives the command its own terminal, so it cannot type into the root shell.
+    With -g, the command gets only the service group, none of the account's other groups.
+    The terminal and the mode switch need no panel token.
+    """
+    user = pwd.getpwuid(SERVICE_UID).pw_name
+    group = grp.getgrgid(SERVICE_GID).gr_name
+    runuser = shutil.which("runuser", path="/usr/sbin:/usr/bin:/sbin:/bin")
+    if runuser is None:
+        raise FileNotFoundError("runuser is missing. Install util-linux.")
     environment = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(host.data),
-        **{key: value for key, value in settings.items() if key.startswith("MG400_") and value},
+        **{
+            key: value
+            for key, value in settings.items()
+            if key.startswith("MG400_") and not key.endswith("_TOKEN") and value
+        },
         **{key: os.environ[key] for key in PASSED if key in os.environ},
     }
     os.chdir(host.code)
-    execvpe(
-        "setpriv",
-        [
-            "setpriv",
-            f"--reuid={SERVICE_UID}",
-            f"--regid={SERVICE_GID}",
-            "--clear-groups",
-            "--",
-            *command,
-        ],
-        environment,
-    )
+    execvpe(runuser, ["runuser", "--pty", "-u", user, "-g", group, "--", *command], environment)
 
 
 def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sys.stdout):
@@ -101,8 +106,18 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
         return 1
     try:
         settings = parse_settings(host.settings.read_text())
+        if args.command in ("terminal", "mode"):
+            check_settings(settings)
+            pwd.getpwuid(SERVICE_UID)
+            grp.getgrgid(SERVICE_GID)
     except FileNotFoundError:
         print(f"{host.settings} is missing. Run deploy/install.py first.", file=sys.stderr)
+        return 1
+    except KeyError:
+        print(f"Create a user and a group with ID {SERVICE_UID} first.", file=sys.stderr)
+        return 1
+    except ValueError as error:
+        print(f"{host.settings}: {error}", file=sys.stderr)
         return 1
 
     if args.command == "status":

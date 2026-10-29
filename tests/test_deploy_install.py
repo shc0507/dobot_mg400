@@ -1,6 +1,7 @@
 """Check the host installer in a temporary root, without systemd, uv or root rights."""
 
 import io
+import os
 import runpy
 import shutil
 import stat
@@ -50,7 +51,13 @@ def host(module, monkeypatch, tmp_path):
     globals_ = module.main.__globals__
     monkeypatch.setattr(globals_["sys"], "platform", "linux")
     monkeypatch.setattr(globals_["os"], "geteuid", lambda: 0)
-    chown = Mock()
+    owners = {}
+
+    def chown(fd, uid, gid):
+        # The installer changes owners only through descriptors, never by path.
+        assert isinstance(fd, int)
+        owners[os.fstat(fd).st_ino] = (uid, gid)
+
     out = io.StringIO()
 
     def install(*argv, runner=None):
@@ -67,7 +74,7 @@ def host(module, monkeypatch, tmp_path):
         code=code,
         install=install,
         commands=commands,
-        chown=chown,
+        owner=lambda path: owners.get(path.stat().st_ino),
         out=out,
         settings=tmp_path / "etc/mg400/mg400.env",
         data=tmp_path / "var/lib/mg400",
@@ -129,13 +136,14 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         ["git", "-C", str(host.code), "rev-parse", "--short", "HEAD"],
     ]
     assert uv[0]["cwd"] == host.code and uv[0]["env"]["UV_LINK_MODE"] == "copy"
-    owners = {Path(args[0]).name: args[1:] for args, _ in host.chown.call_args_list}
-    assert owners["mg400"] == (0, 1000)
-    assert owners["locks"] == owners["work"] == owners["camera"] == (1000, 1000)
+    assert host.owner(host.code) == host.owner(host.data) == (0, 1000)
+    for name in ("locks", "work", "camera", "camera/preview.key"):
+        assert host.owner(host.data / name) == (1000, 1000), name
+    assert host.owner(host.settings) == (0, 0)
     report = host.out.getvalue()
     assert "Installed commit abc1234." in report
     assert "Cameras are off" in report
-    assert "mg400ctl restart" in report
+    assert "No service was started, stopped or restarted" in report
     # The installer never starts, stops or restarts a robot service.
     assert not [command for command in names(host.commands) if "start" in command[1:2]]
 
@@ -312,3 +320,97 @@ def test_failed_dependency_sync_installs_no_units(host):
     assert host.install(runner=failing) == 1
     assert not host.units.exists()
     assert not (host.root / "usr/local/bin/mg400ctl").exists()
+
+
+def test_settings_lines_parse_like_systemd(module):
+    text = "A = 1\nB=\"x y\"\n; comment\n  # comment\nC='z'\nA=2\n"
+    assert module.parse_settings(text) == {"A": "2", "B": "x y", "C": "z"}
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("MG400_PANEL_BIND 0.0.0.0", "is not KEY=VALUE"),
+        ("1KEY=x", "is not KEY=VALUE"),
+        ('KEY="a\\"b"', "remove quotes and backslashes"),
+        ("KEY=a\\b", "remove quotes and backslashes"),
+        ("KEY=it's", "remove quotes and backslashes"),
+    ],
+)
+def test_settings_lines_that_systemd_could_read_differently_are_refused(module, line, message):
+    with pytest.raises(ValueError, match=message):
+        module.parse_settings(f"# ok\n{line}\n")
+
+
+def test_merge_sees_spaced_keys_and_fills_a_quoted_empty_token(module):
+    example = "MG400_ROBOT_HOST=\nB_TOKEN=\n"
+    current = 'MG400_ROBOT_HOST = robot.test\nB_TOKEN=""\n'
+    text, changed = module.merge_settings(current, example, token=lambda: "new")
+    assert text == "MG400_ROBOT_HOST = robot.test\nB_TOKEN=new\n"
+    assert changed == ["B_TOKEN"]
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ("MG400_PANEL_BIND 0.0.0.0\n", "is not KEY=VALUE"),
+        ("MG400_CONTROLLER_LOCK_DIR=\n", "MG400_CONTROLLER_LOCK_DIR to an absolute path"),
+        ("MG400_CONTROLLER_LOCK_DIR=locks\n", "MG400_CONTROLLER_LOCK_DIR to an absolute path"),
+    ],
+    ids=["unreadable-line", "empty-lock-directory", "relative-lock-directory"],
+)
+def test_unsafe_settings_stop_before_any_change(host, capsys, settings, message):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(settings)
+    assert host.install() == 1
+    assert message in capsys.readouterr().err
+    assert host.settings.read_text() == settings
+    assert not host.data.exists() and not host.units.exists()
+
+
+def test_missing_go2rtc_file_stops_before_any_change(host, capsys):
+    assert host.install("--go2rtc", str(host.root / "missing")) == 1
+    assert "go2rtc binary does not exist" in capsys.readouterr().err
+    assert not host.settings.exists() and not host.data.exists()
+
+
+def test_turning_cameras_off_removes_the_camera_configuration(host, tmp_path):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(f"MG400_CAMERA_DEVICES={','.join(DEVICES)}\n")
+    binary = tmp_path / "go2rtc"
+    binary.write_bytes(b"binary")
+    assert host.install("--go2rtc", str(binary)) == 0
+    config = host.root / "etc/mg400/go2rtc.yaml"
+    assert config.exists()
+    host.settings.write_text(host.settings.read_text().replace(",".join(DEVICES), ""))
+    assert host.install() == 0
+    assert not config.exists()
+    assert f"remove {config}: cameras are off" in host.out.getvalue()
+
+
+def test_symbolic_link_in_the_data_directory_is_refused(host, capsys, tmp_path):
+    assert host.install() == 0
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o755)
+    shutil.rmtree(host.data / "work")
+    (host.data / "work").symlink_to(victim)
+    assert host.install() == 1
+    assert "is not a directory" in capsys.readouterr().err
+    assert mode(victim) == 0o755 and host.owner(victim) is None
+
+
+def test_planted_key_link_is_kept_and_never_followed(host, tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("keep\n")
+    (host.data / "camera").mkdir(parents=True)
+    (host.data / "camera/preview.key").symlink_to(victim)
+    assert host.install() == 0
+    assert victim.read_text() == "keep\n" and host.owner(victim) is None
+    assert (host.data / "camera/preview.key").is_symlink()
+
+
+def test_settings_rights_are_repaired_on_every_run(host):
+    assert host.install() == 0
+    os.chmod(host.settings, 0o644)
+    assert host.install() == 0
+    assert mode(host.settings) == 0o600 and host.owner(host.settings) == (0, 0)

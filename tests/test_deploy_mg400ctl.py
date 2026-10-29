@@ -27,6 +27,12 @@ def ctl(monkeypatch, tmp_path):
     monkeypatch.setattr(globals_["os"], "geteuid", lambda: 0)
     chdir = Mock()
     monkeypatch.setattr(globals_["os"], "chdir", chdir)
+    getpwuid = Mock(return_value=SimpleNamespace(pw_name="mg400user"))
+    monkeypatch.setattr(globals_["pwd"], "getpwuid", getpwuid)
+    monkeypatch.setattr(
+        globals_["grp"], "getgrgid", Mock(return_value=SimpleNamespace(gr_name="mg400group"))
+    )
+    monkeypatch.setattr(globals_["shutil"], "which", Mock(return_value="/usr/sbin/runuser"))
     host = module.Host(tmp_path)
     host.settings.parent.mkdir(parents=True)
     host.settings.write_text(SETTINGS)
@@ -38,7 +44,14 @@ def ctl(monkeypatch, tmp_path):
         return module.main(list(argv), host=host, run=run, execvpe=execvpe, out=out)
 
     return SimpleNamespace(
-        module=module, host=host, run=run, execvpe=execvpe, out=out, chdir=chdir, call=call
+        module=module,
+        host=host,
+        run=run,
+        execvpe=execvpe,
+        out=out,
+        chdir=chdir,
+        getpwuid=getpwuid,
+        call=call,
     )
 
 
@@ -113,31 +126,34 @@ def test_logs_follow_both_camera_units(ctl):
     ]
 
 
-def test_terminal_runs_as_the_service_user_with_the_settings(ctl, monkeypatch):
+def test_terminal_runs_as_the_service_user_on_its_own_terminal(ctl, monkeypatch):
     for name in ("COLORTERM", "LANG", "LC_ALL", "LC_CTYPE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("SECRET_OF_ROOT", "hidden")
     assert ctl.call("terminal") == 0
     ctl.chdir.assert_called_once_with(ctl.host.code)
+    ctl.getpwuid.assert_called_with(1000)
     (program, argv, environment), _ = ctl.execvpe.call_args
-    assert program == "setpriv"
+    # PATH of the service user does not contain /usr/sbin: use the absolute path.
+    assert program == "/usr/sbin/runuser"
     assert argv == [
-        "setpriv",
-        "--reuid=1000",
-        "--regid=1000",
-        "--clear-groups",
+        "runuser",
+        "--pty",
+        "-u",
+        "mg400user",
+        "-g",
+        "mg400group",
         "--",
         str(ctl.host.code / ".venv/bin/mg400-robot"),
         "--gripper-feedback",
         str(ctl.host.data / "work/gripper_feedback.json"),
     ]
+    # No token and nothing else from the root environment reaches the service user.
     assert environment == {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(ctl.host.data),
         "MG400_ROBOT_HOST": "robot.test",
         "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
-        "MG400_PANEL_TOKEN": "panel-token-0123456789abcdef",
         "TERM": "xterm-256color",
     }
     ctl.run.assert_not_called()
@@ -147,7 +163,8 @@ def test_terminal_runs_as_the_service_user_with_the_settings(ctl, monkeypatch):
 def test_mode_runs_the_switch_script_as_the_service_user(ctl, switch):
     assert ctl.call("mode", *["--switch-to-tcp"] * switch) == 0
     argv = ctl.execvpe.call_args.args[1]
-    assert argv[5:] == [
+    assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
+    assert argv[7:] == [
         str(ctl.host.code / ".venv/bin/python"),
         str(ctl.host.code / "scripts/mg400_control_mode.py"),
         "--backup-dir",
@@ -180,4 +197,27 @@ def test_non_root_and_missing_settings_are_refused(ctl, monkeypatch, capsys):
     assert ctl.call("terminal") == 1
     assert "Run deploy/install.py first" in capsys.readouterr().err
     ctl.run.assert_not_called()
+    ctl.execvpe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ("MG400_CONTROLLER_LOCK_DIR=\n", "MG400_CONTROLLER_LOCK_DIR to an absolute path"),
+        ("MG400_ROBOT_HOST robot.test\n", "is not KEY=VALUE"),
+    ],
+    ids=["empty-lock-directory", "unreadable-line"],
+)
+@pytest.mark.parametrize("command", ["terminal", "mode"])
+def test_unsafe_settings_never_start_a_robot_program(ctl, capsys, settings, message, command):
+    ctl.host.settings.write_text(settings)
+    assert ctl.call(command) == 1
+    assert message in capsys.readouterr().err
+    ctl.execvpe.assert_not_called()
+
+
+def test_missing_service_user_is_reported(ctl, capsys):
+    ctl.getpwuid.side_effect = KeyError(1000)
+    assert ctl.call("terminal") == 1
+    assert "Create a user and a group with ID 1000 first" in capsys.readouterr().err
     ctl.execvpe.assert_not_called()

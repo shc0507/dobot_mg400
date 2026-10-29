@@ -62,6 +62,19 @@ def test_services_with_settings_read_the_shared_environment_file(name):
     assert "network-online.target" in sections["Unit"]["Wants"]
 
 
+@pytest.mark.parametrize(
+    ("name", "unset"),
+    [
+        ("mg400-web-panel.service", ["MG400_STAGE_TOKEN"]),
+        ("mg400-stage-panel.service", ["MG400_PANEL_TOKEN"]),
+        ("mg400-camera-preview.service", ["MG400_PANEL_TOKEN", "MG400_STAGE_TOKEN"]),
+    ],
+)
+def test_services_drop_the_tokens_they_do_not_check(name, unset):
+    service = unit_sections(name)["Service"]
+    assert service["UnsetEnvironment"][0].split() == unset
+
+
 def test_stage_service_takes_every_setting_from_the_environment():
     sections = unit_sections("mg400-stage-panel.service")
     service = sections["Service"]

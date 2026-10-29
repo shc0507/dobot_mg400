@@ -41,6 +41,12 @@ class ControllerOwnership:
             fd = None
             try:
                 self._directory.mkdir(parents=True, exist_ok=True)
+                owner = self._directory.stat().st_uid
+                if os.geteuid() == 0 and owner != 0:
+                    # A lock file that root creates is unusable for the other panels.
+                    raise RuntimeError(
+                        f"Run as UID {owner}, the owner of {self._directory}, not as root."
+                    )
                 fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:

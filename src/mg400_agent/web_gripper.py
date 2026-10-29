@@ -9,6 +9,9 @@ from uuid import uuid4
 
 from mg400_agent.gripper_feedback import FeedbackState, FileFeedback
 
+# The host path unit starts the collector when this file next to the feedback file changes.
+COLLECTOR_REQUEST = "gripper_collector.start"
+
 
 class GripperNotSentError(RuntimeError):
     """The adapter sent no command and did not lock."""
@@ -19,7 +22,7 @@ class GripperLockedError(RuntimeError):
 
 
 class WebGripper:
-    """Send explicit commands. Never start the collector or initialize automatically."""
+    """Send explicit commands. Request the read-only collector, never initialize automatically."""
 
     def __init__(self, feedback_path, *, publication_guard=None):
         self.feedback_path = Path(feedback_path)
@@ -32,6 +35,7 @@ class WebGripper:
         self._published = False
         self._message = ""
         self._outcome = None
+        self._collector_error = None
 
     @property
     def closed(self):
@@ -55,9 +59,28 @@ class WebGripper:
         with self._state_lock:
             self._source.poll()
 
+    def request_collector(self):
+        """Ask the host watcher to start the collector. It starts read-only and sends nothing."""
+        request = self.feedback_path.with_name(COLLECTOR_REQUEST)
+        temporary = request.with_name(request.name + ".tmp")
+        error = None
+        try:
+            temporary.write_text(str(uuid4()) + "\n")
+            temporary.replace(request)
+        except OSError as failure:
+            error = f"Could not request the USB collector: {failure}"
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+        with self._state_lock:
+            self._collector_error = error
+
     def _capability_error(self, sample, operation):
         if sample is None:
-            return "USB feedback is stale or unavailable. Check the collector."
+            return (
+                self._collector_error
+                or "USB feedback is stale or unavailable. Check the collector."
+            )
         control = sample.get("control")
         protocols = (3,) if operation == "initialize" else (2, 3)
         if control is None or control["protocol"] not in protocols:

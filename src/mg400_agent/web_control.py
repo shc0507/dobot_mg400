@@ -422,6 +422,8 @@ class RobotPanelState:
             self._reader = None
             self._release_ownership_if_idle()
             raise
+        if self._gripper is not None:
+            self._gripper.request_collector()
 
     def _release_ownership_if_idle(self):
         """Keep ownership until feedback and all controller work have ended."""

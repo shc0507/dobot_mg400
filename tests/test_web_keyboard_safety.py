@@ -282,6 +282,9 @@ class Gripper:
     def closed(self):
         return self._closed.is_set()
 
+    def request_collector(self):
+        pass
+
     def snapshot(self):
         return {
             "position": self.position,

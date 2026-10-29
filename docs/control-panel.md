@@ -66,7 +66,7 @@ python3 apps/control_panel/server.py
 
 夹爪使用同主机的 USB 采集程序。
 采集程序必须带 `--commands`，且必须与网页服务共享单调时钟。
-先按 [USB 接在 Olares](olares.md#usb-接在-olares) 安装并启动采集服务。
+先按 [USB 接在 Olares](olares.md#usb-接在-olares) 安装采集服务。
 再启动网页服务，用 `--gripper-feedback` 指定采集文件。
 以下示例使用 Olares 宿主机的数据路径：
 
@@ -76,7 +76,9 @@ python3 apps/control_panel/server.py --mode robot \
 ```
 
 `--gripper-feedback` 必须是网页进程可读的路径。
-网页服务不会自动启动采集程序或初始化夹爪。
+点击 `Connect & take control` 时，网页服务请求启动采集服务。
+采集服务以只读状态启动，网页服务不会自动初始化夹爪。
+请求失败时，夹爪状态显示原因。
 没有夹爪反馈时，机械臂仍可单独控制。
 
 夹持物体时不要初始化。

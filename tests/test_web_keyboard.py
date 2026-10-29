@@ -236,6 +236,9 @@ class Gripper:
         self.closed_checks += 1
         return self._closed
 
+    def request_collector(self):
+        pass
+
     def snapshot(self):
         return {
             "position": self.position,

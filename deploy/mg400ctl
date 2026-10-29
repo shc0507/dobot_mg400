@@ -1,0 +1,160 @@
+#!/usr/bin/python3
+"""Control the MG400 services on this host. Run as root, for example: sudo mg400ctl status
+
+terminal and mode run as the service user (UID 1000) with the settings from
+/etc/mg400/mg400.env, so they share the robot connection lock with the panels.
+"""
+
+import argparse
+import grp
+import os
+import pwd
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from install import SERVICE_GID, SERVICE_UID, Host, check_settings, parse_settings  # noqa: E402
+
+SERVICES = {
+    "web": ["mg400-web-panel.service"],
+    "stage": ["mg400-stage-panel.service"],
+    "camera": ["mg400-camera-preview.service", "mg400-camera-capture.service"],
+    "collector": ["mg400-gripper-collector.service"],
+}
+WATCHER = "mg400-gripper-collector.path"
+CAMERA_PORT = 1985
+PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
+
+
+def units(names, action):
+    if "all" in names:
+        names = list(SERVICES)
+    result = []
+    for name in names:
+        # Starting the preview also starts the capture. Stopping either stops both.
+        chosen = SERVICES[name][:1] if action == "start" else SERVICES[name]
+        result.extend(unit for unit in chosen if unit not in result)
+    return result
+
+
+def status(run, out):
+    rows = [(name, unit) for name, chosen in SERVICES.items() for unit in chosen]
+    rows.append(("collector", WATCHER))
+    shown = run(
+        ["systemctl", "show", "--property=Id,ActiveState,SubState", *[unit for _, unit in rows]],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    states = {}
+    for block in shown.stdout.strip().split("\n\n"):
+        values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        states[values.get("Id")] = f"{values.get('ActiveState')} ({values.get('SubState')})"
+    for name, unit in rows:
+        print(f"{name:<10} {unit:<34} {states.get(unit, 'unknown')}", file=out)
+    return 0
+
+
+def as_service_user(host, settings, command, execvpe):
+    """Replace this process with command, run as the service user from the code directory.
+
+    runuser --pty gives the command its own terminal, so it cannot type into the root shell.
+    With -g, the command gets only the service group, none of the account's other groups.
+    The terminal and the mode switch need no panel token.
+    """
+    user = pwd.getpwuid(SERVICE_UID).pw_name
+    group = grp.getgrgid(SERVICE_GID).gr_name
+    runuser = shutil.which("runuser", path="/usr/sbin:/usr/bin:/sbin:/bin")
+    if runuser is None:
+        raise FileNotFoundError("runuser is missing. Install util-linux.")
+    environment = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        **{
+            key: value
+            for key, value in settings.items()
+            if key.startswith("MG400_") and not key.endswith("_TOKEN") and value
+        },
+        **{key: os.environ[key] for key in PASSED if key in os.environ},
+    }
+    os.chdir(host.code)
+    execvpe(runuser, ["runuser", "--pty", "-u", user, "-g", group, "--", *command], environment)
+
+
+def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sys.stdout):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status", help="Show the state of every service")
+    for action in ("start", "stop", "restart"):
+        sub = commands.add_parser(action, help=f"{action.capitalize()} services")
+        sub.add_argument("names", nargs="+", choices=[*SERVICES, "all"])
+    logs = commands.add_parser("logs", help="Show the journal of one service")
+    logs.add_argument("name", choices=list(SERVICES))
+    logs.add_argument("-n", "--lines", type=int, default=50)
+    logs.add_argument("-f", "--follow", action="store_true")
+    commands.add_parser("terminal", help="Open the interactive robot terminal")
+    mode = commands.add_parser("mode", help="Read the controller mode, or switch it to TCP")
+    mode.add_argument("--switch-to-tcp", action="store_true")
+    commands.add_parser("camera-url", help="Print the camera preview link with its key")
+    token = commands.add_parser("token", help="Print the access token of a panel")
+    token.add_argument("panel", choices=["web", "stage"])
+    args = parser.parse_args(argv)
+    host = host or Host()
+    if os.geteuid() != 0:
+        print("Run mg400ctl as root, for example: sudo mg400ctl status", file=sys.stderr)
+        return 1
+    try:
+        settings = parse_settings(host.settings.read_text())
+        if args.command in ("terminal", "mode"):
+            check_settings(settings)
+            pwd.getpwuid(SERVICE_UID)
+            grp.getgrgid(SERVICE_GID)
+    except FileNotFoundError:
+        print(f"{host.settings} is missing. Run deploy/install.py first.", file=sys.stderr)
+        return 1
+    except KeyError:
+        print(f"Create a user and a group with ID {SERVICE_UID} first.", file=sys.stderr)
+        return 1
+    except ValueError as error:
+        print(f"{host.settings}: {error}", file=sys.stderr)
+        return 1
+
+    if args.command == "status":
+        return status(run, out)
+    if args.command in ("start", "stop", "restart"):
+        if args.command != "start" and any(name in ("web", "all") for name in args.names):
+            print("The web panel can take up to 60 seconds to confirm that the arm stopped.", file=out)
+        return run(["systemctl", args.command, *units(args.names, args.command)]).returncode
+    if args.command == "logs":
+        command = ["journalctl", "--no-pager", "-n", str(args.lines)]
+        for unit in SERVICES[args.name]:
+            command += ["-u", unit]
+        return run(command + (["-f"] if args.follow else [])).returncode
+    if args.command == "terminal":
+        program = host.code / ".venv/bin/mg400-robot"
+        feedback = host.data / "work/gripper_feedback.json"
+        as_service_user(host, settings, [str(program), "--gripper-feedback", str(feedback)], execvpe)
+    elif args.command == "mode":
+        command = [
+            str(host.code / ".venv/bin/python"),
+            str(host.code / "scripts/mg400_control_mode.py"),
+            "--backup-dir",
+            str(host.data / "work/control-mode"),
+        ]
+        as_service_user(host, settings, command + ["--switch-to-tcp"] * args.switch_to_tcp, execvpe)
+    elif args.command == "camera-url":
+        key = (host.data / "camera/preview.key").read_text().strip()
+        bind = settings.get("MG400_CAMERA_BIND") or "127.0.0.1"
+        print(f"http://{bind}:{CAMERA_PORT}/{key}/", file=out)
+    elif args.command == "token":
+        value = settings.get(f"MG400_{'PANEL' if args.panel == 'web' else 'STAGE'}_TOKEN")
+        if not value:
+            print("No token is set. Run deploy/install.py to create one.", file=sys.stderr)
+            return 1
+        print(value, file=out)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

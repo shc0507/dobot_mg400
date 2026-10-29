@@ -184,7 +184,10 @@ def main(argv=None):
             "configured_mode is the saved value. It does not prove TCP command access."
         )
     )
-    parser.add_argument("--host", help="Controller IP address. Defaults to config/robot.toml.")
+    parser.add_argument(
+        "--host",
+        help="Controller IP address. Defaults to MG400_ROBOT_HOST, then config/robot.toml.",
+    )
     parser.add_argument("--timeout", type=float, default=5.0, help="Request timeout in seconds.")
     parser.add_argument(
         "--backup-dir",

@@ -296,6 +296,8 @@ def test_main_refuses_bad_arguments_before_constructing_a_backend(
     monkeypatch, capsys, argv, token, message
 ):
     main = PANEL["main"]
+    monkeypatch.delenv("MG400_PANEL_BIND", raising=False)
+    monkeypatch.delenv("MG400_PANEL_PORT", raising=False)
     if token is None:
         monkeypatch.delenv("MG400_PANEL_TOKEN", raising=False)
     else:
@@ -310,6 +312,56 @@ def test_main_refuses_bad_arguments_before_constructing_a_backend(
     assert error.value.code == 2
     if message is not None:
         assert message in capsys.readouterr().err
+    for backend in backends.values():
+        backend.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("environment", "argv", "address"),
+    [
+        ({}, [], ("127.0.0.1", 8766)),
+        ({"MG400_PANEL_BIND": "", "MG400_PANEL_PORT": ""}, [], ("127.0.0.1", 8766)),
+        ({"MG400_PANEL_BIND": "localhost", "MG400_PANEL_PORT": "9000"}, [], ("localhost", 9000)),
+        (
+            {"MG400_PANEL_BIND": "0.0.0.0", "MG400_PANEL_PORT": "9000"},
+            ["--bind", "::1", "--port", "9001"],
+            ("::1", 9001),
+        ),
+    ],
+    ids=["defaults", "empty-means-unset", "environment", "options-win"],
+)
+def test_listen_address_comes_from_options_then_environment(
+    monkeypatch, signal_table, environment, argv, address
+):
+    main = PANEL["main"]
+    for name in ("MG400_PANEL_BIND", "MG400_PANEL_PORT", "MG400_PANEL_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    server = Mock(server_port=address[1])
+    panel_server = Mock(return_value=server)
+    monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock(return_value=closing_state()))
+    monkeypatch.setitem(main.__globals__, "PanelServer", panel_server)
+    monkeypatch.setitem(main.__globals__, "load_robot_host", Mock(return_value="robot.test"))
+
+    assert main(argv) == 0
+    assert panel_server.call_args.args[0] == address
+
+
+@pytest.mark.parametrize("value", ["0", "65536", "80a", " 80", "-1"])
+def test_invalid_port_environment_is_refused_before_a_backend(monkeypatch, capsys, value):
+    main = PANEL["main"]
+    monkeypatch.delenv("MG400_PANEL_BIND", raising=False)
+    monkeypatch.setenv("MG400_PANEL_PORT", value)
+    backends = {name: Mock() for name in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
+    for name, backend in backends.items():
+        monkeypatch.setitem(main.__globals__, name, backend)
+
+    with pytest.raises(SystemExit) as error:
+        main([])
+
+    assert error.value.code == 2
+    assert "MG400_PANEL_PORT must be a whole number" in capsys.readouterr().err
     for backend in backends.values():
         backend.assert_not_called()
 

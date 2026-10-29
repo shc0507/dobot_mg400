@@ -1,0 +1,21 @@
+[Unit]
+Description=MG400 web panel
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+EnvironmentFile=/etc/mg400/mg400.env
+# Drop the tokens that this service does not check.
+UnsetEnvironment=MG400_STAGE_TOKEN
+WorkingDirectory=/opt/mg400
+ExecStart=/opt/mg400/.venv/bin/python apps/control_panel/server.py --gripper-feedback /var/lib/mg400/work/gripper_feedback.json
+Restart=on-failure
+RestartSec=3
+# A startup refusal (exit status 2) is a configuration error: do not restart.
+RestartPreventExitStatus=2
+UMask=0077
+# The panel uses up to about 60 seconds to confirm that the arm stopped.
+TimeoutStopSec=90

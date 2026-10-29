@@ -14,21 +14,25 @@ import pytest
 KEY = b"camera-test-key-0123456789abcdef0123456789abcdef"
 
 
-@pytest.fixture
-def preview(monkeypatch):
-    read_bytes = Path.read_bytes
-    monkeypatch.setattr(
-        Path,
-        "read_bytes",
-        lambda path: (
-            KEY if path == Path("/opt/mg400-camera-preview/preview.key") else read_bytes(path)
-        ),
-    )
+def load_preview():
     spec = importlib.util.spec_from_file_location(
         "camera_preview_test", Path(__file__).parents[1] / "scripts/camera_preview.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def preview(monkeypatch):
+    monkeypatch.delenv("MG400_CAMERA_KEY_FILE", raising=False)
+    read_bytes = Path.read_bytes
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda path: KEY if path == Path("/var/lib/mg400/camera/preview.key") else read_bytes(path),
+    )
+    module = load_preview()
     upstream = Mock(
         side_effect=lambda *_args, **_kwargs: io.BytesIO(b"\xff\xd8camera-frame\xff\xd9")
     )
@@ -385,3 +389,19 @@ def test_mjpeg_parser_rejects_oversized_headers_even_with_complete_body_in_one_c
     )
     with pytest.raises(ValueError, match="headers are too large"):
         next(module.iter_mjpeg(ChunkedUpstream(body, (65536,))))
+
+
+def test_key_file_comes_from_the_environment(monkeypatch, tmp_path):
+    key_file = tmp_path / "preview.key"
+    key_file.write_bytes(KEY + b"\n")
+    monkeypatch.setenv("MG400_CAMERA_KEY_FILE", str(key_file))
+    module = load_preview()
+    assert (module.KEY_FILE, module.KEY) == (key_file, KEY)
+
+
+def test_short_key_is_refused(monkeypatch, tmp_path):
+    key_file = tmp_path / "preview.key"
+    key_file.write_bytes(b"short")
+    monkeypatch.setenv("MG400_CAMERA_KEY_FILE", str(key_file))
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        load_preview()

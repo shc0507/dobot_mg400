@@ -1,0 +1,15 @@
+[Unit]
+Description=MG400 gripper feedback and position collector
+RequiresMountsFor=/var/lib/mg400
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=1000
+Group=1000
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/mg400
+ExecStart=/opt/mg400/.venv/bin/python scripts/gripper_feedback.py --output /var/lib/mg400/work/gripper_feedback.json --commands
+Restart=on-failure
+RestartSec=2s
+UMask=0077

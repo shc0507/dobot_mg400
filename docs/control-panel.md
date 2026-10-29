@@ -16,7 +16,7 @@
 
 网页面板和交互终端用文件锁限制真机连接，同一机械臂只允许一个程序连接。
 网页的只读模式也使用此锁。
-部署在容器和宿主机时，按 [面板连接锁](olares.md#面板连接锁) 配置共享目录。
+锁目录和权限要求见 [面板连接锁](deploy.md#面板连接锁)。
 此锁只协调本项目的面板，不能阻止 DobotStudio 或其他主机连接。
 
 ## 打开面板
@@ -28,7 +28,7 @@ VPN 访问控制规则必须允许 TCP `8766`。
 打开 [Olares 网页面板](http://100.64.0.1:8766/)。
 
 若出现认证框，输入访问密钥，再点击 `Connect`。
-访问密钥保存在宿主机 `/opt/mg400-web-control/.env`。
+在宿主机运行 `sudo mg400ctl token web` 查看访问密钥。
 本机备份为 `work/.web-panel-token`，该文件不纳入 Git。
 服务未启动时，参见 [服务配置](#服务配置)。
 
@@ -42,7 +42,7 @@ python3 apps/control_panel/server.py
 
 在该主机打开 [本地网页面板](http://127.0.0.1:8766/)。
 省略 `--mode` 时，服务使用 `robot` 模式。
-机械臂地址默认取自 `config/robot.toml`，可用 `--robot-host` 指定。
+机械臂地址默认取自 `MG400_ROBOT_HOST`，未设置时取自 `config/robot.toml`，可用 `--robot-host` 指定。
 
 ## 控制机械臂
 
@@ -66,13 +66,12 @@ python3 apps/control_panel/server.py
 
 夹爪使用同主机的 USB 采集程序。
 采集程序必须带 `--commands`，且必须与网页服务共享单调时钟。
-先按 [USB 接在 Olares](olares.md#usb-接在-olares) 安装采集服务。
-再启动网页服务，用 `--gripper-feedback` 指定采集文件。
-以下示例使用 Olares 宿主机的数据路径：
+[主机部署](deploy.md) 安装采集服务，网页服务用 `--gripper-feedback` 读取采集文件。
+在本地启动时，按下例指定采集文件：
 
 ```sh
 python3 apps/control_panel/server.py --mode robot \
-  --gripper-feedback /olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/work/gripper_olares_feedback.json
+  --gripper-feedback /var/lib/mg400/work/gripper_feedback.json
 ```
 
 `--gripper-feedback` 必须是网页进程可读的路径。
@@ -291,19 +290,19 @@ python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
 
 ## 服务配置
 
-Olares 部署目录为 `/opt/mg400-web-control`。
-`mg400-web-panel.service` 使用宿主机 Python 3.12。
-在 Olares 宿主机启动或检查服务：
+服务名为 `mg400-web-panel.service`，由 [主机部署](deploy.md) 安装，`mg400ctl` 名称为 `web`。
+在宿主机启动或检查服务：
 
 ```sh
-sudo systemctl start mg400-web-panel.service
-sudo systemctl status mg400-web-panel.service --no-pager
+sudo mg400ctl start web
+sudo mg400ctl status
 ```
 
 停止服务时，面板最长用约 60 秒确认机械臂停止。
-`TimeoutStopSec` 必须大于此时间，systemd 默认值 90 秒满足要求。
+服务定义的 `TimeoutStopSec` 为 90 秒，大于此时间。
 
-服务默认监听 `127.0.0.1:8766`，可用 `--bind` 和 `--port` 修改。
+服务从 `MG400_PANEL_BIND` 和 `MG400_PANEL_PORT` 读取监听地址和端口，默认为 `127.0.0.1:8766`。
+`--bind` 和 `--port` 覆盖这两项。
 监听非回环地址时，必须设置至少 24 个字符的 `MG400_PANEL_TOKEN` 环境变量。
 访问密钥只能包含可打印 ASCII 字符，不得以空格开头或结尾。
 网页使用同一密钥访问 API。
@@ -321,8 +320,7 @@ sudo systemctl status mg400-web-panel.service --no-pager
 
 接口说明见 [机器人服务接口](development.md#机器人服务接口)。
 
-更新服务代码时，将 `apps/` 和 `src/` 更新到同一提交，再重启服务。
-`server.py` 依赖 `src/mg400_agent/` 中的模块。
+更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `mg400ctl restart web`。
 重启后，必须重新加载已打开的面板页面。
 页面的消息格式版本与服务不一致时，页面提示重新加载，不再重连。
 版本相同的旧页面不提示。
@@ -346,7 +344,7 @@ sudo systemctl status mg400-web-panel.service --no-pager
 在 Olares 宿主机读取日志：
 
 ```sh
-journalctl -u mg400-web-panel.service --since '-1h' --no-pager
+sudo mg400ctl logs web -n 200
 ```
 
 面板锁定时，在日志中找第一条 `Stop or disable unconfirmed.`。

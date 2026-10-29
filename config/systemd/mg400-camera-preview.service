@@ -1,0 +1,18 @@
+[Unit]
+Description=MG400 camera preview
+Requires=mg400-camera-capture.service
+Wants=network-online.target
+After=mg400-camera-capture.service network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+EnvironmentFile=/etc/mg400/mg400.env
+# Drop the tokens that this service does not check.
+UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN
+WorkingDirectory=/opt/mg400
+ExecStart=/opt/mg400/.venv/bin/python scripts/camera_preview.py
+Restart=on-failure
+RestartSec=3
+UMask=0077

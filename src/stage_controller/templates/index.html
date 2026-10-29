@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="control-token" content="{{ token }}">
+  <meta name="description" content="Three-axis motion control for the motor stage.">
+  <title>Motion control · Stage Controller</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+  <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h6m4 0h6M4 17h10m4 0h2M10 4v6m4 4v6"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-cw" viewBox="0 0 24 24"><path d="M20 6v5h-5M20 11a8 8 0 1 0-2 7"/></symbol>
+    <symbol id="i-ccw" viewBox="0 0 24 24"><path d="M4 6v5h5M4 11a8 8 0 1 1 2 7"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14a8.8 8.8 0 0 1-10.5-10.5A9 9 0 1 0 20.5 14Z"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5m6-5v5M6 8h12v3a6 6 0 0 1-12 0V8Zm6 9v4"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></symbol>
+  </svg>
+
+  <aside class="rail" aria-label="Application identity">
+    <a class="brand-mark" href="/" aria-label="Stage Controller home">s<span>c</span><i></i></a>
+    <div class="rail-rule"></div>
+    <a class="rail-active" href="#main" aria-label="Motion controls" title="Motion controls"><svg class="icon"><use href="#i-sliders"/></svg></a>
+    <span class="rail-caption">WORKBENCH</span>
+  </aside>
+
+  <div class="workspace">
+    <header class="topbar">
+      <div class="breadcrumb">Stage Controller <span>/</span> <strong>Workbench</strong></div>
+      <div class="topbar-actions">
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">
+          <svg class="icon theme-sun"><use href="#i-sun"/></svg><svg class="icon theme-moon"><use href="#i-moon"/></svg>
+          <span id="theme-label">Dark mode</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="page-heading">
+        <div><div class="eyebrow"><span class="tiny-dot"></span> PRECISION AT YOUR FINGERTIPS</div>
+          <h1>Motion control<span>.</span></h1>
+          <p>Three motors. One workbench. Set your pace and make your next move.</p>
+        </div>
+        <button id="stop-all" class="button stop-button" disabled><svg class="icon"><use href="#i-stop"/></svg>Stop all motors</button>
+      </section>
+
+      {% if state.demo %}<div class="demo-banner"><strong>DEMO WORKBENCH</strong><span>Simulated motors. Connect the demo port to explore the controls.</span></div>{% endif %}
+      <form id="auth" class="auth-panel" hidden><input id="access-token" type="password" placeholder="Panel access token" aria-label="Panel access token" autocomplete="off" required><button type="submit" class="button primary">Connect</button></form>
+      <div id="notice" class="notice" role="alert" hidden></div>
+      <noscript><div class="notice">Enable JavaScript to use the motor controls.</div></noscript>
+
+      <section class="connection-panel" aria-labelledby="connection-title">
+        <div class="connection-heading"><div class="connection-icon"><svg class="icon"><use href="#i-plug"/></svg></div>
+          <div><h2 id="connection-title">Device connection</h2><div id="connection-status" class="connection-status"><span class="tiny-dot"></span><span>Not connected</span></div></div>
+        </div>
+        <div class="port-controls">
+          <label class="sr-only" for="serial-port">Serial port</label>
+          <select id="serial-port"><option value="">Looking for serial ports…</option></select>
+          <button id="refresh-ports" class="icon-button" title="Refresh serial ports" aria-label="Refresh serial ports"><svg class="icon"><use href="#i-cw"/></svg></button>
+          <button id="connect" class="button primary" disabled><svg class="icon"><use href="#i-plug"/></svg><span>Connect</span></button>
+        </div>
+      </section>
+
+      <section class="microstep-panel" aria-labelledby="microstep-title">
+        <div class="microstep-heading">
+          <div class="connection-icon"><svg class="icon"><use href="#i-layers"/></svg></div>
+          <div><h2 id="microstep-title">Stepping mode <span class="global-badge">ALL MOTORS</span></h2><p id="microstep-active" role="status">Connect to read the active mode</p></div>
+        </div>
+        <div class="microstep-controls">
+          <label class="sr-only" for="microstep-mode">Global stepping mode</label>
+          <select id="microstep-mode" aria-describedby="microstep-help microstep-feedback" disabled>
+            {% for mode in state.microstep_modes %}<option value="{{ mode.value }}">{{ mode.label }}</option>{% endfor %}
+          </select>
+          <button type="button" id="apply-microstep" class="button primary" disabled>Apply to all</button>
+        </div>
+        <div class="microstep-note"><p id="microstep-help">Speed and Steps per click count STEP pulses. Finer modes make each pulse move less.</p><p id="microstep-feedback" role="status">Connect your device to change the mode.</p></div>
+      </section>
+
+      <section class="section-heading" aria-label="Motor control overview">
+        <div><h2>Motor channels</h2><span class="small-badge">03</span></div>
+        <div class="specs"><span><i class="tiny-dot"></i> {{ state.baud_rate }} baud</span><span id="microstep-badge">Mode unavailable</span><span>1s cooldown</span></div>
+      </section>
+
+      <div class="motor-grid">
+        {% for motor in state.motors %}
+        {% set ccw_label = {'bottom': 'Up', 'top': 'Right', 'insert': 'Insert In'}[motor.id] %}
+        {% set cw_label = {'bottom': 'Down', 'top': 'Left', 'insert': 'Insert Out'}[motor.id] %}
+        {% set directions = [('cw', cw_label), ('ccw', ccw_label)] if motor.id == 'top' else [('ccw', ccw_label), ('cw', cw_label)] %}
+        <section class="motor-card motor-{{ motor.id }}" id="motor-{{ motor.id }}" data-motor="{{ motor.id }}" aria-labelledby="title-{{ motor.id }}">
+          <div class="card-heading"><div class="motor-name"><span class="channel-number">0{{ loop.index }}</span><h3 id="title-{{ motor.id }}">{{ motor.id|title }} motor</h3></div><span class="motor-status">Offline</span></div>
+          <div class="motor-display">
+            <svg class="motor-dial" viewBox="0 0 140 140" aria-hidden="true">
+              <circle class="dial-outer" cx="70" cy="70" r="59"/><circle class="dial-track" cx="70" cy="70" r="47"/>
+              <g class="dial-rotor"><path class="dial-arc" d="M70 23a47 47 0 0 1 47 47"/><path class="dial-arrow" d="m112 63 5 8 6-7"/><path class="dial-arc dial-arc-faint" d="M70 117a47 47 0 0 1-47-47"/></g>
+              <rect class="dial-hub" x="47" y="47" width="46" height="46" rx="14"/><path class="dial-axis" d="M70 57v26M57 70h26"/><circle class="dial-center" cx="70" cy="70" r="5"/>
+              <path class="dial-ticks" d="M70 7v8M70 125v8M7 70h8M125 70h8"/>
+            </svg>
+            <div class="position-readout"><span class="readout-label">SIGNED PULSE COUNT</span><div><span class="position">—</span><span class="unit">pulses</span></div><span class="remaining">Connect to read count</span></div>
+          </div>
+
+          <div class="speed-heading"><label for="speed-{{ motor.id }}">Speed</label><span>pulses / sec</span></div>
+          <div class="speed-value-row"><input class="speed-number" id="speed-{{ motor.id }}" type="number" min="1" max="{{ state.limits.speed }}" step="1" value="{{ state.defaults.speed }}" required inputmode="numeric" aria-describedby="speed-help-{{ motor.id }}"><span class="speed-limit">/ {{ '{:,}'.format(state.limits.speed) }} max</span></div>
+          <label class="sr-only" for="slider-{{ motor.id }}">{{ motor.id|title }} motor speed slider</label>
+          <input class="speed-slider" id="slider-{{ motor.id }}" type="range" min="1" max="{{ state.limits.speed }}" step="1" value="{{ state.defaults.speed }}">
+          <div class="range-labels" id="speed-help-{{ motor.id }}"><span>1</span><span>{{ '{:,}'.format(state.limits.speed) }} pulses/s</span></div>
+
+          <div class="hold-setting" role="group" aria-labelledby="hold-label-{{ motor.id }}" aria-describedby="hold-help-{{ motor.id }}">
+            <div class="hold-heading"><span id="hold-label-{{ motor.id }}">Hold to move</span><span id="hold-help-{{ motor.id }}">Release to stop</span></div>
+            <div class="hold-controls">
+              {% for direction, label in directions %}
+              <button type="button" class="hold-button" data-hold-direction="{{ direction }}" disabled aria-label="{{ motor.id|title }} motor: Hold {{ label }}" aria-pressed="false"><svg class="icon"><use href="#i-{{ direction }}"/></svg><span>Hold {{ label }}</span></button>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="steps-setting"><div><label for="steps-{{ motor.id }}">Steps per click</label><span>STEP pulses per move</span></div><input id="steps-{{ motor.id }}" class="steps-number" type="number" min="1" max="{{ state.limits.steps }}" step="1" value="{{ state.defaults.steps }}" required inputmode="numeric"></div>
+          <p class="input-error" role="status" hidden></p>
+          <div class="direction-controls">
+            {% for direction, label in directions %}
+            <button class="direction-button" data-direction="{{ direction }}" disabled aria-label="{{ motor.id|title }} motor: {{ label }}"><svg class="icon"><use href="#i-{{ direction }}"/></svg><span>{{ label }}</span></button>
+            {% endfor %}
+          </div>
+          <div class="card-footnote"><span class="availability-dot"></span><span class="motor-hint">Connect a device to begin</span></div>
+        </section>
+        {% endfor %}
+      </div>
+
+      <div class="under-controls"><span><svg class="icon"><use href="#i-check"/></svg>Each move completes before a 1 second cooldown.</span><button id="reset" class="text-button"><svg class="icon"><use href="#i-ccw"/></svg>Reset defaults</button></div>
+
+      <section id="keyboard-panel" class="keyboard-panel" aria-labelledby="keyboard-title" aria-describedby="keyboard-help">
+        <div class="keyboard-heading">
+          <div><h2 id="keyboard-title">Keyboard controls</h2><p id="keyboard-help">Hold a key or press and hold a button. Release to stop. Speeds come from the motor channels above.</p></div>
+          <button id="keyboard-toggle" class="keyboard-toggle" type="button" role="switch" aria-checked="false" aria-labelledby="keyboard-title" aria-describedby="keyboard-status"><span class="switch-track" aria-hidden="true"></span><span id="keyboard-toggle-label" aria-hidden="true">Off</span></button>
+        </div>
+        <div class="keyboard-pads">
+          <div class="keyboard-group" role="group" aria-labelledby="direction-keys-title">
+            <h3 id="direction-keys-title">Position <span>Bottom &amp; top motors</span></h3>
+            <div class="direction-keys">
+              {% for key, motor, direction, label in [('w', 'bottom', 'ccw', 'Up'), ('a', 'top', 'cw', 'Left'), ('s', 'bottom', 'cw', 'Down'), ('d', 'top', 'ccw', 'Right')] %}
+              <button type="button" class="key-button" data-key="{{ key }}" data-key-motor="{{ motor }}" data-hold-direction="{{ direction }}" aria-label="Hold {{ label }} ({{ key|upper }})" aria-keyshortcuts="{{ key }}" aria-pressed="false" disabled><kbd>{{ key|upper }}</kbd><span>{{ label }}</span></button>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="keyboard-group" role="group" aria-labelledby="insert-keys-title">
+            <h3 id="insert-keys-title">Insert <span>Insert motor</span></h3>
+            <div class="insert-keys">
+              {% for key, direction, label in [('j', 'ccw', 'Insert In'), ('k', 'cw', 'Insert Out')] %}
+              <button type="button" class="key-button" data-key="{{ key }}" data-key-motor="insert" data-hold-direction="{{ direction }}" aria-label="Hold {{ label }} ({{ key|upper }})" aria-keyshortcuts="{{ key }}" aria-pressed="false" disabled><kbd>{{ key|upper }}</kbd><span>{{ label }}</span></button>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <p id="keyboard-status" class="keyboard-status" role="status">Off. Enable to use the keys or buttons.</p>
+        <p class="keyboard-note">Esc stops held moves. Shortcuts pause while editing inputs. Turning this section off stops its held moves.</p>
+      </section>
+
+      <div class="details-grid">
+        <section class="activity-panel" aria-labelledby="activity-title"><div class="panel-heading"><h2 id="activity-title">Activity</h2><span class="live-label"><span class="tiny-dot"></span> SESSION LOG</span></div><ol id="activity-log"><li class="empty-log"><span class="log-mark">↳</span><span>Your next move starts here.<small>Connect your Arduino to start a session.</small></span></li></ol></section>
+        <section class="workflow-panel" aria-labelledby="workflow-title"><div class="panel-heading"><h2 id="workflow-title">A little movement. A lot of control.</h2><svg class="icon"><use href="#i-layers"/></svg></div><p>Choose a speed, then hold a direction to move until release, or set your step count and click a direction button for a fixed move. Use Up/Down for bottom, Right/Left for top, and Insert In/Insert Out for insert. Each channel moves independently.</p><div class="workflow-sequence"><span>Set speed</span><svg class="icon"><use href="#i-arrow"/></svg><span>Move</span><svg class="icon"><use href="#i-arrow"/></svg><span>Wait 1s</span></div><div class="workflow-note">Counts are signed STEP pulses since startup; travel per pulse depends on the mode. There is no encoder feedback. Stopped motors hold position for 10 s by default, then their drivers sleep and stop holding.</div></section>
+      </div>
+      <footer><span><span class="tiny-dot"></span>STAGE CONTROLLER</span><span>Built for the next experiment.</span></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

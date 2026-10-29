@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mg400-agent"
 version = "0.1.0"
-description = "Real-robot control for a Dobot MG400 and electric gripper"
+description = "Real-robot control for a Dobot MG400, an electric gripper, and a three-motor stage"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
@@ -13,9 +13,17 @@ dependencies = []
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1", "websockets>=15,<18"]
 notebook = ["ipykernel==7.4.0"]
+stage = ["flask>=3.1,<4", "pyserial>=3.5,<4", "waitress>=3.0.2,<4"]
 
 [project.scripts]
 mg400-robot = "mg400_agent.terminal_control:main"
+stage-panel = "stage_controller.__main__:main"
+
+[tool.uv]
+default-groups = ["dev", "stage"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mg400_agent", "src/stage_controller"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

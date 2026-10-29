@@ -3,7 +3,8 @@
 [项目首页](../README.md) · [连接配置](#连接环境) · [代码更新](#代码与运行数据) · [USB 夹爪](#usb-接在-olares) · [摄像头](#usb-摄像头预览)
 
 本页供安装、更新和排障时查阅。
-日常操作见 [交互终端](terminal-control.md) 或 [网页控制面板](control-panel.md)。
+日常操作见 [交互终端](terminal-control.md)、[网页控制面板](control-panel.md) 或 [位移台面板](stage-panel.md)。
+位移台面板的安装、启动和更新见 [位移台面板服务配置](stage-panel.md#服务配置)。
 本页命令在本地项目或 Olares 宿主机运行，各节会标明位置。
 
 ## 连接环境
@@ -84,6 +85,8 @@ DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/d
 | 内容 | 宿主机路径 |
 | --- | --- |
 | 网页服务代码 | `/opt/mg400-web-control` |
+| 位移台面板代码（Git 工作副本） | `/opt/mg400` |
+| 位移台面板配置 | `/etc/mg400/mg400.env` |
 | 交互终端代码 | `$DOCS/mg400-terminal` |
 | 夹爪采集代码（Git 工作副本） | `$DOCS/mg400-isaac` |
 | 运行数据 | `$DOCS/mg400-data` |
@@ -132,6 +135,9 @@ USB 测量文件存放于 `$DOCS/mg400-data/work/`。
 主机稳定路径为 `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0`。
 `ttyUSB` 编号可能变化，采集脚本按完整 USB 身份选择设备。
 不要用扩展坞上的其他串口替代。
+位移台的 Arduino 也接在 Olares USB 上，在 `/dev/serial/by-id/` 中是另一项。
+夹爪采集不使用 Arduino，位移台面板不列出夹爪转换器。
+位移台面板的串口配置见 [配置项](stage-panel.md#配置项)。
 
 ### 安装与启动采集
 
@@ -271,6 +277,7 @@ go2rtc `1.9.14` 仅监听主机回环地址 `127.0.0.1:1984`。
 
 摄像头与夹爪 USB 转换器共用外接集线器。
 恢复共同上游 USB 端口前，停止 `mg400-gripper-collector.path` 和 `mg400-gripper-collector.service`。
+Arduino 接在同一集线器时，也先在位移台面板点击 `Stop all motors` 和 `Disconnect`。
 操作后恢复监听和采集服务。不要把 USB 重新连接视为允许机械臂或夹爪运动。
 
 源码位于 `scripts/camera_preview.py`，部署时使用文件名 `preview.py`。

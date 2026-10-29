@@ -7,7 +7,10 @@ import argparse
 import hmac
 import ipaddress
 import json
+import logging
+import logging.handlers
 import os
+import queue
 import re
 import signal
 import socket
@@ -817,6 +820,38 @@ def report(text, *, wait=None):
         pass
 
 
+def start_event_log():
+    """Write robot service events to stderr on a helper thread.
+
+    Events are logged under the state lock, so a blocked stderr must not delay a stop.
+    Return a function that flushes for at most wait seconds and removes the handler.
+    """
+    events = queue.SimpleQueue()
+    output = logging.StreamHandler(sys.stderr)
+    output.setFormatter(
+        logging.Formatter("[%(asctime)s] %(levelname)s %(message)s", "%d/%b/%Y %H:%M:%S")
+    )
+    listener = logging.handlers.QueueListener(events, output)
+    handler = logging.handlers.QueueHandler(events)
+    logger = logging.getLogger("mg400_agent")
+    level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    listener.start()
+
+    def stop(wait):
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+        try:
+            stopper = threading.Thread(target=listener.stop, daemon=True)
+            stopper.start()
+            stopper.join(wait)
+        except RuntimeError:
+            pass
+
+    return stop
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", help="HTTP address (default: MG400_PANEL_BIND or 127.0.0.1)")
@@ -872,6 +907,7 @@ def main(argv=None):
         f"MG400 panel: http://{bind}:{server.server_port}{args.base_path} ({args.mode})",
         flush=True,
     )
+    stop_event_log = start_event_log()
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     previous = {signum: signal.getsignal(signum) for signum in signals}
 
@@ -913,6 +949,7 @@ def main(argv=None):
         finally:
             for signum, handler in previous.items():
                 signal.signal(signum, handler)
+            stop_event_log(0.2)
     return exit_code
 
 

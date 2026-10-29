@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from unittest.mock import Mock
@@ -974,3 +975,39 @@ def test_a_later_confirmed_stop_does_not_hide_the_unconfirmed_one(rig):
         "Control stays locked: an earlier stop or disable is unconfirmed. "
         "Check the robot, then click Recover."
     )
+
+
+def panel_log(caplog):
+    return [
+        record.getMessage() for record in caplog.records if record.name == "mg400_agent.web_control"
+    ]
+
+
+def test_an_unconfirmed_stop_logs_its_reason_and_the_lock(rig, caplog):
+    caplog.set_level(logging.INFO, logger="mg400_agent.web_control")
+    state, feed, controls = rig
+    connect(state)
+    controls[0].stop_ok = False
+    state.command({"action": "stop"}, "browser-a")
+    wait_for(lambda: state.snapshot()["stop_unconfirmed"] and not state.snapshot()["busy"])
+    # A later message must not erase the reason from the log.
+    state.command({"action": "stop"}, "browser-a")
+    wait_for(lambda: not state.snapshot()["busy"])
+    log = panel_log(caplog)
+    assert "Robot mode 5, error=False" in log
+    assert "Control locked." in log
+    assert "Stop or disable unconfirmed." in log
+    assert any(line.startswith("Message: Robot stop or disable is unconfirmed:") for line in log)
+    assert log.index("Control locked.") < log.index("Stop or disable unconfirmed.")
+
+
+def test_alarms_and_mode_changes_are_logged_once(rig, caplog):
+    caplog.set_level(logging.INFO, logger="mg400_agent.web_control")
+    state, feed, controls = alarm_rig(rig)
+    wait_for(lambda: state.snapshot()["alarms"])
+    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+    wait_for(lambda: state.snapshot()["alarms"] is None)
+    log = panel_log(caplog)
+    assert log.count("Robot mode 9, error=True") == 1
+    assert log.count("Controller alarms: 72 Parallelogram positive limit") == 1
+    assert log.count("Controller alarms cleared.") == 1

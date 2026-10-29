@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -818,17 +819,27 @@ def report(text, *, wait=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bind", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--bind", help="HTTP address (default: MG400_PANEL_BIND or 127.0.0.1)")
+    parser.add_argument("--port", type=int, help="HTTP port (default: MG400_PANEL_PORT or 8766)")
     parser.add_argument("--mode", choices=("robot", "read-only"), default="robot")
     parser.add_argument("--base-path", type=normalize_base_path, default="/")
-    parser.add_argument("--robot-host", help="Robot address. Default: config/robot.toml")
+    parser.add_argument(
+        "--robot-host", help="Robot address. Default: MG400_ROBOT_HOST, then config/robot.toml"
+    )
     parser.add_argument(
         "--gripper-feedback",
         type=Path,
         help="Feedback file from a --commands USB collector on this server's host",
     )
     args = parser.parse_args(argv)
+    # An empty environment value counts as unset.
+    bind = args.bind if args.bind is not None else os.environ.get("MG400_PANEL_BIND") or "127.0.0.1"
+    port = args.port
+    if port is None:
+        value = os.environ.get("MG400_PANEL_PORT") or "8766"
+        port = int(value) if re.fullmatch("[0-9]{1,5}", value) else 0
+        if not 1 <= port <= 65535:
+            parser.error("MG400_PANEL_PORT must be a whole number between 1 and 65535")
     token = os.environ.get("MG400_PANEL_TOKEN")
     if token and not valid_token(token):
         parser.error(
@@ -836,9 +847,9 @@ def main(argv=None):
             "and must not begin or end with a space"
         )
     try:
-        loopback = ipaddress.ip_address(args.bind).is_loopback
+        loopback = ipaddress.ip_address(bind).is_loopback
     except ValueError:
-        loopback = args.bind == "localhost"
+        loopback = bind == "localhost"
     if not loopback and (not token or len(token) < 24):
         parser.error(
             "Set MG400_PANEL_TOKEN to at least 24 characters before binding outside localhost"
@@ -856,9 +867,9 @@ def main(argv=None):
         if args.mode == "robot"
         else ReadOnlyPanelState(host)
     )
-    server = PanelServer((args.bind, args.port), state, token, args.base_path)
+    server = PanelServer((bind, port), state, token, args.base_path)
     print(
-        f"MG400 panel: http://{args.bind}:{server.server_port}{args.base_path} ({args.mode})",
+        f"MG400 panel: http://{bind}:{server.server_port}{args.base_path} ({args.mode})",
         flush=True,
     )
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)

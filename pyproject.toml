@@ -14,6 +14,7 @@ dependencies = []
 dev = ["pytest>=8,<10", "ruff>=0.11,<1", "websockets>=15,<18"]
 notebook = ["ipykernel==7.4.0"]
 stage = ["flask>=3.1,<4", "pyserial>=3.5,<4", "waitress>=3.0.2,<4"]
+tools = ["pysmb>=1.2.15,<2"]
 
 [project.scripts]
 mg400-robot = "mg400_agent.terminal_control:main"

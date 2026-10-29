@@ -9,7 +9,7 @@
 - [网页面板](control-panel.md)：独立网页真机控制。
 - [交互终端](terminal-control.md)：终端命令控制机械臂和夹爪。
 
-网页面板和交互终端共用[机器人地址配置](olares.md#机器人地址与端口)。
+网页面板和交互终端共用机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
 
 ## 直接 TCP 接口
 
@@ -32,40 +32,21 @@
 `configured_mode` 为保存的配置，不能单独证明模式已生效。
 `tp` 表示在线模式，`tcp` 表示 TCP/IP 模式。
 
-脚本要求 Python 3.11+ 和 `pysmb`。
 服务器须能访问机械臂的 TCP `445`、`22000` 和 `29999`。
-在 Olares 宿主机的 Control Hub 终端运行。
-该终端默认使用 root。
-脚本必须以 UID 1000 运行，与网页服务共用[面板连接锁](olares.md#面板连接锁)。
-以 root 运行时，脚本拒绝取得连接锁，不连接控制器。
-
-先以 root 确认 pip 可用，再进入 UID 1000 的 shell：
+在按 [主机部署](deploy.md) 安装的主机上，以 root 身份读取模式：
 
 ```sh
-python3 -m pip --version || apt-get install -y python3-pip
-export DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
-setpriv --reuid=1000 --regid=1000 --init-groups bash
+mg400ctl mode
 ```
 
-首次使用时，在该 shell 中将 `pysmb` 装入数据目录：
-
-```sh
-python3 -m pip install --no-cache-dir --target "$DOCS/mg400-data/work/mode-deps" pysmb
-```
-
-每次运行时，在该 shell 中设置依赖目录和锁目录，再在代码目录运行：
-
-```sh
-export PYTHONPATH="$DOCS/mg400-data/work/mode-deps"
-export MG400_CONTROLLER_LOCK_DIR="$DOCS/mg400-data/controller-locks"
-cd "$DOCS/mg400-isaac"
-python3 scripts/mg400_control_mode.py
-```
+`mg400ctl` 以 UID 1000 运行脚本，与面板共用 [面板连接锁](deploy.md#面板连接锁)。
+脚本使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
+直接以 root 运行脚本时，脚本拒绝取得连接锁，不连接控制器。
 
 切换前，下使能机械臂并停止运行中的程序。
-关闭其他控制客户端，释放[面板连接锁](olares.md#面板连接锁)。
-切换时，在命令末尾加 `--switch-to-tcp`。
-脚本默认读取 `config/robot.toml`，可用 `--host` 指定地址。
+关闭其他控制客户端，释放[面板连接锁](deploy.md#面板连接锁)。
+然后运行 `mg400ctl mode --switch-to-tcp`。
+脚本读取 `MG400_ROBOT_HOST`，未设置时读取 `config/robot.toml`。
 切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止及无报警状态。
 脚本先备份配置，再写入 `project` 共享内的 `/settings/function/remoteControl.json`。
 随后向 `22000` 端口的 `/settings/function/remoteControl` POST 同一配置。
@@ -74,8 +55,7 @@ python3 scripts/mg400_control_mode.py
 
 成功要求 HTTP 返回 `status: true`、配置读回一致且 `RobotMode()` 成功返回 `4`。
 脚本不使能、不清除报警，也不发送运动命令。
-备份默认存入 `work/control-mode/`。
-可用 `--backup-dir` 修改备份目录。
+`mg400ctl` 把备份存入 `/var/lib/mg400/work/control-mode/`。
 写入后发生错误时，控制器状态可能已改变。
 脚本会报告备份路径，不会自动重发切换请求或回滚。
 先核对状态和报错，再决定是否重新执行。
@@ -146,14 +126,12 @@ SMB 使用 TCP `445`，共享为 `project`，日志目录为 `/logs`。
 如果时间范围不足，按目录清单选择旧日志。
 文件修改时间只用于筛选，事件时间以日志内容为准。
 
-下列命令将 `pysmb` 装入临时目录，匿名连接共享，列出文件并保存两个日志副本。
-如果提示 `No module named pip`，先运行 `apt-get install -y python3-pip`。
+下列命令匿名连接共享，列出文件并保存两个日志副本。
+命令使用 [主机部署](deploy.md) 安装的 `/opt/mg400/.venv`，其中已有 `pysmb`。
 
 ```sh
-export MG400_LOG_DEPS=$(mktemp -d /tmp/mg400-smb.XXXXXX)
 export MG400_LOG_DIR=$(mktemp -d /tmp/mg400-logs.XXXXXX)
-python3 -m pip install --target "$MG400_LOG_DEPS" pysmb
-PYTHONPATH="$MG400_LOG_DEPS" python3 - <<'PY'
+/opt/mg400/.venv/bin/python - <<'PY'
 import os
 from pathlib import Path
 from smb.SMBConnection import SMBConnection

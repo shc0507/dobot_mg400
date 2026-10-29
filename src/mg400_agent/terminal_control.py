@@ -243,7 +243,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Interactive MG400 hardware control (no simulator)"
     )
-    parser.add_argument("--robot-host", help="Robot address; default: config/robot.toml")
+    parser.add_argument(
+        "--robot-host", help="Robot address; default: MG400_ROBOT_HOST, then config/robot.toml"
+    )
     parser.add_argument(
         "--gripper-feedback",
         type=Path,

@@ -1,0 +1,10 @@
+[Unit]
+Description=Start the MG400 gripper collector on a panel request
+RequiresMountsFor=/var/lib/mg400
+
+[Path]
+PathChanged=/var/lib/mg400/work/gripper_collector.start
+Unit=mg400-gripper-collector.service
+
+[Install]
+WantedBy=multi-user.target

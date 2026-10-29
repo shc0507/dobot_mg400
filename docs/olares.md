@@ -1,193 +1,159 @@
 # Olares 配置与维护
 
-[项目首页](../README.md) · [连接配置](#连接环境) · [代码更新](#代码与运行数据) · [USB 夹爪](#usb-接在-olares) · [摄像头](#usb-摄像头预览)
+[项目首页](../README.md) · [网络](#网络) · [获取代码](#获取代码) · [迁移](#从旧布局迁移) · [USB 夹爪](#usb-夹爪转换器) · [摄像头](#摄像头)
 
-本页供安装、更新和排障时查阅。
-日常操作见 [交互终端](terminal-control.md)、[网页控制面板](control-panel.md) 或 [位移台面板](stage-panel.md)。
-位移台面板的安装、启动和更新见 [位移台面板服务配置](stage-panel.md#服务配置)。
-本页命令在本地项目或 Olares 宿主机运行，各节会标明位置。
+本页只说明 Olares 特有的设置和故障排查。
+安装、更新、配置和日常命令见 [主机部署](deploy.md)。
+本页命令以 root 身份在 Olares 宿主机终端运行（Control Hub → Terminal → Olares）。
 
-## 连接环境
+## 网络
 
-客户端保持 LarePass VPN 连接，Olares 服务地址为 `100.64.0.1`。
-
-### 机器人地址与端口
-
-网页面板和交互终端默认读取项目根目录下的 `config/robot.toml`：
-
-```toml
-[robot]
-host = "192.168.1.6"
-```
-
-修改配置后，重新启动服务或终端，才会使用新地址。
-网页服务可用 `--robot-host` 指定地址。
-CLI 的 `--host` 和独立教学脚本保持各自的地址设置方式。
-
-Olares 直连网口使用 `192.168.1.10/24`。
-运行控制程序的主机须能连接机器人的 `29999`、`30003`、`30004` 三个 TCP 端口。
-
-## 面板连接锁
-
-网页面板和交互终端在真机连接前取得文件锁。
-网页的 `read-only` 模式也使用此锁。
-另一个程序持锁时，新连接返回 `Robot controlled by another panel`。
-正常断开后，面板等待反馈线程和命令任务结束，再释放锁。
-停止状态无法确认时，面板停止常规坐标查询，保留反馈和锁。
-面板重载不能清除未确认的停止状态。
-
-所有进程必须配置相同的机械臂地址。
-`MG400_CONTROLLER_LOCK_DIR` 必须使用绝对路径，指向同一共享目录。
-所有进程都必须有该目录的读写权限，并使用相同的数字用户 ID（UID）。
-共享目录和锁文件的属主必须为 `1000:1000`。
-以 root 运行时，程序拒绝使用属主不是 root 的锁目录。
-目录权限为 `0700`，锁文件权限为 `0600`。
-该目录必须支持操作系统文件锁，不能放在各自独立的容器临时目录中。
-Olares 宿主机使用以下目录：
-
-```text
-/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/controller-locks
-```
-
-应用配置前，先停止机械臂并正常关闭原面板。
-在网页服务的 `EnvironmentFile`（`/opt/mg400-web-control/.env`）中设置 `MG400_CONTROLLER_LOCK_DIR`。
-交互终端的 Olares 启动脚本已设置同一目录。
-
-网页服务使用 `mg400-panel` 用户和组，数字 ID 均为 `1000`。
-将以下配置写入宿主机的 `/etc/systemd/system/mg400-web-panel.service.d/50-controller-ownership.conf`：
+客户端通过 LarePass VPN 访问 Olares。Olares 的 VPN 地址为 `100.64.0.1`。
+面板和摄像头预览必须监听该地址。在 `/etc/mg400/mg400.env` 中设置：
 
 ```ini
-[Service]
-User=1000
-Group=1000
+MG400_PANEL_BIND=100.64.0.1
+MG400_CAMERA_BIND=100.64.0.1
+MG400_STAGE_BIND=100.64.0.1
 ```
 
-网页服务用户必须能进入代码目录并读取代码和配置。
-`/opt/mg400-web-control` 使用属主 `root:1000` 和权限 `0750`。
-服务用户必须能读取反馈文件，并写入运行数据的 `work/` 目录。
-`.env` 由 systemd 读取，可以仅允许 root 读取。
+Olares 的 VPN 访问控制规则必须允许 TCP `8766`、`8767` 和 `1985`。
+Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 `192.168.1.6`。
 
-运行 `systemctl daemon-reload`。
-然后启动网页服务。
-如果已有锁文件属主不同，原地修改属主，保留原文件。
-不要删除锁文件来解除占用。进程退出时，操作系统释放该进程持有的锁。
-进程退出不确认机械臂已停止。
-DobotStudio 和其他主机不受此锁限制，仍须关闭其他控制程序。
+## 获取代码
 
-## 代码与运行数据
-
-下文的 `$DOCS` 表示以下宿主机目录。运行本页命令前，先在宿主机终端设置：
-
-```sh
-DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
-```
-
-| 内容 | 宿主机路径 |
-| --- | --- |
-| 网页服务代码 | `/opt/mg400-web-control` |
-| 位移台面板代码（Git 工作副本） | `/opt/mg400` |
-| 位移台面板配置 | `/etc/mg400/mg400.env` |
-| 交互终端代码 | `$DOCS/mg400-terminal` |
-| 夹爪采集代码（Git 工作副本） | `$DOCS/mg400-isaac` |
-| 运行数据 | `$DOCS/mg400-data` |
-
-`$DOCS` 位于 IsaacLab 应用的存储中。
-卸载该应用前，先迁移以上目录，再更新服务配置和本页路径。
-
-代码通过 GitHub 管理，Olares 运行选定提交。
-`apps/`、`config/`、`src/` 和 `scripts/` 随同一提交更新，不要只覆盖其中的几个脚本。
-更新后，重启对应服务。
-
-Olares 未配置 GitHub 读取凭据时，通过 Git bundle 导入目标版本。
-在本地项目根目录生成包含完整 Git 历史的 bundle，并记录目标提交：
+Olares 没有 GitHub 读取凭据，通过 Git bundle 获取代码。
+在本地项目根目录生成包含完整历史的 bundle，并记录目标提交：
 
 ```sh
 git bundle create /tmp/mg400-deploy.bundle --all
 git rev-parse HEAD
 ```
 
-通过已登录的 Olares 网页会话，将 bundle 传到 `$DOCS/mg400-data/mg400-deploy.bundle`。
-在宿主机查看工作副本：
+通过已登录的 Olares 网页会话上传 bundle。
+下例使用经 IsaacLab 应用存储上传的路径：
 
 ```sh
-git -C "$DOCS/mg400-isaac" status --short
+BUNDLE=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/mg400-deploy.bundle
 ```
 
-如果有未提交修改，先提交或另存改动，再切换版本。
-将下列 `COMMIT_SHA` 替换为本地记录的目标提交：
+`/opt/mg400` 不存在时，先运行 `git init -q /opt/mg400`。
+将下列 `COMMIT_SHA` 替换为记录的目标提交：
 
 ```sh
-git -C "$DOCS/mg400-isaac" bundle verify "$DOCS/mg400-data/mg400-deploy.bundle"
-git -C "$DOCS/mg400-isaac" fetch "$DOCS/mg400-data/mg400-deploy.bundle" 'refs/heads/*:refs/remotes/bundle/*'
-git -C "$DOCS/mg400-isaac" switch --detach COMMIT_SHA
-git -C "$DOCS/mg400-isaac" rev-parse HEAD
+git -C /opt/mg400 bundle verify "$BUNDLE"
+git -C /opt/mg400 fetch "$BUNDLE" 'refs/heads/*:refs/remotes/bundle/*'
+git -C /opt/mg400 switch --detach COMMIT_SHA
+git -C /opt/mg400 rev-parse HEAD
 ```
 
-`origin` 地址为 `https://github.com/shc0507/dobot_mg400.git`。
-该私有仓库要求访问凭据，有获授权的 GitHub 只读访问后，可以改从 `origin` 获取提交。
+然后按 [主机部署](deploy.md#安装与更新) 运行安装器。
 
-USB 测量文件存放于 `$DOCS/mg400-data/work/`。
-代码目录下的 `work` 使用相对链接 `../mg400-data/work`，供采集服务使用。
+## 从旧布局迁移
 
-## USB 接在 Olares
+旧布局把代码和数据放在多个目录，部分位于 IsaacLab 应用的存储中。
+下文的 `$DOCS` 为 `/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents`。
+
+| 旧位置 | 内容 | 新位置 |
+| --- | --- | --- |
+| `/opt/mg400-web-control` | 网页面板代码，`.env` 含 `MG400_PANEL_TOKEN` | `/opt/mg400`，`/etc/mg400/mg400.env` |
+| `$DOCS/mg400-isaac` | 夹爪采集代码 | `/opt/mg400` |
+| `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `mg400ctl terminal`、`mg400ctl mode` |
+| `$DOCS/mg400-data` | 连接锁、夹爪反馈、模式切换备份 | `/var/lib/mg400` |
+| `/opt/mg400-camera-preview` | go2rtc、采集配置、预览程序和密钥 | `/usr/local/lib/mg400`、`/etc/mg400`、`/var/lib/mg400/camera` |
+
+迁移只做一次。迁移前，关闭所有面板页面和交互终端，下使能机械臂。
+
+1. 停止旧服务，备份旧的服务定义，并停用旧的终端启动脚本。
+   旧脚本使用旧的锁目录，与新面板不互斥：
+
+   ```sh
+   DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
+   systemctl stop mg400-web-panel mg400-stage-panel mg400-camera-preview mg400-gripper-collector.path mg400-gripper-collector
+   mkdir -p /root/mg400-old-units
+   cp -a /etc/systemd/system/mg400-* /root/mg400-old-units/
+   mv "$DOCS/mg400-tools/start-terminal.sh" "$DOCS/mg400-tools/start-terminal.sh.disabled"
+   ```
+
+2. 按 [获取代码](#获取代码) 把 `/opt/mg400` 切换到目标提交。
+3. 把旧的网页面板访问密钥和摄像头设备写入配置文件。用户不必换密钥：
+
+   ```sh
+   grep '^MG400_PANEL_TOKEN=' /opt/mg400-web-control/.env >> /etc/mg400/mg400.env
+   grep -o '/dev/v4l/by-path/[^&]*' /opt/mg400-camera-preview/go2rtc.yaml | paste -sd, | sed 's/^/MG400_CAMERA_DEVICES=/' >> /etc/mg400/mg400.env
+   ```
+
+4. 运行安装器，复用已有的 go2rtc：
+
+   ```sh
+   /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc
+   ```
+
+5. 复制摄像头预览密钥和模式切换备份。保留原密钥时，预览链接不变：
+
+   ```sh
+   install -o 1000 -g 1000 -m 0600 /opt/mg400-camera-preview/preview.key /var/lib/mg400/camera/preview.key
+   test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
+   ```
+
+   检查夹爪命令锁。该文件存在时，有夹爪命令结果未确认：
+
+   ```sh
+   ls -l "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json"
+   ```
+
+   文件存在时，先核实夹爪状态，再按新的反馈文件名复制该锁。
+   新采集服务读到该锁后保持锁定，与旧服务一致：
+
+   ```sh
+   install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
+   ```
+
+6. 按 [网络](#网络) 设置监听地址。
+7. 删除旧服务的附加配置和开机自启链接，再启动服务。
+   第 1 步已备份这些文件：
+
+   ```sh
+   rm -rf /etc/systemd/system/mg400-web-panel.service.d
+   rm -f /etc/systemd/system/*.wants/mg400-*.service
+   systemctl daemon-reload
+   systemctl is-enabled mg400-web-panel mg400-stage-panel mg400-camera-preview
+   mg400ctl start web stage camera
+   mg400ctl status
+   ```
+
+   `is-enabled` 对三项都显示 `static`，表示服务不会开机自启。
+
+8. 核对以下各项：
+   - `mg400ctl camera-url` 的链接能打开三路画面。
+   - 网页面板接受原访问密钥。
+   - 网页面板点击 `Connect & take control` 后，`mg400ctl status` 显示夹爪采集为 `active`。
+   - 位移台面板能连接 Arduino。
+
+旧目录保留到核对完成。
+要恢复旧布局，先运行 `mg400ctl stop all`，再把 `/root/mg400-old-units` 中的文件复制回 `/etc/systemd/system/` 并运行 `systemctl daemon-reload`。
+然后把 `start-terminal.sh.disabled` 改回原名，恢复旧的终端启动脚本。
+
+## USB 夹爪转换器
 
 转换器的 USB 身份为 `0403:6001`，序列号为 `BG02Q5TN`。
 主机稳定路径为 `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0`。
-`ttyUSB` 编号可能变化，采集脚本按完整 USB 身份选择设备。
+`ttyUSB` 编号可能变化，采集程序按完整 USB 身份选择设备。
 不要用扩展坞上的其他串口替代。
 位移台的 Arduino 也接在 Olares USB 上，在 `/dev/serial/by-id/` 中是另一项。
 夹爪采集不使用 Arduino，位移台面板不列出夹爪转换器。
-位移台面板的串口配置见 [配置项](stage-panel.md#配置项)。
 
-### 安装与启动采集
-
-在 Control Hub 的 Olares 主机终端安装采集服务。
-先进入 `$DOCS/mg400-isaac` 目录。
-安装前，停止已确认身份的独立采集进程。
-以 root 身份运行一次：
-
-```sh
-python3 scripts/install_gripper_collector.py
-```
-
-默认数据目录为仓库旁的 `mg400-data`，可用 `--data-dir` 指定。
-安装器启用 `mg400-gripper-collector.path`，监听共享文件 `work/gripper_collector.start`。
-更新该文件时，主机启动 `mg400-gripper-collector.service`。
-服务使用 `--commands`，运行中的采集不会重启。
-采集服务启动只读状态，收到面板请求后才执行初始化或位置命令。
+采集程序每 50 ms 读取三个状态寄存器，并原子替换反馈文件 `/var/lib/mg400/work/gripper_feedback.json`。
+采集服务启动时只读状态，收到面板请求后才执行初始化或位置命令。
 关闭面板后，采集继续运行。
-
-网页面板和交互终端连接机械臂时更新该文件，请求启动采集服务。
-不使用面板时，可在 Olares 主机终端手动启动：
-
-```sh
-systemctl start mg400-gripper-collector.service
-```
-
-网页操作见 [网页控制面板](control-panel.md)。
-省略 `--commands` 时，采集进程只读反馈，夹爪目标输入不可用。
-旧版采集仍可提供测量值，但面板禁止位置命令。
-更新代码后，在主机重启采集服务，再重新打开面板。
-面板与采集进程必须位于同一 Olares 主机，并共享同一单调时钟域。
-位置命令不支持跨主机传递，也不支持带时钟偏移的时间命名空间。
-命令文件和锁的格式见 [USB 夹爪协议](development.md#usb-夹爪协议)。
-
-脚本每 50 ms 读取三个状态寄存器，并原子替换最新测量文件。
-文件权限为 `0644`，路径为 `$DOCS/mg400-data/work/gripper_olares_feedback.json`。
-串口被占用、设备缺失或读取失败时，脚本退出。
-服务在异常退出后等待 2 秒，再尝试启动，不限制重试次数。
+串口被占用、设备缺失或读取失败时，采集程序退出。
+服务在异常退出后等待 2 秒再启动，不限制重试次数。
 USB 恢复连接后，采集自动恢复，不必重新打开面板。
 每次启动使用新会话，不重放旧命令，也不清除命令锁定。
 若断线发生在命令执行期间，控制可能锁定，须先核实夹爪状态。
-手动停止服务后，服务不会自行重启。
-主机重启后，监听服务自动恢复。面板下次连接机械臂时，请求启动采集服务。
-若已安装旧版服务，重新运行安装器，再重启采集服务以应用新配置。
-查看日志或手动停止采集：
-
-```sh
-journalctl -u mg400-gripper-collector.service -n 50 --no-pager
-systemctl stop mg400-gripper-collector.service
-```
+面板与采集程序必须位于同一主机，并共享同一单调时钟域。
+命令文件和锁的格式见 [USB 夹爪协议](development.md#usb-夹爪协议)。
+查看日志：`mg400ctl logs collector`。
 
 ### 恢复 USB 连接
 
@@ -212,42 +178,29 @@ dmesg --ctime | grep -E 'BG02Q5TN|ftdi_sio|ttyUSB|device descriptor|accepting ad
 ```sh
 systemctl reset-failed mg400-gripper-collector.service mg400-gripper-collector.path
 systemctl restart mg400-gripper-collector.path
-systemctl start mg400-gripper-collector.service
+mg400ctl start collector
 ```
 
-## USB 摄像头预览
+## 摄像头
 
-摄像头预览运行在 Olares 主机上。
-服务文件存放于 `/opt/mg400-camera-preview`，重启主机后保留。
-服务手动启动，未设置开机自启。
+三台 AC410 接在 Olares USB 上，按 USB 接口路径绑定。
+预览分辨率为 `640 × 480`，每路使用一条连续 MJPEG 视频流，最高每秒 30 帧。
+保持摄像头连接原 USB 接口。
+更换接口后，修改 `MG400_CAMERA_DEVICES`，再重新运行安装器并重启摄像头。
 
-在 Control Hub → Terminal → Olares 中运行：
+启动预览，再显示含访问密钥的链接：
 
 ```sh
-systemctl start mg400-camera-preview
-cat /opt/mg400-camera-preview/preview.url
+mg400ctl start camera
+mg400ctl camera-url
 ```
 
-连接 LarePass VPN 后，在浏览器打开输出的完整链接。
+连接 LarePass VPN 后，在浏览器打开该链接。
 链接包含访问密钥，服务重启后保持不变。
-密钥存放于 `preview.key`，仅 root 可以读取。
 关闭终端不会停止预览服务。
+停止预览时，摄像头采集服务也停止。
+启动失败时，运行 `mg400ctl logs camera`。
 
-查询状态或停止预览：
-
-```sh
-systemctl status mg400-camera-preview mg400-camera-capture --no-pager
-systemctl stop mg400-camera-preview
-```
-
-停止预览时，摄像头采集服务也会停止。
-若启动失败，运行 `journalctl -u mg400-camera-preview -u mg400-camera-capture -n 30 --no-pager`。
-
-网页监听 VPN 地址 `100.64.0.1:1985`。
-Olares 的 VPN ACL（端口访问规则）必须允许端口 `1985`。
-go2rtc `1.9.14` 仅监听主机回环地址 `127.0.0.1:1984`。
-三台 AC410 按 USB 接口路径绑定，预览分辨率为 `640 × 480`。
-每路使用一条连续 MJPEG 视频流，最高每秒 30 帧。
 画面下方显示实际解码尺寸和更新帧率。实际帧率受摄像头、网络和浏览器性能影响。
 服务端和浏览器只保留最新待处理帧，网络变慢时丢弃积压帧。
 服务端发送超时为 1.5 秒。
@@ -255,8 +208,6 @@ go2rtc `1.9.14` 仅监听主机回环地址 `127.0.0.1:1984`。
 断流或显示帧自接收起满 1.5 秒时，网页标注“画面已暂停 · 非实时”。
 上一帧自接收起最多保留 5 秒，重连不会延长该时限。
 切换到其他标签页时暂停预览并清图，返回预览页后恢复。
-保持摄像头连接原 USB 接口。
-更换接口后，更新 `/opt/mg400-camera-preview/go2rtc.yaml` 中的设备路径。
 
 ### 摄像头故障
 
@@ -267,7 +218,7 @@ go2rtc `1.9.14` 仅监听主机回环地址 `127.0.0.1:1984`。
 若摄像头已被识别，但预览帧率很低，在 Olares 主机运行
 `curl -s http://127.0.0.1:1984/api/preload`。
 确认输出包含 `camera1`、`camera2`、`camera3`。
-若有缺失，运行 `systemctl restart mg400-camera-preview`，等待 2 秒后再次查询。
+若有缺失，运行 `mg400ctl restart camera`，等待 2 秒后再次查询。
 采集服务启动时若设备缺失，预加载可能未建立。
 网页的视频流会自动重连。保留的 `camera1.jpg`、`camera2.jpg`、`camera3.jpg` 单帧接口在没有持续采集时可能较慢。
 
@@ -279,8 +230,3 @@ go2rtc `1.9.14` 仅监听主机回环地址 `127.0.0.1:1984`。
 恢复共同上游 USB 端口前，停止 `mg400-gripper-collector.path` 和 `mg400-gripper-collector.service`。
 Arduino 接在同一集线器时，也先在位移台面板点击 `Stop all motors` 和 `Disconnect`。
 操作后恢复监听和采集服务。不要把 USB 重新连接视为允许机械臂或夹爪运动。
-
-源码位于 `scripts/camera_preview.py`，部署时使用文件名 `preview.py`。
-将 `scripts/camera_preview.js` 同时部署为同目录的 `preview.js`。
-采集配置和服务定义位于 `config/camera_preview/`。
-服务定义安装于主机的 `/etc/systemd/system/`。

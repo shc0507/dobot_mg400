@@ -208,13 +208,11 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 
 ## 服务配置
 
-服务定义为 `config/stage_panel/mg400-stage-panel.service`，服务名为 `mg400-stage-panel.service`。
+服务名为 `mg400-stage-panel.service`，由 [主机部署](deploy.md) 安装，`mg400ctl` 名称为 `stage`。
 服务以数字 ID `1000` 的用户和组运行，并加入 `dialout` 组，用于读写串口。
 服务手动启动，未设置开机自启。
 服务启动不打开串口，在页面点击 `Connect` 后才打开。
 服务不在磁盘写入文件，输出写入 systemd 日志。
-
-机械臂的网页服务仍按 [Olares 部署与维护](olares.md) 和 [网页控制面板](control-panel.md#服务配置) 部署。
 
 ### 配置项
 
@@ -244,64 +242,10 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 未设置时，列表显示除夹爪转换器外的所有串口。
 演示模式忽略此项。
 
-### 安装与更新
-
-安装前，确认以下条件：
-
-- 宿主机已安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
-- 宿主机的 `/usr/bin/python3` 为 Python 3.11 或更高版本。
-- 宿主机能访问 PyPI。`uv sync` 从 PyPI 下载依赖和构建工具。
-- `$DOCS/mg400-isaac` 已切换到目标提交，见 [代码与运行数据](olares.md#代码与运行数据)。
-
-本节命令以 root 身份在 Olares 宿主机终端运行。
-更新时，先停止服务：
-
-```sh
-systemctl stop mg400-stage-panel.service
-```
-
-然后运行以下命令，安装代码、依赖和服务定义：
-
-```sh
-DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
-install -d -o root -g 1000 -m 0750 /opt/mg400
-test -d /opt/mg400/.git || git init -q /opt/mg400
-git -C /opt/mg400 fetch -q --depth 1 "$DOCS/mg400-isaac" HEAD
-git -C /opt/mg400 switch -q --detach FETCH_HEAD
-cd /opt/mg400
-UV_LINK_MODE=copy uv sync --locked --no-default-groups --group stage --python /usr/bin/python3
-install -m 0644 config/stage_panel/mg400-stage-panel.service /etc/systemd/system/
-systemctl daemon-reload
-```
-
-`/opt/mg400` 是 Git 工作副本，内容为 `$DOCS/mg400-isaac` 当前的提交，不含未提交的修改。
-`--depth 1` 只取该提交，不取历史。
-`/opt/mg400` 的属主为 `root:1000`，权限为 `0750`。
-服务用户能读取代码，不能修改代码。
-不要在 `/opt/mg400` 修改文件。修改的文件可能让 `git switch` 中止更新。
-运行 `git -C /opt/mg400 rev-parse HEAD`，查看已安装的提交。
-
-`--python /usr/bin/python3` 用宿主机 Python 创建 `.venv`。
-不指定时，uv 可能使用 root 主目录中的 Python，服务用户不能读取。
-`UV_LINK_MODE=copy` 把依赖复制到 `.venv`，不链接 root 的 uv 缓存。
-`--no-default-groups --group stage` 只安装运行依赖，不安装测试工具。
-
 ### 配置文件
 
 服务从 `/etc/mg400/mg400.env` 读取配置。
-该文件只允许 root 读取，systemd 读取后启动服务。
-文件可能含有其他服务的配置，修改时保留其他行。
-
-首次安装时，创建配置文件并生成访问密钥：
-
-```sh
-mkdir -p /etc/mg400
-touch /etc/mg400/mg400.env
-chmod 0600 /etc/mg400/mg400.env
-grep -q '^MG400_STAGE_TOKEN=' /etc/mg400/mg400.env || printf 'MG400_STAGE_TOKEN=%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" >> /etc/mg400/mg400.env
-```
-
-文件中没有 `MG400_STAGE_TOKEN` 时，最后一行生成 43 个字符的访问密钥。
+安装器生成 `MG400_STAGE_TOKEN`，其余各项按本主机修改。
 
 接上 Arduino 后，查找它的串口路径：
 
@@ -313,40 +257,22 @@ ls -lL /dev/serial/by-id/
 名称含 `BG02Q5TN` 的一项是夹爪转换器，不是 Arduino。
 `-L` 显示链接所指设备的权限和属组，不显示设备名。
 确认 Arduino 一项的属组为 `dialout`。
+将 `MG400_STAGE_SERIAL` 设为 `/dev/serial/by-id/` 加 Arduino 的名称。
 
-最后用文本编辑器加入 `MG400_STAGE_BIND`、`MG400_STAGE_PORT` 和 `MG400_STAGE_SERIAL`。
-`MG400_STAGE_SERIAL` 的值是 `/dev/serial/by-id/` 加 Arduino 的名称。
-完成后，Olares 的位移台配置如下：
-
-```ini
-MG400_STAGE_BIND=100.64.0.1
-MG400_STAGE_PORT=8767
-MG400_STAGE_TOKEN=<至少 24 个字符>
-MG400_STAGE_SERIAL=/dev/serial/by-id/<Arduino>
-```
-
-文件中只保留一行 `MG400_STAGE_TOKEN`，值为生成的访问密钥。
-监听 `100.64.0.1` 时，Olares 的 VPN 访问控制规则必须允许 TCP `8767`。
-
-查看访问密钥：
-
-```sh
-sed -n 's/^MG400_STAGE_TOKEN=//p' /etc/mg400/mg400.env
-```
-
+查看访问密钥：`sudo mg400ctl token stage`。
 修改配置文件后，重启服务。
 修改访问密钥后，在页面输入新密钥。
 
 ### 启动与停止
 
 ```sh
-systemctl start mg400-stage-panel.service
-systemctl status mg400-stage-panel.service --no-pager
-journalctl -u mg400-stage-panel.service -n 50 --no-pager
-systemctl stop mg400-stage-panel.service
+mg400ctl start stage
+mg400ctl status
+mg400ctl logs stage
+mg400ctl stop stage
 ```
 
-启动后，日志显示监听地址，例如 `Stage Controller: http://100.64.0.1:8767`。
+启动后，日志显示监听地址，例如 `Stage Controller: http://127.0.0.1:8767`。
 设置 `MG400_STAGE_SERIAL` 时，日志还显示 `Serial port:` 和该路径。
 停止服务时，日志记录停止结果，例如 `All motors stopped · disconnected`。
 服务异常退出后，systemd 等待 3 秒再启动服务。
@@ -354,14 +280,7 @@ systemctl stop mg400-stage-panel.service
 重启后，面板未连接 Arduino，在页面重新连接。
 主机重启后，手动启动服务。
 
-位移台面板与其他服务使用同一提交。
-更新代码时，按以下顺序操作：
-
-1. 按 [代码与运行数据](olares.md#代码与运行数据)，把 `$DOCS/mg400-isaac` 切换到新提交。
-2. 停止服务，运行 [安装与更新](#安装与更新) 的命令。
-3. 启动服务。
-4. 重新加载已打开的面板页面。
-
+更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `mg400ctl restart stage`，并重新加载已打开的面板页面。
 服务每次启动生成新的命令令牌（页面发送命令时附带的随机值）。
 服务拒绝旧页面发送的命令。
 
@@ -380,8 +299,8 @@ systemctl stop mg400-stage-panel.service
 | 页面显示 `Panel access token` 输入框，或提示 `Enter the panel access token` | 输入 `/etc/mg400/mg400.env` 中的 `MG400_STAGE_TOKEN`。 |
 | 浏览器不显示面板，只显示含 `Open the panel at 127.0.0.1 or localhost` 的 JSON | 服务未设置访问密钥，请求来自其他主机名或代理。在服务主机打开 `127.0.0.1` 地址，或设置至少 24 个字符的 `MG400_STAGE_TOKEN`。 |
 | `Reload this page before sending another command.` | 服务已重启。重新加载页面。 |
-| `Cannot reach the stage panel service. Motion status is unknown.` | 检查 VPN 连接，再在宿主机运行 `systemctl status mg400-stage-panel.service --no-pager`。 |
-| 服务日志显示 `Failed to load environment files` | 按 [配置文件](#配置文件) 创建 `/etc/mg400/mg400.env`，再启动服务。 |
-| 服务日志显示 `Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost` | 已有的 `MG400_STAGE_TOKEN` 少于 24 个字符时，先删除该行。按 [配置文件](#配置文件) 生成访问密钥，再启动服务。 |
+| `Cannot reach the stage panel service. Motion status is unknown.` | 检查 VPN 连接，再在宿主机运行 `mg400ctl status`。 |
+| 服务日志显示 `Failed to load environment files` | 按 [主机部署](deploy.md#安装与更新) 运行安装器，创建 `/etc/mg400/mg400.env`，再启动服务。 |
+| 服务日志显示 `Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost` | 已有的 `MG400_STAGE_TOKEN` 少于 24 个字符时，把该行改为 `MG400_STAGE_TOKEN=`，再运行安装器生成访问密钥，然后启动服务。 |
 | 服务日志显示 `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | 按 [配置文件](#配置文件) 查找 Arduino 的路径，改写 `MG400_STAGE_SERIAL`，再启动服务。 |
 | 服务日志显示 `MG400_STAGE_PORT must be a whole number between 1 and 65535` | 把 `MG400_STAGE_PORT` 改为 1–65535 的整数，再启动服务。 |

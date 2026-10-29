@@ -20,8 +20,8 @@ Dobot MG400 + PGEA 电动夹爪的真机控制项目。
 
 | 任务 | 文档 |
 | --- | --- |
-| 配置 Olares、启动服务、更新代码、接入 USB 设备 | [Olares 部署与维护](docs/olares.md) |
-| 在 Olares 安装、启动或更新位移台面板 | [位移台面板服务配置](docs/stage-panel.md#服务配置) |
+| 安装、启动或更新服务，迁移到新主机 | [主机部署](docs/deploy.md) |
+| 配置 Olares 网络、获取代码、处理 USB 夹爪和摄像头故障 | [Olares 配置与维护](docs/olares.md) |
 | 查询机械臂当前报警或历史日志 | [报警与历史日志](docs/hardware.md#报警与历史日志) |
 | 修改代码、运行检查、查阅实现细节 | [开发参考](docs/development.md) |
 | 查阅真机 TCP 协议与动作完成判定 | [真机控制接口](docs/hardware.md) |

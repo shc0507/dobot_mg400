@@ -1,4 +1,5 @@
 import hmac
+import os
 import socket
 import sys
 import time
@@ -10,7 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Condition, Thread
 
-KEY = Path("/opt/mg400-camera-preview/preview.key").read_bytes().strip()
+# An empty environment value counts as unset.
+KEY_FILE = Path(os.environ.get("MG400_CAMERA_KEY_FILE") or "/var/lib/mg400/camera/preview.key")
+KEY = KEY_FILE.read_bytes().strip()
 if len(KEY) < 32:
     raise ValueError("The camera access key must contain at least 32 bytes.")
 STREAMS = {f"camera{i}.jpg": f"camera{i}" for i in range(1, 4)}
@@ -20,7 +23,7 @@ PAGE = (
     """<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Olares 摄像头</title>
+<title>MG400 摄像头</title>
 <style>
 body{margin:0;padding:32px;background:#111820;color:#e8edf4;font:16px system-ui}
 h1{font-size:26px;margin:0 0 8px}p{color:#a6b5c6;margin:0 0 28px}
@@ -31,19 +34,15 @@ figure[data-paused]::before{content:"画面已暂停 · 非实时";position:abso
 padding:8px 12px;border-radius:6px;background:#8a4200;color:#fff;font-weight:600}
 img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#080d12}
 figcaption{padding:16px}small{display:block;color:#a6b5c6;margin-top:6px}
-footer{margin-top:24px;color:#a6b5c6;font-size:14px}
 </style>
-<h1>Olares 摄像头</h1><p>AC410 · 每路最高 30 帧/秒 · 下方显示实际更新帧率和分辨率</p><main>
+<h1>MG400 摄像头</h1><p>AC410 · 每路最高 30 帧/秒 · 下方显示实际更新帧率和分辨率</p><main>
 """
     + "".join(
         f'<figure><img data-source="camera{i}.mjpeg" alt="摄像头 {i} 暂无画面">'
         f"<figcaption>摄像头 {i}<small>正在连接…</small></figcaption></figure>"
         for i in range(1, 4)
     )
-    + (
-        "</main><footer>观看时保持 LarePass VPN 连接。</footer>"
-        '<script src="preview.js" defer></script></html>'
-    )
+    + ('</main><script src="preview.js" defer></script></html>')
 )
 
 
@@ -271,7 +270,10 @@ class Preview(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    host = sys.argv[1] if len(sys.argv) == 2 else "127.0.0.1"
+    if len(sys.argv) == 2:
+        host = sys.argv[1]
+    else:
+        host = os.environ.get("MG400_CAMERA_BIND") or "127.0.0.1"
     server = ThreadingHTTPServer((host, 1985), Preview)
     print(f"Camera preview is ready at {host}:1985.", flush=True)
     server.serve_forever()

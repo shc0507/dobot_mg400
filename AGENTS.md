@@ -5,7 +5,7 @@ This document provides permanent information/instructions for the convenience of
 ## The Workflow
 
 - 操作 Chrome 时只控制需要的 page，不要再申请整个 Chrome 应用的权限。
-- Olares is a cloud host. It runs the web control panel, the stage motor panel, the USB gripper collector, and the camera preview. Agents can control Olares through its web interface. Check the Chrome browser for tabs that are already open. If no tab is open, ask the user to open the Olares web interface and log in. The URL is: [https://desktop.qumusphusis.olares.com/](https://desktop.qumusphusis.olares.com/)
+- Olares is a cloud host. It runs the web control panel, the stage motor panel, the USB gripper collector, and the camera preview. [docs/deploy.md](docs/deploy.md) describes the services, the settings, and the `mg400ctl` command. Agents can control Olares through its web interface. Check the Chrome browser for tabs that are already open. If no tab is open, ask the user to open the Olares web interface and log in. The URL is: [https://desktop.qumusphusis.olares.com/](https://desktop.qumusphusis.olares.com/)
 - VPN is necessary to access services on Olares (`100.64.0.1`). Turn it on with the LarePass application.
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
 - 排查真机报警或碰撞时，先读 [报警与历史日志](docs/hardware.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。

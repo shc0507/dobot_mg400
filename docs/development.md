@@ -2,7 +2,7 @@
 
 本页说明开发环境、代码分工和控制接口。
 运行现有功能时，从 [README](../README.md) 选择操作指南。
-服务器与 USB 服务配置见 [Olares 部署与维护](olares.md)。
+服务的安装与配置见 [主机部署](deploy.md)，Olares 特有的设置见 [Olares 配置与维护](olares.md)。
 
 
 按修改内容查阅：
@@ -50,11 +50,11 @@ uv run ruff format --check .
 
 | 路径 | 用途 |
 | --- | --- |
-| `config/robot.toml` | 网页面板和交互终端的机器人地址 |
+| `config/robot.toml` | 机器人地址，`MG400_ROBOT_HOST` 未设置时使用 |
 | `apps/control_panel/` | 独立 Python 网页服务和界面 |
 | `apps/layout-studio/` | 离线布局编辑器，使用模拟数据，不发送控制命令 |
-| `config/camera_preview/` | 摄像头预览配置和 systemd 服务 |
-| `config/stage_panel/` | 位移台面板的 systemd 服务，配置从 `/etc/mg400/mg400.env` 读取 |
+| `config/systemd/` | 所有服务的 systemd 定义，配置从 `/etc/mg400/mg400.env` 读取 |
+| `deploy/` | 安装器 `install.py`、日常命令 `mg400ctl` 和配置示例 |
 | `src/mg400_agent/` | 后端、控制协议和反馈处理 |
 | `src/stage_controller/` | 位移台面板：Flask 服务、串口协议和界面 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
@@ -284,7 +284,7 @@ POST 请求还必须满足以下条件：
 ## 真机控制参考
 
 本节供修改真机运动和夹爪接口时查阅。
-部署配置见 [Olares](olares.md)。
+部署配置见 [主机部署](deploy.md)。
 
 ### 控制器关节范围
 
@@ -355,7 +355,7 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 
 命令文件的 `deadline_monotonic` 表示单调时钟上的截止时间。
 单调时钟用于计时，不随系统日期调整。
-面板与采集进程必须位于同一 Olares 主机，并共享同一单调时钟域。
+面板与采集进程必须位于同一主机，并共享同一单调时钟域。
 位置命令不支持跨主机传递，也不支持带时钟偏移的时间命名空间。
 文件准备、采集接收、寄存器操作和到位确认共用命令时限。
 位置命令为 5 秒，初始化为 15 秒。

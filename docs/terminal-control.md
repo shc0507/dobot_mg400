@@ -18,7 +18,7 @@ PTY 是 SSH 分配的交互终端，可用 `ssh -t` 请求。
 终端与网页面板共用机械臂连接锁。
 多个进程必须配置相同的机械臂地址。
 它们还必须共用 `MG400_CONTROLLER_LOCK_DIR`。
-目录、权限和 Olares 路径见 [面板连接锁](olares.md#面板连接锁)。
+目录和权限要求见 [面板连接锁](deploy.md#面板连接锁)。
 此锁不能阻止 DobotStudio 或其他主机连接。
 
 进入项目目录，运行：
@@ -33,7 +33,7 @@ uv run mg400-robot
 python3 scripts/mg400_robot.py
 ```
 
-机械臂地址默认取自 `config/robot.toml`。
+机械臂地址默认取自 `MG400_ROBOT_HOST`，未设置时取自 `config/robot.toml`。
 用 `--robot-host` 覆盖地址：
 
 ```sh
@@ -78,18 +78,18 @@ X/Y/Z 单位为 mm，R 单位为度。
 ## 控制夹爪
 
 夹爪使用现有 USB 采集服务。
-先按 [USB 接在 Olares](olares.md#usb-接在-olares) 安装采集服务。
+采集服务由 [主机部署](deploy.md) 安装。
 采集程序必须带 `--commands`。
 终端与采集程序必须在同一主机。
 两者必须共用单调时钟（计算时间间隔的时钟）。
 夹爪命令不支持跨主机传递。
 
 用 `--gripper-feedback` 指定反馈文件。
-以下示例使用 Olares 宿主机的路径：
+以下示例使用部署主机的路径：
 
 ```sh
 python3 scripts/mg400_robot.py \
-  --gripper-feedback /olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents/mg400-data/work/gripper_olares_feedback.json
+  --gripper-feedback /var/lib/mg400/work/gripper_feedback.json
 ```
 
 该路径必须能由终端进程读取。
@@ -134,18 +134,15 @@ Ctrl+C 后终端保持打开。
 进程退出或网络故障时，停止命令可能无法送达。
 机械臂可能继续到已发送轨迹的终点。
 不要删除锁文件来解除占用。
-锁的处理方式见 [面板连接锁](olares.md#面板连接锁)。
+锁的处理方式见 [面板连接锁](deploy.md#面板连接锁)。
 
-## Olares 启动
+## 在部署主机启动
 
-在 Control Hub 的宿主机终端运行：
+在按 [主机部署](deploy.md) 安装的主机上，以 root 身份运行：
 
 ```sh
-cd /olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
-sh mg400-tools/start-terminal.sh
+mg400ctl terminal
 ```
 
-代码位于同目录下的 `mg400-terminal`。
-启动脚本使用用户和组 `1000:1000`。
-它配置共享连接锁和夹爪反馈路径。
+终端以 UID 1000 运行，读取 `/etc/mg400/mg400.env`，并使用部署主机的夹爪反馈文件。
 启动后显示 `DISCONNECTED`，输入 `connect` 才连接机械臂。

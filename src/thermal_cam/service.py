@@ -187,6 +187,7 @@ class CameraService:
             ),
             "regions": {name: region.bounds() for name, region in self.regions.items()},
             "max_frame_age_s": MAX_FRAME_AGE_S,
+            "renew_only_heartbeat": True,
         }
 
     def snapshot(self):

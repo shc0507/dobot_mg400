@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
+camera = ["numpy>=1.26,<3", "opencv-python-headless>=4.9,<5"]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1", "websockets>=15,<18", "httpx>=0.28,<1"]
 furnace = ["minimalmodbus>=2.1,<3", "pyserial>=3.5,<4"]
 notebook = ["ipykernel==7.4.0"]
@@ -39,7 +40,7 @@ stage-panel = "stage_controller.__main__:main"
 thermal-cam = "thermal_cam.__main__:main"
 
 [tool.uv]
-default-groups = ["dev", "stage", "vision", "thermal", "furnace"]
+default-groups = ["dev", "stage", "vision", "thermal", "furnace", "camera"]
 override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 [tool.uv.sources]
@@ -52,7 +53,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam", "src/furnace"]
+packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam", "src/furnace", "src/toupcam_camera"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -60,8 +61,8 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# Preserve the pinned third-party USB driver without formatting changes.
-extend-exclude = ["work", ".agents", "src/thermal_cam/_vendor"]
+# Preserve pinned third-party drivers without formatting changes.
+extend-exclude = ["work", ".agents", "src/thermal_cam/_vendor", "src/toupcam_camera/toupcam.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

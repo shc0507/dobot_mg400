@@ -1,7 +1,7 @@
 """Protocol and cleanup tests; never open real USB hardware."""
 
-from types import SimpleNamespace
 import struct
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -141,7 +141,10 @@ def test_low_gain_rejected_before_any_device_command(monkeypatch):
     adapter = camera.P1Camera()
     commands = []
     monkeypatch.setattr(adapter._camera, "set_gain_mode", commands.append)
-    with pytest.raises(ValueError, match="Low gain is disabled: temperature conversion has not been validated on the P1"):
+    with pytest.raises(
+        ValueError,
+        match="Low gain is disabled: temperature conversion has not been validated on the P1",
+    ):
         adapter.set_gain("low")
     assert commands == []
 
@@ -152,7 +155,9 @@ def test_reopening_same_camera_resets_parser_and_settling(monkeypatch):
     monkeypatch.setattr(driver, "connect", lambda: setattr(driver, "dev", object()))
     monkeypatch.setattr(driver, "init", lambda: ("P1 test", "test firmware"))
     monkeypatch.setattr(driver, "set_gain_mode", lambda _mode: None)
-    monkeypatch.setattr(camera.P3Camera, "start_streaming", lambda self: setattr(self, "streaming", True))
+    monkeypatch.setattr(
+        camera.P3Camera, "start_streaming", lambda self: setattr(self, "streaming", True)
+    )
     adapter.open()
     driver._settling_frames = 3
     driver.assembler.marker_mismatches = 6

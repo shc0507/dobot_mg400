@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future, TimeoutError as FutureTimeout
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import io
 import json
 import queue
 import threading
 import time
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 import numpy as np
@@ -38,9 +39,11 @@ class ThermalFrame:
             raise ValueError("Camera returned an invalid thermal frame")
         raw, ir = raw.copy(), ir.copy()
         temperatures = raw.astype(np.float64) / 64.0 - 273.15
+
         def point(flat_index):
             y, x = np.unravel_index(flat_index, temperatures.shape)
             return {"celsius": float(temperatures[y, x]), "x": int(x), "y": int(y)}
+
         stats = {
             "min": point(np.argmin(temperatures)),
             "max": point(np.argmax(temperatures)),
@@ -51,24 +54,46 @@ class ThermalFrame:
         }
         for array in (raw, ir, temperatures):
             array.flags.writeable = False
-        return cls(sequence, datetime.now(timezone.utc).isoformat(), time.monotonic(),
-                   source, ir, raw, temperatures, stats)
+        return cls(
+            sequence,
+            datetime.now(timezone.utc).isoformat(),
+            time.monotonic(),
+            source,
+            ir,
+            raw,
+            temperatures,
+            stats,
+        )
 
     def metadata(self):
-        return {"sequence": self.sequence, "timestamp": self.timestamp,
-                "source": self.source, "width": 160, "height": 120,
-                "temperature_unit": "celsius", "raw_unit": "1/64 kelvin",
-                "stats": self.stats}
+        return {
+            "sequence": self.sequence,
+            "timestamp": self.timestamp,
+            "source": self.source,
+            "width": 160,
+            "height": 120,
+            "temperature_unit": "celsius",
+            "raw_unit": "1/64 kelvin",
+            "stats": self.stats,
+        }
 
     def payload(self):
-        return {**self.metadata(), "temperatures_c": self.temperatures_c.tolist(),
-                "raw": self.raw.tolist(), "ir": self.ir.tolist()}
+        return {
+            **self.metadata(),
+            "temperatures_c": self.temperatures_c.tolist(),
+            "raw": self.raw.tolist(),
+            "ir": self.ir.tolist(),
+        }
 
     def npz(self):
         buffer = io.BytesIO()
-        np.savez_compressed(buffer, raw=self.raw, ir=self.ir,
-                            temperatures_c=self.temperatures_c,
-                            metadata=json.dumps(self.metadata()))
+        np.savez_compressed(
+            buffer,
+            raw=self.raw,
+            ir=self.ir,
+            temperatures_c=self.temperatures_c,
+            metadata=json.dumps(self.metadata()),
+        )
         return buffer.getvalue()
 
 
@@ -84,7 +109,11 @@ class DemoCamera:
         time.sleep(0.04)
         y, x = np.mgrid[:120, :160]
         t = time.monotonic() - self.started
-        temperatures = 22 + x / 160 * 4 + 15 * np.exp(-((x - 80 - 25 * np.sin(t / 3))**2 + (y - 55)**2) / 500)
+        temperatures = (
+            22
+            + x / 160 * 4
+            + 15 * np.exp(-((x - 80 - 25 * np.sin(t / 3)) ** 2 + (y - 55) ** 2) / 500)
+        )
         raw = np.rint((temperatures + 273.15) * 64).astype(np.uint16)
         ir = ((temperatures - temperatures.min()) / np.ptp(temperatures) * 255).astype(np.uint8)
         return ir, raw
@@ -139,7 +168,9 @@ class CameraService:
             if thread:
                 thread.join(timeout=15)
                 if thread.is_alive():
-                    raise RuntimeError("Camera is still stopping; wait and retry before reconnecting")
+                    raise RuntimeError(
+                        "Camera is still stopping; wait and retry before reconnecting"
+                    )
             with self._lock:
                 self._state, self._error = "disconnected", None
                 self._frame = None
@@ -149,10 +180,16 @@ class CameraService:
     def status(self):
         with self._lock:
             age = time.monotonic() - self._frame.monotonic_time if self._frame else None
-            return {"state": self._state, "source": self.source, "error": self._error,
-                    "device": dict(self._device), "frames": self._frames,
-                    "fps": round(self._fps, 1), "frame_age_s": age,
-                    "camera_stats": dict(self._camera_stats)}
+            return {
+                "state": self._state,
+                "source": self.source,
+                "error": self._error,
+                "device": dict(self._device),
+                "frames": self._frames,
+                "fps": round(self._fps, 1),
+                "frame_age_s": age,
+                "camera_stats": dict(self._camera_stats),
+            }
 
     def latest(self):
         with self._lock:
@@ -220,7 +257,9 @@ class CameraService:
                 instant_fps = 1 / max(now - previous, 0.001)
                 previous = now
                 with self._lock:
-                    self._fps = instant_fps if not self._fps else self._fps * 0.9 + instant_fps * 0.1
+                    self._fps = (
+                        instant_fps if not self._fps else self._fps * 0.9 + instant_fps * 0.1
+                    )
                     self._frames += 1
                     self._frame = frame
                     self._state = "streaming"

@@ -10,7 +10,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from labkit.auth import bearer_matches, host_allowed, host_port, same_origin, valid_token_for_bind
 
 from .service import CameraService
 
@@ -21,7 +22,9 @@ class GainRequest(BaseModel):
     gain: Literal["high"]
 
 
-def create_app(*, demo=False, auto_connect=True, service=None):
+def create_app(*, demo=False, auto_connect=True, service=None, token=None):
+    if not valid_token_for_bind(token, "127.0.0.1"):
+        raise ValueError("A configured token must contain at least 24 printable ASCII characters")
     controller = service or CameraService(demo=demo)
 
     @asynccontextmanager
@@ -35,16 +38,42 @@ def create_app(*, demo=False, auto_connect=True, service=None):
 
     app = FastAPI(title="Thermal Master P1", version="0.1.0", lifespan=lifespan)
     app.state.camera = controller
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
 
     @app.middleware("http")
     async def local_requests(request: Request, call_next):
-        # Disallow browser-origin camera control from unrelated websites.
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            origin = request.headers.get("origin")
-            if origin and urlsplit(origin).netloc != request.headers.get("host"):
-                return JSONResponse({"detail": "Camera control requires the same origin"}, status_code=403)
-        response = await call_next(request)
+        headers = request.headers
+        # Reject ambiguous headers before access checks or camera methods run.
+        if len(headers.getlist("host")) != 1 or host_port(headers.get("host", ""), 80) is None:
+            response = JSONResponse({"detail": "Invalid Host header"}, status_code=400)
+        elif not host_allowed(headers, token):
+            response = JSONResponse(
+                {"detail": "A token is required outside loopback"}, status_code=400
+            )
+        elif not same_origin(headers) or (
+            headers.get("origin") and urlsplit(headers["origin"]).netloc != headers.get("host")
+        ):
+            response = JSONResponse(
+                {"detail": "Camera control requires the same origin"}, status_code=403
+            )
+        else:
+            public = request.method in {"GET", "HEAD"} and (
+                request.url.path == "/" or request.url.path.startswith("/static/")
+            )
+            if (
+                token
+                and not public
+                and (
+                    len(headers.getlist("authorization")) != 1
+                    or not bearer_matches(headers.get("authorization", ""), token)
+                )
+            ):
+                response = JSONResponse(
+                    {"detail": "A valid bearer token is required"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            else:
+                response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
@@ -71,8 +100,11 @@ def create_app(*, demo=False, auto_connect=True, service=None):
     @app.get("/api/snapshot.npz")
     def snapshot():
         current = latest()
-        return Response(current.npz(), media_type="application/octet-stream",
-                        headers={"Content-Disposition": f'attachment; filename="p1-{current.sequence}.npz"'})
+        return Response(
+            current.npz(),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="p1-{current.sequence}.npz"'},
+        )
 
     @app.post("/api/connect")
     def connect():

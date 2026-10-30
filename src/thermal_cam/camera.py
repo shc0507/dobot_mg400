@@ -1,7 +1,7 @@
 """P1 acquisition adapter using the pinned p3-ir-camera USB protocol.
 
 The adapter owns USB handles and must be used by one acquisition thread. It
-adds Windows backend selection, deterministic cleanup and bounded frame
+adds bundled libusb selection, deterministic cleanup and bounded frame
 resynchronization without modifying the upstream implementation.
 """
 
@@ -21,9 +21,9 @@ import usb.core
 import usb.util
 
 from ._vendor.p3_camera import (
-    COMMANDS,
     CNT3_INCREMENT,
     CNT3_WRAP,
+    COMMANDS,
     MARKER_SIZE,
     GainMode,
     P3Camera,
@@ -34,8 +34,8 @@ from ._vendor.p3_camera import (
 VID = 0x3474
 PID = 0x45C2
 DRIVER_HELP = (
-    "On Windows, install WinUSB for the P1 (VID 3474, PID 45C2) with Zadig; "
-    "see README.md. Close other camera applications and reconnect the USB cable."
+    "On Linux, grant the service group USB access for VID 3474, PID 45C2; "
+    "see docs/thermal.md. Close other camera applications and reconnect the USB cable."
 )
 
 
@@ -48,7 +48,7 @@ class CameraTimeout(CameraError):
 
 
 def usb_backend():
-    """Use the wheel's libusb library; no global DLL/PATH change is necessary."""
+    """Use the wheel's libusb library without changing library search paths."""
     backend = usb.backend.libusb1.get_backend(find_library=libusb_package.find_library)
     if backend is None:
         raise CameraError("libusb could not be loaded. Run `uv sync` to install libusb-package.")
@@ -72,7 +72,9 @@ def diagnose() -> dict[str, Any]:
         result["backend_available"] = True
         device = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
         if device is None:
-            result["error"] = "P1 not visible to libusb. Check cable, power and Windows driver."
+            result["error"] = (
+                "P1 not visible to libusb. Check cable, power and Linux USB permissions."
+            )
             return result
         result["device_found"] = True
         result["bus"] = device.bus
@@ -80,7 +82,9 @@ def diagnose() -> dict[str, Any]:
         config = device.get_active_configuration()
         result["interfaces"] = sorted({int(i.bInterfaceNumber) for i in config})
         result["device_accessible"] = True
-        result["hint"] = "USB configuration is accessible. Run the capture test to verify streaming."
+        result["hint"] = (
+            "USB configuration is accessible. Run the capture test to verify streaming."
+        )
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -165,8 +169,7 @@ class _P1USB(P3Camera):
         if self.dev is None:
             raise CameraError(f"P1 camera not found (3474:45C2). {DRIVER_HELP}")
         try:
-            # Windows WinUSB cannot set an already active configuration on some
-            # composite devices, so only configure devices that need it.
+            # Keep an active configuration; configure only devices that need it.
             try:
                 config = self.dev.get_active_configuration()
             except usb.core.USBError:
@@ -176,13 +179,12 @@ class _P1USB(P3Camera):
             if not {0, 1}.issubset(interfaces):
                 raise CameraError(f"P1 control/stream interfaces 0 and 1 missing: {interfaces}.")
             for interface in (0, 1):
-                if sys.platform != "win32":
-                    try:
-                        if self.dev.is_kernel_driver_active(interface):
-                            self.dev.detach_kernel_driver(interface)
-                            self._detached.append(interface)
-                    except NotImplementedError:
-                        pass
+                try:
+                    if self.dev.is_kernel_driver_active(interface):
+                        self.dev.detach_kernel_driver(interface)
+                        self._detached.append(interface)
+                except NotImplementedError:
+                    pass
                 usb.util.claim_interface(self.dev, interface)
                 self._claimed.append(interface)
         except Exception:
@@ -274,9 +276,13 @@ class P1Camera:
             self._info = {
                 # Registers contain C strings; bytes after the first NUL can
                 # retain an earlier response, especially after reconnecting.
-                "model": "P1", "name": name.split("\x00", 1)[0],
+                "model": "P1",
+                "name": name.split("\x00", 1)[0],
                 "firmware": firmware.split("\x00", 1)[0],
-                "vid": "3474", "pid": "45C2", "width": 160, "height": 120,
+                "vid": "3474",
+                "pid": "45C2",
+                "width": 160,
+                "height": 120,
             }
             return dict(self._info)
         except Exception as exc:
@@ -303,7 +309,9 @@ class P1Camera:
 
     def set_gain(self, gain: str) -> None:
         if gain == "low":
-            raise ValueError("Low gain is disabled: temperature conversion has not been validated on the P1")
+            raise ValueError(
+                "Low gain is disabled: temperature conversion has not been validated on the P1"
+            )
         if gain != "high":
             raise ValueError("gain must be 'high'")
         self._camera.set_gain_mode(GainMode.HIGH)

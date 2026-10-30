@@ -78,7 +78,10 @@ function renderingUI() {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {cache: "no-store", signal: AbortSignal.timeout(12000), ...options});
+  const headers = new Headers(options.headers);
+  const token = $("accessToken").value;
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(path, {cache: "no-store", signal: AbortSignal.timeout(12000), ...options, headers});
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(errorDetail(data, `${response.status}: ${response.statusText}`));
   return data;

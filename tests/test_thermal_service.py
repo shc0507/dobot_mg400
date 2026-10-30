@@ -1,10 +1,10 @@
 """Acquisition, radiometry, lifecycle and command-queue regression tests."""
 
-from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -53,8 +53,9 @@ def test_temperature_units_extrema_center_and_copy_ownership():
 @pytest.mark.parametrize("value", [0, 65535])
 def test_uniform_invalid_sensor_values_are_rejected(value):
     with pytest.raises(ValueError, match="invalid thermal frame"):
-        ThermalFrame.from_arrays(np.zeros((120, 160), dtype=np.uint8),
-                                 np.full((120, 160), value, dtype=np.uint16), 1)
+        ThermalFrame.from_arrays(
+            np.zeros((120, 160), dtype=np.uint8), np.full((120, 160), value, dtype=np.uint16), 1
+        )
 
 
 def test_npz_keeps_raw_ir_temperatures_and_metadata_from_one_frame():

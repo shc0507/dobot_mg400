@@ -29,7 +29,7 @@ A person who can disconnect motor power must be present during use.
 `Stop all motors` is a software stop, not an emergency stop.
 
 The Arduino connects to a USB port on the Olares host and must run the `firmware/three-motor-demo` firmware.
-See the [firmware guide](../firmware/three-motor-demo/README.en.md) (English) for upload instructions, wiring, and serial commands.
+See the [firmware guide](../firmware/three-motor-demo/README.en.md) for upload instructions, wiring, and serial commands.
 The panel uses a file lock for exclusive access to the serial port.
 A program that does not use the lock can still open the same port. The panel cannot detect that program.
 

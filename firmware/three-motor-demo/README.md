@@ -1,71 +1,82 @@
-# Three A4988 motor demo
+[English](README.en.md)
 
-Open `three-motor-demo.ino` in Arduino IDE. Keep `MotorControl.h`,
-`MotorControl.cpp`, and `MotorPins.h` in the same sketch directory; Arduino compiles the `.cpp`
-automatically. Install **AccelStepper by Mike McCauley** through Library Manager,
-select your board and port, then upload.
+# 三个 A4988 电机演示
 
-## Web control panel
+在 Arduino IDE 中打开 `three-motor-demo.ino`。
+把 `MotorControl.h`、`MotorControl.cpp` 和 `MotorPins.h` 放在同一草图目录。
+Arduino 会自动编译 `.cpp`。
+使用库管理器。
+安装 **AccelStepper by Mike McCauley**。
+选择开发板和端口，然后上传。
 
-The stage panel (`stage-panel`) is the web GUI for this sketch. It has independent
-speed and step-count settings, direction buttons, and serial port selection. It also
-has a one-second cooldown after each move completes, Stop all, reset defaults, and
-light/dark themes. This sketch works with the GUI, including separate direction
-hold buttons for continuous motion until release. Upload this sketch to enable
-held moves and their one-second timeout, plus a global stepping-mode control for
-all three motors. To install, start, and connect to the panel, see the
-[stage panel guide](../../docs/stage-panel.md). Close Serial Monitor before
-connecting from the GUI.
+## 网页控制面板
 
-If the host has more than one serial device, set `MG400_STAGE_SERIAL` to the
-`/dev/serial/by-id/` path of the Arduino. The GUI then shows only that port.
+位移台面板（`stage-panel`）是此草图的网页界面。
+面板提供独立的速度和步数设置、方向按钮，并支持选择串口。
+每次运动完成后有一秒冷却时间。
+面板还提供 Stop all、恢复默认值和浅色／深色主题。
 
-The GUI replaces CCW/CW with these labels:
+此草图支持网页界面，包括持续运动直到松开的独立方向长按按钮。
+上传此草图后，可以使用长按运动及其一秒超时。
+还可以用全局步进模式控件设置全部三个电机。
 
-| Motor | CCW (`ccw`) label | CW (`cw`) label |
+面板的安装、启动和连接方法见[位移台面板说明](../../docs/stage-panel.md)。
+通过网页界面连接前，关闭串口监视器。
+
+如果主机有多个串口设备，把 `MG400_STAGE_SERIAL` 设为 Arduino 的 `/dev/serial/by-id/` 路径。
+网页界面随后只显示该端口。
+
+网页界面用以下标签代替 CCW/CW：
+
+| 电机 | CCW（`ccw`）标签 | CW（`cw`）标签 |
 | --- | --- | --- |
 | Bottom | Up | Down |
 | Top | Right | Left |
 | Insert | Insert In | Insert Out |
 
-Hold buttons add **Hold** to each label (for example, **Hold Up** / **Hold Down**),
-and movement status uses the same direction names. These are display labels only;
-serial directions remain `ccw` / `cw`, and motor behavior is unchanged.
+长按按钮在每个标签前加 **Hold**，例如 **Hold Up** / **Hold Down**。
+运动状态使用相同的方向名称。
+这些只是显示标签，串口方向仍为 `ccw` / `cw`，电机行为不变。
 
-The GUI also has an optional **Keyboard controls** section, switched **Off** by
-default. Hold **W/S** for bottom Up/Down, **A/D** for top Left/Right, or **J/K** for
-Insert In/Insert Out; the displayed keys can also be pressed and held. Each uses
-its motor channel's selected speed and the same hold/release commands and timeout.
-Turning the section off releases its active holds. See the [stage panel guide](../../docs/stage-panel.md)
-for keyboard behavior and stopping controls.
+网页界面还提供可选的 **Keyboard controls** 区域，默认是 **Off**。
+按住 **W/S** 控制 Bottom 向上／向下。
+按住 **A/D** 控制 Top 向左／向右。
+按住 **J/K** 控制 Insert 向内／向外。
+也可以按住页面上显示的按键。
 
-## Wiring
+每个按键使用对应电机通道选择的速度，以及相同的长按／松开命令和超时。
+关闭此区域会释放它当前的长按。
+键盘行为和停止控件见[位移台面板说明](../../docs/stage-panel.md)。
 
-Default assignments (customizable in `MotorPins.h`):
+## 接线
 
-| Motor | STEP | DIR | SLEEP |
+默认分配如下，可在 `MotorPins.h` 中修改：
+
+| 电机 | STEP | DIR | SLEEP |
 | --- | --- | --- | --- |
 | Bottom_Motor | D5 | D4 | D12 |
 | Top_Motor | D7 | D6 | D13 |
 | Insert_Motor | D3 | D2 | D11 |
 
-Each driver has its own SLEEP output. Connect it only to the SLP input of that
-motor's driver.
+每个驱动器有独立的 SLEEP 输出。
+每个 SLEEP 输出只能连接对应电机驱动器的 SLP 输入。
 
-Shared resolution inputs (connect each Arduino pin to that input on **all three** boards):
+分辨率输入共用。把每个 Arduino 引脚连接到**全部三个**驱动板上的对应输入：
 
-| A4988 input | Arduino pin |
+| A4988 输入 | Arduino 引脚 |
 | --- | --- |
 | MS1 | D10 |
 | MS2 | D9 |
 | MS3 | D8 |
 
-### Match motor names to your wiring
+### 按接线分配电机名称
 
-Edit only the pin assignments in [`MotorPins.h`](MotorPins.h). Each pair is
-**`{STEP, DIR}`**, in that order. Use Arduino pin numbers, not physical chip pin
-numbers. For example, if the bottom motor's driver is wired to STEP D5 / DIR D4
-and the top motor's driver is wired to STEP D3 / DIR D2, swap their pairs:
+只修改 [`MotorPins.h`](MotorPins.h) 中的引脚分配。
+每对引脚按 **`{STEP, DIR}`** 的顺序排列。
+使用 Arduino 引脚编号，不要使用芯片的物理引脚编号。
+例如，Bottom 驱动器接 STEP D5 / DIR D4。
+Top 驱动器接 STEP D3 / DIR D2。
+如果按此接线，交换对应引脚对：
 
 ```cpp
 constexpr PinPair Bottom = {5, 4};
@@ -73,112 +84,121 @@ constexpr PinPair Top = {3, 2};
 constexpr PinPair Insert = {7, 6};
 ```
 
-`BottomSleep`, `TopSleep`, and `InsertSleep` set the SLEEP output of each motor.
-Set each one to the Arduino pin that connects to the SLP input of that motor's driver.
-If you swap two pairs, make sure that each SLEEP pin still goes to the driver of
-the same motor.
+`BottomSleep`、`TopSleep` 和 `InsertSleep` 设置各电机的 SLEEP 输出。
+每项设为连接对应驱动器 SLP 输入的 Arduino 引脚。
+交换两个引脚对时，确认每个 SLEEP 引脚仍接同一电机的驱动器。
 
-You can also choose other output-capable pins on your board, or change STEP and
-DIR independently to match the wires. All twelve STEP/DIR/MS/SLEEP pins must be distinct.
-D0/D1 are reserved for serial communication. Compilation rejects overlapping assignments,
-D0/D1, and out-of-range numbers on boards that define `NUM_DIGITAL_PINS`. Check
-your board's pinout for any additional pin restrictions.
+也可以选择开发板上其他支持输出的引脚，或分别修改 STEP 和 DIR 来匹配接线。
+全部十二个 STEP/DIR/MS/SLEEP 引脚必须互不相同。
+D0/D1 留给串口通信。
+编译时会拒绝重复分配和 D0/D1。
+对于定义了 `NUM_DIGITAL_PINS` 的开发板，编译时还会拒绝超出范围的编号。
+检查开发板引脚图中的其他引脚限制。
 
-Stop all motors and disconnect the web app before uploading the revised sketch.
-Reconnect after upload: the **Bottom**, **Top**, and **Insert** controls and serial
-commands now use the new pairs. The assignments remain in the firmware across
-restarts. The Python app needs no pin configuration or restart. Uploading resets
-commanded positions to zero.
+上传修改后的草图前，停止全部电机。
+断开网页应用连接。
+上传后重新连接。
+**Bottom**、**Top** 和 **Insert** 控件及串口命令就会使用新的引脚对。
+固件会在重启后保留这些分配。
+Python 应用不必配置引脚或重启。
+上传会把指令位置清零。
 
-STEP and DIR must be **separate signals**, not electrically shorted together or
-shared between drivers. The mapping is used for driver pulses, direction changes,
-startup, and stopping, so there are no other pin numbers to update in the code.
+STEP 和 DIR 必须是**独立信号**，不得短接或在驱动器之间共用。
+驱动脉冲、方向切换、启动和停止都使用这份映射。
+代码中没有其他引脚编号要修改。
 
-### Driver connections
+### 驱动器连接
 
-MS1/MS2/MS3 are driven by the shared D10/D9/D8 outputs listed above. Startup sets
-all three outputs LOW for full stepping.
+MS1/MS2/MS3 由上表中的共用 D10/D9/D8 输出驱动。
+启动时，全部三个输出设为 LOW，使用整步模式。
 
-The firmware drives the SLEEP outputs. LOW puts a driver to sleep. HIGH wakes it.
-On the Pololu carrier, SLP has a pull-up. While the Arduino resets, the firmware
-does not control SLP, so the drivers can be awake until startup sets SLEEP LOW.
-On many boards, for example the Uno, D13 (`TopSleep`) also controls the on-board
-LED. After a reset from the serial port or the reset button, the bootloader flashes
-this LED. Thus the Top driver can sleep and wake several times each time the panel
-connects. To prevent this, set `TopSleep` to a pin without an LED, for example `A0`,
-and move the wire.
+固件控制 SLEEP 输出。
+LOW 让驱动器睡眠，HIGH 唤醒驱动器。
+Pololu 载板的 SLP 有上拉电阻。
+Arduino 复位期间，固件不控制 SLP。
+因此，在启动代码把 SLEEP 设为 LOW 之前，驱动器可能保持唤醒。
 
-Do not leave RST floating. The Pololu carrier has no pull resistor on RST. Connect
-RST to the adjacent SLP pin on the carrier, or connect RST to the logic supply (VDD).
-If RST connects to SLP, RST follows the SLEEP output. The driver operates only while
-RST is HIGH.
+在 Uno 等许多开发板上，D13（`TopSleep`）还控制板载 LED。
+串口或复位按钮触发复位后，引导程序会闪烁此 LED。
+因此，面板每次连接时，Top 驱动器可能多次睡眠和唤醒。
+要避免这种情况，把 `TopSleep` 设为不带 LED 的引脚，例如 `A0`。
+然后移动接线。
 
-EN must be LOW for the driver outputs to operate; it can be tied to GND.
-The API does not control EN or RST. Arduino and drivers
-need a common ground and appropriate logic/motor supplies. See the
-[carrier wiring reference](https://www.pololu.com/product/1182).
+不要让 RST 悬空。
+Pololu 载板的 RST 没有上拉或下拉电阻。
+把 RST 接到载板上相邻的 SLP 引脚，或接到逻辑电源 VDD。
+如果 RST 接到 SLP，RST 会跟随 SLEEP 输出。
+驱动器只在 RST 为 HIGH 时工作。
 
-### Driver sleep
+EN 必须为 LOW，驱动器输出才能工作。EN 可以接 GND。
+API 不控制 EN 或 RST。
+Arduino 和驱动器必须共地，并使用合适的逻辑电源和电机电源。
+参见[载板接线参考](https://www.pololu.com/product/1182)。
 
-Each driver has its own sleep timer:
+### 驱动器睡眠
 
-1. At startup, all three drivers sleep.
-2. If the driver sleeps, an accepted move, `start`, or `hold` sets the SLEEP output
-   of that motor HIGH. The firmware then waits 2 ms before the first STEP pulse.
-   This wait does not stop serial commands or the other motors.
-3. When the motor stops, its driver stays awake and holds the motor.
-4. After `SleepTimeoutMs` without motion, the firmware sets SLEEP LOW. The default
-   value is `10000UL` (10 s).
+每个驱动器有独立的睡眠计时器：
 
-A new move before the timeout keeps the driver awake. Motor selection, `status`,
-`microstep`, other settings, and `stop` on an idle motor do not wake a driver. They
-also do not restart its sleep timer.
+1. 启动时，全部三个驱动器睡眠。
+2. 如果驱动器正在睡眠，接受的运动、`start` 或 `hold` 命令会把对应电机的 SLEEP 输出设为 HIGH。
+   固件随后等待 2 ms，再发送第一个 STEP 脉冲。
+   等待期间，串口命令和其他电机仍能运行。
+3. 电机停止后，驱动器保持唤醒并锁住电机。
+4. 如果持续 `SleepTimeoutMs` 没有运动，固件把 SLEEP 设为 LOW。
+   默认值为 `10000UL`（10 s）。
 
-To change the timeout, edit `SleepTimeoutMs` in [`MotorPins.h`](MotorPins.h). Then
-upload the sketch again. The value must be greater than zero.
+超时前开始新运动，会让驱动器保持唤醒。
+选择电机、`status`、`microstep`、其他设置，以及对空闲电机发送 `stop`，都不会唤醒驱动器。
+这些操作也不会重置睡眠计时器。
 
-A sleeping driver does not hold the motor: the motor has no holding torque. An
-external force can turn the shaft, and the position count does not record this
-movement. The [A4988 datasheet](https://www.allegromicro.com/-/media/files/datasheets/a4988-datasheet.ashx)
-states that a HIGH on SLEEP allows startup, at which time the driver moves the
-motor to the Home microstep position. Thus the motor can also move when its
-driver wakes.
+要修改超时，编辑 [`MotorPins.h`](MotorPins.h) 中的 `SleepTimeoutMs`。
+然后重新上传草图。
+该值必须大于零。
 
-## Global microstepping
+睡眠的驱动器不会锁住电机，电机没有保持扭矩。
+外力可以转动电机轴，位置计数不会记录这种运动。
+[A4988 数据手册](https://www.allegromicro.com/-/media/files/datasheets/a4988-datasheet.ashx)说明，SLEEP 为 HIGH 时允许启动。
+此时驱动器会让电机移到 Home 微步位置。
+因此，驱动器唤醒时，电机也可能运动。
 
-Send `microstep 1`, `microstep 2`, `microstep 4`, `microstep 8`, or `microstep 16`.
-This command applies to **all three motors**, regardless of the selected motor,
-and succeeds only while every motor is idle. It acknowledges with, for example,
-`OK: microstep 16`. Send `microstep` to query the current mode; `status` also begins
-with a global line such as `microstep=16` before its three motor lines.
+## 全局微步设置
 
-| Command | MS1 / D10 | MS2 / D9 | MS3 / D8 | Resolution |
+发送 `microstep 1`、`microstep 2`、`microstep 4`、`microstep 8` 或 `microstep 16`。
+无论当前选择哪个电机，此命令都作用于**全部三个电机**。
+只有全部电机空闲时，命令才会成功。
+确认回复例如 `OK: microstep 16`。
+发送 `microstep` 查询当前模式。
+`status` 也会先显示全局信息，例如 `microstep=16`，再显示三个电机的信息。
+
+| 命令 | MS1 / D10 | MS2 / D9 | MS3 / D8 | 分辨率 |
 | --- | --- | --- | --- | --- |
-| `microstep 1` | LOW | LOW | LOW | Full step |
-| `microstep 2` | HIGH | LOW | LOW | Half step |
-| `microstep 4` | LOW | HIGH | LOW | Quarter step |
-| `microstep 8` | HIGH | HIGH | LOW | Eighth step |
-| `microstep 16` | HIGH | HIGH | HIGH | Sixteenth step |
+| `microstep 1` | LOW | LOW | LOW | 整步 |
+| `microstep 2` | HIGH | LOW | LOW | 半步 |
+| `microstep 4` | LOW | HIGH | LOW | 四分之一步 |
+| `microstep 8` | HIGH | HIGH | LOW | 八分之一步 |
+| `microstep 16` | HIGH | HIGH | HIGH | 十六分之一步 |
 
-Mode changes generate no STEP pulses and preserve the signed pulse counters.
-The mode lasts until the board resets; there is no EEPROM write. `steps`, speed,
-acceleration, position, and remaining counts use STEP pulses at the active mode.
-At sixteenth step, `steps 50` requests 3.125 full steps. `spr 200` still describes
-a 200-full-step/revolution motor: `rev` generates 3,200 pulses at sixteenth step.
-The GUI keeps its numeric speed and step settings when changing resolution.
+切换模式不产生 STEP 脉冲，并保留有符号脉冲计数。
+模式保持到开发板复位，不写入 EEPROM。
 
-The [A4988 datasheet](https://www.allegromicro.com/-/media/files/datasheets/a4988-datasheet.ashx)
-specifies that the new mode takes effect on the next STEP rising edge. To preserve
-absolute position when switching resolutions, switch at a translator position
-shared by both modes. The pulse counters have no encoder or translator-state
-feedback and cannot verify that alignment. Firmware changes the MS outputs only
-while idle and provides a 1 µs setup interval before subsequent STEP pulses.
+`steps`、速度、加速度、位置和剩余计数都按当前模式的 STEP 脉冲计算。
+在十六分之一步模式下，`steps 50` 请求 3.125 个整步。
+`spr 200` 仍表示每圈 200 个整步的电机。
+在十六分之一步模式下，`rev` 产生 3,200 个脉冲。
+切换分辨率时，网页界面保留速度和步数的数值设置。
 
-## Serial test
+[A4988 数据手册](https://www.allegromicro.com/-/media/files/datasheets/a4988-datasheet.ashx)规定，新模式在下一个 STEP 上升沿生效。
+要保留绝对位置，必须在两种模式共用的译码器位置切换分辨率。
+脉冲计数器没有编码器或译码器状态反馈，无法确认这种对齐。
+固件只在空闲时修改 MS 输出，并在后续 STEP 脉冲前提供 1 µs 建立时间。
 
-Set Serial Monitor to **115200 baud** and **Newline** or **Both NL & CR**. Send
-one command per line. Commands are case insensitive; whitespace is accepted.
-No motor starts automatically at boot.
+## 串口测试
+
+把串口监视器设为 **115200 波特**。
+行尾选择 **Newline** 或 **Both NL & CR**。
+每行发送一个命令。
+命令不区分大小写，并接受空白字符。
+启动时不会自动启动任何电机。
 
 ```text
 motor bottom
@@ -186,14 +206,14 @@ dir cw
 steps 200
 ```
 
-After it finishes (use `status` to see `idle`), reverse it:
+运动完成后，反向运动。使用 `status` 查看 `idle` 状态：
 
 ```text
 dir ccw
 rev
 ```
 
-Try the other motors independently:
+分别试用其他电机：
 
 ```text
 motor top
@@ -205,8 +225,8 @@ steps 100
 status
 ```
 
-Selecting a motor does not stop another motor, so this also tests concurrent
-movement. For continuous rotation:
+选择一个电机不会停止另一个电机，因此这也会测试并发运动。
+持续旋转：
 
 ```text
 motor bottom
@@ -218,45 +238,50 @@ stop
 stop all
 ```
 
-| Command | Action |
+| 命令 | 动作 |
 | --- | --- |
-| `motor bottom`, `motor top`, `motor insert` | Select motor (also `motor 1`, `motor 2`, `motor 3`) |
-| `dir cw`, `dir ccw` | Set selected motor's direction while idle |
-| `steps 200` | Move a positive number of STEP pulses in that direction |
-| `rev`, `rev 2`, `rev 0.5` | Move one, two, or half a revolution |
-| `start` | Rotate continuously at constant speed until stopped |
-| `hold` | Rotate at constant speed; stop after 1 second without a `keepalive` |
-| `keepalive` | Renew the selected motor's active hold; never restart an expired hold |
-| `stop`, `stop all` | Cancel selected motor's movement, or all movement immediately |
-| `speed 200` | Set selected motor's speed limit (1..1000 STEP pulses/s) while idle |
-| `accel 50` | Set finite-move acceleration (1..10000 STEP pulses/s squared) while idle |
-| `spr 200` | Set full steps/revolution (1..65535) while idle |
-| `microstep`, `microstep 16` | Query/set the global resolution (1, 2, 4, 8, 16); all motors must be idle to change |
-| `status` | Show all motors; `*` marks the selected motor |
-| `help` | Print command list |
+| `motor bottom`, `motor top`, `motor insert` | 选择电机，也可以用 `motor 1`、`motor 2`、`motor 3` |
+| `dir cw`, `dir ccw` | 空闲时设置所选电机的方向 |
+| `steps 200` | 按该方向发送正数个 STEP 脉冲 |
+| `rev`, `rev 2`, `rev 0.5` | 旋转一圈、两圈或半圈 |
+| `start` | 以恒定速度持续旋转，直到停止 |
+| `hold` | 以恒定速度旋转，1 秒未收到 `keepalive` 后停止 |
+| `keepalive` | 续期所选电机当前的长按，不会重新启动已过期的长按 |
+| `stop`, `stop all` | 立即取消所选电机的运动，或全部运动 |
+| `speed 200` | 空闲时设置所选电机的速度上限（1..1000 STEP 脉冲/秒） |
+| `accel 50` | 空闲时设置定步运动的加速度（1..10000 STEP 脉冲/秒平方） |
+| `spr 200` | 空闲时设置每圈整步数（1..65535） |
+| `microstep`, `microstep 16` | 查询或设置全局分辨率（1、2、4、8、16）。修改时全部电机必须空闲 |
+| `status` | 显示全部电机，`*` 标记所选电机 |
+| `help` | 打印命令列表 |
 
-Counts must be positive; use `dir ccw` to reverse. Revolutions round to the
-nearest STEP pulse at the active resolution; a request rounding to zero is rejected. Invalid, oversized,
-or extra-argument commands are rejected. A new movement or configuration is
-rejected while the selected motor is moving; `stop` it first. Positions and
-remaining counts are signed (CW positive). Position is the signed number of commanded
-STEP pulses since startup, with no encoder or homing feedback. Pulse counts across
-different resolutions cannot be treated as a single physical distance.
+计数必须为正数，反向运动用 `dir ccw`。
+圈数按当前分辨率四舍五入到最接近的 STEP 脉冲数。
+如果请求四舍五入后为零，固件会拒绝请求。
+无效、过大或参数过多的命令都会被拒绝。
+所选电机运动时，固件会拒绝新的运动或配置。先用 `stop` 停止它。
 
-The default **200 full steps/revolution** assumes a 1.8-degree motor. Use `spr 400`
-for a 0.9-degree motor; this setting is per motor and lasts until restart.
-Physical CW/CCW depends on your wiring and viewing direction. Finite moves use
-acceleration/deceleration; `start`, `hold`, and `stop` change pulse generation immediately.
-After a stop, the driver keeps the coils energized until its sleep timeout ends
-(see [Driver sleep](#driver-sleep)).
+位置和剩余计数有正负号，CW 为正。
+位置表示启动以来指令 STEP 脉冲的有符号计数，没有编码器或回零反馈。
+不同分辨率下的脉冲计数不能当作同一种物理距离。
 
-The GUI uses `hold` and renews it about every 200 ms while a button is pressed.
-Releasing sends `motor <name>` followed by `stop`. The hold timeout is per motor
-and runs on the Arduino, so it still ends held motion after a USB disconnect or
-server failure. The standalone Serial Monitor `start` command remains continuous
-until explicitly stopped.
+默认的**每圈 200 个整步**适用于 1.8 度电机。
+对于 0.9 度电机，使用 `spr 400`。
+此设置按电机分别保存，重启后失效。
+实际 CW/CCW 方向取决于接线和观察方向。
 
-## API use from another sketch
+定步运动会加速和减速。
+`start`、`hold` 和 `stop` 立即改变脉冲生成。
+停止后，驱动器会继续给线圈供电，直到睡眠超时结束。
+参见[驱动器睡眠](#驱动器睡眠)。
+
+按住按钮时，网页界面使用 `hold`，约每 200 ms 续期一次。
+松开时，发送 `motor <name>`，然后发送 `stop`。
+每个电机有独立的长按超时，计时在 Arduino 上运行。
+因此，即使 USB 断开或服务器故障，超时仍会结束长按运动。
+单独从串口监视器发送的 `start` 命令会持续运行，直到明确停止。
+
+## 在其他草图中使用 API
 
 ```cpp
 #include "MotorControl.h"
@@ -276,12 +301,11 @@ void loop() {
 }
 ```
 
-`update()` also starts stepping after the wake delay and puts idle drivers to
-sleep. Call it even while all motors are idle.
+`update()` 还会在唤醒延迟后开始步进，并让空闲驱动器睡眠。
+即使全部电机空闲，也要调用它。
 
-Movement functions return immediately and return `false` if rejected.
-`isRotating(motor)` and `getStatus(motor, status)` let your main loop track
-completion. `startRotation()`, `stopRotation()`, and `stopAll()` provide continuous
-rotation and cancellation. See the header for signatures and the
-[AccelStepper reference](https://www.airspayce.com/mikem/arduino/AccelStepper/classAccelStepper.html)
-for the underlying motion library.
+运动函数立即返回。如果请求遭拒，返回 `false`。
+主循环可以通过 `isRotating(motor)` 和 `getStatus(motor, status)` 跟踪完成情况。
+`startRotation()`、`stopRotation()` 和 `stopAll()` 提供持续旋转和取消功能。
+函数签名见头文件。
+底层运动库见 [AccelStepper 参考](https://www.airspayce.com/mikem/arduino/AccelStepper/classAccelStepper.html)。

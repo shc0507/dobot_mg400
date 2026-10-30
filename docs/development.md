@@ -416,6 +416,7 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 | `GET /contract/api/describe` | 读取命令参数、限制、演示标志和租约规则 |
 | `GET /contract/api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command` |
 | `POST /contract/api/heartbeat` | 取得或续期控制租约；其他客户端占用时返回 409 |
+| `POST /contract/api/renew` | 仅续期调用者持有且未过期的租约，否则返回 409 |
 | `POST /contract/api/release` | 释放调用者的控制租约，不发送停止命令 |
 | `POST /contract/api/command` | 正文携带 `action` 和对应参数；接受后返回 202、`command_id` 和 `state` |
 | `POST /contract/api/stop` | 任意客户端可请求停止，无须租约；`wait_s` 为 0–15 秒，默认 0 |
@@ -433,6 +434,13 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 参数范围与面板接口相同，拒绝缺少或多余的参数。
 控制租约默认有效 3 秒，长按仍须在 1 秒内单独续期。
 长按续期不续期控制租约。
+labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
+要持续持有控制权，先用 `ServiceClient.heartbeat()` 明确取得租约，再用 `ServiceClient.renew()` 续期。
+可选的 `heartbeat_thread(renew_only=True)` 辅助线程使用严格续期，首次出错后停止。
+续期请求在租约过期或释放后到达时，返回 409，不会重新取得控制权。
+旧服务没有 `api/renew` 时，返回 404。客户端不会改为取得租约。
+原有 `heartbeat()` 和默认 `heartbeat_thread()` 保留取得或续期租约的行为。
+续期失败后，先停止运动并核对服务状态，再明确取得控制权。
 租约过期时，服务请求停止所有电机。
 释放租约不停止运动；先等待完成或请求停止，再交还控制权。
 租约有效时，面板移动、长按续期和细分接口返回 409，错误为 `Stage is controlled by automation`。

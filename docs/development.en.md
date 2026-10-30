@@ -420,6 +420,7 @@ The interface follows the [instrument service contract](adr/0001-instrument-serv
 | `GET /contract/api/describe` | Read command parameters, limits, demo status, and lease rules |
 | `GET /contract/api/state` | Read motor state plus `service`, `seq`, `ts_unix`, `busy`, `locked`, `fault`, `lease`, and `last_command` |
 | `POST /contract/api/heartbeat` | Acquire or renew the control lease. Return 409 if another client holds it |
+| `POST /contract/api/renew` | Renew only an existing, unexpired lease held by the caller. Otherwise return 409 |
 | `POST /contract/api/release` | Release the caller's control lease without sending a stop command |
 | `POST /contract/api/command` | Send `action` and its parameters. Acceptance returns 202, `command_id`, and `state` |
 | `POST /contract/api/stop` | Any client can request a stop without a lease. `wait_s` is 0–15 seconds, default 0 |
@@ -437,6 +438,13 @@ The interface follows the [instrument service contract](adr/0001-instrument-serv
 Parameter ranges match the panel interface. Missing or extra parameters are rejected.
 The control lease lasts 3 seconds by default. Holds still require a separate renewal within 1 second.
 Hold renewal does not renew the control lease.
+The labkit Flask adapter advertises `renew_only_heartbeat: true` in discovery.
+For continuous ownership, acquire explicitly with `ServiceClient.heartbeat()`, then use `ServiceClient.renew()`.
+The optional `heartbeat_thread(renew_only=True)` helper uses this strict renewal and stops on its first error.
+If a renewal arrives after lease expiry or release, it returns 409 without taking control again.
+An older service without `api/renew` returns 404. The client never falls back to acquisition.
+The existing `heartbeat()` and default `heartbeat_thread()` retain their acquire-or-renew behavior.
+After a renewal failure, stop motion and reconcile the service state before explicitly taking control again.
 On lease expiry, the service requests that all motors stop.
 Releasing the lease does not stop motion. Wait for completion or request a stop before returning control.
 While a lease is active, panel motion, hold renewal, and microstep routes return 409 with `Stage is controlled by automation`.

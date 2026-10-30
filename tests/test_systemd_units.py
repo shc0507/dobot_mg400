@@ -72,6 +72,14 @@ def test_services_drop_the_tokens_they_do_not_check(name, unset):
     assert service["UnsetEnvironment"][0].split() == unset
 
 
+def test_camera_preview_retains_vision_token_for_the_loopback_proxy():
+    service = unit_sections("mg400-camera-preview.service")["Service"]
+    assert service["EnvironmentFile"] == ["/etc/mg400/mg400.env"]
+    unset = {value for line in service.get("UnsetEnvironment", []) for value in line.split()}
+    assert "MG400_VISION_TOKEN" not in unset
+    assert {"MG400_PANEL_TOKEN", "MG400_STAGE_TOKEN"} <= unset
+
+
 def test_stage_service_takes_every_setting_from_the_environment():
     sections = unit_sections("mg400-stage-panel.service")
     service = sections["Service"]

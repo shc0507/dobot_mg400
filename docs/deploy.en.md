@@ -101,7 +101,7 @@ Do not edit files in `/opt/mg400`. Modified files can cause `git switch` to abor
 
 `config/assets.toml` stores 1 table per external asset.
 The fields are `url`, `sha256`, `bytes`, `install`, `mode`, `service`, `source`, and `license`.
-`install` is an absolute destination path. `mode` must be `0640` or `0600`.
+`install` is an absolute destination path under `/var/lib/mg400/`. `mode` must be `0640` or `0600`.
 Asset files and destination directories belong to `1000:1000`. Destination directories have permissions `0750`.
 The installer refuses symbolic links in source files, destination files, or their paths.
 

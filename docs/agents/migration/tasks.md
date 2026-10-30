@@ -664,6 +664,8 @@ Steps (P-SERVICE and P-DEPLOY plus):
 3. Unit `mg400-orchestrator.service`, port 8772, settings `MG400_ORCH_*` (service URLs and tokens, data paths).
 4. On SIGTERM: hold the current run (stop motion), then exit. A run never ends without a recorded state.
 
+Integration scope: add a public held-shutdown lifecycle method in `src/orchestrator/runner.py` and cover it in `tests/test_orchestrator_runner.py`. Preserve worker drain, fresh stop confirmation, lease cleanup and durable run status; the service must not patch private runner state or rewrite an aborted record to held. In `config/systemd/mg400-web-panel.service`, `config/systemd/mg400-stage-panel.service` and `config/systemd/mg400-camera-preview.service`, only extend `UnsetEnvironment` to exclude `MG400_ORCH_TOKEN` and the downstream credential aliases `MG400_ORCH_ROBOT_TOKEN`, `MG400_ORCH_STAGE_TOKEN`, `MG400_ORCH_THERMAL_TOKEN`, `MG400_ORCH_VISION_TOKEN`, `MG400_ORCH_FURNACE_TOKEN` and `MG400_ORCH_MICROSCOPE_TOKEN`. Preserve each service's checked tokens, including camera preview's `MG400_VISION_TOKEN`.
+
 Done when: P-CHECKS pass.
 
 Docs: `orchestrator.md` and `.en.md`, `deploy.md` and `.en.md`.

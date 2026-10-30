@@ -15,16 +15,22 @@ dev = ["pytest>=8,<10", "ruff>=0.11,<1", "websockets>=15,<18"]
 notebook = ["ipykernel==7.4.0"]
 stage = ["flask>=3.1,<4", "pyserial>=3.5,<4", "waitress>=3.0.2,<4"]
 tools = ["pysmb>=1.2.15,<2"]
+vision = [
+  "numpy>=1.26,<3",
+  "pillow>=10.1,<13",
+  "zxing-cpp>=3.0,<4",
+  "opencv-python-headless>=4.9,<5",
+]
 
 [project.scripts]
 mg400-robot = "mg400.terminal_control:main"
 stage-panel = "stage_controller.__main__:main"
 
 [tool.uv]
-default-groups = ["dev", "stage"]
+default-groups = ["dev", "stage", "vision"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mg400", "src/stage_controller"]
+packages = ["src/mg400", "src/stage_controller", "src/vision"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

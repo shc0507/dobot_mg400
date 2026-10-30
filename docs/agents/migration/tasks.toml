@@ -941,25 +941,31 @@ writes = [
 
 [[task]]
 id = "FUR-05"
-title = "Furnace camera and recordings"
-phase = 3
+title = "Recordings with furnace metadata"
+phase = 4
 track = "furnace"
 owner = "agent"
 size = "M"
 review = "agent"
-deps = ["FUR-04", "TPC-01", "TPC-02"]
+deps = ["FUR-04", "MIC-04", "TPC-02"]
 writes = [
   "src/furnace/recordings.py",
   "src/furnace/video.py",
   "src/furnace/app.py",
   "src/furnace/templates/**",
   "src/furnace/static/**",
+  "src/microscope/service.py",
+  "src/microscope/app.py",
+  "src/microscope/templates/**",
+  "src/microscope/static/**",
   "config/systemd/mg400-furnace.service",
   "deploy/mg400.env.example",
   "tests/test_furnace_recordings.py",
   "tests/test_systemd_units.py",
   "docs/furnace.md",
   "docs/furnace.en.md",
+  "docs/microscope.md",
+  "docs/microscope.en.md",
 ]
 
 [[task]]
@@ -1146,10 +1152,11 @@ track = "milestone"
 owner = "agent+human"
 size = "M"
 review = "human"
-deps = ["MIC-06", "MIC-05", "ORC-05", "H-21"]
+deps = ["MIC-06", "MIC-05", "ORC-05", "XDV-01", "H-18", "H-21"]
 writes = [
   "recipes/microscope-image.toml",
   "src/orchestrator/skills/microscope.py",
+  "src/orchestrator/skills/stage.py",
   "tests/test_recipe_microscope_image.py",
   "docs/orchestrator.md",
   "docs/orchestrator.en.md",

@@ -28,7 +28,7 @@ End state:
 1. Every lab device connects to the Olares host: robot, gripper, stage, cameras, thermal camera, furnace and gas controllers, microscope camera, objective turret and focus motors.
 2. Each device has one service on Olares. Every service speaks the same contract (section 4.3) and has a demo mode.
 3. The WuLab code lives in this repo as packages under `src/`. The WuLab repos are marked as moved.
-4. A control plane (the orchestrator) runs recipes across devices: QR-verified tray transfers, wafer load into the crucible, furnace programs, unload after cooling, microscope images.
+4. A control plane (the orchestrator) runs recipes across devices: QR-verified tray transfers, chip load into the crucible, furnace programs, unload after cooling, microscope images through the furnace window.
 5. People use web pages. LLM agents use an MCP gateway whose actuation requests wait for human approval.
 
 The migration is done when the three milestones pass on hardware:
@@ -36,8 +36,8 @@ The migration is done when the three milestones pass on hardware:
 | Milestone | Task | What runs |
 | --- | --- | --- |
 | 1 | MS-01 | The robot moves a chip between tray slots. Vision finds it, the QR label confirms it before and after. |
-| 2 | MS-02 | The robot places a wafer in the crucible, the stage inserts it, a short furnace program runs, the robot takes it back after the thermal check. |
-| 3 | MS-03 | The microscope selects an objective, autofocuses and saves an image under the chip's ID. |
+| 2 | MS-02 | The robot places a chip in the crucible, the stage inserts it, a short furnace program runs, the robot takes it back after the thermal check. |
+| 3 | MS-03 | The stage moves the chip under the furnace window. The microscope selects an objective, autofocuses and saves an image under the chip's ID. |
 
 Phase 5 adds the lab dashboard and the agent gateway. Phase 6 (closed-loop optimization) is research that continues after the migration.
 
@@ -59,10 +59,14 @@ Phase 5 adds the lab dashboard and the agent gateway. Phase 6 (closed-loop optim
 
 ### 2.2 Facts from the lab
 
-- The stage's Insert axis carries the crucible, which holds the wafer, into the furnace.
+- "Chip" and "wafer" name the same object, the sample. This plan says "chip". The vision model's class is `Chip`.
+- The stage's Insert axis carries the crucible, which holds the chip, into the furnace.
 - The robot reaches the crucible when the Insert axis brings it to the load position.
+- The microscope sits above a transparent window in the furnace top. The stage moves the crucible under the window, and the microscope watches the chip inside the furnace. The robot never goes under the microscope.
 - The camera setup is not final. Which camera took the YOLO training images is not known.
 - Olares has an RTX 5090 with 32 GB. Other Olares apps (for example an LLM) may share it.
+
+Hardware freeze: the owner makes no hardware changes for now (answer to Q-04, 2026-10-30). Device moves, wiring and mounting wait: H-04 to H-07, H-09, mounting the tag in H-08, and installing a cutoff in H-11. Inventories, measurements, reviews, decisions and all software tasks go on. Software runs in demo and rehearsal mode until the freeze ends.
 
 ### 2.3 Plan defaults
 
@@ -183,7 +187,7 @@ Data on the host:
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus and reference-view data | MIC-05 |
 | `/var/lib/mg400/stations.toml` | Taught robot stations | ORC-02 |
 | `/var/lib/mg400/tool.toml` | Gripper tool offset | ORC-02 |
-| `/var/lib/mg400/stage.toml` | Stage steps per mm and named positions | STG-02 |
+| `/var/lib/mg400/stage.toml` | Stage steps per mm, soft limits, named positions and poses | STG-02 |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions | THM-03 |
 | `/var/lib/mg400/furnace/state.json` | Running sequence state | FUR-03 |
 | `/var/lib/mg400/runs/` | Run store: SQLite index and run files | ORC-01 |
@@ -223,7 +227,8 @@ Contract rules:
 | Layer | Owner | Mechanism |
 | --- | --- | --- |
 | Inside one device | The device's service | Limits, stop confirmation, leases, hold timeouts, unknown-outcome lock. Existing robot and stage rules stay. |
-| Between devices | Orchestrator | Zones (`tray`, `crucible-load`, `furnace-tube`, `microscope-stage`) and preconditions such as "furnace in STOP/COOLING" or "crucible below the thermal limit" (ORC-04, XDV-01). |
+| Between devices | Orchestrator | Zones (`tray`, `crucible-load`, `furnace-tube`) and preconditions such as "furnace in STOP/COOLING" or "crucible below the thermal limit" (ORC-04, XDV-01). |
+| Furnace window | Stage and microscope services | Stage soft limits in the firmware and the host keep the crucible clear of the tube and the window (STG-01, STG-02). Focus limits and a known focus zero keep the objectives off the window, and the turret turns only at the clearance position (MIC-01, MIC-03). |
 | People and automation | Services | While the orchestrator holds a service's lease, the panels of that service can only stop it. |
 | Physical | Lab (H-11) | E-stop chain, independent over-temperature cutoff. Software never replaces them. |
 
@@ -488,8 +493,8 @@ Never send commands to real hardware. Never weaken a safety rule to make a test 
 | 0 Foundation | Rename, Python 3.12, guards, bilingual docs, ADRs, labkit, robot contract and client, assets, registry, simulator | GOV-01, GOV-02, FND-01..10, DOC-01..10, SIM-01 | H-01; start H-02, H-03, H-10..13, H-15, H-16 now | The robot client works against the simulator; every human doc has its pair |
 | 1 Vision | Localizer, QR reader and vision service on Olares | VIS-01..06 | H-09, H-14 | The camera page shows chip boxes and labels |
 | 2 Manipulation | Robot speed and grasp result, orchestrator, stations, calibration, tray model | ROB-01..02, ORC-01..05, OPS-03, VIS-07..08, CAL-01..03, MS-01 | H-08, H-17, H-22 | MS-01 passes on hardware |
-| 3 Hot side | Thermal, furnace, Toupcam, stage homing, crucible handoff | OPS-01, THM-01..03, FUR-01..05, TPC-01..02, STG-01..02, XDV-01, MS-02 | H-04, H-05, H-07, H-18..20 | MS-02 passes on hardware |
-| 4 Microscope | Firmware, algorithms, service, panel, calibration data | MIC-01..06, MS-03 | H-06, H-21 | MS-03 passes on hardware |
+| 3 Hot side | Thermal, furnace, Toupcam, stage homing, crucible handoff | OPS-01, THM-01..03, FUR-01..04, TPC-01..02, STG-01..02, XDV-01, MS-02 | H-04, H-05, H-07, H-18..20 | MS-02 passes on hardware |
+| 4 Microscope | Firmware, algorithms, service, panel, calibration data, recordings | MIC-01..06, FUR-05, MS-03 | H-06, H-21 | MS-03 passes on hardware |
 | 5 People and agents | Dashboard, chip passport, MCP gateway, approvals, proxy | DSH-01..02, AGT-01..03, OPS-02 | H-23 | An agent proposes a transfer that runs only after approval |
 | 6 Research and cleanup | Image metric, optimizer, unattended runs, cleanup | OPT-01..03, CLN-01..02 | H-24 | The plan folder is removed |
 
@@ -506,6 +511,7 @@ flowchart LR
   P3 --> MS2
   P0 --> P4[Phase 4 microscope]
   P4 --> MS3{{MS-03}}
+  P3 --> MS3
   MS1 --> P5[Phase 5 dashboard and agents]
   MS2 --> P6[Phase 6 research]
   MS3 --> P6
@@ -514,7 +520,7 @@ flowchart LR
 
 Critical path: FND-01, FND-02, DOC-01, GOV-02, FND-05, FND-06, FND-07, ORC-01, ORC-02, ORC-03, MS-01, then MS-02.
 
-Human tasks with long lead times. Start them now: H-02 (firmware recovery), H-03 (USB inventory and purchases), H-09 (cameras), H-10 (furnace rules), H-11 (independent cutoff), H-12 (Toupcam SDK), H-13 (GPU check), H-15 (license), H-16 (colleague consent).
+Human tasks to start now, because they take long and change no hardware: H-02 (firmware recovery), H-03 (USB inventory and purchases), H-10 (furnace rules), H-11 (the review part), H-12 (Toupcam SDK), H-13 (GPU check), H-15 (license), H-16 (colleague consent). H-09 (cameras) waits for the end of the hardware freeze, and calibration and MS-01 wait with it.
 
 ## 11. Risks
 
@@ -526,6 +532,7 @@ Human tasks with long lead times. Start them now: H-02 (firmware recovery), H-03
 | Collision during automated transfers | Damage | Taught stations with safe heights and via points, speed caps, rehearsal first, P-HW, zones |
 | Process safety in the furnace | Fire, gas, damaged samples | D5 rules, caps, simulator tests, H-10, H-11, P-HW with inert gas |
 | Firmware changes | Stage or turret moves wrongly | Backward-compatible protocol additions, limit switches, human review, P-HW |
+| The crucible or an objective hits the furnace window | A broken window over a hot furnace | Stage soft limits (STG-01, STG-02), focus limits and a known focus zero (MIC-01, MIC-03), turret turns only at the clearance position (MIC-03), P-HW at room temperature first (H-18, H-21) |
 | Docs drift between languages | Operators follow wrong steps | Pair check in CI, both files in the same PR |
 | Conflicts in shared files | Merge delays | Section 6.3 rules |
 | GPU memory shared with another app | Vision or the LLM fails to load | Memory cap, `mg400ctl gpu`, H-13 |
@@ -533,22 +540,22 @@ Human tasks with long lead times. Start them now: H-02 (firmware recovery), H-03
 
 ## 12. Open questions
 
-H-01 answers these, in the PR or on the map issue.
+The owner answered on 2026-10-30. Q-02, Q-05 and Q-06 are still open. Q-02 blocks FUR-05 ("Ask first"). Q-05 and Q-06 block no task: the last column says what happens until they have an answer.
 
-| Id | Question | Affects |
-| --- | --- | --- |
-| Q-01 | Are "chip" (the vision model's class) and "wafer" the same object? | GOV-02 glossary, recipes |
-| Q-02 | Are the FurnaceCode camera and the microscope camera two different Toupcam cameras? | TPC-01, FUR-05, MIC-03 |
-| Q-03 | How does a chip get under the microscope objective: the robot, an XY stage, or by hand? Is the Thorlabs stage under the tray in scope? | MS-03, out of scope list |
-| Q-04 | Are the furnace and MFC links RS-485? How long are the cable runs to Olares? | H-04, OPS-01 |
-| Q-05 | Which gas is on each MFC channel, and which one is inert? | H-10, FUR-03 |
-| Q-06 | Where do furnace recordings go on Linux? Can Olares mount the `Wu_Lab_Data` share? | FUR-05 |
-| Q-07 | Where is the YOLO training dataset, and who can label new images? | VIS-08, H-22 |
-| Q-08 | Does the lab agree to publish the trained weights in this public repo's releases? | D4, H-14, H-15 |
+| Id | Question | Answer | Effect on the plan |
+| --- | --- | --- | --- |
+| Q-01 | Are "chip" (the vision model's class) and "wafer" the same object? | Yes. | The plan says "chip". The GOV-02 glossary lists "wafer" as a synonym. |
+| Q-02 | Are the FurnaceCode camera and the microscope camera two different Toupcam cameras? | Not known yet. | Probably one camera, because the microscope watches the furnace through its window. FUR-05 asks first and builds the case that the answer names. |
+| Q-03 | How does a chip get under the microscope objective? Is the Thorlabs stage under the tray in scope? | By the stage. With the crucible inside the furnace, the microscope looks through a transparent window in the furnace top. | MS-03 images through the window. STG-01, STG-02 and H-07 cover all three axes, soft limits and imaging poses. MIC-01 and MIC-03 protect the window. The Thorlabs stage stays out of scope. |
+| Q-04 | Are the furnace and MFC links RS-485? How long are the cable runs to Olares? | Not yet. No hardware changes now. | Hardware freeze (section 2.2). H-04 asks again when the freeze ends. |
+| Q-05 | Which gas is on each MFC channel, and which one is inert? | Not known yet. | FUR-03 refuses gas commands until H-10 sets the gas map. |
+| Q-06 | Where do furnace recordings go on Linux? Can Olares mount the `Wu_Lab_Data` share? | Not known yet. | FUR-05 keeps runs local until `MG400_FURNACE_ARCHIVE_DIR` is set. |
+| Q-07 | Where is the YOLO training dataset, and who can label new images? | Anyone in the lab can label. | The current labeled set is in the Roboflow project behind the model `rotatedlabel/yolo-for-the-qunums2-0-right-han-1-yolo26s-seg-t1` (dataset version 1). H-22 exports it with a Roboflow account that has access, then adds new images. |
+| Q-08 | Does the lab agree to publish the trained weights in this public repo's releases? | Yes. | D4 stands. H-14 runs after H-15. |
 
 ## 13. Out of scope
 
-- The microscope XY stage under the tray (Thorlabs controllers), unless Q-03 adds it.
+- The Thorlabs stage under the tray. The three-axis stage in this repo positions the chip under the microscope (Q-03).
 - ROS 2, MuJoCo and Isaac Sim.
 - Windows support for the moved code.
 - The WuLab desktop GUIs, except where a card ports their function.

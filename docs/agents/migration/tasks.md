@@ -18,7 +18,7 @@ Goal: accept this plan so that agents can start.
 Steps:
 
 1. Read `README.md` and skim this file.
-2. Answer Q-01 to Q-08 (README section 12) in the plan PR or on the map issue.
+2. Check the answers in README section 12. Answer Q-02, Q-05 and Q-06 on the map issue when they are known.
 3. Change what you disagree with in a plan PR, or ask an agent to.
 4. Merge the plan PR.
 
@@ -138,8 +138,6 @@ Owner: agent · Size: M · Review: human · Deps: DOC-01
 
 Goal: record D1 to D9 and the plan defaults where `docs/agents/domain.md` says decisions live.
 
-Ask first: Q-01 (chip versus wafer).
-
 Steps:
 
 1. Create `docs/adr/` with these ADRs. Each is `NNNN-slug.md` (Chinese) plus `NNNN-slug.en.md` (English), has the parts Status (Accepted, date), Context, Decision and Consequences, and fits on one page.
@@ -152,7 +150,7 @@ Steps:
    - 0007 Bilingual docs (D9, DOC-01).
    - 0008 LLM agents behind approval gates (D8, AGT-01, AGT-02).
    - 0009 Web framework for new services (README 2.3).
-2. `GLOSSARY.md`: one table with the columns Term, 术语, Definition, 定义. Terms: chip, wafer, crucible, tray, slot, station, load position, zone, lease, recipe, skill, run, rehearsal, service, contract, control plane, tool offset, calibration, asset, homing.
+2. `GLOSSARY.md`: one table with the columns Term, 术语, Definition, 定义. Terms: chip (the lab also says wafer, Q-01), crucible, furnace window, tray, slot, station, load position, pose, zone, lease, recipe, skill, run, rehearsal, service, contract, control plane, tool offset, calibration, asset, homing, soft limit, clearance position.
 
 Done when: the pair check passes; every README 2.3 row names an ADR that exists.
 
@@ -641,7 +639,7 @@ Goal: two devices never move into the same space, and the conditions between dev
 
 Steps:
 
-1. Zones from settings: `tray`, `crucible-load`, `furnace-tube`, `microscope-stage`. Each has an owner device and entry conditions.
+1. Zones from settings: `tray`, `crucible-load`, `furnace-tube`. Each has an owner device and entry conditions. Only the stage may hold `furnace-tube`. The robot never goes under the microscope.
 2. `src/orchestrator/zones.py`: acquire and release with the holder's name. A second holder waits, then fails after a timeout.
 3. Entry conditions are functions over service states. Examples: the robot enters `crucible-load` only when the stage is homed and the Insert axis is idle at `load` and held awake. The Insert axis moves only when the robot does not hold `crucible-load`.
 4. The runner checks the conditions before each step that declares a zone and again after it.
@@ -977,33 +975,11 @@ Steps:
 
 Done when: P-CHECKS pass.
 
-### FUR-05 · Furnace camera and recordings
-
-Owner: agent · Size: M · Review: agent · Deps: FUR-04, TPC-01, TPC-02
-
-Source: FurnaceCode `run_recordings.py`, `run_video_compiler.py`, the camera and recording routes of `app.py`, `test_run_recordings.py`, `test_run_video_compiler.py`, `test_local_run_sync.py`.
-
-Goal: the furnace page records video with per-frame temperature on Olares.
-
-Ask first: Q-02 and Q-06.
-
-Steps:
-
-1. `src/furnace/recordings.py` and `src/furnace/video.py`. Local runs in `/var/lib/mg400/recordings/`. Archive to `MG400_FURNACE_ARCHIVE_DIR` (a mounted share, Q-06) instead of `Z:\Wu_Lab_Data`.
-2. The camera routes and page parts: live feed, stabilization switch, start and stop recording, record with a sequence.
-3. Per-frame furnace metadata as in the source; the `.timestamps.csv` columns stay unchanged.
-4. Runs that the orchestrator started also go into the run store under the chip ID.
-5. Tests moved and adapted.
-
-Done when: P-CHECKS pass.
-
-Docs: `furnace.md` and `.en.md`.
-
 ### STG-01 · Stage firmware: limit switches, homing, keep-awake
 
 Owner: agent+human · Size: L · Review: human · Deps: DOC-10
 
-Goal: the Insert axis carries the crucible into the furnace, so its position must be known after every reset.
+Goal: the Insert axis carries the crucible into the furnace, and the stage moves the chip under the furnace window for the microscope (Q-03). The position of every axis must be known after every reset, and no axis may leave its safe travel.
 
 Read: `firmware/three-motor-demo/*`, `src/stage_controller/protocol.py` (what the host parses).
 
@@ -1012,11 +988,12 @@ Steps:
 1. `MotorPins.h`: per motor `LimitMin` and `LimitMax` pins (defaults A0 and A1 for Insert, A2 and A3 for Bottom, A4 and A5 for Top; 255 means none). `INPUT_PULLUP`, active low, 5 ms debounce. Static checks against pin conflicts.
 2. `MotorControl`: refuse motion toward an active limit. Stop at once, without a ramp, when the limit in the motion direction becomes active, in finite and hold modes.
 3. `home` (selected motor): move toward the minimum limit at the homing speed, back off 200 steps, approach slowly, set position 0 and `homed=1`. Fail with `ERROR: home failed: <reason>` after a step limit or a timeout.
-4. After a reset or power-up, `homed=0` for all motors. A microstep change also sets `homed=0` for all motors.
-5. `awake <ms>` (selected motor): keep the driver awake for up to 60000 ms after the last motion. Renewable. `awake 0` ends it.
-6. Status lines append ` homed=<0|1> limits=<min><max> awake=<0|1>`. Every existing field keeps its order.
-7. Every existing command and reply stays unchanged.
-8. Update `README.md` and `README.en.md`: wiring, commands, status format.
+4. `soft <min> <max>` (selected motor, steps from home): accepted only when homed. Finite moves that end outside the range fail with `ERROR`. Hold mode stops at the edge of the range.
+5. After a reset or power-up, `homed=0` and no soft range for all motors. A microstep change does the same. A new `home` clears the soft range of its motor.
+6. `awake <ms>` (selected motor): keep the driver awake for up to 60000 ms after the last motion. Renewable. `awake 0` ends it.
+7. Status lines append ` homed=<0|1> limits=<min><max> soft=<0|1> awake=<0|1>`. Every existing field keeps its order.
+8. Every existing command and reply stays unchanged.
+9. Update `README.md` and `README.en.md`: wiring, commands, status format.
 
 Done when: the sketch compiles for the board in use (report the Arduino CLI or IDE command and its output); the owner reviews.
 
@@ -1030,11 +1007,14 @@ Goal: the stage service knows positions in millimetres and refuses automated mov
 
 Steps:
 
-1. `protocol.py`: parse `homed`, `limits` and `awake`; commands `home` and `awake`; `DemoTransport` simulates limit switches and homing.
-2. `/var/lib/mg400/stage.toml`: per motor `steps_per_mm` at a given microstep, and named positions in millimetres from home (Insert: `load` and `furnace`). Values from H-07.
-3. `controller.py`: `home(motor)`, `awake(motor, seconds)`, `goto(motor, name)`. `goto` needs `homed`, refuses unknown names, and converts with the microstep in use. Without homing, automated moves (`goto` and contract commands) fail with "position unknown, home first".
-4. Routes `POST /api/motors/<m>/home`, `/awake`, `/goto`, and the matching contract commands.
-5. Page: a homed badge, a Home button, named position buttons for Insert.
+1. `protocol.py`: parse `homed`, `limits`, `soft` and `awake`; commands `home`, `soft` and `awake`; `DemoTransport` simulates limit switches, homing and soft ranges.
+2. `/var/lib/mg400/stage.toml`, with values from H-07:
+   - Per motor: `steps_per_mm` at a given microstep, and the soft limits `min_mm` and `max_mm` from home.
+   - Named positions of one axis in millimetres from home. Insert: `load` and `furnace`.
+   - Named poses: a position for each of the three axes, reached one axis at a time in the listed order. The imaging poses put the chip under the furnace window. The pose `furnace` is the inserted position from which `crucible.unload` starts.
+3. `controller.py`: `home(motor)`, `awake(motor, seconds)`, `goto(motor, name)`, `pose(name)`. After `home`, send `soft` with the soft limits of that motor. `goto` and `pose` need `homed` on every axis they move, refuse unknown names and targets outside the soft limits, and convert with the microstep in use. Without homing, automated moves (`goto`, `pose` and contract commands) fail with "position unknown, home first".
+4. Routes `POST /api/motors/<m>/home`, `/awake`, `/goto`, `POST /api/poses/<name>`, and the matching contract commands.
+5. Page: a homed badge per axis, a Home button, named position buttons for Insert, pose buttons.
 6. With the old firmware, show homing as unavailable and keep manual control.
 7. Tests and docs.
 
@@ -1046,12 +1026,12 @@ Docs: `stage-panel.md` and `.en.md`.
 
 Owner: agent · Size: L · Review: human · Deps: ORC-03, ORC-04, STG-02, FUR-04, THM-03
 
-Goal: move a wafer between the tray and the crucible with every interlock between robot, stage, furnace and thermal camera.
+Goal: move a chip between the tray and the crucible with every interlock between robot, stage, furnace and thermal camera.
 
 Steps:
 
 1. `crucible.load(from_slot)`: the furnace is in STOP/COOLING with PV below `load_max_c`; the stage is homed; Insert is at `load` and held awake; the robot takes zone `crucible-load`, transfers to station `crucible/load`, leaves and releases the zone; Insert moves to `furnace`.
-2. `crucible.unload(to_slot)`: the sequence is complete and the furnace is in STOP/COOLING; Insert moves to `load` and stays awake; the thermal region `crucible` reads below `unload_max_c` (wait with a timeout, then hold); the robot takes the zone, picks, leaves and places in the slot.
+2. `crucible.unload(to_slot)`: no sequence is running and the furnace is in STOP/COOLING; Insert moves to `load` and stays awake; the thermal region `crucible` reads below `unload_max_c` (wait with a timeout, then hold); the robot takes the zone, picks, leaves and places in the slot.
 3. Limits come from settings and the recipe. No default allows a heat-related move on hardware.
 4. Rehearsal tests for success and for each failed condition.
 
@@ -1100,7 +1080,7 @@ Steps:
    | `STATUS` | status lines |
    | any error | a line that starts with `ERR` or `ERROR` |
 
-3. Add without changing the rows above: `DONE FOCUS POS <n>` when a focus move ends (today the host waits a computed time), `FOCUS ZERO`, `FOCUS LIMIT <min> <max>` (moves outside the range are refused), and `VERSION`, which replies `VERSION microscope-axes <x.y.z>`.
+3. Add without changing the rows above: `DONE FOCUS POS <n>` when a focus move ends (today the host waits a computed time), `FOCUS ZERO`, `FOCUS LIMIT <min> <max>` (moves outside the range are refused), `FOCUS HOME`, and `VERSION`, which replies `VERSION microscope-axes <x.y.z>`. `FOCUS HOME` moves away from the furnace window to an optional limit switch, sets zero there and replies `DONE FOCUS HOME`. Without a switch (pin 255 in the sketch) it replies with `ERR`. The objectives work just above the window, so the host needs a known focus zero before any automated move (MIC-03).
 4. `src/microscope/sim.py`: the same grammar for tests and demo mode.
 5. `tests/test_microscope_protocol.py`: the simulator answers every row of the table.
 6. `firmware/microscope-axes/README.md` and `README.en.md`: wiring, commands, replies.
@@ -1140,11 +1120,12 @@ Goal: the microscope speaks contract v1.
 
 Steps (P-SERVICE plus):
 
-1. Commands: `select_objective(id)` (the ArUco switch with the side camera), `autofocus(mode)` (`full` or `local`), `focus_move(steps)` within the soft limits, `snapshot()` (saved to the run store, or to a path the orchestrator gives), `stop`.
-2. State: objective id, focus position relative to zero, camera states, busy, last result.
-3. Stop and lease expiry: cancel the running task, send `STOP ALL`, disable both motors.
-4. Demo mode: the MIC-01 simulator, a fake microscope camera, and synthetic side-camera frames with ArUco markers.
-5. Tests in demo mode with `tests/contract_helpers.py`.
+1. Commands: `select_objective(id)` (first raise focus to the clearance position `MG400_MICROSCOPE_SWITCH_FOCUS`, then the ArUco switch with the side camera), `autofocus(mode)` (`full` or `local`, inside the focus limits), `focus_move(steps)` within the focus limits, `home_focus()`, `set_focus_zero()`, `snapshot()` (saved to the run store, or to a path the orchestrator gives), `stop`.
+2. Focus zero: `home_focus()` sends `FOCUS HOME` when the focus axis has a switch. Without a switch, an operator moves focus to the clearance position and calls `set_focus_zero()` from the panel. Automation may not call it. Until zero is known, commands that move focus or the turret fail with "focus position unknown". A firmware reset clears zero. When zero is known, the service sends `FOCUS LIMIT` with `MG400_MICROSCOPE_FOCUS_LIMITS`.
+3. State: objective id, focus position relative to zero, whether zero is known, camera states, busy, last result.
+4. Stop and lease expiry: cancel the running task, send `STOP ALL`, disable both motors.
+5. Demo mode: the MIC-01 simulator, a fake microscope camera, and synthetic side-camera frames with ArUco markers.
+6. Tests in demo mode with `tests/contract_helpers.py`, including the clearance move before every turret turn and the refusals without zero.
 
 Done when: P-CHECKS pass.
 
@@ -1158,7 +1139,7 @@ Goal: operators lose the Tk GUI when the microscope moves to Olares (D1). This p
 
 Steps:
 
-1. A page served by the microscope service: live microscope view (MJPEG), side camera view, objective buttons (ids from the calibration data), autofocus buttons, focus jog within the limits, snapshot, stop, status and events.
+1. A page served by the microscope service: live microscope view (MJPEG), side camera view, objective buttons (ids from the calibration data), autofocus buttons, focus jog within the limits, focus home or set zero (with a confirmation), snapshot, stop, status and events.
 2. The same access rules as the other panels. English labels, like the robot and stage panels.
 3. Python route tests and node tests for the page logic.
 
@@ -1194,29 +1175,54 @@ Goal: the microscope service runs on Olares with its devices.
 Steps (P-DEPLOY plus):
 
 1. Unit `mg400-microscope.service` with `SupplementaryGroups=dialout video`, `LD_LIBRARY_PATH` as in TPC-02, port 8770.
-2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_CAMERA`, `_CAMERA_SERIAL`, `_CALIBRATION_DIR`, `_BIND`, `_PORT`, `_TOKEN`.
+2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_CAMERA`, `_CAMERA_SERIAL`, `_CALIBRATION_DIR`, `_SWITCH_FOCUS`, `_FOCUS_LIMITS`, `_BIND`, `_PORT`, `_TOKEN`. The focus values come from H-06.
 3. A registry entry `microscope` (optional).
 
 Done when: P-CHECKS pass.
 
 Docs: `microscope.md` and `.en.md`, `deploy.md` and `.en.md`.
 
+### FUR-05 · Recordings with furnace metadata
+
+Owner: agent · Size: M · Review: agent · Deps: FUR-04, MIC-04, TPC-02
+
+Source: FurnaceCode `run_recordings.py`, `run_video_compiler.py`, the camera and recording routes of `app.py`, `test_run_recordings.py`, `test_run_video_compiler.py`, `test_local_run_sync.py`.
+
+Goal: record video of the chip in the furnace, with the furnace readings on every frame.
+
+Ask first: Q-02 (one Toupcam camera or two). Build only the case that the answer names.
+
+Context: the microscope watches the chip through the furnace window, so the FurnaceCode camera is probably the microscope camera. A camera has one owner service. The owner of the camera records. The furnace service only supplies the readings.
+
+Steps (P-MOVE plus):
+
+1. `src/furnace/recordings.py` and `src/furnace/video.py`: the run recorder and the video compiler as libraries without camera code. Local runs go to `/var/lib/mg400/recordings/`. When `MG400_FURNACE_ARCHIVE_DIR` is set (a mounted share, Q-06), archive there instead of `Z:\Wu_Lab_Data`. Otherwise runs stay local.
+2. A readings provider reads the furnace `api/state` at 1 Hz with `labkit.ServiceClient` and gives each frame the furnace fields of the source. The `.timestamps.csv` columns stay unchanged. When the furnace does not answer, the fields stay empty, an event is added, and the recording goes on.
+3. One camera: the microscope service hosts recording. Add start and stop recording, "record with sequence" and the stabilization switch to its page and its contract commands.
+4. Two cameras: the furnace service opens the furnace camera with `toupcam_camera` (`MG400_FURNACE_CAMERA_SERIAL`) and hosts the live feed, the stabilization switch and the same recording controls on the furnace page.
+5. "Record with sequence": the provider sees a sequence start in the furnace state and starts recording. Recording stops when the sequence ends.
+6. Runs that the orchestrator started also go into the run store under the chip ID.
+7. Tests moved and adapted, with a fake furnace service and the fake camera.
+
+Done when: P-CHECKS pass.
+
+Docs: `furnace.md`, `microscope.md` and their `.en.md` pairs.
+
 ### MS-03 · Milestone: microscope image under the chip's ID
 
-Owner: agent+human · Size: M · Review: human · Deps: MIC-06, MIC-05, ORC-05, H-21
+Owner: agent+human · Size: M · Review: human · Deps: MIC-06, MIC-05, ORC-05, XDV-01, H-18, H-21
 
-Goal: the first automated image with full provenance.
-
-Ask first: Q-03 (how the chip gets under the objective).
+Goal: the first automated image of a chip through the furnace window, with full provenance.
 
 Steps:
 
-1. `src/orchestrator/skills/microscope.py`: `microscope.select`, `microscope.autofocus`, `microscope.snapshot`.
-2. `recipes/microscope-image.toml` with the params `chip_id` and `objective`: select, autofocus, snapshot. The image goes to the run store under the chip ID.
-3. Rehearsal tests.
-4. The operator runs it with P-HW.
+1. `src/orchestrator/skills/microscope.py`: `microscope.select`, `microscope.autofocus`, `microscope.snapshot`. `src/orchestrator/skills/stage.py`: `stage.pose(name)`, which holds the zone `furnace-tube` while the stage moves to a named pose (STG-02).
+2. `recipes/microscope-image.toml` with the params `chip_id`, `objective` and `pose`: verify the label, load the chip (`crucible.load`), move to the imaging pose, select the objective, autofocus, snapshot, move to the pose `furnace`, unload (`crucible.unload`), verify the label. The image goes to the run store under the chip ID.
+3. The furnace stays in STOP for the whole run (room temperature). Imaging during heating is a later recipe, after the owner sets its limits.
+4. Rehearsal tests for success, an unhomed stage, an unknown pose, an unknown focus zero and an autofocus failure.
+5. The operator runs it with P-HW.
 
-Done when: one supervised run stores a focused image under the chip ID; the results are on the issue.
+Done when: one supervised run at room temperature stores a focused image under the chip ID; the results are on the issue.
 
 ## Phase 5: people and agents
 
@@ -1397,6 +1403,8 @@ Done when: P-CHECKS pass.
 
 ## Human tasks
 
+Hardware freeze (README section 2.2): device moves, wiring and mounting wait until the owner ends the freeze. This holds H-04 to H-07, H-09, mounting the tag in H-08 and installing a cutoff in H-11. The other steps and tasks go on.
+
 ### H-02 · Recover the turret and focus firmware
 
 Owner: human · Size: S · Review: human · Deps: none
@@ -1426,7 +1434,7 @@ Owner: human · Size: M · Review: human · Deps: H-03
 
 Steps:
 
-1. Find the link type of the furnace and MFC adapters: RS-485 or other (Q-04).
+1. Find the link type of the furnace and MFC adapters (RS-485 or other) and the cable lengths to Olares (Q-04).
 2. Move the USB adapters to Olares and run the cables. Keep the heater off during the move.
 3. Write down the `/dev/serial/by-id/` names. Set `MG400_FURNACE_SERIAL` and `MG400_MFC_SERIAL`.
 4. If recordings must go to the lab share, mount it on Olares (Q-06).
@@ -1454,6 +1462,8 @@ Steps:
 1. Move the Toupcam camera, the turret and focus Arduino and the side AC410 camera to Olares per the H-03 layout.
 2. Write down the Toupcam VID and PID, the Arduino's `/dev/serial/by-id/` name and the side camera's `/dev/v4l/by-path/` name.
 3. Do not move the side camera or the ArUco markers relative to the turret. The calibration data depends on their positions.
+4. Keep the microscope aligned over the furnace window. Find the clearance position: a focus position at which the turret turns every objective clear of the window, with a margin. Mark it so that an operator can find it again, and write down its distance from the focus switch if one is fitted.
+5. Find the focus limits: the focus range in which every objective stays clear of the window, with a margin, measured from the clearance position.
 
 Unblocks MIC-06, H-21.
 
@@ -1463,10 +1473,12 @@ Owner: human · Size: M · Review: human · Deps: STG-01
 
 Steps:
 
-1. Install minimum and maximum limit switches on the Insert axis, and on the other axes if wanted. Wire them to the pins in STG-01.
+1. Install minimum and maximum limit switches on all three axes. Wire them to the pins in STG-01.
 2. Upload the STG-01 firmware.
 3. Home each axis. Measure the steps per mm at the microstep in use.
 4. Measure the Insert positions `load` and `furnace` in mm from home.
+5. With the furnace cold, measure the soft limits of each axis: the travel that keeps the crucible clear of the tube and the window.
+6. Measure the poses: each imaging pose (the positions of all three axes that put the chip under the window, checked with a test chip in the microscope view) and the pose `furnace`. Write down the axis order that reaches each pose without a collision.
 
 Output: the values for `/var/lib/mg400/stage.toml` on the issue. Unblocks H-18.
 
@@ -1551,7 +1563,7 @@ Owner: human · Size: S · Review: human · Deps: H-15
 
 Steps:
 
-1. Get the lab's agreement to publish the weights (Q-08).
+1. The lab agreed to publish the weights (Q-08). Wait until H-15 has chosen the license.
 2. Create the release `vision-model-v1` on shc0507/dobot_mg400 with the asset `chip-arm-yolo26s-seg-v1.pt`. It is `models/weights.pt` from Visual-Localization `cc329b3`: 23,393,117 bytes, SHA-256 `0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07`.
 
 Unblocks VIS-05.
@@ -1595,7 +1607,7 @@ Owner: human · Size: M · Review: human · Deps: STG-02, H-07
 Steps (P-HW):
 
 1. Homing on each axis; limit stops in both directions.
-2. The named positions `load` and `furnace`.
+2. The named positions `load` and `furnace`, the soft limits, and each pose at low speed.
 3. Keep-awake: the axis holds while the robot works at the crucible at low speed.
 
 Output on the issue. Unblocks MS-02.
@@ -1631,9 +1643,10 @@ Owner: human · Size: M · Review: human · Deps: MIC-06, MIC-04, MIC-05, H-06
 
 Steps (P-HW):
 
-1. Switch through every objective in both directions.
-2. Autofocus, full and local. Check the focus limits.
-3. Take a snapshot from the panel.
+1. With the furnace cold, check the focus zero (home or operator zero), the focus limits and the clearance position against the window.
+2. Switch through every objective in both directions. The turret turns only at the clearance position.
+3. Autofocus, full and local. Check that both stay inside the focus limits.
+4. Take a snapshot from the panel.
 
 Output on the issue. Unblocks MS-03.
 
@@ -1643,8 +1656,9 @@ Owner: human · Size: M · Review: human · Deps: H-09, VIS-05
 
 Steps:
 
-1. Capture at least 50 tray images with the final cameras, with varied chip positions and lighting.
-2. Label the chips and the arm (Roboflow, CVAT or similar). Store the set outside Git and put its path on the issue (Q-07).
+1. Export the current labeled set from the Roboflow project behind the model `rotatedlabel/yolo-for-the-qunums2-0-right-han-1-yolo26s-seg-t1` (dataset version 1). Use a Roboflow account with access to that project (Q-07).
+2. Capture at least 50 tray images with the final cameras, with varied chip positions and lighting.
+3. Label the chips and the arm with the classes of the model. Anyone in the lab may label (Roboflow, CVAT or similar). Keep the set outside Git and put its location on the issue.
 
 Unblocks VIS-08.
 

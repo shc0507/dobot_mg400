@@ -1,1 +1,0 @@
-firmware/three-motor-demo/README.md

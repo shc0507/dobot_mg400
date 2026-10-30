@@ -35,6 +35,7 @@ vision = [
 vision-gpu = ["ultralytics>=8.4,<9", "torch>=2.7", "torchvision>=0.22"]
 
 [project.scripts]
+labctl = "orchestrator.cli:main"
 mg400-robot = "mg400.terminal_control:main"
 stage-panel = "stage_controller.__main__:main"
 thermal-cam = "thermal_cam.__main__:main"
@@ -53,7 +54,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam", "src/furnace", "src/toupcam_camera"]
+packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam", "src/furnace", "src/toupcam_camera", "src/orchestrator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -70,6 +70,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Toupcam capture and recording | `src/toupcam_camera/camera.py`, `capture.py` | `test_toupcam_camera.py` | Module docstrings; keep vendor `toupcam.py` unchanged |
 | Furnace and gas drivers | `src/furnace/controller.py`, `config.py` | `test_furnace_controller.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Furnace run lifecycle and recovery | `src/furnace/service.py`, `state.py`, `sim.py` | `test_furnace_service.py`, `test_furnace_sim.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
+| Recipe orchestration and rehearsal | `src/orchestrator/`, `recipes/`, `deploy/mg400ctl` | `test_orchestrator_*.py`, `test_deploy_mg400ctl.py` | [orchestrator.md](docs/orchestrator.md) |
 | Migration plan | `docs/agents/migration/tasks.toml`, `tasks.md` | `test_migration_plan.py` | [migration README](docs/agents/migration/README.md) |
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_camera_preview.mjs`.

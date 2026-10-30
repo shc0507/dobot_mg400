@@ -1,6 +1,7 @@
 #!/usr/bin/python3
-"""Control host services with mg400ctl or labctl. Run as root, for example: sudo mg400ctl status
+"""Control host services and recipes with mg400ctl or labctl.
 
+Administrative commands require root. Recipe commands run as UID/GID 1000.
 terminal and mode run as the service user (UID 1000) with the settings from
 /etc/mg400/mg400.env, so they share the robot connection lock with the panels.
 """
@@ -36,6 +37,62 @@ CAMERA_PORT = 1985
 PRELOAD = "http://127.0.0.1:1984/api/preload"
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 BACKUP_OWNER = (0, 0)
+ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs"}
+ORCHESTRATOR_SERVICES = ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
+ORCHESTRATOR_DATA = {"MG400_ORCH_RUNS_DIR"}
+ORCHESTRATOR_SETTINGS = (
+    ORCHESTRATOR_DATA
+    | {"MG400_ORCH_TIMEOUT_S"}
+    | {
+        f"MG400_ORCH_{service}_{suffix}"
+        for service in ORCHESTRATOR_SERVICES
+        for suffix in ("URL", "TOKEN")
+    }
+)
+
+
+def orchestrator(host, argv, execvpe):
+    """Dispatch only recipe commands, without changing the administrative root gate."""
+    root = os.geteuid() == 0
+    if not root and (
+        os.getuid() != SERVICE_UID
+        or os.geteuid() != SERVICE_UID
+        or os.getgid() != SERVICE_GID
+        or os.getegid() != SERVICE_GID
+    ):
+        print("Run recipe commands as UID/GID 1000, or through sudo labctl.", file=sys.stderr)
+        return 1
+    try:
+        if root:
+            # Rehearsal must not load production settings, even before dropping UID.
+            settings = parse_settings(host.settings.read_text()) if argv[0] != "rehearse" else {}
+        else:
+            settings = os.environ
+        allowed = ORCHESTRATOR_SETTINGS if argv[0] == "run" else ORCHESTRATOR_DATA
+        environment = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            **{key: os.environ[key] for key in PASSED if key in os.environ},
+            **{key: value for key, value in settings.items() if key in allowed and value},
+        }
+        program = str(host.code.absolute() / ".venv/bin/python")
+        command = [program, "-I", "-m", "orchestrator", *argv]
+        if root:
+            user = pwd.getpwuid(SERVICE_UID).pw_name
+            group = grp.getgrgid(SERVICE_GID).gr_name
+            runuser = shutil.which("runuser", path="/usr/sbin:/usr/bin:/sbin:/bin")
+            if runuser is None:
+                raise FileNotFoundError("runuser is missing. Install util-linux.")
+            execvpe(
+                runuser,
+                ["runuser", "--pty", "-u", user, "-g", group, "--", *command],
+                environment,
+            )
+        else:
+            execvpe(program, command, environment)
+    except (OSError, ValueError, KeyError) as error:
+        print(f"Cannot start recipe command: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _file_state(info):
@@ -291,6 +348,9 @@ def as_service_user(host, settings, command, execvpe):
 
 def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sys.stdout):
     host = host or Host()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ORCHESTRATOR_COMMANDS:
+        return orchestrator(host, argv, execvpe)
     try:
         registry = load_services(host.registry)
     except (OSError, ValueError) as error:

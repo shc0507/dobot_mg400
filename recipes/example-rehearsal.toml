@@ -1,0 +1,26 @@
+name = "Example robot rehearsal"
+version = 1
+
+[params.chip_id]
+type = "string"
+default = "demo-chip"
+
+[[steps]]
+skill = "robot.enable"
+params = {}
+timeout_s = 5
+
+[[steps]]
+skill = "robot.move"
+params = { x_mm = 230.0, y_mm = 0.0, z_mm = 20.0, r_deg = 0.0 }
+timeout_s = 5
+
+[[steps]]
+skill = "sample.record"
+params = { chip_id = "${chip_id}", note = "Simulated robot position reached" }
+timeout_s = 1
+
+[[steps]]
+skill = "robot.stop"
+params = {}
+timeout_s = 5

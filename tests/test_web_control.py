@@ -1009,3 +1009,201 @@ def test_alarms_and_mode_changes_are_logged_once(rig, caplog):
     assert log.count("Robot mode 9, error=True") == 1
     assert log.count("Controller alarms: 72 Parallelogram positive limit") == 1
     assert log.count("Controller alarms cleared.") == 1
+
+
+def test_contract_description_preserves_legacy_commands_and_parameters(rig):
+    state, _, _ = rig
+    value = state.describe()
+    assert value["service"] == "robot" and value["contract"] == 1
+    assert value["demo"] is False
+    assert value["lease_seconds"] == 3
+    commands = value["commands"]
+    assert set(commands) == {
+        "start_sync",
+        "stop_sync",
+        "enable",
+        "disable",
+        "stop",
+        "home",
+        "execute",
+        "grip",
+        "initialize_gripper",
+        "keyboard",
+        "clear_alarm",
+    }
+    assert {name for name, spec in commands.items() if spec["any_client"]} == {"stop", "disable"}
+    assert commands["keyboard"]["ui_only"] is True
+    assert commands["grip"]["params"]["properties"]["position"]["maximum"] == 1000
+    target = commands["execute"]["params"]["properties"]["targets"]
+    assert target["required"] == ["x", "y", "z", "r"]
+    assert set(target["properties"]) == {"x", "y", "z", "r", "grip"}
+    assert state.snapshot()["last_command"] is None
+
+
+def test_contract_events_preserve_existing_journal_lines_once(rig, caplog):
+    state, _, _ = rig
+    caplog.set_level(logging.INFO, logger="mg400.web_control")
+    assert state.events.since(0) == {"events": [], "next": 0}
+    with state._lock:
+        state._message = "fixture state message"
+        state._message = "fixture state message"
+        state._locked = True
+        state._fault = True
+        state._kb_reason = "fixture close reason"
+        state._grip = {"locked": True, "message": "fixture gripper lock"}
+        state._alarms = [{"id": 72, "description": "fixture alarm"}]
+    replay = state.events.since(0)
+    assert [entry["message"] for entry in replay["events"]] == panel_log(caplog)
+    assert replay["next"] == 6
+    assert [entry["seq"] for entry in state.events.since(3)["events"]] == [4, 5, 6]
+    assert panel_log(caplog).count("Message: fixture state message") == 1
+    assert all(entry["fields"] == {} for entry in replay["events"])
+
+
+def test_last_command_waits_for_execution_and_is_not_hidden_by_newer_rejection(rig):
+    state, _, controls = rig
+    connect(state)
+    previous = state.snapshot()["last_command"]
+    assert previous["action"] == "start_sync" and previous["result"] == "ok"
+    controls[0].release_move.clear()
+    try:
+        execute(state)
+        assert controls[0].move_entered.wait(1)
+        assert state.snapshot()["last_command"] == previous
+        with pytest.raises(PermissionError):
+            state.command({"action": "enable"}, "browser-b")
+        rejected = state.snapshot()["last_command"]
+        assert rejected["action"] == "enable" and rejected["result"] == "rejected"
+        assert rejected["client"] == "browser-b"
+    finally:
+        controls[0].release_move.set()
+    wait_for(lambda: not state.snapshot()["busy"])
+    completed = state.snapshot()["last_command"]
+    assert completed["action"] == "execute" and completed["result"] == "ok"
+    assert completed["client"] == "browser-a"
+    assert completed["id"] != previous["id"]
+    assert completed["finished_at"] >= rejected["finished_at"]
+    completed["result"] = "changed"
+    assert state.snapshot()["last_command"]["result"] == "ok"
+
+
+def test_late_canceled_worker_cannot_replace_newer_completed_stop(rig):
+    state, _, controls = rig
+    connect(state)
+    controls[0].release_move.clear()
+    try:
+        execute(state)
+        assert controls[0].move_entered.wait(1)
+        reply = state.stop("browser-b", wait_s=1)
+        assert reply["stop"] == "confirmed"
+        stopped = reply["state"]["last_command"]
+        assert stopped["action"] == "stop" and stopped["result"] == "stopped"
+        assert stopped["client"] == "browser-b"
+    finally:
+        controls[0].release_move.set()
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert state.snapshot()["last_command"] == stopped
+    assert state.snapshot()["locked"]
+
+
+def test_last_command_records_worker_rejection_and_unknown_failure(rig):
+    state, _, controls = rig
+    connect(state)
+    controls[0].failure = TargetRejectedError("target rejected")
+    execute(state)
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert state.snapshot()["last_command"]["result"] == "rejected"
+    assert not state.snapshot()["locked"]
+    controls[0].failure = ValueError("unknown operation outcome")
+    execute(state)
+    wait_for(lambda: not state.snapshot()["busy"])
+    result = state.snapshot()["last_command"]
+    assert result["action"] == "execute" and result["result"] == "failed"
+    assert "unknown operation outcome" in result["message"]
+    assert state.snapshot()["locked"]
+
+
+def test_contract_stop_reports_pending_then_confirmed_without_taking_control(rig):
+    state, _, controls = rig
+    connect(state)
+    started, finish = threading.Event(), threading.Event()
+
+    def delayed_stop():
+        started.set()
+        assert finish.wait(2)
+        return {"ok": True}
+
+    controls[0].stop = delayed_stop
+    try:
+        before = time.monotonic()
+        result = state.stop("browser-b", wait_s=0.02)
+        assert time.monotonic() - before < 0.5
+        assert started.is_set() and result["stop"] == "pending"
+        assert result["state"]["controller_id"] == "browser-a"
+        waiting = []
+        waiter = threading.Thread(target=lambda: waiting.append(state.stop("browser-c", wait_s=1)))
+        waiter.start()
+        finish.set()
+        waiter.join(2)
+        assert not waiter.is_alive()
+        assert waiting[0]["stop"] == "confirmed"
+    finally:
+        finish.set()
+
+
+def test_contract_stop_preserves_unconfirmed_verdict_after_later_success(rig):
+    state, _, controls = rig
+    connect(state)
+    controls[0].stop_ok = False
+    assert state.stop("browser-b", wait_s=1)["stop"] == "unconfirmed"
+    wait_for(lambda: not state.snapshot()["busy"])
+    controls[0].stop_ok = True
+    result = state.stop("browser-c", wait_s=1)
+    assert result["stop"] == "unconfirmed"
+    assert result["state"]["stop_unconfirmed"] and result["state"]["locked"]
+
+
+@pytest.mark.parametrize("grip", [{"busy": True}, {"locked": True}])
+def test_contract_stop_does_not_confirm_while_gripper_is_active_or_unknown(rig, grip):
+    state, _, _ = rig
+    connect(state)
+    with state._lock:
+        state._grip = grip
+    result = state.stop("browser-b", wait_s=0.02)
+    assert result["stop"] == ("unconfirmed" if grip.get("locked") else "pending")
+
+
+@pytest.mark.parametrize(
+    "value", [-1, 15.01, 10**1000, float("nan"), float("inf"), True, "1", None]
+)
+def test_contract_stop_rejects_invalid_wait_before_any_stop(rig, value):
+    state, _, controls = rig
+    with pytest.raises(ValueError):
+        state.stop("browser-a", value)
+    assert controls[0].calls == []
+    assert state.snapshot()["last_command"] is None
+
+
+def test_last_stop_result_waits_for_gripper_completion(rig):
+    state, _, _ = rig
+    connect(state)
+    previous = state.snapshot()["last_command"]
+    with state._lock:
+        state._grip = {"busy": True}
+    assert state.stop("browser-b", wait_s=0.02)["stop"] == "pending"
+    wait_for(lambda: not state._safety_workers)
+    assert state.snapshot()["last_command"] == previous
+    with state._lock:
+        state._grip = {"busy": False}
+    wait_for(lambda: state.snapshot()["last_command"]["action"] == "stop")
+    assert state.snapshot()["last_command"]["result"] == "stopped"
+
+
+def test_last_stop_result_fails_if_gripper_remains_locked(rig):
+    state, _, _ = rig
+    connect(state)
+    with state._lock:
+        state._grip = {"locked": True}
+    assert state.stop("browser-b", wait_s=0.02)["stop"] == "unconfirmed"
+    wait_for(lambda: state.snapshot()["last_command"]["action"] == "stop")
+    assert state.snapshot()["last_command"]["result"] == "failed"

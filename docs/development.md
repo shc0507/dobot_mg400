@@ -143,6 +143,9 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 | 接口 | 用途 |
 | --- | --- |
 | `GET {前缀}api/state` | 读取一次状态 |
+| `GET {前缀}api/describe` | 读取契约版本、命令参数和租约行为 |
+| `POST {前缀}api/stop` | 请求停止并读取确认结果 |
+| `GET {前缀}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
 | `POST {前缀}api/command` | 发送一个命令 |
 | `POST {前缀}api/heartbeat` | 续期控制租约 |
 | `GET {前缀}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
@@ -176,7 +179,7 @@ POST 请求必须满足以下条件：
 2. 真机控制模式带 `X-MG400-Client: <客户端 ID>`。
 3. 正文为 1–4096 字节的 JSON 对象，用 `Content-Length` 标明长度。
 
-成功时返回 200 和状态对象。
+`api/command` 和 `api/heartbeat` 成功时返回 200 和状态对象。
 拒绝时返回 400（请求无效）、401（访问密钥错误）、403（无权）或 409（状态冲突）。
 拒绝的正文为 `{"error": "..."}`。
 
@@ -203,6 +206,53 @@ POST 请求必须满足以下条件：
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
+
+### 契约发现、停止与事件
+
+真机控制模式提供 `api/describe`、`api/stop` 和 `api/events`。
+这些接口检查访问密钥、`Host` 和 `Origin`。
+无访问密钥时，仍拒绝转发头。
+`api/stop` 也检查上述 POST 请求头和客户端 ID。
+
+`api/describe` 返回 `service`、`version`、`contract`、`demo`、`zones`、`lease_seconds`、`on_lease_expiry` 和 `commands`。
+`contract` 为 1，`demo` 为 `false`。
+每个命令的 `params` 用 JSON Schema 描述参数，不含 `action`。
+`stop` 和 `disable` 的 `any_client` 为 `true`。
+`keyboard` 的 `ui_only` 为 `true`，供网页面板使用。
+`start_sync` 取得控制权，原心跳接口只续期。
+
+`api/stop` 的正文为 `{"wait_s": 0}`。
+`wait_s` 可省略，默认为 0，范围为 0–15 秒，必须是有限数值。
+接口沿用停止工作线程，等待时释放状态锁。
+任何客户端都能停止，无须持有控制租约。
+重复请求不改变既有的停止去重规则。
+成功响应为 200 和 `{"stop": "confirmed", "state": {...}}`。
+
+| `stop` | 含义 |
+| --- | --- |
+| `confirmed` | 机械臂停止已确认，夹爪无活动命令或锁定 |
+| `pending` | 等待期限已到，停止工作线程或夹爪命令仍在执行 |
+| `unconfirmed` | 机械臂停止未确认，或夹爪已锁定 |
+
+停止机械臂不会中断正在执行的夹爪命令。
+先前的停止未确认时，后续停止成功也不能清除此状态。
+响应保留锁定状态，不自动重试运动。
+
+状态的 `last_command` 初始为 `null`。
+命令完成或被拒绝后，该字段包含 `id`、`action`、`client`、`result`、`message` 和 `finished_at`。
+`finished_at` 是 Unix 秒数。
+`result` 为 `ok`、`failed`、`rejected` 或 `stopped`。
+异步命令在工作线程完成后更新结果。
+停止结果也等待活动夹爪命令结束，夹爪锁定时记为 `failed`。
+其他客户端的拒绝请求不会隐藏正在执行的命令的最终结果。
+已取消的旧工作线程不能覆盖较新的已完成停止。
+
+`api/events` 返回 `{"events": [...], "next": 0}`。
+每个事件含 `seq`、`ts_unix`、`level`、`message` 和 `fields`。
+`since` 默认为 0，必须是非负整数。
+响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
+服务保留最近 1000 个事件，重启后序号重新开始。
+事件对应既有的状态消息、锁定、报警、键盘关闭原因和夹爪锁定日志，不增加日志行。
 
 ### WebSocket 接口
 
@@ -293,7 +343,57 @@ POST 请求必须满足以下条件：
 `hold/stop` 可以重复发送。
 `hold/stop` 先于同一 `hold_id` 的 `hold` 到达时，服务拒绝之后到达的 `hold`。
 
+### 位移台自动化契约
+
+自动化接口位于 `/contract/api/`，与现有面板接口并存。
+先通过面板连接 Arduino，再使用自动化接口。
+`labkit.client.ServiceClient` 的基地址为 `http://127.0.0.1:8767/contract`，包含 `/contract`。
+接口遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /contract/api/describe` | 读取命令参数、限制、演示标志和租约规则 |
+| `GET /contract/api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command` |
+| `POST /contract/api/heartbeat` | 取得或续期控制租约；其他客户端占用时返回 409 |
+| `POST /contract/api/release` | 释放调用者的控制租约，不发送停止命令 |
+| `POST /contract/api/command` | 正文携带 `action` 和对应参数；接受后返回 202、`command_id` 和 `state` |
+| `POST /contract/api/stop` | 任意客户端可请求停止，无须租约；`wait_s` 为 0–15 秒，默认 0 |
+| `GET /contract/api/events?since=0` | 读取活动事件和 `next` 游标；每条活动只记录一次，同时写入服务日志 |
+
+| `action` | 参数 | 完成判定 |
+| --- | --- | --- |
+| `move` | `motor`、`direction`、`speed`、`steps` | 新鲜反馈确认目标电机空闲后，更新 `last_command` |
+| `hold` | `motor`、`direction`、`speed`、`hold_id`、`sampled_at` | Arduino 确认开始长按；电机继续运动 |
+| `keepalive` | `motor`、`hold_id` | Arduino 确认续期长按 |
+| `release_hold` | `motor`、`hold_id` | 结束对应长按 |
+| `stop_all` | 无 | Arduino 确认停止请求；无须持有租约。故障锁定时使用专用停止接口 |
+| `set_microstep` | `microstep` | Arduino 确认细分模式 |
+
+参数范围与面板接口相同，拒绝缺少或多余的参数。
+控制租约默认有效 3 秒，长按仍须在 1 秒内单独续期。
+长按续期不续期控制租约。
+租约过期时，服务请求停止所有电机。
+释放租约不停止运动；先等待完成或请求停止，再交还控制权。
+租约有效时，面板移动、长按续期和细分接口返回 409，错误为 `Stage is controlled by automation`。
+面板停止和结束长按仍可用。
+
+专用停止接口返回 `stop` 和 `state`，`stop` 为 `confirmed`、`pending` 或 `unconfirmed`。
+仅确认所有电机空闲后才返回 `confirmed`。
+等待反馈时，服务允许其他停止请求，但禁止新运动。
+停止等待到期或串口结果未知时，`locked` 为真且 `fault` 非空。
+后续空闲反馈不清除故障。核对现场状态后，手动断开并重新连接，确认所有电机空闲后才清除。
+停止确认尚未结束时，重新连接请求返回 409，防止用新连接的反馈确认旧设备已停止。
+`last_command` 区分 `ok`、`failed`、`rejected` 和 `stopped`；服务不自动重试运动。
+
+契约接口使用同一 `MG400_STAGE_TOKEN`，并检查 `Host`、`Origin` 和转发请求头。
+POST 必须带 `Content-Type: application/json` 和 `X-MG400-Client`，正文必须是 JSON 对象。
+客户端 ID 为 1–128 个可打印 ASCII 字符。
+契约接口不使用 `X-Control-Token`，也不能用客户端 ID 绕过旧面板接口的该项检查。
+正文大小上限仍为 4096 字节。
+
 ### 访问检查
+
+以下检查适用于原有 `/api/` 面板接口。
 
 设置 `MG400_STAGE_TOKEN` 后，每个 `/api/` 请求都必须带 `Authorization: Bearer <密钥>`。
 此时服务接受任何 `Host` 和转发请求头。

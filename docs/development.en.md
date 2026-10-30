@@ -347,7 +347,58 @@ The client must renew press-and-hold motion within 1 second. The webpage renews 
 `hold/stop` can be sent repeatedly.
 If `hold/stop` arrives before `hold` with the same `hold_id`, the service rejects the later `hold`.
 
+### Stage automation contract
+
+Automation uses `/contract/api/` beside the existing panel routes.
+Connect the Arduino through the panel before using automation.
+The base URL for `labkit.client.ServiceClient` is `http://127.0.0.1:8767/contract`, including `/contract`.
+The interface follows the [instrument service contract](adr/0001-instrument-service-contract.en.md).
+
+| Interface | Purpose |
+| --- | --- |
+| `GET /contract/api/describe` | Read command parameters, limits, demo status, and lease rules |
+| `GET /contract/api/state` | Read motor state plus `service`, `seq`, `ts_unix`, `busy`, `locked`, `fault`, `lease`, and `last_command` |
+| `POST /contract/api/heartbeat` | Acquire or renew the control lease. Return 409 if another client holds it |
+| `POST /contract/api/release` | Release the caller's control lease without sending a stop command |
+| `POST /contract/api/command` | Send `action` and its parameters. Acceptance returns 202, `command_id`, and `state` |
+| `POST /contract/api/stop` | Any client can request a stop without a lease. `wait_s` is 0–15 seconds, default 0 |
+| `GET /contract/api/events?since=0` | Read activity events and the `next` cursor. Record each activity once and also write it to the service journal |
+
+| `action` | Parameters | Completion |
+| --- | --- | --- |
+| `move` | `motor`, `direction`, `speed`, `steps` | Update `last_command` after fresh feedback confirms that the target motor is idle |
+| `hold` | `motor`, `direction`, `speed`, `hold_id`, `sampled_at` | Arduino acknowledges the hold start. The motor continues moving |
+| `keepalive` | `motor`, `hold_id` | Arduino acknowledges hold renewal |
+| `release_hold` | `motor`, `hold_id` | End the matching hold |
+| `stop_all` | None | Arduino acknowledges the stop request. No lease is required. When fault-locked, use the dedicated stop interface |
+| `set_microstep` | `microstep` | Arduino confirms the microstep mode |
+
+Parameter ranges match the panel interface. Missing or extra parameters are rejected.
+The control lease lasts 3 seconds by default. Holds still require a separate renewal within 1 second.
+Hold renewal does not renew the control lease.
+On lease expiry, the service requests that all motors stop.
+Releasing the lease does not stop motion. Wait for completion or request a stop before returning control.
+While a lease is active, panel motion, hold renewal, and microstep routes return 409 with `Stage is controlled by automation`.
+Panel stop and hold release remain available.
+
+The dedicated stop interface returns `stop` and `state`. The `stop` value is `confirmed`, `pending`, or `unconfirmed`.
+It returns `confirmed` only after all motors report idle.
+While waiting for feedback, the service permits other stop requests but blocks new motion.
+If the stop wait expires or a serial outcome is unknown, `locked` is true and `fault` is non-null.
+Later idle feedback does not clear the fault. Check the physical state, then manually disconnect and reconnect.
+Reconnection returns 409 while stop confirmation is in progress. Feedback from a new connection cannot confirm that the old device stopped.
+Reconnection clears the fault only after all motors report idle.
+`last_command` distinguishes `ok`, `failed`, `rejected`, and `stopped`. The service never retries motion automatically.
+
+Contract routes use the same `MG400_STAGE_TOKEN` and check `Host`, `Origin`, and forwarding headers.
+POST requests must include `Content-Type: application/json` and `X-MG400-Client`. The body must be a JSON object.
+Client IDs contain 1–128 printable ASCII characters.
+Contract routes do not use `X-Control-Token`. A client ID cannot bypass that check on legacy panel routes.
+The body limit remains 4096 bytes.
+
 ### Access checks
+
+The following checks apply to the existing `/api/` panel routes.
 
 When `MG400_STAGE_TOKEN` is set, every `/api/` request must include `Authorization: Bearer <密钥>`.
 The service then accepts any `Host` and forwarding headers.

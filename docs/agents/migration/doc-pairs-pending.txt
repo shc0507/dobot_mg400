@@ -1,6 +1,5 @@
 README.md
 docs/development.md
-docs/hardware.md
 docs/stage-panel.md
 docs/terminal-control.md
 firmware/three-motor-demo/README.md

@@ -620,7 +620,7 @@ Goal: pick at one station and place at another, with every check the hardware al
 Steps:
 
 1. Skills `robot.pick(station, grip)`, `robot.place(station, release)`, `robot.transfer(from, to, grip, release)`. Register them in `src/orchestrator/skills/__init__.py`. Map the public `from` and `to` parameters to valid Python argument names while preserving complete typed recipe validation.
-2. Pick: enabled and idle; gripper initialized; rise to the safe height at the current XY; travel at the safe height through the via stations; open to the pre-grip width; descend; close; require outcome `contact`; rise; require that the outcome did not become `dropped`.
+2. Pick: enabled and idle; gripper initialized; rise to the safe height at the current XY; travel at the safe height through the via stations; open to the pre-grip width; descend; close; require outcome `contact`; rise; require that the outcome did not become `dropped`. Verify that each accepted robot state belongs to the current run. In `src/orchestrator/runner.py`, expose `StepClient.owned(state)` through the existing authority guard and adapter ownership predicate; do not expose the private adapter or add acquisition or recovery behavior. Test this precondition in `tests/test_orchestrator_transfer.py`.
 3. Place: travel at the safe height; descend; open; require outcome `arrived`; rise.
 4. Every move uses `execute` with the capped speed and waits for completion through the client.
 5. Take each station's zone before entering and release it after leaving (the ORC-04 interface; a no-op manager until ORC-04 lands).

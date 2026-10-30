@@ -1,3 +1,5 @@
+[English](development.en.md)
+
 # 开发参考
 
 本页说明开发环境、代码分工和控制接口。

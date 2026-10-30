@@ -828,3 +828,67 @@ def test_verified_flow_failure_recloses_valve():
     with pytest.raises(RuntimeError, match="NG response"):
         flow.set_flow_percent(7, 50)
     assert serial.writes == [b"\x0207SVC\r", b"\x0207SCM$1\r", b"\x0207SVC\r"]
+
+
+@pytest.mark.parametrize("state", [0, 2])
+def test_attach_preserves_running_controller_and_program_without_writes(state):
+    instrument = FakeInstrument(
+        {
+            driver.MODEL_ID_REGISTER: driver.AI_518P_MODEL_ID,
+            driver.PNO_REGISTER: 2,
+            driver.SRUN_REGISTER: state,
+            driver.PROGRAM_SP1_REGISTER: 400,
+            driver.PROGRAM_SP2_REGISTER: 400,
+        }
+    )
+    instrument.serial.port = "/dev/fake-attach"
+    furnace = Furnace.attach(port=instrument.serial.port, instrument=instrument)
+    assert instrument.writes == []
+    assert furnace.get_run_state()[0] == state
+    assert instrument.values[driver.PNO_REGISTER] == 2
+    assert furnace.program_setpoint_registers == (
+        driver.PROGRAM_SP1_REGISTER,
+        driver.PROGRAM_SP2_REGISTER,
+    )
+    assert furnace._program_bank_supported is True
+    assert furnace.pending_hold_target is None
+    assert furnace.flow_controller is None
+    assert furnace.program_mode_disabled is False
+    furnace.close(stop_output=False)
+    assert instrument.writes == []
+
+
+def test_injected_normal_constructor_still_disables_program_and_stops():
+    instrument = FakeInstrument(
+        {
+            driver.MODEL_ID_REGISTER: driver.AI_518P_MODEL_ID,
+            driver.PNO_REGISTER: 2,
+        }
+    )
+    instrument.serial.port = "/dev/fake-normal"
+    furnace = Furnace(port=instrument.serial.port, instrument=instrument)
+    assert instrument.writes == [
+        (driver.SRUN_REGISTER, 1),
+        (driver.PNO_REGISTER, 0),
+        (driver.SRUN_REGISTER, 1),
+    ]
+    assert furnace.flow_controller is None
+
+
+def test_attach_rejects_mismatched_injected_port_before_reading():
+    instrument = FakeInstrument()
+    instrument.serial.port = "/dev/actual"
+    with pytest.raises(ValueError, match="configured serial port"):
+        Furnace.attach(port="/dev/other", instrument=instrument)
+    assert instrument.events == []
+
+
+@pytest.mark.parametrize("failed_register", [0x16, driver.MODEL_ID_REGISTER])
+def test_attach_closes_transport_after_failed_identity_or_model_read(failed_register):
+    instrument = FakeInstrument()
+    instrument.serial.port = "/dev/fake-attach"
+    instrument.failed_reads.add(failed_register)
+    with pytest.raises(OSError, match="fake register unavailable"):
+        Furnace.attach(port=instrument.serial.port, instrument=instrument)
+    assert instrument.writes == []
+    assert not instrument.serial.is_open

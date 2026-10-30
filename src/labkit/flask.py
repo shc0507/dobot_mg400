@@ -102,11 +102,12 @@ def contract_blueprint(service, *, token=None, base_path="/", lease):
     @bp.post("/api/stop")
     def stop():
         wait_s = body().get("wait_s", 0)
+        # JSON integers can exceed the floating-point range used by isfinite.
         if (
             isinstance(wait_s, bool)
             or not isinstance(wait_s, (int, float))
-            or not math.isfinite(wait_s)
             or not 0 <= wait_s <= 15
+            or not math.isfinite(wait_s)
         ):
             raise ValueError("wait_s must be a finite number from 0 to 15.")
         # Stop does not wait for a lease transition or require its holder.

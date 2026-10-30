@@ -995,7 +995,7 @@ Steps:
 8. Every existing command and reply stays unchanged.
 9. Update `README.md` and `README.en.md`: wiring, commands, status format.
 
-Done when: the sketch compiles for the board in use (report the Arduino CLI or IDE command and its output); the owner reviews.
+Done when: the sketch compiles for the board in use (report the Arduino CLI or IDE command and its output).
 
 Notes: the operator uploads and validates in H-07 and H-18. STG-02 keeps the panel working with the old firmware.
 

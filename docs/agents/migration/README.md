@@ -236,8 +236,8 @@ Contract rules:
 
 | Role | Who | Does |
 | --- | --- | --- |
-| Owner | shc0507 | Approves this plan, ADRs and every `review = "human"` PR. Answers open questions. |
-| Orchestrator | An agent session or the owner | Keeps the issues current, starts workers, reviews or routes PRs, merges in order, stops at human gates. |
+| Owner | shc0507 | Approves this plan. Reviews every `owner-review` PR after its merge (6.5). Answers open questions and does the human tasks. |
+| Orchestrator | An agent session or the owner | Keeps the issues current, starts workers, reviews and merges PRs in order, and keeps going until only people can unblock the work. |
 | Worker | An agent session | Executes one task card on one branch and opens one PR. |
 | Reviewer | An agent session or the owner | Checks a PR against the reviewer checklist (section 9.3). |
 | Operator | A person in the lab | Executes `H-` tasks and supervises every hardware session (P-HW). |
@@ -246,9 +246,10 @@ Contract rules:
 
 ### 6.1 Tracking
 
-GOV-01 creates one map issue and one child issue per task, with labels and native blocked-by links. It follows `docs/agents/issue-tracker.md`.
+GOV-01 creates one map issue and one child issue per task, with labels and blocked-by links (native links, or a `Blocked by: #n, #m` first line when the tool cannot set them). It follows `docs/agents/issue-tracker.md`.
 
-- The issue is the status. A worker claims a task by assigning the issue. Merging the PR closes it.
+- The issue is the status. A worker claims a task by assigning the issue. Merging the PR closes it: the PR body starts with `Closes #<issue>`.
+- When the card's "Done when" needs a person (a hardware run, a data import, an answer), the PR body starts with `Refs #<issue>` instead. After the merge, the worker comments on the issue what the person must do, and the issue stays open until that person comments the result. The owner's review (6.5) is not such a step.
 - A human task closes when the operator comments the result on the issue.
 - Results of hardware sessions go in issue comments, never in docs.
 
@@ -281,6 +282,8 @@ A task is ready when all of these are true:
 PR body:
 
 ```markdown
+Closes #<issue>
+
 Task: <ID> (docs/agents/migration/tasks.md, card <ID>)
 
 ## What changed
@@ -302,23 +305,27 @@ Task: <ID> (docs/agents/migration/tasks.md, card <ID>)
 <moved code only: source files not moved, and why>
 ```
 
+The first line is `Refs #<issue>` instead when 6.1 says so.
+
 ### 6.5 Review and merge
 
-- `review = "agent"`: a reviewer agent applies the checklist in 9.3. When CI is green, the orchestrator merges.
-- `review = "human"`: the owner approves before the merge.
+- The orchestrator merges a PR when CI is green and the checklist in 9.3 passes. No merge waits for a person.
+- `review = "human"`: before the merge, the orchestrator adds the label `owner-review` to the PR. The owner reviews these PRs after the merge and removes the label. A problem found in review becomes a fix PR, or a plan change (6.8).
+- The owner deploys to Olares, or starts a hardware task, only after reviewing every `owner-review` PR merged since the last deploy.
+- Exception: a plan PR (6.8) merges only after the owner approves it. Work on other tasks goes on meanwhile.
 - Every PR needs green CI.
 
 ### 6.6 Blocked work
 
 When a card's assumption is wrong, a dependency is missing, or a hardware fact is unknown:
 
-1. Stop. Do not widen the scope and do not work around a safety rule.
+1. Stop work on that task. Do not widen the scope and do not work around a safety rule.
 2. Comment on the issue: what blocks, what you checked, what you need.
-3. Add the label `needs-info`. Unassign yourself if you cannot continue.
+3. Add the label `needs-info`. Unassign yourself if you cannot continue. Then go on with another ready task.
 
 ### 6.7 Gates
 
-Gates are human tasks that later tasks depend on. The orchestrator stops at a gate and asks the owner.
+Gates are human tasks that later tasks depend on. The orchestrator starts no task behind an open gate and goes on with the other ready tasks.
 
 | Gate | Closed by | Unblocks |
 | --- | --- | --- |
@@ -448,13 +455,14 @@ A supervised hardware session:
 ```text
 You orchestrate the lab integration migration in shc0507/dobot_mg400.
 Read AGENTS.md and docs/agents/migration/README.md. tasks.toml is the task graph.
-Repeat:
+Repeat until no agent task is ready:
 1. Read the map issue and its child issues. A task is ready per README 6.2.
 2. Pick up to 4 ready agent tasks whose write sets do not overlap, except shared files (README 6.3).
+   If you cannot start workers, take the first ready task in map order and do it yourself as the worker (README 9.2).
 3. Start one worker per task with the worker prompt (README 9.2).
-4. For each PR: wait for CI, run the reviewer checklist (README 9.3), and ask the owner when the task has review = "human".
-5. Merge in dependency order, one shared-file PR at a time. Close the issue.
-6. When only human tasks block progress, list them for the owner with what each one unblocks, then stop.
+4. For each PR: wait for CI, run the reviewer checklist (README 9.3), add the label owner-review when the task has review = "human", and merge (README 6.5).
+5. Merge in dependency order, one shared-file PR at a time.
+Then list for the owner: the merged owner-review PRs, the blocked tasks, and the human tasks that would unblock the most work.
 Never start a task whose deps are open. Never merge red CI.
 ```
 
@@ -468,7 +476,7 @@ You are a worker in shc0507/dobot_mg400. Task: <ID>, <title>.
 3. Do the steps. Stay inside the write set. If you must change another file, stop and ask the orchestrator.
 4. Run the area tests while you work and P-CHECKS before the PR.
 5. Update docs in both languages when the card lists docs.
-6. Open a draft PR with the README 6.4 body. Mark it ready when the checks pass.
+6. Open a draft PR with the README 6.4 body (first line `Closes #<issue>`, or `Refs #<issue>` per README 6.1). Mark it ready when the checks pass.
 7. Report what changed, the check results, open questions, and any hardware validation still needed.
 Never send commands to real hardware. Never weaken a safety rule to make a test pass.
 ```

@@ -12,7 +12,7 @@
 
 ## 决定
 
-模型权重发布为 GitHub Release 资源。每项安装资源在 `config/assets.toml` 中声明 `url`、`sha256`、`bytes`、`install`、`mode`、`service`、`source` 和 `license`。`install` 字段使用目标绝对路径。
+模型权重发布为 GitHub Release 资源。每项安装资源在 `config/assets.toml` 中声明 `url`、`sha256`、`bytes`、`install`、`mode`、`service`、`source` 和 `license`。`install` 字段使用 `/var/lib/mg400/` 下的目标绝对路径。
 
 - 安装器下载到目标目录的临时文件。校验字节数和 SHA-256 后，原子替换目标文件，并设置所有者和权限。拒绝符号链接。
 - `--fetch-assets` 下载资源。`--asset NAME=PATH` 安装本地文件并执行相同校验。试运行列出计划操作。`mg400ctl assets` 报告资源存在、缺失或不匹配。

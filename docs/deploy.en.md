@@ -92,7 +92,7 @@ The installer works in this order:
    By default, install the stage and tool dependencies in `/opt/mg400/.venv`.
 5. Install explicitly requested external assets. Check size and SHA-256 before atomic replacement.
 6. If cameras are configured, install go2rtc and generate `go2rtc.yaml`. Otherwise, remove the old `go2rtc.yaml`.
-7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger USB enumeration.
+7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
 8. Install selected service definitions, reload systemd, and enable the gripper collection request listener.
 9. Create the `mg400ctl` and `labctl` links.
 
@@ -133,7 +133,7 @@ For a service with udev rules, the template path is `config/udev/70-mg400-<name>
 Templates must contain a VID, PID, `MODE="0660"`, and `@SERVICE_GROUP@`.
 The installer replaces the placeholder with the group name for GID 1000.
 The destination is `/etc/udev/rules.d/70-mg400-<name>.rules`, owned by `root:root` with permissions `0644`.
-Only enabled services' templates are installed. A dry run only lists rule installation, reload, and USB enumeration steps.
+Only enabled services' templates are installed. A dry run only lists rule installation, reload, and udev event trigger steps for USB devices.
 
 Stop an optional service before removing its name from the setting.
 Removing its name does not stop processes or delete existing files or rules.
@@ -144,7 +144,7 @@ Removing its name does not stop processes or delete existing files or rules.
 
 `config/assets.toml` stores 1 table per external asset.
 The fields are `url`, `sha256`, `bytes`, `install`, `mode`, `service`, `source`, and `license`.
-`install` is an absolute destination path. `mode` must be `0640` or `0600`.
+`install` is an absolute destination path under `/var/lib/mg400/`. `mode` must be `0640` or `0600`.
 Asset files and destination directories belong to `1000:1000`. Destination directories have permissions `0750`.
 The installer refuses symbolic links in source files, destination files, or their paths.
 

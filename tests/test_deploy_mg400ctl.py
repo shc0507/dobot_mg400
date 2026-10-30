@@ -212,6 +212,84 @@ def test_root_recipe_dispatch_refuses_missing_runuser(ctl, monkeypatch):
     ctl.execvpe.assert_not_called()
 
 
+@pytest.mark.parametrize("root", [True, False])
+@pytest.mark.parametrize("action", ["save", "list", "show", "rm"])
+def test_station_dispatch_only_forwards_necessary_paths_bounds_and_read_credentials(
+    ctl, monkeypatch, root, action
+):
+    station_settings = {key: "12" for key in ctl.module.STATION_SETTINGS}
+    station_settings["MG400_ORCH_STATIONS_FILE"] = "/var/lib/mg400/stations.toml"
+    extras = {
+        "MG400_ORCH_TOOL_FILE": "/var/lib/mg400/tool.toml",
+        "MG400_ORCH_ROBOT_URL": "http://robot.invalid",
+        "MG400_ORCH_ROBOT_TOKEN": "robot-read-token-0123456789",
+        "MG400_ORCH_TIMEOUT_S": "2",
+        "MG400_ORCH_STAGE_TOKEN": "not-needed",
+        "MG400_ORCH_STAGE_URL": "http://stage.invalid",
+        "MG400_PANEL_TOKEN": "not-needed",
+        "MG400_ORCH_RUNS_DIR": "/var/lib/mg400/runs",
+        "HTTP_PROXY": "not-needed",
+        "PYTHONPATH": "not-needed",
+    }
+    values = {**station_settings, **extras}
+    if root:
+        ctl.host.settings.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+    else:
+        for method in ("getuid", "geteuid", "getgid", "getegid"):
+            monkeypatch.setattr(ctl.module.os, method, lambda: 1000)
+        ctl.host.settings.unlink()
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+    assert ctl.call("station", action, *([] if action == "list" else ["tray"])) == 0
+    program, argv, environment = ctl.execvpe.call_args.args
+    expected = dict(station_settings)
+    if action == "save":
+        expected |= {
+            key: extras[key]
+            for key in (
+                "MG400_ORCH_TOOL_FILE",
+                "MG400_ORCH_ROBOT_URL",
+                "MG400_ORCH_ROBOT_TOKEN",
+                "MG400_ORCH_TIMEOUT_S",
+            )
+        }
+    assert {
+        key: value for key, value in environment.items() if key.startswith("MG400_")
+    } == expected
+    assert "HTTP_PROXY" not in environment and "PYTHONPATH" not in environment
+    command = [
+        str(ctl.host.code / ".venv/bin/python"),
+        "-I",
+        "-m",
+        "orchestrator",
+        "station",
+        action,
+        *([] if action == "list" else ["tray"]),
+    ]
+    assert (
+        argv
+        == (["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"] if root else [])
+        + command
+    )
+    assert program == ("/usr/sbin/runuser" if root else command[0])
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize("action", ["", "save-extra", "remove", "list-extra", "--unknown"])
+def test_station_dispatch_requires_exact_subcommand(ctl, action):
+    assert ctl.call("station", *([action] if action else [])) == 2
+    ctl.execvpe.assert_not_called()
+
+
+@pytest.mark.parametrize("identity", ["getuid", "geteuid", "getgid", "getegid"])
+def test_station_dispatch_preserves_real_and_effective_identity_gate(ctl, monkeypatch, identity):
+    for method in ("getuid", "geteuid", "getgid", "getegid"):
+        monkeypatch.setattr(ctl.module.os, method, lambda: 1000)
+    monkeypatch.setattr(ctl.module.os, identity, lambda: 1001)
+    assert ctl.call("station", "save", "tray") == 1
+    ctl.execvpe.assert_not_called()
+
+
 def test_status_lists_every_service_and_the_request_watcher(ctl):
     blocks = [
         "Id=mg400-web-panel.service\nActiveState=active\nSubState=running",

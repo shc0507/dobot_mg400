@@ -91,12 +91,56 @@ The database is `runs.db` inside the record directory. Run files use a separate 
 
 `labctl runs` reads history without acquiring a service. An optional run ID shows steps, samples, artifacts, and events. This command never resumes or restarts a stored run. A held row from an earlier process requires operator recovery before a new run.
 
+## Teaching stations and tool offsets
+
+A station stores a measured fingertip pose, its approach clearance, and an optional route through other stations. Keep the controller at `User=0,Tool=0`. The tool offset applies in software only.
+
+The operator must supply the measured offset from H-08 in `/var/lib/mg400/tool.toml`. Its only field is `offset_mm = [dx, dy, dz]`. Replace these names with the measured finite numbers in millimetres. The offset has no default. Missing or invalid measurements prevent teaching.
+
+The conversion rotates `(dx, dy)` by the flange angle R, then adds the result to flange XY. Fingertip Z equals flange Z minus dz. The inverse conversion subtracts the rotated XY offset and adds dz. Both conversions preserve R, including its sign and complete turns.
+
+Configure every workspace bound before teaching or reading stations:
+
+| Setting | Meaning |
+| --- | --- |
+| `MG400_ORCH_TOOL_FILE` | Tool file, default `/var/lib/mg400/tool.toml` |
+| `MG400_ORCH_STATIONS_FILE` | Station file, default `/var/lib/mg400/stations.toml` |
+| `MG400_ORCH_X_MIN_MM`, `MG400_ORCH_X_MAX_MM` | Fingertip X bounds in millimetres |
+| `MG400_ORCH_Y_MIN_MM`, `MG400_ORCH_Y_MAX_MM` | Fingertip Y bounds in millimetres |
+| `MG400_ORCH_Z_MIN_MM`, `MG400_ORCH_Z_MAX_MM` | Fingertip Z bounds in millimetres |
+| `MG400_ORCH_R_MIN_DEG`, `MG400_ORCH_R_MAX_DEG` | Rotation bounds in degrees |
+
+Bounds are finite, inclusive, and have no default. Each minimum must be less than its maximum. They apply to fingertip coordinates in the controller base frame. The station and its raised approach endpoint must fit these bounds. Workspace bounds do not establish obstacle clearance or joint reachability.
+
+An operator first positions the robot through its panel. The panel, or another controller, must retain control while teaching. Teaching requires fresh measured feedback, an idle robot, no lock, and no unconfirmed stop. The teaching command reads discovery and state only. It never acquires or releases a lease, changes controller tools, or sends motion.
+
+```sh
+labctl station save tray-pick --approach 20 --zone tray
+labctl station list
+labctl station show tray-pick
+labctl station rm tray-pick
+```
+
+`--approach` is a vertical clearance above the fingertip Z coordinate and must be at least 10 mm. The command example uses 20 mm, which the operator must check against the measured workspace. `--zone` defaults to an empty name. `--stations-file PATH` overrides the station path for any station command. For teaching, `--tool-file PATH` overrides the tool path.
+
+The file uses one `[stations.NAME]` table per station. Fields are `x_mm`, `y_mm`, `z_mm`, `r_deg`, `approach_mm`, `zone`, and `saved_at`. `saved_at` is a Unix timestamp. Optional `via` lists station names in travel order.
+
+Names use 1 to 64 letters, digits, underscores, or hyphens. Start a name with a letter or digit. Every reference must exist, with no duplicates or cycles. Saving an existing station preserves its route. Removing a referenced station fails.
+
+Every edit checks the complete station graph before publication. Concurrent edits serialize, and the file replacement is atomic. The file mode is `0640`. The parent directory must have mode `0700` or `0750`.
+
+Data under `/var/lib/mg400` requires owner `1000:1000`. Other paths require the caller's owner. Files may use `0600` or `0640` when read. The store refuses symbolic links, special files, and public permissions.
+
+A write or file-sync failure preserves the old file. A directory-sync failure after replacement reports an error but can leave the new file visible. Inspect the station file before repeating an edit after that error.
+
 ## Rehearsal and installed commands
 
 Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, tokens, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its control panel. Demo factories currently cover the robot, stage, and thermal camera. Unsupported required services fail before the run starts.
 
-On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Administrative commands retain their root requirement.
+On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, and `station rm`. Administrative commands retain their root requirement.
 
-When root invokes a recipe command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. Tokens and endpoints pass only to `run`. `runs` receives only the record path. Root rehearsal does not read the host settings file.
+When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. `run` receives its configured service endpoints and tokens. `runs` receives only the record path. Root rehearsal does not read the host settings file.
+
+`station save` receives the station and tool paths, workspace bounds, robot endpoint and token, and request timeout. The other station commands receive only the station path and workspace bounds. They receive no endpoint or token.
 
 A direct installed invocation requires real and effective UID/GID 1000. It uses only the caller's approved explicit environment settings and never reads the root settings file. Local `uv run labctl` uses the developer's identity. Use `--runs-dir` for a local writable directory.

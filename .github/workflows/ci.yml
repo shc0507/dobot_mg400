@@ -20,8 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the minimum version. The Olares host runs 3.12.
-        python: ["3.11", "3.12"]
+        # Test the minimum supported version used by the Olares host.
+        python: ["3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

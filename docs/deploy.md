@@ -37,7 +37,7 @@
 ## 前提条件
 
 - 主机运行 Linux 和 systemd。
-- `/usr/bin/python3` 为 Python 3.11 或更高版本。
+- `/usr/bin/python3` 为 Python 3.12 或更高版本。
 - 主机已安装 Git、`setpriv` 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
 - 主机能访问 PyPI。`uv sync` 从 PyPI 下载依赖。
 - 主机有一个网口直连机械臂，地址为 `192.168.1.10/24`。

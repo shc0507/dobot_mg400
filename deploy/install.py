@@ -242,13 +242,13 @@ def install(args, host, run, chown, out):
 
     # Read-only checks first: a refusal must leave the host unchanged.
     version = run(
-        [args.python, "-c", "import sys; print(sys.version_info >= (3, 11))"],
+        [args.python, "-c", "import sys; print(sys.version_info >= (3, 12))"],
         capture_output=True,
         text=True,
         check=False,
     )
     if version.returncode or version.stdout.strip() != "True":
-        raise RuntimeError(f"{args.python} must be Python 3.11 or newer.")
+        raise RuntimeError(f"{args.python} must be Python 3.12 or newer.")
     uv = args.uv or shutil.which("uv")
     if not uv:
         raise RuntimeError("Install uv first, or pass its path with --uv.")

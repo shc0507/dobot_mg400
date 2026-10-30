@@ -1,6 +1,6 @@
 """Serve the MG400 robot service and its browser panel.
 
-Run with Python 3.11 or later. Robot mode can send hardware commands.
+Run with Python 3.12 or later. Robot mode can send hardware commands.
 """
 
 import argparse

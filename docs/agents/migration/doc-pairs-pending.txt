@@ -1,3 +1,2 @@
 README.md
 docs/terminal-control.md
-firmware/three-motor-demo/README.md

@@ -439,3 +439,261 @@ def test_help_names_both_command_links(ctl, capsys):
     help_text = capsys.readouterr().out
     assert "mg400ctl or labctl" in help_text
     ctl.run.assert_not_called()
+
+
+@pytest.fixture
+def backup_ctl(ctl, monkeypatch):
+    # The fake host belongs to the test user; production requires UID 0.
+    monkeypatch.setitem(ctl.module.backup.__globals__, "BACKUP_OWNER", (os.getuid(), os.getgid()))
+    ctl.host.settings.chmod(0o600)
+    ctl.host.data.mkdir(parents=True)
+    ctl.host.data.chmod(0o750)
+    directory = ctl.host.root / "backups"
+    directory.mkdir(mode=0o700)
+    ctl.archive = directory / "host.tar"
+    return ctl
+
+
+def test_backup_preserves_host_data_owners_modes_and_persistent_command_locks(backup_ctl):
+    import stat
+    import tarfile
+
+    ctl = backup_ctl
+    files = {
+        "stations.toml": b"[station]\n",
+        "tool.toml": b"offset = 1\n",
+        "stage.toml": b"steps_per_mm = 1\n",
+        "calibration/cameras/arm.toml": b"homography = []\n",
+        "calibration/microscope/reference.json": b"{}\n",
+        "thermal/rois.toml": b"[crucible]\n",
+        "furnace/state.json": b'{"phase":"HOLD"}\n',
+        "runs/index.sqlite": b"fake database fixture",
+        "recordings/run.mp4": b"fake video fixture",
+        "models/model.pt": b"fake model fixture",
+        "camera/preview.key": b"private-preview-key",
+        "work/gripper_feedback.json.command-lock.json": b'{"outcome":"unknown"}',
+        "work/locks/persistent.json": b"do not omit nested lock directories",
+        "locks/process.lock": b"exclude only this process-lock tree",
+    }
+    for name, content in files.items():
+        path = ctl.host.data / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        path.chmod(0o600 if name.endswith(("key", ".json")) else 0o640)
+    old_umask = os.umask(0)
+    try:
+        assert ctl.call("backup", str(ctl.archive)) == 0
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(ctl.archive.stat().st_mode) == 0o600
+    assert (ctl.archive.stat().st_uid, ctl.archive.stat().st_gid) == (os.getuid(), os.getgid())
+    with tarfile.open(ctl.archive) as archive:
+        names = archive.getnames()
+        assert "var/lib/mg400" in names
+        assert "etc/mg400/mg400.env" in names
+        assert archive.extractfile("etc/mg400/mg400.env").read() == ctl.host.settings.read_bytes()
+        for member in archive:
+            assert not member.name.startswith("/")
+            assert ".." not in Path(member.name).parts
+            assert member.isfile() or member.isdir()
+            path = ctl.host.root / member.name
+            info = path.stat()
+            assert (member.uid, member.gid) == (info.st_uid, info.st_gid)
+            assert member.mode == stat.S_IMODE(info.st_mode)
+            assert not member.uname and not member.gname
+        for name, content in files.items():
+            if name.startswith("locks/"):
+                assert f"var/lib/mg400/{name}" not in names
+            else:
+                assert archive.extractfile(f"var/lib/mg400/{name}").read() == content
+            assert (ctl.host.data / name).read_bytes() == content
+        assert "var/lib/mg400/locks" not in names
+    assert list(ctl.archive.parent.iterdir()) == [ctl.archive]
+    assert SETTINGS not in ctl.out.getvalue()
+    ctl.run.assert_not_called()
+    ctl.execvpe.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink", "dangling-symlink"])
+def test_backup_never_overwrites_an_existing_destination(backup_ctl, kind):
+    ctl = backup_ctl
+    target = ctl.archive.parent / "existing"
+    target.write_bytes(b"keep this content")
+    if kind == "file":
+        ctl.archive.write_bytes(b"keep this archive")
+    elif kind == "directory":
+        ctl.archive.mkdir()
+    elif kind == "symlink":
+        ctl.archive.symlink_to(target)
+    else:
+        ctl.archive.symlink_to(ctl.archive.parent / "missing")
+    before = ctl.archive.lstat()
+    assert ctl.call("backup", str(ctl.archive)) == 1
+    assert ctl.archive.lstat().st_ino == before.st_ino
+    assert target.read_bytes() == b"keep this content"
+    if kind == "file":
+        assert ctl.archive.read_bytes() == b"keep this archive"
+    assert not list(ctl.archive.parent.glob(".mg400-backup-*"))
+    ctl.run.assert_not_called()
+
+
+def test_backup_publication_refuses_a_destination_created_during_backup(backup_ctl, monkeypatch):
+    ctl = backup_ctl
+    link = os.link
+
+    def collision(*args, **kwargs):
+        ctl.archive.write_bytes(b"created by another writer")
+        return link(*args, **kwargs)
+
+    monkeypatch.setattr(ctl.module.backup.__globals__["os"], "link", collision)
+    assert ctl.call("backup", str(ctl.archive)) == 1
+    assert ctl.archive.read_bytes() == b"created by another writer"
+    assert not list(ctl.archive.parent.glob(".mg400-backup-*"))
+
+
+@pytest.mark.parametrize(
+    "location", ["settings", "data", "child", "fifo", "settings-directory", "data-file"]
+)
+def test_backup_rejects_symlink_and_special_sources(backup_ctl, location):
+    ctl = backup_ctl
+    external = ctl.host.root / "unrelated-secret"
+    external.write_bytes(b"never follow this path")
+    if location == "settings":
+        ctl.host.settings.unlink()
+        ctl.host.settings.symlink_to(external)
+    elif location == "data":
+        ctl.host.data.rmdir()
+        ctl.host.data.symlink_to(external.parent)
+    elif location == "child":
+        (ctl.host.data / "outside").symlink_to(external)
+    elif location == "fifo":
+        os.mkfifo(ctl.host.data / "pipe")
+    elif location == "settings-directory":
+        ctl.host.settings.unlink()
+        ctl.host.settings.mkdir()
+    else:
+        ctl.host.data.rmdir()
+        ctl.host.data.write_bytes(b"not a directory")
+    assert ctl.call("backup", str(ctl.archive)) == 1
+    assert not ctl.archive.exists()
+    assert not list(ctl.archive.parent.glob(".mg400-backup-*"))
+    assert external.read_bytes() == b"never follow this path"
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind", ["inside", "inside-locks", "parent", "symlink-parent", "unsafe-mode", "wrong-owner"]
+)
+def test_backup_rejects_unsafe_destinations(backup_ctl, monkeypatch, kind):
+    ctl = backup_ctl
+    destination = ctl.archive
+    if kind == "inside":
+        destination = ctl.host.data / "host.tar"
+    elif kind == "inside-locks":
+        destination = ctl.host.data / "locks/host.tar"
+    elif kind == "parent":
+        destination = ctl.archive.parent / "../host.tar"
+    elif kind == "symlink-parent":
+        alias = ctl.host.root / "alias"
+        alias.symlink_to(ctl.archive.parent, target_is_directory=True)
+        destination = alias / "host.tar"
+    elif kind == "unsafe-mode":
+        ctl.archive.parent.chmod(0o770)
+    else:
+        monkeypatch.setitem(
+            ctl.module.backup.__globals__, "BACKUP_OWNER", (os.getuid() + 1, os.getgid())
+        )
+    assert ctl.call("backup", str(destination)) == 1
+    assert not destination.exists()
+    assert not list(ctl.archive.parent.glob(".mg400-backup-*"))
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["write", "changed", "fsync", "ownership"])
+def test_backup_failure_removes_private_staging_without_publishing(
+    backup_ctl, monkeypatch, failure
+):
+    import stat
+    import tarfile
+
+    ctl = backup_ctl
+    source = ctl.host.data / "stations.toml"
+    source.write_bytes(b"original station data")
+    addfile = tarfile.TarFile.addfile
+
+    def interrupted(archive, member, stream=None):
+        if member.name == "var/lib/mg400/stations.toml":
+            temporary = next(ctl.archive.parent.glob(".mg400-backup-*"))
+            assert stat.S_IMODE(temporary.stat().st_mode) == 0o700
+            assert stat.S_IMODE((temporary / "archive.tar").stat().st_mode) == 0o600
+            if failure == "write":
+                raise OSError("injected archive failure")
+        result = addfile(archive, member, stream)
+        if failure == "changed" and member.name == "var/lib/mg400/stations.toml":
+            source.write_bytes(b"changed during read")
+        return result
+
+    monkeypatch.setattr(tarfile.TarFile, "addfile", interrupted)
+    if failure == "fsync":
+        monkeypatch.setattr(os, "fsync", Mock(side_effect=OSError("injected sync failure")))
+    elif failure == "ownership":
+        monkeypatch.setattr(os, "fchown", Mock(side_effect=OSError("injected ownership failure")))
+    assert ctl.call("backup", str(ctl.archive)) == 1
+    assert not ctl.archive.exists()
+    assert not list(ctl.archive.parent.glob(".mg400-backup-*"))
+    assert ctl.host.settings.read_text() == SETTINGS
+
+
+def test_backup_archives_settings_without_parsing_or_printing_their_contents(backup_ctl, capsys):
+    import tarfile
+
+    ctl = backup_ctl
+    content = b"private settings with an invalid line\x00\n"
+    ctl.host.settings.write_bytes(content)
+    assert ctl.call("backup", str(ctl.archive)) == 0
+    with tarfile.open(ctl.archive) as archive:
+        assert archive.extractfile("etc/mg400/mg400.env").read() == content
+    assert "private settings" not in ctl.out.getvalue() + capsys.readouterr().err
+    ctl.run.assert_not_called()
+
+
+def test_backup_refuses_non_root_and_missing_data(backup_ctl, monkeypatch):
+    ctl = backup_ctl
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert ctl.call("backup", str(ctl.archive)) == 1
+    assert not ctl.archive.exists()
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    ctl.host.data.rmdir()
+    assert ctl.call("backup", str(ctl.archive)) == 1
+    assert not ctl.archive.exists()
+    assert not list(ctl.archive.parent.glob(".mg400-backup-*"))
+
+
+def test_backup_does_not_follow_a_source_replaced_after_it_is_pinned(backup_ctl, monkeypatch):
+    ctl = backup_ctl
+    source = ctl.host.data / "stations.toml"
+    source.write_bytes(b"original stations")
+    external = ctl.host.root / "external-secret"
+    external.write_bytes(b"must never be read")
+    outside_inode = external.stat().st_ino
+    open_ = os.open
+    swapped = False
+
+    def race(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path).startswith("/proc/self/fd/"):
+            pinned = int(str(path).rsplit("/", 1)[-1])
+            assert os.fstat(pinned).st_ino != outside_inode
+        fd = open_(path, flags, *args, **kwargs)
+        if path == "stations.toml" and flags & os.O_PATH and not swapped:
+            swapped = True
+            source.unlink()
+            source.symlink_to(external)
+        return fd
+
+    monkeypatch.setattr(os, "open", race)
+    assert ctl.call("backup", str(ctl.archive)) == 1
+    assert swapped
+    assert not ctl.archive.exists()
+    assert external.read_bytes() == b"must never be read"
+    assert not list(ctl.archive.parent.glob(".mg400-backup-*"))

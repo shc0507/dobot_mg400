@@ -1,0 +1,7 @@
+{
+  "counts": {"Chip": 1, "Robotic Arm": 1},
+  "detections": [
+    {"class_id": 0, "label": "Chip", "confidence": 0.95, "xyxy": [12, 12, 36, 32], "center_xy": [24, 22], "polygon": [[12, 12], [36, 12], [36, 32], [12, 32]], "angle_deg": 0, "size_px": [24, 20]},
+    {"class_id": 1, "label": "Robotic Arm", "confidence": 0.9, "xyxy": [56, 8, 82, 50], "center_xy": [69, 29], "polygon": null, "angle_deg": null, "size_px": null}
+  ]
+}

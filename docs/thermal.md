@@ -246,12 +246,20 @@ curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
 | `GET` | `/api/state` | 契约字段，以及相机状态、`frame_sequence` 和 `frame_age_s`。 |
 | `GET` | `/api/events?since=0` | 指定序号之后的活动，以及 `next` 游标。同一事件也写入服务日志。 |
 | `POST` | `/api/heartbeat` | 获取或续期仅作信息记录的租约。 |
+| `POST` | `/api/renew` | 仅续期调用者当前持有的租约。租约缺失、过期或由其他客户端持有时，返回 HTTP 409。 |
 | `POST` | `/api/release` | 释放调用者的租约。 |
 | `POST` | `/api/stop` | 返回 `stop: "confirmed"`。此操作不改变采集状态，采集继续。 |
 | `POST` | `/api/command` | 契约没有命令，返回 HTTP 400。 |
 | `GET` | `/api/roi` | 读取具名区域或指定的传感器矩形。 |
 
 租约持续 3 秒。读取和停止请求不要求持有租约。
+
+发现接口用 `renew_only_heartbeat: true` 提供支持专用 `/api/renew` 路由的信息。
+续期将检查持有者与延长租约作为原子操作，不会获取缺失或过期的租约。
+客户端可直接调用 `/api/renew`。
+旧版服务没有此路由时返回 HTTP 404，续期失败且不会获取租约。
+续期失败时，客户端不得退回 `/api/heartbeat`。
+
 租约到期或释放时，采集继续。
 租约不限制现有面板控件。
 用 `/api/disconnect` 停止采集并释放相机。
@@ -263,7 +271,8 @@ curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
 客户端 ID 必须包含 1–128 个可打印 ASCII 字符。
 发送不超过 4096 字节的 JSON 对象。`/api/stop` 接受 `{"wait_s":0}`，其值必须是 0–15 的有限数值。
 因为没有输出可停止，此请求立即返回。
-契约错误使用 `{"error":"..."}`：输入无效为 HTTP 400，令牌错误为 401，访问遭拒为 403，非 JSON 输入为 415。
+契约错误使用 `{"error":"..."}`。
+输入无效为 HTTP 400，令牌错误为 401，访问遭拒为 403，租约冲突为 409，非 JSON 输入为 415。
 
 ### 具名传感器区域
 

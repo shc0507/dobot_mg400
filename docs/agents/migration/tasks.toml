@@ -623,6 +623,7 @@ writes = [
   "src/orchestrator/recipe.py",
   "src/orchestrator/cli.py",
   "src/orchestrator/skills/robot.py",
+  "tests/conftest.py",
   "tests/test_orchestrator_zones.py",
   "tests/test_orchestrator_transfer.py",
   "docs/orchestrator.md",

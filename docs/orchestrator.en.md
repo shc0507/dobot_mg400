@@ -57,7 +57,7 @@ A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter wit
 | `robot.transfer` | `from`, `to`, `grip`, `release` | Robot |
 | `sample.record` | `chip_id`, `note` | None |
 
-The example in `recipes/example-rehearsal.toml` enables the simulated robot, moves it, records a sample, and stops it. It contains no gas or heating command. Custom skills receive a revocable context with service clients, run records, and the zone manager. Until ORC-04, the zone manager performs no checks and provides no cross-device interlock. Zone entry does not validate conditions or exclude other services.
+The example in `recipes/example-rehearsal.toml` enables the simulated robot, moves it, records a sample, and stops it. It contains no gas or heating command. Custom skills receive a revocable context with service clients, run records, and the zone manager. Named zone entry requires explicit configuration and checks the configured entry conditions.
 
 ## Service settings
 
@@ -67,6 +67,8 @@ Each run uses a unique client identity. The runner checks all required service c
 | --- | --- |
 | `MG400_ORCH_RUNS_DIR` | Record directory, default `/var/lib/mg400/runs` |
 | `MG400_ORCH_TIMEOUT_S` | Positive finite client timeout in seconds, default `2` |
+| `MG400_ORCH_ZONES_FILE` | Zone configuration, default `/var/lib/mg400/zones/config.toml` |
+| `MG400_ORCH_ZONE_STATE_FILE` | Durable occupancy, default `/var/lib/mg400/zones/occupancy.json` |
 | `MG400_ORCH_ROBOT_URL`, `MG400_ORCH_ROBOT_TOKEN` | Robot endpoint and token |
 | `MG400_ORCH_STAGE_URL`, `MG400_ORCH_STAGE_TOKEN` | Stage contract endpoint and token |
 | `MG400_ORCH_THERMAL_URL`, `MG400_ORCH_THERMAL_TOKEN` | Thermal endpoint and token |
@@ -75,6 +77,125 @@ Each run uses a unique client identity. The runner checks all required service c
 | `MG400_ORCH_MICROSCOPE_URL`, `MG400_ORCH_MICROSCOPE_TOKEN` | Microscope endpoint and token |
 
 Configure only the services in use. Use the stage contract base path, which ends with `/contract`. Tokens must follow the [service contract](adr/0001-instrument-service-contract.en.md), including the minimum length of 24 characters. Service adapters connect directly and do not use proxy settings.
+
+## Zones and entry conditions
+
+A zone is a shared physical space with an owner device and entry conditions.
+The configuration names permitted owners. The occupancy record names the current holder.
+A second holder waits for release and fails after its timeout.
+Zone waits cannot exceed the remaining step deadline. A custom zone context can request a shorter timeout.
+Missing configuration or an unknown zone prevents entry. There is no fallback that skips zone checks.
+
+The operator must prepare the private host directory before using the installed orchestrator:
+
+```sh
+sudo install -d -m 0750 -o 1000 -g 1000 /var/lib/mg400/zones
+```
+
+Save the configuration as `/var/lib/mg400/zones/config.toml`, owned by `1000:1000`, with mode `0640`.
+For local paths, the parent directory must belong to the caller and use mode `0700` or `0750`.
+Config and occupancy reads accept only regular files with mode `0600` or `0640` and the required owner.
+The store refuses unsafe parents and symbolic links in all path components. It atomically writes occupancy in the existing owned directory.
+The installer does not prepare this directory. Agents must not execute the host preparation command.
+All hardware runs controlling the same equipment must use the same configuration and occupancy paths.
+
+Storage contention waits at most 0.25 seconds, within the remaining step deadline.
+Write, file-sync, and replacement failures before publication preserve the old claims.
+A directory-sync failure after replacement reports a failure, but the new state may already be visible.
+A released claim can appear only after verified departure or reconciled physical-clearance recovery. Do not assume rollback after an error.
+
+The zone configuration is:
+
+```toml
+[zones.tray]
+owner = "robot"
+conditions = []
+
+[zones.crucible-load]
+owner = "robot"
+conditions = ["stage_at_load"]
+
+[zones.furnace-tube]
+owner = "stage"
+conditions = ["robot_clear"]
+```
+
+Custom zone names also require an explicit owner and conditions. Owners use the service names in the settings table above.
+Names contain 1 to 64 letters, digits, underscores, or hyphens and start with a letter or digit.
+Unknown fields, unknown conditions, and repeated conditions are refused.
+The reserved `crucible-load` zone requires the robot owner and `stage_at_load`.
+The reserved `furnace-tube` zone requires the stage owner and `robot_clear`.
+The robot cannot hold it. Do not send the robot beneath the microscope.
+These ownership checks do not prove that arbitrary `robot.move` commands avoid the microscope.
+Operator-verified routes and workspace limits remain required.
+
+| Condition | Required state |
+| --- | --- |
+| `stage_at_load` | Fresh, connected, healthy stage state under this run's control. All 3 axes must be homed, ready for automation, and idle. Insert must be awake and report `load` in `at_positions`. |
+| `robot_clear` | No durable claim for `crucible-load`. The run also holds the robot control lease. |
+
+The runner resolves services needed by conditions before acquiring leases.
+Condition checks never depend on a service left under manual control. Clients acquired only for conditions are not available to skills for writes.
+The checks use reported named positions. They do not infer a load position from coordinates.
+Awake time is not renewed automatically. A lost condition holds the run and requests stops.
+
+A recipe step can declare `zone = "tray"`. The runner checks that zone before the step and again after it.
+Generic step completion retains the durable claim. A successful step alone does not prove that the device left the zone.
+The station skills release claims only at their explicit measured exits.
+Exceptions, abort, and process exit retain claims. Neither idle feedback nor lease expiry clears them.
+
+The run snapshot reports claims in `zones` and failures in `zone_error`.
+Before clearing a retained claim, physically check that the zone is clear.
+Live held recovery requires manual completion and a nonempty note.
+Only when the current run holds retained claims does it also require the separate declaration `physically-clear`.
+Recovery records that declaration. Another run's claims do not trigger this declaration and cannot be cleared through the current run's recovery.
+
+Every resumption requires old work to drain, fresh stop confirmation or verified robot rest, matching ownership, and healthy service states.
+A transient guard failure with no claim held by the current run can resume through normal manual completion after these checks.
+This clears only the transient error. It does not clear another run's claims or replay the failed step.
+Recovery never reacquires a lost lease.
+
+Claims from an earlier process also require audited recovery with already-owned clients. There is no installed recovery command.
+Do not delete or replace the occupancy file to clear a claim.
+
+### Recover claims from an exited process
+
+The public Python API is `orchestrator.zones.Zones.recover`.
+An operator must first inspect the equipment and confirm physical clearance. The earlier process must have exited.
+Use the same zone configuration and occupancy paths. Prepare these arguments in the recovery application:
+
+| Argument | Requirement |
+| --- | --- |
+| `recipe`, `registry` | A validated recipe and its skill registry, passed to `prepare_zones`. |
+| `zone_settings` | A mapping with `MG400_ORCH_ZONES_FILE` and `MG400_ORCH_ZONE_STATE_FILE`. |
+| `recovery_services` | Service-name mapping of public adapters that already own every service recorded in the retained claims. Maintain their leases during recovery. |
+| `recovery_id` | A unique identity for this recovery manager. |
+| `old_holder` | The retained holder identifier from the claims in `manager.snapshot()`. |
+| `record_event` | A callback accepting event kind and data. Persist the audit event. Return `False` or raise if persistence fails. |
+| `operator_note` | A nonempty description of the physical checks and manual resolution. |
+
+```python
+from orchestrator.zones import Zones, prepare_zones
+
+plan = prepare_zones(recipe, registry, settings=zone_settings)
+manager = Zones(plan, recovery_services, holder=recovery_id, audit=record_event)
+manager.recover(
+    old_holder,
+    recovery_services,
+    physically_clear=True,
+    note=operator_note,
+)
+```
+
+This call reads discovery and verifies existing ownership before clearing the reconciled claims.
+After the drain or exited-process check, it requires fresh stop confirmation or verified robot rest and healthy idle states.
+Robot rest uses the same explicit manual `disable` proof as live recovery. Without that proof, it requests Stop.
+The robot requires its instance ID. Generic contract services may omit it.
+When an instance ID is present, it must be a nonempty string and remain unchanged during recovery.
+A concurrently changed claim prevents clearing it.
+It refuses recovery if the previous process is still alive, a required service is absent, or a stop remains unconfirmed.
+The call never acquires a lease. A persistence error prevents a successful recovery result.
+For a live held run, use the runner's recovery prompt instead.
 
 ## Held runs and abort
 
@@ -158,7 +279,7 @@ A pick rises at the current XY, follows the route at travel height, and opens to
 
 Each move waits for completion and the next fresh measured pose. The measured flange coordinates must match the requested waypoint within 0.1 mm or 0.1 degrees on each axis. Missing pose samples cause reads only, within the step deadline. A mismatch, drop, unexpected outcome, or timeout holds the run and requests stops. No move or grasp is retried.
 
-The skill enters each named station zone before moving toward it. During a transfer, it retains the source zone until measured arrival toward the next station. Standalone pick and place release their final zone only after measured arrival at the raised endpoint. Failures leave the zone context through its exception path. Until ORC-04, these contexts provide no cross-device interlock.
+The skill enters each named station zone before moving toward it. During a transfer, it retains the source zone until measured arrival toward the next station. Standalone pick and place release their final zone only after measured arrival at the raised endpoint. Failures retain durable claims for physical checks and audited recovery.
 
 The operator must verify that each taught approach height clears its working zone and that every route is unobstructed. The minimum 10 mm approach and workspace bounds do not prove physical clearance. Software waypoint checks do not validate collisions or joint reachability.
 
@@ -166,13 +287,17 @@ The operator must verify that each taught approach height clears its working zon
 
 Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, tokens, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its control panel. Demo factories currently cover the robot, stage, and thermal camera. Unsupported required services fail before the run starts.
 
-Transfer rehearsal retains only explicit station and tool paths, workspace bounds, and the pre-grip opening as geometry settings. The documented file-path defaults still apply. Files must contain valid geometry; rehearsal does not invent an offset or workspace. Its gripper feedback belongs to its temporary SIM-01 collector. Only that demo starts initialized. It sends no initialization command and never selects a production collector path.
+Transfer rehearsal retains explicit station and tool paths, workspace bounds, the pre-grip opening, and the zone configuration path. The documented configuration path defaults still apply. Files must contain valid geometry and named zone definitions. Rehearsal does not invent an offset, workspace, or zone configuration. It resolves condition services before creating demos. Its occupancy file belongs to the temporary rehearsal directory, regardless of `MG400_ORCH_ZONE_STATE_FILE`.
+
+Its gripper feedback belongs to its temporary SIM-01 collector. Only that demo starts initialized. It sends no initialization command and never selects a production collector path.
 
 The default simulated gripper reaches its target and reports `arrived`. A pick therefore holds with an empty grasp. Offline tests supply explicit contact and drop scenarios to exercise the complete transfer and failure paths. Rehearsal does not establish physical clearance or prove a real grasp.
 
 On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, and `station rm`. Administrative commands retain their root requirement.
 
-When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. `run` receives its configured service endpoints, tokens, and transfer geometry settings. `runs` receives only the record path. Root rehearsal does not read the host settings file. It receives explicit geometry and record-path settings from the caller's environment, without service endpoints or tokens.
+When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. `run` receives its configured service endpoints, tokens, transfer geometry settings, and both zone paths. `runs` receives only the record path.
+
+Root rehearsal does not read the host settings file. It receives explicit geometry, zone configuration, and record-path settings from the caller's environment. It receives no service endpoint, token, or production occupancy path.
 
 `station save` receives the station and tool paths, workspace bounds, robot endpoint and token, and request timeout. The other station commands receive only the station path and workspace bounds. They receive no endpoint or token.
 

@@ -22,6 +22,7 @@ from .skills import default_registry
 from .skills.robot import TRANSFER_SETTINGS
 from .stations import DEFAULT_STATIONS, DEFAULT_TOOL, StationStore, Workspace, load_tool, teach
 from .store import DEFAULT_RUNS, RunStore
+from .zones import CONFIG_SETTING, prepare_zones
 
 TERMINAL = {"completed", "aborted"}
 
@@ -30,7 +31,16 @@ TERMINAL = {"completed", "aborted"}
 def _demo_environment():
     """Remove ambient device, credential, proxy and Python settings for demos."""
     saved = dict(os.environ)
-    allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "TZ"} | TRANSFER_SETTINGS
+    allowed = {
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "COLORTERM",
+        "TZ",
+        CONFIG_SETTING,
+    } | TRANSFER_SETTINGS
     try:
         os.environ.clear()
         os.environ.update({key: value for key, value in saved.items() if key in allowed})
@@ -104,7 +114,21 @@ def _drive(runner, out, read):
                 print("A nonempty manual completion note is required.", file=out)
                 continue
             try:
-                runner.resume(manually_completed=True, note=note)
+                extra = {}
+                report = runner.snapshot()
+                if report.get("run_id") and any(
+                    claim.get("holder") == report["run_id"]
+                    for claim in report.get("zones", {}).values()
+                ):
+                    declaration = read(
+                        "Verify physical departure from every zone retained by this run. "
+                        "Type 'physically-clear' to confirm: "
+                    ).strip()
+                    if declaration != "physically-clear":
+                        print("Zone occupancy remains retained.", file=out, flush=True)
+                        continue
+                    extra["physically_clear"] = True
+                runner.resume(manually_completed=True, note=note, **extra)
             except (RuntimeError, ValueError) as error:
                 print(f"Run remains held: {error}", file=out, flush=True)
     except BaseException as error:
@@ -208,18 +232,32 @@ def main(argv=None, *, out=None, read=None):
                     _demo_environment(),
                     tempfile.TemporaryDirectory(prefix="mg400-rehearsal-") as temporary,
                 ):
+                    # Rehearsal never reads or writes production occupancy.
+                    demo_settings = {
+                        **os.environ,
+                        "MG400_ORCH_ZONE_STATE_FILE": str(Path(temporary) / "occupancy.json"),
+                    }
+                    plan = prepare_zones(recipe, registry, demo_settings)
                     with (
                         RunStore(directory) as store,
-                        Rehearsal(temporary, recipe.services, identity=identity) as demo,
+                        Rehearsal(temporary, plan.required_services, identity=identity) as demo,
                     ):
                         return _drive(
-                            Runner(recipe, registry, demo.clients, store, time_scale=scale),
+                            Runner(
+                                recipe,
+                                registry,
+                                demo.clients,
+                                store,
+                                time_scale=scale,
+                                zone_plan=plan,
+                            ),
                             out,
                             read,
                         )
+            plan = prepare_zones(recipe, registry, os.environ)
             services = from_settings(os.environ, identity=identity)
             with RunStore(directory) as store:
-                return _drive(Runner(recipe, registry, services, store), out, read)
+                return _drive(Runner(recipe, registry, services, store, zone_plan=plan), out, read)
     except (OSError, ValueError, RuntimeError, sqlite3.Error, ServiceError) as error:
         print(f"Cannot {args.command}: {error}", file=sys.stderr)
         return 2

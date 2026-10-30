@@ -58,11 +58,14 @@ STATION_TEACH_SETTINGS = STATION_SETTINGS | {
     "MG400_ORCH_TIMEOUT_S",
 }
 TRANSFER_SETTINGS = STATION_SETTINGS | {"MG400_ORCH_TOOL_FILE", "MG400_ORCH_PRE_GRIP"}
+ZONE_SETTINGS = {"MG400_ORCH_ZONES_FILE", "MG400_ORCH_ZONE_STATE_FILE"}
+REHEARSAL_ZONE_SETTINGS = {"MG400_ORCH_ZONES_FILE"}
 ORCHESTRATOR_SERVICES = ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
 ORCHESTRATOR_DATA = {"MG400_ORCH_RUNS_DIR"}
 ORCHESTRATOR_SETTINGS = (
     ORCHESTRATOR_DATA
     | TRANSFER_SETTINGS
+    | ZONE_SETTINGS
     | {"MG400_ORCH_TIMEOUT_S"}
     | {
         f"MG400_ORCH_{service}_{suffix}"
@@ -182,7 +185,7 @@ def orchestrator(host, argv, execvpe):
             settings = os.environ
         allowed = ORCHESTRATOR_SETTINGS if argv[0] == "run" else ORCHESTRATOR_DATA
         if argv[0] == "rehearse":
-            allowed = ORCHESTRATOR_DATA | TRANSFER_SETTINGS
+            allowed = ORCHESTRATOR_DATA | TRANSFER_SETTINGS | REHEARSAL_ZONE_SETTINGS
         if argv[0] == "station":
             allowed = STATION_TEACH_SETTINGS if argv[1] == "save" else STATION_SETTINGS
         environment = {

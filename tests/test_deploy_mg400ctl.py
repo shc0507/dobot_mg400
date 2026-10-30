@@ -270,6 +270,63 @@ def test_transfer_data_is_forwarded_without_rehearsal_device_credentials(
 
 
 @pytest.mark.parametrize("root", [True, False])
+@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
+def test_zone_settings_keep_rehearsal_occupancy_and_credentials_isolated(
+    ctl, monkeypatch, root, command
+):
+    production = {
+        "MG400_ORCH_ZONES_FILE": "/var/lib/mg400/zones/config.toml",
+        "MG400_ORCH_ZONE_STATE_FILE": "/var/lib/mg400/zones/occupancy.json",
+        "MG400_ORCH_ROBOT_URL": "http://production.invalid",
+        "MG400_ORCH_ROBOT_TOKEN": "production-token",
+    }
+    caller = {
+        "MG400_ORCH_ZONES_FILE": "/tmp/explicit-demo-zones.toml",
+        "MG400_ORCH_ZONE_STATE_FILE": "/tmp/never-share-occupancy.json",
+        "MG400_ORCH_ROBOT_URL": "http://ambient.invalid",
+        "MG400_ORCH_ROBOT_TOKEN": "ambient-token",
+        "MG400_STAGE_SERIAL": "/production/device",
+        "MG400_ORCH_ZONE_UNKNOWN": "not-allowed",
+        "HTTP_PROXY": "http://proxy.invalid",
+        "PYTHONPATH": "/untrusted/python",
+        "LD_PRELOAD": "/untrusted/library",
+    }
+    for key, value in caller.items():
+        monkeypatch.setenv(key, value)
+    if root and command != "rehearse":
+        ctl.host.settings.write_text(
+            "\n".join(f"{key}={value}" for key, value in production.items())
+        )
+    else:
+        # Root rehearsal and nonroot commands must never read the host file.
+        ctl.host.settings.unlink()
+    if not root:
+        for name in ("getuid", "geteuid", "getgid", "getegid"):
+            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
+    arguments = ["list"] if command == "station" else ["recipe-or-run-id"]
+    assert ctl.call(command, *arguments) == 0
+    program, argv, environment = ctl.execvpe.call_args.args
+    source = production if root and command != "rehearse" else caller
+    expected = (
+        {key: source[key] for key in ("MG400_ORCH_ZONES_FILE", "MG400_ORCH_ZONE_STATE_FILE")}
+        if command == "run"
+        else {"MG400_ORCH_ZONES_FILE": caller["MG400_ORCH_ZONES_FILE"]}
+        if command == "rehearse"
+        else {}
+    )
+    assert {key: value for key, value in environment.items() if "_ZONE" in key} == expected
+    for key in ("MG400_ORCH_ROBOT_URL", "MG400_ORCH_ROBOT_TOKEN"):
+        assert environment.get(key) == (source[key] if command == "run" else None)
+    assert not set(environment) & {"MG400_STAGE_SERIAL", "HTTP_PROXY", "PYTHONPATH", "LD_PRELOAD"}
+    python = str(ctl.host.code / ".venv/bin/python")
+    assert program == ("/usr/sbin/runuser" if root else python)
+    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, *arguments]
+    if root:
+        assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize("root", [True, False])
 @pytest.mark.parametrize("action", ["save", "list", "show", "rm"])
 def test_station_dispatch_only_forwards_necessary_paths_bounds_and_read_credentials(
     ctl, monkeypatch, root, action
@@ -285,6 +342,8 @@ def test_station_dispatch_only_forwards_necessary_paths_bounds_and_read_credenti
         "MG400_ORCH_STAGE_URL": "http://stage.invalid",
         "MG400_PANEL_TOKEN": "not-needed",
         "MG400_ORCH_RUNS_DIR": "/var/lib/mg400/runs",
+        "MG400_ORCH_ZONES_FILE": "/var/lib/mg400/zones/config.toml",
+        "MG400_ORCH_ZONE_STATE_FILE": "/var/lib/mg400/zones/occupancy.json",
         "HTTP_PROXY": "not-needed",
         "PYTHONPATH": "not-needed",
     }

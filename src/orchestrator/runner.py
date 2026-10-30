@@ -4,11 +4,12 @@ import copy
 import logging
 import threading
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager
 from types import MappingProxyType
 
-from .clients import Clients
+from .clients import SERVICES, Clients
 from .recipe import positive
+from .zones import PREDICATES, Zones, prepare_zones, zone_name
 
 
 class Revoked(RuntimeError):
@@ -51,14 +52,37 @@ class _Authority:
             with self._lock:
                 self.active -= 1
 
+    @contextmanager
+    def commit_guard(self):
+        """Fence a bounded local publication against revocation and lease loss.
+
+        Prepare data and acquire the zone/storage locks before entering. Do not
+        perform service calls or wait for another lock while this fence is held.
+        """
+        with self._lock:
+            self.check()
+            yield
+
 
 class StepClient:
     """Expose guarded operations only, never the underlying service client."""
 
     __slots__ = ("__call", "__remaining")
 
-    def __init__(self, authority, service):
+    def __init__(self, authority, service, *, zones=None, device=None):
         def invoke(method, *args, **kwargs):
+            if (
+                zones is not None
+                and method in {"run", "command"}
+                and args[0] != "stop"
+                and not (device == "stage" and args[0] == "stop_all")
+            ):
+
+                def guarded():
+                    with zones.guard(device, authority):
+                        return getattr(service, method)(*args, **kwargs)
+
+                return authority.call(guarded)
             return authority.call(getattr(service, method), *args, **kwargs)
 
         self.__call = invoke
@@ -117,20 +141,16 @@ class StepStore:
         return self.__event(kind, data)
 
 
-class NoZones:
-    """Placeholder until ORC-04. This object provides no cross-device interlock."""
-
-    def take(self, name):
-        return nullcontext()
-
-
 class Context:
-    def __init__(self, authority, services, store, run_id, position, chip_id, time_scale):
+    def __init__(self, authority, services, store, run_id, position, chip_id, time_scale, zones):
         self.clients = MappingProxyType(
-            {name: StepClient(authority, service) for name, service in services.items()}
+            {
+                name: StepClient(authority, service, zones=zones, device=name)
+                for name, service in services.items()
+            }
         )
         self.store = StepStore(authority, store, run_id, position, chip_id)
-        self.zones = NoZones()
+        self.zones = zones.bind(authority, services)
         self.__authority = authority
         self.__time_scale = time_scale
 
@@ -156,7 +176,7 @@ class Runner:
     until old work drains; it never releases ownership under a live old worker.
     """
 
-    def __init__(self, recipe, registry, services, store, *, time_scale=1):
+    def __init__(self, recipe, registry, services, store, *, time_scale=1, zone_plan=None):
         recipe = copy.deepcopy(recipe)
         self.recipe, self.registry, self.store = recipe, registry, store
         self.time_scale = positive(time_scale, "time scale")
@@ -169,9 +189,54 @@ class Runner:
         required = {name for step in recipe.steps for name in registry[step.skill].services}
         if set(recipe.services) != required:
             raise ValueError("Recipe services do not match the registered skills.")
-        if set(recipe.services) - set(services):
+        self.zone_plan = copy.deepcopy(zone_plan or prepare_zones(recipe, registry))
+        definitions = self.zone_plan.definitions
+        if not isinstance(definitions, dict):
+            raise ValueError("Zone definitions must be a mapping.")
+        guard_services = set(required)
+        for name, spec in definitions.items():
+            zone_name(name)
+            if (
+                not isinstance(spec, dict)
+                or set(spec) != {"owner", "conditions"}
+                or not isinstance(spec["owner"], str)
+                or spec["owner"] not in SERVICES
+                or not isinstance(spec["conditions"], (list, tuple))
+                or any(
+                    not isinstance(item, str) or item not in PREDICATES
+                    for item in spec["conditions"]
+                )
+                or len(set(spec["conditions"])) != len(spec["conditions"])
+            ):
+                raise ValueError(f"Invalid zone definition: {name}")
+            if name == "crucible-load" and (
+                spec["owner"] != "robot" or "stage_at_load" not in spec["conditions"]
+            ):
+                raise ValueError("crucible-load requires robot ownership and stage_at_load.")
+            if name == "furnace-tube" and (
+                spec["owner"] != "stage" or "robot_clear" not in spec["conditions"]
+            ):
+                raise ValueError("Only stage may own furnace-tube, with robot_clear required.")
+            if spec["owner"] in required:
+                for predicate in spec["conditions"]:
+                    guard_services.update(PREDICATES[predicate])
+        for step in recipe.steps:
+            if step.zone is not None:
+                zone_name(step.zone)
+                if step.zone not in definitions:
+                    raise ValueError(f"Zone is not configured: {step.zone}")
+                if definitions[step.zone]["owner"] not in registry[step.skill].services:
+                    raise ValueError("A declared zone must belong to a device used by that skill.")
+        if (
+            not isinstance(self.zone_plan.required_services, (tuple, list))
+            or any(not isinstance(name, str) for name in self.zone_plan.required_services)
+            or set(self.zone_plan.required_services) != guard_services
+        ):
+            raise ValueError("Zone services must match the recipe and all required guards.")
+        required.update(self.zone_plan.required_services)
+        if required - set(services):
             raise ValueError("A required service is not configured.")
-        self.clients = Clients(services)
+        self.clients = Clients({name: services[name] for name in sorted(required)})
         self.run_id = store.create(recipe)
         self._condition = threading.Condition(threading.RLock())
         self._status = "created"
@@ -179,6 +244,8 @@ class Runner:
         self._cancel_run = threading.Event()
         self._resume = None
         self._worker = self._thread = self._authority = None
+        self._monitor = None
+        self._monitor_stop = threading.Event()
         self._position = 0
         self._settled = False
         self._resolving = False
@@ -186,6 +253,19 @@ class Runner:
         self._failure = ""
         self.persistence_error = None
         self.release_errors = {}
+        self.zones = Zones(
+            self.zone_plan,
+            self.clients.services,
+            holder=self.run_id,
+            audit=lambda kind, data: self._persist(
+                "event",
+                self.run_id,
+                kind,
+                data,
+                chip_id=self._chip_id(),
+                step=self._position,
+            ),
+        )
 
     @property
     def status(self):
@@ -194,6 +274,9 @@ class Runner:
 
     def snapshot(self):
         """Report safety outcomes even when the persistent audit store failed."""
+        # File inspection may wait briefly. Never take a zone/storage lock while
+        # holding the runner condition or client lifecycle lock.
+        zones = self.zones.snapshot()
         with self._condition:
             stops = self.clients.stop_snapshot()
             return {
@@ -209,6 +292,8 @@ class Runner:
                     if stops.get(name, {}).get("stop") != "confirmed"
                 ),
                 "release_errors": dict(self.release_errors),
+                "zones": zones,
+                "zone_error": self.zones.error,
             }
 
     def _set(self, status, detail=""):
@@ -223,19 +308,40 @@ class Runner:
             getattr(self.store, method)(*args, **kwargs)
             return True
         except Exception as exc:
-            with self._condition:
+            with self._condition, self.clients.lifecycle_lock:
                 self.persistence_error = self.persistence_error or str(exc)
                 self._failure = f"Run persistence failed: {self.persistence_error}"
-                self._abort = True
-                self._cancel_run.set()
-                if self._authority is not None:
-                    self._authority.revoke()
+                self._cancel()
+                self._monitor_stop.set()
                 self._condition.notify_all()
             try:
                 logging.getLogger(__name__).error(self._failure)
             except Exception:
                 pass
             return False
+
+    def _cancel(self):
+        # Callers hold the runner condition. Publication of cancellation shares
+        # the lifecycle fence used by final physical-clearance publication.
+        with self.clients.lifecycle_lock:
+            self._abort = True
+            self._cancel_run.set()
+            if self._authority is not None:
+                self._authority.revoke()
+
+    @contextmanager
+    def _recovery_commit_guard(self):
+        # Zones already holds its manager/storage locks. Only the atomic local
+        # publication belongs inside this fence; no condition or service waits.
+        with self.clients.lifecycle_lock:
+            if (
+                self._abort
+                or self._cancel_run.is_set()
+                or self.clients.error
+                or self.persistence_error
+            ):
+                raise RuntimeError("The run lost permission to publish zone recovery.")
+            yield
 
     def start(self):
         with self._condition:
@@ -245,7 +351,7 @@ class Runner:
                 self._thread = threading.Thread(target=self._run, name="orch-run", daemon=True)
                 self._thread.start()
             except Exception as exc:
-                self._abort = True
+                self._cancel()
                 self._failure = str(exc)
                 self._set("aborted", self._failure)
                 raise
@@ -265,14 +371,12 @@ class Runner:
         with self._condition:
             if self._status in {"completed", "aborted"}:
                 return False
-            self._abort = True
-            self._cancel_run.set()
-            if self._authority is not None:
-                self._authority.revoke()
+            self._cancel()
+            self._monitor_stop.set()
             self._condition.notify_all()
             return True
 
-    def resume(self, *, manually_completed=False, note=""):
+    def resume(self, *, manually_completed=False, note="", physically_clear=False):
         with self._condition:
             if self._status != "held" or self._abort:
                 raise RuntimeError("Only a held run can resume.")
@@ -288,6 +392,20 @@ class Runner:
         try:
             round_id = self._stop(recovery=True)
             states = self.clients.reconcile()
+            claims = self.zones.owned()
+            if claims and physically_clear is not True:
+                raise ValueError("Declare physical clearance of retained zones before resuming.")
+            if claims or self.zones.error:
+                self.zones.recover(
+                    self.run_id,
+                    self.clients.services,
+                    physically_clear=physically_clear,
+                    note=note,
+                    live=True,
+                    commit_guard=self._recovery_commit_guard,
+                )
+            if self.zones.error:
+                raise RuntimeError(f"Zone recovery is incomplete: {self.zones.error}")
             with self._condition:
                 if self._abort:
                     raise RuntimeError("The run was aborted during reconciliation.")
@@ -317,9 +435,23 @@ class Runner:
         return self.recipe.params.get("chip_id")
 
     def _drained(self):
-        return (self._worker is None or not self._worker.is_alive()) and (
-            self._authority is None or self._authority.drained
+        return (
+            (self._worker is None or not self._worker.is_alive())
+            and (self._monitor is None or not self._monitor.is_alive())
+            and (self._authority is None or self._authority.drained)
         )
+
+    def _retain_zones(self):
+        """Keep uncertainty durable without delaying or bypassing stop cleanup."""
+        try:
+            self.zones.retain()
+        except Exception as exc:
+            self.zones.error = self.zones.error or str(exc)
+            with self._condition:
+                self._failure = f"{self._failure}; zone occupancy persistence failed: {exc}".lstrip(
+                    "; "
+                )
+            self._persist("event", self.run_id, "zone-retain-failed", {"error": str(exc)})
 
     def _stop(self, round_id=None, *, recovery=False):
         result = self.clients.recovery_stop_all() if recovery else self.clients.stop_all(round_id)
@@ -337,13 +469,14 @@ class Runner:
         with self._condition:
             if self._authority is not None:
                 self._authority.revoke()
+            self._monitor_stop.set()
             self._failure = str(error)
             if abort:
-                self._abort = True
-                self._cancel_run.set()
+                self._cancel()
             self._settled = False
         was_drained = self._drained()
         initial_round = self._stop()
+        self._retain_zones()
         with self._condition:
             self._final_round = initial_round if was_drained else None
             self._set("aborting" if self._abort else "held", self._failure)
@@ -358,9 +491,15 @@ class Runner:
                     # Each service advances independently. One blocked stop must
                     # not delay a final stop on another service after a late write.
                     self._stop(final_round)
+                done = self.clients.round_done(final_round)
+                if done:
+                    # A previously registered operation may have published a
+                    # claim after initial revocation. Preserve that claim too.
+                    self._retain_zones()
                 with self._condition:
                     self._final_round = final_round
-                    self._settled = self.clients.round_done(final_round)
+                    self._settled = done
+            note = None
             with self._condition:
                 if self._abort:
                     if self._status != "aborting":
@@ -369,14 +508,24 @@ class Runner:
                         return False
                 elif self._resume is not None and not self._resolving:
                     note, self._resume = self._resume, None
-                    # Recheck immediately before the next step. A lease/fault may
-                    # change after the human submitted a resolution.
-                    try:
-                        self.clients.reconcile()
-                    except Exception as exc:
+                if note is None:
+                    self._condition.wait(0.05)
+            if note is not None:
+                # Recheck outside the runner condition: abort remains available
+                # while service or occupancy reads are in flight.
+                try:
+                    self.clients.reconcile()
+                    claims = self.zones.owned()
+                    if self.zones.error or claims:
+                        raise RuntimeError("Retained zone occupancy still requires recovery.")
+                except Exception as exc:
+                    with self._condition:
                         self._failure = str(exc)
                         self._set("held", self._failure)
-                    else:
+                else:
+                    with self._condition:
+                        if self._abort:
+                            continue
                         if self._position < len(self.recipe.steps):
                             if not self._persist(
                                 "step",
@@ -388,20 +537,27 @@ class Runner:
                             ):
                                 return False
                         return True
-                self._condition.wait(0.05)
 
     def _step(self, step):
         with self._condition, self.clients.lifecycle_lock:
-            if self._abort or self.clients.error:
-                return RuntimeError(self.clients.error or "A person aborted the run.")
+            if self._abort or self.clients.error or self.zones.error:
+                return RuntimeError(
+                    self.clients.error or self.zones.error or "A person aborted the run."
+                )
             self._authority = _Authority(
                 time.monotonic() + step.timeout_s,
-                failure=lambda: self.clients.error,
+                failure=lambda: self.clients.error or self.zones.error,
                 lifecycle_lock=self.clients.lifecycle_lock,
             )
             services = {
                 name: self.clients.services[name] for name in self.registry[step.skill].services
             }
+            authority = self._authority
+            self._monitor_stop = threading.Event()
+            monitor_stop = self._monitor_stop
+        # Zone binding takes its manager lock. The lock order is manager then
+        # lifecycle, so binding must be outside the runner/lifecycle fence.
+        try:
             ctx = Context(
                 self._authority,
                 services,
@@ -410,43 +566,100 @@ class Runner:
                 self._position,
                 self._chip_id(),
                 self.time_scale,
+                self.zones,
             )
+        except BaseException as exc:
+            authority.revoke()
+            return exc
         outcome = {}
 
         def invoke():
+            entry = None
             try:
+                if step.zone is not None:
+                    entry = ctx.zones.declare(step.zone)
                 outcome["result"] = self.registry[step.skill].function(
                     ctx, **copy.deepcopy(step.params)
                 )
+                self.zones.check_held(authority)
                 ctx.check()
+                if entry is not None:
+                    finished, entry = entry, None
+                    ctx.zones.finish(finished)
             except BaseException as exc:
                 outcome["error"] = exc
+                if entry is not None:
+                    try:
+                        ctx.zones.finish(entry, exceptional=True)
+                    except BaseException as cleanup:
+                        outcome["error"] = RuntimeError(f"{exc}; zone retention failed: {cleanup}")
+
+        def monitor():
+            try:
+                while not monitor_stop.is_set():
+                    self.zones.check_held(authority)
+                    if monitor_stop.is_set():
+                        return
+                    authority.check()
+                    monitor_stop.wait(0.05)
+            except BaseException as exc:
+                # Revocation is immediate and does not wait for the skill's
+                # zone guard or its possibly blocked device operation.
+                authority.revoke()
+                outcome["guard_error"] = exc
+                monitor_stop.set()
+
+        def failed(error):
+            authority.revoke()
+            monitor_stop.set()
+            return error
 
         with self._condition, self.clients.lifecycle_lock:
-            if self._abort or self.clients.error:
-                self._authority.revoke()
-                return RuntimeError(self.clients.error or "A person aborted the run.")
+            if self._abort or self.clients.error or self.zones.error:
+                return failed(
+                    RuntimeError(
+                        self.clients.error or self.zones.error or "A person aborted the run."
+                    )
+                )
             if not self._persist("step", self.run_id, self._position, "running"):
-                return RuntimeError("Cannot record step startup.")
+                return failed(RuntimeError("Cannot record step startup."))
             try:
+                self._monitor = threading.Thread(target=monitor, name="orch-zones", daemon=True)
+                self._monitor.start()
                 self._worker = threading.Thread(target=invoke, name="orch-skill", daemon=True)
                 self._worker.start()
             except Exception as exc:
-                self._authority.revoke()
-                return exc
+                return failed(exc)
         while self._worker.is_alive():
             if self._abort:
-                return RuntimeError("A person aborted the run.")
-            if self.clients.error:
-                return RuntimeError(self.clients.error)
-            if time.monotonic() >= self._authority.deadline:
-                return TimeoutError("The step timed out. It will not be retried.")
+                return failed(RuntimeError("A person aborted the run."))
+            if self.clients.error or self.zones.error:
+                return failed(RuntimeError(self.clients.error or self.zones.error))
+            if "guard_error" in outcome:
+                return failed(outcome["guard_error"])
+            if time.monotonic() >= authority.deadline:
+                return failed(TimeoutError("The step timed out. It will not be retried."))
             self._worker.join(0.02)
-        self._authority.revoke()
-        if not self._authority.drained:
+        monitor_stop.set()
+        while self._monitor.is_alive():
+            if self._abort or self.clients.error or self.zones.error:
+                return failed(
+                    RuntimeError(
+                        self.clients.error or self.zones.error or "A person aborted the run."
+                    )
+                )
+            if time.monotonic() >= authority.deadline:
+                return failed(TimeoutError("Zone feedback did not drain before the step deadline."))
+            self._monitor.join(0.02)
+        authority.revoke()
+        if not authority.drained:
             return RuntimeError("The skill returned with service operations still in flight.")
-        if self._abort or self.clients.error:
-            return RuntimeError(self.clients.error or "A person aborted the run.")
+        if self._abort or self.clients.error or self.zones.error:
+            return RuntimeError(
+                self.clients.error or self.zones.error or "A person aborted the run."
+            )
+        if "guard_error" in outcome:
+            return outcome["guard_error"]
         if "error" in outcome:
             return outcome["error"]
         if not self._persist(
@@ -461,6 +674,7 @@ class Runner:
         with self._condition:
             if self._authority is not None:
                 self._authority.revoke()
+            self._monitor_stop.set()
         drained = self._drained()
         round_id = self._stop()
         while not self._drained():
@@ -470,6 +684,7 @@ class Runner:
         while not self.clients.round_done(round_id):
             self._stop(round_id)
             time.sleep(0.02)
+        self._retain_zones()
         if not self.clients.confirmed:
             self._failure = (
                 self._failure or "A service stop remains unconfirmed. Manual recovery is required."
@@ -481,7 +696,11 @@ class Runner:
         try:
             self._set("acquiring")
             try:
-                self.clients.acquire(self.recipe.services, cancelled=self._cancel_run)
+                self.zones.snapshot()
+                if self.zones.error:
+                    raise RuntimeError(self.zones.error)
+                self.clients.acquire(self.zone_plan.required_services, cancelled=self._cancel_run)
+                self.zones.services = self.clients.services
             except Exception as exc:
                 self._hold(exc, abort=True)
                 return
@@ -514,6 +733,8 @@ class Runner:
                 completed = False
             with self._condition:
                 self._set(
-                    "completed" if completed and confirmed and not self._abort else "aborted",
+                    "completed"
+                    if completed and confirmed and not self._abort and not self.zones.error
+                    else "aborted",
                     self._failure,
                 )

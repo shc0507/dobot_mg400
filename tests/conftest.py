@@ -1,6 +1,27 @@
-"""Opt-in fixtures that several test modules share."""
+"""Shared fixtures and private orchestrator configuration for offline tests."""
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def private_orchestrator_zones(request):
+    """Never let orchestrator tests inherit an installed host's zone files."""
+    if not request.path.name.startswith("test_orchestrator_"):
+        return
+    from orchestrator import zones
+
+    tmp_path_factory = request.getfixturevalue("tmp_path_factory")
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    directory = tmp_path_factory.mktemp("orchestrator-zones")
+    directory.chmod(0o700)
+    config = directory / "config.toml"
+    config.write_text("[zones]\n")
+    config.chmod(0o600)
+    monkeypatch.setattr(zones, "DEFAULT_CONFIG", config)
+    monkeypatch.setattr(zones, "DEFAULT_STATE", directory / "occupancy.json")
+    monkeypatch.setenv("MG400_ORCH_ZONES_FILE", str(config))
+    monkeypatch.setenv("MG400_ORCH_ZONE_STATE_FILE", str(directory / "occupancy.json"))
+    return directory
 
 
 @pytest.fixture

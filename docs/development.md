@@ -193,13 +193,25 @@ POST 请求必须满足以下条件：
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
 | `home` | 无 | J1–J4 移动到 0° |
-| `execute` | `targets`：`x`、`y`、`z`、`r`，可选 `grip` | 直线移动到法兰坐标，到位后执行夹爪目标 |
+| `execute` | `targets`：`x`、`y`、`z`、`r`，可选 `grip`，另有可选 `speed` | 直线移动到法兰坐标，到位后执行夹爪目标 |
 | `grip` | `position`：0–1000 的整数 | 设置夹爪开口 |
 | `initialize_gripper` | 无 | 初始化夹爪，会张开夹指 |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
 
-`speed` 是 1–100 的整数。
+对于 `keyboard`，`speed` 是 1–100 的整数。
+对于 `execute`，可选 `speed` 是整数，范围从 1 到主机的 `MG400_ROBOT_MAX_SPEED_L` 上限。
+值无效或超出上限时，服务返回 400，不会将运动排队。
+布尔值、字符串、小数和非有限值均无效。
+
+运动使用 `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`。
+加速度上限为 `MG400_ROBOT_MAX_ACC_L`。
+两个主机配置均默认为 1，接受 1–100 的整数。空值也使用 1。
+主机配置无效时，服务拒绝启动。修改上限后，重启服务。
+
+未提供 `speed` 时，即使主机上限提高，协议命令仍为 `SpeedL=1,AccL=1`。
+这些配置不改变 `home`、全局 `SpeedFactor` 或键盘点动。
+无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
 `recoverable` 为 `true` 时也可用：报警期间的停止未确认已锁定控制，报警已在面板外清除。
 此时服务不发送 `ClearError()`，只下使能并确认静止。

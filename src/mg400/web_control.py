@@ -123,10 +123,17 @@ class RobotPanelState:
         host,
         *,
         gripper=None,
+        max_speed_l=1,
+        max_acc_l=1,
         connection_factory=FeedbackConnection,
         control_factory=JointControl,
         session_factory=KeyboardJogSession,
     ):
+        for name, value in (("max_speed_l", max_speed_l), ("max_acc_l", max_acc_l)):
+            if type(value) is not int or not 1 <= value <= 100:
+                raise ValueError(f"{name} must be an integer between 1 and 100")
+        self._max_speed_l = max_speed_l
+        self._max_acc_l = max_acc_l
         self.robot_host = host
         self._gripper = gripper
         self._connection_factory = connection_factory
@@ -295,7 +302,10 @@ class RobotPanelState:
         commands["execute"] = describe_command(
             parameter(
                 "object",
-                properties={"targets": targets},
+                properties={
+                    "targets": targets,
+                    "speed": parameter("integer", minimum=1, maximum=self._max_speed_l, default=1),
+                },
                 required=["targets"],
                 additionalProperties=False,
             )
@@ -530,8 +540,16 @@ class RobotPanelState:
         }:
             raise ValueError("Unknown action")
         fields = {"action"}
+        speed = None
         if action == "execute":
             fields.add("targets")
+            if "speed" in payload:
+                fields.add("speed")
+                speed = payload["speed"]
+                if type(speed) is not int or not 1 <= speed <= self._max_speed_l:
+                    raise ValueError(
+                        f"Execute speed must be an integer between 1 and {self._max_speed_l}"
+                    )
         elif action == "grip":
             fields.add("position")
         elif action == "keyboard":
@@ -615,7 +633,7 @@ class RobotPanelState:
                         self._kb_disarm(None)
                         self._busy = True
                         self._pose = [None] * 4
-                        self._job = (action, targets)
+                        self._job = (action, targets, speed)
                         self._defer_command(record, "job")
                         self._message = f"Robot operation started: {action}."
                         self._wake.set()
@@ -957,7 +975,7 @@ class RobotPanelState:
                 self._finish_commands("alarm", "ok" if succeeded else "failed", self._message)
                 self._recover_disabled()
 
-    def _operate(self, action, targets):
+    def _operate(self, action, targets, speed=None):
         self._guard_send()
         if action == "enable":
             self._control.enable()
@@ -965,7 +983,12 @@ class RobotPanelState:
             self._control.move((0.0, 0.0, 0.0, 0.0))
         elif action == "execute":
             pose, grip = targets
-            self._control.move_linear(pose)
+            if speed is None:
+                self._control.move_linear(pose)
+            else:
+                self._control.move_linear(
+                    pose, speed=speed, acceleration=min(speed, self._max_acc_l)
+                )
             if grip is not None:
                 self._move_gripper(grip)
         elif action == "grip":

@@ -1207,3 +1207,120 @@ def test_last_stop_result_fails_if_gripper_remains_locked(rig):
     assert state.stop("browser-b", wait_s=0.02)["stop"] == "unconfirmed"
     wait_for(lambda: state.snapshot()["last_command"]["action"] == "stop")
     assert state.snapshot()["last_command"]["result"] == "failed"
+
+
+@pytest.fixture
+def speed_rig(monkeypatch, request):
+    block_network(monkeypatch)
+    max_speed, max_acceleration = getattr(request, "param", (20, 5))
+    feed = Feed()
+
+    class SpeedControl(PanelControl):
+        def move_linear(self, target, **options):
+            self.calls.append(("linear", target, options))
+            self._move()
+
+    state = RobotPanelState(
+        "robot.test",
+        max_speed_l=max_speed,
+        max_acc_l=max_acceleration,
+        connection_factory=feed,
+        control_factory=SpeedControl,
+    )
+    try:
+        yield state, feed, state._control
+    finally:
+        state._control.release_move.set()
+        state._control.release_pose.set()
+        feed.read.set()
+        state.close()
+
+
+@pytest.mark.parametrize(
+    "speed_rig,speed,acceleration",
+    [((20, 5), 20, 5), ((20, 5), 3, 3), ((100, 100), 100, 100), ((1, 1), 1, 1)],
+    indirect=["speed_rig"],
+)
+def test_execute_applies_speed_and_acceleration_caps_without_global_speed_changes(
+    speed_rig, speed, acceleration
+):
+    state, _, control = speed_rig
+    connect(state)
+    state.command(
+        {"action": "execute", "targets": {"x": 250, "y": 0, "z": 30, "r": 0}, "speed": speed},
+        "browser-a",
+    )
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert control.calls == [
+        ("linear", (250, 0, 30, 0), {"speed": speed, "acceleration": acceleration})
+    ]
+    assert state.snapshot()["last_command"]["result"] == "ok"
+    assert not state.snapshot()["locked"]
+
+
+def test_raised_caps_keep_omitted_execute_speed_and_home_calls_unchanged(speed_rig):
+    state, _, control = speed_rig
+    connect(state)
+    execute(state)
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert control.calls == [("linear", (250, 0, 30, 0), {})]
+    state.command({"action": "home"}, "browser-a")
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert control.calls[-1] == ("joint", (0, 0, 0, 0))
+
+
+@pytest.mark.parametrize(
+    "speed", [True, False, None, "1", 1.0, 0, -1, 21, 100, 10**400, float("nan"), float("inf")]
+)
+def test_execute_rejects_invalid_or_above_cap_speed_before_worker(speed_rig, speed):
+    state, _, control = speed_rig
+    connect(state)
+    with pytest.raises(ValueError, match="integer between 1 and 20"):
+        state.command(
+            {"action": "execute", "targets": {"x": 250, "y": 0, "z": 30, "r": 0}, "speed": speed},
+            "browser-a",
+        )
+    assert control.calls == []
+    assert state._job is None and not state.snapshot()["busy"]
+    assert state.snapshot()["last_command"]["result"] == "rejected"
+    assert not state.snapshot()["locked"]
+
+
+def test_default_cap_refuses_speed_above_one_and_ignores_request_cap_override(rig):
+    state, _, controls = rig
+    connect(state)
+    for extra in ({"speed": 2}, {"speed": 1, "max_speed_l": 100}, {"speed": 1, "acceleration": 1}):
+        with pytest.raises(ValueError):
+            state.command(
+                {"action": "execute", "targets": {"x": 250, "y": 0, "z": 30, "r": 0}, **extra},
+                "browser-a",
+            )
+    assert controls[0].calls == []
+
+
+def test_describe_reports_the_configured_speed_cap_and_optional_default(speed_rig):
+    state, _, _ = speed_rig
+    params = state.describe()["commands"]["execute"]["params"]
+    assert params["required"] == ["targets"]
+    assert params["properties"]["speed"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 1,
+    }
+    assert (
+        state.describe()["commands"]["keyboard"]["params"]["properties"]["speed"]["maximum"] == 100
+    )
+
+
+@pytest.mark.parametrize("parameter", ["max_speed_l", "max_acc_l"])
+@pytest.mark.parametrize("value", [True, None, "1", 1.0, 0, 101, 10**400, float("nan")])
+def test_invalid_caps_fail_before_controller_or_thread_creation(monkeypatch, parameter, value):
+    block_network(monkeypatch)
+    factory = Mock(side_effect=AssertionError("Invalid cap must not construct a controller"))
+    start = Mock(side_effect=AssertionError("Invalid cap must not start a worker"))
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(ValueError, match=parameter):
+        RobotPanelState("robot.test", control_factory=factory, **{parameter: value})
+    factory.assert_not_called()
+    start.assert_not_called()

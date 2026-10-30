@@ -744,7 +744,9 @@ def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal
     backends = PANEL["main"].__globals__
     assert code == 0
     backends["load_robot_host"].assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
-    backends["RobotPanelState"].assert_called_once_with("robot.test", gripper=None)
+    backends["RobotPanelState"].assert_called_once_with(
+        "robot.test", gripper=None, max_speed_l=1, max_acc_l=1
+    )
     state.command.assert_not_called()
     state.close.assert_called_once_with()
     assert len(before_close) == 1
@@ -1071,3 +1073,70 @@ def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
     assert request(server, "GET", "/api/describe", headers=auth)[0] == 404
     assert request(server, "GET", "/api/events", headers=auth)[0] == 404
     assert request(server, "POST", "/api/stop", "{}", ROBOT_HEADERS)[0] == 403
+
+
+@pytest.mark.parametrize("name", ["MG400_ROBOT_MAX_SPEED_L", "MG400_ROBOT_MAX_ACC_L"])
+@pytest.mark.parametrize(
+    "value", ["0", "101", "-1", "1.0", "true", " 1", "1 ", "NaN", "1e2", "9" * 500]
+)
+def test_invalid_robot_caps_fail_before_backend_construction(monkeypatch, capsys, name, value):
+    main = PANEL["main"]
+    monkeypatch.setenv(name, value)
+    backends = {
+        key: Mock()
+        for key in ("RobotPanelState", "ReadOnlyPanelState", "WebGripper", "PanelServer")
+    }
+    for key, backend in backends.items():
+        monkeypatch.setitem(main.__globals__, key, backend)
+    with pytest.raises(SystemExit) as error:
+        main(["--robot-host", "robot.test"])
+    assert error.value.code == 2
+    assert f"{name} must be a whole number between 1 and 100" in capsys.readouterr().err
+    for backend in backends.values():
+        backend.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "speed,acceleration,expected",
+    [("", "", (1, 1)), ("20", "7", (20, 7)), ("100", "100", (100, 100))],
+)
+def test_robot_caps_are_loaded_from_host_environment(
+    monkeypatch, signal_table, speed, acceleration, expected
+):
+    monkeypatch.setenv("MG400_ROBOT_MAX_SPEED_L", speed)
+    monkeypatch.setenv("MG400_ROBOT_MAX_ACC_L", acceleration)
+    code, _ = run_panel(monkeypatch, closing_state())
+    assert code == 0
+    PANEL["main"].__globals__["RobotPanelState"].assert_called_once_with(
+        "robot.test", gripper=None, max_speed_l=expected[0], max_acc_l=expected[1]
+    )
+
+
+@pytest.mark.usefixtures("closed_clients")
+@pytest.mark.parametrize("transport", ["http", "websocket"])
+@pytest.mark.parametrize("speed", [True, 1.0, None, 0, 2, 10**400, float("nan"), float("inf")])
+def test_invalid_execute_speed_reports_400_without_feedback_or_motion(transport, speed):
+    from helpers import PanelControl
+    from panel_ws import WsClient
+
+    from mg400.web_control import RobotPanelState
+
+    feedback = Mock(side_effect=AssertionError("Invalid speed must not open feedback"))
+    state = RobotPanelState("robot.test", connection_factory=feedback, control_factory=PanelControl)
+    payload = {"action": "execute", "targets": {"x": 250, "y": 0, "z": 30, "r": 0}, "speed": speed}
+    try:
+        with running(state) as server:
+            if transport == "http":
+                status, _ = request(
+                    server, "POST", "/api/command", json.dumps(payload), ROBOT_HEADERS
+                )
+            else:
+                client = WsClient(server)
+                client.hello()
+                status = client.request("command", payload)["status"]
+            assert status == 400
+            assert state._control.calls == []
+            assert state._job is None and not state.snapshot()["busy"]
+            feedback.assert_not_called()
+    finally:
+        state.close()

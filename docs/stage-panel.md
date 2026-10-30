@@ -1,3 +1,5 @@
+[English](stage-panel.en.md)
+
 # 位移台面板
 
 [返回项目首页](../README.md)

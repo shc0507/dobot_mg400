@@ -1329,6 +1329,7 @@ Steps:
 1. A proxy (for example Caddy, installed like go2rtc with `--caddy PATH`) on the VPN address, with the paths `/robot/`, `/stage/`, `/camera/`, `/thermal/`, `/furnace/`, `/microscope/`, `/lab/`.
 2. Meet the proxy rules in `docs/control-panel.md`: HTTP/1.1 for `api/ws` with Upgrade and Connection, the browser's Host with port or `X-Forwarded-Host`, a read timeout above 5 s, tokens set even on loopback.
 3. Every service supports a base path. The robot panel has `--base-path`; labkit services take `base_path`.
+   The stage and thermal pages still use root-only routes and links. Add configurable base paths in their app factories, command entry points, page links and browser requests. Keep `/` as the default, preserve their existing token, Host, Origin, lease and command checks, and test prefixed page, API and asset requests with fakes. The explicit stage and thermal write paths are limited to this integration.
 4. Unit, registry entry, tests, docs.
 
 Done when: P-CHECKS pass.

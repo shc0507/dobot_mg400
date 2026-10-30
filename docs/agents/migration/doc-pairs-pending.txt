@@ -1,2 +1,1 @@
-README.md
 firmware/three-motor-demo/README.md

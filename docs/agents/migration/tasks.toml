@@ -1237,8 +1237,12 @@ review = "human"
 deps = ["ORC-05", "GOV-02"]
 writes = [
   "src/gateway/**",
+  "src/orchestrator/store.py",
   "tests/test_gateway*.py",
   "config/systemd/mg400-gateway.service",
+  "config/systemd/mg400-web-panel.service",
+  "config/systemd/mg400-stage-panel.service",
+  "config/systemd/mg400-camera-preview.service",
   "deploy/services.toml",
   "deploy/install.py",
   "deploy/mg400.env.example",

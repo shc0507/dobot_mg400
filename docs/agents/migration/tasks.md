@@ -1274,9 +1274,17 @@ Steps:
 
 1. `src/gateway/` with the Python MCP SDK, the Streamable HTTP transport, loopback port 8773 and a bearer token.
 2. Read-only tools: `list_services`, `get_state(service)`, `list_recipes`, `describe_recipe`, `list_runs`, `get_run`, `get_chip(id)`.
-3. Every call goes to the run store: caller, tool, arguments, time.
+3. Record every call through a public run-independent audit API in `src/orchestrator/store.py`: caller, tool, arguments, time. Calls must be recorded even before the first recipe run. Do not create synthetic recipe runs or access private SQLite state from the gateway.
 4. Unit `mg400-gateway.service`, a registry entry (optional), group `gateway`.
 5. Tests with an in-process MCP client.
+
+Integration scope: in these existing units, only extend `UnsetEnvironment` to exclude `MG400_GATEWAY_TOKEN`:
+
+- `config/systemd/mg400-web-panel.service`
+- `config/systemd/mg400-stage-panel.service`
+- `config/systemd/mg400-camera-preview.service`
+
+Preserve each service's checked tokens, including camera preview's `MG400_VISION_TOKEN`. Retain the furnace unit's existing gateway-token exclusion. The ORC-05 unit must exclude `MG400_GATEWAY_TOKEN` when introduced. Cover the audit API in `tests/test_gateway*.py` and the token exclusions in the shared deployment tests.
 
 Done when: P-CHECKS pass; a test fixes the list of tools, and none of them changes a device.
 

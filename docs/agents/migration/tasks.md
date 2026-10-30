@@ -258,7 +258,7 @@ Read: `apps/control_panel/server.py` (search for `Forwarded`, `Host`, `token`, `
 Steps:
 
 1. `src/labkit/__init__.py` and `src/labkit/auth.py`, stdlib only. Functions: token validation (printable ASCII, no leading or trailing space, at least 24 characters when binding a non-loopback address), loopback bind check, Host check, forwarded-header check, bearer check with `hmac.compare_digest`, Origin check.
-2. The robot server and the stage app call these functions. Every status code and message stays the same.
+2. The robot server, the stage app and `src/stage_controller/__main__.py` call these functions. Preserve each service's current token and bind policies. Every status code and message stays the same.
 3. Add `src/labkit` to the wheel packages.
 4. Unit tests for each function. An `AGENTS.md` area row for labkit.
 

@@ -260,6 +260,7 @@ writes = [
   "tests/test_labkit_auth.py",
   "apps/control_panel/server.py",
   "src/stage_controller/app.py",
+  "src/stage_controller/__main__.py",
   "pyproject.toml",
   "uv.lock",
   "AGENTS.md",

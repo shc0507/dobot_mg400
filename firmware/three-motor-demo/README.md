@@ -9,6 +9,27 @@ Arduino 会自动编译 `.cpp`。
 安装 **AccelStepper by Mike McCauley**。
 选择开发板和端口，然后上传。
 
+目标开发板为 Arduino Uno R3，FQBN 是 `arduino:avr:uno`，核心是 `arduino:avr`。
+只有操作员可以在有人监督的硬件验证中上传固件。
+上传前，安装 STG-02 主机更新，使主机支持下文追加的状态字段。
+如果旧主机要求每条电机状态以 `spr` 结尾，它就无法解析此固件。
+
+## 离线编译和检查
+
+在仓库根目录运行以下命令。编译不使用开发板或串口：
+
+```sh
+arduino-cli core install arduino:avr
+arduino-cli lib install AccelStepper
+arduino-cli compile --fqbn arduino:avr:uno firmware/three-motor-demo
+python firmware/three-motor-demo/tests/run.py --library /path/to/AccelStepper
+```
+
+本机检查依赖 Python 和 `g++`。
+检查把已安装的 AccelStepper 源码与假的 GPIO、时钟和串口接口链接。
+检查还会拒绝引脚冲突，并确认禁用最小限位输入时拒绝回零。
+Arduino CLI 的数据、下载和用户目录使用工作区内的配置。
+
 ## 网页控制面板
 
 位移台面板（`stage-panel`）是此草图的网页界面。
@@ -52,14 +73,24 @@ Arduino 会自动编译 `.cpp`。
 
 默认分配如下，可在 `MotorPins.h` 中修改：
 
-| 电机 | STEP | DIR | SLEEP |
-| --- | --- | --- | --- |
-| Bottom_Motor | D5 | D4 | D12 |
-| Top_Motor | D7 | D6 | D13 |
-| Insert_Motor | D3 | D2 | D11 |
+| 电机 | STEP | DIR | SLEEP | LimitMin | LimitMax |
+| --- | --- | --- | --- | --- | --- |
+| Bottom_Motor | D5 | D4 | D12 | A2 | A3 |
+| Top_Motor | D7 | D6 | D13 | A4 | A5 |
+| Insert_Motor | D3 | D2 | D11 | A0 | A1 |
 
 每个驱动器有独立的 SLEEP 输出。
 每个 SLEEP 输出只能连接对应电机驱动器的 SLP 输入。
+
+每个限位触点接在对应输入和 GND 之间。
+输入使用 `INPUT_PULLUP`，LOW 表示触发。
+最小限位位于 CCW 端，最大限位位于 CW 端。
+有人监督验证时，检查实际运动方向。
+`InsertLimitMin`、`InsertLimitMax`、`BottomLimitMin`、`BottomLimitMax`、`TopLimitMin` 和 `TopLimitMax` 设置这些引脚。
+`255` 表示禁用输入。没有最小限位输入的电机拒绝回零。
+没有最大限位输入时，不提供最大限位触点保护。
+编译会检查启用的输入之间及其与输出之间是否冲突，并限制在 Uno 的 D2..D19 范围。
+默认接线使用全部 18 个非串口 I/O 引脚。D0/D1 必须空闲。
 
 分辨率输入共用。把每个 Arduino 引脚连接到**全部三个**驱动板上的对应输入：
 
@@ -121,8 +152,9 @@ Arduino 复位期间，固件不控制 SLP。
 在 Uno 等许多开发板上，D13（`TopSleep`）还控制板载 LED。
 串口或复位按钮触发复位后，引导程序会闪烁此 LED。
 因此，面板每次连接时，Top 驱动器可能多次睡眠和唤醒。
-要避免这种情况，把 `TopSleep` 设为不带 LED 的引脚，例如 `A0`。
-然后移动接线。
+修改 `TopSleep` 时，必须选择独立输出引脚并修改对应接线。
+默认模拟引脚现在用于限位触点。
+修改并验证受影响的接线后，才能改用其中的引脚。
 
 不要让 RST 悬空。
 Pololu 载板的 RST 没有上拉或下拉电阻。
@@ -151,6 +183,12 @@ Arduino 和驱动器必须共地，并使用合适的逻辑电源和电机电源
 选择电机、`status`、`microstep`、其他设置，以及对空闲电机发送 `stop`，都不会唤醒驱动器。
 这些操作也不会重置睡眠计时器。
 
+`awake <ms>` 是明确的例外。
+它唤醒所选驱动器，并在运动结束后延长保持时间，最长 60000 ms。
+空闲时续期会重新开始该时间段。
+`awake 0` 取消延长，但普通空闲计时器仍然有效。
+状态字段 `awake=1` 表示 SLEEP 为 HIGH，包括唤醒延迟期间。
+
 要修改超时，编辑 [`MotorPins.h`](MotorPins.h) 中的 `SleepTimeoutMs`。
 然后重新上传草图。
 该值必须大于零。
@@ -160,6 +198,47 @@ Arduino 和驱动器必须共地，并使用合适的逻辑电源和电机电源
 [A4988 数据手册](https://www.allegromicro.com/-/media/files/datasheets/a4988-datasheet.ashx)说明，SLEEP 为 HIGH 时允许启动。
 此时驱动器会让电机移到 Home 微步位置。
 因此，驱动器唤醒时，电机也可能运动。
+
+## 限位、回零和软件范围
+
+触点变为 LOW 时，固件立即禁止朝该限位发送脉冲，不使用减速斜坡。
+输入稳定 5 ms 后，状态才改变。
+释放稳定 5 ms 后，才能再次朝该端运动。
+短暂的触点抖动也可能停止运动。
+如果另一端限位和软件范围允许，仍可以向离开该限位的方向运动。
+这些检查适用于定步运动、`start` 和 `hold`。触点不能检测断线。
+
+`home` 作用于所选的空闲电机。
+它清除该电机的参考位置和软件范围，再执行以下阶段：
+
+1. 沿 CCW 以每秒 100 个 STEP 脉冲寻找最小限位。
+2. 沿 CW 退回 200 个 STEP 脉冲。最小限位必须释放。
+3. 沿 CCW 以每秒 25 个 STEP 脉冲再次接近。触点稳定后停止，位置设为 0，并设置 `homed=1`。
+
+如果最小限位已经触发，直接开始退回。
+每次退出回零时，固件都恢复配置的普通速度。
+方向保持为最后一个回零阶段的方向。
+`MotorPins.h` 中的 `HomeSpeed`、`HomeSlowSpeed`、`HomeStepLimit` 和 `HomeTimeoutMs` 设置速度和上限。
+默认整个操作最多发送 10000 个脉冲或持续 120000 ms。
+先达到任一上限，操作就失败。`HomeBackoffSteps` 为 200。
+限位冲突、退回受阻、最小限位未释放或位置溢出也会使回零失败。
+
+Bottom 电机接受回零后立即回复 `OK: bottom home`。
+使用 `status` 检查完成状态。
+失败时，固件在完整串口行中输出 `ERROR: home failed: <reason>`，包括确认回复之后发生的失败。
+`stop` 和 `stop all` 取消回零。
+回零失败或取消后保持 `homed=0`，不会重试。
+回零期间，其他电机和串口处理继续运行。
+
+`soft <min> <max>` 设置从回零点起算的 STEP 脉冲范围，包含两端。
+所选电机必须空闲且已回零，最小值不能大于最大值。
+定步目标超出范围时返回 `ERROR`。
+持续运动和长按运动在边界停止，不使用减速斜坡。
+如果新范围不包含当前位置，只能朝范围内运动，且定步目标必须在范围内。
+复位和上电会清除全部参考位置和范围。
+实际改变微步模式也会清除全部电机的参考位置和范围，但不重置计数器。
+成功回零建立开关参考位置，不提供编码器反馈。
+睡眠时的外力运动仍可能让物理位置失准。
 
 ## 全局微步设置
 
@@ -179,6 +258,8 @@ Arduino 和驱动器必须共地，并使用合适的逻辑电源和电机电源
 | `microstep 16` | HIGH | HIGH | HIGH | 十六分之一步 |
 
 切换模式不产生 STEP 脉冲，并保留有符号脉冲计数。
+实际改变模式会为全部电机设置 `homed=0` 和 `soft=0`。
+重复当前模式不会改变这些标志。
 模式保持到开发板复位，不写入 EEPROM。
 
 `steps`、速度、加速度、位置和剩余计数都按当前模式的 STEP 脉冲计算。
@@ -193,6 +274,19 @@ Arduino 和驱动器必须共地，并使用合适的逻辑电源和电机电源
 固件只在空闲时修改 MS 输出，并在后续 STEP 脉冲前提供 1 µs 建立时间。
 
 ## 串口测试
+
+状态保留原有字段顺序，并追加参考位置、触点、范围和驱动器状态：
+
+```text
+microstep=1
+* bottom cw idle pos=0 remaining=0 speed=200.0 accel=50.0 spr=200 homed=0 limits=00 soft=0 awake=0
+  top cw idle pos=0 remaining=0 speed=200.0 accel=50.0 spr=200 homed=0 limits=00 soft=0 awake=0
+  insert cw idle pos=0 remaining=0 speed=200.0 accel=50.0 spr=200 homed=0 limits=00 soft=0 awake=0
+```
+
+`limits=<min><max>` 中，1 表示触点触发，0 表示未触发。
+`soft=1` 表示已启用范围。
+全部原有命令保留确认回复原文。
 
 把串口监视器设为 **115200 波特**。
 行尾选择 **Newline** 或 **Both NL & CR**。
@@ -252,6 +346,9 @@ stop all
 | `accel 50` | 空闲时设置定步运动的加速度（1..10000 STEP 脉冲/秒平方） |
 | `spr 200` | 空闲时设置每圈整步数（1..65535） |
 | `microstep`, `microstep 16` | 查询或设置全局分辨率（1、2、4、8、16）。修改时全部电机必须空闲 |
+| `home` | 开始所选空闲电机的有界回零 |
+| `soft 0 10000` | 设置所选已回零电机的范围，包含两端 |
+| `awake 60000`、`awake 0` | 续期或取消所选驱动器的保持延长 |
 | `status` | 显示全部电机，`*` 标记所选电机 |
 | `help` | 打印命令列表 |
 
@@ -260,9 +357,10 @@ stop all
 如果请求四舍五入后为零，固件会拒绝请求。
 无效、过大或参数过多的命令都会被拒绝。
 所选电机运动时，固件会拒绝新的运动或配置。先用 `stop` 停止它。
+运动期间仍可以用 `awake` 续期。
 
 位置和剩余计数有正负号，CW 为正。
-位置表示启动以来指令 STEP 脉冲的有符号计数，没有编码器或回零反馈。
+位置表示启动或最近一次成功回零以来指令 STEP 脉冲的有符号计数，没有编码器反馈。
 不同分辨率下的脉冲计数不能当作同一种物理距离。
 
 默认的**每圈 200 个整步**适用于 1.8 度电机。

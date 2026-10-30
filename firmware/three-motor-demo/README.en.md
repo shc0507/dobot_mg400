@@ -7,6 +7,26 @@ Open `three-motor-demo.ino` in Arduino IDE. Keep `MotorControl.h`,
 automatically. Install **AccelStepper by Mike McCauley** through Library Manager,
 select your board and port, then upload.
 
+The target is Arduino Uno R3 with FQBN `arduino:avr:uno` and core `arduino:avr`.
+Only an operator uploads firmware during supervised hardware validation.
+Before upload, install the STG-02 host update, which accepts the appended status fields below.
+Older hosts that require `spr` at the end of each motor line cannot parse this firmware.
+
+## Offline build and checks
+
+These commands run from the repository root. They compile without a board or serial port:
+
+```sh
+arduino-cli core install arduino:avr
+arduino-cli lib install AccelStepper
+arduino-cli compile --fqbn arduino:avr:uno firmware/three-motor-demo
+python firmware/three-motor-demo/tests/run.py --library /path/to/AccelStepper
+```
+
+The native checks require Python and `g++`. They link the installed AccelStepper source with fake GPIO, clock, and serial interfaces.
+They also reject conflicting pins and check that a disabled minimum input refuses homing.
+Use a workspace-local Arduino CLI configuration for its data, downloads, and user directories.
+
 ## Web control panel
 
 The stage panel (`stage-panel`) is the web GUI for this sketch. It has independent
@@ -45,14 +65,22 @@ for keyboard behavior and stopping controls.
 
 Default assignments (customizable in `MotorPins.h`):
 
-| Motor | STEP | DIR | SLEEP |
-| --- | --- | --- | --- |
-| Bottom_Motor | D5 | D4 | D12 |
-| Top_Motor | D7 | D6 | D13 |
-| Insert_Motor | D3 | D2 | D11 |
+| Motor | STEP | DIR | SLEEP | LimitMin | LimitMax |
+| --- | --- | --- | --- | --- | --- |
+| Bottom_Motor | D5 | D4 | D12 | A2 | A3 |
+| Top_Motor | D7 | D6 | D13 | A4 | A5 |
+| Insert_Motor | D3 | D2 | D11 | A0 | A1 |
 
 Each driver has its own SLEEP output. Connect it only to the SLP input of that
 motor's driver.
+
+Connect each limit contact between its input and GND. Inputs use `INPUT_PULLUP` and become active at LOW.
+The minimum is the CCW end, and the maximum is the CW end. Check the physical directions during supervised validation.
+`InsertLimitMin`, `InsertLimitMax`, `BottomLimitMin`, `BottomLimitMax`, `TopLimitMin`, and `TopLimitMax` set these pins.
+The value `255` disables an input. Homing refuses a motor without a minimum input.
+An absent maximum input provides no maximum contact protection.
+Compilation checks all enabled inputs against each other and the outputs, within Uno pins D2..D19.
+The default wiring uses all 18 nonserial I/O pins. Keep D0/D1 free.
 
 Shared resolution inputs (connect each Arduino pin to that input on **all three** boards):
 
@@ -107,8 +135,8 @@ does not control SLP, so the drivers can be awake until startup sets SLEEP LOW.
 On many boards, for example the Uno, D13 (`TopSleep`) also controls the on-board
 LED. After a reset from the serial port or the reset button, the bootloader flashes
 this LED. Thus the Top driver can sleep and wake several times each time the panel
-connects. To prevent this, set `TopSleep` to a pin without an LED, for example `A0`,
-and move the wire.
+connects. Changing `TopSleep` requires a distinct output pin and corresponding wiring changes.
+The default analog pins now serve the limit contacts. Do not reuse one without changing and validating the affected wiring.
 
 Do not leave RST floating. The Pololu carrier has no pull resistor on RST. Connect
 RST to the adjacent SLP pin on the carrier, or connect RST to the logic supply (VDD).
@@ -133,8 +161,12 @@ Each driver has its own sleep timer:
    value is `10000UL` (10 s).
 
 A new move before the timeout keeps the driver awake. Motor selection, `status`,
-`microstep`, other settings, and `stop` on an idle motor do not wake a driver. They
+`microstep`, ordinary settings, and `stop` on an idle motor do not wake a driver. They
 also do not restart its sleep timer.
+
+`awake <ms>` is the explicit exception. It wakes the selected driver and extends holding by up to 60000 ms after motion ends.
+Renewal while idle starts that interval again. `awake 0` cancels the extension, while the normal idle timer still applies.
+The status field `awake=1` means SLEEP is HIGH, including the wake delay.
 
 To change the timeout, edit `SleepTimeoutMs` in [`MotorPins.h`](MotorPins.h). Then
 upload the sketch again. The value must be greater than zero.
@@ -145,6 +177,36 @@ movement. The [A4988 datasheet](https://www.allegromicro.com/-/media/files/datas
 states that a HIGH on SLEEP allows startup, at which time the driver moves the
 motor to the Home microstep position. Thus the motor can also move when its
 driver wakes.
+
+## Limits, homing, and soft range
+
+A LOW contact inhibits pulses toward that limit immediately, without a deceleration ramp.
+Status changes after 5 ms of stable input. Motion toward that end remains blocked until release is stable for 5 ms.
+A short contact bounce can stop a move. Motion away from that limit remains possible if the opposite limit and soft range permit it.
+These checks apply to finite moves, `start`, and `hold`. Contacts do not detect a broken wire.
+
+`home` applies to the selected idle motor. It clears that motor's reference and soft range, then runs these phases:
+
+1. Seek the minimum contact in CCW at 100 STEP pulses/s.
+2. Back off in CW by 200 STEP pulses. The minimum must release.
+3. Approach again in CCW at 25 STEP pulses/s. On stable contact, stop and set position 0 with `homed=1`.
+
+An already active minimum starts with backoff. The firmware restores the configured ordinary speed after every homing exit.
+The direction remains that of the last homing phase.
+`HomeSpeed`, `HomeSlowSpeed`, `HomeStepLimit`, and `HomeTimeoutMs` in `MotorPins.h` set the speeds and bounds.
+The defaults limit the complete operation to 10000 pulses or 120000 ms. The first reached bound fails the operation.
+`HomeBackoffSteps` is 200. Homing also fails on conflicting limits, a blocked backoff, an unreleased minimum, or position overflow.
+
+Acceptance replies immediately with `OK: bottom home` for the bottom motor. Check `status` for completion.
+Failures produce `ERROR: home failed: <reason>` on a complete serial line, including failures after the acknowledgement.
+`stop` and `stop all` cancel homing. A failed or cancelled home leaves `homed=0` and does not retry.
+Other motors and serial handling continue during homing.
+
+`soft <min> <max>` sets an inclusive range in STEP pulses from home. The selected motor must be idle and homed, and the minimum cannot exceed the maximum.
+Finite targets outside the range fail with `ERROR`. Continuous and held motion stop at the edge without a ramp.
+If a new range excludes the current position, only motion toward the range is possible, and a finite target must lie inside it.
+Reset and power-up clear every reference and range. A real microstep change does the same for all motors without resetting their counters.
+A successful home establishes a switch reference, not encoder feedback. External movement while asleep can still invalidate the physical position.
 
 ## Global microstepping
 
@@ -163,6 +225,7 @@ with a global line such as `microstep=16` before its three motor lines.
 | `microstep 16` | HIGH | HIGH | HIGH | Sixteenth step |
 
 Mode changes generate no STEP pulses and preserve the signed pulse counters.
+An actual mode change sets `homed=0` and `soft=0` for all motors. Repeating the current mode leaves those flags unchanged.
 The mode lasts until the board resets; there is no EEPROM write. `steps`, speed,
 acceleration, position, and remaining counts use STEP pulses at the active mode.
 At sixteenth step, `steps 50` requests 3.125 full steps. `spr 200` still describes
@@ -177,6 +240,18 @@ feedback and cannot verify that alignment. Firmware changes the MS outputs only
 while idle and provides a 1 µs setup interval before subsequent STEP pulses.
 
 ## Serial test
+
+Status preserves the existing field order and appends the reference, contacts, range, and driver state:
+
+```text
+microstep=1
+* bottom cw idle pos=0 remaining=0 speed=200.0 accel=50.0 spr=200 homed=0 limits=00 soft=0 awake=0
+  top cw idle pos=0 remaining=0 speed=200.0 accel=50.0 spr=200 homed=0 limits=00 soft=0 awake=0
+  insert cw idle pos=0 remaining=0 speed=200.0 accel=50.0 spr=200 homed=0 limits=00 soft=0 awake=0
+```
+
+`limits=<min><max>` uses 1 for an active contact and 0 otherwise. `soft=1` means the range is enabled.
+All existing commands retain their acknowledgement text.
 
 Set Serial Monitor to **115200 baud** and **Newline** or **Both NL & CR**. Send
 one command per line. Commands are case insensitive; whitespace is accepted.
@@ -234,15 +309,18 @@ stop all
 | `accel 50` | Set finite-move acceleration (1..10000 STEP pulses/s squared) while idle |
 | `spr 200` | Set full steps/revolution (1..65535) while idle |
 | `microstep`, `microstep 16` | Query/set the global resolution (1, 2, 4, 8, 16); all motors must be idle to change |
+| `home` | Start bounded homing of the selected idle motor |
+| `soft 0 10000` | Set the selected homed motor's inclusive range |
+| `awake 60000`, `awake 0` | Renew or cancel the selected driver's holding extension |
 | `status` | Show all motors; `*` marks the selected motor |
 | `help` | Print command list |
 
 Counts must be positive; use `dir ccw` to reverse. Revolutions round to the
 nearest STEP pulse at the active resolution; a request rounding to zero is rejected. Invalid, oversized,
 or extra-argument commands are rejected. A new movement or configuration is
-rejected while the selected motor is moving; `stop` it first. Positions and
+rejected while the selected motor is moving. Use `stop` first. The `awake` renewal remains available during motion. Positions and
 remaining counts are signed (CW positive). Position is the signed number of commanded
-STEP pulses since startup, with no encoder or homing feedback. Pulse counts across
+STEP pulses since startup or the last successful home, with no encoder feedback. Pulse counts across
 different resolutions cannot be treated as a single physical distance.
 
 The default **200 full steps/revolution** assumes a 1.8-degree motor. Use `spr 400`

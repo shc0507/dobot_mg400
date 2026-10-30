@@ -399,7 +399,10 @@ def test_duplicate_recording_request_does_not_truncate_active_metadata(tmp_path,
 
 
 @pytest.mark.parametrize("event", [FakeSDK.TOUPCAM_EVENT_ERROR, FakeSDK.TOUPCAM_EVENT_DISCONNECTED])
-def test_terminal_acquisition_failure_finalizes_active_recording(tmp_path, monkeypatch, event):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_terminal_acquisition_failure_finalizes_active_recording(
+    tmp_path, monkeypatch, event, cleanup_fails
+):
     writer = Writer()
     monkeypatch.setattr("toupcam_camera.camera.cv2.VideoWriter", lambda *args: writer)
     sdk = FakeSDK()
@@ -410,10 +413,19 @@ def test_terminal_acquisition_failure_finalizes_active_recording(tmp_path, monke
         camera.start_recording(tmp_path / "video.mp4", minimum_free_gb=None)
         session = camera._recording
         metadata = session._timestamp_file
+        cleanup_error = OSError("recording cleanup failed")
+        if cleanup_fails:
+            close = session.close
+
+            def failed_close():
+                close()
+                raise cleanup_error
+
+            monkeypatch.setattr(session, "close", failed_close)
         handle.callback(event, handle.context)
         wait_until(lambda: camera.last_error is not None and not camera.is_recording)
         assert writer.released and metadata.closed
-        assert camera.recording_error is camera.last_error
+        assert camera.recording_error is (cleanup_error if cleanup_fails else camera.last_error)
         assert camera.recording_segments == session.segments
         with pytest.raises(RuntimeError, match="Camera acquisition stopped"):
             camera.get_frame_packet()

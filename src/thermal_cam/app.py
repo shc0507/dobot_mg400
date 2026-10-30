@@ -23,7 +23,17 @@ from .service import CameraService
 STATIC = Path(__file__).parent / "static"
 CONTRACT_PATHS = {
     f"/api/{name}"
-    for name in ("describe", "state", "events", "heartbeat", "release", "stop", "command", "roi")
+    for name in (
+        "describe",
+        "state",
+        "events",
+        "heartbeat",
+        "renew",
+        "release",
+        "stop",
+        "command",
+        "roi",
+    )
 }
 
 
@@ -210,6 +220,11 @@ def add_contract_routes(app, controller):
     async def heartbeat(request: Request):
         await body(request)
         return {"lease": controller.lease.acquire(request.headers["x-mg400-client"])}
+
+    @app.post("/api/renew")
+    async def renew(request: Request):
+        await body(request)
+        return {"lease": controller.lease.renew(request.headers["x-mg400-client"])}
 
     @app.post("/api/release")
     async def release(request: Request):

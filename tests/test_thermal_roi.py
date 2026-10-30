@@ -86,11 +86,56 @@ def test_contract_conformance_and_read_only_metadata(tmp_path):
         assert description["on_lease_expiry"] == "continue_acquisition"
         assert description["regions"] == {"crucible": COORDS}
         assert description["max_frame_age_s"] == 3
+        assert description["renew_only_heartbeat"] is True
         assert_error(post(client, "command", data={"action": "shutter"}), 400)
         state = client.get("/api/state").json()
         assert state["connected"] and not state["busy"] and not state["locked"]
         assert state["last_command"] is None
         assert state["frame_sequence"] == 17
+
+
+@pytest.mark.parametrize("token", [None, TOKEN])
+def test_renew_extends_only_the_existing_callers_lease(tmp_path, token):
+    service, clock = service_with_frame(tmp_path)
+    frame = service._frame
+    with client_for(service, token=token) as client:
+        if token:
+            client.headers["Authorization"] = f"Bearer {token}"
+        assert_error(post(client, "renew"), 409)
+        assert service.lease.snapshot() == {"holder": None, "remaining_s": 0}
+        assert post(client, "heartbeat").status_code == 200
+        clock.advance(1)
+        renewed = post(client, "renew")
+        assert renewed.status_code == 200
+        assert renewed.json() == {"lease": {"holder": "reader", "remaining_s": 3}}
+        assert renewed.headers["Cache-Control"] == "no-store"
+        clock.advance(1)
+        assert_error(post(client, "renew", actor="other"), 409)
+        assert service.lease.snapshot() == {"holder": "reader", "remaining_s": 2}
+        assert post(client, "release").status_code == 200
+        assert_error(post(client, "renew"), 409)
+        assert service.lease.snapshot() == {"holder": None, "remaining_s": 0}
+        assert service._frame is frame and service.status()["state"] == "streaming"
+
+
+@pytest.mark.parametrize("actor", ["reader", "other"])
+def test_expired_renewal_cannot_acquire_and_heartbeat_retains_legacy_acquisition(tmp_path, actor):
+    service, clock = service_with_frame(tmp_path)
+    frame = service._frame
+    with client_for(service) as client:
+        assert post(client, "heartbeat").status_code == 200
+        clock.advance(3)
+        assert_error(post(client, "renew", actor=actor), 409)
+        assert_error(post(client, "renew", actor=actor), 409)
+        assert service.lease.snapshot() == {"holder": None, "remaining_s": 0}
+        messages = [event["message"] for event in service.events.since()["events"]]
+        assert sum("lease expired" in message for message in messages) == 1
+        assert service._frame is frame and service.status()["state"] == "streaming"
+        heartbeat = post(client, "heartbeat", actor=actor)
+        assert heartbeat.status_code == 200
+        assert heartbeat.json()["lease"] == {"holder": actor, "remaining_s": 3}
+        clock.advance(1)
+        assert post(client, "heartbeat", actor=actor).json()["lease"]["remaining_s"] == 3
 
 
 def test_named_and_explicit_regions_use_same_native_coherent_frame(tmp_path):
@@ -312,7 +357,9 @@ print(json.dumps(service.events.since()))
 def test_new_routes_preserve_bearer_host_origin_and_proxy_checks(tmp_path, path):
     service, _ = service_with_frame(tmp_path)
     method = (
-        "POST" if path.rsplit("/", 1)[-1] in {"heartbeat", "release", "command", "stop"} else "GET"
+        "POST"
+        if path.rsplit("/", 1)[-1] in {"heartbeat", "renew", "release", "command", "stop"}
+        else "GET"
     )
     with client_for(service, token=TOKEN) as client:
         assert_error(client.request(method, path), 401)
@@ -353,12 +400,13 @@ def test_stop_rejects_invalid_wait_without_effects(tmp_path, wait_s):
 @pytest.mark.parametrize(
     "body", ["null", "[]", "{", '{"wait_s":NaN}', '{"wait_s":Infinity}', "{}" + " " * 4096]
 )
-def test_contract_invalid_json_and_size_limit(tmp_path, body):
+@pytest.mark.parametrize("route", ["stop", "renew"])
+def test_contract_invalid_json_and_size_limit(tmp_path, body, route):
     service, _ = service_with_frame(tmp_path)
     with client_for(service) as client:
         assert_error(
             client.post(
-                "/api/stop",
+                "/api/" + route,
                 content=body,
                 headers={"Content-Type": "application/json", "X-MG400-Client": "reader"},
             ),
@@ -367,25 +415,29 @@ def test_contract_invalid_json_and_size_limit(tmp_path, body):
 
 
 @pytest.mark.parametrize("actor", ["", "x" * 129, "control\x7f"])
-def test_contract_rejects_invalid_clients(tmp_path, actor):
+@pytest.mark.parametrize("route", ["heartbeat", "renew"])
+def test_contract_rejects_invalid_clients(tmp_path, actor, route):
     service, _ = service_with_frame(tmp_path)
     with client_for(service) as client:
-        assert_error(post(client, "heartbeat", actor=actor), 400)
+        assert_error(post(client, route, actor=actor), 400)
 
 
-def test_contract_rejects_missing_duplicate_clients_and_wrong_media_type(tmp_path):
+@pytest.mark.parametrize("route", ["stop", "renew"])
+def test_contract_rejects_missing_duplicate_clients_and_wrong_media_type(tmp_path, route):
     service, _ = service_with_frame(tmp_path)
     with client_for(service) as client:
-        assert_error(client.post("/api/stop", json={}), 400)
+        assert_error(client.post("/api/" + route, json={}), 400)
         assert_error(
             client.post(
-                "/api/stop", json={}, headers=[("X-MG400-Client", "a"), ("X-MG400-Client", "b")]
+                "/api/" + route,
+                json={},
+                headers=[("X-MG400-Client", "a"), ("X-MG400-Client", "b")],
             ),
             400,
         )
         assert_error(
             client.post(
-                "/api/stop",
+                "/api/" + route,
                 content=json.dumps({}),
                 headers={"X-MG400-Client": "a", "Content-Type": "text/plain"},
             ),

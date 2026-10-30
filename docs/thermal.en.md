@@ -246,12 +246,20 @@ It adds these routes beside the dashboard API:
 | `GET` | `/api/state` | Contract fields plus camera status, `frame_sequence`, and `frame_age_s`. |
 | `GET` | `/api/events?since=0` | Activity after the given sequence, with a `next` cursor. The same events enter the service journal. |
 | `POST` | `/api/heartbeat` | Acquire or renew the informational lease. |
+| `POST` | `/api/renew` | Renew only the caller's existing lease. Return HTTP 409 if it is absent, expired, or held by another client. |
 | `POST` | `/api/release` | Release the caller's lease. |
 | `POST` | `/api/stop` | Return `stop: "confirmed"`. This no-op leaves acquisition running. |
 | `POST` | `/api/command` | Return HTTP 400 because the contract has no commands. |
 | `GET` | `/api/roi` | Read a named region or an explicit sensor rectangle. |
 
 The lease lasts 3 seconds. Reads and stop do not require ownership.
+
+Discovery reports `renew_only_heartbeat: true` as an informational flag for the dedicated `/api/renew` route.
+Renewal checks ownership and extends the lease atomically. It never acquires a missing or expired lease.
+Clients can call `/api/renew` directly.
+An older service without this route returns HTTP 404, so renewal fails without acquiring a lease.
+Clients must not fall back to `/api/heartbeat` when renewal fails.
+
 Lease expiry and release leave acquisition running.
 The lease does not restrict the existing dashboard controls.
 Use `/api/disconnect` to stop acquisition and release the camera.
@@ -263,7 +271,8 @@ Contract POST requests require `Content-Type: application/json` and exactly 1 `X
 The client ID must contain 1–128 printable ASCII characters.
 Send a JSON object of at most 4096 bytes. `/api/stop` accepts `{"wait_s":0}` with a finite value from 0–15.
 It returns immediately because there is no output to stop.
-Contract errors use `{"error":"..."}`: HTTP 400 for invalid input, 401 for token failure, 403 for access denial, and 415 for non-JSON input.
+Contract errors use `{"error":"..."}`.
+HTTP 400 means invalid input, 401 token failure, 403 access denial, 409 lease conflict, and 415 non-JSON input.
 
 ### Named sensor regions
 

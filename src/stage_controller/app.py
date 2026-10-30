@@ -1,43 +1,17 @@
 """Small HTTP API; motor and serial behavior live outside the web framework."""
 
-import ipaddress
 import secrets
-from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
+from labkit.auth import bearer_matches, host_allowed
+
 from .controller import MotorController
 from .protocol import ControllerError, LinkError
 
-FORWARDED_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")
 # The page is served without the access token: it shows layout only, never ports or events.
 PAGE_STATE = ("demo", "baud_rate", "microstep_modes", "defaults", "limits")
-
-
-def _host_port(value, default_port):
-    try:
-        parts = urlsplit("//" + value.strip())
-        port = parts.port
-    except ValueError:
-        return None
-    if not parts.hostname or parts.path or parts.query or parts.fragment or parts.username:
-        return None
-    return parts.hostname.lower(), port or default_port
-
-
-def loopback_name(name):
-    """Check that a host name or IP address names this machine's loopback interface."""
-    try:
-        return ipaddress.ip_address(name).is_loopback
-    except ValueError:
-        return name.lower() == "localhost"
-
-
-def loopback_host(value):
-    """Check that a Host header names this machine's loopback interface."""
-    parts = _host_port(value, 80)
-    return parts is not None and loopback_name(parts[0])
 
 
 def create_app(controller: MotorController | None = None, token: str | None = None):
@@ -50,15 +24,12 @@ def create_app(controller: MotorController | None = None, token: str | None = No
 
     @app.before_request
     def protect_local_control():
-        if not token:
-            # A DNS rebinding page reaches a loopback server under its own host name,
-            # and a proxy on this host can rewrite Host. Both need an access token.
-            forwarded = any(request.headers.get(name) is not None for name in FORWARDED_HEADERS)
-            if forwarded or not loopback_host(request.headers.get("Host", "")):
-                return jsonify(error="Open the panel at 127.0.0.1 or localhost"), 403
-        elif request.path.startswith("/api/") and not secrets.compare_digest(
-            request.headers.get("Authorization", "").encode("latin-1", "replace"),
-            f"Bearer {token}".encode("latin-1", "replace"),
+        if not host_allowed(request.headers, token):
+            return jsonify(error="Open the panel at 127.0.0.1 or localhost"), 403
+        if (
+            token
+            and request.path.startswith("/api/")
+            and not bearer_matches(request.headers.get("Authorization", ""), token)
         ):
             return jsonify(error="Enter the panel access token"), 401
         if request.method != "GET":

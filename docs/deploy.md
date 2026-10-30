@@ -133,6 +133,7 @@
 | `mg400ctl terminal` | 打开 [交互终端](terminal-control.md) |
 | `mg400ctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
 | `mg400ctl camera-url` | 显示含访问密钥的摄像头预览链接 |
+| `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 | `mg400ctl token web` | 显示网页面板的访问密钥。`token stage` 显示位移台面板的密钥 |
 
 `terminal` 和 `mode` 用 `runuser --pty` 以 UID 1000 在独立的伪终端中运行。

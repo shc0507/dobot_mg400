@@ -444,7 +444,7 @@ Steps (P-MOVE plus):
 
 1. `src/vision/qr.py` from `qr_detector.py` (`QRCode`, `read_image`, `detect_qr_codes`, `results_csv`, `DetectionCancelled`, the CLI as `python -m vision.qr`). `src/vision/qr_micro.py` from `qr_micro_recovery.py`.
 2. Do not move `qr_gui.py`, `ui_theme.py` or `tests/test_qr_gui.py`.
-3. Fixtures: run the detector on each sample photo at the source commit. Crop each decoded label with a margin of twice its size, at the original pixel density. Save PNG files in `tests/fixtures/qr/`: each at most 300 KB, together at most 1 MB. Name each file's source photo and crop box in the commit message.
+3. Fixtures: run the detector on each sample photo at the source commit. Use the six labels from `sample_img/image2.jpg` for the committed fixtures: four `Stamp`, `2D` and `2C`. Crop each label with a margin of twice its size, at the original pixel density. Save PNG files in `tests/fixtures/qr/`: each at most 300 KB, together at most 1 MB. Name each file's source photo and crop box in the commit message. Leave the other photos and their crops out of Git because their crops exceed these limits. List them in the PR's "Left behind" section.
 4. Adapt `test_photo_detection.py` to the crops. Move the synthetic tests unchanged.
 
 Done when: P-CHECKS pass; the crop tests decode the labels that the source README reports for the sample photos (four `Stamp`, `2D`, `2C`).

@@ -29,6 +29,11 @@ This document provides permanent information/instructions for the convenience of
 - Keep documentation concise. Use clear headings, bullet points, and numbered lists where they help the reader.
 - Use Simplified Technical English skill for writing in English.
 - Use jianming-zhongwen skill for writing in Chinese.
+- Human docs use Chinese `X.md` and English `X.en.md` beside it. Change both files in the same PR.
+- This rule covers `README.md`, `docs/*.md`, `docs/adr/*.md`, and `firmware/*/README.md`. Agent docs stay English only.
+- `AGENTS.md`, `docs/agents/**`, `.agents/**`, `GLOSSARY.md` (one bilingual table), and `tests/fixtures/**` are exempt.
+- `scripts/check_doc_pairs.py` checks code blocks, inline code, numbers, link targets, and heading counts through pytest. Write numbers as digits in both languages.
+- The checker permits missing pairs listed in `docs/agents/migration/doc-pairs-pending.txt`. Until a pair exists, edit the Chinese file. Remove its entry when you add the pair.
 
 ## UX design
 

@@ -9,6 +9,9 @@ terminal and mode run as the service user (UID 1000) with the settings from
 import argparse
 import contextlib
 import grp
+import http.client
+import ipaddress
+import json
 import os
 import pwd
 import secrets
@@ -17,7 +20,9 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import assets  # noqa: E402
@@ -28,8 +33,10 @@ from install import (  # noqa: E402
     camera_devices,
     check_settings,
     enabled_services,
+    finite_json_number,
     load_services,
     parse_settings,
+    unique_json_object,
 )
 
 WATCHER = "mg400-gripper-collector.path"
@@ -63,6 +70,92 @@ ORCHESTRATOR_SETTINGS = (
         for suffix in ("URL", "TOKEN")
     }
 )
+
+
+def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, clock=time.monotonic):
+    """Read bounded live status directly, without proxies or redirects.
+
+    This is an advisory check before systemctl, not a lease held across shutdown.
+    A new sequence can start after this read. Operators must coordinate shutdown.
+    Socket operations time out after 2 seconds. Body reads also check a 2-second
+    deadline between chunks. Header and transfer-framing reads use socket timeouts, not a total deadline.
+    """
+    bind = settings.get("MG400_FURNACE_BIND") or "127.0.0.1"
+    if bind != "localhost":
+        address = ipaddress.ip_address(bind)
+        if "%" in bind:
+            raise ValueError("Scoped furnace bind addresses are not supported by the guard")
+        bind = str(address)
+    bind = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(bind, bind)
+    port = int(settings.get("MG400_FURNACE_PORT") or 8769)
+    if not 1 <= port <= 65535:
+        raise ValueError("Invalid furnace port")
+    base = settings.get("MG400_FURNACE_BASE_PATH") or "/"
+    if (
+        not base.startswith("/")
+        or any(part in base for part in ("?", "#", "//"))
+        or ".." in base.split("/")
+        or any(ord(character) < 32 or ord(character) == 127 for character in base)
+    ):
+        raise ValueError("Invalid furnace base path")
+    token = settings.get("MG400_FURNACE_TOKEN") or ""
+    if len(token) < 24 or any(not 32 <= ord(character) <= 126 for character in token):
+        raise ValueError("Set a valid MG400_FURNACE_TOKEN before the status check")
+    connection = connection_factory(bind, port, timeout=2)
+    try:
+        connection.request(
+            "GET",
+            quote(base.rstrip("/"), safe="/-._~") + "/api/state",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError(f"Furnace status returned HTTP {response.status}")
+        if response.getheader("Content-Type", "").split(";")[0].strip() != "application/json":
+            raise ValueError("Furnace status is not JSON")
+        deadline, payload = clock() + 2, bytearray()
+        while True:
+            if clock() >= deadline:
+                raise ValueError("Furnace status body exceeded the read deadline")
+            chunk = response.read1(262145 - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > 262144:
+                raise ValueError("Furnace status exceeds the response size limit")
+        return json.loads(
+            payload,
+            object_pairs_hook=unique_json_object,
+            parse_float=finite_json_number,
+            parse_constant=finite_json_number,
+        )
+    finally:
+        connection.close()
+
+
+def check_furnace_shutdown(settings, *, read_state=furnace_state):
+    """Refuse running/cooling sequences and unknown live state before any mutation."""
+    state = read_state(settings)
+    if (
+        not isinstance(state, dict)
+        or state.get("service") != "furnace"
+        or state.get("connected") is not True
+        or state.get("locked") is not False
+        or "fault" not in state
+        or state["fault"] is not None
+    ):
+        raise ValueError("Furnace state is unavailable, disconnected, or locked")
+    sequence = state.get("sequence")
+    if not isinstance(sequence, dict) or type(sequence.get("running")) is not bool:
+        raise ValueError("Furnace sequence state is missing or ambiguous")
+    phase = sequence.get("phase")
+    running = sequence["running"]
+    if phase not in ("idle", "manual", "ramping", "holding", "cooling", "complete", "stopped"):
+        raise ValueError("Furnace sequence phase is unknown")
+    if running != (phase in ("ramping", "holding")):
+        raise ValueError("Furnace sequence state is inconsistent")
+    if running or phase == "cooling":
+        raise ValueError("A furnace sequence or its cooling gas plan is active")
 
 
 def orchestrator(host, argv, execvpe):
@@ -369,7 +462,15 @@ def as_service_user(host, settings, command, execvpe):
     execvpe(runuser, ["runuser", "--pty", "-u", user, "-g", group, "--", *command], environment)
 
 
-def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sys.stdout):
+def main(
+    argv=None,
+    *,
+    host=None,
+    run=subprocess.run,
+    execvpe=os.execvpe,
+    out=sys.stdout,
+    read_furnace_state=furnace_state,
+):
     host = host or Host()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ORCHESTRATOR_COMMANDS:
@@ -391,6 +492,12 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
     for action in ("start", "stop", "restart"):
         sub = commands.add_parser(action, help=f"{action.capitalize()} services")
         sub.add_argument("names", nargs="+", choices=[*services, "all"])
+        if action != "start":
+            sub.add_argument(
+                "--force",
+                action="store_true",
+                help="Allow furnace shutdown during a sequence or when status cannot be checked",
+            )
     logs = commands.add_parser("logs", help="Show the journal of one service")
     logs.add_argument("name", choices=list(services))
     logs.add_argument("-n", "--lines", type=int, default=50)
@@ -456,6 +563,21 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
     if args.command == "camera-check":
         return camera_check(host, devices, run, out, services)
     if args.command in ("start", "stop", "restart"):
+        if (
+            args.command != "start"
+            and "furnace" in services
+            and ("furnace" in args.names or "all" in args.names)
+            and not args.force
+        ):
+            try:
+                check_furnace_shutdown(settings, read_state=read_furnace_state)
+            except (OSError, ValueError, http.client.HTTPException) as error:
+                print(
+                    f"Furnace shutdown refused: {error}. "
+                    "Use --force only after coordinating heat and gas shutdown.",
+                    file=sys.stderr,
+                )
+                return 1
         if args.command != "start" and any(name in ("web", "all") for name in args.names):
             print(
                 "The web panel can take up to 60 seconds to confirm that the arm stopped.", file=out

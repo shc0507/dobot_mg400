@@ -13,6 +13,16 @@ port = 8766
 assets = []
 
 [[service]]
+name = "furnace"
+units = ["mg400-furnace.service"]
+optional = true
+venv = ".venv"
+groups = ["furnace"]
+token = "MG400_FURNACE_TOKEN"
+port = 8769
+assets = []
+
+[[service]]
 name = "stage"
 units = ["mg400-stage-panel.service"]
 optional = false

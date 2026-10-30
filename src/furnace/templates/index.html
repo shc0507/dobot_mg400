@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Furnace Laboratory</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body data-base-path="{{ base_path }}" data-demo="{{ 'true' if demo else 'false' }}">
+  <main class="shell">
+    <header class="topbar">
+      <div><h1>Furnace control</h1><span id="demoBadge" {% if not demo %}hidden{% endif %}>Demo: simulated devices</span></div>
+      <div class="status-group">
+        <div class="status-pill" id="furnaceStatus"><span class="status-dot"></span><span>Furnace</span></div>
+        <div class="status-pill" id="flowStatus"><span class="status-dot"></span><span>Flow</span></div>
+      </div>
+    </header>
+
+    <section class="panel access-panel">
+      <label>Access token <input id="accessToken" type="password" autocomplete="off"></label>
+      <button class="button secondary" id="useToken">Use token</button>
+      <button class="button primary" id="takeControl">Take control</button>
+      <button class="button secondary" id="releaseControl">Release control</button>
+      <button class="button secondary" id="acknowledge" data-manual data-allow-locked>Acknowledge fault</button>
+      <p id="controlOwner" role="status">Read only</p>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="panel furnace-panel">
+        <div class="panel-heading">
+          <div><h2>Furnace</h2></div>
+          <button class="button small secondary" id="connectFurnace" data-manual data-allow-locked>Connect</button>
+        </div>
+        <div class="metrics">
+          <div class="metric"><span>Temperature</span><strong id="pvValue">—</strong><small>°C PV</small></div>
+          <div class="metric"><span>Target</span><strong id="svValue">—</strong><small>°C SV</small></div>
+          <div class="metric"><span>Ramp</span><strong id="rampValue">—</strong><small>°C/min</small></div>
+          <div class="metric"><span>State</span><strong class="state-text" id="runState">Offline</strong></div>
+        </div>
+        <div class="control-mode-status stopped" id="controlModeStatus" role="status" aria-live="polite">
+          <strong>Control mode: Stopped</strong>
+          <small>Heating is not active.</small>
+        </div>
+        <div class="manual-controls">
+          <label>Target temperature (°C)<input id="manualTemperature" type="number" max="{{ max_c }}" min="0" step="0.1" value="100"></label>
+          <label>Ramp rate (°C/min)<input id="manualRamp" type="number" max="{{ max_ramp }}" min="0.01" step="0.1" value="5"></label>
+        </div>
+        <div class="button-row wide">
+          <button class="button primary" id="applySetpoint" data-manual>Apply and run</button>
+          <button class="button danger-outline" id="stopFurnace">Stop heat and gas</button>
+        </div>
+      </article>
+
+      <article class="panel sequence-panel">
+        <div class="panel-heading">
+          <div><h2>Sequence</h2></div>
+          <div class="sequence-state" id="sequenceState">Not running</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Step</th><th>Target °C</th><th>Ramp °C/min</th><th>Hold min</th><th>Gas 1 %</th><th>Gas 2 %</th><th>Gas 3 %</th><th></th></tr></thead>
+            <tbody id="sequenceRows"></tbody>
+          </table>
+        </div>
+        <button class="text-button" id="addStep">+ Add step</button>
+        <div class="end-gas-controls">
+          <span>After the final hold:</span>
+          <label>Gas 1 %<input data-end-gas="0" type="number" min="0" max="100" step="0.1" value="0"></label>
+          <label>Gas 2 %<input data-end-gas="1" type="number" min="0" max="100" step="0.1" value="0"></label>
+          <label>Gas 3 %<input data-end-gas="2" type="number" min="0" max="100" step="0.1" value="0"></label>
+          <label>Until below °C<input id="endGasUntil" type="number" min="0" max="{{ max_c }}" step="0.1"></label>
+        </div>
+        <div class="button-row sequence-actions">
+          <button class="button secondary" id="updateSequence" data-manual>Save / update sequence</button>
+          <button class="button primary" id="startSequence" data-manual>Start sequence</button>
+          <button class="button danger-outline" id="stopSequence">Stop sequence</button>
+        </div>
+        <p class="sequence-progress" id="sequenceProgress"></p>
+      </article>
+
+      <article class="panel flow-panel">
+        <div class="panel-heading flow-heading">
+          <div><h2>Gas flow</h2></div>
+          <div class="flow-connect">
+            <button class="button small secondary" id="connectFlow" data-manual>Connect</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="flow-table">
+            <thead><tr><th>Path</th><th>Target (% full scale)</th><th>Actual</th><th>Valve</th><th></th></tr></thead>
+            <tbody>
+              <tr class="gas-flow-row" data-channel-index="0"><td><strong>Gas 1</strong></td><td><input data-flow-target type="number" min="0" max="100" step="0.1" placeholder="%" aria-label="Gas 1 target percent of full scale"></td><td data-actual-flow>—</td><td data-valve-state>Unknown</td><td><div class="row-actions"><button class="button small primary" data-set-flow data-manual>Send flow</button><button class="button small secondary" data-valve-open data-manual>100%</button><button class="button small danger-outline" data-valve-close>Close valve</button></div></td></tr>
+              <tr class="gas-flow-row" data-channel-index="1"><td><strong>Gas 2</strong></td><td><input data-flow-target type="number" min="0" max="100" step="0.1" placeholder="%" aria-label="Gas 2 target percent of full scale"></td><td data-actual-flow>—</td><td data-valve-state>Unknown</td><td><div class="row-actions"><button class="button small primary" data-set-flow data-manual>Send flow</button><button class="button small secondary" data-valve-open data-manual>100%</button><button class="button small danger-outline" data-valve-close>Close valve</button></div></td></tr>
+              <tr class="gas-flow-row" data-channel-index="2"><td><strong>Gas 3</strong></td><td><input data-flow-target type="number" min="0" max="100" step="0.1" placeholder="%" aria-label="Gas 3 target percent of full scale"></td><td data-actual-flow>—</td><td data-valve-state>Unknown</td><td><div class="row-actions"><button class="button small primary" data-set-flow data-manual>Send flow</button><button class="button small secondary" data-valve-open data-manual>100%</button><button class="button small danger-outline" data-valve-close>Close valve</button></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="flow-footer">
+          <small>Use a physical isolation or emergency shutoff when required.</small>
+          <button class="button danger" id="stopAllFlow">Stop all gas flow</button>
+        </div>
+      </article>
+    </section>
+    <p class="message" id="message" role="status" aria-live="polite"></p>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

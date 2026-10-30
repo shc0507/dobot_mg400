@@ -19,6 +19,7 @@
 | `/var/lib/mg400/work` | 夹爪反馈、夹爪命令文件和模式切换备份 | `1000:1000`，`0750` |
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/camera` | 摄像头预览密钥 `preview.key` | `1000:1000`，`0700` |
+| `/var/lib/mg400/furnace` | 炉控状态和持久锁，文件为 `0600` | `1000:1000`，`0750` |
 | `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
 | `/usr/local/bin/mg400ctl` | 日常命令，链接到 `/opt/mg400/deploy/mg400ctl` | 无 |
 | `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
@@ -33,6 +34,7 @@
 | `mg400-camera-preview.service` | `camera` | 摄像头预览网页，端口 `1985` | 无 |
 | `mg400-camera-capture.service` | `camera` | go2rtc 采集，只监听 `127.0.0.1:1984` | `video` |
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
+| `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-gripper-collector.path` | 无 | 面板请求时启动夹爪采集 | 无 |
 
 服务手动启动，不开机自启。
@@ -121,7 +123,10 @@
 `web`、`stage`、`camera` 和 `collector` 始终为必需服务。
 `MG400_OPTIONAL_SERVICES` 只接受清单中可选服务的名称，用逗号分隔。
 默认值为空。未知、重复、空项或必需服务名称会使安装器拒绝安装。
-当前清单没有可选服务。服务条目和单元文件加入前，保持此配置为空。
+可选服务 `furnace` 使用 `furnace` 依赖组。
+真机使用前，配置串口路径和操作员提供的气体映射。
+设置 `MG400_OPTIONAL_SERVICES=furnace` 后运行安装器，再明确运行 `mg400ctl start furnace`。
+安装器不会启动炉控服务。
 
 安装器按 `venv` 合并已启用服务的 `groups`，每个环境只同步 1 次。
 同步显式使用 `--no-default-groups`，不安装项目的默认依赖组。
@@ -195,7 +200,11 @@
 `/etc/mg400/mg400.env` 保存本主机的全部配置。
 服务启动时读取该文件。修改后，重启对应服务。
 值为空的项使用默认值，`MG400_CONTROLLER_LOCK_DIR` 除外。
-值不得含引号或反斜杠。安装器和 `mg400ctl` 拒绝 systemd 可能读成其他值的行。
+除下述炉控 JSON 配置外，值不得含内部引号或反斜杠。
+安装器和 `mg400ctl` 拒绝 systemd 可能读成其他值的行。
+只有 `MG400_FURNACE_GAS_MAP` 和 `MG400_FURNACE_IDLE_GAS` 接受单引号包围的 JSON 对象。
+内部双引号原样保留。转义、撇号、控制字符、重复键和非有限数字均被拒绝。
+语法及工艺限制见[炉控配置](furnace.md#配置)。
 每次运行时，安装器把该文件恢复为 `root:root` 和 `0600`。
 
 | 配置项 | 默认值 | 用途 |
@@ -212,6 +221,11 @@
 | `MG400_STAGE_PORT` | `8767` | 位移台面板的端口 |
 | `MG400_STAGE_TOKEN` | 安装器生成 | 位移台面板的访问密钥 |
 | `MG400_STAGE_SERIAL` | 空 | Arduino 的串口路径，见 [位移台配置项](stage-panel.md#配置项) |
+| `MG400_FURNACE_BIND` | `127.0.0.1` | 炉控监听地址 |
+| `MG400_FURNACE_PORT` | `8769` | 炉控端口 |
+| `MG400_FURNACE_TOKEN` | 安装器生成 | 炉控访问密钥 |
+| `MG400_FURNACE_SERIAL` | 空 | 炉控串口设备 |
+| `MG400_MFC_SERIAL` | 空 | 独立气控串口设备 |
 
 面板监听回环地址以外的地址时，访问密钥必须至少有 24 个字符。
 摄像头设备使用 `/dev/v4l/by-path/` 下的路径。该路径按 USB 接口区分 3 台同型号摄像头。
@@ -228,7 +242,7 @@
 | `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl status` | 显示所有服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace` 或 `all` |
 | `mg400ctl stop all` | 停止服务 |
 | `mg400ctl restart web` | 重启服务 |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
@@ -237,6 +251,17 @@
 | `mg400ctl camera-url` | 显示含访问密钥的摄像头预览链接 |
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 | `mg400ctl token web` | 显示网页面板的访问密钥。`token stage` 显示位移台面板的密钥 |
+
+炉控 `stop` 和 `restart` 在修改任何所选服务前，先认证并读取实时状态。
+检查覆盖混合列表及 `all`，也覆盖 `stop all` 选中的已停用炉控服务。
+活动序列或冷却气体计划必须使用 `--force`。状态不可用、格式错误、断开或锁定时也必须使用 `--force`。
+使用 `mg400ctl stop furnace --force` 或 `mg400ctl restart furnace --force` 前，必须与所有客户端协调。
+强制关闭请求服务停止加热和气体。必须核对停止结果。检查仅作提示性保护：状态读取与 systemd 操作之间仍可能启动序列。
+检查使用配置的 IP 监听地址、端口和基础路径。它接受 `localhost`，将 `0.0.0.0` 映射为 `127.0.0.1`，将 `::` 映射为 `::1`。
+密钥只在 bearer 标头中发送，不使用代理或重定向。
+套接字操作在 `2` s 后超时。每次收到数据块后检查 `2` s 的响应体截止时间。
+标头和传输分块格式读取使用套接字超时，因此这不是整个请求的总时限。
+超过 `262144` 字节的响应会被拒绝。
 
 `terminal` 和 `mode` 用 `runuser --pty` 以 UID 1000 在独立的伪终端中运行。
 它们读取配置文件，与面板共用连接锁，但不接收访问密钥。
@@ -267,6 +292,7 @@
 `mg400ctl backup FILE.tar` 归档 `/etc/mg400/mg400.env` 和 `/var/lib/mg400`，保留数字属主和文件权限。
 它只排除存放进程连接锁的 `/var/lib/mg400/locks`。
 `/var/lib/mg400/work` 下的持久夹爪命令锁仍会备份，包括 `gripper_feedback.json.command-lock.json`。
+它也保留 `/var/lib/mg400/furnace` 下的炉控状态和 `.state.json.lock`。
 
 备份前，按下方迁移步骤停止服务、夹爪请求监听器和其他数据写入程序。
 备份命令不会代为停止它们。

@@ -50,7 +50,13 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
 
 
 @pytest.mark.parametrize(
-    "name", ["mg400-web-panel.service", "mg400-camera-preview.service", "mg400-stage-panel.service"]
+    "name",
+    [
+        "mg400-web-panel.service",
+        "mg400-camera-preview.service",
+        "mg400-stage-panel.service",
+        "mg400-furnace.service",
+    ],
 )
 def test_services_with_settings_read_the_shared_environment_file(name):
     sections = unit_sections(name)
@@ -62,9 +68,30 @@ def test_services_with_settings_read_the_shared_environment_file(name):
 @pytest.mark.parametrize(
     ("name", "unset"),
     [
-        ("mg400-web-panel.service", ["MG400_STAGE_TOKEN"]),
-        ("mg400-stage-panel.service", ["MG400_PANEL_TOKEN"]),
-        ("mg400-camera-preview.service", ["MG400_PANEL_TOKEN", "MG400_STAGE_TOKEN"]),
+        ("mg400-web-panel.service", ["MG400_STAGE_TOKEN", "MG400_FURNACE_TOKEN"]),
+        ("mg400-stage-panel.service", ["MG400_PANEL_TOKEN", "MG400_FURNACE_TOKEN"]),
+        (
+            "mg400-camera-preview.service",
+            ["MG400_PANEL_TOKEN", "MG400_STAGE_TOKEN", "MG400_FURNACE_TOKEN"],
+        ),
+        (
+            "mg400-furnace.service",
+            [
+                "MG400_PANEL_TOKEN",
+                "MG400_STAGE_TOKEN",
+                "MG400_THERMAL_TOKEN",
+                "MG400_VISION_TOKEN",
+                "MG400_MICROSCOPE_TOKEN",
+                "MG400_ORCH_TOKEN",
+                "MG400_GATEWAY_TOKEN",
+                "MG400_ORCH_ROBOT_TOKEN",
+                "MG400_ORCH_STAGE_TOKEN",
+                "MG400_ORCH_THERMAL_TOKEN",
+                "MG400_ORCH_VISION_TOKEN",
+                "MG400_ORCH_FURNACE_TOKEN",
+                "MG400_ORCH_MICROSCOPE_TOKEN",
+            ],
+        ),
     ],
 )
 def test_services_drop_the_tokens_they_do_not_check(name, unset):
@@ -119,7 +146,16 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-camera-capture.service": ["video"],
         "mg400-camera-preview.service": [],
         "mg400-stage-panel.service": ["dialout"],
+        "mg400-furnace.service": ["dialout"],
     }
+
+
+def test_furnace_service_uses_settings_and_allows_heat_and_gas_shutdown():
+    service = unit_sections("mg400-furnace.service")["Service"]
+    assert command("mg400-furnace.service") == ["/opt/mg400/.venv/bin/python", "-m", "furnace"]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    assert int(service["TimeoutStopSec"][0]) >= 120
+    assert "MG400_FURNACE_TOKEN" not in service["UnsetEnvironment"][0].split()
 
 
 def test_camera_capture_reads_the_generated_configuration():

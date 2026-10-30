@@ -137,6 +137,31 @@ def test_existing_gripper_files_are_never_overwritten(loopback_host, tmp_path):
     assert path.read_text() == "preserve"
 
 
+@pytest.mark.parametrize("kind", ["file", "symlink", "dangling-symlink"])
+def test_persistent_command_lock_is_preserved_and_refuses_start(loopback_host, tmp_path, kind):
+    path = tmp_path / "gripper.json"
+    lock = path.with_name(path.name + ".command-lock.json")
+    target = tmp_path / "lock-target"
+    contents = '{"reason": "unknown command outcome"}'
+    if kind == "file":
+        lock.write_text(contents)
+    else:
+        if kind == "symlink":
+            target.write_text(contents)
+        lock.symlink_to(target)
+    with pytest.raises(ValueError, match="command-lock.json.*already exists"):
+        Simulator(loopback_host, gripper_feedback=path).start()
+    assert not path.exists()
+    if kind == "file":
+        assert lock.read_text() == contents
+    else:
+        assert lock.is_symlink() and lock.readlink() == target
+        if kind == "symlink":
+            assert target.read_text() == contents
+        else:
+            assert not target.exists()
+
+
 @pytest.mark.usefixtures("isolated_controller_locks", "closed_clients")
 def test_real_panel_sequence_over_loopback(loopback_host, tmp_path):
     path = tmp_path / "gripper.json"

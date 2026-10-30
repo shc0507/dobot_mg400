@@ -1,6 +1,8 @@
 """Check mg400ctl commands without systemd, root rights or a service user."""
 
+import hashlib
 import io
+import os
 import runpy
 import subprocess
 from pathlib import Path
@@ -297,4 +299,51 @@ def test_camera_check_reports_stopped_services_and_missing_streams(cameras):
 def test_camera_check_without_cameras(ctl):
     assert ctl.call("camera-check") == 0
     assert "Cameras are off" in ctl.out.getvalue()
+    ctl.run.assert_not_called()
+
+
+def test_assets_reports_verified_missing_and_mismatched_without_commands(
+    ctl, tmp_path, monkeypatch
+):
+    content = b"asset status fixture"
+    config = tmp_path / "assets.toml"
+    config.write_text(
+        "\n".join(
+            f'[{name}]\nurl = "https://assets.example/{name}"\n'
+            f'sha256 = "{hashlib.sha256(content).hexdigest()}"\nbytes = {len(content)}\n'
+            f'install = "/var/lib/mg400/models/{name}.dat"\nmode = "0640"\n'
+            'service = "vision"\nsource = "test fixture"\nlicense = "AGPL-3.0"\n'
+            for name in ("good", "missing", "wrong")
+        )
+    )
+    ctl.host.asset_manifest = config
+    target = ctl.host.data / "models/good.dat"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(content)
+    target.chmod(0o640)
+    wrong = target.with_name("wrong.dat")
+    wrong.write_bytes(b"wrong")
+    wrong.chmod(0o640)
+    assets = ctl.module.main.__globals__["assets"]
+    monkeypatch.setattr(assets, "OWNER", (os.getuid(), os.getgid()))
+    monkeypatch.setattr(assets, "open_download", Mock(side_effect=AssertionError("No download")))
+    ctl.host.settings.unlink()  # Asset inspection does not require service settings.
+    assert ctl.call("assets") == 1
+    assert "good  present" in ctl.out.getvalue()
+    assert "missing  missing" in ctl.out.getvalue()
+    assert "wrong  mismatch" in ctl.out.getvalue()
+    ctl.run.assert_not_called()
+    ctl.execvpe.assert_not_called()
+    wrong.write_bytes(content)
+    missing = target.with_name("missing.dat")
+    missing.write_bytes(content)
+    missing.chmod(0o640)
+    assert ctl.call("assets") == 0
+
+
+def test_assets_reports_invalid_manifest_without_commands(ctl, tmp_path, capsys):
+    ctl.host.asset_manifest = tmp_path / "bad.toml"
+    ctl.host.asset_manifest.write_text('[broken]\nurl = "file:///tmp/model"\n')
+    assert ctl.call("assets") == 1
+    assert "Cannot read assets:" in capsys.readouterr().err
     ctl.run.assert_not_called()

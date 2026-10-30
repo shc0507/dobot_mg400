@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import assets  # noqa: E402
 from install import (  # noqa: E402
     SERVICE_GID,
     SERVICE_UID,
@@ -151,6 +152,7 @@ def as_service_user(host, settings, command, execvpe):
 def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sys.stdout):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("assets", help="Show manifest asset status without downloads or writes")
     commands.add_parser("status", help="Show the state of every service")
     for action in ("start", "stop", "restart"):
         sub = commands.add_parser(action, help=f"{action.capitalize()} services")
@@ -171,6 +173,16 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
     if os.geteuid() != 0:
         print("Run mg400ctl as root, for example: sudo mg400ctl status", file=sys.stderr)
         return 1
+    if args.command == "assets":
+        try:
+            manifest = assets.load_manifest(host.asset_manifest)
+            states = [(asset, assets.asset_status(asset, host.root)) for asset in manifest.values()]
+        except (OSError, ValueError) as error:
+            print(f"Cannot read assets: {error}", file=sys.stderr)
+            return 1
+        for asset, state in states:
+            print(f"{asset.name}  {state}  {assets.destination(asset, host.root)}", file=out)
+        return int(any(state != "present" for _, state in states))
     try:
         settings = parse_settings(host.settings.read_text())
         if args.command == "camera-check":
@@ -195,7 +207,9 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
         return camera_check(host, devices, run, out)
     if args.command in ("start", "stop", "restart"):
         if args.command != "start" and any(name in ("web", "all") for name in args.names):
-            print("The web panel can take up to 60 seconds to confirm that the arm stopped.", file=out)
+            print(
+                "The web panel can take up to 60 seconds to confirm that the arm stopped.", file=out
+            )
         return run(["systemctl", args.command, *units(args.names, args.command)]).returncode
     if args.command == "logs":
         command = ["journalctl", "--no-pager", "-n", str(args.lines)]
@@ -205,7 +219,9 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
     if args.command == "terminal":
         program = host.code / ".venv/bin/mg400-robot"
         feedback = host.data / "work/gripper_feedback.json"
-        as_service_user(host, settings, [str(program), "--gripper-feedback", str(feedback)], execvpe)
+        as_service_user(
+            host, settings, [str(program), "--gripper-feedback", str(feedback)], execvpe
+        )
     elif args.command == "mode":
         command = [
             str(host.code / ".venv/bin/python"),

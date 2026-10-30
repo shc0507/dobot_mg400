@@ -100,7 +100,8 @@
       $('initializeGripper').hidden = !robot;
       $('initializeGripper').disabled = !control || !data.gripper_can_initialize;
       $('gripperStatus').hidden = !robot;
-      $('gripperStatus').textContent = data.gripper_message || '';
+      const graspOutcome = data.gripper?.outcome;
+      $('gripperStatus').textContent = [data.gripper_message, graspOutcome ? `Outcome: ${graspOutcome}` : ''].filter(Boolean).join(' · ');
       axes.forEach((axis,i) => {
         $(axis.id+'Actual').textContent = formatted(data.actual[i],axis.id);
         if(robot) $(axis.id+'Range').disabled = $(axis.id+'Target').disabled = !control || (axis.id === 'grip' ? !data.gripper_available : $(axis.id+'Target').value === '');

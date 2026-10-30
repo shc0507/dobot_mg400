@@ -599,6 +599,9 @@ review = "human"
 deps = ["ORC-02", "ROB-02"]
 writes = [
   "src/orchestrator/skills/robot.py",
+  "src/orchestrator/skills/__init__.py",
+  "src/orchestrator/rehearsal.py",
+  "src/orchestrator/cli.py",
   "tests/test_orchestrator_transfer.py",
   "docs/orchestrator.md",
   "docs/orchestrator.en.md",

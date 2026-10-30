@@ -60,7 +60,7 @@ def test_every_recipe_rehearses_without_hardware(tmp_path, path):
             assert not runner._thread.is_alive()
 
 
-def test_failing_step_holds_run_and_stops_owned_simulated_robot(tmp_path):
+def test_failing_step_holds_owned_robot_and_resumes_after_explicit_manual_recovery(tmp_path):
     registry = default_registry()
     calls = []
 
@@ -104,6 +104,29 @@ def test_failing_step_holds_run_and_stops_owned_simulated_robot(tmp_path):
             assert state["controller_id"] == "orch-failure-demo"
             assert "ResetRobot()" in demo.simulator.controller.sent()
             assert store.get(runner.run_id)["steps"][2]["status"] == "pending"
+            assert "fault" not in state and "connected" not in state
+            assert state["locked"] is True
+            with pytest.raises(RuntimeError, match="manual recovery"):
+                runner.clients.reconcile()
+            # An explicit operator-equivalent recovery on this owned simulator
+            # confirms disable/rest. Reconciliation never clears the lock itself.
+            demo.clients["robot"].run("disable", timeout=3)
+            reconciled = runner.clients.reconcile()["robot"]
+            assert reconciled["instance"] == state["instance"]
+            assert reconciled["robot_error"] is False
+            assert reconciled["stop_unconfirmed"] is False
+            assert reconciled["locked"] is False and reconciled["busy"] is False
+            assert calls == ["failed-step"]
+            runner.resume(manually_completed=True, note="Disabled and completed the step manually.")
+            wait_for(lambda: runner.status == "completed")
+            assert calls == ["failed-step", "later-step"]
+            assert store.get(runner.run_id)["steps"][1]["status"] == "manually_completed"
+            stops = [
+                event["data_json"]
+                for event in store.get(runner.run_id)["events"]
+                if event["kind"] == "stop"
+            ]
+            assert any("verified-disabled-rest" in event for event in stops)
         finally:
             runner.abort()
             runner._thread.join(5)

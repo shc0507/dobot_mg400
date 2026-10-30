@@ -1,3 +1,5 @@
+[English](control-panel.en.md)
+
 # 网页面板
 
 [返回项目首页](../README.md)

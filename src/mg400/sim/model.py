@@ -232,6 +232,9 @@ class Collector:
             Path(feedback_path) if feedback_path is not None else directory / "gripper.json"
         )
         self.command_path = self.feedback_path.with_name(self.feedback_path.name + ".command.json")
+        self.command_lock_path = self.feedback_path.with_name(
+            self.feedback_path.name + ".command-lock.json"
+        )
         self._scratch = self.feedback_path.with_name(self.feedback_path.name + ".collector.tmp")
         self._lock = threading.Lock()
         self._sample = {
@@ -280,7 +283,12 @@ class Collector:
             requests = self._published if kind == "published" else self._answered
             return [request["position"] for request in requests]
 
+    def _honor_command_lock(self):
+        if self.command_lock_path.exists() or self.command_lock_path.is_symlink():
+            self.lock("A persistent gripper command lock requires operator review.")
+
     def _emit(self):
+        self._honor_command_lock()
         with self._lock:
             self._sample["seq"] += 1
             self._sample["sent_at"] = time.time()
@@ -296,6 +304,7 @@ class Collector:
             self._emit()
 
     def _serve(self):
+        self._honor_command_lock()
         try:
             with open(self.command_path) as file:
                 request = json.load(file)

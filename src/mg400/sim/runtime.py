@@ -142,11 +142,10 @@ class Simulator:
                 lock = path.with_name(path.name + ".sim.lock")
                 self._collector_lock = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
                 fcntl.flock(self._collector_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                command_lock = path.with_name(path.name + ".command-lock.json")
                 for existing in (
                     path,
                     self.collector.command_path,
-                    command_lock,
+                    self.collector.command_lock_path,
                     self.collector._scratch,
                 ):
                     if existing.exists() or existing.is_symlink():

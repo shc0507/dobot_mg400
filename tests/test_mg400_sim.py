@@ -162,6 +162,30 @@ def test_persistent_command_lock_is_preserved_and_refuses_start(loopback_host, t
             assert not target.exists()
 
 
+def test_collector_latches_a_persistent_lock_created_after_start(loopback_host, tmp_path):
+    path = tmp_path / "gripper.json"
+    with Simulator(loopback_host, gripper_feedback=path) as simulator:
+        collector = simulator.collector
+        initial = json.loads(path.read_text())
+        contents = '{"reason": "unknown command outcome"}'
+        collector.command_lock_path.write_text(contents)
+        wait_for(lambda: json.loads(path.read_text())["control"]["locked"])
+        collector.command_path.write_text(
+            json.dumps(
+                {
+                    "id": "new",
+                    "session": initial["session"],
+                    "position": 900,
+                    "deadline_monotonic": time.monotonic() + 10,
+                }
+            )
+        )
+        seq = json.loads(path.read_text())["seq"]
+        wait_for(lambda: json.loads(path.read_text())["seq"] > seq + 3)
+        assert collector.answered_count() == 0
+        assert collector.command_lock_path.read_text() == contents
+
+
 @pytest.mark.usefixtures("isolated_controller_locks", "closed_clients")
 def test_real_panel_sequence_over_loopback(loopback_host, tmp_path):
     path = tmp_path / "gripper.json"

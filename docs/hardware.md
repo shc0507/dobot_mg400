@@ -1,3 +1,5 @@
+[English](hardware.en.md)
+
 # 真机控制接口
 
 [返回首页，选择操作入口](../README.md)
@@ -13,17 +15,17 @@
 
 ## 直接 TCP 接口
 
-- [MG400 / M1Pro 四轴 Python SDK](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python)
+- [MG400 / M1Pro 4 轴 Python SDK](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python)
 - [SDK 源码](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python/blob/main/dobot_api.py)
-- [四轴 TCP/IP 协议仓库](https://github.com/Dobot-Arm/TCP-IP-Protocol-4AXis)
-- [四轴协议，2024-04-19 英文版](https://github.com/Dobot-Arm/TCP-IP-Protocol-4AXis/blob/master/TCP_IP%20Remote%20Control%20Interface%20Guide%20%284axis%29_20240419_en.pdf)
+- [4 轴 TCP/IP 协议仓库](https://github.com/Dobot-Arm/TCP-IP-Protocol-4AXis)
+- [4 轴协议，2024-04-19 英文版](https://github.com/Dobot-Arm/TCP-IP-Protocol-4AXis/blob/master/TCP_IP%20Remote%20Control%20Interface%20Guide%20%284axis%29_20240419_en.pdf)
 
 上述 Python README 标注控制器 V1.5.6.0+。
 故障排查建议尝试 V1.6.0.0+。
 最终以本机固件对应的官方手册为准。
 控制前，进入 TCP/IP 二次开发模式。
 可在 DobotStudio Pro 中选择，也可使用下文脚本。
-不要混用六轴机器人 SDK。
+不要混用 6 轴机器人 SDK。
 
 ### 从服务器切换 TCP/IP 模式
 
@@ -63,7 +65,7 @@ mg400ctl mode
 
 ### 官方 SDK 接口
 
-| 操作 | 官方四轴接口 / 说明 |
+| 操作 | 官方 4 轴接口 / 说明 |
 | --- | --- |
 | 建立控制连接 | `DobotApiDashboard(ip, 29999)` |
 | 建立运动连接 | `DobotApiMove(ip, 30003)` |
@@ -122,11 +124,11 @@ SMB 使用 TCP `445`，共享为 `project`，日志目录为 `/logs`。
 | `/logs/gcontrol/log`、`/logs/codesys/log` | 补充核对控制程序记录 |
 | 同目录下带 `.1`、`.2` 等后缀的文件 | 轮转日志，即分卷保存的旧日志 |
 
-先读取前两个文件。
+先读取前 2 个文件。
 如果时间范围不足，按目录清单选择旧日志。
 文件修改时间只用于筛选，事件时间以日志内容为准。
 
-下列命令匿名连接共享，列出文件并保存两个日志副本。
+下列命令匿名连接共享，列出文件并保存 2 个日志副本。
 命令使用 [主机部署](deploy.md) 安装的 `/opt/mg400/.venv`，其中已有 `pysmb`。
 
 ```sh
@@ -179,7 +181,7 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 面板轮询与外部查询可能互相断开连接。
 
 路径参考：[MG400 日志导出说明](https://techshare.co.jp/faq/dobot/mg400/support.html)。
-报警码参考：[Dobot 四轴报警表](https://raw.githubusercontent.com/Dobot-Arm/TCP-IP-4Axis-Python/main/files/alarm_controller.json)。
+报警码参考：[Dobot 4 轴报警表](https://raw.githubusercontent.com/Dobot-Arm/TCP-IP-4Axis-Python/main/files/alarm_controller.json)。
 
 ## 真机验证
 

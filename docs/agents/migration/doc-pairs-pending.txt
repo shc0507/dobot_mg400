@@ -1,6 +1,5 @@
 README.md
 docs/development.md
-docs/hardware.md
 docs/olares.md
 docs/stage-panel.md
 docs/terminal-control.md

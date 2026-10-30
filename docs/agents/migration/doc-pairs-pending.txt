@@ -1,5 +1,4 @@
 README.md
-docs/deploy.md
 docs/development.md
 docs/hardware.md
 docs/olares.md

@@ -54,7 +54,7 @@ Owner: agent · Size: M · Review: human · Deps: none
 
 Goal: D3. The package name still says "agent" though the agent code is gone. Every later task imports the new name.
 
-Read: `AGENTS.md`, `pyproject.toml`, and the output of `rg -l mg400_agent -g '!.agents/**'` (32 files and 100 hits at `c25ccc9`).
+Read: `AGENTS.md`, `pyproject.toml`, and the output of `rg -l mg400_agent -g '!.agents/**' -g '!docs/agents/migration/**'`.
 
 Steps:
 
@@ -65,13 +65,13 @@ Steps:
 
 Done when:
 
-- `rg mg400_agent -g '!.agents/**'` finds nothing.
+- `rg mg400_agent -g '!.agents/**' -g '!docs/agents/migration/**'` finds nothing.
 - P-CHECKS pass.
 - `uv run mg400-robot --help` and `python3 apps/control_panel/server.py --help` print their help.
 
 Docs: the code table in `docs/development.md` (Chinese only; DOC-05 adds the pair) and the paths in the `AGENTS.md` area table.
 
-Notes: the systemd units start scripts and console scripts by path, so they need no change. `deploy/mg400ctl` imports only `deploy/install.py`. The installer's `uv sync` puts the renamed package into the Olares `.venv`.
+Notes: exclude this migration plan from both searches. The plan retains the source package name to describe the rename. The systemd units start scripts and console scripts by path, so they need no change. `deploy/mg400ctl` imports only `deploy/install.py`. The installer's `uv sync` puts the renamed package into the Olares `.venv`.
 
 ### FND-02 · Require Python 3.12
 

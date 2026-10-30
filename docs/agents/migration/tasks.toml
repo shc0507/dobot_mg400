@@ -47,6 +47,8 @@ owner = "agent"
 size = "M"
 review = "human"
 deps = []
+# The source package path defines the rename scope.
+# FND-01 searches exclude the migration plan, which retains the source name.
 writes = [
   "src/mg400_agent/**",
   "src/mg400/**",

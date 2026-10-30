@@ -1,5 +1,2 @@
 README.md
-docs/development.md
-docs/olares.md
-docs/stage-panel.md
 firmware/three-motor-demo/README.md

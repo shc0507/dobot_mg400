@@ -1324,3 +1324,80 @@ def test_invalid_caps_fail_before_controller_or_thread_creation(monkeypatch, par
         RobotPanelState("robot.test", control_factory=factory, **{parameter: value})
     factory.assert_not_called()
     start.assert_not_called()
+
+
+def test_grasp_metadata_is_null_without_a_configured_gripper(rig):
+    state, _, _ = rig
+    assert state.snapshot()["gripper"] == {"outcome": None, "outcome_at": None}
+
+
+def test_simulated_collector_contact_drop_and_new_arrival_publish_once(make_sim_rig, caplog):
+    from sim_mg400 import arrive
+
+    rig = make_sim_rig(gripper=True)
+    state, collector = rig.state, rig.collector
+    rig.connect()
+    rig.wait(lambda s: s["gripper_available"])
+    collector.answer = lambda request: {"init": 1, "state": 2, "position": 510}
+    caplog.set_level(logging.WARNING, logger="mg400.web_control")
+    state.command({"action": "grip", "position": 450}, "browser-a")
+    rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "contact")
+    contact_at = rig.snapshot()["gripper"]["outcome_at"]
+    assert isinstance(contact_at, float)
+    assert collector.targets("published") == [450]
+    mutations = rig.controller.mutations()
+    collector.set(state=3)
+    rig.wait(lambda s: s["gripper"]["outcome"] == "dropped")
+    dropped = rig.snapshot()["gripper"]
+    assert dropped["outcome_at"] >= contact_at
+    assert not rig.snapshot()["locked"]
+    assert rig.controller.mutations() == mutations
+    assert collector.targets("published") == [450]
+    rig.wait_passes(worker=5)
+    assert rig.snapshot()["gripper"] == dropped
+    events = [
+        event
+        for event in state.events.since(0)["events"]
+        if event["fields"].get("outcome") == "dropped"
+    ]
+    assert len(events) == 1
+    assert events[0]["fields"] == dropped
+    assert [record.message for record in caplog.records].count(
+        "The gripper reports that the object dropped."
+    ) == 1
+    # A new explicit command can replace historical dropped metadata with its own result.
+    collector.answer = arrive
+    state.command({"action": "grip", "position": 700}, "browser-a")
+    rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "arrived")
+    assert collector.targets("published") == [450, 700]
+    assert rig.snapshot()["gripper"]["outcome_at"] >= dropped["outcome_at"]
+    assert (
+        len(
+            [
+                event
+                for event in state.events.since(0)["events"]
+                if event["fields"].get("outcome") == "dropped"
+            ]
+        )
+        == 1
+    )
+
+
+def test_new_simulated_gripper_command_hides_previous_outcome_while_active(make_sim_rig):
+    from sim_mg400 import arrive
+
+    rig = make_sim_rig(gripper=True)
+    rig.connect()
+    rig.wait(lambda s: s["gripper_available"])
+    rig.state.command({"action": "grip", "position": 600}, "browser-a")
+    rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "arrived")
+    rig.collector.answer = lambda request: None
+    try:
+        rig.state.command({"action": "grip", "position": 700}, "browser-a")
+        rig.wait(lambda s: s["gripper_busy"])
+        assert rig.snapshot()["gripper"] == {"outcome": None, "outcome_at": None}
+        rig.collector.answer = arrive
+        rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "arrived")
+        assert rig.collector.targets("published") == [600, 700]
+    finally:
+        rig.collector.answer = arrive

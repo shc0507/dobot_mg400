@@ -35,6 +35,8 @@ class WebGripper:
         self._published = False
         self._message = ""
         self._outcome = None
+        self._outcome_at = None
+        self._outcome_sample = None
         self._collector_error = None
 
     @property
@@ -50,14 +52,35 @@ class WebGripper:
 
     @property
     def last_outcome(self):
-        """Return "arrived" or "contact" for the last confirmed position command."""
+        """Return the last command's "arrived" or "contact" completion.
+
+        A later dropped observation does not change that command completion.
+        Keyboard stepping must still stop at contact. snapshot() reports the drop.
+        """
         with self._state_lock:
-            return self._outcome
+            return "contact" if self._outcome == "dropped" else self._outcome
 
     def poll(self):
         """Read feedback without sending a command."""
         with self._state_lock:
             self._source.poll()
+            sample = self.feedback.get()
+            if (
+                self._outcome == "contact"
+                and sample is not None
+                and sample["state"] == 3
+                and sample["session"] == self._outcome_sample[0]
+                and sample["seq"] > self._outcome_sample[1]
+            ):
+                self._set_outcome("dropped", sample)
+                if not self._locked:
+                    self._message = "The gripper reports that the object dropped."
+
+    def _set_outcome(self, outcome, sample=None):
+        # The adapter state lock protects the outcome and its observation together.
+        self._outcome = outcome
+        self._outcome_at = time.time() if outcome is not None else None
+        self._outcome_sample = (sample["session"], sample["seq"]) if sample else None
 
     def request_collector(self):
         """Ask the host watcher to start the collector. It starts read-only and sends nothing."""
@@ -124,6 +147,8 @@ class WebGripper:
             collector_locked = bool(sample and sample.get("control", {}).get("locked"))
             return {
                 "position": sample["position"] if sample and sample["init"] == 1 else None,
+                "outcome": self._outcome,
+                "outcome_at": self._outcome_at,
                 "available": not self._busy and position_error is None,
                 "can_initialize": not self._busy and initialization_error is None,
                 "busy": self._busy,
@@ -152,7 +177,7 @@ class WebGripper:
         try:
             with self._state_lock:
                 self._published = False
-                self._outcome = None
+                self._set_outcome(None)
                 self.poll()
                 initial = self.feedback.get_status()
                 error = self._request_error(initial, operation)
@@ -253,11 +278,11 @@ class WebGripper:
                 elif control["target"] == position:
                     if sample["state"] == 1 and abs(sample["position"] - position) <= 5:
                         self._message = "Measured position is within 5 / 1000 of the target."
-                        self._outcome = "arrived"
+                        self._set_outcome("arrived", sample)
                         return True
                     if sample["state"] == 2:
                         self._message = "The gripper reports object contact before the target."
-                        self._outcome = "contact"
+                        self._set_outcome("contact", sample)
                         return True
         raise TimeoutError("The gripper command result is not confirmed.")
 

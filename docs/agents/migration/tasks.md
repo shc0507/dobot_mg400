@@ -904,6 +904,7 @@ Goal: D5 and a restart rule, tested in simulation.
 Steps:
 
 1. `src/furnace/service.py` from `FurnaceService`. Keep the ramp, HOLD and hold-timer behavior.
+   Add an explicit attach path in `controller.py` for startup recovery and injected simulator transports. It may only read controller registers before the service makes the recovery decision. Keep the normal constructor's existing program-disable and STOP behavior unchanged. Test that default construction still stops and attach makes no register writes.
 2. Steps get an optional `gas` table (channel to percent). The sequence gets `end_gas` and `end_gas_until_c`, required when any step sets gas. Gas is applied at the start of each step. Readback is recorded; missing readback is "unverified", not an error.
 3. Client loss (lease expiry): a sequence runs to its planned end, which already ends in STOP/COOLING, then applies `end_gas` until PV is below `end_gas_until_c`. An open-ended setpoint (`apply_setpoint`) starts a timer of `MG400_FURNACE_ORPHAN_GRACE_MIN` (default 15). When it ends, the service stops heating and applies `MG400_FURNACE_IDLE_GAS` (default all off). Commands other than stop wait until a client takes the lease.
 4. `src/furnace/state.py` writes `/var/lib/mg400/furnace/state.json` atomically at each phase change and every 60 s during a hold: steps, index, phase, hold start (wall clock), elapsed time, gas plan, orphan time.

@@ -268,19 +268,32 @@ class Clients:
         for name in self.acquired:
             service = self.services[name]
             state = service.state()
+            recovery_error = f"{name} still needs manual recovery or no longer belongs to this run."
+            if not isinstance(state, dict):
+                raise RuntimeError(recovery_error)
+            if name == "robot":
+                # The kept robot protocol reports these fields instead of the
+                # generic contract's connected/fault pair.
+                fault_free = (
+                    state.get("mode") == "robot"
+                    and state.get("robot_error") is False
+                    and state.get("stop_unconfirmed") is False
+                    and isinstance(state.get("instance"), str)
+                    and bool(state["instance"].strip())
+                    and state.get("fault") is None
+                )
+            else:
+                fault_free = "fault" in state and state["fault"] is None
             if (
                 not service.owned(state)
                 or not service.healthy(state)
                 or state.get("busy") is not False
                 or state.get("locked") is not False
-                or "fault" not in state
-                or state["fault"] is not None
+                or not fault_free
                 or ("stop_unconfirmed" in state and state["stop_unconfirmed"] is not False)
                 or state.get("instance") != self._instances[name]
             ):
-                raise RuntimeError(
-                    f"{name} still needs manual recovery or no longer belongs to this run."
-                )
+                raise RuntimeError(recovery_error)
             states[name] = state
         return states
 

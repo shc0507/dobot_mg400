@@ -1,5 +1,6 @@
 """Lease adapters use strict renewal and isolate cleanup failures."""
 
+import copy
 import threading
 import time
 
@@ -7,7 +8,7 @@ import pytest
 
 from labkit.errors import ServiceError
 from labkit.lease import Lease
-from orchestrator.clients import Clients, ServiceAdapter, from_settings
+from orchestrator.clients import Clients, RobotAdapter, ServiceAdapter, from_settings
 
 
 def lease_adapter(monkeypatch):
@@ -133,3 +134,147 @@ def test_adapter_construction_makes_no_requests_and_disables_ambient_proxies(mon
     assert not any(getattr(handler, "proxies", {}) for handler in handlers)
     redirect = next(handler for handler in handlers if hasattr(handler, "redirect_request"))
     assert redirect.redirect_request(None, None, 302, "", {}, "http://other.invalid") is None
+
+
+def reconciliation_pool(monkeypatch, name, state):
+    """An already-owned, stopped run; only adapter state reads are replaced."""
+    identity = "orch-recovery-test"
+    adapter_type = RobotAdapter if name == "robot" else ServiceAdapter
+    adapter = adapter_type("http://127.0.0.1:1", "", identity)
+    adapter._lease_seconds = 3
+    monkeypatch.setattr(adapter, "state", lambda: copy.deepcopy(state))
+    pool = Clients({name: adapter})
+    pool.acquired = [name]
+    pool._instances[name] = state.get("instance")
+    pool.stop_round = pool._stop_rounds[name] = 1
+    pool.stop_results[name] = {"stop": "confirmed"}
+    return pool
+
+
+@pytest.fixture
+def robot_reconciliation(monkeypatch):
+    # RobotPanelState.snapshot uses these fields, without generic connected/fault.
+    state = {
+        "mode": "robot",
+        "instance": "robot-process-instance",
+        "controller_id": "orch-recovery-test",
+        "syncing": True,
+        "feedback_fresh": True,
+        "busy": False,
+        "locked": False,
+        "robot_error": False,
+        "stop_unconfirmed": False,
+    }
+    return reconciliation_pool(monkeypatch, "robot", state), state
+
+
+def test_reconcile_accepts_the_kept_robot_state_without_generic_fields(robot_reconciliation):
+    pool, state = robot_reconciliation
+    assert "fault" not in state and "connected" not in state
+    assert pool.reconcile() == {"robot": state}
+
+
+_ABSENT = object()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("mode", _ABSENT),
+        ("mode", "read-only"),
+        ("controller_id", _ABSENT),
+        ("controller_id", "other-holder"),
+        ("syncing", _ABSENT),
+        ("syncing", False),
+        ("syncing", 1),
+        ("feedback_fresh", _ABSENT),
+        ("feedback_fresh", False),
+        ("feedback_fresh", 1),
+        ("busy", _ABSENT),
+        ("busy", True),
+        ("busy", 0),
+        ("locked", _ABSENT),
+        ("locked", True),
+        ("locked", 0),
+        ("robot_error", _ABSENT),
+        ("robot_error", None),
+        ("robot_error", True),
+        ("robot_error", 0),
+        ("stop_unconfirmed", _ABSENT),
+        ("stop_unconfirmed", None),
+        ("stop_unconfirmed", True),
+        ("stop_unconfirmed", 0),
+        ("instance", _ABSENT),
+        ("instance", None),
+        ("instance", ""),
+        ("instance", " "),
+        ("instance", 0),
+        ("instance", "replacement-process"),
+        ("fault", {"code": "unknown", "message": "A reported fault"}),
+        ("fault", False),
+    ],
+)
+def test_reconcile_robot_requires_known_safe_owned_same_instance_state(
+    robot_reconciliation, field, value
+):
+    pool, state = robot_reconciliation
+    if value is _ABSENT:
+        state.pop(field)
+    else:
+        state[field] = value
+    with pytest.raises(RuntimeError, match="manual recovery"):
+        pool.reconcile()
+
+
+@pytest.mark.parametrize("state", [None, [], "invalid state"])
+def test_reconcile_robot_refuses_malformed_state(robot_reconciliation, monkeypatch, state):
+    pool, _ = robot_reconciliation
+    monkeypatch.setattr(pool.services["robot"], "state", lambda: state)
+    with pytest.raises(RuntimeError, match="manual recovery"):
+        pool.reconcile()
+
+
+@pytest.fixture
+def generic_reconciliation(monkeypatch):
+    state = {
+        "connected": True,
+        "busy": False,
+        "locked": False,
+        "fault": None,
+        "lease": {"holder": "orch-recovery-test", "remaining_s": 2},
+    }
+    return reconciliation_pool(monkeypatch, "stage", state), state
+
+
+def test_reconcile_generic_service_keeps_optional_instance_compatibility(generic_reconciliation):
+    pool, state = generic_reconciliation
+    assert "instance" not in state
+    assert pool.reconcile() == {"stage": state}
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("fault", _ABSENT),
+        ("fault", False),
+        ("fault", {}),
+        ("fault", {"code": "unknown", "message": "Stop unconfirmed"}),
+        ("connected", _ABSENT),
+        ("connected", False),
+        ("connected", 1),
+        ("instance", "unexpected-process"),
+        ("stop_unconfirmed", True),
+    ],
+)
+def test_reconcile_generic_service_still_requires_its_contract(
+    generic_reconciliation, field, value
+):
+    pool, state = generic_reconciliation
+    # Robot-shaped additions cannot opt a generic service out of its own contract.
+    state.update(mode="robot", robot_error=False, stop_unconfirmed=False)
+    if value is _ABSENT:
+        state.pop(field)
+    else:
+        state[field] = value
+    with pytest.raises(RuntimeError, match="manual recovery"):
+        pool.reconcile()

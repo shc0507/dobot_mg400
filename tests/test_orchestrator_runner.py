@@ -37,6 +37,19 @@ class FakeService:
             "fault": None,
             "holder": self.identity,
         }
+        if name == "robot":
+            self.value.pop("connected")
+            self.value.pop("fault")
+            self.value.pop("holder")
+            self.value.update(
+                mode="robot",
+                instance="offline-robot-instance",
+                controller_id=self.identity,
+                syncing=True,
+                feedback_fresh=True,
+                robot_error=False,
+                stop_unconfirmed=False,
+            )
         self.stop_value = {"stop": "confirmed"}
 
     def describe(self):
@@ -53,9 +66,11 @@ class FakeService:
         return copy.deepcopy(self.value)
 
     def owned(self, state):
-        return state.get("holder") == self.identity
+        return state.get("controller_id" if self.name == "robot" else "holder") == self.identity
 
     def healthy(self, state):
+        if self.name == "robot":
+            return state.get("syncing") is True and state.get("feedback_fresh") is True
         return state.get("connected") is True
 
     def command(self, action, **params):
@@ -182,9 +197,9 @@ def test_resume_requires_manual_completion_and_fresh_stop_after_repair(tmp_path)
         lambda state: state.pop("busy"),
         lambda state: state.update(busy=None),
         lambda state: state.update(locked=0),
-        lambda state: state.pop("fault"),
+        lambda state: state.pop("robot_error"),
         lambda state: state.update(fault="unknown outcome"),
-        lambda state: state.update(holder="other"),
+        lambda state: state.update(controller_id="other"),
         lambda state: state.update(instance="replacement"),
         lambda state: state.update(stop_unconfirmed=True),
     ],

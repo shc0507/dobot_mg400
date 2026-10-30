@@ -60,7 +60,7 @@ def test_every_recipe_rehearses_without_hardware(tmp_path, path):
             assert not runner._thread.is_alive()
 
 
-def test_failing_step_holds_run_and_stops_owned_simulated_robot(tmp_path):
+def test_failing_step_holds_run_and_owned_robot_reconciles_after_manual_recovery(tmp_path):
     registry = default_registry()
     calls = []
 
@@ -104,6 +104,19 @@ def test_failing_step_holds_run_and_stops_owned_simulated_robot(tmp_path):
             assert state["controller_id"] == "orch-failure-demo"
             assert "ResetRobot()" in demo.simulator.controller.sent()
             assert store.get(runner.run_id)["steps"][2]["status"] == "pending"
+            assert "fault" not in state and "connected" not in state
+            assert state["locked"] is True
+            with pytest.raises(RuntimeError, match="manual recovery"):
+                runner.clients.reconcile()
+            # An explicit operator-equivalent recovery on this owned simulator
+            # confirms disable/rest. Reconciliation never clears the lock itself.
+            demo.clients["robot"].run("disable", timeout=3)
+            reconciled = runner.clients.reconcile()["robot"]
+            assert reconciled["instance"] == state["instance"]
+            assert reconciled["robot_error"] is False
+            assert reconciled["stop_unconfirmed"] is False
+            assert reconciled["locked"] is False and reconciled["busy"] is False
+            assert calls == ["failed-step"]
         finally:
             runner.abort()
             runner._thread.join(5)

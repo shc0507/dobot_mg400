@@ -93,6 +93,38 @@ def test_firmware_rejection_is_explicit(make_transport):
         transport.command("dir ccw")
 
 
+def test_new_status_fields_and_deferred_home_errors_keep_stop_synchronized(make_transport):
+    extended = [line.rstrip() + b" homed=1 limits=10 soft=1 awake=1\n" for line in STATUS]
+    transport, _ = make_transport(
+        [
+            b"ERROR: home failed: bottom timeout\n",
+            b"OK: All motors stopped.\n",
+            b"ERROR: home failed: insert cancelled\n",
+            b"microstep=4\n",
+            *extended,
+        ]
+    )
+    transport.command("stop all")
+    statuses = transport.status()
+    assert statuses["bottom"].homed and statuses["bottom"].limits == "10"
+    assert statuses["top"].soft and statuses["insert"].awake
+    assert list(transport.home_errors) == [("bottom", "timeout"), ("insert", "cancelled")]
+
+
+@pytest.mark.parametrize("header", [[], [b"microstep=1\n"]])
+def test_partial_extended_status_is_rejected(make_transport, header):
+    extended = STATUS[0].rstrip() + b" homed=0 limits=00 soft=0 awake=0\n"
+    transport, _ = make_transport([*header, extended, *STATUS[1:]])
+    with pytest.raises(LinkError, match="Inconsistent"):
+        transport.status()
+
+
+def test_homing_command_rejection_is_not_mistaken_for_deferred_failure(make_transport):
+    transport, _ = make_transport([b"ERROR: home failed: minimum limit not configured\n"])
+    with pytest.raises(CommandRejected, match="not configured"):
+        transport.command("home")
+
+
 def test_timeout_and_unplug_are_errors(make_transport, monkeypatch):
     transport, port = make_transport()
     with pytest.raises(LinkError, match="device removed"):

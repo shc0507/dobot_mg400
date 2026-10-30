@@ -98,6 +98,7 @@
         {% set directions = [('cw', cw_label), ('ccw', ccw_label)] if motor.id == 'top' else [('ccw', ccw_label), ('cw', cw_label)] %}
         <section class="motor-card motor-{{ motor.id }}" id="motor-{{ motor.id }}" data-motor="{{ motor.id }}" aria-labelledby="title-{{ motor.id }}">
           <div class="card-heading"><div class="motor-name"><span class="channel-number">0{{ loop.index }}</span><h3 id="title-{{ motor.id }}">{{ motor.id|title }} motor</h3></div><span class="motor-status">Offline</span></div>
+          <div class="homing-controls"><span class="homing-status" role="status">Homing unavailable</span><button type="button" class="home-button" disabled aria-label="Home {{ motor.id }} motor">Home</button></div>
           <div class="motor-display">
             <svg class="motor-dial" viewBox="0 0 140 140" aria-hidden="true">
               <circle class="dial-outer" cx="70" cy="70" r="59"/><circle class="dial-track" cx="70" cy="70" r="47"/>
@@ -105,8 +106,9 @@
               <rect class="dial-hub" x="47" y="47" width="46" height="46" rx="14"/><path class="dial-axis" d="M70 57v26M57 70h26"/><circle class="dial-center" cx="70" cy="70" r="5"/>
               <path class="dial-ticks" d="M70 7v8M70 125v8M7 70h8M125 70h8"/>
             </svg>
-            <div class="position-readout"><span class="readout-label">SIGNED PULSE COUNT</span><div><span class="position">—</span><span class="unit">pulses</span></div><span class="remaining">Connect to read count</span></div>
+            <div class="position-readout"><span class="readout-label">SIGNED PULSE COUNT</span><div><span class="position">—</span><span class="unit">pulses</span></div><span class="position-mm"></span><span class="remaining">Connect to read count</span></div>
           </div>
+          {% if motor.id == 'insert' %}<div class="named-positions" role="group" aria-label="Insert named positions"></div>{% endif %}
 
           <div class="speed-heading"><label for="speed-{{ motor.id }}">Speed</label><span>pulses / sec</span></div>
           <div class="speed-value-row"><input class="speed-number" id="speed-{{ motor.id }}" type="number" min="1" max="{{ state.limits.speed }}" step="1" value="{{ state.defaults.speed }}" required inputmode="numeric" aria-describedby="speed-help-{{ motor.id }}"><span class="speed-limit">/ {{ '{:,}'.format(state.limits.speed) }} max</span></div>
@@ -135,6 +137,8 @@
       </div>
 
       <div class="under-controls"><span><svg class="icon"><use href="#i-check"/></svg>Each move completes before a 1 second cooldown.</span><button id="reset" class="text-button"><svg class="icon"><use href="#i-ccw"/></svg>Reset defaults</button></div>
+
+      <section class="pose-panel" aria-labelledby="pose-title"><h2 id="pose-title">Named poses</h2><div id="pose-buttons" role="group" aria-labelledby="pose-title"></div><p id="pose-feedback" role="status">Connect to use named poses.</p></section>
 
       <section id="keyboard-panel" class="keyboard-panel" aria-labelledby="keyboard-title" aria-describedby="keyboard-help">
         <div class="keyboard-heading">
@@ -165,7 +169,7 @@
 
       <div class="details-grid">
         <section class="activity-panel" aria-labelledby="activity-title"><div class="panel-heading"><h2 id="activity-title">Activity</h2><span class="live-label"><span class="tiny-dot"></span> SESSION LOG</span></div><ol id="activity-log"><li class="empty-log"><span class="log-mark">↳</span><span>Your next move starts here.<small>Connect your Arduino to start a session.</small></span></li></ol></section>
-        <section class="workflow-panel" aria-labelledby="workflow-title"><div class="panel-heading"><h2 id="workflow-title">A little movement. A lot of control.</h2><svg class="icon"><use href="#i-layers"/></svg></div><p>Choose a speed, then hold a direction to move until release, or set your step count and click a direction button for a fixed move. Use Up/Down for bottom, Right/Left for top, and Insert In/Insert Out for insert. Each channel moves independently.</p><div class="workflow-sequence"><span>Set speed</span><svg class="icon"><use href="#i-arrow"/></svg><span>Move</span><svg class="icon"><use href="#i-arrow"/></svg><span>Wait 1s</span></div><div class="workflow-note">Counts are signed STEP pulses since startup; travel per pulse depends on the mode. There is no encoder feedback. Stopped motors hold position for 10 s by default, then their drivers sleep and stop holding.</div></section>
+        <section class="workflow-panel" aria-labelledby="workflow-title"><div class="panel-heading"><h2 id="workflow-title">A little movement. A lot of control.</h2><svg class="icon"><use href="#i-layers"/></svg></div><p>Choose a speed, then hold a direction to move until release, or set your step count and click a direction button for a fixed move. Use Up/Down for bottom, Right/Left for top, and Insert In/Insert Out for insert. Each channel moves independently.</p><div class="workflow-sequence"><span>Set speed</span><svg class="icon"><use href="#i-arrow"/></svg><span>Move</span><svg class="icon"><use href="#i-arrow"/></svg><span>Wait 1s</span></div><div class="workflow-note">Counts are signed STEP pulses. Reset and homing reset the reference. Travel per pulse depends on the mode. There is no encoder feedback. Stopped motors hold position for 10 s by default, then their drivers sleep and stop holding.</div></section>
       </div>
       <footer><span><span class="tiny-dot"></span>STAGE CONTROLLER</span><span>Built for the next experiment.</span></footer>
     </main>

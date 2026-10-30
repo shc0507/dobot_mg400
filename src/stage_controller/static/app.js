@@ -14,6 +14,9 @@ let connectionPending = false;
 let stopPending = false;
 let microstepPending = false;
 let microstepDirty = false;
+let referencePending = false;
+let poseButtons = [];
+const positionButtons = new Map();
 let lastEvent = -1;
 let toastTimer;
 let pollTimer;
@@ -109,7 +112,37 @@ function automationControlled() {
 }
 
 function motionBlocked() {
-  return automationControlled() || state?.locked === true;
+  return automationControlled() || state?.locked === true || referencePending
+    || !!state?.automation?.active;
+}
+
+function namedButtons(container, names, previous, activate) {
+  if (names.length === previous.length
+      && names.every((name, index) => name === previous[index].dataset.name)) return previous;
+  const buttons = names.map(name => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'named-button';
+    button.dataset.name = name;
+    button.textContent = name;
+    button.disabled = true;
+    button.addEventListener('click', () => activate(button));
+    return button;
+  });
+  container.replaceChildren(...buttons);
+  return buttons;
+}
+
+async function referenceCommand(button, path, data) {
+  if (motionBlocked() || button.disabled) return;
+  referencePending = true;
+  clearError();
+  refreshControls();
+  try { render(await api(path, data)); }
+  catch (error) {
+    showError(`${error.message} Check motor status before retrying.`);
+    // A lost reply can mean that motion started. Never retry automatically.
+  } finally { referencePending = false; refreshControls(); }
 }
 
 function refreshControls() {
@@ -122,6 +155,7 @@ function refreshControls() {
   $('#keyboard-panel').classList.toggle('is-enabled', keyboardEnabled);
   $('#keyboard-status').textContent = automation ? 'Paused while automation controls the stage.'
     : state?.locked ? 'Paused until the stage fault is resolved.'
+    : referencePending || state?.automation?.active ? 'Paused during homing or a named move.'
     : !keyboardEnabled ? 'Off. Enable to use the keys or buttons.'
     : !connected ? 'On. Connect a device to use these controls.'
       : 'On. Hold W / A / S / D or J / K to move. Release to stop.';
@@ -131,6 +165,19 @@ function refreshControls() {
   $('#connect span').textContent = connectionPending ? 'Please wait…' : connected ? 'Disconnect' : 'Connect';
   $('#stop-all').disabled = !connected || stopPending || connectionPending;
   const moving = state?.motors.some(motor => motor.mode !== 'idle');
+  const referenceBlocked = blocked || !connected || moving || pendingMotors.size > 0
+    || holds.size > 0 || connectionPending || stopPending || microstepPending;
+  const active = state?.automation?.active;
+  $('#pose-feedback').textContent = !connected ? 'Connect to use named poses.'
+    : active ? `In progress: ${active.action}${active.pose ? ` · ${active.pose}` : ''}`
+    : state?.automation?.error ? state.automation.error
+    : !state?.automation?.configured ? 'Stage calibration is unavailable.'
+    : !state.motors.every(motor => motor.automation_ready === true) ? 'Home all axes before a named pose.'
+    : poseButtons.length ? 'Moves one axis at a time in the configured order.' : 'No named poses configured.';
+  for (const button of poseButtons) {
+    button.disabled = referenceBlocked || state?.motors.length !== 3
+      || !state.motors.every(motor => motor.automation_ready === true && motor.available);
+  }
   const supported = connected && state.microstep !== null;
   const modeBlocked = blocked || !supported || moving || pendingMotors.size > 0 || holds.size > 0
     || connectionPending || stopPending || microstepPending;
@@ -151,6 +198,11 @@ function refreshControls() {
     const speedValid = $('.speed-number', card).checkValidity();
     const stepsValid = $('.steps-number', card).checkValidity();
     const valid = speedValid && stepsValid;
+    $('.home-button', card).disabled = referenceBlocked || !motor?.available
+      || motor?.homing_available !== true;
+    for (const button of positionButtons.get(card.dataset.motor) || []) {
+      button.disabled = referenceBlocked || !motor?.available || motor?.automation_ready !== true;
+    }
     const feedback = $('.input-error', card);
     feedback.hidden = valid;
     feedback.textContent = !speedValid ? 'Enter a whole speed from 1 to 1,000 pulses/s.'
@@ -281,19 +333,36 @@ function render(next) {
     const card = $(`#motor-${motor.id}`);
     const moving = connected && motor.mode !== 'idle';
     const cooling = connected && !moving && motor.cooldown > 0;
+    const homing = connected && next.automation?.active?.action === 'home'
+      && next.automation.active.motor === motor.id;
     card.classList.toggle('moving', moving);
     card.classList.toggle('ready', connected && motor.available);
     card.classList.toggle('reverse', motor.direction === 'ccw');
     $('.position', card).textContent = connected ? motor.position.toLocaleString() : '—';
-    $('.remaining', card).textContent = !connected ? 'Connect to read count' : moving
+    $('.remaining', card).textContent = !connected ? 'Connect to read count' : homing
+      ? 'Finding home and confirming soft limits' : moving
       ? motor.mode === 'continuous' ? 'Continuous rotation' : `${Math.abs(motor.remaining).toLocaleString()} pulses remaining`
       : 'At rest';
     $('.motor-status', card).textContent = !connected ? 'Offline' : moving ? 'Moving' : cooling ? 'Cooldown' : 'Ready';
+    const badge = $('.homing-status', card);
+    badge.textContent = !connected ? 'Homing unavailable' : homing ? 'Homing…'
+      : motor.homing_available !== true ? 'Homing unavailable'
+      : motor.automation_ready === true ? 'Homed' : 'Home required';
+    badge.classList.toggle('is-homed', connected && motor.automation_ready === true);
+    $('.position-mm', card).textContent = connected && Number.isFinite(motor.position_mm)
+      ? `${motor.position_mm.toLocaleString(undefined, {maximumFractionDigits: 3})} mm from home` : '';
+    if (motor.id === 'insert') {
+      positionButtons.set(motor.id, namedButtons($('.named-positions', card),
+        motor.named_positions || [], positionButtons.get(motor.id) || [], button =>
+          referenceCommand(button, `/motors/${motor.id}/goto`, {name: button.dataset.name})));
+    }
     const directionLabel = $(`[data-direction="${motor.direction}"] span`, card).textContent;
     $('.motor-hint', card).textContent = !connected ? 'Connect a device to begin' : moving
       ? `Moving ${directionLabel} · ${motor.speed.toLocaleString()} pulses/s`
       : cooling ? `Ready in ${motor.cooldown.toFixed(1)}s` : 'Ready for your next move';
   }
+  poseButtons = namedButtons($('#pose-buttons'), next.automation?.poses || [], poseButtons,
+    button => referenceCommand(button, `/poses/${encodeURIComponent(button.dataset.name)}`, {}));
   const newest = next.events[0]?.id ?? 0;
   if (newest !== lastEvent && next.events.length) {
     lastEvent = newest;
@@ -386,6 +455,8 @@ $('#connect').addEventListener('click', async () => {
 });
 
 for (const card of cards) {
+  const home = $('.home-button', card);
+  home.addEventListener('click', () => referenceCommand(home, `/motors/${card.dataset.motor}/home`, {}));
   const slider = $('.speed-slider', card);
   const number = $('.speed-number', card);
   sliderFill(card);

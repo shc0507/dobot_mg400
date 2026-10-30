@@ -31,6 +31,15 @@ class RecordingTransport(DemoTransport):
         super().close()
 
 
+def home_stage(controller, clock):
+    """Establish actual demo references and soft bounds before contract motion tests."""
+    for motor in ("bottom", "top", "insert"):
+        controller.home(motor)
+        clock.advance(0.5)
+        controller.poll()
+        clock.advance(1)
+
+
 def serial_port(device, vid=None, pid=None, serial_number=None, description="n/a"):
     """Return a pyserial port listing entry with the given USB identity."""
     port = ListPortInfo(device, skip_link_detection=True)

@@ -11,13 +11,16 @@ from pathlib import Path
 from mg400.controller_ownership import ControllerOwnership
 from mg400.sim import Simulator
 from mg400.web_control import RobotPanelState
+from mg400.web_gripper import WebGripper
 
 from .clients import RobotAdapter, ServiceAdapter
 
 
 class _DemoRobot(RobotPanelState):
-    def __init__(self, host, lock_directory):
-        super().__init__(host)
+    def __init__(self, host, lock_directory, gripper_feedback):
+        gripper = WebGripper(gripper_feedback)
+        gripper.poll()
+        super().__init__(host, gripper=gripper)
         self._ownership = ControllerOwnership(host, directory=lock_directory)
 
     def describe(self):
@@ -57,7 +60,11 @@ class Rehearsal:
             host = f"127.203.{secrets.randbelow(254) + 1}.{secrets.randbelow(254) + 1}"
             if not ipaddress.ip_address(host).is_loopback:
                 raise ValueError("Rehearsal addresses must be loopback.")
-            simulator = Simulator(host)
+            feedback = self.directory / "gripper" / "feedback.json"
+            simulator = Simulator(host, gripper_feedback=feedback)
+            # Set only the owned simulation's initial state. Never send an
+            # initialization command or use a host collector path.
+            simulator.collector.set(init=1, state=1, position=1000)
             try:
                 simulator.start()
             except OSError as exc:
@@ -73,7 +80,7 @@ class Rehearsal:
         if not panel_path.is_file():
             raise RuntimeError("Robot rehearsal requires the repository checkout's control panel.")
         panel_server = runpy.run_path(str(panel_path))["PanelServer"]
-        state = self.robot_state = _DemoRobot(host, self.directory / "controller-locks")
+        state = self.robot_state = _DemoRobot(host, self.directory / "controller-locks", feedback)
         self._stack.callback(state.close)
         server = panel_server(("127.0.0.1", 0), state)
         self._serve(server)

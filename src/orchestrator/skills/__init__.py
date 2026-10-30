@@ -25,10 +25,19 @@ class Skill:
     services: tuple
     signature: inspect.Signature
     types: dict
+    aliases: dict
 
     def validate(self, params):
+        if not isinstance(params, dict):
+            raise ValueError("Skill parameters must be a table.")
+        normalized = {}
+        for name, value in params.items():
+            target = self.aliases.get(name, name)
+            if target in normalized:
+                raise ValueError(f"Duplicate skill parameter: {target}")
+            normalized[target] = value
         try:
-            bound = self.signature.bind(None, **params)
+            bound = self.signature.bind(None, **normalized)
         except TypeError as exc:
             raise ValueError(str(exc)) from exc
         bound.apply_defaults()
@@ -42,7 +51,7 @@ class Registry:
     def __init__(self):
         self._skills = {}
 
-    def register(self, name, function, *, services=()):
+    def register(self, name, function, *, services=(), aliases=None):
         if not name or name in self._skills:
             raise ValueError("Skill names must be nonempty and unique.")
         signature = inspect.signature(function)
@@ -56,7 +65,18 @@ class Registry:
                 parameter.KEYWORD_ONLY,
             } or types.get(parameter.name) not in {str, int, float, bool}:
                 raise ValueError("Skill parameters need explicit scalar types.")
-        self._skills[name] = Skill(function, tuple(services), signature, types)
+        aliases = dict(aliases or {})
+        names = {parameter.name for parameter in parameters[1:]}
+        if (
+            any(
+                not isinstance(alias, str) or not alias or alias in signature.parameters
+                for alias in aliases
+            )
+            or any(target not in names for target in aliases.values())
+            or len(set(aliases.values())) != len(aliases)
+        ):
+            raise ValueError("Skill aliases must map unique external names to declared parameters.")
+        self._skills[name] = Skill(function, tuple(services), signature, types, aliases)
         return function
 
     def __getitem__(self, name):
@@ -67,6 +87,8 @@ class Registry:
 
 
 def default_registry():
+    from .robot import pick, place, transfer
+
     registry = Registry()
 
     def wait(ctx, seconds: float):
@@ -97,4 +119,12 @@ def default_registry():
     registry.register("robot.move", move, services=("robot",))
     registry.register("robot.stop", stop, services=("robot",))
     registry.register("sample.record", sample)
+    registry.register("robot.pick", pick, services=("robot",))
+    registry.register("robot.place", place, services=("robot",))
+    registry.register(
+        "robot.transfer",
+        transfer,
+        services=("robot",),
+        aliases={"from": "from_station", "to": "to_station"},
+    )
     return registry

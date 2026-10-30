@@ -213,6 +213,51 @@ def test_root_recipe_dispatch_refuses_missing_runuser(ctl, monkeypatch):
 
 
 @pytest.mark.parametrize("root", [True, False])
+@pytest.mark.parametrize("command", ["run", "rehearse", "runs"])
+def test_transfer_data_is_forwarded_without_rehearsal_device_credentials(
+    ctl, monkeypatch, root, command
+):
+    geometry = {key: "explicit-data" for key in ctl.module.TRANSFER_SETTINGS}
+    settings = {
+        **geometry,
+        "MG400_ORCH_ROBOT_URL": "http://production.invalid",
+        "MG400_ORCH_ROBOT_TOKEN": "production-token",
+        "MG400_GRIPPER_FEEDBACK": "/production/collector.json",
+        "MG400_ORCH_UNKNOWN": "forbidden",
+        "HTTP_PROXY": "http://proxy.invalid",
+        "PYTHONPATH": "/untrusted/python",
+    }
+    if root and command != "rehearse":
+        ctl.host.settings.write_text("\n".join(f"{key}={value}" for key, value in settings.items()))
+    else:
+        ctl.host.settings.unlink()
+        for key, value in settings.items():
+            monkeypatch.setenv(key, value)
+    if not root:
+        for name in ("getuid", "geteuid", "getgid", "getegid"):
+            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
+    assert ctl.call(command, "recipe-or-run-id") == 0
+    program, argv, environment = ctl.execvpe.call_args.args
+    assert {key: environment[key] for key in geometry if key in environment} == (
+        {} if command == "runs" else geometry
+    )
+    assert ("MG400_ORCH_ROBOT_URL" in environment) is (command == "run")
+    assert ("MG400_ORCH_ROBOT_TOKEN" in environment) is (command == "run")
+    assert not set(environment) & {
+        "MG400_GRIPPER_FEEDBACK",
+        "MG400_ORCH_UNKNOWN",
+        "HTTP_PROXY",
+        "PYTHONPATH",
+    }
+    python = str(ctl.host.code / ".venv/bin/python")
+    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, "recipe-or-run-id"]
+    assert program == ("/usr/sbin/runuser" if root else python)
+    if root:
+        assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize("root", [True, False])
 @pytest.mark.parametrize("action", ["save", "list", "show", "rm"])
 def test_station_dispatch_only_forwards_necessary_paths_bounds_and_read_credentials(
     ctl, monkeypatch, root, action

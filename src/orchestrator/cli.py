@@ -19,6 +19,7 @@ from .recipe import load_recipe, positive
 from .rehearsal import Rehearsal
 from .runner import Runner
 from .skills import default_registry
+from .skills.robot import TRANSFER_SETTINGS
 from .stations import DEFAULT_STATIONS, DEFAULT_TOOL, StationStore, Workspace, load_tool, teach
 from .store import DEFAULT_RUNS, RunStore
 
@@ -29,7 +30,7 @@ TERMINAL = {"completed", "aborted"}
 def _demo_environment():
     """Remove ambient device, credential, proxy and Python settings for demos."""
     saved = dict(os.environ)
-    allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "TZ"}
+    allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "TZ"} | TRANSFER_SETTINGS
     try:
         os.environ.clear()
         os.environ.update({key: value for key, value in saved.items() if key in allowed})

@@ -113,6 +113,49 @@ def test_commands_require_lease_and_locked_state_refuses_any_client_commands():
     assert service.calls[-1] == ("stop", 15, "b")
 
 
+def test_strict_renewal_cannot_acquire_or_restore_an_expired_lease():
+    app, service, lease = make_app(base_path="/instrument/")
+    client = app.test_client()
+    headers = {"X-MG400-Client": "a"}
+    route = "/instrument/api/renew"
+    assert client.get("/instrument/api/describe").json["renew_only_heartbeat"] is True
+    assert_error(client.post(route, json={}, headers=headers), 409)
+    assert lease.holder is None
+    assert client.post("/instrument/api/heartbeat", json={}, headers=headers).status_code == 200
+    service.advance(2)
+    response = client.post(route, json={}, headers=headers)
+    assert response.json == {"lease": {"holder": "a", "remaining_s": 3}}
+    # A renewal may arrive after an earlier state read reported ownership.
+    assert client.get("/instrument/api/state").json["lease"]["holder"] == "a"
+    service.advance(3)
+    assert_error(client.post(route, json={}, headers=headers), 409)
+    assert lease.holder is None and service.expiry_count == 1
+    assert_error(client.post(route, json={}, headers=headers), 409)
+    assert lease.holder is None and service.expiry_count == 1
+    # Acquisition remains an explicit, compatible operation.
+    lease.acquire("b")
+    assert_error(client.post(route, json={}, headers=headers), 409)
+    assert lease.holder == "b"
+    lease.release("b")
+    assert client.post("/instrument/api/heartbeat", json={}, headers=headers).status_code == 200
+    assert lease.holder == "a"
+
+
+def test_strict_renewal_preserves_access_and_post_validation():
+    app, _, lease = make_app(token=TOKEN)
+    client = app.test_client()
+    auth = {"Authorization": f"Bearer {TOKEN}", "X-MG400-Client": "a"}
+    lease.acquire("a")
+    assert_error(client.post("/api/renew", json={}), 401)
+    assert_error(
+        client.post("/api/renew", json={}, headers={"Authorization": f"Bearer {TOKEN}"}), 400
+    )
+    assert_error(client.post("/api/renew", data="{}", headers=auth), 415)
+    assert_error(client.post("/api/renew", json=[], headers=auth), 400)
+    assert_error(client.post("/api/renew", json={}, headers={**auth, "Origin": "null"}), 403)
+    assert lease.holder == "a"
+
+
 @pytest.mark.parametrize("outcome", ["confirmed", "pending", "unconfirmed"])
 def test_stop_outcome_is_preserved(outcome):
     app, service, _ = make_app()

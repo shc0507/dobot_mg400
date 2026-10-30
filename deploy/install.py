@@ -19,6 +19,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import assets  # noqa: E402
+
 SOURCE = Path(__file__).resolve().parents[1]
 SERVICE_UID = SERVICE_GID = 1000
 COLLECTOR = "mg400-gripper-collector.service"
@@ -33,7 +36,9 @@ class Host:
 
     def __init__(self, root="/", source=SOURCE):
         root = Path(root)
+        self.root = root
         self.source = Path(source)
+        self.asset_manifest = self.source / "config/assets.toml"
         self.code = root / "opt/mg400"
         self.etc = root / "etc/mg400"
         self.settings = self.etc / "mg400.env"
@@ -276,6 +281,23 @@ def install(args, host, run, chown, out):
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
 
+    manifest = assets.load_manifest(host.asset_manifest) if args.asset or args.fetch_assets else {}
+    local_assets = {}
+    for specification in args.asset:
+        name, equals, path = specification.partition("=")
+        if not equals or not path or name not in manifest:
+            raise ValueError(f"Use --asset NAME=PATH with a name from {host.asset_manifest}.")
+        if name in local_assets:
+            raise ValueError(f"Asset {name} was specified more than once.")
+        local_assets[name] = Path(path)
+    selected_assets = (
+        manifest if args.fetch_assets else {name: manifest[name] for name in local_assets}
+    )
+    for name, asset in selected_assets.items():
+        assets.check_destination(asset, host.root)
+        if name in local_assets:
+            assets.validate_source(asset, local_assets[name])
+
     service = (SERVICE_UID, SERVICE_GID)
     directory(host.etc, 0o755, (0, 0))
     if current is None or changed:
@@ -321,6 +343,16 @@ def install(args, host, run, chown, out):
         cwd=host.code,
         env={**os.environ, "UV_LINK_MODE": "copy"},
     )
+    for name, asset in selected_assets.items():
+        source = local_assets.get(name)
+        step(
+            f"install asset {name} from {source or asset.url} as "
+            f"{assets.destination(asset, host.root)} "
+            f"({asset.bytes} bytes, SHA-256 {asset.sha256}, {asset.mode:04o}, "
+            f"{SERVICE_UID}:{SERVICE_GID})"
+        )
+        if not args.dry_run:
+            assets.install_asset(asset, root=host.root, source=source, chown=chown)
     if devices:
         if args.go2rtc is not None:
             step(f"install {args.go2rtc} as {host.go2rtc}")
@@ -351,6 +383,14 @@ def main(argv=None, *, host=None, run=subprocess.run, chown=os.fchown, out=sys.s
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="Print the steps. Change nothing.")
     parser.add_argument("--go2rtc", type=Path, help="go2rtc 1.9.14 binary to install")
+    parser.add_argument(
+        "--asset",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Install a verified local asset",
+    )
+    parser.add_argument("--fetch-assets", action="store_true", help="Download manifest assets")
     parser.add_argument("--python", default="/usr/bin/python3", help="Python for the services")
     parser.add_argument("--uv", help="uv executable (default: uv on PATH)")
     args = parser.parse_args(argv)

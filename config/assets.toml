@@ -1,0 +1,9 @@
+[vision-weights]
+url = "https://github.com/shc0507/dobot_mg400/releases/download/vision-model-v1/chip-arm-yolo26s-seg-v1.pt"
+sha256 = "0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07"
+bytes = 23393117
+install = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
+mode = "0640"
+service = "vision"
+source = "WuLabPrinceton/Visual-Localization@cc329b3 models/download_manifest.json"
+license = "AGPL-3.0"

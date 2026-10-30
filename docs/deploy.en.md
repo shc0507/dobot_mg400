@@ -17,6 +17,7 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400` | Parent directory for runtime data | `root:1000`, `0750` |
 | `/var/lib/mg400/locks` | Robot connection locks | `1000:1000`, `0700` |
 | `/var/lib/mg400/work` | Gripper feedback, gripper command files, and mode-switch backups | `1000:1000`, `0750` |
+| `/var/lib/mg400/models` | Model weights installed from the asset manifest, with file permissions `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
 | `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program | `root:root`, `0755` |
 | `/usr/local/bin/mg400ctl` | Routine command tool, linked to `/opt/mg400/deploy/mg400ctl` | None |
@@ -80,19 +81,68 @@ Before an update, stop the services with `mg400ctl stop all`.
 
 The installer works in this order:
 
-1. Check the Python version, uv, the configuration file, and any independently running gripper collection processes. If a check fails, leave the host unchanged.
+1. Check the Python version, uv, the configuration file, and any independently running gripper collection processes.
+   If assets are requested, also check the manifest, destination paths, and local files. If a check fails, leave the host unchanged.
 2. Create the configuration file or add missing entries. Fill empty `*_TOKEN` entries with newly generated access tokens. Keep existing values.
 3. Create the directories under `/var/lib/mg400` and the camera preview token.
    Refuse symbolic links there and do not overwrite existing tokens.
 4. Run `uv sync` to install the stage and tool dependencies in `/opt/mg400/.venv`.
-5. If cameras are configured, install go2rtc and generate `go2rtc.yaml`. Otherwise, remove the old `go2rtc.yaml`.
-6. Install service definitions, reload systemd, and enable the gripper collection request listener.
-7. Create the `mg400ctl` link.
+5. Install explicitly requested external assets. Check size and SHA-256 before atomic replacement.
+6. If cameras are configured, install go2rtc and generate `go2rtc.yaml`. Otherwise, remove the old `go2rtc.yaml`.
+7. Install service definitions, reload systemd, and enable the gripper collection request listener.
+8. Create the `mg400ctl` link.
 
 The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
 After the update, start services, then reload any open panel pages.
 Do not edit files in `/opt/mg400`. Modified files can cause `git switch` to abort the update.
+
+## External assets
+
+`config/assets.toml` stores 1 table per external asset.
+The fields are `url`, `sha256`, `bytes`, `install`, `mode`, `service`, `source`, and `license`.
+`install` is an absolute destination path under `/var/lib/mg400/`. `mode` must be `0640` or `0600`.
+Asset files and destination directories belong to `1000:1000`. Destination directories have permissions `0750`.
+The installer refuses symbolic links in source files, destination files, or their paths.
+
+The initial `vision-weights` entry specifies `chip-arm-yolo26s-seg-v1.pt` in this repository's `vision-model-v1` release.
+Its size is 23,393,117 bytes. Its SHA-256 is `0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07`.
+The destination is `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`, with permissions `0640`.
+The manifest records the license as `AGPL-3.0`, as declared by Roboflow.
+Publishing the weights must wait for the repository license decision. Downloads fail if the release does not contain the file.
+
+By default, the installer does not download or install assets. To explicitly download manifest assets:
+
+```sh
+/usr/bin/python3 /opt/mg400/deploy/install.py --fetch-assets
+```
+
+Downloads use only HTTPS, including redirects.
+The installer writes content to a temporary file in the destination directory, then checks its byte count and SHA-256.
+After successful checks and ownership and permission changes, the installer replaces the destination atomically.
+If downloading, verification, or permission changes before replacement fail, the original file remains unchanged.
+
+For offline installation, copy the weights to the host through the Drive transfer procedure in [When GitHub is unavailable on Olares](olares.en.md#when-github-is-unavailable).
+The local file path can differ from the destination. For example, use `/tmp/chip-arm-yolo26s-seg-v1.pt`:
+
+```sh
+/usr/bin/python3 /opt/mg400/deploy/install.py --asset vision-weights=/tmp/chip-arm-yolo26s-seg-v1.pt
+```
+
+You can repeat `--asset NAME=PATH`, but specify each asset only 1 time.
+When combined with `--fetch-assets`, the local file takes precedence for the same asset.
+Local files and downloads use the same size and SHA-256 checks. Do not change the manifest to bypass verification.
+With `--dry-run`, the installer only shows planned steps. It does not download, write, or change permissions.
+Dry runs still verify specified local files. They cannot confirm remote asset availability.
+
+Run `mg400ctl assets` to check each manifest asset:
+
+- `present`: content, size, ownership, and permissions match the manifest.
+- `missing`: the destination file does not exist.
+- `mismatch`: content or file attributes differ, the path is unsafe, or the file cannot be read.
+
+The exit code is 0 when all assets are `present`, or 1 otherwise.
+This command does not download assets, change files, or start services.
 
 ## Configuration file
 
@@ -127,6 +177,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`:
 
 | Command | Effect |
 | --- | --- |
+| `mg400ctl assets` | Check external asset content, ownership, and permissions |
 | `mg400ctl status` | Show the status of all services |
 | `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, or `all` |
 | `mg400ctl stop all` | Stop services |

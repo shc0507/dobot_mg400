@@ -28,6 +28,7 @@ vision = [
   "zxing-cpp>=3.0,<4",
   "opencv-python-headless>=4.9,<5",
 ]
+vision-gpu = ["ultralytics>=8.4,<9", "torch>=2.7", "torchvision>=0.22"]
 
 [project.scripts]
 mg400-robot = "mg400.terminal_control:main"
@@ -36,6 +37,16 @@ thermal-cam = "thermal_cam.__main__:main"
 
 [tool.uv]
 default-groups = ["dev", "stage", "vision", "thermal"]
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam"]

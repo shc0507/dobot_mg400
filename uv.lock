@@ -1132,9 +1132,13 @@ wheels = [
 name = "mg400"
 version = "0.1.0"
 source = { editable = "." }
-default-groups = ["dev", "furnace", "stage", "thermal", "vision"]
+default-groups = ["camera", "dev", "furnace", "stage", "thermal", "vision"]
 
 [package.dev-dependencies]
+camera = [
+    { name = "numpy" },
+    { name = "opencv-python-headless" },
+]
 dev = [
     { name = "httpx" },
     { name = "pytest" },
@@ -1180,6 +1184,10 @@ vision-gpu = [
 [package.metadata]
 
 [package.metadata.requires-dev]
+camera = [
+    { name = "numpy", specifier = ">=1.26,<3" },
+    { name = "opencv-python-headless", specifier = ">=4.9,<5" },
+]
 dev = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pytest", specifier = ">=8,<10" },

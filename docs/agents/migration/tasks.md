@@ -1037,10 +1037,12 @@ Goal: move a chip between the tray and the crucible with every interlock between
 
 Steps:
 
-1. `crucible.load(from_slot)`: the furnace is in STOP/COOLING with PV below `load_max_c`; the stage is homed; Insert is at `load` and held awake; the robot takes zone `crucible-load`, transfers to station `crucible/load`, leaves and releases the zone; Insert moves to `furnace`.
+1. `crucible.load(from_slot)`: the furnace is in STOP/COOLING with PV below `load_max_c`; the stage is homed; Insert is at `load` and held awake; the robot takes zone `crucible-load`, transfers to station `crucible-load`, leaves and releases the zone; Insert moves to `furnace`.
 2. `crucible.unload(to_slot)`: no sequence is running and the furnace is in STOP/COOLING; Insert moves to `load` and stays awake; the thermal region `crucible` reads below `unload_max_c` (wait with a timeout, then hold); the robot takes the zone, picks, leaves and places in the slot.
 3. Limits come from settings and the recipe. No default allows a heat-related move on hardware.
-4. Rehearsal tests for success and for each failed condition.
+4. Register both skills in `src/orchestrator/skills/__init__.py`. Add the thermal ROI GET to the orchestrator client and runner interfaces. Keep that read under the step's revocable authority.
+5. Make rehearsal own the furnace demo service. Preserve explicit safety settings for these skills in rehearsal. Remove production endpoints, tokens, device settings, and proxy settings.
+6. Rehearsal tests for success and for each failed condition. Keep the new tests in `tests/test_orchestrator_crucible.py`.
 
 Done when: P-CHECKS pass.
 

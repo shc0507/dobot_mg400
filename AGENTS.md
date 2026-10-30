@@ -29,6 +29,11 @@ This document provides permanent information/instructions for the convenience of
 - Keep documentation concise. Use clear headings, bullet points, and numbered lists where they help the reader.
 - Use Simplified Technical English skill for writing in English.
 - Use jianming-zhongwen skill for writing in Chinese.
+- Human docs use Chinese `X.md` and English `X.en.md` beside it. Change both files in the same PR.
+- This rule covers `README.md`, `docs/*.md`, `docs/adr/*.md`, and `firmware/*/README.md`. Agent docs stay English only.
+- `AGENTS.md`, `docs/agents/**`, `.agents/**`, `GLOSSARY.md` (one bilingual table), and `tests/fixtures/**` are exempt.
+- `scripts/check_doc_pairs.py` checks code blocks, inline code, numbers, link targets, and heading counts through pytest. Write numbers as digits in both languages.
+- The checker permits missing pairs listed in `docs/agents/migration/doc-pairs-pending.txt`. Until a pair exists, edit the Chinese file. Remove its entry when you add the pair.
 
 ## UX design
 
@@ -52,10 +57,12 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Gripper | `src/mg400/web_gripper.py`, `gripper_feedback.py`, `scripts/gripper_feedback.py` | `test_web_gripper.py`, `test_gripper_feedback.py`, `test_gripper_serial_feedback.py` | [development.md](docs/development.md#usb-夹爪协议) |
 | Terminal | `src/mg400/terminal_control.py` | `test_terminal_control.py` | [terminal-control.md](docs/terminal-control.md) |
 | Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
+| Shared access checks | `src/labkit/auth.py` | `test_labkit_auth.py`, `test_control_panel*.py`, `test_stage_app.py` | [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
 | Camera preview | `scripts/camera_preview.py`, `camera_preview.js` | `test_camera_preview.py`, `test_camera_preview.mjs` | [olares.md](docs/olares.md#摄像头) |
 | Deployment | `deploy/`, `config/systemd/` | `test_deploy_*.py`, `test_systemd_units.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
 | QR reader | `src/vision/qr.py`, `qr_micro.py` | `test_vision_qr*.py` | Module docstrings |
+| Simulator | `src/mg400/sim/` | `test_mg400_sim.py`, `sim_mg400.py`, `test_web_keyboard_integration.py`, `test_robot_service_e2e.py` | [development.md](docs/development.md#离线机器人模拟器) |
 | Vision localizer | `src/vision/localizer.py` | `test_vision_localizer.py` | Module docstrings |
 | Migration plan | `docs/agents/migration/tasks.toml`, `tasks.md` | `test_migration_plan.py` | [migration README](docs/agents/migration/README.md) |
 

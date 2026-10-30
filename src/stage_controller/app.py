@@ -6,6 +6,8 @@ from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
 from labkit.auth import bearer_matches, host_allowed
+from labkit.errors import ServiceError
+from labkit.flask import contract_blueprint
 
 from .controller import MotorController
 from .protocol import ControllerError, LinkError
@@ -20,10 +22,17 @@ def create_app(controller: MotorController | None = None, token: str | None = No
     app.config.update(MAX_CONTENT_LENGTH=4096)
     controller = controller or MotorController()
     app.extensions["motor_controller"] = controller
+    app.register_blueprint(
+        contract_blueprint(controller, token=token, base_path="/contract", lease=controller.lease)
+    )
     control_token = secrets.token_urlsafe(32)
 
     @app.before_request
     def protect_local_control():
+        # The contract enforces its own client/JSON/access checks. Legacy requests
+        # still require the page's control token, even when they send a client ID.
+        if request.blueprint == "labkit_contract":
+            return
         if not host_allowed(request.headers, token):
             return jsonify(error="Open the panel at 127.0.0.1 or localhost"), 403
         if (
@@ -56,6 +65,10 @@ def create_app(controller: MotorController | None = None, token: str | None = No
     def controller_error(error):
         return jsonify(error=str(error)), 503 if isinstance(error, LinkError) else 409
 
+    @app.errorhandler(ServiceError)
+    def service_error(error):
+        return jsonify(error=error.message), error.status
+
     @app.errorhandler(ValueError)
     def value_error(error):
         return jsonify(error=str(error)), 400
@@ -70,6 +83,10 @@ def create_app(controller: MotorController | None = None, token: str | None = No
             raise ValueError("Expected a JSON object.")
         return value
 
+    def state_response(state):
+        # Controller operations have released their device lock before this reads the lease.
+        return jsonify({**state, "lease": controller.lease.snapshot()})
+
     @app.get("/")
     def index():
         state = controller.snapshot()
@@ -83,39 +100,42 @@ def create_app(controller: MotorController | None = None, token: str | None = No
 
     @app.get("/api/state")
     def state():
-        return jsonify(controller.snapshot())
+        return jsonify(controller.panel_snapshot())
 
     @app.post("/api/connect")
     def connect():
         port = body().get("port")
         if not isinstance(port, str) or not port:
             raise ValueError("Select a serial port.")
-        return jsonify(controller.connect(port))
+        return state_response(controller.connect(port))
 
     @app.post("/api/disconnect")
     def disconnect():
-        return jsonify(controller.disconnect())
+        return state_response(controller.disconnect())
 
     @app.post("/api/motors/<motor>/move")
     def move(motor):
         data = body()
-        return jsonify(
-            controller.move(motor, data.get("direction"), data.get("speed"), data.get("steps"))
+        return state_response(
+            controller.manual(
+                "move", motor, data.get("direction"), data.get("speed"), data.get("steps")
+            )
         )
 
     @app.post("/api/microstep")
     def microstep():
-        return jsonify(controller.set_microstep(body().get("microstep")))
+        return state_response(controller.manual("set_microstep", body().get("microstep")))
 
     @app.post("/api/stop")
     def stop():
-        return jsonify(controller.stop_all())
+        return state_response(controller.stop_all())
 
     @app.post("/api/motors/<motor>/hold")
     def hold(motor):
         data = body()
-        return jsonify(
-            controller.hold(
+        return state_response(
+            controller.manual(
+                "hold",
                 motor,
                 data.get("direction"),
                 data.get("speed"),
@@ -126,10 +146,10 @@ def create_app(controller: MotorController | None = None, token: str | None = No
 
     @app.post("/api/motors/<motor>/hold/keepalive")
     def keep_hold_alive(motor):
-        return jsonify(controller.keep_hold_alive(motor, body().get("hold_id")))
+        return state_response(controller.manual("keep_hold_alive", motor, body().get("hold_id")))
 
     @app.post("/api/motors/<motor>/hold/stop")
     def release_hold(motor):
-        return jsonify(controller.release_hold(motor, body().get("hold_id")))
+        return state_response(controller.release_hold(motor, body().get("hold_id")))
 
     return app

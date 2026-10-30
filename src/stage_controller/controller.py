@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from serial.tools import list_ports
 
+from .contract import StageContract
 from .protocol import (
     BAUD_RATE,
     COOLDOWN_SECONDS,
@@ -57,7 +58,7 @@ def is_gripper_converter(path):
     return os.path.realpath(path) in _gripper_devices(list_ports.comports())
 
 
-class MotorController:
+class MotorController(StageContract):
     def __init__(self, *, demo=False, serial=None, transport_factory=None, clock=time.monotonic):
         self.demo = demo
         # With a configured device, offer only that device. Demo mode opens no device.
@@ -80,6 +81,7 @@ class MotorController:
         self._event_id = 0
         self._shutdown = threading.Event()
         self._thread = None
+        self._init_contract()
 
     def ports(self):
         if self.demo:
@@ -107,12 +109,13 @@ class MotorController:
                 "level": level,
             }
         )
+        self.events.add(level, message, service="stage", activity_id=self._event_id)
 
     def _require_connection(self):
         if self._transport is None:
             raise ControllerError("Connect to an Arduino first.")
 
-    def _read_status(self):
+    def _read_status(self, *, command_result="ok"):
         statuses = self._transport.status()
         self._microstep = self._transport.microstep
         now = self.clock()
@@ -126,6 +129,7 @@ class MotorController:
                 self._cooldowns[motor] = now + COOLDOWN_SECONDS
                 self._event(f"{motor.title()} stopped · 1 second cooldown")
         self._motors = statuses
+        self._complete_motion_commands("stopped" if self._contract_stopping else command_result)
 
     def _lose_connection(self, exc):
         # Try to cancel movement even when the response stream is lost.
@@ -141,10 +145,15 @@ class MotorController:
             self._transport = None
             self._port = None
         self._error = f"{exc} Connection lost; motor stop could not be confirmed."
+        self._fail_motion_commands(self._error)
         self._event(self._error, "error")
 
     def connect(self, port):
         with self._lock:
+            if self._contract_stopping:
+                raise ControllerError(
+                    "Stop confirmation is in progress. Reconnect after it finishes."
+                )
             # Only a listed port: a remote client must not open arbitrary device paths.
             if not isinstance(port, str) or port not in {item["device"] for item in self.ports()}:
                 raise ValueError("That port is no longer available. Refresh the port list.")
@@ -161,7 +170,12 @@ class MotorController:
             self._motors = statuses
             self._microstep = transport.microstep
             self._active = {motor for motor, state in statuses.items() if state.mode != "idle"}
+            had_unknown_outcome = self._error is not None or self._contract_fault is not None
             self._error = None
+            if all(state.mode == "idle" for state in statuses.values()):
+                self._contract_fault = None
+            elif had_unknown_outcome:
+                self._contract_fault = "Motors are not idle. Check the stage before reconnecting."
             # Preserve cooldowns across reconnects; reconnecting is not a bypass.
             self._event(f"Connected to {port} · {BAUD_RATE:,} baud")
             return self.snapshot()
@@ -171,7 +185,7 @@ class MotorController:
             if self._transport is not None:
                 try:
                     self._transport.command("stop all")
-                    self._read_status()
+                    self._read_status(command_result="stopped")
                 except ControllerError as exc:
                     self._lose_connection(exc)
                     raise LinkError(self._error) from exc
@@ -350,7 +364,7 @@ class MotorController:
             self._require_connection()
             try:
                 self._transport.command("stop all")
-                self._read_status()
+                self._read_status(command_result="stopped")
                 self._event("Stop all acknowledged by Arduino")
             except ControllerError as exc:
                 self._lose_connection(exc)
@@ -358,6 +372,8 @@ class MotorController:
             return self.snapshot()
 
     def poll(self):
+        # Lease callbacks may stop motors. Never acquire the lease under the device lock.
+        self.lease.poll()
         with self._lock:
             if self._transport is not None:
                 try:
@@ -383,6 +399,7 @@ class MotorController:
                     }
                 )
             return {
+                **self._contract_state(),
                 "sampled_at": now,
                 "connected": connected,
                 "port": self._port,

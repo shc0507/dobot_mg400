@@ -54,6 +54,7 @@
       </section>
 
       {% if state.demo %}<div class="demo-banner"><strong>DEMO WORKBENCH</strong><span>Simulated motors. Connect the demo port to explore the controls.</span></div>{% endif %}
+      <div id="automation-banner" class="demo-banner" role="status" hidden>Stage is controlled by automation</div>
       <form id="auth" class="auth-panel" hidden><input id="access-token" type="password" placeholder="Panel access token" aria-label="Panel access token" autocomplete="off" required><button type="submit" class="button primary">Connect</button></form>
       <div id="notice" class="notice" role="alert" hidden></div>
       <noscript><div class="notice">Enable JavaScript to use the motor controls.</div></noscript>

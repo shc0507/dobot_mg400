@@ -647,6 +647,8 @@ Steps:
 
 Integration scope: `src/orchestrator/recipe.py` validates and carries step zone declarations. `src/orchestrator/cli.py` preserves explicit zone configuration for rehearsal and resolves the required demo services before creating them. `tests/test_orchestrator_transfer.py` supplies explicit zone configuration to its owned-demo CLI cases; do not retain a no-op fallback when configuration is missing. In `src/orchestrator/skills/robot.py`, update only the zone-helper comment that describes the old no-op manager. The runner resolves condition-service leases before acquisition so an entry check cannot rely on a service that remains under manual control.
 
+Test isolation: `tests/conftest.py` may add an autouse fixture restricted to `test_orchestrator_*.py`. Use private empty zone configuration and occupancy paths under each test's temporary directory, so inherited settings or default paths cannot reach host zone data. Request the temporary-directory fixture only after checking the test module. Do not change fixtures for other areas or weaken production path and configuration checks.
+
 Done when: P-CHECKS pass.
 
 Docs: `orchestrator.md` and `.en.md`: zones and their conditions.

@@ -46,6 +46,43 @@ uv run ruff format --check .
 使用 `examples/test.ipynb` 时，给同步命令加 `--group notebook`。
 如需保留其他手工安装的包，再加 `--inexact`。
 
+## 离线机器人模拟器
+
+`mg400.sim` 在回环地址模拟控制器和夹爪。
+它只接受数字回环地址，默认使用 `127.0.0.2`。
+控制器端口为 `29999`、`30003` 和 `30004`，反馈周期为 `8 ms`。
+启动后，机械臂处于下使能状态，夹爪已初始化。
+
+在项目根目录运行：
+
+```bash
+sim_dir=$(mktemp -d)
+uv run python -m mg400.sim --host 127.0.0.2 --gripper-feedback "$sim_dir/gripper.json" &
+sim_pid=$!
+MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/server.py \
+  --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2 \
+  --gripper-feedback "$sim_dir/gripper.json"
+kill "$sim_pid"
+wait "$sim_pid"
+```
+
+打开 `http://127.0.0.1:18766/`，按以下顺序操作：
+
+1. 点击 `Connect & take control`，等待反馈更新。
+2. 点击 `Enable robot`，等待使能完成。
+3. 点击 `Use actual`，填写目标坐标，再点击 `Execute targets`。
+4. 发送夹爪目标，确认反馈位置更新。
+5. 点击 `Disconnect`，等待停止确认。
+
+在终端按 `Ctrl+C` 结束网页服务。
+随后两条命令结束本次模拟器进程。
+每次启动使用新目录。模拟器拒绝覆盖已有的反馈文件或命令文件。
+
+模拟器立即到达关节和笛卡尔目标，不计算真实运动学、路径、碰撞或夹持力。
+逆解返回当前关节值。`J1` 点动改变关节反馈，其余点动只改变运动模式。
+这些限制只适用于模拟器，生产控制代码和停止确认规则保持不变。
+离线演练不能替代硬件验收。
+
 ## 代码结构
 
 | 路径 | 用途 |
@@ -56,6 +93,7 @@ uv run ruff format --check .
 | `config/systemd/` | 所有服务的 systemd 定义，配置从 `/etc/mg400/mg400.env` 读取 |
 | `deploy/` | 安装器 `install.py`、日常命令 `mg400ctl` 和配置示例 |
 | `src/mg400/` | 后端、控制协议和反馈处理 |
+| `src/mg400/sim/` | 回环控制器和文件夹爪模拟器，共用测试模型 |
 | `src/stage_controller/` | 位移台面板：Flask 服务、串口协议和界面 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
 | `scripts/` | 摄像头预览、控制模式切换和 USB 采集 |

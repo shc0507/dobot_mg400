@@ -555,6 +555,17 @@ class MicroscopeCamera:
         except Exception as exc:
             if not self._stop_event.is_set():
                 self._error = exc
+                # close() can hold the lifecycle lock while joining this worker.
+                # Finalize under the recording lock without acquiring the lifecycle lock.
+                with self._recording_lock:
+                    session, self._recording = self._recording, None
+                    if session is not None:
+                        self._recording_error = exc
+                        self._last_recording_segments = list(session.segments)
+                        try:
+                            session.close()
+                        except Exception as cleanup_error:
+                            self._recording_error = cleanup_error
                 with self._frame_condition:
                     self._frame_condition.notify_all()
 

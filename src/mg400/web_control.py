@@ -348,7 +348,7 @@ class RobotPanelState:
         """Request the existing stop and report its verified outcome within wait_s."""
         if isinstance(wait_s, bool) or not isinstance(wait_s, (int, float)):
             raise ValueError("wait_s must be a finite number from 0 to 15")
-        if not math.isfinite(wait_s) or not 0 <= wait_s <= 15:
+        if not 0 <= wait_s <= 15 or not math.isfinite(wait_s):
             raise ValueError("wait_s must be a finite number from 0 to 15")
         deadline = time.monotonic() + wait_s
         self.command({"action": "stop"}, client_id)

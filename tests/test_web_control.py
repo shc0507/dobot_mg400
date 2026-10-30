@@ -1173,7 +1173,9 @@ def test_contract_stop_does_not_confirm_while_gripper_is_active_or_unknown(rig, 
     assert result["stop"] == ("unconfirmed" if grip.get("locked") else "pending")
 
 
-@pytest.mark.parametrize("value", [-1, 15.01, float("nan"), float("inf"), True, "1", None])
+@pytest.mark.parametrize(
+    "value", [-1, 15.01, 10**1000, float("nan"), float("inf"), True, "1", None]
+)
 def test_contract_stop_rejects_invalid_wait_before_any_stop(rig, value):
     state, _, controls = rig
     with pytest.raises(ValueError):

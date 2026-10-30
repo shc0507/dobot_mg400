@@ -75,7 +75,7 @@ def contract_blueprint(service, *, token=None, base_path="/", lease):
 
     @bp.get("/api/describe")
     def discovery():
-        return jsonify(service.describe())
+        return jsonify({**service.describe(), "renew_only_heartbeat": True})
 
     @bp.get("/api/state")
     def state():
@@ -93,6 +93,11 @@ def contract_blueprint(service, *, token=None, base_path="/", lease):
     def heartbeat():
         body()
         return jsonify(lease=lease.acquire(request.headers["X-MG400-Client"]))
+
+    @bp.post("/api/renew")
+    def renew():
+        body()
+        return jsonify(lease=lease.renew(request.headers["X-MG400-Client"]))
 
     @bp.post("/api/release")
     def release():

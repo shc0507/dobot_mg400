@@ -105,6 +105,10 @@ class ServiceClient:
     def heartbeat(self):
         return self._call("api/heartbeat", {})
 
+    def renew(self):
+        """Renew an existing lease atomically; never acquire or fall back."""
+        return self._call("api/renew", {})
+
     def release(self):
         return self._call("api/release", {})
 
@@ -113,15 +117,17 @@ class ServiceClient:
             raise ValueError("Event sequence must be a nonnegative integer.")
         return self._call("api/events?" + urllib.parse.urlencode({"since": since}))
 
-    def heartbeat_thread(self, *, interval=1, on_error=None):
-        """Create a helper. Its explicit start or context entry starts the thread."""
-        return Heartbeat(self, interval=interval, on_error=on_error)
+    def heartbeat_thread(self, *, interval=1, on_error=None, renew_only=False):
+        """Create a helper; renew_only requires an explicitly acquired lease."""
+        return Heartbeat(self, interval=interval, on_error=on_error, renew_only=renew_only)
 
 
 class Heartbeat:
     """Renew a lease until stopped or the first error. Never reacquire after an error."""
 
-    def __init__(self, client, *, interval=1, on_error=None):
+    def __init__(self, client, *, interval=1, on_error=None, renew_only=False):
+        if type(renew_only) is not bool:
+            raise ValueError("renew_only must be true or false.")
         if (
             isinstance(interval, bool)
             or not isinstance(interval, (int, float))
@@ -132,6 +138,7 @@ class Heartbeat:
         self.client = client
         self.interval = interval
         self.on_error = on_error
+        self.renew_only = renew_only
         self.error = None
         self._stop = threading.Event()
         self._thread = None
@@ -148,7 +155,10 @@ class Heartbeat:
     def _run(self):
         while not self._stop.is_set():
             try:
-                self.client.heartbeat()
+                if self.renew_only:
+                    self.client.renew()
+                else:
+                    self.client.heartbeat()
             except Exception as error:
                 self.error = error
                 self._stop.set()

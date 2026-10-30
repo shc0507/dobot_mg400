@@ -92,6 +92,62 @@ def test_first_operation_checks_version_before_dispatch(transport):
     ]
 
 
+def test_strict_renewal_has_a_separate_route_and_preserves_request_headers(transport):
+    transport.responses.append({"lease": {"holder": "a", "remaining_s": 3}})
+    client = ServiceClient("http://localhost/contract", "t" * 24, "a")
+    assert client.renew()["lease"]["holder"] == "a"
+    request = transport.calls[-1][0]
+    assert request.full_url == "http://localhost/contract/api/renew"
+    assert request.get_method() == "POST" and json.loads(request.data) == {}
+    assert request.get_header("X-mg400-client") == "a"
+    assert request.get_header("Authorization") == "Bearer " + "t" * 24
+
+
+@pytest.mark.parametrize("status", [404, 409])
+def test_unsupported_or_expired_renewal_never_falls_back_to_acquisition(transport, status):
+    transport.responses.append(
+        urllib.error.HTTPError(
+            "http://localhost/api/renew", status, "refused", {}, io.BytesIO(b"{}")
+        )
+    )
+    with pytest.raises(ServiceError) as error:
+        ServiceClient("http://localhost", None, "a").renew()
+    assert error.value.status == status
+    assert [request.full_url for request, _ in transport.calls] == [
+        "http://localhost/api/describe",
+        "http://localhost/api/renew",
+    ]
+
+
+def test_strict_heartbeat_helper_never_acquires_and_stops_on_expiry():
+    failed = threading.Event()
+    calls = []
+    error = ServiceError(409, "Lease expired")
+    client = ServiceClient("http://localhost", None, "a")
+
+    def renew():
+        calls.append("renew")
+        raise error
+
+    client.renew = renew
+    client.heartbeat = lambda: pytest.fail("Renewal must never acquire")
+    helper = client.heartbeat_thread(
+        renew_only=True, interval=0.001, on_error=lambda _: failed.set()
+    )
+    assert not calls
+    helper.start()
+    assert failed.wait(2)
+    helper.stop(2)
+    assert helper.error is error and calls == ["renew"]
+    assert not helper._thread.is_alive()
+
+
+@pytest.mark.parametrize("renew_only", [None, "true", 1])
+def test_heartbeat_mode_must_be_explicit_boolean(renew_only):
+    with pytest.raises(ValueError, match="renew_only"):
+        ServiceClient("http://localhost", None, "a").heartbeat_thread(renew_only=renew_only)
+
+
 @pytest.mark.parametrize("contract", [None, 0, 2, "1", True])
 def test_different_or_invalid_contract_prevents_mutation_without_fallback(transport, contract):
     transport.responses = [{"contract": contract}]

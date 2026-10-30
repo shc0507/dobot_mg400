@@ -929,7 +929,7 @@ Steps (P-SERVICE and P-DEPLOY plus):
 
 1. `src/furnace/app.py`: the contract blueprint and the existing page routes (`/`, `/api/status`, `/api/furnace/*`, `/api/flow/*`, `/api/sequence*`). The page routes call the same service object. The camera and recording routes come in FUR-05; hide those page parts until then.
 2. Manual page commands work when no automation lease is held. Stop always works.
-3. Unit `mg400-furnace.service` with `SupplementaryGroups=dialout`, port 8769, the settings from FUR-01 and FUR-03.
+3. Unit `mg400-furnace.service` with `SupplementaryGroups=dialout`, port 8769, the settings from FUR-01 and FUR-03. Preserve P-DEPLOY token isolation when adding `MG400_FURNACE_TOKEN` to the shared environment: add that token to `UnsetEnvironment` in `config/systemd/mg400-web-panel.service`, `config/systemd/mg400-stage-panel.service` and `config/systemd/mg400-camera-preview.service`. These existing-unit edits only exclude the new furnace token; camera preview must retain the vision token that it uses. Cover the exclusions in the existing systemd unit tests.
 4. `mg400ctl` refuses `stop` or `restart` of `furnace` while a sequence runs, unless `--force`.
 5. Tests in demo mode with `tests/contract_helpers.py`, and page route tests.
 

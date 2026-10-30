@@ -52,6 +52,9 @@ A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter wit
 | `robot.enable` | None | Robot |
 | `robot.move` | `x_mm`, `y_mm`, `z_mm`, `r_deg` | Robot |
 | `robot.stop` | None | Robot |
+| `robot.pick` | `station`, `grip` | Robot |
+| `robot.place` | `station`, `release` | Robot |
+| `robot.transfer` | `from`, `to`, `grip`, `release` | Robot |
 | `sample.record` | `chip_id`, `note` | None |
 
 The example in `recipes/example-rehearsal.toml` enables the simulated robot, moves it, records a sample, and stops it. It contains no gas or heating command. Custom skills receive a revocable context with service clients, run records, and the zone manager. Until ORC-04, the zone manager performs no checks and provides no cross-device interlock. Zone entry does not validate conditions or exclude other services.
@@ -133,13 +136,43 @@ Data under `/var/lib/mg400` requires owner `1000:1000`. Other paths require the 
 
 A write or file-sync failure preserves the old file. A directory-sync failure after replacement reports an error but can leave the new file visible. Inspect the station file before repeating an edit after that error.
 
+## Station transfers
+
+`robot.pick` and `robot.place` use a station name. `robot.transfer` combines them with public parameters `from` and `to`. These names receive the same complete type and unknown-field checks as other recipe parameters.
+
+```toml
+[[steps]]
+skill = "robot.transfer"
+params = { from = "tray-pick", to = "tray-place", grip = 400, release = 900 }
+timeout_s = 60
+on_fail = "hold"
+```
+
+The numbers in this fragment are examples, not measured hardware settings. Set `MG400_ORCH_PRE_GRIP` to the required opening before a pick. It has no default. `grip`, `release`, and the pre-grip opening are integers from 0 to 1000. The pre-grip opening must exceed `grip`. For a transfer, `release` must also exceed `grip`. Before travel to the destination, it must exceed the measured contact width.
+
+The robot must be enabled and idle, with fresh feedback and an initialized, available gripper. Every state check verifies this run's ownership and the same robot instance. A lock, robot error, unconfirmed stop, or active keyboard control prevents transfer. The skills never initialize the gripper or recover control automatically.
+
+Before the first motion, the skill expands all `via` routes and checks their coordinates and tool conversions. Travel height is the greatest of the current fingertip Z and every routed station's Z plus its `approach_mm`. The current pose, station poses, and raised endpoints must fit the explicit fingertip workspace. Converted flange poses must remain finite. All moves use `execute` with `speed = 1`, within the host speed and acceleration caps. The controller remains at `User=0,Tool=0`.
+
+A pick rises at the current XY, follows the route at travel height, and opens to the pre-grip opening. It then descends, closes to `grip`, requires `contact`, and rises while checking for `dropped`. A place requires an existing contact, travels at height, descends, opens to `release`, requires `arrived`, and rises. An empty close that reports `arrived` cannot satisfy a pick.
+
+Each move waits for completion and the next fresh measured pose. The measured flange coordinates must match the requested waypoint within 0.1 mm or 0.1 degrees on each axis. Missing pose samples cause reads only, within the step deadline. A mismatch, drop, unexpected outcome, or timeout holds the run and requests stops. No move or grasp is retried.
+
+The skill enters each named station zone before moving toward it. During a transfer, it retains the source zone until measured arrival toward the next station. Standalone pick and place release their final zone only after measured arrival at the raised endpoint. Failures leave the zone context through its exception path. Until ORC-04, these contexts provide no cross-device interlock.
+
+The operator must verify that each taught approach height clears its working zone and that every route is unobstructed. The minimum 10 mm approach and workspace bounds do not prove physical clearance. Software waypoint checks do not validate collisions or joint reachability.
+
 ## Rehearsal and installed commands
 
 Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, tokens, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its control panel. Demo factories currently cover the robot, stage, and thermal camera. Unsupported required services fail before the run starts.
 
+Transfer rehearsal retains only explicit station and tool paths, workspace bounds, and the pre-grip opening as geometry settings. The documented file-path defaults still apply. Files must contain valid geometry; rehearsal does not invent an offset or workspace. Its gripper feedback belongs to its temporary SIM-01 collector. Only that demo starts initialized. It sends no initialization command and never selects a production collector path.
+
+The default simulated gripper reaches its target and reports `arrived`. A pick therefore holds with an empty grasp. Offline tests supply explicit contact and drop scenarios to exercise the complete transfer and failure paths. Rehearsal does not establish physical clearance or prove a real grasp.
+
 On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, and `station rm`. Administrative commands retain their root requirement.
 
-When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. `run` receives its configured service endpoints and tokens. `runs` receives only the record path. Root rehearsal does not read the host settings file.
+When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. `run` receives its configured service endpoints, tokens, and transfer geometry settings. `runs` receives only the record path. Root rehearsal does not read the host settings file. It receives explicit geometry and record-path settings from the caller's environment, without service endpoints or tokens.
 
 `station save` receives the station and tool paths, workspace bounds, robot endpoint and token, and request timeout. The other station commands receive only the station path and workspace bounds. They receive no endpoint or token.
 

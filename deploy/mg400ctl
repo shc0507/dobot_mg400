@@ -50,10 +50,12 @@ STATION_TEACH_SETTINGS = STATION_SETTINGS | {
     "MG400_ORCH_ROBOT_TOKEN",
     "MG400_ORCH_TIMEOUT_S",
 }
+TRANSFER_SETTINGS = STATION_SETTINGS | {"MG400_ORCH_TOOL_FILE", "MG400_ORCH_PRE_GRIP"}
 ORCHESTRATOR_SERVICES = ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
 ORCHESTRATOR_DATA = {"MG400_ORCH_RUNS_DIR"}
 ORCHESTRATOR_SETTINGS = (
     ORCHESTRATOR_DATA
+    | TRANSFER_SETTINGS
     | {"MG400_ORCH_TIMEOUT_S"}
     | {
         f"MG400_ORCH_{service}_{suffix}"
@@ -80,10 +82,14 @@ def orchestrator(host, argv, execvpe):
     try:
         if root:
             # Rehearsal must not load production settings, even before dropping UID.
-            settings = parse_settings(host.settings.read_text()) if argv[0] != "rehearse" else {}
+            settings = (
+                parse_settings(host.settings.read_text()) if argv[0] != "rehearse" else os.environ
+            )
         else:
             settings = os.environ
         allowed = ORCHESTRATOR_SETTINGS if argv[0] == "run" else ORCHESTRATOR_DATA
+        if argv[0] == "rehearse":
+            allowed = ORCHESTRATOR_DATA | TRANSFER_SETTINGS
         if argv[0] == "station":
             allowed = STATION_TEACH_SETTINGS if argv[1] == "save" else STATION_SETTINGS
         environment = {

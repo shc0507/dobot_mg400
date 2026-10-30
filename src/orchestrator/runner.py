@@ -67,6 +67,10 @@ class StepClient:
     def state(self):
         return copy.deepcopy(self.__call("state"))
 
+    def owned(self, state):
+        """Check this run's ownership through the same revocable authority."""
+        return self.__call("owned", state)
+
     def run(self, action, **params):
         self.__ordinary(action)
         return self.__call("run", action, timeout=self.__remaining(), **params)

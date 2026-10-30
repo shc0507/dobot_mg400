@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import queue
 import threading
 import time
@@ -15,7 +16,14 @@ from typing import Callable
 
 import numpy as np
 
+from labkit.describe import describe
+from labkit.events import EventLog
+from labkit.lease import Lease
+
 from .camera import P1Camera
+from .roi import DEFAULT_ROI_PATH, load_regions
+
+MAX_FRAME_AGE_S = 3
 
 
 @dataclass(frozen=True)
@@ -30,7 +38,7 @@ class ThermalFrame:
     stats: dict
 
     @classmethod
-    def from_arrays(cls, ir, raw, sequence: int, source: str = "camera"):
+    def from_arrays(cls, ir, raw, sequence: int, source: str = "camera", *, clock=None):
         if raw.shape != (120, 160) or ir.shape != raw.shape:
             raise ValueError("Expected native P1 arrays with shape (120, 160)")
         if raw.dtype != np.uint16 or ir.dtype != np.uint8:
@@ -57,7 +65,7 @@ class ThermalFrame:
         return cls(
             sequence,
             datetime.now(timezone.utc).isoformat(),
-            time.monotonic(),
+            (clock or time.monotonic)(),
             source,
             ir,
             raw,
@@ -132,8 +140,23 @@ class DemoCamera:
 
 
 class CameraService:
-    def __init__(self, *, demo=False, camera_factory: Callable | None = None):
+    def __init__(
+        self,
+        *,
+        demo=False,
+        camera_factory: Callable | None = None,
+        roi_path=DEFAULT_ROI_PATH,
+        clock=None,
+    ):
         self.source = "demo" if demo else "camera"
+        self.clock = clock or (lambda: time.monotonic())
+        self.regions = load_regions(roi_path)
+        # The CLI's Uvicorn configuration sends INFO records from this logger
+        # to stderr, which the service journal captures. No logging is configured
+        # at module import, and embedded applications keep control of logging.
+        self.events = EventLog(logger=logging.getLogger("uvicorn.error"))
+        self.lease = Lease(clock=self.clock, on_expire=self.on_lease_expired)
+        self._state_seq = 0
         self._factory = camera_factory or (DemoCamera if demo else P1Camera)
         self._lock = threading.RLock()
         self._lifecycle = threading.Lock()
@@ -148,6 +171,81 @@ class CameraService:
         self._fps = 0.0
         self._camera_stats = {}
 
+    def _event(self, level, message):
+        self.events.add(level, message, service="thermal", source=self.source)
+
+    def describe(self):
+        return {
+            **describe(
+                service="thermal",
+                version="0.1.0",
+                demo=self.source == "demo",
+                zones=[],
+                lease_seconds=self.lease.seconds,
+                on_lease_expiry="continue_acquisition",
+                commands={},
+            ),
+            "regions": {name: region.bounds() for name, region in self.regions.items()},
+            "max_frame_age_s": MAX_FRAME_AGE_S,
+        }
+
+    def snapshot(self):
+        # Lease callbacks must run before the service lock is taken.
+        self.lease.poll()
+        lease = self.lease.snapshot()
+        with self._lock:
+            status = self.status()
+            self._state_seq += 1
+            fault = None
+            if self._error:
+                fault = {"code": "camera_error", "message": self._error}
+            elif self._state == "streaming":
+                if self._frame is None:
+                    fault = {"code": "frame_unavailable", "message": "No camera frame available"}
+                elif status["frame_age_s"] > MAX_FRAME_AGE_S:
+                    fault = {"code": "frame_stale", "message": "Camera frame is stale"}
+            return {
+                **status,
+                "service": "thermal",
+                "seq": self._state_seq,
+                "ts_unix": time.time(),
+                "demo": self.source == "demo",
+                "connected": self._state == "streaming",
+                "busy": False,
+                "locked": False,
+                "fault": fault,
+                "lease": lease,
+                "last_command": None,
+                "frame_sequence": self._frame.sequence if self._frame else None,
+            }
+
+    def stop(self, client, wait_s):
+        self._event("info", "Contract stop is a no-op. Acquisition continues.")
+        return "confirmed"
+
+    def on_lease_expired(self):
+        self._event("info", "Thermal lease expired. Acquisition continues.")
+
+    def region_reading(self, region, *, name=None):
+        with self._lock:
+            frame = self.latest()
+            values = frame.temperatures_c[region.y0 : region.y1, region.x0 : region.x1]
+            result = {
+                "name": name,
+                **region.bounds(),
+                "min_c": float(np.min(values)),
+                "mean_c": float(np.mean(values)),
+                "max_c": float(np.max(values)),
+                "frame_sequence": frame.sequence,
+                "timestamp": frame.timestamp,
+                "source": frame.source,
+                "demo": self.source == "demo",
+            }
+            age = self.clock() - frame.monotonic_time
+            if age > MAX_FRAME_AGE_S:
+                raise RuntimeError("Camera frame is stale; reconnect the camera")
+            return {**result, "frame_age_s": age}
+
     def connect(self):
         with self._lifecycle, self._lock:
             if self._thread and self._thread.is_alive():
@@ -157,12 +255,14 @@ class CameraService:
             self._state, self._error = "connecting", None
             self._device, self._camera_stats = {}, {}
             self._fps = 0.0
+            self._event("info", "Camera connection requested.")
             self._thread = threading.Thread(target=self._run, name="p1-acquisition", daemon=True)
             self._thread.start()
             return self.status()
 
     def disconnect(self):
         with self._lifecycle:
+            was_connected = self._state != "disconnected"
             self._stop.set()
             thread = self._thread
             if thread:
@@ -175,11 +275,13 @@ class CameraService:
                 self._state, self._error = "disconnected", None
                 self._frame = None
                 self._fps = 0.0
+                if was_connected:
+                    self._event("info", "Camera disconnected.")
             return self.status()
 
     def status(self):
         with self._lock:
-            age = time.monotonic() - self._frame.monotonic_time if self._frame else None
+            age = self.clock() - self._frame.monotonic_time if self._frame else None
             return {
                 "state": self._state,
                 "source": self.source,
@@ -195,7 +297,7 @@ class CameraService:
         with self._lock:
             if self._state != "streaming" or self._frame is None:
                 raise RuntimeError(self._error or "No camera frame available")
-            if time.monotonic() - self._frame.monotonic_time > 3:
+            if self.clock() - self._frame.monotonic_time > MAX_FRAME_AGE_S:
                 raise RuntimeError("Camera frame is stale; reconnect the camera")
             return self._frame
 
@@ -218,9 +320,10 @@ class CameraService:
             device = camera.open()
             with self._lock:
                 self._device = device
-            previous = time.monotonic()
+            previous = self.clock()
             consecutive_bad = 0
             while not self._stop.is_set():
+                self.lease.poll()
                 while not self._commands.empty():
                     name, argument, future = self._commands.get_nowait()
                     if not future.set_running_or_notify_cancel():
@@ -237,7 +340,8 @@ class CameraService:
                             camera.set_gain(argument)
                         else:
                             raise ValueError("Unknown camera command")
-                        previous = time.monotonic()
+                        previous = self.clock()
+                        self._event("info", f"Camera {name} completed.")
                         future.set_result({"ok": True, "command": name})
                     except Exception as exc:
                         future.set_exception(exc)
@@ -246,7 +350,9 @@ class CameraService:
                     break
                 ir, raw = camera.read()
                 try:
-                    frame = ThermalFrame.from_arrays(ir, raw, self._frames + 1, self.source)
+                    frame = ThermalFrame.from_arrays(
+                        ir, raw, self._frames + 1, self.source, clock=self.clock
+                    )
                 except ValueError:
                     consecutive_bad += 1
                     if consecutive_bad >= 25:
@@ -262,6 +368,8 @@ class CameraService:
                     )
                     self._frames += 1
                     self._frame = frame
+                    if self._state != "streaming":
+                        self._event("info", "Camera is streaming.")
                     self._state = "streaming"
                     self._camera_stats = camera.stats()
         except Exception as exc:
@@ -270,6 +378,7 @@ class CameraService:
                 self._state = "error"
                 self._frame = None
                 self._fps = 0.0
+                self._event("error", self._error)
         finally:
             try:
                 if camera is not None:
@@ -277,6 +386,7 @@ class CameraService:
             except Exception as exc:
                 with self._lock:
                     self._error = self._error or f"Camera cleanup: {exc}"
+                    self._event("error", f"Camera cleanup: {exc}")
             with self._lock:
                 if self._stop.is_set():
                     self._state = "disconnected"

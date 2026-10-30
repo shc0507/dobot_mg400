@@ -40,7 +40,7 @@ def host(module, monkeypatch, tmp_path):
 
     def run(command, **options):
         commands.append((command, options))
-        if command[1:3] == ["-c", "import sys; print(sys.version_info >= (3, 11))"]:
+        if command[1:3] == ["-c", "import sys; print(sys.version_info >= (3, 12))"]:
             return SimpleNamespace(returncode=0, stdout="True\n", stderr="")
         if command[:2] == ["systemctl", "show"]:
             return SimpleNamespace(returncode=0, stdout="MainPID=0\n", stderr="")
@@ -117,7 +117,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
 
     uv = [options for command, options in host.commands if command[0] == "/usr/bin/uv"]
     assert names(host.commands) == [
-        ["/usr/bin/python3", "-c", "import sys; print(sys.version_info >= (3, 11))"],
+        ["/usr/bin/python3", "-c", "import sys; print(sys.version_info >= (3, 12))"],
         ["systemctl", "show", "--property=MainPID", "mg400-gripper-collector.service"],
         [
             "/usr/bin/uv",
@@ -282,7 +282,7 @@ def test_old_python_or_missing_uv_stops_before_any_change(module, host, monkeypa
         )
         == 1
     )
-    assert "must be Python 3.11 or newer" in capsys.readouterr().err
+    assert "must be Python 3.12 or newer" in capsys.readouterr().err
     monkeypatch.setitem(module.main.__globals__, "shutil", Mock(which=Mock(return_value=None)))
     assert (
         module.main(

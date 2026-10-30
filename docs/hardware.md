@@ -232,7 +232,7 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
    [ToolDI](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_plugin/src/dashboard_api/tool_di.cpp)。
 
 实现 ROS 2 适配器前，先确定部署环境。
-本项目要求 Python 3.11+。
+本项目要求 Python 3.12+。
 `rclpy` 必须与所安装 ROS 发行版的 Python 环境兼容。
 不能假定当前 macOS 的 venv 可直接使用。
 先在上游支持的 Ubuntu / Humble 环境验证驱动。

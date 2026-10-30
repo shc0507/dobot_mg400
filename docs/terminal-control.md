@@ -10,7 +10,7 @@
 ## 启动
 
 在能连接机械臂的主机运行终端。
-程序使用 Python 3.11+ 标准库中的 `curses`。
+程序使用 Python 3.12+ 标准库中的 `curses`。
 支持 macOS、Linux 本地终端和带 PTY 的 SSH 会话。
 PTY 是 SSH 分配的交互终端，可用 `ssh -t` 请求。
 

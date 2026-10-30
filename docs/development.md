@@ -17,7 +17,7 @@
 
 ## 开发检查
 
-安装 Python 3.11+、uv 和 Node.js 22+。
+安装 Python 3.12+、uv 和 Node.js 22+。
 在项目根目录运行：
 
 ```bash
@@ -33,7 +33,7 @@ uv run ruff format --check .
 机械臂的网页服务和交互终端只用标准库，不依赖 `stage` 组。
 
 测试不连接机械臂或 Arduino。
-拉取请求和推送到 `main` 时，GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.11 和 3.12 上运行以上检查。
+拉取请求和推送到 `main` 时，GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.12 上运行以上检查。
 `pytest` 运行 Python 测试，`node --test` 运行摄像头预览和网页按键测试。
 离线检查不能替代真机验证。
 

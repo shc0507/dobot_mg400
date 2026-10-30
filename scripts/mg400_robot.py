@@ -1,4 +1,4 @@
-"""Start the MG400 terminal with Python 3.11 or later."""
+"""Start the MG400 terminal with Python 3.12 or later."""
 
 import sys
 from pathlib import Path

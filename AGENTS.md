@@ -55,8 +55,14 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
 | Camera preview | `scripts/camera_preview.py`, `camera_preview.js` | `test_camera_preview.py`, `test_camera_preview.mjs` | [olares.md](docs/olares.md#摄像头) |
 | Deployment | `deploy/`, `config/systemd/` | `test_deploy_*.py`, `test_systemd_units.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
+| Migration plan | `docs/agents/migration/tasks.toml`, `tasks.md` | `test_migration_plan.py` | [migration README](docs/agents/migration/README.md) |
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_camera_preview.mjs`.
+
+## Lab integration migration
+
+- The plan that moves the WuLab instrument code into this repo is in [docs/agents/migration/](docs/agents/migration/README.md). Read its README before you start a migration task. `tasks.md` has one card per task, and `tasks.toml` is the task graph.
+- Files in `docs/agents/` are for agents. Write them in English only.
 
 ## Agent skills
 

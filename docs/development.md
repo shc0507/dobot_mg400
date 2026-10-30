@@ -293,6 +293,7 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 认证失败、协议错误或连接被替换后，客户端停止尝试连接。
 
 套接字不可用时，`command("stop")` 和 `command("disable")` 通过 HTTP 发送，保留令牌和客户端 ID。
+改用 HTTP 时，先检查契约 1。
 回复保留 `locked` 和 `stop_unconfirmed`。回复仍只表示接受请求，不表示停止已获确认。
 其他命令不会改用 HTTP。HTTP 请求不跟随重定向，也不会自动重试。
 

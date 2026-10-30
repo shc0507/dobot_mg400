@@ -253,9 +253,7 @@ class RobotClient:
                 raise RobotClientError(first.get("error", "Hello was refused."))
             if first.get("type") != "state" or not isinstance(first.get("state"), dict):
                 raise RobotClientError("The service did not send its initial state.")
-            description = self._http("describe", timeout=max(0.01, deadline - time.monotonic()))
-            if type(description.get("contract")) is not int or description["contract"] != 1:
-                raise RobotClientError("Unsupported robot service contract.", status=409)
+            self._check_contract(max(0.01, deadline - time.monotonic()))
             reader = MessageReader(
                 lambda n: self._read_exact(sock, n), masked=False, max_bytes=1_048_576
             )
@@ -263,6 +261,11 @@ class RobotClient:
         except BaseException:
             sock.close()
             raise
+
+    def _check_contract(self, timeout):
+        description = self._http("describe", timeout=timeout)
+        if type(description.get("contract")) is not int or description["contract"] != 1:
+            raise RobotClientError("Unsupported robot service contract.", status=409)
 
     def connect(self):
         """Open the service connection and start its workers. Return this client."""
@@ -436,7 +439,12 @@ class RobotClient:
         if not isinstance(action, str):
             raise ValueError("Action must be a string.")
         if action in {"stop", "disable"} and not self.connected:
-            state = self._http("command", {"action": action, **fields}, timeout=timeout)
+            deadline = time.monotonic() + timeout
+            self._check_contract(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Contract check timed out before the safety request.")
+            state = self._http("command", {"action": action, **fields}, timeout=remaining)
             with self._changed:
                 self._update(state)
             return {"type": "reply", "id": None, "status": 200, "state": copy.deepcopy(state)}

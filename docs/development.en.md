@@ -295,7 +295,8 @@ Inspect the service state before another action. Do not automatically retry moti
 Authentication, protocol, and replacement failures end the connection attempts.
 
 When the socket is unavailable, `command("stop")` and `command("disable")` use HTTP with the same token and client ID.
-Their replies preserve `locked` and `stop_unconfirmed`. A reply still means acceptance, not verified completion.
+The fallback checks contract 1 before sending a command.
+Its replies preserve `locked` and `stop_unconfirmed`. A reply still means acceptance, not verified completion.
 Other commands have no HTTP fallback. HTTP requests follow no redirects and have no automatic retries.
 
 Context exit runs `stop_sync` while this client holds control, then closes the connection and stops its threads.

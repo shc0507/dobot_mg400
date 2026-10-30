@@ -557,3 +557,17 @@ def test_silent_time_consumes_reconnect_budget(make_client, service, monkeypatch
     client._reader_thread.join(1)
     assert not client._reader_thread.is_alive()
     assert attempts and max(attempts) - started_at < 0.6
+
+
+@pytest.mark.parametrize("previously_connected", [False, True])
+def test_http_fallback_checks_contract_before_sending_any_command(
+    make_client, rig, monkeypatch, previously_connected
+):
+    client = started(make_client) if previously_connected else make_client()
+    client.close()
+    monkeypatch.setattr(rig.state, "describe", lambda: {"contract": 2})
+    before = rig.controller.sent()
+    with pytest.raises(RobotClientError, match="contract") as error:
+        client.command("stop")
+    assert error.value.status == 409
+    assert rig.controller.sent() == before

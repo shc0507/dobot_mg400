@@ -43,6 +43,7 @@ class Host:
         self.units = root / "etc/systemd/system"
         self.command = root / "usr/local/bin/mg400ctl"
         self.proc = root / "proc"
+        self.dev = root / "dev"
 
 
 def parse_line(line, number):

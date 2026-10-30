@@ -221,3 +221,80 @@ def test_missing_service_user_is_reported(ctl, capsys):
     assert ctl.call("terminal") == 1
     assert "Create a user and a group with ID 1000 first" in capsys.readouterr().err
     ctl.execvpe.assert_not_called()
+
+
+CAMERAS = [
+    f"/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.{port}:1.0-video-index0" for port in (2, 3, 4)
+]
+
+
+def plug(ctl, devices):
+    """Create each device link below the test root, as udev does for a connected camera."""
+    (ctl.host.dev / "v4l/by-path").mkdir(parents=True, exist_ok=True)
+    for number, device in enumerate(devices):
+        node = ctl.host.dev / f"video{number * 2}"
+        node.touch()
+        (ctl.host.dev / device.removeprefix("/dev/")).symlink_to(node)
+
+
+def answer(states, preload="camera1 camera2 camera3"):
+    def run(command, **_):
+        if command[0] == "curl":
+            return SimpleNamespace(returncode=0, stdout=preload)
+        blocks = [f"Id={unit}\nActiveState={state}\nSubState=x" for unit, state in states.items()]
+        return SimpleNamespace(returncode=0, stdout="\n\n".join(blocks))
+
+    return run
+
+
+ACTIVE = {"mg400-camera-preview.service": "active", "mg400-camera-capture.service": "active"}
+
+
+@pytest.fixture
+def cameras(ctl):
+    ctl.host.settings.write_text(SETTINGS + f"MG400_CAMERA_DEVICES={','.join(CAMERAS)}\n")
+    return ctl
+
+
+def test_camera_check_passes_when_devices_services_and_streams_work(cameras):
+    plug(cameras, CAMERAS)
+    cameras.run.side_effect = answer(ACTIVE)
+    assert cameras.call("camera-check") == 0
+    output = cameras.out.getvalue()
+    assert output.count(" ok ") == 3
+    assert f"{CAMERAS[1]} -> /dev/video2" in output
+    assert "streams  all loaded" in output
+
+
+@pytest.mark.parametrize(
+    ("plugged", "hint"),
+    [
+        ([], "Check the USB hub"),
+        (CAMERAS[:2], "Check the cable of each missing camera"),
+        ([*CAMERAS[:2], CAMERAS[2].replace("12.1.4", "12.1.1")], "on another USB port"),
+    ],
+    ids=["hub", "cable", "moved"],
+)
+def test_missing_camera_is_reported_before_the_services(cameras, plugged, hint):
+    plug(cameras, plugged)
+    assert cameras.call("camera-check") == 1
+    output = cameras.out.getvalue()
+    assert f"camera3  missing  {CAMERAS[2]}" in output
+    assert hint in output
+    cameras.run.assert_not_called()
+
+
+def test_camera_check_reports_stopped_services_and_missing_streams(cameras):
+    plug(cameras, CAMERAS)
+    cameras.run.side_effect = answer({**ACTIVE, "mg400-camera-capture.service": "inactive"})
+    assert cameras.call("camera-check") == 1
+    assert "mg400ctl start camera" in cameras.out.getvalue()
+    cameras.run.side_effect = answer(ACTIVE, preload='{"camera1": {}, "camera3": {}}')
+    assert cameras.call("camera-check") == 1
+    assert "not loaded: camera2" in cameras.out.getvalue()
+
+
+def test_camera_check_without_cameras(ctl):
+    assert ctl.call("camera-check") == 0
+    assert "Cameras are off" in ctl.out.getvalue()
+    ctl.run.assert_not_called()

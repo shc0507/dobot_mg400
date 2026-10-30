@@ -15,7 +15,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from install import SERVICE_GID, SERVICE_UID, Host, check_settings, parse_settings  # noqa: E402
+from install import (  # noqa: E402
+    SERVICE_GID,
+    SERVICE_UID,
+    Host,
+    camera_devices,
+    check_settings,
+    parse_settings,
+)
 
 SERVICES = {
     "web": ["mg400-web-panel.service"],
@@ -25,6 +32,7 @@ SERVICES = {
 }
 WATCHER = "mg400-gripper-collector.path"
 CAMERA_PORT = 1985
+PRELOAD = "http://127.0.0.1:1984/api/preload"
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 
 
@@ -39,11 +47,10 @@ def units(names, action):
     return result
 
 
-def status(run, out):
-    rows = [(name, unit) for name, chosen in SERVICES.items() for unit in chosen]
-    rows.append(("collector", WATCHER))
+def unit_states(run, chosen):
+    """Return {unit: "ActiveState (SubState)"} for the units that systemd knows."""
     shown = run(
-        ["systemctl", "show", "--property=Id,ActiveState,SubState", *[unit for _, unit in rows]],
+        ["systemctl", "show", "--property=Id,ActiveState,SubState", *chosen],
         capture_output=True,
         text=True,
         check=False,
@@ -52,8 +59,67 @@ def status(run, out):
     for block in shown.stdout.strip().split("\n\n"):
         values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
         states[values.get("Id")] = f"{values.get('ActiveState')} ({values.get('SubState')})"
+    return states
+
+
+def status(run, out):
+    rows = [(name, unit) for name, chosen in SERVICES.items() for unit in chosen]
+    rows.append(("collector", WATCHER))
+    states = unit_states(run, [unit for _, unit in rows])
     for name, unit in rows:
         print(f"{name:<10} {unit:<34} {states.get(unit, 'unknown')}", file=out)
+    return 0
+
+
+def camera_check(host, devices, run, out):
+    """Check the cameras from the USB devices up to the capture streams. Return 0 if all work.
+
+    A service in the active state only shows that its process runs, so check the devices first.
+    """
+    if not devices:
+        print("Cameras are off: MG400_CAMERA_DEVICES is empty.", file=out)
+        return 0
+    missing = []
+    for number, device in enumerate(devices, 1):
+        path = host.dev / Path(device).relative_to("/dev")
+        if path.exists():
+            print(f"camera{number}  ok       {device} -> /dev/{path.resolve().name}", file=out)
+        else:
+            print(f"camera{number}  missing  {device}", file=out)
+            missing.append(device)
+    found = sorted(host.dev.glob("v4l/by-path/*-video-index0"))
+    others = [f"/dev/{path.relative_to(host.dev)}" for path in found]
+    others = [device for device in others if device not in devices]
+    for device in others:
+        print(f"other    present  {device}", file=out)
+    if missing:
+        if others:
+            print("A camera is on another USB port. Connect it to its configured port.", file=out)
+        elif not found:
+            print(
+                "No camera is detected. Check the USB hub, its cable and power: lsusb -t", file=out
+            )
+        else:
+            print("Check the cable of each missing camera: lsusb -t", file=out)
+        print("Restarting the camera services does not fix a missing USB device.", file=out)
+        return 1
+
+    states = unit_states(run, SERVICES["camera"])
+    for unit in SERVICES["camera"]:
+        print(f"service  {unit:<30} {states.get(unit, 'unknown')}", file=out)
+    if not all(states.get(unit, "").startswith("active ") for unit in SERVICES["camera"]):
+        print("Start the cameras: mg400ctl start camera", file=out)
+        return 1
+    preload = run(
+        ["curl", "-s", "--max-time", "3", PRELOAD], capture_output=True, text=True, check=False
+    )
+    names = [f"camera{number}" for number in range(1, len(devices) + 1)]
+    absent = [name for name in names if name not in preload.stdout]
+    if absent:
+        print(f"streams  not loaded: {' '.join(absent)}", file=out)
+        print("Run mg400ctl restart camera, wait 2 seconds, then check again.", file=out)
+        return 1
+    print("streams  all loaded", file=out)
     return 0
 
 
@@ -97,6 +163,7 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
     mode = commands.add_parser("mode", help="Read the controller mode, or switch it to TCP")
     mode.add_argument("--switch-to-tcp", action="store_true")
     commands.add_parser("camera-url", help="Print the camera preview link with its key")
+    commands.add_parser("camera-check", help="Check the camera devices, services and streams")
     token = commands.add_parser("token", help="Print the access token of a panel")
     token.add_argument("panel", choices=["web", "stage"])
     args = parser.parse_args(argv)
@@ -106,6 +173,8 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
         return 1
     try:
         settings = parse_settings(host.settings.read_text())
+        if args.command == "camera-check":
+            devices = camera_devices(settings.get("MG400_CAMERA_DEVICES", ""))
         if args.command in ("terminal", "mode"):
             check_settings(settings)
             pwd.getpwuid(SERVICE_UID)
@@ -122,6 +191,8 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
 
     if args.command == "status":
         return status(run, out)
+    if args.command == "camera-check":
+        return camera_check(host, devices, run, out)
     if args.command in ("start", "stop", "restart"):
         if args.command != "start" and any(name in ("web", "all") for name in args.names):
             print("The web panel can take up to 60 seconds to confirm that the arm stopped.", file=out)

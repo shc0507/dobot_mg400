@@ -1,0 +1,1603 @@
+# Task graph for the lab integration migration. Cards: tasks.md. Rules: README.md.
+#
+# Fields
+#   id      Unique. Two to three capital letters, a hyphen, two digits.
+#   title   Same text as the card heading in tasks.md.
+#   phase   0-6, see README.md section 10. Informational; deps decide order.
+#   track   Groups related tasks. GOV-01 turns it into a mig:<track> label.
+#   owner   agent | human | agent+human
+#   size    S (under half a day of agent work) | M (about a day) | L (several days)
+#   review  agent | human. "human" means the repo owner approves the PR before merge.
+#   deps    Ids that must be closed before this task starts.
+#   writes  Files this task may change (glob patterns). Human tasks write nothing here.
+#
+# tests/test_migration_plan.py checks this file against tasks.md.
+# Status is not kept here. It lives in the GitHub issues that GOV-01 creates.
+
+# ---------------------------------------------------------------- phase 0
+
+[[task]]
+id = "H-01"
+title = "Approve the plan and answer the open questions"
+phase = 0
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "GOV-01"
+title = "Create the tracking issues"
+phase = 0
+track = "governance"
+owner = "agent"
+size = "S"
+review = "human"
+deps = ["H-01"]
+writes = []
+
+[[task]]
+id = "FND-01"
+title = "Rename mg400_agent to mg400"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "M"
+review = "human"
+deps = []
+writes = [
+  "src/mg400_agent/**",
+  "src/mg400/**",
+  "apps/control_panel/server.py",
+  "scripts/mg400_robot.py",
+  "scripts/mg400_control_mode.py",
+  "tests/**",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+  "docs/development.md",
+]
+
+[[task]]
+id = "FND-02"
+title = "Require Python 3.12"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "S"
+review = "agent"
+deps = ["FND-01"]
+writes = [
+  "pyproject.toml",
+  "uv.lock",
+  ".github/workflows/ci.yml",
+  "deploy/install.py",
+  "tests/test_deploy_install.py",
+  "apps/control_panel/server.py",
+  "scripts/mg400_robot.py",
+  "docs/control-panel.md",
+  "docs/deploy.md",
+  "docs/development.md",
+  "docs/hardware.md",
+  "docs/terminal-control.md",
+]
+
+[[task]]
+id = "FND-03"
+title = "Block large and binary files"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "S"
+review = "agent"
+deps = []
+writes = ["tests/test_repo_files.py"]
+
+[[task]]
+id = "DOC-01"
+title = "Bilingual docs rule and pair check"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-02"]
+writes = [
+  "scripts/check_doc_pairs.py",
+  "tests/test_doc_pairs.py",
+  "docs/agents/migration/doc-pairs-pending.txt",
+  "AGENTS.md",
+]
+
+[[task]]
+id = "GOV-02"
+title = "Write the ADRs and the glossary"
+phase = 0
+track = "governance"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["DOC-01"]
+writes = ["docs/adr/**", "GLOSSARY.md"]
+
+[[task]]
+id = "DOC-02"
+title = "English README"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "S"
+review = "agent"
+deps = ["DOC-03", "DOC-04", "DOC-05", "DOC-06", "DOC-07", "DOC-08", "DOC-09"]
+writes = ["README.md", "README.en.md", "docs/agents/migration/doc-pairs-pending.txt"]
+
+[[task]]
+id = "DOC-03"
+title = "English control-panel guide"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["DOC-01"]
+writes = [
+  "docs/control-panel.md",
+  "docs/control-panel.en.md",
+  "docs/agents/migration/doc-pairs-pending.txt",
+]
+
+[[task]]
+id = "DOC-04"
+title = "English deployment guide"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["DOC-01"]
+writes = ["docs/deploy.md", "docs/deploy.en.md", "docs/agents/migration/doc-pairs-pending.txt"]
+
+[[task]]
+id = "DOC-05"
+title = "English development reference"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["DOC-01"]
+writes = [
+  "docs/development.md",
+  "docs/development.en.md",
+  "docs/agents/migration/doc-pairs-pending.txt",
+]
+
+[[task]]
+id = "DOC-06"
+title = "English hardware reference"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["DOC-01"]
+writes = ["docs/hardware.md", "docs/hardware.en.md", "docs/agents/migration/doc-pairs-pending.txt"]
+
+[[task]]
+id = "DOC-07"
+title = "English Olares guide"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["DOC-01"]
+writes = ["docs/olares.md", "docs/olares.en.md", "docs/agents/migration/doc-pairs-pending.txt"]
+
+[[task]]
+id = "DOC-08"
+title = "English stage-panel guide"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["DOC-01"]
+writes = [
+  "docs/stage-panel.md",
+  "docs/stage-panel.en.md",
+  "docs/agents/migration/doc-pairs-pending.txt",
+]
+
+[[task]]
+id = "DOC-09"
+title = "English terminal guide"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "S"
+review = "agent"
+deps = ["DOC-01"]
+writes = [
+  "docs/terminal-control.md",
+  "docs/terminal-control.en.md",
+  "docs/agents/migration/doc-pairs-pending.txt",
+]
+
+[[task]]
+id = "DOC-10"
+title = "Chinese firmware README"
+phase = 0
+track = "docs"
+owner = "agent"
+size = "S"
+review = "agent"
+deps = ["DOC-08"]
+writes = [
+  "firmware/three-motor-demo/README.md",
+  "firmware/three-motor-demo/README.en.md",
+  "docs/stage-panel.md",
+  "docs/stage-panel.en.md",
+  "docs/agents/migration/doc-pairs-pending.txt",
+]
+
+[[task]]
+id = "FND-04"
+title = "Shared access checks (labkit.auth)"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-02"]
+writes = [
+  "src/labkit/__init__.py",
+  "src/labkit/auth.py",
+  "tests/test_labkit_auth.py",
+  "apps/control_panel/server.py",
+  "src/stage_controller/app.py",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+]
+
+[[task]]
+id = "FND-05"
+title = "Service contract kit (labkit)"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "L"
+review = "agent"
+deps = ["FND-04", "GOV-02"]
+writes = ["src/labkit/**", "tests/test_labkit_*.py", "tests/contract_helpers.py", "AGENTS.md"]
+
+[[task]]
+id = "FND-06"
+title = "Contract endpoints on the robot service"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-05", "DOC-03", "DOC-05"]
+writes = [
+  "apps/control_panel/server.py",
+  "src/mg400/web_control.py",
+  "tests/test_control_panel.py",
+  "tests/test_control_panel_ws.py",
+  "tests/test_web_control.py",
+  "docs/control-panel.md",
+  "docs/control-panel.en.md",
+  "docs/development.md",
+  "docs/development.en.md",
+]
+
+[[task]]
+id = "FND-07"
+title = "Python client for the robot service"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-06"]
+writes = [
+  "src/mg400/client.py",
+  "tests/test_robot_client.py",
+  "docs/development.md",
+  "docs/development.en.md",
+]
+
+[[task]]
+id = "FND-08"
+title = "Asset manifest and installer download"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-02", "DOC-04"]
+writes = [
+  "config/assets.toml",
+  "deploy/assets.py",
+  "deploy/install.py",
+  "deploy/mg400ctl",
+  "tests/test_deploy_assets.py",
+  "tests/test_deploy_install.py",
+  "tests/test_deploy_mg400ctl.py",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+]
+
+[[task]]
+id = "FND-09"
+title = "Service registry and labctl"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-08"]
+writes = [
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400ctl",
+  "deploy/mg400.env.example",
+  "tests/test_deploy_install.py",
+  "tests/test_deploy_mg400ctl.py",
+  "tests/test_systemd_units.py",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+]
+
+[[task]]
+id = "FND-10"
+title = "Contract and control lease on the stage service"
+phase = 0
+track = "foundation"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-05", "DOC-05", "DOC-08"]
+writes = [
+  "src/stage_controller/**",
+  "tests/test_stage_*.py",
+  "tests/stage_helpers.py",
+  "docs/stage-panel.md",
+  "docs/stage-panel.en.md",
+  "docs/development.md",
+  "docs/development.en.md",
+]
+
+[[task]]
+id = "SIM-01"
+title = "Runnable MG400 simulator"
+phase = 0
+track = "simulation"
+owner = "agent"
+size = "L"
+review = "agent"
+deps = ["FND-02"]
+writes = [
+  "src/mg400/sim/**",
+  "tests/sim_mg400.py",
+  "tests/test_mg400_sim.py",
+  "docs/development.md",
+  "docs/development.en.md",
+]
+
+# ---------------------------------------------------------------- phase 1
+
+[[task]]
+id = "VIS-01"
+title = "Move the chip and arm localizer"
+phase = 1
+track = "vision"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["FND-02", "FND-03"]
+writes = [
+  "src/vision/__init__.py",
+  "src/vision/localizer.py",
+  "tests/test_vision_localizer.py",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+]
+
+[[task]]
+id = "VIS-02"
+title = "Move the QR reader"
+phase = 1
+track = "vision"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["VIS-01"]
+writes = ["src/vision/qr.py", "src/vision/qr_micro.py", "tests/test_vision_qr*.py", "tests/fixtures/qr/**"]
+
+[[task]]
+id = "VIS-03"
+title = "GPU runtime for vision"
+phase = 1
+track = "vision"
+owner = "agent"
+size = "S"
+review = "human"
+deps = ["VIS-01"]
+writes = ["pyproject.toml", "uv.lock"]
+
+[[task]]
+id = "VIS-04"
+title = "Vision service"
+phase = 1
+track = "vision"
+owner = "agent"
+size = "L"
+review = "agent"
+deps = ["VIS-02", "FND-05"]
+writes = [
+  "src/vision/service.py",
+  "src/vision/frames.py",
+  "src/vision/__main__.py",
+  "tests/test_vision_service.py",
+  "tests/fixtures/vision/**",
+  "docs/vision.md",
+  "docs/vision.en.md",
+]
+
+[[task]]
+id = "VIS-05"
+title = "Deploy vision on Olares"
+phase = 1
+track = "vision"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["VIS-03", "VIS-04", "FND-09", "H-13", "H-14"]
+writes = [
+  "config/systemd/mg400-vision.service",
+  "config/assets.toml",
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400ctl",
+  "deploy/mg400.env.example",
+  "tests/test_systemd_units.py",
+  "tests/test_deploy_install.py",
+  "tests/test_deploy_mg400ctl.py",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+  "docs/olares.md",
+  "docs/olares.en.md",
+]
+
+[[task]]
+id = "VIS-06"
+title = "Detection overlay in the camera page"
+phase = 1
+track = "vision"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["VIS-04", "DOC-07"]
+writes = [
+  "scripts/camera_preview.py",
+  "scripts/camera_preview.js",
+  "config/systemd/mg400-camera-preview.service",
+  "tests/test_camera_preview.py",
+  "tests/test_camera_preview.mjs",
+  "tests/test_systemd_units.py",
+  "docs/olares.md",
+  "docs/olares.en.md",
+]
+
+# ---------------------------------------------------------------- phase 2
+
+[[task]]
+id = "ROB-01"
+title = "Speed per command with a cap"
+phase = 2
+track = "robot"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-07"]
+writes = [
+  "src/mg400/web_control.py",
+  "src/mg400/joint_control.py",
+  "apps/control_panel/server.py",
+  "apps/control_panel/index.html",
+  "deploy/mg400.env.example",
+  "tests/test_web_control.py",
+  "tests/test_joint_control.py",
+  "tests/test_control_panel.py",
+  "docs/control-panel.md",
+  "docs/control-panel.en.md",
+  "docs/development.md",
+  "docs/development.en.md",
+]
+
+[[task]]
+id = "ROB-02"
+title = "Grasp outcome in the robot state"
+phase = 2
+track = "robot"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["ROB-01"]
+writes = [
+  "src/mg400/web_gripper.py",
+  "src/mg400/web_control.py",
+  "apps/control_panel/index.html",
+  "tests/test_web_gripper.py",
+  "tests/test_web_control.py",
+  "docs/control-panel.md",
+  "docs/control-panel.en.md",
+  "docs/development.md",
+  "docs/development.en.md",
+]
+
+[[task]]
+id = "ORC-01"
+title = "Orchestrator core with rehearsal"
+phase = 2
+track = "orchestrator"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["FND-05", "FND-07", "SIM-01"]
+writes = [
+  "src/orchestrator/**",
+  "recipes/**",
+  "tests/test_orchestrator_*.py",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+[[task]]
+id = "ORC-02"
+title = "Stations and tool offset"
+phase = 2
+track = "orchestrator"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["ORC-01"]
+writes = [
+  "src/orchestrator/stations.py",
+  "src/orchestrator/tool.py",
+  "src/orchestrator/cli.py",
+  "deploy/mg400ctl",
+  "tests/test_orchestrator_stations.py",
+  "tests/test_orchestrator_tool.py",
+  "tests/test_deploy_mg400ctl.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+[[task]]
+id = "ORC-03"
+title = "Transfer skill"
+phase = 2
+track = "orchestrator"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["ORC-02", "ROB-02"]
+writes = [
+  "src/orchestrator/skills/robot.py",
+  "tests/test_orchestrator_transfer.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+[[task]]
+id = "ORC-04"
+title = "Zones and cross-device interlocks"
+phase = 2
+track = "orchestrator"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["ORC-01", "FND-10"]
+writes = [
+  "src/orchestrator/zones.py",
+  "src/orchestrator/runner.py",
+  "tests/test_orchestrator_zones.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+[[task]]
+id = "ORC-05"
+title = "Orchestrator service on Olares"
+phase = 2
+track = "orchestrator"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["ORC-01", "FND-09"]
+writes = [
+  "src/orchestrator/app.py",
+  "src/orchestrator/__main__.py",
+  "config/systemd/mg400-orchestrator.service",
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400.env.example",
+  "tests/test_orchestrator_app.py",
+  "tests/test_systemd_units.py",
+  "tests/test_deploy_install.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+]
+
+[[task]]
+id = "OPS-03"
+title = "Backup and host migration for new data"
+phase = 2
+track = "ops"
+owner = "agent"
+size = "S"
+review = "human"
+deps = ["FND-09", "DOC-04"]
+writes = ["deploy/mg400ctl", "tests/test_deploy_mg400ctl.py", "docs/deploy.md", "docs/deploy.en.md"]
+
+[[task]]
+id = "VIS-07"
+title = "Camera modes and full-resolution stills"
+phase = 2
+track = "vision"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-09", "H-09", "DOC-07"]
+writes = [
+  "deploy/install.py",
+  "deploy/mg400.env.example",
+  "src/vision/frames.py",
+  "tests/test_deploy_install.py",
+  "tests/test_vision_service.py",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+  "docs/olares.md",
+  "docs/olares.en.md",
+]
+
+[[task]]
+id = "CAL-01"
+title = "Camera-to-robot calibration"
+phase = 2
+track = "calibration"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["ORC-02", "VIS-04", "H-08", "H-09"]
+writes = [
+  "src/vision/calibration.py",
+  "src/vision/service.py",
+  "src/orchestrator/skills/calibrate.py",
+  "tests/test_vision_calibration.py",
+  "docs/vision.md",
+  "docs/vision.en.md",
+]
+
+[[task]]
+id = "CAL-02"
+title = "Tray model"
+phase = 2
+track = "calibration"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["CAL-01", "VIS-02"]
+writes = [
+  "config/trays/**",
+  "src/vision/tray.py",
+  "tests/test_vision_tray.py",
+  "docs/vision.md",
+  "docs/vision.en.md",
+]
+
+[[task]]
+id = "CAL-03"
+title = "Calibration drift check"
+phase = 2
+track = "calibration"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["CAL-01"]
+writes = [
+  "src/vision/calibration.py",
+  "src/orchestrator/skills/vision.py",
+  "tests/test_vision_drift.py",
+  "docs/vision.md",
+  "docs/vision.en.md",
+]
+
+[[task]]
+id = "VIS-08"
+title = "Evaluate and retrain the detector"
+phase = 2
+track = "vision"
+owner = "agent+human"
+size = "L"
+review = "human"
+deps = ["VIS-05", "VIS-07", "H-22"]
+writes = [
+  "scripts/vision_eval.py",
+  "src/vision/train.py",
+  "config/assets.toml",
+  "tests/test_vision_eval.py",
+  "docs/vision.md",
+  "docs/vision.en.md",
+]
+
+[[task]]
+id = "MS-01"
+title = "Milestone: QR-verified tray transfer"
+phase = 2
+track = "milestone"
+owner = "agent+human"
+size = "M"
+review = "human"
+deps = ["ORC-03", "ORC-04", "ORC-05", "CAL-02", "CAL-03", "VIS-05", "H-17"]
+writes = [
+  "recipes/tray-transfer.toml",
+  "src/orchestrator/skills/vision.py",
+  "tests/test_recipe_tray_transfer.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+# ---------------------------------------------------------------- phase 3
+
+[[task]]
+id = "OPS-01"
+title = "USB device table and udev rules"
+phase = 3
+track = "ops"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-09", "H-03", "DOC-07"]
+writes = [
+  "config/udev/**",
+  "deploy/install.py",
+  "tests/test_deploy_install.py",
+  "tests/test_udev_rules.py",
+  "docs/olares.md",
+  "docs/olares.en.md",
+]
+
+[[task]]
+id = "THM-01"
+title = "Move the thermal camera package"
+phase = 3
+track = "thermal"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["FND-02", "FND-04"]
+writes = [
+  "src/thermal_cam/**",
+  "tests/test_thermal_*.py",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+  "docs/thermal.md",
+  "docs/thermal.en.md",
+]
+
+[[task]]
+id = "THM-02"
+title = "Thermal service on Olares"
+phase = 3
+track = "thermal"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["THM-01", "OPS-01", "H-05"]
+writes = [
+  "config/systemd/mg400-thermal.service",
+  "config/udev/**",
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400.env.example",
+  "tests/test_systemd_units.py",
+  "tests/test_deploy_install.py",
+  "docs/thermal.md",
+  "docs/thermal.en.md",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+]
+
+[[task]]
+id = "THM-03"
+title = "Thermal contract and region readings"
+phase = 3
+track = "thermal"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["THM-01", "FND-05"]
+writes = [
+  "src/thermal_cam/app.py",
+  "src/thermal_cam/service.py",
+  "src/thermal_cam/roi.py",
+  "tests/test_thermal_roi.py",
+  "docs/thermal.md",
+  "docs/thermal.en.md",
+]
+
+[[task]]
+id = "FUR-01"
+title = "Move the furnace controller code"
+phase = 3
+track = "furnace"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-02", "FND-03"]
+writes = [
+  "src/furnace/__init__.py",
+  "src/furnace/controller.py",
+  "src/furnace/config.py",
+  "tests/test_furnace_controller.py",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+]
+
+[[task]]
+id = "FUR-02"
+title = "Furnace and MFC simulator"
+phase = 3
+track = "furnace"
+owner = "agent"
+size = "L"
+review = "agent"
+deps = ["FUR-01"]
+writes = ["src/furnace/sim.py", "tests/test_furnace_sim.py"]
+
+[[task]]
+id = "FUR-03"
+title = "Furnace run logic: gas per step, client loss, restart"
+phase = 3
+track = "furnace"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["FUR-02", "GOV-02"]
+writes = ["src/furnace/service.py", "src/furnace/state.py", "tests/test_furnace_service.py"]
+
+[[task]]
+id = "FUR-04"
+title = "Furnace service and page on Olares"
+phase = 3
+track = "furnace"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["FUR-03", "FND-05", "FND-09"]
+writes = [
+  "src/furnace/app.py",
+  "src/furnace/__main__.py",
+  "src/furnace/templates/**",
+  "src/furnace/static/**",
+  "config/systemd/mg400-furnace.service",
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400ctl",
+  "deploy/mg400.env.example",
+  "tests/test_furnace_app.py",
+  "tests/test_systemd_units.py",
+  "tests/test_deploy_install.py",
+  "tests/test_deploy_mg400ctl.py",
+  "docs/furnace.md",
+  "docs/furnace.en.md",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+]
+
+[[task]]
+id = "TPC-01"
+title = "One Toupcam camera package"
+phase = 3
+track = "camera"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["FND-02", "FND-03"]
+writes = ["src/toupcam_camera/**", "tests/test_toupcam_camera.py", "pyproject.toml", "uv.lock", "AGENTS.md"]
+
+[[task]]
+id = "TPC-02"
+title = "Toupcam library and USB access on Olares"
+phase = 3
+track = "camera"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["TPC-01", "FND-08", "OPS-01", "H-12"]
+writes = [
+  "deploy/install.py",
+  "config/udev/**",
+  "tests/test_deploy_install.py",
+  "tests/test_udev_rules.py",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+]
+
+[[task]]
+id = "FUR-05"
+title = "Furnace camera and recordings"
+phase = 3
+track = "furnace"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["FUR-04", "TPC-01", "TPC-02"]
+writes = [
+  "src/furnace/recordings.py",
+  "src/furnace/video.py",
+  "src/furnace/app.py",
+  "src/furnace/templates/**",
+  "src/furnace/static/**",
+  "config/systemd/mg400-furnace.service",
+  "deploy/mg400.env.example",
+  "tests/test_furnace_recordings.py",
+  "tests/test_systemd_units.py",
+  "docs/furnace.md",
+  "docs/furnace.en.md",
+]
+
+[[task]]
+id = "STG-01"
+title = "Stage firmware: limit switches, homing, keep-awake"
+phase = 3
+track = "stage"
+owner = "agent+human"
+size = "L"
+review = "human"
+deps = ["DOC-10"]
+writes = ["firmware/three-motor-demo/**"]
+
+[[task]]
+id = "STG-02"
+title = "Stage host: homing, named positions, keep-awake"
+phase = 3
+track = "stage"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["STG-01", "FND-10"]
+writes = [
+  "src/stage_controller/**",
+  "tests/test_stage_*.py",
+  "tests/stage_helpers.py",
+  "docs/stage-panel.md",
+  "docs/stage-panel.en.md",
+]
+
+[[task]]
+id = "XDV-01"
+title = "Crucible load and unload skills"
+phase = 3
+track = "orchestrator"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["ORC-03", "ORC-04", "STG-02", "FUR-04", "THM-03"]
+writes = [
+  "src/orchestrator/skills/crucible.py",
+  "tests/test_orchestrator_crucible.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+[[task]]
+id = "MS-02"
+title = "Milestone: furnace cycle with the crucible"
+phase = 3
+track = "milestone"
+owner = "agent+human"
+size = "M"
+review = "human"
+deps = ["XDV-01", "THM-02", "FUR-04", "MS-01", "H-18", "H-19", "H-20", "H-11"]
+writes = [
+  "recipes/furnace-cycle.toml",
+  "tests/test_recipe_furnace_cycle.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+# ---------------------------------------------------------------- phase 4
+
+[[task]]
+id = "MIC-01"
+title = "Turret and focus firmware"
+phase = 4
+track = "microscope"
+owner = "agent+human"
+size = "L"
+review = "human"
+deps = ["H-02"]
+writes = [
+  "firmware/microscope-axes/**",
+  "src/microscope/__init__.py",
+  "src/microscope/sim.py",
+  "tests/test_microscope_protocol.py",
+]
+
+[[task]]
+id = "MIC-02"
+title = "Move the microscope algorithms"
+phase = 4
+track = "microscope"
+owner = "agent"
+size = "L"
+review = "agent"
+deps = ["TPC-01", "MIC-01"]
+writes = [
+  "src/microscope/**",
+  "src/cameras/**",
+  "tests/test_microscope_*.py",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+  "docs/microscope.md",
+  "docs/microscope.en.md",
+]
+
+[[task]]
+id = "MIC-03"
+title = "Microscope service"
+phase = 4
+track = "microscope"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["MIC-02", "FND-05"]
+writes = [
+  "src/microscope/service.py",
+  "src/microscope/app.py",
+  "src/microscope/__main__.py",
+  "tests/test_microscope_service.py",
+  "docs/microscope.md",
+  "docs/microscope.en.md",
+]
+
+[[task]]
+id = "MIC-04"
+title = "Microscope web panel"
+phase = 4
+track = "microscope"
+owner = "agent"
+size = "L"
+review = "agent"
+deps = ["MIC-03"]
+writes = [
+  "src/microscope/templates/**",
+  "src/microscope/static/**",
+  "src/microscope/app.py",
+  "tests/test_microscope_panel.py",
+  "tests/test_microscope_panel.mjs",
+  "docs/microscope.md",
+  "docs/microscope.en.md",
+]
+
+[[task]]
+id = "MIC-05"
+title = "Microscope calibration tools and data import"
+phase = 4
+track = "microscope"
+owner = "agent+human"
+size = "M"
+review = "agent"
+deps = ["MIC-02", "FND-09"]
+writes = [
+  "src/microscope/calibrate.py",
+  "src/microscope/experiments.py",
+  "deploy/mg400ctl",
+  "tests/test_microscope_calibrate.py",
+  "tests/test_deploy_mg400ctl.py",
+  "docs/microscope.md",
+  "docs/microscope.en.md",
+]
+
+[[task]]
+id = "MIC-06"
+title = "Deploy the microscope on Olares"
+phase = 4
+track = "microscope"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["MIC-03", "TPC-02", "FND-09", "H-06"]
+writes = [
+  "config/systemd/mg400-microscope.service",
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400.env.example",
+  "tests/test_systemd_units.py",
+  "tests/test_deploy_install.py",
+  "docs/microscope.md",
+  "docs/microscope.en.md",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
+]
+
+[[task]]
+id = "MS-03"
+title = "Milestone: microscope image under the chip's ID"
+phase = 4
+track = "milestone"
+owner = "agent+human"
+size = "M"
+review = "human"
+deps = ["MIC-06", "MIC-05", "ORC-05", "H-21"]
+writes = [
+  "recipes/microscope-image.toml",
+  "src/orchestrator/skills/microscope.py",
+  "tests/test_recipe_microscope_image.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+# ---------------------------------------------------------------- phase 5
+
+[[task]]
+id = "DSH-01"
+title = "Lab dashboard"
+phase = 5
+track = "dashboard"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["ORC-05", "FND-06", "FND-10"]
+writes = [
+  "src/orchestrator/web/**",
+  "src/orchestrator/app.py",
+  "tests/test_dashboard.py",
+  "tests/test_dashboard.mjs",
+  "docs/dashboard.md",
+  "docs/dashboard.en.md",
+]
+
+[[task]]
+id = "DSH-02"
+title = "Chip passport"
+phase = 5
+track = "dashboard"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["DSH-01"]
+writes = [
+  "src/orchestrator/web/**",
+  "src/orchestrator/store.py",
+  "tests/test_dashboard_passport.py",
+  "docs/dashboard.md",
+  "docs/dashboard.en.md",
+]
+
+[[task]]
+id = "AGT-01"
+title = "MCP gateway with read-only tools"
+phase = 5
+track = "gateway"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["ORC-05", "GOV-02"]
+writes = [
+  "src/gateway/**",
+  "tests/test_gateway*.py",
+  "config/systemd/mg400-gateway.service",
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400.env.example",
+  "tests/test_systemd_units.py",
+  "tests/test_deploy_install.py",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+  "docs/agent-gateway.md",
+  "docs/agent-gateway.en.md",
+]
+
+[[task]]
+id = "AGT-02"
+title = "Approval gates for actuation"
+phase = 5
+track = "gateway"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["AGT-01", "DSH-01", "H-23"]
+writes = [
+  "src/orchestrator/approvals.py",
+  "src/orchestrator/app.py",
+  "src/orchestrator/web/**",
+  "src/gateway/**",
+  "tests/test_approvals.py",
+  "tests/test_gateway*.py",
+  "docs/agent-gateway.md",
+  "docs/agent-gateway.en.md",
+  "docs/dashboard.md",
+  "docs/dashboard.en.md",
+]
+
+[[task]]
+id = "AGT-03"
+title = "Agent clients"
+phase = 5
+track = "gateway"
+owner = "agent"
+size = "M"
+review = "agent"
+deps = ["AGT-02"]
+writes = [
+  "src/gateway/clients/**",
+  "tests/test_gateway_clients.py",
+  "pyproject.toml",
+  "uv.lock",
+  "docs/agent-gateway.md",
+  "docs/agent-gateway.en.md",
+]
+
+[[task]]
+id = "OPS-02"
+title = "One reverse-proxy entry for all services"
+phase = 5
+track = "ops"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["FND-09", "ORC-05"]
+writes = [
+  "config/proxy/**",
+  "config/systemd/mg400-proxy.service",
+  "deploy/services.toml",
+  "deploy/install.py",
+  "deploy/mg400.env.example",
+  "tests/test_systemd_units.py",
+  "tests/test_deploy_install.py",
+  "docs/olares.md",
+  "docs/olares.en.md",
+]
+
+# ---------------------------------------------------------------- phase 6
+
+[[task]]
+id = "OPT-01"
+title = "Image metric for grown material"
+phase = 6
+track = "research"
+owner = "agent+human"
+size = "L"
+review = "human"
+deps = ["MS-03"]
+writes = ["src/analysis/**", "tests/test_analysis_*.py", "docs/analysis.md", "docs/analysis.en.md"]
+
+[[task]]
+id = "OPT-02"
+title = "Recipe optimizer loop"
+phase = 6
+track = "research"
+owner = "agent+human"
+size = "L"
+review = "human"
+deps = ["OPT-01", "MS-02"]
+writes = [
+  "src/analysis/**",
+  "src/orchestrator/skills/optimize.py",
+  "tests/test_analysis_*.py",
+  "docs/analysis.md",
+  "docs/analysis.en.md",
+]
+
+[[task]]
+id = "OPT-03"
+title = "Unattended overnight runs"
+phase = 6
+track = "research"
+owner = "agent+human"
+size = "L"
+review = "human"
+deps = ["OPT-02", "DSH-01", "H-24"]
+writes = [
+  "src/orchestrator/**",
+  "recipes/**",
+  "tests/test_orchestrator_*.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+[[task]]
+id = "CLN-01"
+title = "Mark the WuLab repos as moved"
+phase = 6
+track = "cleanup"
+owner = "agent+human"
+size = "S"
+review = "human"
+deps = ["VIS-02", "THM-01", "FUR-05", "MIC-02", "H-16"]
+writes = []
+
+[[task]]
+id = "CLN-02"
+title = "Remove the migration plan"
+phase = 6
+track = "cleanup"
+owner = "agent"
+size = "S"
+review = "human"
+deps = ["MS-01", "MS-02", "MS-03", "DSH-02", "AGT-03", "OPS-03", "CLN-01"]
+writes = ["docs/agents/migration/**", "tests/test_migration_plan.py", "AGENTS.md"]
+
+# ---------------------------------------------------------------- human tasks
+
+[[task]]
+id = "H-02"
+title = "Recover the turret and focus firmware"
+phase = 0
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-03"
+title = "USB inventory and hardware purchase"
+phase = 0
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-04"
+title = "Move the furnace and MFC links to Olares"
+phase = 3
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["H-03"]
+writes = []
+
+[[task]]
+id = "H-05"
+title = "Move the thermal camera to Olares"
+phase = 3
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = ["H-03"]
+writes = []
+
+[[task]]
+id = "H-06"
+title = "Move the microscope devices to Olares"
+phase = 4
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["H-03"]
+writes = []
+
+[[task]]
+id = "H-07"
+title = "Stage limit switches and geometry"
+phase = 3
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["STG-01"]
+writes = []
+
+[[task]]
+id = "H-08"
+title = "Robot workspace measurements"
+phase = 2
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-09"
+title = "Final camera setup"
+phase = 1
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["H-03"]
+writes = []
+
+[[task]]
+id = "H-10"
+title = "Furnace process rules"
+phase = 0
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-11"
+title = "Independent over-temperature cutoff and e-stop review"
+phase = 0
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-12"
+title = "Toupcam Linux SDK"
+phase = 0
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-13"
+title = "Olares GPU and disk check"
+phase = 0
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-14"
+title = "Publish the weights release"
+phase = 1
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = ["H-15"]
+writes = []
+
+[[task]]
+id = "H-15"
+title = "Repository license"
+phase = 0
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-16"
+title = "Colleague consent for the move"
+phase = 0
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = []
+writes = []
+
+[[task]]
+id = "H-17"
+title = "Validate the robot changes on hardware"
+phase = 2
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["ROB-02", "ORC-02", "H-08"]
+writes = []
+
+[[task]]
+id = "H-18"
+title = "Validate the stage on hardware"
+phase = 3
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["STG-02", "H-07"]
+writes = []
+
+[[task]]
+id = "H-19"
+title = "Validate the thermal camera on Olares"
+phase = 3
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = ["THM-02", "H-05"]
+writes = []
+
+[[task]]
+id = "H-20"
+title = "Validate the furnace and gas on Olares"
+phase = 3
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["FUR-04", "H-04", "H-10", "H-11"]
+writes = []
+
+[[task]]
+id = "H-21"
+title = "Validate the microscope on Olares"
+phase = 4
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["MIC-06", "MIC-04", "MIC-05", "H-06"]
+writes = []
+
+[[task]]
+id = "H-22"
+title = "Capture and label evaluation images"
+phase = 2
+track = "lab"
+owner = "human"
+size = "M"
+review = "human"
+deps = ["H-09", "VIS-05"]
+writes = []
+
+[[task]]
+id = "H-23"
+title = "Agree the agent approval policy"
+phase = 5
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = ["AGT-01"]
+writes = []
+
+[[task]]
+id = "H-24"
+title = "Sign off the first unattended run"
+phase = 6
+track = "lab"
+owner = "human"
+size = "S"
+review = "human"
+deps = ["MS-02", "MS-03", "DSH-01"]
+writes = []

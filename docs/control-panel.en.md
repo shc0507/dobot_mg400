@@ -62,7 +62,19 @@ The sliders adjust values near the measured position. Their ranges are not the r
 Before execution, the program checks the target with the controller's inverse kinematics and the existing joint range checks.
 
 `Home` moves J1–J4 to 0°.
-Linear motion uses `SpeedL=1,AccL=1`. Homing uses `SpeedJ=5,AccJ=5`.
+The panel's linear motion uses `SpeedL=1,AccL=1`. Homing uses `SpeedJ=5,AccJ=5`.
+
+Automation clients can supply an integer `speed` with the `execute` command.
+The host setting `MG400_ROBOT_MAX_SPEED_L` limits this value. Values above the cap are rejected with 400.
+The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
+The acceleration cap is `MG400_ROBOT_MAX_ACC_L`.
+
+Both settings default to 1 and accept integers from 1–100. Empty settings also use 1.
+Set them in `/etc/mg400/mg400.env`. Restart the service after a change.
+Invalid settings prevent startup. Without `speed`, the command remains `SpeedL=1,AccL=1`, even with higher caps.
+
+These caps do not change `Home`, global `SpeedFactor`, or keyboard jogging.
+An operator must validate speeds above 1 on hardware before unattended transfers use them.
 
 ## Control the gripper
 

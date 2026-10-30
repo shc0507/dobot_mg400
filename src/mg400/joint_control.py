@@ -910,12 +910,16 @@ class JointControl:
             time.sleep(0.05)
         raise TimeoutError("Robot did not reach a fresh, verified Cartesian target")
 
-    def move_linear(self, target) -> Feedback:
+    def move_linear(self, target, *, speed=1, acceleration=1) -> Feedback:
         """Move to absolute User=0/Tool=0 XYZ/R and verify measured arrival.
 
         The controller solves the endpoint and plans the Cartesian line.
-        R is flange yaw, not the J4 joint angle.
+        R is flange yaw, not the J4 joint angle. Speed and acceleration are
+        per-command percentages. The service applies its host caps before calling.
         """
+        for name, value in (("SpeedL", speed), ("AccL", acceleration)):
+            if type(value) is not int or not 1 <= value <= 100:
+                raise ValueError(f"{name} must be an integer between 1 and 100")
         target = self._four_values(target)
         sample = self.read_state()
         if sample.mode != 5:
@@ -931,7 +935,7 @@ class JointControl:
             if not self._near(self._read_pose({5}), start_pose):
                 raise RuntimeError("Robot pose changed before Cartesian movement")
             self._guarded_command(
-                f"MovL({values},User=0,Tool=0,SpeedL=1,AccL=1)",
+                f"MovL({values},User=0,Tool=0,SpeedL={speed},AccL={acceleration})",
                 modes={5, 7},
                 send_modes={5},
                 expected=start,

@@ -195,13 +195,25 @@ The command body is `{"action": "<命令>", ...}`, where the placeholder means t
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
 | `home` | None | Move J1–J4 to 0° |
-| `execute` | `targets`: `x`, `y`, `z`, `r`, and optional `grip` | Move linearly to the flange coordinates, then execute the gripper target after arrival |
+| `execute` | `targets`: `x`, `y`, `z`, `r`, and optional `grip`, plus optional `speed` | Move linearly to the flange coordinates, then execute the gripper target after arrival |
 | `grip` | `position`: an integer from 0–1000 | Set the gripper opening |
 | `initialize_gripper` | None | Initialize the gripper. This opens the fingers |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
 | `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
 
-`speed` is an integer from 1–100.
+For `keyboard`, `speed` is an integer from 1–100.
+For `execute`, optional `speed` is an integer from 1 to the host's `MG400_ROBOT_MAX_SPEED_L` cap.
+The service rejects invalid values or values above the cap with 400 before queuing movement.
+Booleans, strings, fractional values, and non-finite values are invalid.
+
+The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
+The acceleration cap is `MG400_ROBOT_MAX_ACC_L`.
+Both host settings default to 1 and accept integers from 1–100. Empty settings also use 1.
+Invalid host settings prevent service startup. Restart the service after changing a cap.
+
+Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher caps.
+These settings do not change `home`, global `SpeedFactor`, or keyboard jogging.
+An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
 It is also available when `recoverable` is `true`: an unconfirmed stop during an alarm locked control, and the alarm was cleared outside the panel.
 In this case, the service does not send `ClearError()`. It only disables the robot and confirms that it is stationary.

@@ -421,6 +421,8 @@ owner = "agent"
 size = "M"
 review = "agent"
 deps = ["VIS-01"]
+# Fixtures use the six required labels from image2.jpg at the pinned source commit.
+# The original-density crops from the other photos exceed the asset size limits.
 writes = ["src/vision/qr.py", "src/vision/qr_micro.py", "tests/test_vision_qr*.py", "tests/fixtures/qr/**"]
 
 [[task]]

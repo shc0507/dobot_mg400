@@ -14,7 +14,7 @@ Rules for this folder:
 
 - It is for agents. Write it in English only.
 - Status lives in GitHub issues (GOV-01), never in these files.
-- Change the plan itself (a new task, a changed dependency, a corrected step) in its own pull request. The repo owner reviews it.
+- Change the plan itself (a new task, a changed dependency, a corrected step) in its own pull request. Section 6.5 says which plan PRs wait for the owner.
 - `tests/test_migration_plan.py` checks that `tasks.toml` and `tasks.md` agree and that the graph has no cycles.
 - CLN-02 deletes this folder and that test when the migration ends.
 
@@ -266,6 +266,7 @@ A task is ready when all of these are true:
 - Default limit: 4 workers at a time.
 - Two open PRs must not change the same file, except the shared files below.
 - Shared files: `pyproject.toml`, `uv.lock`, `AGENTS.md`, `deploy/services.toml`, `deploy/mg400.env.example`, `deploy/install.py`, `deploy/mg400ctl`, `tests/test_systemd_units.py`, `tests/test_deploy_install.py`, `tests/test_deploy_mg400ctl.py`, `docs/deploy*.md`, `docs/development*.md`, `docs/olares*.md`, `docs/agents/migration/doc-pairs-pending.txt`.
+- Shared files belong to every task's write set. A task changes them where its card or procedure (P-MOVE, P-DEPLOY, P-DOCS) needs it.
 - Changes to shared files are additions where possible: a new table row, a new group, a new registry entry.
 - The orchestrator merges PRs that touch shared files one at a time. The next such PR merges `main` before its own merge.
 - Never hand-merge `uv.lock`. Merge `main`, then run `uv lock`.
@@ -312,7 +313,8 @@ The first line is `Refs #<issue>` instead when 6.1 says so.
 - The orchestrator merges a PR when CI is green and the checklist in 9.3 passes. No merge waits for a person.
 - `review = "human"`: before the merge, the orchestrator adds the label `owner-review` to the PR. The owner reviews these PRs after the merge and removes the label. A problem found in review becomes a fix PR, or a plan change (6.8).
 - The owner deploys to Olares, or starts a hardware task, only after reviewing every `owner-review` PR merged since the last deploy.
-- Exception: a plan PR (6.8) merges only after the owner approves it. Work on other tasks goes on meanwhile.
+- A plan PR (6.8) that only corrects a card (a wrong path, command, check or write set) merges like a task PR, with the label `owner-review`.
+- A plan PR that adds or removes a task, or changes a dependency, a review level, a decision (section 2) or a safety rule (7.1), merges only after the owner approves it. Work on other tasks goes on meanwhile.
 - Every PR needs green CI.
 
 ### 6.6 Blocked work
@@ -340,7 +342,7 @@ Gates are human tasks that later tasks depend on. The orchestrator starts no tas
 
 ### 6.8 Plan changes
 
-A worker that finds a wrong card does not edit it in the task PR. It reports the problem on the issue. The orchestrator opens a plan PR that changes `tasks.toml` and `tasks.md` together, and the owner reviews it.
+A worker that finds a wrong card does not edit it in the task PR. It reports the problem on the issue. The orchestrator opens a plan PR that changes `tasks.toml` and `tasks.md` together and merges it per 6.5.
 
 ## 7. Rules for every task
 
@@ -473,7 +475,7 @@ You are a worker in shc0507/dobot_mg400. Task: <ID>, <title>.
 1. Read AGENTS.md, docs/agents/migration/README.md sections 6 to 8, and the card for <ID> in docs/agents/migration/tasks.md.
    Read your write set in tasks.toml. Read only the files the card names and the files you change.
 2. Assign the issue to yourself. Create the branch mig/<id>-<slug> from the latest origin/main.
-3. Do the steps. Stay inside the write set. If you must change another file, stop and ask the orchestrator.
+3. Do the steps. Stay inside the write set; the shared files (README 6.3) are part of it. If you must change another file, stop and ask the orchestrator.
 4. Run the area tests while you work and P-CHECKS before the PR.
 5. Update docs in both languages when the card lists docs.
 6. Open a draft PR with the README 6.4 body (first line `Closes #<issue>`, or `Refs #<issue>` per README 6.1). Mark it ready when the checks pass.
@@ -483,7 +485,7 @@ Never send commands to real hardware. Never weaken a safety rule to make a test 
 
 ### 9.3 Reviewer checklist
 
-1. The diff stays inside the card's write set.
+1. The diff stays inside the card's write set and the shared files (6.3).
 2. Every "Done when" item holds, and CI is green.
 3. Tests cover the new behavior and open no device, port or external address.
 4. No safety rule from section 7.1 got weaker. Safety-relevant changes have `review = "human"`.

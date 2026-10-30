@@ -1,5 +1,6 @@
 """Check the host installer in a temporary root, without systemd, uv or root rights."""
 
+import hashlib
 import io
 import os
 import runpy
@@ -414,3 +415,86 @@ def test_settings_rights_are_repaired_on_every_run(host):
     os.chmod(host.settings, 0o644)
     assert host.install() == 0
     assert mode(host.settings) == 0o600 and host.owner(host.settings) == (0, 0)
+
+
+@pytest.fixture
+def local_asset(host, tmp_path):
+    path = tmp_path / "offline-model.dat"
+    path.write_bytes(b"offline model fixture")
+    (host.code / "config/assets.toml").write_text(
+        '[model]\nurl = "https://assets.example/model"\n'
+        f'sha256 = "{hashlib.sha256(path.read_bytes()).hexdigest()}"\n'
+        f"bytes = {path.stat().st_size}\n"
+        'install = "/var/lib/mg400/models/model.dat"\nmode = "0640"\n'
+        'service = "vision"\nsource = "test fixture"\nlicense = "AGPL-3.0"\n'
+    )
+    return path
+
+
+def test_offline_asset_installs_with_service_permissions(host, local_asset):
+    assert host.install("--asset", f"model={local_asset}") == 0
+    target = host.data / "models/model.dat"
+    assert target.read_bytes() == local_asset.read_bytes()
+    assert mode(target) == 0o640 and host.owner(target) == (1000, 1000)
+    assert mode(target.parent) == 0o750 and host.owner(target.parent) == (1000, 1000)
+    assert host.owner(host.data) == (0, 1000)
+    assert "install asset model" in host.out.getvalue()
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_fetch_assets_and_offline_override(module, host, local_asset, monkeypatch, offline):
+    opener = Mock(return_value=io.BytesIO(local_asset.read_bytes()))
+    monkeypatch.setattr(module.main.__globals__["assets"], "open_download", opener)
+    argv = ["--fetch-assets"]
+    if offline:
+        argv += ["--asset", f"model={local_asset}"]
+    assert host.install(*argv) == 0
+    assert (host.data / "models/model.dat").read_bytes() == local_asset.read_bytes()
+    assert opener.call_count == (0 if offline else 1)
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_asset_dry_run_lists_verification_without_writes_or_downloads(
+    module, host, local_asset, monkeypatch, local
+):
+    opener = Mock(side_effect=AssertionError("Dry run must not download"))
+    monkeypatch.setattr(module.main.__globals__["assets"], "open_download", opener)
+    argv = ["--asset", f"model={local_asset}"] if local else ["--fetch-assets"]
+    assert host.install("--dry-run", *argv) == 0
+    assert not host.settings.exists() and not host.data.exists()
+    assert "Would install asset model" in host.out.getvalue()
+    assert "SHA-256" in host.out.getvalue()
+    assert "0640, 1000:1000" in host.out.getvalue()
+    opener.assert_not_called()
+
+
+@pytest.mark.parametrize("specification", ["unknown=fixture", "model", "model="])
+def test_bad_asset_argument_stops_before_any_host_change(host, local_asset, specification):
+    assert host.install("--asset", specification) == 1
+    assert not host.settings.exists() and not host.data.exists()
+    assert len(host.commands) == 2
+
+
+def test_duplicate_asset_stops_before_any_host_change(host, local_asset):
+    value = f"model={local_asset}"
+    assert host.install("--asset", value, "--asset", value) == 1
+    assert not host.settings.exists() and not host.data.exists()
+
+
+def test_bad_local_asset_stops_before_any_host_change(host, local_asset):
+    local_asset.write_bytes(b"corrupt")
+    assert host.install("--asset", f"model={local_asset}") == 1
+    assert not host.settings.exists() and not host.data.exists()
+    assert len(host.commands) == 2
+
+
+def test_asset_destination_link_is_refused_before_host_changes(host, local_asset, tmp_path):
+    target = host.data / "models/model.dat"
+    target.parent.mkdir(parents=True)
+    sentinel = tmp_path / "keep.dat"
+    sentinel.write_bytes(b"keep")
+    target.symlink_to(sentinel)
+    assert host.install("--asset", f"model={local_asset}") == 1
+    assert not host.settings.exists()
+    assert target.is_symlink() and sentinel.read_bytes() == b"keep"
+    assert len(host.commands) == 2

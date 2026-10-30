@@ -13,7 +13,7 @@ import pytest
 from panel_ws import PanelServer, RealSocket, WsClient, running
 from sim_mg400 import CLIENT, JOGS, RADIAL_FRAME, READY, wait_for
 
-from mg400_agent.web_control import RobotPanelState
+from mg400.web_control import RobotPanelState
 
 TOKEN = "e2e-test-token"
 CLOSED = "browser connection closed."

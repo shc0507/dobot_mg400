@@ -8,8 +8,8 @@ from unittest.mock import Mock
 import pytest
 from helpers import block_network, fake_connection
 
-from mg400_agent import control_mode as mode
-from mg400_agent.controller_ownership import ControllerOwnership
+from mg400 import control_mode as mode
+from mg400.controller_ownership import ControllerOwnership
 
 MISSING = object()
 

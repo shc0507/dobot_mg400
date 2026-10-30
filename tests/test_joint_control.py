@@ -8,15 +8,15 @@ from unittest.mock import Mock, call
 import pytest
 from helpers import block_network, fake_connection
 
-from mg400_agent.controller_protocol import ControllerCommandError, parse_controller_response
-from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import (
+from mg400.controller_protocol import ControllerCommandError, parse_controller_response
+from mg400.feedback import Feedback
+from mg400.joint_control import (
     DashboardQueryCancelledError,
     JointControl,
     PreparationRejectedError,
     TargetRejectedError,
 )
-from mg400_agent.keyboard_jog import KeyboardJogSession
+from mg400.keyboard_jog import KeyboardJogSession
 
 START = (0.7, 0.04, 0.52, 23.08)
 TARGET = (*START[:3], START[3] + 2)
@@ -47,9 +47,9 @@ def prohibit_network(monkeypatch):
 def rig(monkeypatch):
     now = [10.0]
     sample = [Feedback(START, 5, 0, False)]
-    monkeypatch.setattr("mg400_agent.joint_control.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("mg400.joint_control.time.monotonic", lambda: now[0])
     monkeypatch.setattr(
-        "mg400_agent.joint_control.time.sleep",
+        "mg400.joint_control.time.sleep",
         lambda duration: now.__setitem__(0, now[0] + duration),
     )
     control = JointControl("robot.test", lambda: (sample[0], now[0]))
@@ -1664,7 +1664,7 @@ def test_child_stop_interrupts_parent_query_and_closes_before_reconnecting(
     query.__exit__.side_effect = lambda *args: query.close()
     if phase == "connect":
         query.connect_ex.return_value = errno.EINPROGRESS
-        monkeypatch.setattr("mg400_agent.joint_control.select.select", block)
+        monkeypatch.setattr("mg400.joint_control.select.select", block)
     elif phase == "send":
         query.sendall.side_effect = block
     else:
@@ -1725,13 +1725,13 @@ def test_query_connect_keeps_one_socket_until_original_deadline(monkeypatch):
     connection.connect_ex.return_value = errno.EINPROGRESS
     connection.getsockopt.return_value = 0
     now = [10.0]
-    monkeypatch.setattr("mg400_agent.joint_control.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("mg400.joint_control.time.monotonic", lambda: now[0])
 
     def ready(read, write, error, timeout):
         now[0] += timeout
         return ([], [], []) if now[0] < 10.15 else ([], write, [])
 
-    monkeypatch.setattr("mg400_agent.joint_control.select.select", ready)
+    monkeypatch.setattr("mg400.joint_control.select.select", ready)
     assert JointControl("robot.test", Mock())._command("GetPose(0,0)") == ""
     assert now[0] >= 10.15
     socket.socket.assert_called_once()
@@ -2436,8 +2436,8 @@ class _Wire:
 @pytest.fixture
 def wire(monkeypatch):
     robot = _Wire()
-    monkeypatch.setattr("mg400_agent.joint_control.time.monotonic", lambda: robot.now)
-    monkeypatch.setattr("mg400_agent.joint_control.time.sleep", robot.sleep)
+    monkeypatch.setattr("mg400.joint_control.time.monotonic", lambda: robot.now)
+    monkeypatch.setattr("mg400.joint_control.time.sleep", robot.sleep)
 
     def create_connection(address, timeout=None, **kwargs):
         # Only mutations and stop commands open connections this way.

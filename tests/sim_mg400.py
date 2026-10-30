@@ -18,10 +18,10 @@ from functools import partial
 
 import helpers
 
-from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import JointControl, _StationaryTimeoutError
-from mg400_agent.web_control import RobotPanelState
-from mg400_agent.web_gripper import WebGripper
+from mg400.feedback import Feedback
+from mg400.joint_control import JointControl, _StationaryTimeoutError
+from mg400.web_control import RobotPanelState
+from mg400.web_gripper import WebGripper
 
 HOST = "robot.test"
 CLIENT = "browser-a"

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mg400_agent.web_gripper import COLLECTOR_REQUEST
+from mg400.web_gripper import COLLECTOR_REQUEST
 
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "config/systemd"

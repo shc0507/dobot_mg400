@@ -24,12 +24,12 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from mg400_agent.controller_ownership import ControllerOwnership  # noqa: E402
-from mg400_agent.feedback import FeedbackConnection  # noqa: E402
-from mg400_agent.robot_config import load_robot_host  # noqa: E402
-from mg400_agent.web_control import RobotPanelState  # noqa: E402
-from mg400_agent.web_gripper import WebGripper  # noqa: E402
-from mg400_agent.websocket import (  # noqa: E402
+from mg400.controller_ownership import ControllerOwnership  # noqa: E402
+from mg400.feedback import FeedbackConnection  # noqa: E402
+from mg400.robot_config import load_robot_host  # noqa: E402
+from mg400.web_control import RobotPanelState  # noqa: E402
+from mg400.web_gripper import WebGripper  # noqa: E402
+from mg400.websocket import (  # noqa: E402
     Connection,
     ConnectionClosed,
     ProtocolError,
@@ -833,7 +833,7 @@ def start_event_log():
     )
     listener = logging.handlers.QueueListener(events, output)
     handler = logging.handlers.QueueHandler(events)
-    logger = logging.getLogger("mg400_agent")
+    logger = logging.getLogger("mg400")
     level = logger.level
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)

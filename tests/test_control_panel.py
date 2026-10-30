@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 from panel_ws import PANEL, PanelServer, running
 
-from mg400_agent.controller_ownership import ControllerOwnership
+from mg400.controller_ownership import ControllerOwnership
 
 ReadOnlyPanelState = PANEL["ReadOnlyPanelState"]
 PANEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -902,7 +902,7 @@ def test_a_blocked_stderr_delays_the_stop_only_briefly(monkeypatch, signal_table
 
 
 def test_panel_events_reach_stderr_and_the_handler_is_removed(monkeypatch, capsys, signal_table):
-    panel_log = logging.getLogger("mg400_agent.web_control")
+    panel_log = logging.getLogger("mg400.web_control")
     handlers = list(panel_log.handlers)
 
     def serve_forever():
@@ -931,7 +931,7 @@ def test_a_blocked_event_log_cannot_delay_the_stop(monkeypatch, signal_table):
         # The time counts from the first event, so a blocking write would fail the check.
         interrupted.append(time.monotonic())
         for _ in range(3):
-            logging.getLogger("mg400_agent.web_control").info("Control locked.")
+            logging.getLogger("mg400.web_control").info("Control locked.")
         signal_table[signal.SIGTERM](signal.SIGTERM, None)
 
     def close():

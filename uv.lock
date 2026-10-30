@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -483,9 +483,10 @@ wheels = [
 ]
 
 [[package]]
-name = "mg400-agent"
+name = "mg400"
 version = "0.1.0"
 source = { editable = "." }
+default-groups = ["dev", "stage"]
 
 [package.dev-dependencies]
 dev = [

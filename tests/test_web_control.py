@@ -6,10 +6,10 @@ from unittest.mock import Mock
 import pytest
 from helpers import Feed, PanelControl, block_network, wait_for
 
-from mg400_agent.controller_ownership import ControllerOwnership
-from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import JointControl, PreparationRejectedError, TargetRejectedError
-from mg400_agent.web_control import RobotPanelState
+from mg400.controller_ownership import ControllerOwnership
+from mg400.feedback import Feedback
+from mg400.joint_control import JointControl, PreparationRejectedError, TargetRejectedError
+from mg400.web_control import RobotPanelState
 
 pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
@@ -978,13 +978,11 @@ def test_a_later_confirmed_stop_does_not_hide_the_unconfirmed_one(rig):
 
 
 def panel_log(caplog):
-    return [
-        record.getMessage() for record in caplog.records if record.name == "mg400_agent.web_control"
-    ]
+    return [record.getMessage() for record in caplog.records if record.name == "mg400.web_control"]
 
 
 def test_an_unconfirmed_stop_logs_its_reason_and_the_lock(rig, caplog):
-    caplog.set_level(logging.INFO, logger="mg400_agent.web_control")
+    caplog.set_level(logging.INFO, logger="mg400.web_control")
     state, feed, controls = rig
     connect(state)
     controls[0].stop_ok = False
@@ -1002,7 +1000,7 @@ def test_an_unconfirmed_stop_logs_its_reason_and_the_lock(rig, caplog):
 
 
 def test_alarms_and_mode_changes_are_logged_once(rig, caplog):
-    caplog.set_level(logging.INFO, logger="mg400_agent.web_control")
+    caplog.set_level(logging.INFO, logger="mg400.web_control")
     state, feed, controls = alarm_rig(rig)
     wait_for(lambda: state.snapshot()["alarms"])
     feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)

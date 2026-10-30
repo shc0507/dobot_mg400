@@ -1,6 +1,6 @@
 import pytest
 
-from mg400_agent.joint_limits import (
+from mg400.joint_limits import (
     limit_distances,
     validate_joint_segment,
     validate_joints,

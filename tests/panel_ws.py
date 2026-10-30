@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from mg400_agent.websocket import (
+from mg400.websocket import (
     CLOSE,
     PING,
     PONG,

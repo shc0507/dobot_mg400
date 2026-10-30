@@ -6,10 +6,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import JointControl, PreparationRejectedError, TargetRejectedError
-from mg400_agent.joint_limits import validate_joints
-from mg400_agent.keyboard_jog import KeyboardJogSession
+from mg400.feedback import Feedback
+from mg400.joint_control import JointControl, PreparationRejectedError, TargetRejectedError
+from mg400.joint_limits import validate_joints
+from mg400.keyboard_jog import KeyboardJogSession
 
 START = (30.0, 0.0, 10.0, 0.0)
 POSE = (250.0, 10.0, 40.0, 30.0)
@@ -19,7 +19,7 @@ POSE = (250.0, 10.0, 40.0, 30.0)
 def rig(monkeypatch):
     # Exercise the retained finite-trajectory fallback. Continuous jogging has
     # separate transport, cancellation, and feedback tests.
-    monkeypatch.setattr("mg400_agent.keyboard_jog.MOVEJOG_COMMANDS", {})
+    monkeypatch.setattr("mg400.keyboard_jog.MOVEJOG_COMMANDS", {})
 
     class Rig:
         def __init__(self):
@@ -165,8 +165,8 @@ def rig(monkeypatch):
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("robot.test", 29999)),
         ],
     )
-    monkeypatch.setattr("mg400_agent.keyboard_jog.time.monotonic", lambda: robot.now)
-    monkeypatch.setattr("mg400_agent.keyboard_jog.time.sleep", robot.sleep)
+    monkeypatch.setattr("mg400.keyboard_jog.time.monotonic", lambda: robot.now)
+    monkeypatch.setattr("mg400.keyboard_jog.time.sleep", robot.sleep)
     control = JointControl("robot.test", robot.snapshot)
     robot.session = KeyboardJogSession(control)
     return robot
@@ -239,7 +239,7 @@ def test_finite_speed_change_during_movement_stops_and_revokes_readiness(rig, mo
             rig.sample = replace(rig.sample, speed_scaling_raw=1)
         sleep(duration)
 
-    monkeypatch.setattr("mg400_agent.keyboard_jog.time.sleep", change_speed)
+    monkeypatch.setattr("mg400.keyboard_jog.time.sleep", change_speed)
     with pytest.raises(RuntimeError, match="speed changed"):
         rig.session.run("W", threading.Event())
     assert rig.moves and "ResetRobot()" in rig.commands
@@ -708,7 +708,7 @@ def test_base_target_shortens_below_one_degree_at_joint_limit(rig, monkeypatch):
             attempted.append(target[0] - 158.5)
         return validate_joints(target)
 
-    monkeypatch.setattr("mg400_agent.keyboard_jog.validate_joints", validate)
+    monkeypatch.setattr("mg400.keyboard_jog.validate_joints", validate)
     rig.session.run("A", threading.Event())
     assert attempted == pytest.approx([10, 5, 2.5, 1.25, 0.625, 0.3125])
     assert len(rig.moves) == 1
@@ -1014,7 +1014,7 @@ def test_keyboard_measured_margin_band_allows_inward_move(rig, axis, start, key,
 @pytest.mark.parametrize("key", ["A", "W"])
 @pytest.mark.parametrize("arrival", ["target", "offset", "stationary", "reverse", "perpendicular"])
 def test_minimum_step_requires_actual_progress_before_continuation(rig, monkeypatch, key, arrival):
-    from mg400_agent.joint_limits import MARGIN_DEG
+    from mg400.joint_limits import MARGIN_DEG
 
     if key == "A":
         rig.sample = Feedback((160 - MARGIN_DEG - 0.1, *START[1:]), 5, 0, False)

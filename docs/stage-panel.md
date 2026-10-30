@@ -1,3 +1,5 @@
+[English](stage-panel.en.md)
+
 # 位移台面板
 
 [返回项目首页](../README.md)
@@ -27,7 +29,7 @@
 `Stop all motors` 是软件停止，不是急停。
 
 Arduino 接在 Olares 宿主机的 USB 上，必须运行 `firmware/three-motor-demo` 固件。
-上传、接线和串口命令见 [固件说明](../firmware/three-motor-demo/README.md)（英文）。
+上传、接线和串口命令见 [固件说明](../firmware/three-motor-demo/README.md)。
 面板用文件锁独占串口。
 不加锁的程序仍能同时打开该串口，面板不能发现它。
 

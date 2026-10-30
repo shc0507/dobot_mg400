@@ -1034,6 +1034,11 @@ review = "human"
 deps = ["ORC-03", "ORC-04", "STG-02", "FUR-04", "THM-03"]
 writes = [
   "src/orchestrator/skills/crucible.py",
+  "src/orchestrator/skills/__init__.py",
+  "src/orchestrator/rehearsal.py",
+  "src/orchestrator/clients.py",
+  "src/orchestrator/runner.py",
+  "src/orchestrator/cli.py",
   "tests/test_orchestrator_crucible.py",
   "docs/orchestrator.md",
   "docs/orchestrator.en.md",

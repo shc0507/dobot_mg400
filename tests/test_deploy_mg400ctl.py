@@ -347,3 +347,95 @@ def test_assets_reports_invalid_manifest_without_commands(ctl, tmp_path, capsys)
     assert ctl.call("assets") == 1
     assert "Cannot read assets:" in capsys.readouterr().err
     ctl.run.assert_not_called()
+
+
+@pytest.fixture
+def optional_ctl(ctl, tmp_path):
+    registry = tmp_path / "services.toml"
+    registry.write_text(
+        (ROOT / "deploy/services.toml").read_text()
+        + '\n[[service]]\nname = "optional"\nunits = ["mg400-optional.service"]\n'
+        'optional = true\nvenv = ".venv-vision"\ngroups = ["vision"]\n'
+        'token = "MG400_OPTIONAL_TOKEN"\nport = 8771\nassets = []\n'
+    )
+    ctl.host.registry = registry
+    return ctl
+
+
+@pytest.mark.parametrize("action", ["start", "restart"])
+def test_disabled_optional_service_cannot_start(optional_ctl, action):
+    assert optional_ctl.call(action, "optional") == 1
+    optional_ctl.run.assert_not_called()
+    optional_ctl.execvpe.assert_not_called()
+
+
+def test_start_all_selects_only_enabled_services(optional_ctl):
+    assert optional_ctl.call("start", "all") == 0
+    assert "mg400-optional.service" not in systemctl(optional_ctl)[0]
+    optional_ctl.run.reset_mock()
+    optional_ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=optional\n")
+    assert optional_ctl.call("start", "all") == 0
+    assert systemctl(optional_ctl) == [
+        [
+            "systemctl",
+            "start",
+            "mg400-web-panel.service",
+            "mg400-stage-panel.service",
+            "mg400-camera-preview.service",
+            "mg400-gripper-collector.service",
+            "mg400-optional.service",
+        ]
+    ]
+
+
+@pytest.mark.parametrize("target", ["optional", "all"])
+def test_stop_remains_available_after_optional_service_is_disabled(optional_ctl, target):
+    optional_ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=unknown,unknown\n")
+    assert optional_ctl.call("stop", target) == 0
+    assert "mg400-optional.service" in systemctl(optional_ctl)[0]
+
+
+def test_logs_remain_available_for_disabled_registered_services(optional_ctl):
+    assert optional_ctl.call("logs", "optional") == 0
+    assert systemctl(optional_ctl) == [
+        ["journalctl", "--no-pager", "-n", "50", "-u", "mg400-optional.service"]
+    ]
+
+
+def test_status_shows_only_enabled_services(optional_ctl):
+    assert optional_ctl.call("status") == 0
+    assert "mg400-optional.service" not in optional_ctl.out.getvalue()
+    optional_ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=optional\n")
+    assert optional_ctl.call("status") == 0
+    assert "mg400-optional.service" in optional_ctl.out.getvalue()
+
+
+@pytest.mark.parametrize("selection", ["unknown", "optional,optional", "optional,", "web"])
+def test_invalid_optional_selection_refuses_start_before_commands(optional_ctl, selection):
+    optional_ctl.host.settings.write_text(SETTINGS + f"MG400_OPTIONAL_SERVICES={selection}\n")
+    assert optional_ctl.call("start", "all") == 1
+    optional_ctl.run.assert_not_called()
+    optional_ctl.execvpe.assert_not_called()
+
+
+def test_optional_token_comes_from_registry_setting(optional_ctl):
+    optional_ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_TOKEN=test-token-value\n")
+    assert optional_ctl.call("token", "optional") == 0
+    assert optional_ctl.out.getvalue() == "test-token-value\n"
+    optional_ctl.run.assert_not_called()
+
+
+def test_invalid_registry_fails_before_commands(optional_ctl, capsys):
+    optional_ctl.host.registry.write_text("[invalid]\n")
+    assert optional_ctl.call("start", "all") == 1
+    assert "Cannot read service registry:" in capsys.readouterr().err
+    optional_ctl.run.assert_not_called()
+
+
+def test_help_names_both_command_links(ctl, capsys):
+    with pytest.raises(SystemExit) as exit_:
+        ctl.call("--help")
+    assert exit_.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "mg400ctl or labctl" in help_text
+    ctl.run.assert_not_called()

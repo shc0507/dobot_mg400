@@ -35,6 +35,7 @@ def host(module, monkeypatch, tmp_path):
     code = tmp_path / "opt/mg400"
     (code / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
+    shutil.copy(ROOT / "deploy/services.toml", code / "deploy")
     shutil.copytree(ROOT / "config/systemd", code / "config/systemd")
     (tmp_path / "proc").mkdir()
     commands = []
@@ -114,6 +115,8 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
     command = host.root / "usr/local/bin/mg400ctl"
     assert command.is_symlink() and command.readlink() == host.code / "deploy/mg400ctl"
+    lab_command = host.root / "usr/local/bin/labctl"
+    assert lab_command.is_symlink() and lab_command.readlink() == command.readlink()
     assert not (host.root / "etc/mg400/go2rtc.yaml").exists()
 
     uv = [options for command, options in host.commands if command[0] == "/usr/bin/uv"]
@@ -426,8 +429,10 @@ def local_asset(host, tmp_path):
         f'sha256 = "{hashlib.sha256(path.read_bytes()).hexdigest()}"\n'
         f"bytes = {path.stat().st_size}\n"
         'install = "/var/lib/mg400/models/model.dat"\nmode = "0640"\n'
-        'service = "vision"\nsource = "test fixture"\nlicense = "AGPL-3.0"\n'
+        'service = "web"\nsource = "test fixture"\nlicense = "AGPL-3.0"\n'
     )
+    registry = host.code / "deploy/services.toml"
+    registry.write_text(registry.read_text().replace("assets = []", 'assets = ["model"]', 1))
     return path
 
 
@@ -498,3 +503,279 @@ def test_asset_destination_link_is_refused_before_host_changes(host, local_asset
     assert not host.settings.exists()
     assert target.is_symlink() and sentinel.read_bytes() == b"keep"
     assert len(host.commands) == 2
+
+
+def add_optional_service(
+    host, *, name="optional", venv=".venv-vision", groups=("vision",), asset_names=()
+):
+    import json
+
+    path = host.code / "deploy/services.toml"
+    with path.open("a") as stream:
+        stream.write(
+            f'\n[[service]]\nname = "{name}"\nunits = ["mg400-{name}.service"]\n'
+            f'optional = true\nvenv = "{venv}"\ngroups = {json.dumps(list(groups))}\n'
+            f'token = "MG400_{name.upper()}_TOKEN"\nport = 8771\n'
+            f"assets = {json.dumps(list(asset_names))}\n"
+        )
+    (host.code / "config/systemd" / f"mg400-{name}.service").write_text("[Service]\n")
+
+
+def select_optional(host, value):
+    example = host.code / "deploy/mg400.env.example"
+    example.write_text(
+        example.read_text().replace("MG400_OPTIONAL_SERVICES=", f"MG400_OPTIONAL_SERVICES={value}")
+    )
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('name = "web"', 'name = "all"'),
+        ('name = "stage"', 'name = "web"'),
+        ("optional = false", 'optional = "false"'),
+        ('venv = ".venv"', 'venv = "../../elsewhere"'),
+        ('units = ["mg400-web-panel.service"]', 'units = ["../escape.service"]'),
+        ('units = ["mg400-web-panel.service"]', "units = []"),
+        ('units = ["mg400-stage-panel.service"]', 'units = ["mg400-web-panel.service"]'),
+        ('groups = ["stage"]', 'groups = ["stage", "stage"]'),
+        ('groups = ["tools"]', 'groups = ["--all-groups"]'),
+        ('token = "MG400_PANEL_TOKEN"', 'token = "OTHER_TOKEN"'),
+        ("port = 8766", "port = true"),
+        ("port = 8766", "port = 65536"),
+        ("port = 8766", "port = -1"),
+        ("port = 8767", "port = 8766"),
+        ("assets = []", 'assets = ["../model"]'),
+        ("assets = []", 'assets = ["model", "model"]'),
+        ("optional = false\n", ""),
+    ],
+)
+def test_registry_loader_rejects_invalid_fields(module, tmp_path, old, new):
+    path = tmp_path / "services.toml"
+    path.write_text((ROOT / "deploy/services.toml").read_text().replace(old, new, 1))
+    with pytest.raises(ValueError):
+        module.load_services(path)
+
+
+def test_registry_loader_refuses_symlink(module, tmp_path):
+    link = tmp_path / "services.toml"
+    link.symlink_to(ROOT / "deploy/services.toml")
+    with pytest.raises(OSError):
+        module.load_services(link)
+
+
+@pytest.mark.parametrize(
+    "selection", ["unknown", "optional,optional", "optional,", ",optional", "web", "optional,,web"]
+)
+def test_bad_optional_selection_refuses_before_host_changes(host, selection):
+    add_optional_service(host)
+    select_optional(host, selection)
+    assert host.install() == 1
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    assert len(host.commands) == 2
+
+
+def test_mandatory_groups_are_explicit_and_ignore_external_venv(host, monkeypatch):
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/tmp/unrelated-environment")
+    assert host.install() == 0
+    sync, options = next(
+        (command, options) for command, options in host.commands if command[0] == "/usr/bin/uv"
+    )
+    assert sync == [
+        "/usr/bin/uv",
+        "sync",
+        "--locked",
+        "--no-default-groups",
+        "--group",
+        "stage",
+        "--group",
+        "tools",
+        "--python",
+        "/usr/bin/python3",
+    ]
+    assert options["env"]["UV_PROJECT_ENVIRONMENT"] == str(host.code / ".venv")
+
+
+def test_enabled_optional_service_uses_its_separate_environment(host):
+    add_optional_service(host)
+    select_optional(host, " optional ")
+    assert host.install() == 0
+    syncs = [
+        (command, options) for command, options in host.commands if command[0] == "/usr/bin/uv"
+    ]
+    assert len(syncs) == 2
+    assert syncs[0][0][4:8] == ["--group", "stage", "--group", "tools"]
+    assert syncs[1][0] == [
+        "/usr/bin/uv",
+        "sync",
+        "--locked",
+        "--no-default-groups",
+        "--group",
+        "vision",
+        "--python",
+        "/usr/bin/python3",
+    ]
+    assert syncs[1][1]["env"]["UV_PROJECT_ENVIRONMENT"] == str(host.code / ".venv-vision")
+    assert (host.units / "mg400-optional.service").exists()
+
+
+def test_optional_groups_in_shared_environment_are_deduplicated(host):
+    add_optional_service(host, venv=".venv", groups=("stage", "thermal"))
+    select_optional(host, "optional")
+    assert host.install() == 0
+    commands = [command for command, _ in host.commands if command[0] == "/usr/bin/uv"]
+    assert commands == [
+        [
+            "/usr/bin/uv",
+            "sync",
+            "--locked",
+            "--no-default-groups",
+            "--group",
+            "stage",
+            "--group",
+            "thermal",
+            "--group",
+            "tools",
+            "--python",
+            "/usr/bin/python3",
+        ]
+    ]
+
+
+@pytest.fixture
+def optional_asset(host, local_asset):
+    registry = host.code / "deploy/services.toml"
+    registry.write_text(registry.read_text().replace('assets = ["model"]', "assets = []"))
+    manifest = host.code / "config/assets.toml"
+    manifest.write_text(manifest.read_text().replace('service = "web"', 'service = "optional"'))
+    add_optional_service(host, asset_names=("model",))
+    return local_asset
+
+
+def test_disabled_service_installs_no_groups_assets_units_or_udev(
+    module, host, optional_asset, monkeypatch
+):
+    templates = host.code / "config/udev"
+    templates.mkdir()
+    (templates / "70-mg400-optional.rules.in").write_text("invalid disabled template")
+    opener = Mock(side_effect=AssertionError("Disabled asset must not download"))
+    monkeypatch.setattr(module.main.__globals__["assets"], "open_download", opener)
+    assert host.install("--fetch-assets") == 0
+    syncs = [command for command, _ in host.commands if command[0] == "/usr/bin/uv"]
+    assert len(syncs) == 1 and "vision" not in syncs[0]
+    assert not (host.data / "models").exists()
+    assert not (host.units / "mg400-optional.service").exists()
+    assert not (host.root / "etc/udev").exists()
+    assert not [command for command, _ in host.commands if command[0] == "udevadm"]
+    opener.assert_not_called()
+
+
+def test_explicit_disabled_asset_is_refused_before_changes(host, optional_asset):
+    assert host.install("--asset", f"model={optional_asset}") == 1
+    assert not host.settings.exists() and not host.data.exists()
+
+
+def test_enabled_optional_asset_keeps_verification_and_permissions(host, optional_asset):
+    select_optional(host, "optional")
+    assert host.install("--asset", f"model={optional_asset}") == 0
+    target = host.data / "models/model.dat"
+    assert target.read_bytes() == optional_asset.read_bytes()
+    assert mode(target) == 0o640 and host.owner(target) == (1000, 1000)
+
+
+def test_registry_cannot_claim_another_services_asset(host, local_asset):
+    manifest = host.code / "config/assets.toml"
+    manifest.write_text(manifest.read_text().replace('service = "web"', 'service = "someone-else"'))
+    assert host.install("--fetch-assets") == 1
+    assert not host.settings.exists() and not host.data.exists()
+
+
+def test_missing_selected_unit_is_refused_before_changes(host):
+    add_optional_service(host)
+    select_optional(host, "optional")
+    (host.code / "config/systemd/mg400-optional.service").unlink()
+    assert host.install() == 1
+    assert not host.settings.exists() and not host.data.exists()
+
+
+@pytest.fixture
+def optional_udev(module, host, monkeypatch):
+    add_optional_service(host)
+    select_optional(host, "optional")
+    templates = host.code / "config/udev"
+    templates.mkdir()
+    template = templates / "70-mg400-optional.rules.in"
+    template.write_text(
+        'SUBSYSTEM=="usb", ATTR{idVendor}=="1234", ATTR{idProduct}=="5678", '
+        'MODE="0660", GROUP="@SERVICE_GROUP@"\n'
+    )
+    monkeypatch.setattr(
+        module.main.__globals__["grp"],
+        "getgrgid",
+        lambda gid: SimpleNamespace(gr_name="mg400group"),
+    )
+    return template
+
+
+def test_only_enabled_udev_rules_are_rendered_with_root_permissions(host, optional_udev):
+    assert host.install() == 0
+    target = host.root / "etc/udev/rules.d/70-mg400-optional.rules"
+    assert target.read_text() == optional_udev.read_text().replace("@SERVICE_GROUP@", "mg400group")
+    assert mode(target) == 0o644 and host.owner(target) == (0, 0)
+    assert [command for command, _ in host.commands if command[0] == "udevadm"] == [
+        ["udevadm", "control", "--reload-rules"],
+        ["udevadm", "trigger", "--subsystem-match=usb"],
+    ]
+
+
+def test_optional_udev_dry_run_only_lists_actions(host, optional_udev):
+    assert host.install("--dry-run") == 0
+    assert not host.settings.exists() and not (host.root / "etc/udev").exists()
+    assert not [command for command, _ in host.commands if command[0] == "udevadm"]
+    assert "Would run: udevadm control --reload-rules" in host.out.getvalue()
+    assert "Would run: udevadm trigger --subsystem-match=usb" in host.out.getvalue()
+
+
+@pytest.mark.parametrize("where", ["source", "destination", "ancestor"])
+def test_udev_symlinks_are_refused_before_changes(host, optional_udev, tmp_path, where):
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_text("keep")
+    if where == "source":
+        optional_udev.unlink()
+        optional_udev.symlink_to(sentinel)
+    elif where == "destination":
+        target = host.root / "etc/udev/rules.d/70-mg400-optional.rules"
+        target.parent.mkdir(parents=True)
+        target.symlink_to(sentinel)
+    else:
+        (host.root / "etc").mkdir()
+        (host.root / "etc/udev").symlink_to(tmp_path)
+    assert host.install() == 1
+    assert not host.settings.exists() and not host.data.exists()
+    assert sentinel.read_text() == "keep"
+
+
+def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
+    assert host.install("--dry-run") == 0
+    assert host.out.getvalue().replace(str(host.root), "<host>").splitlines() == [
+        "Would ensure <host>/etc/mg400 (0755, 0:0)",
+        "Would create <host>/etc/mg400/mg400.env",
+        "Would ensure <host>/var/lib/mg400 (0750, 0:1000)",
+        "Would ensure <host>/var/lib/mg400/locks (0700, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/work (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/camera (0700, 1000:1000)",
+        "Would create <host>/var/lib/mg400/camera/preview.key",
+        "Would ensure <host>/opt/mg400 (0750, 0:1000)",
+        "Would run: /usr/bin/uv sync --locked --no-default-groups "
+        "--group stage --group tools --python /usr/bin/python3",
+        "Would install <host>/etc/systemd/system/mg400-camera-capture.service",
+        "Would install <host>/etc/systemd/system/mg400-camera-preview.service",
+        "Would install <host>/etc/systemd/system/mg400-gripper-collector.path",
+        "Would install <host>/etc/systemd/system/mg400-gripper-collector.service",
+        "Would install <host>/etc/systemd/system/mg400-stage-panel.service",
+        "Would install <host>/etc/systemd/system/mg400-web-panel.service",
+        "Would run: systemctl daemon-reload",
+        "Would run: systemctl enable --now mg400-gripper-collector.path",
+        "Would link <host>/usr/local/bin/mg400ctl to <host>/opt/mg400/deploy/mg400ctl",
+        "Would link <host>/usr/local/bin/labctl to <host>/opt/mg400/deploy/mg400ctl",
+    ]

@@ -1,6 +1,7 @@
 """The service files hold no values of one host and agree on shared paths."""
 
 import shlex
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -10,13 +11,9 @@ from mg400.web_gripper import COLLECTOR_REQUEST
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "config/systemd"
 HOST_VALUES = ("100.64.", "/olares", "/opt/mg400-", "/root/")
-SERVICES = (
-    "mg400-web-panel.service",
-    "mg400-gripper-collector.service",
-    "mg400-camera-capture.service",
-    "mg400-camera-preview.service",
-    "mg400-stage-panel.service",
-)
+with (ROOT / "deploy/services.toml").open("rb") as stream:
+    REGISTRY = tomllib.load(stream)["service"]
+SERVICES = tuple(unit for entry in REGISTRY for unit in entry["units"])
 FEEDBACK = "/var/lib/mg400/work/gripper_feedback.json"
 
 

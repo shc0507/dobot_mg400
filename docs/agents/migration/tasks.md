@@ -668,6 +668,8 @@ Steps (P-SERVICE and P-DEPLOY plus):
 
 Integration scope: add a public held-shutdown lifecycle method in `src/orchestrator/runner.py` and cover it in `tests/test_orchestrator_runner.py`. Preserve worker drain, fresh stop confirmation, lease cleanup and durable run status; the service must not patch private runner state or rewrite an aborted record to held. In `config/systemd/mg400-web-panel.service`, `config/systemd/mg400-stage-panel.service` and `config/systemd/mg400-camera-preview.service`, only extend `UnsetEnvironment` to exclude `MG400_ORCH_TOKEN` and the downstream credential aliases `MG400_ORCH_ROBOT_TOKEN`, `MG400_ORCH_STAGE_TOKEN`, `MG400_ORCH_THERMAL_TOKEN`, `MG400_ORCH_VISION_TOKEN`, `MG400_ORCH_FURNACE_TOKEN` and `MG400_ORCH_MICROSCOPE_TOKEN`. Preserve each service's checked tokens, including camera preview's `MG400_VISION_TOKEN`.
 
+Demo recovery scope: add a public `Rehearsal.new_clients(identity)` factory in `src/orchestrator/rehearsal.py`, with coverage in `tests/test_orchestrator_rehearsal.py`. It creates unacquired clients for a new identity against the same active owned demo services. It must not create replacement simulators, change an existing client's identity, expose production endpoints, or access another module's private transport. Preserve owned-resource lifetime and cleanup, and reject use outside the active rehearsal context. The service uses these clients only through the explicit recovery transaction; it never reacquires the old run's leases automatically.
+
 Done when: P-CHECKS pass.
 
 Docs: `orchestrator.md` and `.en.md`, `deploy.md` and `.en.md`.

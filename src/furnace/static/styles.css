@@ -88,3 +88,11 @@ input[type=text]:focus { border-color:var(--blue);box-shadow:0 0 0 3px #4e91e81c
 .flow-footer { display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:14px; }
 .flow-footer small { max-width:720px;color:var(--muted);line-height:1.45; }
 @media(max-width:650px){.flow-heading,.flow-footer{align-items:stretch;flex-direction:column}.flow-connect{align-items:stretch;flex-direction:column}.row-actions{justify-content:stretch}.row-actions .button{flex:1}}
+.access-panel { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:20px; }
+.access-panel label { display:flex; gap:8px; align-items:center; }
+.access-panel p { flex-basis:100%; margin:0; }
+.end-gas-controls { display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin:16px 0; }
+.end-gas-controls label { display:grid; gap:5px; width:105px; }
+.end-gas-controls input { width:100%; }
+#sequenceRows input { min-width:75px; }
+#demoBadge { color:#b35600; font-weight:600; }

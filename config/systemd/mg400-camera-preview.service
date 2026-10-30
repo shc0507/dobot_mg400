@@ -10,7 +10,7 @@ User=1000
 Group=1000
 EnvironmentFile=/etc/mg400/mg400.env
 # Keep MG400_VISION_TOKEN for the loopback detections proxy; drop unrelated tokens.
-UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN
+UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN MG400_FURNACE_TOKEN
 WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/python scripts/camera_preview.py
 Restart=on-failure

@@ -11,6 +11,8 @@ The installer never starts, stops or restarts a robot service.
 import argparse
 import errno
 import grp
+import json
+import math
 import os
 import re
 import secrets
@@ -31,6 +33,23 @@ REQUEST_WATCHER = "mg400-gripper-collector.path"
 CAMERA_COUNT = 3
 DEVICE = re.compile(r"/dev/[A-Za-z0-9/._:-]+")
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+JSON_SETTINGS = {"MG400_FURNACE_GAS_MAP", "MG400_FURNACE_IDLE_GAS"}
+
+
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def finite_json_number(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("Nonfinite JSON number")
+    return number
 
 
 class Host:
@@ -197,6 +216,7 @@ def parse_line(line, number):
     Read the line as systemd reads EnvironmentFile=: spaces around the key and the
     value do not count, and one pair of quotes around the value is removed. Refuse
     the forms where systemd could read another value: no "=", escapes, inner quotes.
+    Only the two furnace JSON settings permit a literal single-quoted object.
     """
     stripped = line.strip()
     if not stripped or stripped[0] in "#;":
@@ -205,6 +225,26 @@ def parse_line(line, number):
     key, value = key.strip(), value.strip()
     if not equals or not KEY.fullmatch(key):
         raise ValueError(f"Settings line {number} is not KEY=VALUE.")
+    if key in JSON_SETTINGS and value:
+        # EnvironmentFile single quotes preserve all interior characters.
+        # Keep this exception restricted to the two furnace JSON settings.
+        if len(value) < 2 or value[0] != "'" or value[-1] != "'":
+            raise ValueError(f"Settings line {number}: enclose {key} JSON in single quotes.")
+        literal = value[1:-1]
+        if any(
+            character in "\\'" or ord(character) < 32 or ord(character) == 127
+            for character in literal
+        ):
+            raise ValueError(f"Settings line {number}: invalid literal JSON in {key}.")
+        parsed = json.loads(
+            literal,
+            object_pairs_hook=unique_json_object,
+            parse_constant=finite_json_number,
+            parse_float=finite_json_number,
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Settings line {number}: {key} must be a JSON object.")
+        return key, literal
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
         value = value[1:-1]
     if any(character in value for character in "\\'\""):
@@ -243,6 +283,8 @@ def merge_settings(current, example, token=lambda: secrets.token_urlsafe(32)):
             pair = parse_line(line, number)
             if pair is not None and pair[0] not in present:
                 key, value = pair
+                if key in JSON_SETTINGS and value:
+                    value = f"'{value}'"
                 lines.append(f"{key}={token() if key.endswith('_TOKEN') and not value else value}")
                 present.add(key)
                 changed.append(key)
@@ -475,6 +517,8 @@ def install(args, host, run, chown, out):
     directory(host.data / "locks", 0o700, service)
     directory(host.data / "work", 0o750, service)
     directory(host.data / "camera", 0o700, service)
+    if "furnace" in selected:
+        directory(host.data / "furnace", 0o750, service)
     key = host.data / "camera/preview.key"
     if not os.path.lexists(key):
         step(f"create {key}")

@@ -9,7 +9,7 @@ Type=simple
 User=1000
 Group=1000
 EnvironmentFile=/etc/mg400/mg400.env
-# Drop the tokens that this service does not check.
+# Keep MG400_VISION_TOKEN for the loopback detections proxy; drop unrelated tokens.
 UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN
 WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/python scripts/camera_preview.py

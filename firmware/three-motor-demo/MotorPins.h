@@ -27,6 +27,26 @@ constexpr uint8_t BottomSleep = 12;
 constexpr uint8_t TopSleep = 13;
 constexpr uint8_t InsertSleep = 11;
 
+// Active LOW limit contacts to GND, with the Uno's internal pull-ups.
+// 255 disables an input. A minimum input is required for homing.
+constexpr uint8_t InsertLimitMin = A0;
+constexpr uint8_t InsertLimitMax = A1;
+constexpr uint8_t BottomLimitMin = A2;
+constexpr uint8_t BottomLimitMax = A3;
+constexpr uint8_t TopLimitMin = A4;
+constexpr uint8_t TopLimitMax = A5;
+constexpr unsigned long LimitDebounceMs = 5;
+constexpr float HomeSpeed = 100.0f;
+constexpr float HomeSlowSpeed = 25.0f;
+constexpr unsigned long HomeBackoffSteps = 200;
+constexpr unsigned long HomeStepLimit = 10000;
+constexpr unsigned long HomeTimeoutMs = 120000;
+static_assert(HomeSpeed >= 1 && HomeSpeed <= 1000 &&
+                  HomeSlowSpeed >= 1 && HomeSlowSpeed < HomeSpeed,
+              "Homing speeds must be within 1..1000, with a slower final approach.");
+static_assert(HomeStepLimit > HomeBackoffSteps && HomeTimeoutMs > 0,
+              "Homing must have finite positive travel and time bounds.");
+
 // Editable idle timeout in milliseconds: 10000UL = 10 seconds.
 // Each motor has its own timer, starting when that motor stops moving.
 constexpr unsigned long SleepTimeoutMs = 10000UL;
@@ -71,6 +91,34 @@ static_assert(validSleepPin(BottomSleep) && validSleepPin(TopSleep) &&
                   validSleepPin(InsertSleep) && BottomSleep != TopSleep &&
                   BottomSleep != InsertSleep && TopSleep != InsertSleep,
               "Sleep pins must be distinct and not overlap motor, microstep, or serial pins.");
+
+constexpr bool validLimitPin(uint8_t pin) {
+  return pin == 255 || (pin < 20 && validSleepPin(pin) &&
+      pin != BottomSleep && pin != TopSleep && pin != InsertSleep);
+}
+
+constexpr bool separateLimits(uint8_t first, uint8_t second) {
+  return first == 255 || second == 255 || first != second;
+}
+
+constexpr bool limitDistinct(uint8_t pin, uint8_t a, uint8_t b,
+                             uint8_t c, uint8_t d, uint8_t e) {
+  return separateLimits(pin, a) && separateLimits(pin, b) &&
+      separateLimits(pin, c) && separateLimits(pin, d) && separateLimits(pin, e);
+}
+
+static_assert(validLimitPin(InsertLimitMin) && validLimitPin(InsertLimitMax) &&
+                  validLimitPin(BottomLimitMin) && validLimitPin(BottomLimitMax) &&
+                  validLimitPin(TopLimitMin) && validLimitPin(TopLimitMax),
+              "Limit pins must be Uno I/O pins D2..D19 or 255, without output conflicts.");
+static_assert(limitDistinct(InsertLimitMin, InsertLimitMax, BottomLimitMin, BottomLimitMax,
+                            TopLimitMin, TopLimitMax) &&
+                  limitDistinct(InsertLimitMax, BottomLimitMin, BottomLimitMax,
+                                TopLimitMin, TopLimitMax, 255) &&
+                  limitDistinct(BottomLimitMin, BottomLimitMax, TopLimitMin, TopLimitMax, 255, 255) &&
+                  limitDistinct(BottomLimitMax, TopLimitMin, TopLimitMax, 255, 255, 255) &&
+                  separateLimits(TopLimitMin, TopLimitMax),
+              "Enabled limit pins must be distinct.");
 
 #if defined(NUM_DIGITAL_PINS)
 constexpr bool withinBoard(PinPair pins) {

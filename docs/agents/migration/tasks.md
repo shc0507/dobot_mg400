@@ -620,7 +620,7 @@ Goal: pick at one station and place at another, with every check the hardware al
 Steps:
 
 1. Skills `robot.pick(station, grip)`, `robot.place(station, release)`, `robot.transfer(from, to, grip, release)`. Register them in `src/orchestrator/skills/__init__.py`. Map the public `from` and `to` parameters to valid Python argument names while preserving complete typed recipe validation.
-2. Pick: enabled and idle; gripper initialized; rise to the safe height at the current XY; travel at the safe height through the via stations; open to the pre-grip width; descend; close; require outcome `contact`; rise; require that the outcome did not become `dropped`.
+2. Pick: enabled and idle; gripper initialized; rise to the safe height at the current XY; travel at the safe height through the via stations; open to the pre-grip width; descend; close; require outcome `contact`; rise; require that the outcome did not become `dropped`. Verify that each accepted robot state belongs to the current run. In `src/orchestrator/runner.py`, expose `StepClient.owned(state)` through the existing authority guard and adapter ownership predicate; do not expose the private adapter or add acquisition or recovery behavior. Test this precondition in `tests/test_orchestrator_transfer.py`.
 3. Place: travel at the safe height; descend; open; require outcome `arrived`; rise.
 4. Every move uses `execute` with the capped speed and waits for completion through the client.
 5. Take each station's zone before entering and release it after leaving (the ORC-04 interface; a no-op manager until ORC-04 lands).
@@ -929,7 +929,7 @@ Steps (P-SERVICE and P-DEPLOY plus):
 
 1. `src/furnace/app.py`: the contract blueprint and the existing page routes (`/`, `/api/status`, `/api/furnace/*`, `/api/flow/*`, `/api/sequence*`). The page routes call the same service object. The camera and recording routes come in FUR-05; hide those page parts until then.
 2. Manual page commands work when no automation lease is held. Stop always works.
-3. Unit `mg400-furnace.service` with `SupplementaryGroups=dialout`, port 8769, the settings from FUR-01 and FUR-03.
+3. Unit `mg400-furnace.service` with `SupplementaryGroups=dialout`, port 8769, the settings from FUR-01 and FUR-03. Preserve P-DEPLOY token isolation when adding `MG400_FURNACE_TOKEN` to the shared environment: add that token to `UnsetEnvironment` in `config/systemd/mg400-web-panel.service`, `config/systemd/mg400-stage-panel.service` and `config/systemd/mg400-camera-preview.service`. These existing-unit edits only exclude the new furnace token; camera preview must retain the vision token that it uses. Cover the exclusions in the existing systemd unit tests.
 4. `mg400ctl` refuses `stop` or `restart` of `furnace` while a sequence runs, unless `--force`.
 5. Tests in demo mode with `tests/contract_helpers.py`, and page route tests.
 

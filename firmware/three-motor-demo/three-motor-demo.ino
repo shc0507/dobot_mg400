@@ -46,6 +46,9 @@ void printHelp() {
   console.println(F("  accel 50                1..10000 STEP pulses/s^2, while idle"));
   console.println(F("  spr 200                 1..65535 full steps/rev, while idle"));
   console.println(F("  microstep [1|2|4|8|16]  Query/set global resolution; all motors idle"));
+  console.println(F("  home                    Seek minimum, back off, approach slowly"));
+  console.println(F("  soft <min> <max>        Inclusive steps from home; idle and homed only"));
+  console.println(F("  awake <ms>              Renew idle holding for 0..60000 ms; 0 cancels"));
   console.println(F("  status                  Show all motors"));
   console.println(F("  help"));
   console.println(F("Select/stop a busy motor before changing its direction or settings."));
@@ -71,6 +74,14 @@ bool parsePositiveLong(const char *text, long &value) {
   errno = 0;
   value = strtol(text, &end, 10);
   return end != text && *end == '\0' && errno != ERANGE && value > 0;
+}
+
+bool parseLong(const char *text, long &value) {
+  if (!text || *text == '\0') return false;
+  char *end;
+  errno = 0;
+  value = strtol(text, &end, 10);
+  return end != text && *end == '\0' && errno != ERANGE;
 }
 
 bool parsePositiveFloat(const char *text, float &value) {
@@ -101,7 +112,16 @@ void printStatus() {
     console.print(F(" accel="));
     console.print(status.acceleration, 1);
     console.print(F(" spr="));
-    console.println(status.stepsPerRevolution);
+    console.print(status.stepsPerRevolution);
+    console.print(F(" homed="));
+    console.print(status.homed ? 1 : 0);
+    console.print(F(" limits="));
+    console.print(status.limitMin ? 1 : 0);
+    console.print(status.limitMax ? 1 : 0);
+    console.print(F(" soft="));
+    console.print(status.soft ? 1 : 0);
+    console.print(F(" awake="));
+    console.println(status.awake ? 1 : 0);
   }
 }
 
@@ -112,13 +132,15 @@ void handleCommand(char *line) {
   char *command = strtok(line, " \t");
   if (!command) return;
   char *argument = strtok(NULL, " \t");
-  if (strtok(NULL, " \t")) {
+  char *second = strtok(NULL, " \t");
+  if ((second && strcmp(command, "soft") != 0) || strtok(NULL, " \t")) {
     console.println(F("ERROR: Too many arguments; type help."));
     return;
   }
 
   bool ok = false;
   long integerValue;
+  long secondValue;
   float floatValue;
   MotorControl::Motor motor;
 
@@ -142,6 +164,20 @@ void handleCommand(char *line) {
       console.println(F("ERROR: microstep requires 1, 2, 4, 8, or 16 and all motors idle."));
     }
     return;
+  } else if (strcmp(command, "home") == 0 && !argument) {
+    const MotorControl::HomeError error = MotorControl::home();
+    if (error != MotorControl::HomeError::None) {
+      console.print(F("ERROR: home failed: "));
+      console.println(MotorControl::homeErrorText(error));
+      return;
+    }
+    ok = true;
+  } else if (strcmp(command, "soft") == 0) {
+    ok = parseLong(argument, integerValue) && parseLong(second, secondValue) &&
+         MotorControl::setSoftLimits(integerValue, secondValue);
+  } else if (strcmp(command, "awake") == 0) {
+    ok = parseLong(argument, integerValue) && integerValue >= 0 && integerValue <= 60000L &&
+         MotorControl::keepAwake(static_cast<unsigned long>(integerValue));
   } else if (strcmp(command, "motor") == 0) {
     ok = parseMotor(argument, motor) && MotorControl::selectMotor(motor);
   } else if (strcmp(command, "dir") == 0 && argument) {
@@ -189,17 +225,40 @@ void handleCommand(char *line) {
   }
 }
 
+void printHomeErrors() {
+  // update() runs during every printed byte. Report deferred failures only from
+  // complete reply boundaries, never inside an acknowledgement/status line.
+  // Printing one axis can fail a previously scanned axis. Drain before accepting
+  // another command: each of the three homes can fail only once without a command.
+  bool printed;
+  do {
+    printed = false;
+    for (uint8_t i = 0; i < 3; ++i) {
+      const MotorControl::Motor motor = static_cast<MotorControl::Motor>(i);
+      const MotorControl::HomeError error = MotorControl::takeHomeError(motor);
+      if (error == MotorControl::HomeError::None) continue;
+      printed = true;
+      console.print(F("ERROR: home failed: "));
+      console.print(motorName(motor));
+      console.print(' ');
+      console.println(MotorControl::homeErrorText(error));
+    }
+  } while (printed);
+}
+
 void readSerialCommands() {
   // Fixed buffer, bounded work, and no parseFloat()/readStringUntil() timeouts.
   for (uint8_t received = 0; received < 16 && Serial.available() > 0; ++received) {
     const char character = static_cast<char>(Serial.read());
     if (character == '\n' || character == '\r') {
+      printHomeErrors();
       if (discardLine) {
         console.println(F("ERROR: Invalid or oversized line; discarded."));
       } else if (commandLength > 0) {
         commandBuffer[commandLength] = '\0';
         handleCommand(commandBuffer);
       }
+      printHomeErrors();
       commandLength = 0;
       discardLine = false;
     } else if (!discardLine) {
@@ -228,5 +287,7 @@ void setup() {
 
 void loop() {
   MotorControl::update();
+  printHomeErrors();
   readSerialCommands();
+  printHomeErrors();
 }

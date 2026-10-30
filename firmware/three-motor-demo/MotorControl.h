@@ -10,23 +10,33 @@ namespace MotorControl {
 
 enum class Motor : uint8_t { Bottom_Motor, Top_Motor, Insert_Motor };
 enum class Direction : uint8_t { Clockwise, Counterclockwise };
+enum class HomeError : uint8_t {
+  None, Busy, NoMinimum, Timeout, StepLimit, Maximum, BothLimits, NotReleased,
+  PositionRange, Cancelled
+};
 
 struct Status {
   Direction direction;
   bool rotating;
   bool continuous;
-  long position;        // Signed STEP pulse count since begin(), not measured travel.
+  long position;        // Signed STEP pulses since begin()/home(), not measured travel.
   long remainingSteps; // Signed; zero in continuous mode.
   float speed;         // Configured speed limit, STEP pulses/second.
   float acceleration;  // STEP pulses/second squared, for finite moves.
   uint16_t stepsPerRevolution;
+  bool homed;
+  bool limitMin;
+  bool limitMax;
+  bool soft;
+  bool awake;
 };
 
 // Wiring is configured in MotorPins.h; re-upload the sketch after editing it.
 // Defaults: bottom selected, CW, 200 steps/rev, 200 steps/s, 50 steps/s^2.
 // All drivers start asleep. Accepted motion wakes only that driver, with a
 // non-blocking 2 ms wait before stepping. Each sleeps after SleepTimeoutMs idle
-// (editable in MotorPins.h). Selection, status, and settings do not wake drivers.
+// (editable in MotorPins.h). keepAwake() can extend this interval without motion.
+// Selection, status, and other settings do not wake drivers.
 void begin();
 void update(); // Call frequently from loop(); do not add blocking delays.
 bool selectMotor(Motor motor);
@@ -57,6 +67,14 @@ bool startHold();
 bool keepHoldAlive();
 void stopRotation(); // Immediately cancel selected motor's pulses/target.
 void stopAll();      // Immediately cancel every motor's pulses/target.
+
+// Nonblocking, bounded homing in CCW (negative) direction. The final minimum
+// contact establishes zero. Stop cancels homing and never establishes a reference.
+HomeError home();
+HomeError takeHomeError(Motor motor); // Consume a deferred failure, outside printing.
+const __FlashStringHelper *homeErrorText(HomeError error);
+bool setSoftLimits(long minimum, long maximum); // Idle and homed only, inclusive.
+bool keepAwake(unsigned long milliseconds); // 0..60000, renewable; 0 cancels extension.
 
 // Stopping holds coils until that driver's idle sleep timeout, then SLEEP goes
 // LOW and releases them. No A4988 EN pin is controlled here.

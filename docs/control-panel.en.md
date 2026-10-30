@@ -105,6 +105,16 @@ Use this sequence:
 The service executes the gripper target only after confirming that the robot reached its target.
 `Stop arm` and disabling the robot do not retract gripper commands already sent.
 
+The page shows `arrived`, `contact`, or `dropped` beside the gripper status when an outcome is available.
+`arrived` means the measured position reached the command target. It does not prove that an object is held.
+`contact` means the gripper reported object contact before reaching the target.
+`dropped` means later fresh feedback from the same collector session reported that the object fell.
+The service records 1 warning event for each observed drop. It sends no recovery command.
+
+These outcomes describe the last observation. Stale feedback does not erase them.
+Check current feedback and lock status before another action.
+During a new gripper operation, the page hides the previous outcome until a new result is confirmed.
+
 ## Keyboard jogging
 
 Keyboard jogging is available only in real-robot control mode. See [Jogging rules](#jogging-rules) for the motion rules.

@@ -584,4 +584,23 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 同一文件重复读取不会延长测量值的有效期。
 
 夹爪状态寄存器 `0x0201` 的 `3` 表示物体掉落。
+
+机器人状态保留原有夹爪字段，并增加 `gripper.outcome` 和 `gripper.outcome_at`。
+`outcome` 为 `null`、`arrived`、`contact` 或 `dropped`。
+`outcome_at` 是适配器观察到该结果时的 Unix 时间戳，单位为秒。无结果时为 `null`。
+
+新的夹爪操作在发布前清空两个字段。操作进行期间，机器人状态也隐藏旧结果。
+初始化不产生抓取结果。
+
+`arrived` 保留测量到位结果，`contact` 保留已确认的接触结果。
+在 `contact` 之后，已初始化的新鲜样本报告状态 `3` 时，观察结果变为 `dropped`。
+样本必须来自接触结果所在的采集会话，且序号更大。
+采集进程重启、过期样本或重复样本都不能触发该转换。
+
+原有采集轮询在操作间隙和运动任务结束后观察掉落。
+每次新掉落产生 1 条警告事件，包含 `outcome` 和 `outcome_at` 字段。重复轮询不改变时间戳，也不重复记录事件。
+
+反馈不可用时，结果和时间戳仍作为历史信息保留，不证明当前仍持有物体。
+即使观察结果变为 `dropped`，`WebGripper.last_outcome` 仍保留上次命令的 `arrived` 或 `contact` 结果。
+这让键盘步进在接触后继续保持停止。掉落观察不发送命令，也不清除锁定。
 状态定义见 [PGEA 用户手册表 2.9](https://www.manualslib.com/manual/4358849/Dh-Robotics-Technology-Pgea-Series.html?page=17)。

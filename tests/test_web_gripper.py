@@ -81,6 +81,8 @@ def test_construction_and_snapshot_do_not_read_or_start_collector(monkeypatch, t
     gripper = web_gripper.WebGripper(tmp_path / "feedback.json")
     assert gripper.snapshot() == {
         "position": None,
+        "outcome": None,
+        "outcome_at": None,
         "available": False,
         "can_initialize": False,
         "busy": False,
@@ -655,3 +657,166 @@ def test_initialization_failures_use_the_same_typed_errors(rig, monkeypatch):
     assert str(raised.value).startswith("Control is locked. Check the gripper. ")
     assert rig.gripper.failed
     assert rig.gripper.last_outcome is None
+
+
+def contact_result(rig, monkeypatch):
+    rig.emit()
+
+    def acknowledge_contact(delay):
+        rig.acknowledge(delay)
+        rig.emit(state=2, position=510)
+
+    monkeypatch.setattr(web_gripper.time, "sleep", acknowledge_contact)
+    assert rig.gripper.move(550)
+    assert rig.gripper.snapshot()["outcome"] == "contact"
+
+
+@pytest.mark.parametrize("contact", [False, True])
+def test_snapshot_retains_confirmed_outcome_and_unix_observation_time(rig, monkeypatch, contact):
+    rig.emit()
+    if contact:
+        contact_result(rig, monkeypatch)
+    else:
+        assert rig.gripper.move(550)
+    expected = "contact" if contact else "arrived"
+    assert rig.gripper.snapshot()["outcome"] == expected
+    assert rig.gripper.snapshot()["outcome_at"] == pytest.approx(1010.05)
+    rig.now[0] += 1
+    rig.gripper.poll()
+    assert not rig.gripper.snapshot()["available"]
+    assert rig.gripper.snapshot()["outcome"] == expected
+    assert rig.gripper.snapshot()["outcome_at"] == pytest.approx(1010.05)
+
+
+def test_fresh_drop_after_contact_changes_outcome_once_without_commands(rig, monkeypatch):
+    contact_result(rig, monkeypatch)
+    published = rig.command_path.read_bytes()
+    rig.now[0] += 0.1
+    rig.emit(state=3)
+    rig.gripper.poll()
+    dropped_at = rig.gripper.snapshot()["outcome_at"]
+    assert rig.gripper.snapshot()["outcome"] == "dropped"
+    assert dropped_at == pytest.approx(1010.15)
+    assert not rig.gripper.snapshot()["locked"]
+    # The keyboard helper still sees the completion that ended this close command.
+    assert rig.gripper.last_outcome == "contact"
+    for _ in range(3):
+        rig.now[0] += 0.1
+        rig.emit(state=3)
+        rig.gripper.poll()
+        assert rig.gripper.snapshot()["outcome_at"] == dropped_at
+    assert rig.command_path.read_bytes() == published
+    assert len(rig.requests) == 1
+
+
+@pytest.mark.parametrize("prior_arrival", [False, True])
+def test_state_three_without_prior_contact_does_not_infer_a_drop(rig, prior_arrival):
+    rig.emit()
+    if prior_arrival:
+        assert rig.gripper.move(550)
+    before = rig.gripper.snapshot()
+    rig.emit(state=3)
+    rig.gripper.poll()
+    assert rig.gripper.snapshot()["outcome"] == before["outcome"]
+    assert rig.gripper.snapshot()["outcome_at"] == before["outcome_at"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "stale",
+        "replay",
+        "session",
+        "retired",
+        "initializing",
+        "not_initialized",
+        "invalid",
+        "old_timestamp",
+    ],
+)
+def test_drop_requires_fresh_initialized_same_session_feedback(rig, monkeypatch, fault):
+    contact_result(rig, monkeypatch)
+    before = rig.gripper.snapshot()
+    session, sequence = rig.sample["session"], rig.sample["seq"]
+    if fault == "retired":
+        rig.emit(session=str(uuid4()), state=2)
+        rig.gripper.poll()
+    rig.emit(state=3)
+    if fault == "stale":
+        rig.gripper._source.poll()
+        rig.now[0] += 0.76
+    else:
+        data = json.loads(rig.feedback_path.read_text())
+        if fault == "replay":
+            data["seq"] = sequence
+        elif fault == "session":
+            data["session"] = str(uuid4())
+        elif fault == "retired":
+            data["session"] = session
+        elif fault in {"initializing", "not_initialized"}:
+            data["init"] = 2 if fault == "initializing" else 0
+        elif fault == "invalid":
+            data["state"] = True
+        elif fault == "old_timestamp":
+            data["sent_at"] -= 3
+        rig.feedback_path.write_text(json.dumps(data))
+    rig.gripper.poll()
+    assert rig.gripper.snapshot()["outcome"] == "contact"
+    assert rig.gripper.snapshot()["outcome_at"] == before["outcome_at"]
+    assert len(rig.requests) == 1
+
+
+def test_new_command_resets_observation_even_when_publication_is_refused(rig, monkeypatch):
+    contact_result(rig, monkeypatch)
+    rig.emit(state=3)
+    rig.gripper.poll()
+    assert rig.gripper.snapshot()["outcome"] == "dropped"
+
+    @contextlib.contextmanager
+    def refuse():
+        assert rig.gripper.snapshot()["outcome"] is None
+        assert rig.gripper.snapshot()["outcome_at"] is None
+        raise RuntimeError("No permission to publish")
+        yield
+
+    rig.gripper.publication_guard = refuse
+    with pytest.raises(web_gripper.GripperNotSentError):
+        rig.gripper.move(600)
+    assert rig.gripper.snapshot()["outcome"] is None
+    assert rig.gripper.snapshot()["outcome_at"] is None
+    assert len(rig.requests) == 1
+
+
+def test_collector_lock_remains_independent_of_observed_drop(rig, monkeypatch):
+    contact_result(rig, monkeypatch)
+    rig.sample["control"].update(locked=True, error="Collector command ordering unknown")
+    rig.emit(state=3)
+    rig.gripper.poll()
+    result = rig.gripper.snapshot()
+    assert result["outcome"] == "dropped"
+    assert result["locked"] and not result["available"]
+    assert result["message"] == "Collector command ordering unknown"
+    assert len(rig.requests) == 1
+
+
+def test_drop_before_keyboard_completion_check_cannot_trigger_another_step(rig, monkeypatch):
+    from mg400.web_keyboard import run_gripper_steps
+
+    rig.emit()
+
+    def acknowledge_contact(delay):
+        rig.acknowledge(delay)
+        rig.emit(state=2, position=510)
+
+    def set_active(active):
+        if not active:
+            rig.emit(state=3)
+            rig.gripper.poll()
+
+    monkeypatch.setattr(web_gripper.time, "sleep", acknowledge_contact)
+    result = run_gripper_steps(
+        rig.gripper, lambda: None, "X", threading.Event(), set_active=set_active
+    )
+    assert result == "contact"
+    assert rig.gripper.snapshot()["outcome"] == "dropped"
+    assert len(rig.requests) == 1

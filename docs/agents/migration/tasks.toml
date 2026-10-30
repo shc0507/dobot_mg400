@@ -884,7 +884,13 @@ owner = "agent"
 size = "L"
 review = "human"
 deps = ["FUR-02", "GOV-02"]
-writes = ["src/furnace/service.py", "src/furnace/state.py", "tests/test_furnace_service.py"]
+writes = [
+  "src/furnace/controller.py",
+  "src/furnace/service.py",
+  "src/furnace/state.py",
+  "tests/test_furnace_controller.py",
+  "tests/test_furnace_service.py",
+]
 
 [[task]]
 id = "FUR-04"

@@ -193,3 +193,15 @@ def test_cli_succeeds_for_matching_pair(tmp_path, capsys):
 def test_operators_and_directives_are_not_comments(tmp_path, language, chinese, english):
     pair(tmp_path, f"```{language}\n{chinese}\n```", f"```{language}\n{english}\n```")
     assert any("fenced code blocks" in item for item in CHECK["check_repository"](tmp_path))
+
+
+@pytest.mark.parametrize("language", ["js", "cpp"])
+def test_adjacent_slash_comments_can_be_translated(tmp_path, language):
+    pair(
+        tmp_path,
+        f'```{language}\nrun("https://example.org");// 运行\n```',
+        f'```{language}\nrun("https://example.org");// Run\n```',
+    )
+    assert CHECK["check_repository"](tmp_path) == []
+    write(tmp_path, "docs/example.en.md", f'```{language}\nrun("https://other.org");// Run\n```')
+    assert any("fenced code blocks" in item for item in CHECK["check_repository"](tmp_path))

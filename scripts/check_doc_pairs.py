@@ -51,7 +51,10 @@ def code_lines(lines, language):
                 index += len(quote)
                 continue
             elif any(line.startswith(marker, index) for marker in markers) and (
-                index == 0 or line[index - 1].isspace() or language in {"python", "py"}
+                index == 0
+                or line[index - 1].isspace()
+                or language in {"python", "py"}
+                or markers == ("//",)
             ):
                 comment = index
                 break

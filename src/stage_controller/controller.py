@@ -10,11 +10,15 @@ import re
 import threading
 import time
 from collections import deque
+from contextlib import ExitStack
 from dataclasses import asdict
 from datetime import datetime, timezone
 
 from serial.tools import list_ports
 
+from labkit.errors import ServiceError
+
+from .automation import StageAutomation
 from .contract import StageContract
 from .protocol import (
     BAUD_RATE,
@@ -58,8 +62,10 @@ def is_gripper_converter(path):
     return os.path.realpath(path) in _gripper_devices(list_ports.comports())
 
 
-class MotorController(StageContract):
-    def __init__(self, *, demo=False, serial=None, transport_factory=None, clock=time.monotonic):
+class MotorController(StageAutomation, StageContract):
+    def __init__(
+        self, *, demo=False, serial=None, transport_factory=None, clock=time.monotonic, config=None
+    ):
         self.demo = demo
         # With a configured device, offer only that device. Demo mode opens no device.
         self.serial = None if demo else serial or None
@@ -73,6 +79,7 @@ class MotorController(StageContract):
         self._error = None
         self._motors = {motor: MotorStatus(motor) for motor in MOTOR_IDS}
         self._microstep = None
+        self._last_feedback_at = None
         self._active = set()
         self._holds = {}
         self._closed_holds = {}
@@ -82,6 +89,7 @@ class MotorController(StageContract):
         self._shutdown = threading.Event()
         self._thread = None
         self._init_contract()
+        self._init_automation(config)
 
     def ports(self):
         if self.demo:
@@ -117,8 +125,10 @@ class MotorController(StageContract):
 
     def _read_status(self, *, command_result="ok"):
         statuses = self._transport.status()
+        previous_mode = self._microstep
         self._microstep = self._transport.microstep
         now = self.clock()
+        self._last_feedback_at = now
         for motor, state in statuses.items():
             if state.mode == "idle":
                 self._forget_hold(motor)
@@ -129,9 +139,14 @@ class MotorController(StageContract):
                 self._cooldowns[motor] = now + COOLDOWN_SECONDS
                 self._event(f"{motor.title()} stopped · 1 second cooldown")
         self._motors = statuses
+        self._observe_references(previous_mode)
+        self._complete_sequence_stops()
         self._complete_motion_commands("stopped" if self._contract_stopping else command_result)
 
     def _lose_connection(self, exc):
+        self._references.clear()
+        self._end_sequence("failed", str(exc))
+        self._complete_sequence_stops(f"Connection lost; motor stop is unconfirmed: {exc}")
         # Try to cancel movement even when the response stream is lost.
         # A broken cable cannot deliver this command: never claim it stopped.
         try:
@@ -166,9 +181,11 @@ class MotorController(StageContract):
                 transport.close()
                 raise
             self._transport = transport
+            self._references.clear()
             self._port = port
             self._motors = statuses
             self._microstep = transport.microstep
+            self._last_feedback_at = self.clock()
             self._active = {motor for motor, state in statuses.items() if state.mode != "idle"}
             had_unknown_outcome = self._error is not None or self._contract_fault is not None
             self._error = None
@@ -182,6 +199,8 @@ class MotorController(StageContract):
 
     def disconnect(self):
         with self._lock:
+            self._cancel_sequence()
+            self._references.clear()
             if self._transport is not None:
                 try:
                     self._transport.command("stop all")
@@ -190,6 +209,9 @@ class MotorController(StageContract):
                     self._lose_connection(exc)
                     raise LinkError(self._error) from exc
                 self._transport.close()
+                if self._sequence_stops:
+                    self._complete_sequence_stops("Disconnected before motor stop was confirmed.")
+                    self._lock_unconfirmed_stop()
                 self._transport = None
                 self._port = None
                 self._event("All motors stopped · disconnected")
@@ -200,6 +222,7 @@ class MotorController(StageContract):
             raise ValueError("Choose a microstep mode: 1, 2, 4, 8, or 16.")
         with self._lock:
             self._require_connection()
+            self._require_no_sequence()
             try:
                 self._read_status()
                 if self._microstep is None:
@@ -227,6 +250,7 @@ class MotorController(StageContract):
                 raise ValueError(f"{name} must be a whole number from 1 to {maximum:,}.")
         with self._lock:
             self._require_connection()
+            self._require_no_sequence()
             try:
                 self._read_status()
                 if self._motors[motor].mode != "idle":
@@ -276,6 +300,7 @@ class MotorController(StageContract):
         if direction not in ("cw", "ccw") or type(speed) is not int or not 1 <= speed <= MAX_SPEED:
             raise ValueError("Choose a direction and a whole speed from 1 to 1,000 pulses/s.")
         with self._lock:
+            self._require_no_sequence()
             now = self.clock()
             # Expire delayed start requests. Closed identifiers outlive this window,
             # so a release arriving before its start can never turn into a late move.
@@ -362,9 +387,12 @@ class MotorController(StageContract):
     def stop_all(self):
         with self._lock:
             self._require_connection()
+            self._cancel_sequence()
             try:
                 self._transport.command("stop all")
                 self._read_status(command_result="stopped")
+                if self._sequence_stops:
+                    self._lock_unconfirmed_stop()
                 self._event("Stop all acknowledged by Arduino")
             except ControllerError as exc:
                 self._lose_connection(exc)
@@ -374,15 +402,25 @@ class MotorController(StageContract):
     def poll(self):
         # Lease callbacks may stop motors. Never acquire the lease under the device lock.
         self.lease.poll()
-        with self._lock:
-            if self._transport is not None:
-                try:
-                    for motor, (_, deadline) in list(self._holds.items()):
-                        if self.clock() >= deadline:
-                            self._stop_hold(motor)
-                    self._read_status()
-                except (LinkError, CommandRejected) as exc:
-                    self._lose_connection(exc)
+        with ExitStack() as authorization:
+            try:
+                authorization.enter_context(
+                    self.lease.control("stage-poller", require_holder=False)
+                )
+            except ServiceError:
+                # Expiry may be pending/failed in another request. Leave all
+                # continuation work untouched and keep the poller alive.
+                return
+            with self._lock:
+                if self._transport is not None:
+                    try:
+                        for motor, (_, deadline) in list(self._holds.items()):
+                            if self.clock() >= deadline:
+                                self._stop_hold(motor)
+                        self._read_status()
+                        self._advance_sequence(self.lease.snapshot()["holder"])
+                    except (LinkError, CommandRejected) as exc:
+                        self._lose_connection(exc)
 
     def snapshot(self):
         with self._lock:
@@ -394,13 +432,37 @@ class MotorController(StageContract):
                 motors.append(
                     {
                         **asdict(status),
+                        "homing_available": connected
+                        and status.homed is not None
+                        and self._geometry is not None,
+                        "automation_ready": self._ready(motor),
+                        "position_mm": status.position
+                        / self._geometry.motors[motor].scale(self._microstep)
+                        if self._ready(motor)
+                        else None,
+                        "named_positions": sorted(self._geometry.motors[motor].positions)
+                        if self._geometry
+                        else [],
+                        "at_positions": sorted(
+                            name
+                            for name, mm in self._geometry.motors[motor].positions.items()
+                            if self._geometry.motors[motor].target(mm, self._microstep)
+                            == status.position
+                        )
+                        if self._ready(motor) and status.mode == "idle"
+                        else [],
                         "cooldown": round(cooldown, 3),
                         "available": connected and status.mode == "idle" and cooldown == 0,
                     }
                 )
             return {
                 **self._contract_state(),
+                "automation": self._automation_snapshot(),
                 "sampled_at": now,
+                "feedback_fresh": self._feedback_fresh(),
+                "feedback_age_s": max(0.0, now - self._last_feedback_at)
+                if connected and self._last_feedback_at is not None
+                else None,
                 "connected": connected,
                 "port": self._port,
                 "demo": self.demo,

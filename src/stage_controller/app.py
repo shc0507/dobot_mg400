@@ -126,6 +126,24 @@ def create_app(controller: MotorController | None = None, token: str | None = No
     def microstep():
         return state_response(controller.manual("set_microstep", body().get("microstep")))
 
+    @app.post("/api/motors/<motor>/home")
+    def home(motor):
+        body()
+        return state_response(controller.manual("home", motor))
+
+    @app.post("/api/motors/<motor>/awake")
+    def awake(motor):
+        return state_response(controller.manual("awake", motor, body().get("seconds")))
+
+    @app.post("/api/motors/<motor>/goto")
+    def goto(motor):
+        return state_response(controller.manual("goto", motor, body().get("name")))
+
+    @app.post("/api/poses/<name>")
+    def pose(name):
+        body()
+        return state_response(controller.manual("pose", name))
+
     @app.post("/api/stop")
     def stop():
         return state_response(controller.stop_all())

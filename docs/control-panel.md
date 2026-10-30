@@ -62,7 +62,19 @@ python3 apps/control_panel/server.py
 执行前，程序用控制器逆解和现有关节范围检查验证目标。
 
 `Home` 将 J1–J4 移动到 0°。
-直线运动使用 `SpeedL=1,AccL=1`，回零使用 `SpeedJ=5,AccJ=5`。
+面板的直线运动使用 `SpeedL=1,AccL=1`，回零使用 `SpeedJ=5,AccJ=5`。
+
+自动化客户端可在 `execute` 命令中提供整数 `speed`。
+主机配置 `MG400_ROBOT_MAX_SPEED_L` 限制该值。超出上限时，服务返回 400。
+运动使用 `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`。
+加速度上限为 `MG400_ROBOT_MAX_ACC_L`。
+
+两个配置均默认为 1，接受 1–100 的整数。空值也使用 1。
+在 `/etc/mg400/mg400.env` 中配置后，重启服务。
+配置无效时，服务拒绝启动。未提供 `speed` 时，即使上限提高，命令仍为 `SpeedL=1,AccL=1`。
+
+这些上限不改变 `Home`、全局 `SpeedFactor` 或键盘点动。
+无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 
 ## 控制夹爪
 

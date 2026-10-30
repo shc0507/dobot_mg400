@@ -2685,3 +2685,31 @@ def test_clear_alarms_sends_clear_error_only_and_reads_the_remaining_ids(rig, mo
     expected = ((72,) if remains else (), (), (), (), (), ())
     assert control.clear_alarms() == expected
     assert calls == [("ClearError()", True), ("GetErrorID()", False)]
+
+
+@pytest.mark.parametrize("speed,acceleration", [(1, 1), (17, 9), (100, 100)])
+def test_linear_speed_and_acceleration_only_change_the_movl_percentages(
+    cartesian_rig, speed, acceleration
+):
+    control, _, _, commands, pose = cartesian_rig
+    control.move_linear(LINEAR_TARGET, speed=speed, acceleration=acceleration)
+    assert pose[0] == LINEAR_TARGET
+    assert [(text, port) for text, port in commands if text.startswith("MovL(")] == [
+        (LINEAR_MOVE.replace("SpeedL=1,AccL=1", f"SpeedL={speed},AccL={acceleration}"), 30003)
+    ]
+    assert not any(text.startswith(("SpeedFactor", "JointMovJ", "Enable")) for text, _ in commands)
+    assert not control.stopped and not control.busy
+
+
+@pytest.mark.parametrize("parameter", ["speed", "acceleration"])
+@pytest.mark.parametrize(
+    "value", [True, False, None, "1", 1.0, 0, -1, 101, 10**400, float("inf"), float("nan")]
+)
+def test_invalid_linear_percentages_never_read_feedback_or_send(rig, monkeypatch, parameter, value):
+    control, _, _, commands = rig
+    read = Mock(side_effect=AssertionError("Invalid percentage must not read feedback"))
+    monkeypatch.setattr(control, "read_state", read)
+    with pytest.raises(ValueError, match="integer between 1 and 100"):
+        control.move_linear(LINEAR_TARGET, **{parameter: value})
+    read.assert_not_called()
+    assert not commands and not control.busy and not control.stopped

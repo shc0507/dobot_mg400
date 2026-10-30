@@ -193,13 +193,25 @@ POST 请求必须满足以下条件：
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
 | `home` | 无 | J1–J4 移动到 0° |
-| `execute` | `targets`：`x`、`y`、`z`、`r`，可选 `grip` | 直线移动到法兰坐标，到位后执行夹爪目标 |
+| `execute` | `targets`：`x`、`y`、`z`、`r`，可选 `grip`，另有可选 `speed` | 直线移动到法兰坐标，到位后执行夹爪目标 |
 | `grip` | `position`：0–1000 的整数 | 设置夹爪开口 |
 | `initialize_gripper` | 无 | 初始化夹爪，会张开夹指 |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
 
-`speed` 是 1–100 的整数。
+对于 `keyboard`，`speed` 是 1–100 的整数。
+对于 `execute`，可选 `speed` 是整数，范围从 1 到主机的 `MG400_ROBOT_MAX_SPEED_L` 上限。
+值无效或超出上限时，服务返回 400，不会将运动排队。
+布尔值、字符串、小数和非有限值均无效。
+
+运动使用 `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`。
+加速度上限为 `MG400_ROBOT_MAX_ACC_L`。
+两个主机配置均默认为 1，接受 1–100 的整数。空值也使用 1。
+主机配置无效时，服务拒绝启动。修改上限后，重启服务。
+
+未提供 `speed` 时，即使主机上限提高，协议命令仍为 `SpeedL=1,AccL=1`。
+这些配置不改变 `home`、全局 `SpeedFactor` 或键盘点动。
+无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
 `recoverable` 为 `true` 时也可用：报警期间的停止未确认已锁定控制，报警已在面板外清除。
 此时服务不发送 `ClearError()`，只下使能并确认静止。
@@ -253,6 +265,55 @@ POST 请求必须满足以下条件：
 响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
 服务保留最近 1000 个事件，重启后序号重新开始。
 事件对应既有的状态消息、锁定、报警、键盘关闭原因和夹爪锁定日志，不增加日志行。
+
+### Python 客户端
+
+`mg400.client.RobotClient(url, token, client_id)` 使用服务基础 URL 和明确的客户端 ID。
+每个程序使用独立 ID。运行中的程序不得共用 ID。
+构造对象不会连接服务。`connect()` 检查 WebSocket 协议 1 和服务契约 1，然后启动客户端线程。
+支持 `http://`、`https://`、`ws://` 和 `wss://`。如果服务配置了基础路径，URL 必须包含该路径。
+令牌遵循机器人服务的访问规则。空令牌仅适用于允许的环回主机。
+
+运行示例前，启动[离线模拟器和面板](#离线机器人模拟器)。
+示例向该模拟器发送运动命令。
+
+```python
+from mg400.client import RobotClient
+
+with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
+    robot.run("start_sync")
+    robot.run("enable")
+    result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
+    print(result["last_command"])
+```
+
+- `state` 返回最新状态的副本。连接前为 `None`。`connected` 表示 WebSocket 是否可用。
+- `command(action, **fields)` 发送 1 次请求并返回协议回复。检查 `status`。接受请求不表示操作完成。
+- `wait(predicate, timeout)` 返回满足条件的状态。超时抛出 `TimeoutError`。
+- `run(action, timeout=30, **fields)` 等待 `busy == False`，并检查属于本次动作和客户端的新 `last_command`。
+- `RobotClientError` 表示请求被拒绝或结果未知。如果服务提供错误码，异常保留 `status` 和 `close_code`。
+
+`run()` 接受 `ok`。对于 `stop`、`disable` 和 `stop_sync`，停止仍获确认时，也接受 `stopped`。
+请求被拒绝、操作失败、停止取代运动或服务重启，都不能算作运动成功。
+每个客户端 ID 只能有 1 个运行中的程序。`run()` 期间，同一客户端的普通命令串行执行。
+其他线程仍可调用 `command("stop")`、`command("disable")`、`run("stop")` 或 `run("disable")`。
+
+持有控制权时，客户端每 0.5 秒发送心跳。
+套接字断开后，客户端最多尝试重连传输连接 2.5 秒，短于 3 秒租约。
+客户端不会重发命令。回复丢失或超时后，命令是否送达或完成可能未知。
+再次操作前，检查服务状态。不得自动重试运动。
+认证失败、协议错误或连接被替换后，客户端停止尝试连接。
+
+套接字不可用时，`command("stop")` 和 `command("disable")` 通过 HTTP 发送，保留令牌和客户端 ID。
+改用 HTTP 时，先检查契约 1。
+回复保留 `locked` 和 `stop_unconfirmed`。回复仍只表示接受请求，不表示停止已获确认。
+其他命令不会改用 HTTP。HTTP 请求不跟随重定向，也不会自动重试。
+
+退出上下文时，如果客户端持有控制权，先运行 `stop_sync`，再关闭连接并停止线程。
+可选参数 `keep_control=True` 跳过 `stop_sync`。退出后仍会停止心跳。
+直接调用 `close()` 也会停止线程，不续期或释放控制权。
+服务随后按原有租约超时规则停止机械臂并锁定控制。
+可选参数 `timeout=5` 配置连接和回复超时，单位为秒。
 
 ### WebSocket 接口
 

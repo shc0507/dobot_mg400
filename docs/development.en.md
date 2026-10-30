@@ -195,13 +195,25 @@ The command body is `{"action": "<命令>", ...}`, where the placeholder means t
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
 | `home` | None | Move J1–J4 to 0° |
-| `execute` | `targets`: `x`, `y`, `z`, `r`, and optional `grip` | Move linearly to the flange coordinates, then execute the gripper target after arrival |
+| `execute` | `targets`: `x`, `y`, `z`, `r`, and optional `grip`, plus optional `speed` | Move linearly to the flange coordinates, then execute the gripper target after arrival |
 | `grip` | `position`: an integer from 0–1000 | Set the gripper opening |
 | `initialize_gripper` | None | Initialize the gripper. This opens the fingers |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
 | `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
 
-`speed` is an integer from 1–100.
+For `keyboard`, `speed` is an integer from 1–100.
+For `execute`, optional `speed` is an integer from 1 to the host's `MG400_ROBOT_MAX_SPEED_L` cap.
+The service rejects invalid values or values above the cap with 400 before queuing movement.
+Booleans, strings, fractional values, and non-finite values are invalid.
+
+The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
+The acceleration cap is `MG400_ROBOT_MAX_ACC_L`.
+Both host settings default to 1 and accept integers from 1–100. Empty settings also use 1.
+Invalid host settings prevent service startup. Restart the service after changing a cap.
+
+Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher caps.
+These settings do not change `home`, global `SpeedFactor`, or keyboard jogging.
+An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
 It is also available when `recoverable` is `true`: an unconfirmed stop during an alarm locked control, and the alarm was cleared outside the panel.
 In this case, the service does not send `ClearError()`. It only disables the robot and confirms that it is stationary.
@@ -255,6 +267,55 @@ Each event contains `seq`, `ts_unix`, `level`, `message`, and `fields`.
 The response contains only events with sequences greater than `since`. Use `next` for the next query.
 The service retains the latest 1000 events. Sequence numbering restarts with the service.
 Events correspond to existing state messages, locks, alarms, keyboard close reasons, and gripper lock messages. They add no journal lines.
+
+### Python client
+
+`mg400.client.RobotClient(url, token, client_id)` uses the service base URL and an explicit client ID.
+Use a unique ID for each program. Do not share an ID between active programs.
+Construction opens no connection. `connect()` checks WebSocket protocol 1 and service contract 1, then starts the client threads.
+Use `http://`, `https://`, `ws://`, or `wss://`, including the service base path when configured.
+The token follows the robot service's access rules. An empty token works only with the permitted loopback hosts.
+
+Start the [offline simulator and panel](#offline-robot-simulator) before this example.
+The example sends movement commands to that simulator.
+
+```python
+from mg400.client import RobotClient
+
+with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
+    robot.run("start_sync")
+    robot.run("enable")
+    result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
+    print(result["last_command"])
+```
+
+- `state` returns a copy of the latest state. It is `None` before connection. `connected` reports whether the WebSocket is available.
+- `command(action, **fields)` sends 1 request and returns the protocol reply. Check `status`. Acceptance does not mean completion.
+- `wait(predicate, timeout)` returns a state that satisfies the predicate. A timeout raises `TimeoutError`.
+- `run(action, timeout=30, **fields)` waits for `busy == False` and a new `last_command` for its action and client.
+- `RobotClientError` reports a refusal or uncertain outcome. It retains `status` and `close_code` when available.
+
+`run()` accepts `ok`. For `stop`, `disable`, and `stop_sync`, it also accepts `stopped` when the stop remains confirmed.
+A rejection, failed operation, superseding stop, or service restart cannot count as successful motion.
+Use 1 active program per client ID. Ordinary commands from the same client are serialized during `run()`.
+A different thread can still call `command("stop")`, `command("disable")`, `run("stop")`, or `run("disable")`.
+
+While this client holds control, it sends heartbeats every 0.5 seconds.
+After a dropped socket, it attempts transport reconnection for up to 2.5 seconds, within the 3-second lease.
+It never replays a command. A lost reply or timeout can leave delivery or completion unknown.
+Inspect the service state before another action. Do not automatically retry motion.
+Authentication, protocol, and replacement failures end the connection attempts.
+
+When the socket is unavailable, `command("stop")` and `command("disable")` use HTTP with the same token and client ID.
+The fallback checks contract 1 before sending a command.
+Its replies preserve `locked` and `stop_unconfirmed`. A reply still means acceptance, not verified completion.
+Other commands have no HTTP fallback. HTTP requests follow no redirects and have no automatic retries.
+
+Context exit runs `stop_sync` while this client holds control, then closes the connection and stops its threads.
+The optional `keep_control=True` skips `stop_sync`. It does not keep heartbeats running after exit.
+Calling `close()` directly also ends the threads without renewing or releasing control.
+The service then applies its normal lease-expiry stop and lock.
+The optional `timeout=5` sets the connection and reply timeout in seconds.
 
 ### WebSocket interface
 

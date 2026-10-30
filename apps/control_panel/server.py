@@ -863,6 +863,14 @@ def main(argv=None):
         parser.error(
             "Set MG400_PANEL_TOKEN to at least 24 characters before binding outside localhost"
         )
+    caps = {}
+    for suffix, parameter in (("SPEED", "max_speed_l"), ("ACC", "max_acc_l")):
+        name = f"MG400_ROBOT_MAX_{suffix}_L"
+        value = os.environ.get(name) or "1"
+        cap = int(value) if re.fullmatch("[0-9]{1,3}", value) else 0
+        if not 1 <= cap <= 100:
+            parser.error(f"{name} must be a whole number between 1 and 100")
+        caps[parameter] = cap
     host = args.robot_host
     if args.gripper_feedback and args.mode != "robot":
         parser.error("--gripper-feedback requires --mode robot")
@@ -872,6 +880,7 @@ def main(argv=None):
         RobotPanelState(
             host,
             gripper=WebGripper(args.gripper_feedback) if args.gripper_feedback else None,
+            **caps,
         )
         if args.mode == "robot"
         else ReadOnlyPanelState(host)

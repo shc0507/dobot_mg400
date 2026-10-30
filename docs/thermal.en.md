@@ -235,6 +235,93 @@ Use the sequence and timestamp to associate measurements.
 Unavailable or stale frames return HTTP 503 instead of fabricated readings.
 The acquisition worker owns USB reads and commands. HTTP viewers read snapshots.
 
+## Automation contract and regions
+
+The read-only [instrument contract](adr/0001-instrument-service-contract.en.md) uses the base URL `http://127.0.0.1:8768`.
+It adds these routes beside the dashboard API:
+
+| Method | Path | Result |
+| --- | --- | --- |
+| `GET` | `/api/describe` | Contract version, demo flag, region definitions, and the maximum frame age. `commands` is empty. |
+| `GET` | `/api/state` | Contract fields plus camera status, `frame_sequence`, and `frame_age_s`. |
+| `GET` | `/api/events?since=0` | Activity after the given sequence, with a `next` cursor. The same events enter the service journal. |
+| `POST` | `/api/heartbeat` | Acquire or renew the informational lease. |
+| `POST` | `/api/release` | Release the caller's lease. |
+| `POST` | `/api/stop` | Return `stop: "confirmed"`. This no-op leaves acquisition running. |
+| `POST` | `/api/command` | Return HTTP 400 because the contract has no commands. |
+| `GET` | `/api/roi` | Read a named region or an explicit sensor rectangle. |
+
+The lease lasts 3 seconds. Reads and stop do not require ownership.
+Lease expiry and release leave acquisition running.
+The lease does not restrict the existing dashboard controls.
+Use `/api/disconnect` to stop acquisition and release the camera.
+Contract state reports `busy: false`, `locked: false`, and `last_command: null` because this contract controls no output.
+Inspect `connected`, `fault`, and frame age before using readings.
+
+These routes retain the token, Host, Origin, and forwarded-header checks described above.
+Contract POST requests require `Content-Type: application/json` and exactly 1 `X-MG400-Client` header.
+The client ID must contain 1–128 printable ASCII characters.
+Send a JSON object of at most 4096 bytes. `/api/stop` accepts `{"wait_s":0}` with a finite value from 0–15.
+It returns immediately because there is no output to stop.
+Contract errors use `{"error":"..."}`: HTTP 400 for invalid input, 401 for token failure, 403 for access denial, and 415 for non-JSON input.
+
+### Named sensor regions
+
+Store named regions in `/var/lib/mg400/thermal/rois.toml`:
+
+```toml
+[regions.crucible]
+x0 = 60
+y0 = 40
+x1 = 100
+y1 = 80
+```
+
+These example bounds do not identify the crucible in a particular camera view.
+Set the bounds from the native sensor image.
+Names contain 1–64 ASCII letters, digits, `_`, or `-`.
+Each region defines exactly `x0`, `y0`, `x1`, and `y1`, as integers.
+The bounds must satisfy `0 <= x0 < x1 <= 160` and `0 <= y0 < y1 <= 120`.
+The service rejects empty, reversed, or out-of-range rectangles.
+It does not clip bounds or rotate coordinates.
+
+Here, x is the sensor column and y is the sensor row.
+The rectangle is `temperatures_c[y0:y1, x0:x1]`: lower bounds are included and upper bounds are excluded.
+The rotated display does not change these coordinates.
+For example, `x0=159, y0=119, x1=160, y1=120` selects the last sensor pixel.
+
+The service reads this file once during construction, before camera startup.
+Restart the service after editing it.
+A missing file leaves the named-region map empty. Explicit coordinate queries still work.
+An invalid file prevents startup. The service never substitutes example regions.
+An embedded application can select another path with `CameraService(roi_path=...)`.
+
+### Region readings
+
+Use exactly 1 selector: `name`, or all of `x0`, `y0`, `x1`, and `y1`.
+Do not combine them or repeat query parameters.
+For example:
+
+```sh
+curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
+  'http://127.0.0.1:8768/api/roi?name=crucible'
+curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
+  'http://127.0.0.1:8768/api/roi?x0=60&y0=40&x1=100&y1=80'
+```
+
+Without a token, omit the bearer header.
+The response contains `min_c`, `mean_c`, and `max_c` in °C, plus the bounds and `name` (`null` for explicit coordinates).
+All statistics, `frame_sequence`, `timestamp`, `source`, `demo`, and `frame_age_s` refer to 1 coherent frame.
+Frame age uses a monotonic clock and is measured in seconds.
+Frames older than 3 seconds return HTTP 503, with no temperature values.
+The same applies when the camera is disconnected, has an error, or has no frame during shutter or gain settling.
+Invalid or unknown regions return HTTP 400 before frame access.
+
+These readings have the same apparent-temperature limits as the full frame.
+Let the camera warm for approximately 5 minutes, then apply shutter correction before interpreting measurements.
+After shutter correction, wait for a new frame. Do not use a retained display image as a current reading.
+Shutter correction does not replace comparison with a suitable temperature reference.
+
 ## Tests and troubleshooting
 
 Run the offline tests:

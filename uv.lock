@@ -1164,9 +1164,11 @@ tools = [
     { name = "pysmb" },
 ]
 vision = [
+    { name = "flask" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "pillow" },
+    { name = "waitress" },
     { name = "zxing-cpp" },
 ]
 vision-gpu = [
@@ -1203,9 +1205,11 @@ thermal = [
 ]
 tools = [{ name = "pysmb", specifier = ">=1.2.15,<2" }]
 vision = [
+    { name = "flask", specifier = ">=3.1,<4" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "opencv-python-headless", specifier = ">=4.9,<5" },
     { name = "pillow", specifier = ">=10.1,<13" },
+    { name = "waitress", specifier = ">=3.0.2,<4" },
     { name = "zxing-cpp", specifier = ">=3.0,<4" },
 ]
 vision-gpu = [

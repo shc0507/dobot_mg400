@@ -24,6 +24,8 @@ thermal = [
   "libusb-package>=1.0.26,<2",
 ]
 vision = [
+  "flask>=3.1,<4",
+  "waitress>=3.0.2,<4",
   "numpy>=1.26,<3",
   "pillow>=10.1,<13",
   "zxing-cpp>=3.0,<4",

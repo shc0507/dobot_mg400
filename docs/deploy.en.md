@@ -21,6 +21,7 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
 | `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program | `root:root`, `0755` |
 | `/usr/local/bin/mg400ctl` | Routine command tool, linked to `/opt/mg400/deploy/mg400ctl` | None |
+| `/usr/local/bin/labctl` | Another link to the same command, with identical arguments and behavior | None |
 
 All services run as the user and group with numeric ID `1000`.
 Service definitions are in `config/systemd/` and are installed in `/etc/systemd/system/`:
@@ -82,26 +83,68 @@ Before an update, stop the services with `mg400ctl stop all`.
 The installer works in this order:
 
 1. Check the Python version, uv, the configuration file, and any independently running gripper collection processes.
-   If assets are requested, also check the manifest, destination paths, and local files. If a check fails, leave the host unchanged.
+   Also check the service registry, selection, selected units, and udev templates.
+   If assets are requested, also check the asset manifest, destination paths, and local files. If a check fails, leave the host unchanged.
 2. Create the configuration file or add missing entries. Fill empty `*_TOKEN` entries with newly generated access tokens. Keep existing values.
 3. Create the directories under `/var/lib/mg400` and the camera preview token.
    Refuse symbolic links there and do not overwrite existing tokens.
-4. Run `uv sync` to install the stage and tool dependencies in `/opt/mg400/.venv`.
+4. Run `uv sync` from the service registry, with dependency groups only for enabled services.
+   By default, install the stage and tool dependencies in `/opt/mg400/.venv`.
 5. Install explicitly requested external assets. Check size and SHA-256 before atomic replacement.
 6. If cameras are configured, install go2rtc and generate `go2rtc.yaml`. Otherwise, remove the old `go2rtc.yaml`.
-7. Install service definitions, reload systemd, and enable the gripper collection request listener.
-8. Create the `mg400ctl` link.
+7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
+8. Install selected service definitions, reload systemd, and enable the gripper collection request listener.
+9. Create the `mg400ctl` and `labctl` links.
 
 The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
 After the update, start services, then reload any open panel pages.
 Do not edit files in `/opt/mg400`. Modified files can cause `git switch` to abort the update.
 
+## Service registry
+
+`deploy/services.toml` contains a `[[service]]` entry for each implemented service.
+The installer, `mg400ctl`, and `labctl` share this registry.
+Add each new service entry together with its unit files.
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Service name used by commands |
+| `units` | systemd unit list. Start item 1, whose dependencies start the remaining units |
+| `optional` | `true` for optional services, `false` for mandatory services |
+| `venv` | Python environment, either `.venv` or `.venv-vision` |
+| `groups` | uv dependency groups for this service |
+| `token` | Token setting name in the shared configuration, or an empty string if absent |
+| `port` | Primary TCP port, or 0 for no TCP port |
+| `assets` | Asset manifest names owned by this service |
+
+`web`, `stage`, `camera`, and `collector` are always mandatory.
+`MG400_OPTIONAL_SERVICES` accepts only optional service names from the registry, separated by commas.
+The default is empty. Unknown names, duplicates, empty items, or mandatory service names cause the installer to refuse installation.
+The current registry has no optional services. Keep this setting empty until the service entry and unit files are available.
+
+The installer combines enabled services' `groups` by `venv` and synchronizes each environment only 1 time.
+Synchronization explicitly uses `--no-default-groups` and does not install the project's default dependency groups.
+Mandatory services use `stage` and `tools` in `/opt/mg400/.venv`.
+Services that select `.venv-vision` use `/opt/mg400/.venv-vision`.
+The installer explicitly sets `UV_PROJECT_ENVIRONMENT`. It does not use another environment specified by the caller.
+
+For a service with udev rules, the template path is `config/udev/70-mg400-<name>.rules.in`.
+Templates must contain a VID, PID, `MODE="0660"`, and `@SERVICE_GROUP@`.
+The installer replaces the placeholder with the group name for GID 1000.
+The destination is `/etc/udev/rules.d/70-mg400-<name>.rules`, owned by `root:root` with permissions `0644`.
+Only enabled services' templates are installed. A dry run only lists rule installation, reload, and udev event trigger steps for USB devices.
+
+Stop an optional service before removing its name from the setting.
+Removing its name does not stop processes or delete existing files or rules.
+`start`, `restart`, and `status` use only enabled services.
+`stop` and `logs` can still access disabled registered services. `stop all` includes all registered services.
+
 ## External assets
 
 `config/assets.toml` stores 1 table per external asset.
 The fields are `url`, `sha256`, `bytes`, `install`, `mode`, `service`, `source`, and `license`.
-`install` is an absolute destination path. `mode` must be `0640` or `0600`.
+`install` is an absolute destination path under `/var/lib/mg400/`. `mode` must be `0640` or `0600`.
 Asset files and destination directories belong to `1000:1000`. Destination directories have permissions `0750`.
 The installer refuses symbolic links in source files, destination files, or their paths.
 
@@ -111,7 +154,10 @@ The destination is `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`, with perm
 The manifest records the license as `AGPL-3.0`, as declared by Roboflow.
 Publishing the weights must wait for the repository license decision. Downloads fail if the release does not contain the file.
 
-By default, the installer does not download or install assets. To explicitly download manifest assets:
+By default, the installer does not download or install assets. Assets must belong to an enabled service and appear in its `assets` list.
+`vision-weights` becomes installable only after the `vision` service entry exists in the registry and is enabled.
+Until then, `--fetch-assets` skips this asset, and explicit `--asset NAME=PATH` refuses installation.
+To explicitly download enabled services' assets:
 
 ```sh
 /usr/bin/python3 /opt/mg400/deploy/install.py --fetch-assets
@@ -123,7 +169,7 @@ After successful checks and ownership and permission changes, the installer repl
 If downloading, verification, or permission changes before replacement fail, the original file remains unchanged.
 
 For offline installation, copy the weights to the host through the Drive transfer procedure in [When GitHub is unavailable on Olares](olares.en.md#when-github-is-unavailable).
-The local file path can differ from the destination. For example, use `/tmp/chip-arm-yolo26s-seg-v1.pt`:
+The local file path can differ from the destination. After enabling `vision`, for example, use `/tmp/chip-arm-yolo26s-seg-v1.pt`:
 
 ```sh
 /usr/bin/python3 /opt/mg400/deploy/install.py --asset vision-weights=/tmp/chip-arm-yolo26s-seg-v1.pt
@@ -154,6 +200,7 @@ Each time it runs, the installer restores this file's owner to `root:root` and p
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
+| `MG400_OPTIONAL_SERVICES` | Empty | Optional service names from the registry, separated by commas |
 | `MG400_ROBOT_HOST` | Address in `config/robot.toml` | Robot address |
 | `MG400_CONTROLLER_LOCK_DIR` | Required, for example `/var/lib/mg400/locks` | [Panel connection lock](#panel-connection-lock) directory, which must be an absolute path |
 | `MG400_PANEL_BIND` | `127.0.0.1` | Web panel bind address |
@@ -173,7 +220,8 @@ After changing `MG400_CAMERA_DEVICES`, run the installer again to generate a new
 
 ## Routine commands
 
-Run `mg400ctl` as root, for example `sudo mg400ctl status`:
+Run `mg400ctl` as root, for example `sudo mg400ctl status`.
+`labctl` uses the same arguments and behavior:
 
 | Command | Effect |
 | --- | --- |

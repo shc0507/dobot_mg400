@@ -21,6 +21,7 @@
 | `/var/lib/mg400/camera` | 摄像头预览密钥 `preview.key` | `1000:1000`，`0700` |
 | `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
 | `/usr/local/bin/mg400ctl` | 日常命令，链接到 `/opt/mg400/deploy/mg400ctl` | 无 |
+| `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
 
 所有服务以数字 ID `1000` 的用户和组运行。
 服务定义位于 `config/systemd/`，安装到 `/etc/systemd/system/`：
@@ -82,26 +83,68 @@
 安装器按以下顺序工作：
 
 1. 检查 Python 版本、uv、配置文件和独立运行的夹爪采集进程。
-   如指定资源，还检查清单、目标路径和本地文件。检查不通过时，安装器不修改主机。
+   同时检查服务清单、服务选择、所选单元和 udev 模板。
+   如指定资源，还检查资源清单、目标路径和本地文件。检查不通过时，安装器不修改主机。
 2. 创建配置文件，或补全缺少的配置项。空的 `*_TOKEN` 项填入新生成的访问密钥。已有的值不变。
 3. 创建 `/var/lib/mg400` 下的目录和摄像头预览密钥。
    安装器拒绝其中的符号链接，也不覆盖已有的密钥。
-4. 运行 `uv sync`，在 `/opt/mg400/.venv` 安装位移台和工具依赖。
+4. 按服务清单运行 `uv sync`，只安装已启用服务的依赖组。
+   默认在 `/opt/mg400/.venv` 安装位移台和工具依赖。
 5. 安装显式指定的外部资源，先校验大小和 SHA-256，再原子替换目标。
 6. 配置了摄像头时，安装 go2rtc 并生成 `go2rtc.yaml`。未配置时，删除旧的 `go2rtc.yaml`。
-7. 安装服务定义，重新加载 systemd，启用夹爪采集的请求监听。
-8. 链接 `mg400ctl`。
+7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
+8. 安装所选服务定义，重新加载 systemd，启用夹爪采集的请求监听。
+9. 链接 `mg400ctl` 和 `labctl`。
 
 安装器不启动、不停止，也不重启服务。
 更新代码前必须停止服务。运行中的服务可能读取新旧混合的文件。
 更新后，启动服务，再重新加载已打开的面板页面。
 不要在 `/opt/mg400` 修改文件。修改的文件可能让 `git switch` 中止更新。
 
+## 服务清单
+
+`deploy/services.toml` 保存每个已实现服务的 `[[service]]` 条目。
+安装器、`mg400ctl` 和 `labctl` 共用此清单。
+新增服务时，把条目与对应单元文件一起加入仓库。
+
+| 字段 | 含义 |
+| --- | --- |
+| `name` | 命令使用的服务名称 |
+| `units` | systemd 单元列表。启动第 1 项，其依赖关系启动其余单元 |
+| `optional` | 可选服务为 `true`，必需服务为 `false` |
+| `venv` | Python 环境，限 `.venv` 或 `.venv-vision` |
+| `groups` | 此服务使用的 uv 依赖组 |
+| `token` | 共享配置中的密钥名称，空字符串表示无此项 |
+| `port` | 主 TCP 端口，0 表示无 TCP 端口 |
+| `assets` | 此服务拥有的资源清单名称 |
+
+`web`、`stage`、`camera` 和 `collector` 始终为必需服务。
+`MG400_OPTIONAL_SERVICES` 只接受清单中可选服务的名称，用逗号分隔。
+默认值为空。未知、重复、空项或必需服务名称会使安装器拒绝安装。
+当前清单没有可选服务。服务条目和单元文件加入前，保持此配置为空。
+
+安装器按 `venv` 合并已启用服务的 `groups`，每个环境只同步 1 次。
+同步显式使用 `--no-default-groups`，不安装项目的默认依赖组。
+必需服务使用 `stage` 和 `tools`，环境为 `/opt/mg400/.venv`。
+选择 `.venv-vision` 的服务使用 `/opt/mg400/.venv-vision`。
+安装器显式设置 `UV_PROJECT_ENVIRONMENT`，不采用调用者指定的其他环境。
+
+如服务有 udev 规则，模板路径为 `config/udev/70-mg400-<name>.rules.in`。
+模板必须含 VID、PID、`MODE="0660"` 和 `@SERVICE_GROUP@`。
+安装器把占位符替换为 GID 1000 的组名。
+目标为 `/etc/udev/rules.d/70-mg400-<name>.rules`，所有者为 `root:root`，权限为 `0644`。
+只有已启用服务的模板会安装。试运行只列出规则安装、重新加载和 USB 设备 udev 事件的触发步骤。
+
+删除可选服务名称前，先停止该服务。
+删除名称不会停止进程，也不会删除已有的文件或规则。
+`start`、`restart` 和 `status` 只使用已启用服务。
+`stop` 和 `logs` 仍可访问清单中已停用的服务，`stop all` 包含全部已登记服务。
+
 ## 外部资源
 
 `config/assets.toml` 为每项外部资源保存 1 个表。
 字段为 `url`、`sha256`、`bytes`、`install`、`mode`、`service`、`source` 和 `license`。
-`install` 是绝对目标路径。`mode` 只能是 `0640` 或 `0600`。
+`install` 是 `/var/lib/mg400/` 下的绝对目标路径。`mode` 只能是 `0640` 或 `0600`。
 资源文件和目标目录归 `1000:1000` 所有，目标目录权限为 `0750`。
 安装器拒绝源文件、目标文件或路径中的符号链接。
 
@@ -111,7 +154,10 @@
 清单按 Roboflow 声明记录许可证 `AGPL-3.0`。
 权重发布必须等待仓库许可证决定。发布中没有文件时，下载会失败。
 
-安装器默认不下载或安装资源。显式下载清单中的资源：
+安装器默认不下载或安装资源。资源必须属于已启用服务，并列在该服务的 `assets` 中。
+`vision-weights` 只有在 `vision` 服务条目加入清单并启用后才能安装。
+此前，`--fetch-assets` 跳过该资源，显式 `--asset NAME=PATH` 会拒绝安装。
+显式下载已启用服务的资源：
 
 ```sh
 /usr/bin/python3 /opt/mg400/deploy/install.py --fetch-assets
@@ -123,7 +169,7 @@
 下载、校验或替换前的权限设置失败时，原文件不变。
 
 离线安装时，按 [Olares 无法访问 GitHub 时](olares.md#无法访问-github-时) 的 Drive 传文件流程，把权重复制到主机。
-本地文件路径不必与目标路径相同。以 `/tmp/chip-arm-yolo26s-seg-v1.pt` 为例：
+本地文件路径不必与目标路径相同。启用 `vision` 后，以 `/tmp/chip-arm-yolo26s-seg-v1.pt` 为例：
 
 ```sh
 /usr/bin/python3 /opt/mg400/deploy/install.py --asset vision-weights=/tmp/chip-arm-yolo26s-seg-v1.pt
@@ -154,6 +200,7 @@
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
+| `MG400_OPTIONAL_SERVICES` | 空 | 服务清单中的可选服务名称，用逗号分隔 |
 | `MG400_ROBOT_HOST` | `config/robot.toml` 中的地址 | 机械臂地址 |
 | `MG400_CONTROLLER_LOCK_DIR` | 必填，示例为 `/var/lib/mg400/locks` | [面板连接锁](#面板连接锁) 的目录，必须为绝对路径 |
 | `MG400_PANEL_BIND` | `127.0.0.1` | 网页面板的监听地址 |
@@ -173,7 +220,8 @@
 
 ## 日常命令
 
-以 root 身份运行 `mg400ctl`，例如 `sudo mg400ctl status`：
+以 root 身份运行 `mg400ctl`，例如 `sudo mg400ctl status`。
+`labctl` 使用相同的参数和行为：
 
 | 命令 | 作用 |
 | --- | --- |

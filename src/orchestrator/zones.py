@@ -562,7 +562,12 @@ class Zones:
         stop_errors = {}
         for name in sorted(required):
             try:
-                if services[name].stop().get("stop") != "confirmed":
+                service = services[name]
+                confirm = getattr(service, "recovery_stop", None)
+                # The live authority or dead-process gate above proves that old
+                # work has drained. Ordinary cancellation still calls stop().
+                result = confirm(instances[name]) if callable(confirm) else service.stop()
+                if not isinstance(result, dict) or result.get("stop") != "confirmed":
                     stop_errors[name] = "stop was not confirmed"
             except Exception as error:
                 stop_errors[name] = str(error)

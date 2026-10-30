@@ -150,7 +150,7 @@ Live held recovery requires manual completion and a nonempty note.
 Only when the current run holds retained claims does it also require the separate declaration `physically-clear`.
 Recovery records that declaration. Another run's claims do not trigger this declaration and cannot be cleared through the current run's recovery.
 
-Every resumption requires old work to drain, fresh confirmed stops, matching ownership, and healthy service states.
+Every resumption requires old work to drain, fresh stop confirmation or verified robot rest, matching ownership, and healthy service states.
 A transient guard failure with no claim held by the current run can resume through normal manual completion after these checks.
 This clears only the transient error. It does not clear another run's claims or replay the failed step.
 Recovery never reacquires a lost lease.
@@ -187,7 +187,9 @@ manager.recover(
 )
 ```
 
-This call reads discovery, verifies existing ownership, requests fresh stops, and checks healthy idle states before clearing the reconciled claims.
+This call reads discovery and verifies existing ownership before clearing the reconciled claims.
+After the drain or exited-process check, it requires fresh stop confirmation or verified robot rest and healthy idle states.
+Robot rest uses the same explicit manual `disable` proof as live recovery. Without that proof, it requests Stop.
 The robot requires its instance ID. Generic contract services may omit it.
 When an instance ID is present, it must be a nonempty string and remain unchanged during recovery.
 A concurrently changed claim prevents clearing it.

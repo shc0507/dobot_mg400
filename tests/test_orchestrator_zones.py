@@ -21,11 +21,30 @@ import pytest
 
 from orchestrator import cli, zones
 from orchestrator import zones as recover_module
+from orchestrator.clients import RobotAdapter
 from orchestrator.recipe import validate
 from orchestrator.runner import Runner, StepClient, _Authority
 from orchestrator.skills import Registry
 from orchestrator.store import RunStore
 from orchestrator.zones import OccupancyStore, ZonePlan, Zones, prepare_zones, stage_at_load
+
+
+@pytest.mark.parametrize("settings", [{}, None])
+def test_zone_fixture_isolates_defaults_when_environment_is_removed(
+    private_orchestrator_zones, tmp_path, monkeypatch, settings
+):
+    monkeypatch.delenv(zones.CONFIG_SETTING)
+    monkeypatch.delenv(zones.STATE_SETTING)
+    assert zones.DEFAULT_CONFIG.is_relative_to(private_orchestrator_zones)
+    zones.DEFAULT_CONFIG.write_text('[zones.private]\nowner="robot"\nconditions=[]\n')
+    registry = Registry()
+    registry.register("work", lambda ctx: None, services=("robot",))
+    recipe = zone_recipe(registry, zone="private")
+    plan = prepare_zones(recipe, registry, settings=settings)
+    assert set(plan.definitions) == {"private"}
+    assert plan.state_path.is_relative_to(private_orchestrator_zones)
+    assert plan.state_path == zones.DEFAULT_STATE
+    assert list(tmp_path.iterdir()) == []
 
 
 def claim(holder="run-a", generation="a" * 32):
@@ -636,6 +655,32 @@ def test_recover_dead_process_uses_already_owned_clients_without_acquiring(
     assert [name for name, action in env.calls if action == "stop"] == ["robot", "stage"]
 
 
+@pytest.mark.parametrize("live", [True, False])
+def test_recover_selects_public_confirmation_after_drain_proof(recover_env, monkeypatch, live):
+    env = recover_env
+    if not live:
+        monkeypatch.setattr(recover_module, "_process_start", lambda pid: None)
+    confirm = Mock(return_value={"stop": "confirmed"})
+    env.clients["robot"].recovery_stop = confirm
+    recover_call(env, live=live)
+    confirm.assert_called_once_with("robot-instance")
+    assert [name for name, action in env.calls if action == "stop"] == ["stage"]
+    assert not env.manager.store.claims
+
+
+@pytest.mark.parametrize("gate", ["clearance", "authority", "process"])
+def test_recover_cannot_select_confirmation_before_clearance_or_drain(recover_env, gate):
+    env = recover_env
+    confirm = Mock(side_effect=AssertionError("The recovery gate must run first"))
+    env.clients["robot"].recovery_stop = confirm
+    if gate == "authority":
+        env.authority.cancelled.clear()
+    with pytest.raises((ValueError, RuntimeError)):
+        recover_call(env, live=gate != "process", physically_clear=gate != "clearance")
+    confirm.assert_not_called()
+    assert env.calls == [] and env.manager.store.claims
+
+
 def test_recover_does_not_acquire_missing_ownership(recover_env):
     env = recover_env
     env.clients["robot"].current["owned"] = False
@@ -680,6 +725,10 @@ def test_recover_valid_live_clear_records_the_compared_generation(recover_env):
 
 
 class FakeRobot:
+    identity = "review-run"
+    owned = RobotAdapter.owned
+    healthy = RobotAdapter.healthy
+
     def state(self):
         return {
             "mode": "robot",
@@ -692,12 +741,6 @@ class FakeRobot:
             "locked": False,
             "stop_unconfirmed": False,
         }
-
-    def owned(self, state):
-        return state.get("controller_id") == "review-run"
-
-    def healthy(self, state):
-        return state.get("syncing") is True and state.get("feedback_fresh") is True
 
 
 @pytest.fixture
@@ -1165,7 +1208,7 @@ def recover_held_runner(env):
     runner.persistence_error = None
     runner.recipe = SimpleNamespace(steps=[], params={})
     runner.run_id, runner.zones = env.manager.holder, env.manager
-    runner._stop = lambda: 1
+    runner._stop = lambda round_id=None, *, recovery=False: 1
     runner._persist = lambda *args, **kwargs: True
     runner.clients = SimpleNamespace(
         services=env.clients,
@@ -1215,7 +1258,9 @@ def test_recover_runner_interruption_after_temporary_sync_preserves_durable_clai
 
     env = recover_env
     tmp_path.chmod(0o700)
-    path = tmp_path / "occupancy.json"
+    directory = tmp_path / "recovery-publication"
+    directory.mkdir(mode=0o700)
+    path = directory / "occupancy.json"
     original_claims = env.manager.store.snapshot()
     env.manager.store = OccupancyStore(path)
     assert env.manager.store.acquire("tray", original_claims["tray"])
@@ -1244,7 +1289,7 @@ def test_recover_runner_interruption_after_temporary_sync_preserves_durable_clai
     assert runner._resume is None and not runner._resolving
     assert env.manager.store.snapshot() == original_claims
     assert path.read_bytes() == original_bytes
-    assert list(tmp_path.iterdir()) == [path]
+    assert list(directory.iterdir()) == [path]
 
 
 def test_repaired_unzoned_command_can_resume_with_manual_completion(tmp_path):
@@ -1264,9 +1309,6 @@ def test_repaired_unzoned_command_can_resume_with_manual_completion(tmp_path):
         def heartbeat(self):
             pass
 
-        def state(self):
-            return {**super().state(), "connected": True, "fault": None}
-
         def command(self, action, **params):
             self.commands.append(action)
             if not self.repaired:
@@ -1283,6 +1325,7 @@ def test_repaired_unzoned_command_can_resume_with_manual_completion(tmp_path):
             pass
 
     registry, robot, continued = Registry(), RepairableRobot(), []
+    assert "fault" not in robot.state() and "connected" not in robot.state()
 
     def work(ctx):
         ctx.clients["robot"].command("work")
@@ -1326,6 +1369,73 @@ def test_repaired_unzoned_command_can_resume_with_manual_completion(tmp_path):
             runner.abort()
             runner._thread.join(4)
             assert not runner._thread.is_alive(), runner.snapshot()
+
+
+def test_owned_robot_zone_recovery_confirms_manual_disable_without_relocking(tmp_path):
+    from orchestrator.rehearsal import Rehearsal
+    from orchestrator.skills import default_registry
+
+    registry, calls = default_registry(), []
+
+    def fail(ctx):
+        calls.append("failed-step")
+        raise RuntimeError("synthetic failure inside the retained zone")
+
+    def later(ctx):
+        calls.append("later-step")
+
+    registry.register("test.fail", fail, services=("robot",))
+    registry.register("test.later", later)
+    recipe = validate(
+        {
+            "name": "Owned robot zone recovery",
+            "version": 1,
+            "params": {},
+            "steps": [
+                {"skill": "robot.enable", "params": {}, "timeout_s": 5},
+                {"skill": "test.fail", "params": {}, "timeout_s": 5, "zone": "tray"},
+                {"skill": "test.later", "params": {}, "timeout_s": 5},
+            ],
+        },
+        registry,
+    )
+    plan = ZonePlan(
+        {"tray": {"owner": "robot", "conditions": ()}},
+        ("robot",),
+        tmp_path / "occupancy.json",
+        "a" * 64,
+    )
+    with (
+        RunStore(tmp_path / "runs") as store,
+        Rehearsal(tmp_path / "demos", recipe.services, identity="orch-zone-demo") as demo,
+    ):
+        runner = Runner(recipe, registry, demo.clients, store, zone_plan=plan).start()
+        try:
+            assert runner.wait(10) == "held", runner.snapshot()
+            wait_zone(lambda: runner._settled)
+            assert runner.snapshot()["zones"]["tray"]["status"] == "unknown"
+            raw = demo.robot_state.snapshot()
+            assert "fault" not in raw and "connected" not in raw and raw["locked"] is True
+            # Explicit operator-equivalent recovery reaches only this owned SIM-01 rig.
+            demo.clients["robot"].run("disable", timeout=3)
+            assert demo.robot_state.snapshot()["locked"] is False
+            runner.resume(
+                manually_completed=True,
+                physically_clear=True,
+                note="Disabled the owned simulator and checked the empty zone.",
+            )
+            wait_zone(lambda: runner.status == "completed")
+            assert calls == ["failed-step", "later-step"]
+            assert runner.snapshot()["zones"] == {}
+            events = store.get(runner.run_id)["events"]
+            resolution = next(
+                event for event in events if event["kind"] == "zone-physical-clearance"
+            )
+            state = json.loads(resolution["data_json"])["states"]["robot"]
+            assert state["locked"] is False and state["last_command"]["action"] == "disable"
+            assert "fault" not in state and "connected" not in state
+        finally:
+            finish_zone_runner(runner)
 
 
 @pytest.mark.parametrize("declaration", ['zone = "missing"', "zone = 1", 'zonez = "tray"'])

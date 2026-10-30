@@ -106,6 +106,23 @@ Demo mode does not open a serial port. Its simulated motion times exclude accele
 
 ## Controls
 
+### Automation control
+
+While an automation client holds the control lease, the page shows `Stage is controlled by automation`.
+Fixed-step, hold, keyboard motion, and microstep controls are unavailable.
+`Stop all motors` and hold release remain available.
+The lease lasts 3 seconds by default. The client must renew it.
+On expiry, the service requests that all motors stop.
+Releasing the lease only returns control ownership. It does not stop motion.
+Before releasing control, the client must wait for motion to finish or request a stop.
+
+If the stop cannot be confirmed, the page shows a fault and blocks new motion.
+First use the physical emergency stop and check the motors. Then manually disconnect and reconnect the Arduino.
+Wait until the stop request finishes before reconnecting.
+Reconnection clears the fault only after all motors report idle.
+Idle feedback alone does not automatically clear the fault.
+See [Stage automation contract](development.en.md#stage-automation-contract) for the interface.
+
 ### Connection
 
 Use this sequence:

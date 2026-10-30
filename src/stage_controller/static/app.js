@@ -104,12 +104,25 @@ function isEditing(target) {
   );
 }
 
+function automationControlled() {
+  return state?.lease?.holder != null;
+}
+
+function motionBlocked() {
+  return automationControlled() || state?.locked === true;
+}
+
 function refreshControls() {
   const connected = online && state?.connected;
+  const automation = automationControlled();
+  const blocked = motionBlocked();
+  $('#automation-banner').hidden = !automation;
   $('#keyboard-toggle').setAttribute('aria-checked', String(keyboardEnabled));
   $('#keyboard-toggle-label').textContent = keyboardEnabled ? 'On' : 'Off';
   $('#keyboard-panel').classList.toggle('is-enabled', keyboardEnabled);
-  $('#keyboard-status').textContent = !keyboardEnabled ? 'Off. Enable to use the keys or buttons.'
+  $('#keyboard-status').textContent = automation ? 'Paused while automation controls the stage.'
+    : state?.locked ? 'Paused until the stage fault is resolved.'
+    : !keyboardEnabled ? 'Off. Enable to use the keys or buttons.'
     : !connected ? 'On. Connect a device to use these controls.'
       : 'On. Hold W / A / S / D or J / K to move. Release to stop.';
   $('#serial-port').disabled = connected || connectionPending;
@@ -119,12 +132,14 @@ function refreshControls() {
   $('#stop-all').disabled = !connected || stopPending || connectionPending;
   const moving = state?.motors.some(motor => motor.mode !== 'idle');
   const supported = connected && state.microstep !== null;
-  const modeBlocked = !supported || moving || pendingMotors.size > 0 || holds.size > 0
+  const modeBlocked = blocked || !supported || moving || pendingMotors.size > 0 || holds.size > 0
     || connectionPending || stopPending || microstepPending;
   $('#microstep-mode').disabled = modeBlocked;
   $('#apply-microstep').disabled = modeBlocked || Number($('#microstep-mode').value) === state?.microstep;
   $('#apply-microstep').textContent = microstepPending ? 'Applying…' : 'Apply to all';
-  $('#microstep-feedback').textContent = !connected ? 'Connect your device to change the mode.'
+  $('#microstep-feedback').textContent = automation ? 'Stage is controlled by automation.'
+    : state?.locked ? 'Resolve the stage fault before changing the mode.'
+    : !connected ? 'Connect your device to change the mode.'
     : !supported ? 'Upload the updated Arduino sketch to enable stepping modes.'
       : microstepPending ? 'Applying the mode to all three motors…'
         : moving || holds.size > 0 || pendingMotors.size > 0 ? 'Stop all motors before changing the mode.'
@@ -141,13 +156,13 @@ function refreshControls() {
     feedback.textContent = !speedValid ? 'Enter a whole speed from 1 to 1,000 pulses/s.'
       : !stepsValid ? 'Enter a whole step count from 1 to 100,000.' : '';
     for (const button of card.querySelectorAll('[data-direction]')) {
-      button.disabled = !connected || !motor?.available || !valid || busy
+      button.disabled = blocked || !connected || !motor?.available || !valid || busy
         || connectionPending || stopPending || microstepPending;
     }
     for (const button of holdButtonsFor(card)) {
       // Keep the held button enabled so it continues receiving release/key events.
       const pressed = hold?.button === button && !hold.released;
-      button.disabled = (!!button.dataset.key && !keyboardEnabled)
+      button.disabled = blocked || (!!button.dataset.key && !keyboardEnabled)
         || (!pressed && (!connected || !motor?.available || !speedValid || busy
           || connectionPending || stopPending || microstepPending));
     }
@@ -209,7 +224,7 @@ function newHoldId() {
 function beginHold(card, button, input) {
   const motor = card.dataset.motor;
   const number = $('.speed-number', card);
-  if (button.disabled || holds.has(motor) || !number.reportValidity()) return;
+  if (motionBlocked() || button.disabled || holds.has(motor) || !number.reportValidity()) return;
   const hold = {
     motor, button, id: newHoldId(), starting: true, released: false, stopped: false, ...input,
   };
@@ -250,7 +265,7 @@ function render(next) {
   $('#microstep-badge').textContent = activeMode
     ? next.microstep === 1 ? 'Full step' : `1/${next.microstep} step`
     : 'Mode unavailable';
-  if (!connected) releaseAllHolds();
+  if (!connected || motionBlocked()) releaseAllHolds();
   $('#connection-status').classList.toggle('connected', connected);
   $('#connection-status span:last-child').textContent = !online
     ? authWait ? 'Access token required' : 'Server unavailable' : connected
@@ -294,7 +309,7 @@ function render(next) {
       return row;
     }));
   }
-  if (next.error) showError(next.error);
+  if (next.error || next.fault?.message) showError(next.error || next.fault.message);
   refreshControls();
 }
 
@@ -341,7 +356,7 @@ $('#microstep-mode').addEventListener('change', () => {
   refreshControls();
 });
 $('#apply-microstep').addEventListener('click', async () => {
-  if ($('#apply-microstep').disabled) return;
+  if (motionBlocked() || $('#apply-microstep').disabled) return;
   const microstep = Number($('#microstep-mode').value);
   microstepPending = true;
   clearError();
@@ -422,7 +437,7 @@ for (const card of cards) {
   for (const button of card.querySelectorAll('[data-direction]')) {
     button.addEventListener('click', async () => {
       const motor = card.dataset.motor;
-      if (pendingMotors.has(motor)) return;
+      if (motionBlocked() || button.disabled || pendingMotors.has(motor)) return;
       const steps = $('.steps-number', card);
       if (!number.reportValidity() || !steps.reportValidity()) return;
       pendingMotors.add(motor);
@@ -475,7 +490,7 @@ window.addEventListener('keydown', event => {
     releaseAllHolds();
     return;
   }
-  if (!keyboardEnabled || event.defaultPrevented || event.isComposing || document.hidden
+  if (motionBlocked() || !keyboardEnabled || event.defaultPrevented || event.isComposing || document.hidden
       || event.ctrlKey || event.metaKey || event.altKey || isEditing(event.target)) return;
   const button = shortcutButtons.get(event.key.toLowerCase());
   if (!button) return;

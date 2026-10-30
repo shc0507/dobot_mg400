@@ -11,10 +11,17 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.11,<1", "websockets>=15,<18"]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1", "websockets>=15,<18", "httpx>=0.28,<1"]
 notebook = ["ipykernel==7.4.0"]
 stage = ["flask>=3.1,<4", "pyserial>=3.5,<4", "waitress>=3.0.2,<4"]
 tools = ["pysmb>=1.2.15,<2"]
+thermal = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.34,<1",
+  "numpy>=1.26,<3",
+  "pyusb>=1.3,<2",
+  "libusb-package>=1.0.26,<2",
+]
 vision = [
   "flask>=3.1,<4",
   "waitress>=3.0.2,<4",
@@ -28,9 +35,10 @@ vision-gpu = ["ultralytics>=8.4,<9", "torch>=2.7", "torchvision>=0.22"]
 [project.scripts]
 mg400-robot = "mg400.terminal_control:main"
 stage-panel = "stage_controller.__main__:main"
+thermal-cam = "thermal_cam.__main__:main"
 
 [tool.uv]
-default-groups = ["dev", "stage", "vision"]
+default-groups = ["dev", "stage", "vision", "thermal"]
 override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 [tool.uv.sources]
@@ -43,7 +51,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision"]
+packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -51,7 +59,8 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-extend-exclude = ["work", ".agents"]
+# Preserve the pinned third-party USB driver without formatting changes.
+extend-exclude = ["work", ".agents", "src/thermal_cam/_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

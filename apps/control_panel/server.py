@@ -18,7 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
@@ -630,6 +630,28 @@ class PanelHandler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             if self._authorized():
                 self._send(200, self.server.state.snapshot())
+        elif path in {"/api/describe", "/api/events"}:
+            if not self._authorized():
+                return
+            if not same_origin(self.headers):
+                self._send(403, {"error": "Open the panel page from this server"})
+                return
+            if self.server.state.mode != "robot":
+                self._send(404, {"error": "Contract routes are only available in robot mode"})
+                return
+            try:
+                if path == "/api/describe":
+                    result = self.server.state.describe()
+                else:
+                    query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                    values = query.get("since", ["0"])
+                    if len(values) != 1 or not values[0].isascii() or not values[0].isdecimal():
+                        raise ValueError("Event sequence must be a nonnegative integer")
+                    result = self.server.state.events.since(int(values[0]))
+            except ValueError as error:
+                self._send(400, {"error": str(error)})
+            else:
+                self._send(200, result)
         elif path == "/api/ws":
             self._serve_websocket()
         else:
@@ -684,6 +706,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         if path not in {
             self.server.base_path + "api/command",
             self.server.base_path + "api/heartbeat",
+            self.server.base_path + "api/stop",
         }:
             self._send(404, {"error": "Not found"})
             return
@@ -712,8 +735,19 @@ class PanelHandler(BaseHTTPRequestHandler):
                 client = self.headers.get("X-MG400-Client", "")
                 if not client or len(client) > 128 or not client.isascii():
                     raise ValueError("Open the panel to identify this browser")
-            kind = "heartbeat" if path.endswith("/heartbeat") else "command"
-            result = dispatch(state, kind, payload, client)
+            if path.endswith("/stop"):
+                if state.mode != "robot":
+                    raise PermissionError("Robot stop is unavailable in read-only mode")
+                if not same_origin(self.headers):
+                    raise PermissionError("Open the panel page from this server")
+                if not valid_client(client):
+                    raise ValueError("A printable ASCII client ID is required")
+                if not isinstance(payload, dict) or set(payload) - {"wait_s"}:
+                    raise ValueError("Stop must be a JSON object with only wait_s")
+                result = state.stop(client, payload.get("wait_s", 0))
+            else:
+                kind = "heartbeat" if path.endswith("/heartbeat") else "command"
+                result = dispatch(state, kind, payload, client)
         except (ValueError, PermissionError, RuntimeError) as error:
             self._send(refusal_status(error), {"error": str(error)})
         else:
@@ -725,6 +759,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         polls = (
             f"GET {self.server.base_path}api/state ",
+            f"GET {self.server.base_path}api/describe ",
+            f"GET {self.server.base_path}api/events",
             f"POST {self.server.base_path}api/heartbeat ",
         )
         if (

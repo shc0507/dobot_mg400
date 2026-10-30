@@ -41,9 +41,20 @@ def ctl(monkeypatch, tmp_path):
     run = Mock(return_value=SimpleNamespace(returncode=0, stdout=""))
     execvpe = Mock()
     out = io.StringIO()
+    state = Mock(
+        return_value={
+            "service": "furnace",
+            "connected": True,
+            "locked": False,
+            "fault": None,
+            "sequence": {"running": False, "phase": "idle"},
+        }
+    )
 
     def call(*argv):
-        return module.main(list(argv), host=host, run=run, execvpe=execvpe, out=out)
+        return module.main(
+            list(argv), host=host, run=run, execvpe=execvpe, out=out, read_furnace_state=state
+        )
 
     return SimpleNamespace(
         module=module,
@@ -54,6 +65,7 @@ def ctl(monkeypatch, tmp_path):
         chdir=chdir,
         getpwuid=getpwuid,
         call=call,
+        state=state,
     )
 
 
@@ -997,3 +1009,179 @@ def test_backup_does_not_follow_a_source_replaced_after_it_is_pinned(backup_ctl,
     assert not ctl.archive.exists()
     assert external.read_bytes() == b"must never be read"
     assert not list(ctl.archive.parent.glob(".mg400-backup-*"))
+
+
+@pytest.mark.parametrize("action", ["stop", "restart"])
+@pytest.mark.parametrize("targets", [("furnace",), ("web", "furnace"), ("all",)])
+@pytest.mark.parametrize(
+    "phase,running", [("ramping", True), ("holding", True), ("cooling", False)]
+)
+def test_furnace_shutdown_guard_precedes_all_systemctl_mutations(
+    ctl, capsys, action, targets, phase, running
+):
+    ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=furnace\n")
+    ctl.state.return_value["sequence"] = {"phase": phase, "running": running}
+    assert ctl.call(action, *targets) == 1
+    ctl.run.assert_not_called()
+    assert "--force" in capsys.readouterr().err
+    assert ctl.call(action, *targets, "--force") == 0
+    assert "mg400-furnace.service" in systemctl(ctl)[0]
+    assert ctl.state.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        None,
+        {},
+        {"service": "other"},
+        {"service": "furnace", "connected": False, "locked": False, "fault": None},
+        {"service": "furnace", "connected": True, "locked": True, "fault": {"message": "unknown"}},
+        {
+            "service": "furnace",
+            "connected": True,
+            "locked": False,
+            "fault": None,
+            "sequence": {"running": "false", "phase": "idle"},
+        },
+        {
+            "service": "furnace",
+            "connected": True,
+            "locked": False,
+            "fault": None,
+            "sequence": {"running": False, "phase": "ramping"},
+        },
+    ],
+)
+def test_furnace_shutdown_refuses_unknown_state_even_after_optional_disable(ctl, state):
+    ctl.state.return_value = state
+    assert ctl.call("stop", "all") == 1
+    ctl.run.assert_not_called()
+    assert ctl.call("stop", "furnace", "--force") == 0
+
+
+def test_furnace_shutdown_refuses_unavailable_status_and_skips_disabled_restart_all(ctl):
+    ctl.state.side_effect = OSError("offline")
+    assert ctl.call("stop", "furnace") == 1
+    ctl.run.assert_not_called()
+    assert ctl.call("restart", "all") == 0
+    assert "mg400-furnace.service" not in systemctl(ctl)[0]
+    assert ctl.state.call_count == 1
+
+
+class FurnaceHTTP:
+    def __init__(
+        self, payload=b'{"service":"furnace"}', status=200, content_type="application/json"
+    ):
+        self.payload, self.status, self.content_type = payload, status, content_type
+        self.closed = False
+        self.requests = []
+
+    def request(self, *args, **kwargs):
+        self.requests.append((args, kwargs))
+
+    def getresponse(self):
+        return self
+
+    def getheader(self, name, default=""):
+        return self.content_type
+
+    def read1(self, size):
+        chunk, self.payload = self.payload[:size], self.payload[size:]
+        return chunk
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    "bind,host",
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("0.0.0.0", "127.0.0.1"),
+        ("::", "::1"),
+        ("::1", "::1"),
+        ("192.0.2.1", "192.0.2.1"),
+        ("localhost", "localhost"),
+    ],
+)
+def test_furnace_guard_uses_configured_bind_and_header_token_without_proxy(
+    ctl, bind, host, monkeypatch
+):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid")
+    response = FurnaceHTTP()
+    factory = Mock(return_value=response)
+    token = "test-furnace-token-0123456789"
+    value = ctl.module.furnace_state(
+        {
+            "MG400_FURNACE_BIND": bind,
+            "MG400_FURNACE_PORT": "9000",
+            "MG400_FURNACE_BASE_PATH": "/heat/",
+            "MG400_FURNACE_TOKEN": token,
+        },
+        connection_factory=factory,
+    )
+    assert value == {"service": "furnace"}
+    factory.assert_called_once_with(host, 9000, timeout=2)
+    args, options = response.requests[0]
+    assert args == ("GET", "/heat/api/state")
+    assert options["headers"]["Authorization"] == f"Bearer {token}"
+    assert token not in args[1] and response.closed
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"MG400_FURNACE_BIND": "user@host"},
+        {"MG400_FURNACE_BIND": "127.0.0.1/evil"},
+        {"MG400_FURNACE_BIND": "remote.example"},
+        {"MG400_FURNACE_BIND": "fe80::1%eth0"},
+        {"MG400_FURNACE_PORT": "0"},
+        {"MG400_FURNACE_BASE_PATH": "//evil"},
+        {"MG400_FURNACE_BASE_PATH": "/a?x=1"},
+        {"MG400_FURNACE_BASE_PATH": "/../"},
+        {"MG400_FURNACE_TOKEN": "short"},
+    ],
+)
+def test_furnace_guard_invalid_destination_never_constructs_connection(ctl, settings):
+    factory = Mock(side_effect=AssertionError("network"))
+    with pytest.raises(ValueError):
+        ctl.module.furnace_state(
+            {"MG400_FURNACE_TOKEN": "test-furnace-token-0123456789", **settings},
+            connection_factory=factory,
+        )
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        FurnaceHTTP(status=302),
+        FurnaceHTTP(content_type="text/html"),
+        FurnaceHTTP(b"x" * 262145),
+        FurnaceHTTP(b'{"x":1,"x":2}'),
+        FurnaceHTTP(b'{"x":NaN}'),
+        FurnaceHTTP(b'{"x":1e999}'),
+    ],
+)
+def test_furnace_guard_rejects_redirects_and_malformed_status(ctl, response):
+    factory = Mock(return_value=response)
+    with pytest.raises(ValueError):
+        ctl.module.furnace_state(
+            {"MG400_FURNACE_TOKEN": "test-furnace-token-0123456789"}, connection_factory=factory
+        )
+    factory.assert_called_once()
+    assert response.closed
+
+
+def test_furnace_guard_closes_dripping_body_at_monotonic_deadline(ctl):
+    response = FurnaceHTTP()
+    response.read1 = Mock(return_value=b" ")
+    times = iter([10, 10, 11, 12])
+    with pytest.raises(ValueError, match="deadline"):
+        ctl.module.furnace_state(
+            {"MG400_FURNACE_TOKEN": "test-furnace-token-0123456789"},
+            connection_factory=Mock(return_value=response),
+            clock=lambda: next(times),
+        )
+    assert response.read1.call_count == 2 and response.closed

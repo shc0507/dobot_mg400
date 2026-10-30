@@ -22,6 +22,9 @@ MG400_STAGE_BIND=100.64.0.1
 The Olares VPN access rules must allow TCP `8766`, `8767`, and `1985`.
 The Olares network interface connected directly to the robot uses `192.168.1.10/24`. The robot address is `192.168.1.6`.
 
+If the optional furnace service is enabled, set `MG400_FURNACE_BIND=100.64.0.1` and permit TCP `8769` through the VPN.
+Keep `MG400_FURNACE_TOKEN` private. Enter it on the [furnace page](furnace.en.md), never in its URL.
+
 ## Get the code
 
 The repository is public. Olares reads the code from GitHub through HTTPS without credentials.

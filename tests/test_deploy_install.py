@@ -109,7 +109,9 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     assert len((host.data / "camera/preview.key").read_text().strip()) >= 32
     assert mode(host.data / "camera/preview.key") == 0o600
     assert {path.name for path in host.units.iterdir()} == {
-        path.name for path in (ROOT / "config/systemd").iterdir()
+        path.name
+        for path in (ROOT / "config/systemd").iterdir()
+        if path.name != "mg400-furnace.service"
     }
     for unit in host.units.iterdir():
         assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
@@ -779,3 +781,71 @@ def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
         "Would link <host>/usr/local/bin/mg400ctl to <host>/opt/mg400/deploy/mg400ctl",
         "Would link <host>/usr/local/bin/labctl to <host>/opt/mg400/deploy/mg400ctl",
     ]
+
+
+@pytest.mark.parametrize("key", ["MG400_FURNACE_GAS_MAP", "MG400_FURNACE_IDLE_GAS"])
+def test_furnace_json_settings_keep_the_systemd_single_quoted_literal(module, key):
+    literal = '{"0": "Operator label", "1": 0}'
+    line = f"{key}='{literal}'\n"
+    assert module.parse_settings(line)[key] == literal
+    merged, changed = module.merge_settings(line, f"{key}=\nOTHER=1\n")
+    assert merged.startswith(line) and changed == ["OTHER"]
+    assert module.parse_settings(merged)[key] == literal
+    for current in (None, "OTHER=1\n"):
+        merged, _ = module.merge_settings(current, line)
+        assert module.parse_settings(merged)[key] == literal
+        repeated, changed = module.merge_settings(merged, line)
+        assert repeated == merged and changed == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"0": 0}',
+        '"{}"',
+        "'[]'",
+        "'{\"0\":NaN}'",
+        "'{\"0\":1e999}'",
+        '\'{"0":1,"0":2}\'',
+        '\'{"0":"a\\nb"}\'',
+        '\'{"0":"it\'s"}\'',
+    ],
+)
+def test_furnace_json_settings_refuse_ambiguous_or_nonfinite_literals(module, value):
+    with pytest.raises(ValueError):
+        module.parse_settings(f"MG400_FURNACE_GAS_MAP={value}\n")
+
+
+def test_furnace_json_exception_does_not_apply_to_other_settings(module):
+    with pytest.raises(ValueError, match="remove quotes"):
+        module.parse_settings("OTHER='{\"0\":0}'\n")
+
+
+def test_enabled_furnace_installs_private_state_directory_and_own_group(module, host):
+    select_optional(host, "furnace")
+    example = host.code / "deploy/mg400.env.example"
+    example.write_text(
+        example.read_text().replace(
+            "MG400_FURNACE_GAS_MAP=", 'MG400_FURNACE_GAS_MAP=\'{"0":"Operator label"}\''
+        )
+    )
+    assert host.install() == 0
+    assert mode(host.data / "furnace") == 0o750
+    assert host.owner(host.data / "furnace") == (1000, 1000)
+    assert (host.units / "mg400-furnace.service").exists()
+    assert (
+        module.parse_settings(host.settings.read_text())["MG400_FURNACE_GAS_MAP"]
+        == '{"0":"Operator label"}'
+    )
+    assert len(module.parse_settings(host.settings.read_text())["MG400_FURNACE_TOKEN"]) >= 24
+    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
+    assert sync[sync.index("furnace") - 1] == "--group"
+    assert not any(
+        command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
+        for command, _ in host.commands
+    )
+
+
+def test_furnace_json_setting_rejects_del(module):
+    with pytest.raises(ValueError):
+        module.parse_settings('MG400_FURNACE_GAS_MAP=\'{"0":"bad\x7flabel"}\'')

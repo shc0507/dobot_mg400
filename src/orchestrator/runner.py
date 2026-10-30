@@ -386,11 +386,11 @@ class Runner:
                 raise RuntimeError("The failed worker and final stop must finish before recovery.")
             self._resolving = True
             self._settled = False
-        # Manual recovery can itself change the service state. Always send a
-        # fresh stop after the declaration; cached confirmation is insufficient.
+        # Old work has drained. Require a fresh stop or verified explicit manual
+        # disable/rest; cached confirmation alone cannot authorize recovery.
         round_id = None
         try:
-            round_id = self._stop()
+            round_id = self._stop(recovery=True)
             states = self.clients.reconcile()
             claims = self.zones.owned()
             if claims and physically_clear is not True:
@@ -453,8 +453,8 @@ class Runner:
                 )
             self._persist("event", self.run_id, "zone-retain-failed", {"error": str(exc)})
 
-    def _stop(self, round_id=None):
-        result = self.clients.stop_all(round_id)
+    def _stop(self, round_id=None, *, recovery=False):
+        result = self.clients.recovery_stop_all() if recovery else self.clients.stop_all(round_id)
         self._persist(
             "event",
             self.run_id,

@@ -10,7 +10,7 @@ Group=1000
 SupplementaryGroups=dialout
 EnvironmentFile=/etc/mg400/mg400.env
 # Drop the tokens that this service does not check.
-UnsetEnvironment=MG400_PANEL_TOKEN
+UnsetEnvironment=MG400_PANEL_TOKEN MG400_FURNACE_TOKEN
 WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/stage-panel
 Restart=on-failure

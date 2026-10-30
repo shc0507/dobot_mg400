@@ -647,6 +647,8 @@ Steps:
 
 Integration scope: `src/orchestrator/recipe.py` validates and carries step zone declarations. `src/orchestrator/cli.py` preserves explicit zone configuration for rehearsal and resolves the required demo services before creating them. `tests/test_orchestrator_transfer.py` supplies explicit zone configuration to its owned-demo CLI cases; do not retain a no-op fallback when configuration is missing. In `src/orchestrator/skills/robot.py`, update only the zone-helper comment that describes the old no-op manager. The runner resolves condition-service leases before acquisition so an entry check cannot rely on a service that remains under manual control.
 
+Test isolation: `tests/conftest.py` may add an autouse fixture restricted to `test_orchestrator_*.py`. Use private empty zone configuration and occupancy paths under each test's temporary directory, so inherited settings or default paths cannot reach host zone data. Request the temporary-directory fixture only after checking the test module. Do not change fixtures for other areas or weaken production path and configuration checks.
+
 Done when: P-CHECKS pass.
 
 Docs: `orchestrator.md` and `.en.md`: zones and their conditions.
@@ -663,6 +665,8 @@ Steps (P-SERVICE and P-DEPLOY plus):
 2. One run at a time, in a worker thread.
 3. Unit `mg400-orchestrator.service`, port 8772, settings `MG400_ORCH_*` (service URLs and tokens, data paths).
 4. On SIGTERM: hold the current run (stop motion), then exit. A run never ends without a recorded state.
+
+Integration scope: add a public held-shutdown lifecycle method in `src/orchestrator/runner.py` and cover it in `tests/test_orchestrator_runner.py`. Preserve worker drain, fresh stop confirmation, lease cleanup and durable run status; the service must not patch private runner state or rewrite an aborted record to held. In `config/systemd/mg400-web-panel.service`, `config/systemd/mg400-stage-panel.service` and `config/systemd/mg400-camera-preview.service`, only extend `UnsetEnvironment` to exclude `MG400_ORCH_TOKEN` and the downstream credential aliases `MG400_ORCH_ROBOT_TOKEN`, `MG400_ORCH_STAGE_TOKEN`, `MG400_ORCH_THERMAL_TOKEN`, `MG400_ORCH_VISION_TOKEN`, `MG400_ORCH_FURNACE_TOKEN` and `MG400_ORCH_MICROSCOPE_TOKEN`. Preserve each service's checked tokens, including camera preview's `MG400_VISION_TOKEN`.
 
 Done when: P-CHECKS pass.
 
@@ -1033,10 +1037,12 @@ Goal: move a chip between the tray and the crucible with every interlock between
 
 Steps:
 
-1. `crucible.load(from_slot)`: the furnace is in STOP/COOLING with PV below `load_max_c`; the stage is homed; Insert is at `load` and held awake; the robot takes zone `crucible-load`, transfers to station `crucible/load`, leaves and releases the zone; Insert moves to `furnace`.
+1. `crucible.load(from_slot)`: the furnace is in STOP/COOLING with PV below `load_max_c`; the stage is homed; Insert is at `load` and held awake; the robot takes zone `crucible-load`, transfers to station `crucible-load`, leaves and releases the zone; Insert moves to `furnace`.
 2. `crucible.unload(to_slot)`: no sequence is running and the furnace is in STOP/COOLING; Insert moves to `load` and stays awake; the thermal region `crucible` reads below `unload_max_c` (wait with a timeout, then hold); the robot takes the zone, picks, leaves and places in the slot.
 3. Limits come from settings and the recipe. No default allows a heat-related move on hardware.
-4. Rehearsal tests for success and for each failed condition.
+4. Register both skills in `src/orchestrator/skills/__init__.py`. Add the thermal ROI GET to the orchestrator client and runner interfaces. Keep that read under the step's revocable authority.
+5. Make rehearsal own the furnace demo service. Preserve explicit safety settings for these skills in rehearsal. Remove production endpoints, tokens, device settings, and proxy settings.
+6. Rehearsal tests for success and for each failed condition. Keep the new tests in `tests/test_orchestrator_crucible.py`.
 
 Done when: P-CHECKS pass.
 

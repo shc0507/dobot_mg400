@@ -10,6 +10,7 @@ The installer never starts, stops or restarts a robot service.
 
 import argparse
 import errno
+import grp
 import os
 import re
 import secrets
@@ -17,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -39,6 +41,7 @@ class Host:
         self.root = root
         self.source = Path(source)
         self.asset_manifest = self.source / "config/assets.toml"
+        self.registry = self.source / "deploy/services.toml"
         self.code = root / "opt/mg400"
         self.etc = root / "etc/mg400"
         self.settings = self.etc / "mg400.env"
@@ -47,8 +50,145 @@ class Host:
         self.go2rtc = root / "usr/local/lib/mg400/go2rtc"
         self.units = root / "etc/systemd/system"
         self.command = root / "usr/local/bin/mg400ctl"
+        self.lab_command = root / "usr/local/bin/labctl"
+        self.udev = root / "etc/udev/rules.d"
         self.proc = root / "proc"
         self.dev = root / "dev"
+
+
+SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "token", "port", "assets"}
+SERVICE_NAME = re.compile(r"[a-z][a-z0-9-]*")
+UNIT_NAME = re.compile(r"mg400-[a-z0-9-]+\.service")
+
+
+def load_services(path):
+    """Read the registry without starting a service or touching host settings.
+
+    The first unit starts its companion units through systemd dependencies.
+    An enabled service can supply config/udev/70-mg400-<name>.rules.in.
+    """
+    with assets._local(path) as stream:
+        data = tomllib.load(stream)
+    if set(data) != {"service"} or not isinstance(data["service"], list) or not data["service"]:
+        raise ValueError("Service registry must contain nonempty [[service]] entries.")
+    result = {}
+    used_units, used_assets, used_tokens, used_ports = set(), set(), set(), set()
+    for entry in data["service"]:
+        if not isinstance(entry, dict) or set(entry) != SERVICE_FIELDS:
+            raise ValueError("Service registry entry has missing or unknown fields.")
+        name = entry["name"]
+        if not isinstance(name, str) or not SERVICE_NAME.fullmatch(name) or name == "all":
+            raise ValueError("Invalid service name.")
+        if name in result:
+            raise ValueError(f"Duplicate service name: {name}")
+        if type(entry["optional"]) is not bool or entry["venv"] not in (".venv", ".venv-vision"):
+            raise ValueError(f"Service {name}: invalid optional flag or environment.")
+        for field, pattern in (
+            ("units", UNIT_NAME),
+            ("groups", SERVICE_NAME),
+            ("assets", SERVICE_NAME),
+        ):
+            values = entry[field]
+            if (
+                not isinstance(values, list)
+                or any(
+                    not isinstance(value, str) or not pattern.fullmatch(value) for value in values
+                )
+                or len(values) != len(set(values))
+                or (field == "units" and not values)
+            ):
+                raise ValueError(f"Service {name}: invalid or duplicate {field}.")
+        token, port = entry["token"], entry["port"]
+        if not isinstance(token, str) or (
+            token and not re.fullmatch(r"MG400_[A-Z0-9_]+_TOKEN", token)
+        ):
+            raise ValueError(f"Service {name}: invalid token setting.")
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise ValueError(f"Service {name}: port must be 0 or a valid TCP port.")
+        if (
+            used_units.intersection(entry["units"])
+            or used_assets.intersection(entry["assets"])
+            or (token and token in used_tokens)
+            or (port and port in used_ports)
+        ):
+            raise ValueError(f"Service {name}: duplicate unit, asset, token, or port.")
+        used_units.update(entry["units"])
+        used_assets.update(entry["assets"])
+        used_tokens.add(token)
+        used_ports.add(port)
+        result[name] = entry
+    return result
+
+
+def enabled_services(registry, value):
+    """Select all mandatory services and the explicitly named optional services."""
+    names = [] if not value.strip() else [part.strip() for part in value.split(",")]
+    if len(names) != len(set(names)):
+        raise ValueError("MG400_OPTIONAL_SERVICES contains duplicate names.")
+    for name in names:
+        if name not in registry or not registry[name]["optional"]:
+            raise ValueError(
+                f"MG400_OPTIONAL_SERVICES has an unknown or non-optional name: {name!r}"
+            )
+    return {
+        name: entry for name, entry in registry.items() if not entry["optional"] or name in names
+    }
+
+
+def service_environments(selected):
+    """Return explicit dependency groups for each selected Python environment."""
+    environments = {}
+    for entry in selected.values():
+        environments.setdefault(entry["venv"], set()).update(entry["groups"])
+    return {venv: sorted(groups) for venv, groups in sorted(environments.items())}
+
+
+def service_assets(selected, manifest):
+    """Use both registry membership and manifest ownership to select assets."""
+    chosen = {}
+    for service, entry in selected.items():
+        for name in entry["assets"]:
+            if name not in manifest or manifest[name].service != service:
+                raise ValueError(f"Service {service}: missing or incorrectly owned asset {name}.")
+            chosen[name] = manifest[name]
+    return chosen
+
+
+def udev_rules(host, selected):
+    """Render only selected services' templates, before any host changes."""
+    rendered = {}
+    for name in selected:
+        filename = f"70-mg400-{name}.rules"
+        source = host.source / "config/udev" / (filename + ".in")
+        if not os.path.lexists(source):
+            continue
+        if source.is_symlink() or not source.is_file():
+            raise ValueError(f"udev template must be a regular file: {source}")
+        with assets._local(source) as stream:
+            text = stream.read().decode("utf-8")
+        if (
+            "@SERVICE_GROUP@" not in text
+            or 'MODE="0660"' not in text
+            or not re.search(r'ATTRS?\{idVendor\}=="[0-9a-fA-F]{4}"', text)
+            or not re.search(r'ATTRS?\{idProduct\}=="[0-9a-fA-F]{4}"', text)
+        ):
+            raise ValueError(f"udev template lacks VID, PID, mode, or group: {source}")
+        try:
+            group = grp.getgrgid(SERVICE_GID).gr_name
+        except KeyError as error:
+            raise ValueError(f"Create the service group with ID {SERVICE_GID} first.") from error
+        if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.-]*\$?", group):
+            raise ValueError("The service group name cannot be used in a udev rule.")
+        text = text.replace("@SERVICE_GROUP@", group)
+        if "@" in text:
+            raise ValueError(f"udev template has an unresolved placeholder: {source}")
+        try:
+            with assets._directory(host.udev) as directory:
+                assets._regular(host.udev / filename, directory)
+        except FileNotFoundError:
+            pass
+        rendered[filename] = text
+    return rendered
 
 
 def parse_line(line, number):
@@ -275,6 +415,14 @@ def install(args, host, run, chown, out):
     merged, changed = merge_settings(current, example)
     settings = parse_settings(merged)
     check_settings(settings)
+    registry = load_services(host.registry)
+    selected = enabled_services(registry, settings.get("MG400_OPTIONAL_SERVICES", ""))
+    selected_units = {unit for entry in selected.values() for unit in entry["units"]}
+    unit_contents = {}
+    for name in sorted(selected_units | {REQUEST_WATCHER}):
+        with assets._local(host.source / "config/systemd" / name) as stream:
+            unit_contents[name] = stream.read().decode("utf-8")
+    rendered_rules = udev_rules(host, selected)
     devices = camera_devices(settings.get("MG400_CAMERA_DEVICES", ""))
     if args.go2rtc is not None and not args.go2rtc.is_file():
         raise RuntimeError(f"The go2rtc binary does not exist: {args.go2rtc}")
@@ -282,19 +430,26 @@ def install(args, host, run, chown, out):
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
 
     manifest = assets.load_manifest(host.asset_manifest) if args.asset or args.fetch_assets else {}
+    available_assets = service_assets(selected, manifest) if args.asset or args.fetch_assets else {}
     local_assets = {}
     for specification in args.asset:
         name, equals, path = specification.partition("=")
         if not equals or not path or name not in manifest:
             raise ValueError(f"Use --asset NAME=PATH with a name from {host.asset_manifest}.")
+        if name not in available_assets:
+            raise ValueError(f"Asset {name} does not belong to an enabled registered service.")
         if name in local_assets:
             raise ValueError(f"Asset {name} was specified more than once.")
         local_assets[name] = Path(path)
     selected_assets = (
-        manifest if args.fetch_assets else {name: manifest[name] for name in local_assets}
+        available_assets
+        if args.fetch_assets
+        else {name: available_assets[name] for name in local_assets}
     )
     for name, asset in selected_assets.items():
         assets.check_destination(asset, host.root)
+        if name not in available_assets:
+            raise ValueError(f"Asset {name} does not belong to an enabled registered service.")
         if name in local_assets:
             assets.validate_source(asset, local_assets[name])
 
@@ -327,22 +482,24 @@ def install(args, host, run, chown, out):
             create_key(key.parent, key.name, service, chown)
     directory(host.code, 0o750, (0, SERVICE_GID))
     # The system Python keeps the environment readable for the service user.
-    system(
-        [
-            uv,
-            "sync",
-            "--locked",
-            "--no-default-groups",
-            "--group",
-            "stage",
-            "--group",
-            "tools",
-            "--python",
-            args.python,
-        ],
-        cwd=host.code,
-        env={**os.environ, "UV_LINK_MODE": "copy"},
-    )
+    for venv, groups in service_environments(selected).items():
+        system(
+            [
+                uv,
+                "sync",
+                "--locked",
+                "--no-default-groups",
+                *[part for group in groups for part in ("--group", group)],
+                "--python",
+                args.python,
+            ],
+            cwd=host.code,
+            env={
+                **os.environ,
+                "UV_LINK_MODE": "copy",
+                "UV_PROJECT_ENVIRONMENT": str(host.code / venv),
+            },
+        )
     for name, asset in selected_assets.items():
         source = local_assets.get(name)
         step(
@@ -365,17 +522,26 @@ def install(args, host, run, chown, out):
         step(f"remove {host.go2rtc_config}: cameras are off")
         if not args.dry_run:
             host.go2rtc_config.unlink()
-    for unit in sorted((host.source / "config/systemd").iterdir()):
-        step(f"install {host.units / unit.name}")
+    if rendered_rules:
+        directory(host.udev, 0o755, (0, 0))
+        for name, text in rendered_rules.items():
+            step(f"install {host.udev / name}")
+            if not args.dry_run:
+                write_file(host.udev / name, text, 0o644, (0, 0), chown)
+        system(["udevadm", "control", "--reload-rules"])
+        system(["udevadm", "trigger", "--subsystem-match=usb"])
+    for name, content in unit_contents.items():
+        step(f"install {host.units / name}")
         if not args.dry_run:
-            write_file(host.units / unit.name, unit.read_text(), 0o644, (0, 0), chown)
+            write_file(host.units / name, content, 0o644, (0, 0), chown)
     system(["systemctl", "daemon-reload"])
     system(["systemctl", "enable", "--now", REQUEST_WATCHER])
-    step(f"link {host.command} to {host.code / 'deploy/mg400ctl'}")
-    if not args.dry_run:
-        host.command.parent.mkdir(parents=True, exist_ok=True)
-        host.command.unlink(missing_ok=True)
-        host.command.symlink_to(host.code / "deploy/mg400ctl")
+    for command in (host.command, host.lab_command):
+        step(f"link {command} to {host.code / 'deploy/mg400ctl'}")
+        if not args.dry_run:
+            command.parent.mkdir(parents=True, exist_ok=True)
+            command.unlink(missing_ok=True)
+            command.symlink_to(host.code / "deploy/mg400ctl")
     return settings, devices
 
 

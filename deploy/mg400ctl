@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Control the MG400 services on this host. Run as root, for example: sudo mg400ctl status
+"""Control host services with mg400ctl or labctl. Run as root, for example: sudo mg400ctl status
 
 terminal and mode run as the service user (UID 1000) with the settings from
 /etc/mg400/mg400.env, so they share the robot connection lock with the panels.
@@ -22,28 +22,24 @@ from install import (  # noqa: E402
     Host,
     camera_devices,
     check_settings,
+    enabled_services,
+    load_services,
     parse_settings,
 )
 
-SERVICES = {
-    "web": ["mg400-web-panel.service"],
-    "stage": ["mg400-stage-panel.service"],
-    "camera": ["mg400-camera-preview.service", "mg400-camera-capture.service"],
-    "collector": ["mg400-gripper-collector.service"],
-}
 WATCHER = "mg400-gripper-collector.path"
 CAMERA_PORT = 1985
 PRELOAD = "http://127.0.0.1:1984/api/preload"
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 
 
-def units(names, action):
+def units(names, action, services):
     if "all" in names:
-        names = list(SERVICES)
+        names = list(services)
     result = []
     for name in names:
         # Starting the preview also starts the capture. Stopping either stops both.
-        chosen = SERVICES[name][:1] if action == "start" else SERVICES[name]
+        chosen = services[name][:1] if action == "start" else services[name]
         result.extend(unit for unit in chosen if unit not in result)
     return result
 
@@ -63,8 +59,8 @@ def unit_states(run, chosen):
     return states
 
 
-def status(run, out):
-    rows = [(name, unit) for name, chosen in SERVICES.items() for unit in chosen]
+def status(run, out, services):
+    rows = [(name, unit) for name, chosen in services.items() for unit in chosen]
     rows.append(("collector", WATCHER))
     states = unit_states(run, [unit for _, unit in rows])
     for name, unit in rows:
@@ -72,7 +68,7 @@ def status(run, out):
     return 0
 
 
-def camera_check(host, devices, run, out):
+def camera_check(host, devices, run, out, services):
     """Check the cameras from the USB devices up to the capture streams. Return 0 if all work.
 
     A service in the active state only shows that its process runs, so check the devices first.
@@ -105,10 +101,10 @@ def camera_check(host, devices, run, out):
         print("Restarting the camera services does not fix a missing USB device.", file=out)
         return 1
 
-    states = unit_states(run, SERVICES["camera"])
-    for unit in SERVICES["camera"]:
+    states = unit_states(run, services["camera"])
+    for unit in services["camera"]:
         print(f"service  {unit:<30} {states.get(unit, 'unknown')}", file=out)
-    if not all(states.get(unit, "").startswith("active ") for unit in SERVICES["camera"]):
+    if not all(states.get(unit, "").startswith("active ") for unit in services["camera"]):
         print("Start the cameras: mg400ctl start camera", file=out)
         return 1
     preload = run(
@@ -150,15 +146,22 @@ def as_service_user(host, settings, command, execvpe):
 
 
 def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sys.stdout):
+    host = host or Host()
+    try:
+        registry = load_services(host.registry)
+    except (OSError, ValueError) as error:
+        print(f"Cannot read service registry: {error}", file=sys.stderr)
+        return 1
+    services = {name: entry["units"] for name, entry in registry.items()}
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("assets", help="Show manifest asset status without downloads or writes")
     commands.add_parser("status", help="Show the state of every service")
     for action in ("start", "stop", "restart"):
         sub = commands.add_parser(action, help=f"{action.capitalize()} services")
-        sub.add_argument("names", nargs="+", choices=[*SERVICES, "all"])
+        sub.add_argument("names", nargs="+", choices=[*services, "all"])
     logs = commands.add_parser("logs", help="Show the journal of one service")
-    logs.add_argument("name", choices=list(SERVICES))
+    logs.add_argument("name", choices=list(services))
     logs.add_argument("-n", "--lines", type=int, default=50)
     logs.add_argument("-f", "--follow", action="store_true")
     commands.add_parser("terminal", help="Open the interactive robot terminal")
@@ -167,9 +170,10 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
     commands.add_parser("camera-url", help="Print the camera preview link with its key")
     commands.add_parser("camera-check", help="Check the camera devices, services and streams")
     token = commands.add_parser("token", help="Print the access token of a panel")
-    token.add_argument("panel", choices=["web", "stage"])
+    token.add_argument(
+        "panel", choices=[name for name, entry in registry.items() if entry["token"]]
+    )
     args = parser.parse_args(argv)
-    host = host or Host()
     if os.geteuid() != 0:
         print("Run mg400ctl as root, for example: sudo mg400ctl status", file=sys.stderr)
         return 1
@@ -185,6 +189,13 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
         return int(any(state != "present" for _, state in states))
     try:
         settings = parse_settings(host.settings.read_text())
+        if args.command in ("status", "start", "restart"):
+            enabled = enabled_services(registry, settings.get("MG400_OPTIONAL_SERVICES", ""))
+            if args.command != "status":
+                disabled = [name for name in args.names if name != "all" and name not in enabled]
+                if disabled:
+                    raise ValueError(f"Optional services are not enabled: {', '.join(disabled)}")
+            services = {name: entry["units"] for name, entry in enabled.items()}
         if args.command == "camera-check":
             devices = camera_devices(settings.get("MG400_CAMERA_DEVICES", ""))
         if args.command in ("terminal", "mode"):
@@ -202,18 +213,20 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
         return 1
 
     if args.command == "status":
-        return status(run, out)
+        return status(run, out, services)
     if args.command == "camera-check":
-        return camera_check(host, devices, run, out)
+        return camera_check(host, devices, run, out, services)
     if args.command in ("start", "stop", "restart"):
         if args.command != "start" and any(name in ("web", "all") for name in args.names):
             print(
                 "The web panel can take up to 60 seconds to confirm that the arm stopped.", file=out
             )
-        return run(["systemctl", args.command, *units(args.names, args.command)]).returncode
+        return run(
+            ["systemctl", args.command, *units(args.names, args.command, services)]
+        ).returncode
     if args.command == "logs":
         command = ["journalctl", "--no-pager", "-n", str(args.lines)]
-        for unit in SERVICES[args.name]:
+        for unit in services[args.name]:
             command += ["-u", unit]
         return run(command + (["-f"] if args.follow else [])).returncode
     if args.command == "terminal":
@@ -235,7 +248,7 @@ def main(argv=None, *, host=None, run=subprocess.run, execvpe=os.execvpe, out=sy
         bind = settings.get("MG400_CAMERA_BIND") or "127.0.0.1"
         print(f"http://{bind}:{CAMERA_PORT}/{key}/", file=out)
     elif args.command == "token":
-        value = settings.get(f"MG400_{'PANEL' if args.panel == 'web' else 'STAGE'}_TOKEN")
+        value = settings.get(registry[args.panel]["token"])
         if not value:
             print("No token is set. Run deploy/install.py to create one.", file=sys.stderr)
             return 1

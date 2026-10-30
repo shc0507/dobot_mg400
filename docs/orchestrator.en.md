@@ -80,9 +80,9 @@ Configure only the services in use. Use the stage contract base path, which ends
 
 On failure or timeout, the runner revokes the failed step and requests a stop from every acquired service. With `on_fail = "hold"`, it retains the leases and waits for a person. It never retries the failed step.
 
-At the prompt, enter `abort` to terminate the run. To continue after manual completion, enter `manually-completed` and supply a nonempty resolution note. The old worker, helper calls, and in-flight service operations must finish. After the manual declaration, the runner requests a fresh stop and requires confirmation.
+At the prompt, enter `abort` to terminate the run. To continue after manual completion, enter `manually-completed` and supply a nonempty resolution note. The old worker, helper calls, and in-flight service operations must finish. The runner then requires fresh stop confirmation or verified robot rest after an explicit manual `disable`. Robot rest requires the latest command to confirm successful disable, current disabled and idle feedback, and no keyboard or gripper activity. Without this proof, and during ordinary stop, hold, abort, or cleanup, the runner sends Stop.
 
-Ownership must match. If a service reports an instance ID, that ID must also match. Services must be healthy and idle, with `busy = false`, `locked = false`, and `fault = null`. Lease loss or audit persistence failure prevents resumption. The runner records the manual completion and continues with the next step. A refused resolution leaves the run held.
+Every service must be healthy, retain ownership, and report `busy = false` and `locked = false`. Generic services also require `fault = null`, and any reported instance ID must match. The robot requires fresh syncing feedback, `robot_error = false`, `stop_unconfirmed = false`, and a valid unchanged instance ID. The runner never disables the robot automatically. Lease loss or audit persistence failure prevents resumption. The runner records manual completion and continues with the next step, while a refused resolution keeps the run held.
 
 EOF, Ctrl-C, SIGTERM, and SIGHUP request abort. The CLI waits for active work and stop operations to finish before closing the store or demo services. Repeated interrupts do not bypass this wait.
 

@@ -3,6 +3,7 @@
 import copy
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 
@@ -278,3 +279,204 @@ def test_reconcile_generic_service_still_requires_its_contract(
         state[field] = value
     with pytest.raises(RuntimeError, match="manual recovery"):
         pool.reconcile()
+
+
+@pytest.fixture
+def disabled_robot(robot_reconciliation, monkeypatch):
+    pool, state = robot_reconciliation
+    state.update(
+        robot_mode=4,
+        enabled=False,
+        keyboard_enabled=False,
+        keyboard_arming=False,
+        keyboard_active_key=None,
+        gripper_busy=False,
+        last_command={
+            "id": "manual-disable",
+            "action": "disable",
+            "client": "operator",  # Safety disable need not come from the run holder.
+            "result": "ok",
+            "message": "Robot disable and rest are confirmed.",
+            "finished_at": 1.0,  # No arbitrary age cutoff; current feedback proves rest.
+        },
+    )
+    stop = Mock(return_value={"stop": "confirmed"})
+    monkeypatch.setattr(pool.services["robot"]._robot, "_http", stop)
+    return pool, state, stop
+
+
+def test_recovery_only_confirmation_uses_fresh_explicit_manual_disable(disabled_robot):
+    pool, state, stop = disabled_robot
+    result = pool.services["robot"].recovery_stop(pool._instances["robot"])
+    assert result == {
+        "stop": "confirmed",
+        "state": state,
+        "recovery": "verified-disabled-rest",
+    }
+    stop.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("instance", _ABSENT),
+        ("instance", "other-instance"),
+        ("mode", "read-only"),
+        ("controller_id", "other-holder"),
+        ("syncing", False),
+        ("feedback_fresh", False),
+        ("robot_mode", _ABSENT),
+        ("robot_mode", 5),
+        ("robot_mode", 4.0),
+        ("enabled", _ABSENT),
+        ("enabled", True),
+        ("busy", True),
+        ("locked", True),
+        ("robot_error", True),
+        ("stop_unconfirmed", True),
+        ("keyboard_enabled", _ABSENT),
+        ("keyboard_enabled", True),
+        ("keyboard_arming", _ABSENT),
+        ("keyboard_arming", True),
+        ("keyboard_active_key", _ABSENT),
+        ("keyboard_active_key", "ArrowUp"),
+        ("gripper_busy", _ABSENT),
+        ("gripper_busy", True),
+        ("fault", "unknown outcome"),
+        ("last_command", _ABSENT),
+        ("last_command", []),
+    ],
+)
+def test_unproven_recovery_state_sends_real_stop(disabled_robot, field, value):
+    pool, state, stop = disabled_robot
+    if value is _ABSENT:
+        state.pop(field)
+    else:
+        state[field] = value
+    assert pool.services["robot"].recovery_stop(pool._instances["robot"]) == {"stop": "confirmed"}
+    stop.assert_called_once_with("stop", {"wait_s": 1})
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("action", _ABSENT),
+        ("action", "enable"),
+        ("result", _ABSENT),
+        ("result", "stopped"),
+        ("id", _ABSENT),
+        ("id", ""),
+        ("id", 1),
+        ("client", _ABSENT),
+        ("client", " "),
+        ("client", None),
+        ("finished_at", _ABSENT),
+        ("finished_at", 0),
+        ("finished_at", -1),
+        ("finished_at", True),
+        ("finished_at", "1"),
+        ("finished_at", float("inf")),
+        ("finished_at", float("nan")),
+        ("finished_at", 10**1000),
+    ],
+)
+def test_recovery_requires_valid_latest_disable_metadata(disabled_robot, field, value):
+    pool, state, stop = disabled_robot
+    if value is _ABSENT:
+        state["last_command"].pop(field)
+    else:
+        state["last_command"][field] = value
+    assert pool.services["robot"].recovery_stop(pool._instances["robot"]) == {"stop": "confirmed"}
+    stop.assert_called_once()
+
+
+def test_failed_recovery_read_still_attempts_independent_stop(disabled_robot, monkeypatch):
+    pool, _, stop = disabled_robot
+    adapter = pool.services["robot"]
+    monkeypatch.setattr(adapter, "state", Mock(side_effect=OSError("unavailable feedback")))
+    assert adapter.recovery_stop(pool._instances["robot"]) == {"stop": "confirmed"}
+    stop.assert_called_once()
+
+
+@pytest.mark.parametrize("state", [None, [], "invalid state"])
+def test_malformed_recovery_state_still_attempts_independent_stop(
+    disabled_robot, monkeypatch, state
+):
+    pool, _, stop = disabled_robot
+    adapter = pool.services["robot"]
+    monkeypatch.setattr(adapter, "state", lambda: state)
+    assert adapter.recovery_stop(pool._instances["robot"]) == {"stop": "confirmed"}
+    stop.assert_called_once()
+
+
+def test_generic_recovery_still_requests_fresh_stop(generic_reconciliation, monkeypatch):
+    pool, _ = generic_reconciliation
+    adapter = pool.services["stage"]
+    stop = Mock(return_value={"stop": "pending"})
+    monkeypatch.setattr(adapter, "stop", stop)
+    assert adapter.recovery_stop(None) == {"stop": "pending"}
+    stop.assert_called_once()
+
+
+def test_default_stop_round_always_cancels_even_with_valid_disabled_proof(disabled_robot):
+    pool, _, stop = disabled_robot
+    round_id = pool.stop_all()
+    assert pool.round_done(round_id) and pool.confirmed
+    stop.assert_called_once_with("stop", {"wait_s": 1})
+    assert "recovery" not in pool.stop_snapshot()["robot"]
+
+
+def test_lease_failure_cannot_select_recovery_proof(disabled_robot):
+    pool, _, stop = disabled_robot
+    pool._failed("Lease renewal failed")
+    pool.recovery_stop_all()
+    stop.assert_called_once_with("stop", {"wait_s": 1})
+
+
+def test_recovery_mode_survives_async_round_progress_and_new_round_defaults_to_stop():
+    entered, finish = threading.Event(), threading.Event()
+    calls = []
+
+    class Service:
+        timeout = 0
+
+        def __init__(self, name):
+            self.name = name
+            self.first = True
+
+        def stop(self):
+            calls.append((self.name, "stop"))
+            if self.name == "a" and self.first:
+                self.first = False
+                entered.set()
+                assert finish.wait(5), "offline stop did not drain"
+            return {"stop": "confirmed"}
+
+        def recovery_stop(self, expected_instance):
+            assert expected_instance == self.name + "-instance"
+            calls.append((self.name, "recovery"))
+            return {"stop": "confirmed"}
+
+    pool = Clients({name: Service(name) for name in ("a", "b")})
+    pool.acquired = ["a", "b"]
+    pool._instances = {name: name + "-instance" for name in pool.acquired}
+    try:
+        pool.stop_all()
+        assert entered.is_set()
+        recovery_round = pool.recovery_stop_all()
+        assert not pool.round_done(recovery_round)
+        assert calls.count(("b", "recovery")) == 1
+        finish.set()
+        pool._stoppers["a"].join(1)
+        pool.stop_all(recovery_round)
+        assert pool.round_done(recovery_round) and pool.confirmed
+        assert calls.count(("a", "recovery")) == 1
+        assert calls.count(("a", "stop")) == 1
+        pool.stop_all()
+        assert calls.count(("a", "stop")) == 2 and calls.count(("b", "stop")) == 2
+        assert calls.count(("a", "recovery")) == calls.count(("b", "recovery")) == 1
+    finally:
+        finish.set()
+        for worker in pool._stoppers.values():
+            worker.join(1)
+            assert not worker.is_alive()

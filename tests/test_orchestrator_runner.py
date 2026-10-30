@@ -267,6 +267,14 @@ def test_inflight_helper_drains_and_is_stopped_before_any_next_step(tmp_path, sk
 
     service.command = slow_command
 
+    def recovery_stop(expected_instance):
+        assert finish.is_set()
+        assert expected_instance == service.value["instance"]
+        service.events.append("recovery-stop")
+        return service.stop_value.copy()
+
+    service.recovery_stop = recovery_stop
+
     def helper(ctx):
         try:
             ctx.clients["robot"].command("write")
@@ -294,6 +302,7 @@ def test_inflight_helper_drains_and_is_stopped_before_any_next_step(tmp_path, sk
         assert runner.wait() == "held"
         with pytest.raises(RuntimeError, match="finish before recovery"):
             runner.resume(manually_completed=True, note="not yet safe")
+        assert "recovery-stop" not in service.events
         assert "next-step" not in service.events and "release" not in service.events
         finish.set()
         for worker in helpers:
@@ -303,7 +312,12 @@ def test_inflight_helper_drains_and_is_stopped_before_any_next_step(tmp_path, sk
         assert service.events[-1] == "stop"
         runner.resume(manually_completed=True, note="late operation inspected and completed")
         until(lambda: runner.status == "completed")
-        assert service.events.index("late-write") < service.events.index("next-step")
+        assert (
+            service.events.index("late-write")
+            < service.events.index("recovery-stop")
+            < service.events.index("next-step")
+        )
+        assert service.events.count("recovery-stop") == 1
 
 
 def test_hung_stop_does_not_block_another_services_final_stop(tmp_path):

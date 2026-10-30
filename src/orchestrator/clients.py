@@ -1,6 +1,7 @@
 """Service adapters and leases. No endpoint is contacted during construction."""
 
 import copy
+import math
 import os
 import threading
 import time
@@ -65,6 +66,10 @@ class ServiceAdapter:
     def stop(self):
         return self._http.stop(wait_s=min(1, self.timeout / 2))
 
+    def recovery_stop(self, expected_instance):
+        """Reconcile only after old work drains; generic services need a fresh stop."""
+        return self.stop()
+
     def release(self):
         return self._http.release()
 
@@ -104,6 +109,58 @@ class RobotAdapter(ServiceAdapter):
         # remains independent of an in-flight WebSocket command.
         return self._robot._http("stop", {"wait_s": min(1, self.timeout / 2)})
 
+    def recovery_stop(self, expected_instance):
+        """Confirm explicit manual disable after old work drains, or send Stop.
+
+        Normal cancellation must always use stop(). This recovery-only proof
+        avoids relocking a robot whose operator already verified disable/rest.
+        It never disables, unlocks, or reacquires control automatically.
+        """
+        try:
+            state = self.state()
+            command = state.get("last_command")
+            if (
+                isinstance(expected_instance, str)
+                and expected_instance.strip()
+                and state.get("instance") == expected_instance
+                and state.get("mode") == "robot"
+                and self.owned(state)
+                and self.healthy(state)
+                and type(state.get("robot_mode")) is int
+                and state["robot_mode"] == 4
+                and state.get("enabled") is False
+                and all(
+                    state.get(field) is False
+                    for field in (
+                        "busy",
+                        "locked",
+                        "robot_error",
+                        "stop_unconfirmed",
+                        "keyboard_enabled",
+                        "keyboard_arming",
+                        "gripper_busy",
+                    )
+                )
+                and "keyboard_active_key" in state
+                and state["keyboard_active_key"] is None
+                and state.get("fault") is None
+                and isinstance(command, dict)
+                and command.get("action") == "disable"
+                and command.get("result") == "ok"
+                and all(
+                    isinstance(command.get(field), str) and command[field].strip()
+                    for field in ("id", "client")
+                )
+                and type(command.get("finished_at")) in {int, float}
+                and command["finished_at"] > 0
+                and math.isfinite(command["finished_at"])
+            ):
+                return {"stop": "confirmed", "state": state, "recovery": "verified-disabled-rest"}
+        except Exception:
+            # Read failures and malformed proof still require an independent stop.
+            pass
+        return self.stop()
+
     def release(self):
         return self._robot.run("stop_sync", timeout=self.timeout)
 
@@ -135,6 +192,7 @@ class Clients:
         self._renewers = []
         self._stoppers = {}
         self._stop_rounds = {}
+        self._recovery_rounds = set()
         self.stop_round = 0
         self.stop_results = {}
         self._instances = {}
@@ -188,14 +246,29 @@ class Clients:
                 return
 
     def stop_all(self, round_id=None):
+        return self._stop_all(round_id)
+
+    def recovery_stop_all(self):
+        """Start a recovery round only after the caller drains all old work."""
+        return self._stop_all(recovery=True)
+
+    def _stop_all(self, round_id=None, *, recovery=False):
         with self._lock:
             if round_id is None:
                 self.stop_round += 1
                 round_id = self.stop_round
+                if recovery:
+                    self._recovery_rounds.add(round_id)
+            recovery = round_id in self._recovery_rounds
 
         def stop(name):
             try:
-                result = self.services[name].stop()
+                service = self.services[name]
+                confirm = getattr(service, "recovery_stop", None)
+                if recovery and not self.error and callable(confirm):
+                    result = confirm(self._instances.get(name))
+                else:
+                    result = service.stop()
                 if not isinstance(result, dict) or result.get("stop") not in {
                     "confirmed",
                     "pending",

@@ -60,7 +60,7 @@ def test_every_recipe_rehearses_without_hardware(tmp_path, path):
             assert not runner._thread.is_alive()
 
 
-def test_failing_step_holds_run_and_owned_robot_reconciles_after_manual_recovery(tmp_path):
+def test_failing_step_holds_owned_robot_and_resumes_after_explicit_manual_recovery(tmp_path):
     registry = default_registry()
     calls = []
 
@@ -117,6 +117,16 @@ def test_failing_step_holds_run_and_owned_robot_reconciles_after_manual_recovery
             assert reconciled["stop_unconfirmed"] is False
             assert reconciled["locked"] is False and reconciled["busy"] is False
             assert calls == ["failed-step"]
+            runner.resume(manually_completed=True, note="Disabled and completed the step manually.")
+            wait_for(lambda: runner.status == "completed")
+            assert calls == ["failed-step", "later-step"]
+            assert store.get(runner.run_id)["steps"][1]["status"] == "manually_completed"
+            stops = [
+                event["data_json"]
+                for event in store.get(runner.run_id)["events"]
+                if event["kind"] == "stop"
+            ]
+            assert any("verified-disabled-rest" in event for event in stops)
         finally:
             runner.abort()
             runner._thread.join(5)

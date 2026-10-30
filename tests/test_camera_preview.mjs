@@ -24,13 +24,23 @@ function part(bytes, length = bytes.length) {
 function browser(count = 1) {
   let now = 0, timerId = 0, objectId = 0;
   const timers = new Map(), requests = [], decodes = [], revoked = [], listeners = [];
+  const intersections = [], resizes = [];
   const blobs = new Map();
   const images = Array.from({ length: count }, (_, index) => {
     const status = { textContent: "" };
-    const figure = { dataset: {}, querySelector: () => status };
+    const overlayStatus = { textContent: "" }, drawing = [];
+    const toggle = { checked: false, addEventListener: (_event, listener) => { toggle.change = listener; } };
+    const context = { measureText: text => ({ width: text.length * 7 }) };
+    for (const operation of ["clearRect", "strokeRect", "beginPath", "moveTo", "lineTo", "closePath", "stroke", "fillRect", "fillText"]) {
+      context[operation] = (...args) => drawing.push({ operation, args, color: context.strokeStyle, fill: context.fillStyle });
+    }
+    const canvas = { width: 320, height: 240, hidden: true, getContext: () => context };
+    const figure = { dataset: {}, querySelector: selector => ({
+      small: status, "[data-overlay]": toggle, "[data-overlay-status]": overlayStatus, canvas,
+    })[selector] };
     return {
-      dataset: { source: `camera${index + 1}.mjpeg` },
-      status, figure, shown: [],
+      dataset: { source: `camera${index + 1}.mjpeg`, detections: `camera${index + 1}/detections.json` },
+      status, figure, shown: [], overlayStatus, toggle, canvas, drawing, clientWidth: 320, clientHeight: 240,
       set src(value) { this.value = value; this.shown.push(value); },
       get src() { return this.value; },
       removeAttribute() { this.value = undefined; },
@@ -64,9 +74,17 @@ function browser(count = 1) {
       naturalHeight = 720;
       decode() {
         const pending = deferred();
-        decodes.push({ ...pending, url: this.src });
+        decodes.push({ ...pending, url: this.src, image: this });
         return pending.promise;
       }
+    },
+    IntersectionObserver: class {
+      constructor(callback) { this.callback = callback; intersections.push(this); }
+      observe(target) { this.target = target; this.callback([{ target, isIntersecting: true }]); }
+    },
+    ResizeObserver: class {
+      constructor(callback) { this.callback = callback; resizes.push(this); }
+      observe(target) { this.target = target; }
     },
     fetch: (source, options) => {
       const pending = deferred();
@@ -114,6 +132,25 @@ function browser(count = 1) {
       listeners.forEach(listener => listener());
       await drain();
     },
+    async overlay(index, enabled = true) {
+      images[index].toggle.checked = enabled;
+      images[index].toggle.change();
+      await this.advance(0);
+    },
+    async tileVisible(index, value) {
+      const observer = intersections[index];
+      observer.callback([{ target: observer.target, isIntersecting: value }]);
+      await this.advance(0);
+    },
+    async detections(index, data, ok = true) {
+      requests[index].resolve({ ok, json: async () => data });
+      await drain();
+    },
+    resize(index, width, height) {
+      images[index].clientWidth = width;
+      images[index].clientHeight = height;
+      resizes[index].callback();
+    },
   };
 }
 
@@ -123,6 +160,291 @@ async function showing(page, wait = 1000, label = "visible") {
   page.decodes[0].resolve();
   await page.advance(wait);
 }
+
+function detected() {
+  return {
+    available: true, image_size: { width: 1280, height: 720 },
+    coordinate_system: "oriented_original_image_pixels",
+    detections: [
+      { class_id: 0, label: "Chip", confidence: 0.95, xyxy: [100, 100, 300, 300], polygon: [[100, 100], [300, 100], [300, 300]] },
+      { class_id: 1, label: "Robotic Arm", confidence: 0.9, xyxy: [700, 200, 900, 500], polygon: null },
+    ],
+  };
+}
+
+async function refreshFrame(page, index = 0) {
+  await page.push(index, part(jpeg("fresh")));
+  page.decodes.at(-1).resolve();
+  await page.advance(0);
+}
+
+test("overlay draws model boxes, polygons and labels with letterbox offsets and resize", async () => {
+  const page = browser();
+  await showing(page, 0);
+  assert.equal(page.requests.length, 1);
+  await page.overlay(0);
+  assert.equal(page.requests[1].source, "camera1/detections.json");
+  assert.equal(page.requests[1].options.cache, "no-store");
+  assert.equal(page.requests[1].options.headers, undefined);
+  await page.detections(1, detected());
+  const image = page.images[0];
+  assert.equal(image.canvas.hidden, false);
+  const boxes = image.drawing.filter(call => call.operation === "strokeRect");
+  assert.deepEqual(boxes.map(box => box.args), [[25, 55, 50, 50], [175, 80, 50, 75]]);
+  assert.deepEqual(boxes.map(box => box.color), ["#18b85a", "#ed8a24"]);
+  assert.deepEqual(image.drawing.find(call => call.operation === "moveTo").args, [25, 55]);
+  assert.ok(image.drawing.some(call => call.operation === "closePath"));
+  assert.deepEqual(image.drawing.filter(call => call.operation === "fillText").map(call => call.args[0]), ["Chip 95%", "Robotic Arm 90%"]);
+  page.resize(0, 640, 360);
+  assert.deepEqual(image.drawing.filter(call => call.operation === "strokeRect").at(-2).args, [50, 50, 100, 100]);
+});
+
+test("overlay polls each visible enabled camera at most once per second with one request in flight", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  await page.advance(1000);
+  assert.equal(page.requests.length, 2);
+  await refreshFrame(page);
+  await page.detections(1, detected());
+  await page.advance(0);
+  assert.equal(page.requests.length, 3);
+  await page.detections(2, detected());
+  await page.advance(999);
+  assert.equal(page.requests.length, 3);
+  await page.advance(1);
+  assert.equal(page.requests.length, 4);
+});
+
+test("hidden tiles cancel only overlay work and resume without changing the video stream", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.tileVisible(0, false);
+  await page.overlay(0);
+  assert.equal(page.requests.length, 1);
+  await page.tileVisible(0, true);
+  assert.equal(page.requests.length, 2);
+  await page.tileVisible(0, false);
+  assert.equal(page.requests[1].options.signal.aborted, true);
+  assert.equal(page.requests[0].options.signal.aborted, false);
+  assert.equal(page.images[0].canvas.hidden, true);
+  await page.advance(1000);
+  assert.equal(page.requests.length, 2);
+  await page.tileVisible(0, true);
+  assert.equal(page.requests.length, 3);
+});
+
+test("overlay switch cancels and clears only its own camera", async () => {
+  const page = browser(2);
+  for (let index = 0; index < 2; index++) {
+    await page.respond(index);
+    await page.push(index, part(jpeg("camera")));
+    page.decodes.at(-1).resolve();
+  }
+  await page.advance(0);
+  await page.overlay(0);
+  await page.overlay(1);
+  await page.detections(2, detected());
+  await page.detections(3, detected());
+  await page.overlay(0, false);
+  assert.equal(page.images[0].canvas.hidden, true);
+  assert.equal(page.images[1].canvas.hidden, false);
+  await page.advance(1000);
+  assert.equal(page.requests.at(-1).source, "camera2/detections.json");
+  assert.equal(page.requests.filter(request => request.source === "camera1/detections.json").length, 1);
+});
+
+test("late prior-session JSON cannot restore or overwrite a hidden overlay", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  const old = deferred();
+  page.requests[1].resolve({ ok: true, json: () => old.promise });
+  await drain();
+  await page.tileVisible(0, false);
+  await page.tileVisible(0, true);
+  await page.detections(2, detected());
+  const before = page.images[0].drawing.length;
+  const stale = detected();
+  stale.detections[0].label = "stale";
+  old.resolve(stale);
+  await drain();
+  assert.equal(page.images[0].drawing.length, before);
+  assert.equal(page.images[0].canvas.hidden, false);
+});
+
+test("pausing a stream immediately clears and aborts detection without extending frame retention", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  await page.detections(1, detected());
+  await page.advance(1500);
+  assert.equal(page.images[0].canvas.hidden, true);
+  assert.equal(page.images[0].figure.dataset.paused, "true");
+  assert.equal(page.requests[2].options.signal.aborted, true);
+  assert.equal(page.images[0].overlayStatus.textContent, "");
+  await page.advance(3500);
+  assert.equal(page.images[0].src, undefined);
+  assert.equal(page.requests.filter(request => request.source.endsWith("detections.json")).length, 2);
+});
+
+test("document hiding aborts overlay and video and requires a fresh displayed frame before polling again", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  await page.visible(false);
+  assert.ok(page.requests.every(request => request.options.signal.aborted));
+  assert.equal(page.images[0].canvas.hidden, true);
+  await page.visible(true);
+  await page.advance(500);
+  assert.equal(page.requests.at(-1).source, "camera1.mjpeg");
+  assert.equal(page.requests.filter(request => request.source.endsWith("detections.json")).length, 1);
+});
+
+test("unavailable vision and request timeout leave fresh video unchanged", async () => {
+  const page = browser();
+  await showing(page, 0);
+  const image = page.images[0], original = image.src;
+  await page.overlay(0);
+  await page.detections(1, { available: false });
+  assert.equal(image.src, original);
+  assert.equal(image.canvas.hidden, true);
+  assert.equal(image.overlayStatus.textContent, "识别不可用");
+  await page.advance(1000);
+  await refreshFrame(page);
+  await page.advance(1000);
+  await refreshFrame(page);
+  await page.advance(1000);
+  assert.equal(page.requests[2].options.signal.aborted, true);
+  assert.equal(page.requests[0].options.signal.aborted, false);
+  assert.equal(image.figure.dataset.paused, undefined);
+  assert.equal(page.requests.at(-1).source, "camera1/detections.json");
+});
+
+for (const [name, invalidate] of [
+  ["different image dimensions", result => { result.image_size.width = 640; }],
+  ["nonfinite coordinates", result => { result.detections[0].xyxy[0] = NaN; }],
+  ["negative polygon coordinates", result => { result.detections[0].polygon[0][1] = -1; }],
+  ["fractional class ID", result => { result.detections[0].class_id = 0.5; }],
+  ["unknown class label", result => { result.detections[0].label = "unknown"; }],
+  ["invalid confidence", result => { result.detections[0].confidence = 2; }],
+]) {
+  test(`overlay rejects ${name} without touching the preview`, async () => {
+    const page = browser();
+    await showing(page, 0);
+    await page.overlay(0);
+    const result = detected();
+    invalidate(result);
+    await page.detections(1, result);
+    assert.equal(page.images[0].canvas.hidden, true);
+    assert.equal(page.images[0].overlayStatus.textContent, "识别不可用");
+    assert.equal(page.requests[0].options.signal.aborted, false);
+  });
+}
+
+test("overlay refuses unknown markup labels without interpreting them", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  const result = detected();
+  result.detections[0].label = "<img src=x onerror=alert(1)>";
+  await page.detections(1, result);
+  assert.ok(!page.images[0].drawing.some(call => call.operation === "fillText"));
+  assert.equal(page.images[0].canvas.hidden, true);
+});
+
+test("semantic class names keep source colors with swapped or alternate numeric IDs", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  const result = detected();
+  result.detections[0].class_id = 1;
+  result.detections[0].label = "cHiP";
+  result.detections[1].class_id = 0;
+  result.detections[1].label = "RoBoTiC_ArM";
+  result.detections.push({ ...result.detections[1], class_id: 7, label: "robotic arm" });
+  await page.detections(1, result);
+  const boxes = page.images[0].drawing.filter(call => call.operation === "strokeRect");
+  assert.deepEqual(boxes.map(box => box.color), ["#18b85a", "#ed8a24", "#ed8a24"]);
+});
+
+test("three enabled cameras take fair turns and cancelled queued work never fetches", async () => {
+  const page = browser(3);
+  for (let index = 0; index < 3; index++) {
+    await page.respond(index);
+    await page.push(index, part(jpeg("camera")));
+    page.decodes.at(-1).resolve();
+  }
+  await page.advance(0);
+  for (let index = 0; index < 3; index++) await page.overlay(index);
+  assert.equal(page.requests.length, 4);
+  assert.equal(page.requests[3].source, "camera1/detections.json");
+  await page.tileVisible(1, false);
+  await page.detections(3, detected());
+  assert.equal(page.requests.length, 5);
+  assert.equal(page.requests[4].source, "camera3/detections.json");
+  await page.tileVisible(1, true);
+  await page.detections(4, detected());
+  assert.equal(page.requests.length, 6);
+  assert.equal(page.requests[5].source, "camera2/detections.json");
+  await page.detections(5, detected());
+  await page.advance(1000);
+  assert.equal(page.requests.length, 7);
+  assert.equal(page.requests[6].source, "camera1/detections.json");
+  await page.detections(6, detected());
+  assert.equal(page.requests[7].source, "camera3/detections.json");
+  await page.detections(7, detected());
+  assert.equal(page.requests[8].source, "camera2/detections.json");
+});
+
+test("timeout and unavailable replies release the shared slot for another camera", async () => {
+  const page = browser(2);
+  for (let index = 0; index < 2; index++) {
+    await page.respond(index);
+    await refreshFrame(page, index);
+    await page.overlay(index);
+  }
+  assert.equal(page.requests.length, 3);
+  assert.equal(page.requests[2].source, "camera1/detections.json");
+  await page.advance(1000);
+  await refreshFrame(page, 0);
+  await refreshFrame(page, 1);
+  await page.advance(1000);
+  assert.equal(page.requests[2].options.signal.aborted, true);
+  assert.equal(page.requests[3].source, "camera2/detections.json");
+  await page.detections(3, { available: false });
+  assert.equal(page.requests[4].source, "camera1/detections.json");
+  assert.ok(page.images.every(image => image.figure.dataset.paused === undefined));
+});
+
+test("stale detection results expire while fresh camera frames continue", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  await page.detections(1, detected());
+  await page.advance(1000);
+  await refreshFrame(page);
+  await page.advance(500);
+  assert.equal(page.images[0].canvas.hidden, true);
+  assert.equal(page.images[0].overlayStatus.textContent, "识别结果已过期");
+  assert.equal(page.images[0].figure.dataset.paused, undefined);
+});
+
+test("changed frame dimensions discard the previous geometry and active inference", async () => {
+  const page = browser();
+  await showing(page, 0);
+  await page.overlay(0);
+  await page.detections(1, detected());
+  await page.advance(1000);
+  await page.push(0, part(jpeg("new size")));
+  page.decodes.at(-1).image.naturalWidth = 640;
+  page.decodes.at(-1).image.naturalHeight = 480;
+  page.decodes.at(-1).resolve();
+  await page.advance(0);
+  assert.equal(page.requests[2].options.signal.aborted, true);
+  assert.equal(page.images[0].canvas.hidden, true);
+  assert.match(page.images[0].status.textContent, /640 × 480/);
+});
 
 test("three cameras use one persistent authenticated relative request each", async () => {
   const page = browser(3);

@@ -236,6 +236,35 @@ The page shows “Image paused · Not live” when the stream stops or the visib
 The page keeps the previous frame for at most 5 seconds after receipt. Reconnection does not extend this limit.
 Switching to another browser tab pauses the preview and clears the image. Returning to the preview tab resumes it.
 
+### Detection overlays
+
+Enable `识别叠加` on a camera tile to show detection boxes, outlines, class names, and confidence.
+The switch is off when the page opens.
+Chip uses green `#18b85a`. The robotic arm uses orange `#ed8a24`.
+The colors follow class names, regardless of the model's numeric class IDs.
+
+Each visible tile with a live image requests detections at most once per second.
+Enabled cameras take turns within the page. Slow requests can reduce the update rate.
+Scrolling a tile out of view, hiding the browser tab, disabling its switch, or pausing its image cancels and clears its overlay.
+These actions preserve the existing video pause rules.
+Without a new result, the overlay expires after 1.5 seconds. Browser detection requests time out after 2 seconds.
+
+Detection uses a separate frame and can lag behind the video.
+The overlay uses image pixels and accounts for blank margins around the image.
+It hides results whose image dimensions differ from the current frame.
+Do not use the overlay as a calibrated robot motion target.
+
+The access-key route `/<key>/camera<N>/detections.json` calls the fixed endpoint `http://127.0.0.1:8771/api/detect?camera=N`.
+The vision service must use port `8771` and base path `/` for this proxy.
+The preview reads `MG400_VISION_TOKEN` and sends it as a Bearer header. The browser never receives this token.
+The preview unit retains this variable from `/etc/mg400/mg400.env`.
+The proxy uses a 2-second socket timeout, bypasses environment proxies, and refuses redirects.
+It rejects invalid JSON and detection responses larger than 256 KiB.
+
+On any vision error, the route returns `{"available":false}` and the tile shows `识别不可用`.
+Video continues independently of vision.
+The preview does not start the vision service. See [Vision service](vision.en.md) for its runtime and startup requirements.
+
 ### Camera failures
 
 If an image looks wrong, first run `mg400ctl camera-check`.

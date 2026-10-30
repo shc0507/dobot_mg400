@@ -2,6 +2,48 @@ const MAX_FRAME = 4 * 1024 * 1024;
 const FRAME_FRESH_MS = 1500;
 const FRAME_HOLD_MS = 5000;
 const HEADER_END = new Uint8Array([13, 10, 13, 10]);
+const visionQueue = [];
+let visionBusy = false;
+
+function visionSlot(signal) {
+  if (signal.aborted) return Promise.resolve(null);
+  return new Promise(resolve => {
+    function grant() {
+      signal.removeEventListener("abort", cancel);
+      visionBusy = true;
+      resolve(() => {
+        visionBusy = false;
+        visionQueue.shift()?.();
+      });
+    }
+    function cancel() {
+      const index = visionQueue.indexOf(grant);
+      if (index >= 0) visionQueue.splice(index, 1);
+      resolve(null);
+    }
+    if (visionBusy) {
+      visionQueue.push(grant);
+      signal.addEventListener("abort", cancel, { once: true });
+    } else grant();
+  });
+}
+
+const className = label => label.toLowerCase().replace(/[ _]/g, "");
+
+function abortable(promise, signal) {
+  if (signal.aborted) return Promise.reject(new Error("Aborted"));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new Error("Aborted"));
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(promise).then(value => {
+      signal.removeEventListener("abort", abort);
+      resolve(value);
+    }, error => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    });
+  });
+}
 
 function findBytes(bytes, pattern) {
   outer: for (let i = 0; i <= bytes.length - pattern.length; i++) {
@@ -63,14 +105,164 @@ async function readFrames(response, signal, onFrame) {
   }
 }
 
+function detectionOverlay(image, figure) {
+  const toggle = figure.querySelector("[data-overlay]");
+  const canvas = figure.querySelector("canvas");
+  const status = figure.querySelector("[data-overlay-status]");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    toggle.disabled = true;
+    status.textContent = "识别不可用";
+    return { frame() {}, pause() {} };
+  }
+  let visible = false, dimensions, latest, session, timer, expiry, generation = 0;
+
+  function eligible() {
+    return toggle.checked && visible && !document.hidden && dimensions && !figure.dataset.paused;
+  }
+
+  function clear(message = "") {
+    clearTimeout(expiry);
+    latest = undefined;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.hidden = true;
+    status.textContent = message;
+  }
+
+  function halt() {
+    generation++;
+    clearTimeout(timer);
+    timer = undefined;
+    session?.abort();
+    session = undefined;
+    clear();
+  }
+
+  function valid(result) {
+    if (!result || result.available !== true || !dimensions ||
+        result.coordinate_system !== "oriented_original_image_pixels" ||
+        result.image_size?.width !== dimensions.width || result.image_size?.height !== dimensions.height ||
+        !Array.isArray(result.detections) || result.detections.length > 256) return false;
+    const point = value => Array.isArray(value) && value.length === 2 &&
+      Number.isFinite(value[0]) && Number.isFinite(value[1]) && value[0] >= 0 && value[1] >= 0 &&
+      value[0] <= dimensions.width && value[1] <= dimensions.height;
+    return result.detections.every(item => item && Number.isSafeInteger(item.class_id) && item.class_id >= 0 &&
+      typeof item.label === "string" && item.label.length <= 80 &&
+      ["chip", "roboticarm"].includes(className(item.label)) &&
+      Number.isFinite(item.confidence) && item.confidence >= 0 && item.confidence <= 1 &&
+      Array.isArray(item.xyxy) && item.xyxy.length === 4 &&
+      point(item.xyxy.slice(0, 2)) && point(item.xyxy.slice(2)) &&
+      item.xyxy[2] > item.xyxy[0] && item.xyxy[3] > item.xyxy[1] &&
+      (item.polygon == null || (Array.isArray(item.polygon) && item.polygon.length >= 3 &&
+        item.polygon.length <= 4096 && item.polygon.every(point))));
+  }
+
+  function draw() {
+    if (!latest || !eligible()) return;
+    canvas.width = image.clientWidth;
+    canvas.height = image.clientHeight;
+    const scale = Math.min(canvas.width / dimensions.width, canvas.height / dimensions.height);
+    const left = (canvas.width - dimensions.width * scale) / 2;
+    const top = (canvas.height - dimensions.height * scale) / 2;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.lineWidth = 2;
+    context.font = "13px system-ui";
+    context.textBaseline = "top";
+    for (const item of latest.detections) {
+      const color = className(item.label) === "chip" ? "#18b85a" : "#ed8a24";
+      const [x0, y0, x1, y1] = item.xyxy;
+      context.strokeStyle = color;
+      context.strokeRect(left + x0 * scale, top + y0 * scale, (x1 - x0) * scale, (y1 - y0) * scale);
+      if (item.polygon) {
+        context.beginPath();
+        item.polygon.forEach(([x, y], index) => {
+          context[index ? "lineTo" : "moveTo"](left + x * scale, top + y * scale);
+        });
+        context.closePath();
+        context.stroke();
+      }
+      const label = `${item.label} ${Math.round(item.confidence * 100)}%`;
+      const x = Math.min(left + x0 * scale, Math.max(0, canvas.width - context.measureText(label).width - 6));
+      const y = Math.max(top, top + y0 * scale - 20);
+      context.fillStyle = color;
+      context.fillRect(x, y, context.measureText(label).width + 6, 20);
+      context.fillStyle = "#080d12";
+      context.fillText(label, x + 3, y + 3);
+    }
+    canvas.hidden = false;
+  }
+
+  async function poll() {
+    timer = undefined;
+    if (!eligible() || session) return;
+    const request = new AbortController();
+    const current = generation;
+    let started = performance.now(), release, timeout;
+    session = request;
+    try {
+      release = await visionSlot(request.signal);
+      if (!release || request.signal.aborted || generation !== current || !eligible()) return;
+      started = performance.now();
+      timeout = setTimeout(() => request.abort(), 2000);
+      const response = await abortable(
+        fetch(image.dataset.detections, { cache: "no-store", signal: request.signal }), request.signal,
+      );
+      if (!response.ok) throw new Error("Vision is unavailable.");
+      const result = await abortable(response.json(), request.signal);
+      if (request.signal.aborted || generation !== current || !eligible()) return;
+      if (!valid(result)) throw new Error("Vision result is unavailable.");
+      latest = result;
+      status.textContent = "";
+      draw();
+      clearTimeout(expiry);
+      expiry = setTimeout(() => clear("识别结果已过期"), FRAME_FRESH_MS);
+    } catch {
+      if (generation === current && eligible()) clear("识别不可用");
+    } finally {
+      release?.();
+      clearTimeout(timeout);
+      if (session === request) session = undefined;
+      if (generation === current && eligible()) {
+        timer = setTimeout(poll, Math.max(0, 1000 - (performance.now() - started)));
+      }
+    }
+  }
+
+  function update() {
+    if (!eligible()) halt();
+    else if (!session && timer === undefined) timer = setTimeout(poll, 0);
+  }
+
+  toggle.addEventListener("change", update);
+  document.addEventListener("visibilitychange", update);
+  if (typeof IntersectionObserver !== "undefined") {
+    new IntersectionObserver(entries => {
+      visible = entries.some(entry => entry.target === figure && entry.isIntersecting);
+      update();
+    }).observe(figure);
+  }
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(draw).observe(image);
+
+  return {
+    frame(width, height) {
+      if (dimensions && (width !== dimensions.width || height !== dimensions.height)) halt();
+      dimensions = { width, height };
+      update();
+    },
+    pause() { dimensions = undefined; halt(); },
+  };
+}
+
 for (const image of document.querySelectorAll("img[data-source]")) {
   const figure = image.closest("figure");
   const status = figure.querySelector("small");
+  const overlay = detectionOverlay(image, figure);
   let controller, currentUrl, pendingFrame, decoding = false;
   let shown = 0, measuredAt = 0, fps;
   let displayedAt, staleTimer, expiryTimer;
 
   function clearImage(message) {
+    overlay.pause();
     clearTimeout(staleTimer);
     clearTimeout(expiryTimer);
     pendingFrame = undefined;
@@ -83,6 +275,7 @@ for (const image of document.querySelectorAll("img[data-source]")) {
   }
 
   function pauseImage() {
+    overlay.pause();
     if (!currentUrl || performance.now() - displayedAt >= FRAME_HOLD_MS) {
       clearImage("连接中断，正在重连…");
       return;
@@ -129,6 +322,7 @@ for (const image of document.querySelectorAll("img[data-source]")) {
           }
           status.textContent = `${frame.naturalWidth} × ${frame.naturalHeight} · ${fps === undefined ? "帧率测量中…" : `${fps} 帧/秒`}`;
           if (age >= FRAME_FRESH_MS) pauseImage();
+          else overlay.frame(frame.naturalWidth, frame.naturalHeight);
         } catch {
           if (controller === session && !session.signal.aborted) {
             session.abort();

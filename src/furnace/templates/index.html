@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Furnace Laboratory</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div><h1>Furnace control</h1><a href="/agent">Camera &amp; agent chat</a></div>
+      <div class="status-group">
+        <div class="status-pill" id="cameraStatus"><span class="status-dot"></span><span>Camera</span></div>
+        <div class="status-pill" id="furnaceStatus"><span class="status-dot"></span><span>Furnace</span></div>
+        <div class="status-pill" id="flowStatus"><span class="status-dot"></span><span>Flow</span></div>
+      </div>
+    </header>
+
+    <section class="run-setup">
+      <label class="run-name-field">
+        <span>Run name</span>
+        <input id="runName" type="text" maxlength="80" value="Untitled run" placeholder="e.g. Sample A, 700 C soak">
+      </label>
+      <label class="toggle-row compact-toggle">
+        <span><strong>Center lock</strong><small>Keep the specimen centered in the live feed.</small></span>
+        <input id="stabilizationToggle" type="checkbox" checked><i></i>
+      </label>
+    </section>
+
+    <section class="viewer-card">
+      <div class="video-wrap">
+        <img src="{{ url_for('video_feed') }}" alt="Live microscope feed">
+        <div class="stabilization-target" id="stabilizationTarget" aria-hidden="true"></div>
+        <div class="recording-badge" id="recordingBadge" hidden><span></span> Recording</div>
+      </div>
+      <div class="controls">
+        <p class="control-title" id="recordingStatus">Live view</p>
+        <div class="recording-settings">
+          <label>
+            <span>Recording mode</span>
+            <select id="recordingMode">
+              <option value="time_lapse">Time-lapse</option>
+              <option value="live">Live video</option>
+            </select>
+          </label>
+          <label>
+            <span>Capture every</span>
+            <input id="recordingInterval" type="number" min="1" max="3600" step="1" value="30">
+            <small>seconds</small>
+          </label>
+          <label>
+            <span>Time-lapse FPS</span>
+            <input id="recordingFps" type="number" min="0.1" max="10" step="0.1" value="1">
+          </label>
+        </div>
+        <div class="button-row">
+          <button class="button danger" id="startRecording">Start recording</button>
+          <button class="button secondary" id="stopRecording" disabled>Stop recording</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="panel furnace-panel">
+        <div class="panel-heading">
+          <div><h2>Furnace</h2></div>
+          <button class="button small secondary" id="connectFurnace">Connect</button>
+        </div>
+        <div class="metrics">
+          <div class="metric"><span>Temperature</span><strong id="pvValue">—</strong><small>°C PV</small></div>
+          <div class="metric"><span>Target</span><strong id="svValue">—</strong><small>°C SV</small></div>
+          <div class="metric"><span>Ramp</span><strong id="rampValue">—</strong><small>°C/min</small></div>
+          <div class="metric"><span>State</span><strong class="state-text" id="runState">Offline</strong></div>
+        </div>
+        <div class="control-mode-status stopped" id="controlModeStatus" role="status" aria-live="polite">
+          <strong>Control mode: Stopped</strong>
+          <small>Heating is not active.</small>
+        </div>
+        <div class="manual-controls">
+          <label>Target temperature (°C)<input id="manualTemperature" type="number" min="0" step="0.1" value="100"></label>
+          <label>Ramp rate (°C/min)<input id="manualRamp" type="number" min="0.01" step="0.1" value="5"></label>
+        </div>
+        <div class="button-row wide">
+          <button class="button primary" id="applySetpoint">Apply and run</button>
+          <button class="button danger-outline" id="stopFurnace">Stop heating</button>
+        </div>
+      </article>
+
+      <article class="panel sequence-panel">
+        <div class="panel-heading">
+          <div><h2>Sequence</h2></div>
+          <div class="sequence-state" id="sequenceState">Not running</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Step</th><th>Target °C</th><th>Ramp °C/min</th><th>Hold min</th><th></th></tr></thead>
+            <tbody id="sequenceRows"></tbody>
+          </table>
+        </div>
+        <button class="text-button" id="addStep">+ Add step</button>
+        <label class="toggle-row">
+          <span><strong>Record with sequence</strong></span>
+          <input id="recordSequence" type="checkbox"><i></i>
+        </label>
+        <div class="button-row sequence-actions">
+          <button class="button secondary" id="updateSequence">Save / update sequence</button>
+          <button class="button primary" id="startSequence">Start sequence</button>
+          <button class="button danger-outline" id="stopSequence" disabled>Stop sequence</button>
+        </div>
+        <p class="sequence-progress" id="sequenceProgress"></p>
+      </article>
+
+      <article class="panel flow-panel">
+        <div class="panel-heading flow-heading">
+          <div><h2>Gas flow</h2></div>
+          <div class="flow-connect">
+            <button class="button small secondary" id="connectFlow">Connect</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="flow-table">
+            <thead><tr><th>Path</th><th>Target (% full scale)</th><th>Actual</th><th>Valve</th><th></th></tr></thead>
+            <tbody>
+              <tr class="gas-flow-row" data-channel-index="0"><td><strong>Gas 1</strong></td><td><input data-flow-target type="number" min="0" max="100" step="0.1" placeholder="%" aria-label="Gas 1 target percent of full scale"></td><td data-actual-flow>—</td><td data-valve-state>Unknown</td><td><div class="row-actions"><button class="button small primary" data-set-flow>Send flow</button><button class="button small secondary" data-valve-open>100%</button><button class="button small danger-outline" data-valve-close>Close valve</button></div></td></tr>
+              <tr class="gas-flow-row" data-channel-index="1"><td><strong>Gas 2</strong></td><td><input data-flow-target type="number" min="0" max="100" step="0.1" placeholder="%" aria-label="Gas 2 target percent of full scale"></td><td data-actual-flow>—</td><td data-valve-state>Unknown</td><td><div class="row-actions"><button class="button small primary" data-set-flow>Send flow</button><button class="button small secondary" data-valve-open>100%</button><button class="button small danger-outline" data-valve-close>Close valve</button></div></td></tr>
+              <tr class="gas-flow-row" data-channel-index="2"><td><strong>Gas 3</strong></td><td><input data-flow-target type="number" min="0" max="100" step="0.1" placeholder="%" aria-label="Gas 3 target percent of full scale"></td><td data-actual-flow>—</td><td data-valve-state>Unknown</td><td><div class="row-actions"><button class="button small primary" data-set-flow>Send flow</button><button class="button small secondary" data-valve-open>100%</button><button class="button small danger-outline" data-valve-close>Close valve</button></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="flow-footer">
+          <small>Use a physical isolation or emergency shutoff when required.</small>
+          <button class="button danger" id="stopAllFlow">Stop all gas flow</button>
+        </div>
+      </article>
+    </section>
+    <p class="message" id="message" role="status" aria-live="polite"></p>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

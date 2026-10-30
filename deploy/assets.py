@@ -83,6 +83,9 @@ def load_manifest(path):
             or any(ord(character) < 32 for character in str(path))
         ):
             raise ValueError(f"Asset {name}: install must be a canonical absolute file path.")
+        # The installer gives the parent directory to the service account, so stay in host data.
+        if path.parts[:4] != ("/", "var", "lib", "mg400") or len(path.parts) < 5:
+            raise ValueError(f"Asset {name}: install must be a file under /var/lib/mg400.")
         if path in destinations:
             raise ValueError(f"Asset {name}: duplicate install path.")
         destinations.add(path)

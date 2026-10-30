@@ -101,7 +101,7 @@
 
 `config/assets.toml` 为每项外部资源保存 1 个表。
 字段为 `url`、`sha256`、`bytes`、`install`、`mode`、`service`、`source` 和 `license`。
-`install` 是绝对目标路径。`mode` 只能是 `0640` 或 `0600`。
+`install` 是 `/var/lib/mg400/` 下的绝对目标路径。`mode` 只能是 `0640` 或 `0600`。
 资源文件和目标目录归 `1000:1000` 所有，目标目录权限为 `0750`。
 安装器拒绝源文件、目标文件或路径中的符号链接。
 

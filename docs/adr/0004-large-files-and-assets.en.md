@@ -12,7 +12,7 @@ Model weights and native libraries must remain available without placing binary 
 
 ## Decision
 
-Publish model weights as GitHub Release assets. Describe each installed asset in `config/assets.toml` with `url`, `sha256`, `bytes`, `install`, `mode`, `service`, `source`, and `license`. The `install` field is an absolute destination path.
+Publish model weights as GitHub Release assets. Describe each installed asset in `config/assets.toml` with `url`, `sha256`, `bytes`, `install`, `mode`, `service`, `source`, and `license`. The `install` field is an absolute destination path under `/var/lib/mg400/`.
 
 - The installer downloads to a temporary file in the target directory. It checks byte count and SHA-256, replaces the destination atomically, and sets ownership and mode. Refuse symbolic links.
 - `--fetch-assets` downloads assets. `--asset NAME=PATH` installs local files with the same checks. Dry runs list planned actions. `mg400ctl assets` reports present, missing, or mismatched assets.

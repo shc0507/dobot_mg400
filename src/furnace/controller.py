@@ -1,17 +1,24 @@
-"""Standalone furnace control, monitoring, and sequence library."""
+"""AI-808/AI-518P furnace and MFC drivers with verified register writes.
+
+Create a Furnace explicitly to connect and leave it in STOP/COOLING. Connect
+the MFC separately. Constructors open devices; module imports do not.
+FurnaceConfig supplies serial settings and finite temperature/ramp caps.
+Setters retain the source's clamping behavior. Before RUN and HOLD, check
+live values and supported active program banks against the configured caps.
+"""
 
 import math
 import queue
 import threading
 import time
+from dataclasses import replace
+
 import minimalmodbus
 import serial
 
+from .config import FurnaceConfig, resolve_slave_address, serial_port
 
-# Default serial connection and polling settings for the furnace controller.
-PORT = "COM14" # Changed based on the computer used
-SLAVE_ADDRESS = 1
-FLOW_PORT = "COM13" # Changed based on the computer used
+# Serial protocol and polling settings for the furnace controller.
 FLOW_BAUDRATE = 9600
 FLOW_TIMEOUT_SECONDS = 0.2
 FLOW_RESPONSE_ATTEMPTS = 4
@@ -54,16 +61,14 @@ MAX_PROGRAM_TIME_VALUE = 32000
 MAX_PROGRAM_TIME_MINUTES = 3200.0
 AUTOMATIC_MODE = 1
 PROGRAM_DATA_LAST_REGISTER = 0xB4
-MAX_PROGRAM_SETPOINTS = (
-    (PROGRAM_DATA_LAST_REGISTER - PROGRAM_DATA_FIRST_REGISTER) // 2 + 1
-)
-MAX_TEMP = 1000
-MAX_RAMP = 100
+MAX_PROGRAM_SETPOINTS = (PROGRAM_DATA_LAST_REGISTER - PROGRAM_DATA_FIRST_REGISTER) // 2 + 1
 
 
 # Configure Modbus RTU serial communication and confirm the expected device responds.
-def connect(port=PORT, slave_address=SLAVE_ADDRESS):
+def connect(port=None, slave_address=None):
     """Create and verify a connection to the furnace controller."""
+    port = serial_port(port, "MG400_FURNACE_SERIAL")
+    slave_address = resolve_slave_address(slave_address)
     print(
         f"Attempting to initialize furnace on {port}, slave {slave_address}...",
         flush=True,
@@ -85,8 +90,7 @@ def connect(port=PORT, slave_address=SLAVE_ADDRESS):
     if address != slave_address:
         controller.serial.close()
         raise RuntimeError(
-            f"Expected slave address {slave_address}, "
-            f"but the controller returned {address}"
+            f"Expected slave address {slave_address}, but the controller returned {address}"
         )
 
     print(f"Connected to {port}, slave {slave_address}.")
@@ -104,6 +108,7 @@ def disconnect(controller):
 # ---------------------------------------------------------------------------
 # Basic Modbus functions
 # ---------------------------------------------------------------------------
+
 
 # Use Modbus function 3 for all signed holding-register reads.
 def read_register(controller, register):
@@ -130,8 +135,7 @@ def write_register(controller, register, value):
 
     if confirmed != value:
         raise RuntimeError(
-            f"Register {register} verification failed: "
-            f"wrote {value}, read back {confirmed}"
+            f"Register {register} verification failed: wrote {value}, read back {confirmed}"
         )
 
     return confirmed
@@ -146,9 +150,14 @@ class MFCFlowController:
     MFCs have permanent ASCII addresses 07, 08, and 09.
     """
 
-    def __init__(self, port=FLOW_PORT, baudrate=FLOW_BAUDRATE,
-                 timeout=FLOW_TIMEOUT_SECONDS, serial_connection=None):
-        self.port = port
+    def __init__(
+        self,
+        port=None,
+        baudrate=FLOW_BAUDRATE,
+        timeout=FLOW_TIMEOUT_SECONDS,
+        serial_connection=None,
+    ):
+        self.port = serial_port(port, "MG400_MFC_SERIAL", required=serial_connection is None)
         self.baudrate = int(baudrate)
         self.timeout = float(timeout)
         self._io_lock = threading.RLock()
@@ -176,7 +185,7 @@ class MFCFlowController:
             )
             self.serial.dtr = False
             self.serial.rts = False
-            self.serial.port = port
+            self.serial.port = self.port
             self.serial.open()
 
     @property
@@ -191,9 +200,7 @@ class MFCFlowController:
         try:
             numeric_id = float(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Flow-controller unit ID must be an integer from 1 to 255"
-            ) from exc
+            raise ValueError("Flow-controller unit ID must be an integer from 1 to 255") from exc
         if not math.isfinite(numeric_id) or not numeric_id.is_integer():
             raise ValueError("Flow-controller unit ID must be an integer from 1 to 255")
         unit_id = int(numeric_id)
@@ -241,13 +248,9 @@ class MFCFlowController:
         try:
             body = response[:-1].decode("ascii")
         except UnicodeDecodeError as exc:
-            raise RuntimeError(
-                f"MFC unit {unit_id} returned a non-ASCII response"
-            ) from exc
+            raise RuntimeError(f"MFC unit {unit_id} returned a non-ASCII response") from exc
         if body == "NG":
-            raise RuntimeError(
-                f"MFC unit {unit_id} rejected {command} (NG response)"
-            )
+            raise RuntimeError(f"MFC unit {unit_id} rejected {command} (NG response)")
         return body
 
     def _send_without_response(self, unit_id, command, data=None):
@@ -306,7 +309,7 @@ class MFCFlowController:
             raise ValueError("opened must be true or false")
         if not self.connected:
             raise RuntimeError("Flow controller is not connected")
-        value = b"\xFF\x00" if opened else b"\x00\x00"
+        value = b"\xff\x00" if opened else b"\x00\x00"
         body = bytes((FLOW_VALVE_SLAVE_ADDRESS, 0x05, 0x00, channel)) + value
         packet = body + self._modbus_crc(body)
         with self._io_lock:
@@ -322,12 +325,8 @@ class MFCFlowController:
                     f"Gas channel {channel + 1} returned an incomplete valve response"
                 )
             if self._modbus_crc(response[:-2]) != response[-2:]:
-                raise RuntimeError(
-                    f"Gas channel {channel + 1} returned a bad Modbus CRC"
-                )
-            raise RuntimeError(
-                f"Gas channel {channel + 1} did not echo the requested valve state"
-            )
+                raise RuntimeError(f"Gas channel {channel + 1} returned a bad Modbus CRC")
+            raise RuntimeError(f"Gas channel {channel + 1} did not echo the requested valve state")
         return {
             "channel_index": channel,
             "channel_number": channel + 1,
@@ -411,13 +410,8 @@ class MFCFlowController:
             self._valve_override_units.discard(unit_id)
 
     def _write_command(self, unit_id, command, data=None):
-        response = self._exchange(unit_id, command, data)
-        """
-        if response != "OK":
-            raise RuntimeError(
-                f"MFC unit {unit_id} returned {response!r}; expected 'OK'"
-            )
-        """
+        # The source permits a silent acknowledgement. _exchange still rejects NG.
+        self._exchange(unit_id, command, data)
 
     def _read_command(self, unit_id, command):
         response = self._exchange(unit_id, command)
@@ -449,16 +443,12 @@ class MFCFlowController:
         try:
             return int(raw, 16) / 100.0
         except ValueError as exc:
-            raise RuntimeError(
-                f"MFC unit {unit_id} returned invalid flow data {raw!r}"
-            ) from exc
+            raise RuntimeError(f"MFC unit {unit_id} returned invalid flow data {raw!r}") from exc
 
     def set_flow_percent(self, unit_id, percent):
         """Safely select digital control and set 0.00 to 100.00 percent flow."""
         unit_id = self._unit_id(unit_id)
-        percent = self._finite_number(
-            percent, "Flow percentage", minimum=0, maximum=100
-        )
+        percent = self._finite_number(percent, "Flow percentage", minimum=0, maximum=100)
         raw = round(percent * 100)
         self._controlled_unit_ids.add(unit_id)
         self._valve_override_units.discard(unit_id)
@@ -482,9 +472,7 @@ class MFCFlowController:
     def set_flow_percent_unconfirmed(self, unit_id, percent):
         """Set a 0–100 percent setpoint without requiring an MFC reply."""
         unit_id = self._unit_id(unit_id)
-        percent = self._finite_number(
-            percent, "Flow percentage", minimum=0, maximum=100
-        )
+        percent = self._finite_number(percent, "Flow percentage", minimum=0, maximum=100)
         raw = round(percent * 100)
         self._controlled_unit_ids.add(unit_id)
         self._restore_normal_valve(unit_id)
@@ -519,9 +507,7 @@ class MFCFlowController:
     def set_water_flow(self, unit_id, percent):
         """Set a channel only when its stored identity explicitly says water."""
         name = self.read_gas_name(unit_id)
-        normalized = "".join(
-            character for character in name.upper() if character.isalnum()
-        )
+        normalized = "".join(character for character in name.upper() if character.isalnum())
         if "WATER" not in normalized and "H2O" not in normalized:
             raise ValueError(
                 f"MFC unit {self._unit_id(unit_id)} identifies as {name!r}, not WATER/H2O; "
@@ -572,26 +558,43 @@ class MFCFlowController:
 
 
 # Low-level convenience wrapper around the furnace registers and serial connection.
-class Furnace (object):
-    def __init__(self, port=PORT, slave_address=SLAVE_ADDRESS, flow_port=FLOW_PORT):
+class Furnace(object):
+    def __init__(self, port=None, slave_address=None, flow_port=None, *, config=None):
         """Connect safely and leave the controller in STOP/COOLING."""
+        if config is None:
+            config = FurnaceConfig.from_env(
+                port=port, slave_address=slave_address, flow_port=flow_port
+            )
+        else:
+            config = replace(
+                config,
+                port=config.port if port is None else port,
+                slave_address=config.slave_address if slave_address is None else slave_address,
+                flow_port=config.flow_port if flow_port is None else flow_port,
+            )
+        self.config = config
         self.controller = None
-        self.port = port
-        self.slave_address = slave_address
+        self.port = serial_port(config.port, "MG400_FURNACE_SERIAL")
+        self.slave_address = config.slave_address
+        self.flow_port = config.flow_port
         self.commands = queue.Queue()
         self.should_exit = False
         self.instrument_model = None
         self.program_steps_before_disable = None
         self.program_mode_disabled = False
         self.program_setpoint_registers = ()
+        self._program_bank_supported = False
         self.pending_hold_target = None
         self.controller_program_step = None
         self.flow_controller = None
 
-        self.controller = connect(port=port, slave_address=slave_address)
+        self.controller = connect(port=self.port, slave_address=self.slave_address)
         try:
             self.disable_internal_program()
             self.program_setpoint_registers = self._detect_program_setpoints()
+            self._program_bank_supported = self.instrument_model == AI_518P_MODEL_ID or bool(
+                self.program_setpoint_registers
+            )
             # Merely constructing the library object must never begin heating.
             self.set_stop()
         except Exception:
@@ -600,15 +603,12 @@ class Furnace (object):
             raise
 
         # Do not auto-connect the separate flow controller during furnace setup.
-        # The web app explicitly connects each device, and the fixed ports are
-        # configured in this module so the connection paths remain independent.
+        # The caller explicitly connects each device with its separate settings.
 
     @property
     def connected(self):
         """Return whether the serial connection is currently open."""
-        return bool(
-            self.controller is not None and self.controller.serial.is_open
-        )
+        return bool(self.controller is not None and self.controller.serial.is_open)
 
     def __enter__(self):
         """Allow ``with Furnace() as furnace`` for automatic cleanup."""
@@ -617,10 +617,14 @@ class Furnace (object):
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
-    def connect_flow_controller(self, port=FLOW_PORT):
+    def connect_flow_controller(self, port=None):
         """Open the enclosure's independent MFCW RS-485 connection."""
+        port = serial_port(self.flow_port if port is None else port, "MG400_MFC_SERIAL")
         if self.flow_controller is None:
             self.flow_controller = MFCFlowController(port=port)
+            self.flow_port = port
+        elif port != self.flow_controller.port:
+            raise RuntimeError("Disconnect the flow controller before changing its port")
         return self.flow_controller
 
     def disconnect_flow_controller(self, stop_output=True):
@@ -679,9 +683,7 @@ class Furnace (object):
         zero does not erase the stored step values; it prevents those steps from
         changing SV while Python is controlling the setpoint.
         """
-        self.instrument_model = read_register(
-            self.controller, MODEL_ID_REGISTER
-        )
+        self.instrument_model = read_register(self.controller, MODEL_ID_REGISTER)
         if self.instrument_model != AI_518P_MODEL_ID:
             self.program_steps_before_disable = None
             self.program_mode_disabled = False
@@ -697,9 +699,7 @@ class Furnace (object):
 
         confirmed_pno = read_register(self.controller, PNO_REGISTER)
         if confirmed_pno != 0:
-            raise RuntimeError(
-                "Could not disable the controller's internal program (Pno != 0)"
-            )
+            raise RuntimeError("Could not disable the controller's internal program (Pno != 0)")
         self.program_mode_disabled = True
         return True
 
@@ -721,10 +721,7 @@ class Furnace (object):
         if not 1 <= step_count <= MAX_PROGRAM_SETPOINTS:
             return ()
 
-        registers = tuple(
-            PROGRAM_DATA_FIRST_REGISTER + (2 * index)
-            for index in range(step_count)
-        )
+        registers = tuple(PROGRAM_DATA_FIRST_REGISTER + (2 * index) for index in range(step_count))
         try:
             probe_values = (
                 read_register(self.controller, registers[0]),
@@ -761,16 +758,15 @@ class Furnace (object):
         acting = read_register(self.controller, ACT_REGISTER)
         return {
             "type_code": aux_type,
-            "type": {0: "SSR", 1: "RELAY", 2: "0-20mA", 3: "4-20mA"}.get(
-                aux_type, "UNKNOWN"
-            ),
+            "type": {0: "SSR", 1: "RELAY", 2: "0-20mA", 3: "4-20mA"}.get(aux_type, "UNKNOWN"),
             "acting_method_code": acting,
             "acting_method": {
-                0: "REVERSE", 1: "DIRECT", 2: "REVERSE+BURNOUT", 3: "DIRECT+BURNOUT"
+                0: "REVERSE",
+                1: "DIRECT",
+                2: "REVERSE+BURNOUT",
+                3: "DIRECT+BURNOUT",
             }.get(acting, "UNKNOWN"),
-            "event_output_status": read_register(
-                self.controller, EVENT_OUTPUT_STATUS_REGISTER
-            ),
+            "event_output_status": read_register(self.controller, EVENT_OUTPUT_STATUS_REGISTER),
             "secondary_pid": {
                 "p": read_register(self.controller, P2_REGISTER),
                 "i": read_register(self.controller, I2_REGISTER),
@@ -781,7 +777,44 @@ class Furnace (object):
 
     # Explicit RUN remains available for advanced callers, but is not used by sequences.
     def start(self):
+        self._check_run_limits()
         return write_register(self.controller, SRUN_REGISTER, 0)
+
+    def _check_run_limits(self, *, preserved_sv=None):
+        """Check live and active program values before an explicit RUN transition."""
+        _, _, scale = self.get_temperature_format()
+        if preserved_sv is not None:
+            MFCFlowController._finite_number(
+                preserved_sv / scale,
+                "Preserved controller temperature",
+                maximum=self.config.max_c,
+            )
+        MFCFlowController._finite_number(
+            read_register(self.controller, SV_REGISTER) / scale,
+            "Controller temperature",
+            maximum=self.config.max_c,
+        )
+        MFCFlowController._finite_number(
+            read_register(self.controller, SPR_REGISTER) / scale,
+            "Controller ramp rate",
+            minimum=0,
+            maximum=self.config.max_ramp,
+        )
+        # The source permits controllers without a readable program bank.
+        # Check stored targets only after the model, a probe, or programming
+        # has established support for these registers.
+        if not self._program_bank_supported:
+            return
+        count = read_register(self.controller, PNO_REGISTER)
+        if not isinstance(count, int) or not 0 <= count <= MAX_PROGRAM_SETPOINTS:
+            raise RuntimeError(f"Cannot check the active program targets: unexpected Pno {count}")
+        for index in range(count):
+            value = read_register(self.controller, PROGRAM_DATA_FIRST_REGISTER + 2 * index)
+            if value >= 32512:
+                raise RuntimeError("Cannot check an active program target: reserved register value")
+            MFCFlowController._finite_number(
+                value / scale, "Active program temperature", maximum=self.config.max_c
+            )
 
     def set_hold(self):
         """Enter RUN before HOLD, preserving the live setpoint throughout.
@@ -793,6 +826,7 @@ class Furnace (object):
         """
         preserved_sv = read_register(self.controller, SV_REGISTER)
         try:
+            self._check_run_limits(preserved_sv=preserved_sv)
             write_register(self.controller, SRUN_REGISTER, 0)
             time.sleep(RUN_TO_HOLD_DELAY_SECONDS)
 
@@ -806,8 +840,7 @@ class Furnace (object):
             confirmed = read_register(self.controller, SRUN_REGISTER)
             if confirmed != 2:
                 raise RuntimeError(
-                    "HOLD was not accepted after RUN: wrote Srun=2 but read "
-                    f"back Srun={confirmed}."
+                    f"HOLD was not accepted after RUN: wrote Srun=2 but read back Srun={confirmed}."
                 )
 
             # RUN may have loaded a stored program target before HOLD took effect.
@@ -824,12 +857,10 @@ class Furnace (object):
                 self.set_stop()
             except Exception as stop_exc:
                 raise RuntimeError(
-                    f"{exc} An automatic STOP was also attempted but failed: "
-                    f"{stop_exc}"
+                    f"{exc} An automatic STOP was also attempted but failed: {stop_exc}"
                 ) from exc
             raise RuntimeError(
-                f"{exc} Heating has been stopped; stored program setpoints "
-                "were not changed."
+                f"{exc} Heating has been stopped; stored program setpoints were not changed."
             ) from exc
 
     def set_stop(self):
@@ -840,6 +871,7 @@ class Furnace (object):
         print("Furnace controller is STOPPED.")
         print("Heating is disabled; the furnace can cool naturally.")
         return confirmed
+
     def close(self, stop_output=True):
         """Optionally stop heating/flow, then close both serial connections."""
         try:
@@ -854,15 +886,16 @@ class Furnace (object):
     def stop(self):
         """Backward-compatible helper that stops heating and disconnects."""
         self.close(stop_output=True)
+
     # Read temperature and ramp registers and return display-formatted values.
     def get_current_values(self):
         _, decimal_places, scale = self.get_temperature_format()
-    
+
         raw_pv = read_register(self.controller, PV_REGISTER)
         raw_sv = read_register(self.controller, SV_REGISTER)
         raw_rate = read_register(self.controller, SPR_REGISTER)
         rate = raw_rate / scale
-    
+
         temperatures = {
             "pv": raw_pv / scale,
             "sv": raw_sv / scale,
@@ -874,19 +907,19 @@ class Furnace (object):
             "time": time.time(),
             "PV": f"{temperatures['pv']:7.{places}f}",
             "SV": f"{temperatures['sv']:7.{places}f}",
-            "Ramp": f"{round(rate, decimal_places):7.{places}f}"
+            "Ramp": f"{round(rate, decimal_places):7.{places}f}",
         }
 
     # Translate the numeric run-state register into a human-readable name.
     def get_run_state(self):
         state = read_register(self.controller, SRUN_REGISTER)
-        
+
         names = {
             0: "RUN",
             1: "STOP/COOLING",
             2: "HOLD",
         }
-    
+
         return state, names.get(state, f"UNKNOWN({state})")
 
     # Run two identical target steps; the monitor enters HOLD at STEP=2.
@@ -898,21 +931,25 @@ class Furnace (object):
         target as SP1, SP2, and live SV, then FurnaceService applies HOLD when
         the controller enters step 2.
         """
-        if temp > MAX_TEMP:
-            temp = MAX_TEMP
-            print(f"Set to max temp {MAX_TEMP}")
-    
+        temp = MFCFlowController._finite_number(temp, "Temperature")
+        if temp > self.config.max_c:
+            temp = self.config.max_c
+            print(f"Set to max temp {self.config.max_c}")
+
         target = float(temp)
         _, _, scale = self.get_temperature_format()
         raw_start = read_register(self.controller, PV_REGISTER)
         starting_temperature = raw_start / scale
-        raw_temperature = round(target * scale)
+        raw_temperature = min(round(target * scale), math.floor(self.config.max_c * scale))
         raw_ramp_rate = read_register(self.controller, SPR_REGISTER)
         ramp_rate = raw_ramp_rate / scale
         if ramp_rate <= 0:
             raise RuntimeError(
                 "Cannot calculate t1 because the controller ramp rate is not positive"
             )
+        MFCFlowController._finite_number(
+            ramp_rate, "Controller ramp rate", maximum=self.config.max_ramp
+        )
 
         duration_minutes = abs(target - starting_temperature) / ramp_rate
         if duration_minutes > MAX_PROGRAM_TIME_MINUTES:
@@ -937,11 +974,10 @@ class Furnace (object):
         write_register(self.controller, PROGRAM_SP1_REGISTER, raw_temperature)
         write_register(self.controller, PROGRAM_T1_REGISTER, raw_t1)
         write_register(self.controller, PROGRAM_SP2_REGISTER, raw_temperature)
-        write_register(
-            self.controller, PROGRAM_T2_REGISTER, MAX_PROGRAM_TIME_VALUE
-        )
+        write_register(self.controller, PROGRAM_T2_REGISTER, MAX_PROGRAM_TIME_VALUE)
         write_register(self.controller, PROGRAM_STEP_REGISTER, 1)
         write_register(self.controller, SV_REGISTER, raw_temperature)
+        self._program_bank_supported = True
         write_register(self.controller, SRUN_REGISTER, 0)
 
         self.pending_hold_target = target
@@ -965,30 +1001,38 @@ class Furnace (object):
         self.pending_hold_target = None
         self.controller_program_step = 2
         return True
+
     # Validate and write the temperature change rate in controller-scaled units.
     def set_ramp_rate(self, rate):
-        rate = float(rate)
+        rate = MFCFlowController._finite_number(rate, "Ramp rate")
         if rate <= 0:
             raise ValueError("Ramp rate must be greater than zero.")
-        if rate > MAX_RAMP:
-            rate = MAX_RAMP
-            print("Set to max ramp ({MAX_RAMP})")
+        if rate > self.config.max_ramp:
+            rate = self.config.max_ramp
+            print(f"Set to max ramp ({self.config.max_ramp})")
 
         _, decimal_places, scale = self.get_temperature_format()
-        raw_rate = round(rate * scale)
+        raw_rate = min(round(rate * scale), math.floor(self.config.max_ramp * scale))
+        if raw_rate <= 0:
+            raise ValueError("Ramp rate is below the controller resolution")
         write_register(
             self.controller,
             SPR_REGISTER,
             raw_rate,
         )
         return rate
+
     # Adjust the current setpoint by a relative amount and return the new target.
     def change_temperature(self, delta, ramp_rate):
+        delta = MFCFlowController._finite_number(delta, "Temperature change")
+        ramp_rate = MFCFlowController._finite_number(ramp_rate, "Ramp rate")
+        if ramp_rate <= 0:
+            raise ValueError("Ramp rate must be greater than zero.")
         current_temp = float(self.get_current_values()["SV"])
-        new_temp = current_temp + float(delta)
-        if new_temp > MAX_TEMP:
-            new_temp = MAX_TEMP
-            print("Cannot exceed {MAX_TEMP} degrees")
+        new_temp = MFCFlowController._finite_number(current_temp + delta, "Temperature")
+        if new_temp > self.config.max_c:
+            new_temp = self.config.max_c
+            print(f"Cannot exceed {self.config.max_c} degrees")
         self.set_ramp_rate(ramp_rate)
         self.set_temperature(new_temp)
         return new_temp
@@ -1008,6 +1052,5 @@ class Furnace (object):
         if decimal_places > 4:
             raise RuntimeError(f"Unexpected dPt value: {dpt}")
 
-        scale = 10 ** decimal_places
+        scale = 10**decimal_places
         return dpt, decimal_places, scale
-

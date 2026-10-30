@@ -65,6 +65,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Simulator | `src/mg400/sim/` | `test_mg400_sim.py`, `sim_mg400.py`, `test_web_keyboard_integration.py`, `test_robot_service_e2e.py` | [development.md](docs/development.md#离线机器人模拟器) |
 | Vision localizer | `src/vision/localizer.py` | `test_vision_localizer.py` | Module docstrings |
 | Thermal camera | `src/thermal_cam/` | `test_thermal_*.py` | [thermal.md](docs/thermal.md) |
+| Furnace and gas drivers | `src/furnace/controller.py`, `config.py` | `test_furnace_controller.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Migration plan | `docs/agents/migration/tasks.toml`, `tasks.md` | `test_migration_plan.py` | [migration README](docs/agents/migration/README.md) |
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_camera_preview.mjs`.

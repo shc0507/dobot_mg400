@@ -1,4 +1,5 @@
 import hmac
+import json
 import os
 import socket
 import sys
@@ -18,6 +19,7 @@ if len(KEY) < 32:
     raise ValueError("The camera access key must contain at least 32 bytes.")
 STREAMS = {f"camera{i}.jpg": f"camera{i}" for i in range(1, 4)}
 MAX_FRAME = 4 * 1024 * 1024
+MAX_DETECTIONS = 256 * 1024
 SCRIPT = Path(__file__).with_suffix(".js").read_bytes()
 PAGE = (
     """<!doctype html>
@@ -31,15 +33,21 @@ main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1
 figure{position:relative;margin:0;background:#1c2733;border:1px solid #334255;
 border-radius:12px;overflow:hidden}
 figure[data-paused]::before{content:"画面已暂停 · 非实时";position:absolute;top:12px;left:12px;
-padding:8px 12px;border-radius:6px;background:#8a4200;color:#fff;font-weight:600}
+padding:8px 12px;border-radius:6px;background:#8a4200;color:#fff;font-weight:600;z-index:2}
+.view{position:relative}canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#080d12}
 figcaption{padding:16px}small{display:block;color:#a6b5c6;margin-top:6px}
+label{display:block;margin-top:10px}input{margin-right:6px}[data-overlay-status]{margin-left:8px;color:#a6b5c6}
 </style>
 <h1>MG400 摄像头</h1><p>AC410 · 每路最高 30 帧/秒 · 下方显示实际更新帧率和分辨率</p><main>
 """
     + "".join(
-        f'<figure><img data-source="camera{i}.mjpeg" alt="摄像头 {i} 暂无画面">'
-        f"<figcaption>摄像头 {i}<small>正在连接…</small></figcaption></figure>"
+        f'<figure><div class="view"><img data-source="camera{i}.mjpeg" '
+        f'data-detections="camera{i}/detections.json" alt="摄像头 {i} 暂无画面">'
+        '<canvas hidden aria-hidden="true"></canvas></div>'
+        f"<figcaption>摄像头 {i}<small>正在连接…</small>"
+        '<label><input type="checkbox" data-overlay>识别叠加'
+        '<span data-overlay-status role="status"></span></label></figcaption></figure>'
         for i in range(1, 4)
     )
     + ('</main><script src="preview.js" defer></script></html>')
@@ -185,6 +193,57 @@ class CameraFeed:
 FEEDS = {source: CameraFeed(source) for source in STREAMS.values()}
 
 
+class NoVisionRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never send the vision token to a redirect destination.
+        return None
+
+
+def vision_detections(camera):
+    """Read bounded JSON from the fixed local service without affecting video."""
+    unavailable = {"available": False}
+    url = f"http://127.0.0.1:8771/api/detect?camera={camera}"
+    try:
+        headers = {"Accept": "application/json"}
+        token = os.environ.get("MG400_VISION_TOKEN")
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoVisionRedirect())
+        with opener.open(urllib.request.Request(url, headers=headers), timeout=2) as response:
+            if response.status != 200 or response.geturl() != url:
+                return unavailable
+            body = response.read(MAX_DETECTIONS + 1)
+        if len(body) > MAX_DETECTIONS:
+            return unavailable
+        result = json.loads(body)
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("detections"), list)
+            or type(result.get("camera")) is not int
+            or result["camera"] != camera
+            or result.get("coordinate_system") != "oriented_original_image_pixels"
+            or not isinstance(result.get("image_size"), dict)
+            or any(
+                type(result["image_size"].get(axis)) is not int
+                or not 0 < result["image_size"][axis] <= 16_000_000
+                for axis in ("width", "height")
+            )
+            or result["image_size"]["width"] * result["image_size"]["height"] > 16_000_000
+        ):
+            return unavailable
+        # Reject nonfinite values before copying JSON into a browser response.
+        result = {**result, "available": True}
+        encoded = json.dumps(result, allow_nan=False, separators=(",", ":"))
+        return result if len(encoded) <= MAX_DETECTIONS else unavailable
+    except urllib.error.HTTPError as error:
+        error.close()
+        return unavailable
+    except Exception:
+        # Vision is optional: bad settings, transport errors, and invalid JSON
+        # must leave the independent camera stream available.
+        return unavailable
+
+
 class Preview(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -205,8 +264,17 @@ class Preview(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parts = self.path.split("/")
-        if len(parts) != 3 or not hmac.compare_digest(parts[1].encode(), KEY):
+        if len(parts) not in (3, 4) or not hmac.compare_digest(parts[1].encode(), KEY):
             self.send_error(404)
+            return
+        if len(parts) == 4:
+            if parts[2] not in FEEDS or parts[3] != "detections.json":
+                self.send_error(404)
+                return
+            body = json.dumps(
+                vision_detections(int(parts[2][-1])), allow_nan=False, separators=(",", ":")
+            ).encode()
+            self.respond(body, "application/json; charset=utf-8")
             return
         route = parts[2]
         if route in ("", "preview.js"):

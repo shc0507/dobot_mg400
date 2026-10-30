@@ -225,6 +225,7 @@
 
 | 命令 | 作用 |
 | --- | --- |
+| `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl status` | 显示所有服务的状态 |
 | `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector` 或 `all` |
@@ -261,21 +262,92 @@
 进程退出不能确认机械臂已停止。
 此锁不限制 DobotStudio 和其他主机，使用前须关闭其他控制程序。
 
+## 备份
+
+`mg400ctl backup FILE.tar` 归档 `/etc/mg400/mg400.env` 和 `/var/lib/mg400`，保留数字属主和文件权限。
+它只排除存放进程连接锁的 `/var/lib/mg400/locks`。
+`/var/lib/mg400/work` 下的持久夹爪命令锁仍会备份，包括 `gripper_feedback.json.command-lock.json`。
+
+备份前，按下方迁移步骤停止服务、夹爪请求监听器和其他数据写入程序。
+备份命令不会代为停止它们。
+输入缺失、符号链接、特殊文件、目录循环或读取时检测到变化，都会导致备份失败。
+修复原因后再试。不要为通过备份而删除安全锁。
+
+选择已存在、由 root 拥有的目标目录，组成员和其他用户不得有写权限。
+目标必须在备份源路径之外，路径中不得有符号链接或 `..` 部分。
+命令拒绝覆盖任何已有路径，包括断开的符号链接。
+命令先写入私密临时归档，完整写入后才生成目标文件。
+
+归档属主为 `root:root`，权限为 `0600`。
+其中包含访问令牌和摄像头预览密钥。
+存储或传输时保留这些权限，不要提交到 Git 或公开发布。
+
 ## 迁移到新主机
 
-1. 在旧主机停止服务，并停用夹爪采集的请求监听：
+以下路径存在时，备份会包含它们：
+
+| 路径 | 内容 |
+| --- | --- |
+| `/var/lib/mg400/models/` | 已安装的模型权重 |
+| `/var/lib/mg400/calibration/cameras/` | 按相机路径保存的相机到机械臂单应矩阵 |
+| `/var/lib/mg400/calibration/microscope/` | 物镜转盘、自动对焦和参考视图数据 |
+| `/var/lib/mg400/stations.toml` | 示教机械臂工位 |
+| `/var/lib/mg400/tool.toml` | 夹爪工具偏移 |
+| `/var/lib/mg400/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
+| `/var/lib/mg400/thermal/rois.toml` | 命名热像区域 |
+| `/var/lib/mg400/furnace/state.json` | 炉程序状态 |
+| `/var/lib/mg400/runs/` | 运行文件和 SQLite 索引 |
+| `/var/lib/mg400/recordings/` | 归档前的炉视频 |
+| `/var/lib/mg400/camera/preview.key` | 摄像头预览密钥 |
+| `/var/lib/mg400/work/` | 夹爪反馈、命令文件、持久命令锁和模式切换备份 |
+
+在新主机上手动恢复：
+
+1. 先让旧主机上的实验安全结束。停止服务和夹爪采集请求监听器：
 
    ```sh
    mg400ctl stop all
    systemctl disable --now mg400-gripper-collector.path
    ```
 
-2. 在新主机按 [前提条件](#前提条件) 准备主机，再按 [安装与更新](#安装与更新) 安装。
-3. 把旧主机的 `/etc/mg400/mg400.env` 复制到新主机，再按新主机修改监听地址和摄像头设备。
-   复制时用 `install -o root -g root -m 0600`。保留访问密钥时，用户不必重新输入密钥。
-4. 要保留摄像头预览链接，把旧主机的 `/var/lib/mg400/camera/preview.key` 复制到新主机的同一路径，属主为 `1000:1000`。
-5. 旧主机有 `/var/lib/mg400/work/gripper_feedback.json.command-lock.json` 时，夹爪命令结果未确认。
-   先核实夹爪状态，再把该文件复制到新主机的同一路径，属主为 `1000:1000`，权限为 `0600`。
-   新主机的采集服务读到该文件后保持锁定，与旧主机一致。
-6. 修改摄像头设备后，重新运行安装器。
-7. 连接机械臂网口和 USB 设备，再启动服务。
+   继续前，停止其他写入主机数据的进程。
+2. 在旧主机创建备份：
+
+   ```sh
+   mg400ctl backup /root/mg400-host.tar
+   ```
+
+3. 安全地把归档传到新主机的 `/root/mg400-host.tar`。保留属主 `root:root` 和权限 `0600`。
+4. 按[前提条件](#前提条件)准备新主机，再按[安装与更新](#安装与更新)安装。
+   恢复期间保持硬件断开。恢复数据前，停止新安装的服务和请求监听器：
+
+   ```sh
+   mg400ctl stop all
+   systemctl disable --now mg400-gripper-collector.path
+   ```
+
+5. 只恢复本命令生成的可信归档。先检查归档成员：
+
+   ```sh
+   tar --list --verbose --file /root/mg400-host.tar
+   ```
+
+   成员必须使用 `etc/mg400/mg400.env` 和 `var/lib/mg400` 的相对路径，不得含 `..`、链接、特殊文件或进程锁子目录。
+   确认新主机的恢复路径中没有符号链接。
+   恢复数字属主和权限：
+
+   ```sh
+   tar --extract --file /root/mg400-host.tar --directory / --numeric-owner --same-owner --same-permissions
+   ```
+
+6. 按新主机的监听地址和摄像头设备路径修改 `/etc/mg400/mg400.env`。保留属主 `root:root` 和权限 `0600`。
+   保留访问令牌后，用户不必重新输入。恢复 `/var/lib/mg400/camera/preview.key` 后，预览链接不变。
+   上述数据路径的属主为 `1000:1000`，目录权限为 `0750`，文件权限为 `0640` 或 `0600`。
+   保留摄像头目录原有的更严格权限 `0700`，以及归档中其他已有数据的属主和权限。
+7. 如果存在 `/var/lib/mg400/work/gripper_feedback.json.command-lock.json`，说明夹爪命令结果未确认。
+   检查夹爪状态，并保留此文件，属主为 `1000:1000`，权限为 `0600`。
+   采集服务读到恢复的文件后保持锁定。不要删除它来恢复命令执行。
+   启动服务前，按仪器实际状态核对待执行命令和已保存的运行／炉状态。恢复操作不得重放命令。
+8. 修改摄像头设备后，再次运行安装器。
+   运动前，核对恢复的工位、工具偏移、位移台配置和校准映射是否符合硬件。
+9. 连接机械臂网络接口和 USB 设备，再按正常操作流程启动所选服务。

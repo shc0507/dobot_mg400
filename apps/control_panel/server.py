@@ -5,7 +5,6 @@ Run with Python 3.12 or later. Robot mode can send hardware commands.
 
 import argparse
 import hmac
-import ipaddress
 import json
 import logging
 import logging.handlers
@@ -24,6 +23,13 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from labkit.auth import (  # noqa: E402
+    bearer_matches,
+    host_allowed,
+    same_origin,
+    valid_token,
+    valid_token_for_bind,
+)
 from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
@@ -64,14 +70,6 @@ def valid_client(value):
     )
 
 
-def valid_token(value):
-    """Accept a token that a browser sends unchanged in the Authorization header.
-
-    Browsers send only these characters and strip spaces at either end of a value.
-    """
-    return all(" " <= char <= "~" for char in value) and value == value.strip(" ")
-
-
 def dispatch(state, kind, payload, client):
     """Apply one API request. The HTTP API and the WebSocket share this routing.
 
@@ -101,54 +99,6 @@ def refusal_status(error):
     if isinstance(error, RuntimeError):
         return 409
     return None
-
-
-def _host_port(value, default_port):
-    try:
-        parts = urlsplit("//" + value.strip())
-        port = parts.port
-    except ValueError:
-        return None
-    if not parts.hostname or parts.path or parts.query or parts.fragment or parts.username:
-        return None
-    return parts.hostname.lower(), port or default_port
-
-
-def loopback_host(value):
-    """Check that a Host header names this machine's loopback interface."""
-    parts = _host_port(value, 80)
-    if parts is None:
-        return False
-    try:
-        return ipaddress.ip_address(parts[0]).is_loopback
-    except ValueError:
-        return parts[0] == "localhost"
-
-
-def same_origin(headers):
-    """Refuse a WebSocket opened by a page from another origin.
-
-    Browsers always send Origin on a WebSocket handshake, and a page script cannot set
-    Origin, Host or X-Forwarded-Host. Programs may omit Origin.
-    """
-    if headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
-        return False
-    origins = headers.get_all("Origin") or []
-    if not origins:
-        return True
-    if len(origins) != 1:
-        return False
-    try:
-        parts = urlsplit(origins[0].strip())
-        port = parts.port
-    except ValueError:
-        return False
-    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path:
-        return False
-    default_port = 443 if parts.scheme == "https" else 80
-    origin = (parts.hostname.lower(), port or default_port)
-    hosts = [headers.get("Host", ""), headers.get("X-Forwarded-Host", "").split(",")[0]]
-    return any(host.strip() and _host_port(host, default_port) == origin for host in hosts)
 
 
 class ReadOnlyPanelState:
@@ -646,24 +596,14 @@ class PanelHandler(BaseHTTPRequestHandler):
         A DNS rebinding page reaches a loopback server under its own host name, so its
         requests look same-origin. A token protects the other binds.
         """
-        if self.server.token:
-            return True
-        # A proxy on this host can rewrite Host to a loopback name. Proxies need a token.
-        forwarded = any(
-            self.headers.get(name) is not None
-            for name in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")
-        )
-        if not forwarded and loopback_host(self.headers.get("Host", "")):
+        if host_allowed(self.headers, self.server.token):
             return True
         self._send(403, {"error": "Open the panel at 127.0.0.1 or localhost"})
         return False
 
     def _authorized(self):
         expected = self.server.token
-        if expected and not hmac.compare_digest(
-            self.headers.get("Authorization", "").encode("latin-1", "replace"),
-            f"Bearer {expected}".encode("latin-1", "replace"),
-        ):
+        if expected and not bearer_matches(self.headers.get("Authorization", ""), expected):
             self._send(401, {"error": "Enter the panel access token"})
             return False
         return True
@@ -881,11 +821,9 @@ def main(argv=None):
             "MG400_PANEL_TOKEN must contain only printable ASCII characters "
             "and must not begin or end with a space"
         )
-    try:
-        loopback = ipaddress.ip_address(bind).is_loopback
-    except ValueError:
-        loopback = bind == "localhost"
-    if not loopback and (not token or len(token) < 24):
+    if not valid_token_for_bind(
+        token, bind, require_long_token=False, case_sensitive_localhost=True
+    ):
         parser.error(
             "Set MG400_PANEL_TOKEN to at least 24 characters before binding outside localhost"
         )

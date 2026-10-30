@@ -30,7 +30,7 @@ stage-panel = "stage_controller.__main__:main"
 default-groups = ["dev", "stage", "vision"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mg400", "src/stage_controller", "src/vision"]
+packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

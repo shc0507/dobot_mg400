@@ -345,6 +345,7 @@ A worker that finds a wrong card does not edit it in the task PR. It reports the
 4. Furnace and gas: respect the configured caps. No code path starts heat or gas without an explicit command or recipe step. Furnace tests use the simulator only.
 5. Do not weaken access control: token length, loopback defaults, Host, Origin and forwarded-header checks, or file permissions.
 6. Do not delete or bypass lock files or gripper command locks.
+7. Agents do not deploy. The owner installs, upgrades and starts services on Olares. For migration tasks, agents do not log in to Olares or use its web interface, although `AGENTS.md` allows that for other work.
 
 ### 7.2 Code
 

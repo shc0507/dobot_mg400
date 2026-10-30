@@ -645,6 +645,8 @@ Steps:
 4. The runner checks the conditions before each step that declares a zone and again after it.
 5. Tests with fake states for each condition and for a lease loss during a step.
 
+Integration scope: `src/orchestrator/recipe.py` validates and carries step zone declarations. `src/orchestrator/cli.py` preserves explicit zone configuration for rehearsal and resolves the required demo services before creating them. `tests/test_orchestrator_transfer.py` supplies explicit zone configuration to its owned-demo CLI cases; do not retain a no-op fallback when configuration is missing. In `src/orchestrator/skills/robot.py`, update only the zone-helper comment that describes the old no-op manager. The runner resolves condition-service leases before acquisition so an entry check cannot rely on a service that remains under manual control.
+
 Done when: P-CHECKS pass.
 
 Docs: `orchestrator.md` and `.en.md`: zones and their conditions.

@@ -45,6 +45,10 @@ def main(argv=None):
         help="Offer only this Arduino device, for example /dev/serial/by-id/... "
         "(default: MG400_STAGE_SERIAL, or every serial port except the gripper converter)",
     )
+    parser.add_argument(
+        "--config",
+        help="Stage geometry TOML (default: MG400_STAGE_CONFIG or /var/lib/mg400/stage.toml)",
+    )
     args = parser.parse_args(argv)
     # An empty environment value counts as unset.
     bind = args.bind if args.bind is not None else os.environ.get("MG400_STAGE_BIND") or "127.0.0.1"
@@ -80,7 +84,10 @@ def main(argv=None):
         )
     logging.basicConfig(level=logging.INFO)
     # Do not open the port here: opening it resets the Arduino.
-    controller = MotorController(demo=args.demo, serial=serial)
+    config = (
+        args.config if args.config is not None else os.environ.get("MG400_STAGE_CONFIG") or None
+    )
+    controller = MotorController(demo=args.demo, serial=serial, config=config)
     server = create_server(
         create_app(controller, token or None),
         host=bind,

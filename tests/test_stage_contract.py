@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from contract_helpers import check_contract
+from stage_helpers import home_stage
 
 from labkit.errors import ServiceError
 from stage_controller.app import create_app
@@ -18,6 +19,8 @@ HOLD_ID = "automation-hold-0001"
 @pytest.fixture
 def contract(stage_rig):
     controller, transport, clock = stage_rig
+    home_stage(controller, clock)
+    transport.commands.clear()
     app = create_app(controller)
     app.config["TESTING"] = True
     web = app.test_client()
@@ -136,12 +139,17 @@ def test_fixed_motion_finishes_only_after_fresh_idle_feedback(contract):
 def test_contract_maps_microstep_hold_keepalive_release_and_stop(contract):
     controller, transport, clock, web, _ = contract
     acquire(web)
+    assert post(web, "command", dict(action="set_microstep", microstep=2)).status_code == 202
+    assert move(web).status_code == 409  # A real mode change invalidates every reference.
+    assert post(web, "command", dict(action="home", motor="top")).status_code == 202
+    clock.advance(0.5)
+    controller.poll()
+    clock.advance(1)
     for args in (
-        dict(action="set_microstep", microstep=2),
         dict(
             action="hold",
             motor="top",
-            direction="ccw",
+            direction="cw",
             speed=30,
             hold_id=HOLD_ID,
             sampled_at=clock(),

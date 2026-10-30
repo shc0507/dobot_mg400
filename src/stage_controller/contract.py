@@ -10,15 +10,15 @@ import uuid
 from labkit.describe import command, describe, parameter
 from labkit.errors import ServiceError
 from labkit.events import EventLog
-from labkit.lease import Lease
 
+from .lease import StageLease
 from .protocol import MAX_SPEED, MAX_STEPS, MICROSTEP_MODES, MOTOR_IDS, ControllerError, LinkError
 
 
 class StageContract:
     def _init_contract(self):
         self.events = EventLog()
-        self.lease = Lease(clock=self.clock, on_expire=self.on_lease_expired)
+        self.lease = StageLease(clock=self.clock, on_expire=self.on_lease_expired)
         self._state_seq = 0
         self._last_command = None
         self._pending_commands = {}
@@ -73,6 +73,12 @@ class StageContract:
                 "set_microstep": spec(
                     dict(microstep=parameter("integer", enum=list(MICROSTEP_MODES)))
                 ),
+                "home": spec(dict(motor=motor)),
+                "awake": spec(
+                    dict(motor=motor, seconds=parameter("number", minimum=0, maximum=60))
+                ),
+                "goto": spec(dict(motor=motor, name=parameter("string"))),
+                "pose": spec(dict(name=parameter("string"))),
             },
         )
 
@@ -99,7 +105,8 @@ class StageContract:
             "service": "stage",
             "seq": self._state_seq,
             "ts_unix": time.time(),
-            "busy": any(motor.mode != "idle" for motor in self._motors.values()),
+            "busy": self._automation is not None
+            or any(motor.mode != "idle" for motor in self._motors.values()),
             "locked": bool(self._error or self._contract_fault or self._contract_stopping),
             "fault": (
                 {"code": "device_link_lost", "message": self._error}
@@ -125,7 +132,15 @@ class StageContract:
         for command_id, entry in list(self._pending_commands.items()):
             if self._motors[entry["motor"]].mode == "idle":
                 del self._pending_commands[command_id]
-                self._finish_command(entry, result, "Motor is idle.")
+                state = self._motors[entry["motor"]]
+                reached = self._ready(entry["motor"]) and state.position == entry["target"]
+                self._finish_command(
+                    entry,
+                    "failed" if result == "ok" and not reached else result,
+                    "Position confirmed."
+                    if reached
+                    else "Motor stopped without the requested position.",
+                )
 
     def _fail_motion_commands(self, message):
         for entry in self._pending_commands.values():
@@ -152,7 +167,7 @@ class StageContract:
         if set(args) != expected:
             raise ValueError("Command arguments must match the discovery schema.")
         entry = {"id": uuid.uuid4().hex, "action": action, "client": client}
-        with self._lock:
+        with self.lease.control(client, require_holder=not specs[action]["any_client"]), self._lock:
             if (
                 self._error is not None
                 or self._contract_fault is not None
@@ -160,6 +175,29 @@ class StageContract:
             ) and action != "stop_all":
                 raise ServiceError(409, "The service is locked. Only stop is allowed.")
             try:
+                self._automation_client = client
+                if action in ("move", "hold", "keepalive") or (
+                    action == "awake" and args["seconds"] != 0
+                ):
+                    self._require_connection()
+                    self._read_status()
+                    self._require_reference(args["motor"])
+                    if action == "move":
+                        # Validate before arithmetic and before any serial mutation.
+                        if (
+                            type(args["steps"]) is not int
+                            or not 1 <= args["steps"] <= MAX_STEPS
+                            or args["direction"] not in ("cw", "ccw")
+                        ):
+                            raise ValueError("Invalid automated stage move.")
+                        target = self._motors[args["motor"]].position + args["steps"] * (
+                            1 if args["direction"] == "cw" else -1
+                        )
+                        low, high = self._axis(args["motor"]).bounds(self._microstep)
+                        if not low <= target <= high:
+                            raise ControllerError(
+                                "Stage target is outside the configured soft limits."
+                            )
                 if action == "set_microstep":
                     self.set_microstep(args["microstep"])
                 elif action == "keepalive":
@@ -167,6 +205,8 @@ class StageContract:
                 else:
                     getattr(self, action)(**args)
             except (ValueError, ControllerError) as exc:
+                if isinstance(exc, LinkError) and self._transport is not None:
+                    self._lose_connection(exc)
                 self._finish_command(
                     entry, "failed" if isinstance(exc, LinkError) else "rejected", str(exc)
                 )
@@ -175,8 +215,16 @@ class StageContract:
                         503 if isinstance(exc, LinkError) else 409, str(exc)
                     ) from exc
                 raise
+            finally:
+                self._automation_client = None
             if action == "move":
-                self._pending_commands[entry["id"]] = {**entry, "motor": args["motor"]}
+                self._pending_commands[entry["id"]] = {
+                    **entry,
+                    "motor": args["motor"],
+                    "target": target,
+                }
+            elif action in ("home", "goto", "pose") and self._automation:
+                self._automation["entry"] = entry
             else:
                 self._finish_command(entry, "ok", "Command acknowledged.")
         return entry["id"]

@@ -44,9 +44,9 @@ For an Olares deployment, upload the firmware from a computer with the Arduino I
 
 When you run the panel locally, click `Disconnect` in the panel before uploading firmware.
 
-The stage uses open-loop control: it sends pulses without reading the actual position.
-It has no encoders, homing, or limit switches. The panel does not limit travel.
-The page count is the signed number of STEP pulses sent since the Arduino reset. It is not measured travel.
+The stage uses open-loop control: it sends pulses without reading the actual position. It has no encoders.
+Updated firmware supports homing switches and soft limits. Old firmware keeps manual control but cannot use homing or named moves.
+The page count is a signed STEP pulse count. Reset and homing reset its reference. It is not measured travel.
 Before moving, confirm that sufficient travel remains in that direction.
 
 Most Arduino boards reset when the serial port opens. The panel opens the serial port on every connection.
@@ -109,7 +109,7 @@ Demo mode does not open a serial port. Its simulated motion times exclude accele
 ### Automation control
 
 While an automation client holds the control lease, the page shows `Stage is controlled by automation`.
-Fixed-step, hold, keyboard motion, and microstep controls are unavailable.
+Fixed-step, hold, keyboard motion, microstep, Home, named position, and pose controls are unavailable.
 `Stop all motors` and hold release remain available.
 The lease lasts 3 seconds by default. The client must renew it.
 On expiry, the service requests that all motors stop.
@@ -156,6 +156,59 @@ Speed and steps both count STEP pulses in the current mode.
 The panel does not convert speed or steps when you change the mode.
 For example, in 1/16-step mode, 50 pulses equal 3.125 full steps.
 Counts from different modes cannot be converted to the same distance.
+Changing the microstep mode clears the home reference and soft limits for all 3 axes.
+Home each axis again before a named move or automated motion.
+
+### Homing and named moves
+
+Before routine hardware use, complete the supervised switch and calibration checks in H-07 and H-18.
+Homing finds the configured reference switch. Soft limits restrict travel from that reference.
+The service reads measured calibration from `/var/lib/mg400/stage.toml`. See [Stage calibration](#stage-calibration).
+
+Each motor shows its reference state:
+
+| Badge | Meaning |
+| --- | --- |
+| `Homing unavailable` | The motor is disconnected, firmware lacks support, or calibration is unavailable. Manual controls remain available when connected. |
+| `Home required` | The service has not confirmed homing and the configured soft limits for this connection and microstep mode. |
+| `Homing…` | Homing or soft-limit confirmation is in progress. |
+| `Homed` | The service confirmed homing and soft limits. |
+
+Clear the travel path before clicking `Home` for an axis.
+Wait for `Homed` before selecting an Insert named position, such as `load` or `furnace`.
+Named positions use millimetres from home. The millimetres shown come from pulse counts and calibration, not measured travel.
+The host refuses automated motion without a confirmed reference with `position unknown, home first`.
+
+Home all 3 axes before selecting a button under `Named poses`.
+A pose moves each axis to its configured position, 1 axis at a time in the configured order.
+New motion controls remain unavailable while homing or a named move is active. `Stop all motors` remains available.
+The page does not queue or automatically retry these actions.
+Reset, reconnection, and a microstep change require fresh homing and soft-limit confirmation.
+
+State reports `feedback_age_s` from the last complete board reply. `feedback_fresh` requires that reply to be at most 2 s old.
+Each motor's `automation_ready` requires fresh feedback and a confirmed reference and soft range for the current microstep.
+Its `at_positions` lists named targets only while idle at the exact configured pulse count. Do not assume `load` is zero.
+These fields do not use the HTTP response timestamp as board feedback.
+Releasing a lease cancels the remaining sequence, even if the same client acquires control again. Renewal preserves the current sequence.
+
+The page routes are:
+
+| POST route | JSON body |
+| --- | --- |
+| `/api/motors/<motor>/home` | `{}` |
+| `/api/motors/<motor>/awake` | `{"seconds": 30}` |
+| `/api/motors/<motor>/goto` | `{"name": "load"}` |
+| `/api/poses/<name>` | `{}` |
+
+These routes use the same page authentication and automation ownership rules as manual motion.
+An accepted request returns a snapshot. Poll state to check completion.
+An awake request extends driver energization for 0–60 seconds. It sends no STEP pulses and does not establish a reference.
+An extension of 0 cancels the extension. The normal 10-second idle hold still applies.
+The page does not renew awake requests. The hold watchdog remains 1 second.
+
+The contract adds `home` with `motor`, `awake` with `motor` and `seconds`, `goto` with `motor` and `name`, and `pose` with `name`.
+A positive contract `awake` requires a confirmed reference. An owning client can cancel the extension with 0 without homing.
+The manual awake route requires updated firmware but does not require homing.
 
 ### Fixed-step movement
 
@@ -243,6 +296,7 @@ The service reads configuration from environment variables. Command-line argumen
 | `MG400_STAGE_PORT` | `--port` | `8767` | Listen port, 1–65535 |
 | `MG400_STAGE_TOKEN` | None | None | Access token |
 | `MG400_STAGE_SERIAL` | `--serial` | None | Arduino serial-port path |
+| `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage.toml` | Measured stage calibration and named targets |
 
 An empty environment variable has the same effect as an unset variable.
 
@@ -260,6 +314,35 @@ If the device is absent, the list is empty.
 If the path points to the gripper converter, the service refuses to start.
 Without this setting, the list shows all serial ports except the gripper converter.
 Demo mode ignores this setting.
+
+### Stage calibration
+
+Use the measurements and travel limits from H-07. Do not infer calibration from the pulse count or copy demo geometry to hardware.
+The file contains a `motors` table and an optional `poses` table. It has no production defaults.
+Use a regular file owned by UID 1000 or the local service user, with mode `0600` or `0640`.
+The reader refuses symbolic links in the file path. Keep the host data directory at mode `0750`.
+Each of `motors.bottom`, `motors.top`, and `motors.insert` contains:
+
+| Field | Value |
+| --- | --- |
+| `steps_per_mm` | Positive, finite pulse count per millimetre at the calibration microstep mode. |
+| `microstep` | Calibration mode: 1, 2, 4, 8, or 16. |
+| `min_mm`, `max_mm` | Finite, ordered travel bounds from home. |
+| `positions` | Optional table of names and positions in millimetres. Insert requires `load` and `furnace`. |
+
+Each `poses.<name>` table contains `order` and `positions`.
+`order` lists `bottom`, `top`, and `insert` exactly 1 time, in the required movement order.
+`positions` maps each axis to a position in millimetres within its bounds.
+The `furnace` pose identifies the inserted position from which crucible unloading starts.
+
+The host computes pulses per millimetre as `steps_per_mm * current_microstep / microstep`.
+It rounds boundaries inward and targets to the nearest pulse. It checks the rounded target against the pulse boundaries again.
+After homing, the host sends the soft limits and waits for confirmation before enabling named or automated motion.
+An absent or invalid file disables these controls and shows the configuration error. Manual controls and Stop remain available.
+
+Without an explicit configuration override, demo mode uses separate synthetic geometry for offline practice.
+An explicit `--config` or `MG400_STAGE_CONFIG` also applies in demo mode.
+Synthetic geometry is not real calibration. Check the hardware configuration before use.
 
 ### Configuration file
 

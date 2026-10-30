@@ -225,6 +225,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 
 | Command | Effect |
 | --- | --- |
+| `mg400ctl backup FILE.tar` | Save private host settings and data, excluding process locks |
 | `mg400ctl assets` | Check external asset content, ownership, and permissions |
 | `mg400ctl status` | Show the status of all services |
 | `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, or `all` |
@@ -261,21 +262,92 @@ Do not remove lock files to release ownership. When a process exits, the operati
 A process exit does not confirm that the robot stopped.
 This lock does not restrict DobotStudio or other hosts. Close other control programs before use.
 
+## Backup
+
+`mg400ctl backup FILE.tar` archives `/etc/mg400/mg400.env` and `/var/lib/mg400` with numeric owners and file modes.
+It excludes only `/var/lib/mg400/locks`, which contains process connection locks.
+It includes persistent gripper command locks under `/var/lib/mg400/work`, including `gripper_feedback.json.command-lock.json`.
+
+Stop services, the gripper request listener, and other data writers before a backup, as the migration steps below specify.
+The command does not stop them for you.
+It refuses missing inputs, symbolic links, special files, directory cycles, and changes detected while reading.
+Correct the cause before retrying. Do not remove a safety lock to make a backup pass.
+
+Choose an existing root-owned destination directory that group members and other users cannot write.
+The destination must be outside the backed-up paths, and its path must contain no symbolic link or `..` component.
+The command refuses to overwrite any existing path, including a broken symbolic link.
+It writes a private temporary archive and publishes the destination only after completing the archive.
+
+The archive has owner `root:root` and mode `0600`.
+It contains access tokens and camera preview keys.
+Keep these permissions when storing or transferring it, and do not commit it to Git or publish it.
+
 ## Migration to a new host
 
-1. Stop services on the old host and disable the gripper collection request listener:
+The backup includes the following paths when they exist:
+
+| Path | Content |
+| --- | --- |
+| `/var/lib/mg400/models/` | Installed model weights |
+| `/var/lib/mg400/calibration/cameras/` | Camera-to-robot homographies for each camera path |
+| `/var/lib/mg400/calibration/microscope/` | Turret, autofocus, and reference-view data |
+| `/var/lib/mg400/stations.toml` | Taught robot stations |
+| `/var/lib/mg400/tool.toml` | Gripper tool offset |
+| `/var/lib/mg400/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
+| `/var/lib/mg400/thermal/rois.toml` | Named thermal regions |
+| `/var/lib/mg400/furnace/state.json` | Furnace sequence state |
+| `/var/lib/mg400/runs/` | Run files and SQLite index |
+| `/var/lib/mg400/recordings/` | Furnace recordings before archiving |
+| `/var/lib/mg400/camera/preview.key` | Camera preview key |
+| `/var/lib/mg400/work/` | Gripper feedback, command files, persistent command locks, and mode-switch backups |
+
+Restore by hand on the new host:
+
+1. Bring active lab work to a safe end on the old host. Stop services and disable the gripper collection request listener:
 
    ```sh
    mg400ctl stop all
    systemctl disable --now mg400-gripper-collector.path
    ```
 
-2. Prepare the new host according to [Prerequisites](#prerequisites), then install according to [Installation and updates](#installation-and-updates).
-3. Copy `/etc/mg400/mg400.env` from the old host to the new host. Adjust bind addresses and camera devices for the new host.
-   Copy with `install -o root -g root -m 0600`. If you preserve access tokens, users do not need to enter them again.
-4. To preserve camera preview links, copy `/var/lib/mg400/camera/preview.key` to the same path on the new host with owner `1000:1000`.
-5. If `/var/lib/mg400/work/gripper_feedback.json.command-lock.json` exists on the old host, a gripper command outcome is unconfirmed.
-   First check the gripper state. Then copy the file to the same path on the new host with owner `1000:1000` and permissions `0600`.
-   When the new host's collection service reads this file, it stays locked, as on the old host.
-6. After changing camera devices, run the installer again.
-7. Connect the robot network interface and USB devices, then start services.
+   Stop any other process that writes host data before continuing.
+2. Create the backup on the old host:
+
+   ```sh
+   mg400ctl backup /root/mg400-host.tar
+   ```
+
+3. Transfer the archive securely to `/root/mg400-host.tar` on the new host. Keep owner `root:root` and mode `0600`.
+4. Prepare the new host according to [Prerequisites](#prerequisites), then install according to [Installation and updates](#installation-and-updates).
+   Keep hardware disconnected during restoration. Before restoring data, stop the newly installed services and request listener:
+
+   ```sh
+   mg400ctl stop all
+   systemctl disable --now mg400-gripper-collector.path
+   ```
+
+5. Restore only a trusted archive from this command. Inspect its members first:
+
+   ```sh
+   tar --list --verbose --file /root/mg400-host.tar
+   ```
+
+   Members must use relative paths for `etc/mg400/mg400.env` and `var/lib/mg400`, with no `..`, links, special files, or process-lock subtree.
+   Confirm that the new host's restore paths contain no symbolic links.
+   Restore numeric owners and modes:
+
+   ```sh
+   tar --extract --file /root/mg400-host.tar --directory / --numeric-owner --same-owner --same-permissions
+   ```
+
+6. Adjust `/etc/mg400/mg400.env` for the new bind addresses and camera device paths. Keep owner `root:root` and mode `0600`.
+   Preserving access tokens avoids another token entry by users. Restoring `/var/lib/mg400/camera/preview.key` preserves preview links.
+   The data paths above use owner `1000:1000`, directory mode `0750`, and file modes `0640` or `0600`.
+   Preserve the stricter existing camera-directory mode `0700`, and the archive's owners and modes for other existing data.
+7. If `/var/lib/mg400/work/gripper_feedback.json.command-lock.json` exists, a gripper command outcome is unconfirmed.
+   Confirm the gripper state and preserve this file with owner `1000:1000` and mode `0600`.
+   The collection service stays locked when it reads the restored file. Do not remove it to resume commands.
+   Reconcile pending commands and saved run/furnace state with the actual instruments before starting services. Restoration must not replay commands.
+8. Run the installer again after changing camera devices.
+   Confirm that restored stations, tool offsets, stage settings, and calibration mappings match the hardware before motion.
+9. Connect the robot network interface and USB devices, then start the selected services through the normal operating procedures.

@@ -37,6 +37,19 @@ class FakeService:
             "fault": None,
             "holder": self.identity,
         }
+        if name == "robot":
+            self.value.pop("connected")
+            self.value.pop("fault")
+            self.value.pop("holder")
+            self.value.update(
+                mode="robot",
+                instance="offline-robot-instance",
+                controller_id=self.identity,
+                syncing=True,
+                feedback_fresh=True,
+                robot_error=False,
+                stop_unconfirmed=False,
+            )
         self.stop_value = {"stop": "confirmed"}
 
     def describe(self):
@@ -53,9 +66,11 @@ class FakeService:
         return copy.deepcopy(self.value)
 
     def owned(self, state):
-        return state.get("holder") == self.identity
+        return state.get("controller_id" if self.name == "robot" else "holder") == self.identity
 
     def healthy(self, state):
+        if self.name == "robot":
+            return state.get("syncing") is True and state.get("feedback_fresh") is True
         return state.get("connected") is True
 
     def command(self, action, **params):
@@ -182,9 +197,9 @@ def test_resume_requires_manual_completion_and_fresh_stop_after_repair(tmp_path)
         lambda state: state.pop("busy"),
         lambda state: state.update(busy=None),
         lambda state: state.update(locked=0),
-        lambda state: state.pop("fault"),
+        lambda state: state.pop("robot_error"),
         lambda state: state.update(fault="unknown outcome"),
-        lambda state: state.update(holder="other"),
+        lambda state: state.update(controller_id="other"),
         lambda state: state.update(instance="replacement"),
         lambda state: state.update(stop_unconfirmed=True),
     ],
@@ -252,6 +267,14 @@ def test_inflight_helper_drains_and_is_stopped_before_any_next_step(tmp_path, sk
 
     service.command = slow_command
 
+    def recovery_stop(expected_instance):
+        assert finish.is_set()
+        assert expected_instance == service.value["instance"]
+        service.events.append("recovery-stop")
+        return service.stop_value.copy()
+
+    service.recovery_stop = recovery_stop
+
     def helper(ctx):
         try:
             ctx.clients["robot"].command("write")
@@ -279,6 +302,7 @@ def test_inflight_helper_drains_and_is_stopped_before_any_next_step(tmp_path, sk
         assert runner.wait() == "held"
         with pytest.raises(RuntimeError, match="finish before recovery"):
             runner.resume(manually_completed=True, note="not yet safe")
+        assert "recovery-stop" not in service.events
         assert "next-step" not in service.events and "release" not in service.events
         finish.set()
         for worker in helpers:
@@ -288,7 +312,12 @@ def test_inflight_helper_drains_and_is_stopped_before_any_next_step(tmp_path, sk
         assert service.events[-1] == "stop"
         runner.resume(manually_completed=True, note="late operation inspected and completed")
         until(lambda: runner.status == "completed")
-        assert service.events.index("late-write") < service.events.index("next-step")
+        assert (
+            service.events.index("late-write")
+            < service.events.index("recovery-stop")
+            < service.events.index("next-step")
+        )
+        assert service.events.count("recovery-stop") == 1
 
 
 def test_hung_stop_does_not_block_another_services_final_stop(tmp_path):

@@ -12,11 +12,14 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .clients import from_settings
+from labkit.errors import ServiceError
+
+from .clients import ServiceAdapter, from_settings
 from .recipe import load_recipe, positive
 from .rehearsal import Rehearsal
 from .runner import Runner
 from .skills import default_registry
+from .stations import DEFAULT_STATIONS, DEFAULT_TOOL, StationStore, Workspace, load_tool, teach
 from .store import DEFAULT_RUNS, RunStore
 
 TERMINAL = {"completed", "aborted"}
@@ -127,6 +130,37 @@ def _overrides(values):
     return result
 
 
+def _station(args, settings, out):
+    workspace = Workspace.from_settings(settings)
+    path = args.stations_file or settings.get("MG400_ORCH_STATIONS_FILE") or DEFAULT_STATIONS
+    store = StationStore(workspace, path)
+    if args.station_action == "save":
+        offset = load_tool(args.tool_file or settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
+        url = settings.get("MG400_ORCH_ROBOT_URL")
+        if not url:
+            raise ValueError("Set MG400_ORCH_ROBOT_URL before teaching a station.")
+        timeout = positive(float(settings.get("MG400_ORCH_TIMEOUT_S", "2")), "request timeout")
+        # This adapter has no robot WebSocket and sends only the two GETs in teach().
+        robot = ServiceAdapter(
+            url,
+            settings.get("MG400_ORCH_ROBOT_TOKEN", ""),
+            "teach-" + uuid.uuid4().hex,
+            timeout=timeout,
+        )
+        result = teach(store, args.name, robot, offset, approach_mm=args.approach, zone=args.zone)
+    elif args.station_action == "rm":
+        store.remove(args.name)
+        result = {"removed": args.name}
+    else:
+        result = store.load()
+        if args.station_action == "show":
+            if args.name not in result:
+                raise ValueError(f"Unknown station: {args.name}")
+            result = result[args.name]
+    print(json.dumps(result, ensure_ascii=False, allow_nan=False), file=out)
+    return 0
+
+
 def main(argv=None, *, out=None, read=None):
     out, read = sys.stdout if out is None else out, input if read is None else read
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -141,9 +175,22 @@ def main(argv=None, *, out=None, read=None):
     history = commands.add_parser("runs", allow_abbrev=False)
     history.add_argument("run_id", nargs="?")
     history.add_argument("--runs-dir", type=Path)
+    station = commands.add_parser("station", allow_abbrev=False)
+    station_actions = station.add_subparsers(dest="station_action", required=True)
+    for action in ("save", "list", "show", "rm"):
+        sub = station_actions.add_parser(action, allow_abbrev=False)
+        if action != "list":
+            sub.add_argument("name")
+        sub.add_argument("--stations-file", type=Path)
+        if action == "save":
+            sub.add_argument("--approach", type=float, required=True)
+            sub.add_argument("--zone", default="")
+            sub.add_argument("--tool-file", type=Path)
     args = parser.parse_args(argv)
-    directory = args.runs_dir or Path(os.environ.get("MG400_ORCH_RUNS_DIR", DEFAULT_RUNS))
     try:
+        if args.command == "station":
+            return _station(args, os.environ, out)
+        directory = args.runs_dir or Path(os.environ.get("MG400_ORCH_RUNS_DIR", DEFAULT_RUNS))
         if args.command == "runs":
             with RunStore(directory, readonly=True) as store:
                 result = store.get(args.run_id) if args.run_id else store.runs()
@@ -172,7 +219,7 @@ def main(argv=None, *, out=None, read=None):
             services = from_settings(os.environ, identity=identity)
             with RunStore(directory) as store:
                 return _drive(Runner(recipe, registry, services, store), out, read)
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+    except (OSError, ValueError, RuntimeError, sqlite3.Error, ServiceError) as error:
         print(f"Cannot {args.command}: {error}", file=sys.stderr)
         return 2
     except (KeyboardInterrupt, EOFError):

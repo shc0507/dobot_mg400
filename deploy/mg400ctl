@@ -37,7 +37,19 @@ CAMERA_PORT = 1985
 PRELOAD = "http://127.0.0.1:1984/api/preload"
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 BACKUP_OWNER = (0, 0)
-ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs"}
+ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs", "station"}
+STATION_ACTIONS = {"save", "list", "show", "rm"}
+STATION_SETTINGS = {"MG400_ORCH_STATIONS_FILE"} | {
+    f"MG400_ORCH_{axis}_{side}_{'DEG' if axis == 'R' else 'MM'}"
+    for axis in ("X", "Y", "Z", "R")
+    for side in ("MIN", "MAX")
+}
+STATION_TEACH_SETTINGS = STATION_SETTINGS | {
+    "MG400_ORCH_TOOL_FILE",
+    "MG400_ORCH_ROBOT_URL",
+    "MG400_ORCH_ROBOT_TOKEN",
+    "MG400_ORCH_TIMEOUT_S",
+}
 ORCHESTRATOR_SERVICES = ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
 ORCHESTRATOR_DATA = {"MG400_ORCH_RUNS_DIR"}
 ORCHESTRATOR_SETTINGS = (
@@ -54,6 +66,9 @@ ORCHESTRATOR_SETTINGS = (
 def orchestrator(host, argv, execvpe):
     """Dispatch only recipe commands, without changing the administrative root gate."""
     root = os.geteuid() == 0
+    if argv[0] == "station" and (len(argv) < 2 or argv[1] not in STATION_ACTIONS):
+        print("Usage: labctl station {save,list,show,rm} ...", file=sys.stderr)
+        return 2
     if not root and (
         os.getuid() != SERVICE_UID
         or os.geteuid() != SERVICE_UID
@@ -69,6 +84,8 @@ def orchestrator(host, argv, execvpe):
         else:
             settings = os.environ
         allowed = ORCHESTRATOR_SETTINGS if argv[0] == "run" else ORCHESTRATOR_DATA
+        if argv[0] == "station":
+            allowed = STATION_TEACH_SETTINGS if argv[1] == "save" else STATION_SETTINGS
         environment = {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             **{key: os.environ[key] for key in PASSED if key in os.environ},

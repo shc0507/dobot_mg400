@@ -1,15 +1,15 @@
 """Reusable Toupcam microscope feed, stabilization, snapshots, and recording."""
 
-from pathlib import Path
 import csv
 import shutil
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-from toupcam_capture import ToupcamCapture
+from .capture import ToupcamCapture, selection
 
 
 # Owns one recording run, including video segments and synchronized metadata.
@@ -17,24 +17,30 @@ class _RecordingSession:
     """Write bounded video segments and stream timestamps to disk."""
 
     # Open the timestamp CSV and first video segment for one recording session.
-    def __init__(self, path, frame_size, fps, codec, timestamps_path,
-                 segment_minutes, minimum_free_gb, metadata_provider,
-                 metadata_fields, capture_interval_seconds=None):
+    def __init__(
+        self,
+        path,
+        frame_size,
+        fps,
+        codec,
+        timestamps_path,
+        segment_minutes,
+        minimum_free_gb,
+        metadata_provider,
+        metadata_fields,
+        capture_interval_seconds=None,
+    ):
         self.output_path = Path(path)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.frame_size = frame_size
         self.fps = float(fps)
         self.codec = codec
-        self.segment_seconds = (
-            None if segment_minutes is None else float(segment_minutes) * 60
-        )
+        self.segment_seconds = None if segment_minutes is None else float(segment_minutes) * 60
         self.capture_interval_seconds = (
-            None if capture_interval_seconds is None
-            else float(capture_interval_seconds)
+            None if capture_interval_seconds is None else float(capture_interval_seconds)
         )
         self.minimum_free_bytes = (
-            None if minimum_free_gb is None
-            else int(float(minimum_free_gb) * 1024**3)
+            None if minimum_free_gb is None else int(float(minimum_free_gb) * 1024**3)
         )
         self.metadata_provider = metadata_provider
         self.metadata_fields = tuple(metadata_fields or ())
@@ -54,8 +60,7 @@ class _RecordingSession:
         )
         self._csv = csv.writer(self._timestamp_file)
         self._csv.writerow(
-            ("frame_index", "segment_index", "segment_frame", "unix_time",
-             *self.metadata_fields)
+            ("frame_index", "segment_index", "segment_frame", "unix_time", *self.metadata_fields)
         )
         try:
             self._open_segment(time.time())
@@ -68,8 +73,7 @@ class _RecordingSession:
         if self.segment_seconds is None:
             return self.output_path
         return self.output_path.with_name(
-            f"{self.output_path.stem}_{self.segment_index + 1:04d}"
-            f"{self.output_path.suffix}"
+            f"{self.output_path.stem}_{self.segment_index + 1:04d}{self.output_path.suffix}"
         )
 
     # Start a new segment so very long recordings do not depend on one huge file.
@@ -77,10 +81,10 @@ class _RecordingSession:
     def _open_segment(self, started_at):
         path = self._next_path()
         writer = cv2.VideoWriter(
-            str(path), cv2.VideoWriter_fourcc(*self.codec),
-            self.fps, self.frame_size
+            str(path), cv2.VideoWriter_fourcc(*self.codec), self.fps, self.frame_size
         )
         if not writer.isOpened():
+            writer.release()
             raise RuntimeError(f"Could not open video for writing: {path}")
         self._writer = writer
         self.segment_started_at = started_at
@@ -91,14 +95,16 @@ class _RecordingSession:
     def write(self, frame, captured_at):
         if self.capture_interval_seconds is not None:
             should_write = (
-                self._last_captured_at is None or
-                captured_at - self._last_captured_at >= self.capture_interval_seconds
+                self._last_captured_at is None
+                or captured_at - self._last_captured_at >= self.capture_interval_seconds
             )
             if not should_write:
                 return
             self._last_captured_at = captured_at
-        if (self.segment_seconds is not None and
-                captured_at - self.segment_started_at >= self.segment_seconds):
+        if (
+            self.segment_seconds is not None
+            and captured_at - self.segment_started_at >= self.segment_seconds
+        ):
             self._writer.release()
             self.segment_index += 1
             self._open_segment(captured_at)
@@ -107,14 +113,18 @@ class _RecordingSession:
             free = shutil.disk_usage(self.output_path.parent).free
             if free < self.minimum_free_bytes:
                 raise RuntimeError(
-                    f"Recording stopped: less than "
-                    f"{self.minimum_free_bytes / 1024**3:.1f} GB free"
+                    f"Recording stopped: less than {self.minimum_free_bytes / 1024**3:.1f} GB free"
                 )
         self._writer.write(frame)
         metadata = self.metadata_provider() if self.metadata_provider else {}
         self._csv.writerow(
-            (self.total_frame, self.segment_index, self.segment_frame, captured_at,
-             *(metadata.get(field) for field in self.metadata_fields))
+            (
+                self.total_frame,
+                self.segment_index,
+                self.segment_frame,
+                captured_at,
+                *(metadata.get(field) for field in self.metadata_fields),
+            )
         )
         self.total_frame += 1
         self.segment_frame += 1
@@ -135,16 +145,29 @@ class MicroscopeCamera:
     """Threaded camera feed with optional stabilization and safe recording."""
 
     # Configure camera, stabilization, frame sharing, and recording state.
-    def __init__(self, camera_index=0, resolution=(2592, 1944),
-                 stabilization=True, smoothing=0.9):
+    def __init__(
+        self,
+        camera_index=None,
+        resolution=(2592, 1944),
+        stabilization=True,
+        smoothing=0.9,
+        *,
+        camera_serial=None,
+        settings=None,
+        capture_factory=None,
+    ):
         if not 0 <= smoothing < 1:
             raise ValueError("smoothing must be at least 0 and less than 1")
-        self.camera_index = camera_index
+        self.camera_index, self.camera_serial = selection(
+            camera_index, camera_serial, settings=settings
+        )
+        self._capture_factory = capture_factory or ToupcamCapture
         self.resolution = resolution
         self.stabilization_enabled = stabilization
         self.smoothing = smoothing
         self._source = None
         self._thread = None
+        self._lifecycle_lock = threading.RLock()
         self._recording_mode = "time_lapse"
         self._recording_interval_seconds = 30.0
         self._recording_fps = 1.0
@@ -156,6 +179,8 @@ class MicroscopeCamera:
         self._stabilization_lock = threading.Lock()
         self._latest_frame = None
         self._latest_raw_frame = None
+        self._frame_id = 0
+        self._captured_at = None
         self._error = None
         self._recording = None
         self._recording_error = None
@@ -165,28 +190,54 @@ class MicroscopeCamera:
     # Camera lifecycle -----------------------------------------------------
     def open(self):
         """Open the camera and begin background acquisition, but not recording."""
+        with self._lifecycle_lock:
+            return self._open()
+
+    def _open(self):
         if self.is_open:
             return self
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError("The previous acquisition worker is still stopping.")
         self._error = None
         self._stop_event.clear()
         self.reset_stabilization()
-        self._source = ToupcamCapture(self.camera_index, self.resolution)
+        with self._frame_condition:
+            self._latest_frame = self._latest_raw_frame = None
+            self._frame_id = 0
+            self._captured_at = None
+        self._source = self._capture_factory(
+            self.camera_index, self.resolution, camera_serial=self.camera_serial
+        )
         self._thread = threading.Thread(
             target=self._acquisition_loop, name="microscope-camera", daemon=True
         )
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException:
+            source, self._source = self._source, None
+            source.release()
+            self._thread = None
+            raise
         return self
 
     # Finalize the writer and CSV; repeated calls are harmless.
     def close(self):
         """Finalize recording and release the camera. Safe to call repeatedly."""
-        self.stop_recording()
+        with self._lifecycle_lock:
+            self._close()
+
+    def _close(self):
         self._stop_event.set()
+        self.stop_recording()
         source, self._source = self._source, None
         if source is not None:
             source.release()
         if self._thread is not None:
             self._thread.join(timeout=3.0)
+            if self._thread.is_alive():
+                raise RuntimeError(
+                    "The acquisition worker is still stopping. Wait before reopening."
+                )
             self._thread = None
         with self._frame_condition:
             self._latest_frame = None
@@ -228,9 +279,7 @@ class MicroscopeCamera:
     @property
     # Return the active camera dimensions, or None while closed.
     def frame_size(self):
-        return None if self._source is None else (
-            self._source.width, self._source.height
-        )
+        return None if self._source is None else (self._source.width, self._source.height)
 
     @property
     def recording_mode(self):
@@ -263,7 +312,7 @@ class MicroscopeCamera:
         deadline = time.monotonic() + timeout
         with self._frame_condition:
             frame = self._latest_raw_frame if raw else self._latest_frame
-            while frame is None and wait and self._error is None:
+            while frame is None and wait and self._error is None and not self._stop_event.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -273,77 +322,127 @@ class MicroscopeCamera:
                 raise RuntimeError("Camera acquisition stopped") from self._error
             return None if frame is None else (frame.copy() if copy else frame)
 
+    def get_frame_packet(self, after_id=None, wait=True, timeout=2.0, raw=False, copy=True):
+        """Return ``(frame_id, captured_at, frame)`` for a new camera frame.
+
+        Pass the previously received frame ID as ``after_id`` to wait for a
+        genuinely newer frame instead of scoring the cached frame again.
+        """
+        if not self.is_open:
+            raise RuntimeError("Camera is not open; call open() first")
+        deadline = time.monotonic() + timeout
+        with self._frame_condition:
+            while self._error is None and not self._stop_event.is_set():
+                frame = self._latest_raw_frame if raw else self._latest_frame
+                is_new = after_id is None or self._frame_id > after_id
+                if frame is not None and is_new:
+                    break
+                if not wait:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._frame_condition.wait(remaining)
+            if self._error is not None:
+                raise RuntimeError("Camera acquisition stopped") from self._error
+            frame = self._latest_raw_frame if raw else self._latest_frame
+            if frame is None or (after_id is not None and self._frame_id <= after_id):
+                return None
+            return (
+                self._frame_id,
+                self._captured_at,
+                frame.copy() if copy else frame,
+            )
+
     # Recording and snapshots ----------------------------------------------
-    def start_recording(self, path="capture.mp4", fps=30.0, codec="mp4v",
-                        timestamps_path=None, segment_minutes=60,
-                        minimum_free_gb=2.0, metadata_provider=None,
-                        metadata_fields=None, mode="time_lapse",
-                        capture_interval_seconds=None, output_fps=None):
+    def start_recording(
+        self,
+        path="capture.mp4",
+        fps=30.0,
+        codec="mp4v",
+        timestamps_path=None,
+        segment_minutes=60,
+        minimum_free_gb=2.0,
+        metadata_provider=None,
+        metadata_fields=None,
+        mode="time_lapse",
+        capture_interval_seconds=None,
+        output_fps=None,
+    ):
         """Start recording; one-hour segments are used by default.
 
         Set mode="time_lapse" to record only every N seconds while keeping the live
         preview running in real time.
         """
-        if not self.is_open:
-            raise RuntimeError("Camera is not open; call open() first")
-        if mode not in {"live", "time_lapse"}:
-            raise ValueError("mode must be 'live' or 'time_lapse'")
-        if mode == "time_lapse":
-            if capture_interval_seconds is None:
-                capture_interval_seconds = 30.0
-            if capture_interval_seconds <= 0:
-                raise ValueError("capture_interval_seconds must be positive")
-            if output_fps is None:
-                output_fps = 1.0
-            effective_fps = float(output_fps)
-            effective_capture_interval = float(capture_interval_seconds)
-        else:
-            effective_fps = float(fps)
-            effective_capture_interval = None
-        if effective_fps <= 0:
-            raise ValueError("fps must be greater than zero")
-        if len(codec) != 4:
-            raise ValueError("codec must contain exactly four characters")
-        if segment_minutes is not None and segment_minutes <= 0:
-            raise ValueError("segment_minutes must be positive or None")
-        if minimum_free_gb is not None and minimum_free_gb < 0:
-            raise ValueError("minimum_free_gb cannot be negative")
-        frame = self.get_frame(wait=True, timeout=3.0, copy=False)
-        if frame is None:
-            raise RuntimeError("No camera frame is available")
-        path = Path(path)
-        timestamps_path = (
-            Path(timestamps_path) if timestamps_path is not None
-            else path.with_suffix(".timestamps.csv")
-        )
-        height, width = frame.shape[:2]
-        session = _RecordingSession(
-            path, (width, height), effective_fps, codec, timestamps_path,
-            segment_minutes, minimum_free_gb, metadata_provider,
-            metadata_fields, effective_capture_interval,
-        )
-        with self._recording_lock:
-            if self._recording is not None:
-                session.close()
-                raise RuntimeError("Recording is already in progress")
-            self._recording = session
-            self._recording_error = None
-            self._last_recording_segments = []
-            self._recording_mode = mode
-            self._recording_interval_seconds = effective_capture_interval
-            self._recording_fps = effective_fps
-        return path
+        with self._lifecycle_lock:
+            if not self.is_open:
+                raise RuntimeError("Camera is not open; call open() first")
+            if mode not in {"live", "time_lapse"}:
+                raise ValueError("mode must be 'live' or 'time_lapse'")
+            if mode == "time_lapse":
+                if capture_interval_seconds is None:
+                    capture_interval_seconds = 30.0
+                if capture_interval_seconds <= 0:
+                    raise ValueError("capture_interval_seconds must be positive")
+                if output_fps is None:
+                    output_fps = 1.0
+                effective_fps = float(output_fps)
+                effective_capture_interval = float(capture_interval_seconds)
+            else:
+                effective_fps = float(fps)
+                effective_capture_interval = None
+            if effective_fps <= 0:
+                raise ValueError("fps must be greater than zero")
+            if len(codec) != 4:
+                raise ValueError("codec must contain exactly four characters")
+            if segment_minutes is not None and segment_minutes <= 0:
+                raise ValueError("segment_minutes must be positive or None")
+            if minimum_free_gb is not None and minimum_free_gb < 0:
+                raise ValueError("minimum_free_gb cannot be negative")
+            frame = self.get_frame(wait=True, timeout=3.0, copy=False)
+            if frame is None:
+                raise RuntimeError("No camera frame is available")
+            path = Path(path)
+            timestamps_path = (
+                Path(timestamps_path)
+                if timestamps_path is not None
+                else path.with_suffix(".timestamps.csv")
+            )
+            height, width = frame.shape[:2]
+            with self._recording_lock:
+                if self._recording is not None:
+                    raise RuntimeError("Recording is already in progress")
+                session = _RecordingSession(
+                    path,
+                    (width, height),
+                    effective_fps,
+                    codec,
+                    timestamps_path,
+                    segment_minutes,
+                    minimum_free_gb,
+                    metadata_provider,
+                    metadata_fields,
+                    effective_capture_interval,
+                )
+                self._recording = session
+                self._recording_error = None
+                self._last_recording_segments = []
+                self._recording_mode = mode
+                self._recording_interval_seconds = effective_capture_interval
+                self._recording_fps = effective_fps
+            return path
 
     def stop_recording(self):
         """Finalize the current segment and return the requested base path."""
-        with self._recording_lock:
-            session, self._recording = self._recording, None
-        if session is None:
-            return None
-        session.close()
-        with self._recording_lock:
-            self._last_recording_segments = list(session.segments)
-        return session.output_path
+        with self._lifecycle_lock:
+            with self._recording_lock:
+                session, self._recording = self._recording, None
+            if session is None:
+                return None
+            session.close()
+            with self._recording_lock:
+                self._last_recording_segments = list(session.segments)
+            return session.output_path
 
     # Save either the stabilized or raw latest frame as an image file.
     def save_snapshot(self, path="snapshot.png", raw=False):
@@ -397,6 +496,7 @@ class MicroscopeCamera:
         points[:, 0, 0] += x1
         points[:, 0, 1] += y1
         return points.astype(np.float32)
+
     # Enable or disable the camera SDK automatic exposure algorithm.
     def set_auto_exposure(self, enabled=True):
         self.sdk_camera.put_AutoExpoEnable(1 if enabled else 0)
@@ -430,18 +530,16 @@ class MicroscopeCamera:
                 if source is None:
                     break
                 success, raw = source.read(timeout=0.5)
-                if not success:
+                if not success or self._stop_event.is_set() or source is not self._source:
                     continue
                 with self._stabilization_lock:
-                    frame = (
-                        self._stabilize(raw)
-                        if self.stabilization_enabled
-                        else raw.copy()
-                    )
+                    frame = self._stabilize(raw) if self.stabilization_enabled else raw.copy()
                 captured_at = time.time()
                 with self._frame_condition:
                     self._latest_raw_frame = raw
                     self._latest_frame = frame
+                    self._frame_id += 1
+                    self._captured_at = captured_at
                     self._frame_condition.notify_all()
                 with self._recording_lock:
                     session = self._recording
@@ -474,9 +572,7 @@ class MicroscopeCamera:
 
         if self._tracking_points is None or len(self._tracking_points) < 6:
             expected_center = frame_center + self._cumulative_motion
-            self._tracking_points = self._find_tracking_points(
-                self._previous_gray, expected_center
-            )
+            self._tracking_points = self._find_tracking_points(self._previous_gray, expected_center)
 
         if self._tracking_points is None or len(self._tracking_points) < 6:
             # With no reliable subject features, show the raw frame and reacquire next time.
@@ -485,15 +581,27 @@ class MicroscopeCamera:
             return frame.copy()
 
         current, forward_status, _ = cv2.calcOpticalFlowPyrLK(
-            self._previous_gray, gray, self._tracking_points, None,
-            winSize=(31, 31), maxLevel=3,
+            self._previous_gray,
+            gray,
+            self._tracking_points,
+            None,
+            winSize=(31, 31),
+            maxLevel=3,
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
         )
-        backward, backward_status, _ = cv2.calcOpticalFlowPyrLK(
-            gray, self._previous_gray, current, None,
-            winSize=(31, 31), maxLevel=3,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
-        ) if current is not None else (None, None, None)
+        backward, backward_status, _ = (
+            cv2.calcOpticalFlowPyrLK(
+                gray,
+                self._previous_gray,
+                current,
+                None,
+                winSize=(31, 31),
+                maxLevel=3,
+                criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+            )
+            if current is not None
+            else (None, None, None)
+        )
 
         self._previous_gray = gray
         if current is None or backward is None:
@@ -528,13 +636,10 @@ class MicroscopeCamera:
 
         self._cumulative_motion += median_displacement.astype(np.float32)
         max_offset = np.array((width * 0.25, height * 0.25), dtype=np.float32)
-        self._cumulative_motion = np.clip(
-            self._cumulative_motion, -max_offset, max_offset
-        )
+        self._cumulative_motion = np.clip(self._cumulative_motion, -max_offset, max_offset)
         target_correction = -self._cumulative_motion
         self._smoothed_correction = (
-            self.smoothing * self._smoothed_correction
-            + (1.0 - self.smoothing) * target_correction
+            self.smoothing * self._smoothed_correction + (1.0 - self.smoothing) * target_correction
         )
         self._tracked_center = frame_center + self._cumulative_motion
         self._tracking_points = current_good.reshape(-1, 1, 2).astype(np.float32)
@@ -542,51 +647,19 @@ class MicroscopeCamera:
         if len(self._tracking_points) < 30:
             new_points = self._find_tracking_points(gray, self._tracked_center)
             if new_points is not None:
-                self._tracking_points = np.concatenate(
-                    (self._tracking_points, new_points), axis=0
-                )[:120]
+                self._tracking_points = np.concatenate((self._tracking_points, new_points), axis=0)[
+                    :120
+                ]
 
         correction = np.array(
-            [[1.0, 0.0, self._smoothed_correction[0]],
-             [0.0, 1.0, self._smoothed_correction[1]]],
+            [[1.0, 0.0, self._smoothed_correction[0]], [0.0, 1.0, self._smoothed_correction[1]]],
             dtype=np.float32,
         )
         # Reflection avoids black borders; the 25% clamp prevents runaway transforms.
         return cv2.warpAffine(
-            frame, correction, (width, height),
-            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101,
+            frame,
+            correction,
+            (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
         )
-
-# Minimal local preview retained for testing without the Flask app.
-def preview():
-    """Standalone preview: Q quits, R records, S saves a snapshot."""
-    with MicroscopeCamera() as camera:
-        print("Q: quit | R: start/stop recording | S: snapshot")
-        while True:
-            frame = camera.get_frame(wait=True, timeout=2.0, copy=False)
-            if frame is None:
-                continue
-            cv2.imshow("Microscope feed", frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
-            if key == ord("r"):
-                if camera.is_recording:
-                    camera.stop_recording()
-                    print("Saved:", *camera.recording_segments)
-                else:
-                    print(f"Recording {camera.start_recording()}")
-            if key == ord("s"):
-                print(f"Saved {camera.save_snapshot()}")
-            if camera.recording_error is not None:
-                print(camera.recording_error)
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    preview()
-
-
-
-
-

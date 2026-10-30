@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>P1 Thermal Observatory</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="P1 Thermal Observatory home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>THERMAL<span class="brand-light"> / OBSERVATORY</span></span></a>
+    <div class="topbar-right"><span class="model-pill">THERMAL MASTER P1</span><a href="/docs" target="_blank" rel="noreferrer" class="api-link">API docs ↗</a></div>
+  </header>
+  <main>
+    <section class="intro">
+      <div><p class="eyebrow">RADIOMETRIC WORKSPACE</p><h1>See the temperature.</h1><p class="subtitle">Live infrared imaging and full-frame temperature analysis.</p></div>
+      <div class="connection-actions"><span id="connection" class="status-badge"><span class="status-dot"></span><span id="connectionText">Checking camera</span></span><button id="connect" class="button primary">Connect camera</button><button id="disconnect" class="button subtle" disabled>Disconnect</button></div>
+    </section>
+    <div id="error" class="error-banner" role="alert" hidden></div>
+    <div id="demoNotice" class="demo-banner" hidden>DEMO SOURCE · Synthetic thermal data. No physical camera measurements.</div>
+    <div class="workspace">
+      <section class="panel viewer-panel" id="viewerPanel" aria-labelledby="viewerTitle">
+        <div class="panel-heading"><div class="heading-group"><span class="tiny-square"></span><h2 id="viewerTitle">Thermal view</h2><span id="viewState" class="mini-tag">WAITING</span></div><div class="viewer-tools"><span id="resolution" class="mono dim">240 × 320 smooth · 3:4</span><button id="freeze" class="button compact" disabled aria-pressed="false">Freeze view</button><button id="fullscreen" class="button compact" aria-pressed="false">Full screen</button></div></div>
+        <div class="viewport" id="viewport"><canvas id="thermal" width="720" height="960" tabindex="0" aria-label="Thermal image rotated 90 degrees counterclockwise. Move pointer to inspect a pixel, click to pin it. Use arrow keys to move the pinned pixel." role="img"></canvas><div id="emptyState" class="empty-state"><div class="scan-symbol" aria-hidden="true">⌖</div><h3>Ready for a closer look</h3><p>Connect your P1 to begin viewing thermal data.</p><span>USB 3474 : 45C2</span></div><div id="staleOverlay" class="view-overlay" hidden>Last frame · camera unavailable</div><div id="freezeOverlay" class="freeze-label" hidden>FROZEN FRAME · <span id="frozenSequence"></span></div></div>
+        <div class="legend"><span id="scaleMin" class="mono">—</span><div id="colorbar" class="colorbar"></div><span id="scaleMax" class="mono">—</span></div>
+        <div class="view-footer"><div><span class="label">PIXEL PROBE</span><strong id="probeTemp">—</strong><span id="probeCoords" class="mono dim">Move over image</span><button id="clearProbe" class="text-button" hidden>Unpin</button></div><span id="frameLabel" class="mono dim">No frame received</span></div>
+      </section>
+      <aside class="readouts" aria-label="Temperature readouts">
+        <section class="panel measurements"><div class="panel-heading"><h2>Temperature readings</h2><label class="sr-only" for="units">Display temperature units</label><select id="units" class="unit-select"><option value="C">°C</option><option value="F">°F</option><option value="K">K</option></select></div><div class="stat-grid">
+          <div class="stat stat-hot"><span class="stat-label"><i></i>Maximum</span><div class="stat-value"><span id="maxTemp">—</span><small class="unit-label">°C</small></div><span id="maxLocation" class="stat-detail mono">x — / y —</span></div>
+          <div class="stat stat-cold"><span class="stat-label"><i></i>Minimum</span><div class="stat-value"><span id="minTemp">—</span><small class="unit-label">°C</small></div><span id="minLocation" class="stat-detail mono">x — / y —</span></div>
+          <div class="stat stat-center"><span class="stat-label"><i></i>Center</span><div class="stat-value"><span id="centerTemp">—</span><small class="unit-label">°C</small></div><span id="centerLocation" class="stat-detail mono">x 80 / y 60</span></div>
+          <div class="stat stat-mean"><span class="stat-label"><i></i>Frame mean</span><div class="stat-value"><span id="meanTemp">—</span><small class="unit-label">°C</small></div><span class="stat-detail">All 19,200 pixels</span></div>
+        </div><div class="secondary-stats"><div><span>Temperature span</span><strong id="rangeTemp">—</strong></div><div><span>Standard deviation</span><strong id="stdTemp">—</strong></div></div></section>
+        <section class="panel appearance"><div class="panel-heading"><h2>View settings</h2><span class="dim small">Display only</span></div><div class="settings-body">
+          <div class="field-row"><label for="renderMode">Image rendering</label><select id="renderMode"><option value="smooth">Smooth · 240 × 320</option><option value="native">Native pixels · 120 × 160</option></select></div>
+          <p id="renderDetail" class="helper rendering-detail">90° counterclockwise view; 240 × 320 interpolated display. Temperature readings use the original 160 × 120 sensor pixels.</p>
+          <div class="field-row"><label for="palette">Palette</label><select id="palette"><option value="inferno">Inferno</option><option value="iron">Iron</option><option value="gray">White hot</option><option value="gray-inverse">Black hot</option></select></div>
+          <div class="field-row"><label for="scale">Color scale</label><select id="scale"><option value="auto">Auto · frame min/max</option><option value="fixed">Fixed range</option></select></div>
+          <div id="fixedRange" class="fixed-range" hidden><label>Low (°C)<input id="rangeLow" type="number" value="15" step="0.5"></label><label>High (°C)<input id="rangeHigh" type="number" value="45" step="0.5"></label></div>
+          <p id="rangeError" class="field-error" hidden>Using auto scale. Enter finite values with high greater than low.</p>
+          <label class="check-row"><input id="markers" type="checkbox" checked><span>Show min, max & center markers</span></label>
+          <p class="helper">Colors use the temperature array. View settings never alter measured values.</p>
+        </div></section>
+        <section class="panel camera-controls"><div class="panel-heading"><h2>Camera controls</h2><span class="mini-tag">USB</span></div><div class="settings-body"><div class="field-row"><label for="gain">Sensor gain</label><select id="gain" disabled><option value="high">High · sensitive</option></select></div><p class="helper">Low gain is unavailable: its temperature readings failed validation on this P1.</p><button id="shutter" class="button full" disabled>Calibrate shutter / NUC</button><p class="helper">Shutter correction may briefly interrupt the image.</p></div></section>
+      </aside>
+      <section class="panel history-panel"><div class="panel-heading"><h2>Temperature over time</h2><div class="chart-key"><span class="hot">Max</span><span class="center">Center</span><span class="cold">Min</span><span class="dim">Last 60 s</span></div></div><div class="chart-wrap"><canvas id="history" width="1200" height="230" aria-label="Line chart of maximum, center and minimum temperatures over the last 60 seconds" role="img"></canvas><span id="historyEmpty">Temperature trends appear when frames arrive.</span></div></section>
+      <section class="panel export-panel"><div class="panel-heading"><h2>Extract a frame</h2><span class="mini-tag">SNAPSHOT</span></div><p>Export the exact frame shown, including a frozen frame.</p><div class="export-buttons"><button id="exportCsv" class="button" disabled>CSV array ↓</button><button id="exportJson" class="button" disabled>Raw + JSON ↓</button><button id="exportPng" class="button" disabled>Image PNG ↓</button></div><p class="helper">CSV: °C, rows = y, columns = x. JSON: raw sensor values, temperatures, image brightness, statistics and timestamp.</p></section>
+    </div>
+    <footer class="system-footer"><span id="deviceInfo">P1 · 160 × 120 native sensor</span><div><span id="fps">— fps</span><span id="frameCount">0 frames</span><span id="lastUpdate">Awaiting camera</span></div></footer>
+  </main>
+</body>
+</html>

@@ -23,6 +23,7 @@ class Step:
     params: dict
     timeout_s: float
     on_fail: str
+    zone: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,10 +66,12 @@ def validate(data, registry, overrides=None):
     for entry in data["steps"]:
         if (
             not isinstance(entry, dict)
-            or set(entry) - {"skill", "params", "timeout_s", "on_fail"}
+            or set(entry) - {"skill", "params", "timeout_s", "on_fail", "zone"}
             or not {"skill", "params", "timeout_s"} <= set(entry)
         ):
-            raise ValueError("Each step needs skill, params and timeout_s, with optional on_fail.")
+            raise ValueError(
+                "Each step needs skill, params and timeout_s, with optional on_fail and zone."
+            )
         skill = registry[entry["skill"]]
         values = entry["params"]
         if not isinstance(values, dict):
@@ -89,8 +92,13 @@ def validate(data, registry, overrides=None):
         on_fail = entry.get("on_fail", "hold")
         if not isinstance(on_fail, str) or on_fail not in {"hold", "abort"}:
             raise ValueError("on_fail must be hold or abort.")
+        zone = entry.get("zone")
+        if "zone" in entry:
+            from .zones import zone_name
+
+            zone_name(zone)
         steps.append(
-            Step(entry["skill"], resolved, positive(entry["timeout_s"], "timeout_s"), on_fail)
+            Step(entry["skill"], resolved, positive(entry["timeout_s"], "timeout_s"), on_fail, zone)
         )
         services.update(skill.services)
     return Recipe(data["name"], 1, params, tuple(steps), tuple(sorted(services)))

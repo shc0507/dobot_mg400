@@ -394,11 +394,21 @@ def test_public_transfer_aliases_keep_complete_typed_validation():
 def test_public_cli_transfer_rehearses_with_owned_collector_and_no_production_settings(
     geometry, tmp_path, monkeypatch, outcome
 ):
+    zone_config = tmp_path / "zones.toml"
+    zone_config.write_text(
+        "\n".join(
+            f'[zones.{name}]\nowner = "robot"\nconditions = []\n'
+            for name in ("aisle", "source", "target")
+        )
+    )
+    zone_config.chmod(0o640)
+    monkeypatch.setenv("MG400_ORCH_ZONES_FILE", str(zone_config))
     forbidden = {
         "MG400_ORCH_ROBOT_URL",
         "MG400_ORCH_ROBOT_TOKEN",
         "MG400_ROBOT_HOST",
         "MG400_GRIPPER_FEEDBACK",
+        "MG400_ORCH_ZONE_STATE_FILE",
         "HTTP_PROXY",
         "https_proxy",
         "ALL_PROXY",
@@ -412,6 +422,7 @@ def test_public_cli_transfer_rehearses_with_owned_collector_and_no_production_se
     class Demo(Rehearsal):
         def __enter__(self):
             assert forbidden.isdisjoint(os.environ)
+            assert os.environ["MG400_ORCH_ZONES_FILE"] == str(zone_config)
             assert {key: os.environ[key] for key in TRANSFER_SETTINGS} == explicit
             super().__enter__()
             demos.append(self)

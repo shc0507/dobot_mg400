@@ -30,8 +30,8 @@ def _position(value, label):
 class _RouteZones:
     """Report successful departure or exceptional exit to the zone contexts.
 
-    ORC-04 can retain occupied or unknown zones on exceptional exit. The current
-    carded manager is a no-op and provides no cross-device interlock.
+    The zone manager retains occupied or unknown zones on exceptional exit.
+    Normal exits follow the measured departure or taught approach clearance.
     """
 
     def __init__(self, manager):

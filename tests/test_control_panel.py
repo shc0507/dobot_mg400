@@ -955,3 +955,119 @@ def test_read_only_exit_reads_a_snapshot_without_robot_fields(monkeypatch, capsy
     output = capsys.readouterr()
     assert "Cleanup failed" not in output.err + output.out
     assert "physical emergency stop" not in output.err + output.out
+
+
+class ContractRecordingState(RecordingState):
+    def __init__(self):
+        super().__init__()
+        from labkit.events import EventLog
+
+        self.events = EventLog()
+
+    def describe(self):
+        self.calls.append(("describe",))
+        return {"service": "robot", "contract": 1, "demo": False}
+
+    def stop(self, client_id, wait_s):
+        self.calls.append(("stop", client_id, wait_s))
+        if self.failure:
+            raise self.failure
+        return {"stop": "pending", "state": self.snapshot()}
+
+
+@pytest.mark.parametrize("base_path", ["/", "/mg400-panel/"])
+def test_contract_routes_follow_base_path_authentication_and_event_cursor(base_path):
+    state = ContractRecordingState()
+    state.events.add("info", "first")
+    state.events.add("warning", "second")
+    with running(state, base_path=base_path) as server:
+        auth = {"Authorization": "Bearer test-token"}
+        for route in ("describe", "events"):
+            assert request(server, "GET", base_path + "api/" + route)[0] == 401
+        code, body = request(server, "GET", base_path + "api/describe", headers=auth)
+        assert code == 200 and json.loads(body)["contract"] == 1
+        code, body = request(server, "GET", base_path + "api/events?since=1", headers=auth)
+        assert code == 200
+        assert json.loads(body)["next"] == 2
+        assert [event["message"] for event in json.loads(body)["events"]] == ["second"]
+        headers = {**ROBOT_HEADERS, "X-MG400-Client": "not-the-holder"}
+        code, body = request(server, "POST", base_path + "api/stop", '{"wait_s":0.25}', headers)
+        assert code == 200 and json.loads(body)["stop"] == "pending"
+        assert state.calls[-1] == ("stop", "not-the-holder", 0.25)
+        if base_path != "/":
+            assert request(server, "GET", "/api/describe", headers=auth)[0] == 404
+            assert request(server, "POST", "/api/stop", "{}", headers)[0] == 404
+
+
+@pytest.mark.parametrize("route", ["describe", "events"])
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Host": "foreign.invalid"},
+        {"Forwarded": ""},
+        {"X-Forwarded-For": ""},
+        {"X-Forwarded-Host": ""},
+        {"X-Real-IP": ""},
+        {"Origin": "http://foreign.invalid"},
+        {"Sec-Fetch-Site": "cross-site"},
+    ],
+)
+def test_contract_get_routes_preserve_access_rules(route, headers):
+    state = ContractRecordingState()
+    with running(state, token=None) as server:
+        code, body = request(server, "GET", "/api/" + route, headers=headers)
+        assert code == 403 and "error" in json.loads(body)
+    assert state.calls == []
+
+
+@pytest.mark.parametrize(
+    ("change", "status"),
+    [
+        ({"Authorization": None}, 401),
+        ({"X-MG400-Panel": None}, 403),
+        ({"Content-Type": "text/plain"}, 403),
+        ({"Sec-Fetch-Site": "cross-site"}, 403),
+        ({"Origin": "http://foreign.invalid"}, 403),
+        ({"X-MG400-Client": None}, 400),
+        ({"X-MG400-Client": "\x7f"}, 400),
+        ({"X-MG400-Client": " "}, 400),
+    ],
+)
+def test_contract_stop_preserves_legacy_post_guard_and_validates_identity(change, status):
+    state = ContractRecordingState()
+    headers = {
+        key: value for key, value in {**ROBOT_HEADERS, **change}.items() if value is not None
+    }
+    with running(state) as server:
+        code, body = request(server, "POST", "/api/stop", "{}", headers)
+        assert code == status and "error" in json.loads(body)
+    assert state.calls == []
+
+
+@pytest.mark.parametrize("body", ["[]", "null", '{"action":"stop"}', "{"])
+def test_contract_stop_rejects_bad_body_before_dispatch(body):
+    state = ContractRecordingState()
+    with running(state) as server:
+        assert request(server, "POST", "/api/stop", body, ROBOT_HEADERS)[0] == 400
+    assert state.calls == []
+
+
+@pytest.mark.parametrize("cursor", ["-1", "1.5", "", "1&since=2", "%D9%A1"])
+def test_contract_events_reject_invalid_or_ambiguous_cursor(cursor):
+    with running(ContractRecordingState()) as server:
+        assert (
+            request(
+                server,
+                "GET",
+                "/api/events?since=" + cursor,
+                headers={"Authorization": "Bearer test-token"},
+            )[0]
+            == 400
+        )
+
+
+def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
+    auth = {"Authorization": "Bearer test-token"}
+    assert request(server, "GET", "/api/describe", headers=auth)[0] == 404
+    assert request(server, "GET", "/api/events", headers=auth)[0] == 404
+    assert request(server, "POST", "/api/stop", "{}", ROBOT_HEADERS)[0] == 403

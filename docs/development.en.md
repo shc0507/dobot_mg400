@@ -145,6 +145,9 @@ The service uses only the Python standard library.
 | Interface | Purpose |
 | --- | --- |
 | `GET {前缀}api/state` | Read the state once |
+| `GET {前缀}api/describe` | Read the contract version, command parameters, and lease behavior |
+| `POST {前缀}api/stop` | Request a stop and read its confirmation status |
+| `GET {前缀}api/events?since=<seq>` | Read journal events after the specified sequence |
 | `POST {前缀}api/command` | Send one command |
 | `POST {前缀}api/heartbeat` | Renew the control lease |
 | `GET {前缀}api/ws` | WebSocket connection: state updates, commands, heartbeats, and keys |
@@ -178,7 +181,7 @@ POST requests must meet these conditions:
 2. In physical robot control mode, include `X-MG400-Client: <客户端 ID>`. The placeholder means the client ID.
 3. Send a JSON object of 1–4096 bytes, with its length specified by `Content-Length`.
 
-Success returns 200 and the state object.
+Successful `api/command` and `api/heartbeat` requests return 200 and the state object.
 Rejection returns 400 (invalid request), 401 (incorrect access token), 403 (unauthorized), or 409 (state conflict).
 The rejection body is `{"error": "..."}`.
 
@@ -205,6 +208,53 @@ In this case, the service does not send `ClearError()`. It only disables the rob
 The state object's `alarms` field lists current alarms. It is `null` when there are no alarms.
 Each item contains `id`, `source` (`controller` or `J1`–`J4`), `description`, and `solution`.
 The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
+
+### Contract discovery, stop, and events
+
+Physical robot control mode provides `api/describe`, `api/stop`, and `api/events`.
+These routes check the access token, `Host`, and `Origin`.
+Without an access token, they still reject forwarded headers.
+`api/stop` also checks the POST headers and client ID described above.
+
+`api/describe` returns `service`, `version`, `contract`, `demo`, `zones`, `lease_seconds`, `on_lease_expiry`, and `commands`.
+`contract` is 1, and `demo` is `false`.
+Each command's `params` describes its arguments as JSON Schema, excluding `action`.
+For `stop` and `disable`, `any_client` is `true`.
+For `keyboard`, `ui_only` is `true`. The web panel uses this command.
+`start_sync` takes control. The existing heartbeat route only renews it.
+
+The `api/stop` body is `{"wait_s": 0}`.
+`wait_s` is optional and defaults to 0. It must be a finite number from 0–15 seconds.
+The route uses the existing stop worker and releases the state lock while waiting.
+Any client can stop without holding the control lease.
+Repeated requests follow the existing stop deduplication rules.
+A successful response is 200 with `{"stop": "confirmed", "state": {...}}`.
+
+| `stop` | Meaning |
+| --- | --- |
+| `confirmed` | Robot stop is confirmed, and the gripper has no active command or lock |
+| `pending` | The wait ended while a stop worker or gripper command was still active |
+| `unconfirmed` | Robot stop is unconfirmed, or the gripper is locked |
+
+Stopping the robot does not interrupt an active gripper command.
+A later successful stop cannot clear an earlier unconfirmed stop.
+The response preserves the lock state. It does not retry motion automatically.
+
+The state's `last_command` starts as `null`.
+After a command completes or is rejected, it contains `id`, `action`, `client`, `result`, `message`, and `finished_at`.
+`finished_at` is a Unix timestamp in seconds.
+`result` is `ok`, `failed`, `rejected`, or `stopped`.
+An asynchronous command updates its result after its worker completes.
+Stop results also wait for active gripper commands to finish. A gripper lock produces `failed`.
+A rejection from another client does not hide the final result of an active command.
+An older canceled worker cannot overwrite a newer completed stop.
+
+`api/events` returns `{"events": [...], "next": 0}`.
+Each event contains `seq`, `ts_unix`, `level`, `message`, and `fields`.
+`since` defaults to 0 and must be a nonnegative integer.
+The response contains only events with sequences greater than `since`. Use `next` for the next query.
+The service retains the latest 1000 events. Sequence numbering restarts with the service.
+Events correspond to existing state messages, locks, alarms, keyboard close reasons, and gripper lock messages. They add no journal lines.
 
 ### WebSocket interface
 

@@ -1,0 +1,43 @@
+# One entry per implemented service. Add optional services with their unit files.
+# The first unit starts its companions through systemd dependencies.
+# Optional udev template: config/udev/70-mg400-<name>.rules.in.
+
+[[service]]
+name = "web"
+units = ["mg400-web-panel.service"]
+optional = false
+venv = ".venv"
+groups = ["tools"]
+token = "MG400_PANEL_TOKEN"
+port = 8766
+assets = []
+
+[[service]]
+name = "stage"
+units = ["mg400-stage-panel.service"]
+optional = false
+venv = ".venv"
+groups = ["stage"]
+token = "MG400_STAGE_TOKEN"
+port = 8767
+assets = []
+
+[[service]]
+name = "camera"
+units = ["mg400-camera-preview.service", "mg400-camera-capture.service"]
+optional = false
+venv = ".venv"
+groups = []
+token = ""
+port = 1985
+assets = []
+
+[[service]]
+name = "collector"
+units = ["mg400-gripper-collector.service"]
+optional = false
+venv = ".venv"
+groups = ["stage"]
+token = ""
+port = 0
+assets = []

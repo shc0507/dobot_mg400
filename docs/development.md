@@ -143,6 +143,9 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 | 接口 | 用途 |
 | --- | --- |
 | `GET {前缀}api/state` | 读取一次状态 |
+| `GET {前缀}api/describe` | 读取契约版本、命令参数和租约行为 |
+| `POST {前缀}api/stop` | 请求停止并读取确认结果 |
+| `GET {前缀}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
 | `POST {前缀}api/command` | 发送一个命令 |
 | `POST {前缀}api/heartbeat` | 续期控制租约 |
 | `GET {前缀}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
@@ -176,7 +179,7 @@ POST 请求必须满足以下条件：
 2. 真机控制模式带 `X-MG400-Client: <客户端 ID>`。
 3. 正文为 1–4096 字节的 JSON 对象，用 `Content-Length` 标明长度。
 
-成功时返回 200 和状态对象。
+`api/command` 和 `api/heartbeat` 成功时返回 200 和状态对象。
 拒绝时返回 400（请求无效）、401（访问密钥错误）、403（无权）或 409（状态冲突）。
 拒绝的正文为 `{"error": "..."}`。
 
@@ -203,6 +206,53 @@ POST 请求必须满足以下条件：
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
+
+### 契约发现、停止与事件
+
+真机控制模式提供 `api/describe`、`api/stop` 和 `api/events`。
+这些接口检查访问密钥、`Host` 和 `Origin`。
+无访问密钥时，仍拒绝转发头。
+`api/stop` 也检查上述 POST 请求头和客户端 ID。
+
+`api/describe` 返回 `service`、`version`、`contract`、`demo`、`zones`、`lease_seconds`、`on_lease_expiry` 和 `commands`。
+`contract` 为 1，`demo` 为 `false`。
+每个命令的 `params` 用 JSON Schema 描述参数，不含 `action`。
+`stop` 和 `disable` 的 `any_client` 为 `true`。
+`keyboard` 的 `ui_only` 为 `true`，供网页面板使用。
+`start_sync` 取得控制权，原心跳接口只续期。
+
+`api/stop` 的正文为 `{"wait_s": 0}`。
+`wait_s` 可省略，默认为 0，范围为 0–15 秒，必须是有限数值。
+接口沿用停止工作线程，等待时释放状态锁。
+任何客户端都能停止，无须持有控制租约。
+重复请求不改变既有的停止去重规则。
+成功响应为 200 和 `{"stop": "confirmed", "state": {...}}`。
+
+| `stop` | 含义 |
+| --- | --- |
+| `confirmed` | 机械臂停止已确认，夹爪无活动命令或锁定 |
+| `pending` | 等待期限已到，停止工作线程或夹爪命令仍在执行 |
+| `unconfirmed` | 机械臂停止未确认，或夹爪已锁定 |
+
+停止机械臂不会中断正在执行的夹爪命令。
+先前的停止未确认时，后续停止成功也不能清除此状态。
+响应保留锁定状态，不自动重试运动。
+
+状态的 `last_command` 初始为 `null`。
+命令完成或被拒绝后，该字段包含 `id`、`action`、`client`、`result`、`message` 和 `finished_at`。
+`finished_at` 是 Unix 秒数。
+`result` 为 `ok`、`failed`、`rejected` 或 `stopped`。
+异步命令在工作线程完成后更新结果。
+停止结果也等待活动夹爪命令结束，夹爪锁定时记为 `failed`。
+其他客户端的拒绝请求不会隐藏正在执行的命令的最终结果。
+已取消的旧工作线程不能覆盖较新的已完成停止。
+
+`api/events` 返回 `{"events": [...], "next": 0}`。
+每个事件含 `seq`、`ts_unix`、`level`、`message` 和 `fields`。
+`since` 默认为 0，必须是非负整数。
+响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
+服务保留最近 1000 个事件，重启后序号重新开始。
+事件对应既有的状态消息、锁定、报警、键盘关闭原因和夹爪锁定日志，不增加日志行。
 
 ### WebSocket 接口
 

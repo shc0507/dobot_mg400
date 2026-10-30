@@ -203,14 +203,26 @@ def test_nonobject_json_is_invalid(data):
     assert_error(response, 400)
 
 
-@pytest.mark.parametrize("value", [-1, 15.1, True, "1", float("inf"), float("nan")])
+@pytest.mark.parametrize(
+    "value",
+    [
+        -1,
+        15.1,
+        True,
+        "1",
+        float("inf"),
+        float("nan"),
+        pytest.param(10**1000, id="huge-positive-integer"),
+        pytest.param(-(10**1000), id="huge-negative-integer"),
+    ],
+)
 def test_invalid_stop_wait(value):
-    response = (
-        make_app()[0]
-        .test_client()
-        .post("/api/stop", json={"wait_s": value}, headers={"X-MG400-Client": "a"})
+    app, service, _ = make_app()
+    response = app.test_client().post(
+        "/api/stop", json={"wait_s": value}, headers={"X-MG400-Client": "a"}
     )
     assert_error(response, 400)
+    assert service.calls == []
 
 
 @pytest.mark.parametrize("client", [None, "", "x" * 129, "é", "\x7f"])

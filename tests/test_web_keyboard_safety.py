@@ -11,12 +11,12 @@ import time
 import pytest
 from helpers import Feed, block_network, idle_lock, wait_for
 
-from mg400_agent import web_control
-from mg400_agent.controller_ownership import ControllerOwnership
-from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import PreparationRejectedError
-from mg400_agent.web_control import RobotPanelState
-from mg400_agent.web_gripper import GripperNotSentError
+from mg400 import web_control
+from mg400.controller_ownership import ControllerOwnership
+from mg400.feedback import Feedback
+from mg400.joint_control import PreparationRejectedError
+from mg400.web_control import RobotPanelState
+from mg400.web_gripper import GripperNotSentError
 
 OWNER = "browser-a"
 OTHER = "browser-b"

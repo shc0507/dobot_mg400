@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from mg400_agent import keyboard_jog
-from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import JointControl
-from mg400_agent.joint_limits import MARGIN_DEG, validate_joints
-from mg400_agent.keyboard_jog import KeyboardJogSession
+from mg400 import keyboard_jog
+from mg400.feedback import Feedback
+from mg400.joint_control import JointControl
+from mg400.joint_limits import MARGIN_DEG, validate_joints
+from mg400.keyboard_jog import KeyboardJogSession
 
 START = (30.0, 0.0, 10.0, 0.0)
 POSE = (250.0, 10.0, 40.0, 30.0)

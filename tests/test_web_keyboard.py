@@ -12,10 +12,10 @@ from contextlib import contextmanager
 import pytest
 from helpers import Feed, block_network, idle_lock, wait_for
 
-from mg400_agent.feedback import Feedback
-from mg400_agent.joint_control import PreparationRejectedError
-from mg400_agent.web_control import RobotPanelState
-from mg400_agent.web_gripper import GripperNotSentError
+from mg400.feedback import Feedback
+from mg400.joint_control import PreparationRejectedError
+from mg400.web_control import RobotPanelState
+from mg400.web_gripper import GripperNotSentError
 
 CLIENT = "browser-a"
 OTHER = "browser-b"

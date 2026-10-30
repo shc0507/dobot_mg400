@@ -5,9 +5,9 @@ from unittest.mock import Mock
 import pytest
 from helpers import Feed, PanelControl, block_network, wait_for
 
-from mg400_agent import terminal_control
-from mg400_agent.terminal_control import TerminalSession, parse_command, run_terminal, status_lines
-from mg400_agent.web_control import RobotPanelState
+from mg400 import terminal_control
+from mg400.terminal_control import TerminalSession, parse_command, run_terminal, status_lines
+from mg400.web_control import RobotPanelState
 
 
 class State:

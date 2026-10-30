@@ -29,7 +29,7 @@ from panel_ws import (
     upgrade_request,
 )
 
-from mg400_agent.websocket import (
+from mg400.websocket import (
     BINARY,
     CLOSE,
     CONTINUATION,

@@ -55,7 +55,7 @@ uv run ruff format --check .
 | `apps/layout-studio/` | 离线布局编辑器，使用模拟数据，不发送控制命令 |
 | `config/systemd/` | 所有服务的 systemd 定义，配置从 `/etc/mg400/mg400.env` 读取 |
 | `deploy/` | 安装器 `install.py`、日常命令 `mg400ctl` 和配置示例 |
-| `src/mg400_agent/` | 后端、控制协议和反馈处理 |
+| `src/mg400/` | 后端、控制协议和反馈处理 |
 | `src/stage_controller/` | 位移台面板：Flask 服务、串口协议和界面 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
 | `scripts/` | 摄像头预览、控制模式切换和 USB 采集 |
@@ -82,7 +82,7 @@ uv run ruff format --check .
 TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 当前没有 ROS 2 后端或视觉感知。
 
-`src/stage_controller/` 是位移台面板，不导入 `mg400_agent`，也不使用机械臂的连接锁。
+`src/stage_controller/` 是位移台面板，不导入 `mg400`，也不使用机械臂的连接锁。
 `__main__.py` 读取 `MG400_STAGE_*` 环境变量和命令行参数，再启动 waitress。
 收到 SIGINT、SIGTERM 或 SIGHUP 时，它先停止电机并断开串口，再退出。
 `app.py` 提供 HTTP 接口和访问检查。

@@ -10,12 +10,12 @@ from pathlib import Path
 import pytest
 from sim_mg400 import HOST, JOGS, POSE, RADIAL_FRAME, START, held_until, wait_for
 
-from mg400_agent.controller_ownership import ControllerOwnership
-from mg400_agent.joint_control import JointControl
-from mg400_agent.joint_limits import MARGIN_DEG, validate_joints
-from mg400_agent.keyboard_jog import CONTINUOUS_MARGIN_DEG_PER_PERCENT
-from mg400_agent.web_control import RobotPanelState
-from mg400_agent.web_gripper import WebGripper
+from mg400.controller_ownership import ControllerOwnership
+from mg400.joint_control import JointControl
+from mg400.joint_limits import MARGIN_DEG, validate_joints
+from mg400.keyboard_jog import CONTINUOUS_MARGIN_DEG_PER_PERCENT
+from mg400.web_control import RobotPanelState
+from mg400.web_gripper import WebGripper
 
 PREPARATION = ("RobotMode(", "GetErrorID(", "GetAngle(", "SpeedFactor(")
 NEXT = "Stopped. Hold a key for the next move."

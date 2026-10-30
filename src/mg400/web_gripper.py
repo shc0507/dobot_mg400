@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from mg400_agent.gripper_feedback import FeedbackState, FileFeedback
+from mg400.gripper_feedback import FeedbackState, FileFeedback
 
 # The host path unit starts the collector when this file next to the feedback file changes.
 COLLECTOR_REQUEST = "gripper_collector.start"

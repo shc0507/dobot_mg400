@@ -1,6 +1,6 @@
 import pytest
 
-from mg400_agent.controller_protocol import ControllerCommandError, parse_controller_response
+from mg400.controller_protocol import ControllerCommandError, parse_controller_response
 
 CALC_USER = "CalcUser(9,1,{0,0,0,0})"
 

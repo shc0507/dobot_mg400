@@ -4,7 +4,7 @@ import tomllib
 import pytest
 from helpers import block_network
 
-from mg400_agent.robot_config import load_robot_host
+from mg400.robot_config import load_robot_host
 
 
 @pytest.fixture(autouse=True)

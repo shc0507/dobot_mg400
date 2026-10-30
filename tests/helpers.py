@@ -6,7 +6,7 @@ import threading
 import time
 from unittest.mock import Mock
 
-from mg400_agent.feedback import Feedback
+from mg400.feedback import Feedback
 
 
 def wait_for(predicate, timeout=2, describe=None):

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from mg400_agent.feedback import FRAME_SIZE, Feedback, FeedbackConnection, decode_feedback
+from mg400.feedback import FRAME_SIZE, Feedback, FeedbackConnection, decode_feedback
 
 
 def frame(joints=(10.0, -20.0, 30.0, 40.0), *, timestamp=12345, mode=5, error=False):
@@ -126,7 +126,7 @@ def test_partial_frame_timeout_does_not_return_stale_state(monkeypatch):
 def test_drip_feed_cannot_extend_frame_deadline(monkeypatch):
     receiver = ReceiveOnlySocket(frame()[:1], frame()[1:])
     connection, _ = connection_for(monkeypatch, receiver, timeout_s=2)
-    monkeypatch.setattr("mg400_agent.feedback.time.monotonic", Mock(side_effect=[0, 1, 3]))
+    monkeypatch.setattr("mg400.feedback.time.monotonic", Mock(side_effect=[0, 1, 3]))
     with pytest.raises(TimeoutError, match="complete feedback frame"), connection:
         connection.read_latest()
 

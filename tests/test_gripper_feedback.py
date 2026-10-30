@@ -3,7 +3,7 @@ from uuid import UUID
 
 import pytest
 
-from mg400_agent.gripper_feedback import FeedbackState, FileFeedback
+from mg400.gripper_feedback import FeedbackState, FileFeedback
 
 SESSION = "a51c687e-95f5-4fa5-a73d-6088dba073f1"
 RESTART = "ea97d1be-5302-44a1-8dfb-83d88defc935"
@@ -24,8 +24,8 @@ def sample(**changes):
 @pytest.fixture
 def clocks(monkeypatch):
     values = {"wall": 1000.0, "monotonic": 10.0}
-    monkeypatch.setattr("mg400_agent.gripper_feedback.time.time", lambda: values["wall"])
-    monkeypatch.setattr("mg400_agent.gripper_feedback.time.monotonic", lambda: values["monotonic"])
+    monkeypatch.setattr("mg400.gripper_feedback.time.time", lambda: values["wall"])
+    monkeypatch.setattr("mg400.gripper_feedback.time.monotonic", lambda: values["monotonic"])
     return values
 
 

@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 from helpers import block_network
 
-from mg400_agent import web_gripper
+from mg400 import web_gripper
 
 
 @pytest.fixture

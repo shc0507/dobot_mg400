@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
-from mg400_agent import controller_ownership
-from mg400_agent.controller_ownership import ControllerOwnership
+from mg400 import controller_ownership
+from mg400.controller_ownership import ControllerOwnership
 
 
 def test_another_panel_cannot_acquire_until_the_owner_releases(tmp_path):
@@ -48,7 +48,7 @@ def test_process_exit_releases_ownership_without_a_stale_file_lock(tmp_path):
             "\n".join(
                 [
                     "import sys",
-                    "from mg400_agent.controller_ownership import ControllerOwnership",
+                    "from mg400.controller_ownership import ControllerOwnership",
                     "lease = ControllerOwnership('192.168.1.6', directory=sys.argv[1])",
                     "lease.acquire()",
                     "print('owned', flush=True)",

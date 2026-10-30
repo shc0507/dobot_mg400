@@ -1,6 +1,6 @@
 import pytest
 
-from mg400_agent.controller_alarms import describe_alarms, parse_alarm_ids
+from mg400.controller_alarms import describe_alarms, parse_alarm_ids
 
 
 def test_parse_reads_one_tuple_per_list():

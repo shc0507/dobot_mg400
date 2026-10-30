@@ -65,15 +65,19 @@ MAX_PROGRAM_SETPOINTS = (PROGRAM_DATA_LAST_REGISTER - PROGRAM_DATA_FIRST_REGISTE
 
 
 # Configure Modbus RTU serial communication and confirm the expected device responds.
-def connect(port=None, slave_address=None):
-    """Create and verify a connection to the furnace controller."""
+def connect(port=None, slave_address=None, *, instrument=None):
+    """Create or accept an instrument, then verify its configured serial identity."""
     port = serial_port(port, "MG400_FURNACE_SERIAL")
     slave_address = resolve_slave_address(slave_address)
     print(
         f"Attempting to initialize furnace on {port}, slave {slave_address}...",
         flush=True,
     )
-    controller = minimalmodbus.Instrument(port, slave_address)
+    if instrument is not None and getattr(instrument.serial, "port", None) != port:
+        raise ValueError("The injected instrument must use the configured serial port")
+    controller = (
+        instrument if instrument is not None else minimalmodbus.Instrument(port, slave_address)
+    )
     controller.mode = minimalmodbus.MODE_RTU
 
     controller.serial.baudrate = 9600
@@ -85,13 +89,15 @@ def connect(port=None, slave_address=None):
     controller.clear_buffers_before_each_transaction = True
 
     # Verify that the controller responds.
-    address = read_register(controller, 0x16)
-
-    if address != slave_address:
+    try:
+        address = read_register(controller, 0x16)
+        if address != slave_address:
+            raise RuntimeError(
+                f"Expected slave address {slave_address}, but the controller returned {address}"
+            )
+    except BaseException:
         controller.serial.close()
-        raise RuntimeError(
-            f"Expected slave address {slave_address}, but the controller returned {address}"
-        )
+        raise
 
     print(f"Connected to {port}, slave {slave_address}.")
     return controller
@@ -559,8 +565,54 @@ class MFCFlowController:
 
 # Low-level convenience wrapper around the furnace registers and serial connection.
 class Furnace(object):
-    def __init__(self, port=None, slave_address=None, flow_port=None, *, config=None):
+    def __init__(
+        self, port=None, slave_address=None, flow_port=None, *, config=None, instrument=None
+    ):
         """Connect safely and leave the controller in STOP/COOLING."""
+        self._configure(port, slave_address, flow_port, config)
+        self._connect_controller(instrument)
+        try:
+            self.disable_internal_program()
+            self.program_setpoint_registers = self._detect_program_setpoints()
+            self._program_bank_supported = self.instrument_model == AI_518P_MODEL_ID or bool(
+                self.program_setpoint_registers
+            )
+            # Merely constructing the library object must never begin heating.
+            self.set_stop()
+        except Exception:
+            disconnect(self.controller)
+            self.controller = None
+            raise
+
+        # Do not auto-connect the separate flow controller during furnace setup.
+        # The caller explicitly connects each device with its separate settings.
+
+    @classmethod
+    def attach(cls, port=None, slave_address=None, flow_port=None, *, config=None, instrument=None):
+        """Attach for recovery without changing any controller register.
+
+        The caller must inspect and validate the live state before allowing
+        control. Unlike normal construction, this path preserves RUN/HOLD and
+        stored programs. An injected instrument becomes this object's serial
+        connection and must identify the configured port and slave address.
+        """
+        furnace = cls.__new__(cls)
+        furnace._configure(port, slave_address, flow_port, config)
+        furnace._connect_controller(instrument)
+        try:
+            furnace.instrument_model = read_register(furnace.controller, MODEL_ID_REGISTER)
+            furnace.program_setpoint_registers = furnace._detect_program_setpoints()
+            furnace._program_bank_supported = furnace.instrument_model == AI_518P_MODEL_ID or bool(
+                furnace.program_setpoint_registers
+            )
+        except Exception:
+            disconnect(furnace.controller)
+            furnace.controller = None
+            raise
+        return furnace
+
+    def _configure(self, port, slave_address, flow_port, config):
+        """Initialize shared fields without opening a connection or changing outputs."""
         if config is None:
             config = FurnaceConfig.from_env(
                 port=port, slave_address=slave_address, flow_port=flow_port
@@ -588,22 +640,13 @@ class Furnace(object):
         self.controller_program_step = None
         self.flow_controller = None
 
-        self.controller = connect(port=self.port, slave_address=self.slave_address)
-        try:
-            self.disable_internal_program()
-            self.program_setpoint_registers = self._detect_program_setpoints()
-            self._program_bank_supported = self.instrument_model == AI_518P_MODEL_ID or bool(
-                self.program_setpoint_registers
+    def _connect_controller(self, instrument):
+        if instrument is None:
+            self.controller = connect(port=self.port, slave_address=self.slave_address)
+        else:
+            self.controller = connect(
+                port=self.port, slave_address=self.slave_address, instrument=instrument
             )
-            # Merely constructing the library object must never begin heating.
-            self.set_stop()
-        except Exception:
-            disconnect(self.controller)
-            self.controller = None
-            raise
-
-        # Do not auto-connect the separate flow controller during furnace setup.
-        # The caller explicitly connects each device with its separate settings.
 
     @property
     def connected(self):

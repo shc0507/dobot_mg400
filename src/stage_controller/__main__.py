@@ -6,16 +6,10 @@ import signal
 
 from waitress import create_server
 
-from .app import create_app, loopback_name
+from labkit.auth import valid_token, valid_token_for_bind
+
+from .app import create_app
 from .controller import GRIPPER_CONVERTER, MotorController, is_gripper_converter
-
-
-def valid_token(value):
-    """Accept a token that a browser sends unchanged in the Authorization header.
-
-    Browsers send only these characters and strip spaces at either end of a value.
-    """
-    return all(" " <= char <= "~" for char in value) and value == value.strip(" ")
 
 
 def listen_urls(server):
@@ -79,7 +73,7 @@ def main(argv=None):
             "and must not begin or end with a space"
         )
     # With an access token, the app accepts any host name, also on a loopback bind.
-    if (token or not loopback_name(bind)) and len(token or "") < 24:
+    if not valid_token_for_bind(token, bind):
         parser.error(
             "Set MG400_STAGE_TOKEN to at least 24 characters, "
             "or leave it unset and bind to localhost"

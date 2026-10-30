@@ -94,6 +94,124 @@ def test_unknown_service_name_is_refused(ctl, capsys):
     ctl.run.assert_not_called()
 
 
+@pytest.mark.parametrize("command", ["run", "rehearse", "runs"])
+def test_recipe_dispatch_precedes_admin_registry_and_drops_root(ctl, monkeypatch, command):
+    settings = (
+        SETTINGS
+        + """
+MG400_ORCH_RUNS_DIR=/var/lib/mg400/custom-runs
+MG400_ORCH_ROBOT_URL=http://robot.invalid
+MG400_ORCH_ROBOT_TOKEN=orchestrator-token-0123456789
+MG400_ORCH_TIMEOUT_S=2
+MG400_ORCH_UNRECOGNIZED_TOKEN=never-forward
+MG400_PANEL_TOKEN=never-forward-panel
+"""
+    )
+    ctl.host.settings.write_text(settings)
+    monkeypatch.setitem(
+        ctl.module.main.__globals__,
+        "load_services",
+        Mock(side_effect=AssertionError("admin parser")),
+    )
+    for key in (
+        "PYTHONPATH",
+        "LD_PRELOAD",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "MG400_ORCH_STAGE_TOKEN",
+    ):
+        monkeypatch.setenv(key, "ambient-secret")
+    if command == "rehearse":
+        ctl.host.settings.unlink()
+    assert ctl.call(command, "recipe-or-run-id", "--runs-dir", "/tmp/run-records") == 0
+    program, argv, environment = ctl.execvpe.call_args.args
+    assert program == "/usr/sbin/runuser"
+    assert argv == [
+        "runuser",
+        "--pty",
+        "-u",
+        "mg400user",
+        "-g",
+        "mg400group",
+        "--",
+        str(ctl.host.code / ".venv/bin/python"),
+        "-I",
+        "-m",
+        "orchestrator",
+        command,
+        "recipe-or-run-id",
+        "--runs-dir",
+        "/tmp/run-records",
+    ]
+    settings = {key: value for key, value in environment.items() if key.startswith("MG400_")}
+    expected = (
+        {} if command == "rehearse" else {"MG400_ORCH_RUNS_DIR": "/var/lib/mg400/custom-runs"}
+    )
+    if command == "run":
+        expected |= {
+            "MG400_ORCH_ROBOT_URL": "http://robot.invalid",
+            "MG400_ORCH_ROBOT_TOKEN": "orchestrator-token-0123456789",
+            "MG400_ORCH_TIMEOUT_S": "2",
+        }
+    assert settings == expected
+    assert not set(environment) & {
+        "PYTHONPATH",
+        "LD_PRELOAD",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+    }
+    ctl.getpwuid.assert_called_with(1000)
+    ctl.run.assert_not_called()
+    ctl.chdir.assert_not_called()  # Preserve the caller's relative recipe paths.
+
+
+@pytest.mark.parametrize("command", ["run", "rehearse", "runs"])
+def test_nonroot_recipe_uses_only_allowed_explicit_environment(ctl, monkeypatch, command):
+    for method in ("getuid", "geteuid", "getgid", "getegid"):
+        monkeypatch.setattr(ctl.module.os, method, lambda: 1000)
+    ctl.host.settings.unlink()
+    monkeypatch.setenv("MG400_ORCH_RUNS_DIR", "/tmp/own-runs")
+    monkeypatch.setenv("MG400_ORCH_ROBOT_URL", "http://robot.invalid")
+    monkeypatch.setenv("MG400_ORCH_ROBOT_TOKEN", "explicit-token")
+    monkeypatch.setenv("MG400_ORCH_UNKNOWN", "unknown")
+    monkeypatch.setenv("MG400_PANEL_TOKEN", "panel")
+    monkeypatch.setenv("HTTP_PROXY", "proxy")
+    assert ctl.call(command) == 0
+    program, argv, environment = ctl.execvpe.call_args.args
+    assert program == str(ctl.host.code / ".venv/bin/python")
+    assert argv == [program, "-I", "-m", "orchestrator", command]
+    assert environment["MG400_ORCH_RUNS_DIR"] == "/tmp/own-runs"
+    assert ("MG400_ORCH_ROBOT_TOKEN" in environment) is (command == "run")
+    assert ("MG400_ORCH_ROBOT_URL" in environment) is (command == "run")
+    assert not set(environment) & {"MG400_ORCH_UNKNOWN", "MG400_PANEL_TOKEN", "HTTP_PROXY"}
+    ctl.getpwuid.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["getuid", "geteuid", "getgid", "getegid"])
+def test_nonroot_recipe_refuses_wrong_real_or_effective_identity(ctl, monkeypatch, method):
+    for identity in ("getuid", "geteuid", "getgid", "getegid"):
+        monkeypatch.setattr(ctl.module.os, identity, lambda: 1000)
+    monkeypatch.setattr(ctl.module.os, method, lambda: 1001)
+    assert ctl.call("rehearse", "recipe.toml") == 1
+    ctl.execvpe.assert_not_called()
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["run-extra", "rehears", "runs-extra", "-m"])
+def test_recipe_dispatch_accepts_only_exact_commands(ctl, command):
+    with pytest.raises(SystemExit):
+        ctl.call(command)
+    ctl.execvpe.assert_not_called()
+
+
+def test_root_recipe_dispatch_refuses_missing_runuser(ctl, monkeypatch):
+    monkeypatch.setattr(ctl.module.shutil, "which", lambda *args, **kwargs: None)
+    assert ctl.call("rehearse", "recipe.toml") == 1
+    ctl.execvpe.assert_not_called()
+
+
 def test_status_lists_every_service_and_the_request_watcher(ctl):
     blocks = [
         "Id=mg400-web-panel.service\nActiveState=active\nSubState=running",

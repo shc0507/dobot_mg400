@@ -344,6 +344,7 @@ def test_caps_reject_entire_command_before_writes(lab, temperature, ramp):
     service = lab.make(
         config=FurnaceConfig(port="sim://furnace", flow_port="sim://mfc", max_c=100, max_ramp=10)
     )
+    service.start(background=False)
     service.lease.acquire("operator")
     before = list(lab.serial.requests)
     with pytest.raises(ValueError):
@@ -853,3 +854,97 @@ def test_recovery_with_partially_configured_map_preserves_all_off_end_plan(lab):
     restored = lab.make(gas_map={0: "test gas A"})
     assert not restored.start(background=False)["locked"]
     assert restored.status()["sequence"]["end_gas"] == {0: 0, 1: 0, 2: 0}
+
+
+@pytest.mark.parametrize("operation", ["stop_furnace", "disconnect"])
+def test_interrupted_stop_cannot_resume_previous_committed_run(lab, monkeypatch, operation):
+    lab.service.start_sequence(recipe(hold=5), client="operator")
+
+    def interrupted():
+        raise SystemExit("simulated process loss before STOP confirmation")
+
+    monkeypatch.setattr(lab.service.furnace, "set_stop", interrupted)
+    with pytest.raises(SystemExit):
+        if operation == "disconnect":
+            lab.service.disconnect(client="operator")
+        else:
+            lab.service.stop_furnace()
+    assert lab.store.load()["phase"] == "applying"
+    # A new driver owns the same in-memory controller, which is still RUN.
+    restored = lab.make()
+    assert restored.start(background=False)["locked"]
+
+
+@pytest.mark.parametrize(
+    "operation,args",
+    [
+        ("stop_gas_flow", (0,)),
+        ("stop_all_flow", ()),
+        ("disconnect_flow_controller", ()),
+        ("stop_water_flow", (10,)),
+    ],
+)
+def test_interrupted_gas_stop_cannot_resume_committed_recipe(lab, monkeypatch, operation, args):
+    lab.service.start_sequence(
+        recipe(hold=5, gas={0: 20}), end_gas={}, end_gas_until_c=30, client="operator"
+    )
+
+    def interrupted(packet):
+        raise SystemExit("simulated process loss during flow stop")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(lab.mfc, "write", interrupted)
+        with pytest.raises(SystemExit):
+            getattr(lab.service, operation)(*args)
+    assert lab.store.load()["phase"] == "applying"
+    assert lab.make().start(background=False)["locked"]
+
+
+@pytest.mark.parametrize("phase,locked", [("fault", True), ("applying", False)])
+@pytest.mark.parametrize(
+    "operation,args", [("stop_furnace", ()), ("stop_gas_flow", (0,)), ("stop_all_flow", ())]
+)
+def test_unstarted_stop_preserves_durable_acknowledgement(lab, phase, locked, operation, args):
+    lab.store.save(dict(phase=phase, locked=locked))
+    fresh = lab.make()
+    result = getattr(fresh, operation)(*args)
+    assert result["locked"]
+    assert lab.store.load()["locked"]
+    fresh.lease.acquire("operator")
+    assert fresh.connect(client="operator")["locked"]
+    assert not fresh.acknowledge(client="operator")["locked"]
+
+
+@pytest.mark.parametrize(
+    "method,args",
+    [
+        ("set_sequence", (recipe(),)),
+        ("set_gas_flow", (0, 20)),
+        ("connect_flow_controller", ()),
+        ("apply_setpoint", (30, 10)),
+    ],
+)
+def test_unstarted_commands_cannot_bypass_saved_fault(lab, method, args):
+    saved = dict(phase="fault", locked=True)
+    lab.store.save(saved)
+    fresh = lab.make()
+    fresh.lease.acquire("operator")
+    before = (list(lab.serial.requests), list(lab.mfc.requests))
+    with pytest.raises(ServiceError, match="Start or connect"):
+        getattr(fresh, method)(*args, client="operator")
+    assert lab.store.load() == saved
+    assert before == (list(lab.serial.requests), list(lab.mfc.requests))
+
+
+def test_unstarted_stop_with_busy_storage_still_stops_outputs(lab):
+    lab.service.apply_setpoint(30, 10, client="operator")
+    fresh = lab.make()
+    directory = lab.store._directory()
+    try:
+        with lab.store._transaction(directory):
+            result = fresh.stop_furnace()
+        assert result["locked"] and result["persistence_error"]
+        assert lab.serial.registers[p.SRUN_REGISTER] == 1
+        assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
+    finally:
+        os.close(directory)

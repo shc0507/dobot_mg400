@@ -5,6 +5,7 @@ run the poll thread. Tests and embedding can use start(background=False) and
 poll_once(). Factories receive validated configuration and must return the real
 driver interface. All output changes use one operation lock. A controlling
 client must hold lease before a non-stop command. Stop bypasses lease failures.
+Non-stop commands require completed recovery through start() or connect().
 
 Gas map and idle gas settings are JSON objects keyed by channel 0, 1, or 2.
 MG400_FURNACE_GAS_MAP maps channels to operator-supplied labels; it has no default.
@@ -52,10 +53,12 @@ def _controlled(method):
             raise ServiceError(409, "Acquire the control lease before sending a command.")
         with self.lease.control(client):
             with self._operation_lock:
-                if self._locked:
+                if self._locked and method.__name__ != "connect":
                     raise ServiceError(409, "Acknowledge the furnace fault before control.")
                 if self._closed:
                     raise ServiceError(409, "The service is closed.")
+                if not self._initialized and method.__name__ != "connect":
+                    raise ServiceError(409, "Start or connect the service before sending commands.")
                 result = method(self, *args, **kwargs)
         self._notify_pending()
         return self.status() if result is None else result
@@ -141,6 +144,7 @@ class FurnaceService:
         self._stop_event = threading.Event()
         self._thread = None
         self._closed = False
+        self._initialized = False
         self._locked = False
         self._fault = self._error = self._flow_error = self._persistence_error = None
         self._output_stopped = True
@@ -229,15 +233,18 @@ class FurnaceService:
                 raise RuntimeError(
                     "Furnace connection was lost; restart and recover before control"
                 )
-            return
-        self._furnace = self._furnace_factory(
-            port=self.port, slave_address=self.slave_address, config=self.config
-        )
+            if self._initialized:
+                return
+        else:
+            self._furnace = self._furnace_factory(
+                port=self.port, slave_address=self.slave_address, config=self.config
+            )
         try:
             self._snapshot = self._read_snapshot(track=False)
             self._recover()
         except Exception as error:
             self._fail(error, idle=True)
+        self._initialized = True
 
     @_controlled
     def connect(self, port=None):
@@ -253,6 +260,8 @@ class FurnaceService:
         self._sequence_phase = "stopped"
         self._hold_started_at = self._hold_started_wall = None
         self._orphan_started_at = self._orphan_started_wall = None
+        if not self._prepare_stop():
+            return
         errors = self._stop_outputs()
         if errors:
             self._fail(RuntimeError("; ".join(str(error) for error in errors)))
@@ -285,6 +294,8 @@ class FurnaceService:
         if not stop_output:
             raise ValueError("Flow output must stop before disconnect")
         with self._operation_lock:
+            if not self._prepare_stop():
+                return self.flow_status()
             try:
                 self._flow_off()
                 self._persist()
@@ -439,6 +450,8 @@ class FurnaceService:
     def stop_gas_flow(self, channel):
         channel = MFCFlowController._gas_channel(channel)
         with self._operation_lock:
+            if not self._prepare_stop():
+                return self.flow_status()
             try:
                 self._zero_gas(channel)
                 self._persist()
@@ -477,8 +490,11 @@ class FurnaceService:
     def stop_water_flow(self, unit_id):
         unit = self._assert_flow_channel_kind("water", unit_id)
         with self._operation_lock:
+            if not self._prepare_stop():
+                return self.flow_status()
             try:
                 self._ensure_flow_controller()._send_without_response(unit, "SFR", "0")
+                self._persist()
             except Exception as error:
                 self._fail(error)
         return self.flow_status()
@@ -505,6 +521,8 @@ class FurnaceService:
 
     def stop_all_flow(self):
         with self._operation_lock:
+            if not self._prepare_stop():
+                return self.flow_status()
             try:
                 self._flow_off()
                 self._persist()
@@ -953,6 +971,29 @@ class FurnaceService:
     def stop_furnace(self):
         return self.stop_sequence()
 
+    def _prepare_stop(self):
+        """Persist intent before stop; storage failure still stops every output.
+
+        Return False when the fault path has already attempted the independent
+        stops. A process loss during an unconfirmed stop then leaves either an
+        incomplete intent or a fault, not a stale resumable RUN record.
+        """
+        try:
+            if not self._initialized:
+                saved = self.store.load()
+                if saved is not None and (
+                    saved.get("locked") or saved.get("phase") in ("fault", "applying")
+                ):
+                    self._locked = True
+                    self._error = StateError("Saved state requires acknowledgement")
+                    self._fault = dict(code="unknown_outcome", message=str(self._error))
+                    self._sequence_phase = "fault"
+            self._persist(phase="applying")
+            return True
+        except Exception as error:
+            self._fail(error)
+            return False
+
     def stop_sequence(self, stop_furnace=True):
         if not stop_furnace:
             raise ValueError("Stopping sequence tracking must also stop output")
@@ -962,14 +1003,15 @@ class FurnaceService:
             self._sequence_phase = "fault" if self._locked else "stopped"
             self._hold_started_at = self._hold_started_wall = None
             self._orphan_started_at = self._orphan_started_wall = None
-            errors = self._stop_outputs()
-            if errors:
-                self._fail(RuntimeError("; ".join(str(error) for error in errors)))
-            else:
-                try:
-                    self._persist()
-                except Exception as error:
-                    self._fail(error)
+            if self._prepare_stop():
+                errors = self._stop_outputs()
+                if errors:
+                    self._fail(RuntimeError("; ".join(str(error) for error in errors)))
+                else:
+                    try:
+                        self._persist()
+                    except Exception as error:
+                        self._fail(error)
             if was_running:
                 self._notifications.append("stopped")
         self._notify_pending()
@@ -978,6 +1020,8 @@ class FurnaceService:
     def acknowledge(self, *, client):
         with self.lease.control(client):
             with self._operation_lock:
+                if not self._initialized:
+                    raise ServiceError(409, "Start or connect the service before acknowledgement.")
                 if not self.connected or self._furnace.get_run_state()[0] != 1:
                     raise ServiceError(409, "Verify controller STOP before acknowledgement")
                 self._locked = False

@@ -581,4 +581,23 @@ Duplicate packets, old sequence numbers, and packets from ended sessions are ign
 Repeated reads of the same file do not extend measurement validity.
 
 A value of `3` in the gripper status register `0x0201` means that the object fell from the gripper.
+
+Robot state includes `gripper.outcome` and `gripper.outcome_at` beside the existing gripper fields.
+`outcome` is `null`, `arrived`, `contact`, or `dropped`.
+`outcome_at` is the Unix timestamp, in seconds, when the adapter observed that outcome. It is `null` when no outcome is available.
+
+A new gripper operation clears both fields before publication. The robot state also hides the previous outcome while that operation is active.
+Initialization does not produce a grasp outcome.
+
+`arrived` retains the measured target-arrival result. `contact` retains the confirmed contact result.
+After `contact`, a fresh initialized sample with state `3` changes the observed outcome to `dropped`.
+The sample must have a newer sequence in the same collector session as the contact result.
+A collector restart, stale sample, or repeated sample cannot create that transition.
+
+The existing collector poll observes drops between operations and after a motion job.
+Each new drop produces 1 warning event with `outcome` and `outcome_at` fields. Repeated polls do not change its timestamp or repeat the event.
+
+The outcome and timestamp remain historical metadata when feedback becomes unavailable. They do not prove a current grasp.
+`WebGripper.last_outcome` retains the last command's `arrived` or `contact` result, even after the observed outcome becomes `dropped`.
+This keeps keyboard stepping stopped after contact. Drop observation sends no command and does not clear a lock.
 For status definitions, see [PGEA User Manual, Table 2.9](https://www.manualslib.com/manual/4358849/Dh-Robotics-Technology-Pgea-Series.html?page=17).

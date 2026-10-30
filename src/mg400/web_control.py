@@ -265,6 +265,10 @@ class RobotPanelState:
                 "gripper_can_initialize": bool(self._grip.get("can_initialize")),
                 "gripper_busy": self._gripper_active or bool(self._grip.get("busy")),
                 "gripper_message": self._grip.get("message", "Gripper is not configured."),
+                "gripper": {
+                    "outcome": None if self._gripper_active else self._grip.get("outcome"),
+                    "outcome_at": None if self._gripper_active else self._grip.get("outcome_at"),
+                },
                 "controller_id": self._owner,
                 "keyboard_enabled": self._kb_on,
                 "keyboard_arming": self._kb_arming,
@@ -996,6 +1000,21 @@ class RobotPanelState:
         else:
             self._move_gripper(None)
 
+    def _update_gripper_snapshot(self):
+        """Publish cached gripper state and log each observed drop once, under the panel lock."""
+        previous = self._grip
+        self._grip = self._gripper.snapshot()
+        if self._grip.get("outcome") == "dropped" and (
+            previous.get("outcome") != "dropped"
+            or previous.get("outcome_at") != self._grip.get("outcome_at")
+        ):
+            self.events.add(
+                "warning",
+                "The gripper reports that the object dropped.",
+                outcome="dropped",
+                outcome_at=self._grip.get("outcome_at"),
+            )
+
     def _move_gripper(self, target):
         with self._lock:
             self._guard_send()
@@ -1008,7 +1027,7 @@ class RobotPanelState:
         finally:
             with self._lock:
                 self._gripper_active = False
-                self._grip = self._gripper.snapshot()
+                self._update_gripper_snapshot()
 
     def _work(self):
         while not self._closing:
@@ -1055,7 +1074,7 @@ class RobotPanelState:
                 if self._gripper is not None and self._syncing:
                     self._gripper.poll()
                     with self._lock:
-                        self._grip = self._gripper.snapshot()
+                        self._update_gripper_snapshot()
             except (TargetRejectedError, PreparationRejectedError) as error:
                 result, message = "rejected", str(error)
                 with self._lock:
@@ -1446,7 +1465,7 @@ class RobotPanelState:
         with self._lock:
             self._gripper_active = active
             if not active:
-                self._grip = self._gripper.snapshot()
+                self._update_gripper_snapshot()
 
     def _kb_watch(self):
         """Turn keys off when feedback, control state, or key updates no longer permit them."""

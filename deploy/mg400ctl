@@ -44,6 +44,12 @@ CAMERA_PORT = 1985
 PRELOAD = "http://127.0.0.1:1984/api/preload"
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 BACKUP_OWNER = (0, 0)
+CALIBRATION_OWNER = (SERVICE_UID, SERVICE_GID)
+CALIBRATION_MAX_FILES = 10000
+CALIBRATION_MAX_ENTRIES = 20000
+CALIBRATION_MAX_FILE_BYTES = 128 * 1024 * 1024
+CALIBRATION_MAX_BYTES = 2 * 1024 * 1024 * 1024
+CALIBRATION_MAX_DEPTH = 32
 ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs", "station"}
 STATION_ACTIONS = {"save", "list", "show", "rm"}
 STATION_SETTINGS = {"MG400_ORCH_STATIONS_FILE"} | {
@@ -369,6 +375,227 @@ def backup(host, output):
             os.rmdir(temporary, dir_fd=directory)
 
 
+def _calibration_entries(source):
+    """Preflight the fixed source allowlist without opening special files."""
+    files = []
+    total = 0
+    scanned = 0
+
+    def names(directory):
+        nonlocal scanned
+        result = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                scanned += 1
+                if scanned > CALIBRATION_MAX_ENTRIES:
+                    raise ValueError("Calibration import exceeds the directory entry limit")
+                result.append(entry.name)
+        return sorted(result)
+
+    def visit(directory, name, relative, expected_type=None):
+        nonlocal total
+        if any(ord(char) < 32 or ord(char) == 127 for char in name):
+            raise ValueError("Calibration names must not contain control characters")
+        if len(relative.parts) > CALIBRATION_MAX_DEPTH:
+            raise ValueError("Calibration tree exceeds the depth limit")
+        entry = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+        try:
+            info = os.fstat(entry)
+            if expected_type is not None and stat.S_IFMT(info.st_mode) != expected_type:
+                raise ValueError(f"Unexpected calibration source type: {relative}")
+            if stat.S_ISDIR(info.st_mode):
+                child = os.open(".", os.O_RDONLY | os.O_DIRECTORY, dir_fd=entry)
+                try:
+                    for name in names(child):
+                        visit(child, name, relative / name)
+                    if _file_state(os.fstat(child)) != _file_state(info):
+                        raise ValueError(f"Calibration source changed: {relative}")
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                total += info.st_size
+                if (
+                    len(files) >= CALIBRATION_MAX_FILES
+                    or info.st_size > CALIBRATION_MAX_FILE_BYTES
+                    or total > CALIBRATION_MAX_BYTES
+                ):
+                    raise ValueError("Calibration import exceeds the file or byte limit")
+                files.append((relative, info))
+            else:
+                raise ValueError(
+                    f"Calibration source must be a regular file or directory: {relative}"
+                )
+        finally:
+            os.close(entry)
+
+    for name in names(source):
+        directory = name in ("objective_views", "side_camera_images")
+        if directory or name == "objective_reference.png" or name.endswith(".csv"):
+            visit(source, name, Path(name), stat.S_IFDIR if directory else stat.S_IFREG)
+    if not files:
+        raise ValueError("Source contains no allowlisted calibration data")
+    return files
+
+
+@contextlib.contextmanager
+def _calibration_directory(path, root, *, create=False):
+    """Walk pinned directories; check ownership and privacy at and below the data root."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(path.anchor, flags)
+    try:
+        for index, part in enumerate(path.parts[1:], 1):
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    yield None
+                    return
+                os.mkdir(part, 0o750, dir_fd=descriptor)
+                child = os.open(part, flags, dir_fd=descriptor)
+                try:
+                    os.fchown(child, *CALIBRATION_OWNER)
+                    os.fchmod(child, 0o750)
+                except BaseException:
+                    os.close(child)
+                    raise
+            os.close(descriptor)
+            descriptor = child
+            if index >= len(root.parts) - 1:
+                info = os.fstat(descriptor)
+                if (info.st_uid, info.st_gid) != CALIBRATION_OWNER or info.st_mode & 0o027:
+                    raise ValueError(
+                        "Calibration destination directories must be owned and private"
+                    )
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextlib.contextmanager
+def _calibration_source(source, relative, expected):
+    """Reopen a preflighted regular inode without following a replaced source link."""
+    parent = os.dup(source)
+    entry = None
+    try:
+        for part in relative.parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        entry = os.open(relative.name, os.O_PATH | os.O_NOFOLLOW, dir_fd=parent)
+        info = os.fstat(entry)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or _file_state(info) != _file_state(expected)
+        ):
+            raise ValueError(f"Calibration source changed before copying: {relative}")
+        descriptor = os.open(f"/proc/self/fd/{entry}", os.O_RDONLY | os.O_CLOEXEC)
+        with os.fdopen(descriptor, "rb") as stream:
+            yield stream
+            if _file_state(os.fstat(stream.fileno())) != _file_state(expected):
+                raise ValueError(f"Calibration source changed while copying: {relative}")
+    finally:
+        if entry is not None:
+            os.close(entry)
+        os.close(parent)
+
+
+def import_microscope_calibration(host, source, settings, out):
+    """Copy allowlisted host data only; never open a device or overwrite a target."""
+    source = Path(source).absolute()
+    configured = Path(
+        settings.get("MG400_MICROSCOPE_CALIBRATION_DIR") or "/var/lib/mg400/calibration/microscope"
+    )
+    if (
+        not configured.is_absolute()
+        or configured == Path(configured.anchor)
+        or ".." in configured.parts
+        or ".." in source.parts
+        or source == Path(source.anchor)
+        or any(ord(char) < 32 or ord(char) == 127 for char in str(source) + str(configured))
+    ):
+        raise ValueError("Calibration paths must be absolute data paths without parent traversal")
+    destination = host.root.absolute() / configured.relative_to(configured.anchor)
+    if source.is_relative_to(destination) or destination.is_relative_to(source):
+        raise ValueError("Calibration source and destination must not overlap")
+    with assets._directory(source) as source_directory:
+        files = _calibration_entries(source_directory)
+        # Detect every existing collision and unsafe component before the first write.
+        for relative, _ in files:
+            with _calibration_directory(destination / relative.parent, destination) as parent:
+                if parent is not None:
+                    try:
+                        os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise FileExistsError(
+                            f"Calibration target already exists: {destination / relative}"
+                        )
+        for relative, expected in files:
+            target = destination / relative
+            with _calibration_directory(target.parent, destination, create=True) as parent:
+                temporary = f".mg400-calibration-{secrets.token_hex(16)}"
+                # A root-private directory prevents the service user from swapping the
+                # staged file name after validation and before atomic publication.
+                os.mkdir(temporary, 0o700, dir_fd=parent)
+                stage = os.open(
+                    temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+                )
+                try:
+                    info = os.fstat(stage)
+                    if info.st_uid != BACKUP_OWNER[0] or info.st_mode & 0o077:
+                        raise ValueError("Calibration staging directory changed")
+                    os.fchown(stage, *BACKUP_OWNER)
+                    os.fchmod(stage, 0o700)
+                    descriptor = os.open(
+                        "data",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        0o600,
+                        dir_fd=stage,
+                    )
+                    try:
+                        with os.fdopen(descriptor, "wb") as output:
+                            os.fchown(output.fileno(), *CALIBRATION_OWNER)
+                            os.fchmod(output.fileno(), 0o640)
+                            with _calibration_source(
+                                source_directory, relative, expected
+                            ) as stream:
+                                remaining = expected.st_size
+                                while chunk := stream.read(min(1024 * 1024, remaining + 1)):
+                                    remaining -= len(chunk)
+                                    if remaining < 0:
+                                        raise ValueError(
+                                            f"Calibration source grew while copying: {relative}"
+                                        )
+                                    output.write(chunk)
+                                if remaining:
+                                    raise ValueError(
+                                        f"Calibration source shrank while copying: {relative}"
+                                    )
+                            output.flush()
+                            os.fsync(output.fileno())
+                        with assets._directory(target.parent) as current:
+                            old, new = os.fstat(parent), os.fstat(current)
+                            if (old.st_dev, old.st_ino) != (new.st_dev, new.st_ino):
+                                raise ValueError("Calibration destination changed during import")
+                        os.link(
+                            "data",
+                            relative.name,
+                            src_dir_fd=stage,
+                            dst_dir_fd=parent,
+                            follow_symlinks=False,
+                        )
+                    finally:
+                        os.unlink("data", dir_fd=stage)
+                finally:
+                    os.close(stage)
+                    os.rmdir(temporary, dir_fd=parent)
+                os.fsync(parent)
+                print(f"Copied {source / relative} -> {target}", file=out)
+    return len(files)
+
+
 def units(names, action, services):
     if "all" in names:
         names = list(services)
@@ -507,6 +734,15 @@ def main(
         "backup", help="Back up host settings and data without process locks"
     )
     archive.add_argument("file", type=Path, metavar="FILE.tar")
+    calibration = commands.add_parser(
+        "calibration", help="Import existing microscope calibration data"
+    )
+    calibration_actions = calibration.add_subparsers(dest="calibration_action", required=True)
+    calibration_import = calibration_actions.add_parser(
+        "import", help="Copy allowlisted data without overwriting"
+    )
+    calibration_import.add_argument("instrument", choices=["microscope"])
+    calibration_import.add_argument("directory", type=Path, metavar="DIR")
     commands.add_parser("status", help="Show the state of every service")
     for action in ("start", "stop", "restart"):
         sub = commands.add_parser(action, help=f"{action.capitalize()} services")
@@ -577,6 +813,18 @@ def main(
         print(f"{host.settings}: {error}", file=sys.stderr)
         return 1
 
+    if args.command == "calibration":
+        try:
+            count = import_microscope_calibration(host, args.directory, settings, out)
+        except (OSError, ValueError) as error:
+            print(
+                f"Calibration import failed: {error}. Inspect the destination before retrying; "
+                "completed copies are not removed.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Imported {count} microscope calibration files.", file=out)
+        return 0
     if args.command == "status":
         return status(run, out, services)
     if args.command == "camera-check":

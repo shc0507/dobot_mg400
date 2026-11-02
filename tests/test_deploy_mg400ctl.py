@@ -1220,3 +1220,244 @@ def test_thermal_token_and_logs_use_registered_names_without_device_access(ctl):
     assert systemctl(ctl) == [
         ["journalctl", "--no-pager", "-n", "50", "-u", "mg400-thermal.service"]
     ]
+
+
+@pytest.fixture
+def calibration_ctl(ctl, monkeypatch):
+    globals_ = ctl.module.import_microscope_calibration.__globals__
+    assert globals_["CALIBRATION_OWNER"] == (1000, 1000)
+    owner = (os.getuid(), os.getgid())
+    monkeypatch.setitem(globals_, "CALIBRATION_OWNER", owner)
+    monkeypatch.setitem(globals_, "BACKUP_OWNER", owner)
+    ctl.source = ctl.host.root / "incoming"
+    ctl.source.mkdir()
+    ctl.destination = ctl.host.data / "calibration/microscope"
+    return ctl
+
+
+def import_calibration(ctl, source=None):
+    return ctl.call("calibration", "import", "microscope", str(source or ctl.source))
+
+
+def test_microscope_import_copies_only_allowlisted_data_with_private_modes(calibration_ctl):
+    import stat
+
+    ctl = calibration_ctl
+    files = {
+        "objective_views/nested/view.png": b"synthetic objective image",
+        "side_camera_images/frame.jpeg": b"synthetic side image",
+        "objective_reference.png": b"synthetic reference image",
+        "objective_calibration.csv": b"id,value\n1,2\n",
+        "trials.csv": b"id,score\n1,3\n",
+    }
+    for name, content in files.items():
+        path = ctl.source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    for name in ("current_objective.txt", "unrelated.py", "upper.CSV"):
+        (ctl.source / name).write_bytes(b"not calibration data")
+    old_umask = os.umask(0)
+    try:
+        assert import_calibration(ctl) == 0
+    finally:
+        os.umask(old_umask)
+    assert {
+        str(path.relative_to(ctl.destination))
+        for path in ctl.destination.rglob("*")
+        if path.is_file()
+    } == set(files)
+    for path in [ctl.destination, *ctl.destination.rglob("*")]:
+        assert (path.stat().st_uid, path.stat().st_gid) == (os.getuid(), os.getgid())
+        assert stat.S_IMODE(path.stat().st_mode) == (0o750 if path.is_dir() else 0o640)
+    for name, content in files.items():
+        assert (ctl.destination / name).read_bytes() == content
+        assert f"Copied {ctl.source / name} -> {ctl.destination / name}" in ctl.out.getvalue()
+    assert "Imported 5 microscope calibration files." in ctl.out.getvalue()
+    assert "current_objective" not in ctl.out.getvalue()
+    assert not list(ctl.destination.rglob(".mg400-calibration-*"))
+    ctl.run.assert_not_called()
+    ctl.execvpe.assert_not_called()
+
+
+def test_microscope_import_uses_host_setting_under_fake_root_not_environment(
+    calibration_ctl, monkeypatch
+):
+    ctl = calibration_ctl
+    (ctl.source / "one.csv").write_bytes(b"data")
+    ctl.host.settings.write_text(
+        SETTINGS + "MG400_MICROSCOPE_CALIBRATION_DIR=/custom/calibration\n"
+    )
+    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", "/ignored/environment")
+    assert import_calibration(ctl) == 0
+    assert (ctl.host.root / "custom/calibration/one.csv").read_bytes() == b"data"
+    assert not ctl.destination.exists()
+    assert not (ctl.host.root / "ignored").exists()
+
+
+@pytest.mark.parametrize("setting", ["/", "relative/path", "/var/lib/../outside"])
+def test_microscope_import_rejects_unsafe_configured_path_before_writes(calibration_ctl, setting):
+    ctl = calibration_ctl
+    (ctl.source / "one.csv").write_bytes(b"data")
+    ctl.host.settings.write_text(SETTINGS + f"MG400_MICROSCOPE_CALIBRATION_DIR={setting}\n")
+    assert import_calibration(ctl) == 1
+    assert not ctl.destination.exists()
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "source-root",
+        "source-parent",
+        "source-file",
+        "source-tree",
+        "nested",
+        "fifo",
+        "hardlink",
+        "csv-directory",
+    ],
+)
+def test_microscope_import_refuses_unsafe_selected_sources(calibration_ctl, kind):
+    ctl = calibration_ctl
+    outside = ctl.host.root / "outside"
+    outside.mkdir()
+    secret = outside / "private.txt"
+    secret.write_bytes(b"private synthetic content")
+    source = ctl.source
+    if kind == "source-root":
+        alias = ctl.host.root / "alias"
+        alias.symlink_to(source, target_is_directory=True)
+        source = alias
+        (ctl.source / "one.csv").write_bytes(b"data")
+    elif kind == "source-parent":
+        alias = ctl.host.root / "alias"
+        alias.symlink_to(ctl.host.root, target_is_directory=True)
+        source = alias / "incoming"
+        (ctl.source / "one.csv").write_bytes(b"data")
+    elif kind == "source-file":
+        (source / "one.csv").symlink_to(secret)
+    elif kind == "source-tree":
+        (source / "objective_views").symlink_to(outside, target_is_directory=True)
+    elif kind == "nested":
+        (source / "objective_views").mkdir()
+        (source / "objective_views/view.png").symlink_to(secret)
+    elif kind == "fifo":
+        os.mkfifo(source / "one.csv")
+    elif kind == "hardlink":
+        os.link(secret, source / "one.csv")
+    else:
+        (source / "one.csv").mkdir()
+    assert import_calibration(ctl, source) == 1
+    assert not ctl.destination.exists()
+    assert secret.read_bytes() == b"private synthetic content"
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind", ["collision", "symlink-file", "symlink-directory", "unsafe-mode", "wrong-owner"]
+)
+def test_microscope_import_preflights_all_destinations_before_copy(
+    calibration_ctl, monkeypatch, kind
+):
+    ctl = calibration_ctl
+    (ctl.source / "a.csv").write_bytes(b"first")
+    (ctl.source / "z.csv").write_bytes(b"last")
+    ctl.destination.mkdir(parents=True, mode=0o750)
+    outside = ctl.host.root / "outside"
+    outside.mkdir()
+    preserved = outside / "preserved"
+    preserved.write_bytes(b"keep")
+    if kind == "collision":
+        (ctl.destination / "z.csv").write_bytes(b"old")
+    elif kind == "symlink-file":
+        (ctl.destination / "z.csv").symlink_to(preserved)
+    elif kind == "symlink-directory":
+        ctl.destination.rmdir()
+        ctl.destination.symlink_to(outside, target_is_directory=True)
+    elif kind == "unsafe-mode":
+        ctl.destination.chmod(0o777)
+    else:
+        monkeypatch.setitem(
+            ctl.module.import_microscope_calibration.__globals__,
+            "CALIBRATION_OWNER",
+            (99999, 99999),
+        )
+    assert import_calibration(ctl) == 1
+    assert not (ctl.destination / "a.csv").exists()
+    assert preserved.read_bytes() == b"keep"
+    assert not list(ctl.destination.rglob(".mg400-calibration-*"))
+
+
+@pytest.mark.parametrize(
+    "limit",
+    [
+        "CALIBRATION_MAX_FILES",
+        "CALIBRATION_MAX_ENTRIES",
+        "CALIBRATION_MAX_FILE_BYTES",
+        "CALIBRATION_MAX_BYTES",
+        "CALIBRATION_MAX_DEPTH",
+    ],
+)
+def test_microscope_import_bounds_preflight_before_writes(calibration_ctl, monkeypatch, limit):
+    ctl = calibration_ctl
+    (ctl.source / "one.csv").write_bytes(b"data")
+    monkeypatch.setitem(ctl.module.import_microscope_calibration.__globals__, limit, 0)
+    assert import_calibration(ctl) == 1
+    assert not ctl.destination.exists()
+
+
+def test_microscope_import_refuses_empty_overlap_and_parent_traversal(calibration_ctl):
+    ctl = calibration_ctl
+    assert import_calibration(ctl) == 1
+    (ctl.source / "one.csv").write_bytes(b"data")
+    assert import_calibration(ctl, ctl.source / ".." / "incoming") == 1
+    ctl.host.settings.write_text(SETTINGS + "MG400_MICROSCOPE_CALIBRATION_DIR=/incoming/nested\n")
+    assert import_calibration(ctl) == 1
+    assert not ctl.destination.exists()
+
+
+def test_microscope_import_requires_root(calibration_ctl, monkeypatch):
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert import_calibration(calibration_ctl) == 1
+    assert not calibration_ctl.destination.exists()
+
+
+@pytest.mark.parametrize("failure", ["source-swapped", "fsync", "ownership", "destination-race"])
+def test_microscope_import_failures_preserve_targets_and_remove_staging(
+    calibration_ctl, monkeypatch, capsys, failure
+):
+    ctl = calibration_ctl
+    original = ctl.source / "one.csv"
+    original.write_bytes(b"data")
+    outside = ctl.host.root / "outside"
+    outside.write_bytes(b"keep")
+    globals_ = ctl.module.import_microscope_calibration.__globals__
+    if failure == "source-swapped":
+        open_source = globals_["_calibration_source"]
+
+        def swapped(*args):
+            original.unlink()
+            original.symlink_to(outside)
+            return open_source(*args)
+
+        monkeypatch.setitem(globals_, "_calibration_source", swapped)
+    elif failure == "fsync":
+        monkeypatch.setattr(os, "fsync", Mock(side_effect=OSError("injected sync failure")))
+    elif failure == "ownership":
+        monkeypatch.setattr(os, "fchown", Mock(side_effect=OSError("injected ownership failure")))
+    else:
+        link = os.link
+
+        def collide(*args, **kwargs):
+            (ctl.destination / "one.csv").write_bytes(b"concurrent calibration")
+            return link(*args, **kwargs)
+
+        monkeypatch.setattr(os, "link", collide)
+    assert import_calibration(ctl) == 1
+    assert "Imported" not in ctl.out.getvalue()
+    assert "Inspect the destination before retrying" in capsys.readouterr().err
+    if failure == "destination-race":
+        assert (ctl.destination / "one.csv").read_bytes() == b"concurrent calibration"
+    else:
+        assert not (ctl.destination / "one.csv").exists()
+    assert outside.read_bytes() == b"keep"
+    assert not list(ctl.host.root.rglob(".mg400-calibration-*"))

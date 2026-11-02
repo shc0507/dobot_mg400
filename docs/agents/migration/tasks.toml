@@ -687,12 +687,19 @@ writes = [
   "deploy/install.py",
   "deploy/mg400.env.example",
   "src/vision/frames.py",
+  "src/vision/service.py",
+  "scripts/camera_preview.py",
+  "scripts/camera_preview.js",
   "tests/test_deploy_install.py",
   "tests/test_vision_service.py",
+  "tests/test_camera_preview.py",
+  "tests/test_camera_preview.mjs",
   "docs/deploy.md",
   "docs/deploy.en.md",
   "docs/olares.md",
   "docs/olares.en.md",
+  "docs/vision.md",
+  "docs/vision.en.md",
 ]
 
 [[task]]
@@ -1144,7 +1151,9 @@ writes = [
   "src/microscope/service.py",
   "src/microscope/app.py",
   "src/microscope/__main__.py",
+  "src/microscope/motors.py",
   "tests/test_microscope_service.py",
+  "tests/test_microscope_motors.py",
   "docs/microscope.md",
   "docs/microscope.en.md",
 ]

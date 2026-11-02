@@ -93,6 +93,68 @@ URL 留空时不列出该服务。URL 必须包含服务基础路径，例如位
 分派或回复失败时，检查提议和当前运行。同一审批不能再次分派。
 分派后的失败可能使已授权运行继续活动。必要时，通过总览停止或暂停。
 
+## 智能体客户端
+
+客户端示例位于 `src/gateway/clients/`。实验室访问只给客户端网关端点和网关令牌。
+不得把 `/etc/mg400/mg400.env` 复制到客户端环境。操作员和仪器凭据必须留在客户端之外。
+在另一台计算机上，通过已认证的隧道提供本地端点。网关和模型端点均保持回环地址。
+
+网关提供 `operator_guidance` MCP 提示词及 `mg400://gateway/operator-guidance` 文本资源。
+两者内容相同，均通过现有 Bearer 和访问检查。它们不接受参数或任意路径。
+使用配方前，加载此指导。它说明流程，服务器仍强制执行审批和安全规则。
+这些端点不增加工具，也不请求后端。工具调用保留现有审计行为。
+
+### Claude Code
+
+在客户端环境导出 `MG400_GATEWAY_TOKEN`，再使用仓库配置：
+
+```sh
+claude --strict-mcp-config --mcp-config src/gateway/clients/claude-code.mcp.json --tools ""
+```
+
+配置在 Authorization 请求头展开 `${MG400_GATEWAY_TOKEN}`，不保存凭据。
+此命令只选择这份 MCP 配置，并禁用内置工具。不得给此实验室客户端添加 shell、设备或审批工具。
+通过客户端 MCP 界面加载 `operator_guidance` 提示词。先请求列出配方或读取服务状态。
+Claude Code 自行管理传输和模型提供方配置。代理配置不得把网关凭据发送到回环连接之外。
+
+### 本地 Qwen 与 smolagents
+
+使用已有的本地 OpenAI 兼容 Qwen 服务，或通向该服务的已认证隧道。
+示例不启动模型服务，也不下载模型权重。在 `QUMUS_DEFAULT_MODEL_ID` 填入服务提供的准确模型 ID。
+示例使用 smolagents `OpenAIServerModel` 和 `ToolCallingAgent`，沿用旧智能体的 `QUMUS_*` 配置名。
+
+| 客户端配置 | 用途 |
+| --- | --- |
+| `MG400_GATEWAY_URL` | HTTP 回环 URL，包含显式端口和 `/mcp`，默认 `http://127.0.0.1:8773/mcp` |
+| `MG400_GATEWAY_TOKEN` | 网关 Bearer 令牌，至少 24 个可打印 ASCII 字符 |
+| `QUMUS_DEFAULT_MODEL_ID` | 必填，本地 API 提供的模型 ID |
+| `QUMUS_API_BASE` | HTTP 回环 URL，包含显式端口和 `/v1`，默认 `http://127.0.0.1:8000/v1` |
+| `QUMUS_API_KEY` | 独立模型凭据，本地服务不要求凭据时填 `unused` |
+| `QUMUS_LLM_TIMEOUT` | 模型请求超时，范围为 1 到 300 秒，默认 60 |
+| `QUMUS_LLM_RETRIES` | 必须为 0，禁用模型请求自动重试 |
+
+单独导出网关令牌。修改 `src/gateway/clients/qwen.env.example` 中的模型值，再运行：
+
+```sh
+set -a
+. src/gateway/clients/qwen.env.example
+set +a
+uv run --group gateway-clients python -m gateway.clients "List recipes. Do not propose a run."
+```
+
+`gateway-clients` 依赖组包含 `smolagents[mcp,openai]`，不安装 GPU 运行时或模型权重。
+示例通过 MCP SDK 读取网关工具定义，再用 `SmolAgentsAdapter` 适配。
+它要求恰好为网关的 9 个工具，不添加 shell、代码执行器、直连设备客户端或审批工具。
+每次 MCP 操作使用新会话，时限为 30 秒。两个 HTTP 客户端都忽略环境代理，并拒绝重定向。
+启动示例前，清除 `OPENAI_CUSTOM_HEADERS`。示例拒绝继承自定义请求头。
+显式 SDK 配置覆盖继承的 API 凭据、组织、项目及基础 URL。
+模型客户端只获得独立模型凭据，其指令和工具定义均不含网关凭据。
+
+每次启动示例最多尝试 1 次提议，包括失败或结果不明的尝试。工具调用循环最多执行 8 步。
+提交提议后，报告 ID 和待审批状态。人员在总览检查并批准。
+`get_approval` 返回的决定不授予客户端设备操作权。通过运行记录报告已记录结果。
+回复丢失时，不得重新执行提议命令。请人员在总览检查提议及当前运行。
+
 ## 安装与演示
 
 把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再按[安装流程](deploy.md#安装与升级)操作。

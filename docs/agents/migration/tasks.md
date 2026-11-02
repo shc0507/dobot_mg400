@@ -694,19 +694,31 @@ Done when: P-CHECKS pass.
 
 Owner: agent · Size: M · Review: human · Deps: FND-09, H-09, DOC-07
 
-Goal: the tray camera gives enough pixels for Micro QR labels.
+Goal: the tray camera gives enough pixels for Micro QR labels, and the 4 AC410 cameras share the hub's USB 2 link without overload.
 
-Ask first: the mode of each camera and the still method, from H-09.
+Facts (H-03 and H-09 data, read from the USB descriptors on 2026-11-02; no camera was opened):
+
+- There are 4 AC410 cameras (`f326:1306`), on hub ports 12.1.2, 12.1.3, 12.1.4 and 12.2.1. The tray camera is camera 4, on 12.2.1. All 4 cameras and the thermal P1 share 1 USB 2 link at 480M.
+- MJPEG modes of every AC410: 1920x1080@60, 1920x1080@30, 4000x3000@15, 3840x2160@30, 2592x1944@30, 2560x1440@30, 2048x1536@30, 1600x1200@30, 1280x720@30, 1024x768@30, 1024x576@30, 800x600@30, 640x480@30, 640x360@30, 320x240@30. The uncompressed modes are slower and are not used.
+- The largest isochronous setting is 3 × 1024 bytes per microframe. The USB 2 periodic budget is about 6000 bytes per microframe for the whole link, so at most 1 camera can use the largest setting at a time.
+- The Micro QR labels are about 30 mm (owner). About 2.3 px/mm gives 70 px across a label.
+
+Decisions (coordinator, 2026-11-02):
+
+- Still method: `still(camera)` returns 1 frame from that camera's go2rtc stream at its configured mode. There is no separate still capture.
+- The tray camera uses 1280x720@30. It gives 2.3 px/mm across a field of view up to 556 mm wide.
 
 Steps:
 
-1. Setting `MG400_CAMERA_MODES`: per camera `WIDTHxHEIGHT@FPS`, default `640x480@30`. `render_go2rtc` uses it. Accept only the modes that H-09 lists.
-2. Implement the still method that H-09 chose: a full-resolution stream for the tray camera, or a separate still capture. Add `still(camera)` to `src/vision/frames.py`.
-3. Tests and docs.
+1. Support 1 to 4 cameras. `MG400_CAMERA_DEVICES` lists 1 to 4 stable `/dev/v4l/by-path` devices, and the stream names are `camera1` to `cameraN` in list order. Replace the fixed count of 3 in the installer, the camera preview (server and page), and the vision frames, contract and routes.
+2. Setting `MG400_CAMERA_MODES`: 1 `WIDTHxHEIGHT@FPS` per device, from the MJPEG list above. The default is 640x480@30. Refuse any other mode. `render_go2rtc` uses it. `MG400_CAMERA_CAPTURE_SIZES` (MIC-02) stays valid as sizes at 30 fps. Refuse a configuration that sets both.
+3. Preload only the cameras whose mode is at most 640x480. go2rtc starts a larger stream on demand, when a consumer reads it. This keeps the side camera's 3840x2160 stream (MIC-02) and the tray stream off the link while nothing uses them.
+4. `still(camera)` in `src/vision/frames.py`, with the frame size check against the configured mode.
+5. Tests and docs.
 
 Done when: P-CHECKS pass.
 
-Notes: aim for about 4 pixels per module, about 70 pixels across a 17-module Micro QR label.
+Notes: H-21 runs all streams together on the hardware and checks the kernel log for USB bandwidth errors. If the link is over budget, the owner chooses: a smaller side camera mode, or a camera on another host USB port after the hardware freeze. Aim for about 4 pixels per module, about 70 pixels across a 17-module Micro QR label.
 
 ### CAL-01 · Camera-to-robot calibration
 
@@ -1164,10 +1176,14 @@ Steps (P-SERVICE plus):
 
 1. Commands: `select_objective(id)` (first raise focus to the clearance position `MG400_MICROSCOPE_SWITCH_FOCUS`, then the ArUco switch with the side camera), `autofocus(mode)` (`full` or `local`, inside the focus limits), `focus_move(steps)` within the focus limits, `home_focus()`, `set_focus_zero()`, `snapshot()` (saved to the run store, or to a path the orchestrator gives), `stop`.
 2. Focus zero: `home_focus()` sends `FOCUS HOME` when the focus axis has a switch. Without a switch, an operator moves focus to the clearance position and calls `set_focus_zero()` from the panel. Automation may not call it. Until zero is known, commands that move focus or the turret fail with "focus position unknown". A firmware reset clears zero. When zero is known, the service sends `FOCUS LIMIT` with `MG400_MICROSCOPE_FOCUS_LIMITS`.
+   Extend `src/microscope/motors.py` with public helpers for a coherent full status result and the focus reference operations this service needs. Include objective state, focus position and `FOCUS_REF` state when the firmware supplies it; missing reference state must not authorize motion. A firmware reset invalidates old session work and reference state. Keep the existing motor APIs, legacy compatibility, completion waits and stop/cancellation fences.
 3. State: objective id, focus position relative to zero, whether zero is known, camera states, busy, last result.
 4. Stop and lease expiry: cancel the running task, send `STOP ALL`, disable both motors.
+   Permit this safety cleanup through the motor helpers while retaining unknown-outcome faults and ordinary command admission guards. Do not add unrestricted raw-command authority.
 5. Demo mode: the MIC-01 simulator, a fake microscope camera, and synthetic side-camera frames with ArUco markers.
+   Use explicit synthetic focus settings in demo mode. Real motion requires measured clearance and focus limits from H-06; missing settings fail closed.
 6. Tests in demo mode with `tests/contract_helpers.py`, including the clearance move before every turret turn and the refusals without zero.
+   Extend `tests/test_microscope_motors.py` with fake-serial checks for full status, focus reference operations and reset/session invalidation; retain the existing completion and cancellation regressions.
 
 Done when: P-CHECKS pass.
 

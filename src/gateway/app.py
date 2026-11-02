@@ -25,6 +25,7 @@ from labkit.auth import (
 from labkit.lease import validate_client
 
 from .backend import MAX_RESPONSE
+from .clients.guidance import register_guidance
 
 TEXT = {"type": "string", "minLength": 1, "maxLength": 128}
 LIMIT = {"type": "integer", "minimum": 1, "maximum": 100}
@@ -167,6 +168,7 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
     bound_host = f"[{bind}]" if ":" in bind else bind.lower()
     allowed = sorted({"127.0.0.1", "localhost", "[::1]", bound_host})
     server = Server("mg400-gateway", version="1.0")
+    register_guidance(server)
     tools = definitions()
     schemas = {tool.name: tool.inputSchema for tool in tools}
 

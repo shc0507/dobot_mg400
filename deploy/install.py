@@ -188,11 +188,14 @@ def udev_rules(host, selected):
             raise ValueError(f"udev template must be a regular file: {source}")
         with assets._local(source) as stream:
             text = stream.read().decode("utf-8")
-        if (
-            "@SERVICE_GROUP@" not in text
-            or 'MODE="0660"' not in text
-            or not re.search(r'ATTRS?\{idVendor\}=="[0-9a-fA-F]{4}"', text)
-            or not re.search(r'ATTRS?\{idProduct\}=="[0-9a-fA-F]{4}"', text)
+        rules = [line.strip() for line in text.splitlines() if line.strip()]
+        rules = [line for line in rules if not line.startswith("#")]
+        if not rules or any(
+            'GROUP="@SERVICE_GROUP@"' not in rule
+            or 'MODE="0660"' not in rule
+            or not re.search(r'ATTRS?\{idVendor\}=="[0-9a-fA-F]{4}"', rule)
+            or not re.search(r'ATTRS?\{idProduct\}=="[0-9a-fA-F]{4}"', rule)
+            for rule in rules
         ):
             raise ValueError(f"udev template lacks VID, PID, mode, or group: {source}")
         try:

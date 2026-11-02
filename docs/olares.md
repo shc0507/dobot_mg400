@@ -260,6 +260,55 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 要恢复旧布局，先运行 `mg400ctl stop all`，再把 `/root/mg400-old-units` 中的文件复制回 `/etc/systemd/system/` 并运行 `systemctl daemon-reload`。
 然后把 `start-terminal.sh.disabled` 改回原名，恢复旧的终端启动脚本。
 
+## USB 设备布局
+
+所有实验室 USB 设备通过 1 个自供电集线器连接到 1 个主机端口。
+控制器为 `0000:80:14.0`，USB 2 端口为 `12`，USB 3 端口为 `3`。
+Toupcam 摄像头保持连接在集线器的 USB 3 侧。不得复位共用集线器。
+复位会同时断开电机、炉子、气体、夹爪和摄像头的连接。
+
+每台摄像头保持连接在表中的集线器端口。
+3 台 AC410 的序列号均为 `HU12321178`，因此稳定名称使用端口路径。
+`12.1.3` 上的是显微镜侧视摄像头。go2rtc 独占设备，显微镜读取共享视频流。
+分配用途前，先在摄像头预览中核对 `12.1.2` 和 `12.1.4` 的画面。
+
+| 设备 | VID:PID | 稳定标识 | 集线器端口 | 服务 |
+| --- | --- | --- | --- | --- |
+| 位移台 Arduino Uno R3 | `2341:0043` | `/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_1453230313235111D1E0-if00` | `12.2.3` | `stage`（`MG400_STAGE_SERIAL`） |
+| 转盘与调焦 Arduino Uno R3 | `2341:0043` | `/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_035353433353512070D1-if00` | `12.2.2` | `microscope` |
+| 炉子 FT231X | `0403:6015` | `/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_DU0DT9G8-if00-port0` | `12.3.2` | `furnace`（`MG400_FURNACE_SERIAL`） |
+| 气体控制器 FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace`（`MG400_MFC_SERIAL`） |
+| 夹爪转换器 FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0` | `12.3.3` | `collector` |
+| Thermal Master P1 | `3474:45c2` | libusb，序列号 `P1016021DG040100208` | `12.1.1` | `thermal` |
+| AC410 摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
+| AC410 显微镜侧视摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera`，通过 go2rtc 共享 |
+| AC410 摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera` |
+| ToupTek USB 3 摄像头 | `0547:1375` | Toupcam SDK，无序列号 | `3.2.4` | `microscope`，与炉子录像共享 |
+
+控制器必须使用完整串口路径。气体控制器与夹爪转换器的 VID:PID 相同，但序列号不同。
+热像仪和 Toupcam 使用 `/dev/bus/usb` 下的 USB 设备节点，没有串口或视频设备节点。
+总线和设备编号可能变化。让 libusb 或 SDK 查找摄像头。
+
+### USB 访问规则
+
+安装程序只为已注册且启用的服务选择 `config/udev/70-mg400-<name>.rules.in`。
+它从主机用户组数据库获取 GID `1000` 的组名，替换 `@SERVICE_GROUP@`。
+每条规则匹配 VID:PID，并以 `MODE="0660"` 授予该组访问权限。
+串口规则还匹配表中的设备序列号。摄像头规则保留现有端口路径名称。
+模板不创建设备别名，也不执行复位程序。
+
+安装程序以 root 身份写入 `/etc/udev/rules.d/70-mg400-<name>.rules`，权限为 `0644`。
+随后执行 `udevadm control --reload-rules` 和 `udevadm trigger --subsystem-match=usb`。
+USB trigger 不会复位集线器或启动服务。
+TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 `dialout` 和 `video` 组访问设备。
+安装前，用安装程序的 dry run 检查所选文件和命令。
+
+默认服务选择 `stage`、`collector` 和 `camera` 模板。
+启用 `furnace` 后，还会选择其 2 条串口控制器规则。
+`thermal` 和 `microscope` 模板等待对应服务注册并启用。
+显微镜独占 Toupcam，也提供炉子录像。炉子规则不另行授予该摄像头的访问权限。
+模板不选择服务配置中的设备路径。保持这些路径与表格一致。
+
 ## USB 夹爪转换器
 
 转换器的 USB 身份为 `0403:6001`，序列号为 `BG02Q5TN`。
@@ -386,7 +435,6 @@ mg400ctl camera-url
 浏览器显示分辨率和帧率不能排除花屏或部分图像损坏。
 若出现这类问题，恢复 `640 × 480` 配置，再检查 USB 采集链路。
 
-摄像头与夹爪 USB 转换器共用外接集线器。
-恢复共同上游 USB 端口前，停止 `mg400-gripper-collector.path` 和 `mg400-gripper-collector.service`。
-Arduino 接在同一集线器时，也先在位移台面板点击 `Stop all motors` 和 `Disconnect`。
-操作后恢复监听和采集服务。不要把 USB 重新连接视为允许机械臂或夹爪运动。
+所有实验室设备共用外接集线器。不得通过复位共用上游集线器恢复摄像头。
+检查故障摄像头的端口和日志。改变设备连接前，遵守有人监督的硬件操作流程。
+USB 重新连接不代表允许发送机械臂、位移台、夹爪、炉子或气体指令。

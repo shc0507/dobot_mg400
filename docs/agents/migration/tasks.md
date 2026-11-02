@@ -1522,7 +1522,7 @@ The stage has no limit switches. Manual zero with a camera reference replaces ho
 
 Steps:
 
-1. Install the STG-02 host update, then upload the STG-03 firmware (P-HW).
+1. Install the STG-03 host update, then upload the STG-03 firmware (P-HW).
 2. Per axis, choose a reference: a printed ArUco marker on the moving part, seen by a fixed camera at one position. Write down the go2rtc stream and the marker id.
 3. Move each axis to its reference at low speed, check it in the camera view, teach the reference, and set zero.
 4. Measure the steps per mm at the microstep in use. Measure the Insert positions `load` and `furnace` in mm from zero.

@@ -98,6 +98,7 @@ class Control:
         self.send_guard = send_guard
         self.stopped = False
         self.command_pending = False
+        self.rejection = None
         self.retention = None
         self.stop_ok = True
         self.stop_entered = threading.Event()

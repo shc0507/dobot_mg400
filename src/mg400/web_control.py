@@ -833,6 +833,16 @@ class RobotPanelState:
             with self._lock:
                 self._record_fault()
                 self._message = f"Robot stop or disable is unconfirmed: {error}"
+            # Only the message changes. The fault and the lock stay.
+            if control.rejection is not None and self._disabled_at_rest(control):
+                with self._lock:
+                    self._message = (
+                        f"Robot stop or disable is unconfirmed: the controller rejected it "
+                        f"({control.rejection}). Feedback shows the robot disabled and still, "
+                        "without an alarm. The controller is probably not in TCP/IP mode. "
+                        "Check it with sudo mg400ctl mode. To recover, run sudo mg400ctl stop web, "
+                        "sudo mg400ctl mode --switch-to-tcp, then sudo mg400ctl start web."
+                    )
         finally:
             with self._lock:
                 self._safety_workers -= 1
@@ -849,6 +859,23 @@ class RobotPanelState:
                     self._disconnect_requested = False
                     self._finish_commands("sync", "stopped", self._message)
                 self._recover_disabled()
+
+    def _disabled_at_rest(self, control):
+        """Whether fresh feedback shows the robot disabled and still, without an alarm.
+
+        This reads feedback only. It never confirms a stop.
+        """
+        try:
+            sample = control.verify_stationary()
+        except Exception:
+            return False
+        with self._lock:
+            return (
+                sample.mode == 4
+                and self._fresh()
+                and self._sample.mode == 4
+                and not self._sample.error_status
+            )
 
     def _alarm_now(self):
         return self._fresh() and (self._sample.mode == 9 or self._sample.error_status)

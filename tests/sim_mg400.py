@@ -92,7 +92,17 @@ def short_wait_stable(
 
 
 class Controller(ControllerModel):
-    """Add socket and reply gates to the shared controller model for tests."""
+    """Add socket and reply gates to the shared controller model for tests.
+
+    With rejecting set, it answers every command with -1 and changes nothing, like a
+    controller outside TCP/IP mode.
+    """
+
+    rejecting = False
+
+    def reject(self, port, text):
+        with self._lock:
+            self._log.append(("send", port, text))
 
     def install(self, monkeypatch):
         def getaddrinfo(host, port, *args, **kwargs):
@@ -138,6 +148,10 @@ class Connection:
 
     def sendall(self, data):
         self.text = data.decode("ascii")
+        if self.controller.rejecting:
+            self.controller.reject(self.port, self.text)
+            self.reply = f"-1,{{}},{self.text};".encode("ascii")
+            return
         payload = self.controller.execute(self.port, self.text)
         self.reply = f"0,{{{payload}}},{self.text};".encode("ascii")
 

@@ -301,6 +301,30 @@ Before restarting, read the reason for the unconfirmed result in the [Service lo
 Control also stays locked if you click `Stop arm` during recovery and the stop is unconfirmed.
 While a stop is unconfirmed, the status bar shows the recovery procedure. A later successful stop does not replace this message.
 
+### Controller not in TCP/IP mode
+
+In `tp` (online mode), the controller returns `-1` for all commands on port `29999`.
+The `30004` feedback continues to work.
+After you connect, the first coordinate query `GetPose(0,0)` fails. The panel requests a stop and locks control.
+The controller also rejects the stop and disable commands.
+A `-1` reply does not confirm a stop. Control stays locked.
+
+When the controller returns `-1`, the panel reads the feedback.
+If the robot is disabled and stationary without an alarm, the status bar tells you that the controller is probably not in TCP/IP mode.
+In all other conditions, the status bar shows the original error.
+In that case, use the physical emergency stop as described in [Stop and recover](#stop-and-recover).
+
+The mode switch script must get the [panel connection lock](deploy.en.md#panel-connection-lock). Thus, stop the web service first.
+Use this recovery sequence:
+
+1. Make sure that the robot is stationary.
+2. Run `sudo mg400ctl mode` and read the controller mode.
+3. Run `sudo mg400ctl stop web`.
+4. Run `sudo mg400ctl mode --switch-to-tcp`.
+5. Run `sudo mg400ctl start web`, then reload the panel page.
+
+For the switch conditions, see [Switch to TCP/IP mode from the server](hardware.en.md#switch-to-tcpip-mode-from-the-server).
+
 ## Read-only feedback
 
 Use this command for read-only mode:

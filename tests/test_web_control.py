@@ -1401,3 +1401,43 @@ def test_new_simulated_gripper_command_hides_previous_outcome_while_active(make_
         assert rig.collector.targets("published") == [600, 700]
     finally:
         rig.collector.answer = arrive
+
+
+TCP_HINT = "The controller is probably not in TCP/IP mode."
+
+
+def test_rejected_commands_while_disabled_at_rest_point_to_tcp_mode(make_sim_rig):
+    rig = make_sim_rig()
+    rig.controller.update(mode=4)
+    rig.controller.rejecting = True
+    rig.command("start_sync")
+    # The first pose query fails with -1, and the stop that follows fails with -1 too.
+    rig.wait(lambda s: s["stop_unconfirmed"] and not s["busy"] and TCP_HINT in s["message"])
+    rig.command("disable")
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "disable")
+    snapshot = rig.snapshot()
+    assert TCP_HINT in snapshot["message"]
+    assert "sudo mg400ctl mode --switch-to-tcp" in snapshot["message"]
+    assert "physical emergency stop" not in snapshot["message"]
+    # A rejected stop is never a confirmed stop.
+    assert snapshot["locked"] and snapshot["stop_unconfirmed"] and not snapshot["recoverable"]
+    # The failed disable sends ResetRobot() again as its fallback stop.
+    assert rig.controller.sent() == [
+        "GetPose(0,0)",
+        "ResetRobot()",
+        "DisableRobot()",
+        "ResetRobot()",
+    ]
+
+
+def test_rejected_commands_while_enabled_still_require_the_physical_stop(make_sim_rig):
+    rig = make_sim_rig()
+    rig.controller.rejecting = True
+    rig.command("start_sync")
+    rig.wait(lambda s: s["stop_unconfirmed"] and not s["busy"])
+    rig.command("disable")
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "disable")
+    snapshot = rig.snapshot()
+    assert snapshot["message"].endswith("use the physical emergency stop")
+    assert "TCP/IP" not in snapshot["message"]
+    assert snapshot["locked"] and snapshot["stop_unconfirmed"]

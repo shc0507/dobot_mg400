@@ -79,6 +79,7 @@ class JointControl:
         self._pending = None
         self._stop_result = None
         self._stop_uncertain = False
+        self._rejection = None
         self._child_stop_error = None
         self._preparing = False
         self._preparation_pending = None
@@ -105,6 +106,19 @@ class JointControl:
     def ordering_unknown(self):
         """Whether an unresolved mutation acknowledgement left command ordering unknown."""
         return self._stop_uncertain or (self._parent is not None and self._parent.ordering_unknown)
+
+    @property
+    def rejection(self):
+        """The controller reply that rejected this instance's stop or disable with -1, or None.
+
+        A controller outside TCP/IP mode rejects every dashboard command so.
+        A rejected stop or disable stays unconfirmed.
+        """
+        return self._rejection
+
+    def _note_rejection(self, error):
+        if isinstance(error, ControllerCommandError) and error.code == -1:
+            self._rejection = error.response
 
     def feedback_retention_reason(self):
         """Return why command state requires feedback to remain connected.
@@ -1001,6 +1015,7 @@ class JointControl:
                 self._disable_result = sample
                 return sample
             except Exception as error:
+                self._note_rejection(error)
                 try:
                     self._failed(error, disabling=True)
                 except Exception as failure:
@@ -1082,6 +1097,7 @@ class JointControl:
                     "physical_stop_requested": True,
                 }
             except Exception as error:
+                self._note_rejection(error)
                 if normal_jog:
                     try:
                         self._command("ResetRobot()", stopping=True)

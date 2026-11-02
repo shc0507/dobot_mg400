@@ -51,6 +51,23 @@
         <p id="command-status">No command</p>
       </section>
     </div>
+    <section class="panel" aria-labelledby="recording-heading">
+      <h2 id="recording-heading">Recording</h2>
+      <div class="recording-options">
+        <div><label for="recording-name">Run name (optional)</label><input id="recording-name" type="text" maxlength="80"></div>
+        <div><label for="recording-mode">Mode</label><select id="recording-mode"><option value="time_lapse">Time lapse</option><option value="live">Live</option></select></div>
+        <div><label for="recording-interval">Capture interval (seconds)</label><input id="recording-interval" type="number" min="0.1" max="3600" step="0.1" value="30"></div>
+        <div><label for="recording-fps">Output frames per second</label><input id="recording-fps" type="number" min="0.1" max="120" step="0.1" value="1"></div>
+      </div>
+      <div class="row"><button id="recording-start" type="button" disabled>Start recording</button><button id="recording-stop" type="button" disabled>Finish recording</button></div>
+      <p id="recording-status">Recording state unavailable</p>
+      <p id="recording-error"></p><ul id="recording-files"></ul>
+      <div class="row"><button id="sequence-arm" type="button" disabled>Record next furnace sequence</button><button id="sequence-disarm" type="button" disabled>Cancel sequence recording</button></div>
+      <p id="sequence-status">Sequence recording is not armed</p>
+      <p class="hint">Sequence recording waits for the next furnace sequence. Keep this page connected with control.</p>
+      <button id="stabilization" type="button" disabled>Enable stabilization</button>
+      <p id="recording-attempt" role="status" aria-live="polite"></p>
+    </section>
     <section class="panel"><h2>Events</h2><ol id="events" aria-live="polite"></ol></section>
   </main>
 </body>

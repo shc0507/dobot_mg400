@@ -529,3 +529,318 @@ def test_panel_cannot_claim_manual_control_from_automation(demo_rig):
         )
     assert rig.service.snapshot()["manual_client"] is None
     assert not any(command == "FOCUS ZERO" for command in rig.port.commands)
+
+
+# Recording uses fake capture/metadata/finalization; no SDK, socket or encoder.
+class RecordingReadings:
+    def __init__(self):
+        self.value = dict(
+            available=True,
+            error=None,
+            metadata={},
+            sequence=dict(running=False, started_at=None, phase="idle", healthy=True),
+        )
+        self.started = self.closed = False
+
+    def snapshot(self):
+        import copy
+
+        return copy.deepcopy(self.value)
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.closed = True
+
+
+class RecordingCamera(Camera):
+    def __init__(self):
+        super().__init__((1, 1.0, np.zeros((20, 30, 3), np.uint8)))
+        self.is_recording = False
+        self.recording_error = None
+        self.recording_segments = []
+        self.stabilization_enabled = False
+        self.start_gate = self.stop_gate = None
+        self.start_calls = self.stop_calls = 0
+        self.metadata = []
+
+    def open(self):
+        self.is_open = True
+
+    def set_stabilization(self, enabled):
+        self.stabilization_enabled = enabled
+
+    def start_recording(self, path, **options):
+        from furnace.recordings import private_open
+
+        self.start_calls += 1
+        self.entered.set()
+        if self.start_gate:
+            assert self.start_gate.wait(3)
+        assert options["private_output"] is True
+        self.is_recording = True
+        segment = path.with_name("video_0001.mp4")
+        for output in (segment, options["timestamps_path"]):
+            with private_open(output, "xb", root=path.parent.parent) as stream:
+                stream.write(b"fake-media")
+        self.recording_segments = [segment]
+        self.metadata.append(options["metadata_provider"]())
+
+    def stop_recording(self):
+        self.stop_calls += 1
+        if self.stop_gate:
+            assert self.stop_gate.wait(3)
+        self.is_recording = False
+
+
+@pytest.fixture
+def recording_rig(tmp_path):
+    import time
+
+    from furnace.recordings import private_open
+    from microscope.service import MicroscopeConfig
+
+    camera, readings = RecordingCamera(), RecordingReadings()
+    clock = [10.0]
+    calls = []
+
+    def finalize(directory, *, recordings_root, check_cancel):
+        check_cancel()
+        calls.append(directory.name)
+        output = directory / f"{directory.name}_shortened_3_min.mp4"
+        with private_open(output, "xb", root=recordings_root) as stream:
+            stream.write(b"fake-summary")
+        check_cancel()
+        return None, output, None
+
+    service = MicroscopeService(
+        MicroscopeConfig(lease_seconds=30),
+        demo=True,
+        camera=camera,
+        readings=readings,
+        recordings_root=tmp_path / "recordings",
+        recording_finalizer=finalize,
+        clock=lambda: clock[0],
+    )
+    service.start(background=False)
+    service.lease.acquire("operator")
+    rig = SimpleNamespace(
+        service=service,
+        camera=camera,
+        readings=readings,
+        clock=clock,
+        calls=calls,
+        root=tmp_path / "recordings",
+    )
+
+    def command(action, args):
+        ident = service.command(action, args, "operator")
+        until = time.monotonic() + 3
+        while time.monotonic() < until:
+            state = service.snapshot()
+            if state["last_command"] and state["last_command"]["id"] == ident:
+                return state
+            time.sleep(0.005)
+        pytest.fail("Fake recording command did not finish")
+
+    rig.command = command
+    yield rig
+    for gate in (camera.start_gate, camera.stop_gate):
+        if gate:
+            gate.set()
+    service.close()
+
+
+def wait_recording(rig, status):
+    import time
+
+    until = time.monotonic() + 3
+    while time.monotonic() < until:
+        state = rig.service.snapshot()
+        if state["recording"]["status"] == status:
+            return state
+        time.sleep(0.005)
+    pytest.fail(f"Recording did not reach {status}")
+
+
+def test_recording_exact_id_start_finish_and_private_retained_outputs(recording_rig):
+    rig = recording_rig
+    ident = "a" * 32
+    state = rig.command("start_recording", {"recording_id": ident})
+    assert state["last_command"]["result"] == "ok" and not state["busy"]
+    record = state["recording"]
+    assert record == state["last_result"]["recording"]
+    assert record["id"] == ident and record["status"] == "recording"
+    assert record["run_name"] == "Untitled run" and record["frame_count"] == 1
+    state = rig.command("stop_recording", {"recording_id": ident})
+    assert state["last_command"]["result"] == "ok"
+    assert state["recording"] == state["last_result"]["recording"]
+    assert state["recording"]["status"] == "completed"
+    assert state["recording"]["summary"] == f"{ident}_shortened_3_min.mp4"
+    assert state["recording"]["stop_command_id"] == state["last_command"]["id"]
+    assert state["recording"]["segments"] == ["video_0001.mp4"]
+    assert rig.calls == [ident]
+    assert all(path.stat().st_mode & 0o007 == 0 for path in (rig.root / ident).iterdir())
+    # A repeated ID never replaces the original run, even under a different label.
+    before = (rig.root / ident / "run.json").read_bytes()
+    state = rig.command("start_recording", {"recording_id": ident, "run_name": "new"})
+    assert state["last_command"]["result"] == "failed"
+    assert (rig.root / ident / "run.json").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "action,args",
+    [
+        ("start_recording", {}),
+        ("start_recording", {"recording_id": "A" * 32}),
+        ("start_recording", {"recording_id": "a" * 32, "run_name": "a\n"}),
+        ("start_recording", {"recording_id": "a" * 32, "output_fps": True}),
+        ("start_recording", {"recording_id": "a" * 32, "output_fps": float("nan")}),
+        ("start_recording", {"recording_id": "a" * 32, "output_fps": 121}),
+        (
+            "start_recording",
+            {"recording_id": "a" * 32, "mode": "live", "capture_interval_seconds": 1},
+        ),
+        ("stop_recording", {"recording_id": "a" * 32, "mode": "live"}),
+        ("record_with_sequence", {"recording_id": "a" * 32}),
+        ("record_with_sequence", {"recording_id": "a" * 32, "enabled": False, "mode": "live"}),
+        ("set_stabilization", {"enabled": 1}),
+    ],
+)
+def test_recording_arguments_fail_before_dispatch(recording_rig, action, args):
+    with pytest.raises(ValueError):
+        recording_rig.service.command(action, args, "operator")
+    assert recording_rig.camera.start_calls == 0 and not recording_rig.root.exists()
+
+
+@pytest.mark.parametrize("revoke", ["stop", "release", "expiry", "same-id"])
+def test_active_recording_authority_is_irreversible(recording_rig, revoke):
+    rig = recording_rig
+    rig.command("start_recording", {"recording_id": "b" * 32, "mode": "live"})
+    if revoke == "stop":
+        rig.service.stop("another-client", 0)
+    elif revoke == "release":
+        rig.service.lease.release("operator")
+    else:
+        rig.clock[0] += 31
+        if revoke == "same-id":
+            rig.service.lease.acquire("operator")
+        else:
+            rig.service.lease.poll()
+    state = wait_recording(rig, "stopped")
+    assert not state["recording_sequence"]["armed"]
+    assert not rig.calls and rig.camera.stop_calls >= 1
+    assert state["recording"]["summary"] is None
+
+
+def test_recording_heartbeat_extends_only_current_live_authority(recording_rig):
+    rig = recording_rig
+    rig.command("start_recording", {"recording_id": "c" * 32})
+    rig.clock[0] += 25
+    rig.service.lease.renew("operator")
+    rig.clock[0] += 10
+    assert not rig.service._recording.cancel.is_set()
+    state = rig.command("stop_recording", {"recording_id": "c" * 32})
+    assert state["recording"]["status"] == "completed"
+
+
+def test_stop_does_not_wait_for_blocked_accepted_camera_start(recording_rig):
+    rig = recording_rig
+    rig.camera.start_gate = threading.Event()
+    command_id = rig.service.command("start_recording", {"recording_id": "d" * 32}, "operator")
+    assert rig.camera.entered.wait(1)
+    assert rig.service.stop("emergency", 0) == "pending"
+    assert rig.service._stop_done.wait(1)
+    assert rig.service.snapshot()["busy"]
+    rig.camera.start_gate.set()
+    state = wait_recording(rig, "stopped")
+    assert not rig.calls and not rig.camera.is_recording
+    assert state["recording"]["start_command_id"] == command_id
+
+
+def test_stop_during_finalization_cannot_publish_completed(recording_rig):
+    rig = recording_rig
+    entered, release = threading.Event(), threading.Event()
+
+    def finalizer(directory, **options):
+        entered.set()
+        assert release.wait(3)
+        options["check_cancel"]()
+        pytest.fail("Cancelled finalizer cannot publish")
+
+    rig.service._recording_finalizer = finalizer
+    rig.command("start_recording", {"recording_id": "e" * 32})
+    rig.service.command("stop_recording", {"recording_id": "e" * 32}, "operator")
+    assert entered.wait(1)
+    try:
+        assert rig.service.stop("emergency", 0) == "pending"
+        assert rig.service._stop_done.wait(1)
+        assert rig.service.snapshot()["busy"]
+    finally:
+        release.set()
+    state = wait_recording(rig, "stopped")
+    assert state["recording"]["summary"] is None and not state["recording"]["archived"]
+
+
+@pytest.mark.parametrize(
+    "phase,healthy,identity,expected",
+    [
+        ("complete", True, 20.0, "completed"),
+        ("cooling", True, 20.0, "completed"),
+        ("stopped", True, 20.0, "failed"),
+        ("fault", False, 20.0, "failed"),
+        ("complete", True, 21.0, "failed"),
+        ("complete", True, None, "failed"),
+    ],
+)
+def test_sequence_arm_start_and_exact_normal_end(recording_rig, phase, healthy, identity, expected):
+    rig = recording_rig
+    state = rig.command("record_with_sequence", {"recording_id": "f" * 32, "enabled": True})
+    receipt = state["last_result"]["recording_sequence"]
+    assert receipt["armed"] and receipt["id"] == "f" * 32
+    assert not rig.camera.start_calls and not state["busy"]
+    rig.readings.value["sequence"] = dict(
+        running=True, started_at=20.0, phase="holding", healthy=True
+    )
+    wait_recording(rig, "recording")
+    assert rig.service.snapshot()["recording"]["start_command_id"] == state["last_command"]["id"]
+    # Missing samples do not finish, disarm, or infer a successful end.
+    rig.readings.value["sequence"] = None
+    assert rig.service._recording is not None
+    rig.readings.value["sequence"] = dict(
+        running=False, started_at=identity, phase=phase, healthy=healthy
+    )
+    state = wait_recording(rig, expected)
+    assert bool(rig.calls) is (expected == "completed")
+    assert receipt["armed"]  # accepted receipt is immutable
+
+
+def test_disarm_preserves_exact_accepted_identity_and_never_starts(recording_rig):
+    rig = recording_rig
+    ident = "1" * 32
+    rig.command("record_with_sequence", {"recording_id": ident, "enabled": True})
+    state = rig.command("record_with_sequence", {"recording_id": ident, "enabled": False})
+    accepted = state["last_result"]["recording_sequence"]
+    assert accepted == dict(armed=False, id=ident, client="operator", sequence_started_at=None)
+    wait_recording(rig, "stopped")
+    assert not rig.camera.start_calls and not rig.calls
+
+
+def test_recording_missing_furnace_metadata_still_captures(recording_rig):
+    from furnace.service import FRAME_METADATA_FIELDS
+
+    rig = recording_rig
+    rig.readings.value = dict(
+        available=False,
+        error="unavailable",
+        sequence=None,
+        metadata=dict.fromkeys(FRAME_METADATA_FIELDS),
+    )
+    state = rig.command("start_recording", {"recording_id": "2" * 32})
+    assert state["recording"]["status"] == "recording"
+    assert rig.camera.metadata == [dict.fromkeys(FRAME_METADATA_FIELDS)]
+    assert (
+        rig.command("stop_recording", {"recording_id": "2" * 32})["recording"]["status"]
+        == "completed"
+    )

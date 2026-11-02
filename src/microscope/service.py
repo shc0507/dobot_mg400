@@ -5,20 +5,28 @@ have been validated. Demo transports use the MIC-01 simulator and generated imag
 """
 
 import copy
+import http.client
+import json
 import math
 import os
 import queue
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
+from furnace.recordings import create_run, finalize_run_recording, normalize_recording_settings
+from furnace.service import FRAME_METADATA_FIELDS
+from labkit.client import ServiceClient
 from labkit.describe import command, describe, parameter
 from labkit.errors import ServiceError
 from labkit.events import EventLog
@@ -42,6 +50,8 @@ class MicroscopeConfig:
     home_switch: bool | None = None
     lease_seconds: float = 3.0
     focus_speed: int = 800
+    furnace_url: str = "http://127.0.0.1:8769/"
+    furnace_token: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls, env=None):
@@ -61,6 +71,8 @@ class MicroscopeConfig:
             focus_limits=tuple(map(int, limits.split(","))) if limits else None,
             switch_focus=int(clearance) if clearance else None,
             home_switch=None if not switch else switch == "1",
+            furnace_url=env.get("MG400_MICROSCOPE_FURNACE_URL", "http://127.0.0.1:8769/"),
+            furnace_token=env.get("MG400_FURNACE_TOKEN", ""),
         )
 
     def validate(self):
@@ -88,6 +100,222 @@ class MicroscopeConfig:
         if type(self.focus_speed) is not int or not 1 <= self.focus_speed <= 10000:
             raise ValueError("Invalid focus speed")
         return self
+
+
+class _NoMetadataRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+class FurnaceReadingsClient(ServiceClient):
+    """Read the contract and state with bounded bodies and no mutation methods.
+
+    Connect and response headers retain the socket timeout. The separate body
+    budget is checked between read1 calls; it is not a total request deadline.
+    """
+
+    def __init__(self, url, token="", *, timeout=0.5):
+        super().__init__(url, token, "microscope-readings", timeout=timeout)
+        self._opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _NoMetadataRedirect()
+        )
+
+    def _body(self, response):
+        limit, deadline = 256 * 1024, time.monotonic() + 1.0
+        blocks, size = [], 0
+        while True:
+            if time.monotonic() >= deadline:
+                raise ServiceError(504, "Furnace metadata body deadline exceeded")
+            block = response.read1(min(65536, limit - size + 1))
+            if time.monotonic() >= deadline:
+                raise ServiceError(504, "Furnace metadata body deadline exceeded")
+            if not block:
+                return b"".join(blocks)
+            size += len(block)
+            if size > limit:
+                raise ServiceError(502, "Furnace metadata body exceeds its size limit")
+            blocks.append(block)
+
+    def _request(self, path, data=None):
+        if path not in ("api/describe", "api/state") or data is not None:
+            raise ServiceError(403, "The furnace readings provider is read-only")
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        request = urllib.request.Request(self.base_url + path, headers=headers)
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                payload = self._body(response)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise ServiceError(error.code, "Furnace metadata request was refused") from error
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+            raise ServiceError(503, "Furnace metadata is unavailable") from error
+        try:
+            value = json.loads(payload)
+        except (ValueError, UnicodeError) as error:
+            raise ServiceError(502, "Furnace metadata is not valid JSON") from error
+        if not isinstance(value, dict):
+            raise ServiceError(502, "Furnace metadata must be an object")
+        return value
+
+
+class FurnaceReadings:
+    """One explicit polling worker; frame callbacks only read its short-lived cache."""
+
+    def __init__(self, client, events, *, clock=time.monotonic):
+        self.client, self.events, self.clock = client, events, clock
+        self._lock = threading.Lock()
+        self._quit = threading.Event()
+        self._thread = None
+        self._closed = False
+        self._sample = None
+        self._received = None
+        self._error = "Furnace readings have not arrived"
+
+    @staticmethod
+    def _number(value):
+        return type(value) in (int, float) and math.isfinite(value)
+
+    @classmethod
+    def _validate(cls, state):
+        if not isinstance(state, dict) or state.get("service") != "furnace":
+            raise ValueError("Unexpected furnace readings service")
+        sequence = state.get("sequence")
+        if (
+            state.get("connected") is not True
+            or not isinstance(sequence, dict)
+            or type(sequence.get("running")) is not bool
+            or not isinstance(sequence.get("phase"), str)
+            or len(sequence["phase"]) > 64
+        ):
+            raise ValueError("Furnace readings are incomplete")
+        index, started = sequence.get("current_index"), sequence.get("started_at")
+        if index is not None and (type(index) is not int or not 0 <= index < 10000):
+            raise ValueError("Invalid furnace sequence index")
+        if started is not None and (not cls._number(started) or started <= 0):
+            raise ValueError("Invalid furnace sequence identity")
+        if sequence["running"] and started is None:
+            raise ValueError("Running furnace sequence has no identity")
+        names = ("sample_time", "pv", "sv", "ramp")
+        values = {key: state.get(key) for key in names}
+        if any(value is not None and not cls._number(value) for value in values.values()):
+            raise ValueError("Furnace numeric readings are invalid")
+        if not isinstance(state.get("run_state"), str) or len(state["run_state"]) > 64:
+            raise ValueError("Furnace run state is invalid")
+        targets = {f"gas_{index + 1}_target_percent": None for index in range(3)}
+        flow = state.get("flow")
+        if not isinstance(flow, dict):
+            raise ValueError("Furnace gas readings are invalid")
+        channels = flow.get("gas_channels", [])
+        if not isinstance(channels, list) or len(channels) > 3:
+            raise ValueError("Furnace gas readings are invalid")
+        seen = set()
+        for channel in channels:
+            if not isinstance(channel, dict):
+                raise ValueError("Furnace gas channel is invalid")
+            index, value = channel.get("channel_index"), channel.get("target_percent")
+            if (
+                type(index) is not int
+                or index not in range(3)
+                or index in seen
+                or (value is not None and (not cls._number(value) or not 0 <= value <= 100))
+            ):
+                raise ValueError("Furnace gas channel is invalid")
+            seen.add(index)
+            targets[f"gas_{index + 1}_target_percent"] = value
+        if type(state.get("locked")) is not bool or "fault" not in state:
+            raise ValueError("Furnace health state is incomplete")
+        healthy = not state["locked"] and state["fault"] is None
+        metadata = dict(
+            temperature_sample_time=values["sample_time"],
+            temperature_c=values["pv"],
+            target_c=values["sv"],
+            ramp_rate_c_per_min=values["ramp"],
+            furnace_state=state["run_state"],
+            sequence_running=sequence["running"],
+            sequence_step=None
+            if sequence.get("current_index") is None
+            else sequence["current_index"] + 1,
+            sequence_phase=sequence["phase"],
+            **targets,
+        )
+        return {
+            "metadata": metadata if healthy else dict.fromkeys(FRAME_METADATA_FIELDS),
+            "sequence": dict(
+                running=sequence["running"],
+                started_at=started,
+                phase=sequence["phase"],
+                healthy=healthy,
+            ),
+        }
+
+    def poll_once(self):
+        """One fake-testable request. Never called by the acquisition thread."""
+        try:
+            value = self._validate(self.client.state())
+            error = (
+                None
+                if value["sequence"]["healthy"]
+                else "Furnace readings are faulted; recording metadata is blank"
+            )
+        except Exception:
+            value, error = None, "Furnace readings unavailable; recording metadata is blank"
+        with self._lock:
+            if self._closed:
+                return
+            changed = error != self._error
+            self._sample, self._received, self._error = value, self.clock(), error
+        if changed:
+            self.events.add("warning" if error else "info", error or "Furnace readings available")
+
+    def start(self):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Furnace readings provider is closed")
+            if self._thread is not None:
+                return
+            self._thread = threading.Thread(
+                target=self._run, name="microscope-readings", daemon=True
+            )
+            try:
+                self._thread.start()
+            except BaseException:
+                self._thread = None
+                raise
+
+    def _run(self):
+        while not self._quit.is_set():
+            started = time.monotonic()
+            self.poll_once()
+            self._quit.wait(max(0, 1.0 - (time.monotonic() - started)))
+
+    def snapshot(self):
+        with self._lock:
+            fresh = (
+                not self._closed
+                and self._sample is not None
+                and self._received is not None
+                and 0 <= self.clock() - self._received <= 2.5
+            )
+            return {
+                "available": fresh,
+                "error": self._error if fresh else self._error or "Furnace readings are stale",
+                "metadata": copy.deepcopy(self._sample["metadata"])
+                if fresh
+                else dict.fromkeys(FRAME_METADATA_FIELDS),
+                "sequence": copy.deepcopy(self._sample["sequence"]) if fresh else None,
+            }
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            self._quit.set()
+            worker = self._thread
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(2)
+            if worker.is_alive():
+                raise RuntimeError("Furnace metadata request is still stopping")
 
 
 class _ContractLease:
@@ -193,6 +421,28 @@ class _Job:
     cancel: _AuthorityCancel
     done: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
+
+
+@dataclass
+class _Recording:
+    ident: str
+    client: str
+    command_id: str
+    options: dict
+    cancel: _AuthorityCancel
+    sequence: bool = False
+    sequence_started_at: float | None = None
+    finish: threading.Event = field(default_factory=threading.Event)
+    started: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    thread: threading.Thread | None = None
+    data: dict = field(default_factory=dict)
+    failure: str | None = None
+
+
+class _NoFurnace:
+    def state(self):
+        raise ServiceError(503, "Demo furnace readings require an injected provider")
 
 
 class _DemoSerial:
@@ -313,6 +563,9 @@ class MicroscopeService:
         wall_clock=time.time,
         autofocus_factory=AutoFocuser,
         switcher_factory=ArucoObjectiveSwitcher,
+        readings=None,
+        recordings_root=None,
+        recording_finalizer=finalize_run_recording,
     ):
         config = config or MicroscopeConfig()
         self.demo = bool(demo)
@@ -343,6 +596,18 @@ class MicroscopeService:
         self._manual_holder = None
         self._handoff_deadline = None
         self.events = EventLog()
+        self._readings = readings or FurnaceReadings(
+            _NoFurnace()
+            if self.demo
+            else FurnaceReadingsClient(self.config.furnace_url, self.config.furnace_token),
+            self.events,
+            clock=clock,
+        )
+        self._recordings_root = recordings_root
+        self._recording_finalizer = recording_finalizer
+        self._recording = None
+        self._recording_data = self._empty_recording()
+        self._recording_sequence = dict(armed=False, id=None, client=None, sequence_started_at=None)
         self._quit = threading.Event()
         self._started = self._closed = self._starting = False
         self._shutdown_complete = False
@@ -361,6 +626,335 @@ class MicroscopeService:
         self._last_command = self._last_result = None
         self.expiry_count = 0
 
+    @staticmethod
+    def _empty_recording():
+        return dict(
+            id=None,
+            status="idle",
+            client=None,
+            start_command_id=None,
+            stop_command_id=None,
+            run_name="",
+            mode="time_lapse",
+            capture_interval_seconds=30.0,
+            output_fps=1.0,
+            frame_count=0,
+            started_at=None,
+            finished_at=None,
+            segments=[],
+            timestamps=None,
+            summary=None,
+            archived=False,
+            error=None,
+        )
+
+    @staticmethod
+    def _recording_parameters():
+        return {
+            "recording_id": parameter("string", pattern="^[0-9a-f]{32}$"),
+            "run_name": parameter("string", maxLength=80),
+            "mode": parameter("string", enum=["time_lapse", "live"]),
+            "capture_interval_seconds": parameter("number", minimum=0.1, maximum=3600),
+            "output_fps": parameter("number", minimum=0.1, maximum=120),
+        }
+
+    def _recording_arguments(self, action, args):
+        if action == "set_stabilization":
+            if set(args) != {"enabled"} or type(args["enabled"]) is not bool:
+                raise ValueError("Stabilization requires enabled: boolean")
+            return
+        allowed = set(self._recording_parameters())
+        if action == "record_with_sequence":
+            allowed.add("enabled")
+            if type(args.get("enabled")) is not bool:
+                raise ValueError("Record with sequence requires enabled: boolean")
+        if action == "stop_recording" or args.get("enabled") is False:
+            allowed = {"recording_id"} | ({"enabled"} if "enabled" in args else set())
+        if set(args) - allowed or not re.fullmatch(
+            r"[0-9a-f]{32}", str(args.get("recording_id", ""))
+        ):
+            raise ValueError("Recording requires a new 32-character lowercase hexadecimal ID")
+        name = args.get("run_name", "")
+        if (
+            not isinstance(name, str)
+            or len(name) > 80
+            or any(ord(c) < 32 or ord(c) == 127 for c in name)
+        ):
+            raise ValueError("Recording name must contain at most 80 printable characters")
+        if args.get("mode", "time_lapse") not in ("time_lapse", "live"):
+            raise ValueError("Recording mode must be time_lapse or live")
+        for key, maximum in (("capture_interval_seconds", 3600), ("output_fps", 120)):
+            if key in args and (
+                type(args[key]) not in (int, float)
+                or not math.isfinite(args[key])
+                or not 0.1 <= args[key] <= maximum
+            ):
+                raise ValueError("Recording timing is outside its allowed range")
+        if args.get("mode") == "live" and "capture_interval_seconds" in args:
+            raise ValueError("Live recording does not use a capture interval")
+
+    def _recording_draining(self):
+        recording = self._recording
+        return recording is not None and (
+            recording.cancel.is_set() or recording.data["status"] == "finalizing"
+        )
+
+    def _check_recording(self, recording):
+        # The copied authority deadline is checked without a lease/service lock
+        # inversion, including from the compiler/archive cancellation callback.
+        with self._lock:
+            if (
+                recording is not self._recording
+                or recording.cancel.is_set()
+                or self._closed
+                or self._stopping
+                or self._fault
+            ):
+                raise SideCaptureCancelled("Recording authority was revoked")
+
+    def _recording_metadata(self, recording):
+        readings = self._readings.snapshot()
+        with self._lock:
+            if recording is self._recording and not recording.cancel.is_set():
+                recording.data["frame_count"] += 1
+        return readings["metadata"]
+
+    def _recording_command(self, job):
+        self._check_job(job)
+        if job.action == "set_stabilization":
+            self._camera.set_stabilization(job.args["enabled"])
+            self._check_job(job)
+            return {"stabilization": bool(self._camera.stabilization_enabled)}
+        if job.action == "stop_recording" or job.args.get("enabled") is False:
+            with self._lock:
+                recording = self._recording
+                if (
+                    recording is None
+                    or recording.ident != job.args["recording_id"]
+                    or recording.client != job.client
+                ):
+                    raise ValueError("The recording ID is not active for this client")
+                if job.action == "record_with_sequence":
+                    if not recording.sequence:
+                        raise ValueError("This recording was not armed for a sequence")
+                    recording.cancel.set()
+                    recording.finish.set()
+                    self._recording_sequence["armed"] = False
+                    accepted = dict(self._recording_sequence, id=recording.ident, client=job.client)
+                    return {"recording_sequence": copy.deepcopy(accepted)}
+                if recording.data["status"] != "recording":
+                    raise ValueError("Recording has not started or is already stopping")
+                recording.data["stop_command_id"] = job.ident
+                recording.finish.set()
+            while not recording.done.wait(0.05):
+                self._check_job(job)
+            self._check_job(job)
+            with self._lock:
+                if recording.data["status"] != "completed":
+                    raise RuntimeError(recording.data["error"] or "Recording did not finalize")
+                return {"recording": copy.deepcopy(recording.data)}
+        sequence = job.action == "record_with_sequence"
+        self._readings.start()
+        initial = self._readings.snapshot().get("sequence")
+        if sequence and (initial is None or not initial["healthy"] or initial["running"]):
+            raise ValueError("Arming requires fresh, healthy, idle furnace readings")
+        options = normalize_recording_settings(job.args)
+        options["run_name"] = job.args.get("run_name") or "Untitled run"
+        deadline = self._lease_deadline()
+        with self._lock:
+            self._check_job_locked(job)
+            if self._recording is not None:
+                raise ValueError("A recording or sequence arm is already active")
+            recording = _Recording(
+                job.args["recording_id"],
+                job.client,
+                job.ident,
+                options,
+                _AuthorityCancel(self._clock, deadline),
+                sequence,
+            )
+            recording.data = dict(
+                self._empty_recording(),
+                id=recording.ident,
+                client=job.client,
+                start_command_id=job.ident,
+                status="starting",
+                **{
+                    key: options[key]
+                    for key in ("run_name", "mode", "capture_interval_seconds", "output_fps")
+                },
+            )
+            self._recording, self._recording_data = recording, recording.data
+            if sequence:
+                self._recording_sequence = dict(
+                    armed=True, id=recording.ident, client=job.client, sequence_started_at=None
+                )
+            accepted = copy.deepcopy(self._recording_sequence)
+            recording.thread = threading.Thread(
+                target=self._run_recording,
+                args=(recording, initial),
+                name="microscope-recording",
+                daemon=True,
+            )
+            try:
+                recording.thread.start()
+            except BaseException:
+                recording.cancel.set()
+                recording.data.update(status="failed", error="Recording worker could not start")
+                self._recording_sequence["armed"] = False
+                self._recording = None
+                recording.done.set()
+                raise
+        # An arm also reserves its persistent ID before acknowledging acceptance.
+        while not recording.started.wait(0.05):
+            self._check_job(job)
+        self._check_job(job)
+        if recording.failure:
+            raise RuntimeError(recording.failure)
+        if sequence:
+            return {"recording_sequence": accepted}
+        with self._lock:
+            self._check_recording(recording)
+            return {"recording": copy.deepcopy(recording.data)}
+
+    def _run_recording(self, recording, initial):
+        camera_attempted = False
+        try:
+            self._check_recording(recording)
+            video, directory = create_run(
+                recording.options["run_name"],
+                "microscope",
+                recordings_root=self._recordings_root,
+                recording_id=recording.ident,
+            )
+            self._check_recording(recording)
+            if recording.sequence:
+                recording.started.set()
+                while True:
+                    self._check_recording(recording)
+                    sequence = self._readings.snapshot().get("sequence")
+                    if sequence is not None:
+                        if not sequence["healthy"]:
+                            raise RuntimeError("Furnace sequence became unhealthy")
+                        if sequence["running"]:
+                            if sequence["started_at"] == initial["started_at"]:
+                                raise RuntimeError("Furnace sequence identity did not change")
+                            recording.sequence_started_at = sequence["started_at"]
+                            with self._lock:
+                                self._recording_sequence.update(
+                                    armed=False, sequence_started_at=recording.sequence_started_at
+                                )
+                            break
+                    recording.finish.wait(0.05)
+            self._check_recording(recording)
+            camera_attempted = True
+            self._camera.start_recording(
+                video,
+                fps=recording.options["output_fps"],
+                timestamps_path=video.with_suffix(".timestamps.csv"),
+                segment_minutes=60,
+                minimum_free_gb=recording.options["minimum_free_gb"],
+                metadata_provider=lambda: self._recording_metadata(recording),
+                metadata_fields=FRAME_METADATA_FIELDS,
+                mode=recording.options["mode"],
+                capture_interval_seconds=recording.options["capture_interval_seconds"],
+                output_fps=recording.options["output_fps"],
+                private_output=True,
+            )
+            self._check_recording(recording)
+            with self._lock:
+                recording.data.update(
+                    status="recording",
+                    started_at=self._wall_clock(),
+                    timestamps="video.timestamps.csv",
+                )
+                self._seq += 1
+            recording.started.set()
+            while not recording.finish.wait(0.05):
+                self._check_recording(recording)
+                if self._camera.recording_error or not self._camera.is_recording:
+                    raise RuntimeError("Camera recording stopped unexpectedly")
+                if len(self._camera.recording_segments) > 128:
+                    raise RuntimeError("Recording segment limit reached")
+                if recording.sequence:
+                    sequence = self._readings.snapshot().get("sequence")
+                    if sequence is not None:
+                        if (
+                            not sequence["healthy"]
+                            or sequence["started_at"] != recording.sequence_started_at
+                        ):
+                            raise RuntimeError("Furnace sequence identity or health changed")
+                        if not sequence["running"]:
+                            if sequence["phase"] not in ("complete", "cooling"):
+                                raise RuntimeError("Furnace sequence did not complete normally")
+                            recording.finish.set()
+            self._check_recording(recording)
+            with self._lock:
+                recording.data["status"] = "finalizing"
+                self._seq += 1
+            self._camera.stop_recording()
+            camera_attempted = False
+            self._check_recording(recording)
+            segments = [Path(path).name for path in self._camera.recording_segments]
+            if (
+                self._camera.recording_error
+                or not recording.data["frame_count"]
+                or not 1 <= len(segments) <= 128
+                or len(set(segments)) != len(segments)
+                or any(not re.fullmatch(r"video_[0-9]{4}\.mp4", name) for name in segments)
+            ):
+                raise RuntimeError("Recording media is incomplete")
+            with self._lock:
+                recording.data["segments"] = segments
+            archived, summary, _ = self._recording_finalizer(
+                directory,
+                recordings_root=self._recordings_root,
+                check_cancel=lambda: self._check_recording(recording),
+            )
+            self._check_recording(recording)
+            if Path(summary).name != f"{recording.ident}_shortened_3_min.mp4":
+                raise RuntimeError("Recording summary identity does not match")
+            with self._lock:
+                self._check_recording(recording)
+                recording.data.update(
+                    status="completed",
+                    summary=Path(summary).name,
+                    archived=archived is not None,
+                    finished_at=self._wall_clock(),
+                )
+        except BaseException as error:
+            cancelled = recording.cancel.is_set() or isinstance(error, SideCaptureCancelled)
+            with self._lock:
+                recording.failure = (
+                    "Recording stopped; local files are retained"
+                    if cancelled
+                    else "Recording failed; local files are retained"
+                )
+                recording.data.update(
+                    status="stopped" if cancelled else "failed",
+                    error=recording.failure,
+                    finished_at=self._wall_clock(),
+                )
+            self.events.add("warning", recording.failure, recording_id=recording.ident)
+        finally:
+            if camera_attempted:
+                try:
+                    self._camera.stop_recording()
+                except Exception:
+                    with self._lock:
+                        recording.data.update(
+                            status="failed", error="Camera recording shutdown is unconfirmed"
+                        )
+                    self._latch_fault("recording", "Camera recording shutdown is unconfirmed")
+                    self.stop("recording-cleanup-failed", 0)
+            with self._lock:
+                if recording is self._recording:
+                    self._recording = None
+                    self._recording_sequence["armed"] = False
+                    self._seq += 1
+                recording.started.set()
+                recording.done.set()
+
     def describe(self):
         specifications = {
             "select_objective": {"id": parameter("integer", enum=list(OBJECTIVE_ORDER))},
@@ -368,6 +962,12 @@ class MicroscopeService:
             "focus_move": {"steps": parameter("integer", minimum=-(2**31), maximum=2**31 - 1)},
             "home_focus": {},
             "snapshot": {"path": parameter("string", minLength=1)},
+            "start_recording": self._recording_parameters(),
+            "stop_recording": {"recording_id": parameter("string", pattern="^[0-9a-f]{32}$")},
+            "record_with_sequence": dict(
+                self._recording_parameters(), enabled=parameter("boolean")
+            ),
+            "set_stabilization": {"enabled": parameter("boolean")},
         }
         return describe(
             service="microscope",
@@ -381,7 +981,15 @@ class MicroscopeService:
                     parameter(
                         "object",
                         properties=properties,
-                        required=[] if name == "snapshot" else list(properties),
+                        required=(
+                            []
+                            if name == "snapshot"
+                            else ["recording_id"]
+                            if name == "start_recording"
+                            else ["recording_id", "enabled"]
+                            if name == "record_with_sequence"
+                            else list(properties)
+                        ),
                         additionalProperties=False,
                     )
                 )
@@ -407,7 +1015,7 @@ class MicroscopeService:
                 ts_unix=self._wall_clock(),
                 demo=self.demo,
                 connected=bool(self._started and self._motor and self._motor.connected),
-                busy=self._job is not None or self._stopping,
+                busy=self._job is not None or self._stopping or self._recording_draining(),
                 locked=self._fault is not None,
                 fault=copy.deepcopy(self._fault),
                 lease=lease_state,
@@ -422,6 +1030,16 @@ class MicroscopeService:
                 },
                 last_result=copy.deepcopy(self._last_result),
                 manual_client=self._manual_holder,
+                recording=copy.deepcopy(self._recording_data),
+                recording_sequence=copy.deepcopy(self._recording_sequence),
+                stabilization=bool(
+                    self._camera and getattr(self._camera, "stabilization_enabled", False)
+                ),
+                furnace_readings={
+                    key: value
+                    for key, value in self._readings.snapshot().items()
+                    if key in ("available", "error")
+                },
             )
 
     def panel_info(self):
@@ -595,6 +1213,7 @@ class MicroscopeService:
                     self._started = True
                     self._seq += 1
                 if background:
+                    self._readings.start()
                     thread = threading.Thread(
                         target=self._poll, name="microscope-lease", daemon=True
                     )
@@ -662,6 +1281,8 @@ class MicroscopeService:
         with self._lock:
             if self._job is not None and self._job.client == client:
                 self._job.cancel.renew(deadline)
+            if self._recording is not None and self._recording.client == client:
+                self._recording.cancel.renew(deadline)
 
     def _expire_handoff_locked(self):
         # The caller holds the raw lease lock, so acquisition cannot revive a
@@ -677,7 +1298,12 @@ class MicroscopeService:
         # The caller anchors this absolute deadline before sampling the lease.
         # Neither scheduling delay nor a status read can extend its authority.
         with self._lock:
-            candidate = self._job is None and not self._stopping and not self._fault
+            candidate = (
+                self._job is None
+                and self._recording is None
+                and not self._stopping
+                and not self._fault
+            )
             reference = self._reference
         if candidate and reference is not None:
             try:
@@ -686,6 +1312,7 @@ class MicroscopeService:
                     valid = (
                         self._clock() < deadline
                         and self._job is None
+                        and self._recording is None
                         and not self._stopping
                         and not self._fault
                         and self._reference == reference
@@ -749,6 +1376,14 @@ class MicroscopeService:
             action not in self.describe()["commands"] and action != "set_focus_zero"
         ):
             raise ValueError("Unknown microscope command or parameters")
+        if action in (
+            "start_recording",
+            "stop_recording",
+            "record_with_sequence",
+            "set_stabilization",
+        ):
+            self._recording_arguments(action, args)
+            return
         required = {"select_objective": {"id"}, "autofocus": {"mode"}, "focus_move": {"steps"}}
         allowed = required.get(action, {"path"} if action == "snapshot" else set())
         if set(args) - allowed or not required.get(action, set()) <= set(args):
@@ -777,7 +1412,7 @@ class MicroscopeService:
                 raise ServiceError(503, "Microscope is not connected")
             if self._fault:
                 raise ServiceError(409, "Microscope is locked; only stop is allowed")
-            if self._job is not None or self._stopping:
+            if self._job is not None or self._stopping or self._recording_draining():
                 raise ServiceError(409, "Microscope is busy")
             if (
                 action in ("focus_move", "select_objective", "autofocus")
@@ -1032,6 +1667,13 @@ class MicroscopeService:
                 result = self._autofocus(job, motor)
             elif job.action == "snapshot":
                 result = self._save_snapshot(job)
+            elif job.action in (
+                "start_recording",
+                "stop_recording",
+                "record_with_sequence",
+                "set_stabilization",
+            ):
+                result = self._recording_command(job)
             self._check_job(job)
         except (SideCaptureCancelled, AutofocusCancelled) as error:
             outcome, message = "stopped", str(error)
@@ -1083,6 +1725,10 @@ class MicroscopeService:
         with self._lock:
             if self._job is not None:
                 self._job.cancel.set()
+            if self._recording is not None:
+                self._recording.cancel.set()
+                self._recording.finish.set()
+                self._recording_sequence["armed"] = False
             self._reference = None
             self._handoff_deadline = None
             self._seq += 1
@@ -1106,7 +1752,7 @@ class MicroscopeService:
             done = self._stop_done
         done.wait(wait_s)
         with self._lock:
-            return self._stop_outcome if done.is_set() else "pending"
+            return self._stop_outcome if done.is_set() and self._recording is None else "pending"
 
     def _finish_stop(self):
         outcome = "confirmed"
@@ -1135,9 +1781,16 @@ class MicroscopeService:
                     return
                 self._closed = True
                 self._quit.set()
-                job = self._job
-            outcome = self.stop("shutdown", 15)
-            failures = [] if outcome == "confirmed" else ["Motor shutdown is unconfirmed"]
+                job, recording = self._job, self._recording
+            self.stop("shutdown", 15)
+            failures = (
+                [] if self._stop_outcome == "confirmed" else ["Motor shutdown is unconfirmed"]
+            )
+            if recording is not None and not recording.done.wait(3):
+                raise RuntimeError(
+                    "Microscope recording is still stopping; camera owner is retained"
+                )
+            self._readings.close()
             if job is not None and not job.done.wait(3):
                 failures.append("Microscope command did not stop")
             with self._frame_condition:

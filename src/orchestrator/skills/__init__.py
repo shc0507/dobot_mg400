@@ -88,6 +88,7 @@ class Registry:
 
 def default_registry():
     from .crucible import load, unload
+    from .recording import record
     from .robot import pick, place, transfer
 
     registry = Registry()
@@ -120,6 +121,7 @@ def default_registry():
     registry.register("robot.move", move, services=("robot",))
     registry.register("robot.stop", stop, services=("robot",))
     registry.register("sample.record", sample)
+    registry.register("microscope.record", record, services=("microscope",))
     registry.register("robot.pick", pick, services=("robot",))
     registry.register("robot.place", place, services=("robot",))
     registry.register(

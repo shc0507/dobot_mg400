@@ -22,11 +22,19 @@ class _Authority:
         self.cancelled = threading.Event()
         self._lock = lifecycle_lock or threading.RLock()
         self._failure = failure
+        self._revocation_error = None
         self.active = 0
 
-    def revoke(self):
+    def revoke(self, error=None):
         with self._lock:
+            if self._revocation_error is None:
+                self._revocation_error = error
             self.cancelled.set()
+
+    @property
+    def revocation_error(self):
+        with self._lock:
+            return self._revocation_error
 
     def check(self):
         with self._lock:
@@ -91,6 +99,12 @@ class StepClient:
     def state(self):
         return copy.deepcopy(self.__call("state"))
 
+    def describe(self):
+        return copy.deepcopy(self.__call("describe"))
+
+    def roi(self, name):
+        return copy.deepcopy(self.__call("roi", name))
+
     def owned(self, state):
         """Check this run's ownership through the same revocable authority."""
         return self.__call("owned", state)
@@ -153,9 +167,77 @@ class Context:
         self.zones = zones.bind(authority, services)
         self.__authority = authority
         self.__time_scale = time_scale
+        self.__zone_definitions = copy.deepcopy(zones.plan.definitions)
+        self.__guard_condition = threading.Condition()
+        self.__guards = {}
 
     def check(self):
         self.__authority.check()
+
+    def remaining_s(self):
+        """Return the remaining step time under the current authority."""
+        return self.__authority.call(lambda: max(0, self.__authority.deadline - time.monotonic()))
+
+    def zone_definitions(self):
+        """Copy the prepared zone definitions without reading configuration again."""
+        return self.__authority.call(copy.deepcopy, self.__zone_definitions)
+
+    def __check_guard(self, check):
+        try:
+            self.__authority.call(check)
+        except BaseException as error:
+            # A caught validator error cannot leave this context able to act.
+            self.__authority.revoke(error)
+            raise
+
+    def check_guards(self):
+        """Run the active read-only validators outside the registration lock."""
+        self.check()
+        with self.__guard_condition:
+            tokens = tuple(self.__guards)
+        for token in tokens:
+            with self.__guard_condition:
+                entry = self.__guards.get(token)
+                if entry is None:
+                    continue
+                entry["active"] += 1
+            try:
+                self.__check_guard(entry["check"])
+            finally:
+                with self.__guard_condition:
+                    entry["active"] -= 1
+                    self.__guard_condition.notify_all()
+        self.check()
+
+    @contextmanager
+    def guard(self, check):
+        """Monitor a read-only validator that raises when its condition fails.
+
+        Check synchronously before and after a successful body. On exit, remove
+        the validator and drain its accepted reads before the next phase starts.
+        """
+        if not callable(check):
+            raise TypeError("A step guard must be callable.")
+        self.__check_guard(check)
+        token = object()
+        entry = {"check": check, "active": 0}
+        with self.__guard_condition:
+            self.__guards[token] = entry
+        try:
+            self.check()
+            yield
+            self.__check_guard(check)
+        except BaseException as error:
+            # Stop does not wait for an accepted monitor read to drain. The
+            # coordinator observes this revocation while the worker waits below.
+            self.__authority.revoke(error)
+            raise
+        finally:
+            with self.__guard_condition:
+                self.__guards.pop(token)
+                while entry["active"]:
+                    self.__guard_condition.wait()
+        self.check()
 
     def sleep(self, seconds):
         if seconds < 0:
@@ -776,6 +858,7 @@ class Runner:
             try:
                 while not monitor_stop.is_set():
                     self.zones.check_held(authority)
+                    ctx.check_guards()
                     if monitor_stop.is_set():
                         return
                     authority.check()
@@ -824,11 +907,15 @@ class Runner:
                 return failed(RuntimeError(self.clients.error or self.zones.error))
             if "guard_error" in outcome:
                 return failed(outcome["guard_error"])
+            if authority.cancelled.is_set():
+                return failed(authority.revocation_error or Revoked("The step was revoked."))
             if time.monotonic() >= authority.deadline:
                 return failed(TimeoutError("The step timed out. It will not be retried."))
             self._worker.join(0.02)
         monitor_stop.set()
         while self._monitor.is_alive():
+            if authority.cancelled.is_set():
+                return failed(authority.revocation_error or Revoked("The step was revoked."))
             if (
                 self._abort
                 or self._hold_reason is not None

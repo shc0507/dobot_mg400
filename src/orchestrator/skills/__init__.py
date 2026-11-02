@@ -87,6 +87,7 @@ class Registry:
 
 
 def default_registry():
+    from .crucible import load, unload
     from .robot import pick, place, transfer
 
     registry = Registry()
@@ -127,4 +128,6 @@ def default_registry():
         services=("robot",),
         aliases={"from": "from_station", "to": "to_station"},
     )
+    registry.register("crucible.load", load, services=("robot", "stage", "furnace"))
+    registry.register("crucible.unload", unload, services=("robot", "stage", "furnace", "thermal"))
     return registry

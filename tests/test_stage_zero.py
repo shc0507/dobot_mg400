@@ -351,3 +351,35 @@ def test_preview_and_zero_http_routes_keep_token_json_and_lease_checks(stage_rig
         .json["image"]
         .startswith("data:image/jpeg;base64,")
     )
+
+
+def test_initial_link_loss_invalidates_reference_and_connection(stage_rig, monkeypatch):
+    controller, transport, _ = stage_rig
+    controller.zero("insert", True)
+
+    def lost():
+        raise LinkError("unplugged")
+
+    monkeypatch.setattr(transport, "status", lost)
+    with pytest.raises(LinkError):
+        controller.zero("insert", True)
+    assert not controller._ready("insert")
+    assert not controller.snapshot()["connected"]
+    assert controller.snapshot()["locked"]
+
+
+def test_stale_feedback_after_motor_select_cannot_authorize_zero(stage_rig):
+    controller, transport, clock = stage_rig
+    reference(controller)
+    original = transport.command
+
+    def delayed(command):
+        original(command)
+        if command == "motor insert":
+            clock.advance(2.1)
+
+    transport.command = delayed
+    with pytest.raises(ControllerError, match="stale"):
+        controller.zero("insert", True)
+    assert transport.commands == ["motor insert"]
+    assert not controller._ready("insert")

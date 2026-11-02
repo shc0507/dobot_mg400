@@ -39,7 +39,11 @@ class StageReference:
         self._require_no_sequence()
         if not getattr(self._transport, "zero_supported", False):
             raise ControllerError("Manual zero is unavailable with this firmware.")
-        self._read_status()
+        try:
+            self._read_status()
+        except LinkError as exc:
+            self._lose_connection(exc)
+            raise LinkError(self._error) from exc
         self._idle_axis(motor)
         if not self._feedback_fresh() or self._motors[motor].homed is None:
             raise ControllerError("Fresh extended stage feedback is required.")
@@ -142,6 +146,10 @@ class StageReference:
                 else:
                     self._transport.command(f"motor {motor}")
                     self._reference_authority(client)
+                    if not self._feedback_fresh() or (
+                        view and not 0 <= self.clock() - view["sampled_at"] <= 2
+                    ):
+                        raise ControllerError("Reference or board feedback is stale.")
                     self._transport.command("zero")
                     self._read_status()
                     state = self._motors[motor]

@@ -16,6 +16,7 @@ let stopPending = false;
 let microstepPending = false;
 let microstepDirty = false;
 let referencePending = false;
+let referenceViewGeneration = 0;
 let poseButtons = [];
 const positionButtons = new Map();
 let lastEvent = -1;
@@ -49,6 +50,7 @@ function requireToken(sent) {
   // A reply to an older token must not discard the token the user just entered.
   if (sent !== accessToken) return;
   accessToken = '';
+  referenceViewGeneration++;
   tokenSubmitted = false;
   try { sessionStorage.removeItem('stage-panel-token'); } catch { /* Nothing stored. */ }
   authWait = true;
@@ -319,6 +321,9 @@ function render(next) {
   // Polls and command responses can arrive out of order over separate requests.
   if (state && next.sampled_at < state.sampled_at) return;
   const modeChanged = state?.microstep !== next.microstep;
+  if (modeChanged || state?.connected !== next.connected || state?.port !== next.port) {
+    referenceViewGeneration++;
+  }
   state = next;
   const connected = online && next.connected;
   const activeMode = connected ? next.microstep_modes.find(mode => mode.value === next.microstep) : null;
@@ -419,6 +424,7 @@ $('#auth').addEventListener('submit', event => {
   const entered = $('#access-token').value.trim();
   if (!entered) return;
   accessToken = entered;
+  referenceViewGeneration++;
   tokenSubmitted = true;
   authWait = false;
   clearError();
@@ -474,12 +480,12 @@ for (const card of cards) {
   const zero = $('.zero-button', card);
   zero.addEventListener('click', () => {
     if (zero.disabled || motionBlocked() || !window.confirm('Confirm that this axis is at its safe zero position.')) return;
-    referenceCommand(zero, `/motors/${card.dataset.motor}/zero`, {confirm: true});
+    return referenceCommand(zero, `/motors/${card.dataset.motor}/zero`, {confirm: true});
   });
   const teach = $('.reference-teach', card);
   teach.addEventListener('click', () => {
     if (teach.disabled || motionBlocked() || !window.confirm('Confirm that this axis is at its safe zero position. Replace the camera reference?')) return;
-    referenceCommand(teach, `/motors/${card.dataset.motor}/teach_reference`, {confirm: true});
+    return referenceCommand(teach, `/motors/${card.dataset.motor}/teach_reference`, {confirm: true});
   });
   const refresh = $('.reference-refresh', card);
   refresh.addEventListener('click', async () => {
@@ -487,15 +493,18 @@ for (const card of cards) {
     refresh.disabled = true;
     const sent = accessToken;
     const connection = state?.port;
+    const generation = referenceViewGeneration;
     try {
       const view = await api(`/motors/${card.dataset.motor}/reference`);
-      if (sent !== accessToken || !online || !state?.connected || connection !== state.port) return;
+      if (sent !== accessToken || generation !== referenceViewGeneration
+          || !online || !state?.connected || connection !== state.port) return;
       const image = $('.reference-image', card);
       image.src = typeof view.image === 'string' && view.image.startsWith('data:image/jpeg;base64,') ? view.image : '';
       image.hidden = !image.src;
       $('.reference-offset', card).textContent = Array.isArray(view.offset_px)
         ? `Marker offset: ${view.offset_px.map(value => Number(value).toFixed(1)).join(', ')} px` : '';
     } catch (error) {
+      if (sent !== accessToken || generation !== referenceViewGeneration) return;
       $('.reference-image', card).src = '';
       $('.reference-image', card).hidden = true;
       $('.reference-offset', card).textContent = error.message;

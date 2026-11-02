@@ -110,6 +110,7 @@ class _ContractLease:
             self.service._expire_handoff_locked()
             value = self.raw.acquire(client)
             self.service._expire_handoff_locked()
+            self.service._renew_job_authority(client)
             with self.service._lock:
                 self.service._handoff_deadline = None
                 self.service._manual_holder = None
@@ -118,6 +119,7 @@ class _ContractLease:
     def renew(self, client):
         with self.raw.control(client):
             value = self.raw.renew(client)
+            self.service._renew_job_authority(client)
             self.service._manual_holder = None
             return value
 
@@ -144,13 +146,51 @@ class _ContractLease:
         return self.raw.snapshot()
 
 
+class _AuthorityCancel:
+    """An irreversible cancellation flag that also expires at the job lease deadline.
+
+    Motor dispatch checks this token without acquiring service or lease locks.
+    A heartbeat can extend a live token; an expired or stopped token stays revoked.
+    """
+
+    def __init__(self, clock, deadline):
+        self._clock, self._deadline = clock, deadline
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+
+    def set(self):
+        self._event.set()
+
+    def is_set(self):
+        with self._lock:
+            if self._clock() >= self._deadline:
+                self._event.set()
+            return self._event.is_set()
+
+    def renew(self, deadline):
+        with self._lock:
+            if self._clock() >= self._deadline:
+                self._event.set()
+            if not self._event.is_set():
+                self._deadline = deadline
+
+    def wait(self, timeout=None):
+        end = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            remaining = None if end is None else end - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return False
+            self._event.wait(0.05 if remaining is None else min(0.05, remaining))
+        return True
+
+
 @dataclass
 class _Job:
     ident: str
     action: str
     client: str
     args: dict
-    cancel: threading.Event = field(default_factory=threading.Event)
+    cancel: _AuthorityCancel
     done: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
 
@@ -465,9 +505,20 @@ class MicroscopeService:
                 self._lease.acquire(client)
                 self._expire_handoff_locked()
                 self._manual_holder = client
+            self._renew_job_authority(client)
             with self._lock:
                 self._handoff_deadline = None
             yield
+
+    def _lease_deadline(self):
+        sampled_at = self._clock()
+        return sampled_at + self._lease.snapshot()["remaining_s"]
+
+    def _renew_job_authority(self, client):
+        deadline = self._lease_deadline()
+        with self._lock:
+            if self._job is not None and self._job.client == client:
+                self._job.cancel.renew(deadline)
 
     def _expire_handoff_locked(self):
         # The caller holds the raw lease lock, so acquisition cannot revive a
@@ -577,6 +628,7 @@ class MicroscopeService:
     def _dispatch(self, action, args, client, *, manual=False):
         self._arguments(action, args)
         self._sync_motor_fault()
+        deadline = self._lease_deadline()
         with self._lock:
             if not self._started or self._closed:
                 raise ServiceError(503, "Microscope is not connected")
@@ -593,7 +645,13 @@ class MicroscopeService:
                 raise ServiceError(409, "No configured focus home switch")
             if action == "set_focus_zero" and (not manual or self.config.home_switch):
                 raise ServiceError(403, "Manual zero requires an operator and no home switch")
-            job = _Job(uuid.uuid4().hex, action, client, copy.deepcopy(args))
+            job = _Job(
+                uuid.uuid4().hex,
+                action,
+                client,
+                copy.deepcopy(args),
+                _AuthorityCancel(self._clock, deadline),
+            )
             self._job = job
             self._seq += 1
             thread = threading.Thread(
@@ -609,12 +667,20 @@ class MicroscopeService:
                 raise
             return job.ident
 
+    def _check_job_locked(self, job):
+        if job is not self._job or job.cancel.is_set() or self._closed or self._stopping:
+            raise SideCaptureCancelled("Microscope command was stopped")
+        if self._fault:
+            raise RuntimeError(self._fault["message"])
+
     def _check_job(self, job):
-        with self._lock:
-            if job is not self._job or job.cancel.is_set() or self._closed or self._stopping:
-                raise SideCaptureCancelled("Microscope command was stopped")
-            if self._fault:
-                raise RuntimeError(self._fault["message"])
+        try:
+            with self._lease.control(job.client):
+                with self._lock:
+                    self._check_job_locked(job)
+        except ServiceError as error:
+            job.cancel.set()
+            raise SideCaptureCancelled("Microscope control lease was revoked") from error
 
     def _fresh_status(self, job=None):
         if job is not None:
@@ -672,9 +738,10 @@ class MicroscopeService:
             and (status.minimum, status.maximum) == self.config.focus_limits
         ):
             raise RuntimeError("Firmware did not confirm focus zero and limits")
-        with self._lock:
-            self._check_job(job)
-            self._reference = (status.session, status.reference_epoch)
+        with self._lease.control(job.client):
+            with self._lock:
+                self._check_job_locked(job)
+                self._reference = (status.session, status.reference_epoch)
         return {"focus_position_pulses": 0, "focus_zero_known": True}
 
     def _locator(self):
@@ -738,9 +805,10 @@ class MicroscopeService:
             completed.append(item)
         if current != target:
             raise RuntimeError("Requested objective was not confirmed")
-        with self._lock:
-            self._check_job(job)
-            self._objective_id = current
+        with self._lease.control(job.client):
+            with self._lock:
+                self._check_job_locked(job)
+                self._objective_id = current
         return {"objective_id": current, "switches": completed}
 
     def _autofocus(self, job, motor):
@@ -833,6 +901,7 @@ class MicroscopeService:
         finally:
             with self._lock:
                 if job.cancel.is_set() and outcome == "ok":
+                    self.stop("completion-authority-expired", 0)
                     outcome, message, result = "stopped", "Microscope command was stopped", None
                 if job is self._job:
                     self._last_command = dict(

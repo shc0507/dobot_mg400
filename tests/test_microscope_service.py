@@ -585,7 +585,8 @@ def test_reset_revokes_reference_and_never_rezeros_automatically(demo_rig):
     assert "FOCUS ENABLE" not in rig.port.commands[before:]
 
 
-def test_late_autofocus_enable_cannot_reenergize_after_stop(demo_rig, monkeypatch):
+@pytest.mark.parametrize("trigger", ["stop", "expiry_without_poll", "expired_same_id_reacquire"])
+def test_late_autofocus_enable_cannot_reenergize_after_stop(demo_rig, monkeypatch, trigger):
     import threading
 
     rig = demo_rig()
@@ -604,8 +605,17 @@ def test_late_autofocus_enable_cannot_reenergize_after_stop(demo_rig, monkeypatc
     assert response.status_code == 202 and entered.wait(1)
     job = rig.service._job
     try:
-        assert service_post(rig, "stop", {"wait_s": 1}, actor="other").json["stop"] == "confirmed"
-        assert not rig.port.sim.focus.enabled
+        if trigger == "stop":
+            assert (
+                service_post(rig, "stop", {"wait_s": 1}, actor="other").json["stop"] == "confirmed"
+            )
+            assert not rig.port.sim.focus.enabled
+        else:
+            rig.clock.now = 3.0
+            if trigger == "expired_same_id_reacquire":
+                assert service_post(rig, "heartbeat").status_code == 200
+                assert rig.service._stop_done.wait(1)
+                assert job.cancel.is_set()
         after_stop = len(rig.port.commands)
         resume.set()
         state = wait_command(rig, response.json["command_id"])
@@ -759,3 +769,63 @@ def test_autofocus_from_clearance_at_limit_endpoint_uses_a_bounded_window(demo_r
             position += int(text.split()[-1])
             assert -120 <= position <= 0
     assert position == state["focus_position_pulses"]
+
+
+def test_heartbeat_renews_live_job_deadline_before_queued_enable(demo_rig, monkeypatch):
+    import threading
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    entered, resume = threading.Event(), threading.Event()
+    enable = rig.service._motor.focus_enable
+
+    def delayed_enable(**kwargs):
+        entered.set()
+        assert resume.wait(2)
+        return enable(**kwargs)
+
+    monkeypatch.setattr(rig.service._motor, "focus_enable", delayed_enable)
+    response = service_post(rig, "command", {"action": "autofocus", "mode": "local"})
+    assert response.status_code == 202 and entered.wait(1)
+    job = rig.service._job
+    try:
+        rig.clock.now = 2.5
+        assert service_post(rig, "renew").status_code == 200
+        rig.clock.now = 3.1
+        assert not job.cancel.is_set()
+        resume.set()
+        state = wait_command(rig, response.json["command_id"])
+        assert state["last_command"]["result"] == "ok", state
+        assert state["focus_zero_known"]
+    finally:
+        resume.set()
+        assert job.done.wait(2)
+
+
+def test_expired_job_token_is_irreversible_and_wait_preserves_settle_time(monkeypatch):
+    from microscope import service as module
+
+    clock = SimpleNamespace(now=0.0, wall=0.0)
+    token = module._AuthorityCancel(lambda: clock.now, 1.0)
+
+    class Event:
+        marked = False
+
+        def set(self):
+            self.marked = True
+
+        def is_set(self):
+            return self.marked
+
+        def wait(self, seconds):
+            clock.wall += seconds
+            token.renew(2.0)
+
+    token._event = Event()
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock.wall))
+    assert token.wait(0.2) is False and clock.wall == pytest.approx(0.2)
+    clock.now = 2.0
+    assert token.is_set()
+    token.renew(100.0)
+    assert token.is_set() and token.wait(0.2) is True

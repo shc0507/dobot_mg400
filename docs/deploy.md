@@ -38,6 +38,7 @@
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
+| `mg400-gateway.service` | `gateway` | 可选的[只读 MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-gripper-collector.path` | 无 | 面板请求时启动夹爪采集 | 无 |
 
 服务手动启动，不开机自启。
@@ -134,7 +135,11 @@
 可选服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
 此组含 Flask、waitress，以及自有演示服务所需的 `stage` 和 `thermal` 组。
 把 `orch` 加入 `MG400_OPTIONAL_SERVICES`，运行安装器，配置[配方服务](orchestrator.md#http-服务)，再运行 `mg400ctl start orch`。
-只有选中 `orch` 时，安装器才准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
+选中 `orch` 时，安装器准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
+
+可选服务 `gateway` 使用 `gateway` 依赖组。把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再配置[只读网关](agent-gateway.md)。
+选中 `gateway` 时，安装器也会准备私密的 `runs` 目录，使首次配方运行前即可记录审计。安装器不会启动网关。
+保持 `MG400_GATEWAY_BIND=127.0.0.1`。每个 MCP 请求都必须携带 `MG400_GATEWAY_TOKEN`，包括回环请求。
 
 安装器按 `venv` 合并已启用服务的 `groups`，每个环境只同步 1 次。
 同步显式使用 `--no-default-groups`，不安装项目的默认依赖组。
@@ -257,7 +262,7 @@
 | `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl status` | 显示所有服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace`、`orch` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace`、`orch`、`gateway` 或 `all` |
 | `mg400ctl stop all` | 停止服务 |
 | `mg400ctl restart web` | 重启服务 |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |

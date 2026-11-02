@@ -38,6 +38,7 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-gripper-collector.service` | `collector` | Gripper USB collection | `dialout` |
 | `mg400-furnace.service` | `furnace` | Optional [furnace and gas page](furnace.en.md), port `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | Optional [recipe service](orchestrator.en.md#http-service), port `8772` | None |
+| `mg400-gateway.service` | `gateway` | Optional [read-only MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
 | `mg400-gripper-collector.path` | None | Start gripper collection when the panel requests it | None |
 
 Start services manually. They do not start automatically at boot.
@@ -134,7 +135,11 @@ The installer does not start the furnace.
 The optional `orch` service uses the `orchestrator` dependency group in `/opt/mg400/.venv`.
 This group includes Flask, waitress, and the `stage` and `thermal` groups for supported owned demos.
 Add `orch` to `MG400_OPTIONAL_SERVICES`, run the installer, and configure the [recipe service](orchestrator.en.md#http-service) before `mg400ctl start orch`.
-The installer prepares private `runs` and `zones` directories only when `orch` is selected. It does not invent zone configuration or start the service.
+The installer prepares private `runs` and `zones` directories when `orch` is selected. It does not invent zone configuration or start the service.
+
+The optional `gateway` service uses the `gateway` dependency group. Add `gateway` to `MG400_OPTIONAL_SERVICES` and configure the [read-only gateway](agent-gateway.en.md).
+Selecting `gateway` also prepares the private `runs` directory for audit records before any recipe run exists. The installer does not start the gateway.
+Keep `MG400_GATEWAY_BIND=127.0.0.1`. Every MCP request requires `MG400_GATEWAY_TOKEN`, including loopback requests.
 
 The installer combines enabled services' `groups` by `venv` and synchronizes each environment only 1 time.
 Synchronization explicitly uses `--no-default-groups` and does not install the project's default dependency groups.
@@ -257,7 +262,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 | `mg400ctl backup FILE.tar` | Save private host settings and data, excluding process locks |
 | `mg400ctl assets` | Check external asset content, ownership, and permissions |
 | `mg400ctl status` | Show the status of all services |
-| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, `furnace`, `orch`, or `all` |
+| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, `furnace`, `orch`, `gateway`, or `all` |
 | `mg400ctl stop all` | Stop services |
 | `mg400ctl restart web` | Restart services |
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |

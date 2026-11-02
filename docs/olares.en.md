@@ -29,6 +29,9 @@ If the optional recipe service must accept VPN clients, set `MG400_ORCH_BIND=100
 Send `MG400_ORCH_TOKEN` in the bearer header, never in the URL. Keep downstream token aliases private on the host.
 The default bind remains `127.0.0.1`. See the [recipe service](orchestrator.en.md#http-service) for access and recovery rules.
 
+Keep the optional [MCP gateway](agent-gateway.en.md) at `MG400_GATEWAY_BIND=127.0.0.1`, port `8773`. Do not open that port directly through the VPN.
+Remote MCP clients require an authenticated tunnel to loopback and the `MG400_GATEWAY_TOKEN` bearer credential.
+
 ## Get the code
 
 The repository is public. Olares reads the code from GitHub through HTTPS without credentials.

@@ -29,6 +29,9 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 通过 bearer 标头发送 `MG400_ORCH_TOKEN`，不得放入 URL。下游令牌别名必须保存在主机上，不得公开。
 默认监听地址仍为 `127.0.0.1`。访问与恢复规则见[配方服务](orchestrator.md#http-服务)。
 
+可选的 [MCP 网关](agent-gateway.md) 必须保持 `MG400_GATEWAY_BIND=127.0.0.1`，端口为 `8773`。不得通过 VPN 直接开放此端口。
+远程 MCP 客户端必须使用到回环接口的已认证隧道，并携带 `MG400_GATEWAY_TOKEN` Bearer 凭据。
+
 ## 获取代码
 
 仓库公开。Olares 通过 HTTPS 从 GitHub 读取代码，不需要凭据。

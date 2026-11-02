@@ -979,8 +979,8 @@ Goal: the services that use a Toupcam camera find the native library and may ope
 
 Steps:
 
-1. Installer option `--toupcam PATH` installs the library from H-12 as `/usr/local/lib/mg400/libtoupcam.so` (root, 0755), like `--go2rtc`.
-2. `config/udev/70-mg400-toupcam.rules.in` with the VID and PID from H-06, or the vendor's rules from H-12.
+1. Installer option `--toupcam PATH` installs the library from H-12 as `/usr/local/lib/mg400/libtoupcam.so` (root, 0755), like `--go2rtc`. It refuses a file whose SHA-256 differs from the H-12 value for version 59.30594.20260120.
+2. `config/udev/70-mg400-toupcam.rules.in` for the camera model C3CMOS05100KPA: `0547:1375` (USB 3) and `0547:1376` (USB 2), with `MODE="0660"` and the group placeholder. Do not install the vendor's `99-toupcam.rules`: it gives every local user read and write access to all `0547` and `04b4` devices.
 3. The units that use the camera (furnace, microscope) set `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`. Allow it in the unit tests.
 4. Tests and docs.
 
@@ -1588,7 +1588,7 @@ Owner: human · Size: S · Review: human · Deps: none
 
 Steps:
 
-1. Download the ToupTek SDK for Linux x64, version 59.30594.20260120, or update the wrapper and the library together.
+1. Download the ToupTek SDK for Linux x64, version 59.30594.20260120, or update the wrapper and the library together. That version is `https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip` (not linked from the download page). `linux/x64/libtoupcam.so` has SHA-256 `5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997`. Its `python/toupcam.py` matches `src/toupcam_camera/toupcam.py` apart from line endings.
 2. Check that its license allows this use.
 3. Keep `libtoupcam.so` and the vendor's udev rules outside Git. Give the library to the installer with `--toupcam`.
 

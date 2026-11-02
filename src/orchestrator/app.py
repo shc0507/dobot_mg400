@@ -367,6 +367,7 @@ class OrchestratorService:
         self.runners, self.plans = {}, {}
         self.owner = None
         self.resume_cancel = None
+        self.approval_generation = 0
         self.closing = self.started = False
         self.last_command = self.fault = None
         self.report = None
@@ -686,7 +687,15 @@ class OrchestratorService:
             raise ValueError("Demo supports only robot, stage, thermal and furnace services.")
         return recipe, plan
 
-    def run(self, prepared, client):
+    def approval_ticket(self, client):
+        """Fence slow approval validation/audit without retaining the control locks."""
+        with self.lease.control(client), self.lock, self.dashboard.lock:
+            self._ready()
+            if self.dashboard.busy():
+                raise ServiceError(409, "Dashboard safety requests are still draining.")
+            return self.approval_generation, self.dashboard.approval_generation
+
+    def run(self, prepared, client, *, approval_ticket=None):
         recipe, plan = prepared
 
         def start(job):
@@ -714,6 +723,16 @@ class OrchestratorService:
                 runner.start()
 
         with self.lease.control(client), self.lock:
+            if approval_ticket is not None:
+                # The reservation generation and admission gate are atomic with
+                # dashboard reserve(). No app lock is acquired by that method.
+                with self.dashboard.lock:
+                    if approval_ticket != (
+                        self.approval_generation,
+                        self.dashboard.approval_generation,
+                    ):
+                        raise ServiceError(409, "Approval control was revoked before dispatch.")
+                    return self._schedule("run", client, start, exclusive=True)
             return self._schedule("run", client, start, exclusive=True)
 
     def get_run(self, run_id):
@@ -782,6 +801,7 @@ class OrchestratorService:
 
     def _lost(self, reason):
         with self.lock:
+            self.approval_generation += 1
             if self.job is not None:
                 self.job["cancelled"].set()
             if self.current is not None and not self.current.wait_closed(0):

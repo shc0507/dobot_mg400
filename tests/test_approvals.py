@@ -209,6 +209,7 @@ def test_identity_and_display_fingerprint_are_required(rig):
 def test_catalog_and_host_policy_drift_refuse_dispatch(rig):
     service, client, _ = rig
     record = proposal(client).json
+    client.post("/api/heartbeat", headers=headers(), json={})
     path = service.catalog.directory / "wait.toml"
     path.write_text(path.read_text().replace("seconds=0.0", "seconds=0.1"))
     assert decision(client, record).status_code == 409
@@ -216,15 +217,16 @@ def test_catalog_and_host_policy_drift_refuse_dispatch(rig):
     assert service.job is None
 
 
-def test_missing_lease_consumes_authority_without_automatic_retry(rig):
+def test_missing_lease_refuses_before_a_decision_is_recorded(rig):
     service, client, _ = rig
     record = proposal(client).json
     assert decision(client, record).status_code == 409
     saved = service.approvals.get(record["id"])
-    assert saved["decision"] == "approved" and saved["dispatch"] == "not-confirmed"
-    assert client.post("/api/heartbeat", headers=headers(), json={}).status_code == 200
-    assert decision(client, record).status_code == 409
+    assert saved["decision"] == "pending" and saved["decider"] is None
     assert service.job is None
+    assert client.post("/api/heartbeat", headers=headers(), json={}).status_code == 200
+    assert decision(client, record).status_code == 202
+    settle(service)
 
 
 def test_concurrent_proposals_and_decisions_are_bounded_and_one_shot(rig):
@@ -264,6 +266,7 @@ def test_audit_failure_prevents_storage_or_execution(rig, monkeypatch):
     assert service.approvals.records == {}
     monkeypatch.setattr(service.store, "audit_call", original)
     record = proposal(client).json
+    client.post("/api/heartbeat", headers=headers(), json={})
     monkeypatch.setattr(service.store, "audit_call", fail)
     assert decision(client, record).status_code == 503
     assert service.approvals.records[record["id"]]["decision"] == "pending"
@@ -275,6 +278,7 @@ def test_expiry_during_validation_or_audit_cannot_dispatch(rig, monkeypatch, bou
     service, client, clock = rig
     record = proposal(client).json
     clock[0] += EXPIRY_S - 1
+    client.post("/api/heartbeat", headers=headers(), json={})
     if boundary == "prepare":
         original = service.catalog.read
 
@@ -567,3 +571,60 @@ def test_malformed_decision_is_rejected_before_state_change(rig, malformed):
     assert response.status_code == 400
     assert service.approvals.get(record["id"])["decision"] == "pending"
     assert service.job is None
+
+
+@pytest.mark.parametrize("loss", ["release", "expiry", "stop", "dashboard-reserve"])
+def test_slow_decision_audit_cannot_outlive_its_original_control(rig, monkeypatch, loss):
+    service, client, clock = rig
+    record = proposal(client).json
+    client.post("/api/heartbeat", headers=headers(), json={})
+    entered, release = threading.Event(), threading.Event()
+    original = service.store.audit_call
+    created = []
+
+    def no_clients(required, identity):
+        created.append(identity)
+        return {}
+
+    service.client_factory = no_clients
+
+    def delayed(caller, event, data):
+        if event == "approval.approved":
+            entered.set()
+            assert release.wait(3)
+        return original(caller, event, data)
+
+    monkeypatch.setattr(service.store, "audit_call", delayed)
+    replies = []
+
+    def decide_in_thread():
+        with client.application.test_client() as separate:
+            replies.append(decision(separate, record))
+
+    worker = threading.Thread(target=decide_in_thread)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        if loss == "release":
+            assert client.post("/api/release", headers=headers(), json={}).status_code == 200
+            assert client.post("/api/heartbeat", headers=headers(), json={}).status_code == 200
+        elif loss == "expiry":
+            clock[0] += 4
+            assert client.post("/api/heartbeat", headers=headers(), json={}).status_code == 200
+        elif loss == "stop":
+            assert client.post("/api/stop", headers=headers(), json={}).status_code == 200
+        else:
+            operation, fresh = service.dashboard.reserve("motion")
+            assert fresh
+            # Exercise initial acceptance with no worker publication. Even a
+            # subsequently cleared gate must not restore the earlier ticket.
+            operation["done"].set()
+            assert not service.dashboard.busy()
+    finally:
+        release.set()
+        worker.join(3)
+    assert not worker.is_alive()
+    assert len(replies) == 1 and replies[0].status_code == 409
+    assert service.approvals.get(record["id"])["dispatch"] == "not-confirmed"
+    assert service.job is None and service.current is None and created == []
+    assert decision(client, record).status_code == 409

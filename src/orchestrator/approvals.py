@@ -227,6 +227,7 @@ class Approvals:
                     400, "Confirm a person is in the lab and can reach a stop control."
                 )
             if approved:
+                ticket = self.service.approval_ticket(decider)
                 prepared, _, fingerprint = prepare(self.service, record["recipe"], record["params"])
                 if fingerprint != record["fingerprint"]:
                     raise ServiceError(
@@ -249,7 +250,9 @@ class Approvals:
                     self._audit(decider, "expired", record)
                     raise ServiceError(409, "The proposal expired before dispatch.")
                 try:
-                    record["command_id"] = self.service.run(prepared, decider)
+                    record["command_id"] = self.service.run(
+                        prepared, decider, approval_ticket=ticket
+                    )
                 except Exception:
                     record["dispatch"] = "not-confirmed"
                     self.records[identifier] = copy.deepcopy(record)

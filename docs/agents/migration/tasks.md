@@ -1019,7 +1019,7 @@ Goal: the stage service knows positions in millimetres and refuses automated mov
 Steps:
 
 1. `protocol.py`: parse `homed`, `limits`, `soft` and `awake`; commands `home`, `soft` and `awake`; `DemoTransport` simulates limit switches, homing and soft ranges.
-2. `/var/lib/mg400/stage.toml`, with values from H-07:
+2. `/var/lib/mg400/stage/stage.toml`, with values from H-07:
    - Per motor: `steps_per_mm` at a given microstep, and the soft limits `min_mm` and `max_mm` from home.
    - Named positions of one axis in millimetres from home. Insert: `load` and `furnace`.
    - Named poses: a position for each of the three axes, reached one axis at a time in the listed order. The imaging poses put the chip under the furnace window. The pose `furnace` is the inserted position from which `crucible.unload` starts.
@@ -1043,13 +1043,14 @@ Steps:
 
 1. Firmware (`firmware/three-motor-demo`): set every limit pin in `MotorPins.h` to `255`. Then `home` replies `ERROR: home failed: minimum limit not configured` and never moves. Keep the limit-switch code for a later board with switches. Add `zero` for the selected idle motor: set the position to 0, set `homed=1`, clear the soft range, reply `OK: <motor> zero`. Every existing command and reply stays unchanged. A reset, a power-up or a real microstep change still clears every zero and soft range.
 2. Host (`src/stage_controller`): `zero(motor)` sends `zero`, then `soft` with that axis's limits from `stage.toml`, and confirms both from status, like the end of `home`. Add the route `POST /api/motors/<m>/zero` with `{"confirm": true}` and the contract command `zero`. The axis must be connected and idle, with fresh feedback. The event log records the client that set the zero.
-3. Camera reference, optional per axis in `stage.toml`: `reference = {stream = "<go2rtc stream>", marker = <ArUco id>, pixel = [x, y], tolerance_px = <n>}`. The service reads one JPEG frame from go2rtc on loopback and finds the marker. It refuses `zero` when the marker is missing or farther than `tolerance_px` from `pixel`. `teach_reference(motor)` stores the marker's current pixel after an operator confirmation. Without a reference, `zero` needs the confirmation only.
+3. Camera reference, optional per axis in `stage.toml`: `reference = {stream = "<go2rtc stream>", marker = <ArUco id>, pixel = [x, y], tolerance_px = <n>}`. The service reads one JPEG frame from go2rtc on loopback and finds the marker. It refuses `zero` when the marker is missing or farther than `tolerance_px` from `pixel`. `teach_reference(motor)` stores the marker's current pixel after an operator confirmation through the page route `POST /api/motors/<m>/teach_reference`. Do not expose teaching through the service contract. Without a reference, contract `zero` still needs only `confirm: true`.
 4. Page: per axis, a "Set zero here" button with a confirmation, the reference camera image with the marker offset, and the zero state. With the old firmware, or with a board that has switches, the page keeps its current buttons.
 5. Tests with the demo transport and a fake frame source.
+6. Writable calibration: use `/var/lib/mg400/stage/stage.toml` as `DEFAULT_CONFIG`. The installer creates `/var/lib/mg400/stage` with mode `0700` and owner `1000:1000`. If the legacy `/var/lib/mg400/stage.toml` exists, print an operator move instruction without moving it. Test the directory permissions and preservation of the old file. Update the CLI help, stage-panel guides, deployment directory table, STG-02 path, H-07 output, and migration data table together.
 
 Done when: P-CHECKS pass; the sketch compiles for `arduino:avr:uno` (report the command and output).
 
-Docs: the firmware `README.md` and `README.en.md` (no switches, `zero`), `stage-panel.md` and `.en.md` (zero procedure, reference setup).
+Docs: the firmware `README.md` and `README.en.md` (no switches, `zero`), `stage-panel.md` and `.en.md` (zero procedure, reference setup), `deploy.md` and `.en.md` (private calibration directory).
 
 Notes: H-07 teaches the references and sets the zero. H-18 validates on hardware.
 
@@ -1535,7 +1536,7 @@ Steps:
 5. With the furnace cold, measure the soft limits of each axis: the travel that keeps the crucible clear of the tube and the window.
 6. Measure the poses: each imaging pose (the positions of all three axes that put the chip under the window, checked with a test chip in the microscope view) and the pose `furnace`. Write down the axis order that reaches each pose without a collision.
 
-Output: the values for `/var/lib/mg400/stage.toml`, with the references, on the issue. Unblocks H-18.
+Output: the values for `/var/lib/mg400/stage/stage.toml`, with the references, on the issue. Unblocks H-18.
 
 ### H-08 · Robot workspace measurements
 

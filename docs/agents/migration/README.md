@@ -193,13 +193,13 @@ Data on the host:
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus and reference-view data | MIC-05 |
 | `/var/lib/mg400/stations.toml` | Taught robot stations | ORC-02 |
 | `/var/lib/mg400/tool.toml` | Gripper tool offset | ORC-02 |
-| `/var/lib/mg400/stage.toml` | Stage steps per mm, soft limits, named positions and poses | STG-02 |
+| `/var/lib/mg400/stage/stage.toml` | Stage steps per mm, soft limits, named positions, poses and camera references | STG-02, STG-03 |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions | THM-03 |
 | `/var/lib/mg400/furnace/state.json` | Running sequence state | FUR-03 |
 | `/var/lib/mg400/runs/` | Run store: SQLite index and run files | ORC-01 |
 | `/var/lib/mg400/recordings/` | Furnace video before archiving | FUR-05 |
 
-All of these use owner `1000:1000`, directories `0750`, files `0640` or `0600`. The installer creates the directories. OPS-03 adds them to backup and host migration.
+All of these use owner `1000:1000` and files `0640` or `0600`. Directories use `0750`, except the private stage calibration directory `/var/lib/mg400/stage`, which uses `0700`. The installer creates the directories. OPS-03 adds them to backup and host migration.
 
 ### 4.3 Instrument service contract v1
 

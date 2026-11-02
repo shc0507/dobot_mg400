@@ -1037,6 +1037,10 @@ size = "L"
 review = "human"
 deps = ["STG-02"]
 writes = [
+  "deploy/install.py",
+  "tests/test_deploy_install.py",
+  "docs/deploy.md",
+  "docs/deploy.en.md",
   "firmware/three-motor-demo/**",
   "src/stage_controller/**",
   "tests/test_stage_*.py",

@@ -1219,3 +1219,68 @@ def test_proxy_other_execute_cannot_override_matching_group_permissions(
     installed_caddy(host, module, monkeypatch, group=1000, rights=rights)
     assert host.install() == 1
     assert not host.data.exists()
+
+
+@pytest.fixture
+def inventory_udev(module, host, monkeypatch):
+    """Use the shipped templates with an isolated host and a fake NSS group."""
+    shutil.copytree(ROOT / "config/udev", host.code / "config/udev")
+    monkeypatch.setattr(
+        module.main.__globals__["grp"],
+        "getgrgid",
+        lambda gid: SimpleNamespace(gr_name="lab1000") if gid == 1000 else None,
+    )
+    return host.code / "config/udev"
+
+
+@pytest.mark.parametrize("furnace", [False, True])
+def test_inventory_udev_install_selects_only_registered_enabled_services(
+    host, inventory_udev, furnace
+):
+    if furnace:
+        select_optional(host, "furnace")
+    assert host.install() == 0
+    expected = {"camera", "collector", "stage"} | ({"furnace"} if furnace else set())
+    rules = host.root / "etc/udev/rules.d"
+    assert {p.name for p in rules.iterdir()} == {f"70-mg400-{name}.rules" for name in expected}
+    for name in expected:
+        target = rules / f"70-mg400-{name}.rules"
+        source = inventory_udev / (target.name + ".in")
+        assert target.read_text() == source.read_text().replace("@SERVICE_GROUP@", "lab1000")
+        assert mode(target) == 0o644 and host.owner(target) == (0, 0)
+    assert [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"] == [
+        ["udevadm", "control", "--reload-rules"],
+        ["udevadm", "trigger", "--subsystem-match=usb"],
+    ]
+
+
+def test_inventory_udev_dry_run_writes_nothing_and_executes_no_udev(host, inventory_udev):
+    select_optional(host, "furnace")
+    assert host.install("--dry-run") == 0
+    assert not host.settings.exists()
+    assert not (host.root / "etc/udev").exists()
+    assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]
+    output = host.out.getvalue()
+    for name in ("camera", "collector", "stage", "furnace"):
+        assert f"70-mg400-{name}.rules" in output
+    for name in ("thermal", "microscope"):
+        assert f"70-mg400-{name}.rules" not in output
+    assert "Would run: udevadm control --reload-rules" in output
+    assert "Would run: udevadm trigger --subsystem-match=usb" in output
+
+
+@pytest.mark.parametrize(
+    "bad_rule",
+    [
+        'SUBSYSTEM=="tty", MODE="0660", GROUP="@SERVICE_GROUP@"',
+        'SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0666"',
+        '# ATTR{idVendor}=="1234", ATTR{idProduct}=="5678", MODE="0660", GROUP="@SERVICE_GROUP@"',
+    ],
+)
+def test_every_udev_permission_rule_must_identify_device_and_group(host, optional_udev, bad_rule):
+    valid_rule = optional_udev.read_text()
+    optional_udev.write_text(bad_rule if bad_rule.startswith("#") else valid_rule + bad_rule + "\n")
+    assert host.install() == 1
+    assert not host.data.exists()
+    assert not (host.root / "etc/udev").exists()
+    assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]

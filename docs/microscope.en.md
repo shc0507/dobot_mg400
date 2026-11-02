@@ -5,7 +5,7 @@
 The `microscope` package provides autofocus, objective switching, image calibration, and side-camera capture on Linux.
 It runs without a desktop or Tk.
 The contract service enforces focus-reference, travel-limit, and turret-clearance checks.
-The browser panel is not yet available. Direct algorithm calls do not acquire the service lease or provide its interlocks.
+The browser panel uses the service for daily controls. Direct algorithm calls do not acquire the service lease or provide its interlocks.
 Before real motion, an operator must establish safe focus travel and clearance from the furnace window.
 
 ## Linux environment
@@ -51,9 +51,10 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
 
 Real startup requires reference-aware firmware and explicit focus settings.
-Use the measurements from `H-06`; do not copy demo limits to hardware.
-All requests retain the shared token, Host, Origin, and forwarded-header checks.
-Without a token, only loopback Host values without forwarded headers are accepted.
+Use the measurements from `H-06`. Do not copy demo limits to hardware.
+All requests retain the shared Host, Origin, and forwarded-header checks.
+Protected data and action routes also require the configured token.
+Without a token, the service accepts only loopback Host values without forwarded headers.
 POST requests require `Content-Type: application/json` and `X-MG400-Client`.
 The control lease lasts 3 seconds and must be renewed during work.
 
@@ -74,13 +75,14 @@ A full autofocus scan uses a window centered inside the measured range.
 A local scan uses a smaller window near the current position.
 The service first moves the scan center inside the limits when clearance is at a range endpoint.
 Snapshot creates a new PNG under the run root and refuses an existing destination.
-Its returned `captured_at` is the frame's monotonic receive time, not sensor exposure time.
+Its returned `captured_at` preserves the source clock. The real main camera uses host wall time, while demo frames use monotonic time.
+These values do not measure sensor exposure time.
 
 ## Focus zero and control handoff
 
 With a configured home switch, `home_focus` establishes zero and installs the configured firmware limits.
 Without a switch, an operator must place focus at the verified clearance position before setting zero.
-That position is `0`; the service does not move to an unknown clearance position automatically.
+That position is `0`. The service does not move to an unknown clearance position automatically.
 
 For the operator flow, send an empty object to `POST /api/manual/heartbeat` to acquire manual control.
 Use `POST /api/manual/renew` to retain it.
@@ -100,6 +102,41 @@ Unknown command or stop outcomes latch a fault and lock ordinary commands.
 Stop remains available, but successful stop does not clear that fault.
 After resolving the cause, reconnect through a controlled service restart and establish zero again.
 Never retry unknown motion automatically or re-establish zero from a cached position.
+
+## Browser panel
+
+Open `/` under the configured base path. For the demo command above, open `http://127.0.0.1:8770/`.
+The fixed page and assets contain no service state or access token.
+If the service requires a token, enter it and select **Connect**.
+The page keeps the token in memory and sends it in the `Authorization` header. It does not put tokens in URLs or browser storage.
+
+Select **Acquire control** before an ordinary action. The page renews its existing lease while connected.
+An existing lease held by another client blocks acquisition. The page does not take over automation control.
+Objective buttons use IDs from loaded calibration references. Missing or invalid references leave these buttons unavailable.
+Install valid reference images, then restart the service to reload cached calibration metadata.
+Full and local autofocus, bounded focus jog, and snapshot use the contract commands above.
+Read the command result before another action. **Stop** remains available without a controlling lease.
+
+Without a home switch, select **Set focus zero…** only after placing focus at the verified clearance position.
+Accept the dialog only after you check the physical position. The page releases its idle ordinary lease, acquires manual control, and submits the zero command.
+After successful completion, it releases manual control and immediately acquires ordinary control within the remaining handoff deadline.
+Any failed request stops this sequence. Reconnect explicitly after access or lease failure.
+With a configured home switch, **Home focus…** asks for confirmation before homing.
+Closing the page stops local requests and renewals. Lease expiry then stops and disables both motors and invalidates zero.
+
+| Preview route | Result |
+| --- | --- |
+| `GET /api/panel-info` | Calibrated objective IDs, calibration availability, and home-switch configuration. |
+| `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | Authenticated MJPEG views from the existing camera owners. |
+| `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG, or `204` when no newer frame is available. |
+
+Preview requests accept an optional nonnegative `after_id` cursor.
+Each JPEG carries `X-Frame-Id` and `X-Captured-At` headers. Main-camera timestamps use host wall time, while side-camera timestamps use monotonic receive time.
+Do not compare timestamps across cameras or treat them as sensor exposure times.
+The browser uses authenticated fetch requests and discards stale preview results.
+At most 4 MJPEG responses can remain open. Extra streams return `503`. Close another preview before reconnecting.
+This limit leaves workers available for control requests, but does not guarantee a stop response time.
+Preview reads do not acquire or renew control, and shutdown waits for accepted reads before closing camera owners.
 
 ## Python interfaces
 
@@ -159,11 +196,13 @@ Keep the cameras on their fixed ports and never reset the shared USB hub.
 | --- | --- |
 | `MG400_CAMERA_DEVICES` | Stable device paths in the order used by the camera preview installer. |
 | `MG400_MICROSCOPE_SIDE_STREAM` | The configured go2rtc stream for the side camera. There is no default stream. |
-| `MG400_CAMERA_CAPTURE_SIZES` | Optional comma-separated `WIDTHxHEIGHT` values, with 1 value for each configured device. |
+| `MG400_CAMERA_MODES` | Optional comma-separated `WIDTHxHEIGHT@FPS` values, with 1 value for each configured device. |
+| `MG400_CAMERA_CAPTURE_SIZES` | Legacy comma-separated `WIDTHxHEIGHT` values, with 1 value for each configured device. |
 
 Map the side-camera device path to its stream before enabling capture.
-When the size list is empty, the selected side stream uses `3840x2160`.
-Other camera streams retain `640x480`.
+Configure only one mode or size list. The installer rejects configurations with both lists.
+Explicit values control each stream. When both lists are empty, the selected side stream uses `3840x2160@30`.
+Other camera streams retain `640x480@30`. Large streams start on demand.
 `USBCamera` expects `3840x2160` by default and rejects frames with a different size.
 Changing capture dimensions also requires compatible reference images and an explicit expected resolution in the caller.
 The supervised `H-21` checks must cover USB 2 bandwidth and microscope operation before lab use.

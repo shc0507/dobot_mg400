@@ -24,11 +24,11 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.lease import Lease
 
-from .aruco_locator import Locator
+from .aruco_locator import REFERENCES, Locator
 from .aruco_switch import OBJECTIVE_ORDER, ArucoObjectiveSwitcher, SwitchSettings, select_objective
 from .autofocus import AutofocusCancelled, AutoFocuser
 from .motors import CommandRejected, MotorController
-from .paths import private_open, run_path
+from .paths import calibration_path, private_open, run_path
 from .side_capture import SideCaptureCancelled
 from .sim import MicroscopeSimulator
 
@@ -293,6 +293,13 @@ class _DemoCamera:
         return self._serial, captured_at, cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
 
+@dataclass(frozen=True)
+class PreviewFrame:
+    frame_id: int
+    captured_at: float
+    jpeg: bytes
+
+
 class MicroscopeService:
     def __init__(
         self,
@@ -327,6 +334,10 @@ class MicroscopeService:
         self._clock, self._wall_clock = clock, wall_clock
         self._lock = threading.RLock()
         self._lifecycle = threading.RLock()
+        self._frame_condition = threading.Condition(self._lock)
+        self._frame_reads = 0
+        self._panel_info_lock = threading.Lock()
+        self._panel_info_cache = None
         self._lease = Lease(self.config.lease_seconds, clock=clock, on_expire=self.on_lease_expired)
         self.lease = _ContractLease(self)
         self._manual_holder = None
@@ -412,6 +423,138 @@ class MicroscopeService:
                 last_result=copy.deepcopy(self._last_result),
                 manual_client=self._manual_holder,
             )
+
+    def panel_info(self):
+        """Load fixed calibration metadata once, without opening a camera or moving."""
+        with self._lock:
+            if not self._started or self._closed:
+                raise ServiceError(503, "Microscope service is closed")
+            if self._panel_info_cache is not None:
+                return copy.deepcopy(self._panel_info_cache)
+        if not self._panel_info_lock.acquire(blocking=False):
+            raise ServiceError(503, "Microscope calibration metadata is loading")
+        try:
+            with self._lock:
+                if not self._started or self._closed:
+                    raise ServiceError(503, "Microscope service is closed")
+                if self._panel_info_cache is not None:
+                    return copy.deepcopy(self._panel_info_cache)
+            try:
+                if not self.demo:
+                    # The pinned locator consumes four PNG references. Bound their
+                    # declared dimensions before OpenCV allocates decoded images.
+                    for name in REFERENCES.values():
+                        path = calibration_path("side_camera_images") / name
+                        if (
+                            path.is_symlink()
+                            or not path.is_file()
+                            or path.stat().st_size > 64 * 1024 * 1024
+                        ):
+                            raise ValueError("A calibration reference is missing or invalid")
+                        with path.open("rb") as stream:
+                            header = stream.read(24)
+                        if (
+                            len(header) != 24
+                            or header[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+                        ):
+                            raise ValueError("Calibration references must be bounded PNG images")
+                        width, height = (
+                            int.from_bytes(header[16:20], "big"),
+                            int.from_bytes(header[20:24], "big"),
+                        )
+                        if not width or not height or width * height > 16_000_000:
+                            raise ValueError(
+                                "Calibration reference dimensions exceed the image limit"
+                            )
+                identifiers = sorted(set(self._locator().references) & set(OBJECTIVE_ORDER))
+                if not identifiers:
+                    raise ValueError("No calibrated objectives are available")
+                error = None
+            except Exception as problem:
+                identifiers, error = [], str(problem)
+            value = dict(
+                objective_ids=identifiers,
+                calibration_available=bool(identifiers),
+                calibration_error=error,
+                home_switch=self.config.home_switch,
+            )
+            with self._lock:
+                if self._closed or not self._started:
+                    raise ServiceError(503, "Microscope service closed during metadata loading")
+                self._panel_info_cache = value
+                return copy.deepcopy(value)
+        finally:
+            self._panel_info_lock.release()
+
+    def read_frame(self, camera, *, after_id=None, timeout=0.5):
+        """Read and encode one bounded copy from an already owned camera.
+
+        Frame IDs and timestamp domains are unchanged: the main camera uses its
+        capture wall time and the side camera uses its monotonic receive time.
+        """
+        if not isinstance(camera, str) or camera not in ("microscope", "side"):
+            raise ValueError("Unknown microscope camera")
+        if after_id is not None and (type(after_id) is not int or not 0 <= after_id < 2**63):
+            raise ValueError("after_id must be a nonnegative integer")
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 <= timeout <= 0.5
+        ):
+            raise ValueError("Frame timeout must be within 0..0.5 seconds")
+        with self._frame_condition:
+            if self._closed or not self._started:
+                raise ServiceError(503, "Microscope service is closed")
+            owner = self._camera if camera == "microscope" else self._side
+            if owner is None or not owner.is_open:
+                raise ServiceError(503, "Microscope camera is unavailable")
+            if self._frame_reads >= 4:
+                raise ServiceError(503, "Microscope frame readers are busy")
+            self._frame_reads += 1
+        try:
+            packet = owner.get_frame_packet(
+                after_id=after_id, wait=timeout > 0, timeout=timeout, copy=True
+            )
+            with self._frame_condition:
+                if self._closed or not self._started:
+                    raise ServiceError(503, "Microscope service closed during frame read")
+            if packet is None:
+                return None
+            frame_id, captured_at, pixels = packet
+            if (
+                type(frame_id) is not int
+                or frame_id < 0
+                or isinstance(captured_at, bool)
+                or not isinstance(captured_at, (int, float))
+                or not math.isfinite(captured_at)
+                or not isinstance(pixels, np.ndarray)
+                or pixels.dtype != np.uint8
+                or pixels.ndim not in (2, 3)
+                or not pixels.shape[0]
+                or not pixels.shape[1]
+                or pixels.shape[0] * pixels.shape[1] > 16_000_000
+                or (pixels.ndim == 3 and pixels.shape[2] not in (1, 3, 4))
+            ):
+                raise ServiceError(503, "Microscope camera returned an invalid frame")
+            if after_id is not None and frame_id <= after_id:
+                return None
+            ok, encoded = cv2.imencode(".jpg", pixels, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok or encoded.nbytes > 16_777_216:
+                raise ServiceError(503, "Microscope preview exceeds the frame limit")
+            jpeg = encoded.tobytes()
+            with self._frame_condition:
+                if self._closed or not self._started:
+                    raise ServiceError(503, "Microscope service closed during frame read")
+                return PreviewFrame(frame_id, float(captured_at), jpeg)
+        except ServiceError:
+            raise
+        except Exception as error:
+            raise ServiceError(503, "Microscope camera read failed") from error
+        finally:
+            with self._frame_condition:
+                self._frame_reads -= 1
+                self._frame_condition.notify_all()
 
     def start(self, *, background=True):
         with self._lifecycle:
@@ -997,6 +1140,11 @@ class MicroscopeService:
             failures = [] if outcome == "confirmed" else ["Motor shutdown is unconfirmed"]
             if job is not None and not job.done.wait(3):
                 failures.append("Microscope command did not stop")
+            with self._frame_condition:
+                if not self._frame_condition.wait_for(lambda: self._frame_reads == 0, timeout=2.0):
+                    # Keep both owners intact until the accepted read returns.
+                    # A later explicit close can finish cleanup; no new read is admitted.
+                    raise RuntimeError("Microscope frame reads are still stopping")
             for device in (self._side, self._camera):
                 if device is not None:
                     try:

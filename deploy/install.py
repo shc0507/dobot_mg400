@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import assets  # noqa: E402
+
 from cameras.config import camera_configuration  # noqa: E402
 from cameras.config import camera_devices as camera_devices  # noqa: E402
 

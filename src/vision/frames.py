@@ -11,8 +11,9 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
-from cameras.config import camera_configuration
 from PIL import Image, ImageOps
+
+from cameras.config import camera_configuration
 
 _MAX_BYTES = 8 * 1024 * 1024
 _MAX_PIXELS = 16_000_000

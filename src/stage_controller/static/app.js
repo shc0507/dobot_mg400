@@ -201,6 +201,19 @@ function refreshControls() {
     const valid = speedValid && stepsValid;
     $('.home-button', card).disabled = referenceBlocked || !motor?.available
       || motor?.homing_available !== true;
+    $('.home-button', card).hidden = motor?.zero_available === true && motor?.homing_available !== true;
+    const zero = $('.zero-button', card);
+    zero.hidden = motor?.zero_available !== true || motor?.homing_available === true;
+    zero.disabled = referenceBlocked || !motor?.available || motor?.zero_available !== true
+      || state?.feedback_fresh !== true;
+    $('.reference-camera', card).hidden = !motor?.reference;
+    $('.reference-refresh', card).disabled = !connected || authWait || referencePending || !motor?.reference;
+    $('.reference-teach', card).disabled = zero.disabled || !motor?.reference;
+    if (!connected || authWait || !motor?.reference) {
+      $('.reference-image', card).src = '';
+      $('.reference-image', card).hidden = true;
+      $('.reference-offset', card).textContent = '';
+    }
     for (const button of positionButtons.get(card.dataset.motor) || []) {
       button.disabled = referenceBlocked || !motor?.available || motor?.automation_ready !== true;
     }
@@ -347,6 +360,8 @@ function render(next) {
     $('.motor-status', card).textContent = !connected ? 'Offline' : moving ? 'Moving' : cooling ? 'Cooldown' : 'Ready';
     const badge = $('.homing-status', card);
     badge.textContent = !connected ? 'Homing unavailable' : homing ? 'Homing…'
+      : motor.zero_available === true && motor.homing_available !== true
+        ? motor.automation_ready === true ? 'Zero confirmed' : 'Zero required'
       : motor.homing_available !== true ? 'Homing unavailable'
       : motor.automation_ready === true ? 'Homed' : 'Home required';
     badge.classList.toggle('is-homed', connected && motor.automation_ready === true);
@@ -456,6 +471,36 @@ $('#connect').addEventListener('click', async () => {
 });
 
 for (const card of cards) {
+  const zero = $('.zero-button', card);
+  zero.addEventListener('click', () => {
+    if (zero.disabled || motionBlocked() || !window.confirm('Confirm that this axis is at its safe zero position.')) return;
+    referenceCommand(zero, `/motors/${card.dataset.motor}/zero`, {confirm: true});
+  });
+  const teach = $('.reference-teach', card);
+  teach.addEventListener('click', () => {
+    if (teach.disabled || motionBlocked() || !window.confirm('Confirm that this axis is at its safe zero position. Replace the camera reference?')) return;
+    referenceCommand(teach, `/motors/${card.dataset.motor}/teach_reference`, {confirm: true});
+  });
+  const refresh = $('.reference-refresh', card);
+  refresh.addEventListener('click', async () => {
+    if (refresh.disabled) return;
+    refresh.disabled = true;
+    const sent = accessToken;
+    const connection = state?.port;
+    try {
+      const view = await api(`/motors/${card.dataset.motor}/reference`);
+      if (sent !== accessToken || !online || !state?.connected || connection !== state.port) return;
+      const image = $('.reference-image', card);
+      image.src = typeof view.image === 'string' && view.image.startsWith('data:image/jpeg;base64,') ? view.image : '';
+      image.hidden = !image.src;
+      $('.reference-offset', card).textContent = Array.isArray(view.offset_px)
+        ? `Marker offset: ${view.offset_px.map(value => Number(value).toFixed(1)).join(', ')} px` : '';
+    } catch (error) {
+      $('.reference-image', card).src = '';
+      $('.reference-image', card).hidden = true;
+      $('.reference-offset', card).textContent = error.message;
+    } finally { refreshControls(); }
+  });
   const home = $('.home-button', card);
   home.addEventListener('click', () => referenceCommand(home, `/motors/${card.dataset.motor}/home`, {}));
   const slider = $('.speed-slider', card);

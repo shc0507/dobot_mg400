@@ -23,7 +23,7 @@ orchestrator = [
   { include-group = "thermal" },
   { include-group = "furnace" },
 ]
-stage = ["flask>=3.1,<4", "pyserial>=3.5,<4", "waitress>=3.0.2,<4"]
+stage = ["flask>=3.1,<4", "pyserial>=3.5,<4", "waitress>=3.0.2,<4", "numpy>=1.26,<3", "opencv-python-headless>=4.9,<5"]
 tools = ["pysmb>=1.2.15,<2"]
 thermal = [
   "fastapi>=0.115,<1",

@@ -74,6 +74,10 @@ class StageContract:
                     dict(microstep=parameter("integer", enum=list(MICROSTEP_MODES)))
                 ),
                 "home": spec(dict(motor=motor)),
+                "zero": spec(dict(motor=motor, confirm=parameter("boolean", const=True))),
+                "teach_reference": spec(
+                    dict(motor=motor, confirm=parameter("boolean", const=True))
+                ),
                 "awake": spec(
                     dict(motor=motor, seconds=parameter("number", minimum=0, maximum=60))
                 ),
@@ -89,6 +93,8 @@ class StageContract:
 
     def manual(self, operation, *args):
         """Exclude new manual actuation atomically with lease acquisition."""
+        if operation in ("zero", "teach_reference"):
+            return getattr(self, operation)(*args)
         with self.lease.control("stage-panel", require_holder=False):
             if self.lease.snapshot()["holder"] is not None:
                 raise ControllerError("Stage is controlled by automation")
@@ -167,6 +173,22 @@ class StageContract:
         if set(args) != expected:
             raise ValueError("Command arguments must match the discovery schema.")
         entry = {"id": uuid.uuid4().hex, "action": action, "client": client}
+        if action in ("zero", "teach_reference"):
+            try:
+                getattr(self, action)(**args, client=client)
+            except (ValueError, ControllerError) as exc:
+                with self._lock:
+                    self._finish_command(
+                        entry, "failed" if isinstance(exc, LinkError) else "rejected", str(exc)
+                    )
+                if isinstance(exc, ControllerError):
+                    raise ServiceError(
+                        503 if isinstance(exc, LinkError) else 409, str(exc)
+                    ) from exc
+                raise
+            with self._lock:
+                self._finish_command(entry, "ok", "Reference operation confirmed.")
+            return entry["id"]
         with self.lease.control(client, require_holder=not specs[action]["any_client"]), self._lock:
             if (
                 self._error is not None

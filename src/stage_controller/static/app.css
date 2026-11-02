@@ -155,3 +155,8 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .port-controls #connect { grid-column: 1 / -1; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+.reference-camera { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: .5rem; }
+.reference-camera[hidden], .reference-image[hidden], .zero-button[hidden], .home-button[hidden] { display: none; }
+.reference-image { width: 100%; max-height: 16rem; object-fit: contain; }
+.reference-offset { flex-basis: 100%; }

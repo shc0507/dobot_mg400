@@ -716,6 +716,8 @@ Steps:
 4. `still(camera)` in `src/vision/frames.py`, with the frame size check against the configured mode.
 5. Tests and docs.
 
+Implementation paths: share the camera device and mode parser through `src/cameras/config.py`. Keep it stdlib-only and free of import-time side effects so the system Python installer, preview server and vision source can use it. Pass the entrypoint's settings to the frame source in `src/vision/__main__.py`. These paths do not change the mode list or capture policy. Preserve MIC-02's selected side-stream default of 3840x2160@30 when both mode settings are empty. Other streams default to 640x480@30. An explicit mode or legacy size list specifies every stream, and the two lists remain mutually exclusive.
+
 Done when: P-CHECKS pass.
 
 Notes: H-21 runs all streams together on the hardware and checks the kernel log for USB bandwidth errors. If the link is over budget, the owner chooses: a smaller side camera mode, or a camera on another host USB port after the hardware freeze. Aim for about 4 pixels per module, about 70 pixels across a 17-module Micro QR label.

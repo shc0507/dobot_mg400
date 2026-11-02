@@ -64,7 +64,7 @@ Phase 5 adds the lab dashboard and the agent gateway. Phase 6 (closed-loop optim
 - The robot reaches the crucible when the Insert axis brings it to the load position.
 - The microscope sits above a transparent window in the furnace top. The stage moves the crucible under the window, and the microscope watches the chip inside the furnace. The robot never goes under the microscope.
 - The camera setup is not final. Which camera took the YOLO training images is not known.
-- Olares has an RTX 5090 with 32 GB. Other Olares apps (for example an LLM) may share it.
+- Olares has an RTX 5090 Laptop GPU with 24 GB, driver 595.84 (H-13, 2026-11-02). Other apps share it: Isaac Sim and a Python process used about 2.5 GB during the check. `/opt` has 74 GB free and `/var` has 1.5 TB free.
 - Every lab USB device is on one self-powered hub on one Olares port, the Toupcam camera on its USB 3 side (owner, 2026-11-02). The device table is on the H-03 issue. Each camera keeps its hub port: the three AC410 cameras report one serial number, so their stable names come from the port.
 - The AC410 on hub port 12.1.3 is the microscope side camera. The camera preview's go2rtc owns it, and the microscope reads it through go2rtc.
 - The stage has no limit switches. An operator sets each axis's zero by hand, checked against a camera reference (STG-03, H-07).

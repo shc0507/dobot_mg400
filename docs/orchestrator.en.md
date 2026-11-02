@@ -120,6 +120,8 @@ A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter wit
 | `robot.pick` | `station`, `grip` | Robot |
 | `robot.place` | `station`, `release` | Robot |
 | `robot.transfer` | `from`, `to`, `grip`, `release` | Robot |
+| `crucible.load` | `from_slot`, optional limits below | Robot, stage, furnace |
+| `crucible.unload` | `to_slot`, optional limits below | Robot, stage, furnace, thermal |
 | `sample.record` | `chip_id`, `note` | None |
 
 The example in `recipes/example-rehearsal.toml` enables the simulated robot, moves it, records a sample, and stops it. It contains no gas or heating command. Custom skills receive a revocable context with service clients, run records, and the zone manager. Named zone entry requires explicit configuration and checks the configured entry conditions.
@@ -348,9 +350,69 @@ The skill enters each named station zone before moving toward it. During a trans
 
 The operator must verify that each taught approach height clears its working zone and that every route is unobstructed. The minimum 10 mm approach and workspace bounds do not prove physical clearance. Software waypoint checks do not validate collisions or joint reachability.
 
+## Crucible load and unload
+
+`crucible.load` moves a chip from a taught tray station to `crucible-load`, then inserts the crucible.
+`crucible.unload` withdraws the crucible, waits for a cold named thermal region, then transfers the chip to a taught tray station.
+The tray station must differ from `crucible-load`. That station must use zone `crucible-load`.
+Do not declare the entire composite step with `zone = "crucible-load"`. Its robot phase releases that zone before Insert can move.
+
+These typed recipe parameters override explicit settings. The default parameter value `-1` means unset and requires the corresponding setting.
+It is never a safety limit. Missing, nonfinite, or invalid values refuse the step before any command.
+
+| Parameter | Setting | Requirement |
+| --- | --- | --- |
+| `load_max_c` | `MG400_ORCH_CRUCIBLE_LOAD_MAX_C` | Nonnegative maximum furnace PV for load |
+| `unload_max_c` | `MG400_ORCH_CRUCIBLE_UNLOAD_MAX_C` | Nonnegative maximum crucible-region temperature for unload |
+| `grip` | `MG400_ORCH_CRUCIBLE_GRIP` | Integer from 0 to 1000 |
+| `release` | `MG400_ORCH_CRUCIBLE_RELEASE` | Integer from 0 to 1000, greater than `grip` and the measured contact width |
+| `awake_s` | `MG400_ORCH_CRUCIBLE_AWAKE_S` | Greater than 0 and at most 60 seconds |
+| `max_age_s` | `MG400_ORCH_CRUCIBLE_MAX_AGE_S` | Positive maximum measured-data age |
+
+The required pre-grip opening, measured tool offset, explicit workspace, and taught routes follow the station-transfer rules.
+Both routes and every tool conversion are checked before Insert or the robot receives a command.
+All robot moves retain `speed = 1`, measured arrival checks, and `contact`, `arrived`, and `dropped` checks.
+The skill never homes, initializes, enables, unlocks, or retries a device.
+
+Every stage axis must have a fresh home reference and soft limits at its current microstep.
+The read-only `automation.at_poses` field compares each configured pose with measured positions:
+
+```json
+{"furnace":{"matched":false,"axes":{"bottom":true,"top":true,"insert":false}}}
+```
+
+The field is empty during motion, an active automation sequence, stale feedback, or an uncertain reference or stop.
+`matched` is true only when all configured axis targets match. It never assumes that a named position equals 0.
+Load requires matching Bottom and Top furnace targets plus Insert at its named `load` position.
+Unload requires the complete measured `furnace` pose. It does not command that pose to repair a failed precondition.
+Bottom and Top must remain idle at the verified alignment throughout the transfer.
+
+The furnace must report fresh measured PV, `STOP/COOLING`, no running sequence, and no fault or persistence error.
+Load requires PV strictly below `load_max_c`. After robot departure reaches the taught clearance, Insert moves to its named `furnace` position.
+The run retains known occupancy of `furnace-tube` while Insert remains inside. A successful load does not prove departure from that zone.
+
+Unload reserves `furnace-tube`, moves only Insert to `load`, and verifies fresh named arrival before releasing the zone.
+It waits for the existing stage cooldown with reads before dispatch. It never retries a rejected motion command.
+It then requests its explicit awake interval and reads only the named thermal region `crucible`.
+The reading's maximum must be strictly below `unload_max_c`. There is no whole-frame fallback.
+The skill pins the integer pixel bounds from `api/describe`. Each reading must match that rectangle within the native 160 by 120 sensor.
+Malformed, stale, future, or nonfinite readings refuse the transfer. The thermal service's age bound can only tighten `max_age_s`.
+While the region remains hot, the skill reads again within the step deadline. It holds and requests stops when the deadline expires.
+
+Each awake phase sends only 1 explicit request. The remaining wall-clock step budget must fit within its interval after millisecond truncation.
+Rehearsal time scaling does not extend that budget. Lease renewal never extends awake time.
+Owned service state, measured freshness, and reported instance identities are checked again during waits and before each actuation.
+The runner also monitors furnace and thermal conditions during blocking robot commands. A failed check revokes the step and requests independent stops.
+No new phase starts before old monitor checks drain.
+
+A later unload in the same run can reuse its known retained tube claim.
+A standalone unload can reserve an absent claim after all measured preconditions pass.
+Foreign, unknown, or terminal retained claims require the existing explicit physical-clearance recovery. A new run never adopts them automatically.
+Software checks do not establish physical clearance. The operator must verify the taught routes, stage calibration, temperature limits, and approach heights.
+
 ## Rehearsal and installed commands
 
-Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, tokens, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its control panel. Demo factories currently cover the robot, stage, and thermal camera. Unsupported required services fail before the run starts.
+Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, tokens, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its control panel. Demo factories cover the robot, stage, thermal camera, and furnace. Unsupported required services fail before the run starts.
 
 Transfer rehearsal retains explicit station and tool paths, workspace bounds, the pre-grip opening, and the zone configuration path. The documented configuration path defaults still apply. Files must contain valid geometry and named zone definitions. Rehearsal does not invent an offset, workspace, or zone configuration. It resolves condition services before creating demos. Its occupancy file belongs to the temporary rehearsal directory, regardless of `MG400_ORCH_ZONE_STATE_FILE`.
 
@@ -358,11 +420,16 @@ Its gripper feedback belongs to its temporary SIM-01 collector. Only that demo s
 
 The default simulated gripper reaches its target and reports `arrived`. A pick therefore holds with an empty grasp. Offline tests supply explicit contact and drop scenarios to exercise the complete transfer and failure paths. Rehearsal does not establish physical clearance or prove a real grasp.
 
+Crucible rehearsal preserves the explicit safety settings above. `MG400_ORCH_CRUCIBLE_ROIS_FILE` can select read-only named-region data for its owned thermal demo.
+An absent setting defines no thermal regions. It never selects a real camera, production furnace, or device path.
+The demo stage starts without a home reference. Offline tests explicitly home their owned simulator and supply contact feedback.
+The furnace demo owns its serial simulators and temporary state. Crucible skills send no heat or gas command.
+
 On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, and `station rm`. Administrative commands retain their root requirement.
 
-When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. `run` receives its configured service endpoints, tokens, transfer geometry settings, and both zone paths. `runs` receives only the record path.
+When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. Only the approved orchestrator settings reach the child. `run` receives its configured service endpoints, tokens, transfer geometry and crucible settings, and both zone paths. `runs` receives only the record path.
 
-Root rehearsal does not read the host settings file. It receives explicit geometry, zone configuration, and record-path settings from the caller's environment. It receives no service endpoint, token, or production occupancy path.
+Root rehearsal does not read the host settings file. It receives explicit geometry, crucible, zone configuration, and record-path settings from the caller's environment. It receives no service endpoint, token, or production occupancy path.
 
 `station save` receives the station and tool paths, workspace bounds, robot endpoint and token, and request timeout. The other station commands receive only the station path and workspace bounds. They receive no endpoint or token.
 

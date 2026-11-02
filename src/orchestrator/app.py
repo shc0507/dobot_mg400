@@ -28,30 +28,36 @@ from labkit.lease import Lease, validate_client
 
 from .clients import Clients, from_settings
 from .recipe import Recipe, validate
+from .rehearsal import DEMO_SERVICES
 from .runner import Runner
 from .skills import default_registry
+from .skills.crucible import CRUCIBLE_SETTINGS
 from .skills.robot import TRANSFER_SETTINGS
 from .store import DEFAULT_RUNS, RunStore
 from .zones import CONFIG_SETTING, STATE_SETTING, Zones, prepare_zones
 
 CATALOG_DEFAULT = "/opt/mg400/recipes"
 DEMO_MARKER = "MG400_ORCH_DEMO_PROCESS"
-DEMO_ENV = {
-    "PATH",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
-    "COLORTERM",
-    "TZ",
-    "MG400_ORCH_BIND",
-    "MG400_ORCH_PORT",
-    "MG400_ORCH_TOKEN",
-    "MG400_ORCH_BASE_PATH",
-    "MG400_ORCH_RECIPES_DIR",
-    CONFIG_SETTING,
-    DEMO_MARKER,
-} | TRANSFER_SETTINGS
+DEMO_ENV = (
+    {
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "COLORTERM",
+        "TZ",
+        "MG400_ORCH_BIND",
+        "MG400_ORCH_PORT",
+        "MG400_ORCH_TOKEN",
+        "MG400_ORCH_BASE_PATH",
+        "MG400_ORCH_RECIPES_DIR",
+        CONFIG_SETTING,
+        DEMO_MARKER,
+    }
+    | TRANSFER_SETTINGS
+    | CRUCIBLE_SETTINGS
+)
 
 
 def demo_environment(environ):
@@ -180,8 +186,8 @@ class DemoResources:
     def clients(self, required, identity):
         from .rehearsal import Rehearsal
 
-        if set(required) - {"robot", "stage", "thermal"}:
-            raise ValueError("Demo supports only robot, stage and thermal services.")
+        if set(required) - DEMO_SERVICES:
+            raise ValueError("Demo supports only robot, stage, thermal and furnace services.")
         result = {}
         try:
             for name in required:
@@ -569,8 +575,8 @@ class OrchestratorService:
             raise ValueError("Recipe params must be an object.")
         recipe = validate(self.catalog.read(data["recipe"]), self.registry, data.get("params"))
         plan = prepare_zones(recipe, self.registry, self.settings)
-        if self.demo and set(plan.required_services) - {"robot", "stage", "thermal"}:
-            raise ValueError("Demo supports only robot, stage and thermal services.")
+        if self.demo and set(plan.required_services) - DEMO_SERVICES:
+            raise ValueError("Demo supports only robot, stage, thermal and furnace services.")
         return recipe, plan
 
     def run(self, prepared, client):
@@ -744,7 +750,7 @@ class OrchestratorService:
                 sorted({name for claim in claims.values() for name in claim["services"]})
             )
             plan = replace(plan, required_services=required)
-        if self.demo and set(plan.required_services) - {"robot", "stage", "thermal"}:
+        if self.demo and set(plan.required_services) - DEMO_SERVICES:
             raise ValueError("No owned demo exists for a required recovery service.")
 
         def begin(job):

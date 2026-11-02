@@ -2,6 +2,8 @@
 
 import copy
 import json
+import os
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -13,6 +15,7 @@ from orchestrator.recipe import validate
 from orchestrator.runner import Revoked, Runner
 from orchestrator.skills import Registry
 from orchestrator.store import RunStore
+from orchestrator.zones import ZonePlan
 
 
 def until(predicate, timeout=4):
@@ -546,7 +549,8 @@ def test_runner_thread_start_failure_is_terminal_and_never_acquires(tmp_path, mo
         monkeypatch.setattr(threading.Thread, "start", fail_start)
         with pytest.raises(RuntimeError, match="resources exhausted"):
             runner.start()
-        assert runner.status == "aborted" and service.events == []
+        assert runner.status == "aborted" and service.events == ["close"]
+        assert runner.wait_closed(0)
         with pytest.raises(RuntimeError, match="only once"):
             runner.start()
 
@@ -673,3 +677,515 @@ def test_active_context_rejects_mutations_immediately_after_latched_lease_loss(t
         finish.set()
         settled(runner)
         assert not any(e["kind"] == "event-after-loss" for e in store.get(runner.run_id)["events"])
+
+
+def test_public_hold_revokes_work_keeps_leases_and_resumes_only_after_manual_completion(tmp_path):
+    registry, service = Registry(), FakeService()
+    entered, finish = threading.Event(), threading.Event()
+    rejected, calls = [], []
+
+    def active(ctx):
+        calls.append("active")
+        entered.set()
+        finish.wait()
+        try:
+            ctx.clients["robot"].command("late-motion")
+        except Revoked:
+            rejected.append(True)
+
+    registry.register("active", active, services=("robot",))
+    registry.register("next", lambda ctx: calls.append("next"))
+    with running(tmp_path, registry, ["active", "next"], {"robot": service}, gates=(finish,)) as (
+        runner,
+        store,
+    ):
+        assert entered.wait(1)
+        assert runner.hold("Operator requested inspection")
+        assert runner.wait() == "held"
+        report = runner.snapshot()
+        assert report["draining"] and not report["settled"] and not report["closed"]
+        with pytest.raises(RuntimeError, match="worker and final stop"):
+            runner.resume(manually_completed=True, note="too early")
+        finish.set()
+        until(lambda: runner.snapshot()["settled"])
+        assert rejected == [True] and "late-motion" not in service.events
+        assert "release" not in service.events and not runner.wait_closed(0)
+        runner.resume(
+            manually_completed=True, note="The interrupted operation was completed manually"
+        )
+        assert runner.wait_closed(3)
+        assert calls == ["active", "next"]
+        assert store.get(runner.run_id)["steps"][0]["status"] == "manually_completed"
+
+
+@pytest.mark.parametrize("operation", ["hold", "shutdown"])
+def test_public_request_before_start_fences_acquisition(tmp_path, operation):
+    registry, service = Registry(), FakeService()
+    registry.register("never", lambda ctx: pytest.fail("held run executed"), services=("robot",))
+    with RunStore(tmp_path / "runs") as store:
+        runner = Runner(prepared(registry, ["never"]), registry, {"robot": service}, store)
+        getattr(runner, operation)("Stop before acquisition")
+        if operation == "hold":
+            runner.start()
+            assert runner.wait() == "held"
+            until(lambda: runner.snapshot()["settled"])
+            with pytest.raises(RuntimeError, match="Initial acquisition was interrupted"):
+                runner.resume(manually_completed=True, note="No action was sent")
+            runner.abort()
+        assert runner.wait_closed(3)
+        assert "acquire" not in service.events and "release" not in service.events
+        assert runner.status == ("held" if operation == "shutdown" else "aborted")
+        assert store.get(runner.run_id)["status"] == runner.status
+
+
+def test_hold_during_partial_acquisition_drains_accepted_acquire_and_blocks_remaining(tmp_path):
+    registry, first, second = Registry(), FakeService("stage"), FakeService("thermal")
+    entered, finish = threading.Event(), threading.Event()
+
+    def acquire():
+        first.events.append("acquire")
+        entered.set()
+        finish.wait()
+
+    first.acquire = acquire
+    registry.register(
+        "never", lambda ctx: pytest.fail("held run executed"), services=("stage", "thermal")
+    )
+    with running(
+        tmp_path, registry, ["never"], {"stage": first, "thermal": second}, gates=(finish,)
+    ) as (runner, store):
+        assert entered.wait(1)
+        runner.hold("Stop acquisition")
+        assert not runner.wait_closed(0.01)
+        finish.set()
+        until(lambda: runner.snapshot()["settled"])
+        assert runner.status == "held" and "acquire" not in second.events
+        with pytest.raises(RuntimeError, match="Initial acquisition was interrupted"):
+            runner.resume(manually_completed=True, note="No recipe step was started")
+        assert first.events.count("acquire") == 1
+        runner.shutdown("Service stopping")
+        assert runner.wait_closed(3)
+        assert "stop" in first.events and first.events[-2:] == ["release", "close"]
+        assert runner.status == "held"
+
+
+def test_hold_between_steps_cannot_publish_new_authority(tmp_path, monkeypatch):
+    registry, service, calls = Registry(), FakeService(), []
+    arrived, finish = threading.Event(), threading.Event()
+    registry.register("first", lambda ctx: calls.append("first"), services=("robot",))
+    registry.register("second", lambda ctx: calls.append("second"), services=("robot",))
+    original = Runner._step
+
+    def fenced(self, step):
+        if step.skill == "second":
+            arrived.set()
+            finish.wait()
+        return original(self, step)
+
+    monkeypatch.setattr(Runner, "_step", fenced)
+    with running(tmp_path, registry, ["first", "second"], {"robot": service}, gates=(finish,)) as (
+        runner,
+        store,
+    ):
+        assert arrived.wait(1)
+        runner.hold("Hold between steps")
+        finish.set()
+        until(lambda: runner.snapshot()["settled"])
+        assert calls == ["first"] and runner.status == "held"
+        assert store.get(runner.run_id)["steps"][1]["status"] == "pending"
+        runner.resume(manually_completed=True, note="Inspected; the next step never started")
+        assert runner.wait_closed(3)
+        assert calls == ["first", "second"]
+        assert store.get(runner.run_id)["steps"][1]["status"] == "completed"
+
+
+def test_shutdown_waits_for_late_write_and_close_then_preserves_held(tmp_path):
+    registry, service = Registry(), FakeService()
+    entered, write_done, closing, close_done = [threading.Event() for _ in range(4)]
+
+    def command(action, **params):
+        entered.set()
+        write_done.wait()
+        service.events.append("accepted-write")
+
+    def close():
+        closing.set()
+        close_done.wait()
+        service.events.append("close")
+
+    service.command, service.close = command, close
+    registry.register(
+        "write", lambda ctx: ctx.clients["robot"].command("write"), services=("robot",)
+    )
+    with running(
+        tmp_path, registry, ["write"], {"robot": service}, gates=(write_done, close_done)
+    ) as (runner, store):
+        assert entered.wait(1)
+        assert runner.shutdown("SIGTERM")
+        assert runner.wait() == "held"
+        assert runner.snapshot()["shutdown"] and not runner.wait_closed(0.01)
+        assert "release" not in service.events
+        write_done.set()
+        assert closing.wait(2)
+        assert not runner.wait_closed(0.01)
+        assert runner.snapshot()["draining"]
+        close_done.set()
+        assert runner.wait_closed(2)
+        assert runner.status == store.get(runner.run_id)["status"] == "held"
+        assert service.events.index("accepted-write") < len(service.events) - 3
+        assert service.events[-3:] == ["stop", "release", "close"]
+        assert not runner.abort() and not runner.hold("too late")
+        with pytest.raises(RuntimeError, match="Only a held run"):
+            runner.resume(manually_completed=True, note="Closed run must not restart")
+
+
+def test_shutdown_preserves_unconfirmed_stops_and_audit_failure_while_draining(
+    tmp_path, monkeypatch
+):
+    registry, service = Registry(), FakeService()
+    entered, finish = threading.Event(), threading.Event()
+    service.stop_value = {"stop": "unconfirmed"}
+
+    def work(ctx):
+        entered.set()
+        finish.wait()
+
+    registry.register("work", work, services=("robot",))
+    with running(tmp_path, registry, ["work"], {"robot": service}, gates=(finish,)) as (
+        runner,
+        store,
+    ):
+        assert entered.wait(1)
+        runner.shutdown("Service stopping")
+        until(lambda: runner.status == "held")
+        monkeypatch.setattr(
+            store, "event", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        )
+        assert not runner.wait_closed(0.01) and "release" not in service.events
+        finish.set()
+        assert runner.wait_closed(3)
+        report = runner.snapshot()
+        assert report["status"] == "held" and report["persistence_error"] == "disk full"
+        assert report["unconfirmed_services"] == ["robot"]
+        assert report["stops"]["robot"]["stop"] == "unconfirmed"
+
+
+def test_new_hold_during_resume_prevents_advancing(tmp_path):
+    registry, service = Registry(), FakeService()
+    calls = []
+    registry.register(
+        "fail", lambda ctx: (_ for _ in ()).throw(RuntimeError("failed")), services=("robot",)
+    )
+    registry.register("later", lambda ctx: calls.append("later"))
+    with running(tmp_path, registry, ["fail", "later"], {"robot": service}) as (runner, store):
+        settled(runner)
+        stop = service.stop
+
+        def held_again():
+            runner.hold("Another stop request")
+            return stop()
+
+        service.stop = held_again
+        with pytest.raises(RuntimeError, match="stopped again"):
+            runner.resume(manually_completed=True, note="Manually resolved")
+        service.stop = stop
+        assert calls == [] and runner.status == "held"
+
+
+@contextmanager
+def terminal_zone_run(tmp_path, *, ending="abort"):
+    registry, service = Registry(), FakeService()
+
+    def work(ctx):
+        if ending != "complete":
+            raise RuntimeError("Manual recovery required")
+
+    registry.register("work", work, services=("robot",))
+    recipe = validate(
+        {
+            "name": "Terminal claim",
+            "version": 1,
+            "params": {},
+            "steps": [{"skill": "work", "params": {}, "timeout_s": 2, "zone": "tray"}],
+        },
+        registry,
+    )
+    directory = tmp_path / "zones"
+    directory.mkdir(mode=0o750)
+    plan = ZonePlan(
+        {"tray": {"owner": "robot", "conditions": ()}},
+        ("robot",),
+        directory / "occupancy.json",
+        "c" * 64,
+    )
+    with RunStore(tmp_path / "runs") as store:
+        runner = Runner(recipe, registry, {"robot": service}, store, zone_plan=plan).start()
+        try:
+            if ending != "complete":
+                until(lambda: runner.snapshot()["settled"])
+                if ending == "shutdown":
+                    runner.shutdown("Service stopping")
+                else:
+                    runner.abort()
+            assert runner.wait_closed(3)
+            assert runner.snapshot()["zones"]["tray"]["status"] == "unknown"
+            yield runner, service, store
+        finally:
+            runner.abort()
+            assert runner.wait_closed(3)
+
+
+@contextmanager
+def owned_recovery_pool():
+    service = FakeService()
+    service.identity = "fresh-recovery-transaction"
+    service.value["controller_id"] = service.identity
+    pool = Clients({"robot": service})
+    pool.acquire(("robot",), cancelled=threading.Event())
+    pool.stop_all()
+    try:
+        yield pool, service
+    finally:
+        pool.stop_all()
+        while pool.release() is False:
+            time.sleep(0.01)
+
+
+@pytest.mark.parametrize("ending", ["abort", "shutdown", "complete"])
+def test_terminal_recovery_uses_original_provenance_without_reacquiring_or_rewriting_status(
+    tmp_path, ending
+):
+    with (
+        terminal_zone_run(tmp_path, ending=ending) as (runner, old, store),
+        owned_recovery_pool() as (pool, new),
+    ):
+        status = runner.status
+        old_events, new_events = list(old.events), list(new.events)
+        with pytest.raises(ValueError, match="physical clearance"):
+            runner.recover_terminal(
+                pool, physically_clear=False, note="Inspected", cancelled=threading.Event()
+            )
+        report = runner.recover_terminal(
+            pool,
+            physically_clear=True,
+            note="Every retained zone is physically clear",
+            cancelled=threading.Event(),
+        )
+        assert report["zones"] == {} and report["closed"]
+        assert runner.status == store.get(runner.run_id)["status"] == status
+        assert old.events == old_events
+        assert new.events.count("acquire") == new_events.count("acquire")
+        assert "release" not in new.events and "close" not in new.events
+        assert any(
+            e["kind"] == "zone-physical-clearance" for e in store.get(runner.run_id)["events"]
+        )
+
+
+@pytest.mark.parametrize("boundary", ["cancel", "lease"])
+def test_terminal_recovery_refuses_late_publication_after_new_transaction_loss(
+    tmp_path, monkeypatch, boundary
+):
+    with terminal_zone_run(tmp_path) as (runner, old, store), owned_recovery_pool() as (pool, new):
+        cancelled = threading.Event()
+        original = os.fsync
+
+        def fsync(fd):
+            original(fd)
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                with pool.lifecycle_lock:
+                    if boundary == "cancel":
+                        cancelled.set()
+                    else:
+                        pool._failed(RuntimeError("Recovery lease expired"))
+
+        monkeypatch.setattr(os, "fsync", fsync)
+        with pytest.raises(RuntimeError, match="lost permission"):
+            runner.recover_terminal(
+                pool, physically_clear=True, note="Checked physical clearance", cancelled=cancelled
+            )
+        assert "tray" in runner.snapshot()["zones"]
+        assert runner.status == store.get(runner.run_id)["status"] == "aborted"
+
+
+def test_terminal_recovery_rejects_old_identity_and_missing_ownership(tmp_path):
+    with terminal_zone_run(tmp_path) as (runner, old, store), owned_recovery_pool() as (pool, new):
+        new.identity = old.identity
+        with pytest.raises(ValueError, match="new transaction identity"):
+            runner.recover_terminal(
+                pool, physically_clear=True, note="Checked", cancelled=threading.Event()
+            )
+        new.identity = "fresh-recovery-transaction"
+        new.value["controller_id"] = "other-owner"
+        with pytest.raises(RuntimeError, match="manual recovery"):
+            runner.recover_terminal(
+                pool, physically_clear=True, note="Checked", cancelled=threading.Event()
+            )
+        assert "tray" in runner.snapshot()["zones"]
+
+
+@pytest.mark.parametrize("boundary", ["queued", "reconciling"])
+def test_cancelled_resume_cannot_start_after_a_new_stop_request(tmp_path, boundary):
+    registry, service = Registry(), FakeService()
+    calls = []
+
+    def failed(ctx):
+        raise RuntimeError("Manual intervention required")
+
+    registry.register("failed", failed, services=("robot",))
+    registry.register("later", lambda ctx: calls.append("later"))
+    with running(tmp_path, registry, ["failed", "later"], {"robot": service}) as (runner, store):
+        until(lambda: runner.snapshot()["settled"])
+        cancelled = threading.Event()
+        original = service.stop
+        if boundary == "queued":
+            assert runner.cancel_resume(cancelled, "Lease expired before resume worker ran")
+        else:
+
+            def stop():
+                runner.cancel_resume(cancelled, "Stop during resume reconciliation")
+                return original()
+
+            service.stop = stop
+        with pytest.raises(RuntimeError, match="cancelled|stopped again"):
+            runner.resume(
+                manually_completed=True,
+                note="The interrupted step was completed manually",
+                cancelled=cancelled,
+            )
+        service.stop = original
+        assert calls == [] and runner.status == "held"
+        assert cancelled.is_set() and not runner.wait_closed(0)
+        assert store.get(runner.run_id)["steps"][0]["status"] == "failed"
+
+
+def test_shutdown_stops_other_services_while_one_stop_is_blocked(tmp_path):
+    registry, first, second = Registry(), FakeService("stage"), FakeService("thermal")
+    entered, skill_done, stop_entered, stop_done = [threading.Event() for _ in range(4)]
+
+    def step(ctx):
+        entered.set()
+        skill_done.wait()
+
+    def blocked_stop():
+        first.events.append("stop")
+        stop_entered.set()
+        stop_done.wait()
+        return {"stop": "confirmed"}
+
+    first.stop = blocked_stop
+    registry.register("step", step, services=("stage", "thermal"))
+    with running(
+        tmp_path,
+        registry,
+        ["step"],
+        {"stage": first, "thermal": second},
+        gates=(skill_done, stop_done),
+    ) as (runner, store):
+        assert entered.wait(1)
+        runner.shutdown("Service stopping")
+        assert stop_entered.wait(1)
+        until(lambda: "stop" in second.events)
+        assert not runner.wait_closed(0.01)
+        assert "release" not in first.events + second.events
+        skill_done.set()
+        assert not runner.wait_closed(0.01)
+        stop_done.set()
+        assert runner.wait_closed(3)
+        assert runner.status == "held"
+        assert first.events[-2:] == second.events[-2:] == ["release", "close"]
+
+
+def test_terminal_recovery_cannot_run_concurrently_or_release_pool(tmp_path):
+    with terminal_zone_run(tmp_path) as (runner, old, store), owned_recovery_pool() as (pool, new):
+        entered, finish = threading.Event(), threading.Event()
+        errors = []
+        original = new.stop
+
+        def stop():
+            entered.set()
+            finish.wait()
+            return original()
+
+        new.stop = stop
+
+        def recover():
+            try:
+                runner.recover_terminal(
+                    pool,
+                    physically_clear=True,
+                    note="Physically clear",
+                    cancelled=threading.Event(),
+                )
+            except Exception as error:
+                errors.append(error)
+
+        worker = threading.Thread(target=recover)
+        worker.start()
+        try:
+            assert entered.wait(1)
+            with pytest.raises(RuntimeError, match="finish cleanup"):
+                runner.recover_terminal(
+                    pool,
+                    physically_clear=True,
+                    note="Second request",
+                    cancelled=threading.Event(),
+                )
+            assert "release" not in new.events
+            assert runner.status == "aborted" and not runner.snapshot()["settled"]
+        finally:
+            finish.set()
+            worker.join(2)
+        assert not worker.is_alive() and errors == []
+        assert runner.snapshot()["zones"] == {}
+
+
+def test_terminal_recovery_refreshes_unconfirmed_stop_after_manual_repair(tmp_path):
+    with terminal_zone_run(tmp_path) as (runner, old, store), owned_recovery_pool() as (pool, new):
+        new.stop_value = {"stop": "unconfirmed"}
+        pool.stop_all()
+        assert not pool.confirmed
+        proofs = []
+
+        def recovery_stop(instance):
+            assert instance == new.value["instance"]
+            proofs.append(instance)
+            return {"stop": "confirmed", "proof": "verified-disabled-rest"}
+
+        new.recovery_stop = recovery_stop
+        report = runner.recover_terminal(
+            pool,
+            physically_clear=True,
+            note="Manually disabled and verified all retained zones clear",
+            cancelled=threading.Event(),
+        )
+        assert proofs and pool.confirmed and report["zones"] == {}
+        assert runner.status == store.get(runner.run_id)["status"] == "aborted"
+        assert new.events.count("acquire") == 1 and "release" not in new.events
+
+
+@pytest.mark.parametrize("read_number", [1, 2])
+def test_terminal_recovery_reports_post_publication_inspection_failure(
+    tmp_path, monkeypatch, read_number
+):
+    with terminal_zone_run(tmp_path) as (runner, old, store), owned_recovery_pool() as (pool, new):
+        original = runner.zones.snapshot
+        reads = 0
+
+        def failed_inspection():
+            nonlocal reads
+            reads += 1
+            result = original()
+            if not result and reads >= read_number:
+                runner.zones.error = "Cannot inspect the published occupancy"
+            return result
+
+        monkeypatch.setattr(runner.zones, "snapshot", failed_inspection)
+        with pytest.raises(RuntimeError, match="Zone recovery is incomplete"):
+            runner.recover_terminal(
+                pool,
+                physically_clear=True,
+                note="All retained zones checked",
+                cancelled=threading.Event(),
+            )
+        assert runner.status == store.get(runner.run_id)["status"] == "aborted"
+        assert runner.snapshot()["zone_error"] == "Cannot inspect the published occupancy"

@@ -25,6 +25,10 @@ The Olares network interface connected directly to the robot uses `192.168.1.10/
 If the optional furnace service is enabled, set `MG400_FURNACE_BIND=100.64.0.1` and permit TCP `8769` through the VPN.
 Keep `MG400_FURNACE_TOKEN` private. Enter it on the [furnace page](furnace.en.md), never in its URL.
 
+If the optional recipe service must accept VPN clients, set `MG400_ORCH_BIND=100.64.0.1` and permit TCP `8772` through the VPN.
+Send `MG400_ORCH_TOKEN` in the bearer header, never in the URL. Keep downstream token aliases private on the host.
+The default bind remains `127.0.0.1`. See the [recipe service](orchestrator.en.md#http-service) for access and recovery rules.
+
 ## Get the code
 
 The repository is public. Olares reads the code from GitHub through HTTPS without credentials.

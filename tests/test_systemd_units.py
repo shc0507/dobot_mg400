@@ -15,6 +15,13 @@ with (ROOT / "deploy/services.toml").open("rb") as stream:
     REGISTRY = tomllib.load(stream)["service"]
 SERVICES = tuple(unit for entry in REGISTRY for unit in entry["units"])
 FEEDBACK = "/var/lib/mg400/work/gripper_feedback.json"
+ORCHESTRATOR_TOKENS = [
+    "MG400_ORCH_TOKEN",
+    *[
+        f"MG400_ORCH_{name}_TOKEN"
+        for name in ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
+    ],
+]
 
 
 def unit_sections(name):
@@ -56,6 +63,7 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-camera-preview.service",
         "mg400-stage-panel.service",
         "mg400-furnace.service",
+        "mg400-orchestrator.service",
     ],
 )
 def test_services_with_settings_read_the_shared_environment_file(name):
@@ -68,11 +76,22 @@ def test_services_with_settings_read_the_shared_environment_file(name):
 @pytest.mark.parametrize(
     ("name", "unset"),
     [
-        ("mg400-web-panel.service", ["MG400_STAGE_TOKEN", "MG400_FURNACE_TOKEN"]),
-        ("mg400-stage-panel.service", ["MG400_PANEL_TOKEN", "MG400_FURNACE_TOKEN"]),
+        (
+            "mg400-web-panel.service",
+            ["MG400_STAGE_TOKEN", "MG400_FURNACE_TOKEN", *ORCHESTRATOR_TOKENS],
+        ),
+        (
+            "mg400-stage-panel.service",
+            ["MG400_PANEL_TOKEN", "MG400_FURNACE_TOKEN", *ORCHESTRATOR_TOKENS],
+        ),
         (
             "mg400-camera-preview.service",
-            ["MG400_PANEL_TOKEN", "MG400_STAGE_TOKEN", "MG400_FURNACE_TOKEN"],
+            [
+                "MG400_PANEL_TOKEN",
+                "MG400_STAGE_TOKEN",
+                "MG400_FURNACE_TOKEN",
+                *ORCHESTRATOR_TOKENS,
+            ],
         ),
         (
             "mg400-furnace.service",
@@ -147,6 +166,7 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-camera-preview.service": [],
         "mg400-stage-panel.service": ["dialout"],
         "mg400-furnace.service": ["dialout"],
+        "mg400-orchestrator.service": [],
     }
 
 
@@ -156,6 +176,23 @@ def test_furnace_service_uses_settings_and_allows_heat_and_gas_shutdown():
     assert service["RestartPreventExitStatus"] == ["2"]
     assert int(service["TimeoutStopSec"][0]) >= 120
     assert "MG400_FURNACE_TOKEN" not in service["UnsetEnvironment"][0].split()
+
+
+def test_orchestrator_keeps_only_its_access_and_downstream_alias_tokens_and_drains_shutdown():
+    service = unit_sections("mg400-orchestrator.service")["Service"]
+    assert command("mg400-orchestrator.service") == [
+        "/opt/mg400/.venv/bin/python",
+        "-m",
+        "orchestrator",
+        "serve",
+    ]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    assert service["TimeoutStopSec"] == ["infinity"]
+    assert set(service["UnsetEnvironment"][0].split()) == {
+        f"MG400_{name}_TOKEN"
+        for name in ("PANEL", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE", "GATEWAY")
+    }
+    assert not set(ORCHESTRATOR_TOKENS) & set(service["UnsetEnvironment"][0].split())
 
 
 def test_camera_capture_reads_the_generated_configuration():

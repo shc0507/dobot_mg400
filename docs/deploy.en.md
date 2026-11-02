@@ -20,6 +20,8 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400/models` | Model weights installed from the asset manifest, with file permissions `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
 | `/var/lib/mg400/furnace` | Furnace state and persistent lock, files `0600` | `1000:1000`, `0750` |
+| `/var/lib/mg400/runs` | Orchestrator run records, files `0600` | `1000:1000`, `0750` |
+| `/var/lib/mg400/zones` | Zone configuration and retained occupancy, files `0640` or `0600` | `1000:1000`, `0750` |
 | `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program | `root:root`, `0755` |
 | `/usr/local/bin/mg400ctl` | Routine command tool, linked to `/opt/mg400/deploy/mg400ctl` | None |
 | `/usr/local/bin/labctl` | Another link to the same command, with identical arguments and behavior | None |
@@ -35,6 +37,7 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-camera-capture.service` | `camera` | go2rtc capture, listening only on `127.0.0.1:1984` | `video` |
 | `mg400-gripper-collector.service` | `collector` | Gripper USB collection | `dialout` |
 | `mg400-furnace.service` | `furnace` | Optional [furnace and gas page](furnace.en.md), port `8769` | `dialout` |
+| `mg400-orchestrator.service` | `orch` | Optional [recipe service](orchestrator.en.md#http-service), port `8772` | None |
 | `mg400-gripper-collector.path` | None | Start gripper collection when the panel requests it | None |
 
 Start services manually. They do not start automatically at boot.
@@ -87,7 +90,7 @@ The installer works in this order:
 1. Check the Python version, uv, the configuration file, and any independently running gripper collection processes.
    Also check the service registry, selection, selected units, and udev templates.
    If assets are requested, also check the asset manifest, destination paths, and local files. If a check fails, leave the host unchanged.
-2. Create the configuration file or add missing entries. Fill empty `*_TOKEN` entries with newly generated access tokens. Keep existing values.
+2. Create the configuration file or add missing entries. Generate empty service `*_TOKEN` values, then copy matching service tokens into blank orchestrator aliases. Keep nonempty values.
 3. Create the directories under `/var/lib/mg400` and the camera preview token.
    Refuse symbolic links there and do not overwrite existing tokens.
 4. Run `uv sync` from the service registry, with dependency groups only for enabled services.
@@ -127,6 +130,11 @@ The optional `furnace` service uses the `furnace` dependency group.
 Configure its serial paths and operator-supplied gas map before enabling hardware use.
 Set `MG400_OPTIONAL_SERVICES=furnace`, run the installer, then start it explicitly with `mg400ctl start furnace`.
 The installer does not start the furnace.
+
+The optional `orch` service uses the `orchestrator` dependency group in `/opt/mg400/.venv`.
+This group includes Flask, waitress, and the `stage` and `thermal` groups for supported owned demos.
+Add `orch` to `MG400_OPTIONAL_SERVICES`, run the installer, and configure the [recipe service](orchestrator.en.md#http-service) before `mg400ctl start orch`.
+The installer prepares private `runs` and `zones` directories only when `orch` is selected. It does not invent zone configuration or start the service.
 
 The installer combines enabled services' `groups` by `venv` and synchronizes each environment only 1 time.
 Synchronization explicitly uses `--no-default-groups` and does not install the project's default dependency groups.
@@ -207,6 +215,13 @@ Their inner double quotes remain literal. Escapes, apostrophes, control characte
 See [furnace configuration](furnace.en.md#configuration) for syntax and process limits.
 Each time it runs, the installer restores this file's owner to `root:root` and permissions to `0600`.
 
+`MG400_ORCH_TOKEN` authenticates callers of the recipe service.
+The `MG400_ORCH_ROBOT_TOKEN` alias copies `MG400_PANEL_TOKEN` when blank or newly added.
+The `STAGE`, `THERMAL`, `VISION`, `FURNACE`, and `MICROSCOPE` aliases copy the corresponding service token after normal token generation.
+If a source token is absent, its alias stays empty. An alias never receives an independently generated token.
+Explicit nonempty aliases remain unchanged. After rotating a service token, update its alias to the same value or clear the alias and rerun the installer.
+The orchestrator unit receives its own token and these aliases. It excludes direct instrument tokens and the gateway token.
+
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `MG400_OPTIONAL_SERVICES` | Empty | Optional service names from the registry, separated by commas |
@@ -242,7 +257,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 | `mg400ctl backup FILE.tar` | Save private host settings and data, excluding process locks |
 | `mg400ctl assets` | Check external asset content, ownership, and permissions |
 | `mg400ctl status` | Show the status of all services |
-| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, `furnace`, or `all` |
+| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, `furnace`, `orch`, or `all` |
 | `mg400ctl stop all` | Stop services |
 | `mg400ctl restart web` | Restart services |
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
@@ -251,6 +266,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 | `mg400ctl camera-url` | Show the camera preview link with its access token |
 | `mg400ctl camera-check` | Check camera devices, services, and capture streams in order. See [Camera failures](olares.en.md#camera-failures) |
 | `mg400ctl token web` | Show the web panel access token. `token stage` shows the stage panel token |
+| `mg400ctl token orch` | Show the recipe service token, without its downstream aliases |
 
 Furnace `stop` and `restart` query authenticated live state before changing any selected service.
 The check includes mixed lists and `all`, including a disabled furnace selected by `stop all`.
@@ -262,6 +278,10 @@ It sends the token only in the bearer header, without proxies or redirects.
 Socket operations time out after `2` s. A `2` s body deadline is checked between returned chunks.
 Header and transfer-framing reads use socket timeouts, so this is not a total request deadline.
 Responses above `262144` bytes are refused.
+
+Stopping `orch` requests a hold, drains accepted operations, records the final state, and releases service leases.
+Its unit uses `TimeoutStopSec=infinity`, so systemd waits for this cleanup instead of imposing a stop deadline.
+Restarting the service does not resume saved runs or clear retained zones. Use the [recovery procedure](orchestrator.en.md#http-service).
 
 `terminal` and `mode` use `runuser --pty` to run as UID 1000 in a separate pseudo-terminal.
 They read the configuration file and share the panel's connection lock, but do not receive access tokens.

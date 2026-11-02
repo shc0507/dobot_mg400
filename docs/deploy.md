@@ -20,6 +20,8 @@
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/camera` | 摄像头预览密钥 `preview.key` | `1000:1000`，`0700` |
 | `/var/lib/mg400/furnace` | 炉控状态和持久锁，文件为 `0600` | `1000:1000`，`0750` |
+| `/var/lib/mg400/runs` | 编排器运行记录，文件为 `0600` | `1000:1000`，`0750` |
+| `/var/lib/mg400/zones` | 区域配置和保留占用，文件为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
 | `/usr/local/bin/mg400ctl` | 日常命令，链接到 `/opt/mg400/deploy/mg400ctl` | 无 |
 | `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
@@ -35,6 +37,7 @@
 | `mg400-camera-capture.service` | `camera` | go2rtc 采集，只监听 `127.0.0.1:1984` | `video` |
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
+| `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
 | `mg400-gripper-collector.path` | 无 | 面板请求时启动夹爪采集 | 无 |
 
 服务手动启动，不开机自启。
@@ -87,7 +90,7 @@
 1. 检查 Python 版本、uv、配置文件和独立运行的夹爪采集进程。
    同时检查服务清单、服务选择、所选单元和 udev 模板。
    如指定资源，还检查资源清单、目标路径和本地文件。检查不通过时，安装器不修改主机。
-2. 创建配置文件，或补全缺少的配置项。空的 `*_TOKEN` 项填入新生成的访问密钥。已有的值不变。
+2. 创建配置文件，或补全缺少的配置项。先生成空的服务 `*_TOKEN` 值，再把对应服务令牌复制到空的编排器别名。非空值保持不变。
 3. 创建 `/var/lib/mg400` 下的目录和摄像头预览密钥。
    安装器拒绝其中的符号链接，也不覆盖已有的密钥。
 4. 按服务清单运行 `uv sync`，只安装已启用服务的依赖组。
@@ -127,6 +130,11 @@
 真机使用前，配置串口路径和操作员提供的气体映射。
 设置 `MG400_OPTIONAL_SERVICES=furnace` 后运行安装器，再明确运行 `mg400ctl start furnace`。
 安装器不会启动炉控服务。
+
+可选服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
+此组含 Flask、waitress，以及自有演示服务所需的 `stage` 和 `thermal` 组。
+把 `orch` 加入 `MG400_OPTIONAL_SERVICES`，运行安装器，配置[配方服务](orchestrator.md#http-服务)，再运行 `mg400ctl start orch`。
+只有选中 `orch` 时，安装器才准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
 
 安装器按 `venv` 合并已启用服务的 `groups`，每个环境只同步 1 次。
 同步显式使用 `--no-default-groups`，不安装项目的默认依赖组。
@@ -207,6 +215,13 @@
 语法及工艺限制见[炉控配置](furnace.md#配置)。
 每次运行时，安装器把该文件恢复为 `root:root` 和 `0600`。
 
+`MG400_ORCH_TOKEN` 用于认证配方服务的调用者。
+`MG400_ORCH_ROBOT_TOKEN` 别名为空或首次添加时，复制 `MG400_PANEL_TOKEN`。
+常规令牌生成后，`STAGE`、`THERMAL`、`VISION`、`FURNACE` 和 `MICROSCOPE` 别名复制对应服务的令牌。
+源令牌缺失时，别名保持为空。别名不会获得独立生成的令牌。
+明确设置的非空别名保持不变。轮换服务令牌后，把别名改为相同值，或清空别名并重新运行安装器。
+编排器单元只接收自身令牌和这些别名，不接收仪器的直接令牌或网关令牌。
+
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
 | `MG400_OPTIONAL_SERVICES` | 空 | 服务清单中的可选服务名称，用逗号分隔 |
@@ -242,7 +257,7 @@
 | `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl status` | 显示所有服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace`、`orch` 或 `all` |
 | `mg400ctl stop all` | 停止服务 |
 | `mg400ctl restart web` | 重启服务 |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
@@ -251,6 +266,7 @@
 | `mg400ctl camera-url` | 显示含访问密钥的摄像头预览链接 |
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 | `mg400ctl token web` | 显示网页面板的访问密钥。`token stage` 显示位移台面板的密钥 |
+| `mg400ctl token orch` | 显示配方服务令牌，不显示下游别名 |
 
 炉控 `stop` 和 `restart` 在修改任何所选服务前，先认证并读取实时状态。
 检查覆盖混合列表及 `all`，也覆盖 `stop all` 选中的已停用炉控服务。
@@ -262,6 +278,10 @@
 套接字操作在 `2` s 后超时。每次收到数据块后检查 `2` s 的响应体截止时间。
 标头和传输分块格式读取使用套接字超时，因此这不是整个请求的总时限。
 超过 `262144` 字节的响应会被拒绝。
+
+停止 `orch` 时，服务请求暂停，等待已接受的操作结束，记录最终状态，再释放服务租约。
+单元使用 `TimeoutStopSec=infinity`，systemd 会等待清理完成，不另设停止期限。
+重启服务不会恢复已保存的运行，也不会清除保留区域。请使用[恢复流程](orchestrator.md#http-服务)。
 
 `terminal` 和 `mode` 用 `runuser --pty` 以 UID 1000 在独立的伪终端中运行。
 它们读取配置文件，与面板共用连接锁，但不接收访问密钥。

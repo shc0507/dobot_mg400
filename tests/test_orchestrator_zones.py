@@ -1200,6 +1200,8 @@ def recover_held_runner(env):
     runner = Runner.__new__(Runner)
     runner._condition = threading.Condition(threading.RLock())
     runner._status, runner._abort = "held", False
+    runner._shutdown, runner._closed = False, threading.Event()
+    runner._hold_epoch = 0
     runner._settled, runner._resolving = True, False
     runner._worker = runner._monitor = None
     runner._authority = env.authority
@@ -1208,10 +1210,12 @@ def recover_held_runner(env):
     runner.persistence_error = None
     runner.recipe = SimpleNamespace(steps=[], params={})
     runner.run_id, runner.zones = env.manager.holder, env.manager
+    runner.zone_plan = env.manager.plan
     runner._stop = lambda round_id=None, *, recovery=False: 1
     runner._persist = lambda *args, **kwargs: True
     runner.clients = SimpleNamespace(
         services=env.clients,
+        acquired=list(env.clients),
         reconcile=lambda: {},
         round_done=lambda value: True,
         lifecycle_lock=threading.RLock(),

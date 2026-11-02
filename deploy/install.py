@@ -267,6 +267,19 @@ def check_settings(settings):
         raise ValueError("Set MG400_CONTROLLER_LOCK_DIR to an absolute path.")
 
 
+ORCHESTRATOR_TOKEN_ALIASES = {
+    f"MG400_ORCH_{service}_TOKEN": f"MG400_{source}_TOKEN"
+    for service, source in (
+        ("ROBOT", "PANEL"),
+        ("STAGE", "STAGE"),
+        ("THERMAL", "THERMAL"),
+        ("VISION", "VISION"),
+        ("FURNACE", "FURNACE"),
+        ("MICROSCOPE", "MICROSCOPE"),
+    )
+}
+
+
 def merge_settings(current, example, token=lambda: secrets.token_urlsafe(32)):
     """Return the new settings text and the changed keys. Keep every nonempty value."""
     lines = (example if current is None else current).splitlines()
@@ -275,7 +288,7 @@ def merge_settings(current, example, token=lambda: secrets.token_urlsafe(32)):
         if (pair := parse_line(line, number)) is None:
             continue
         present.add(pair[0])
-        if pair[0].endswith("_TOKEN") and not pair[1]:
+        if pair[0].endswith("_TOKEN") and pair[0] not in ORCHESTRATOR_TOKEN_ALIASES and not pair[1]:
             lines[number - 1] = f"{pair[0]}={token()}"
             changed.append(pair[0])
     if current is not None:
@@ -285,9 +298,22 @@ def merge_settings(current, example, token=lambda: secrets.token_urlsafe(32)):
                 key, value = pair
                 if key in JSON_SETTINGS and value:
                     value = f"'{value}'"
-                lines.append(f"{key}={token() if key.endswith('_TOKEN') and not value else value}")
+                if key.endswith("_TOKEN") and key not in ORCHESTRATOR_TOKEN_ALIASES and not value:
+                    value = token()
+                lines.append(f"{key}={value}")
                 present.add(key)
                 changed.append(key)
+    # Resolve aliases after all source tokens exist. Systemd uses the final line
+    # for duplicate keys, so update only that effective blank alias.
+    values, positions = {}, {}
+    for number, line in enumerate(lines, 1):
+        if (pair := parse_line(line, number)) is not None:
+            values[pair[0]], positions[pair[0]] = pair[1], number - 1
+    for alias, source in ORCHESTRATOR_TOKEN_ALIASES.items():
+        if alias in values and not values[alias] and values.get(source):
+            lines[positions[alias]] = f'{alias}="{values[source]}"'
+            if alias not in changed:
+                changed.append(alias)
     return "\n".join(lines) + "\n", changed
 
 
@@ -519,6 +545,9 @@ def install(args, host, run, chown, out):
     directory(host.data / "camera", 0o700, service)
     if "furnace" in selected:
         directory(host.data / "furnace", 0o750, service)
+    if "orch" in selected:
+        directory(host.data / "runs", 0o750, service)
+        directory(host.data / "zones", 0o750, service)
     key = host.data / "camera/preview.key"
     if not os.path.lexists(key):
         step(f"create {key}")

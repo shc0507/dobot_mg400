@@ -8,12 +8,87 @@ import threading
 from contextlib import ExitStack
 from pathlib import Path
 
+from labkit.lease import validate_client
 from mg400.controller_ownership import ControllerOwnership
 from mg400.sim import Simulator
 from mg400.web_control import RobotPanelState
 from mg400.web_gripper import WebGripper
 
 from .clients import RobotAdapter, ServiceAdapter
+
+
+class _DemoClient:
+    """A fresh adapter that cannot outlive its owned rehearsal services."""
+
+    _METHODS = {
+        "describe",
+        "acquire",
+        "heartbeat",
+        "state",
+        "owned",
+        "healthy",
+        "command",
+        "run",
+        "stop",
+        "recovery_stop",
+        "release",
+    }
+
+    def __init__(self, owner, adapter):
+        self._owner, self._adapter = owner, adapter
+        self._closed = False
+        self._calls = 0
+        self._close_done = threading.Event()
+
+    @property
+    def identity(self):
+        return self._adapter.identity
+
+    @property
+    def timeout(self):
+        return self._adapter.timeout
+
+    def __getattr__(self, name):
+        if name not in self._METHODS:
+            raise AttributeError(name)
+        operation = getattr(self._adapter, name)
+
+        def invoke(*args, **kwargs):
+            owner = self._owner
+            with owner._condition:
+                if not owner._active or self._closed:
+                    raise RuntimeError("This rehearsal client is no longer active.")
+                owner._operations += 1
+                self._calls += 1
+            try:
+                return operation(*args, **kwargs)
+            finally:
+                with owner._condition:
+                    owner._operations -= 1
+                    self._calls -= 1
+                    owner._condition.notify_all()
+
+        return invoke
+
+    def close(self):
+        owner = self._owner
+        with owner._condition:
+            first = not self._closed
+            if first:
+                self._closed = True
+                owner._operations += 1
+                while self._calls:
+                    owner._condition.wait()
+        if not first:
+            self._close_done.wait()
+            return
+        try:
+            self._adapter.close()
+        finally:
+            with owner._condition:
+                owner._operations -= 1
+                self._close_done.set()
+                owner._condition.notify_all()
 
 
 class _DemoRobot(RobotPanelState):
@@ -32,14 +107,27 @@ class _DemoRobot(RobotPanelState):
 
 class Rehearsal:
     def __init__(self, directory, required, *, identity):
-        self.directory, self.required, self.identity = Path(directory), tuple(required), identity
+        self.directory, self.required, self.identity = (
+            Path(directory),
+            tuple(required),
+            validate_client(identity),
+        )
         if set(self.required) - {"robot", "stage", "thermal"}:
             raise ValueError("Rehearsal has no demo factory for a required service.")
         self.clients = {}
         self.simulator = self.robot_state = None
         self._stack = ExitStack()
+        self._condition = threading.Condition(threading.RLock())
+        self._entered = self._starting = self._active = False
+        self._operations = 0
+        self._endpoints = {}
+        self._identities = {self.identity}
 
     def __enter__(self):
+        with self._condition:
+            if self._entered:
+                raise RuntimeError("A rehearsal context can start only once.")
+            self._entered = self._starting = True
         try:
             self.directory.mkdir(mode=0o750, parents=True, exist_ok=True)
             for name in self.required:
@@ -48,9 +136,40 @@ class Rehearsal:
             for client in self.clients.values():
                 if client.describe().get("demo") is not True:
                     raise RuntimeError("Rehearsal refuses a service without demo=true.")
+            with self._condition:
+                self._active = True
             return self
         except BaseException:
             self._stack.close()
+            raise
+        finally:
+            with self._condition:
+                self._starting = False
+                self._condition.notify_all()
+
+    def new_clients(self, identity):
+        """Create unacquired, fresh identities for these same active demos.
+
+        The context owns their lifetime. Callers must stop and drain work before
+        leaving the context; it never re-creates servers or acquires a lease.
+        """
+        validate_client(identity)
+        created = {}
+        try:
+            with self._condition:
+                if not self._active:
+                    raise RuntimeError("Fresh clients require an active rehearsal context.")
+                if identity in self._identities:
+                    raise ValueError("A rehearsal client identity cannot be reused.")
+                self._identities.add(identity)
+                for name, (adapter, url) in self._endpoints.items():
+                    client = _DemoClient(self, adapter(url, "", identity))
+                    self._stack.callback(client.close)
+                    created[name] = client
+            return created
+        except BaseException:
+            for client in created.values():
+                client.close()
             raise
 
     def _robot(self):
@@ -85,9 +204,9 @@ class Rehearsal:
         server = panel_server(("127.0.0.1", 0), state)
         self._serve(server)
         self._stack.callback(server.stop_sockets)
-        self.clients["robot"] = RobotAdapter(
-            f"http://127.0.0.1:{server.server_port}", "", self.identity
-        )
+        url = f"http://127.0.0.1:{server.server_port}"
+        self._endpoints["robot"] = (RobotAdapter, url)
+        self.clients["robot"] = RobotAdapter(url, "", self.identity)
 
     def _serve(self, server):
         self._stack.callback(server.server_close)
@@ -117,9 +236,9 @@ class Rehearsal:
         controller.start()
         server = make_server("127.0.0.1", 0, create_app(controller=controller), threaded=True)
         self._serve(server)
-        self.clients["stage"] = ServiceAdapter(
-            f"http://127.0.0.1:{server.server_port}/contract", "", self.identity
-        )
+        url = f"http://127.0.0.1:{server.server_port}/contract"
+        self._endpoints["stage"] = (ServiceAdapter, url)
+        self.clients["stage"] = ServiceAdapter(url, "", self.identity)
 
     def _thermal(self):
         # FastAPI stays on its own ASGI server, bound from an already reserved
@@ -155,9 +274,15 @@ class Rehearsal:
             if not worker.is_alive() or time.monotonic() >= deadline:
                 raise RuntimeError("Thermal rehearsal startup failed.")
             time.sleep(0.01)
-        self.clients["thermal"] = ServiceAdapter(
-            f"http://127.0.0.1:{listener.getsockname()[1]}", "", self.identity
-        )
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        self._endpoints["thermal"] = (ServiceAdapter, url)
+        self.clients["thermal"] = ServiceAdapter(url, "", self.identity)
 
     def __exit__(self, *exc):
+        with self._condition:
+            while self._starting:
+                self._condition.wait()
+            self._active = False
+            while self._operations:
+                self._condition.wait()
         self._stack.close()

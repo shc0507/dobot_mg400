@@ -1048,6 +1048,10 @@ Steps:
 5. Make rehearsal own the furnace demo service. Preserve explicit safety settings for these skills in rehearsal. Remove production endpoints, tokens, device settings, and proxy settings.
 6. Rehearsal tests for success and for each failed condition. Keep the new tests in `tests/test_orchestrator_crucible.py`.
 
+Service demo integration: update `src/orchestrator/app.py` only to retain explicit crucible safety settings and support the owned furnace demo. Extend required-service validation and resource creation together. Validate the required services before startup. Preserve frontend access checks, fresh client identities, resource lifetime, and cleanup. Do not retain production instrument URLs, downstream credentials, device settings, or proxies. Do not add permissive safety defaults. Keep coverage in `tests/test_orchestrator_crucible.py`.
+
+Measured pose integration: extend `src/stage_controller/automation.py` only with read-only `automation.at_poses` state. Derive named pose matches from configured geometry and the existing target conversion. Require every target axis to have fresh feedback and to be homed, soft-limited, idle, and ready for automation. Report no matches while stage automation is active. Unload must confirm the `furnace` pose before motion. It must not command that pose to establish the precondition. Add no motion or default geometry. Cover the state proof with the owned stage demo in `tests/test_orchestrator_crucible.py`.
+
 Done when: P-CHECKS pass.
 
 Docs: `orchestrator.md` and `.en.md`.
@@ -1347,6 +1351,8 @@ Steps:
 3. Every service supports a base path. The robot panel has `--base-path`; labkit services take `base_path`.
    The stage and thermal pages still use root-only routes and links. Add configurable base paths in their app factories, command entry points, page links and browser requests. Keep `/` as the default, preserve their existing token, Host, Origin, lease and command checks, and test prefixed page, API and asset requests with fakes. The explicit stage and thermal write paths are limited to this integration.
 4. Unit, registry entry, tests, docs.
+
+Installed robot prefix: update `config/systemd/mg400-web-panel.service` only to pass `MG400_PANEL_BASE_PATH` through the existing `--base-path` option. Add the shared setting with `/` as its default. Preserve the existing launch arguments, checked credentials, and access controls. Cover the unit wiring in the shared deployment tests.
 
 Done when: P-CHECKS pass.
 

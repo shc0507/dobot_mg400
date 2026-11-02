@@ -27,3 +27,7 @@ Dobot MG400 + PGEA 电动夹爪的真机控制项目。
 | 查询机械臂当前报警或历史日志 | [报警与历史日志](docs/hardware.md#报警与历史日志) |
 | 修改代码、运行检查、查阅实现细节 | [开发参考](docs/development.md) |
 | 查阅真机 TCP 协议与动作完成判定 | [真机控制接口](docs/hardware.md) |
+
+## 许可证
+
+本仓库采用 [GNU Affero 通用公共许可证 v3.0](LICENSE)（AGPL-3.0），与视觉模型和 `ultralytics` 的许可证相同。随仓库提供的第三方文件保留各自的条款：`src/thermal_cam/_vendor/` 采用 Apache-2.0，`src/toupcam_camera/toupcam.py` 来自 ToupTek SDK。

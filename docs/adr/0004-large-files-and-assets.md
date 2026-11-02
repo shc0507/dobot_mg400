@@ -20,7 +20,7 @@
 - 超过 1,000,000 字节的文件不得进入 Git，生成的 `uv.lock` 除外。图片不得超过 300,000 字节。
 - 拒绝这些扩展名：`.dll`、`.so`、`.dylib`、`.exe`、`.bin`、`.pt`、`.pth`、`.onnx`、`.engine`、`.npz`、`.h5`、`.zip`、`.stp`。
 
-首个 `vision-weights` 资源是本仓库 `vision-model-v1` 发布中的 `chip-arm-yolo26s-seg-v1.pt`。大小为 23,393,117 字节。SHA-256 为 `0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07`。安装路径为 `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`。Roboflow 声明的许可证为 `AGPL-3.0`。权重发布必须等待仓库许可证决定。
+首个 `vision-weights` 资源是本仓库 `vision-model-v1` 发布中的 `chip-arm-yolo26s-seg-v1.pt`。大小为 23,393,117 字节。SHA-256 为 `0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07`。安装路径为 `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`。Roboflow 声明的许可证为 `AGPL-3.0`。仓库许可证为 AGPL-3.0（H-15，2026-11-02），因此可以发布权重（H-14）。
 
 ## 影响
 

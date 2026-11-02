@@ -8,10 +8,12 @@ import stat
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
 
 DEFAULT_RUNS = Path("/var/lib/mg400/runs")
+MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 
 
 def encoded(value):
@@ -42,7 +44,8 @@ class RunStore:
                 pass
             else:
                 self.directory.chmod(0o750)
-        self._check(self.directory, directory=True)
+        directory_info = self._check(self.directory, directory=True)
+        self._directory_identity = directory_info.st_dev, directory_info.st_ino
         self.path = self.directory / "runs.db"
         if not readonly:
             try:
@@ -106,6 +109,7 @@ class RunStore:
             or stat.S_IMODE(info.st_mode) not in allowed_modes
         ):
             raise ValueError(f"Run data has unsafe type, ownership or permissions: {path}")
+        return info
 
     def create(self, recipe):
         run_id = uuid.uuid4().hex
@@ -304,6 +308,198 @@ class RunStore:
                     result.setdefault("truncated", {})[table] = len(result[table]) > item_limit
                     result[table] = result[table][:item_limit]
             return result
+
+    @staticmethod
+    def _run_identity(run_id):
+        if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+            raise ValueError("Invalid run identity.")
+
+    @staticmethod
+    def _chip_relation():
+        return "runs.chip_id=? OR " + " OR ".join(
+            f"EXISTS(SELECT 1 FROM {table} WHERE {table}.run_id=runs.id AND {table}.chip_id=?)"
+            for table in ("steps", "samples", "artifacts", "events")
+        )
+
+    @staticmethod
+    def _artifact_metadata(row):
+        result = dict(row)
+        run_id, artifact_id, path = result["run_id"], result["id"], result.pop("path")
+        RunStore._run_identity(run_id)
+        if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{32}", artifact_id):
+            raise ValueError("Invalid artifact identity.")
+        prefix = f"{run_id}/{artifact_id}-"
+        if not isinstance(path, str) or not path.startswith(prefix):
+            raise ValueError("Invalid stored artifact path.")
+        name = path[len(prefix) :]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+            raise ValueError("Invalid stored artifact name.")
+        result["name"] = name
+        return result
+
+    def chip_history(self, chip_id, *, kind="runs", run_id=None, limit=100, offset=0):
+        """Read one exact chip's records, filtering before bounded pagination.
+
+        Each table uses its recorded chip identity. A run summary is included
+        if that chip occurs in the run or one of its records; summaries omit
+        the complete recipe and other chips' records. Artifact paths are never
+        returned. next_offset is None only at the end of this query.
+        """
+        identifier(chip_id)
+        if kind not in ("runs", "steps", "samples", "artifacts", "events"):
+            raise ValueError("Unknown chip history kind.")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("Read limit must be an integer from 1 to 1000.")
+        if type(offset) is not int or not 0 <= offset <= 2**63 - 1 - limit:
+            raise ValueError("Read offset must be a nonnegative SQLite integer.")
+        if run_id is not None:
+            self._run_identity(run_id)
+        relation = self._chip_relation()
+        with self._lock:
+            if (
+                run_id is not None
+                and not self._db.execute(
+                    f"SELECT 1 FROM runs WHERE id=? AND ({relation})", (run_id, *([chip_id] * 5))
+                ).fetchone()
+            ):
+                raise ValueError("Unknown chip run.")
+            if kind == "runs":
+                select = "SELECT id,name,status,created_at,updated_at,detail FROM runs"
+                where, parameters = f"({relation})", [chip_id] * 5
+                order = "created_at DESC,id DESC"
+                run_column = "id"
+            else:
+                select = f"SELECT * FROM {kind}"
+                where, parameters = "chip_id=?", [chip_id]
+                order = "run_id,position" if kind == "steps" else "created_at,id"
+                run_column = "run_id"
+            if run_id is not None:
+                where += f" AND {run_column}=?"
+                parameters.append(run_id)
+            rows = [
+                dict(row)
+                for row in self._db.execute(
+                    f"{select} WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                    (*parameters, limit + 1, offset),
+                )
+            ]
+        more = len(rows) > limit
+        items = rows[:limit]
+        if kind == "artifacts":
+            items = [self._artifact_metadata(row) for row in items]
+        return {"items": items, "next_offset": offset + limit if more else None}
+
+    @staticmethod
+    def _inode(info):
+        return info.st_dev, info.st_ino
+
+    @staticmethod
+    def _file_signature(info):
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_uid,
+            info.st_gid,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+
+    def _artifact_file_check(self, info, *, directory=False):
+        valid_kind = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        modes = (0o700, 0o750) if directory else (0o600, 0o640)
+        if (
+            not valid_kind
+            or (info.st_uid, info.st_gid) != self.owner
+            or stat.S_IMODE(info.st_mode) not in modes
+            or (not directory and info.st_nlink != 1)
+        ):
+            raise ValueError("Artifact data has unsafe type, ownership, links or permissions.")
+
+    def artifact_bytes(self, artifact_id, *, chip_id, max_bytes=MAX_ARTIFACT_BYTES):
+        """Read a chip-associated artifact by opaque ID, without accepting a path.
+
+        Data directories and the final regular file are opened through anchored
+        descriptors. The final O_PATH handle rejects special files before a
+        readable handle is opened. Reads are capped at 16 MiB, and replacement
+        or modification during the read fails instead of returning mixed data.
+        """
+        identifier(chip_id)
+        if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{32}", artifact_id):
+            raise ValueError("Invalid artifact identity.")
+        if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ARTIFACT_BYTES:
+            raise ValueError("Artifact read limit must be an integer from 1 byte to 16 MiB.")
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM artifacts WHERE id=? AND chip_id=?", (artifact_id, chip_id)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown chip artifact.")
+            result = self._artifact_metadata(row)
+        try:
+            with ExitStack() as stack:
+                links = []
+
+                def open_handle(path, flags, *, parent=None):
+                    fd = os.open(path, flags | os.O_CLOEXEC, dir_fd=parent)
+                    stack.callback(os.close, fd)
+                    return fd
+
+                directory_flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+                directory = open_handle("/", directory_flags)
+                for part in self.directory.parts[1:]:
+                    if part in (".", ".."):
+                        raise ValueError("Run paths must be normalized.")
+                    child = open_handle(part, directory_flags, parent=directory)
+                    links.append((directory, part, child))
+                    directory = child
+                root_info = os.fstat(directory)
+                self._artifact_file_check(root_info, directory=True)
+                if self._inode(root_info) != self._directory_identity:
+                    raise ValueError("Run directory was replaced.")
+                run = open_handle(result["run_id"], directory_flags, parent=directory)
+                links.append((directory, result["run_id"], run))
+                self._artifact_file_check(os.fstat(run), directory=True)
+                filename = f"{artifact_id}-{result['name']}"
+                handle = open_handle(filename, os.O_PATH | os.O_NOFOLLOW, parent=run)
+                links.append((run, filename, handle))
+                before = os.fstat(handle)
+                self._artifact_file_check(before)
+                if before.st_size > max_bytes:
+                    raise ValueError("Artifact exceeds the read limit.")
+                descriptor = open_handle(f"/proc/self/fd/{handle}", os.O_RDONLY | os.O_NONBLOCK)
+
+                def verify():
+                    for parent, name, child in links:
+                        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                        opened = os.fstat(child)
+                        if self._inode(current) != self._inode(opened):
+                            raise ValueError("Artifact path was replaced.")
+                    self._artifact_file_check(os.fstat(directory), directory=True)
+                    self._artifact_file_check(os.fstat(run), directory=True)
+                    after = os.fstat(descriptor)
+                    self._artifact_file_check(after)
+                    if self._file_signature(before) != self._file_signature(after):
+                        raise ValueError("Artifact changed during its read.")
+
+                verify()
+                chunks, size = [], 0
+                while True:
+                    chunk = os.read(descriptor, min(65536, max_bytes - size + 1))
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise ValueError("Artifact exceeds the read limit.")
+                    chunks.append(chunk)
+                verify()
+                if size != before.st_size:
+                    raise ValueError("Artifact changed during its read.")
+                return {**result, "data": b"".join(chunks)}
+        except OSError as error:
+            raise ValueError("Cannot read artifact safely.") from error
 
     def close(self):
         with self._lock:

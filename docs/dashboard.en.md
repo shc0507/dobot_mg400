@@ -91,3 +91,37 @@ A refusal keeps the run held.
 
 Use the [orchestrator recovery procedure](orchestrator.en.md#http-service) for terminal runs and retained zones.
 The dashboard does not automatically resume a saved run, replay a step, reacquire an old run's leases, or clear unknown occupancy.
+
+## Chip passport
+
+Select **Chip passport** on the dashboard, or open `/chip` under the configured service prefix.
+Enter the orchestrator token, then search with the chip's exact QR text.
+Search preserves case, spaces, slashes, and punctuation. It does not trim or normalize the identifier.
+For a direct link, use `/chip?id=` followed by the URL-encoded identifier.
+The ordinary `/chip/<id>` route also opens the passport shell.
+Do not include the access token in either URL.
+
+The fixed passport shell and assets keep the dashboard's Host and Origin checks.
+All history, search-data, and artifact requests require the bearer token.
+The page keeps the token only in memory. It does not acquire a control lease or contact instruments.
+The passport shows saved records only. An empty result does not prove that no physical work occurred.
+
+Run summaries include runs associated with the exact chip identifier.
+Within each run, steps, samples, events, and artifacts include only records explicitly associated with that chip.
+Other chips' records are not included through a shared run.
+The page loads 25 run summaries at a time. Each opened run loads 100 records per category at a time.
+Use **Load more** to continue each list. The first page is not the complete history.
+
+The passport shows recorded transfers, step parameters and results, samples, and events.
+Its furnace PV chart uses explicit finite `pv_c` or `furnace.pv_c` values with recorded timestamps.
+It does not infer temperatures from missing fields or create thermal readings that were not saved.
+Missing chart data remains unavailable while other recorded data remains visible.
+The server redacts private fields, known credentials, and configured private endpoint URLs in displayed records.
+Invalid JSON payloads and payloads larger than 256 KiB show an unavailable marker.
+
+Artifact requests use an opaque record ID and the exact chip identifier. They do not accept a filesystem path.
+Only checked private regular files can be read. Symlinks, hard links, unsafe permissions, and changed paths or files cause refusal.
+The read limit is 16 MiB per artifact. A refused read does not delete or rewrite the saved record.
+The page previews PNG, JPEG, GIF, and WebP files identified by their bytes.
+It fetches these files with authorization and uses temporary browser blob URLs for previews.
+Other file types are available only as downloads. The browser never receives the stored filesystem path.

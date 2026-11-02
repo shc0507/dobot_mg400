@@ -1214,6 +1214,8 @@ deps = ["ORC-05", "FND-06", "FND-10"]
 writes = [
   "src/orchestrator/web/**",
   "src/orchestrator/app.py",
+  "src/orchestrator/clients.py",
+  "src/orchestrator/rehearsal.py",
   "tests/test_dashboard.py",
   "tests/test_dashboard.mjs",
   "docs/dashboard.md",

@@ -229,6 +229,13 @@ class MotorController:
             return (self._generation, self._stop_epoch[axis])
         return (self._generation, self._stop_epoch["OBJ"], self._stop_epoch["FOCUS"])
 
+    def _admission_token(self, command, *, handshake=False):
+        # Snapshot authority before a command can queue behind another transaction.
+        # A stop or reconnect must revoke queued work as well as an active wait.
+        with self.response_condition:
+            self._allowed(pending=True, handshake=handshake)
+            return self._generation_token(command)
+
     def _wait_reply(
         self,
         sequence,
@@ -275,6 +282,7 @@ class MotorController:
         timeout=5.0,
         cancel_event=None,
         _handshake=False,
+        _expected_generation=None,
     ):
         command = self._command(command)
         if not math.isfinite(timeout) or timeout <= 0:
@@ -283,10 +291,16 @@ class MotorController:
             raise ValueError("Only VERSION is permitted during the handshake")
         if command.startswith("STOP "):
             return self._stop(command, timeout)
-        generation = None
+        generation = (
+            self._admission_token(command, handshake=_handshake)
+            if _expected_generation is None
+            else _expected_generation
+        )
         try:
             with self._transaction:
                 with self.response_condition:
+                    if generation != self._generation_token(command):
+                        raise SideCaptureCancelled("Queued microscope command was stopped")
                     self._allowed(handshake=_handshake)
                     if cancel_event is not None and cancel_event.is_set():
                         raise SideCaptureCancelled("Microscope command was stopped")
@@ -377,10 +391,9 @@ class MotorController:
         return value
 
     def _ack(self, command, expected):
+        generation = self._admission_token(command)
         with self._transaction:
-            with self.response_condition:
-                generation = self._generation_token(command)
-            reply = self.send_and_wait(command, expected)
+            reply = self.send_and_wait(command, expected, _expected_generation=generation)
             with self.response_condition:
                 if generation != self._generation_token(command):
                     raise SideCaptureCancelled("Acknowledgement is from an old session")
@@ -415,8 +428,11 @@ class MotorController:
     def focus_move_async(self, steps, *, cancel_event=None):
         """Start one focus move and return its completion ticket."""
         steps = self._steps(steps)
+        generation = self._admission_token("FOCUS MOVE")
         with self._transaction:
             with self.response_condition:
+                if generation != self._generation_token("FOCUS MOVE"):
+                    raise SideCaptureCancelled("Queued focus command was stopped")
                 self._allowed()
                 if cancel_event is not None and cancel_event.is_set():
                     raise SideCaptureCancelled("Microscope command was stopped")
@@ -525,10 +541,13 @@ class MotorController:
         speed = self._steps(steps_per_second)
         if not 1 <= speed <= 10000:
             raise ValueError("Focus speed must be within 1..10000")
+        generation = self._admission_token("FOCUS SPEED")
         with self._transaction:
-            with self.response_condition:
-                generation = self._generation_token("FOCUS SPEED")
-            reply = self.send_and_wait(f"FOCUS SPEED {speed}", f"OK FOCUS SPEED {speed}")
+            reply = self.send_and_wait(
+                f"FOCUS SPEED {speed}",
+                f"OK FOCUS SPEED {speed}",
+                _expected_generation=generation,
+            )
             with self.response_condition:
                 if generation != self._generation_token("FOCUS SPEED"):
                     raise SideCaptureCancelled("Focus speed acknowledgement is from an old session")

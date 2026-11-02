@@ -10,6 +10,7 @@ import re
 import threading
 import time
 from contextlib import closing
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
@@ -73,7 +74,12 @@ class Go2RTCCapture:
             return False, None
         deadline = time.monotonic() + self.timeout
         open_frame = self._opener if callable(self._opener) else self._opener.open
-        with closing(open_frame(self.url, timeout=self.timeout)) as response:
+        try:
+            response = open_frame(self.url, timeout=self.timeout)
+        except HTTPError as error:
+            error.close()
+            raise RuntimeError("go2rtc frame response was not successful") from error
+        with closing(response):
             if getattr(response, "status", 200) != 200:
                 raise RuntimeError("go2rtc frame response was not successful")
             if hasattr(response, "geturl") and response.geturl() != self.url:

@@ -334,3 +334,95 @@ def test_autofocus_translates_cancellation_during_blocked_motor_completion(conne
     with pytest.raises(AutofocusCancelled):
         future.result(0.5)
     assert focuser.position == 0 and not port.sim.focus.moving
+
+
+@pytest.mark.parametrize(
+    "operation,axis",
+    [
+        (lambda motor: motor.objective_enable(), "OBJ"),
+        (lambda motor: motor.send_and_wait("OBJ ENABLE", "OK OBJ ENABLED"), "OBJ"),
+        (lambda motor: motor.focus_move_async(1), "FOCUS"),
+        (lambda motor: motor.focus_speed(100), "FOCUS"),
+        (lambda motor: motor.set_microstep(1), "ALL"),
+    ],
+)
+@pytest.mark.parametrize("revoke", ["reconnect", "stop"])
+def test_queued_commands_cannot_resume_after_authority_revocation(
+    connect, monkeypatch, operation, axis, revoke
+):
+    controller, old_port = connect()
+    controller.focus_enable()
+    captured = threading.Event()
+    admission = controller._admission_token
+    owner = threading.current_thread()
+
+    def snapshot(command, **kwargs):
+        token = admission(command, **kwargs)
+        if threading.current_thread() is not owner:
+            captured.set()
+        return token
+
+    monkeypatch.setattr(controller, "_admission_token", snapshot)
+    with controller._transaction:
+        future = asynchronous(lambda: operation(controller))
+        assert captured.wait(1)
+        if revoke == "reconnect":
+            new_port = FakePort()
+            controller._serial_factory = lambda **_: new_port
+            controller.connect(PORT, reset_seconds=0)
+        else:
+            controller._stop("STOP " + axis)
+        before = list(controller.ser.commands)
+    with pytest.raises(SideCaptureCancelled, match="Queued"):
+        future.result(1)
+    assert controller.ser.commands == before
+    if revoke == "reconnect":
+        assert new_port.commands == ["VERSION"]
+
+
+def test_queued_command_survives_unrelated_axis_stop(connect, monkeypatch):
+    controller, port = connect()
+    captured = threading.Event()
+    admission = controller._admission_token
+
+    def snapshot(command, **kwargs):
+        token = admission(command, **kwargs)
+        captured.set()
+        return token
+
+    monkeypatch.setattr(controller, "_admission_token", snapshot)
+    with controller._transaction:
+        future = asynchronous(controller.objective_enable)
+        assert captured.wait(1)
+        controller.focus_stop()
+    assert future.result(1) == "OK OBJ ENABLED"
+    assert port.commands[-2:] == ["STOP FOCUS", "OBJ ENABLE"]
+
+
+def test_command_admission_is_closed_during_version_validation(monkeypatch):
+    from microscope import motors
+
+    port = FakePort()
+    controller = MotorController(serial_factory=lambda **_: port)
+    validating, release = threading.Event(), threading.Event()
+    fullmatch = motors.re.fullmatch
+
+    def validate(pattern, value):
+        if pattern.startswith("VERSION microscope-axes"):
+            validating.set()
+            assert release.wait(1)
+        return fullmatch(pattern, value)
+
+    monkeypatch.setattr(motors.re, "fullmatch", validate)
+    future = asynchronous(lambda: controller.connect(PORT, reset_seconds=0))
+    try:
+        assert validating.wait(1)
+        with pytest.raises(RuntimeError, match="handshake"):
+            controller.objective_enable()
+        assert port.commands == ["VERSION"]
+        release.set()
+        assert future.result(1) is controller
+        assert controller.objective_enable() == "OK OBJ ENABLED"
+    finally:
+        release.set()
+        controller.disconnect()

@@ -1176,10 +1176,14 @@ Steps (P-SERVICE plus):
 
 1. Commands: `select_objective(id)` (first raise focus to the clearance position `MG400_MICROSCOPE_SWITCH_FOCUS`, then the ArUco switch with the side camera), `autofocus(mode)` (`full` or `local`, inside the focus limits), `focus_move(steps)` within the focus limits, `home_focus()`, `set_focus_zero()`, `snapshot()` (saved to the run store, or to a path the orchestrator gives), `stop`.
 2. Focus zero: `home_focus()` sends `FOCUS HOME` when the focus axis has a switch. Without a switch, an operator moves focus to the clearance position and calls `set_focus_zero()` from the panel. Automation may not call it. Until zero is known, commands that move focus or the turret fail with "focus position unknown". A firmware reset clears zero. When zero is known, the service sends `FOCUS LIMIT` with `MG400_MICROSCOPE_FOCUS_LIMITS`.
+   Extend `src/microscope/motors.py` with public helpers for a coherent full status result and the focus reference operations this service needs. Include objective state, focus position and `FOCUS_REF` state when the firmware supplies it; missing reference state must not authorize motion. A firmware reset invalidates old session work and reference state. Keep the existing motor APIs, legacy compatibility, completion waits and stop/cancellation fences.
 3. State: objective id, focus position relative to zero, whether zero is known, camera states, busy, last result.
 4. Stop and lease expiry: cancel the running task, send `STOP ALL`, disable both motors.
+   Permit this safety cleanup through the motor helpers while retaining unknown-outcome faults and ordinary command admission guards. Do not add unrestricted raw-command authority.
 5. Demo mode: the MIC-01 simulator, a fake microscope camera, and synthetic side-camera frames with ArUco markers.
+   Use explicit synthetic focus settings in demo mode. Real motion requires measured clearance and focus limits from H-06; missing settings fail closed.
 6. Tests in demo mode with `tests/contract_helpers.py`, including the clearance move before every turret turn and the refusals without zero.
+   Extend `tests/test_microscope_motors.py` with fake-serial checks for full status, focus reference operations and reset/session invalidation; retain the existing completion and cancellation regressions.
 
 Done when: P-CHECKS pass.
 

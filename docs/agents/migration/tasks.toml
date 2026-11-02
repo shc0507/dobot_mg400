@@ -1151,7 +1151,9 @@ writes = [
   "src/microscope/service.py",
   "src/microscope/app.py",
   "src/microscope/__main__.py",
+  "src/microscope/motors.py",
   "tests/test_microscope_service.py",
+  "tests/test_microscope_motors.py",
   "docs/microscope.md",
   "docs/microscope.en.md",
 ]

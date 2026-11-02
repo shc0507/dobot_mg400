@@ -1455,6 +1455,121 @@ def test_installer_renders_side_stream_capture_size(host, module, tmp_path):
     assert config == module.render_go2rtc(DEVICES, [(640, 480), (3840, 2160), (640, 480)])
 
 
+@pytest.mark.parametrize("count", [1, 2, 3, 4])
+def test_camera_configuration_renders_exact_device_count(module, count):
+    devices = [f"/dev/v4l/by-path/offline-{number}-video-index0" for number in range(count)]
+    assert module.camera_devices(",".join(devices)) == devices
+    rendered = module.render_go2rtc(devices)
+    assert rendered.count("v4l2:device?video=") == count
+    for number, device in enumerate(devices, 1):
+        assert f"camera{number}: v4l2:device?video={device}" in rendered
+        assert f"camera{number}: video\n" in rendered
+    assert f"camera{count + 1}:" not in rendered
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        (1920, 1080, 60),
+        (1920, 1080, 30),
+        (4000, 3000, 15),
+        (3840, 2160, 30),
+        (2592, 1944, 30),
+        (2560, 1440, 30),
+        (2048, 1536, 30),
+        (1600, 1200, 30),
+        (1280, 720, 30),
+        (1024, 768, 30),
+        (1024, 576, 30),
+        (800, 600, 30),
+        (640, 480, 30),
+        (640, 360, 30),
+        (320, 240, 30),
+    ],
+)
+def test_only_descriptor_approved_mjpeg_modes_render_and_large_streams_stay_idle(module, mode):
+    rendered = module.render_go2rtc(DEVICES[:1], modes=[mode])
+    width, height, fps = mode
+    assert f"input_format=mjpeg&video_size={width}x{height}&framerate={fps}" in rendered
+    if width <= 640 and height <= 480:
+        assert "preload:\n  camera1: video\n" in rendered
+    else:
+        assert "preload: {}\n" in rendered
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "640x480@15",
+        "640x480@60",
+        "1920x1080@15",
+        "4000x3000@30",
+        "800x480@30",
+        "640x480@30.0",
+        "0640x480@30",
+        "640X480@30",
+        "640x480@30&exec=x",
+        "640x480@30,",
+        "640x480@30,640x480@30",
+    ],
+)
+def test_invalid_camera_modes_refuse_before_host_changes(host, setting):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(f"MG400_CAMERA_DEVICES={DEVICES[0]}\nMG400_CAMERA_MODES={setting}\n")
+    before = host.settings.read_bytes()
+    assert host.install() == 1
+    assert host.settings.read_bytes() == before
+    assert not host.data.exists() and not host.units.exists()
+
+
+def test_camera_modes_refuse_legacy_size_conflict_before_changes(host):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(
+        f"MG400_CAMERA_DEVICES={DEVICES[0]}\nMG400_CAMERA_MODES=640x480@30\n"
+        "MG400_CAMERA_CAPTURE_SIZES=640x480\n"
+    )
+    before = host.settings.read_bytes()
+    assert host.install() == 1
+    assert host.settings.read_bytes() == before
+    assert not host.data.exists() and not host.units.exists()
+
+
+def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_streams(module):
+    devices = [*DEVICES, "/dev/v4l/by-path/offline-tray-video-index0"]
+    settings = {
+        "MG400_CAMERA_DEVICES": ",".join(devices),
+        "MG400_MICROSCOPE_SIDE_STREAM": "camera3",
+    }
+    default = module.camera_configuration(settings)
+    assert default.modes == ((640, 480, 30), (640, 480, 30), (3840, 2160, 30), (640, 480, 30))
+    settings["MG400_CAMERA_MODES"] = "640x480@30,640x480@30,3840x2160@30,1280x720@30"
+    configured = module.camera_configuration(settings)
+    assert configured.preloaded == ("camera1", "camera2")
+    rendered = module.render_go2rtc(devices, modes=configured.modes)
+    assert "camera3: video\n" not in rendered and "camera4: video\n" not in rendered
+    assert "video_size=3840x2160&framerate=30" in rendered
+    assert (
+        f"camera4: v4l2:device?video={devices[3]}&input_format=mjpeg&video_size=1280x720"
+        in rendered
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/dev/video0",
+        "/dev/serial/by-id/camera",
+        "/dev/v4l/by-path/../video0",
+        f"{DEVICES[0]},{DEVICES[0]}",
+        f"{DEVICES[0]},",
+        f",{DEVICES[0]}",
+    ],
+)
+def test_camera_devices_require_distinct_complete_stable_paths(module, value):
+    with pytest.raises(ValueError):
+        module.camera_devices(value)
+
+
 def test_enabled_thermal_installs_private_roi_directory_group_and_usb_rule(
     module, host, inventory_udev
 ):

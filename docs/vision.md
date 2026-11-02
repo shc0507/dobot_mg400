@@ -21,7 +21,7 @@ uv run python -m vision --demo
 ```
 
 演示模式读取 `tests/fixtures/vision/scene.ppm` 和 `tests/fixtures/vision/detections.json`。
-3 个演示摄像头编号使用相同的图像和检测结果。
+4 个演示摄像头编号使用相同的图像和检测结果。
 演示使用真实 QR 读取器和模拟定位器，不导入 torch，也不访问摄像头。
 演示结果不能验证真实模型或摄像头几何关系。
 
@@ -62,7 +62,10 @@ GPU 内存配置在模型加载前执行。
 
 ## 图像来源与坐标
 
-摄像头编号为 1 到 3 的整数。
+真实模式的摄像头编号为 1 到已配置设备数量的整数，最多为 4。
+服务与安装器、预览使用相同的 `MG400_CAMERA_DEVICES`、`MG400_CAMERA_MODES` 和 `MG400_CAMERA_CAPTURE_SIZES` 配置。
+允许的模式和默认值见[摄像头](olares.md#摄像头)。设备配置为空时，关闭真实图像命令。
+命令参数说明只列出已配置的摄像头编号；未配置的编号在请求图像前被拒绝。
 真实模式使用以下固定地址，把 `N` 替换为摄像头编号：
 
 ```text
@@ -75,6 +78,9 @@ http://127.0.0.1:1984/api/frame.jpeg?src=cameraN
 连接、响应头和 HTTP 传输格式读取使用套接字超时，不设单独的总时限。
 每张图像最多 8 MiB、16,000,000 像素。
 解码器检查 JPEG 数据，应用 EXIF 方向，再输出 RGB 像素。
+输出尺寸必须与配置的采集模式一致。不一致时失败，不调整图像尺寸。
+`vision.frames.still(camera)` 和服务读取都从同一 go2rtc 流请求 1 帧。
+它们不改变采集模式，也不另行打开设备采集。
 读取失败返回 503 并记录故障。请求不自动重试。
 
 结果的 `coordinate_system` 为 `oriented_original_image_pixels`。

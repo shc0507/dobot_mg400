@@ -21,7 +21,7 @@ uv run python -m vision --demo
 ```
 
 Demo mode reads `tests/fixtures/vision/scene.ppm` and `tests/fixtures/vision/detections.json`.
-All 3 demo camera numbers use the same image and detections.
+All 4 demo camera numbers use the same image and detections.
 The demo uses the real QR reader and a fake localizer. It does not import torch or access cameras.
 Demo results do not validate the live model or camera geometry.
 
@@ -62,7 +62,10 @@ The service does not silently change an explicit CUDA request to CPU.
 
 ## Frame sources and coordinates
 
-Camera numbers are integers from 1 to 3.
+Live camera numbers are integers from 1 through the configured device count, at most 4.
+The service uses the same `MG400_CAMERA_DEVICES`, `MG400_CAMERA_MODES`, and `MG400_CAMERA_CAPTURE_SIZES` settings as the installer and preview.
+See [Cameras](olares.en.md#cameras) for allowed modes and defaults. Empty device settings disable live frame commands.
+The command schema lists only configured camera numbers; unconfigured numbers are rejected before a frame request.
 The live source uses this fixed endpoint, replacing `N` with the camera number:
 
 ```text
@@ -75,6 +78,9 @@ A socket read already in progress can continue until its socket timeout before t
 Connection, response-header, and HTTP transfer-framing reads use the socket timeout, without a separate total deadline.
 The source accepts frames of at most 8 MiB and 16,000,000 pixels.
 The decoder checks JPEG data, applies EXIF orientation, and produces RGB pixels.
+The resulting dimensions must equal the configured capture mode. A mismatch fails without resizing.
+`vision.frames.still(camera)` and service reads request 1 frame from this same go2rtc stream.
+They do not change capture mode or start a separate device capture.
 Source failures return 503 and set a fault. Requests do not retry automatically.
 
 Results report `coordinate_system` as `oriented_original_image_pixels`.

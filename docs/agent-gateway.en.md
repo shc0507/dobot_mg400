@@ -93,6 +93,66 @@ An unavailable proposal returns an explicit error. Do not interpret it as approv
 If dispatch or its reply fails, check the proposal and current run. The same approval cannot dispatch again.
 A failure after dispatch can leave an authorized run active. Stop or hold it through the dashboard when necessary.
 
+## Agent clients
+
+Client examples are in `src/gateway/clients/`. Give each client only the gateway endpoint and gateway token for lab access.
+Do not copy `/etc/mg400/mg400.env` into a client environment. Keep operator and instrument credentials outside the client.
+On another computer, use an authenticated tunnel with a local endpoint. Keep both the gateway and model endpoints on loopback.
+
+The gateway provides the `operator_guidance` MCP prompt and the `mg400://gateway/operator-guidance` text resource.
+Both contain the same static guidance, require the existing bearer and access checks, and accept no parameters or arbitrary paths.
+Load this guidance before working with recipes. It describes the workflow; the server still enforces approval and safety rules.
+These endpoints add no tool and make no backend request. Tool calls retain the existing audit behavior.
+
+### Claude Code
+
+Export `MG400_GATEWAY_TOKEN` in the client environment, then use the checked-in configuration:
+
+```sh
+claude --strict-mcp-config --mcp-config src/gateway/clients/claude-code.mcp.json --tools ""
+```
+
+The configuration expands `${MG400_GATEWAY_TOKEN}` in the Authorization header. It stores no credential.
+The command selects this MCP configuration and disables built-in tools. Do not add shell, device, or approval tools to this lab client.
+Load the `operator_guidance` prompt through the client's MCP interface. Start with a request to list recipes or read service state.
+Claude Code owns its transport and provider configuration. Keep proxy settings from routing the gateway credential outside the loopback connection.
+
+### Local Qwen and smolagents
+
+Use an existing local OpenAI-compatible Qwen server, or an authenticated tunnel to that server.
+The example starts no model server and downloads no model weights. Set the exact served model ID in `QUMUS_DEFAULT_MODEL_ID`.
+It uses smolagents `OpenAIServerModel` and `ToolCallingAgent`. The settings retain the `QUMUS_*` names from the earlier agent.
+
+| Client setting | Purpose |
+| --- | --- |
+| `MG400_GATEWAY_URL` | HTTP loopback URL with an explicit port and `/mcp`; default `http://127.0.0.1:8773/mcp` |
+| `MG400_GATEWAY_TOKEN` | Gateway bearer token; at least 24 printable ASCII characters |
+| `QUMUS_DEFAULT_MODEL_ID` | Required model ID served by the local API |
+| `QUMUS_API_BASE` | HTTP loopback URL with an explicit port and `/v1`; default `http://127.0.0.1:8000/v1` |
+| `QUMUS_API_KEY` | Separate model credential; `unused` if the local server requires no credential |
+| `QUMUS_LLM_TIMEOUT` | Model request timeout from 1 through 300 seconds; default 60 |
+| `QUMUS_LLM_RETRIES` | Must be 0; automatic model request retries are disabled |
+
+Export the gateway token separately. Edit the model values in `src/gateway/clients/qwen.env.example`, then run:
+
+```sh
+set -a
+. src/gateway/clients/qwen.env.example
+set +a
+uv run --group gateway-clients python -m gateway.clients "List recipes. Do not propose a run."
+```
+
+The `gateway-clients` dependency group contains `smolagents[mcp,openai]`. It installs no GPU runtime or model weights.
+The example reads the gateway's tool definitions through the MCP SDK and adapts them with `SmolAgentsAdapter`.
+It requires exactly the 9 gateway tools. It adds no shell, code executor, direct device client, or approval tool.
+Each MCP operation uses a fresh session with a 30-second deadline. Both HTTP clients ignore environment proxies and refuse redirects.
+The model client receives only its separate model credential. It receives no gateway credential in its instructions or tool definitions.
+
+The example permits at most 1 proposal attempt per invocation, including failed or uncertain attempts. Its tool-calling loop permits at most 8 steps.
+After a proposal, report its ID and pending decision. A person reviews and approves it on the dashboard.
+A decision from `get_approval` gives the client no actuation authority. Use run records to report recorded outcomes.
+If the reply is lost, do not rerun the proposal command. Have a person inspect proposals and current runs on the dashboard.
+
 ## Installation and demo
 
 Add `gateway` to `MG400_OPTIONAL_SERVICES` and follow the [installation procedure](deploy.en.md#installation-and-updates).

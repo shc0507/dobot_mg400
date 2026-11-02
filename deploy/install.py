@@ -11,6 +11,7 @@ The installer never starts, stops or restarts a robot service.
 import argparse
 import errno
 import grp
+import ipaddress
 import json
 import math
 import os
@@ -67,6 +68,8 @@ class Host:
         self.go2rtc_config = self.etc / "go2rtc.yaml"
         self.data = root / "var/lib/mg400"
         self.go2rtc = root / "usr/local/lib/mg400/go2rtc"
+        self.caddy = root / "usr/local/lib/mg400/caddy"
+        self.proxy_config = self.etc / "Caddyfile"
         self.units = root / "etc/systemd/system"
         self.command = root / "usr/local/bin/mg400ctl"
         self.lab_command = root / "usr/local/bin/labctl"
@@ -347,6 +350,104 @@ def render_go2rtc(devices):
     )
 
 
+PROXY_UPSTREAMS = {
+    "PANEL": ("web", "robot", 8766),
+    "STAGE": ("stage", "stage", 8767),
+    "THERMAL": ("thermal", "thermal", 8768),
+    "FURNACE": ("furnace", "furnace", 8769),
+    "MICROSCOPE": ("microscope", "microscope", 8770),
+    "ORCH": ("orch", "lab", 8772),
+}
+
+
+def render_proxy(host, settings, selected):
+    """Render fixed loopback routes after validating the proxy and its installed peers."""
+
+    def port(key, default, minimum=1):
+        value = settings.get(key) or str(default)
+        if not re.fullmatch(r"[0-9]{1,5}", value) or not minimum <= int(value) <= 65535:
+            raise ValueError(f"{key} must be an integer from {minimum} to 65535.")
+        return str(int(value))
+
+    bind = settings.get("MG400_PROXY_BIND") or "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(bind)
+    except ValueError as error:
+        raise ValueError("MG400_PROXY_BIND must be one numeric loopback or VPN address.") from error
+    if "%" in bind or address.is_unspecified or address.is_multicast:
+        raise ValueError("MG400_PROXY_BIND must be one numeric loopback or VPN address.")
+    values = {
+        "PROXY_BIND": f"[{address}]" if address.version == 6 else str(address),
+        "PROXY_PORT": port("MG400_PROXY_PORT", 8080, 1024),
+    }
+    ports = {"1985", values["PROXY_PORT"]}
+    if len(ports) != 2:
+        raise ValueError("Proxy and upstream ports must be distinct.")
+    for prefix, (name, path, default) in PROXY_UPSTREAMS.items():
+        key = f"MG400_{prefix}_"
+        value = port(key + "PORT", default)
+        if value in ports:
+            raise ValueError("Proxy and upstream ports must be distinct.")
+        ports.add(value)
+        values[prefix + "_PORT"] = value
+        if name in selected:
+            if (settings.get(key + "BIND") or "127.0.0.1") != "127.0.0.1":
+                raise ValueError(f"Set {key}BIND=127.0.0.1 before enabling proxy.")
+            if settings.get(key + "BASE_PATH") not in {f"/{path}", f"/{path}/"}:
+                raise ValueError(f"Set {key}BASE_PATH=/{path}/ before enabling proxy.")
+            token = settings.get(key + "TOKEN", "")
+            if (
+                len(token) < 24
+                or token != token.strip()
+                or any(not 32 <= ord(character) <= 126 for character in token)
+            ):
+                raise ValueError(f"{key}TOKEN needs at least 24 printable ASCII characters.")
+    if (settings.get("MG400_CAMERA_BIND") or "127.0.0.1") != "127.0.0.1":
+        raise ValueError("Set MG400_CAMERA_BIND=127.0.0.1 before enabling proxy.")
+    with assets._local(host.source / "config/proxy/Caddyfile") as stream:
+        template = stream.read().decode("utf-8")
+    for key, value in values.items():
+        template = template.replace(f"@{key}@", value)
+    if re.search(r"@[A-Z][A-Z0-9_]*@", template):
+        raise ValueError("Proxy template contains an unresolved placeholder.")
+    return template
+
+
+def prepare_proxy(args, host, settings, selected):
+    """Check the optional proxy without starting its binary or changing files."""
+    if "proxy" not in selected:
+        if args.caddy is not None:
+            raise ValueError("Select proxy in MG400_OPTIONAL_SERVICES before using --caddy.")
+        return None, None
+    config = render_proxy(host, settings, selected)
+    for destination in (host.caddy, host.proxy_config):
+        try:
+            with assets._directory(destination.parent) as directory:
+                assets._regular(destination, directory)
+        except FileNotFoundError:
+            pass
+    source = args.caddy if args.caddy is not None else host.caddy
+    try:
+        with assets._local(source) as stream:
+            info = os.fstat(stream.fileno())
+            # POSIX uses matching group bits before "other" permissions.
+            execute_bit = 0o010 if info.st_gid == SERVICE_GID else 0o001
+            service_executable = bool(info.st_mode & execute_bit)
+            if args.caddy is None and (
+                info.st_uid != 0 or info.st_mode & 0o7022 or not service_executable
+            ):
+                raise ValueError(
+                    "The installed Caddy binary must be root-owned and executable by the service, "
+                    "without special mode bits or group or other write access."
+                )
+            binary = stream.read()
+    except FileNotFoundError as error:
+        raise RuntimeError("Proxy is selected. Pass a Caddy 2 binary with --caddy PATH.") from error
+    if not binary:
+        raise ValueError("The Caddy binary is empty.")
+    return config, binary if args.caddy is not None else None
+
+
 def find_collectors(proc_root, managed_pid):
     """Return PIDs of Python processes that run any gripper_feedback.py, except the service.
 
@@ -496,6 +597,7 @@ def install(args, host, run, chown, out):
         raise RuntimeError(f"The go2rtc binary does not exist: {args.go2rtc}")
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
+    proxy_config, caddy_binary = prepare_proxy(args, host, settings, selected)
 
     manifest = assets.load_manifest(host.asset_manifest) if args.asset or args.fetch_assets else {}
     available_assets = service_assets(selected, manifest) if args.asset or args.fetch_assets else {}
@@ -596,6 +698,15 @@ def install(args, host, run, chown, out):
         step(f"remove {host.go2rtc_config}: cameras are off")
         if not args.dry_run:
             host.go2rtc_config.unlink()
+    if proxy_config is not None:
+        if caddy_binary is not None:
+            directory(host.caddy.parent, 0o755, (0, 0))
+            step(f"install {args.caddy} as {host.caddy}")
+            if not args.dry_run:
+                write_file(host.caddy, caddy_binary, 0o755, (0, 0), chown)
+        step(f"write {host.proxy_config}")
+        if not args.dry_run:
+            write_file(host.proxy_config, proxy_config, 0o640, (0, SERVICE_GID), chown)
     if rendered_rules:
         directory(host.udev, 0o755, (0, 0))
         for name, text in rendered_rules.items():
@@ -623,6 +734,7 @@ def main(argv=None, *, host=None, run=subprocess.run, chown=os.fchown, out=sys.s
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="Print the steps. Change nothing.")
     parser.add_argument("--go2rtc", type=Path, help="go2rtc 1.9.14 binary to install")
+    parser.add_argument("--caddy", type=Path, help="Caddy 2 binary for the optional proxy")
     parser.add_argument(
         "--asset",
         action="append",

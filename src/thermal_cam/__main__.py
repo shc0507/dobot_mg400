@@ -77,7 +77,14 @@ def main():
     parser.add_argument("--no-connect", action="store_true", help="Wait for Connect in the GUI")
     parser.add_argument("--bind", default=os.environ.get("MG400_THERMAL_BIND", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=os.environ.get("MG400_THERMAL_PORT", "8768"))
+    parser.add_argument("--base-path", default=os.environ.get("MG400_THERMAL_BASE_PATH", "/"))
     args = parser.parse_args()
+    from .app import normalize_base_path
+
+    try:
+        prefix = normalize_base_path(args.base_path)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 1 <= args.frames <= 10000:
         parser.error("--frames must be between 1 and 10000")
     if not 1 <= args.port <= 65535:
@@ -97,7 +104,7 @@ def main():
         return probe(args.frames, args.output)
     host = args.bind
     url_host = f"[{host}]" if ":" in host else host
-    url = f"http://{url_host}:{args.port}"
+    url = f"http://{url_host}:{args.port}{prefix}"
     # Reserve the port before the app's lifespan can acquire the USB camera.
     # Keep this exact socket through startup: a check followed by a second bind
     # would leave a race with another instance launching at the same time.
@@ -134,7 +141,9 @@ def main():
         from .app import create_app
 
         print(f"Thermal Master P1 {'[SIMULATED DEMO]' if args.demo else '[REAL CAMERA]'}: {url}")
-        app = create_app(demo=args.demo, auto_connect=not args.no_connect, token=token)
+        app = create_app(
+            demo=args.demo, auto_connect=not args.no_connect, token=token, base_path=prefix or "/"
+        )
         server = uvicorn.Server(uvicorn.Config(app, host=host, port=args.port, workers=1))
         try:
             server.run(sockets=[listener])

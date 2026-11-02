@@ -1185,3 +1185,15 @@ def test_furnace_guard_closes_dripping_body_at_monotonic_deadline(ctl):
             clock=lambda: next(times),
         )
     assert response.read1.call_count == 2 and response.closed
+
+
+def test_proxy_is_an_explicit_optional_service_and_stop_remains_available(ctl):
+    assert ctl.call("start", "proxy") == 1
+    ctl.run.assert_not_called()
+    ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=proxy\n")
+    assert ctl.call("start", "proxy") == 0
+    assert systemctl(ctl) == [["systemctl", "start", "mg400-proxy.service"]]
+    ctl.run.reset_mock()
+    ctl.host.settings.write_text(SETTINGS)
+    assert ctl.call("stop", "proxy") == 0
+    assert systemctl(ctl) == [["systemctl", "stop", "mg400-proxy.service"]]

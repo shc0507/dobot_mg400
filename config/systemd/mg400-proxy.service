@@ -1,0 +1,19 @@
+[Unit]
+Description=MG400 service reverse proxy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+EnvironmentFile=/etc/mg400/mg400.env
+# The proxy passes inbound credentials unchanged and checks no service token.
+UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN MG400_THERMAL_TOKEN MG400_VISION_TOKEN MG400_FURNACE_TOKEN MG400_MICROSCOPE_TOKEN MG400_ORCH_TOKEN MG400_ORCH_ROBOT_TOKEN MG400_ORCH_STAGE_TOKEN MG400_ORCH_THERMAL_TOKEN MG400_ORCH_VISION_TOKEN MG400_ORCH_FURNACE_TOKEN MG400_ORCH_MICROSCOPE_TOKEN MG400_GATEWAY_TOKEN HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+WorkingDirectory=/opt/mg400
+ExecStart=/usr/local/lib/mg400/caddy run --config /etc/mg400/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=2
+UMask=0077
+TimeoutStopSec=30

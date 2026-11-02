@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <meta name="base-path" content="{{ base_path }}">
   <meta name="control-token" content="{{ token }}">
   <meta name="description" content="Three-axis motion control for the motor stage.">
   <title>Motion control · Stage Controller</title>
@@ -27,7 +28,7 @@
   </svg>
 
   <aside class="rail" aria-label="Application identity">
-    <a class="brand-mark" href="/" aria-label="Stage Controller home">s<span>c</span><i></i></a>
+    <a class="brand-mark" href="{{ url_for('index') }}" aria-label="Stage Controller home">s<span>c</span><i></i></a>
     <div class="rail-rule"></div>
     <a class="rail-active" href="#main" aria-label="Motion controls" title="Motion controls"><svg class="icon"><use href="#i-sliders"/></svg></a>
     <span class="rail-caption">WORKBENCH</span>

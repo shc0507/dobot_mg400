@@ -27,7 +27,7 @@ Connect every lab device to Olares and run its services there. Each device has 1
 - Store settings in `/etc/mg400/mg400.env`. Services read `<PREFIX>BIND`, `<PREFIX>PORT`, and `<PREFIX>TOKEN`. Code and units contain no host-specific addresses or paths.
 - `MG400_OPTIONAL_SERVICES` selects optional services. The installer prepares only those. Most services use `/opt/mg400/.venv`. Vision uses `/opt/mg400/.venv-vision`.
 - Keep models, calibration, taught stations, tool offsets, stage configuration, thermal regions, furnace state, runs, and recordings under `/var/lib/mg400`.
-- Data ownership is `1000:1000`, directory mode `0750`, and file mode `0640` or `0600`. The installer creates data directories.
+- Data ownership is `1000:1000`, directory mode `0750`, and file mode `0640` or `0600`. The private stage calibration directory `/var/lib/mg400/stage` uses mode `0700`. The installer creates data directories.
 - Inventory every USB device by device name, VID:PID, stable path, hub/port, and service. Use `/dev/serial/by-id/` and `/dev/v4l/by-path/` identities.
 - Connect every USB device through 1 self-powered hub on 1 host port. Put the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
 - Keep each camera on its fixed hub port. The 3 AC410 cameras report the same serial number, so stable names must distinguish their ports.

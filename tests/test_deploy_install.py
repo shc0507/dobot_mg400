@@ -111,7 +111,8 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     assert {path.name for path in host.units.iterdir()} == {
         path.name
         for path in (ROOT / "config/systemd").iterdir()
-        if path.name not in {"mg400-furnace.service", "mg400-orchestrator.service"}
+        if path.name
+        not in {"mg400-furnace.service", "mg400-orchestrator.service", "mg400-gateway.service"}
     }
     for unit in host.units.iterdir():
         assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
@@ -927,6 +928,28 @@ def test_enabled_orchestrator_installs_private_data_and_group_without_starting_i
     assert settings["MG400_ORCH_THERMAL_TOKEN"] == ""
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("orchestrator") - 1] == "--group"
+    assert not any(
+        command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
+        for command, _ in host.commands
+    )
+
+
+def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricating_runs(
+    module, host
+):
+    select_optional(host, "gateway")
+    assert host.install() == 0
+    directory = host.data / "runs"
+    assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
+    assert list(directory.iterdir()) == []
+    assert not (host.data / "zones").exists()
+    assert (host.units / "mg400-gateway.service").exists()
+    settings = module.parse_settings(host.settings.read_text())
+    assert len(settings["MG400_GATEWAY_TOKEN"]) >= 24
+    assert settings["MG400_ORCH_STAGE_TOKEN"] == settings["MG400_STAGE_TOKEN"]
+    assert settings["MG400_ORCH_THERMAL_TOKEN"] == ""
+    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
+    assert sync[sync.index("gateway") - 1] == "--group"
     assert not any(
         command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
         for command, _ in host.commands

@@ -33,6 +33,16 @@ port = 8772
 assets = []
 
 [[service]]
+name = "gateway"
+units = ["mg400-gateway.service"]
+optional = true
+venv = ".venv"
+groups = ["gateway"]
+token = "MG400_GATEWAY_TOKEN"
+port = 8773
+assets = []
+
+[[service]]
 name = "stage"
 units = ["mg400-stage-panel.service"]
 optional = false

@@ -64,6 +64,7 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-stage-panel.service",
         "mg400-furnace.service",
         "mg400-orchestrator.service",
+        "mg400-gateway.service",
     ],
 )
 def test_services_with_settings_read_the_shared_environment_file(name):
@@ -78,11 +79,21 @@ def test_services_with_settings_read_the_shared_environment_file(name):
     [
         (
             "mg400-web-panel.service",
-            ["MG400_STAGE_TOKEN", "MG400_FURNACE_TOKEN", *ORCHESTRATOR_TOKENS],
+            [
+                "MG400_STAGE_TOKEN",
+                "MG400_FURNACE_TOKEN",
+                *ORCHESTRATOR_TOKENS,
+                "MG400_GATEWAY_TOKEN",
+            ],
         ),
         (
             "mg400-stage-panel.service",
-            ["MG400_PANEL_TOKEN", "MG400_FURNACE_TOKEN", *ORCHESTRATOR_TOKENS],
+            [
+                "MG400_PANEL_TOKEN",
+                "MG400_FURNACE_TOKEN",
+                *ORCHESTRATOR_TOKENS,
+                "MG400_GATEWAY_TOKEN",
+            ],
         ),
         (
             "mg400-camera-preview.service",
@@ -91,6 +102,7 @@ def test_services_with_settings_read_the_shared_environment_file(name):
                 "MG400_STAGE_TOKEN",
                 "MG400_FURNACE_TOKEN",
                 *ORCHESTRATOR_TOKENS,
+                "MG400_GATEWAY_TOKEN",
             ],
         ),
         (
@@ -167,6 +179,7 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-stage-panel.service": ["dialout"],
         "mg400-furnace.service": ["dialout"],
         "mg400-orchestrator.service": [],
+        "mg400-gateway.service": [],
     }
 
 
@@ -193,6 +206,18 @@ def test_orchestrator_keeps_only_its_access_and_downstream_alias_tokens_and_drai
         for name in ("PANEL", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE", "GATEWAY")
     }
     assert not set(ORCHESTRATOR_TOKENS) & set(service["UnsetEnvironment"][0].split())
+
+
+def test_gateway_has_no_device_groups_and_retains_only_checked_read_credentials():
+    service = unit_sections("mg400-gateway.service")["Service"]
+    assert command("mg400-gateway.service") == ["/opt/mg400/.venv/bin/python", "-m", "gateway"]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    assert not service.get("SupplementaryGroups")
+    assert set(service["UnsetEnvironment"][0].split()) == {
+        f"MG400_{name}_TOKEN"
+        for name in ("PANEL", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE", "ORCH")
+    }
+    assert "MG400_GATEWAY_TOKEN" not in service["UnsetEnvironment"][0].split()
 
 
 def test_camera_capture_reads_the_generated_configuration():

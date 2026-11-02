@@ -460,6 +460,16 @@ void stopAll() {
   for (uint8_t i = 0; i < motorCount; ++i) halt(motors[i]);
 }
 
+bool zero() {
+  if (!canConfigure()) return false;
+  MotorState &motor = selectedState();
+  motor.stepper->setCurrentPosition(0);
+  motor.homed = true;
+  motor.soft = false;
+  motor.homeError = HomeError::None;
+  return true;
+}
+
 HomeError home() {
   if (!canConfigure()) return HomeError::Busy;
   MotorState &motor = selectedState();

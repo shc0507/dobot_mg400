@@ -19,6 +19,7 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400/work` | Gripper feedback, gripper command files, and mode-switch backups | `1000:1000`, `0750` |
 | `/var/lib/mg400/models` | Model weights installed from the asset manifest, with file permissions `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
+| `/var/lib/mg400/stage` | Writable stage calibration and camera references in `stage.toml` | `1000:1000`, `0700` |
 | `/var/lib/mg400/furnace` | Furnace state and persistent lock, files `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/runs` | Orchestrator run records, files `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/zones` | Zone configuration and retained occupancy, files `0640` or `0600` | `1000:1000`, `0750` |
@@ -354,13 +355,19 @@ The backup includes the following paths when they exist:
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus, and reference-view data |
 | `/var/lib/mg400/stations.toml` | Taught robot stations |
 | `/var/lib/mg400/tool.toml` | Gripper tool offset |
-| `/var/lib/mg400/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
+| `/var/lib/mg400/stage/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions |
 | `/var/lib/mg400/furnace/state.json` | Furnace sequence state |
 | `/var/lib/mg400/runs/` | Run files and SQLite index |
 | `/var/lib/mg400/recordings/` | Furnace recordings before archiving |
 | `/var/lib/mg400/camera/preview.key` | Camera preview key |
 | `/var/lib/mg400/work/` | Gripper feedback, command files, persistent command locks, and mode-switch backups |
+
+The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` for writable stage calibration.
+It keeps `/var/lib/mg400` root-owned with mode `0750`.
+If `/var/lib/mg400/stage.toml` exists, it prints a move instruction and leaves the file unchanged.
+Stop the stage service before moving that file to `/var/lib/mg400/stage/stage.toml` manually. Do not overwrite an existing destination.
+Retain owner `1000:1000` and file mode `0600` or `0640`. Update any old `MG400_STAGE_CONFIG` override before restarting.
 
 Restore by hand on the new host:
 
@@ -403,8 +410,8 @@ Restore by hand on the new host:
 
 6. Adjust `/etc/mg400/mg400.env` for the new bind addresses and camera device paths. Keep owner `root:root` and mode `0600`.
    Preserving access tokens avoids another token entry by users. Restoring `/var/lib/mg400/camera/preview.key` preserves preview links.
-   The data paths above use owner `1000:1000`, directory mode `0750`, and file modes `0640` or `0600`.
-   Preserve the stricter existing camera-directory mode `0700`, and the archive's owners and modes for other existing data.
+   The data paths above use owner `1000:1000` and file modes `0640` or `0600`.
+   Keep directory mode `0750`, except the camera and stage directories, which require `0700`. Preserve the archive's owners and modes for other existing data.
 7. If `/var/lib/mg400/work/gripper_feedback.json.command-lock.json` exists, a gripper command outcome is unconfirmed.
    Confirm the gripper state and preserve this file with owner `1000:1000` and mode `0600`.
    The collection service stays locked when it reads the restored file. Do not remove it to resume commands.

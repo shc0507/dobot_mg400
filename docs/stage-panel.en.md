@@ -45,8 +45,9 @@ For an Olares deployment, upload the firmware from a computer with the Arduino I
 When you run the panel locally, click `Disconnect` in the panel before uploading firmware.
 
 The stage uses open-loop control: it sends pulses without reading the actual position. It has no encoders.
-Updated firmware supports homing switches and soft limits. Old firmware keeps manual control but cannot use homing or named moves.
-The page count is a signed STEP pulse count. Reset and homing reset its reference. It is not measured travel.
+The stage has no limit switches. Updated firmware supports confirmed manual zero and soft limits.
+A board with configured switches can still use homing. Old firmware keeps manual control.
+The page count is a signed STEP pulse count. Reset, homing, and manual zero reset its reference. It is not measured travel.
 Before moving, confirm that sufficient travel remains in that direction.
 
 Most Arduino boards reset when the serial port opens. The panel opens the serial port on every connection.
@@ -109,7 +110,7 @@ Demo mode does not open a serial port. Its simulated motion times exclude accele
 ### Automation control
 
 While an automation client holds the control lease, the page shows `Stage is controlled by automation`.
-Fixed-step, hold, keyboard motion, microstep, Home, named position, and pose controls are unavailable.
+Fixed-step, hold, keyboard motion, microstep, Home, manual zero, reference teaching, named position, and pose controls are unavailable.
 `Stop all motors` and hold release remain available.
 The lease lasts 3 seconds by default. The client must renew it.
 On expiry, the service requests that all motors stop.
@@ -139,7 +140,8 @@ When `MG400_STAGE_SERIAL` is set, the list shows only that device. See [Configur
 Otherwise, the list may contain other serial ports.
 Run `ls -l /dev/serial/by-id/` on the host. Find the Arduino by its device name.
 Do not connect to an unidentified serial port.
-During connection, the service sends a `status` command to that port.
+During connection, the service sends `status` and the read-only `features` query to that port.
+Old firmware can refuse `features` and keep its current controls.
 
 The service opens only serial ports that currently appear in the list.
 During connection, the service opens the serial port and waits about 2 seconds for the Arduino to reset.
@@ -157,13 +159,13 @@ The panel does not convert speed or steps when you change the mode.
 For example, in 1/16-step mode, 50 pulses equal 3.125 full steps.
 Counts from different modes cannot be converted to the same distance.
 Changing the microstep mode clears the home reference and soft limits for all 3 axes.
-Home each axis again before a named move or automated motion.
+Confirm each axis reference again before a named move or automated motion.
 
 ### Homing and named moves
 
-Before routine hardware use, complete the supervised switch and calibration checks in H-07 and H-18.
-Homing finds the configured reference switch. Soft limits restrict travel from that reference.
-The service reads measured calibration from `/var/lib/mg400/stage.toml`. See [Stage calibration](#stage-calibration).
+Before routine hardware use, complete the supervised reference and calibration checks in H-07 and H-18.
+On a board with switches, homing finds the configured reference switch. Soft limits restrict travel from the confirmed reference.
+The service reads measured calibration from `/var/lib/mg400/stage/stage.toml`. See [Stage calibration](#stage-calibration).
 
 Each motor shows its reference state:
 
@@ -179,11 +181,11 @@ Wait for `Homed` before selecting an Insert named position, such as `load` or `f
 Named positions use millimetres from home. The millimetres shown come from pulse counts and calibration, not measured travel.
 The host refuses automated motion without a confirmed reference with `position unknown, home first`.
 
-Home all 3 axes before selecting a button under `Named poses`.
+Confirm the reference and soft limits of all 3 axes before selecting a button under `Named poses`.
 A pose moves each axis to its configured position, 1 axis at a time in the configured order.
 New motion controls remain unavailable while homing or a named move is active. `Stop all motors` remains available.
 The page does not queue or automatically retry these actions.
-Reset, reconnection, and a microstep change require fresh homing and soft-limit confirmation.
+Reset, reconnection, and a microstep change require fresh reference and soft-limit confirmation.
 
 State reports `feedback_age_s` from the last complete board reply. `feedback_fresh` requires that reply to be at most 2 s old.
 Each motor's `automation_ready` requires fresh feedback and a confirmed reference and soft range for the current microstep.
@@ -209,6 +211,62 @@ The page does not renew awake requests. The hold watchdog remains 1 second.
 The contract adds `home` with `motor`, `awake` with `motor` and `seconds`, `goto` with `motor` and `name`, and `pose` with `name`.
 A positive contract `awake` requires a confirmed reference. An owning client can cancel the extension with 0 without homing.
 The manual awake route requires updated firmware but does not require homing.
+
+### Manual zero and camera reference
+
+Without switches, the page shows `Set zero here`, `Zero required`, and `Zero confirmed` for each axis.
+The service shows `Home` for boards with switches and keeps the existing controls for older firmware.
+The demo transport also supports simulated switches for homing practice.
+
+1. Use manual controls to place the axis at its measured safe zero position.
+2. Stop the axis. Wait for idle feedback and the cooldown to end.
+3. If a reference is configured, click `Check reference`. Check the image and marker offset.
+4. Click `Set zero here`. Confirm the physical position in the dialog.
+5. Wait for `Zero confirmed` before an automated move.
+
+Zeroing sends no motion. It resets the pulse count, clears the firmware soft range, and then installs the configured soft limits.
+Both zero and soft limits must be confirmed by fresh board replies. The configured range must contain zero.
+Reset, reconnection, or an actual microstep change invalidates this confirmation.
+The activity log identifies the client that set zero. Page requests use `stage-panel` as the client identity.
+
+Each axis can have this optional entry in its calibration table:
+
+```toml
+reference = {stream = "camera3", marker = 12, pixel = [99.5, 99.5], tolerance_px = 2}
+```
+
+These values illustrate the format. Measure the real pixel and tolerance during H-07.
+`stream` is a go2rtc stream name with letters, digits, underscores, or hyphens. It is not a URL.
+`marker` selects 1 ArUco marker from `DICT_4X4_1000`, with an ID from 0 to 999.
+`pixel` is the marker centre in image coordinates, with x first and y second.
+`tolerance_px` is a positive maximum Euclidean offset in pixels.
+Coordinates and tolerance must be finite and within 8192 pixels.
+
+The service reads 1 JPEG from `http://127.0.0.1:1984/api/frame.jpeg` through go2rtc, which owns the camera.
+Each socket operation has a 2-second timeout. Between single-buffer reads, the service checks a 2-second body age budget and a 4 MiB limit.
+HTTP headers and a pending socket receive can extend request duration. Zeroing requires a frame age of at most 2 seconds.
+Redirects and proxies are disabled.
+The service refuses a missing, duplicated, or out-of-tolerance marker before sending zero.
+If the stage state or control lease changes during capture, it refuses the operation.
+Without a reference, zero still requires explicit confirmation. Demo references require an offline frame source.
+
+To teach a configured marker, put the axis at its safe physical zero and stop it.
+Click `Teach reference here` and confirm. This stores the detected centre, including when it differs from the old centre.
+Teaching invalidates the previous host zero confirmation. Click `Set zero here` afterwards.
+Teaching requires a configuration file and an owned directory with mode `0700` or `0750`.
+It replaces the file atomically, retains its owner and permissions, and refuses concurrent calibration changes or links.
+The saved file uses the supported calibration schema. Formatting and comments are not retained.
+
+| Route | Request |
+| --- | --- |
+| `POST /api/motors/<motor>/zero` | `{"confirm": true}` |
+| `POST /api/motors/<motor>/teach_reference` | `{"confirm": true}` |
+| `GET /api/motors/<motor>/reference` | Read the image and marker offset. |
+
+The contract command `zero` requires `motor`, `confirm: true`, and the control lease.
+Reference teaching is available only from the operator page, without an automation lease holder.
+The page routes retain the page token and access checks. Image responses use the authenticated reference route only.
+Ordinary state replies contain reference metadata without the JPEG.
 
 ### Fixed-step movement
 
@@ -284,7 +342,7 @@ The panel does not reconnect automatically or retry movements.
 The service runs as a user and group with numeric ID `1000`. It also joins `dialout` for serial-port read and write access.
 The service starts manually. It is not configured to start at boot.
 Starting the service does not open a serial port. The port opens only after you click `Connect` on the page.
-The service writes no files to disk. It sends output to the systemd journal.
+Reference teaching updates the stage calibration file. The service sends output to the systemd journal.
 
 ### Configuration
 
@@ -296,7 +354,7 @@ The service reads configuration from environment variables. Command-line argumen
 | `MG400_STAGE_PORT` | `--port` | `8767` | Listen port, 1–65535 |
 | `MG400_STAGE_TOKEN` | None | None | Access token |
 | `MG400_STAGE_SERIAL` | `--serial` | None | Arduino serial-port path |
-| `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage.toml` | Measured stage calibration and named targets |
+| `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | Measured stage calibration and named targets |
 
 An empty environment variable has the same effect as an unset variable.
 
@@ -320,7 +378,12 @@ Demo mode ignores this setting.
 Use the measurements and travel limits from H-07. Do not infer calibration from the pulse count or copy demo geometry to hardware.
 The file contains a `motors` table and an optional `poses` table. It has no production defaults.
 Use a regular file owned by UID 1000 or the local service user, with mode `0600` or `0640`.
-The reader refuses symbolic links in the file path. Keep the host data directory at mode `0750`.
+The reader refuses symbolic links in the file path.
+The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` so the service can teach references.
+The parent `/var/lib/mg400` remains root-owned with mode `0750`.
+If `/var/lib/mg400/stage.toml` exists, installation prints a move instruction without moving or overwriting the file.
+With the stage service stopped, check both paths and move the old file to `/var/lib/mg400/stage/stage.toml` manually.
+Retain owner `1000:1000` and file mode `0600` or `0640`. Update any old `MG400_STAGE_CONFIG` override before restarting.
 Each of `motors.bottom`, `motors.top`, and `motors.insert` contains:
 
 | Field | Value |
@@ -329,6 +392,7 @@ Each of `motors.bottom`, `motors.top`, and `motors.insert` contains:
 | `microstep` | Calibration mode: 1, 2, 4, 8, or 16. |
 | `min_mm`, `max_mm` | Finite, ordered travel bounds from home. |
 | `positions` | Optional table of names and positions in millimetres. Insert requires `load` and `furnace`. |
+| `reference` | Optional camera reference with `stream`, `marker`, `pixel`, and `tolerance_px`. |
 
 Each `poses.<name>` table contains `order` and `positions`.
 `order` lists `bottom`, `top`, and `insert` exactly 1 time, in the required movement order.
@@ -337,7 +401,7 @@ The `furnace` pose identifies the inserted position from which crucible unloadin
 
 The host computes pulses per millimetre as `steps_per_mm * current_microstep / microstep`.
 It rounds boundaries inward and targets to the nearest pulse. It checks the rounded target against the pulse boundaries again.
-After homing, the host sends the soft limits and waits for confirmation before enabling named or automated motion.
+After homing or manual zero, the host sends the soft limits and waits for confirmation before enabling named or automated motion.
 An absent or invalid file disables these controls and shows the configuration error. Manual controls and Stop remain available.
 
 Without an explicit configuration override, demo mode uses separate synthetic geometry for offline practice.

@@ -648,6 +648,8 @@ def install(args, host, run, chown, out):
     directory(host.data / "locks", 0o700, service)
     directory(host.data / "work", 0o750, service)
     directory(host.data / "camera", 0o700, service)
+    if "thermal" in selected:
+        directory(host.data / "thermal", 0o750, service)
     if "furnace" in selected:
         directory(host.data / "furnace", 0o750, service)
     if "orch" in selected or "gateway" in selected:

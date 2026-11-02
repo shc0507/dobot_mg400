@@ -1,2 +1,5 @@
 # Thermal Master P1 uses libusb through /dev/bus/usb.
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3474", ATTR{idProduct}=="45c2", ATTR{serial}=="P1016021DG040100208", MODE="0660", GROUP="@SERVICE_GROUP@"
+# The P1 appends non-printing bytes to its USB serial string, for example
+# "P1016021DG040100208\x01\xc2\xa0\x1e\x01". udev compares the whole value, so
+# match the recorded serial as a prefix.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3474", ATTR{idProduct}=="45c2", ATTR{serial}=="P1016021DG040100208*", MODE="0660", GROUP="@SERVICE_GROUP@"

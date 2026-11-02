@@ -257,7 +257,8 @@ void homingFailures() {
   assert(!status().homed);
 
   reset();
-  inputs[MotorPins::BottomLimitMin] = inputs[MotorPins::BottomLimitMax] = LOW;
+  inputs[MotorPins::BottomLimitMin] = LOW;
+  inputs[MotorPins::BottomLimitMax] = LOW;
   assert(MotorControl::home() == HomeError::None);
   advance(3);
   assert(MotorControl::takeHomeError(bottomMotor) == HomeError::BothLimits);
@@ -301,6 +302,8 @@ void awakeTimers() {
 
 void protocolCompatibility() {
   reset();
+  command("features");
+  assert(Serial.output == "FEATURES zero=1 home=111\r\n");
   command("MoToR top");
   assert(Serial.output == "OK: top motor\r\n");
   command("dir ccw");
@@ -371,12 +374,76 @@ void protocolCompatibility() {
   assert(Serial.output == "ERROR: home failed: insert cancelled\r\nERROR: home failed: bottom timeout\r\nOK: bottom home\r\n");
 }
 
+void manualZero() {
+  reset();
+  assert(!status().homed && !status().soft && !status().awake);
+  command("features");
+  assert(Serial.output == "FEATURES zero=1 home=000\r\n");
+  for (uint8_t pin = A0; pin <= A5; ++pin) assert(modes[pin] != INPUT_PULLUP);
+  for (uint8_t i = 0; i < 3; ++i) {
+    const Motor motor = static_cast<Motor>(i);
+    assert(MotorControl::selectMotor(motor));
+    command("home");
+    assert(Serial.output == "ERROR: home failed: minimum limit not configured\r\n");
+    advance(200);
+    assert(!status(motor).homed && !status(motor).rotating && pulses[i] == 0);
+    assert(MotorControl::rotateSteps(7));
+    assert(!MotorControl::zero());
+    command("zero");
+    assert(Serial.output.find("ERROR:") == 0);
+    finish(motor);
+    assert(status(motor).position == 7);
+    advance(MotorPins::SleepTimeoutMs);
+    const unsigned long before = pulses[i];
+    const long physicalBefore = physical[i];
+    command("zero");
+    const char *names[] = {"bottom", "top", "insert"};
+    assert(Serial.output == std::string("OK: ") + names[i] + " zero\r\n");
+    const MotorControl::Status zeroed = status(motor);
+    assert(zeroed.homed && !zeroed.soft && !zeroed.awake && zeroed.position == 0);
+    assert(zeroed.remainingSteps == 0 && !zeroed.rotating);
+    assert(pulses[i] == before && physical[i] == physicalBefore);
+    assert(MotorControl::setSoftLimits(-3, 3));
+    assert(!MotorControl::rotateSteps(4));
+    assert(MotorControl::rotateSteps(3));
+    finish(motor);
+    assert(!MotorControl::startHold());
+    assert(MotorControl::zero());
+    assert(status(motor).homed && !status(motor).soft && status(motor).position == 0);
+    assert(MotorControl::setSoftLimits(-3, 3));
+    assert(MotorControl::setDirection(Direction::Counterclockwise));
+    assert(MotorControl::startHold());
+    advance(1000);
+    assert(status(motor).position == -3 && !status(motor).rotating);
+    assert(!MotorControl::keepHoldAlive());
+  }
+  const unsigned long before = pulses[0] + pulses[1] + pulses[2];
+  assert(MotorControl::setMicrostep(1));
+  for (uint8_t i = 0; i < 3; ++i) {
+    assert(status(static_cast<Motor>(i)).homed && status(static_cast<Motor>(i)).soft);
+  }
+  assert(MotorControl::setMicrostep(16));
+  for (uint8_t i = 0; i < 3; ++i) {
+    const MotorControl::Status value = status(static_cast<Motor>(i));
+    assert(!value.homed && !value.soft && value.position == -3);
+  }
+  assert(before == pulses[0] + pulses[1] + pulses[2]);
+  MotorControl::begin();
+  for (uint8_t i = 0; i < 3; ++i) {
+    const MotorControl::Status value = status(static_cast<Motor>(i));
+    assert(!value.homed && !value.soft && !value.awake && value.position == 0);
+  }
+  command("zero 1");
+  assert(Serial.output.find("ERROR:") == 0);
+  command("features extra");
+  assert(Serial.output.find("ERROR:") == 0);
+  std::cout << "manual zero, no-switch homing refusal and soft-limit checks passed\n";
+}
+
 int main() {
   if (MotorPins::BottomLimitMin == 255) {
-    reset();
-    assert(MotorControl::home() == HomeError::NoMinimum);
-    assert(!status().homed && !status().rotating && pulses[0] == 0);
-    std::cout << "disabled minimum refuses homing\n";
+    manualZero();
+    awakeTimers();
     return 0;
   }
   limitsAndLegacyHold();

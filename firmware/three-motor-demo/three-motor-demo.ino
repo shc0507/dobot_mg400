@@ -1,4 +1,5 @@
 #include "MotorControl.h"
+#include "MotorPins.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -47,6 +48,8 @@ void printHelp() {
   console.println(F("  spr 200                 1..65535 full steps/rev, while idle"));
   console.println(F("  microstep [1|2|4|8|16]  Query/set global resolution; all motors idle"));
   console.println(F("  home                    Seek minimum, back off, approach slowly"));
+  console.println(F("  zero                    Set the selected idle motor's position to zero"));
+  console.println(F("  features                Report manual zero and minimum-switch support"));
   console.println(F("  soft <min> <max>        Inclusive steps from home; idle and homed only"));
   console.println(F("  awake <ms>              Renew idle holding for 0..60000 ms; 0 cancels"));
   console.println(F("  status                  Show all motors"));
@@ -150,6 +153,12 @@ void handleCommand(char *line) {
   } else if (strcmp(command, "status") == 0 && !argument) {
     printStatus();
     return;
+  } else if (strcmp(command, "features") == 0 && !argument) {
+    console.print(F("FEATURES zero=1 home="));
+    console.print(MotorPins::BottomLimitMin != 255 ? 1 : 0);
+    console.print(MotorPins::TopLimitMin != 255 ? 1 : 0);
+    console.println(MotorPins::InsertLimitMin != 255 ? 1 : 0);
+    return;
   } else if (strcmp(command, "microstep") == 0) {
     if (!argument) {
       console.print(F("microstep="));
@@ -164,6 +173,8 @@ void handleCommand(char *line) {
       console.println(F("ERROR: microstep requires 1, 2, 4, 8, or 16 and all motors idle."));
     }
     return;
+  } else if (strcmp(command, "zero") == 0 && !argument) {
+    ok = MotorControl::zero();
   } else if (strcmp(command, "home") == 0 && !argument) {
     const MotorControl::HomeError error = MotorControl::home();
     if (error != MotorControl::HomeError::None) {

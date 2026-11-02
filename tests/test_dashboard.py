@@ -417,6 +417,16 @@ def test_failed_hold_or_inspection_keeps_stop_pending_and_admission_closed(rig, 
                 rig.devices[name].stop_count == 1 for name in ("robot", "stage", "microscope")
             )
         )
+
+        def failure_published():
+            # The fake signals before its exception reaches the status publisher.
+            # Admission must stay closed throughout that asynchronous transition.
+            result = operation(rig, identity)
+            assert not result["done"]
+            assert rig.service.dashboard.busy()
+            return result["hold"] == "unconfirmed"
+
+        wait_for(failure_published)
         result = operation(rig, identity)
         assert not result["done"] and result["hold"] == "unconfirmed"
         assert rig.service.dashboard.busy()

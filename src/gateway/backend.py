@@ -1,12 +1,14 @@
-"""Fixed GET-only endpoints and public catalog/run-store reads."""
+"""Fixed reads and a proposal-only orchestrator connection. No device commands."""
 
 import json
+import re
 from urllib.parse import urlsplit
 
 import anyio
 import httpx
 
-from labkit.auth import valid_token
+from labkit.auth import loopback_name, valid_token
+from labkit.lease import validate_client
 from orchestrator.app import Catalog
 
 SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
@@ -15,9 +17,36 @@ READ_TIMEOUT = 3
 
 
 class Backend:
-    def __init__(self, store, recipes, *, endpoints=None, demo=False, transport=None):
+    def __init__(
+        self, store, recipes, *, endpoints=None, proposal=None, demo=False, transport=None
+    ):
         self.store, self.catalog, self.demo = store, Catalog(recipes), demo
         self.endpoints = dict(endpoints or {})
+        self.proposal = proposal
+        if proposal:
+            url, token, caller = proposal
+            parts = urlsplit(url)
+            if (
+                parts.scheme != "http"
+                or not loopback_name(parts.hostname or "")
+                or parts.username is not None
+                or parts.password is not None
+                or parts.query
+                or parts.fragment
+                or "\\" in url
+                or any(ord(char) < 33 or ord(char) == 127 for char in url)
+                or any(part in {".", ".."} for part in parts.path.split("/"))
+                or "%" in parts.path
+                or "//" in parts.path
+                or not isinstance(token, str)
+                or len(token) < 24
+                or not valid_token(token)
+            ):
+                raise ValueError(
+                    "Proposal URL requires direct HTTP loopback and a gateway credential."
+                )
+            _ = parts.port
+            validate_client(caller)
         if set(self.endpoints) - set(SERVICES):
             raise ValueError("Unknown configured service.")
         for url, token in self.endpoints.values():
@@ -34,7 +63,7 @@ class Backend:
             ):
                 raise ValueError("Service URLs must be HTTP(S) base paths without credentials.")
             _ = parts.port
-        if demo and self.endpoints:
+        if demo and (self.endpoints or proposal):
             raise ValueError("Demo mode cannot configure service endpoints.")
         self.http = httpx.AsyncClient(
             timeout=2, follow_redirects=False, trust_env=False, transport=transport
@@ -60,6 +89,8 @@ class Backend:
             for _, token in self.endpoints.values():
                 if token:
                     value = value.replace(token, "[redacted]")
+            if self.proposal:
+                value = value.replace(self.proposal[1], "[redacted]")
         return value
 
     async def _read(self, service, path):
@@ -94,10 +125,46 @@ class Backend:
             raise ValueError("The service does not support contract version 1.")
         return result
 
+    async def _approval(self, name, args):
+        if self.proposal is None:
+            raise ValueError("Proposal access is not configured.")
+        url, token, caller = self.proposal
+        path, method, body = "/api/proposals", "POST", args
+        if name == "get_approval":
+            if not isinstance(args["id"], str) or not re.fullmatch(r"[a-f0-9]{32}", args["id"]):
+                raise ValueError("Invalid proposal ID.")
+            path += "/" + args["id"]
+            method, body = "GET", None
+        headers = {
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+            "X-MG400-Client": caller,
+        }
+        try:
+            with anyio.fail_after(READ_TIMEOUT):
+                async with self.http.stream(
+                    method, url.rstrip("/") + path, headers=headers, json=body
+                ) as response:
+                    if response.status_code not in {200, 201}:
+                        raise ValueError("Proposal access failed.")
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > MAX_RESPONSE:
+                            raise ValueError("The proposal response exceeds 1 MiB.")
+                    result = json.loads(data)
+                    if not isinstance(result, dict):
+                        raise ValueError("The proposal response is invalid.")
+                    return result
+        except (TimeoutError, httpx.HTTPError, UnicodeError, json.JSONDecodeError):
+            raise ValueError("Proposal access failed.") from None
+
     async def call(self, name, args):
         return self._redact(await self._call(name, args))
 
     async def _call(self, name, args):
+        if name in {"propose_run", "get_approval"}:
+            return await self._approval(name, args)
         if name == "list_services":
             if self.demo:
                 return {"services": [{"id": "demo", "demo": True, "read_only": True}]}
@@ -150,7 +217,7 @@ class Backend:
                 return {"chip_id": args["id"], "records": records}
 
             return await anyio.to_thread.run_sync(chip)
-        raise ValueError("Unknown read-only tool.")
+        raise ValueError("Unknown gateway tool.")
 
 
 def configured_endpoints(settings):

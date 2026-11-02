@@ -19,13 +19,21 @@ from flask import Flask, jsonify, request
 from flask.json.provider import DefaultJSONProvider
 from werkzeug.exceptions import HTTPException
 
-from labkit.auth import bearer_matches, host_allowed, same_origin
+from labkit.auth import (
+    bearer_matches,
+    has_forwarded_headers,
+    host_allowed,
+    loopback_host,
+    same_origin,
+    valid_token,
+)
 from labkit.describe import command, describe
 from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.flask import contract_blueprint
 from labkit.lease import Lease, validate_client
 
+from .approvals import Approvals
 from .clients import Clients, from_settings
 from .recipe import Recipe, validate
 from .rehearsal import DEMO_SERVICES
@@ -359,6 +367,7 @@ class OrchestratorService:
         self.runners, self.plans = {}, {}
         self.owner = None
         self.resume_cancel = None
+        self.approval_generation = 0
         self.closing = self.started = False
         self.last_command = self.fault = None
         self.report = None
@@ -367,6 +376,7 @@ class OrchestratorService:
         from .web.backend import Dashboard
 
         self.dashboard = Dashboard(self, clock=clock)
+        self.approvals = Approvals(self, clock=clock)
 
     def start(self, *, background=True):
         with self.lock:
@@ -677,7 +687,15 @@ class OrchestratorService:
             raise ValueError("Demo supports only robot, stage, thermal and furnace services.")
         return recipe, plan
 
-    def run(self, prepared, client):
+    def approval_ticket(self, client):
+        """Fence slow approval validation/audit without retaining the control locks."""
+        with self.lease.control(client), self.lock, self.dashboard.lock:
+            self._ready()
+            if self.dashboard.busy():
+                raise ServiceError(409, "Dashboard safety requests are still draining.")
+            return self.approval_generation, self.dashboard.approval_generation
+
+    def run(self, prepared, client, *, approval_ticket=None):
         recipe, plan = prepared
 
         def start(job):
@@ -705,6 +723,16 @@ class OrchestratorService:
                 runner.start()
 
         with self.lease.control(client), self.lock:
+            if approval_ticket is not None:
+                # The reservation generation and admission gate are atomic with
+                # dashboard reserve(). No app lock is acquired by that method.
+                with self.dashboard.lock:
+                    if approval_ticket != (
+                        self.approval_generation,
+                        self.dashboard.approval_generation,
+                    ):
+                        raise ServiceError(409, "Approval control was revoked before dispatch.")
+                    return self._schedule("run", client, start, exclusive=True)
             return self._schedule("run", client, start, exclusive=True)
 
     def get_run(self, run_id):
@@ -773,6 +801,7 @@ class OrchestratorService:
 
     def _lost(self, reason):
         with self.lock:
+            self.approval_generation += 1
             if self.job is not None:
                 self.job["cancelled"].set()
             if self.current is not None and not self.current.wait_closed(0):
@@ -965,6 +994,25 @@ class OrchestratorService:
 
 
 def create_app(service, *, token=None, base_path="/"):
+    settings = getattr(service, "settings", {})
+    proposal_token = settings.get("MG400_GATEWAY_TOKEN", "")
+    requester = settings.get("MG400_GATEWAY_CALLER", "gateway-agent")
+    if proposal_token:
+        validate_client(requester)
+        if (
+            not isinstance(proposal_token, str)
+            or len(proposal_token) < 24
+            or not valid_token(proposal_token)
+            or not token
+            or proposal_token == token
+            or any(
+                value == proposal_token
+                for key, value in settings.items()
+                if key.endswith("_TOKEN") and key != "MG400_GATEWAY_TOKEN"
+            )
+        ):
+            raise ValueError("Proposal access requires distinct gateway and operator credentials.")
+        service.approvals.private_tokens = (token,)
     app = Flask(__name__)
     app.json = StrictJSON(app)
     app.config["MAX_CONTENT_LENGTH"] = 65536
@@ -985,7 +1033,17 @@ def create_app(service, *, token=None, base_path="/"):
             "dashboard.javascript",
             "dashboard.stylesheet",
         }
-        if (
+        proposal = request.endpoint in {"propose", "get_proposal"}
+        if proposal:
+            if not proposal_token:
+                raise ServiceError(409, "Proposal access is not configured.")
+            if not loopback_host(request.headers.get("Host", "")) or has_forwarded_headers(
+                request.headers
+            ):
+                raise ServiceError(403, "Proposal access requires direct loopback access.")
+            if not bearer_matches(request.headers.get("Authorization", ""), proposal_token):
+                raise ServiceError(401, "Invalid proposal credential.")
+        elif (
             token
             and not public
             and not bearer_matches(request.headers.get("Authorization", ""), token)
@@ -1029,6 +1087,39 @@ def create_app(service, *, token=None, base_path="/"):
     @app.get(prefix + "/api/recipes")
     def recipes():
         return jsonify(recipes=service.catalog.list())
+
+    @app.post(prefix + "/api/proposals")
+    def propose():
+        try:
+            result = service.approvals.propose(request.get_json(), requester)
+        except ValueError:
+            raise ValueError(
+                "Proposal violates the catalog, parameters or host approval policy."
+            ) from None
+        return jsonify(result), 201
+
+    @app.get(prefix + "/api/proposals/<identifier>")
+    def get_proposal(identifier):
+        record = service.approvals.get(identifier)
+        if record["requester"] != requester:
+            raise ServiceError(404, "Proposal unavailable.")
+        return jsonify(record)
+
+    @app.get(prefix + "/api/approvals")
+    def approvals():
+        if not proposal_token:
+            return jsonify(approvals=[], enabled=False)
+        return jsonify(approvals=service.approvals.list(), enabled=True)
+
+    @app.post(prefix + "/api/approvals/<identifier>/decision")
+    def decision(identifier):
+        if not proposal_token:
+            raise ServiceError(409, "Proposal access is not configured.")
+        actor = request.headers["X-MG400-Client"]
+        if actor == requester:
+            raise ServiceError(403, "The gateway identity cannot decide proposals.")
+        result = service.approvals.decide(identifier, request.get_json(), actor)
+        return jsonify(result), 202 if result["decision"] == "approved" else 200
 
     @app.get(prefix + "/api/runs")
     def runs():

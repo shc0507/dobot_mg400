@@ -22,6 +22,10 @@ MG400_STAGE_BIND=100.64.0.1
 The Olares VPN access rules must allow TCP `8766`, `8767`, and `1985`.
 The Olares network interface connected directly to the robot uses `192.168.1.10/24`. The robot address is `192.168.1.6`.
 
+For the optional thermal service, set `MG400_THERMAL_BIND=100.64.0.1` and permit TCP `8768` through the VPN for direct access.
+The default remains `127.0.0.1`. Keep `MG400_THERMAL_TOKEN` private and send it in the bearer header, never the URL.
+Add `thermal` to `MG400_OPTIONAL_SERVICES` before installation. See the [thermal service guide](thermal.en.md#managed-host-service).
+
 If the optional furnace service is enabled, set `MG400_FURNACE_BIND=100.64.0.1` and permit TCP `8769` through the VPN.
 Keep `MG400_FURNACE_TOKEN` private. Enter it on the [furnace page](furnace.en.md), never in its URL.
 
@@ -80,15 +84,16 @@ The routes preserve each service's native prefix:
 | `/lab/` | `127.0.0.1:8772` | `/lab/` |
 
 The camera port remains `1985`. Other upstream ports follow their `MG400_*_PORT` settings when supplied.
-The proxy does not install or enable thermal or microscope services.
+Selecting `proxy` does not select `thermal`. Add `thermal` separately to `MG400_OPTIONAL_SERVICES` to install its service.
 A route cannot work until its upstream service exists and runs with the required native prefix.
 Keep a separately started service on `127.0.0.1` with its own token, even though its connection is local.
-For thermal, set `MG400_THERMAL_TOKEN` and `MG400_THERMAL_BASE_PATH=/thermal/` in its startup environment.
+For thermal, set `MG400_THERMAL_BIND=127.0.0.1` and `MG400_THERMAL_BASE_PATH=/thermal/` in `/etc/mg400/mg400.env`.
+The installer fills a blank `MG400_THERMAL_TOKEN` and preserves a configured token.
 `thermal-cam --base-path /thermal/` overrides that prefix setting.
 
 For a separately installed microscope service, use `MG400_MICROSCOPE_TOKEN` and its `/microscope/` native prefix option.
-These direct thermal and microscope tokens are not added to the shared environment example.
-Configure their startup environments separately. Do not place tokens in Caddy configuration or URLs.
+The direct microscope token remains outside the shared environment example. Configure its startup environment separately.
+Do not place service tokens in Caddy configuration or URLs.
 The MCP gateway remains loopback-only and has no proxy route.
 
 Stop active work before changing service URLs. Update downstream client URLs to include the new native prefixes.
@@ -284,7 +289,7 @@ Confirm the views on `12.1.2` and `12.1.4` in the camera preview before assignin
 | AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
 | AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera`, shared through go2rtc |
 | AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera` |
-| ToupTek USB 3 camera | `0547:1375` | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
+| ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
 Use the full serial paths for controllers. The gas controller and gripper converter share a VID:PID, but have different serial numbers.
 The thermal and Toupcam cameras use USB device nodes under `/dev/bus/usb`, without serial-port or video-device nodes.
@@ -296,6 +301,7 @@ The installer selects `config/udev/70-mg400-<name>.rules.in` only for registered
 It replaces `@SERVICE_GROUP@` with the group name for GID `1000`, from the host group database.
 Each rule matches a VID:PID and grants `MODE="0660"` to that group.
 Serial rules also match the recorded device serial number. Camera rules preserve the existing port-based names.
+The thermal rule matches the recorded P1 serial number as a prefix. The P1 adds non-printing bytes after its serial number, and udev compares the whole value.
 The templates create no new device aliases and run no reset helper.
 
 The installer writes `/etc/udev/rules.d/70-mg400-<name>.rules` as root with mode `0644`.
@@ -306,7 +312,7 @@ Use the installer dry run to inspect the selected files and commands before inst
 
 The default services select the `stage`, `collector`, and `camera` templates.
 Enabling `furnace` also selects its 2 serial-controller rules.
-The `thermal` and `microscope` templates wait for their registered services to be enabled.
+Enabling `thermal` selects the P1 template. The `microscope` template waits for its service to be registered and enabled.
 The microscope owns the Toupcam camera, including furnace recordings. The furnace rules do not grant separate access to it.
 Templates do not select device paths in service settings. Keep those paths consistent with the table.
 

@@ -716,17 +716,17 @@ Goal: pixel positions from a fixed camera become robot millimetres on the tray p
 
 Steps:
 
-1. `src/vision/calibration.py`: fit a homography from image points to robot XY with `cv2.findHomography` (RANSAC, threshold 2 px). Validate on held-out points and report the RMS error in millimetres. Store JSON in `/var/lib/mg400/calibration/cameras/`, keyed by the camera's `/dev/v4l/by-path` name: matrix, plane height, image size, points, RMS, time.
+1. `src/vision/calibration.py`: fit a camera model from 3D tag points to pixels: `cv2.calibrateCamera` with `CALIB_USE_INTRINSIC_GUESS`, radial terms k1 and k2 only, the initial guess from a DLT fit, and RANSAC on the DLT with a 2 px threshold. Map a pixel to robot XY by undistorting it and intersecting its ray with the tray plane. Validate on held-out points and report the RMS error in millimetres, each point at its own height. Store JSON in `/var/lib/mg400/calibration/cameras/`, keyed by the camera's `/dev/v4l/by-path` name: camera matrix, distortion, rotation, translation, tray plane height, image size, points, RMS, time.
 2. Refuse a calibration when the live image size differs from the stored one.
-3. `src/orchestrator/skills/calibrate.py`: the robot carries the ArUco tag from H-08 to a 3 × 4 grid between two taught stations at the plane height. At each point: wait until still, take 5 frames, detect the tag center, take the median. Fit with 9 points, validate with 3. Accept when the RMS is at most 1.0 mm (setting).
+3. `src/orchestrator/skills/calibrate.py`: the robot carries the arm tag from H-08 over a 3 × 4 grid between two taught stations, at 2 flange heights at least 40 mm apart (24 points). The tag sits on the J4 axis, so its position is the flange X and Y, and the flange Z plus a nominal tag height of 100 mm (setting). At each point: wait until still, take 5 frames, detect the tag center, take the median. Then read the tray references from H-08 step 4: the QR reader finds each code's center in the same camera, and the recorded robot position gives the point on the tray plane. Fit the camera model together with 1 more unknown, D, the vertical distance from the tag to the tweezer tip. The tray plane then follows from the references, and errors in the tool dz and the nominal tag height cancel. Report D. Refuse a D more than 10 mm from 246 mm (setting). Fit with 18 tag points, validate with 6 tag points and the tray references. Accept when the RMS is at most 1.0 mm (setting).
 4. The vision service loads the calibrations and adds `robot_mm` to detections.
-5. Tests with synthetic points from a known homography, outliers included.
+5. Tests with synthetic points from a known camera with distortion, outliers included.
 
 Done when: P-CHECKS pass; the routine runs in rehearsal.
 
 Docs: `vision.md` and `.en.md`: when and how to recalibrate.
 
-Notes: the homography is valid only for the plane at the calibration height. Plugging the camera into another USB port invalidates its file, because the key is the port path.
+Notes: the tag is about 246 mm above the tweezer tip, so it can never reach the tray plane. The two heights let the camera model map any plane. Plugging the camera into another USB port invalidates its file, because the key is the port path.
 
 ### CAL-02 · Tray model
 
@@ -751,7 +751,7 @@ Goal: stop vision-guided motion when a camera has moved.
 
 Steps:
 
-1. Project the fingertip position from the robot state into the image with the inverse homography.
+1. Project the tweezer-tip position from the robot state into the image with the CAL-01 camera model.
 2. Check that it falls inside the detected "Robotic Arm" box, with a margin from settings.
 3. Skill `vision.check_calibration(camera)`. The transfer recipe calls it before each vision-guided move. A failure holds the run with "camera moved, recalibrate".
 4. Tests with synthetic boxes.
@@ -842,6 +842,8 @@ Steps (P-DEPLOY plus):
 1. `config/udev/70-mg400-thermal.rules.in` for USB `3474:45c2`.
 2. Unit `mg400-thermal.service` with `ExecStart=/opt/mg400/.venv/bin/thermal-cam`. Reading the camera moves nothing, so the service connects at start as it does today.
 3. A registry entry `thermal` (optional) and the settings in the env example.
+
+Token isolation: in the existing web-panel, stage-panel, and camera-preview units, add only `MG400_THERMAL_TOKEN` to `UnsetEnvironment`. Keep each unit's checked credentials, command, device groups, and other restrictions unchanged. The new thermal unit retains only the credentials it checks.
 
 Done when: P-CHECKS pass.
 
@@ -980,8 +982,8 @@ Goal: the services that use a Toupcam camera find the native library and may ope
 Steps:
 
 1. Installer option `--toupcam PATH` installs the library from H-12 as `/usr/local/lib/mg400/libtoupcam.so` (root, 0755), like `--go2rtc`. It refuses a file whose SHA-256 differs from the H-12 value for version 59.30594.20260120.
-2. `config/udev/70-mg400-toupcam.rules.in` for the camera model C3CMOS05100KPA: `0547:1375` (USB 3) and `0547:1376` (USB 2), with `MODE="0660"` and the group placeholder. Do not install the vendor's `99-toupcam.rules`: it gives every local user read and write access to all `0547` and `04b4` devices.
-3. The units that use the camera (furnace, microscope) set `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`. Allow it in the unit tests.
+2. USB access: the OPS-01 template `config/udev/70-mg400-microscope.rules.in` already grants the Toupcam camera model C3CMOS05100KPA (`0547:1375` on USB 3, `0547:1376` on USB 2) with `MODE="0660"` and the group placeholder, because the microscope service owns the camera. Do not add another Toupcam template. Do not install the vendor's `99-toupcam.rules`: it gives every local user read and write access to all `0547` and `04b4` devices.
+3. No unit changes here. The microscope service is the only Toupcam user, and it also records the furnace video (Q-02, FUR-05). MIC-06 creates `mg400-microscope.service` with `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`. The furnace unit stays unchanged. The installer may install the library before MIC-06.
 4. Tests and docs.
 
 Done when: P-CHECKS pass.
@@ -1019,7 +1021,7 @@ Goal: the stage service knows positions in millimetres and refuses automated mov
 Steps:
 
 1. `protocol.py`: parse `homed`, `limits`, `soft` and `awake`; commands `home`, `soft` and `awake`; `DemoTransport` simulates limit switches, homing and soft ranges.
-2. `/var/lib/mg400/stage.toml`, with values from H-07:
+2. `/var/lib/mg400/stage/stage.toml`, with values from H-07:
    - Per motor: `steps_per_mm` at a given microstep, and the soft limits `min_mm` and `max_mm` from home.
    - Named positions of one axis in millimetres from home. Insert: `load` and `furnace`.
    - Named poses: a position for each of the three axes, reached one axis at a time in the listed order. The imaging poses put the chip under the furnace window. The pose `furnace` is the inserted position from which `crucible.unload` starts.
@@ -1043,13 +1045,14 @@ Steps:
 
 1. Firmware (`firmware/three-motor-demo`): set every limit pin in `MotorPins.h` to `255`. Then `home` replies `ERROR: home failed: minimum limit not configured` and never moves. Keep the limit-switch code for a later board with switches. Add `zero` for the selected idle motor: set the position to 0, set `homed=1`, clear the soft range, reply `OK: <motor> zero`. Every existing command and reply stays unchanged. A reset, a power-up or a real microstep change still clears every zero and soft range.
 2. Host (`src/stage_controller`): `zero(motor)` sends `zero`, then `soft` with that axis's limits from `stage.toml`, and confirms both from status, like the end of `home`. Add the route `POST /api/motors/<m>/zero` with `{"confirm": true}` and the contract command `zero`. The axis must be connected and idle, with fresh feedback. The event log records the client that set the zero.
-3. Camera reference, optional per axis in `stage.toml`: `reference = {stream = "<go2rtc stream>", marker = <ArUco id>, pixel = [x, y], tolerance_px = <n>}`. The service reads one JPEG frame from go2rtc on loopback and finds the marker. It refuses `zero` when the marker is missing or farther than `tolerance_px` from `pixel`. `teach_reference(motor)` stores the marker's current pixel after an operator confirmation. Without a reference, `zero` needs the confirmation only.
+3. Camera reference, optional per axis in `stage.toml`: `reference = {stream = "<go2rtc stream>", marker = <ArUco id>, pixel = [x, y], tolerance_px = <n>}`. The service reads one JPEG frame from go2rtc on loopback and finds the marker. It refuses `zero` when the marker is missing or farther than `tolerance_px` from `pixel`. `teach_reference(motor)` stores the marker's current pixel after an operator confirmation through the page route `POST /api/motors/<m>/teach_reference`. Do not expose teaching through the service contract. Without a reference, contract `zero` still needs only `confirm: true`.
 4. Page: per axis, a "Set zero here" button with a confirmation, the reference camera image with the marker offset, and the zero state. With the old firmware, or with a board that has switches, the page keeps its current buttons.
 5. Tests with the demo transport and a fake frame source.
+6. Writable calibration: use `/var/lib/mg400/stage/stage.toml` as `DEFAULT_CONFIG`. The installer creates `/var/lib/mg400/stage` with mode `0700` and owner `1000:1000`. If the legacy `/var/lib/mg400/stage.toml` exists, print an operator move instruction without moving it. Test the directory permissions and preservation of the old file. Update the CLI help, stage-panel guides, deployment directory table, STG-02 path, H-07 output, and migration data table together.
 
 Done when: P-CHECKS pass; the sketch compiles for `arduino:avr:uno` (report the command and output).
 
-Docs: the firmware `README.md` and `README.en.md` (no switches, `zero`), `stage-panel.md` and `.en.md` (zero procedure, reference setup).
+Docs: the firmware `README.md` and `README.en.md` (no switches, `zero`), `stage-panel.md` and `.en.md` (zero procedure, reference setup), `deploy.md` and `.en.md` (private calibration directory).
 
 Notes: H-07 teaches the references and sets the zero. H-18 validates on hardware.
 
@@ -1213,7 +1216,7 @@ Goal: the microscope service runs on Olares with its devices.
 
 Steps (P-DEPLOY plus):
 
-1. Unit `mg400-microscope.service` with `SupplementaryGroups=dialout video`, `LD_LIBRARY_PATH` as in TPC-02, port 8770.
+1. Unit `mg400-microscope.service` with `SupplementaryGroups=dialout video`, `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400` (TPC-02 installs the library there; allow it in the unit tests for this unit only), port 8770.
 2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_CAMERA`, `_CAMERA_SERIAL`, `_CALIBRATION_DIR`, `_SWITCH_FOCUS`, `_FOCUS_LIMITS`, `_BIND`, `_PORT`, `_TOKEN`. The focus values come from H-06.
 3. A registry entry `microscope` (optional).
 
@@ -1535,7 +1538,7 @@ Steps:
 5. With the furnace cold, measure the soft limits of each axis: the travel that keeps the crucible clear of the tube and the window.
 6. Measure the poses: each imaging pose (the positions of all three axes that put the chip under the window, checked with a test chip in the microscope view) and the pose `furnace`. Write down the axis order that reaches each pose without a collision.
 
-Output: the values for `/var/lib/mg400/stage.toml`, with the references, on the issue. Unblocks H-18.
+Output: the values for `/var/lib/mg400/stage/stage.toml`, with the references, on the issue. Unblocks H-18.
 
 ### H-08 · Robot workspace measurements
 
@@ -1543,10 +1546,10 @@ Owner: human · Size: M · Review: human · Deps: none
 
 Steps:
 
-1. Measure the gripper tool offset: dx, dy, dz in mm from the flange to the fingertip center.
-2. Print and mount the ArUco calibration tag (dictionary 4x4_50). Write down its id, size and offset from the fingertip.
+1. Measure the tool offset: dx, dy, dz in mm from the flange face (tool 0) to the tweezer tip. The tool is the PGEA-2/15-10-O-S gripper (89 mm from its mounting face to the jaw ends, vendor drawing), the owner's `Gripper_To_Tweezer_Adaptor_V6` on each jaw, and tweezers. The owner's side photos (2026-11-02), scaled by the gripper body (67 mm), its front plate (17.5 mm) and the adaptor (32.1 mm), give dz = 146 mm (±3 mm) and dx = dy = 0 (±2 mm): the adaptor hangs 32 mm below the jaw ends and the tweezer tip 27 mm below the adaptor. ±3 mm is enough for `tool.toml`, because taught stations convert back with the same offset.
+2. The arm tag is mounted: ArUco `DICT_4X4_50` id 4, from Zenan's print sheet (24 mm black square), flat on the top cover of the robot's end block. That face is centered on the J4 axis. The end block does not turn with R. The black square measures 24 mm (owner, 2026-11-02). The photos put the tag about 100 mm above the flange face (the MG400 model says 93 mm), so about 246 mm above the tweezer tip. Nobody measures the exact tag-to-tip distance by hand: CAL-01 solves it from the tray references in step 4.
 3. Choose the safe travel height and any via points around the furnace and the microscope.
-4. Measure the tray: the text and position of its two corner QR codes, and the position of every slot.
+4. Tray, without ruler measurements: the text of its corner QR codes, and the positions of the QR codes and slots in the tray frame from the tray's design file. Then record 2 to 4 tray references: jog the tweezer tip onto the center of a corner QR code and write down the X, Y, Z and R that the robot panel shows, with no tool set.
 
 Output on the issue. Unblocks CAL-01, CAL-02, H-17.
 

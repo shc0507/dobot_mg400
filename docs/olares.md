@@ -22,6 +22,10 @@ MG400_STAGE_BIND=100.64.0.1
 Olares 的 VPN 访问控制规则必须允许 TCP `8766`、`8767` 和 `1985`。
 Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 `192.168.1.6`。
 
+可选热像服务通过 VPN 直接访问时，设置 `MG400_THERMAL_BIND=100.64.0.1`，并放行 TCP `8768`。
+默认值仍为 `127.0.0.1`。妥善保管 `MG400_THERMAL_TOKEN`，通过 Bearer 头发送，不得放入 URL。
+安装前，把 `thermal` 加入 `MG400_OPTIONAL_SERVICES`。见[热像服务说明](thermal.md#主机托管服务)。
+
 启用可选炉控服务时，设置 `MG400_FURNACE_BIND=100.64.0.1`，并在 VPN 规则中允许 TCP `8769`。
 保持 `MG400_FURNACE_TOKEN` 私密。在[炉控网页](furnace.md)中输入密钥，不得放入 URL。
 
@@ -80,15 +84,16 @@ MG400_ORCH_BASE_PATH=/lab/
 | `/lab/` | `127.0.0.1:8772` | `/lab/` |
 
 摄像头端口固定为 `1985`。其他上游端口采用已提供的 `MG400_*_PORT` 配置。
-代理不会安装或启用热成像和显微镜服务。
+选择 `proxy` 不会选择 `thermal`。把 `thermal` 单独加入 `MG400_OPTIONAL_SERVICES` 才会安装其服务。
 只有上游服务存在且使用必需的原生前缀运行，路由才能工作。
 单独启动的服务必须监听 `127.0.0.1`。即使连接来自本机，也必须配置服务令牌。
-热成像启动环境必须包含 `MG400_THERMAL_TOKEN` 和 `MG400_THERMAL_BASE_PATH=/thermal/`。
+在 `/etc/mg400/mg400.env` 中设置 `MG400_THERMAL_BIND=127.0.0.1` 和 `MG400_THERMAL_BASE_PATH=/thermal/`。
+`MG400_THERMAL_TOKEN` 为空时，安装程序生成令牌。已配置的令牌保持不变。
 `thermal-cam --base-path /thermal/` 覆盖该前缀配置。
 
 单独安装的显微镜服务使用 `MG400_MICROSCOPE_TOKEN`，并配置其原生前缀选项为 `/microscope/`。
-共享环境示例不新增这两个服务的直接访问令牌。
-分别配置它们的启动环境。不得把令牌放入 Caddy 配置或 URL。
+共享环境示例仍不包含显微镜的直接访问令牌。单独配置其启动环境。
+不得把服务令牌放入 Caddy 配置或 URL。
 MCP 网关仍只监听回环地址，不提供代理路由。
 
 更改服务 URL 前，停止正在运行的操作。更新下游客户端 URL，加入新的原生前缀。
@@ -283,7 +288,7 @@ Toupcam 摄像头保持连接在集线器的 USB 3 侧。不得复位共用集�
 | AC410 摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
 | AC410 显微镜侧视摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera`，通过 go2rtc 共享 |
 | AC410 摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera` |
-| ToupTek USB 3 摄像头 | `0547:1375` | Toupcam SDK，无序列号 | `3.2.4` | `microscope`，与炉子录像共享 |
+| ToupTek USB 3 摄像头 | `0547:1375`（USB 3），`0547:1376`（USB 2） | Toupcam SDK，无序列号 | `3.2.4` | `microscope`，与炉子录像共享 |
 
 控制器必须使用完整串口路径。气体控制器与夹爪转换器的 VID:PID 相同，但序列号不同。
 热像仪和 Toupcam 使用 `/dev/bus/usb` 下的 USB 设备节点，没有串口或视频设备节点。
@@ -295,6 +300,7 @@ Toupcam 摄像头保持连接在集线器的 USB 3 侧。不得复位共用集�
 它从主机用户组数据库获取 GID `1000` 的组名，替换 `@SERVICE_GROUP@`。
 每条规则匹配 VID:PID，并以 `MODE="0660"` 授予该组访问权限。
 串口规则还匹配表中的设备序列号。摄像头规则保留现有端口路径名称。
+热像仪规则按前缀匹配表中的 P1 序列号。P1 在序列号后附加不可打印字节，而 udev 比较完整的值。
 模板不创建设备别名，也不执行复位程序。
 
 安装程序以 root 身份写入 `/etc/udev/rules.d/70-mg400-<name>.rules`，权限为 `0644`。
@@ -305,7 +311,7 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 
 默认服务选择 `stage`、`collector` 和 `camera` 模板。
 启用 `furnace` 后，还会选择其 2 条串口控制器规则。
-`thermal` 和 `microscope` 模板等待对应服务注册并启用。
+启用 `thermal` 后会选择 P1 模板。`microscope` 模板等待对应服务注册并启用。
 显微镜独占 Toupcam，也提供炉子录像。炉子规则不另行授予该摄像头的访问权限。
 模板不选择服务配置中的设备路径。保持这些路径与表格一致。
 

@@ -982,7 +982,7 @@ Goal: the services that use a Toupcam camera find the native library and may ope
 Steps:
 
 1. Installer option `--toupcam PATH` installs the library from H-12 as `/usr/local/lib/mg400/libtoupcam.so` (root, 0755), like `--go2rtc`. It refuses a file whose SHA-256 differs from the H-12 value for version 59.30594.20260120.
-2. `config/udev/70-mg400-toupcam.rules.in` for the camera model C3CMOS05100KPA: `0547:1375` (USB 3) and `0547:1376` (USB 2), with `MODE="0660"` and the group placeholder. Do not install the vendor's `99-toupcam.rules`: it gives every local user read and write access to all `0547` and `04b4` devices.
+2. USB access: the OPS-01 template `config/udev/70-mg400-microscope.rules.in` already grants the Toupcam camera model C3CMOS05100KPA (`0547:1375` on USB 3, `0547:1376` on USB 2) with `MODE="0660"` and the group placeholder, because the microscope service owns the camera. Do not add another Toupcam template. Do not install the vendor's `99-toupcam.rules`: it gives every local user read and write access to all `0547` and `04b4` devices.
 3. The units that use the camera (furnace, microscope) set `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`. Allow it in the unit tests.
 4. Tests and docs.
 

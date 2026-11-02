@@ -694,19 +694,31 @@ Done when: P-CHECKS pass.
 
 Owner: agent · Size: M · Review: human · Deps: FND-09, H-09, DOC-07
 
-Goal: the tray camera gives enough pixels for Micro QR labels.
+Goal: the tray camera gives enough pixels for Micro QR labels, and the 4 AC410 cameras share the hub's USB 2 link without overload.
 
-Ask first: the mode of each camera and the still method, from H-09.
+Facts (H-03 and H-09 data, read from the USB descriptors on 2026-11-02; no camera was opened):
+
+- There are 4 AC410 cameras (`f326:1306`), on hub ports 12.1.2, 12.1.3, 12.1.4 and 12.2.1. The tray camera is camera 4, on 12.2.1. All 4 cameras and the thermal P1 share 1 USB 2 link at 480M.
+- MJPEG modes of every AC410: 1920x1080@60, 1920x1080@30, 4000x3000@15, 3840x2160@30, 2592x1944@30, 2560x1440@30, 2048x1536@30, 1600x1200@30, 1280x720@30, 1024x768@30, 1024x576@30, 800x600@30, 640x480@30, 640x360@30, 320x240@30. The uncompressed modes are slower and are not used.
+- The largest isochronous setting is 3 × 1024 bytes per microframe. The USB 2 periodic budget is about 6000 bytes per microframe for the whole link, so at most 1 camera can use the largest setting at a time.
+- The Micro QR labels are about 30 mm (owner). About 2.3 px/mm gives 70 px across a label.
+
+Decisions (coordinator, 2026-11-02):
+
+- Still method: `still(camera)` returns 1 frame from that camera's go2rtc stream at its configured mode. There is no separate still capture.
+- The tray camera uses 1280x720@30. It gives 2.3 px/mm across a field of view up to 556 mm wide.
 
 Steps:
 
-1. Setting `MG400_CAMERA_MODES`: per camera `WIDTHxHEIGHT@FPS`, default `640x480@30`. `render_go2rtc` uses it. Accept only the modes that H-09 lists.
-2. Implement the still method that H-09 chose: a full-resolution stream for the tray camera, or a separate still capture. Add `still(camera)` to `src/vision/frames.py`.
-3. Tests and docs.
+1. Support 1 to 4 cameras. `MG400_CAMERA_DEVICES` lists 1 to 4 stable `/dev/v4l/by-path` devices, and the stream names are `camera1` to `cameraN` in list order. Replace the fixed count of 3 in the installer, the camera preview (server and page), and the vision frames, contract and routes.
+2. Setting `MG400_CAMERA_MODES`: 1 `WIDTHxHEIGHT@FPS` per device, from the MJPEG list above. The default is 640x480@30. Refuse any other mode. `render_go2rtc` uses it. `MG400_CAMERA_CAPTURE_SIZES` (MIC-02) stays valid as sizes at 30 fps. Refuse a configuration that sets both.
+3. Preload only the cameras whose mode is at most 640x480. go2rtc starts a larger stream on demand, when a consumer reads it. This keeps the side camera's 3840x2160 stream (MIC-02) and the tray stream off the link while nothing uses them.
+4. `still(camera)` in `src/vision/frames.py`, with the frame size check against the configured mode.
+5. Tests and docs.
 
 Done when: P-CHECKS pass.
 
-Notes: aim for about 4 pixels per module, about 70 pixels across a 17-module Micro QR label.
+Notes: H-21 runs all streams together on the hardware and checks the kernel log for USB bandwidth errors. If the link is over budget, the owner chooses: a smaller side camera mode, or a camera on another host USB port after the hardware freeze. Aim for about 4 pixels per module, about 70 pixels across a 17-module Micro QR label.
 
 ### CAL-01 · Camera-to-robot calibration
 

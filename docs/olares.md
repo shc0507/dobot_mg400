@@ -11,7 +11,7 @@
 ## 网络
 
 客户端通过 LarePass VPN 访问 Olares。Olares 的 VPN 地址为 `100.64.0.1`。
-面板和摄像头预览必须监听该地址。在 `/etc/mg400/mg400.env` 中设置：
+使用各服务的独立端口时，面板和摄像头预览必须监听该地址。在 `/etc/mg400/mg400.env` 中设置：
 
 ```ini
 MG400_PANEL_BIND=100.64.0.1
@@ -31,6 +31,96 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 
 可选的 [MCP 网关](agent-gateway.md) 必须保持 `MG400_GATEWAY_BIND=127.0.0.1`，端口为 `8773`。不得通过 VPN 直接开放此端口。
 远程 MCP 客户端必须使用到回环接口的已认证隧道，并携带 `MG400_GATEWAY_TOKEN` Bearer 凭据。
+
+## 可选的单端口代理
+
+可选服务 `proxy` 用 1 个 VPN 端口转发仪器服务。
+通过 `--caddy PATH` 提供 Caddy 2 二进制文件。
+安装器写入 `/etc/mg400/Caddyfile`，并安装 `/usr/local/lib/mg400/caddy`。
+安装器不会下载 Caddy，也不会启动代理。
+
+把 `proxy` 加入 `MG400_OPTIONAL_SERVICES`，保留其他已选服务。
+如果没有其他可选服务，在 `/etc/mg400/mg400.env` 中设置：
+
+```ini
+MG400_OPTIONAL_SERVICES=proxy
+MG400_PROXY_BIND=100.64.0.1
+MG400_PROXY_PORT=8080
+MG400_PANEL_BIND=127.0.0.1
+MG400_PANEL_BASE_PATH=/robot/
+MG400_STAGE_BIND=127.0.0.1
+MG400_STAGE_BASE_PATH=/stage/
+MG400_CAMERA_BIND=127.0.0.1
+```
+
+代理地址必须是 1 个数字形式的回环或 VPN 地址，不得使用通配地址。
+代理端口必须在 `1024` 到 `65535` 之间，且不同于所有上游端口。
+各上游端口也必须互不相同。
+写文件前，安装器检查已启用服务的回环地址、原生前缀和令牌。
+
+如果启用了 `furnace` 或 `orch`，还必须设置对应项：
+
+```ini
+MG400_FURNACE_BIND=127.0.0.1
+MG400_FURNACE_BASE_PATH=/furnace/
+MG400_ORCH_BIND=127.0.0.1
+MG400_ORCH_BASE_PATH=/lab/
+```
+
+路由保留各服务的原生前缀：
+
+| VPN 路径 | 回环上游 | 必需的原生前缀 |
+| --- | --- | --- |
+| `/robot/` | `127.0.0.1:8766` | `/robot/` |
+| `/stage/` | `127.0.0.1:8767` | `/stage/` |
+| `/camera/<key>/` | `127.0.0.1:1985` | 仅移除 `/camera`，保留 `/<key>/` |
+| `/thermal/` | `127.0.0.1:8768` | `/thermal/` |
+| `/furnace/` | `127.0.0.1:8769` | `/furnace/` |
+| `/microscope/` | `127.0.0.1:8770` | `/microscope/` |
+| `/lab/` | `127.0.0.1:8772` | `/lab/` |
+
+摄像头端口固定为 `1985`。其他上游端口采用已提供的 `MG400_*_PORT` 配置。
+代理不会安装或启用热成像和显微镜服务。
+只有上游服务存在且使用必需的原生前缀运行，路由才能工作。
+单独启动的服务必须监听 `127.0.0.1`。即使连接来自本机，也必须配置服务令牌。
+热成像启动环境必须包含 `MG400_THERMAL_TOKEN` 和 `MG400_THERMAL_BASE_PATH=/thermal/`。
+`thermal-cam --base-path /thermal/` 覆盖该前缀配置。
+
+单独安装的显微镜服务使用 `MG400_MICROSCOPE_TOKEN`，并配置其原生前缀选项为 `/microscope/`。
+共享环境示例不新增这两个服务的直接访问令牌。
+分别配置它们的启动环境。不得把令牌放入 Caddy 配置或 URL。
+MCP 网关仍只监听回环地址，不提供代理路由。
+
+更改服务 URL 前，停止正在运行的操作。更新下游客户端 URL，加入新的原生前缀。
+例如，使用 `MG400_ORCH_ROBOT_URL=http://127.0.0.1:8766/robot/` 和 `MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/stage/contract/`。
+位移台契约位于 `/stage/contract/api/`，与原有页面 API 分开。
+未配置基本路径时，位移台和热成像服务仍默认使用 `/`。
+
+配置完成后，安装提供的二进制文件并检查生成的配置：
+
+```sh
+/usr/bin/python3 /opt/mg400/deploy/install.py --dry-run --caddy /path/to/caddy
+/usr/bin/python3 /opt/mg400/deploy/install.py --caddy /path/to/caddy
+/usr/local/lib/mg400/caddy validate --config /etc/mg400/Caddyfile --adapter caddyfile
+```
+
+通过 `mg400ctl` 重启配置已改变的上游服务。
+然后明确运行 `mg400ctl start proxy` 启动代理。
+在 VPN 规则中允许 TCP `8080`，或已配置的代理端口。
+打开 `http://100.64.0.1:8080/robot/`，或表中的其他路由。
+访问摄像头时，必须保留原有预览 URL 中的完整密钥。
+后续更新可复用已安装的二进制文件，不必再次传入 `--caddy`。
+
+代理原样传递浏览器的 bearer 凭据，不会代填上游令牌。
+各服务保留令牌、Host、Origin、租约和命令检查。
+代理保留浏览器 `Host` 的端口，并用该值设置 `X-Forwarded-Host`。
+它替换请求中的转发地址标头，并移除 `Forwarded` 和 `X-Real-IP`。
+
+Caddy 原生反向代理转发 WebSocket 的 `Upgrade` 和 `Connection`，上游使用 HTTP/1.1。
+上游响应头和读取超时均为 `60` s，大于机械臂的 `5` s ping 间隔。
+代理不新增请求重试，并禁用管理 API 和配置持久化。
+摄像头 URL 包含密钥，因此配置排除了请求访问日志和请求错误日志。
+此 HTTP 入口使用 VPN 连接，不启用公共 HTTPS。
 
 ## 获取代码
 

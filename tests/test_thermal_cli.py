@@ -13,7 +13,12 @@ from thermal_cam import app
 
 @pytest.fixture(autouse=True)
 def clean_settings(monkeypatch):
-    for name in ("MG400_THERMAL_BIND", "MG400_THERMAL_PORT", "MG400_THERMAL_TOKEN"):
+    for name in (
+        "MG400_THERMAL_BIND",
+        "MG400_THERMAL_PORT",
+        "MG400_THERMAL_TOKEN",
+        "MG400_THERMAL_BASE_PATH",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -121,7 +126,12 @@ def test_reserved_socket_handoff_and_cleanup(monkeypatch, server_fails, sockets)
             cli.main()
     else:
         assert cli.main() == 0
-    assert captured["options"] == {"demo": True, "auto_connect": False, "token": ""}
+    assert captured["options"] == {
+        "demo": True,
+        "auto_connect": False,
+        "token": "",
+        "base_path": "/",
+    }
     assert captured["listener"].fileno() == -1
     with socket.socket() as next_instance:
         next_instance.bind(("127.0.0.1", port))
@@ -139,6 +149,10 @@ def test_reserved_socket_handoff_and_cleanup(monkeypatch, server_fails, sockets)
         ({"MG400_THERMAL_TOKEN": "x" * 24 + "é"}, []),
         ({"MG400_THERMAL_PORT": "invalid"}, []),
         ({"MG400_THERMAL_PORT": "65536"}, []),
+        ({"MG400_THERMAL_BASE_PATH": "//thermal"}, []),
+        ({"MG400_THERMAL_BASE_PATH": "/thermal?secret=value"}, []),
+        ({}, ["--base-path", "/thermal/../other"]),
+        ({}, ["--base-path", "/thermal%2fother"]),
         ({}, ["--port", "0"]),
         ({}, ["--bind", ""]),
         ({}, ["--bind", " 127.0.0.1"]),
@@ -159,17 +173,25 @@ def test_configuration_errors_precede_socket_or_camera_access(monkeypatch, setti
 
 
 @pytest.mark.parametrize("override", [False, True])
-def test_environment_settings_cli_override_and_token_handoff(monkeypatch, sockets, override):
+def test_environment_settings_cli_override_and_token_handoff(
+    monkeypatch, sockets, override, capsys
+):
     token = "thermal-test-token-length-24"
     monkeypatch.setenv("MG400_THERMAL_BIND", "0.0.0.0")
     monkeypatch.setenv("MG400_THERMAL_PORT", "9999")
     monkeypatch.setenv("MG400_THERMAL_TOKEN", token)
-    args = ["--bind", "::1", "--port", "8768"] if override else []
+    monkeypatch.setenv("MG400_THERMAL_BASE_PATH", "/thermal/")
+    args = ["--bind", "::1", "--port", "8768", "--base-path", "/lab/thermal/"] if override else []
     monkeypatch.setattr(sys, "argv", ["thermal-cam", "--demo", "--no-connect", *args])
     sentinel = object()
 
     def fake_app(**kwargs):
-        assert kwargs == {"demo": True, "auto_connect": False, "token": token}
+        assert kwargs == {
+            "demo": True,
+            "auto_connect": False,
+            "token": token,
+            "base_path": "/lab/thermal" if override else "/thermal",
+        }
         return sentinel
 
     class FakeServer:
@@ -187,3 +209,6 @@ def test_environment_settings_cli_override_and_token_handoff(monkeypatch, socket
     monkeypatch.setattr(uvicorn, "Server", FakeServer)
     assert cli.main() == 0
     assert sockets[0].closed
+    assert (
+        "http://[::1]:8768/lab/thermal" if override else "http://0.0.0.0:9999/thermal"
+    ) in capsys.readouterr().out

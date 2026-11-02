@@ -1,5 +1,6 @@
 """Small HTTP API; motor and serial behavior live outside the web framework."""
 
+import re
 import secrets
 
 from flask import Flask, jsonify, render_template, request
@@ -16,14 +17,35 @@ from .protocol import ControllerError, LinkError
 PAGE_STATE = ("demo", "baud_rate", "microstep_modes", "defaults", "limits")
 
 
-def create_app(controller: MotorController | None = None, token: str | None = None):
-    app = Flask(__name__)
+def normalize_base_path(value):
+    """Return a literal URL prefix with one trailing slash."""
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or "//" in value
+        or any(
+            part in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9._~-]+", part)
+            for part in value.strip("/").split("/")
+            if value != "/"
+        )
+    ):
+        raise ValueError("Base path must be an absolute URL path with literal segments.")
+    return value.rstrip("/") + "/"
+
+
+def create_app(
+    controller: MotorController | None = None, token: str | None = None, *, base_path="/"
+):
+    prefix = normalize_base_path(base_path).rstrip("/")
+    app = Flask(__name__, static_url_path=prefix + "/static")
     # Host names are checked below: with an access token, any host name is accepted.
     app.config.update(MAX_CONTENT_LENGTH=4096)
     controller = controller or MotorController()
     app.extensions["motor_controller"] = controller
     app.register_blueprint(
-        contract_blueprint(controller, token=token, base_path="/contract", lease=controller.lease)
+        contract_blueprint(
+            controller, token=token, base_path=prefix + "/contract", lease=controller.lease
+        )
     )
     control_token = secrets.token_urlsafe(32)
 
@@ -37,7 +59,7 @@ def create_app(controller: MotorController | None = None, token: str | None = No
             return jsonify(error="Open the panel at 127.0.0.1 or localhost"), 403
         if (
             token
-            and request.path.startswith("/api/")
+            and request.path.startswith(prefix + "/api/")
             and not bearer_matches(request.headers.get("Authorization", ""), token)
         ):
             return jsonify(error="Enter the panel access token"), 401
@@ -87,33 +109,33 @@ def create_app(controller: MotorController | None = None, token: str | None = No
         # Controller operations have released their device lock before this reads the lease.
         return jsonify({**state, "lease": controller.lease.snapshot()})
 
-    @app.get("/")
+    @app.get(prefix + "/")
     def index():
         state = controller.snapshot()
         page = {key: state[key] for key in PAGE_STATE}
         page["motors"] = [{"id": motor["id"]} for motor in state["motors"]]
-        return render_template("index.html", token=control_token, state=page)
+        return render_template("index.html", token=control_token, state=page, base_path=prefix)
 
-    @app.get("/api/ports")
+    @app.get(prefix + "/api/ports")
     def ports():
         return jsonify(ports=controller.ports())
 
-    @app.get("/api/state")
+    @app.get(prefix + "/api/state")
     def state():
         return jsonify(controller.panel_snapshot())
 
-    @app.post("/api/connect")
+    @app.post(prefix + "/api/connect")
     def connect():
         port = body().get("port")
         if not isinstance(port, str) or not port:
             raise ValueError("Select a serial port.")
         return state_response(controller.connect(port))
 
-    @app.post("/api/disconnect")
+    @app.post(prefix + "/api/disconnect")
     def disconnect():
         return state_response(controller.disconnect())
 
-    @app.post("/api/motors/<motor>/move")
+    @app.post(prefix + "/api/motors/<motor>/move")
     def move(motor):
         data = body()
         return state_response(
@@ -122,33 +144,33 @@ def create_app(controller: MotorController | None = None, token: str | None = No
             )
         )
 
-    @app.post("/api/microstep")
+    @app.post(prefix + "/api/microstep")
     def microstep():
         return state_response(controller.manual("set_microstep", body().get("microstep")))
 
-    @app.post("/api/motors/<motor>/home")
+    @app.post(prefix + "/api/motors/<motor>/home")
     def home(motor):
         body()
         return state_response(controller.manual("home", motor))
 
-    @app.post("/api/motors/<motor>/awake")
+    @app.post(prefix + "/api/motors/<motor>/awake")
     def awake(motor):
         return state_response(controller.manual("awake", motor, body().get("seconds")))
 
-    @app.post("/api/motors/<motor>/goto")
+    @app.post(prefix + "/api/motors/<motor>/goto")
     def goto(motor):
         return state_response(controller.manual("goto", motor, body().get("name")))
 
-    @app.post("/api/poses/<name>")
+    @app.post(prefix + "/api/poses/<name>")
     def pose(name):
         body()
         return state_response(controller.manual("pose", name))
 
-    @app.post("/api/stop")
+    @app.post(prefix + "/api/stop")
     def stop():
         return state_response(controller.stop_all())
 
-    @app.post("/api/motors/<motor>/hold")
+    @app.post(prefix + "/api/motors/<motor>/hold")
     def hold(motor):
         data = body()
         return state_response(
@@ -162,11 +184,11 @@ def create_app(controller: MotorController | None = None, token: str | None = No
             )
         )
 
-    @app.post("/api/motors/<motor>/hold/keepalive")
+    @app.post(prefix + "/api/motors/<motor>/hold/keepalive")
     def keep_hold_alive(motor):
         return state_response(controller.manual("keep_hold_alive", motor, body().get("hold_id")))
 
-    @app.post("/api/motors/<motor>/hold/stop")
+    @app.post(prefix + "/api/motors/<motor>/hold/stop")
     def release_hold(motor):
         return state_response(controller.release_hold(motor, body().get("hold_id")))
 

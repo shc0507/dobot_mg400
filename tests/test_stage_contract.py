@@ -460,3 +460,58 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     assert recovered.json["locked"] is True
     assert move(web, motor="top").status_code == 409
     assert "motor top" not in transport.commands
+
+
+def test_prefixed_contract_keeps_its_access_lease_and_page_guard_boundaries(stage_rig):
+    controller, transport, clock = stage_rig
+    home_stage(controller, clock)
+    token = "prefixed-stage-access-token-0123456789"
+    web = create_app(controller, token, base_path="/lab/stage/").test_client()
+    base = "/lab/stage"
+    proxy = {"Host": "lab.example:8080", "X-Forwarded-Host": "lab.example:8080"}
+    headers = {**proxy, "Authorization": f"Bearer {token}", **CLIENT}
+    page = web.get(base + "/", headers=proxy).text
+    control = re.search(r'name="control-token" content="([^"]+)"', page)[1]
+    assert web.get(base + "/contract/api/state", headers=proxy).status_code == 401
+    assert web.get(base + "/contract/api/state", headers=headers).status_code == 200
+    for origin in ("http://evil.example:8080", "http://lab.example:9999"):
+        assert (
+            web.get(base + "/contract/api/state", headers={**headers, "Origin": origin}).status_code
+            == 403
+        )
+    assert (
+        web.get(
+            base + "/contract/api/state", headers={**headers, "Origin": "http://lab.example:8080"}
+        ).status_code
+        == 200
+    )
+    assert web.post(base + "/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    assert web.post(base + "/api/stop", json={}, headers=headers).status_code == 403
+    assert (
+        web.post(
+            base + "/api/stop", json={}, headers={**headers, "X-Control-Token": control}
+        ).status_code
+        == 200
+    )
+    assert (
+        web.post(
+            base + "/contract/api/stop",
+            json={},
+            headers={**proxy, "Authorization": f"Bearer {token}", "X-Control-Token": control},
+        ).status_code
+        == 400
+    )
+    assert (
+        web.post(
+            base + "/contract/api/stop", json={}, headers={**headers, "X-MG400-Client": "other"}
+        ).status_code
+        == 200
+    )
+    tokenless = create_app(controller, base_path=base).test_client()
+    for path in ("/api/state", "/contract/api/state"):
+        assert (
+            tokenless.get(
+                base + path, headers={"Host": "localhost", "X-Forwarded-Host": "localhost"}
+            ).status_code
+            == 403
+        )

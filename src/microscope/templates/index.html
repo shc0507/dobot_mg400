@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Microscope</title>
+  <link rel="stylesheet" href="{{ base_path }}/static/styles.css">
+  <script src="{{ base_path }}/static/app.js" defer></script>
+</head>
+<body data-base-path="{{ base_path }}">
+  <header>
+    <div><h1>Microscope</h1><p id="connection">Connecting…</p></div>
+    <button id="stop" class="stop" type="button" disabled>Stop</button>
+  </header>
+  <main>
+    <form id="access-form" class="access">
+      <label for="access-token">Access token</label>
+      <input id="access-token" type="password" autocomplete="off" spellcheck="false">
+      <button type="submit">Connect</button>
+    </form>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <section class="previews" aria-label="Camera views">
+      <figure><img id="microscope-image" alt="Microscope live view"><figcaption>Microscope <span id="microscope-status">Waiting for access</span></figcaption></figure>
+      <figure><img id="side-image" alt="Side camera live view"><figcaption>Side camera <span id="side-status">Waiting for access</span></figcaption></figure>
+    </section>
+    <section class="panel" aria-label="Control lease">
+      <div class="row"><h2>Control</h2><span id="lease-status">No control</span></div>
+      <div class="row"><button id="acquire" type="button" disabled>Acquire control</button><button id="release" type="button" disabled>Release control</button></div>
+    </section>
+    <div class="controls">
+      <section class="panel">
+        <h2>Objective</h2><p id="objective-status">Unknown</p>
+        <div id="objectives" class="row"></div><p id="calibration-status"></p>
+        <h2>Autofocus</h2>
+        <div class="row"><button id="focus-full" type="button" disabled>Full autofocus</button><button id="focus-local" type="button" disabled>Local autofocus</button></div>
+      </section>
+      <section class="panel">
+        <h2>Focus</h2><p id="focus-status">Position unknown</p>
+        <label for="focus-step">Jog distance (pulses)</label>
+        <input id="focus-step" type="number" min="1" max="2147483647" step="1" value="10">
+        <div class="row"><button id="focus-minus" type="button" disabled>− Jog</button><button id="focus-plus" type="button" disabled>+ Jog</button></div>
+        <button id="home" type="button" disabled hidden>Home focus…</button>
+        <button id="zero" type="button" disabled hidden>Set focus zero…</button>
+      </section>
+      <section class="panel">
+        <h2>Snapshot</h2>
+        <label for="snapshot-path">Run path (optional)</label>
+        <input id="snapshot-path" type="text" maxlength="4096" placeholder="Use the service default">
+        <button id="snapshot" type="button" disabled>Save snapshot</button>
+        <p id="command-status">No command</p>
+      </section>
+    </div>
+    <section class="panel"><h2>Events</h2><ol id="events" aria-live="polite"></ol></section>
+  </main>
+</body>
+</html>

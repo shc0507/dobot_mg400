@@ -983,7 +983,7 @@ Steps:
 
 1. Installer option `--toupcam PATH` installs the library from H-12 as `/usr/local/lib/mg400/libtoupcam.so` (root, 0755), like `--go2rtc`. It refuses a file whose SHA-256 differs from the H-12 value for version 59.30594.20260120.
 2. USB access: the OPS-01 template `config/udev/70-mg400-microscope.rules.in` already grants the Toupcam camera model C3CMOS05100KPA (`0547:1375` on USB 3, `0547:1376` on USB 2) with `MODE="0660"` and the group placeholder, because the microscope service owns the camera. Do not add another Toupcam template. Do not install the vendor's `99-toupcam.rules`: it gives every local user read and write access to all `0547` and `04b4` devices.
-3. The units that use the camera (furnace, microscope) set `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`. Allow it in the unit tests.
+3. No unit changes here. The microscope service is the only Toupcam user, and it also records the furnace video (Q-02, FUR-05). MIC-06 creates `mg400-microscope.service` with `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`. The furnace unit stays unchanged. The installer may install the library before MIC-06.
 4. Tests and docs.
 
 Done when: P-CHECKS pass.
@@ -1216,7 +1216,7 @@ Goal: the microscope service runs on Olares with its devices.
 
 Steps (P-DEPLOY plus):
 
-1. Unit `mg400-microscope.service` with `SupplementaryGroups=dialout video`, `LD_LIBRARY_PATH` as in TPC-02, port 8770.
+1. Unit `mg400-microscope.service` with `SupplementaryGroups=dialout video`, `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400` (TPC-02 installs the library there; allow it in the unit tests for this unit only), port 8770.
 2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_CAMERA`, `_CAMERA_SERIAL`, `_CALIBRATION_DIR`, `_SWITCH_FOCUS`, `_FOCUS_LIMITS`, `_BIND`, `_PORT`, `_TOKEN`. The focus values come from H-06.
 3. A registry entry `microscope` (optional).
 

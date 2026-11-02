@@ -70,7 +70,7 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 
 ## 侧视相机流
 
-显微镜侧视相机为固定集线器端口 `12.1.3` 上的 AC410。
+显微镜侧视相机为固定集线器端口 `12.1.4` 上的 AC410，拍摄物镜转盘。
 相机预览的 go2rtc 进程独占其 V4L2 设备。
 `USBCamera` 从 `http://127.0.0.1:1984/api/frame.jpeg` 读取 JPEG 图像。
 它拒绝重定向，忽略环境代理配置。

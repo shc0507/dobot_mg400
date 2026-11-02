@@ -274,9 +274,10 @@ Keep the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
 A reset disconnects the motor, furnace, gas, gripper, and camera connections together.
 
 Keep each camera on its listed hub port.
-The 3 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
-The camera on `12.1.3` is the microscope side camera. go2rtc owns it, and the microscope reads its shared stream.
-Confirm the views on `12.1.2` and `12.1.4` in the camera preview before assigning their roles.
+The 4 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
+The camera on `12.1.4` is the microscope side camera. It watches the objective turret. go2rtc owns it, and the microscope reads its shared stream.
+The camera on `12.1.2` sees the stage from above. The camera on `12.1.3` looks along the Insert rail, with the tray behind it.
+The camera on `12.2.1` sees the tray. The camera preview does not show it yet (VIS-07).
 
 | Device | VID:PID | Stable identity | Hub port | Service |
 | --- | --- | --- | --- | --- |
@@ -286,9 +287,10 @@ Confirm the views on `12.1.2` and `12.1.4` in the camera preview before assignin
 | Gas controller FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace` (`MG400_MFC_SERIAL`) |
 | Gripper converter FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0` | `12.3.3` | `collector` |
 | Thermal Master P1 | `3474:45c2` | libusb, serial `P1016021DG040100208` | `12.1.1` | `thermal` |
-| AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
-| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera`, shared through go2rtc |
-| AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera` |
+| AC410 stage camera, from above | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
+| AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera` |
+| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera`, shared through go2rtc |
+| AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0` | `12.2.1` | `camera` (VIS-07) |
 | ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
 Use the full serial paths for controllers. The gas controller and gripper converter share a VID:PID, but have different serial numbers.

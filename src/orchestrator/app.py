@@ -974,8 +974,9 @@ class OrchestratorService:
 
 
 def create_app(service, *, token=None, base_path="/"):
-    proposal_token = service.settings.get("MG400_GATEWAY_TOKEN", "")
-    requester = service.settings.get("MG400_GATEWAY_CALLER", "gateway-agent")
+    settings = getattr(service, "settings", {})
+    proposal_token = settings.get("MG400_GATEWAY_TOKEN", "")
+    requester = settings.get("MG400_GATEWAY_CALLER", "gateway-agent")
     if proposal_token:
         validate_client(requester)
         if (
@@ -986,11 +987,12 @@ def create_app(service, *, token=None, base_path="/"):
             or proposal_token == token
             or any(
                 value == proposal_token
-                for key, value in service.settings.items()
+                for key, value in settings.items()
                 if key.endswith("_TOKEN") and key != "MG400_GATEWAY_TOKEN"
             )
         ):
             raise ValueError("Proposal access requires distinct gateway and operator credentials.")
+        service.approvals.private_tokens = (token,)
     app = Flask(__name__)
     app.json = StrictJSON(app)
     app.config["MAX_CONTENT_LENGTH"] = 65536

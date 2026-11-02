@@ -3,6 +3,7 @@
 import copy
 import json
 import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -420,3 +421,149 @@ def test_credentials_cannot_be_equal_or_leak_through_recipe(rig, monkeypatch):
     service.settings["MG400_ORCH_TOKEN"] = OPERATOR
     response = proposal(client)
     assert response.status_code == 400 and OPERATOR not in response.text
+
+
+def test_creation_audit_cannot_extend_the_displayed_expiry(rig, monkeypatch):
+    service, client, clock = rig
+    original = service.store.audit_call
+
+    def slow(caller, event, record):
+        result = original(caller, event, record)
+        if event == "approval.proposed":
+            clock[0] += EXPIRY_S + 1
+        return result
+
+    monkeypatch.setattr(service.store, "audit_call", slow)
+    response = proposal(client)
+    assert response.status_code == 201
+    record = response.json
+    assert record["decision"] == "expired"
+    assert service.approvals.wall() > record["expires_at"]
+    assert decision(client, record).status_code == 409
+    assert service.job is None
+
+
+def test_approval_keeps_existing_admission_and_lease_revocation_fences(rig):
+    service, client, _ = rig
+    entered, release = threading.Event(), threading.Event()
+
+    def delayed_clients(required, identity):
+        entered.set()
+        assert release.wait(3)
+        return {}
+
+    service.client_factory = delayed_clients
+    first, second = proposal(client).json, proposal(client).json
+    client.post("/api/heartbeat", headers=headers(), json={})
+    try:
+        assert decision(client, first).status_code == 202
+        assert entered.wait(1)
+        assert decision(client, second).status_code == 409
+        assert service.approvals.get(second["id"])["dispatch"] == "not-confirmed"
+        assert client.post("/api/release", headers=headers(), json={}).status_code == 200
+        assert service.job["cancelled"].is_set()
+    finally:
+        release.set()
+    assert service.job["done"].wait(2)
+    assert service.store.runs() == []
+    assert decision(client, first).status_code == 409
+
+
+def test_approval_ui_enforces_presence_control_and_one_shot_decisions():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    harness = (root / "tests/test_dashboard.mjs").read_text().split('\ntest("', 1)[0]
+    script = (
+        harness
+        + r"""
+const proposal = overrides => ({
+  id: "a".repeat(32), recipe: "wait", requester: "agent", reason: "<img src=x>",
+  decision: "pending", decider: null, expires_at: 9999999999,
+  fingerprint: "f".repeat(64), definition: {steps: [{skill: "wait"}]},
+  params: {chip: "<script>alert(1)</script>"},
+  effective: {steps: [{skill: "wait", params: {seconds: 0}}]}, ...overrides,
+});
+const approvalButton = (page, text) => descendants(page.get("approvals")).find(
+  element => element.tagName === "BUTTON" && element.textContent === text);
+const presence = page => descendants(page.get("approvals")).find(
+  element => element.tagName === "INPUT");
+{
+  const page = browser(), row = proposal();
+  await page.respond(0, state({approvals: [row]}));
+  assert.ok(approvalButton(page, "Approve and run").disabled);
+  assert.ok(!approvalButton(page, "Reject").disabled);
+  assert.ok(page.get("approvals").textContent.includes("<script>alert(1)</script>"));
+  await page.click("acquire-control");
+  await page.respond(1, {lease: {holder: client, remaining_s: 3}});
+  await page.respond(2, owned({approvals: [row]}));
+  assert.ok(approvalButton(page, "Approve and run").disabled);
+  presence(page).checked = true;
+  presence(page).emit("change");
+  assert.ok(!approvalButton(page, "Approve and run").disabled);
+  approvalButton(page, "Approve and run").emit("click");
+  await drain();
+  const sent = page.requests.at(-1);
+  assert.equal(sent.url, "/lab/api/approvals/" + row.id + "/decision");
+  assert.deepEqual(JSON.parse(sent.options.body),
+    {decision: "approve", present: true, fingerprint: row.fingerprint});
+  assert.ok(approvalButton(page, "Approve and run").disabled);
+  sent.reject(new Error("Unknown result"));
+  await drain();
+  approvalButton(page, "Approve and run").emit("click");
+  await drain();
+  assert.equal(page.requests.filter(item => item.url.endsWith("/decision")).length, 1);
+  assert.match(page.get("notice").textContent, /No automatic retry/);
+}
+{
+  const page = browser(), row = proposal();
+  await page.respond(0, state({approvals: [row]}));
+  approvalButton(page, "Reject").emit("click");
+  await drain();
+  const sent = page.requests.at(-1);
+  assert.equal(JSON.parse(sent.options.body).decision, "reject");
+  await page.click("forget-token");
+  sent.resolve({ok: true, status: 200, json: async () => ({decision: "rejected"})});
+  await drain();
+  assert.doesNotMatch(page.get("notice").textContent, /Proposal rejected/);
+  assert.equal(posts(page).filter(item => item.url.endsWith("/heartbeat")).length, 0);
+}
+{
+  const page = browser(), row = proposal();
+  await page.respond(0, state({approvals: [row]}));
+  await page.advance(4000);
+  assert.ok(approvalButton(page, "Approve and run").disabled);
+  // A stale poll cannot imply authority or trigger an approval.
+  assert.equal(posts(page).length, 0);
+}
+"""
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module"],
+        input=script,
+        text=True,
+        cwd=root / "tests",
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("secret", [GATEWAY, OPERATOR])
+def test_known_tokens_are_refused_in_reason_before_publication(rig, secret):
+    service, client, _ = rig
+    reply = proposal(client, reason="private: " + secret)
+    assert reply.status_code == 400
+    assert secret not in reply.text
+    assert service.approvals.list() == []
+
+
+@pytest.mark.parametrize("malformed", [[], {}, None, 1, True])
+def test_malformed_decision_is_rejected_before_state_change(rig, malformed):
+    service, client, _ = rig
+    record = proposal(client).json
+    response = decision(client, record, action=malformed)
+    assert response.status_code == 400
+    assert service.approvals.get(record["id"])["decision"] == "pending"
+    assert service.job is None

@@ -73,7 +73,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Furnace run lifecycle and recovery | `src/furnace/service.py`, `state.py`, `sim.py` | `test_furnace_service.py`, `test_furnace_sim.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Recipe orchestration and rehearsal | `src/orchestrator/`, `recipes/`, `deploy/mg400ctl` | `test_orchestrator_*.py`, `test_deploy_mg400ctl.py` | [orchestrator.md](docs/orchestrator.md) |
 | Lab dashboard | `src/orchestrator/web/`, `src/orchestrator/app.py` | `test_dashboard.py`, `test_dashboard.mjs`, `test_dashboard_passport.py` | [dashboard.md](docs/dashboard.md) |
-| Read-only MCP gateway | `src/gateway/`, `src/orchestrator/store.py` | `test_gateway*.py` | [agent-gateway.md](docs/agent-gateway.md) |
+| MCP gateway and approval policy | `src/gateway/`, `src/orchestrator/approvals.py`, `src/orchestrator/store.py` | `test_gateway*.py`, `test_approvals.py` | [agent-gateway.md](docs/agent-gateway.md) |
 | Migration plan | `docs/agents/migration/tasks.toml`, `tasks.md` | `test_migration_plan.py` | [migration README](docs/agents/migration/README.md) |
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_camera_preview.mjs`.

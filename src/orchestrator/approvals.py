@@ -54,6 +54,18 @@ def _digest(value):
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _public(service, value):
+    serialized = json.dumps(value, ensure_ascii=True, allow_nan=False)
+    secrets = [
+        value
+        for key, value in service.settings.items()
+        if key.endswith(("_TOKEN", "_URL")) and isinstance(value, str) and value
+    ]
+    secrets.extend(service.approvals.private_tokens)
+    if any(json.dumps(secret, ensure_ascii=True)[1:-1] in serialized for secret in secrets):
+        raise ValueError("A proposal must not contain private credentials or service URLs.")
+
+
 def prepare(service, name, overrides):
     """Resolve the catalog once, then enforce policy on every effective step."""
     if not isinstance(overrides, dict):
@@ -104,13 +116,7 @@ def prepare(service, name, overrides):
     recipe = replace(recipe, steps=tuple(steps))
     plan = prepare_zones(recipe, service.registry, service.settings)
     visible = {"definition": definition, "effective": asdict(recipe)}
-    serialized = json.dumps(visible, ensure_ascii=True, allow_nan=False)
-    if any(
-        json.dumps(value, ensure_ascii=True)[1:-1] in serialized
-        for key, value in service.settings.items()
-        if key.endswith(("_TOKEN", "_URL")) and isinstance(value, str) and value
-    ):
-        raise ValueError("A recipe must not contain private credentials or service URLs.")
+    _public(service, visible)
     return (recipe, plan), visible, _digest(visible)
 
 
@@ -122,6 +128,7 @@ class Approvals:
         self.lock = threading.RLock()
         self.records = {}
         self.deadlines = {}
+        self.private_tokens = ()
 
     def _audit(self, caller, event, record):
         # A failed audit prevents publication and execution. Never use an event log
@@ -154,7 +161,7 @@ class Approvals:
             self._expire()
             if sum(row["decision"] == "pending" for row in self.records.values()) >= MAX_PENDING:
                 raise ServiceError(409, "At most 3 proposals may be pending.")
-            now = self.wall()
+            now, deadline = self.wall(), self.clock() + EXPIRY_S
             record = {
                 "id": uuid.uuid4().hex,
                 "recipe": data["recipe"],
@@ -171,15 +178,17 @@ class Approvals:
                 **visible,
                 "presence_required": True,
             }
+            _public(self.service, record)
             self._audit(requester, "proposed", record)
             self.records[record["id"]] = copy.deepcopy(record)
-            self.deadlines[record["id"]] = self.clock() + EXPIRY_S
+            self.deadlines[record["id"]] = deadline
+            self._expire()
             while len(self.records) > MAX_HISTORY:
                 oldest = next(
                     key for key, row in self.records.items() if row["decision"] != "pending"
                 )
                 del self.records[oldest], self.deadlines[oldest]
-            return copy.deepcopy(record)
+            return copy.deepcopy(self.records[record["id"]])
 
     def get(self, identifier):
         with self.lock:
@@ -198,6 +207,7 @@ class Approvals:
         if (
             not isinstance(data, dict)
             or set(data) != {"decision", "present", "fingerprint"}
+            or not isinstance(data["decision"], str)
             or data["decision"] not in {"approve", "reject"}
             or type(data["present"]) is not bool
         ):

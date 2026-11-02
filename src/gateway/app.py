@@ -182,7 +182,9 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
             return types.CallToolResult(
                 isError=True,
                 content=[
-                    types.TextContent(type="text", text="Audit unavailable. No tool operation was performed.")
+                    types.TextContent(
+                        type="text", text="Audit unavailable. No tool operation was performed."
+                    )
                 ],
             )
         try:
@@ -202,7 +204,7 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
             error = "Arguments do not match this gateway tool."
         except Exception:
             # HTTP errors and storage paths can contain private configuration.
-            error = "Read unavailable. Check the identifier, service state, and configured data."
+            error = "Tool unavailable. Check the identifier, service state, and configured policy."
         return types.CallToolResult(
             isError=True, content=[types.TextContent(type="text", text=error)]
         )

@@ -104,6 +104,7 @@ The plan picks these defaults. GOV-02 records them as ADRs. Change one only thro
 | `WuLabPrinceton/Objective-Control` | `3a2dad0` | `camera.py`, `toupcam_capture.py`, `python/toupcam.py` | TPC-01 |
 | `WuLabPrinceton/Objective-Control` | `3a2dad0` | Autofocus, ArUco, calibration and capture modules, `MotorController`, `usb_camera_devices.py`, two test files | MIC-02 |
 | `WuLabPrinceton/Objective-Control` | `3a2dad0` | Calibration images and CSV files, as host data | MIC-05 |
+| `WuLabPrinceton/Objective-Control` | `a9241a1` | `Objective_Control/Arduino_Firmware/Dual_UNO_Controller/Dual_UNO_Controller.ino`, the recovered dual-motor sketch from H-02 | MIC-01 |
 
 These files do not move:
 

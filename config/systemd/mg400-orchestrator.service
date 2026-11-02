@@ -1,0 +1,20 @@
+[Unit]
+Description=Lab recipe orchestrator
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+EnvironmentFile=/etc/mg400/mg400.env
+# Keep the orchestrator token and its six downstream aliases only.
+UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN MG400_THERMAL_TOKEN MG400_VISION_TOKEN MG400_FURNACE_TOKEN MG400_MICROSCOPE_TOKEN MG400_GATEWAY_TOKEN
+WorkingDirectory=/opt/mg400
+ExecStart=/opt/mg400/.venv/bin/python -m orchestrator serve
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=2
+UMask=0077
+# Accepted operations must drain before stop confirmation and lease cleanup.
+TimeoutStopSec=infinity

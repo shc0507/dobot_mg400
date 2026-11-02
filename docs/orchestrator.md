@@ -24,6 +24,71 @@ uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-run
 
 `--time-scale` 必须为正数，只用于演练。默认值为 `0.1`。它缩短模拟等待，步骤超时仍按实际时间计算。
 
+## HTTP 服务
+
+可选服务 `orch` 通过 Flask 和 waitress 运行 `python -m orchestrator serve`。
+按[服务清单](deploy.md#服务清单)安装。它不使用设备组，也不自动启动配方。
+现有的 `run`、`rehearse`、`runs` 和 `station` 命令保持可用。
+
+| 配置项 | 默认值 | 含义 |
+| --- | --- | --- |
+| `MG400_ORCH_BIND` | `127.0.0.1` | HTTP 监听地址 |
+| `MG400_ORCH_PORT` | `8772` | HTTP 端口 |
+| `MG400_ORCH_TOKEN` | 安装器生成 | 此服务的访问令牌 |
+| `MG400_ORCH_BASE_PATH` | `/` | 所有路由的 URL 前缀 |
+| `MG400_ORCH_RECIPES_DIR` | `/opt/mg400/recipes` | 只读配方目录 |
+
+`--bind`、`--port`、`--base-path`、`--recipes-dir` 和 `--runs-dir` 可覆盖对应配置。
+真机使用前，配置下游端点、匹配的令牌别名，以及各配方所需的实测几何参数。
+安装器从已有服务令牌复制空别名，保留非空别名。令牌轮换方法见[配置文件](deploy.md#配置文件)。
+
+通过 `Authorization: Bearer TOKEN` 发送令牌。POST 请求还必须带 `Content-Type: application/json` 和 `X-MG400-Client`，后者使用固定的调用者身份。
+通过 `/api/heartbeat` 获取并续期前端控制租约。下表所有自定义修改路由都要求持有该租约。
+共享的 `/api/stop` 仍对任何已认证客户端开放，用于暂停当前运行或取消恢复。
+前端租约释放或过期也会请求暂停或取消恢复。
+
+下列路径都相对于配置的基础路径：
+
+| 方法与路径 | 请求或结果 |
+| --- | --- |
+| `GET /api/recipes` | 列出配方标识、名称和参数声明 |
+| `POST /api/runs` | 提供必填的 `recipe` 标识和可选的 `params` 对象后启动 |
+| `GET /api/runs` | 列出运行记录 |
+| `GET /api/runs/<id>` | 读取运行及其已记录结果 |
+| `POST /api/runs/<id>/resume` | 提供 `manually_completed: true` 和非空 `note`。此运行保留区域占用时，还必须提供 `physically_clear: true` |
+| `POST /api/runs/<id>/abort` | 用空对象终止当前运行 |
+| `POST /api/runs/<id>/recovery` | 用空对象开始恢复已结束运行保留的占用 |
+| `POST /api/runs/<id>/recovery/confirm` | 确认 `physically_clear: true` 并填写非空 `note` |
+| `POST /api/runs/<id>/recovery/abort` | 用空对象取消恢复 |
+
+修改请求被接受后返回 `202` 和 `command_id`。轮询 `/api/state` 和 `/api/runs/<id>`，读取异步结果。
+请求被接受不能证明已完成。同一时间只能有 1 个运行或恢复会话。
+获取设备租约前，先校验完整配方及其所需的区域条件服务。
+
+当前运行按下文的人工完成和等待旧操作结束规则恢复。它进入下一步，不重放失败步骤。
+已结束运行的恢复另行处理。首个请求创建新的客户端身份，并在人工检查期间保持所需租约。
+此请求不会清除占用。确认前，检查现场区域已清空，并完成设备恢复。
+确认时，重新检查停止或已验证的静止状态、控制权和健康状态，记录清空声明后才删除已核对的占用。
+取消、租约丢失或关闭服务时，停止并等待恢复操作结束，再释放租约，保留占用。
+恢复不会重新启动已记录的配方。
+
+收到 `SIGTERM` 时，服务请求暂停，并等待已接受的工作和停止操作结束。
+关闭前，服务记录运行状态并释放租约。关闭后仍保留区域占用。
+systemd 单元会等待清理完成。重启不会恢复已保存的运行，也不会清除其区域。
+
+要启动隔离的本地服务，运行：
+
+```sh
+uv run python -m orchestrator serve --demo --recipes-dir ./recipes
+```
+
+演示启动时，在创建线程前从进程环境中移除下游端点和凭据、设备路径及代理配置。
+它保留 `MG400_ORCH_TOKEN`，用于前端认证。
+它独占临时运行记录、占用文件、设备模拟器、夹爪反馈和控制器锁。
+环境中的 `MG400_ORCH_RUNS_DIR` 和 `MG400_ORCH_ZONE_STATE_FILE` 会被忽略。`--demo` 不接受 `--runs-dir`。
+配方目录保持只读。明确提供的工位、工具、工作空间、预夹开度和区域配置仍可作为只读输入。
+演示初始化不能证明现场区域已清空。服务关闭时删除临时数据。
+
 ## 配方
 
 CLI 先校验完整配方，再创建记录、启动演示服务或获取控制租约。未知操作单元、缺少参数、类型错误、超时无效或未知字段都会拒绝。

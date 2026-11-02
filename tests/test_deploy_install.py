@@ -111,7 +111,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     assert {path.name for path in host.units.iterdir()} == {
         path.name
         for path in (ROOT / "config/systemd").iterdir()
-        if path.name != "mg400-furnace.service"
+        if path.name not in {"mg400-furnace.service", "mg400-orchestrator.service"}
     }
     for unit in host.units.iterdir():
         assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
@@ -849,3 +849,106 @@ def test_enabled_furnace_installs_private_state_directory_and_own_group(module, 
 def test_furnace_json_setting_rejects_del(module):
     with pytest.raises(ValueError):
         module.parse_settings('MG400_FURNACE_GAS_MAP=\'{"0":"bad\x7flabel"}\'')
+
+
+@pytest.mark.parametrize(
+    "service,source",
+    [
+        ("ROBOT", "PANEL"),
+        *[(name, name) for name in ("STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")],
+    ],
+)
+def test_blank_alias_copies_generated_source_even_when_alias_precedes_it(module, service, source):
+    alias, token_key = f"MG400_ORCH_{service}_TOKEN", f"MG400_{source}_TOKEN"
+    generate = Mock(return_value="generated-direct-token")
+    text, changed = module.merge_settings(None, f'{alias}=""\n{token_key}=\n', token=generate)
+    assert module.parse_settings(text) == {
+        alias: "generated-direct-token",
+        token_key: "generated-direct-token",
+    }
+    generate.assert_called_once_with()
+    assert set(changed) == {alias, token_key}
+    again, changed = module.merge_settings(text, f"{alias}=\n{token_key}=\n", token=generate)
+    assert again == text and changed == []
+    generate.assert_called_once_with()
+
+
+def test_missing_alias_copies_existing_source_without_generating_a_token(module):
+    text, changed = module.merge_settings(
+        'MG400_PANEL_TOKEN=" token with significant spaces "\n',
+        "MG400_ORCH_ROBOT_TOKEN=\n",
+        token=Mock(side_effect=AssertionError("An alias is never generated")),
+    )
+    assert (
+        module.parse_settings(text)["MG400_ORCH_ROBOT_TOKEN"] == " token with significant spaces "
+    )
+    assert changed == ["MG400_ORCH_ROBOT_TOKEN"]
+
+
+@pytest.mark.parametrize("last_alias", ['""', '"explicit alias"'])
+def test_alias_merge_uses_last_source_and_alias_without_changing_nonempty_values(
+    module, last_alias
+):
+    current = (
+        "MG400_PANEL_TOKEN=earlier-source\nMG400_ORCH_ROBOT_TOKEN=earlier-alias\n"
+        f"MG400_PANEL_TOKEN=final-source\nMG400_ORCH_ROBOT_TOKEN={last_alias}\n"
+    )
+    text, changed = module.merge_settings(
+        current, "", token=Mock(side_effect=AssertionError("No independent alias token"))
+    )
+    settings = module.parse_settings(text)
+    assert settings["MG400_ORCH_ROBOT_TOKEN"] == (
+        "final-source" if last_alias == '""' else "explicit alias"
+    )
+    assert text.startswith(current.rsplit("MG400_ORCH_ROBOT_TOKEN=", 1)[0])
+    assert changed == (["MG400_ORCH_ROBOT_TOKEN"] if last_alias == '""' else [])
+
+
+def test_alias_without_a_source_stays_empty_and_is_never_generated(module):
+    example = "MG400_ORCH_THERMAL_TOKEN=\n"
+    text, changed = module.merge_settings(
+        None, example, token=Mock(side_effect=AssertionError("No source token exists"))
+    )
+    assert text == example and changed == []
+
+
+def test_enabled_orchestrator_installs_private_data_and_group_without_starting_it(module, host):
+    select_optional(host, "orch")
+    assert host.install() == 0
+    for name in ("runs", "zones"):
+        directory = host.data / name
+        assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
+        assert list(directory.iterdir()) == []
+    assert (host.units / "mg400-orchestrator.service").exists()
+    settings = module.parse_settings(host.settings.read_text())
+    assert len(settings["MG400_ORCH_TOKEN"]) >= 24
+    for service, source in (("ROBOT", "PANEL"), ("STAGE", "STAGE"), ("FURNACE", "FURNACE")):
+        assert settings[f"MG400_ORCH_{service}_TOKEN"] == settings[f"MG400_{source}_TOKEN"]
+    assert settings["MG400_ORCH_THERMAL_TOKEN"] == ""
+    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
+    assert sync[sync.index("orchestrator") - 1] == "--group"
+    assert not any(
+        command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
+        for command, _ in host.commands
+    )
+
+
+def test_disabled_orchestrator_has_no_directories_unit_or_group(host):
+    assert host.install() == 0
+    assert not (host.data / "runs").exists() and not (host.data / "zones").exists()
+    assert not (host.units / "mg400-orchestrator.service").exists()
+    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
+    assert "orchestrator" not in sync
+
+
+def test_selected_orchestrator_refuses_symlinked_zone_directory(host, tmp_path):
+    select_optional(host, "orch")
+    host.data.mkdir(parents=True)
+    target = tmp_path / "unrelated-zone-data"
+    target.mkdir()
+    sentinel = target / "keep"
+    sentinel.write_text("unchanged")
+    (host.data / "zones").symlink_to(target, target_is_directory=True)
+    assert host.install() == 1
+    assert sentinel.read_text() == "unchanged"
+    assert not (host.units / "mg400-orchestrator.service").exists()

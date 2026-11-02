@@ -241,6 +241,11 @@ class Runner:
         self._condition = threading.Condition(threading.RLock())
         self._status = "created"
         self._abort = False
+        self._hold_reason = None
+        self._hold_epoch = 0
+        self._shutdown = False
+        self._closing = False
+        self._closed = threading.Event()
         self._cancel_run = threading.Event()
         self._resume = None
         self._worker = self._thread = self._authority = None
@@ -294,6 +299,15 @@ class Runner:
                 "release_errors": dict(self.release_errors),
                 "zones": zones,
                 "zone_error": self.zones.error,
+                "closed": self._closed.is_set(),
+                "settled": self._settled and self._drained() and not self._resolving,
+                "draining": not self._closed.is_set()
+                and (
+                    self._closing
+                    or (self._hold_reason is not None or self._abort)
+                    and not self._settled
+                ),
+                "shutdown": self._shutdown,
             }
 
     def _set(self, status, detail=""):
@@ -330,15 +344,21 @@ class Runner:
                 self._authority.revoke()
 
     @contextmanager
-    def _recovery_commit_guard(self):
+    def _recovery_commit_guard(self, *, hold_epoch=None, cancelled=None):
         # Zones already holds its manager/storage locks. Only the atomic local
         # publication belongs inside this fence; no condition or service waits.
         with self.clients.lifecycle_lock:
             if (
                 self._abort
+                or self._shutdown
+                or self._closed.is_set()
                 or self._cancel_run.is_set()
                 or self.clients.error
                 or self.persistence_error
+                or hold_epoch is not None
+                and hold_epoch != self._hold_epoch
+                or cancelled is not None
+                and cancelled.is_set()
             ):
                 raise RuntimeError("The run lost permission to publish zone recovery.")
             yield
@@ -354,6 +374,10 @@ class Runner:
                 self._cancel()
                 self._failure = str(exc)
                 self._set("aborted", self._failure)
+                self.release_errors = self.clients.release()
+                self._settled = True
+                self._closed.set()
+                self._condition.notify_all()
                 raise
         return self
 
@@ -369,23 +393,153 @@ class Runner:
 
     def abort(self):
         with self._condition:
-            if self._status in {"completed", "aborted"}:
+            if self._closed.is_set() or self._shutdown or self._status in {"completed", "aborted"}:
                 return False
             self._cancel()
             self._monitor_stop.set()
             self._condition.notify_all()
             return True
 
-    def resume(self, *, manually_completed=False, note="", physically_clear=False):
+    def hold(self, reason):
+        """Revoke work and request a live hold without releasing its leases.
+
+        A hold during initial acquisition retains partial ownership. Such a run
+        cannot resume: abort it explicitly before starting a new run.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Supply a nonempty hold reason.")
+        with self._condition, self.clients.lifecycle_lock:
+            if self._closed.is_set() or self._closing or self._shutdown or self._abort:
+                return False
+            self._hold_reason = self._failure = reason
+            self._hold_epoch += 1
+            self._resume = None
+            self._settled = False
+            self._final_round = None
+            self._cancel_run.set()
+            if self._authority is not None:
+                self._authority.revoke()
+            self._monitor_stop.set()
+            self._condition.notify_all()
+            return True
+
+    def shutdown(self, reason):
+        """Close after a held stop/drain, preserving the held run record."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Supply a nonempty shutdown reason.")
+        with self._condition, self.clients.lifecycle_lock:
+            if self._closed.is_set() or self._abort:
+                return False
+            if not self._shutdown:
+                self.hold(reason)
+                self._shutdown = True
+            start = self._thread is None
+            self._condition.notify_all()
+        if start:
+            self.start()
+        return True
+
+    def cancel_resume(self, cancelled, reason):
+        """Fence a queued or active resume, then request a live hold."""
+        if not isinstance(cancelled, threading.Event):
+            raise ValueError("Resume cancellation requires an event.")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Supply a nonempty hold reason.")
+        with self._condition, self.clients.lifecycle_lock:
+            cancelled.set()
+            return self.hold(reason)
+
+    def wait_closed(self, timeout=30):
+        """Wait for all accepted work, stop attempts and client cleanup."""
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
+            raise ValueError("Close timeout must be a nonnegative finite number.")
+        if timeout:
+            positive(timeout, "close timeout")
+        return self._closed.wait(timeout)
+
+    def recover_terminal(self, recovery_clients, *, physically_clear, note, cancelled):
+        """Clear retained claims through a separate, already-owned transaction.
+
+        The caller owns acquisition, renewal, stop and release of the new pool.
+        Set cancelled under that pool's lifecycle_lock to fence publication.
+        This method never restarts the old run or changes its terminal status.
+        """
+        if not isinstance(recovery_clients, Clients) or recovery_clients is self.clients:
+            raise ValueError("Recovery requires a new, already-owned client pool.")
+        if not isinstance(cancelled, threading.Event):
+            raise ValueError("Recovery requires a cancellation event.")
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("Supply a nonempty recovery note.")
         with self._condition:
-            if self._status != "held" or self._abort:
+            if not self._closed.is_set() or not self._drained() or self._resolving:
+                raise RuntimeError("The original run must finish cleanup before recovery.")
+            if self.persistence_error:
+                raise RuntimeError("Cannot recover while the run audit store has failed.")
+            old_clients = tuple(self.clients.services.values())
+            old_identities = {client.identity for client in old_clients}
+            if any(
+                client in old_clients
+                or not isinstance(client.identity, str)
+                or not client.identity
+                or client.identity in old_identities
+                for client in recovery_clients.services.values()
+            ):
+                raise ValueError("Recovery must use new clients and a new transaction identity.")
+            self._resolving = True
+
+        @contextmanager
+        def commit_guard():
+            with recovery_clients.lifecycle_lock:
+                if cancelled.is_set() or recovery_clients.error or self.persistence_error:
+                    raise RuntimeError("The recovery transaction lost permission to publish.")
+                yield
+
+        try:
+            with commit_guard():
+                if set(recovery_clients.services) != set(recovery_clients.acquired):
+                    raise RuntimeError("Recovery clients must already hold every required lease.")
+            recovery_clients.recovery_stop_all()
+            recovery_clients.reconcile()
+            self.zones.recover(
+                self.run_id,
+                recovery_clients.services,
+                physically_clear=physically_clear,
+                note=note,
+                live=True,
+                commit_guard=commit_guard,
+            )
+            if self.zones.error:
+                raise RuntimeError(f"Zone recovery is incomplete: {self.zones.error}")
+        finally:
+            with self._condition:
+                self._resolving = False
+                self._condition.notify_all()
+        report = self.snapshot()
+        if report["zone_error"] or any(
+            claim["holder"] == self.run_id for claim in report["zones"].values()
+        ):
+            raise RuntimeError("Zone recovery is incomplete; inspect retained occupancy.")
+        return report
+
+    def resume(self, *, manually_completed=False, note="", physically_clear=False, cancelled=None):
+        if cancelled is not None and not isinstance(cancelled, threading.Event):
+            raise ValueError("Resume cancellation requires an event.")
+        with self._condition:
+            if cancelled is not None and cancelled.is_set():
+                raise RuntimeError("This resume request was cancelled.")
+            if self._status != "held" or self._abort or self._shutdown or self._closed.is_set():
                 raise RuntimeError("Only a held run can resume.")
             if manually_completed is not True or not isinstance(note, str) or not note.strip():
                 raise ValueError("Confirm manual completion and supply a resolution note.")
             if not self._settled or not self._drained() or self._resolving:
                 raise RuntimeError("The failed worker and final stop must finish before recovery.")
+            if set(self.clients.acquired) != set(self.zone_plan.required_services):
+                raise RuntimeError("Initial acquisition was interrupted. Abort before a new run.")
             self._resolving = True
             self._settled = False
+            hold_epoch = self._hold_epoch
+            # No further acquisition is possible once all leases were acquired.
+            self._cancel_run.clear()
         # Old work has drained. Require a fresh stop or verified explicit manual
         # disable/rest; cached confirmation alone cannot authorize recovery.
         round_id = None
@@ -402,13 +556,21 @@ class Runner:
                     physically_clear=physically_clear,
                     note=note,
                     live=True,
-                    commit_guard=self._recovery_commit_guard,
+                    commit_guard=lambda: self._recovery_commit_guard(
+                        hold_epoch=hold_epoch, cancelled=cancelled
+                    ),
                 )
             if self.zones.error:
                 raise RuntimeError(f"Zone recovery is incomplete: {self.zones.error}")
             with self._condition:
-                if self._abort:
-                    raise RuntimeError("The run was aborted during reconciliation.")
+                if (
+                    self._abort
+                    or self._shutdown
+                    or hold_epoch != self._hold_epoch
+                    or cancelled is not None
+                    and cancelled.is_set()
+                ):
+                    raise RuntimeError("The run was stopped again during reconciliation.")
                 if not self._persist(
                     "event",
                     self.run_id,
@@ -418,7 +580,7 @@ class Runner:
                     step=self._position,
                 ):
                     raise RuntimeError("Cannot record the manual resolution.")
-                self._resume = note
+                self._resume = (note, hold_epoch)
         finally:
             with self._condition:
                 if round_id is not None:
@@ -465,13 +627,13 @@ class Runner:
         )
         return result
 
-    def _hold(self, error, *, abort=False):
+    def _hold(self, error, *, abort=False, interrupted=True):
         with self._condition:
             if self._authority is not None:
                 self._authority.revoke()
             self._monitor_stop.set()
             self._failure = str(error)
-            if abort:
+            if abort and not self._shutdown:
                 self._cancel()
             self._settled = False
         was_drained = self._drained()
@@ -479,7 +641,7 @@ class Runner:
         self._retain_zones()
         with self._condition:
             self._final_round = initial_round if was_drained else None
-            self._set("aborting" if self._abort else "held", self._failure)
+            self._set("aborting" if self._abort and not self._shutdown else "held", self._failure)
         while True:
             with self._condition:
                 settling = self._drained() and not self._settled and not self._resolving
@@ -501,13 +663,18 @@ class Runner:
                     self._settled = done
             note = None
             with self._condition:
-                if self._abort:
+                if self._shutdown:
+                    if self._status != "held":
+                        self._set("held", self._failure)
+                    if self._settled and not self._resolving:
+                        return False
+                elif self._abort:
                     if self._status != "aborting":
                         self._set("aborting", self._failure)
                     if self._settled and not self._resolving:
                         return False
                 elif self._resume is not None and not self._resolving:
-                    note, self._resume = self._resume, None
+                    (note, epoch), self._resume = self._resume, None
                 if note is None:
                     self._condition.wait(0.05)
             if note is not None:
@@ -523,10 +690,10 @@ class Runner:
                         self._failure = str(exc)
                         self._set("held", self._failure)
                 else:
-                    with self._condition:
-                        if self._abort:
+                    with self._condition, self.clients.lifecycle_lock:
+                        if self._abort or self._shutdown or epoch != self._hold_epoch:
                             continue
-                        if self._position < len(self.recipe.steps):
+                        if interrupted and self._position < len(self.recipe.steps):
                             if not self._persist(
                                 "step",
                                 self.run_id,
@@ -536,14 +703,25 @@ class Runner:
                                 resolution=note,
                             ):
                                 return False
+                        self._hold_reason = None
+                        self._cancel_run.clear()
                         return True
 
     def _step(self, step):
         with self._condition, self.clients.lifecycle_lock:
-            if self._abort or self.clients.error or self.zones.error:
+            if (
+                self._abort
+                or self._hold_reason is not None
+                or self.clients.error
+                or self.zones.error
+            ):
                 return RuntimeError(
-                    self.clients.error or self.zones.error or "A person aborted the run."
+                    self.clients.error
+                    or self.zones.error
+                    or self._hold_reason
+                    or "A person aborted the run."
                 )
+            self._settled = False
             self._authority = _Authority(
                 time.monotonic() + step.timeout_s,
                 failure=lambda: self.clients.error or self.zones.error,
@@ -615,14 +793,23 @@ class Runner:
             return error
 
         with self._condition, self.clients.lifecycle_lock:
-            if self._abort or self.clients.error or self.zones.error:
+            if (
+                self._abort
+                or self._hold_reason is not None
+                or self.clients.error
+                or self.zones.error
+            ):
                 return failed(
                     RuntimeError(
-                        self.clients.error or self.zones.error or "A person aborted the run."
+                        self.clients.error
+                        or self.zones.error
+                        or self._hold_reason
+                        or "A person aborted the run."
                     )
                 )
             if not self._persist("step", self.run_id, self._position, "running"):
                 return failed(RuntimeError("Cannot record step startup."))
+            self._step_started = True
             try:
                 self._monitor = threading.Thread(target=monitor, name="orch-zones", daemon=True)
                 self._monitor.start()
@@ -631,8 +818,8 @@ class Runner:
             except Exception as exc:
                 return failed(exc)
         while self._worker.is_alive():
-            if self._abort:
-                return failed(RuntimeError("A person aborted the run."))
+            if self._abort or self._hold_reason is not None:
+                return failed(RuntimeError(self._hold_reason or "A person aborted the run."))
             if self.clients.error or self.zones.error:
                 return failed(RuntimeError(self.clients.error or self.zones.error))
             if "guard_error" in outcome:
@@ -642,10 +829,18 @@ class Runner:
             self._worker.join(0.02)
         monitor_stop.set()
         while self._monitor.is_alive():
-            if self._abort or self.clients.error or self.zones.error:
+            if (
+                self._abort
+                or self._hold_reason is not None
+                or self.clients.error
+                or self.zones.error
+            ):
                 return failed(
                     RuntimeError(
-                        self.clients.error or self.zones.error or "A person aborted the run."
+                        self.clients.error
+                        or self.zones.error
+                        or self._hold_reason
+                        or "A person aborted the run."
                     )
                 )
             if time.monotonic() >= authority.deadline:
@@ -654,9 +849,12 @@ class Runner:
         authority.revoke()
         if not authority.drained:
             return RuntimeError("The skill returned with service operations still in flight.")
-        if self._abort or self.clients.error or self.zones.error:
+        if self._abort or self._hold_reason is not None or self.clients.error or self.zones.error:
             return RuntimeError(
-                self.clients.error or self.zones.error or "A person aborted the run."
+                self.clients.error
+                or self.zones.error
+                or self._hold_reason
+                or "A person aborted the run."
             )
         if "guard_error" in outcome:
             return outcome["guard_error"]
@@ -672,6 +870,8 @@ class Runner:
         # This guard also runs after an unexpected coordinator error. Audit
         # failures cannot jump directly to lease release with old writes alive.
         with self._condition:
+            self._closing = True
+            self._settled = False
             if self._authority is not None:
                 self._authority.revoke()
             self._monitor_stop.set()
@@ -685,6 +885,8 @@ class Runner:
             self._stop(round_id)
             time.sleep(0.02)
         self._retain_zones()
+        with self._condition:
+            self._settled = True
         if not self.clients.confirmed:
             self._failure = (
                 self._failure or "A service stop remains unconfirmed. Manual recovery is required."
@@ -694,6 +896,9 @@ class Runner:
     def _run(self):
         completed = False
         try:
+            if self._hold_reason is not None:
+                if not self._hold(self._hold_reason, interrupted=False):
+                    return
             self._set("acquiring")
             try:
                 self.zones.snapshot()
@@ -702,18 +907,38 @@ class Runner:
                 self.clients.acquire(self.zone_plan.required_services, cancelled=self._cancel_run)
                 self.zones.services = self.clients.services
             except Exception as exc:
-                self._hold(exc, abort=True)
+                self._hold(
+                    self._hold_reason or exc,
+                    abort=self._hold_reason is None,
+                    interrupted=False,
+                )
                 return
             while self._position < len(self.recipe.steps):
+                if self._hold_reason is not None:
+                    if not self._hold(self._hold_reason, interrupted=False):
+                        return
                 self._set("running")
                 step = self.recipe.steps[self._position]
+                self._step_started = False
                 error = self._step(step)
                 if error is not None:
-                    self._persist("step", self.run_id, self._position, "failed", error=str(error))
-                    if not self._hold(error, abort=self._abort or step.on_fail == "abort"):
+                    if self._step_started:
+                        self._persist(
+                            "step", self.run_id, self._position, "failed", error=str(error)
+                        )
+                    if not self._hold(
+                        error,
+                        abort=self._abort or step.on_fail == "abort" and self._hold_reason is None,
+                        interrupted=self._step_started,
+                    ):
                         return
+                    if not self._step_started:
+                        continue
                 self._position += 1
             self._stop()
+            if self._hold_reason is not None:
+                if not self._hold(self._hold_reason, interrupted=False):
+                    return
             if not self.clients.confirmed:
                 if not self._hold("Run cleanup could not confirm every stop."):
                     return
@@ -721,6 +946,17 @@ class Runner:
         except BaseException as exc:
             self._hold(exc, abort=True)
         finally:
+            # Closing admission and a late live hold share one fence. Once
+            # closing begins, no skill remains authorized and hold returns False.
+            while True:
+                with self._condition:
+                    late_hold = (
+                        self._hold_reason if not self._abort and not self._shutdown else None
+                    )
+                    if late_hold is None:
+                        self._closing = True
+                        break
+                self._hold(late_hold, interrupted=False)
             confirmed = self._final_cleanup()
             while (release_errors := self.clients.release()) is False:
                 time.sleep(0.05)
@@ -733,8 +969,12 @@ class Runner:
                 completed = False
             with self._condition:
                 self._set(
-                    "completed"
+                    "held"
+                    if self._shutdown
+                    else "completed"
                     if completed and confirmed and not self._abort and not self.zones.error
                     else "aborted",
                     self._failure,
                 )
+                self._closed.set()
+                self._condition.notify_all()

@@ -25,6 +25,10 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 启用可选炉控服务时，设置 `MG400_FURNACE_BIND=100.64.0.1`，并在 VPN 规则中允许 TCP `8769`。
 保持 `MG400_FURNACE_TOKEN` 私密。在[炉控网页](furnace.md)中输入密钥，不得放入 URL。
 
+可选配方服务必须接受 VPN 客户端时，设置 `MG400_ORCH_BIND=100.64.0.1`，并在 VPN 规则中允许 TCP `8772`。
+通过 bearer 标头发送 `MG400_ORCH_TOKEN`，不得放入 URL。下游令牌别名必须保存在主机上，不得公开。
+默认监听地址仍为 `127.0.0.1`。访问与恢复规则见[配方服务](orchestrator.md#http-服务)。
+
 ## 获取代码
 
 仓库公开。Olares 通过 HTTPS 从 GitHub 读取代码，不需要凭据。

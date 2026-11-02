@@ -23,6 +23,16 @@ port = 8769
 assets = []
 
 [[service]]
+name = "orch"
+units = ["mg400-orchestrator.service"]
+optional = true
+venv = ".venv"
+groups = ["orchestrator"]
+token = "MG400_ORCH_TOKEN"
+port = 8772
+assets = []
+
+[[service]]
 name = "stage"
 units = ["mg400-stage-panel.service"]
 optional = false

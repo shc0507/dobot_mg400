@@ -11,6 +11,7 @@
   let active = true, leaseIntent = false, leaseDeadline = 0, leaseEpoch = 0;
   let leaseBusy = false, runBusy = false, renewBusy = false, resumeRunId = null;
   const safetyBusy = new Set();
+  const proposalPresence = new Map(), proposalBusy = new Set(), proposalConsumed = new Set();
   let client = "";
   try {
     const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -127,6 +128,57 @@
       $("show-" + action).disabled = !client || safetyBusy.has(action);
       $("confirm-" + action).disabled = !client || safetyBusy.has(action);
     }
+    renderApprovals();
+  }
+
+  function renderApprovals() {
+    const rows = Array.isArray(snapshot?.approvals) ? snapshot.approvals : [];
+    const cards = rows.map(row => {
+      const card = node("article", undefined, "panel approval-card");
+      card.append(node("h3", row.recipe), node("p", `Requested by ${row.requester}: ${row.reason}`));
+      card.append(node("p", `Decision: ${row.decision}${row.decider ? " · " + row.decider : ""}`));
+      card.append(node("p", `Expires: ${new Date(row.expires_at * 1000).toISOString()}`, "muted"));
+      card.append(node("pre", JSON.stringify({ definition: row.definition, params: row.params, effective: row.effective }, null, 2), "approval-definition"));
+      if (row.decision === "pending") {
+        const key = row.id + ":" + row.fingerprint;
+        const label = node("label", undefined, "check"), presence = node("input");
+        presence.type = "checkbox";
+        presence.checked = proposalPresence.get(key) === true;
+        presence.addEventListener("change", () => { proposalPresence.set(key, presence.checked); controls(); });
+        label.append(presence, node("span", "I am in the lab, can reach a stop control, and will stay during the run."));
+        const actions = node("div", undefined, "actions");
+        for (const action of ["approve", "reject"]) {
+          const button = node("button", action === "approve" ? "Approve and run" : "Reject", action === "reject" ? "secondary" : "");
+          button.type = "button";
+          button.disabled = !client || !current() || proposalBusy.has(row.id) || proposalConsumed.has(row.id) || (action === "approve" && (!ownsControl() || !presence.checked || runBusy));
+          button.addEventListener("click", () => decideProposal(row, action, key));
+          actions.append(button);
+        }
+        card.append(label, actions);
+      }
+      if (row.command_id) card.append(node("p", "Run command: " + row.command_id));
+      if (row.dispatch === "not-confirmed") card.append(node("p", "Dispatch was not confirmed. Check the current run. This proposal cannot run again.", "service-error"));
+      return card;
+    });
+    $("approvals").replaceChildren(...(cards.length ? cards : [node("p", "No proposals received.", "empty")]));
+    const retained = new Set(rows.filter(row => row.decision === "pending").map(row => row.id + ":" + row.fingerprint));
+    for (const key of proposalPresence.keys()) if (!retained.has(key)) proposalPresence.delete(key);
+  }
+
+  async function decideProposal(row, decision, key) {
+    if (!current() || proposalBusy.has(row.id) || proposalConsumed.has(row.id)) return;
+    if (decision === "approve" && (!ownsControl() || proposalPresence.get(key) !== true || runBusy)) return;
+    const savedGeneration = generation;
+    proposalBusy.add(row.id);
+    proposalConsumed.add(row.id);
+    controls();
+    try {
+      await request("/api/approvals/" + encodeURIComponent(row.id) + "/decision", { decision, present: proposalPresence.get(key) === true, fingerprint: row.fingerprint }, savedGeneration);
+      say(decision === "approve" ? "Approval accepted. Read the run status and keep this page's control lease active." : "Proposal rejected.");
+      refresh();
+    } catch (error) {
+      if (savedGeneration === generation) say("Decision outcome is not confirmed. Check the proposal and current run. No automatic retry. " + error.message, true);
+    } finally { proposalBusy.delete(row.id); controls(); }
   }
 
   function renderServices() {
@@ -367,6 +419,8 @@
     token = forget ? "" : $("access-token").value.trim();
     if (forget) $("access-token").value = "";
     snapshot = null;
+    proposalPresence.clear();
+    proposalConsumed.clear();
     stateAt = -Infinity;
     for (const action of ["heat", "gas"]) confirmation(action, false);
     say(forget ? "Token cleared. Control renewals stopped." : "Reading status with the supplied access settings.");

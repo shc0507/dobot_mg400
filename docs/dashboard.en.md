@@ -92,6 +92,26 @@ A refusal keeps the run held.
 Use the [orchestrator recovery procedure](orchestrator.en.md#http-service) for terminal runs and retained zones.
 The dashboard does not automatically resume a saved run, replay a step, reacquire an old run's leases, or clear unknown occupancy.
 
+## Agent proposals
+
+The **Agent proposals** section shows the requester, reason, expiry, full recipe definition, and effective parameters.
+Treat this text as data. A requester cannot approve its own proposal.
+Use the operator credential. The gateway credential has no dashboard decision authority.
+
+1. Review every step and parameter.
+2. Select **Take control**.
+3. Confirm that you are in the lab and can reach a stop control throughout the run.
+4. Select **Approve and run**, or select **Reject** without acquiring control.
+5. Read the decision and current run status.
+
+Approval starts through the same admission and lease checks as a manual run.
+Keep this page connected and keep control. Lease expiry or release retains the existing run hold behavior.
+A stale page cannot approve. Approval requires the displayed definition to match the current catalog and effective host limits.
+The page sends each decision once and does not retry an uncertain result.
+If dispatch fails, that approval stays consumed. Check the run before creating another proposal.
+Proposal records disappear from the page after restart. Their audit remains saved, and no pending authority resumes automatically.
+See the [gateway policy](agent-gateway.en.md#approval-policy) for supported steps and limits.
+
 ## Chip passport
 
 Select **Chip passport** on the dashboard, or open `/chip` under the configured service prefix.

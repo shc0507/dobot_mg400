@@ -38,7 +38,7 @@
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
-| `mg400-gateway.service` | `gateway` | 可选的[只读 MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
+| `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | 可选的[单端口代理](olares.md#可选的单端口代理)，端口 `8080` | 无 |
 | `mg400-gripper-collector.path` | 无 | 面板请求时启动夹爪采集 | 无 |
 
@@ -139,7 +139,7 @@
 选中 `orch` 时，安装器准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
 同一服务还提供[实验室总览](dashboard.md)，包含状态卡片、运行控制、摄像头链接，以及独立的运动、加热和气体停止操作。
 
-可选服务 `gateway` 使用 `gateway` 依赖组。把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再配置[只读网关](agent-gateway.md)。
+可选服务 `gateway` 使用 `gateway` 依赖组。把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再配置[智能体网关](agent-gateway.md)。
 选中 `gateway` 时，安装器也会准备私密的 `runs` 目录，使首次配方运行前即可记录审计。安装器不会启动网关。
 保持 `MG400_GATEWAY_BIND=127.0.0.1`。每个 MCP 请求都必须携带 `MG400_GATEWAY_TOKEN`，包括回环请求。
 
@@ -230,7 +230,8 @@
 常规令牌生成后，`STAGE`、`THERMAL`、`VISION`、`FURNACE` 和 `MICROSCOPE` 别名复制对应服务的令牌。
 源令牌缺失时，别名保持为空。别名不会获得独立生成的令牌。
 明确设置的非空别名保持不变。轮换服务令牌后，把别名改为相同值，或清空别名并重新运行安装器。
-编排器单元只接收自身令牌和这些别名，不接收仪器的直接令牌或网关令牌。
+编排器单元接收自身令牌和这些别名，不接收仪器的直接令牌。
+它还保留 `MG400_GATEWAY_TOKEN`，仅用于提议 API。此令牌不能授权总览决定或控制请求。
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |

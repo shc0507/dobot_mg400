@@ -134,7 +134,7 @@
 安装器不会启动炉控服务。
 
 可选服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
-此组含 Flask、waitress，以及自有演示服务所需的 `stage` 和 `thermal` 组。
+此组含 Flask、waitress，以及自有演示服务所需的 `stage`、`thermal` 和 `furnace` 组。
 把 `orch` 加入 `MG400_OPTIONAL_SERVICES`，运行安装器，配置[配方服务](orchestrator.md#http-服务)，再运行 `mg400ctl start orch`。
 选中 `orch` 时，安装器准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
 

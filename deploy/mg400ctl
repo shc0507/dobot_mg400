@@ -58,6 +58,18 @@ STATION_TEACH_SETTINGS = STATION_SETTINGS | {
     "MG400_ORCH_TIMEOUT_S",
 }
 TRANSFER_SETTINGS = STATION_SETTINGS | {"MG400_ORCH_TOOL_FILE", "MG400_ORCH_PRE_GRIP"}
+CRUCIBLE_SETTINGS = {
+    "MG400_ORCH_CRUCIBLE_" + suffix
+    for suffix in (
+        "LOAD_MAX_C",
+        "UNLOAD_MAX_C",
+        "GRIP",
+        "RELEASE",
+        "AWAKE_S",
+        "MAX_AGE_S",
+        "ROIS_FILE",
+    )
+}
 ZONE_SETTINGS = {"MG400_ORCH_ZONES_FILE", "MG400_ORCH_ZONE_STATE_FILE"}
 REHEARSAL_ZONE_SETTINGS = {"MG400_ORCH_ZONES_FILE"}
 ORCHESTRATOR_SERVICES = ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
@@ -65,6 +77,7 @@ ORCHESTRATOR_DATA = {"MG400_ORCH_RUNS_DIR"}
 ORCHESTRATOR_SETTINGS = (
     ORCHESTRATOR_DATA
     | TRANSFER_SETTINGS
+    | CRUCIBLE_SETTINGS
     | ZONE_SETTINGS
     | {"MG400_ORCH_TIMEOUT_S"}
     | {
@@ -81,7 +94,8 @@ def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, cl
     This is an advisory check before systemctl, not a lease held across shutdown.
     A new sequence can start after this read. Operators must coordinate shutdown.
     Socket operations time out after 2 seconds. Body reads also check a 2-second
-    deadline between chunks. Header and transfer-framing reads use socket timeouts, not a total deadline.
+    deadline between chunks. Header and transfer-framing reads use socket timeouts,
+    not a total deadline.
     """
     bind = settings.get("MG400_FURNACE_BIND") or "127.0.0.1"
     if bind != "localhost":
@@ -185,7 +199,9 @@ def orchestrator(host, argv, execvpe):
             settings = os.environ
         allowed = ORCHESTRATOR_SETTINGS if argv[0] == "run" else ORCHESTRATOR_DATA
         if argv[0] == "rehearse":
-            allowed = ORCHESTRATOR_DATA | TRANSFER_SETTINGS | REHEARSAL_ZONE_SETTINGS
+            allowed = (
+                ORCHESTRATOR_DATA | TRANSFER_SETTINGS | CRUCIBLE_SETTINGS | REHEARSAL_ZONE_SETTINGS
+            )
         if argv[0] == "station":
             allowed = STATION_TEACH_SETTINGS if argv[1] == "save" else STATION_SETTINGS
         environment = {

@@ -134,7 +134,7 @@ Set `MG400_OPTIONAL_SERVICES=furnace`, run the installer, then start it explicit
 The installer does not start the furnace.
 
 The optional `orch` service uses the `orchestrator` dependency group in `/opt/mg400/.venv`.
-This group includes Flask, waitress, and the `stage` and `thermal` groups for supported owned demos.
+This group includes Flask, waitress, and the `stage`, `thermal`, and `furnace` groups for supported owned demos.
 Add `orch` to `MG400_OPTIONAL_SERVICES`, run the installer, and configure the [recipe service](orchestrator.en.md#http-service) before `mg400ctl start orch`.
 The installer prepares private `runs` and `zones` directories when `orch` is selected. It does not invent zone configuration or start the service.
 

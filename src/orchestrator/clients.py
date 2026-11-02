@@ -3,8 +3,10 @@
 import copy
 import math
 import os
+import re
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 from labkit.client import ServiceClient
@@ -22,10 +24,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ServiceAdapter:
+    _client_type = ServiceClient
+
     def __init__(self, url, token, identity, *, timeout=2):
         self.identity, self.timeout = identity, timeout
         self._lease_seconds = 0
-        self._http = ServiceClient(url, token, identity, timeout=timeout)
+        self._http = self._client_type(url, token, identity, timeout=timeout)
         # Instrument endpoints are direct. In particular, generated rehearsal
         # URLs must never travel through an ambient HTTP_PROXY.
         self._http._opener = urllib.request.build_opener(
@@ -75,6 +79,21 @@ class ServiceAdapter:
 
     def close(self):
         pass
+
+
+class _ThermalClient(ServiceClient):
+    def roi(self, name):
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            raise ValueError("Region names must contain 1 to 64 ASCII letters, digits, _ or -.")
+        return self._call("api/roi?" + urllib.parse.urlencode({"name": name}))
+
+
+class ThermalAdapter(ServiceAdapter):
+    _client_type = _ThermalClient
+
+    def roi(self, name):
+        """Read one explicit named region without a frame or coordinate fallback."""
+        return self._http.roi(name)
 
 
 class RobotAdapter(ServiceAdapter):
@@ -176,7 +195,7 @@ def from_settings(settings=None, *, identity):
         prefix = f"MG400_ORCH_{name.upper()}"
         url = settings.get(prefix + "_URL")
         if url:
-            adapter = RobotAdapter if name == "robot" else ServiceAdapter
+            adapter = {"robot": RobotAdapter, "thermal": ThermalAdapter}.get(name, ServiceAdapter)
             result[name] = adapter(
                 url, settings.get(prefix + "_TOKEN", ""), identity, timeout=timeout
             )

@@ -314,6 +314,31 @@ class StageAutomation:
 
     def _automation_snapshot(self):
         operation = self._automation
+        at_poses = {}
+        if (
+            self._geometry is not None
+            and operation is None
+            and not self._sequence_stops
+            and not self._error
+            and not self._contract_fault
+            and not self._contract_stopping
+            and not self._configuration_error
+            and not self._automation_error
+            and all(
+                self._ready(motor) and self._motors[motor].mode == "idle" for motor in MOTOR_IDS
+            )
+        ):
+            try:
+                for name, targets in self._geometry.poses.items():
+                    axes = {
+                        motor: self._motors[motor].position
+                        == self._geometry.motors[motor].target(mm, self._microstep)
+                        for motor, mm in targets
+                    }
+                    at_poses[name] = {"matched": all(axes.values()), "axes": axes}
+            except (ValueError, OverflowError):
+                # A calibration/reference failure must never become pose proof.
+                at_poses = {}
         return dict(
             configured=self._geometry is not None,
             error=self._configuration_error or self._automation_error,
@@ -321,4 +346,5 @@ class StageAutomation:
             if operation
             else None,
             poses=sorted(self._geometry.poses) if self._geometry else [],
+            at_poses=at_poses,
         )

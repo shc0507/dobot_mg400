@@ -2,6 +2,7 @@
 
 import errno
 import ipaddress
+import os
 import runpy
 import secrets
 import threading
@@ -14,7 +15,9 @@ from mg400.sim import Simulator
 from mg400.web_control import RobotPanelState
 from mg400.web_gripper import WebGripper
 
-from .clients import RobotAdapter, ServiceAdapter
+from .clients import RobotAdapter, ServiceAdapter, ThermalAdapter
+
+DEMO_SERVICES = frozenset({"robot", "stage", "thermal", "furnace"})
 
 
 class _DemoClient:
@@ -32,6 +35,7 @@ class _DemoClient:
         "stop",
         "recovery_stop",
         "release",
+        "roi",
     }
 
     def __init__(self, owner, adapter):
@@ -112,7 +116,7 @@ class Rehearsal:
             tuple(required),
             validate_client(identity),
         )
-        if set(self.required) - {"robot", "stage", "thermal"}:
+        if set(self.required) - DEMO_SERVICES:
             raise ValueError("Rehearsal has no demo factory for a required service.")
         self.clients = {}
         self.simulator = self.robot_state = None
@@ -250,7 +254,11 @@ class Rehearsal:
         from thermal_cam.app import create_app
         from thermal_cam.service import CameraService
 
-        camera = CameraService(demo=True, roi_path=self.directory / "absent-rois.toml")
+        camera = CameraService(
+            demo=True,
+            roi_path=os.environ.get("MG400_ORCH_CRUCIBLE_ROIS_FILE")
+            or self.directory / "absent-rois.toml",
+        )
         app = create_app(service=camera)
         listener = socket.socket()
         self._stack.callback(listener.close)
@@ -275,8 +283,22 @@ class Rehearsal:
                 raise RuntimeError("Thermal rehearsal startup failed.")
             time.sleep(0.01)
         url = f"http://127.0.0.1:{listener.getsockname()[1]}"
-        self._endpoints["thermal"] = (ServiceAdapter, url)
-        self.clients["thermal"] = ServiceAdapter(url, "", self.identity)
+        self._endpoints["thermal"] = (ThermalAdapter, url)
+        self.clients["thermal"] = ThermalAdapter(url, "", self.identity)
+
+    def _furnace(self):
+        from werkzeug.serving import make_server
+
+        from furnace.app import create_app, make_service
+
+        service = make_service(demo=True)
+        self._stack.callback(service.close)
+        service.start()
+        server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
+        self._serve(server)
+        url = f"http://127.0.0.1:{server.server_port}"
+        self._endpoints["furnace"] = (ServiceAdapter, url)
+        self.clients["furnace"] = ServiceAdapter(url, "", self.identity)
 
     def __exit__(self, *exc):
         with self._condition:

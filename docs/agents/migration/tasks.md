@@ -1267,6 +1267,8 @@ Implementation paths for step 5: add the typed `microscope.record` skill in `src
 
 Test paths: port the three named upstream suites separately to `tests/test_furnace_recordings.py`, `tests/test_furnace_video.py` and `tests/test_furnace_local_run_sync.py`. Add fake-service run/chip association and cancellation coverage in `tests/test_orchestrator_recording.py`. Extend the existing `tests/test_microscope_panel.py` and `tests/test_microscope_panel.mjs` for recording controls. The sequence watcher uses explicitly armed live microscope authority; it does not acquire or renew leases itself. Missing furnace readings do not imply sequence completion.
 
+Private recording outputs: allow `src/toupcam_camera/camera.py` to add an opt-in private-output policy to the existing recording API/session, selected by the microscope service. Validate the owned private directory and exclusively reserve the timestamps CSV and every initial or rollover video file with no-follow protection and private permissions at creation. Reject unsafe existing outputs instead of overwriting them; do not use process-global umask changes or post-creation permission fixes. Preserve the default public API behavior, capture, segmentation and metadata. Add fake-writer tests in `tests/test_toupcam_camera.py` under umask `022`, including construction, rollover and failure cleanup, without opening native capture.
+
 Done when: P-CHECKS pass.
 
 Docs: `furnace.md`, `microscope.md` and their `.en.md` pairs.

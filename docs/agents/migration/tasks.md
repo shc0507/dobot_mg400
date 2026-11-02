@@ -806,7 +806,7 @@ Steps:
 1. `config/udev/*.rules.in` templates with `@SERVICE_GROUP@`. The installer replaces it with the group name of GID 1000 (`getent group 1000`), installs the rules of enabled services as `/etc/udev/rules.d/70-mg400-<name>.rules` (root, 0644), then runs `udevadm control --reload-rules` and `udevadm trigger --subsystem-match=usb`.
 2. `tests/test_udev_rules.py`: every template has a VID and PID, `MODE="0660"` and the group placeholder.
 3. Installer tests for the dry run and the rendering.
-4. Docs: a USB section in `olares.md` and `.en.md` with the device table from H-03 (device, VID:PID, stable path, hub and port, service) and the layout rules: the Toupcam camera on its own USB 3 controller, powered hubs by job, never reset a shared upstream hub.
+4. Docs: a USB section in `olares.md` and `.en.md` with the device table from H-03 (device, VID:PID, stable path, hub and port, service) and the layout rules (owner, 2026-11-02): one self-powered hub on one host port carries every device, the Toupcam camera on its USB 3 side; every camera keeps its hub port, because the three AC410 cameras report one serial number and get their names from the port; never reset the shared hub.
 
 Done when: P-CHECKS pass.
 
@@ -979,8 +979,8 @@ Goal: the services that use a Toupcam camera find the native library and may ope
 
 Steps:
 
-1. Installer option `--toupcam PATH` installs the library from H-12 as `/usr/local/lib/mg400/libtoupcam.so` (root, 0755), like `--go2rtc`.
-2. `config/udev/70-mg400-toupcam.rules.in` with the VID and PID from H-06, or the vendor's rules from H-12.
+1. Installer option `--toupcam PATH` installs the library from H-12 as `/usr/local/lib/mg400/libtoupcam.so` (root, 0755), like `--go2rtc`. It refuses a file whose SHA-256 differs from the H-12 value for version 59.30594.20260120.
+2. `config/udev/70-mg400-toupcam.rules.in` for the camera model C3CMOS05100KPA: `0547:1375` (USB 3) and `0547:1376` (USB 2), with `MODE="0660"` and the group placeholder. Do not install the vendor's `99-toupcam.rules`: it gives every local user read and write access to all `0547` and `04b4` devices.
 3. The units that use the camera (furnace, microscope) set `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`. Allow it in the unit tests.
 4. Tests and docs.
 
@@ -1032,6 +1032,26 @@ Steps:
 Done when: P-CHECKS pass.
 
 Docs: `stage-panel.md` and `.en.md`.
+
+### STG-03 · Stage manual zero with camera reference
+
+Owner: agent · Size: L · Review: human · Deps: STG-02
+
+Goal: the stage has no limit switches (owner, 2026-11-02). An operator sets the zero of each axis by hand, and a camera reference makes that zero repeatable. Automated moves still need a confirmed zero and soft limits on every axis they move.
+
+Steps:
+
+1. Firmware (`firmware/three-motor-demo`): set every limit pin in `MotorPins.h` to `255`. Then `home` replies `ERROR: home failed: minimum limit not configured` and never moves. Keep the limit-switch code for a later board with switches. Add `zero` for the selected idle motor: set the position to 0, set `homed=1`, clear the soft range, reply `OK: <motor> zero`. Every existing command and reply stays unchanged. A reset, a power-up or a real microstep change still clears every zero and soft range.
+2. Host (`src/stage_controller`): `zero(motor)` sends `zero`, then `soft` with that axis's limits from `stage.toml`, and confirms both from status, like the end of `home`. Add the route `POST /api/motors/<m>/zero` with `{"confirm": true}` and the contract command `zero`. The axis must be connected and idle, with fresh feedback. The event log records the client that set the zero.
+3. Camera reference, optional per axis in `stage.toml`: `reference = {stream = "<go2rtc stream>", marker = <ArUco id>, pixel = [x, y], tolerance_px = <n>}`. The service reads one JPEG frame from go2rtc on loopback and finds the marker. It refuses `zero` when the marker is missing or farther than `tolerance_px` from `pixel`. `teach_reference(motor)` stores the marker's current pixel after an operator confirmation. Without a reference, `zero` needs the confirmation only.
+4. Page: per axis, a "Set zero here" button with a confirmation, the reference camera image with the marker offset, and the zero state. With the old firmware, or with a board that has switches, the page keeps its current buttons.
+5. Tests with the demo transport and a fake frame source.
+
+Done when: P-CHECKS pass; the sketch compiles for `arduino:avr:uno` (report the command and output).
+
+Docs: the firmware `README.md` and `README.en.md` (no switches, `zero`), `stage-panel.md` and `.en.md` (zero procedure, reference setup).
+
+Notes: H-07 teaches the references and sets the zero. H-18 validates on hardware.
 
 ### XDV-01 · Crucible load and unload skills
 
@@ -1119,7 +1139,7 @@ Steps (P-MOVE plus):
 1. `src/microscope/`: `autofocus.py`, `aruco_locator.py`, `aruco_switch.py`, `objective_calibration.py`, `light_calibration.py`, `side_capture.py`, `motors.py` (`MotorController`). `src/cameras/`: `usb.py` (the Linux part of `usb_camera_devices.py`) and `uvc.py` (`USBCamera`).
 2. Imports: `toupcam_camera.MicroscopeCamera` instead of `camera`; package-relative imports elsewhere.
 3. Paths: the calibration CSV files, `objective_views/`, `current_objective.txt`, `objective_reference.png` and `side_camera_images/` come from `MG400_MICROSCOPE_CALIBRATION_DIR` (default `/var/lib/mg400/calibration/microscope`). Experiment logs go to the run store folder.
-4. Cameras: V4L2 only. The side camera is chosen by its `/dev/v4l/by-path` name (`MG400_MICROSCOPE_SIDE_CAMERA`). Remove the Windows enumeration and the DirectShow and MSMF paths.
+4. Cameras: the side camera is the AC410 on hub port 12.1.3. The camera preview's go2rtc owns it (owner, 2026-11-02). Read its frames from go2rtc on loopback, with the stream name in `MG400_MICROSCOPE_SIDE_STREAM`, instead of opening the V4L2 device. Add a per-camera capture size to the go2rtc rendering in `deploy/install.py`, so this camera runs at the size the ArUco alignment needs (the source used 3840×2160). H-21 checks the USB 2 bandwidth. Remove the Windows enumeration and the DirectShow and MSMF paths.
 5. `motors.py` asks `VERSION` at connect. With the new firmware, focus moves wait for `DONE FOCUS POS`. With the old one, keep the computed wait.
 6. No Tk import anywhere.
 7. Group `microscope` with numpy, opencv-python-headless and pyserial, in the default groups.
@@ -1207,19 +1227,16 @@ Source: FurnaceCode `run_recordings.py`, `run_video_compiler.py`, the camera and
 
 Goal: record video of the chip in the furnace, with the furnace readings on every frame.
 
-Ask first: Q-02 (one Toupcam camera or two). Build only the case that the answer names.
-
-Context: the microscope watches the chip through the furnace window, so the FurnaceCode camera is probably the microscope camera. A camera has one owner service. The owner of the camera records. The furnace service only supplies the readings.
+Context: there is one Toupcam camera (Q-02, owner, 2026-11-02): the microscope camera, which sees the chip through the furnace window. A camera has one owner service. The microscope service records. The furnace service only supplies the readings.
 
 Steps (P-MOVE plus):
 
 1. `src/furnace/recordings.py` and `src/furnace/video.py`: the run recorder and the video compiler as libraries without camera code. Local runs go to `/var/lib/mg400/recordings/`. When `MG400_FURNACE_ARCHIVE_DIR` is set (a mounted share, Q-06), archive there instead of `Z:\Wu_Lab_Data`. Otherwise runs stay local.
 2. A readings provider reads the furnace `api/state` at 1 Hz with `labkit.ServiceClient` and gives each frame the furnace fields of the source. The `.timestamps.csv` columns stay unchanged. When the furnace does not answer, the fields stay empty, an event is added, and the recording goes on.
-3. One camera: the microscope service hosts recording. Add start and stop recording, "record with sequence" and the stabilization switch to its page and its contract commands.
-4. Two cameras: the furnace service opens the furnace camera with `toupcam_camera` (`MG400_FURNACE_CAMERA_SERIAL`) and hosts the live feed, the stabilization switch and the same recording controls on the furnace page.
-5. "Record with sequence": the provider sees a sequence start in the furnace state and starts recording. Recording stops when the sequence ends.
-6. Runs that the orchestrator started also go into the run store under the chip ID.
-7. Tests moved and adapted, with a fake furnace service and the fake camera.
+3. The microscope service hosts recording. Add start and stop recording, "record with sequence" and the stabilization switch to its page and its contract commands.
+4. "Record with sequence": the provider sees a sequence start in the furnace state and starts recording. Recording stops when the sequence ends.
+5. Runs that the orchestrator started also go into the run store under the chip ID.
+6. Tests moved and adapted, with a fake furnace service and the fake camera.
 
 Done when: P-CHECKS pass.
 
@@ -1497,20 +1514,22 @@ Steps:
 
 Unblocks MIC-06, H-21.
 
-### H-07 · Stage limit switches and geometry
+### H-07 · Stage reference and geometry
 
-Owner: human · Size: M · Review: human · Deps: STG-01
+Owner: human · Size: M · Review: human · Deps: STG-03
+
+The stage has no limit switches. Manual zero with a camera reference replaces homing (owner, 2026-11-02).
 
 Steps:
 
-1. Install minimum and maximum limit switches on all three axes. Wire them to the pins in STG-01.
-2. Upload the STG-01 firmware.
-3. Home each axis. Measure the steps per mm at the microstep in use.
-4. Measure the Insert positions `load` and `furnace` in mm from home.
+1. Install the STG-03 host update, then upload the STG-03 firmware (P-HW).
+2. Per axis, choose a reference: a printed ArUco marker on the moving part, seen by a fixed camera at one position. Write down the go2rtc stream and the marker id.
+3. Move each axis to its reference at low speed, check it in the camera view, teach the reference, and set zero.
+4. Measure the steps per mm at the microstep in use. Measure the Insert positions `load` and `furnace` in mm from zero.
 5. With the furnace cold, measure the soft limits of each axis: the travel that keeps the crucible clear of the tube and the window.
 6. Measure the poses: each imaging pose (the positions of all three axes that put the chip under the window, checked with a test chip in the microscope view) and the pose `furnace`. Write down the axis order that reaches each pose without a collision.
 
-Output: the values for `/var/lib/mg400/stage.toml` on the issue. Unblocks H-18.
+Output: the values for `/var/lib/mg400/stage.toml`, with the references, on the issue. Unblocks H-18.
 
 ### H-08 · Robot workspace measurements
 
@@ -1544,7 +1563,7 @@ Owner: human · Size: S · Review: human · Deps: none
 
 Steps:
 
-1. Name the gas on each MFC channel and the inert one (Q-05).
+1. Name the gas on each MFC channel and the inert one (Q-05). Partial answer (owner, 2026-11-02): oxygen is planned, and the other two gases are not chosen. Until they are, the placeholder map is `{"0": "Gas A", "1": "Gas B", "2": "Gas C"}` with no inert gas. The host keeps no gas map, so gas commands stay refused, until the operator replaces each placeholder with the real gas.
 2. Set the end-of-run gas rule (for example: inert gas until PV is below 100 °C, then all off) and the idle gas after a stopped manual setpoint.
 3. Set the caps for automation (maximum °C and °C/min) and the grace time for an orphaned manual setpoint.
 4. Decide whether `mg400ctl stop furnace` may stop a running sequence.
@@ -1569,7 +1588,7 @@ Owner: human · Size: S · Review: human · Deps: none
 
 Steps:
 
-1. Download the ToupTek SDK for Linux x64, version 59.30594.20260120, or update the wrapper and the library together.
+1. Download the ToupTek SDK for Linux x64, version 59.30594.20260120, or update the wrapper and the library together. That version is `https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip` (not linked from the download page). `linux/x64/libtoupcam.so` has SHA-256 `5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997`. Its `python/toupcam.py` matches `src/toupcam_camera/toupcam.py` apart from line endings.
 2. Check that its license allows this use.
 3. Keep `libtoupcam.so` and the vendor's udev rules outside Git. Give the library to the installer with `--toupcam`.
 
@@ -1632,11 +1651,11 @@ Output on the issue. Unblocks MS-01.
 
 ### H-18 · Validate the stage on hardware
 
-Owner: human · Size: M · Review: human · Deps: STG-02, H-07
+Owner: human · Size: M · Review: human · Deps: STG-03, H-07
 
 Steps (P-HW):
 
-1. Homing on each axis; limit stops in both directions.
+1. Manual zero on each axis with the camera reference check; soft-limit stops in both directions.
 2. The named positions `load` and `furnace`, the soft limits, and each pose at low speed.
 3. Keep-awake: the axis holds while the robot works at the crucible at low speed.
 

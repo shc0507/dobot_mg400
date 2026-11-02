@@ -20,7 +20,7 @@ Publish model weights as GitHub Release assets. Describe each installed asset in
 - Keep files larger than 1,000,000 bytes out of Git, except generated `uv.lock`. Images must not exceed 300,000 bytes.
 - Reject these file extensions: `.dll`, `.so`, `.dylib`, `.exe`, `.bin`, `.pt`, `.pth`, `.onnx`, `.engine`, `.npz`, `.h5`, `.zip`, `.stp`.
 
-The initial `vision-weights` asset is `chip-arm-yolo26s-seg-v1.pt` in this repository's `vision-model-v1` release. Its size is 23,393,117 bytes. Its SHA-256 is `0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07`. Install it at `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`. Its declared license is `AGPL-3.0` per Roboflow. Publishing the weights waits for the repository license decision.
+The initial `vision-weights` asset is `chip-arm-yolo26s-seg-v1.pt` in this repository's `vision-model-v1` release. Its size is 23,393,117 bytes. Its SHA-256 is `0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07`. Install it at `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`. Its declared license is `AGPL-3.0` per Roboflow. The repository license is AGPL-3.0 (H-15, 2026-11-02), so the weights can be published (H-14).
 
 ## Consequences
 

@@ -8,7 +8,7 @@ Accepted: 2026-10-30.
 
 ## Context
 
-Olares has an RTX 5090 with 32 GB. Other applications may share its GPU memory. The detector needs a compatible, isolated runtime.
+Olares has an RTX 5090 Laptop GPU with 24 GB (H-13, 2026-11-02). Other applications share its GPU memory: Isaac Sim and another Python process used about 2.5 GB during the check. The detector needs a compatible, isolated runtime.
 
 ## Decision
 

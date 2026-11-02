@@ -64,9 +64,14 @@ Phase 5 adds the lab dashboard and the agent gateway. Phase 6 (closed-loop optim
 - The robot reaches the crucible when the Insert axis brings it to the load position.
 - The microscope sits above a transparent window in the furnace top. The stage moves the crucible under the window, and the microscope watches the chip inside the furnace. The robot never goes under the microscope.
 - The camera setup is not final. Which camera took the YOLO training images is not known.
-- Olares has an RTX 5090 with 32 GB. Other Olares apps (for example an LLM) may share it.
+- Camera positions (owner, 2026-11-02): Camera 1 is at the upper left of the arm. Camera 2, the microscope side camera on hub port 12.1.3, watches the turret. Camera 3 is at the end of the Insert rail. The thermal camera is right below Camera 2. The hub ports of Cameras 1 and 3 (12.1.2 and 12.1.4) are not confirmed yet; the camera preview page shows which stream is which.
+- The repository license is AGPL-3.0 (H-15, 2026-11-02). Vendored third-party files keep their own terms. The ToupTek wrapper `src/toupcam_camera/toupcam.py` stays in the repo (owner decision, H-12); `libtoupcam.so` stays outside Git.
+- Olares has an RTX 5090 Laptop GPU with 24 GB, driver 595.84 (H-13, 2026-11-02). Other apps share it: Isaac Sim and a Python process used about 2.5 GB during the check. `/opt` has 74 GB free and `/var` has 1.5 TB free.
+- Every lab USB device is on one self-powered hub on one Olares port, the Toupcam camera on its USB 3 side (owner, 2026-11-02). The device table is on the H-03 issue. Each camera keeps its hub port: the three AC410 cameras report one serial number, so their stable names come from the port.
+- The AC410 on hub port 12.1.3 is the microscope side camera. The camera preview's go2rtc owns it, and the microscope reads it through go2rtc.
+- The stage has no limit switches. An operator sets each axis's zero by hand, checked against a camera reference (STG-03, H-07).
 
-Hardware freeze: the owner makes no hardware changes for now (answer to Q-04, 2026-10-30). Device moves, wiring and mounting wait: H-04 to H-07, H-09, mounting the tag in H-08, and installing a cutoff in H-11. Inventories, measurements, reviews, decisions and all software tasks go on. Software runs in demo and rehearsal mode until the freeze ends.
+Hardware freeze: the owner makes no hardware changes for now (answer to Q-04, 2026-10-30). The device moves are done (2026-11-02, H-04 to H-06). Wiring and mounting still wait: H-09, mounting the tag in H-08, and installing a cutoff in H-11. The stage gets no limit switches; H-07 needs only a printed marker per axis. Inventories, measurements, reviews, decisions and all software tasks go on. Software runs in demo and rehearsal mode until the freeze ends.
 
 ### 2.3 Plan defaults
 
@@ -252,6 +257,7 @@ GOV-01 creates one map issue and one child issue per task, with labels and block
 - When the card's "Done when" needs a person (a hardware run, a data import, an answer), the PR body starts with `Refs #<issue>` instead. After the merge, the worker comments on the issue what the person must do, and the issue stays open until that person comments the result. The owner's review (6.5) is not such a step.
 - A human task closes when the operator comments the result on the issue.
 - Results of hardware sessions go in issue comments, never in docs.
+- GitHub allows 100 sub-issues per issue, and the map issue has 100. A task added later gets an issue under its closest predecessor and a row in the map issue's table. The table is the task list.
 
 ### 6.2 Ready tasks
 
@@ -458,7 +464,7 @@ A supervised hardware session:
 You orchestrate the lab integration migration in shc0507/dobot_mg400.
 Read AGENTS.md and docs/agents/migration/README.md. tasks.toml is the task graph.
 Repeat until no agent task is ready:
-1. Read the map issue and its child issues. A task is ready per README 6.2.
+1. Read the map issue's task table and the task issues. A task is ready per README 6.2.
 2. Pick up to 4 ready agent tasks whose write sets do not overlap, except shared files (README 6.3).
    If you cannot start workers, take the first ready task in map order and do it yourself as the worker (README 9.2).
 3. Start one worker per task with the worker prompt (README 9.2).
@@ -542,7 +548,7 @@ Human tasks to start now, because they take long and change no hardware: H-02 (f
 | The detector does not transfer to the final cameras | Vision-guided picks fail | H-09 then VIS-08: evaluate, retrain, publish new weights. |
 | Collision during automated transfers | Damage | Taught stations with safe heights and via points, speed caps, rehearsal first, P-HW, zones |
 | Process safety in the furnace | Fire, gas, damaged samples | D5 rules, caps, simulator tests, H-10, H-11, P-HW with inert gas |
-| Firmware changes | Stage or turret moves wrongly | Backward-compatible protocol additions, limit switches, human review, P-HW |
+| Firmware changes | Stage or turret moves wrongly | Backward-compatible protocol additions, manual zero with a camera reference on the stage, human review, P-HW |
 | The crucible or an objective hits the furnace window | A broken window over a hot furnace | Stage soft limits (STG-01, STG-02), focus limits and a known focus zero (MIC-01, MIC-03), turret turns only at the clearance position (MIC-03), P-HW at room temperature first (H-18, H-21) |
 | Docs drift between languages | Operators follow wrong steps | Pair check in CI, both files in the same PR |
 | Conflicts in shared files | Merge delays | Section 6.3 rules |
@@ -551,16 +557,16 @@ Human tasks to start now, because they take long and change no hardware: H-02 (f
 
 ## 12. Open questions
 
-The owner answered on 2026-10-30. Q-02, Q-05 and Q-06 are still open. Q-02 blocks FUR-05 ("Ask first"). Q-05 and Q-06 block no task: the last column says what happens until they have an answer.
+The owner answered on 2026-10-30, and answered Q-02, Q-04 and parts of Q-05 and Q-06 on 2026-11-02. Q-05 and Q-06 block no task: the last column says what happens until they have a full answer.
 
 | Id | Question | Answer | Effect on the plan |
 | --- | --- | --- | --- |
 | Q-01 | Are "chip" (the vision model's class) and "wafer" the same object? | Yes. | The plan says "chip". The GOV-02 glossary lists "wafer" as a synonym. |
-| Q-02 | Are the FurnaceCode camera and the microscope camera two different Toupcam cameras? | Not known yet. | Probably one camera, because the microscope watches the furnace through its window. FUR-05 asks first and builds the case that the answer names. |
-| Q-03 | How does a chip get under the microscope objective? Is the Thorlabs stage under the tray in scope? | By the stage. With the crucible inside the furnace, the microscope looks through a transparent window in the furnace top. | MS-03 images through the window. STG-01, STG-02 and H-07 cover all three axes, soft limits and imaging poses. MIC-01 and MIC-03 protect the window. The Thorlabs stage stays out of scope. |
-| Q-04 | Are the furnace and MFC links RS-485? How long are the cable runs to Olares? | Not yet. No hardware changes now. | Hardware freeze (section 2.2). H-04 asks again when the freeze ends. |
-| Q-05 | Which gas is on each MFC channel, and which one is inert? | Not known yet. | FUR-03 refuses gas commands until H-10 sets the gas map. |
-| Q-06 | Where do furnace recordings go on Linux? Can Olares mount the `Wu_Lab_Data` share? | Not known yet. | FUR-05 keeps runs local until `MG400_FURNACE_ARCHIVE_DIR` is set. |
+| Q-02 | Are the FurnaceCode camera and the microscope camera two different Toupcam cameras? | No. There is one Toupcam camera. | It is the microscope camera, which sees the chip through the furnace window. FUR-05 records through the microscope service. |
+| Q-03 | How does a chip get under the microscope objective? Is the Thorlabs stage under the tray in scope? | By the stage. With the crucible inside the furnace, the microscope looks through a transparent window in the furnace top. | MS-03 images through the window. STG-01 to STG-03 and H-07 cover all three axes, soft limits and imaging poses. MIC-01 and MIC-03 protect the window. The Thorlabs stage stays out of scope. |
+| Q-04 | Are the furnace and MFC links RS-485? How long are the cable runs to Olares? | Both links are on the Olares hub (2026-11-02): the furnace controller on an FTDI FT231X adapter, the MFC on an FTDI FT232R adapter. | The H-03 issue has their stable names. The source code drives both at 9600 baud. |
+| Q-05 | Which gas is on each MFC channel, and which one is inert? | Partly: oxygen is planned; the other two gases are not chosen. | Placeholder labels Gas A, Gas B and Gas C, with no inert gas (H-10). FUR-03 refuses gas commands until the host has a gas map with real gases. |
+| Q-06 | Where do furnace recordings go on Linux? Can Olares mount the `Wu_Lab_Data` share? | Partly: record on Olares first, then copy finished runs to the lab share. The share's address is not known yet. | FUR-05 records to `/var/lib/mg400/recordings/`. `MG400_FURNACE_ARCHIVE_DIR` stays an empty placeholder until the owner mounts the share (H-04 step 4). Keep each local copy until its archive copy is verified. |
 | Q-07 | Where is the YOLO training dataset, and who can label new images? | Anyone in the lab can label. | The current labeled set is in the Roboflow project behind the model `rotatedlabel/yolo-for-the-qunums2-0-right-han-1-yolo26s-seg-t1` (dataset version 1). H-22 exports it with a Roboflow account that has access, then adds new images. |
 | Q-08 | Does the lab agree to publish the trained weights in this public repo's releases? | Yes. | D4 stands. H-14 runs after H-15. |
 

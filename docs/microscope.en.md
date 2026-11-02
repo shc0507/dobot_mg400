@@ -70,7 +70,7 @@ Do not substitute repository paths or shared public directories for the configur
 
 ## Side-camera stream
 
-The microscope side camera is the AC410 on fixed hub port `12.1.3`.
+The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches the objective turret.
 Camera preview's go2rtc process owns its V4L2 device.
 `USBCamera` reads JPEG frames from `http://127.0.0.1:1984/api/frame.jpeg`.
 It rejects redirects and ignores environment proxy settings.

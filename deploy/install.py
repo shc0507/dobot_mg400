@@ -340,12 +340,48 @@ def camera_devices(value):
     return devices
 
 
-def render_go2rtc(devices):
-    """Return the go2rtc configuration: one MJPEG stream per camera, API on loopback only."""
+def camera_capture_sizes(value, devices, side_stream=""):
+    """Resolve capture dimensions in the same order as the stable device list."""
+    if not devices:
+        if value.strip():
+            raise ValueError("Camera capture sizes require configured camera devices.")
+        return []
+    if side_stream and side_stream not in {f"camera{i}" for i in range(1, len(devices) + 1)}:
+        raise ValueError("MG400_MICROSCOPE_SIDE_STREAM must name a rendered camera stream.")
+    if not value.strip():
+        return [
+            (3840, 2160) if side_stream == f"camera{i}" else (640, 480)
+            for i in range(1, len(devices) + 1)
+        ]
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != len(devices):
+        raise ValueError("MG400_CAMERA_CAPTURE_SIZES must give one WIDTHxHEIGHT per device.")
+    sizes = []
+    for part in parts:
+        match = re.fullmatch(r"([1-9][0-9]{0,4})x([1-9][0-9]{0,4})", part)
+        if match is None:
+            raise ValueError("Invalid camera capture size; use WIDTHxHEIGHT.")
+        width, height = map(int, match.groups())
+        if width * height > 16_000_000:
+            raise ValueError("Camera capture size exceeds the 16000000 pixel limit.")
+        sizes.append((width, height))
+    return sizes
+
+
+def render_go2rtc(devices, sizes=None):
+    """Return per-camera MJPEG capture settings, with the API on loopback only."""
+    sizes = [(640, 480)] * len(devices) if sizes is None else sizes
+    if len(sizes) != len(devices) or any(
+        len(size) != 2
+        or any(type(n) is not int or n <= 0 for n in size)
+        or size[0] * size[1] > 16_000_000
+        for size in sizes
+    ):
+        raise ValueError("Invalid per-camera capture dimensions.")
     streams = "".join(
         f"  camera{number}: v4l2:device?video={device}"
-        "&input_format=mjpeg&video_size=640x480&framerate=30\n"
-        for number, device in enumerate(devices, 1)
+        f"&input_format=mjpeg&video_size={size[0]}x{size[1]}&framerate=30\n"
+        for number, (device, size) in enumerate(zip(devices, sizes), 1)
     )
     preload = "".join(f"  camera{number}: video\n" for number in range(1, len(devices) + 1))
     return (
@@ -619,6 +655,11 @@ def install(args, host, run, chown, out):
             unit_contents[name] = stream.read().decode("utf-8")
     rendered_rules = udev_rules(host, selected)
     devices = camera_devices(settings.get("MG400_CAMERA_DEVICES", ""))
+    capture_sizes = camera_capture_sizes(
+        settings.get("MG400_CAMERA_CAPTURE_SIZES", ""),
+        devices,
+        settings.get("MG400_MICROSCOPE_SIDE_STREAM", ""),
+    )
     if args.go2rtc is not None and not args.go2rtc.is_file():
         raise RuntimeError(f"The go2rtc binary does not exist: {args.go2rtc}")
     if devices and args.go2rtc is None and not host.go2rtc.exists():
@@ -732,7 +773,13 @@ def install(args, host, run, chown, out):
                 write_file(host.go2rtc, Path(args.go2rtc).read_bytes(), 0o755, (0, 0), chown)
         step(f"write {host.go2rtc_config}")
         if not args.dry_run:
-            write_file(host.go2rtc_config, render_go2rtc(devices), 0o640, (0, SERVICE_GID), chown)
+            write_file(
+                host.go2rtc_config,
+                render_go2rtc(devices, capture_sizes),
+                0o640,
+                (0, SERVICE_GID),
+                chown,
+            )
     elif host.go2rtc_config.exists():
         step(f"remove {host.go2rtc_config}: cameras are off")
         if not args.dry_run:

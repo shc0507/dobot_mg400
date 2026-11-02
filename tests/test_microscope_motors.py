@@ -426,3 +426,429 @@ def test_command_admission_is_closed_during_version_validation(monkeypatch):
     finally:
         release.set()
         controller.disconnect()
+
+
+def reference_controller(connect, *, home=False):
+    port = FakePort()
+    if home:
+        port.sim = MicroscopeSimulator(home_switch=True, home_direction=-1, home_max_steps=100)
+    controller, port = connect(port)
+    controller.set_microstep(4)
+    controller.focus_enable()
+    return controller, port
+
+
+def test_full_status_is_fresh_complete_and_immutable(connect):
+    from dataclasses import FrozenInstanceError
+
+    controller, port = reference_controller(connect)
+    controller.focus_zero()
+    controller.focus_limits(-20, 30)
+    first = controller.read_status()
+    assert first.session == controller.session
+    assert first.reference_epoch == controller.reference_epoch
+    assert first.microstep == 4 and first.focus.enabled and not first.objective.enabled
+    assert first.zeroed and first.limited and (first.minimum, first.maximum) == (-20, 30)
+    assert first.focus.position == 0 and not first.homing
+    with pytest.raises(FrozenInstanceError):
+        first.zeroed = False
+    with pytest.raises(FrozenInstanceError):
+        first.focus.position = 2
+    ticket = controller.focus_move_async(4)
+    port.complete(0.02)
+    assert controller.wait_focus_done(ticket) == "DONE FOCUS POS 4"
+    second = controller.read_status()
+    assert second.focus.position == 4 and second.sequence > first.sequence
+    assert second.observed_at >= first.observed_at
+    assert controller.status() == "MICRO=4"
+
+
+def test_status_bypasses_long_move_wait_without_consuming_done(connect):
+    controller, port = reference_controller(connect)
+    ticket = controller.focus_move_async(10)
+    completion = asynchronous(lambda: controller.wait_focus_done(ticket))
+    sample = controller.read_status(timeout=0.2)
+    assert sample.focus.moving and sample.focus.remaining == 10 and not completion.done()
+    port.complete(0.1)
+    assert completion.result(1) == "DONE FOCUS POS 10"
+    assert not controller.read_status().focus.moving
+
+
+def test_status_accepts_unsigned_remaining_for_minimum_signed_move(connect):
+    controller, port = reference_controller(connect)
+    ticket = controller.focus_move_async(-(2**31))
+    assert controller.read_status().focus.remaining == 2**31
+    controller.focus_stop()
+    with pytest.raises(SideCaptureCancelled):
+        controller.wait_focus_done(ticket)
+
+
+@pytest.mark.parametrize(
+    "row,replacement",
+    [
+        (0, "MICRO=3"),
+        (1, "OBJ: enabled=2 moving=0 speed=400 remaining=0 pos=0"),
+        (1, "OBJ: enabled=0 moving=0 speed=0 remaining=0 pos=0"),
+        (1, "OBJ: enabled=1 moving=1 speed=400 remaining=2147483649 pos=0"),
+        (2, "FOCUS: enabled=1 moving=0 speed=800 remaining=0 pos=2147483648"),
+        (3, "FOCUS_REF: zeroed=0 limited=1 min=-10 max=10 homing=0"),
+        (3, "FOCUS_REF: zeroed=1 limited=1 min=10 max=-10 homing=0"),
+        (3, "FOCUS_REF: zeroed=0 limited=0 min=0 max=0 homing=1"),
+    ],
+)
+def test_malformed_status_faults_without_using_cached_fields(connect, row, replacement):
+    controller, port = reference_controller(connect)
+    old = controller.read_status()
+    lines = port.sim.status()
+    lines[row] = replacement
+    port.hook = lambda command: lines if command == "STATUS" else None
+    with pytest.raises(RuntimeError):
+        controller.read_status()
+    assert controller.fault and controller.reference_epoch > old.reference_epoch
+    before = list(port.commands)
+    with pytest.raises(RuntimeError):
+        controller.read_status()
+    assert port.commands == before
+
+
+@pytest.mark.parametrize("rows", [(0, 2, 1, 3), (0, 0, 1, 2, 3), (0, 1, 2)])
+def test_status_rejects_reordered_duplicate_or_missing_rows(connect, rows):
+    controller, port = reference_controller(connect)
+    lines = port.sim.status()
+    port.hook = lambda command: [lines[i] for i in rows] if command == "STATUS" else None
+    with pytest.raises(RuntimeError):
+        controller.read_status(timeout=0.03)
+    assert controller.fault
+
+
+def test_status_drain_discards_group_revoked_before_first_byte(connect):
+    controller, port = reference_controller(connect)
+    original = port.sim.status()
+    count = 0
+
+    def status_reply(command):
+        nonlocal count
+        if command == "STATUS":
+            count += 1
+            if count == 1:
+                return []
+        return None
+
+    port.hook = status_reply
+    stale = asynchronous(lambda: controller.read_status(timeout=0.5))
+    until(lambda: count == 1)
+    controller.focus_zero()
+    current = asynchronous(lambda: controller.read_status(timeout=0.5))
+    time.sleep(0.02)
+    assert count == 1 and not current.done()
+    port.emit(*original)
+    with pytest.raises(SideCaptureCancelled):
+        stale.result(1)
+    sample = current.result(1)
+    assert sample.zeroed and sample.reference_epoch == controller.reference_epoch
+    assert count == 2 and controller.fault is None
+
+
+def test_revoked_status_missing_tail_faults_instead_of_reusing_late_group(connect):
+    controller, port = reference_controller(connect)
+    port.hook = lambda command: [] if command == "STATUS" else None
+    future = asynchronous(lambda: controller.read_status(timeout=0.05))
+    until(lambda: "STATUS" in port.commands)
+    controller.focus_zero()
+    with pytest.raises(RuntimeError, match="incomplete"):
+        future.result(1)
+    port.emit(*port.sim.status())
+    with pytest.raises(RuntimeError):
+        controller.read_status()
+
+
+@pytest.mark.parametrize("during", ["status", "focus"])
+def test_ready_revokes_pending_reference_and_requires_explicit_reconnect(connect, during):
+    controller, port = reference_controller(connect)
+    controller.focus_zero()
+    controller.focus_limits(-50, 50)
+    before = controller.read_status()
+    if during == "status":
+        port.hook = lambda command: [] if command == "STATUS" else None
+        future = asynchronous(controller.read_status)
+        until(lambda: port.commands.count("STATUS") == 2)
+    else:
+        ticket = controller.focus_move_async(5)
+        future = asynchronous(lambda: controller.wait_focus_done(ticket))
+    port.emit(*port.sim.reset())
+    with pytest.raises(SideCaptureCancelled):
+        future.result(1)
+    until(lambda: controller.session != before.session)
+    assert controller.reference_epoch > before.reference_epoch
+    assert controller.fault and controller._pending_focus is None
+    commands = list(port.commands)
+    with pytest.raises(RuntimeError, match="reset"):
+        controller.focus_enable()
+    with pytest.raises(RuntimeError, match="reset"):
+        controller.read_status()
+    assert port.commands == commands
+    new = FakePort()
+    controller._serial_factory = lambda **_: new
+    controller.connect(PORT, reset_seconds=0)
+    assert not controller.read_status().zeroed and controller.fault is None
+
+
+def test_legacy_status_api_remains_available_without_reference_authority(connect):
+    controller, port = connect(FakePort(legacy=True))
+    port.hook = lambda command: port.sim.status()[:3] if command == "STATUS" else None
+    assert controller.status() == "MICRO=1"
+    before = list(port.commands)
+    with pytest.raises(RuntimeError, match="reference status"):
+        controller.read_status()
+    assert port.commands == before and controller.fault is None
+
+
+def test_reference_epoch_changes_for_reference_writes_faults_and_disconnect(connect):
+    controller, port = reference_controller(connect)
+    epoch = controller.reference_epoch
+    controller.set_microstep(4)
+    assert controller.reference_epoch == epoch
+    for action in (
+        controller.focus_zero,
+        lambda: controller.focus_limits(-10, 10),
+        controller.focus_disable,
+    ):
+        action()
+        assert controller.reference_epoch > epoch
+        epoch = controller.reference_epoch
+    controller.set_microstep(2)
+    assert controller.reference_epoch > epoch
+    epoch = controller.reference_epoch
+    port.read_error = serial.SerialException("offline unplug")
+    until(lambda: controller.fault is not None)
+    assert controller.reference_epoch > epoch
+    epoch = controller.reference_epoch
+    controller.disconnect()
+    assert controller.reference_epoch > epoch
+
+
+def test_home_waits_for_own_done_then_confirms_fresh_reference(connect):
+    controller, port = reference_controller(connect, home=True)
+
+    def stale_done(command):
+        if command == "FOCUS HOME":
+            port.emit("DONE FOCUS HOME")
+        return None
+
+    port.hook = stale_done
+    future = asynchronous(lambda: controller.focus_home(timeout=1))
+    until(lambda: "FOCUS HOME" in port.commands)
+    time.sleep(0.02)
+    assert not future.done()
+    port.sim.set_home_switch(True)
+    port.complete(0.03)
+    status = future.result(1)
+    assert status.zeroed and not status.limited and not status.homing
+    assert status.focus.position == 0 and not status.focus.moving
+    assert port.commands[-1] == "STATUS" and "FOCUS ZERO" not in port.commands
+
+
+def test_home_rejection_never_falls_back_to_zero(connect):
+    controller, port = reference_controller(connect)
+    with pytest.raises(RuntimeError, match="NO_SWITCH"):
+        controller.focus_home(timeout=0.2)
+    assert "FOCUS ZERO" not in port.commands and not port.sim.zeroed
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_home_timeout_and_cancel_cannot_establish_zero(connect, cancelled):
+    controller, port = reference_controller(connect, home=True)
+    event = threading.Event()
+    future = asynchronous(lambda: controller.focus_home(timeout=0.06, cancel_event=event))
+    until(lambda: "FOCUS HOME" in port.commands)
+    if cancelled:
+        event.set()
+    with pytest.raises(SideCaptureCancelled if cancelled else RuntimeError):
+        future.result(1)
+    assert not port.sim.zeroed and "FOCUS ZERO" not in port.commands
+    if cancelled:
+        assert "STOP FOCUS" in port.commands and not port.sim.homing
+    else:
+        assert controller.fault
+        controller.safe_stop_disable(timeout=0.1)
+        assert controller.fault and not port.sim.homing
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda c, e: c.objective_enable(cancel_event=e),
+        lambda c, e: c.objective_disable(cancel_event=e),
+        lambda c, e: c.objective_move(1, cancel_event=e),
+        lambda c, e: c.objective_speed(100, cancel_event=e),
+        lambda c, e: c.focus_enable(cancel_event=e),
+        lambda c, e: c.focus_disable(cancel_event=e),
+        lambda c, e: c.focus_speed(100, cancel_event=e),
+        lambda c, e: c.set_microstep(4, cancel_event=e),
+        lambda c, e: c.focus_zero(cancel_event=e),
+        lambda c, e: c.focus_limits(-5, 5, cancel_event=e),
+        lambda c, e: c.focus_home(cancel_event=e),
+        lambda c, e: c.send_and_wait("STOP OBJ", "OK STOP OBJ", cancel_event=e),
+    ],
+)
+def test_cancelled_mutations_do_not_emit_commands_or_cleanup_for_unissued_work(connect, operation):
+    controller, port = connect()
+    event = threading.Event()
+    event.set()
+    with pytest.raises(SideCaptureCancelled):
+        operation(controller, event)
+    assert port.commands == ["VERSION"] and controller.fault is None
+
+
+def test_cancelled_queued_enable_does_not_reenergize_or_stop_new_work(connect, monkeypatch):
+    controller, port = connect()
+    captured, cancel = threading.Event(), threading.Event()
+    admission = controller._admission_token
+
+    def snapshot(command, **kwargs):
+        value = admission(command, **kwargs)
+        captured.set()
+        return value
+
+    monkeypatch.setattr(controller, "_admission_token", snapshot)
+    with controller._transaction:
+        future = asynchronous(lambda: controller.focus_enable(cancel_event=cancel))
+        assert captured.wait(1)
+        cancel.set()
+    with pytest.raises(SideCaptureCancelled):
+        future.result(1)
+    assert port.commands == ["VERSION"]
+
+
+def test_safe_cleanup_confirms_all_outputs_and_keeps_existing_fault(connect):
+    controller, port = reference_controller(connect)
+    controller.objective_enable()
+    controller.focus_zero()
+    controller.focus_limits(-20, 20)
+    before = controller.reference_epoch
+    controller._fail("Earlier command outcome is unknown")
+    assert controller.safe_stop_disable(timeout=0.1) == (
+        "OK STOP ALL",
+        "OK OBJ DISABLED",
+        "OK FOCUS DISABLED",
+    )
+    assert port.commands[-3:] == ["STOP ALL", "OBJ DISABLE", "FOCUS DISABLE"]
+    assert not port.sim.objective.enabled and not port.sim.focus.enabled and not port.sim.zeroed
+    assert controller.reference_epoch > before
+    assert controller.fault == "Earlier command outcome is unknown"
+    with pytest.raises(RuntimeError, match="Earlier"):
+        controller.objective_enable()
+
+
+@pytest.mark.parametrize("failed", ["STOP ALL", "OBJ DISABLE", "FOCUS DISABLE"])
+def test_safety_cleanup_attempts_both_disables_despite_wrong_ack(connect, failed):
+    controller, port = reference_controller(connect)
+    controller.objective_enable()
+
+    def wrong(command):
+        if command == failed:
+            replies = port.sim.command(command)
+            return [replies[0] + "junk"]
+        return None
+
+    port.hook = wrong
+    with pytest.raises(RuntimeError):
+        controller.safe_stop_disable(timeout=0.1)
+    assert port.commands[-3:] == ["STOP ALL", "OBJ DISABLE", "FOCUS DISABLE"]
+    assert not port.sim.objective.enabled and not port.sim.focus.enabled
+    assert controller.fault and not controller._cleaning
+
+
+def test_cleanup_admission_stays_closed_between_stop_and_both_disables(connect):
+    controller, port = reference_controller(connect)
+    controller.objective_enable()
+
+    def delay(command):
+        if command in ("STOP ALL", "OBJ DISABLE"):
+            port.sim.command(command)
+            return []
+        return None
+
+    port.hook = delay
+    future = asynchronous(lambda: controller.safe_stop_disable(timeout=0.5))
+    until(lambda: "STOP ALL" in port.commands)
+    with pytest.raises(RuntimeError, match="stop is pending"):
+        controller.objective_enable()
+    port.emit("OK STOP ALL")
+    until(lambda: "OBJ DISABLE" in port.commands)
+    assert not controller._stopping and controller._cleaning
+    with pytest.raises(RuntimeError, match="stop is pending"):
+        controller.focus_enable()
+    port.emit("OK OBJ DISABLED")
+    assert future.result(1)[-1] == "OK FOCUS DISABLED"
+    assert not controller._cleaning and not controller.fault
+
+
+def test_overlapping_cleanup_requests_keep_a_continuous_admission_gate(connect):
+    controller, port = connect()
+    port.hook = lambda command: [] if command == "STOP ALL" else None
+    first = asynchronous(lambda: controller.safe_stop_disable(timeout=0.5))
+    until(lambda: port.commands.count("STOP ALL") == 1)
+    second = asynchronous(lambda: controller.safe_stop_disable(timeout=0.5))
+    until(lambda: controller._cleaning == 2)
+    port.emit("OK STOP ALL")
+    first.result(1)
+    until(lambda: port.commands.count("STOP ALL") == 2)
+    assert controller._cleaning == 1
+    with pytest.raises(RuntimeError, match="stop is pending"):
+        controller.objective_enable()
+    port.emit("OK STOP ALL")
+    second.result(1)
+    assert not controller._cleaning and controller.fault is None
+
+
+def test_old_cleanup_cannot_disable_reconnected_session(connect):
+    controller, old = connect()
+    old.hook = lambda command: [] if command == "STOP ALL" else None
+    future = asynchronous(lambda: controller.safe_stop_disable(timeout=0.5))
+    until(lambda: "STOP ALL" in old.commands)
+    new = FakePort()
+    controller._serial_factory = lambda **_: new
+    controller.connect(PORT, reset_seconds=0)
+    with pytest.raises(RuntimeError, match="old session"):
+        future.result(1)
+    assert new.commands == ["VERSION"]
+    assert not controller.fault and not controller._cleaning
+    controller.objective_enable()
+    assert new.sim.objective.enabled
+
+
+def test_ready_revokes_already_queued_mutations(connect, monkeypatch):
+    controller, port = connect()
+    captured = threading.Event()
+    admission = controller._admission_token
+
+    def snapshot(command, **kwargs):
+        token = admission(command, **kwargs)
+        captured.set()
+        return token
+
+    monkeypatch.setattr(controller, "_admission_token", snapshot)
+    with controller._transaction:
+        future = asynchronous(controller.objective_enable)
+        assert captured.wait(1)
+        old_session = controller.session
+        port.emit(*port.sim.reset())
+        until(lambda: controller.session != old_session)
+    with pytest.raises(SideCaptureCancelled):
+        future.result(1)
+    assert port.commands == ["VERSION"]
+
+
+def test_serial_thread_start_failure_closes_transport_without_joining_unstarted_thread(monkeypatch):
+    port = FakePort()
+    controller = MotorController(serial_factory=lambda **_: port)
+
+    def fail(_thread):
+        raise RuntimeError("offline thread start failure")
+
+    monkeypatch.setattr(threading.Thread, "start", fail)
+    with pytest.raises(RuntimeError, match="offline thread start failure"):
+        controller.connect(PORT, reset_seconds=0)
+    assert not port.is_open and not controller.connected and controller.reader_thread is None
+    controller.disconnect()

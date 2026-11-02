@@ -1203,6 +1203,8 @@ Steps:
 2. The same access rules as the other panels. English labels, like the robot and stage panels.
 3. Python route tests and node tests for the page logic.
 
+Implementation paths: add a public bounded frame-read interface in `src/microscope/service.py` for the microscope and side-camera views. Read only from the service's existing camera owners. App routes must use this interface without accessing private camera fields or opening another capture. Reject new reads after closure and settle accepted reads before camera cleanup. Keep motion, lease and access rules unchanged. Cover these boundaries with fake cameras in the existing panel test path.
+
 Done when: P-CHECKS pass.
 
 Docs: `microscope.md` and `.en.md`.

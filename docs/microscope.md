@@ -1,10 +1,11 @@
 [English](microscope.en.md)
 
-# 显微镜算法
+# 显微镜服务与算法
 
 `microscope` 包在 Linux 上提供自动调焦、物镜切换、图像校准和侧视相机采集。
 它不依赖桌面或 Tk。
-这些 Python 模块尚未提供显微镜网页服务、面板或自动避让联锁。
+契约服务检查调焦零点、行程限位和物镜转盘避让位置。
+浏览器面板尚未提供。直接调用算法不会取得服务租约，也不提供服务联锁。
 真实运动前，操作员必须确认安全调焦行程及炉顶窗口的避让位置。
 
 ## Linux 环境
@@ -16,11 +17,89 @@
 uv sync --locked
 ```
 
-默认的 `microscope` 依赖组包含 NumPy、opencv-python-headless 和 pyserial。
+默认的 `microscope` 依赖组包含 NumPy、opencv-python-headless、pyserial、Flask 和 waitress。
 导入包不会打开相机或串口。
 Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 真实 Toupcam 采集必须具备匹配的 Linux 厂商库和设备权限。
 主机配置见[部署指南](deploy.md)。
+
+## 契约服务
+
+显示服务选项时不会打开设备。以下命令也可启动模拟器：
+
+```sh
+uv run python -m microscope --help
+uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
+```
+
+演示模式使用模拟电机、生成的显微图像和 ArUco 图像。
+其调焦限位和避让位置是合成值，不能作为硬件安全配置。
+服务启动时才打开设备。配置无效时，以状态码 `2` 退出。
+收到 `SIGINT`、`SIGTERM` 或 `SIGHUP` 后，服务取消工作，停止并禁用电机，关闭设备后退出。
+清理失败时，退出状态码不为零。
+
+| 配置项 | 配置内容 |
+| --- | --- |
+| `MG400_MICROSCOPE_BIND` | 默认为 `127.0.0.1`。 |
+| `MG400_MICROSCOPE_PORT` | 默认为 `8770`。 |
+| `MG400_MICROSCOPE_BASE_PATH` | 默认为 `/`。下列路由路径相对于此前缀。 |
+| `MG400_MICROSCOPE_TOKEN` | 至少 24 个可打印 ASCII 字符。绑定非回环地址时必须配置。 |
+| `MG400_MICROSCOPE_SERIAL` | 控制板的稳定 `/dev/serial/by-id/` 路径。 |
+| `MG400_MICROSCOPE_SIDE_STREAM` | go2rtc 独占的侧视相机流。 |
+| `MG400_MICROSCOPE_FOCUS_LIMITS` | 必填的实测 `MIN,MAX` 整数脉冲，包含零点，且行程不为零。 |
+| `MG400_MICROSCOPE_SWITCH_FOCUS` | 必填的实测避让位置，单位为脉冲，必须在限位内。没有归零开关时，必须为 `0`。 |
+| `MG400_MICROSCOPE_HOME_SWITCH` | 必填硬件事实：有已配置的调焦归零开关时为 `1`，没有时为 `0`。 |
+
+真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
+使用 `H-06` 的实测值，不得把演示限位复制到硬件。
+所有请求保留共用的令牌、Host、Origin 和转发头检查。
+没有令牌时，只接受没有转发头的回环 Host 值。
+POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
+控制租约为 3 秒，工作期间必须续租。
+
+| 路由 | 用途 |
+| --- | --- |
+| `GET /api/describe` | 契约版本、支持的命令、物镜 ID 和租约行为。 |
+| `GET /api/state` | 调焦位置和零点状态、限位、物镜 ID、相机状态、忙碌状态、故障及命令结果。 |
+| `GET /api/events` | 服务事件历史。 |
+| `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | 取得、续期或释放普通控制权。 |
+| `POST /api/command` | 提交动作和参数。`202` 响应返回命令 ID，不代表命令完成。 |
+| `POST /api/stop` | 任何已认证客户端都能停止，无须持有控制租约。读取其 `confirmed`、`pending` 或 `unconfirmed` 结果。 |
+
+命令动作包括带 `id` 的 `select_objective`、带 `mode`（`full` 或 `local`）的 `autofocus`、带相对 `steps` 的 `focus_move`、`home_focus`，以及带可选 `path` 的 `snapshot`。
+执行下一动作前，读取 `last_command` 中对应命令 ID 的结果。
+每次转动物镜转盘前，服务完成避让移动，并重新检查位置静止。
+调焦移动和自动调焦必须具有已知零点，且不得越过配置限位。
+完整自动调焦扫描使用以实测行程内部为中心的窗口。
+局部扫描使用靠近当前位置的较小窗口。
+避让位置位于行程端点时，服务先把扫描中心移到限位内。
+快照在运行根目录内新建 PNG，拒绝覆盖现有目标。
+返回的 `captured_at` 是帧的单调接收时间，不是传感器曝光时间。
+
+## 调焦零点与控制交接
+
+有已配置的归零开关时，`home_focus` 建立零点并写入配置的固件限位。
+没有开关时，操作员必须先把调焦轴放到已验证的避让位置，再设置零点。
+该位置为 `0`，服务不会自动移动到未知的避让位置。
+
+操作员先向 `POST /api/manual/heartbeat` 发送空对象，取得手动控制权。
+通过 `POST /api/manual/renew` 保留控制权。
+完成物理确认后，才向 `POST /api/manual/set_focus_zero` 发送 `{"confirm": true}`，并等待命令结果。
+普通契约命令不能设置手动零点，自动化程序不得调用此操作。
+自动化持有租约时，手动请求无法取得控制权，即使复用同一客户端 ID。
+服务检查两轴静止，设置 `MICRO 4`，建立零点，写入限位，并验证固件结果。
+
+零点建立成功后，通过 `POST /api/manual/release` 释放手动控制权，再由另一客户端取得普通控制权。
+健康且空闲时，释放操作可保留已验证的参考状态，最长到原租约的剩余截止时间。
+重新检查必须确认两轴静止、调焦轴已启用，且零点、限位和固件会话一致。
+下一客户端必须在截止时间前取得控制权。释放不会增加租约时间。
+检查失败或超时后，服务停止并禁用两轴，零点随之失效。
+
+显式停止、租约到期、固件复位或调焦参考状态变化都会使服务零点失效。
+命令或停止结果不确定时，服务锁存故障，锁定普通命令。
+停止仍可用，但成功停止不会清除该故障。
+排除原因后，通过受控的服务重启重新连接，并重新建立零点。
+不得自动重试结果未知的运动，也不得用缓存位置恢复零点。
 
 ## Python 接口
 
@@ -79,7 +158,7 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 | 配置项 | 配置内容 |
 | --- | --- |
 | `MG400_CAMERA_DEVICES` | 按相机预览安装程序顺序排列的稳定设备路径。 |
-| `MG400_MICROSCOPE_SIDE_STREAM` | 侧视相机对应的流：`camera1`、`camera2` 或 `camera3`。默认不选择任何流。 |
+| `MG400_MICROSCOPE_SIDE_STREAM` | 侧视相机对应的已配置 go2rtc 流。默认不选择任何流。 |
 | `MG400_CAMERA_CAPTURE_SIZES` | 可选的逗号分隔 `WIDTHxHEIGHT` 列表，每个已配置设备对应 1 个值。 |
 
 启用采集前，确认侧视相机设备路径对应的流。

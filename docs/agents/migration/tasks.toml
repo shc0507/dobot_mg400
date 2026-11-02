@@ -1170,6 +1170,7 @@ size = "L"
 review = "agent"
 deps = ["MIC-03"]
 writes = [
+  "src/microscope/service.py",
   "src/microscope/templates/**",
   "src/microscope/static/**",
   "src/microscope/app.py",

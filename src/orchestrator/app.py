@@ -207,6 +207,11 @@ class DemoResources:
     def close(self):
         self.stack.close()
 
+    def existing_client(self, name, identity):
+        """Read or stop an existing owned demo without starting another service."""
+        resource = self.resources.get(name)
+        return None if resource is None else resource.new_clients(identity)[name]
+
 
 class Recovery:
     """A new ownership transaction; its caller retains admission until closed."""
@@ -359,6 +364,9 @@ class OrchestratorService:
         self.report = None
         self.poll_stop = threading.Event()
         self.poller = None
+        from .web.backend import Dashboard
+
+        self.dashboard = Dashboard(self, clock=clock)
 
     def start(self, *, background=True):
         with self.lock:
@@ -404,6 +412,7 @@ class OrchestratorService:
 
     def poll_once(self):
         self.lease.poll()
+        self.dashboard.poll()
         with self.lock:
             recovery = self.recovery
         if (
@@ -437,7 +446,8 @@ class OrchestratorService:
 
     def _occupied(self):
         return (
-            self.job is not None
+            self.dashboard.busy()
+            or self.job is not None
             and not self.job["done"].is_set()
             or self.current is not None
             and not self.current.wait_closed(0)
@@ -514,6 +524,8 @@ class OrchestratorService:
     def _schedule(self, action, client, function, *, exclusive=False):
         # Caller holds lease->app locks only for admission and thread dispatch.
         self._ready()
+        if self.dashboard.busy():
+            raise ServiceError(409, "Dashboard safety requests are still draining.")
         if self.job is not None and not self.job["done"].is_set():
             raise ServiceError(409, "Another control operation is still draining.")
         if exclusive and self._occupied():
@@ -568,6 +580,92 @@ class OrchestratorService:
         if set(required) - set(services):
             raise ValueError("A required service is not configured.")
         return {name: services[name] for name in required}
+
+    def dashboard_configured(self, name):
+        """Report configured endpoints without starting a simulator or acquiring control."""
+        if self.client_factory is not None:
+            return True
+        if self.demo:
+            return self.resources is not None and name in self.resources.resources
+        return bool(self.settings.get(f"MG400_ORCH_{name.upper()}_URL"))
+
+    def dashboard_client(self, name, identity):
+        """Return a fresh read/stop transport; never acquire or renew a lease."""
+        from .clients import SERVICES
+
+        if name not in SERVICES:
+            raise ValueError("Unknown dashboard service.")
+        if self.client_factory is not None:
+            return self.client_factory((name,), identity).get(name)
+        if self.demo:
+            return (
+                None if self.resources is None else self.resources.existing_client(name, identity)
+            )
+        prefix = f"MG400_ORCH_{name.upper()}"
+        settings = {
+            key: value
+            for key, value in self.settings.items()
+            if key in {prefix + "_URL", prefix + "_TOKEN", "MG400_ORCH_TIMEOUT_S"}
+        }
+        return from_settings(settings, identity=identity).get(name)
+
+    def dashboard_summary(self):
+        """Read run/storage state only from a dashboard background worker."""
+        state = self.snapshot()
+        with self.lock:
+            runner = self.current
+        return state, self.get_run(runner.run_id) if runner is not None else None
+
+    def dashboard_drain(self, context):
+        """Request hold outside app locks and inspect every accepted old operation.
+
+        The dashboard gate is already published. Initial instrument stops run
+        independently even if a preexisting release holds this app lock.
+        """
+        with self.lock:
+            job, runner, recovery = self.job, self.current, self.recovery
+            cancelled = self.resume_cancel
+            if job is not None:
+                job["cancelled"].set()
+            self.owner = None
+        if runner is not None and (
+            context.get("runner") is not runner or context.get("resume") is not cancelled
+        ):
+            if cancelled is not None:
+                runner.cancel_resume(cancelled, "Dashboard safety hold requested.")
+            else:
+                runner.hold("Dashboard safety hold requested.")
+            context.update(runner=runner, resume=cancelled)
+        if recovery is not None and not recovery.closed.is_set():
+            recovery.cancel()
+        if job is not None and not job["done"].is_set():
+            return {"settled": False, "confirmed": False}
+        if recovery is not None and not recovery.closed.is_set():
+            return {"settled": False, "confirmed": False}
+        report = runner.snapshot() if runner is not None else None
+        with self.lock:
+            if runner is not self.current or job is not self.job or recovery is not self.recovery:
+                return {"settled": False, "confirmed": False}
+        settled = (
+            report is None
+            or report.get("closed") is True
+            or (
+                report.get("status") == "held"
+                and report.get("settled") is True
+                and report.get("draining") is False
+            )
+        )
+        confirmed = not report or not (
+            report.get("unconfirmed_services")
+            or report.get("release_errors")
+            or report.get("persistence_error")
+        )
+        if recovery is not None:
+            confirmed = confirmed and all(
+                result.get("stop") == "confirmed"
+                for result in recovery.snapshot()["stops"].values()
+            )
+        return {"settled": settled, "confirmed": bool(confirmed)}
 
     def prepare_run(self, data):
         _fields(data, {"recipe", "params"}, {"recipe"})
@@ -712,6 +810,7 @@ class OrchestratorService:
             report = self.snapshot()
             active, recovery = report["active_run"], report["recovery"]
             pending = bool(report["operation"] and not report["operation"]["done"])
+            pending |= self.dashboard.busy()
             pending |= bool(recovery and not recovery["closed"])
             pending |= bool(active and not active["closed"] and not active["settled"])
             if not pending:
@@ -829,6 +928,7 @@ class OrchestratorService:
             return self._record("recovery-abort", client)
 
     def close(self):
+        self.dashboard.begin_close()
         with self.lock:
             self.closing = True
             self._lost("Orchestrator service is shutting down.")
@@ -852,6 +952,7 @@ class OrchestratorService:
         self.poll_stop.set()
         if self.poller is not None:
             self.poller.join()
+        self.dashboard.close()
         if self.resources is not None:
             self.resources.close()
             self.resources = None
@@ -871,12 +972,24 @@ def create_app(service, *, token=None, base_path="/"):
         contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
     )
     prefix = base_path.rstrip("/")
+    from .web import dashboard_blueprint
+
+    app.register_blueprint(dashboard_blueprint(service, prefix))
 
     @app.before_request
     def access():
         if not host_allowed(request.headers, token):
             raise ServiceError(403, "Use a loopback Host without forwarded headers.")
-        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
+        public = request.method in {"GET", "HEAD"} and request.endpoint in {
+            "dashboard.index",
+            "dashboard.javascript",
+            "dashboard.stylesheet",
+        }
+        if (
+            token
+            and not public
+            and not bearer_matches(request.headers.get("Authorization", ""), token)
+        ):
             raise ServiceError(401, "Invalid service access token.")
         if not same_origin(request.headers):
             raise ServiceError(403, "The request origin is not allowed.")

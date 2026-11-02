@@ -137,6 +137,7 @@ The optional `orch` service uses the `orchestrator` dependency group in `/opt/mg
 This group includes Flask, waitress, and the `stage`, `thermal`, and `furnace` groups for supported owned demos.
 Add `orch` to `MG400_OPTIONAL_SERVICES`, run the installer, and configure the [recipe service](orchestrator.en.md#http-service) before `mg400ctl start orch`.
 The installer prepares private `runs` and `zones` directories when `orch` is selected. It does not invent zone configuration or start the service.
+The same service serves the [lab dashboard](dashboard.en.md), including status cards, run controls, camera links, and separate motion, heat, and gas stop controls.
 
 The optional `gateway` service uses the `gateway` dependency group. Add `gateway` to `MG400_OPTIONAL_SERVICES` and configure the [read-only gateway](agent-gateway.en.md).
 Selecting `gateway` also prepares the private `runs` directory for audit records before any recipe run exists. The installer does not start the gateway.

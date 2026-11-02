@@ -137,6 +137,7 @@
 此组含 Flask、waitress，以及自有演示服务所需的 `stage`、`thermal` 和 `furnace` 组。
 把 `orch` 加入 `MG400_OPTIONAL_SERVICES`，运行安装器，配置[配方服务](orchestrator.md#http-服务)，再运行 `mg400ctl start orch`。
 选中 `orch` 时，安装器准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
+同一服务还提供[实验室总览](dashboard.md)，包含状态卡片、运行控制、摄像头链接，以及独立的运动、加热和气体停止操作。
 
 可选服务 `gateway` 使用 `gateway` 依赖组。把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再配置[只读网关](agent-gateway.md)。
 选中 `gateway` 时，安装器也会准备私密的 `runs` 目录，使首次配方运行前即可记录审计。安装器不会启动网关。

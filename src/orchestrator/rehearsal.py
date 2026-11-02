@@ -15,7 +15,7 @@ from mg400.sim import Simulator
 from mg400.web_control import RobotPanelState
 from mg400.web_gripper import WebGripper
 
-from .clients import RobotAdapter, ServiceAdapter, ThermalAdapter
+from .clients import FurnaceAdapter, RobotAdapter, ServiceAdapter, ThermalAdapter
 
 DEMO_SERVICES = frozenset({"robot", "stage", "thermal", "furnace"})
 
@@ -36,6 +36,7 @@ class _DemoClient:
         "recovery_stop",
         "release",
         "roi",
+        "gas_stop",
     }
 
     def __init__(self, owner, adapter):
@@ -297,8 +298,8 @@ class Rehearsal:
         server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
         self._serve(server)
         url = f"http://127.0.0.1:{server.server_port}"
-        self._endpoints["furnace"] = (ServiceAdapter, url)
-        self.clients["furnace"] = ServiceAdapter(url, "", self.identity)
+        self._endpoints["furnace"] = (FurnaceAdapter, url)
+        self.clients["furnace"] = FurnaceAdapter(url, "", self.identity)
 
     def __exit__(self, *exc):
         with self._condition:

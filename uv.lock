@@ -1466,7 +1466,7 @@ wheels = [
 name = "mg400"
 version = "0.1.0"
 source = { editable = "." }
-default-groups = ["camera", "dev", "furnace", "gateway", "gateway-clients", "orchestrator", "stage", "thermal", "vision"]
+default-groups = ["camera", "dev", "furnace", "gateway", "gateway-clients", "microscope", "orchestrator", "stage", "thermal", "vision"]
 
 [package.dev-dependencies]
 camera = [
@@ -1492,6 +1492,11 @@ gateway = [
 ]
 gateway-clients = [
     { name = "smolagents", extra = ["mcp", "openai"] },
+]
+microscope = [
+    { name = "numpy" },
+    { name = "opencv-python-headless" },
+    { name = "pyserial" },
 ]
 notebook = [
     { name = "ipykernel" },
@@ -1564,6 +1569,11 @@ gateway = [
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
 gateway-clients = [{ name = "smolagents", extras = ["mcp", "openai"], specifier = ">=1.26,<2" }]
+microscope = [
+    { name = "numpy", specifier = ">=1.26,<3" },
+    { name = "opencv-python-headless", specifier = ">=4.9,<5" },
+    { name = "pyserial", specifier = ">=3.5,<4" },
+]
 notebook = [{ name = "ipykernel", specifier = "==7.4.0" }]
 orchestrator = [
     { name = "fastapi", specifier = ">=0.115,<1" },

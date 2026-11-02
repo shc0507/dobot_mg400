@@ -1404,6 +1404,57 @@ def test_every_udev_permission_rule_must_identify_device_and_group(host, optiona
     assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]
 
 
+def test_camera_capture_sizes_keep_defaults_and_select_microscope_stream(module):
+    assert module.camera_capture_sizes("", DEVICES) == [(640, 480)] * 3
+    sizes = module.camera_capture_sizes("", DEVICES, "camera2")
+    assert sizes == [(640, 480), (3840, 2160), (640, 480)]
+    config = module.render_go2rtc(DEVICES, sizes)
+    assert f"video={DEVICES[1]}&input_format=mjpeg&video_size=3840x2160" in config
+    assert config.count("video_size=640x480") == 2
+    assert "api:\n  listen: 127.0.0.1:1984\n" in config
+    assert module.camera_capture_sizes("800x600,3840x2160,1280x720", DEVICES) == [
+        (800, 600),
+        (3840, 2160),
+        (1280, 720),
+    ]
+
+
+@pytest.mark.parametrize(
+    "value,stream",
+    [
+        ("640x480", ""),
+        ("0x480,640x480,640x480", ""),
+        ("640x480&exec=bad,640x480,640x480", ""),
+        ("99999x99999,640x480,640x480", ""),
+        ("", "camera4"),
+        ("", "http://example.invalid/frame"),
+    ],
+)
+def test_camera_size_settings_fail_before_install_changes(host, capsys, value, stream):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(
+        f"MG400_CAMERA_DEVICES={','.join(DEVICES)}\n"
+        f"MG400_CAMERA_CAPTURE_SIZES={value}\nMG400_MICROSCOPE_SIDE_STREAM={stream}\n"
+    )
+    before = host.settings.read_bytes()
+    assert host.install() == 1
+    assert capsys.readouterr().err
+    assert host.settings.read_bytes() == before
+    assert not host.data.exists() and not host.units.exists()
+
+
+def test_installer_renders_side_stream_capture_size(host, module, tmp_path):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(
+        f"MG400_CAMERA_DEVICES={','.join(DEVICES)}\nMG400_MICROSCOPE_SIDE_STREAM=camera2\n"
+    )
+    binary = tmp_path / "go2rtc"
+    binary.write_bytes(b"offline executable")
+    assert host.install("--go2rtc", str(binary)) == 0
+    config = (host.root / "etc/mg400/go2rtc.yaml").read_text()
+    assert config == module.render_go2rtc(DEVICES, [(640, 480), (3840, 2160), (640, 480)])
+
+
 def test_enabled_thermal_installs_private_roi_directory_group_and_usb_rule(
     module, host, inventory_udev
 ):

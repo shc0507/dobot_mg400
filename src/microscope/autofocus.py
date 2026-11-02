@@ -9,15 +9,19 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
-from pathlib import Path
+import os
 import threading
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-from camera import MicroscopeCamera
+from toupcam_camera import MicroscopeCamera
+
+from .paths import private_open, run_path
+from .side_capture import SideCaptureCancelled
 
 
 class AutofocusCancelled(RuntimeError):
@@ -48,15 +52,14 @@ def focus_score(frame: np.ndarray, roi_fraction: float = 1.00) -> float:
     roi_height = max(32, int(height * roi_fraction))
     x1 = max(0, (width - roi_width) // 2)
     y1 = max(0, (height - roi_height) // 2)
-    roi = frame[y1:y1 + roi_height, x1:x1 + roi_width]
+    roi = frame[y1 : y1 + roi_height, x1 : x1 + roi_width]
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
     # Limiting the working size makes scoring fast and keeps scores comparable.
     max_dimension = max(gray.shape)
     if max_dimension > 1200:
         scale = 1200.0 / max_dimension
-        gray = cv2.resize(gray, None, fx=scale, fy=scale,
-                          interpolation=cv2.INTER_AREA)
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
@@ -82,15 +85,12 @@ class AutoFocuser:
     ):
         if speed <= 0:
             raise ValueError("speed must be positive")
-        if (settle_seconds < 0 or precision_settle_seconds < 0
-                or frame_interval < 0):
+        if settle_seconds < 0 or precision_settle_seconds < 0 or frame_interval < 0:
             raise ValueError("wait times cannot be negative")
         if frames_per_position < 1:
             raise ValueError("frames_per_position must be at least 1")
         if precision_frames_per_position < 1:
-            raise ValueError(
-                "precision_frames_per_position must be at least 1"
-            )
+            raise ValueError("precision_frames_per_position must be at least 1")
         if backlash_steps < 0:
             raise ValueError("backlash_steps cannot be negative")
 
@@ -100,9 +100,7 @@ class AutoFocuser:
         self.settle_seconds = float(settle_seconds)
         self.frames_per_position = int(frames_per_position)
         self.precision_settle_seconds = float(precision_settle_seconds)
-        self.precision_frames_per_position = int(
-            precision_frames_per_position
-        )
+        self.precision_frames_per_position = int(precision_frames_per_position)
         self.frame_interval = float(frame_interval)
         self.roi_fraction = float(roi_fraction)
         self.backlash_steps = int(backlash_steps)
@@ -123,19 +121,22 @@ class AutoFocuser:
             self.motor.focus_stop()
             raise AutofocusCancelled("Autofocus was stopped")
 
+    def _focus_command(self, method, *args):
+        try:
+            return method(*args, cancel_event=self.cancel_event)
+        except SideCaptureCancelled as error:
+            raise AutofocusCancelled("Autofocus was stopped") from error
+
     def _move_to(self, target: int, *, precision: bool = False) -> None:
         self._check_cancelled()
         steps = int(target) - self.position
         if steps == 0:
             return
-        self.motor.focus_move(steps)
-        # The current Arduino protocol has no motion-complete response.  Wait
-        # for the commanded travel time, then allow vibration to settle.
-        settle_seconds = (
-            self.precision_settle_seconds
-            if precision else self.settle_seconds
-        )
-        self._wait(abs(steps) / self.speed + settle_seconds)
+        self._focus_command(self.motor.focus_move, steps)
+        # The controller awaits DONE on current firmware, or the computed
+        # travel duration on legacy firmware. Keep the original settling delay.
+        settle_seconds = self.precision_settle_seconds if precision else self.settle_seconds
+        self._wait(settle_seconds)
         self.position = int(target)
         self._stationary_since = time.time()
 
@@ -143,10 +144,7 @@ class AutoFocuser:
         scores = []
         frame_id = None
         captured_at = None
-        sample_count = (
-            self.precision_frames_per_position
-            if precision else self.frames_per_position
-        )
+        sample_count = self.precision_frames_per_position if precision else self.frames_per_position
         for sample_index in range(sample_count):
             # Movement settling already precedes the first sample.  For later
             # samples, get_frame_packet(after_id=...) itself waits for a new
@@ -184,14 +182,19 @@ class AutoFocuser:
             stage=stage,
             frame_id=frame_id,
             captured_at=captured_at,
-            score_noise=1.4826 * float(np.median(np.abs(
-                np.asarray(scores) - median_score
-            ))),
+            score_noise=1.4826 * float(np.median(np.abs(np.asarray(scores) - median_score))),
         )
 
-    def _record_measurement(self, *, position: int, score: float, stage: str,
-                            frame_id=None, captured_at=None,
-                            score_noise=0.0) -> FocusMeasurement:
+    def _record_measurement(
+        self,
+        *,
+        position: int,
+        score: float,
+        stage: str,
+        frame_id=None,
+        captured_at=None,
+        score_noise=0.0,
+    ) -> FocusMeasurement:
         measurement = FocusMeasurement(
             position=position,
             score=score,
@@ -212,8 +215,9 @@ class AutoFocuser:
             positions.append(stop)
         return positions
 
-    def _scan(self, start: int, stop: int, step: int,
-              stage: str, *, precision: bool = False) -> list[FocusMeasurement]:
+    def _scan(
+        self, start: int, stop: int, step: int, stage: str, *, precision: bool = False
+    ) -> list[FocusMeasurement]:
         results = []
         for target in self._positions(start, stop, step):
             self._check_cancelled()
@@ -221,8 +225,7 @@ class AutoFocuser:
             results.append(self._measure(stage, precision=precision))
         return results
 
-    def _continuous_scan(self, start: int, stop: int,
-                         stage: str) -> list[FocusMeasurement]:
+    def _continuous_scan(self, start: int, stop: int, stage: str) -> list[FocusMeasurement]:
         """Move without intermediate stops and score every new camera frame."""
         self._move_to(start)
         results = [self._measure(stage)]
@@ -231,9 +234,9 @@ class AutoFocuser:
             return results
 
         duration = abs(distance) / self.speed
-        self.motor.focus_move(distance)
-        motion_started_at = time.time()
-        motion_started_monotonic = time.monotonic()
+        ticket = self._focus_command(self.motor.focus_move_async, distance)
+        motion_started_at = ticket.started_wall
+        motion_started_monotonic = ticket.started
 
         while True:
             self._check_cancelled()
@@ -251,18 +254,19 @@ class AutoFocuser:
                 continue
             frame_id, captured_at, frame = packet
             self.last_frame_id = frame_id
-            fraction = np.clip(
-                (captured_at - motion_started_at) / duration, 0.0, 1.0
-            )
+            fraction = np.clip((captured_at - motion_started_at) / duration, 0.0, 1.0)
             estimated_position = int(round(start + distance * fraction))
-            results.append(self._record_measurement(
-                position=estimated_position,
-                score=focus_score(frame, self.roi_fraction),
-                stage=stage,
-                frame_id=frame_id,
-                captured_at=captured_at,
-            ))
+            results.append(
+                self._record_measurement(
+                    position=estimated_position,
+                    score=focus_score(frame, self.roi_fraction),
+                    stage=stage,
+                    frame_id=frame_id,
+                    captured_at=captured_at,
+                )
+            )
 
+        self._focus_command(self.motor.wait_focus_done, ticket)
         self._wait(self.settle_seconds)
         self.position = stop
         self._stationary_since = time.time()
@@ -275,9 +279,7 @@ class AutoFocuser:
         if len(samples) < 3:
             return max(samples, key=lambda item: item.score)
         smoothed = [
-            float(np.median([
-                item.score for item in samples[max(0, index - 1):index + 2]
-            ]))
+            float(np.median([item.score for item in samples[max(0, index - 1) : index + 2]]))
             for index in range(len(samples))
         ]
         # The neighboring frame support matters more than a single maximum.
@@ -288,8 +290,14 @@ class AutoFocuser:
         return samples[index]
 
     def _adaptive_fine_scan(
-        self, *, start: int, stop: int, predicted_peak: int,
-        max_step: int, min_step: int, lower_limit: int,
+        self,
+        *,
+        start: int,
+        stop: int,
+        predicted_peak: int,
+        max_step: int,
+        min_step: int,
+        lower_limit: int,
         stage: str | None = None,
         stage_prefix: str = "",
     ) -> list[FocusMeasurement]:
@@ -327,16 +335,18 @@ class AutoFocuser:
 
             # Do not stop on the first slightly lower/noisy value. Require
             # support on both sides and a spatially separated declining tail.
-            if (step == min_step and below_peak >= 3
-                    and start > best.position
-                    and best.position - target >= 3 * min_step):
+            if (
+                step == min_step
+                and below_peak >= 3
+                and start > best.position
+                and best.position - target >= 3 * min_step
+            ):
                 break
 
             # Broad, statistically flat peaks need no long minimum-step sweep.
             # Once the dense zone has been crossed, five agreeing samples near
             # the best measured score are sufficient to stop on a plateau.
-            if (step == min_step and len(results) >= 5
-                    and target <= predicted_peak - max_step):
+            if step == min_step and len(results) >= 5 and target <= predicted_peak - max_step:
                 tail = results[-5:]
                 tolerance = max(
                     abs(best.score) * 0.015,
@@ -353,7 +363,8 @@ class AutoFocuser:
                 rising = (
                     len(results) >= 3
                     and best.position == target
-                    and measurement.score - results[-3].score > max(
+                    and measurement.score - results[-3].score
+                    > max(
                         abs(measurement.score) * 0.015,
                         3.0 * max(measurement.score_noise, results[-3].score_noise),
                         1e-9,
@@ -379,8 +390,10 @@ class AutoFocuser:
                     3.0 * max(first.score_noise, middle.score_noise, last.score_noise),
                     1e-9,
                 )
-                if (middle.score - first.score > turn_threshold
-                        and middle.score - last.score > turn_threshold):
+                if (
+                    middle.score - first.score > turn_threshold
+                    and middle.score - last.score > turn_threshold
+                ):
                     step = min_step
 
             # Land on the dense zone boundary before taking a minimum step;
@@ -398,8 +411,13 @@ class AutoFocuser:
         return max(samples, key=lambda item: item.score)
 
     def _land_and_verify(
-        self, best: FocusMeasurement, *, lower_limit: int,
-        upper_limit: int, correction_radius: int, min_step: int,
+        self,
+        best: FocusMeasurement,
+        *,
+        lower_limit: int,
+        upper_limit: int,
+        correction_radius: int,
+        min_step: int,
         stage_prefix: str = "",
     ) -> FocusMeasurement:
         """Return to the measured maximum; final score is diagnostic only.
@@ -443,13 +461,22 @@ class AutoFocuser:
         if ultrafine_step >= fine_step:
             raise ValueError("ultrafine_step must be smaller than fine_step")
         return self._run_scan(
-            half_range=half_range, coarse_step=coarse_step, fine_step=fine_step,
-            ultrafine_step=ultrafine_step, lock_exposure=lock_exposure,
+            half_range=half_range,
+            coarse_step=coarse_step,
+            fine_step=fine_step,
+            ultrafine_step=ultrafine_step,
+            lock_exposure=lock_exposure,
         )
 
     def _run_scan(
-        self, *, half_range: int, coarse_step: int, fine_step: int,
-        ultrafine_step: int, lock_exposure: bool, stage_prefix: str = "",
+        self,
+        *,
+        half_range: int,
+        coarse_step: int,
+        fine_step: int,
+        ultrafine_step: int,
+        lock_exposure: bool,
+        stage_prefix: str = "",
     ) -> FocusMeasurement:
         """Shared full/local pipeline, including final landing verification."""
         if half_range <= 0:
@@ -480,9 +507,7 @@ class AutoFocuser:
                 # Let automatic exposure settle before freezing it for the scan.
                 time.sleep(0.7)
                 try:
-                    auto_exposure_before = bool(
-                        self.camera.sdk_camera.get_AutoExpoEnable()
-                    )
+                    auto_exposure_before = bool(self.camera.sdk_camera.get_AutoExpoEnable())
                 except Exception:
                     pass
                 self.camera.set_auto_exposure(False)
@@ -496,9 +521,7 @@ class AutoFocuser:
             self.motor.focus_speed(self.speed)
             self.motor.focus_enable()
 
-            coarse = self._continuous_scan(
-                -half_range, half_range, stage_prefix + "coarse"
-            )
+            coarse = self._continuous_scan(-half_range, half_range, stage_prefix + "coarse")
             coarse_best = self._coarse_candidate(coarse)
 
             fine_start = max(-half_range, coarse_best.position - coarse_step)
@@ -516,8 +539,11 @@ class AutoFocuser:
             )
             best = self._fine_candidate(fine)
             return self._land_and_verify(
-                best, lower_limit=-half_range, upper_limit=half_range,
-                correction_radius=fine_step, min_step=ultrafine_step,
+                best,
+                lower_limit=-half_range,
+                upper_limit=half_range,
+                correction_radius=fine_step,
+                min_step=ultrafine_step,
                 stage_prefix=stage_prefix,
             )
         except BaseException:
@@ -561,28 +587,41 @@ class AutoFocuser:
         radius = min(int(radius), 2 * int(half_range))
         maximum = min(int(step), radius)
         return self._run_scan(
-            half_range=int(half_range), coarse_step=radius, fine_step=maximum,
+            half_range=int(half_range),
+            coarse_step=radius,
+            fine_step=maximum,
             ultrafine_step=min(int(minimum), maximum),
-            lock_exposure=lock_exposure, stage_prefix="local_",
+            lock_exposure=lock_exposure,
+            stage_prefix="local_",
         )
 
 
-def save_measurements(path: str | Path,
-                      measurements: list[FocusMeasurement]) -> Path:
+def save_measurements(path: str | Path, measurements: list[FocusMeasurement]) -> Path:
     """Save the focus curve so scan parameters can be tuned from real data."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as output:
+    path = run_path(path)
+    with private_open(path, "w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
-        writer.writerow((
-            "stage", "relative_position", "focus_score",
-            "frame_id", "captured_at", "score_noise",
-        ))
+        writer.writerow(
+            (
+                "stage",
+                "relative_position",
+                "focus_score",
+                "frame_id",
+                "captured_at",
+                "score_noise",
+            )
+        )
         for item in measurements:
-            writer.writerow((
-                item.stage, item.position, item.score,
-                item.frame_id, item.captured_at, item.score_noise,
-            ))
+            writer.writerow(
+                (
+                    item.stage,
+                    item.position,
+                    item.score,
+                    item.frame_id,
+                    item.captured_at,
+                    item.score_noise,
+                )
+            )
     return path
 
 
@@ -597,40 +636,49 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Continuous coarse and single-pass adaptive fine autofocus."
     )
-    parser.add_argument("--port", default="COM3", help="Arduino serial port")
     parser.add_argument(
-        "--half-range", required=True, type=_positive_int,
+        "--port",
+        default=os.environ.get("MG400_MICROSCOPE_SERIAL"),
+        help="Arduino /dev/serial/by-id/ path",
+    )
+    parser.add_argument(
+        "--half-range",
+        required=True,
+        type=_positive_int,
         help="safe travel allowed on each side of the starting point, in pulses",
     )
     parser.add_argument(
-        "--fine-radius", "--coarse-step", dest="coarse_step",
-        type=_positive_int, default=1000,
+        "--fine-radius",
+        "--coarse-step",
+        dest="coarse_step",
+        type=_positive_int,
+        default=1000,
         help="radius searched around the continuous coarse-scan peak",
     )
     parser.add_argument(
-        "--fine-step", type=_positive_int, default=100,
+        "--fine-step",
+        type=_positive_int,
+        default=100,
         help="maximum step used in the single adaptive fine pass",
     )
     parser.add_argument(
-        "--ultrafine-step", type=_positive_int, default=10,
+        "--ultrafine-step",
+        type=_positive_int,
+        default=10,
         help="minimum step near the peak in the same fine pass",
     )
     parser.add_argument("--speed", type=_positive_int, default=800)
     parser.add_argument("--settle", type=float, default=0.15)
     parser.add_argument("--frames", type=_positive_int, default=2)
     parser.add_argument("--precision-settle", type=float, default=0.35)
-    parser.add_argument(
-        "--precision-frames", type=_positive_int, default=3
-    )
+    parser.add_argument("--precision-frames", type=_positive_int, default=3)
     parser.add_argument("--roi", type=float, default=1.00)
     parser.add_argument("--backlash", type=int, default=200)
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--output", default="autofocus.csv")
     args = parser.parse_args()
 
-    # Imported here so the GUI can import AutoFocuser without a circular
-    # import back into Dual_A4988_GUI.
-    from Dual_A4988_GUI import BAUDRATE, MotorController
+    from .motors import BAUDRATE, MotorController
 
     controller = MotorController()
     camera = MicroscopeCamera(
@@ -640,10 +688,7 @@ def main() -> None:
     focuser = None
 
     def report(item: FocusMeasurement) -> None:
-        print(
-            f"{item.stage:6s}  position={item.position:7d}  "
-            f"score={item.score:12.3f}"
-        )
+        print(f"{item.stage:6s}  position={item.position:7d}  score={item.score:12.3f}")
 
     try:
         controller.connect(args.port, BAUDRATE)
@@ -667,10 +712,7 @@ def main() -> None:
             ultrafine_step=args.ultrafine_step,
         )
         output = save_measurements(args.output, focuser.measurements)
-        print(
-            f"Best focus: relative position {best.position}, "
-            f"score {best.score:.3f}"
-        )
+        print(f"Best focus: relative position {best.position}, score {best.score:.3f}")
         print(f"Focus curve saved to: {output.resolve()}")
     except KeyboardInterrupt:
         print("Autofocus cancelled.")

@@ -9,17 +9,19 @@ inside the saved reference.  No manually chosen image block is used.
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
-from pathlib import Path
 import threading
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-from autofocus import AutoFocuser, AutofocusCancelled, FocusMeasurement
-from camera import MicroscopeCamera
-from objective_calibration import measure_image_displacement
+from toupcam_camera import MicroscopeCamera
+
+from .autofocus import AutofocusCancelled, AutoFocuser, FocusMeasurement
+from .objective_calibration import measure_image_displacement
+from .paths import calibration_path, private_open
 
 
 class LightObjectiveCalibrationCancelled(RuntimeError):
@@ -196,9 +198,7 @@ def match_known_magnification_view(
 
     reference, work_scale = _working_gray(reference_frame, max_dimension)
     current, current_scale = _working_gray(current_frame, max_dimension)
-    if reference.shape != current.shape or not np.isclose(
-        work_scale, current_scale, rtol=0.02
-    ):
+    if reference.shape != current.shape or not np.isclose(work_scale, current_scale, rtol=0.02):
         current = cv2.resize(
             current,
             (reference.shape[1], reference.shape[0]),
@@ -225,10 +225,7 @@ def match_known_magnification_view(
         # current image by the known ratio and slide it over all reference x/y.
         template_width = max(32, int(round(current.shape[1] / ratio)))
         template_height = max(32, int(round(current.shape[0] / ratio)))
-        if (
-            template_width > reference.shape[1]
-            or template_height > reference.shape[0]
-        ):
+        if template_width > reference.shape[1] or template_height > reference.shape[0]:
             raise ValueError("Known magnification ratio produced an invalid view")
         template = cv2.resize(
             current,
@@ -240,9 +237,7 @@ def match_known_magnification_view(
             template,
             cv2.TM_CCOEFF_NORMED,
         )
-        _minimum, score, _minimum_location, best_location = cv2.minMaxLoc(
-            score_map
-        )
+        _minimum, score, _minimum_location, best_location = cv2.minMaxLoc(score_map)
         second_score = _second_spatial_peak(
             score_map,
             best_location,
@@ -251,12 +246,8 @@ def match_known_magnification_view(
         uniqueness = float(score - second_score)
         match_center_x = best_location[0] + 0.5 * template_width
         match_center_y = best_location[1] + 0.5 * template_height
-        center_dx = float(
-            (match_center_x - 0.5 * reference.shape[1]) / work_scale
-        )
-        center_dy = float(
-            (match_center_y - 0.5 * reference.shape[0]) / work_scale
-        )
+        center_dx = float((match_center_x - 0.5 * reference.shape[1]) / work_scale)
+        center_dy = float((match_center_y - 0.5 * reference.shape[0]) / work_scale)
         overlap = 1.0
         valid = (
             score >= minimum_score
@@ -324,9 +315,7 @@ class LightObjectiveCalibrator:
         if not 0 < region_fraction <= 1:
             raise ValueError("region_fraction must be greater than 0 and at most 1")
         if not 0 < neighbor_support_fraction <= 1:
-            raise ValueError(
-                "neighbor_support_fraction must be greater than 0 and at most 1"
-            )
+            raise ValueError("neighbor_support_fraction must be greater than 0 and at most 1")
         if release_threshold_px <= 0 or neighbor_consistency_px <= 0:
             raise ValueError("release and neighbor thresholds must be positive")
         if not 0 <= release_min_confidence <= 1:
@@ -359,9 +348,7 @@ class LightObjectiveCalibrator:
         self.current_microstep: int | None = None
         self.position_units = 0
         self.last_frame_id = None
-        self.measurements: list[
-            LightObjectiveMeasurement | LightObjectiveReleaseMeasurement
-        ] = []
+        self.measurements: list[LightObjectiveMeasurement | LightObjectiveReleaseMeasurement] = []
         self.coarse_frames: dict[int, np.ndarray] = {}
 
     @staticmethod
@@ -378,9 +365,7 @@ class LightObjectiveCalibrator:
                 self.motor.objective_stop()
                 self.motor.focus_stop()
             finally:
-                raise LightObjectiveCalibrationCancelled(
-                    "Light objective calibration was stopped"
-                )
+                raise LightObjectiveCalibrationCancelled("Light objective calibration was stopped")
 
     def _wait(self, seconds: float) -> None:
         if self.cancel_event.wait(max(0.0, seconds)):
@@ -400,9 +385,8 @@ class LightObjectiveCalibrator:
         if pulses == 0:
             return
         self._check_cancelled()
-        predicted_units = (
-            self.position_units
-            + pulses * self._units_per_pulse(self.current_microstep)
+        predicted_units = self.position_units + pulses * self._units_per_pulse(
+            self.current_microstep
         )
         self._publish_diagnostic(
             "move",
@@ -415,9 +399,7 @@ class LightObjectiveCalibrator:
             self._check_cancelled()
         self.motor.objective_move(pulses)
         self._wait(abs(pulses) / self.speed + self.move_settle_seconds)
-        self.position_units += pulses * self._units_per_pulse(
-            self.current_microstep
-        )
+        self.position_units += pulses * self._units_per_pulse(self.current_microstep)
 
     def _move_to_units(self, target_units: int) -> None:
         unit_size = self._units_per_pulse(self.current_microstep)
@@ -455,9 +437,7 @@ class LightObjectiveCalibrator:
             # Keep only a compact normalized representation in memory.  At
             # 384px maximum dimension, dozens of frames remain inexpensive
             # and no temporary PNG files are written.
-            remember_in[int(self.position_units)] = _working_gray(
-                frame, 384
-            )[0]
+            remember_in[int(self.position_units)] = _working_gray(frame, 384)[0]
         match = match_known_magnification_view(
             self.reference_frame,
             frame,
@@ -515,11 +495,13 @@ class LightObjectiveCalibrator:
         denominator = float(np.linalg.norm(first) * np.linalg.norm(second))
         if denominator <= 1e-12:
             return 0.0
-        return float(np.clip(
-            np.dot(first.reshape(-1), second.reshape(-1)) / denominator,
-            -1.0,
-            1.0,
-        ))
+        return float(
+            np.clip(
+                np.dot(first.reshape(-1), second.reshape(-1)) / denominator,
+                -1.0,
+                1.0,
+            )
+        )
 
     def _return_to_saved_view(
         self,
@@ -532,16 +514,12 @@ class LightObjectiveCalibrator:
     ) -> None:
         """Return by finding a supported peak in target-frame similarity."""
         if target_position_units not in saved_frames:
-            raise RuntimeError(
-                f"The target frame at {target_position_units}/16 step was not saved"
-            )
+            raise RuntimeError(f"The target frame at {target_position_units}/16 step was not saved")
         if not saved_frames:
             raise RuntimeError("No saved scan frames are available for visual return")
         target_frame = saved_frames[target_position_units]
         unit_size = self._units_per_pulse(self.current_microstep)
-        span_pulses = int(np.ceil(
-            abs(upper_position_units - lower_position_units) / unit_size
-        ))
+        span_pulses = int(np.ceil(abs(upper_position_units - lower_position_units) / unit_size))
         # Permit a modest backlash margin below the original scan, without
         # allowing a missed peak to drive through the range repeatedly.
         max_reverse_pulses = max(8, span_pulses + max(4, span_pulses // 4))
@@ -550,15 +528,15 @@ class LightObjectiveCalibrator:
 
         def publish_trace(accepted_position_units: int | None = None) -> None:
             if self.progress is not None:
-                self.progress(LightObjectiveReturnTrace(
-                    stage=stage,
-                    target_position_units=int(target_position_units),
-                    samples=tuple(samples),
-                    rejected_isolated_positions=tuple(sorted(
-                        isolated_positions
-                    )),
-                    accepted_position_units=accepted_position_units,
-                ))
+                self.progress(
+                    LightObjectiveReturnTrace(
+                        stage=stage,
+                        target_position_units=int(target_position_units),
+                        samples=tuple(samples),
+                        rejected_isolated_positions=tuple(sorted(isolated_positions)),
+                        accepted_position_units=accepted_position_units,
+                    )
+                )
 
         for reverse_index in range(max_reverse_pulses + 1):
             self._check_cancelled()
@@ -580,21 +558,13 @@ class LightObjectiveCalibrator:
                 candidate = samples[-2]
                 after = samples[-1]
                 candidate_position, candidate_score = candidate
-                is_local_peak = (
-                    candidate_score >= before[1]
-                    and candidate_score >= after[1]
-                )
+                is_local_peak = candidate_score >= before[1] and candidate_score >= after[1]
                 support_limit = max(
                     self.minimum_score,
                     candidate_score * self.neighbor_support_fraction,
                 )
-                has_neighbor_support = (
-                    before[1] >= support_limit
-                    or after[1] >= support_limit
-                )
-                filtered_score = float(np.median([
-                    before[1], candidate_score, after[1]
-                ]))
+                has_neighbor_support = before[1] >= support_limit or after[1] >= support_limit
+                filtered_score = float(np.median([before[1], candidate_score, after[1]]))
 
                 if is_local_peak and not has_neighbor_support:
                     isolated_positions.add(candidate_position)
@@ -636,18 +606,15 @@ class LightObjectiveCalibrator:
 
         supported_scores = []
         for index in range(1, len(samples) - 1):
-            before, candidate, after = samples[index - 1:index + 2]
+            before, candidate, after = samples[index - 1 : index + 2]
             support_limit = max(
                 self.minimum_score,
                 candidate[1] * self.neighbor_support_fraction,
             )
-            if (
-                candidate[0] <= target_position_units
-                and (before[1] >= support_limit or after[1] >= support_limit)
+            if candidate[0] <= target_position_units and (
+                before[1] >= support_limit or after[1] >= support_limit
             ):
-                supported_scores.append(float(np.median([
-                    before[1], candidate[1], after[1]
-                ])))
+                supported_scores.append(float(np.median([before[1], candidate[1], after[1]])))
         best_supported = max(supported_scores, default=float("nan"))
         raise RuntimeError(
             f"Visual return could not find a neighbor-supported similarity "
@@ -665,8 +632,7 @@ class LightObjectiveCalibrator:
         usable = [item for item in ordered if item.valid]
         if not usable:
             raise RuntimeError(
-                "No trustworthy partial-reference match was found in the "
-                "light-calibration scan"
+                "No trustworthy partial-reference match was found in the light-calibration scan"
             )
 
         by_position = {item.position_units: item for item in ordered}
@@ -682,9 +648,7 @@ class LightObjectiveCalibrator:
                 by_position.get(item.position_units + coarse_step_units),
             ]
             has_support = any(
-                neighbor is not None
-                and neighbor.valid
-                and neighbor.score >= support_limit
+                neighbor is not None and neighbor.valid and neighbor.score >= support_limit
                 for neighbor in neighbors
             )
             if has_support:
@@ -711,15 +675,12 @@ class LightObjectiveCalibrator:
         for item in selected:
             if (
                 not groups
-                or item.position_units - groups[-1][-1].position_units
-                > coarse_step_units
+                or item.position_units - groups[-1][-1].position_units > coarse_step_units
             ):
                 groups.append([item])
             else:
                 groups[-1].append(item)
-        peak_group = next(
-            group for group in groups if peak in group
-        )
+        peak_group = next(group for group in groups if peak in group)
         lower = peak_group[0].position_units
         upper = peak_group[-1].position_units
         if lower == upper:
@@ -735,14 +696,16 @@ class LightObjectiveCalibrator:
             f"{len(isolated_positions)} isolated high-score point(s).",
         )
         if self.progress is not None:
-            self.progress(LightObjectiveRegionUpdate(
-                lower_position_units=int(lower),
-                upper_position_units=int(upper),
-                peak_position_units=int(peak.position_units),
-                region_cutoff=float(region_cutoff),
-                neighbor_support_fraction=self.neighbor_support_fraction,
-                rejected_isolated_positions=tuple(isolated_positions),
-            ))
+            self.progress(
+                LightObjectiveRegionUpdate(
+                    lower_position_units=int(lower),
+                    upper_position_units=int(upper),
+                    peak_position_units=int(peak.position_units),
+                    region_cutoff=float(region_cutoff),
+                    neighbor_support_fraction=self.neighbor_support_fraction,
+                    rejected_isolated_positions=tuple(isolated_positions),
+                )
+            )
         return lower, upper, peak
 
     def _coarse_motor_axis(self) -> np.ndarray:
@@ -754,12 +717,10 @@ class LightObjectiveCalibrator:
             if delta_units <= 0:
                 continue
             try:
-                dx, dy, distance, confidence, overlap = (
-                    measure_image_displacement(
-                        self.coarse_frames[first_position],
-                        self.coarse_frames[second_position],
-                        roi_fraction=1.0,
-                    )
+                dx, dy, distance, confidence, overlap = measure_image_displacement(
+                    self.coarse_frames[first_position],
+                    self.coarse_frames[second_position],
+                    roi_fraction=1.0,
                 )
             except (cv2.error, ValueError):
                 continue
@@ -771,8 +732,7 @@ class LightObjectiveCalibrator:
                 vectors.append((dx / delta_units, dy / delta_units))
         if not vectors:
             raise RuntimeError(
-                "The coarse light scan did not provide a trustworthy visual "
-                "motor direction"
+                "The coarse light scan did not provide a trustworthy visual motor direction"
             )
         axis = np.median(np.asarray(vectors, dtype=np.float64), axis=0)
         magnitude = float(np.linalg.norm(axis))
@@ -801,22 +761,20 @@ class LightObjectiveCalibrator:
         disabled_work, disabled_scale = _working_gray(disabled_frame, 384)
         if not np.isclose(enabled_scale, disabled_scale):
             raise RuntimeError("Release frames were captured at different scales")
-        dx_work, dy_work, distance_work, confidence, overlap = (
-            measure_image_displacement(
-                enabled_work,
-                disabled_work,
-                roi_fraction=1.0,
-            )
+        dx_work, dy_work, distance_work, confidence, overlap = measure_image_displacement(
+            enabled_work,
+            disabled_work,
+            roi_fraction=1.0,
         )
         scale = max(1e-9, float(enabled_scale))
         endpoint_error = float("nan")
         if endpoint_target is not None:
-            _target_dx, _target_dy, target_distance, target_confidence, (
-                target_overlap
-            ) = measure_image_displacement(
-                endpoint_target,
-                disabled_work,
-                roi_fraction=1.0,
+            _target_dx, _target_dy, target_distance, target_confidence, (target_overlap) = (
+                measure_image_displacement(
+                    endpoint_target,
+                    disabled_work,
+                    roi_fraction=1.0,
+                )
             )
             if (
                 target_confidence >= self.release_min_confidence
@@ -836,8 +794,7 @@ class LightObjectiveCalibrator:
             confidence=float(confidence),
             overlap=float(overlap),
             valid=bool(
-                confidence >= self.release_min_confidence
-                and overlap >= self.minimum_overlap
+                confidence >= self.release_min_confidence and overlap >= self.minimum_overlap
             ),
             endpoint_error=endpoint_error,
         )
@@ -881,9 +838,7 @@ class LightObjectiveCalibrator:
         motor_axis: np.ndarray,
     ) -> int:
         denominator = float(np.dot(motor_axis, motor_axis))
-        requested_units = float(
-            np.dot(np.asarray([dx_work, dy_work]), motor_axis) / denominator
-        )
+        requested_units = float(np.dot(np.asarray([dx_work, dy_work]), motor_axis) / denominator)
         units_per_pulse = self._units_per_pulse(self.current_microstep)
         requested_pulses = requested_units / units_per_pulse
         if abs(requested_pulses) < 0.25:
@@ -916,10 +871,7 @@ class LightObjectiveCalibrator:
                 roi_fraction=1.0,
             )
             distance_px = float(distance / max(1e-9, scale))
-            valid = (
-                confidence >= self.release_min_confidence
-                and overlap >= self.minimum_overlap
-            )
+            valid = confidence >= self.release_min_confidence and overlap >= self.minimum_overlap
             self._publish_diagnostic(
                 stage,
                 f"alignment attempt {attempt}: residual={distance_px:.3f}px "
@@ -928,9 +880,7 @@ class LightObjectiveCalibrator:
                 f"{confidence:.3f}, overlap={overlap:.3f}.",
             )
             if not valid:
-                raise RuntimeError(
-                    f"{stage} could not localize the disabled target image"
-                )
+                raise RuntimeError(f"{stage} could not localize the disabled target image")
             if distance_px <= tolerance_px:
                 return frame_id, frame
 
@@ -946,14 +896,12 @@ class LightObjectiveCalibrator:
                 no_progress = 0
             if no_progress >= 3:
                 raise RuntimeError(
-                    f"{stage} did not reduce its visual residual for three "
-                    "consecutive attempts"
+                    f"{stage} did not reduce its visual residual for three consecutive attempts"
                 )
             previous_distance = distance_px
             self._move_pulses(pulses)
         raise RuntimeError(
-            f"{stage} did not reach the disabled target within "
-            f"{max_attempts} visual corrections"
+            f"{stage} did not reach the disabled target within {max_attempts} visual corrections"
         )
 
     def _release_centering(
@@ -962,7 +910,7 @@ class LightObjectiveCalibrator:
     ) -> tuple[np.ndarray, LightObjectiveReleaseMeasurement]:
         """Iteratively move the enabled image onto each relaxed landing image."""
         last_item = None
-        last_disabled_work = None
+        _last_disabled_work = None
         for iteration in range(1, self.release_max_iterations + 1):
             item, _disabled_frame, disabled_work = self._capture_release(
                 "release_centering",
@@ -974,7 +922,7 @@ class LightObjectiveCalibrator:
                     "measured reliably during light calibration"
                 )
             last_item = item
-            last_disabled_work = disabled_work
+            _last_disabled_work = disabled_work
             self._publish_diagnostic(
                 "release centering",
                 f"Iteration {iteration}: enabled-to-disabled shift="
@@ -1033,12 +981,8 @@ class LightObjectiveCalibrator:
             )
             # All working frames use the same resize factor.  Recover it from
             # the reference image size for a full-camera-pixel report.
-            _reference_work, reference_scale = _working_gray(
-                self.reference_frame, 384
-            )
-            endpoint_separation = float(
-                endpoint_work / max(1e-9, reference_scale)
-            )
+            _reference_work, reference_scale = _working_gray(self.reference_frame, 384)
+            endpoint_separation = float(endpoint_work / max(1e-9, reference_scale))
         endpoints_agree = (
             all(item.valid for item in probes)
             and endpoint_confidence >= self.release_min_confidence
@@ -1046,10 +990,7 @@ class LightObjectiveCalibrator:
             and endpoint_separation <= self.neighbor_consistency_px
         )
 
-        verification_target = (
-            probe_disabled_frames[-1]
-            if endpoints_agree else stable_target
-        )
+        verification_target = probe_disabled_frames[-1] if endpoints_agree else stable_target
         verification = []
         for repeat in range(1, self.verification_repeats + 1):
             self._align_enabled_to_working_frame(
@@ -1065,12 +1006,8 @@ class LightObjectiveCalibrator:
             )
             verification.append(item)
 
-        distances = [
-            item.displacement for item in verification if item.valid
-        ]
-        median_release = (
-            float(np.median(distances)) if distances else float("nan")
-        )
+        distances = [item.displacement for item in verification if item.valid]
+        median_release = float(np.median(distances)) if distances else float("nan")
         verification_passed = (
             len(distances) == self.verification_repeats
             and median_release <= self.release_threshold_px
@@ -1122,7 +1059,9 @@ class LightObjectiveCalibrator:
         if focus_fine_radius is not None and focus_fine_radius < focus_step:
             raise ValueError("Local autofocus fine radius must be at least its maximum step")
         if focus_min_step is not None and not 0 < focus_min_step <= focus_step:
-            raise ValueError("Local autofocus minimum step must be positive and at most its maximum step")
+            raise ValueError(
+                "Local autofocus minimum step must be positive and at most its maximum step"
+            )
         if not self.camera.is_open:
             raise RuntimeError("Camera is not open")
         if not self.motor.connected:
@@ -1141,9 +1080,7 @@ class LightObjectiveCalibrator:
             if lock_exposure:
                 time.sleep(0.7)
                 try:
-                    auto_exposure_before = bool(
-                        self.camera.sdk_camera.get_AutoExpoEnable()
-                    )
+                    auto_exposure_before = bool(self.camera.sdk_camera.get_AutoExpoEnable())
                 except Exception:
                     pass
                 self.camera.set_auto_exposure(False)
@@ -1214,15 +1151,13 @@ class LightObjectiveCalibrator:
                     pass
 
             self._set_microstep(fine_microstep)
-            stable_target, _centered_release = self._release_centering(
-                motor_axis
-            )
-            mechanical_stable, median_release, endpoint_separation, (
-                verification_count
-            ) = self._stable_point_check(
-                stable_target,
-                motor_axis,
-                probe_pulses=int(fine_step_pulses),
+            stable_target, _centered_release = self._release_centering(motor_axis)
+            mechanical_stable, median_release, endpoint_separation, (verification_count) = (
+                self._stable_point_check(
+                    stable_target,
+                    motor_axis,
+                    probe_pulses=int(fine_step_pulses),
+                )
             )
 
             # The stable-point routine finishes with the turret disabled.
@@ -1279,69 +1214,84 @@ class LightObjectiveCalibrator:
 
 def save_light_objective_measurements(
     path: str | Path,
-    measurements: list[
-        LightObjectiveMeasurement | LightObjectiveReleaseMeasurement
-    ],
+    measurements: list[LightObjectiveMeasurement | LightObjectiveReleaseMeasurement],
 ) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as output:
+    path = calibration_path(path)
+    with private_open(path, "w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
-        writer.writerow((
-            "kind",
-            "stage",
-            "position_1_16_step_units",
-            "microstep",
-            "frame_id",
-            "score",
-            "second_score",
-            "uniqueness",
-            "center_dx_px",
-            "center_dy_px",
-            "center_error_px",
-            "overlap",
-            "valid",
-            "enabled_frame_id",
-            "disabled_frame_id",
-            "release_dx_px",
-            "release_dy_px",
-            "release_displacement_px",
-            "release_confidence",
-            "endpoint_error_px",
-        ))
+        writer.writerow(
+            (
+                "kind",
+                "stage",
+                "position_1_16_step_units",
+                "microstep",
+                "frame_id",
+                "score",
+                "second_score",
+                "uniqueness",
+                "center_dx_px",
+                "center_dy_px",
+                "center_error_px",
+                "overlap",
+                "valid",
+                "enabled_frame_id",
+                "disabled_frame_id",
+                "release_dx_px",
+                "release_dy_px",
+                "release_displacement_px",
+                "release_confidence",
+                "endpoint_error_px",
+            )
+        )
         for item in measurements:
             if isinstance(item, LightObjectiveReleaseMeasurement):
-                writer.writerow((
-                    "release",
-                    item.stage,
-                    item.position_units,
-                    item.microstep,
-                    "", "", "", "", "", "", "",
-                    item.overlap,
-                    item.valid,
-                    item.enabled_frame_id,
-                    item.disabled_frame_id,
-                    item.dx,
-                    item.dy,
-                    item.displacement,
-                    item.confidence,
-                    item.endpoint_error,
-                ))
+                writer.writerow(
+                    (
+                        "release",
+                        item.stage,
+                        item.position_units,
+                        item.microstep,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        item.overlap,
+                        item.valid,
+                        item.enabled_frame_id,
+                        item.disabled_frame_id,
+                        item.dx,
+                        item.dy,
+                        item.displacement,
+                        item.confidence,
+                        item.endpoint_error,
+                    )
+                )
             else:
-                writer.writerow((
-                    "reference_match",
-                    item.stage,
-                    item.position_units,
-                    item.microstep,
-                    item.frame_id,
-                    item.score,
-                    item.second_score,
-                    item.uniqueness,
-                    item.center_dx,
-                    item.center_dy,
-                    item.center_error,
-                    item.overlap,
-                    item.valid,
-                    "", "", "", "", "", "", "",
-                ))
+                writer.writerow(
+                    (
+                        "reference_match",
+                        item.stage,
+                        item.position_units,
+                        item.microstep,
+                        item.frame_id,
+                        item.score,
+                        item.second_score,
+                        item.uniqueness,
+                        item.center_dx,
+                        item.center_dy,
+                        item.center_error,
+                        item.overlap,
+                        item.valid,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                    )
+                )
     return path

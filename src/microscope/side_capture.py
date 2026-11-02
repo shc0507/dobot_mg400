@@ -1,13 +1,16 @@
 """One-way objective rotation with one full-resolution USB photo per move."""
 
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 import csv
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import cv2
+
+from .paths import calibration_path, private_open
+from .paths import directory as make_directory
 
 
 class SideCaptureCancelled(RuntimeError):
@@ -23,8 +26,16 @@ class SideCaptureProgress:
 
 
 def capture_objective_series(
-    camera, motor, directory, *, step=2, total_steps=720,
-    speed=200, settle_seconds=0.35, cancel_event=None, progress=None,
+    camera,
+    motor,
+    directory,
+    *,
+    step=2,
+    total_steps=720,
+    speed=200,
+    settle_seconds=0.35,
+    cancel_event=None,
+    progress=None,
 ):
     """Move +2 full steps, await DONE, then save a fresh photo; repeat to +720.
 
@@ -37,7 +48,7 @@ def capture_objective_series(
     if speed <= 0 or settle_seconds < 0:
         raise ValueError("Speed must be positive and settling nonnegative")
     cancel_event = cancel_event or threading.Event()
-    directory = Path(directory)
+    directory = calibration_path(directory)
     total = total_steps // step
 
     def check_cancelled():
@@ -51,7 +62,10 @@ def capture_objective_series(
     def command(text, expected, timeout=5.0):
         check_cancelled()
         return motor.send_and_wait(
-            text, expected, timeout=timeout, cancel_event=cancel_event,
+            text,
+            expected,
+            timeout=timeout,
+            cancel_event=cancel_event,
         )
 
     def fresh_frame(after_id=None, not_before=0.0):
@@ -59,7 +73,9 @@ def capture_objective_series(
         while time.monotonic() < deadline:
             check_cancelled()
             packet = camera.get_frame_packet(
-                after_id=after_id, timeout=0.2, copy=True,
+                after_id=after_id,
+                timeout=0.2,
+                copy=True,
             )
             if packet is None:
                 continue
@@ -69,7 +85,7 @@ def capture_objective_series(
         raise RuntimeError("No new side-camera frame arrived after settling")
 
     try:
-        directory.mkdir(parents=True, exist_ok=False)
+        make_directory(directory, exclusive=True)
         # Validate that the camera supplies frames before moving the objective.
         fresh_frame()
         command("STOP OBJ", "OK STOP OBJ")
@@ -80,19 +96,34 @@ def capture_objective_series(
         if progress:
             progress(SideCaptureProgress(0, total, 0, directory))
 
-        with (directory / "capture.csv").open(
-            "w", newline="", encoding="utf-8", buffering=1,
+        with private_open(
+            directory / "capture.csv",
+            "w",
+            newline="",
+            encoding="utf-8",
+            buffering=1,
         ) as output:
             writer = csv.writer(output)
-            writer.writerow((
-                "index", "commanded_full_steps", "firmware_position",
-                "microstep", "speed_pulses_per_s", "settle_seconds",
-                "frame_id", "frame_received_monotonic", "saved_at",
-                "width", "height", "file",
-            ))
+            writer.writerow(
+                (
+                    "index",
+                    "commanded_full_steps",
+                    "firmware_position",
+                    "microstep",
+                    "speed_pulses_per_s",
+                    "settle_seconds",
+                    "frame_id",
+                    "frame_received_monotonic",
+                    "saved_at",
+                    "width",
+                    "height",
+                    "file",
+                )
+            )
             for index in range(1, total + 1):
                 done = command(
-                    f"OBJ MOVE {step}", "DONE OBJ POS ",
+                    f"OBJ MOVE {step}",
+                    "DONE OBJ POS ",
                     timeout=max(5.0, step / speed + 3.0),
                 )
                 firmware_position = int(done.rsplit(" ", 1)[-1])
@@ -103,25 +134,39 @@ def capture_objective_series(
                 latest = camera.get_frame_packet(wait=False, copy=False)
                 after_id = latest[0] if latest else None
                 frame_id, received_at, frame = fresh_frame(
-                    after_id=after_id, not_before=time.monotonic(),
+                    after_id=after_id,
+                    not_before=time.monotonic(),
                 )
                 check_cancelled()
                 commanded = index * step
                 filename = f"side_{index:04d}_step_{commanded:04d}.png"
                 ok, encoded = cv2.imencode(
-                    ".png", frame, [cv2.IMWRITE_PNG_COMPRESSION, 1],
+                    ".png",
+                    frame,
+                    [cv2.IMWRITE_PNG_COMPRESSION, 1],
                 )
                 if not ok:
                     raise RuntimeError(f"Could not encode {filename}")
                 # Finish writing each image before starting the next movement.
-                encoded.tofile(str(directory / filename))
+                with private_open(directory / filename, "xb") as image_file:
+                    image_file.write(encoded.tobytes())
                 height, width = frame.shape[:2]
-                writer.writerow((
-                    index, commanded, firmware_position, 1, speed,
-                    settle_seconds, frame_id, received_at,
-                    datetime.now().astimezone().isoformat(),
-                    width, height, filename,
-                ))
+                writer.writerow(
+                    (
+                        index,
+                        commanded,
+                        firmware_position,
+                        1,
+                        speed,
+                        settle_seconds,
+                        frame_id,
+                        received_at,
+                        datetime.now().astimezone().isoformat(),
+                        width,
+                        height,
+                        filename,
+                    )
+                )
                 if progress:
                     progress(SideCaptureProgress(index, total, commanded, directory))
         return directory

@@ -9,15 +9,17 @@ frame corrects the position through image-atlas registration.
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
-from pathlib import Path
 import threading
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-from camera import MicroscopeCamera
+from toupcam_camera import MicroscopeCamera
+
+from .paths import calibration_path, private_open
 
 
 class ObjectiveCalibrationCancelled(RuntimeError):
@@ -164,7 +166,7 @@ def _center_gray(frame: np.ndarray, roi_fraction: float) -> tuple[np.ndarray, fl
     roi_height = max(64, int(height * roi_fraction))
     x1 = max(0, (width - roi_width) // 2)
     y1 = max(0, (height - roi_height) // 2)
-    roi = frame[y1:y1 + roi_height, x1:x1 + roi_width]
+    roi = frame[y1 : y1 + roi_height, x1 : x1 + roi_width]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
     gray = cv2.GaussianBlur(gray, (3, 3), 0).astype(np.float32)
 
@@ -173,17 +175,14 @@ def _center_gray(frame: np.ndarray, roi_fraction: float) -> tuple[np.ndarray, fl
     scale_x = scale_y = 1.0
     if max(gray.shape) > 1024:
         scale = 1024.0 / max(gray.shape)
-        resized = cv2.resize(
-            gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA
-        )
+        resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         scale_x = roi_width / resized.shape[1]
         scale_y = roi_height / resized.shape[0]
         gray = resized
     return gray, scale_x, scale_y
 
 
-def _aligned_correlation(first: np.ndarray, second: np.ndarray,
-                         dx: int, dy: int) -> float:
+def _aligned_correlation(first: np.ndarray, second: np.ndarray, dx: int, dy: int) -> float:
     """Return brightness-independent correlation over the translated overlap."""
     height, width = first.shape
     overlap_width = width - abs(dx)
@@ -196,12 +195,12 @@ def _aligned_correlation(first: np.ndarray, second: np.ndarray,
     first_y = max(0, -dy)
     second_y = max(0, dy)
     a = first[
-        first_y:first_y + overlap_height,
-        first_x:first_x + overlap_width,
+        first_y : first_y + overlap_height,
+        first_x : first_x + overlap_width,
     ].reshape(-1)
     b = second[
-        second_y:second_y + overlap_height,
-        second_x:second_x + overlap_width,
+        second_y : second_y + overlap_height,
+        second_x : second_x + overlap_width,
     ].reshape(-1)
     a = a - float(a.mean())
     b = b - float(b.mean())
@@ -219,31 +218,21 @@ def measure_image_displacement(
 ) -> tuple[float, float, float, float, float]:
     """Return ``(dx, dy, distance, confidence, overlap)`` in ROI pixels."""
     first, scale_x, scale_y = _center_gray(enabled_frame, roi_fraction)
-    second, second_scale_x, second_scale_y = _center_gray(
-        disabled_frame, roi_fraction
-    )
+    second, second_scale_x, second_scale_y = _center_gray(disabled_frame, roi_fraction)
     if first.shape != second.shape:
         raise ValueError("Enabled and disabled frames have different sizes")
-    if not np.isclose(scale_x, second_scale_x) or not np.isclose(
-        scale_y, second_scale_y
-    ):
+    if not np.isclose(scale_x, second_scale_x) or not np.isclose(scale_y, second_scale_y):
         raise ValueError("Enabled and disabled frames have different scales")
 
     window = cv2.createHanningWindow((first.shape[1], first.shape[0]), cv2.CV_32F)
-    (work_dx, work_dy), phase_response = cv2.phaseCorrelate(
-        first, second, window
-    )
+    (work_dx, work_dy), phase_response = cv2.phaseCorrelate(first, second, window)
     rounded_dx = int(round(work_dx))
     rounded_dy = int(round(work_dy))
     overlap = max(0.0, 1.0 - abs(work_dx) / first.shape[1]) * max(
         0.0, 1.0 - abs(work_dy) / first.shape[0]
     )
-    image_correlation = _aligned_correlation(
-        first, second, rounded_dx, rounded_dy
-    )
-    confidence = min(
-        float(np.clip(phase_response, 0.0, 1.0)), image_correlation
-    )
+    image_correlation = _aligned_correlation(first, second, rounded_dx, rounded_dy)
+    confidence = min(float(np.clip(phase_response, 0.0, 1.0)), image_correlation)
     dx = float(work_dx * scale_x)
     dy = float(work_dy * scale_y)
     distance = float(np.hypot(dx, dy))
@@ -284,7 +273,7 @@ def reference_view_similarity(
         roi_height = max(32, int(height * roi_fraction))
         x1 = max(0, (width - roi_width) // 2)
         y1 = max(0, (height - roi_height) // 2)
-        return frame[y1:y1 + roi_height, x1:x1 + roi_width]
+        return frame[y1 : y1 + roi_height, x1 : x1 + roi_width]
 
     reference = center_roi(reference)
     candidate = center_roi(candidate)
@@ -305,51 +294,49 @@ def reference_view_similarity(
     def color_histogram(frame):
         small = cv2.resize(frame, (192, 144), interpolation=cv2.INTER_AREA)
         hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-        histogram = cv2.calcHist(
-            [hsv], [0, 1], None, [24, 16], [0, 180, 0, 256]
-        )
+        histogram = cv2.calcHist([hsv], [0, 1], None, [24, 16], [0, 180, 0, 256])
         cv2.normalize(histogram, histogram, alpha=1.0, norm_type=cv2.NORM_L1)
         return histogram
 
-    color_similarity = float(np.clip(cv2.compareHist(
-        color_histogram(reference),
-        color_histogram(candidate),
-        cv2.HISTCMP_INTERSECT,
-    ), 0.0, 1.0))
+    color_similarity = float(
+        np.clip(
+            cv2.compareHist(
+                color_histogram(reference),
+                color_histogram(candidate),
+                cv2.HISTCMP_INTERSECT,
+            ),
+            0.0,
+            1.0,
+        )
+    )
 
     # Preserve large-scale sample structure while suppressing focus-sensitive
     # detail.  Phase correlation permits moderate lateral displacement.
     reference_blurred = cv2.GaussianBlur(reference, (0, 0), 5.0)
     candidate_blurred = cv2.GaussianBlur(candidate, (0, 0), 5.0)
     try:
-        _dx, _dy, _distance, structure_similarity, _overlap = (
-            measure_image_displacement(
-                reference_blurred,
-                candidate_blurred,
-                roi_fraction=1.0,
-            )
+        _dx, _dy, _distance, structure_similarity, _overlap = measure_image_displacement(
+            reference_blurred,
+            candidate_blurred,
+            roi_fraction=1.0,
         )
     except (cv2.error, ValueError):
         structure_similarity = 0.0
 
     # A very small spatial color grid distinguishes a structured reference
     # from a uniform field even when both contain a similar average color.
-    reference_grid = cv2.resize(
-        reference, (8, 6), interpolation=cv2.INTER_AREA
-    ).astype(np.float32)
-    candidate_grid = cv2.resize(
-        candidate, (8, 6), interpolation=cv2.INTER_AREA
-    ).astype(np.float32)
+    reference_grid = cv2.resize(reference, (8, 6), interpolation=cv2.INTER_AREA).astype(np.float32)
+    candidate_grid = cv2.resize(candidate, (8, 6), interpolation=cv2.INTER_AREA).astype(np.float32)
     grid_difference = float(np.mean(np.abs(reference_grid - candidate_grid)))
     grid_similarity = float(np.exp(-grid_difference / 45.0))
 
-    return float(np.clip(
-        0.50 * color_similarity
-        + 0.30 * structure_similarity
-        + 0.20 * grid_similarity,
-        0.0,
-        1.0,
-    ))
+    return float(
+        np.clip(
+            0.50 * color_similarity + 0.30 * structure_similarity + 0.20 * grid_similarity,
+            0.0,
+            1.0,
+        )
+    )
 
 
 class _EdgeReacquireObjectiveCalibrator:
@@ -378,8 +365,15 @@ class _EdgeReacquireObjectiveCalibrator:
     ):
         if speed <= 0:
             raise ValueError("speed must be positive")
-        if min(move_settle_seconds, precision_settle_seconds, enable_settle_seconds,
-               release_settle_seconds) < 0:
+        if (
+            min(
+                move_settle_seconds,
+                precision_settle_seconds,
+                enable_settle_seconds,
+                release_settle_seconds,
+            )
+            < 0
+        ):
             raise ValueError("wait times cannot be negative")
         if not 0 < roi_fraction <= 1:
             raise ValueError("roi_fraction must be greater than 0 and at most 1")
@@ -423,18 +417,14 @@ class _EdgeReacquireObjectiveCalibrator:
             try:
                 self.motor.objective_stop()
             finally:
-                raise ObjectiveCalibrationCancelled(
-                    "Objective calibration was stopped"
-                )
+                raise ObjectiveCalibrationCancelled("Objective calibration was stopped")
 
     def _check_cancelled(self) -> None:
         if self.cancel_event.is_set():
             try:
                 self.motor.objective_stop()
             finally:
-                raise ObjectiveCalibrationCancelled(
-                    "Objective calibration was stopped"
-                )
+                raise ObjectiveCalibrationCancelled("Objective calibration was stopped")
 
     def _move_to(self, target: int, *, settle_seconds: float | None = None) -> None:
         self._check_cancelled()
@@ -447,11 +437,8 @@ class _EdgeReacquireObjectiveCalibrator:
         self._wait(abs(distance) / self.speed + settle_seconds)
         self.position = int(target)
 
-    def _move_by(self, distance: int, *,
-                 settle_seconds: float | None = None) -> None:
-        self._move_to(
-            self.position + int(distance), settle_seconds=settle_seconds
-        )
+    def _move_by(self, distance: int, *, settle_seconds: float | None = None) -> None:
+        self._move_to(self.position + int(distance), settle_seconds=settle_seconds)
 
     def _new_frame(self) -> tuple[int, np.ndarray]:
         packet = self.camera.get_frame_packet(
@@ -478,12 +465,8 @@ class _EdgeReacquireObjectiveCalibrator:
         self.motor.objective_disable()
         self._wait(self.release_settle_seconds)
         disabled_frame_id, disabled_frame = self._new_frame()
-        enabled_similarity = reference_view_similarity(
-            self.reference_frame, enabled_frame
-        )
-        disabled_similarity = reference_view_similarity(
-            self.reference_frame, disabled_frame
-        )
+        enabled_similarity = reference_view_similarity(self.reference_frame, enabled_frame)
+        disabled_similarity = reference_view_similarity(self.reference_frame, disabled_frame)
         reference_similarity = min(enabled_similarity, disabled_similarity)
         if reference_similarity < self.reference_threshold:
             dx = dy = displacement = float("nan")
@@ -491,21 +474,17 @@ class _EdgeReacquireObjectiveCalibrator:
             valid = False
             status = "SCENE_MISMATCH"
         else:
-            dx, dy, displacement, confidence, overlap = (
-                measure_image_displacement(
-                    enabled_frame,
-                    disabled_frame,
-                    roi_fraction=self.roi_fraction,
-                )
+            dx, dy, displacement, confidence, overlap = measure_image_displacement(
+                enabled_frame,
+                disabled_frame,
+                roi_fraction=self.roi_fraction,
             )
             # A fast mechanical release can still be moving when the first
             # post-release frame arrives.  Retry once after the precision
             # settling time and keep whichever registration is clearer.
             if confidence < self.min_confidence:
                 self._wait(self.precision_settle_seconds)
-                retry_frame_id, retry_frame, retry_similarity = (
-                    self._reference_sample()
-                )
+                retry_frame_id, retry_frame, retry_similarity = self._reference_sample()
                 if retry_similarity >= self.reference_threshold:
                     retry_values = measure_image_displacement(
                         enabled_frame,
@@ -517,9 +496,7 @@ class _EdgeReacquireObjectiveCalibrator:
                         disabled_frame_id = retry_frame_id
                         disabled_frame = retry_frame
                         disabled_similarity = retry_similarity
-                        reference_similarity = min(
-                            enabled_similarity, disabled_similarity
-                        )
+                        reference_similarity = min(enabled_similarity, disabled_similarity)
             valid = (
                 confidence >= self.min_confidence
                 and overlap >= self.min_overlap
@@ -624,9 +601,7 @@ class _EdgeReacquireObjectiveCalibrator:
                     break
             else:
                 outside_count = 0
-            self._move_by(
-                -direction, settle_seconds=self.move_settle_seconds
-            )
+            self._move_by(-direction, settle_seconds=self.move_settle_seconds)
         else:
             raise RuntimeError(
                 "Could not find the outside of the saved-view region. "
@@ -665,9 +640,7 @@ class _EdgeReacquireObjectiveCalibrator:
             max_search_steps=max_search_steps,
         )
         anchor_frame_id, anchor_similarity = self._reference_sample()
-        self._publish_reference_sample(
-            0, "reference_map", anchor_frame_id, anchor_similarity
-        )
+        self._publish_reference_sample(0, "reference_map", anchor_frame_id, anchor_similarity)
 
         offset = 0
         last_matched_offset = 0
@@ -676,9 +649,7 @@ class _EdgeReacquireObjectiveCalibrator:
             self._move_by(1, settle_seconds=self.move_settle_seconds)
             offset += 1
             frame_id, similarity = self._reference_sample()
-            self._publish_reference_sample(
-                offset, "reference_map", frame_id, similarity
-            )
+            self._publish_reference_sample(offset, "reference_map", frame_id, similarity)
             if similarity >= self.reference_threshold:
                 last_matched_offset = offset
             if similarity < self.edge_exit_threshold:
@@ -695,9 +666,7 @@ class _EdgeReacquireObjectiveCalibrator:
 
         # A right-edge search approaches from the right and confirms on its
         # second matched point, so use the corresponding interior point here.
-        width = last_matched_offset - (
-            self.edge_confirmation_positions - 1
-        )
+        width = last_matched_offset - (self.edge_confirmation_positions - 1)
         if width <= 0:
             raise RuntimeError(
                 "The saved-view region is too narrow for reliable image "
@@ -731,20 +700,14 @@ class _EdgeReacquireObjectiveCalibrator:
                 seek_margin += max(0, self.last_relative_position)
             else:
                 # Cross from the previous candidate to the right side first.
-                seek_margin += max(
-                    0, match_width - self.last_relative_position
-                )
+                seek_margin += max(0, match_width - self.last_relative_position)
 
         self._find_visual_anchor(
             direction,
             outside_margin=seek_margin,
             max_search_steps=max_search_steps,
         )
-        distance = (
-            relative_position
-            if direction > 0
-            else match_width - relative_position
-        )
+        distance = relative_position if direction > 0 else match_width - relative_position
         if distance < 0:
             raise RuntimeError("Candidate lies behind its visual anchor")
         if distance:
@@ -784,8 +747,7 @@ class _EdgeReacquireObjectiveCalibrator:
         )
 
     @staticmethod
-    def _group_positions(positions: list[int], max_gap: int
-                         ) -> list[tuple[int, int]]:
+    def _group_positions(positions: list[int], max_gap: int) -> list[tuple[int, int]]:
         ordered = sorted(set(positions))
         if not ordered:
             return []
@@ -806,13 +768,8 @@ class _EdgeReacquireObjectiveCalibrator:
         by_position: dict[int, list[float]] = {}
         for item in measurements:
             if item.valid and np.isfinite(item.displacement):
-                by_position.setdefault(item.position, []).append(
-                    item.displacement
-                )
-        return {
-            position: float(np.median(values))
-            for position, values in by_position.items()
-        }
+                by_position.setdefault(item.position, []).append(item.displacement)
+        return {position: float(np.median(values)) for position, values in by_position.items()}
 
     def _local_three_point_search(
         self,
@@ -831,11 +788,15 @@ class _EdgeReacquireObjectiveCalibrator:
 
         while candidate not in visited:
             visited.add(candidate)
-            positions = sorted(set((
-                max(lower, candidate - step),
-                candidate,
-                min(upper, candidate + step),
-            )))
+            positions = sorted(
+                set(
+                    (
+                        max(lower, candidate - step),
+                        candidate,
+                        min(upper, candidate + step),
+                    )
+                )
+            )
             trio = [
                 self._measure_relative_position(
                     position,
@@ -850,14 +811,11 @@ class _EdgeReacquireObjectiveCalibrator:
             if not usable:
                 break
             local_best = min(usable, key=lambda item: item.displacement)
-            center = next(
-                (item for item in usable if item.position == candidate), None
-            )
+            center = next((item for item in usable if item.position == candidate), None)
             # Sub-pixel differences are normally registration noise.  Keep
             # the center instead of drifting one pulse left because of list
             # ordering when the three positions are effectively equivalent.
-            if (center is not None
-                    and center.displacement <= local_best.displacement + 0.25):
+            if center is not None and center.displacement <= local_best.displacement + 0.25:
                 if center.displacement < best_seen[0]:
                     best_seen = (center.displacement, center.position)
                 return candidate
@@ -907,9 +865,7 @@ class _EdgeReacquireObjectiveCalibrator:
             if lock_exposure:
                 time.sleep(0.7)
                 try:
-                    auto_exposure_before = bool(
-                        self.camera.sdk_camera.get_AutoExpoEnable()
-                    )
+                    auto_exposure_before = bool(self.camera.sdk_camera.get_AutoExpoEnable())
                 except Exception:
                     pass
                 self.camera.set_auto_exposure(False)
@@ -922,27 +878,19 @@ class _EdgeReacquireObjectiveCalibrator:
             # is the confirmed left edge; match_width is the confirmed right
             # edge.  Motor pulse totals never become calibration coordinates.
             outside_margin = max(2, int(coarse_step))
-            max_search_steps = (
-                2 * int(half_range)
-                + 2 * int(refine_radius)
-                + outside_margin
-            )
+            max_search_steps = 2 * int(half_range) + 2 * int(refine_radius) + outside_margin
             match_width = self._map_reference_region(
                 outside_margin=outside_margin,
                 max_search_steps=max_search_steps,
             )
-            self.last_relative_position = match_width + (
-                self.edge_confirmation_positions + 1
-            )
+            self.last_relative_position = match_width + (self.edge_confirmation_positions + 1)
             selected_match_region = (0, match_width)
 
             # Release scanning covers the complete matched interval plus the
             # requested number of pulses outside both of its boundaries.
             release_lower = -int(refine_radius)
             release_upper = match_width + int(refine_radius)
-            release_positions = self._positions(
-                release_lower, release_upper, fine_step
-            )
+            release_positions = self._positions(release_lower, release_upper, fine_step)
             for relative_position in release_positions:
                 # Each ENABLE-to-DISABLE test gets a new visual anchor.  Any
                 # motion caused by the previous release is intentionally not
@@ -956,12 +904,9 @@ class _EdgeReacquireObjectiveCalibrator:
                 )
 
             peak_positions = [
-                item.position for item in self.measurements
-                if self._is_peak_signal(item)
+                item.position for item in self.measurements if self._is_peak_signal(item)
             ]
-            peak_regions = self._group_positions(
-                peak_positions, max(1, fine_step)
-            )
+            peak_regions = self._group_positions(peak_positions, max(1, fine_step))
 
             displacement_map = self._best_valid_by_position(self.measurements)
             if not displacement_map:
@@ -975,23 +920,24 @@ class _EdgeReacquireObjectiveCalibrator:
             # the valley they enclose.  The three-point measurements then
             # compensate for an asymmetric mechanical detent.
             enclosing_pairs = []
-            for left_region, right_region in zip(
-                peak_regions, peak_regions[1:]
-            ):
+            for left_region, right_region in zip(peak_regions, peak_regions[1:]):
                 valley_start = left_region[1] + fine_step
                 valley_stop = right_region[0] - fine_step
                 if valley_start > valley_stop:
                     continue
                 valley_values = [
-                    value for position, value in displacement_map.items()
+                    value
+                    for position, value in displacement_map.items()
                     if valley_start <= position <= valley_stop
                 ]
                 if valley_values:
-                    enclosing_pairs.append((
-                        min(valley_values),
-                        valley_start,
-                        valley_stop,
-                    ))
+                    enclosing_pairs.append(
+                        (
+                            min(valley_values),
+                            valley_start,
+                            valley_stop,
+                        )
+                    )
             if enclosing_pairs:
                 _score, valley_start, valley_stop = min(enclosing_pairs)
                 search_start = int(round((valley_start + valley_stop) / 2))
@@ -1022,12 +968,9 @@ class _EdgeReacquireObjectiveCalibrator:
                 position=best_position,
                 median_displacement=float(np.median(distances)),
                 maximum_displacement=float(max(distances)),
-                minimum_confidence=float(
-                    min(item.confidence for item in verification)
-                ),
+                minimum_confidence=float(min(item.confidence for item in verification)),
                 stable=(
-                    all(valid_verification)
-                    and float(np.median(distances)) <= self.stable_threshold
+                    all(valid_verification) and float(np.median(distances)) <= self.stable_threshold
                 ),
                 peak_regions=tuple(peak_regions),
                 match_region=selected_match_region,
@@ -1091,8 +1034,15 @@ class ObjectiveCalibrator:
     ):
         if speed <= 0:
             raise ValueError("speed must be positive")
-        if min(move_settle_seconds, precision_settle_seconds,
-               enable_settle_seconds, release_settle_seconds) < 0:
+        if (
+            min(
+                move_settle_seconds,
+                precision_settle_seconds,
+                enable_settle_seconds,
+                release_settle_seconds,
+            )
+            < 0
+        ):
             raise ValueError("wait times cannot be negative")
         if not 0 < roi_fraction <= 1:
             raise ValueError("roi_fraction must be greater than 0 and at most 1")
@@ -1105,9 +1055,7 @@ class ObjectiveCalibrator:
         if min(max_valid_displacement, peak_threshold, stable_threshold) <= 0:
             raise ValueError("displacement thresholds must be positive")
         if neighbor_consistency_tolerance_px <= 0:
-            raise ValueError(
-                "neighbor consistency tolerance must be positive"
-            )
+            raise ValueError("neighbor consistency tolerance must be positive")
         if atlas_merge_distance_px < 0:
             raise ValueError("atlas merge distance cannot be negative")
         if post_peak_quiet_distance_px < 0:
@@ -1131,15 +1079,9 @@ class ObjectiveCalibrator:
         self.max_valid_displacement = float(max_valid_displacement)
         self.peak_threshold = float(peak_threshold)
         self.stable_threshold = float(stable_threshold)
-        self.neighbor_consistency_tolerance_px = float(
-            neighbor_consistency_tolerance_px
-        )
-        self.atlas_merge_distance_px = max(
-            0.20, float(atlas_merge_distance_px)
-        )
-        self.post_peak_quiet_distance_px = float(
-            post_peak_quiet_distance_px
-        )
+        self.neighbor_consistency_tolerance_px = float(neighbor_consistency_tolerance_px)
+        self.atlas_merge_distance_px = max(0.20, float(atlas_merge_distance_px))
+        self.post_peak_quiet_distance_px = float(post_peak_quiet_distance_px)
         self.progress = progress
         self.position_progress = position_progress
         self.before_move = before_move
@@ -1160,9 +1102,7 @@ class ObjectiveCalibrator:
         self.atlas: list[_AtlasNode] = []
         self.atlas_segments: list[_AtlasSegment] = []
         self.atlas_attempt_counter = 0
-        self.peak_frames: list[
-            tuple[float, np.ndarray, np.ndarray]
-        ] = []
+        self.peak_frames: list[tuple[float, np.ndarray, np.ndarray]] = []
 
     @staticmethod
     def _units_per_pulse(microstep: int) -> int:
@@ -1176,8 +1116,7 @@ class ObjectiveCalibrator:
             microstep = self.current_microstep
         return max(
             0.05,
-            float(self.atlas_pixels_per_motor_unit)
-            * self._units_per_pulse(int(microstep)),
+            float(self.atlas_pixels_per_motor_unit) * self._units_per_pulse(int(microstep)),
         )
 
     def _check_cancelled(self) -> None:
@@ -1185,9 +1124,7 @@ class ObjectiveCalibrator:
             try:
                 self.motor.objective_stop()
             finally:
-                raise ObjectiveCalibrationCancelled(
-                    "Objective calibration was stopped"
-                )
+                raise ObjectiveCalibrationCancelled("Objective calibration was stopped")
 
     def _wait(self, seconds: float) -> None:
         if self.cancel_event.wait(max(0.0, seconds)):
@@ -1217,27 +1154,24 @@ class ObjectiveCalibrator:
                 self._wait(settle_seconds)
             return
         delta_units = pulses * self._units_per_pulse(self.current_microstep)
-        predicted_visual_delta = (
-            pulses * self._estimated_pixels_per_pulse(self.current_microstep)
-        )
+        predicted_visual_delta = pulses * self._estimated_pixels_per_pulse(self.current_microstep)
         if (
             self.position_progress is not None
             and self.visual_position_estimate is not None
             and np.isfinite(self.visual_position_estimate)
         ):
-            self.position_progress(ObjectivePositionUpdate(
-                position=float(self.visual_position_estimate),
-                predicted_position=float(
-                    self.visual_position_estimate + predicted_visual_delta
-                ),
-                target=(
-                    None if self.movement_target is None
-                    else float(self.movement_target)
-                ),
-                pulses=pulses,
-                microstep=self.current_microstep,
-                stage=self.movement_stage,
-            ))
+            self.position_progress(
+                ObjectivePositionUpdate(
+                    position=float(self.visual_position_estimate),
+                    predicted_position=float(
+                        self.visual_position_estimate + predicted_visual_delta
+                    ),
+                    target=(None if self.movement_target is None else float(self.movement_target)),
+                    pulses=pulses,
+                    microstep=self.current_microstep,
+                    stage=self.movement_stage,
+                )
+            )
         # The GUI may put objective calibration into operator-controlled
         # single-step mode.  Position/prediction is published first so the
         # displacement plot shows the pending command while this callback
@@ -1262,9 +1196,7 @@ class ObjectiveCalibrator:
         stage: str,
         target: float | None = None,
     ) -> None:
-        self.visual_position_estimate = (
-            None if position is None else float(position)
-        )
+        self.visual_position_estimate = None if position is None else float(position)
         self.movement_stage = stage
         self.movement_target = target
 
@@ -1315,10 +1247,12 @@ class ObjectiveCalibrator:
 
     def _publish_diagnostic(self, stage: str, message: str) -> None:
         if self.progress is not None:
-            self.progress(ObjectiveDiagnosticUpdate(
-                stage=str(stage),
-                message=str(message),
-            ))
+            self.progress(
+                ObjectiveDiagnosticUpdate(
+                    stage=str(stage),
+                    message=str(message),
+                )
+            )
 
     def _publish_reference(
         self,
@@ -1329,33 +1263,37 @@ class ObjectiveCalibrator:
         atlas_attempt_id: int | None = None,
     ) -> None:
         matched = similarity >= self.reference_threshold
-        self._publish(ObjectiveMeasurement(
-            position=float(position),
-            displacement=float("nan"),
-            dx=float("nan"),
-            dy=float("nan"),
-            confidence=similarity,
-            overlap=1.0,
-            valid=matched,
-            stage=stage,
-            enabled_frame_id=frame_id,
-            reference_similarity=similarity,
-            status="REFERENCE_MATCH" if matched else "REFERENCE_MISS",
-            commanded_position=self.commanded_position_units,
-            localization_confidence=similarity,
-            microstep=self.current_microstep,
-            atlas_attempt_id=atlas_attempt_id,
-        ))
+        self._publish(
+            ObjectiveMeasurement(
+                position=float(position),
+                displacement=float("nan"),
+                dx=float("nan"),
+                dy=float("nan"),
+                confidence=similarity,
+                overlap=1.0,
+                valid=matched,
+                stage=stage,
+                enabled_frame_id=frame_id,
+                reference_similarity=similarity,
+                status="REFERENCE_MATCH" if matched else "REFERENCE_MISS",
+                commanded_position=self.commanded_position_units,
+                localization_confidence=similarity,
+                microstep=self.current_microstep,
+                atlas_attempt_id=atlas_attempt_id,
+            )
+        )
 
     def _new_atlas_attempt(self, microstep: int) -> int:
         self.atlas_attempt_counter += 1
         attempt_id = self.atlas_attempt_counter
         if self.progress is not None:
-            self.progress(ObjectiveAtlasAttemptUpdate(
-                attempt_id=attempt_id,
-                microstep=int(microstep),
-                action="begin",
-            ))
+            self.progress(
+                ObjectiveAtlasAttemptUpdate(
+                    attempt_id=attempt_id,
+                    microstep=int(microstep),
+                    action="begin",
+                )
+            )
         return attempt_id
 
     def _finish_atlas_attempt(
@@ -1369,16 +1307,17 @@ class ObjectiveCalibrator:
         action = "commit" if success else "discard"
         if not success:
             self.measurements[:] = [
-                item for item in self.measurements
-                if item.atlas_attempt_id != attempt_id
+                item for item in self.measurements if item.atlas_attempt_id != attempt_id
             ]
         if self.progress is not None:
-            self.progress(ObjectiveAtlasAttemptUpdate(
-                attempt_id=int(attempt_id),
-                microstep=int(microstep),
-                action=action,
-                reason=reason,
-            ))
+            self.progress(
+                ObjectiveAtlasAttemptUpdate(
+                    attempt_id=int(attempt_id),
+                    microstep=int(microstep),
+                    action=action,
+                    reason=reason,
+                )
+            )
 
     def _publish_atlas_step(
         self,
@@ -1394,29 +1333,28 @@ class ObjectiveCalibrator:
         valid: bool,
         status: str,
     ) -> None:
-        signed = (
-            float(displacement)
-            if np.isfinite(displacement) else float("nan")
+        signed = float(displacement) if np.isfinite(displacement) else float("nan")
+        self._publish(
+            ObjectiveMeasurement(
+                position=float(position),
+                displacement=float(displacement),
+                dx=float("nan"),
+                dy=float("nan"),
+                confidence=float(confidence),
+                overlap=float(overlap),
+                valid=bool(valid),
+                stage=stage,
+                enabled_frame_id=frame_id,
+                reference_similarity=float(similarity),
+                status=status,
+                commanded_position=self.commanded_position_units,
+                localization_confidence=float(confidence),
+                microstep=self.current_microstep,
+                signed_displacement=signed,
+                scan_direction=1,
+                atlas_attempt_id=int(attempt_id),
+            )
         )
-        self._publish(ObjectiveMeasurement(
-            position=float(position),
-            displacement=float(displacement),
-            dx=float("nan"),
-            dy=float("nan"),
-            confidence=float(confidence),
-            overlap=float(overlap),
-            valid=bool(valid),
-            stage=stage,
-            enabled_frame_id=frame_id,
-            reference_similarity=float(similarity),
-            status=status,
-            commanded_position=self.commanded_position_units,
-            localization_confidence=float(confidence),
-            microstep=self.current_microstep,
-            signed_displacement=signed,
-            scan_direction=1,
-            atlas_attempt_id=int(attempt_id),
-        ))
 
     def _find_visual_edge(
         self,
@@ -1457,9 +1395,7 @@ class ObjectiveCalibrator:
                         break
                 else:
                     outside_count = 0
-                self._move_pulses(
-                    -direction, settle_seconds=self.move_settle_seconds
-                )
+                self._move_pulses(-direction, settle_seconds=self.move_settle_seconds)
             else:
                 raise RuntimeError(
                     "Could not reach the outside of the saved-view region. "
@@ -1531,13 +1467,11 @@ class ObjectiveCalibrator:
             self._set_microstep(microstep)
             self._set_visual_position(None, stage="atlas_step_test")
             try:
-                anchor_id, anchor_frame, anchor_similarity = (
-                    self._find_visual_edge(
-                        1,
-                        outside_margin_full_steps=outside_margin_full_steps,
-                        max_search_full_steps=max_search_full_steps,
-                        confirmation_positions=confirmation_positions,
-                    )
+                anchor_id, anchor_frame, anchor_similarity = self._find_visual_edge(
+                    1,
+                    outside_margin_full_steps=outside_margin_full_steps,
+                    max_search_full_steps=max_search_full_steps,
+                    confirmation_positions=confirmation_positions,
                 )
                 self._set_visual_position(0.0, stage="atlas_step_test")
                 self._publish_atlas_step(
@@ -1552,12 +1486,8 @@ class ObjectiveCalibrator:
                     valid=True,
                     status="ATLAS_TEST_ANCHOR",
                 )
-                self._move_pulses(
-                    1, settle_seconds=self.precision_settle_seconds
-                )
-                next_id, next_frame, next_similarity = (
-                    self._reference_sample()
-                )
+                self._move_pulses(1, settle_seconds=self.precision_settle_seconds)
+                next_id, next_frame, next_similarity = self._reference_sample()
                 try:
                     (
                         _dx,
@@ -1646,9 +1576,7 @@ class ObjectiveCalibrator:
         self.atlas_segments = list(segments)
         failed_pixel_step = self._estimated_pixels_per_pulse(failed_microstep)
         current_position_hint = float(
-            nodes[-1].position
-            if failed_position_hint is None
-            else failed_position_hint
+            nodes[-1].position if failed_position_hint is None else failed_position_hint
         )
 
         def localize_current_without_motion() -> float | None:
@@ -1689,9 +1617,7 @@ class ObjectiveCalibrator:
 
         if localized_position is None:
             failed_mode_index = self.MICROSTEP_MODES.index(failed_microstep)
-            recovery_modes = list(reversed(
-                self.MICROSTEP_MODES[:failed_mode_index + 1]
-            ))
+            recovery_modes = list(reversed(self.MICROSTEP_MODES[: failed_mode_index + 1]))
             for recovery_mode in recovery_modes:
                 self._set_microstep(recovery_mode)
                 for reverse_pulses in (1, 2, 4):
@@ -1746,10 +1672,12 @@ class ObjectiveCalibrator:
                     current_position_hint,
                     max_pulses=max(
                         32,
-                        int(np.ceil(
-                            abs(current_position_hint - target)
-                            / max(0.05, failed_pixel_step)
-                        )) + 16,
+                        int(
+                            np.ceil(
+                                abs(current_position_hint - target) / max(0.05, failed_pixel_step)
+                            )
+                        )
+                        + 16,
                     ),
                     max_command_pulses=16,
                     tolerance=max(
@@ -1800,15 +1728,15 @@ class ObjectiveCalibrator:
                 )
                 continue
 
-            retained_nodes = list(nodes[:target_index + 1])
+            retained_nodes = list(nodes[: target_index + 1])
             retained_segments = [
-                segment for segment in segments
-                if segment.right.position <= target
+                segment for segment in segments if segment.right.position <= target
             ]
             self.atlas = retained_nodes
             self.atlas_segments = retained_segments
             self.measurements[:] = [
-                item for item in self.measurements
+                item
+                for item in self.measurements
                 if not (
                     item.atlas_attempt_id == attempt_id
                     and item.stage == "atlas_build"
@@ -1816,16 +1744,18 @@ class ObjectiveCalibrator:
                 )
             ]
             if self.progress is not None:
-                self.progress(ObjectiveAtlasAttemptUpdate(
-                    attempt_id=int(attempt_id),
-                    microstep=int(failed_microstep),
-                    action="trim",
-                    reason=(
-                        "Unreachable atlas tail removed; continuing from "
-                        f"{target:.3f}px with a finer MICRO."
-                    ),
-                    retain_through=float(target),
-                ))
+                self.progress(
+                    ObjectiveAtlasAttemptUpdate(
+                        attempt_id=int(attempt_id),
+                        microstep=int(failed_microstep),
+                        action="trim",
+                        reason=(
+                            "Unreachable atlas tail removed; continuing from "
+                            f"{target:.3f}px with a finer MICRO."
+                        ),
+                        retain_through=float(target),
+                    )
+                )
             self._set_visual_position(
                 position,
                 stage="atlas_tail_returned",
@@ -1833,9 +1763,7 @@ class ObjectiveCalibrator:
             )
             return retained_nodes, retained_segments, float(position)
 
-        raise RuntimeError(
-            "Could not return to any trustworthy node in the partial atlas."
-        )
+        raise RuntimeError("Could not return to any trustworthy node in the partial atlas.")
 
     def _build_visual_atlas(
         self,
@@ -1857,12 +1785,14 @@ class ObjectiveCalibrator:
             confirmation_positions=confirmation_positions,
         )
         self._set_visual_position(0.0, stage="atlas_build")
-        nodes = [_AtlasNode(
-            position=0.0,
-            frame=self._prepare_atlas_frame(frame),
-            frame_id=frame_id,
-            reference_similarity=similarity,
-        )]
+        nodes = [
+            _AtlasNode(
+                position=0.0,
+                frame=self._prepare_atlas_frame(frame),
+                frame_id=frame_id,
+                reference_similarity=similarity,
+            )
+        ]
         self._publish_atlas_step(
             attempt_id=attempt_id,
             stage="atlas_build",
@@ -1907,14 +1837,12 @@ class ObjectiveCalibrator:
                 self._publish_diagnostic("atlas build", restart_reason)
                 raise _AtlasStepRegistrationError(restart_reason)
             try:
-                nodes, segments, _returned_position = (
-                    self._recover_partial_atlas_tail(
-                        nodes,
-                        segments,
-                        active_microstep,
-                        attempt_id,
-                        failed_position_hint=failed_position_hint,
-                    )
+                nodes, segments, _returned_position = self._recover_partial_atlas_tail(
+                    nodes,
+                    segments,
+                    active_microstep,
+                    attempt_id,
+                    failed_position_hint=failed_position_hint,
                 )
             except ObjectiveCalibrationCancelled:
                 raise
@@ -1934,23 +1862,24 @@ class ObjectiveCalibrator:
                 raise _AtlasStepRegistrationError(restart_reason) from exc
             retained_position = nodes[-1].position
             pending_reference_samples = [
-                sample for sample in pending_reference_samples
-                if sample[0] <= retained_position
+                sample for sample in pending_reference_samples if sample[0] <= retained_position
             ]
             active_microstep = self.MICROSTEP_MODES[mode_index + 1]
             self._set_microstep(active_microstep)
             if self.progress is not None:
-                self.progress(ObjectiveAtlasAttemptUpdate(
-                    attempt_id=int(attempt_id),
-                    microstep=int(active_microstep),
-                    action="refine",
-                    reason=(
-                        f"Partial atlas retained through "
-                        f"{retained_position:.3f}px; continuing at "
-                        f"MICRO {active_microstep}."
-                    ),
-                    retain_through=float(retained_position),
-                ))
+                self.progress(
+                    ObjectiveAtlasAttemptUpdate(
+                        attempt_id=int(attempt_id),
+                        microstep=int(active_microstep),
+                        action="refine",
+                        reason=(
+                            f"Partial atlas retained through "
+                            f"{retained_position:.3f}px; continuing at "
+                            f"MICRO {active_microstep}."
+                        ),
+                        retain_through=float(retained_position),
+                    )
+                )
             self._set_visual_position(
                 retained_position,
                 stage="atlas_build",
@@ -1963,15 +1892,11 @@ class ObjectiveCalibrator:
             self._move_pulses(1, settle_seconds=self.move_settle_seconds)
             pulse_index += 1
             pulses_since_node += 1
-            motor_units_since_node += self._units_per_pulse(
-                active_microstep
-            )
+            motor_units_since_node += self._units_per_pulse(active_microstep)
             frame_id, frame, similarity = self._reference_sample()
-            predicted_position = (
-                nodes[-1].position
-                + pulses_since_node
-                * self._estimated_pixels_per_pulse(active_microstep)
-            )
+            predicted_position = nodes[
+                -1
+            ].position + pulses_since_node * self._estimated_pixels_per_pulse(active_microstep)
             if similarity >= self.reference_threshold:
                 prepared_frame = self._prepare_atlas_frame(frame)
                 candidate = _AtlasNode(
@@ -2009,10 +1934,7 @@ class ObjectiveCalibrator:
                     )
                     continue
                 dx, dy, distance, confidence, overlap = registration
-                if (
-                    confidence < self.min_confidence
-                    or overlap < self.min_overlap
-                ):
+                if confidence < self.min_confidence or overlap < self.min_overlap:
                     status = (
                         "ATLAS_BUILD_LOW_CONFIDENCE"
                         if confidence < self.min_confidence
@@ -2045,9 +1967,7 @@ class ObjectiveCalibrator:
                     continue
                 if forward_axis is None:
                     forward_axis = (dx / distance, dy / distance)
-                signed_progress = (
-                    dx * forward_axis[0] + dy * forward_axis[1]
-                )
+                signed_progress = dx * forward_axis[0] + dy * forward_axis[1]
                 if signed_progress <= 0.20:
                     # A detent snap can send the image backwards even though
                     # the commanded scan direction is forward.  It must not
@@ -2060,14 +1980,16 @@ class ObjectiveCalibrator:
                     frame_id=frame_id,
                     reference_similarity=similarity,
                 )
-                segments.append(_AtlasSegment(
-                    left=nodes[-1],
-                    right=candidate,
-                    dx=dx,
-                    dy=dy,
-                    confidence=confidence,
-                    overlap=overlap,
-                ))
+                segments.append(
+                    _AtlasSegment(
+                        left=nodes[-1],
+                        right=candidate,
+                        dx=dx,
+                        dy=dy,
+                        confidence=confidence,
+                        overlap=overlap,
+                    )
+                )
                 nodes.append(candidate)
                 self._publish_atlas_step(
                     attempt_id=attempt_id,
@@ -2081,23 +2003,14 @@ class ObjectiveCalibrator:
                     valid=True,
                     status="ATLAS_BUILD_VALID",
                 )
-                pixel_scale_samples.append(
-                    distance
-                    / max(1.0, motor_units_since_node)
-                )
-                self.atlas_pixels_per_motor_unit = float(np.median(
-                    pixel_scale_samples
-                ))
+                pixel_scale_samples.append(distance / max(1.0, motor_units_since_node))
+                self.atlas_pixels_per_motor_unit = float(np.median(pixel_scale_samples))
                 pulses_since_node = 0
                 motor_units_since_node = 0.0
-                pending_reference_samples.append((
-                    position, frame_id, similarity
-                ))
+                pending_reference_samples.append((position, frame_id, similarity))
                 self._set_visual_position(position, stage="atlas_build")
             else:
-                pending_reference_samples.append((
-                    predicted_position, frame_id, similarity
-                ))
+                pending_reference_samples.append((predicted_position, frame_id, similarity))
             if similarity < self.edge_exit_threshold:
                 outside_count += 1
                 if outside_count >= confirmation_positions:
@@ -2105,33 +2018,25 @@ class ObjectiveCalibrator:
             else:
                 outside_count = 0
         else:
-            raise RuntimeError(
-                "Could not find the right edge while building the image map."
-            )
+            raise RuntimeError("Could not find the right edge while building the image map.")
 
         if len(nodes) < 3:
-            raise RuntimeError(
-                "Too few matched images were available to build a position map."
-            )
+            raise RuntimeError("Too few matched images were available to build a position map.")
         right_position = nodes[-1].position
         if len(nodes) < 2 or right_position <= 0:
             raise RuntimeError("The matched image region is too narrow")
         if len(segments) != len(nodes) - 1:
-            raise RuntimeError(
-                "The atlas did not form one continuous registered position map."
-            )
+            raise RuntimeError("The atlas did not form one continuous registered position map.")
         self.atlas = nodes
         self.atlas_segments = segments
-        for position, sample_frame_id, sample_similarity in (
-            pending_reference_samples
-        ):
-                self._publish_reference(
-                    position,
-                    sample_frame_id,
-                    sample_similarity,
-                    "atlas",
-                    atlas_attempt_id=attempt_id,
-                )
+        for position, sample_frame_id, sample_similarity in pending_reference_samples:
+            self._publish_reference(
+                position,
+                sample_frame_id,
+                sample_similarity,
+                "atlas",
+                atlas_attempt_id=attempt_id,
+            )
         return float(right_position)
 
     def _localize_in_atlas(
@@ -2143,19 +2048,18 @@ class ObjectiveCalibrator:
         """Locate a frame on the cumulative pixel-displacement atlas."""
         candidate = self._prepare_atlas_frame(frame)
         best = None
-        typical_spacing = float(np.median([
-            segment.right.position - segment.left.position
-            for segment in self.atlas_segments
-        ]))
+        typical_spacing = float(
+            np.median(
+                [segment.right.position - segment.left.position for segment in self.atlas_segments]
+            )
+        )
         for segment in self.atlas_segments:
-            vector_norm_sq = segment.dx ** 2 + segment.dy ** 2
+            vector_norm_sq = segment.dx**2 + segment.dy**2
             if vector_norm_sq < 0.04:
                 continue
             try:
-                dx, dy, _distance, confidence, overlap = (
-                    measure_image_displacement(
-                        segment.left.frame, candidate, roi_fraction=1.0
-                    )
+                dx, dy, _distance, confidence, overlap = measure_image_displacement(
+                    segment.left.frame, candidate, roi_fraction=1.0
                 )
             except (cv2.error, ValueError):
                 continue
@@ -2164,9 +2068,7 @@ class ObjectiveCalibrator:
             alpha = (dx * segment.dx + dy * segment.dy) / vector_norm_sq
             projected_dx = alpha * segment.dx
             projected_dy = alpha * segment.dy
-            residual = float(np.hypot(
-                dx - projected_dx, dy - projected_dy
-            ))
+            residual = float(np.hypot(dx - projected_dx, dy - projected_dy))
             outside_penalty = max(0.0, -alpha, alpha - 1.0)
             visual_position = segment.left.position + alpha * (
                 segment.right.position - segment.left.position
@@ -2179,12 +2081,7 @@ class ObjectiveCalibrator:
                     / max(1.0, 8.0 * typical_spacing)
                     * 0.10,
                 )
-            score = (
-                confidence
-                - min(0.50, residual / 40.0)
-                - 0.35 * outside_penalty
-                - prior_penalty
-            )
+            score = confidence - min(0.50, residual / 40.0) - 0.35 * outside_penalty - prior_penalty
             if best is None or score > best[0]:
                 best = (score, visual_position, confidence, residual, alpha)
         if best is None:
@@ -2214,31 +2111,16 @@ class ObjectiveCalibrator:
         ):
             return False
         insertion_index = 0
-        while (
-            insertion_index < len(self.atlas)
-            and self.atlas[insertion_index].position < position
-        ):
+        while insertion_index < len(self.atlas) and self.atlas[insertion_index].position < position:
             insertion_index += 1
 
-        left = (
-            self.atlas[insertion_index - 1]
-            if insertion_index > 0 else None
-        )
-        right = (
-            self.atlas[insertion_index]
-            if insertion_index < len(self.atlas) else None
-        )
+        left = self.atlas[insertion_index - 1] if insertion_index > 0 else None
+        right = self.atlas[insertion_index] if insertion_index < len(self.atlas) else None
         # Nearly coincident frames do not add useful positional resolution and
         # would create zero-length atlas segments.
-        if (
-            left is not None
-            and position - left.position < self.atlas_merge_distance_px
-        ):
+        if left is not None and position - left.position < self.atlas_merge_distance_px:
             return False
-        if (
-            right is not None
-            and right.position - position < self.atlas_merge_distance_px
-        ):
+        if right is not None and right.position - position < self.atlas_merge_distance_px:
             return False
 
         candidate = _AtlasNode(
@@ -2251,26 +2133,27 @@ class ObjectiveCalibrator:
         for first, second in ((left, candidate), (candidate, right)):
             if first is None or second is None:
                 continue
-            registration = self._prepared_adjacent_registration(
-                first.frame, second.frame
-            )
+            registration = self._prepared_adjacent_registration(first.frame, second.frame)
             if registration is None:
                 return False
             dx, dy, _distance, confidence, overlap = registration
             if dx * dx + dy * dy < 0.04:
                 return False
-            new_segments.append(_AtlasSegment(
-                left=first,
-                right=second,
-                dx=dx,
-                dy=dy,
-                confidence=confidence,
-                overlap=overlap,
-            ))
+            new_segments.append(
+                _AtlasSegment(
+                    left=first,
+                    right=second,
+                    dx=dx,
+                    dy=dy,
+                    confidence=confidence,
+                    overlap=overlap,
+                )
+            )
 
         if left is not None and right is not None:
             self.atlas_segments = [
-                segment for segment in self.atlas_segments
+                segment
+                for segment in self.atlas_segments
                 if not (segment.left is left and segment.right is right)
             ]
         self.atlas.insert(insertion_index, candidate)
@@ -2290,9 +2173,7 @@ class ObjectiveCalibrator:
         """Return release distance signed along the one-dimensional atlas."""
         if disabled_position is not None and np.isfinite(disabled_position):
             return float(disabled_position - position)
-        if not (
-            np.isfinite(dx) and np.isfinite(dy) and np.isfinite(displacement)
-        ):
+        if not (np.isfinite(dx) and np.isfinite(dy) and np.isfinite(displacement)):
             return float("nan")
         if not self.atlas_segments:
             return float("nan")
@@ -2319,7 +2200,8 @@ class ObjectiveCalibrator:
         """Merge nearby valid measurements without mixing scan directions."""
         usable = sorted(
             (
-                item for item in measurements
+                item
+                for item in measurements
                 if item.valid
                 and np.isfinite(item.displacement)
                 and np.isfinite(item.signed_displacement)
@@ -2331,9 +2213,7 @@ class ObjectiveCalibrator:
             if not groups:
                 groups.append([item])
                 continue
-            center = float(np.median([
-                member.position for member in groups[-1]
-            ]))
+            center = float(np.median([member.position for member in groups[-1]]))
             if abs(item.position - center) <= self.atlas_merge_distance_px:
                 groups[-1].append(item)
             else:
@@ -2342,25 +2222,23 @@ class ObjectiveCalibrator:
         merged = []
         for group in groups:
             disabled_positions = [
-                item.disabled_visual_position for item in group
+                item.disabled_visual_position
+                for item in group
                 if item.disabled_visual_position is not None
                 and np.isfinite(item.disabled_visual_position)
             ]
-            merged.append(_MergedReleasePoint(
-                position=float(np.median([
-                    item.position for item in group
-                ])),
-                displacement=float(np.median([
-                    item.displacement for item in group
-                ])),
-                signed_displacement=float(np.median([
-                    item.signed_displacement for item in group
-                ])),
-                disabled_visual_position=(
-                    float(np.median(disabled_positions))
-                    if disabled_positions else None
-                ),
-            ))
+            merged.append(
+                _MergedReleasePoint(
+                    position=float(np.median([item.position for item in group])),
+                    displacement=float(np.median([item.displacement for item in group])),
+                    signed_displacement=float(
+                        np.median([item.signed_displacement for item in group])
+                    ),
+                    disabled_visual_position=(
+                        float(np.median(disabled_positions)) if disabled_positions else None
+                    ),
+                )
+            )
         return merged
 
     def _record_failed_location(
@@ -2371,49 +2249,53 @@ class ObjectiveCalibrator:
         stage: str,
         scan_direction: int = 0,
     ) -> None:
-        self._publish(ObjectiveMeasurement(
-            position=float(guessed_position),
-            displacement=float("nan"),
-            dx=float("nan"),
-            dy=float("nan"),
-            confidence=0.0,
-            overlap=0.0,
-            valid=False,
-            stage=stage,
-            enabled_frame_id=frame_id,
-            reference_similarity=similarity,
-            status=(
-                "SCENE_MISMATCH"
-                if similarity < self.reference_threshold
-                else "LOCALIZATION_FAILED"
-            ),
-            commanded_position=self.commanded_position_units,
-            localization_confidence=0.0,
-            microstep=self.current_microstep,
-            scan_direction=int(scan_direction),
-        ))
+        self._publish(
+            ObjectiveMeasurement(
+                position=float(guessed_position),
+                displacement=float("nan"),
+                dx=float("nan"),
+                dy=float("nan"),
+                confidence=0.0,
+                overlap=0.0,
+                valid=False,
+                stage=stage,
+                enabled_frame_id=frame_id,
+                reference_similarity=similarity,
+                status=(
+                    "SCENE_MISMATCH"
+                    if similarity < self.reference_threshold
+                    else "LOCALIZATION_FAILED"
+                ),
+                commanded_position=self.commanded_position_units,
+                localization_confidence=0.0,
+                microstep=self.current_microstep,
+                scan_direction=int(scan_direction),
+            )
+        )
 
     def _record_skipped_target(
         self,
         error: _VisualTargetUnreachable,
         stage: str,
     ) -> ObjectiveMeasurement:
-        return self._publish(ObjectiveMeasurement(
-            position=error.target,
-            displacement=float("nan"),
-            dx=float("nan"),
-            dy=float("nan"),
-            confidence=0.0,
-            overlap=0.0,
-            valid=False,
-            stage=stage,
-            enabled_frame_id=error.frame_id,
-            reference_similarity=error.similarity,
-            status="POSITION_SKIPPED",
-            commanded_position=self.commanded_position_units,
-            localization_confidence=error.confidence,
-            microstep=self.current_microstep,
-        ))
+        return self._publish(
+            ObjectiveMeasurement(
+                position=error.target,
+                displacement=float("nan"),
+                dx=float("nan"),
+                dy=float("nan"),
+                confidence=0.0,
+                overlap=0.0,
+                valid=False,
+                stage=stage,
+                enabled_frame_id=error.frame_id,
+                reference_similarity=error.similarity,
+                status="POSITION_SKIPPED",
+                commanded_position=self.commanded_position_units,
+                localization_confidence=error.confidence,
+                microstep=self.current_microstep,
+            )
+        )
 
     def _measure_release(
         self,
@@ -2427,9 +2309,7 @@ class ObjectiveCalibrator:
     ) -> ObjectiveMeasurement:
         self.motor.objective_disable()
         self._wait(self.release_settle_seconds)
-        disabled_frame_id, disabled_frame, disabled_similarity = (
-            self._reference_sample()
-        )
+        disabled_frame_id, disabled_frame, disabled_similarity = self._reference_sample()
         reference_similarity = min(enabled_similarity, disabled_similarity)
         if reference_similarity < self.reference_threshold:
             dx = dy = displacement = float("nan")
@@ -2437,21 +2317,17 @@ class ObjectiveCalibrator:
             valid = False
             status = "SCENE_MISMATCH"
         else:
-            dx, dy, displacement, confidence, overlap = (
-                measure_image_displacement(
-                    enabled_frame,
-                    disabled_frame,
-                    roi_fraction=self.roi_fraction,
-                )
+            dx, dy, displacement, confidence, overlap = measure_image_displacement(
+                enabled_frame,
+                disabled_frame,
+                roi_fraction=self.roi_fraction,
             )
             # The first disabled frame can still contain motion blur from the
             # fast detent release.  Wait once more and keep the clearer result
             # instead of repeatedly measuring the same motor position.
             if confidence < self.min_confidence:
                 self._wait(self.precision_settle_seconds)
-                retry_frame_id, retry_frame, retry_similarity = (
-                    self._reference_sample()
-                )
+                retry_frame_id, retry_frame, retry_similarity = self._reference_sample()
                 if retry_similarity >= self.reference_threshold:
                     retry_values = measure_image_displacement(
                         enabled_frame,
@@ -2463,9 +2339,7 @@ class ObjectiveCalibrator:
                         disabled_frame_id = retry_frame_id
                         disabled_frame = retry_frame
                         disabled_similarity = retry_similarity
-                        reference_similarity = min(
-                            enabled_similarity, disabled_similarity
-                        )
+                        reference_similarity = min(enabled_similarity, disabled_similarity)
             if confidence < self.min_confidence:
                 valid = False
                 status = "LOW_CONFIDENCE"
@@ -2484,11 +2358,9 @@ class ObjectiveCalibrator:
         disabled_visual_position = None
         if reference_similarity >= self.reference_threshold:
             try:
-                disabled_visual_position, _disabled_location_confidence = (
-                    self._localize_in_atlas(
-                        disabled_frame,
-                        previous_position=visual_position,
-                    )
+                disabled_visual_position, _disabled_location_confidence = self._localize_in_atlas(
+                    disabled_frame,
+                    previous_position=visual_position,
                 )
             except RuntimeError:
                 pass
@@ -2520,11 +2392,13 @@ class ObjectiveCalibrator:
             scan_direction=int(scan_direction),
         )
         if np.isfinite(displacement) and displacement >= self.peak_threshold:
-            self.peak_frames.append((
-                float(visual_position),
-                self._prepare_atlas_frame(enabled_frame),
-                self._prepare_atlas_frame(disabled_frame),
-            ))
+            self.peak_frames.append(
+                (
+                    float(visual_position),
+                    self._prepare_atlas_frame(enabled_frame),
+                    self._prepare_atlas_frame(disabled_frame),
+                )
+            )
         return self._publish(item)
 
     def _release_scan_pass(
@@ -2555,9 +2429,7 @@ class ObjectiveCalibrator:
             scan_lower = float(np.clip(scan_bounds[0], 0.0, match_width))
             scan_upper = float(np.clip(scan_bounds[1], 0.0, match_width))
             if scan_lower >= scan_upper:
-                raise RuntimeError(
-                    "The requested release-rescan pixel window is empty"
-                )
+                raise RuntimeError("The requested release-rescan pixel window is empty")
         active_microstep = microstep
         pixel_step = self._estimated_pixels_per_pulse(active_microstep)
         move_pulses = 1
@@ -2588,10 +2460,8 @@ class ObjectiveCalibrator:
                     edge_position,
                     max_pulses=max(
                         32,
-                        int(np.ceil(
-                            abs(entrance - edge_position)
-                            / max(0.05, full_step_pixels)
-                        )) + 16,
+                        int(np.ceil(abs(entrance - edge_position) / max(0.05, full_step_pixels)))
+                        + 16,
                     ),
                     max_command_pulses=16,
                     tolerance=max(0.50, 0.75 * full_step_pixels),
@@ -2638,11 +2508,9 @@ class ObjectiveCalibrator:
                 seen_match = True
                 outside_after_match = 0
                 try:
-                    visual_position, location_confidence = (
-                        self._localize_in_atlas(
-                            enabled_frame,
-                            previous_position=previous_visual,
-                        )
+                    visual_position, location_confidence = self._localize_in_atlas(
+                        enabled_frame,
+                        previous_position=previous_visual,
                     )
                 except RuntimeError:
                     self._record_failed_location(
@@ -2656,10 +2524,8 @@ class ObjectiveCalibrator:
                     previous_visual = visual_position
                     self._set_visual_position(visual_position, stage=stage)
                     scan_exit = scan_upper if direction > 0 else scan_lower
-                    if (
-                        scan_bounds is not None
-                        and direction * (visual_position - scan_exit)
-                        > max(0.50, 0.35 * pixel_step)
+                    if scan_bounds is not None and direction * (visual_position - scan_exit) > max(
+                        0.50, 0.35 * pixel_step
                     ):
                         completed_scan_window = True
                         break
@@ -2671,21 +2537,16 @@ class ObjectiveCalibrator:
                     )
                     if best_progress_visual is None:
                         best_progress_visual = visual_position
-                    progress = direction * (
-                        visual_position - best_progress_visual
-                    )
+                    progress = direction * (visual_position - best_progress_visual)
                     if progress >= max(0.35 * pixel_step, 0.5):
                         best_progress_visual = visual_position
                         stagnant_pulses = 0
                     else:
                         stagnant_pulses += 1
 
-                    spacing_ok = (
-                        last_measured_visual is None
-                        or direction * (
-                            visual_position - last_measured_visual
-                        ) >= max(0.35 * pixel_step, 0.5)
-                    )
+                    spacing_ok = last_measured_visual is None or direction * (
+                        visual_position - last_measured_visual
+                    ) >= max(0.35 * pixel_step, 0.5)
                     if spacing_ok:
                         measurement = self._measure_release(
                             visual_position,
@@ -2710,8 +2571,7 @@ class ObjectiveCalibrator:
                         if (
                             measurement.valid
                             and np.isfinite(measurement.signed_displacement)
-                            and abs(measurement.signed_displacement)
-                            >= self.peak_threshold
+                            and abs(measurement.signed_displacement) >= self.peak_threshold
                         ):
                             last_large_release_visual = visual_position
 
@@ -2723,48 +2583,34 @@ class ObjectiveCalibrator:
                         if (
                             self.post_peak_quiet_distance_px > 0
                             and last_large_release_visual is not None
-                            and direction * (
-                                visual_position - last_large_release_visual
-                            ) >= self.post_peak_quiet_distance_px
+                            and direction * (visual_position - last_large_release_visual)
+                            >= self.post_peak_quiet_distance_px
                         ):
                             current_regions = self._peak_regions(
                                 results,
                                 max_gap=max(1.0, 2.2 * pixel_step),
                             )
-                            if self._choose_peak_pair(
-                                current_regions, results
-                            ) is not None:
+                            if self._choose_peak_pair(current_regions, results) is not None:
                                 completed_peak_search = True
                                 break
 
-                        disabled_position = (
-                            measurement.disabled_visual_position
-                        )
+                        disabled_position = measurement.disabled_visual_position
                         resume_distance = pixel_step * move_pulses
-                        resume_target = (
-                            visual_position + direction * resume_distance
-                        )
+                        resume_target = visual_position + direction * resume_distance
                         release_jump = (
-                            0.0 if disabled_position is None else
-                            disabled_position - visual_position
+                            0.0
+                            if disabled_position is None
+                            else disabled_position - visual_position
                         )
-                        large_release_jump = (
-                            abs(release_jump)
-                            > max(2.0, 1.5 * pixel_step)
-                        )
-                        if (
-                            large_release_jump
-                            and 0.0 <= resume_target <= match_width
-                        ):
+                        large_release_jump = abs(release_jump) > max(2.0, 1.5 * pixel_step)
+                        if large_release_jump and 0.0 <= resume_target <= match_width:
                             # A large release in either direction must not skip
                             # visual samples.  If release went backward, seek
                             # forward past this sample.  If it jumped forward
                             # beyond the next sample, the same absolute target
                             # makes the seeker issue reverse commands.
                             snap_direction = (
-                                "forward"
-                                if direction * release_jump > 0
-                                else "backward"
+                                "forward" if direction * release_jump > 0 else "backward"
                             )
                             self._publish_diagnostic(
                                 "release scan return",
@@ -2773,13 +2619,8 @@ class ObjectiveCalibrator:
                                 f"{disabled_position:.3f}px; returning to "
                                 f"the next scan target {resume_target:.3f}px.",
                             )
-                            pulse_distance = abs(
-                                disabled_position - resume_target
-                            )
-                            pulse_budget = (
-                                int(np.ceil(pulse_distance / pixel_step))
-                                + 8
-                            )
+                            pulse_distance = abs(disabled_position - resume_target)
+                            pulse_budget = int(np.ceil(pulse_distance / pixel_step)) + 8
                             command_pulses = max(
                                 2,
                                 min(
@@ -2807,26 +2648,18 @@ class ObjectiveCalibrator:
                             # microstep mode.  Continue the scan using the
                             # controller's real mode and its pixel estimate.
                             active_microstep = self.current_microstep
-                            pixel_step = self._estimated_pixels_per_pulse(
-                                active_microstep
-                            )
+                            pixel_step = self._estimated_pixels_per_pulse(active_microstep)
                             previous_visual = resumed_position
                             guess = resumed_position
                             resumed_after_release = True
-                            resumed_progress = direction * (
-                                resumed_position - best_progress_visual
-                            )
-                            if resumed_progress >= max(
-                                0.35 * pixel_step, 0.5
-                            ):
+                            resumed_progress = direction * (resumed_position - best_progress_visual)
+                            if resumed_progress >= max(0.35 * pixel_step, 0.5):
                                 best_progress_visual = resumed_position
                                 stagnant_pulses = 0
 
                     maximum_stagnant = max(12, 4 * active_microstep)
                     if stagnant_pulses >= maximum_stagnant:
-                        mode_index = self.MICROSTEP_MODES.index(
-                            active_microstep
-                        )
+                        mode_index = self.MICROSTEP_MODES.index(active_microstep)
                         if mode_index > 0:
                             # A finer subdivision can lack enough incremental
                             # torque to move the turret.  Fall back to the next
@@ -2834,13 +2667,9 @@ class ObjectiveCalibrator:
                             # small pulse group.  Visual localization, rather
                             # than the skipped pulse positions, establishes the
                             # next trustworthy sample coordinate.
-                            active_microstep = self.MICROSTEP_MODES[
-                                mode_index - 1
-                            ]
+                            active_microstep = self.MICROSTEP_MODES[mode_index - 1]
                             self._set_microstep(active_microstep)
-                            pixel_step = self._estimated_pixels_per_pulse(
-                                active_microstep
-                            )
+                            pixel_step = self._estimated_pixels_per_pulse(active_microstep)
                             move_pulses = min(4, max(2, move_pulses * 2))
                             stagnant_pulses = 0
                             best_progress_visual = visual_position
@@ -2874,11 +2703,7 @@ class ObjectiveCalibrator:
                 settle_seconds=self.precision_settle_seconds,
             )
             guess += direction * pixel_step * move_pulses
-        if (
-            not reached_other_edge
-            and not completed_peak_search
-            and not completed_scan_window
-        ):
+        if not reached_other_edge and not completed_peak_search and not completed_scan_window:
             raise RuntimeError(
                 "Release scan did not reach the opposite image boundary. "
                 "The motor may be slipping or returning to the same position."
@@ -2892,7 +2717,8 @@ class ObjectiveCalibrator:
     ) -> list[tuple[float, float, int, float]]:
         """Return signed peak regions from one scan pass and direction."""
         peak_points = [
-            point for point in self._merge_release_points(measurements)
+            point
+            for point in self._merge_release_points(measurements)
             if abs(point.signed_displacement) >= self.peak_threshold
         ]
         if not peak_points:
@@ -2905,29 +2731,28 @@ class ObjectiveCalibrator:
         for point in peak_points[1:]:
             point_sign = 1 if point.signed_displacement > 0 else -1
             if point.position - previous > max_gap or point_sign != sign:
-                regions.append((
-                    float(start), float(previous), sign, float(peak_size)
-                ))
+                regions.append((float(start), float(previous), sign, float(peak_size)))
                 start = point.position
                 sign = point_sign
                 peak_size = abs(point.signed_displacement)
             else:
                 peak_size = max(peak_size, abs(point.signed_displacement))
             previous = point.position
-        regions.append((
-            float(start), float(previous), sign, float(peak_size)
-        ))
+        regions.append((float(start), float(previous), sign, float(peak_size)))
         return regions
 
     def _choose_peak_pair(
         self,
         peaks: list[tuple[float, float, int, float]],
         measurements: list[ObjectiveMeasurement],
-    ) -> tuple[
-        tuple[float, float, int, float],
-        tuple[float, float, int, float],
-        float,
-    ] | None:
+    ) -> (
+        tuple[
+            tuple[float, float, int, float],
+            tuple[float, float, int, float],
+            float,
+        ]
+        | None
+    ):
         """Choose opposite signed peaks surrounding a low-release valley."""
         curve = self._merge_release_points(measurements)
         candidates = []
@@ -2938,41 +2763,31 @@ class ObjectiveCalibrator:
                 continue
             valley_start = left[1]
             valley_stop = right[0]
-            valley = [
-                point for point in curve
-                if valley_start <= point.position <= valley_stop
-            ]
+            valley = [point for point in curve if valley_start <= point.position <= valley_stop]
             if valley_start > valley_stop or not valley:
                 continue
-            valley_best = min(
-                valley, key=lambda point: abs(point.signed_displacement)
-            )
+            valley_best = min(valley, key=lambda point: abs(point.signed_displacement))
             if abs(valley_best.signed_displacement) > self.peak_threshold:
                 continue
             release_endpoints = [
-                point.disabled_visual_position for point in valley
+                point.disabled_visual_position
+                for point in valley
                 if point.disabled_visual_position is not None
             ]
             if release_endpoints:
                 stable_target = float(np.median(release_endpoints))
-                endpoint_spread = float(np.median(np.abs(
-                    np.asarray(release_endpoints) - stable_target
-                )))
+                endpoint_spread = float(
+                    np.median(np.abs(np.asarray(release_endpoints) - stable_target))
+                )
             else:
                 stable_target = float(valley_best.position)
                 endpoint_spread = self.peak_threshold
-            stable_target = float(np.clip(
-                stable_target, valley_start, valley_stop
-            ))
-            score = (
-                abs(valley_best.signed_displacement) + endpoint_spread
-            )
+            stable_target = float(np.clip(stable_target, valley_start, valley_stop))
+            score = abs(valley_best.signed_displacement) + endpoint_spread
             candidates.append((score, left, right, stable_target))
         if not candidates:
             return None
-        _score, left, right, stable_target = min(
-            candidates, key=lambda item: item[0]
-        )
+        _score, left, right, stable_target = min(candidates, key=lambda item: item[0])
         return left, right, stable_target
 
     def _seek_inside_atlas(
@@ -2997,12 +2812,8 @@ class ObjectiveCalibrator:
         self._wait(self.enable_settle_seconds)
         frame_id, frame, similarity = self._reference_sample()
         if similarity < self.reference_threshold:
-            raise RuntimeError(
-                "The image left the mapped material region during fine tuning"
-            )
-        position, confidence = self._localize_in_atlas(
-            frame, previous_position=previous_position
-        )
+            raise RuntimeError("The image left the mapped material region during fine tuning")
+        position, confidence = self._localize_in_atlas(frame, previous_position=previous_position)
         self._set_visual_position(
             position,
             stage=stage,
@@ -3014,9 +2825,7 @@ class ObjectiveCalibrator:
         # estimate slightly.  Do not chatter across an already-close target.
         remaining_pulses = max(1, int(max_pulses))
         command_group_limit = max_command_pulses
-        local_pixels_per_pulse = self._estimated_pixels_per_pulse(
-            self.current_microstep
-        )
+        local_pixels_per_pulse = self._estimated_pixels_per_pulse(self.current_microstep)
         no_progress_attempts = 0
         while remaining_pulses > 0 or adaptive_recovery:
             if abs(position - target) <= tolerance:
@@ -3027,14 +2836,8 @@ class ObjectiveCalibrator:
                 if adaptive_recovery
                 else self._estimated_pixels_per_pulse(self.current_microstep)
             )
-            pulses_needed = max(
-                1, int(np.ceil(abs(target - position) / pixel_step))
-            )
-            available_pulses = (
-                remaining_pulses
-                if remaining_pulses > 0
-                else command_group_limit
-            )
+            pulses_needed = max(1, int(np.ceil(abs(target - position) / pixel_step)))
+            available_pulses = remaining_pulses if remaining_pulses > 0 else command_group_limit
             pulses = min(
                 available_pulses,
                 command_group_limit,
@@ -3049,22 +2852,15 @@ class ObjectiveCalibrator:
             remaining_pulses -= pulses
             frame_id, frame, similarity = self._reference_sample()
             if similarity < self.reference_threshold:
-                raise RuntimeError(
-                    "Fine tuning left the mapped material region"
-                )
-            position, confidence = self._localize_in_atlas(
-                frame, previous_position=position
-            )
+                raise RuntimeError("Fine tuning left the mapped material region")
+            position, confidence = self._localize_in_atlas(frame, previous_position=position)
             self._set_visual_position(
                 position,
                 stage=stage,
                 target=float(target),
             )
             current_error = target - position
-            if (
-                accept_target_crossing
-                and previous_error * current_error <= 0
-            ):
+            if accept_target_crossing and previous_error * current_error <= 0:
                 # A release-scan resume point is only a boundary separating
                 # already sampled positions from new ones.  Landing beyond it
                 # in the requested direction is sufficient and avoids
@@ -3072,17 +2868,14 @@ class ObjectiveCalibrator:
                 return frame_id, frame, similarity, position, confidence
             if adaptive_recovery:
                 current_absolute_error = abs(current_error)
-                progress_toward_target = (
-                    previous_absolute_error - current_absolute_error
-                )
+                progress_toward_target = previous_absolute_error - current_absolute_error
                 meaningful_progress = max(
                     0.20,
                     min(1.0, 0.10 * local_pixels_per_pulse),
                 )
                 if progress_toward_target >= meaningful_progress:
-                    observed_pixels_per_pulse = (
-                        abs(position - previous_position_before_move)
-                        / max(1, pulses)
+                    observed_pixels_per_pulse = abs(position - previous_position_before_move) / max(
+                        1, pulses
                     )
                     # Follow the locally observed motion without allowing one
                     # unusually large detent jump to dominate the next move.
@@ -3092,12 +2885,11 @@ class ObjectiveCalibrator:
                     )
                     local_pixels_per_pulse = max(
                         0.05,
-                        0.5 * local_pixels_per_pulse
-                        + 0.5 * observed_pixels_per_pulse,
+                        0.5 * local_pixels_per_pulse + 0.5 * observed_pixels_per_pulse,
                     )
-                    needed_from_observed_progress = int(np.ceil(
-                        current_absolute_error / local_pixels_per_pulse
-                    ))
+                    needed_from_observed_progress = int(
+                        np.ceil(current_absolute_error / local_pixels_per_pulse)
+                    )
                     remaining_pulses = max(
                         remaining_pulses,
                         needed_from_observed_progress + 8,
@@ -3106,23 +2898,16 @@ class ObjectiveCalibrator:
                 else:
                     no_progress_attempts += 1
                     if no_progress_attempts >= 3:
-                        mode_index = self.MICROSTEP_MODES.index(
-                            self.current_microstep
-                        )
+                        mode_index = self.MICROSTEP_MODES.index(self.current_microstep)
                         if mode_index > 0:
                             old_mode = self.current_microstep
-                            stronger_mode = self.MICROSTEP_MODES[
-                                mode_index - 1
-                            ]
+                            stronger_mode = self.MICROSTEP_MODES[mode_index - 1]
                             self._set_microstep(stronger_mode)
-                            local_pixels_per_pulse *= (
-                                self._units_per_pulse(stronger_mode)
-                                / self._units_per_pulse(old_mode)
-                            )
+                            local_pixels_per_pulse *= self._units_per_pulse(
+                                stronger_mode
+                            ) / self._units_per_pulse(old_mode)
                         elif command_group_limit < 32:
-                            command_group_limit = min(
-                                32, max(2, command_group_limit * 2)
-                            )
+                            command_group_limit = min(32, max(2, command_group_limit * 2))
                         else:
                             raise RuntimeError(
                                 "Visual recovery made no meaningful progress "
@@ -3193,11 +2978,13 @@ class ObjectiveCalibrator:
             int(np.ceil(map_width / full_step_pixels)) + 4,
         )
         self._set_microstep(1)
-        approach_target = float(np.clip(
-            stable_hint if stable_hint is not None else lower,
-            lower,
-            upper,
-        ))
+        approach_target = float(
+            np.clip(
+                stable_hint if stable_hint is not None else lower,
+                lower,
+                upper,
+            )
+        )
         (
             _coarse_frame_id,
             _coarse_frame,
@@ -3224,21 +3011,17 @@ class ObjectiveCalibrator:
         def measure_target(target: float, stage: str, pixel_step: float):
             nonlocal previous
             try:
-                frame_id, frame, similarity, position, confidence = (
-                    self._seek_inside_atlas(
-                        float(target),
-                        previous,
-                        max_pulses=max(
-                            64,
-                            int(np.ceil(
-                                map_width / max(0.05, pixel_step)
-                            )) + 32,
-                        ),
-                        max_command_pulses=16,
-                        tolerance=max(0.50, 0.45 * pixel_step),
-                        stage=stage,
-                        max_target_crossings=3,
-                    )
+                frame_id, frame, similarity, position, confidence = self._seek_inside_atlas(
+                    float(target),
+                    previous,
+                    max_pulses=max(
+                        64,
+                        int(np.ceil(map_width / max(0.05, pixel_step))) + 32,
+                    ),
+                    max_command_pulses=16,
+                    tolerance=max(0.50, 0.45 * pixel_step),
+                    stage=stage,
+                    max_target_crossings=3,
                 )
             except _VisualTargetUnreachable as exc:
                 results.append(self._record_skipped_target(exc, stage))
@@ -3259,12 +3042,9 @@ class ObjectiveCalibrator:
                 stage,
             )
             results.append(measurement)
-            if (
-                measurement.disabled_visual_position is not None
-                and abs(
-                    measurement.disabled_visual_position - position
-                ) > max(2.0, 1.5 * pixel_step)
-            ):
+            if measurement.disabled_visual_position is not None and abs(
+                measurement.disabled_visual_position - position
+            ) > max(2.0, 1.5 * pixel_step):
                 self._publish_diagnostic(
                     "balance return",
                     f"{stage}: release moved from {position:.3f}px to "
@@ -3283,11 +3063,13 @@ class ObjectiveCalibrator:
         for refinement_index, mode in enumerate(refinement_modes):
             self._set_microstep(mode)
             pixel_step = self._estimated_pixels_per_pulse(mode)
-            targets = list(np.arange(
-                search_lower,
-                search_upper + 0.25 * pixel_step,
-                pixel_step,
-            ))
+            targets = list(
+                np.arange(
+                    search_lower,
+                    search_upper + 0.25 * pixel_step,
+                    pixel_step,
+                )
+            )
             if not targets:
                 targets = [search_lower]
             if targets[-1] < search_upper - 0.25 * pixel_step:
@@ -3305,9 +3087,7 @@ class ObjectiveCalibrator:
 
             pass_measurements = []
             for target in targets:
-                measurement = measure_target(
-                    float(target), "balance_scan", pixel_step
-                )
+                measurement = measure_target(float(target), "balance_scan", pixel_step)
                 if measurement is not None:
                     pass_measurements.append(measurement)
 
@@ -3315,7 +3095,8 @@ class ObjectiveCalibrator:
             if not usable:
                 continue
             endpoint_positions = [
-                item.disabled_visual_position for item in usable
+                item.disabled_visual_position
+                for item in usable
                 if item.disabled_visual_position is not None
                 and np.isfinite(item.disabled_visual_position)
             ]
@@ -3325,26 +3106,22 @@ class ObjectiveCalibrator:
                 # constrain it to the complete between-peaks interval.  Clipping
                 # it to search_lower/search_upper can move the target away from
                 # the mechanical detent that the images actually identified.
-                release_center = float(np.clip(
-                    np.median(endpoint_positions),
-                    lower,
-                    upper,
-                ))
+                release_center = float(
+                    np.clip(
+                        np.median(endpoint_positions),
+                        lower,
+                        upper,
+                    )
+                )
             else:
                 release_center = min(
                     usable,
                     key=lambda item: abs(item.signed_displacement),
                 ).position
 
-            nearest = min(
-                usable, key=lambda item: abs(item.position - release_center)
-            )
-            if abs(nearest.position - release_center) > max(
-                0.35, 0.25 * pixel_step
-            ):
-                center_measurement = measure_target(
-                    release_center, "balance_scan", pixel_step
-                )
+            nearest = min(usable, key=lambda item: abs(item.position - release_center))
+            if abs(nearest.position - release_center) > max(0.35, 0.25 * pixel_step):
+                center_measurement = measure_target(release_center, "balance_scan", pixel_step)
                 if center_measurement is not None and center_measurement.valid:
                     usable.append(center_measurement)
                     nearest = center_measurement
@@ -3362,15 +3139,11 @@ class ObjectiveCalibrator:
                 best.position + pixel_step,
             )
             probes = []
-            probes_within_atlas = all(
-                0.0 <= target <= map_width for target in probe_targets
-            )
+            probes_within_atlas = all(0.0 <= target <= map_width for target in probe_targets)
             if probes_within_atlas:
                 for target in probe_targets:
                     try:
-                        measurement = measure_target(
-                            float(target), "balance_probe", pixel_step
-                        )
+                        measurement = measure_target(float(target), "balance_probe", pixel_step)
                     except ObjectiveCalibrationCancelled:
                         raise
                     except RuntimeError as exc:
@@ -3386,7 +3159,8 @@ class ObjectiveCalibrator:
 
             valid_probes = sorted(
                 (
-                    item for item in probes
+                    item
+                    for item in probes
                     if item.valid
                     and item.disabled_visual_position is not None
                     and np.isfinite(item.signed_displacement)
@@ -3421,31 +3195,27 @@ class ObjectiveCalibrator:
 
             if len(valid_probes) == 2:
                 left_probe, right_probe = valid_probes
-                probe_center = float(np.median([
-                    left_probe.disabled_visual_position,
-                    right_probe.disabled_visual_position,
-                ]))
+                probe_center = float(
+                    np.median(
+                        [
+                            left_probe.disabled_visual_position,
+                            right_probe.disabled_visual_position,
+                        ]
+                    )
+                )
                 endpoints_agree = (
-                    abs(
-                        left_probe.disabled_visual_position
-                        - right_probe.disabled_visual_position
-                    ) <= same_release_tolerance
+                    abs(left_probe.disabled_visual_position - right_probe.disabled_visual_position)
+                    <= same_release_tolerance
                 )
                 directions_point_inward = (
-                    (
-                        left_probe.signed_displacement > 0
-                        or abs(left_probe.signed_displacement)
-                        <= self.stable_threshold
-                    )
-                    and (
-                        right_probe.signed_displacement < 0
-                        or abs(right_probe.signed_displacement)
-                        <= self.stable_threshold
-                    )
+                    left_probe.signed_displacement > 0
+                    or abs(left_probe.signed_displacement) <= self.stable_threshold
+                ) and (
+                    right_probe.signed_displacement < 0
+                    or abs(right_probe.signed_displacement) <= self.stable_threshold
                 )
                 endpoint_separation = abs(
-                    left_probe.disabled_visual_position
-                    - right_probe.disabled_visual_position
+                    left_probe.disabled_visual_position - right_probe.disabled_visual_position
                 )
                 endpoint_center_error = abs(probe_center - release_center)
                 self._publish_diagnostic(
@@ -3468,11 +3238,13 @@ class ObjectiveCalibrator:
                     # coordinate.  That common landing coordinate is the
                     # mechanical stable point.  Go there directly and test it
                     # at the current MICRO instead of narrowing the step first.
-                    stable_landing = float(np.clip(
-                        probe_center,
-                        lower,
-                        upper,
-                    ))
+                    stable_landing = float(
+                        np.clip(
+                            probe_center,
+                            lower,
+                            upper,
+                        )
+                    )
                     self._publish_diagnostic(
                         "balance",
                         f"MICRO {mode}: both probes release to the same "
@@ -3485,16 +3257,12 @@ class ObjectiveCalibrator:
                         "balance_landing_check",
                         pixel_step,
                     )
-                    if (
-                        landing_measurement is not None
-                        and landing_measurement.valid
-                    ):
+                    if landing_measurement is not None and landing_measurement.valid:
                         best = landing_measurement
                         release_center = stable_landing
                         center_is_stable = (
                             np.isfinite(best.signed_displacement)
-                            and abs(best.signed_displacement)
-                            <= self.stable_threshold
+                            and abs(best.signed_displacement) <= self.stable_threshold
                             and best.displacement <= self.stable_threshold
                         )
                         self._publish_diagnostic(
@@ -3568,9 +3336,7 @@ class ObjectiveCalibrator:
             search_upper = min(float(upper), release_center + pixel_step)
 
         if best is None:
-            raise RuntimeError(
-                "No valid between-peak measurements were available"
-            )
+            raise RuntimeError("No valid between-peak measurements were available")
         return (
             results,
             best,
@@ -3623,9 +3389,7 @@ class ObjectiveCalibrator:
             if lock_exposure:
                 time.sleep(0.7)
                 try:
-                    auto_exposure_before = bool(
-                        self.camera.sdk_camera.get_AutoExpoEnable()
-                    )
+                    auto_exposure_before = bool(self.camera.sdk_camera.get_AutoExpoEnable())
                 except Exception:
                     pass
                 self.camera.set_auto_exposure(False)
@@ -3636,13 +3400,11 @@ class ObjectiveCalibrator:
 
             starting_mode_index = 0
             while True:
-                atlas_microstep, atlas_attempt_id = (
-                    self._choose_atlas_microstep(
-                        outside_margin_full_steps=outside_margin,
-                        max_search_full_steps=max_search,
-                        confirmation_positions=stagger_offset,
-                        starting_mode_index=starting_mode_index,
-                    )
+                atlas_microstep, atlas_attempt_id = self._choose_atlas_microstep(
+                    outside_margin_full_steps=outside_margin,
+                    max_search_full_steps=max_search,
+                    confirmation_positions=stagger_offset,
+                    starting_mode_index=starting_mode_index,
                 )
                 try:
                     match_width = self._build_visual_atlas(
@@ -3693,10 +3455,7 @@ class ObjectiveCalibrator:
             release_measurements: list[ObjectiveMeasurement] = []
             scan_modes = [
                 atlas_microstep,
-                *(
-                    mode for mode in self.MICROSTEP_MODES
-                    if mode > atlas_microstep
-                ),
+                *(mode for mode in self.MICROSTEP_MODES if mode > atlas_microstep),
             ]
             direction = -1
             selected_pair = None
@@ -3707,10 +3466,7 @@ class ObjectiveCalibrator:
             known_large_positions: list[float] = []
             for pass_index, mode in enumerate(scan_modes):
                 used_modes.append(mode)
-                stage = (
-                    "release_coarse" if pass_index == 0
-                    else "release_rescan"
-                )
+                stage = "release_coarse" if pass_index == 0 else "release_rescan"
                 batch = self._release_scan_pass(
                     direction,
                     mode,
@@ -3747,7 +3503,8 @@ class ObjectiveCalibrator:
                     ]
                     break
                 known_large_positions.extend(
-                    item.position for item in batch
+                    item.position
+                    for item in batch
                     if item.valid
                     and np.isfinite(item.signed_displacement)
                     and abs(item.signed_displacement) >= self.peak_threshold
@@ -3841,12 +3598,8 @@ class ObjectiveCalibrator:
                 verification_positioning_error = None
                 self._set_microstep(final_microstep)
                 previous_position = best.position
-                final_pixel_step = self._estimated_pixels_per_pulse(
-                    final_microstep
-                )
-                verification_tolerance = max(
-                    0.50, 0.45 * final_pixel_step
-                )
+                final_pixel_step = self._estimated_pixels_per_pulse(final_microstep)
+                verification_tolerance = max(0.50, 0.45 * final_pixel_step)
                 self._publish_diagnostic(
                     "verification",
                     f"MICRO {final_microstep}: verifying candidate "
@@ -3856,29 +3609,22 @@ class ObjectiveCalibrator:
                 )
                 for _ in range(verification_repeats):
                     try:
-                        frame_id, frame, similarity, position, confidence = (
-                            self._seek_inside_atlas(
-                                best.position,
-                                previous_position,
-                                max_pulses=max(
-                                    64,
-                                    int(np.ceil(
-                                        match_width
-                                        / max(0.05, final_pixel_step)
-                                    )) + 32,
-                                ),
-                                max_command_pulses=16,
-                                tolerance=verification_tolerance,
-                                stage="verify_position",
-                                max_target_crossings=3,
-                            )
+                        frame_id, frame, similarity, position, confidence = self._seek_inside_atlas(
+                            best.position,
+                            previous_position,
+                            max_pulses=max(
+                                64,
+                                int(np.ceil(match_width / max(0.05, final_pixel_step))) + 32,
+                            ),
+                            max_command_pulses=16,
+                            tolerance=verification_tolerance,
+                            stage="verify_position",
+                            max_target_crossings=3,
                         )
                     except ObjectiveCalibrationCancelled:
                         raise
                     except _VisualTargetUnreachable as exc:
-                        verification.append(
-                            self._record_skipped_target(exc, "verify")
-                        )
+                        verification.append(self._record_skipped_target(exc, "verify"))
                         previous_position = exc.last_position
                         verification_positioning_error = str(exc)
                         break
@@ -3902,14 +3648,12 @@ class ObjectiveCalibrator:
                     verification.append(verification_measurement)
                     previous_position = (
                         verification_measurement.disabled_visual_position
-                        if verification_measurement.disabled_visual_position
-                        is not None
+                        if verification_measurement.disabled_visual_position is not None
                         else position
                     )
 
                 finite_distances = [
-                    item.displacement for item in verification
-                    if np.isfinite(item.displacement)
+                    item.displacement for item in verification if np.isfinite(item.displacement)
                 ]
                 if finite_distances:
                     median_displacement = float(np.median(finite_distances))
@@ -3939,38 +3683,38 @@ class ObjectiveCalibrator:
                 if verification_passed:
                     break
 
-                final_mode_index = self.MICROSTEP_MODES.index(
-                    final_microstep
-                )
+                final_mode_index = self.MICROSTEP_MODES.index(final_microstep)
                 if final_mode_index + 1 >= len(self.MICROSTEP_MODES):
                     break
 
                 disabled_endpoints = [
-                    item.disabled_visual_position for item in verification
+                    item.disabled_visual_position
+                    for item in verification
                     if item.valid
                     and item.disabled_visual_position is not None
                     and np.isfinite(item.disabled_visual_position)
                 ]
                 if disabled_endpoints:
-                    balance_hint = float(np.clip(
-                        np.median(disabled_endpoints),
-                        balance_lower,
-                        balance_upper,
-                    ))
-                elif (
-                    best.disabled_visual_position is not None
-                    and np.isfinite(best.disabled_visual_position)
+                    balance_hint = float(
+                        np.clip(
+                            np.median(disabled_endpoints),
+                            balance_lower,
+                            balance_upper,
+                        )
+                    )
+                elif best.disabled_visual_position is not None and np.isfinite(
+                    best.disabled_visual_position
                 ):
-                    balance_hint = float(np.clip(
-                        best.disabled_visual_position,
-                        balance_lower,
-                        balance_upper,
-                    ))
+                    balance_hint = float(
+                        np.clip(
+                            best.disabled_visual_position,
+                            balance_lower,
+                            balance_upper,
+                        )
+                    )
                 else:
                     balance_hint = float(best.position)
-                balance_starting_microstep = self.MICROSTEP_MODES[
-                    final_mode_index + 1
-                ]
+                balance_starting_microstep = self.MICROSTEP_MODES[final_mode_index + 1]
                 self._publish_diagnostic(
                     "verification",
                     f"MICRO {final_microstep} was not repeatably stable; "
@@ -3989,9 +3733,7 @@ class ObjectiveCalibrator:
                         default=0.0,
                     )
                 ),
-                stable=(
-                    verification_passed
-                ),
+                stable=(verification_passed),
                 peak_regions=tuple(peak_regions),
                 match_region=(0.0, float(match_width)),
                 release_range=(
@@ -4035,40 +3777,54 @@ def save_objective_measurements(
     measurements: list[ObjectiveMeasurement],
 ) -> Path:
     """Save the reference map, release scan, refinement, and verification."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as output:
+    path = calibration_path(path)
+    with private_open(path, "w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
-        writer.writerow((
-            "stage", "visual_position_px", "commanded_position_1_16_step",
-            "microstep", "scan_direction", "atlas_attempt_id",
-            "localization_confidence",
-            "signed_displacement_px",
-            "displacement_px", "dx_px", "dy_px",
-            "confidence", "overlap", "valid", "status",
-            "reference_similarity", "enabled_frame_id", "disabled_frame_id",
-            "disabled_visual_position_px",
-        ))
+        writer.writerow(
+            (
+                "stage",
+                "visual_position_px",
+                "commanded_position_1_16_step",
+                "microstep",
+                "scan_direction",
+                "atlas_attempt_id",
+                "localization_confidence",
+                "signed_displacement_px",
+                "displacement_px",
+                "dx_px",
+                "dy_px",
+                "confidence",
+                "overlap",
+                "valid",
+                "status",
+                "reference_similarity",
+                "enabled_frame_id",
+                "disabled_frame_id",
+                "disabled_visual_position_px",
+            )
+        )
         for item in measurements:
-            writer.writerow((
-                item.stage,
-                item.position,
-                item.commanded_position,
-                item.microstep,
-                item.scan_direction,
-                item.atlas_attempt_id,
-                item.localization_confidence,
-                item.signed_displacement,
-                item.displacement,
-                item.dx,
-                item.dy,
-                item.confidence,
-                item.overlap,
-                int(item.valid),
-                item.status,
-                item.reference_similarity,
-                item.enabled_frame_id,
-                item.disabled_frame_id,
-                item.disabled_visual_position,
-            ))
+            writer.writerow(
+                (
+                    item.stage,
+                    item.position,
+                    item.commanded_position,
+                    item.microstep,
+                    item.scan_direction,
+                    item.atlas_attempt_id,
+                    item.localization_confidence,
+                    item.signed_displacement,
+                    item.displacement,
+                    item.dx,
+                    item.dy,
+                    item.confidence,
+                    item.overlap,
+                    int(item.valid),
+                    item.status,
+                    item.reference_similarity,
+                    item.enabled_frame_id,
+                    item.disabled_frame_id,
+                    item.disabled_visual_position,
+                )
+            )
     return path

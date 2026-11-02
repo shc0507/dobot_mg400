@@ -383,3 +383,26 @@ def test_stale_feedback_after_motor_select_cannot_authorize_zero(stage_rig):
         controller.zero("insert", True)
     assert transport.commands == ["motor insert"]
     assert not controller._ready("insert")
+
+
+def test_camera_slow_body_checks_budget_between_single_buffer_reads():
+    from stage_helpers import Clock
+
+    clock = Clock()
+
+    class SlowResponse(Response):
+        calls = 0
+
+        def read(self, _size=-1):
+            raise AssertionError("An exact-size read can wait across multiple receives")
+
+        def read1(self, _size=-1):
+            self.calls += 1
+            clock.advance(0.7)
+            return b"a"
+
+    response = SlowResponse()
+    with pytest.raises(ControllerError, match="timed out"):
+        ReferenceCamera(opener=Opener(response), clock=clock).read("camera3")
+    assert response.calls == 3
+    assert response.closed

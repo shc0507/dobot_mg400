@@ -28,16 +28,18 @@ class ReferenceCamera:
             raise ControllerError("Invalid reference stream name.")
         url = f"http://127.0.0.1:1984/api/frame.jpeg?src={stream}"
         opener = self.opener or build_opener(ProxyHandler({}), _NoRedirect())
-        deadline = self.clock() + 2
         try:
             with closing(opener.open(url, timeout=2)) as response:
                 if response.status != 200 or response.geturl() != url:
                     raise ControllerError("Reference camera returned an unexpected response.")
+                deadline = self.clock() + 2
                 data = bytearray()
                 while True:
                     if self.clock() >= deadline:
                         raise ControllerError("Reference camera read timed out.")
-                    chunk = response.read(min(65536, MAX_JPEG_BYTES + 1 - len(data)))
+                    # HTTPResponse.read1 performs at most one buffered/raw read.
+                    # read(size) can wait for many receives while a peer drips bytes.
+                    chunk = response.read1(min(65536, MAX_JPEG_BYTES + 1 - len(data)))
                     if not chunk:
                         break
                     data.extend(chunk)

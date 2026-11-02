@@ -243,7 +243,9 @@ These values illustrate the format. Measure the real pixel and tolerance during 
 Coordinates and tolerance must be finite and within 8192 pixels.
 
 The service reads 1 JPEG from `http://127.0.0.1:1984/api/frame.jpeg` through go2rtc, which owns the camera.
-The read has a 2-second deadline and a 4 MiB limit. Redirects and proxies are disabled.
+Each socket operation has a 2-second timeout. Between single-buffer reads, the service checks a 2-second body age budget and a 4 MiB limit.
+HTTP headers and a pending socket receive can extend request duration. Zeroing requires a frame age of at most 2 seconds.
+Redirects and proxies are disabled.
 The service refuses a missing, duplicated, or out-of-tolerance marker before sending zero.
 If the stage state or control lease changes during capture, it refuses the operation.
 Without a reference, zero still requires explicit confirmation. Demo references require an offline frame source.

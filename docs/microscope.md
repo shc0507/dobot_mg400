@@ -52,7 +52,8 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 
 真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
 使用 `H-06` 的实测值，不得把演示限位复制到硬件。
-所有请求保留共用的令牌、Host、Origin 和转发头检查。
+所有请求保留共用的 Host、Origin 和转发头检查。
+受保护的数据和动作路由还要求配置的令牌。
 没有令牌时，只接受没有转发头的回环 Host 值。
 POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 控制租约为 3 秒，工作期间必须续租。

@@ -51,9 +51,10 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
 
 Real startup requires reference-aware firmware and explicit focus settings.
-Use the measurements from `H-06`; do not copy demo limits to hardware.
-All requests retain the shared token, Host, Origin, and forwarded-header checks.
-Without a token, only loopback Host values without forwarded headers are accepted.
+Use the measurements from `H-06`. Do not copy demo limits to hardware.
+All requests retain the shared Host, Origin, and forwarded-header checks.
+Protected data and action routes also require the configured token.
+Without a token, the service accepts only loopback Host values without forwarded headers.
 POST requests require `Content-Type: application/json` and `X-MG400-Client`.
 The control lease lasts 3 seconds and must be renewed during work.
 
@@ -81,7 +82,7 @@ These values do not measure sensor exposure time.
 
 With a configured home switch, `home_focus` establishes zero and installs the configured firmware limits.
 Without a switch, an operator must place focus at the verified clearance position before setting zero.
-That position is `0`; the service does not move to an unknown clearance position automatically.
+That position is `0`. The service does not move to an unknown clearance position automatically.
 
 For the operator flow, send an empty object to `POST /api/manual/heartbeat` to acquire manual control.
 Use `POST /api/manual/renew` to retain it.
@@ -106,7 +107,7 @@ Never retry unknown motion automatically or re-establish zero from a cached posi
 
 Open `/` under the configured base path. For the demo command above, open `http://127.0.0.1:8770/`.
 The fixed page and assets contain no service state or access token.
-If a token is configured, enter it and select **Connect**.
+If the service requires a token, enter it and select **Connect**.
 The page keeps the token in memory and sends it in the `Authorization` header. It does not put tokens in URLs or browser storage.
 
 Select **Acquire control** before an ordinary action. The page renews its existing lease while connected.
@@ -117,7 +118,7 @@ Full and local autofocus, bounded focus jog, and snapshot use the contract comma
 Read the command result before another action. **Stop** remains available without a controlling lease.
 
 Without a home switch, select **Set focus zero…** only after placing focus at the verified clearance position.
-Confirm the physical position in the dialog. The page releases its idle ordinary lease, acquires manual control, and submits the confirmed zero command.
+Accept the dialog only after you check the physical position. The page releases its idle ordinary lease, acquires manual control, and submits the zero command.
 After successful completion, it releases manual control and immediately acquires ordinary control within the remaining handoff deadline.
 Any failed request stops this sequence. Reconnect explicitly after access or lease failure.
 With a configured home switch, **Home focus…** asks for confirmation before homing.
@@ -133,7 +134,7 @@ Preview requests accept an optional nonnegative `after_id` cursor.
 Each JPEG carries `X-Frame-Id` and `X-Captured-At` headers. Main-camera timestamps use host wall time, while side-camera timestamps use monotonic receive time.
 Do not compare timestamps across cameras or treat them as sensor exposure times.
 The browser uses authenticated fetch requests and discards stale preview results.
-At most 4 MJPEG responses can remain open. Extra streams return `503`; close another preview before reconnecting.
+At most 4 MJPEG responses can remain open. Extra streams return `503`. Close another preview before reconnecting.
 This limit leaves workers available for control requests, but does not guarantee a stop response time.
 Preview reads do not acquire or renew control, and shutdown waits for accepted reads before closing camera owners.
 

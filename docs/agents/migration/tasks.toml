@@ -1296,6 +1296,7 @@ size = "L"
 review = "human"
 deps = ["AGT-01", "DSH-01", "H-23"]
 writes = [
+  "config/systemd/mg400-orchestrator.service",
   "src/orchestrator/approvals.py",
   "src/orchestrator/app.py",
   "src/orchestrator/web/**",

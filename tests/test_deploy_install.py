@@ -89,6 +89,121 @@ def names(commands):
     return [command for command, _ in commands]
 
 
+@pytest.fixture
+def toupcam_library(host, module, monkeypatch):
+    library = host.root / "supplied-libtoupcam.so"
+    library.write_bytes(b"synthetic SDK bytes; never load this file")
+    monkeypatch.setitem(
+        module.main.__globals__, "TOUPCAM_SHA256", hashlib.sha256(library.read_bytes()).hexdigest()
+    )
+    return library
+
+
+def test_toupcam_installs_verified_snapshot_before_microscope_service_exists(host, toupcam_library):
+    original = toupcam_library.read_bytes()
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"old SDK")
+    target.chmod(0o600)
+
+    def run(command, **options):
+        host.commands.append((command, options))
+        if command[:2] == ["/usr/bin/uv", "sync"]:
+            toupcam_library.write_bytes(b"changed after read-only checks")
+        return SimpleNamespace(returncode=0, stdout="True\n", stderr="")
+
+    assert host.install("--toupcam", str(toupcam_library), runner=run) == 0
+    assert target.read_bytes() == original
+    assert mode(target) == 0o755 and host.owner(target) == (0, 0)
+    assert mode(target.parent) == 0o755 and host.owner(target.parent) == (0, 0)
+    assert toupcam_library.read_bytes() != original
+    assert not (host.units / "mg400-microscope.service").exists()
+    assert not (host.units / "mg400-furnace.service").exists()
+    assert not any("toupcam" in command[0] for command in names(host.commands))
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_toupcam_refuses_unverified_sdk_before_changes(host, module, capsys, dry_run):
+    library = host.root / "unverified.so"
+    library.write_bytes(b"wrong SDK version")
+    # The production pin must match the owner's H-12 linux/x64 artifact.
+    assert module.TOUPCAM_VERSION == "59.30594.20260120"
+    assert module.TOUPCAM_SHA256 == (
+        "5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997"
+    )
+    args = ["--dry-run"] if dry_run else []
+    assert host.install(*args, "--toupcam", str(library)) == 1
+    assert "SHA-256 mismatch" in capsys.readouterr().err
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    assert not (host.root / "usr").exists()
+
+
+@pytest.mark.parametrize("source_kind", ["missing", "empty", "directory", "symlink", "fifo"])
+def test_toupcam_refuses_invalid_sources_before_changes(host, toupcam_library, source_kind):
+    original = toupcam_library.read_bytes()
+    toupcam_library.unlink()
+    if source_kind == "empty":
+        toupcam_library.touch()
+    elif source_kind == "directory":
+        toupcam_library.mkdir()
+    elif source_kind == "symlink":
+        real_file = host.root / "real-library"
+        real_file.write_bytes(original)
+        toupcam_library.symlink_to(real_file)
+    elif source_kind == "fifo":
+        os.mkfifo(toupcam_library)
+    assert host.install("--toupcam", str(toupcam_library)) == 1
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+def test_toupcam_refuses_symlinked_source_parent(host, toupcam_library):
+    alias = host.root / "source-alias"
+    alias.symlink_to(host.root, target_is_directory=True)
+    assert host.install("--toupcam", str(alias / toupcam_library.name)) == 1
+    assert not host.settings.exists() and not host.data.exists()
+
+
+@pytest.mark.parametrize("destination_kind", ["symlink", "directory", "fifo", "parent_symlink"])
+def test_toupcam_refuses_unsafe_destination_before_changes(host, toupcam_library, destination_kind):
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    outside = host.root / "untouched"
+    outside.mkdir()
+    marker = outside / "libtoupcam.so"
+    marker.write_bytes(b"preserve")
+    target.parent.parent.mkdir(parents=True)
+    if destination_kind == "parent_symlink":
+        target.parent.symlink_to(outside, target_is_directory=True)
+    else:
+        target.parent.mkdir()
+        if destination_kind == "symlink":
+            target.symlink_to(marker)
+        elif destination_kind == "directory":
+            target.mkdir()
+        else:
+            os.mkfifo(target)
+    assert host.install("--toupcam", str(toupcam_library)) == 1
+    assert marker.read_bytes() == b"preserve"
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+def test_toupcam_dry_run_validates_and_lists_without_changes(host, toupcam_library):
+    assert host.install("--dry-run", "--toupcam", str(toupcam_library)) == 0
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    assert not (host.root / "usr").exists()
+    assert "Would install Toupcam 59.30594.20260120" in host.out.getvalue()
+    assert all(command[0] in {"/usr/bin/python3", "systemctl"} for command in names(host.commands))
+
+
+def test_toupcam_without_option_keeps_existing_library(host):
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"existing owner-managed SDK")
+    target.chmod(0o640)
+    assert host.install() == 0
+    assert target.read_bytes() == b"existing owner-managed SDK"
+    assert mode(target) == 0o640 and host.owner(target) is None
+
+
 def test_first_install_creates_settings_data_units_and_command(module, host):
     assert host.install() == 0
 
@@ -116,6 +231,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         if path.name
         not in {
             "mg400-furnace.service",
+            "mg400-thermal.service",
             "mg400-orchestrator.service",
             "mg400-gateway.service",
             "mg400-proxy.service",
@@ -933,7 +1049,7 @@ def test_enabled_orchestrator_installs_private_data_and_group_without_starting_i
     assert len(settings["MG400_ORCH_TOKEN"]) >= 24
     for service, source in (("ROBOT", "PANEL"), ("STAGE", "STAGE"), ("FURNACE", "FURNACE")):
         assert settings[f"MG400_ORCH_{service}_TOKEN"] == settings[f"MG400_{source}_TOKEN"]
-    assert settings["MG400_ORCH_THERMAL_TOKEN"] == ""
+    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("orchestrator") - 1] == "--group"
     assert not any(
@@ -955,7 +1071,7 @@ def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricatin
     settings = module.parse_settings(host.settings.read_text())
     assert len(settings["MG400_GATEWAY_TOKEN"]) >= 24
     assert settings["MG400_ORCH_STAGE_TOKEN"] == settings["MG400_STAGE_TOKEN"]
-    assert settings["MG400_ORCH_THERMAL_TOKEN"] == ""
+    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("gateway") - 1] == "--group"
     assert not any(
@@ -1286,6 +1402,83 @@ def test_every_udev_permission_rule_must_identify_device_and_group(host, optiona
     assert not host.data.exists()
     assert not (host.root / "etc/udev").exists()
     assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]
+
+
+def test_enabled_thermal_installs_private_roi_directory_group_and_usb_rule(
+    module, host, inventory_udev
+):
+    select_optional(host, "thermal")
+    assert host.install() == 0
+    directory = host.data / "thermal"
+    assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
+    assert not (directory / "rois.toml").exists()
+    unit = host.units / "mg400-thermal.service"
+    assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
+    assert mode(unit) == 0o644 and host.owner(unit) == (0, 0)
+    rule = host.root / "etc/udev/rules.d/70-mg400-thermal.rules"
+    expected = (inventory_udev / (rule.name + ".in")).read_text()
+    assert rule.read_text() == expected.replace("@SERVICE_GROUP@", "lab1000")
+    assert 'ATTR{serial}=="P1016021DG040100208*"' in rule.read_text()
+    assert mode(rule) == 0o644 and host.owner(rule) == (0, 0)
+    settings = module.parse_settings(host.settings.read_text())
+    assert settings["MG400_THERMAL_BIND"] == "127.0.0.1"
+    assert settings["MG400_THERMAL_PORT"] == "8768"
+    assert settings["MG400_THERMAL_BASE_PATH"] == "/"
+    assert len(settings["MG400_THERMAL_TOKEN"]) >= 24
+    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
+    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
+    assert sync[sync.index("thermal") - 1] == "--group"
+    assert not any(
+        command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
+        or "mg400-thermal.service" in command
+        for command, _ in host.commands
+    )
+
+
+def test_disabled_thermal_has_no_unit_usb_rule_data_or_dependency_group(host, inventory_udev):
+    assert host.install() == 0
+    assert not (host.units / "mg400-thermal.service").exists()
+    assert not (host.root / "etc/udev/rules.d/70-mg400-thermal.rules").exists()
+    assert not (host.data / "thermal").exists()
+    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
+    assert "thermal" not in sync
+
+
+def test_thermal_dry_run_lists_preparation_without_writes_or_commands(host, inventory_udev):
+    select_optional(host, "thermal")
+    assert host.install("--dry-run") == 0
+    assert not host.settings.exists() and not host.data.exists()
+    assert not (host.root / "etc/udev").exists()
+    assert not (host.units / "mg400-thermal.service").exists()
+    assert not [cmd for cmd, _ in host.commands if cmd[0] in {"udevadm", "/usr/bin/uv"}]
+    output = host.out.getvalue()
+    assert "thermal (0750, 1000:1000)" in output
+    assert "70-mg400-thermal.rules" in output
+    assert "mg400-thermal.service" in output
+    assert "--group thermal" in output
+
+
+def test_thermal_install_preserves_existing_regions_and_explicit_token(
+    module, host, inventory_udev
+):
+    from thermal_cam.roi import load_regions
+
+    select_optional(host, "thermal")
+    directory = host.data / "thermal"
+    directory.mkdir(parents=True)
+    regions = directory / "rois.toml"
+    regions.write_text("[regions.crucible]\nx0=1\ny0=2\nx1=3\ny1=4\n")
+    regions.chmod(0o640)
+    original = regions.read_bytes()
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text("MG400_THERMAL_TOKEN=operator-token-0123456789abcdef\n")
+    assert host.install() == 0
+    assert regions.read_bytes() == original
+    assert mode(regions) == 0o640
+    assert load_regions(regions)["crucible"].bounds() == {"x0": 1, "y0": 2, "x1": 3, "y1": 4}
+    settings = module.parse_settings(host.settings.read_text())
+    assert settings["MG400_THERMAL_TOKEN"] == "operator-token-0123456789abcdef"
+    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

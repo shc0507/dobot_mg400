@@ -20,10 +20,12 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400/models` | Model weights installed from the asset manifest, with file permissions `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
 | `/var/lib/mg400/stage` | Writable stage calibration and camera references in `stage.toml` | `1000:1000`, `0700` |
+| `/var/lib/mg400/thermal` | Named thermal regions in `rois.toml`, files `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/furnace` | Furnace state and persistent lock, files `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/runs` | Orchestrator run records, files `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/zones` | Zone configuration and retained occupancy, files `0640` or `0600` | `1000:1000`, `0750` |
 | `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program | `root:root`, `0755` |
+| `/usr/local/lib/mg400/libtoupcam.so` | Optional Toupcam 59.30594.20260120 Linux x64 library | `root:root`, `0755` |
 | `/usr/local/bin/mg400ctl` | Routine command tool, linked to `/opt/mg400/deploy/mg400ctl` | None |
 | `/usr/local/bin/labctl` | Another link to the same command, with identical arguments and behavior | None |
 
@@ -37,6 +39,7 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-camera-preview.service` | `camera` | Camera preview page, port `1985` | None |
 | `mg400-camera-capture.service` | `camera` | go2rtc capture, listening only on `127.0.0.1:1984` | `video` |
 | `mg400-gripper-collector.service` | `collector` | Gripper USB collection | `dialout` |
+| `mg400-thermal.service` | `thermal` | Optional [thermal camera page](thermal.en.md), port `8768` | None |
 | `mg400-furnace.service` | `furnace` | Optional [furnace and gas page](furnace.en.md), port `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | Optional [recipe service](orchestrator.en.md#http-service), port `8772` | None |
 | `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
@@ -83,6 +86,7 @@ Before an update, stop the services with `mg400ctl stop all`.
    ```
 
    For cameras, add `--go2rtc <go2rtc 程序路径>` with the go2rtc program path on the first installation.
+   For Toupcam, add `--toupcam PATH` with the verified library described below.
    With `--dry-run`, the installer only lists its steps and does not change the host.
 
 3. After the first installation, edit the configuration as described in [Configuration file](#configuration-file).
@@ -92,6 +96,7 @@ The installer works in this order:
 
 1. Check the Python version, uv, the configuration file, and any independently running gripper collection processes.
    Also check the service registry, selection, selected units, and udev templates.
+   If `--toupcam` is supplied, check its source, destination, and pinned SHA-256.
    If assets are requested, also check the asset manifest, destination paths, and local files. If a check fails, leave the host unchanged.
 2. Create the configuration file or add missing entries. Generate empty service `*_TOKEN` values, then copy matching service tokens into blank orchestrator aliases. Keep nonempty values.
 3. Create the directories under `/var/lib/mg400` and the camera preview token.
@@ -100,6 +105,7 @@ The installer works in this order:
    By default, install the stage and tool dependencies in `/opt/mg400/.venv`.
 5. Install explicitly requested external assets. Check size and SHA-256 before atomic replacement.
 6. If cameras are configured, install go2rtc and generate `go2rtc.yaml`. Otherwise, remove the old `go2rtc.yaml`.
+   If `--toupcam` is supplied, install the library bytes verified in step 1.
 7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
 8. Install selected service definitions, reload systemd, and enable the gripper collection request listener.
 9. Create the `mg400ctl` and `labctl` links.
@@ -108,6 +114,28 @@ The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
 After the update, start services, then reload any open panel pages.
 Do not edit files in `/opt/mg400`. Modified files can cause `git switch` to abort the update.
+
+## Toupcam library
+
+Get `linux/x64/libtoupcam.so` from the [Toupcam 59.30594.20260120 SDK archive](https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip).
+Keep the archive and library outside Git. Pass the extracted library path to the installer:
+
+```sh
+/usr/bin/python3 /opt/mg400/deploy/install.py --toupcam /path/to/linux/x64/libtoupcam.so
+```
+
+The required SHA-256 is `5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997`.
+The installer refuses a mismatch, a symbolic link, or a nonregular file before changing the host.
+It copies the verified bytes atomically to `/usr/local/lib/mg400/libtoupcam.so`, owned by `root:root` with mode `0755`.
+It does not load the library or open a camera. Add `--dry-run` to validate and list the steps without changing files.
+Without `--toupcam`, an existing library stays unchanged.
+
+You can install the library before the microscope service is available.
+The microscope service owns this camera and furnace recordings. Its unit must set `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400` when that service is added.
+This installer option does not create a microscope unit or change the furnace unit.
+The existing `config/udev/70-mg400-microscope.rules.in` template grants the service group `0660` access to C3CMOS05100KPA USB3 `0547:1375` and USB2 `0547:1376` devices.
+The installer renders this template when the microscope service is registered and selected.
+Do not install the vendor's `99-toupcam.rules`: it grants broad `0666` access to vendors `0547` and `04b4`.
 
 ## Service registry
 
@@ -129,6 +157,15 @@ Add each new service entry together with its unit files.
 `web`, `stage`, `camera`, and `collector` are always mandatory.
 `MG400_OPTIONAL_SERVICES` accepts only optional service names from the registry, separated by commas.
 The default is empty. Unknown names, duplicates, empty items, or mandatory service names cause the installer to refuse installation.
+The optional `thermal` service uses the `thermal` dependency group in `/opt/mg400/.venv`.
+Add `thermal` to `MG400_OPTIONAL_SERVICES`, preserving other selections, then run the installer.
+It installs the thermal USB access rule and prepares `/var/lib/mg400/thermal` with owner `1000:1000` and mode `0750`.
+It does not create region coordinates or start the camera. Configure named regions as described in the [thermal guide](thermal.en.md).
+The owner starts the service explicitly with `mg400ctl start thermal`. Startup opens the camera automatically.
+
+Use `mg400ctl logs thermal` and `mg400ctl stop thermal` for logs and shutdown.
+Stop other camera applications first. Only 1 process can own the P1 camera.
+
 The optional `furnace` service uses the `furnace` dependency group.
 Configure its serial paths and operator-supplied gas map before enabling hardware use.
 Set `MG400_OPTIONAL_SERVICES=furnace`, run the installer, then start it explicitly with `mg400ctl start furnace`.
@@ -252,6 +289,10 @@ It also retains `MG400_GATEWAY_TOKEN` solely for the proposal API. This token ca
 | `MG400_STAGE_BASE_PATH` | `/` | Native stage prefix, with the contract under `contract/` |
 | `MG400_STAGE_TOKEN` | Generated by the installer | Stage panel access token |
 | `MG400_STAGE_SERIAL` | Empty | Arduino serial port path. See [Stage configuration](stage-panel.en.md#configuration) |
+| `MG400_THERMAL_BIND` | `127.0.0.1` | Thermal listen address |
+| `MG400_THERMAL_PORT` | `8768` | Thermal port |
+| `MG400_THERMAL_BASE_PATH` | `/` | Native thermal prefix, use `/thermal/` with the proxy |
+| `MG400_THERMAL_TOKEN` | Generated by the installer | Thermal access token |
 | `MG400_FURNACE_BIND` | `127.0.0.1` | Furnace listen address |
 | `MG400_FURNACE_PORT` | `8769` | Furnace port |
 | `MG400_FURNACE_TOKEN` | Generated by the installer | Furnace access token |

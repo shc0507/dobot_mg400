@@ -7,6 +7,34 @@
 FastAPI 和 uvicorn 提供网页面板，不必构建 JavaScript，也不依赖外部 CDN。
 交互式 API 参考会从 CDN 加载 Swagger 资源。
 
+## 主机托管服务
+
+可选单元 `mg400-thermal.service` 以 `1000:1000` 运行 `thermal-cam`，使用 `UMask=0077`，不添加设备附加组。
+它读取 `/etc/mg400/mg400.env`，并在启动时打开 P1 摄像头。
+它保留 `MG400_THERMAL_TOKEN`，排除其他服务令牌和编排器别名。
+CLI 配置无效时以状态码 `2` 退出，不自动重启。
+安装程序不启动此服务，单元也不随主机开机启动。
+
+把 `thermal` 加入 `MG400_OPTIONAL_SERVICES`，保留其他已选服务。
+按[主机部署](deploy.md)安装。安装程序以 `0750`、`1000:1000` 创建 `/var/lib/mg400/thermal`。
+它保留现有 `rois.toml`，不创建区域坐标。
+区域文件权限使用 `0640` 或 `0600`。配方使用读数前，先配置坩埚区域。
+
+USB 规则匹配 `3474:45c2` 和序列号前缀 `P1016021DG040100208*`。
+前缀匹配允许 P1 序列号末尾的不可打印字节。安装程序以 `0660` 授予 GID `1000` 对应组访问权限。
+设备通过 libusb 访问 `/dev/bus/usb`。摄像头保持连接在文档中的集线器端口，不得复位共用集线器。
+
+只有所有者能在实验室主机安装或启动服务。先关闭其他 P1 摄像头程序。
+安装和配置后，使用以下命令：
+
+```sh
+mg400ctl start thermal
+mg400ctl logs thermal
+mg400ctl stop thermal
+```
+
+读数用于实验室自动化前，必须完成有人监督的热像验证。软件安装不能确认测量准确度或数据是否新鲜。
+
 ## Linux 环境准备
 
 使用 Python 3.12 或更高版本，以及 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
@@ -81,6 +109,7 @@ uv run thermal-cam --help
 | --- | --- | --- |
 | `MG400_THERMAL_BIND` | `127.0.0.1` | 监听地址。`--bind` 覆盖此值。 |
 | `MG400_THERMAL_PORT` | `8768` | HTTP 端口。`--port` 覆盖此值。 |
+| `MG400_THERMAL_BASE_PATH` | `/` | 原生 URL 前缀。`--base-path` 覆盖此值。 |
 | `MG400_THERMAL_TOKEN` | 空 | 相机 API 的 Bearer 令牌。 |
 
 监听非回环地址时，必须配置令牌。

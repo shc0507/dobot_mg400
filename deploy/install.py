@@ -11,6 +11,7 @@ The installer never starts, stops or restarts a robot service.
 import argparse
 import errno
 import grp
+import hashlib
 import ipaddress
 import json
 import math
@@ -28,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import assets  # noqa: E402
 
 SOURCE = Path(__file__).resolve().parents[1]
+TOUPCAM_VERSION = "59.30594.20260120"
+TOUPCAM_SHA256 = "5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997"
 SERVICE_UID = SERVICE_GID = 1000
 COLLECTOR = "mg400-gripper-collector.service"
 REQUEST_WATCHER = "mg400-gripper-collector.path"
@@ -69,6 +72,7 @@ class Host:
         self.data = root / "var/lib/mg400"
         self.go2rtc = root / "usr/local/lib/mg400/go2rtc"
         self.caddy = root / "usr/local/lib/mg400/caddy"
+        self.toupcam = root / "usr/local/lib/mg400/libtoupcam.so"
         self.proxy_config = self.etc / "Caddyfile"
         self.units = root / "etc/systemd/system"
         self.command = root / "usr/local/bin/mg400ctl"
@@ -451,6 +455,25 @@ def prepare_proxy(args, host, settings, selected):
     return config, binary if args.caddy is not None else None
 
 
+def prepare_toupcam(source, host):
+    """Keep verified SDK bytes without loading the library or changing the host."""
+    if source is None:
+        return None
+    try:
+        with assets._directory(host.toupcam.parent) as directory:
+            assets._regular(host.toupcam, directory)
+    except FileNotFoundError:
+        pass
+    with assets._local(source) as stream:
+        binary = stream.read()
+    if hashlib.sha256(binary).hexdigest() != TOUPCAM_SHA256:
+        raise ValueError(
+            f"Toupcam {TOUPCAM_VERSION} linux/x64/libtoupcam.so: SHA-256 mismatch "
+            f"(expected {TOUPCAM_SHA256})."
+        )
+    return binary
+
+
 def find_collectors(proc_root, managed_pid):
     """Return PIDs of Python processes that run any gripper_feedback.py, except the service.
 
@@ -601,6 +624,7 @@ def install(args, host, run, chown, out):
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
     proxy_config, caddy_binary = prepare_proxy(args, host, settings, selected)
+    toupcam_binary = prepare_toupcam(args.toupcam, host)
 
     manifest = assets.load_manifest(host.asset_manifest) if args.asset or args.fetch_assets else {}
     available_assets = service_assets(selected, manifest) if args.asset or args.fetch_assets else {}
@@ -658,6 +682,8 @@ def install(args, host, run, chown, out):
             file=out,
             flush=True,
         )
+    if "thermal" in selected:
+        directory(host.data / "thermal", 0o750, service)
     if "furnace" in selected:
         directory(host.data / "furnace", 0o750, service)
     if "orch" in selected or "gateway" in selected:
@@ -720,6 +746,11 @@ def install(args, host, run, chown, out):
         step(f"write {host.proxy_config}")
         if not args.dry_run:
             write_file(host.proxy_config, proxy_config, 0o640, (0, SERVICE_GID), chown)
+    if toupcam_binary is not None:
+        directory(host.toupcam.parent, 0o755, (0, 0))
+        step(f"install Toupcam {TOUPCAM_VERSION} from {args.toupcam} as {host.toupcam}")
+        if not args.dry_run:
+            write_file(host.toupcam, toupcam_binary, 0o755, (0, 0), chown)
     if rendered_rules:
         directory(host.udev, 0o755, (0, 0))
         for name, text in rendered_rules.items():
@@ -748,6 +779,9 @@ def main(argv=None, *, host=None, run=subprocess.run, chown=os.fchown, out=sys.s
     parser.add_argument("--dry-run", action="store_true", help="Print the steps. Change nothing.")
     parser.add_argument("--go2rtc", type=Path, help="go2rtc 1.9.14 binary to install")
     parser.add_argument("--caddy", type=Path, help="Caddy 2 binary for the optional proxy")
+    parser.add_argument(
+        "--toupcam", type=Path, help=f"Verified Toupcam {TOUPCAM_VERSION} Linux x64 library"
+    )
     parser.add_argument(
         "--asset",
         action="append",

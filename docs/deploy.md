@@ -20,10 +20,12 @@
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/camera` | 摄像头预览密钥 `preview.key` | `1000:1000`，`0700` |
 | `/var/lib/mg400/stage` | `stage.toml` 中可写的位移台校准和相机参考 | `1000:1000`，`0700` |
+| `/var/lib/mg400/thermal` | `rois.toml` 中的命名热像区域，文件权限 `0640` 或 `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/furnace` | 炉控状态和持久锁，文件为 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/runs` | 编排器运行记录，文件为 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/zones` | 区域配置和保留占用，文件为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
+| `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
 | `/usr/local/bin/mg400ctl` | 日常命令，链接到 `/opt/mg400/deploy/mg400ctl` | 无 |
 | `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
 
@@ -37,6 +39,7 @@
 | `mg400-camera-preview.service` | `camera` | 摄像头预览网页，端口 `1985` | 无 |
 | `mg400-camera-capture.service` | `camera` | go2rtc 采集，只监听 `127.0.0.1:1984` | `video` |
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
+| `mg400-thermal.service` | `thermal` | 可选[热像仪页面](thermal.md)，端口 `8768` | 无 |
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
@@ -83,6 +86,7 @@
    ```
 
    使用摄像头时，首次安装加 `--go2rtc <go2rtc 程序路径>`。
+   使用 Toupcam 时，加 `--toupcam PATH`，指定下文说明的已校验库文件。
    加 `--dry-run` 时，安装器只列出步骤，不修改主机。
 
 3. 首次安装后，按 [配置文件](#配置文件) 修改配置。
@@ -92,6 +96,7 @@
 
 1. 检查 Python 版本、uv、配置文件和独立运行的夹爪采集进程。
    同时检查服务清单、服务选择、所选单元和 udev 模板。
+   如指定 `--toupcam`，检查源文件、目标路径和固定的 SHA-256。
    如指定资源，还检查资源清单、目标路径和本地文件。检查不通过时，安装器不修改主机。
 2. 创建配置文件，或补全缺少的配置项。先生成空的服务 `*_TOKEN` 值，再把对应服务令牌复制到空的编排器别名。非空值保持不变。
 3. 创建 `/var/lib/mg400` 下的目录和摄像头预览密钥。
@@ -100,6 +105,7 @@
    默认在 `/opt/mg400/.venv` 安装位移台和工具依赖。
 5. 安装显式指定的外部资源，先校验大小和 SHA-256，再原子替换目标。
 6. 配置了摄像头时，安装 go2rtc 并生成 `go2rtc.yaml`。未配置时，删除旧的 `go2rtc.yaml`。
+   如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
 8. 安装所选服务定义，重新加载 systemd，启用夹爪采集的请求监听。
 9. 链接 `mg400ctl` 和 `labctl`。
@@ -108,6 +114,28 @@
 更新代码前必须停止服务。运行中的服务可能读取新旧混合的文件。
 更新后，启动服务，再重新加载已打开的面板页面。
 不要在 `/opt/mg400` 修改文件。修改的文件可能让 `git switch` 中止更新。
+
+## Toupcam 库
+
+从 [Toupcam 59.30594.20260120 SDK 压缩包](https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip)提取 `linux/x64/libtoupcam.so`。
+压缩包和库文件都放在 Git 仓库外。把提取出的库文件路径传给安装器：
+
+```sh
+/usr/bin/python3 /opt/mg400/deploy/install.py --toupcam /path/to/linux/x64/libtoupcam.so
+```
+
+要求的 SHA-256 为 `5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997`。
+校验和不匹配、路径含符号链接或文件不是普通文件时，安装器拒绝安装，不修改主机。
+安装器把已校验的内容原子写入 `/usr/local/lib/mg400/libtoupcam.so`，属主为 `root:root`，权限为 `0755`。
+安装器不加载库，也不打开摄像头。加 `--dry-run` 可校验并列出步骤，不修改文件。
+未指定 `--toupcam` 时，已有库文件保持不变。
+
+可以先安装库，再添加显微镜服务。
+显微镜服务独占此摄像头，并负责炉控录像。添加该服务时，其单元必须设置 `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`。
+此安装选项不创建显微镜单元，也不修改炉控单元。
+已有的 `config/udev/70-mg400-microscope.rules.in` 模板以 `0660` 权限，向服务组开放 C3CMOS05100KPA 的 USB3 `0547:1375` 和 USB2 `0547:1376` 设备。
+显微镜服务注册并选中后，安装器才渲染此模板。
+不要安装厂商的 `99-toupcam.rules`：它以 `0666` 权限，向所有用户开放厂商 `0547` 和 `04b4` 的设备。
 
 ## 服务清单
 
@@ -129,6 +157,15 @@
 `web`、`stage`、`camera` 和 `collector` 始终为必需服务。
 `MG400_OPTIONAL_SERVICES` 只接受清单中可选服务的名称，用逗号分隔。
 默认值为空。未知、重复、空项或必需服务名称会使安装器拒绝安装。
+可选服务 `thermal` 使用 `/opt/mg400/.venv` 中的 `thermal` 依赖组。
+把 `thermal` 加入 `MG400_OPTIONAL_SERVICES`，保留其他选项，然后运行安装程序。
+安装程序安装热像仪 USB 访问规则，并以 `1000:1000`、`0750` 创建 `/var/lib/mg400/thermal`。
+它不创建区域坐标，也不启动摄像头。命名区域的配置见[热像仪说明](thermal.md)。
+由所有者执行 `mg400ctl start thermal` 启动服务。服务启动时自动打开摄像头。
+
+用 `mg400ctl logs thermal` 查看日志，用 `mg400ctl stop thermal` 停止服务。
+先关闭其他摄像头程序。P1 摄像头只能由 1 个进程独占。
+
 可选服务 `furnace` 使用 `furnace` 依赖组。
 真机使用前，配置串口路径和操作员提供的气体映射。
 设置 `MG400_OPTIONAL_SERVICES=furnace` 后运行安装器，再明确运行 `mg400ctl start furnace`。
@@ -252,6 +289,10 @@
 | `MG400_STAGE_BASE_PATH` | `/` | 位移台原生前缀，契约位于其下的 `contract/` |
 | `MG400_STAGE_TOKEN` | 安装器生成 | 位移台面板的访问密钥 |
 | `MG400_STAGE_SERIAL` | 空 | Arduino 的串口路径，见 [位移台配置项](stage-panel.md#配置项) |
+| `MG400_THERMAL_BIND` | `127.0.0.1` | 热像仪监听地址 |
+| `MG400_THERMAL_PORT` | `8768` | 热像仪端口 |
+| `MG400_THERMAL_BASE_PATH` | `/` | 热像仪原生路径前缀，使用代理时设为 `/thermal/` |
+| `MG400_THERMAL_TOKEN` | 安装程序生成 | 热像仪访问令牌 |
 | `MG400_FURNACE_BIND` | `127.0.0.1` | 炉控监听地址 |
 | `MG400_FURNACE_PORT` | `8769` | 炉控端口 |
 | `MG400_FURNACE_TOKEN` | 安装器生成 | 炉控访问密钥 |

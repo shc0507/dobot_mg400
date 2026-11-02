@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from contextlib import closing
 from io import BytesIO
@@ -11,6 +12,8 @@ from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from PIL import Image, ImageOps
+
+from cameras.config import camera_configuration
 
 _MAX_BYTES = 8 * 1024 * 1024
 _MAX_PIXELS = 16_000_000
@@ -21,10 +24,12 @@ class FrameError(RuntimeError):
     """A frame could not be read or decoded within the source limits."""
 
 
-def validate_camera(camera: int) -> int:
-    """Return a camera number from 1 through 3; reject other types and values."""
-    if type(camera) is not int or camera not in (1, 2, 3):
-        raise ValueError("camera must be an integer from 1 through 3.")
+def validate_camera(camera: int, count: int = 4) -> int:
+    """Return a configured camera number; reject other types and values."""
+    if type(count) is not int or not 0 <= count <= 4:
+        raise ValueError("Configured camera count must be an integer from 0 through 4.")
+    if type(camera) is not int or not 1 <= camera <= count:
+        raise ValueError("camera must identify a configured stream from camera1 to camera4.")
     return camera
 
 
@@ -93,6 +98,7 @@ class Go2RTCSource:
         max_bytes: int = _MAX_BYTES,
         opener=None,
         clock=time.monotonic,
+        settings=None,
     ):
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ValueError("timeout must be a positive finite number.")
@@ -114,10 +120,16 @@ class Go2RTCSource:
         self.max_bytes = max_bytes
         self._opener = opener
         self._clock = clock
+        self.configuration = camera_configuration(os.environ if settings is None else settings)
+        self.camera_count = self.configuration.count
 
     def read(self, camera: int) -> Image.Image:
         """Return an EXIF-oriented RGB frame, or raise FrameError on failure."""
-        camera = validate_camera(camera)
+        return self.still(camera)
+
+    def still(self, camera: int) -> Image.Image:
+        """Read one frame from the same configured stream and check its dimensions."""
+        camera = validate_camera(camera, self.camera_count)
         url = f"http://127.0.0.1:1984/api/frame.jpeg?src=camera{camera}"
         opener = self._opener
         if opener is None:
@@ -137,7 +149,14 @@ class Go2RTCSource:
                     deadline=self._clock() + self.timeout,
                     clock=self._clock,
                 )
-            return _decode(data, "JPEG")
+            image = _decode(data, "JPEG")
+            expected = self.configuration.mode(camera)[:2]
+            if image.size != expected:
+                raise FrameError(
+                    f"Camera {camera} frame size {image.size[0]}x{image.size[1]} "
+                    f"differs from configured mode {expected[0]}x{expected[1]}."
+                )
+            return image
         except FrameError:
             raise
         except HTTPError as exc:
@@ -151,6 +170,7 @@ class DemoSource:
     """Read the same offline scene for each camera; construction reads no file."""
 
     def __init__(self, directory: str | Path | None = None):
+        self.camera_count = 4
         self.directory = (
             Path(directory)
             if directory is not None
@@ -169,3 +189,11 @@ class DemoSource:
             raise
         except Exception as exc:
             raise FrameError(f"Cannot read demo frame {path}: {exc}") from exc
+
+    def still(self, camera: int) -> Image.Image:
+        return self.read(camera)
+
+
+def still(camera: int, *, settings=None, opener=None) -> Image.Image:
+    """Fetch one checked frame without opening or reconfiguring a camera device."""
+    return Go2RTCSource(settings=settings, opener=opener).still(camera)

@@ -12,12 +12,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Condition, Thread
 
+from cameras.config import camera_configuration
+
 # An empty environment value counts as unset.
 KEY_FILE = Path(os.environ.get("MG400_CAMERA_KEY_FILE") or "/var/lib/mg400/camera/preview.key")
 KEY = KEY_FILE.read_bytes().strip()
 if len(KEY) < 32:
     raise ValueError("The camera access key must contain at least 32 bytes.")
-STREAMS = {f"camera{i}.jpg": f"camera{i}" for i in range(1, 4)}
+CAMERAS = camera_configuration(os.environ)
+STREAMS = {f"{stream}.jpg": stream for stream in CAMERAS.streams}
 MAX_FRAME = 4 * 1024 * 1024
 MAX_DETECTIONS = 256 * 1024
 SCRIPT = Path(__file__).with_suffix(".js").read_bytes()
@@ -39,22 +42,22 @@ img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#080
 figcaption{padding:16px}small{display:block;color:#a6b5c6;margin-top:6px}
 label{display:block;margin-top:10px}input{margin-right:6px}[data-overlay-status]{margin-left:8px;color:#a6b5c6}
 </style>
-<h1>MG400 摄像头</h1><p>AC410 · 每路最高 30 帧/秒 · 下方显示实际更新帧率和分辨率</p><main>
+<h1>MG400 摄像头</h1><p>AC410 · 预览每路最高 30 帧/秒 · 下方显示实际更新帧率和分辨率</p><main>
 """
     + "".join(
-        f'<figure><div class="view"><img data-source="camera{i}.mjpeg" '
-        f'data-detections="camera{i}/detections.json" alt="摄像头 {i} 暂无画面">'
+        f'<figure><div class="view"><img data-source="{stream}.mjpeg" '
+        f'data-detections="{stream}/detections.json" alt="摄像头 {i} 暂无画面">'
         '<canvas hidden aria-hidden="true"></canvas></div>'
-        f"<figcaption>摄像头 {i}<small>正在连接…</small>"
+        f"<figcaption>摄像头 {i}{' · 托盘' if i == 4 else ''}<small>正在连接…</small>"
         '<label><input type="checkbox" data-overlay>识别叠加'
         '<span data-overlay-status role="status"></span></label></figcaption></figure>'
-        for i in range(1, 4)
+        for i, stream in enumerate(CAMERAS.streams, 1)
     )
     + ('</main><script src="preview.js" defer></script></html>')
 )
 
 
-def iter_mjpeg(upstream):
+def iter_mjpeg(upstream, *, keep_reading=lambda: True):
     """Read complete JPEG parts. Bound memory even if the source omits a boundary."""
     content_type = Message()
     content_type["content-type"] = upstream.headers.get("Content-Type", "")
@@ -69,7 +72,7 @@ def iter_mjpeg(upstream):
         raise ValueError("Invalid MJPEG boundary")
     marker = b"--" + boundary.encode("ascii")
     buffer = bytearray()
-    while True:
+    while keep_reading():
         chunk = upstream.read1(64 * 1024)
         if not chunk:
             if buffer.startswith(marker + b"--"):
@@ -130,8 +133,10 @@ def iter_mjpeg(upstream):
 class CameraFeed:
     """Share one upstream reader and one latest-frame slot between viewers."""
 
-    def __init__(self, source):
+    def __init__(self, source, *, on_demand=False):
         self.source = source
+        self.on_demand = on_demand
+        self.viewers = 0
         self.condition = Condition()
         self.thread = None
         self.sequence = 0
@@ -141,12 +146,34 @@ class CameraFeed:
 
     def start(self):
         with self.condition:
+            if self.on_demand and self.viewers == 0:
+                self.error = False
+            self.viewers += 1
             if self.thread is None:
                 self.thread = Thread(target=self.run, daemon=True)
-                self.thread.start()
+                try:
+                    self.thread.start()
+                except BaseException:
+                    self.thread = None
+                    self.viewers -= 1
+                    raise
+
+    def release(self):
+        with self.condition:
+            self.viewers = max(0, self.viewers - 1)
+            if self.on_demand and self.viewers == 0:
+                self.frame = None
+                self.error = True
+                self.condition.notify_all()
+
+    def active(self):
+        with self.condition:
+            return not self.on_demand or self.viewers > 0
 
     def publish(self, frame):
         with self.condition:
+            if self.on_demand and self.viewers == 0:
+                return
             self.sequence += 1
             self.frame = frame
             self.error = False
@@ -178,19 +205,27 @@ class CameraFeed:
 
     def run(self):
         while True:
+            with self.condition:
+                if self.on_demand and self.viewers == 0:
+                    self.thread = None
+                    return
             try:
                 with urllib.request.urlopen(
                     "http://127.0.0.1:1984/api/stream.mjpeg?src=" + self.source, timeout=2
                 ) as upstream:
-                    for frame in iter_mjpeg(upstream):
+                    for frame in iter_mjpeg(upstream, keep_reading=self.active):
                         self.publish(frame)
             except (OSError, ValueError, UnicodeError, HTTPException):
                 pass
             self.disconnect()
-            time.sleep(0.5)
+            if self.active():
+                time.sleep(0.5)
 
 
-FEEDS = {source: CameraFeed(source) for source in STREAMS.values()}
+FEEDS = {
+    source: CameraFeed(source, on_demand=source not in CAMERAS.preloaded)
+    for source in STREAMS.values()
+}
 
 
 class NoVisionRedirect(urllib.request.HTTPRedirectHandler):
@@ -301,30 +336,33 @@ class Preview(BaseHTTPRequestHandler):
     def stream(self, feed):
         feed.start()
         try:
-            sequence, frame = feed.wait_after(0)
-        except OSError:
-            self.send_error(502)
-            return
-        self.close_connection = True
-        self.connection.settimeout(1.5)
-        self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            while True:
-                self.wfile.write(
-                    b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                    + str(len(frame)).encode()
-                    + b"\r\n\r\n"
-                    + frame
-                    + b"\r\n"
-                )
-                time.sleep(1 / 30)
-                sequence, frame = feed.wait_after(sequence)
-        except OSError:
-            pass
+            try:
+                sequence, frame = feed.wait_after(0)
+            except OSError:
+                self.send_error(502)
+                return
+            self.close_connection = True
+            self.connection.settimeout(1.5)
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                while True:
+                    self.wfile.write(
+                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                        + str(len(frame)).encode()
+                        + b"\r\n\r\n"
+                        + frame
+                        + b"\r\n"
+                    )
+                    time.sleep(1 / 30)
+                    sequence, frame = feed.wait_after(sequence)
+            except OSError:
+                pass
+        finally:
+            feed.release()
 
     def respond(self, body, content_type):
         try:

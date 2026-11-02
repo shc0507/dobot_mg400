@@ -60,7 +60,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
 | Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
-| Camera preview | `scripts/camera_preview.py`, `camera_preview.js` | `test_camera_preview.py`, `test_camera_preview.mjs` | [olares.md](docs/olares.md#摄像头) |
+| Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py`, `camera_preview.js` | `test_deploy_install.py`, `test_camera_preview.py`, `test_camera_preview.mjs` | [olares.md](docs/olares.md#摄像头) |
 | Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
 | QR reader | `src/vision/qr.py`, `qr_micro.py` | `test_vision_qr*.py` | Module docstrings |
 | Simulator | `src/mg400/sim/` | `test_mg400_sim.py`, `sim_mg400.py`, `test_web_keyboard_integration.py`, `test_robot_service_e2e.py` | [development.md](docs/development.md#离线机器人模拟器) |

@@ -37,11 +37,23 @@ def main():
         subprocess.run([str(root / "native")], check=True, timeout=30)
         pins = copied / "MotorPins.h"
         original = pins.read_text()
-        pins.write_text(original.replace("BottomLimitMin = A2", "BottomLimitMin = 255"))
+        # Exercise the retained switch safeguards only in this temporary copy.
+        # The production header always represents the stage without switches.
+        switched = original
+        for name, pin in (
+            ("InsertLimitMin", "A0"),
+            ("InsertLimitMax", "A1"),
+            ("BottomLimitMin", "A2"),
+            ("BottomLimitMax", "A3"),
+            ("TopLimitMin", "A4"),
+            ("TopLimitMax", "A5"),
+        ):
+            switched = switched.replace(f"{name} = 255", f"{name} = {pin}")
+        pins.write_text(switched)
         subprocess.run(build, check=True)
         subprocess.run([str(root / "native")], check=True, timeout=30)
         for invalid in ("A0", "5", "0", "20"):
-            pins.write_text(original.replace("BottomLimitMin = A2", f"BottomLimitMin = {invalid}"))
+            pins.write_text(switched.replace("BottomLimitMin = A2", f"BottomLimitMin = {invalid}"))
             probe = root / "pins.cpp"
             probe.write_text('#include "sketch/MotorPins.h"\n')
             result = subprocess.run(

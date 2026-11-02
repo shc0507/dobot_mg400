@@ -63,6 +63,7 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-camera-preview.service",
         "mg400-stage-panel.service",
         "mg400-furnace.service",
+        "mg400-thermal.service",
         "mg400-orchestrator.service",
         "mg400-gateway.service",
     ],
@@ -82,6 +83,7 @@ def test_services_with_settings_read_the_shared_environment_file(name):
             [
                 "MG400_STAGE_TOKEN",
                 "MG400_FURNACE_TOKEN",
+                "MG400_THERMAL_TOKEN",
                 *ORCHESTRATOR_TOKENS,
                 "MG400_GATEWAY_TOKEN",
             ],
@@ -91,6 +93,7 @@ def test_services_with_settings_read_the_shared_environment_file(name):
             [
                 "MG400_PANEL_TOKEN",
                 "MG400_FURNACE_TOKEN",
+                "MG400_THERMAL_TOKEN",
                 *ORCHESTRATOR_TOKENS,
                 "MG400_GATEWAY_TOKEN",
             ],
@@ -101,6 +104,7 @@ def test_services_with_settings_read_the_shared_environment_file(name):
                 "MG400_PANEL_TOKEN",
                 "MG400_STAGE_TOKEN",
                 "MG400_FURNACE_TOKEN",
+                "MG400_THERMAL_TOKEN",
                 *ORCHESTRATOR_TOKENS,
                 "MG400_GATEWAY_TOKEN",
             ],
@@ -178,6 +182,7 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-camera-preview.service": [],
         "mg400-stage-panel.service": ["dialout"],
         "mg400-furnace.service": ["dialout"],
+        "mg400-thermal.service": [],
         "mg400-orchestrator.service": [],
         "mg400-proxy.service": [],
         "mg400-gateway.service": [],
@@ -279,3 +284,27 @@ def test_proxy_runs_only_explicit_binary_and_never_receives_service_credentials(
 def test_installed_robot_panel_uses_existing_base_path_option():
     arguments = command("mg400-web-panel.service")
     assert arguments[arguments.index("--base-path") + 1] == "${MG400_PANEL_BASE_PATH}"
+
+
+def test_thermal_service_keeps_only_its_token_and_uses_primary_group_usb_access():
+    service = unit_sections("mg400-thermal.service")["Service"]
+    assert command("mg400-thermal.service") == ["/opt/mg400/.venv/bin/thermal-cam"]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    assert service["TimeoutStopSec"] == ["30"]
+    assert not service.get("SupplementaryGroups")
+    assert set(service["UnsetEnvironment"][0].split()) == {
+        f"MG400_{name}_TOKEN"
+        for name in ("PANEL", "STAGE", "VISION", "FURNACE", "MICROSCOPE", "GATEWAY")
+    } | set(ORCHESTRATOR_TOKENS)
+    assert "MG400_THERMAL_TOKEN" not in service["UnsetEnvironment"][0].split()
+    entry = next(entry for entry in REGISTRY if entry["name"] == "thermal")
+    assert entry == {
+        "name": "thermal",
+        "units": ["mg400-thermal.service"],
+        "optional": True,
+        "venv": ".venv",
+        "groups": ["thermal"],
+        "token": "MG400_THERMAL_TOKEN",
+        "port": 8768,
+        "assets": [],
+    }

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .protocol import MICROSTEP_MODES, MOTOR_IDS
 
-DEFAULT_CONFIG = Path("/var/lib/mg400/stage.toml")
+DEFAULT_CONFIG = Path("/var/lib/mg400/stage/stage.toml")
 MAX_PULSES = 2**31 - 1
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
@@ -40,6 +40,7 @@ class Axis:
     min_mm: float
     max_mm: float
     positions: dict[str, float]
+    reference: dict | None = None
 
     def scale(self, microstep):
         if microstep not in MICROSTEP_MODES:
@@ -76,6 +77,41 @@ class Geometry:
     poses: dict[str, tuple[tuple[str, float], ...]]
 
 
+def parse_reference(value):
+    if not isinstance(value, dict) or set(value) != {"stream", "marker", "pixel", "tolerance_px"}:
+        raise ValueError("A stage reference requires stream, marker, pixel and tolerance_px.")
+    if not isinstance(value["stream"], str) or not NAME.fullmatch(value["stream"]):
+        raise ValueError("Reference stream must be a go2rtc stream name, not a URL.")
+    if type(value["marker"]) is not int or not 0 <= value["marker"] < 1000:
+        raise ValueError("Reference marker must be an ArUco DICT_4X4_1000 ID from 0 to 999.")
+    pixel = value["pixel"]
+    if not isinstance(pixel, list) or len(pixel) != 2:
+        raise ValueError("Reference pixel must contain x and y.")
+    pixel = [number(item) for item in pixel]
+    tolerance = number(value["tolerance_px"])
+    if any(not 0 <= item <= 8192 for item in pixel) or not 0 < tolerance <= 8192:
+        raise ValueError("Reference pixels and tolerance must fit an 8192 pixel image.")
+    return dict(stream=value["stream"], marker=value["marker"], pixel=pixel, tolerance_px=tolerance)
+
+
+def geometry_data(geometry):
+    """Return the exact schema for safe calibration persistence."""
+    from dataclasses import asdict
+
+    motors = {}
+    for motor, axis in geometry.motors.items():
+        motors[motor] = asdict(axis)
+        if axis.reference is None:
+            del motors[motor]["reference"]
+    return dict(
+        motors=motors,
+        poses={
+            name: dict(order=[motor for motor, _ in targets], positions=dict(targets))
+            for name, targets in geometry.poses.items()
+        },
+    )
+
+
 def parse_geometry(data):
     if not isinstance(data, dict) or set(data) - {"motors", "poses"}:
         raise ValueError("Stage configuration accepts only motors and poses tables.")
@@ -85,7 +121,10 @@ def parse_geometry(data):
     axes = {}
     required = {"steps_per_mm", "microstep", "min_mm", "max_mm"}
     for motor, values in motors.items():
-        if not isinstance(values, dict) or not required <= set(values) <= required | {"positions"}:
+        if not isinstance(values, dict) or not required <= set(values) <= required | {
+            "positions",
+            "reference",
+        }:
             raise ValueError(f"Invalid stage configuration fields for {motor}.")
         scale, low, high = (number(values[key]) for key in ("steps_per_mm", "min_mm", "max_mm"))
         microstep = values["microstep"]
@@ -99,7 +138,8 @@ def parse_geometry(data):
         positions = {name: number(mm) for name, mm in names(values.get("positions", {})).items()}
         if motor == "insert" and not {"load", "furnace"} <= set(positions):
             raise ValueError("Insert requires load and furnace named positions.")
-        axis = Axis(scale, microstep, low, high, positions)
+        reference = parse_reference(values["reference"]) if "reference" in values else None
+        axis = Axis(scale, microstep, low, high, positions, reference)
         for mode in MICROSTEP_MODES:
             axis.bounds(mode)
             for mm in positions.values():

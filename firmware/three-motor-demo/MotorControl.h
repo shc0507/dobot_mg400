@@ -19,7 +19,7 @@ struct Status {
   Direction direction;
   bool rotating;
   bool continuous;
-  long position;        // Signed STEP pulses since begin()/home(), not measured travel.
+  long position;        // Signed STEP pulses since begin()/home()/zero(), not measured travel.
   long remainingSteps; // Signed; zero in continuous mode.
   float speed;         // Configured speed limit, STEP pulses/second.
   float acceleration;  // STEP pulses/second squared, for finite moves.
@@ -71,6 +71,9 @@ void stopAll();      // Immediately cancel every motor's pulses/target.
 // Nonblocking, bounded homing in CCW (negative) direction. The final minimum
 // contact establishes zero. Stop cancels homing and never establishes a reference.
 HomeError home();
+// An operator-confirmed idle position becomes zero, without any STEP pulse.
+// Clear the old soft range; the host must install and confirm its calibrated range.
+bool zero();
 HomeError takeHomeError(Motor motor); // Consume a deferred failure, outside printing.
 const __FlashStringHelper *homeErrorText(HomeError error);
 bool setSoftLimits(long minimum, long maximum); // Idle and homed only, inclusive.

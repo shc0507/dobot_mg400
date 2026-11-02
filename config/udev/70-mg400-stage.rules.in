@@ -1,0 +1,2 @@
+# Stage Arduino. Keep its /dev/serial/by-id identity.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043", ATTRS{serial}=="1453230313235111D1E0", MODE="0660", GROUP="@SERVICE_GROUP@"

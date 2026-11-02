@@ -1,0 +1,2 @@
+# Gripper converter. Its serial distinguishes it from the gas controller.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="BG02Q5TN", MODE="0660", GROUP="@SERVICE_GROUP@"

@@ -104,6 +104,7 @@ The plan picks these defaults. GOV-02 records them as ADRs. Change one only thro
 | `WuLabPrinceton/Objective-Control` | `3a2dad0` | `camera.py`, `toupcam_capture.py`, `python/toupcam.py` | TPC-01 |
 | `WuLabPrinceton/Objective-Control` | `3a2dad0` | Autofocus, ArUco, calibration and capture modules, `MotorController`, `usb_camera_devices.py`, two test files | MIC-02 |
 | `WuLabPrinceton/Objective-Control` | `3a2dad0` | Calibration images and CSV files, as host data | MIC-05 |
+| `WuLabPrinceton/Objective-Control` | `a9241a1` | `Objective_Control/Arduino_Firmware/Dual_UNO_Controller/Dual_UNO_Controller.ino`, the recovered dual-motor sketch from H-02 | MIC-01 |
 
 These files do not move:
 
@@ -543,7 +544,7 @@ Human tasks to start now, because they take long and change no hardware: H-02 (f
 
 | Risk | Effect | Mitigation |
 | --- | --- | --- |
-| About a dozen USB devices on one host | Enumeration failures drop the gripper or a motor controller | OPS-01 USB plan: own controller for the Toupcam camera, powered hubs per job, stable names. Never reset a shared upstream hub. |
+| About a dozen USB devices on one host | Enumeration failures drop the gripper or a motor controller | OPS-01 USB plan: 1 self-powered hub on 1 host port, Toupcam on its USB 3 side, and fixed camera ports. Never reset the shared hub. |
 | No Linux Toupcam library, or a license that forbids use | Furnace and microscope cameras do not work on Olares | H-12 early. Wrapper and library from the same SDK version. |
 | The detector does not transfer to the final cameras | Vision-guided picks fail | H-09 then VIS-08: evaluate, retrain, publish new weights. |
 | Collision during automated transfers | Damage | Taught stations with safe heights and via points, speed caps, rehearsal first, P-HW, zones |

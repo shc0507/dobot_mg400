@@ -1,0 +1,3 @@
+# Furnace and gas serial controllers. Do not match the gripper converter.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", ATTRS{serial}=="DU0DT9G8", MODE="0660", GROUP="@SERVICE_GROUP@"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="ABBCE4JW", MODE="0660", GROUP="@SERVICE_GROUP@"

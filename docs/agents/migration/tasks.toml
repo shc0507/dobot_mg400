@@ -1088,6 +1088,8 @@ writes = [
 
 [[task]]
 id = "MIC-01"
+# Recovered sketch: Objective-Control@a9241a1
+# Objective_Control/Arduino_Firmware/Dual_UNO_Controller/Dual_UNO_Controller.ino
 title = "Turret and focus firmware"
 phase = 4
 track = "microscope"
@@ -1296,6 +1298,8 @@ size = "L"
 review = "human"
 deps = ["AGT-01", "DSH-01", "H-23"]
 writes = [
+  "config/systemd/mg400-orchestrator.service",
+  "config/systemd/mg400-gateway.service",
   "src/orchestrator/approvals.py",
   "src/orchestrator/app.py",
   "src/orchestrator/web/**",

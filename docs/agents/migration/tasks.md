@@ -1098,11 +1098,13 @@ Owner: agent+human · Size: L · Review: human · Deps: H-02
 
 Goal: firmware source for the turret and focus motors in the repo, plus a host-side simulator.
 
-Read: in Objective-Control, every command the Python code sends and every reply prefix it waits for (`rg -n "send_and_wait|_command\(|command\(" Objective_Control/*.py`), and lines 1 to 22 of `Dual_A4988_GUI.py` (the protocol docstring).
+Source: Objective-Control `a9241a1`, `Objective_Control/Arduino_Firmware/Dual_UNO_Controller/Dual_UNO_Controller.ino`, recovered in H-02.
+
+Read: at the existing Objective-Control `3a2dad0` pin, every command the Python code sends and every reply prefix it waits for (`rg -n "send_and_wait|_command\(|command\(" Objective_Control/*.py`), and lines 1 to 22 of `Dual_A4988_GUI.py` (the protocol docstring). The recovered-sketch pin does not change the source revisions for MIC-02 or MIC-05.
 
 Steps:
 
-1. If H-02 found the original sketch, commit it unchanged under `firmware/microscope-axes/` as the first commit. Otherwise write a new sketch with the structure of `three-motor-demo` (AccelStepper, bounded line buffer, non-blocking loop) and the wiring from H-02.
+1. Commit the recovered sketch unchanged under `firmware/microscope-axes/` as the first commit. Adapt it in later commits of the same PR and keep the source-author trailers required by P-MOVE.
 2. Keep the existing protocol byte for byte:
 
    | Command | Reply that the Python code waits for |
@@ -1334,6 +1336,10 @@ Steps:
 3. Dashboard: an approvals list that shows the full recipe and params, with Approve and Reject. An approved run starts in the orchestrator like a manual run.
 4. Check the H-23 limits (for example the maximum temperature) before a proposal is stored.
 5. Tests for propose, approve, reject, expiry and limit violations.
+
+Proposal authentication: `config/systemd/mg400-orchestrator.service` may retain `MG400_GATEWAY_TOKEN` for the fixed proposal-only API. Enforce that this capability is distinct from operator and device-control credentials, and map its requester identity on the server. It must never authorize approval, rejection, ordinary orchestrator control, or device-control routes. Keep the other token exclusions and unit restrictions unchanged. This implements the existing ADR 0008 role separation; it grants no gateway actuation authority.
+
+Update only the description and comment in `config/systemd/mg400-gateway.service` to include proposal support. Keep its command, token exclusions, and device-access policy unchanged.
 
 Done when: P-CHECKS pass.
 

@@ -1,0 +1,2 @@
+# Thermal Master P1 uses libusb through /dev/bus/usb.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3474", ATTR{idProduct}=="45c2", ATTR{serial}=="P1016021DG040100208", MODE="0660", GROUP="@SERVICE_GROUP@"

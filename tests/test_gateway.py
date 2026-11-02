@@ -25,6 +25,8 @@ EXPECTED = {
     "list_runs",
     "get_run",
     "get_chip",
+    "propose_run",
+    "get_approval",
 }
 
 
@@ -74,7 +76,8 @@ def test_exact_tools_and_audit_before_first_run(env):
             tools = (await client.list_tools()).tools
             assert {tool.name for tool in tools} == EXPECTED
             assert all(
-                tool.annotations.readOnlyHint and not tool.annotations.destructiveHint
+                (tool.annotations.readOnlyHint is (tool.name != "propose_run"))
+                and not tool.annotations.destructiveHint
                 for tool in tools
             )
             for name, args in (
@@ -89,7 +92,10 @@ def test_exact_tools_and_audit_before_first_run(env):
                 result = await client.call_tool(name, args)
                 assert result.isError is (name == "get_run")
         rows = store.audit_calls()
-        assert len(rows) == 7 and {row["tool"] for row in rows} == EXPECTED
+        assert len(rows) == 7 and {row["tool"] for row in rows} == EXPECTED - {
+            "propose_run",
+            "get_approval",
+        }
         assert all(row["caller"] == "configured-agent" and row["created_at"] > 0 for row in rows)
         assert store.runs() == []
         assert sorted(path.name for path in store.directory.iterdir()) == ["runs.db"]
@@ -153,7 +159,9 @@ def test_audit_failure_prevents_read(env, monkeypatch):
                     },
                 )
                 assert result.status_code == 503
-                assert result.json() == {"error": "Audit unavailable. No read was performed."}
+                assert result.json() == {
+                    "error": "Audit unavailable. No tool operation was performed."
+                }
 
     asyncio.run(exercise())
 

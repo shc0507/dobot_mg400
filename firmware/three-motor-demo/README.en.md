@@ -67,20 +67,21 @@ Default assignments (customizable in `MotorPins.h`):
 
 | Motor | STEP | DIR | SLEEP | LimitMin | LimitMax |
 | --- | --- | --- | --- | --- | --- |
-| Bottom_Motor | D5 | D4 | D12 | A2 | A3 |
-| Top_Motor | D7 | D6 | D13 | A4 | A5 |
-| Insert_Motor | D3 | D2 | D11 | A0 | A1 |
+| Bottom_Motor | D5 | D4 | D12 | 255 | 255 |
+| Top_Motor | D7 | D6 | D13 | 255 | 255 |
+| Insert_Motor | D3 | D2 | D11 | 255 | 255 |
 
 Each driver has its own SLEEP output. Connect it only to the SLP input of that
 motor's driver.
 
-Connect each limit contact between its input and GND. Inputs use `INPUT_PULLUP` and become active at LOW.
+The stage has no limit switches. All limit inputs are `255` (disabled). Use the panel's confirmed manual-zero procedure and camera reference.
+For a future board with switches, connect each limit contact between its configured input and GND. Inputs use `INPUT_PULLUP` and become active at LOW.
 The minimum is the CCW end, and the maximum is the CW end. Check the physical directions during supervised validation.
 `InsertLimitMin`, `InsertLimitMax`, `BottomLimitMin`, `BottomLimitMax`, `TopLimitMin`, and `TopLimitMax` set these pins.
 The value `255` disables an input. Homing refuses a motor without a minimum input.
 An absent maximum input provides no maximum contact protection.
 Compilation checks all enabled inputs against each other and the outputs, within Uno pins D2..D19.
-The default wiring uses all 18 nonserial I/O pins. Keep D0/D1 free.
+The default wiring uses 12 nonserial I/O pins. Keep D0/D1 free.
 
 Shared resolution inputs (connect each Arduino pin to that input on **all three** boards):
 
@@ -136,7 +137,7 @@ On many boards, for example the Uno, D13 (`TopSleep`) also controls the on-board
 LED. After a reset from the serial port or the reset button, the bootloader flashes
 this LED. Thus the Top driver can sleep and wake several times each time the panel
 connects. Changing `TopSleep` requires a distinct output pin and corresponding wiring changes.
-The default analog pins now serve the limit contacts. Do not reuse one without changing and validating the affected wiring.
+The default analog pins have no assigned limit contacts. Change and validate the affected wiring before assigning another output pin.
 
 Do not leave RST floating. The Pololu carrier has no pull resistor on RST. Connect
 RST to the adjacent SLP pin on the carrier, or connect RST to the logic supply (VDD).
@@ -180,6 +181,19 @@ driver wakes.
 
 ## Limits, homing, and soft range
 
+With the default pin configuration, `home` replies `ERROR: home failed: minimum limit not configured` and sends no motion pulses.
+`zero` applies to the selected idle motor. It sets position 0 and `homed=1`, clears the soft range, and replies `OK: bottom zero` for Bottom.
+It does not wake the driver or move the motor. Moving motors reject `zero`.
+An operator must first confirm the physical zero using the panel and its configured camera reference.
+After `zero`, the host sends the calibrated `soft <min> <max>` range and confirms the status before it permits automated moves.
+The firmware cannot check the camera or the operator confirmation. Direct serial access remains an operator procedure.
+
+`features` replies `FEATURES zero=1 home=000` with the default pin configuration.
+The 3 `home` bits report configured minimum inputs in Bottom, Top, Insert order.
+The panel can keep the Home controls for a board with switches and the existing controls for older firmware that rejects `features`.
+This command does not change the existing status or acknowledgement lines.
+
+The remaining switch behavior applies only when a future board has configured inputs.
 A LOW contact inhibits pulses toward that limit immediately, without a deceleration ramp.
 Status changes after 5 ms of stable input. Motion toward that end remains blocked until release is stable for 5 ms.
 A short contact bounce can stop a move. Motion away from that limit remains possible if the opposite limit and soft range permit it.
@@ -202,11 +216,12 @@ Failures produce `ERROR: home failed: <reason>` on a complete serial line, inclu
 `stop` and `stop all` cancel homing. A failed or cancelled home leaves `homed=0` and does not retry.
 Other motors and serial handling continue during homing.
 
-`soft <min> <max>` sets an inclusive range in STEP pulses from home. The selected motor must be idle and homed, and the minimum cannot exceed the maximum.
+`soft <min> <max>` sets an inclusive range in STEP pulses from the confirmed zero. The selected motor must be idle with `homed=1`, and the minimum cannot exceed the maximum.
 Finite targets outside the range fail with `ERROR`. Continuous and held motion stop at the edge without a ramp.
 If a new range excludes the current position, only motion toward the range is possible, and a finite target must lie inside it.
 Reset and power-up clear every reference and range. A real microstep change does the same for all motors without resetting their counters.
-A successful home establishes a switch reference, not encoder feedback. External movement while asleep can still invalidate the physical position.
+A successful home establishes a switch reference. Manual zero establishes an operator-confirmed reference. Neither provides encoder feedback.
+External movement while asleep can still invalidate the physical position.
 
 ## Global microstepping
 
@@ -310,6 +325,8 @@ stop all
 | `spr 200` | Set full steps/revolution (1..65535) while idle |
 | `microstep`, `microstep 16` | Query/set the global resolution (1, 2, 4, 8, 16); all motors must be idle to change |
 | `home` | Start bounded homing of the selected idle motor |
+| `zero` | Set the selected idle motor's position to 0 and clear its soft range |
+| `features` | Report manual zero support and configured minimum inputs |
 | `soft 0 10000` | Set the selected homed motor's inclusive range |
 | `awake 60000`, `awake 0` | Renew or cancel the selected driver's holding extension |
 | `status` | Show all motors; `*` marks the selected motor |
@@ -320,7 +337,7 @@ nearest STEP pulse at the active resolution; a request rounding to zero is rejec
 or extra-argument commands are rejected. A new movement or configuration is
 rejected while the selected motor is moving. Use `stop` first. The `awake` renewal remains available during motion. Positions and
 remaining counts are signed (CW positive). Position is the signed number of commanded
-STEP pulses since startup or the last successful home, with no encoder feedback. Pulse counts across
+STEP pulses since startup, the last successful home, or manual zero, with no encoder feedback. Pulse counts across
 different resolutions cannot be treated as a single physical distance.
 
 The default **200 full steps/revolution** assumes a 1.8-degree motor. Use `spr 400`

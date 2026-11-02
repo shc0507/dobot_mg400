@@ -99,7 +99,8 @@
         {% set directions = [('cw', cw_label), ('ccw', ccw_label)] if motor.id == 'top' else [('ccw', ccw_label), ('cw', cw_label)] %}
         <section class="motor-card motor-{{ motor.id }}" id="motor-{{ motor.id }}" data-motor="{{ motor.id }}" aria-labelledby="title-{{ motor.id }}">
           <div class="card-heading"><div class="motor-name"><span class="channel-number">0{{ loop.index }}</span><h3 id="title-{{ motor.id }}">{{ motor.id|title }} motor</h3></div><span class="motor-status">Offline</span></div>
-          <div class="homing-controls"><span class="homing-status" role="status">Homing unavailable</span><button type="button" class="home-button" disabled aria-label="Home {{ motor.id }} motor">Home</button></div>
+          <div class="reference-camera" hidden><img class="reference-image" alt="Axis reference camera" hidden><span class="reference-offset" role="status"></span><button type="button" class="reference-refresh" disabled>Check reference</button><button type="button" class="reference-teach" disabled>Teach reference here</button></div>
+          <div class="homing-controls"><span class="homing-status" role="status">Homing unavailable</span><button type="button" class="home-button" disabled aria-label="Home {{ motor.id }} motor">Home</button><button type="button" class="zero-button" disabled hidden>Set zero here</button></div>
           <div class="motor-display">
             <svg class="motor-dial" viewBox="0 0 140 140" aria-hidden="true">
               <circle class="dial-outer" cx="70" cy="70" r="59"/><circle class="dial-track" cx="70" cy="70" r="47"/>

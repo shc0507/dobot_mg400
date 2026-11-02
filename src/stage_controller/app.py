@@ -153,6 +153,18 @@ def create_app(
         body()
         return state_response(controller.manual("home", motor))
 
+    @app.post(prefix + "/api/motors/<motor>/zero")
+    def zero(motor):
+        return state_response(controller.manual("zero", motor, body().get("confirm")))
+
+    @app.post(prefix + "/api/motors/<motor>/teach_reference")
+    def teach_reference(motor):
+        return state_response(controller.manual("teach_reference", motor, body().get("confirm")))
+
+    @app.get(prefix + "/api/motors/<motor>/reference")
+    def reference(motor):
+        return jsonify(controller.preview_reference(motor))
+
     @app.post(prefix + "/api/motors/<motor>/awake")
     def awake(motor):
         return state_response(controller.manual("awake", motor, body().get("seconds")))

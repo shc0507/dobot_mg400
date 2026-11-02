@@ -47,7 +47,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--config",
-        help="Stage geometry TOML (default: MG400_STAGE_CONFIG or /var/lib/mg400/stage.toml)",
+        help="Stage geometry TOML (default: MG400_STAGE_CONFIG or /var/lib/mg400/stage/stage.toml)",
     )
     parser.add_argument(
         "--base-path",

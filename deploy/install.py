@@ -648,6 +648,16 @@ def install(args, host, run, chown, out):
     directory(host.data / "locks", 0o700, service)
     directory(host.data / "work", 0o750, service)
     directory(host.data / "camera", 0o700, service)
+    directory(host.data / "stage", 0o700, service)
+    legacy_stage = host.data / "stage.toml"
+    if os.path.lexists(legacy_stage):
+        print(
+            f"Legacy stage calibration exists at {legacy_stage}. "
+            f"Move it manually to {host.data / 'stage/stage.toml'} before reference teaching; "
+            "do not overwrite an existing destination. No calibration file was moved.",
+            file=out,
+            flush=True,
+        )
     if "thermal" in selected:
         directory(host.data / "thermal", 0o750, service)
     if "furnace" in selected:

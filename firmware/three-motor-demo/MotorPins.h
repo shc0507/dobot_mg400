@@ -27,14 +27,15 @@ constexpr uint8_t BottomSleep = 12;
 constexpr uint8_t TopSleep = 13;
 constexpr uint8_t InsertSleep = 11;
 
-// Active LOW limit contacts to GND, with the Uno's internal pull-ups.
-// 255 disables an input. A minimum input is required for homing.
-constexpr uint8_t InsertLimitMin = A0;
-constexpr uint8_t InsertLimitMax = A1;
-constexpr uint8_t BottomLimitMin = A2;
-constexpr uint8_t BottomLimitMax = A3;
-constexpr uint8_t TopLimitMin = A4;
-constexpr uint8_t TopLimitMax = A5;
+// This stage has no limit switches. 255 disables an input; use manual zero.
+// A future switched board can use active LOW contacts to GND with pull-ups.
+// A configured minimum input is required for switch-based homing.
+constexpr uint8_t InsertLimitMin = 255;
+constexpr uint8_t InsertLimitMax = 255;
+constexpr uint8_t BottomLimitMin = 255;
+constexpr uint8_t BottomLimitMax = 255;
+constexpr uint8_t TopLimitMin = 255;
+constexpr uint8_t TopLimitMax = 255;
 constexpr unsigned long LimitDebounceMs = 5;
 constexpr float HomeSpeed = 100.0f;
 constexpr float HomeSlowSpeed = 25.0f;

@@ -30,7 +30,11 @@ def dashboard_blueprint(service, prefix):
     @blueprint.get("/api/dashboard/state")
     def state():
         service.dashboard.refresh()
-        return jsonify(service.dashboard.snapshot())
+        report = service.dashboard.snapshot()
+        report["approvals"] = (
+            service.approvals.list() if service.settings.get("MG400_GATEWAY_TOKEN") else []
+        )
+        return jsonify(report)
 
     @blueprint.get("/api/services")
     def services():

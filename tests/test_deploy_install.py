@@ -104,6 +104,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     assert [(path.name, mode(path)) for path in sorted(host.data.rglob("*")) if path.is_dir()] == [
         ("camera", 0o700),
         ("locks", 0o700),
+        ("stage", 0o700),
         ("work", 0o750),
     ]
     assert mode(host.data) == 0o750
@@ -151,7 +152,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     ]
     assert uv[0]["cwd"] == host.code and uv[0]["env"]["UV_LINK_MODE"] == "copy"
     assert host.owner(host.code) == host.owner(host.data) == (0, 1000)
-    for name in ("locks", "work", "camera", "camera/preview.key"):
+    for name in ("locks", "work", "camera", "stage", "camera/preview.key"):
         assert host.owner(host.data / name) == (1000, 1000), name
     assert host.owner(host.settings) == (0, 0)
     report = host.out.getvalue()
@@ -774,6 +775,7 @@ def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
         "Would ensure <host>/var/lib/mg400/locks (0700, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/work (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/camera (0700, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/stage (0700, 1000:1000)",
         "Would create <host>/var/lib/mg400/camera/preview.key",
         "Would ensure <host>/opt/mg400 (0750, 0:1000)",
         "Would run: /usr/bin/uv sync --locked --no-default-groups "
@@ -1344,16 +1346,81 @@ def test_thermal_dry_run_lists_preparation_without_writes_or_commands(host, inve
 def test_thermal_install_preserves_existing_regions_and_explicit_token(
     module, host, inventory_udev
 ):
+    from thermal_cam.roi import load_regions
+
     select_optional(host, "thermal")
     directory = host.data / "thermal"
     directory.mkdir(parents=True)
     regions = directory / "rois.toml"
-    regions.write_text("[crucible]\nx0=1\ny0=2\nx1=3\ny1=4\n")
+    regions.write_text("[regions.crucible]\nx0=1\ny0=2\nx1=3\ny1=4\n")
+    regions.chmod(0o640)
     original = regions.read_bytes()
     host.settings.parent.mkdir(parents=True)
     host.settings.write_text("MG400_THERMAL_TOKEN=operator-token-0123456789abcdef\n")
     assert host.install() == 0
     assert regions.read_bytes() == original
+    assert mode(regions) == 0o640
+    assert load_regions(regions)["crucible"].bounds() == {"x0": 1, "y0": 2, "x1": 3, "y1": 4}
     settings = module.parse_settings(host.settings.read_text())
     assert settings["MG400_THERMAL_TOKEN"] == "operator-token-0123456789abcdef"
     assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("destination_exists", [False, True])
+def test_legacy_stage_calibration_prints_manual_move_hint_without_mutation(
+    host, dry_run, destination_exists
+):
+    host.data.mkdir(parents=True)
+    legacy = host.data / "stage.toml"
+    legacy.write_text("legacy calibration must remain unchanged\n")
+    legacy.chmod(0o640)
+    before = legacy.stat()
+    destination = host.data / "stage/stage.toml"
+    if destination_exists:
+        destination.parent.mkdir(mode=0o700)
+        destination.write_text("existing new calibration\n")
+        destination.chmod(0o600)
+    assert host.install(*(["--dry-run"] if dry_run else [])) == 0
+    assert legacy.read_text() == "legacy calibration must remain unchanged\n"
+    assert legacy.stat().st_ino == before.st_ino
+    assert mode(legacy) == 0o640
+    if destination_exists:
+        assert destination.read_text() == "existing new calibration\n"
+        assert mode(destination) == 0o600
+    else:
+        assert not destination.exists()
+    report = host.out.getvalue()
+    assert f"Legacy stage calibration exists at {legacy}" in report
+    assert f"Move it manually to {destination}" in report
+    assert "do not overwrite an existing destination" in report
+    assert "No calibration file was moved" in report
+
+
+def test_installed_stage_directory_supports_atomic_reference_teaching(host, monkeypatch):
+    from stage_controller.config import demo_geometry, geometry_data, load_geometry, parse_geometry
+    from stage_controller.reference_store import _toml, teach_pixel
+
+    assert host.install() == 0
+    directory = host.data / "stage"
+    assert mode(directory) == 0o700
+    assert host.owner(directory) == (1000, 1000)
+    assert mode(host.data) == 0o750
+    assert host.owner(host.data) == (0, 1000)
+    # Installation emulates root; the reference writer runs as the local service user.
+    writer_uid = directory.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: writer_uid)
+    data = geometry_data(demo_geometry())
+    data["motors"]["insert"]["reference"] = dict(
+        stream="camera3", marker=12, pixel=[10, 10], tolerance_px=2
+    )
+    geometry = parse_geometry(data)
+    path = directory / "stage.toml"
+    path.write_text(_toml(geometry))
+    path.chmod(0o600)
+    before = path.stat().st_ino
+    updated = teach_pixel(path, geometry, "insert", [99.5, 99.5])
+    assert path.stat().st_ino != before
+    assert load_geometry(path) == updated
+    assert mode(path) == 0o600
+    assert updated.motors["insert"].reference["pixel"] == [99.5, 99.5]

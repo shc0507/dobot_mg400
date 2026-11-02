@@ -254,3 +254,36 @@ def test_a_second_transport_cannot_share_an_open_port(pty_port):
     finally:
         first.close()
     SerialTransport(pty_port).close()
+
+
+@pytest.mark.parametrize("bits", ["000", "111", "010"])
+def test_additive_zero_capabilities_leave_status_format_unchanged(make_transport, bits):
+    transport, port = make_transport([f"FEATURES zero=1 home={bits}\r\n".encode(), *STATUS])
+    transport.features()
+    assert transport.zero_supported
+    assert transport.home_switches == dict(
+        zip(("bottom", "top", "insert"), (bit == "1" for bit in bits))
+    )
+    assert transport.status()["top"].position == -12
+    assert port.writes == [b"features\n", b"status\n"]
+
+
+def test_old_firmware_refuses_features_and_keeps_legacy_control(make_transport):
+    transport, _ = make_transport([b"ERROR: unknown command\r\n", b"OK: bottom speed\r\n"])
+    transport.features()
+    assert not transport.zero_supported and transport.home_switches is None
+    transport.command("speed 50")
+
+
+def test_invalid_features_never_enable_manual_zero(make_transport):
+    transport, _ = make_transport([b"FEATURES zero=1 home=01X\r\n"])
+    with pytest.raises(LinkError):
+        transport.features()
+    assert not transport.zero_supported
+
+
+def test_manual_zero_requires_selected_motor_acknowledgement(make_transport):
+    transport, port = make_transport([b"OK: insert motor\r\n", b"OK: insert zero\r\n"])
+    transport.command("motor insert")
+    transport.command("zero")
+    assert port.writes[-1] == b"zero\n"

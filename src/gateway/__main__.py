@@ -1,4 +1,4 @@
-"""Start the authenticated, read-only MCP gateway."""
+"""Start the authenticated MCP gateway for reads and human-reviewed proposals."""
 
 import argparse
 import os
@@ -40,11 +40,16 @@ def main(argv=None):
                 runs = directory / "runs"
                 recipes = Path(__file__).resolve().parents[2] / "recipes"
                 endpoints = {}
+                proposal = None
             else:
                 runs, recipes = args.runs_dir, args.recipes_dir
                 endpoints = configured_endpoints(os.environ)
+                proposal_url = os.environ.get("MG400_GATEWAY_ORCH_URL", "")
+                proposal = (proposal_url, token, caller) if proposal_url else None
             store = stack.enter_context(RunStore(runs))
-            backend = Backend(store, recipes, endpoints=endpoints, demo=args.demo)
+            backend = Backend(
+                store, recipes, endpoints=endpoints, proposal=proposal, demo=args.demo
+            )
             app = create_app(
                 backend,
                 token=token,

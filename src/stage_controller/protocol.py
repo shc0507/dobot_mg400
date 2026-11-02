@@ -111,6 +111,8 @@ class SerialTransport:
         self.selected = "bottom"
         self.microstep = None
         self.home_errors = deque(maxlen=32)
+        self.zero_supported = False
+        self.home_switches = None
         try:
             # The lock stops a second program, or a second panel, from sharing the port.
             self.serial = serial.Serial(
@@ -177,6 +179,22 @@ class SerialTransport:
             if line.startswith("OK:"):
                 raise LinkError(f"Unexpected Arduino acknowledgement: {line}")
 
+    def features(self):
+        """Query the additive capability command. Old firmware keeps its old UI."""
+        self._write("features")
+        try:
+            for line in self._lines():
+                match = re.fullmatch(r"FEATURES zero=1 home=([01]{3})", line)
+                if match:
+                    self.zero_supported = True
+                    self.home_switches = dict(zip(MOTOR_IDS, (bit == "1" for bit in match[1])))
+                    return
+                if line.startswith("FEATURES"):
+                    raise LinkError("Invalid Arduino feature reply.")
+        except CommandRejected:
+            self.zero_supported = False
+            self.home_switches = None
+
     def status(self) -> dict[str, MotorStatus]:
         self._write("status")
         statuses = {}
@@ -215,8 +233,10 @@ class SerialTransport:
 class DemoTransport:
     """Simulate finite and held moves without opening a serial port."""
 
-    def __init__(self, clock=time.monotonic):
+    def __init__(self, clock=time.monotonic, *, home_switches=True):
         self.clock = clock
+        self.zero_supported = True
+        self.home_switches = dict.fromkeys(MOTOR_IDS, home_switches)
         self.selected = "bottom"
         self.motors = {
             motor: MotorStatus(motor, homed=False, limits="00", soft=False, awake=False)
@@ -293,7 +313,11 @@ class DemoTransport:
                 self._stop(motor)
         for motor, state in self.motors.items():
             low, high = self.hard_ranges[motor]
-            state.limits = f"{int(state.position <= low)}{int(state.position >= high)}"
+            state.limits = (
+                f"{int(state.position <= low)}{int(state.position >= high)}"
+                if self.home_switches[motor]
+                else "00"
+            )
             state.awake = state.mode != "idle" or now < max(
                 self.awake_until[motor], self.idle_until[motor]
             )
@@ -338,7 +362,14 @@ class DemoTransport:
             return
         if state.mode != "idle":
             raise CommandRejected("Motor is already moving.")
-        if verb == "home":
+        if verb == "zero":
+            state.position = 0
+            state.homed = True
+            state.soft = False
+            self.soft_ranges.pop(state.id, None)
+        elif verb == "home":
+            if not self.home_switches[state.id]:
+                raise CommandRejected("ERROR: home failed: minimum limit not configured")
             state.homed = state.soft = False
             self.soft_ranges.pop(state.id, None)
             state.mode = "moving"

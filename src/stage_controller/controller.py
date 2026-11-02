@@ -37,6 +37,7 @@ from .protocol import (
     MotorStatus,
     SerialTransport,
 )
+from .reference import StageReference
 
 # The PGEA gripper's FTDI RS-485 converter on the same host (see scripts/gripper_feedback.py).
 # Never list or open it: Arduino commands on that bus could move the gripper.
@@ -62,9 +63,16 @@ def is_gripper_converter(path):
     return os.path.realpath(path) in _gripper_devices(list_ports.comports())
 
 
-class MotorController(StageAutomation, StageContract):
+class MotorController(StageReference, StageAutomation, StageContract):
     def __init__(
-        self, *, demo=False, serial=None, transport_factory=None, clock=time.monotonic, config=None
+        self,
+        *,
+        demo=False,
+        serial=None,
+        transport_factory=None,
+        clock=time.monotonic,
+        config=None,
+        frame_source=None,
     ):
         self.demo = demo
         # With a configured device, offer only that device. Demo mode opens no device.
@@ -90,6 +98,7 @@ class MotorController(StageAutomation, StageContract):
         self._thread = None
         self._init_contract()
         self._init_automation(config)
+        self._init_reference(config, frame_source)
 
     def ports(self):
         if self.demo:
@@ -177,6 +186,8 @@ class MotorController(StageAutomation, StageContract):
             transport = self._factory(port)
             try:
                 statuses = transport.status()
+                if hasattr(transport, "features"):
+                    transport.features()
             except ControllerError:
                 transport.close()
                 raise
@@ -434,7 +445,12 @@ class MotorController(StageAutomation, StageContract):
                         **asdict(status),
                         "homing_available": connected
                         and status.homed is not None
-                        and self._geometry is not None,
+                        and self._geometry is not None
+                        and self._home_available(motor),
+                        "zero_available": connected
+                        and self._geometry is not None
+                        and getattr(self._transport, "zero_supported", False),
+                        "reference": self._reference_snapshot(motor),
                         "automation_ready": self._ready(motor),
                         "position_mm": status.position
                         / self._geometry.motors[motor].scale(self._microstep)

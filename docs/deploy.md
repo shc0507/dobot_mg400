@@ -19,6 +19,7 @@
 | `/var/lib/mg400/work` | 夹爪反馈、夹爪命令文件和模式切换备份 | `1000:1000`，`0750` |
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/camera` | 摄像头预览密钥 `preview.key` | `1000:1000`，`0700` |
+| `/var/lib/mg400/stage` | `stage.toml` 中可写的位移台校准和相机参考 | `1000:1000`，`0700` |
 | `/var/lib/mg400/thermal` | `rois.toml` 中的命名热像区域，文件权限 `0640` 或 `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/furnace` | 炉控状态和持久锁，文件为 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/runs` | 编排器运行记录，文件为 `0600` | `1000:1000`，`0750` |
@@ -40,7 +41,7 @@
 | `mg400-thermal.service` | `thermal` | 可选[热像仪页面](thermal.md)，端口 `8768` | 无 |
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
-| `mg400-gateway.service` | `gateway` | 可选的[只读 MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
+| `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | 可选的[单端口代理](olares.md#可选的单端口代理)，端口 `8080` | 无 |
 | `mg400-gripper-collector.path` | 无 | 面板请求时启动夹爪采集 | 无 |
 
@@ -150,7 +151,7 @@
 选中 `orch` 时，安装器准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
 同一服务还提供[实验室总览](dashboard.md)，包含状态卡片、运行控制、摄像头链接，以及独立的运动、加热和气体停止操作。
 
-可选服务 `gateway` 使用 `gateway` 依赖组。把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再配置[只读网关](agent-gateway.md)。
+可选服务 `gateway` 使用 `gateway` 依赖组。把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再配置[智能体网关](agent-gateway.md)。
 选中 `gateway` 时，安装器也会准备私密的 `runs` 目录，使首次配方运行前即可记录审计。安装器不会启动网关。
 保持 `MG400_GATEWAY_BIND=127.0.0.1`。每个 MCP 请求都必须携带 `MG400_GATEWAY_TOKEN`，包括回环请求。
 
@@ -241,7 +242,8 @@
 常规令牌生成后，`STAGE`、`THERMAL`、`VISION`、`FURNACE` 和 `MICROSCOPE` 别名复制对应服务的令牌。
 源令牌缺失时，别名保持为空。别名不会获得独立生成的令牌。
 明确设置的非空别名保持不变。轮换服务令牌后，把别名改为相同值，或清空别名并重新运行安装器。
-编排器单元只接收自身令牌和这些别名，不接收仪器的直接令牌或网关令牌。
+编排器单元接收自身令牌和这些别名，不接收仪器的直接令牌。
+它还保留 `MG400_GATEWAY_TOKEN`，仅用于提议 API。此令牌不能授权总览决定或控制请求。
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -368,13 +370,19 @@
 | `/var/lib/mg400/calibration/microscope/` | 物镜转盘、自动对焦和参考视图数据 |
 | `/var/lib/mg400/stations.toml` | 示教机械臂工位 |
 | `/var/lib/mg400/tool.toml` | 夹爪工具偏移 |
-| `/var/lib/mg400/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
+| `/var/lib/mg400/stage/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
 | `/var/lib/mg400/thermal/rois.toml` | 命名热像区域 |
 | `/var/lib/mg400/furnace/state.json` | 炉程序状态 |
 | `/var/lib/mg400/runs/` | 运行文件和 SQLite 索引 |
 | `/var/lib/mg400/recordings/` | 归档前的炉视频 |
 | `/var/lib/mg400/camera/preview.key` | 摄像头预览密钥 |
 | `/var/lib/mg400/work/` | 夹爪反馈、命令文件、持久命令锁和模式切换备份 |
+
+安装器创建 `/var/lib/mg400/stage`，所有者为 `1000:1000`，权限为 `0700`，用于写入位移台校准。
+父目录 `/var/lib/mg400` 仍由 root 拥有，权限为 `0750`。
+若 `/var/lib/mg400/stage.toml` 存在，安装器只打印移动提示，不修改文件。
+停止位移台服务后，手动将旧文件移到 `/var/lib/mg400/stage/stage.toml`，不得覆盖已有目标。
+保留所有者 `1000:1000` 和文件权限 `0600` 或 `0640`。重启前更新旧的 `MG400_STAGE_CONFIG` 覆盖配置。
 
 在新主机上手动恢复：
 
@@ -417,8 +425,8 @@
 
 6. 按新主机的监听地址和摄像头设备路径修改 `/etc/mg400/mg400.env`。保留属主 `root:root` 和权限 `0600`。
    保留访问令牌后，用户不必重新输入。恢复 `/var/lib/mg400/camera/preview.key` 后，预览链接不变。
-   上述数据路径的属主为 `1000:1000`，目录权限为 `0750`，文件权限为 `0640` 或 `0600`。
-   保留摄像头目录原有的更严格权限 `0700`，以及归档中其他已有数据的属主和权限。
+   上述数据路径的属主为 `1000:1000`，文件权限为 `0640` 或 `0600`。
+   目录权限保留 `0750`，但摄像头和位移台目录必须为 `0700`。保留归档中其他已有数据的属主和权限。
 7. 如果存在 `/var/lib/mg400/work/gripper_feedback.json.command-lock.json`，说明夹爪命令结果未确认。
    检查夹爪状态，并保留此文件，属主为 `1000:1000`，权限为 `0600`。
    采集服务读到恢复的文件后保持锁定。不要删除它来恢复命令执行。

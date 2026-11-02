@@ -686,8 +686,10 @@ deps = ["FND-09", "H-09", "DOC-07"]
 writes = [
   "deploy/install.py",
   "deploy/mg400.env.example",
+  "src/cameras/config.py",
   "src/vision/frames.py",
   "src/vision/service.py",
+  "src/vision/__main__.py",
   "scripts/camera_preview.py",
   "scripts/camera_preview.js",
   "tests/test_deploy_install.py",

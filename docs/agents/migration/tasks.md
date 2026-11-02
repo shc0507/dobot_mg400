@@ -716,6 +716,8 @@ Steps:
 4. `still(camera)` in `src/vision/frames.py`, with the frame size check against the configured mode.
 5. Tests and docs.
 
+Implementation paths: share the camera device and mode parser through `src/cameras/config.py`. Keep it stdlib-only and free of import-time side effects so the system Python installer, preview server and vision source can use it. Pass the entrypoint's settings to the frame source in `src/vision/__main__.py`. These paths do not change the mode list or capture policy. Preserve MIC-02's selected side-stream default of 3840x2160@30 when both mode settings are empty. Other streams default to 640x480@30. An explicit mode or legacy size list specifies every stream, and the two lists remain mutually exclusive.
+
 Done when: P-CHECKS pass.
 
 Notes: H-21 runs all streams together on the hardware and checks the kernel log for USB bandwidth errors. If the link is over budget, the owner chooses: a smaller side camera mode, or a camera on another host USB port after the hardware freeze. Aim for about 4 pixels per module, about 70 pixels across a 17-module Micro QR label.
@@ -1156,7 +1158,7 @@ Steps (P-MOVE plus):
 1. `src/microscope/`: `autofocus.py`, `aruco_locator.py`, `aruco_switch.py`, `objective_calibration.py`, `light_calibration.py`, `side_capture.py`, `motors.py` (`MotorController`). `src/cameras/`: `usb.py` (the Linux part of `usb_camera_devices.py`) and `uvc.py` (`USBCamera`).
 2. Imports: `toupcam_camera.MicroscopeCamera` instead of `camera`; package-relative imports elsewhere.
 3. Paths: the calibration CSV files, `objective_views/`, `current_objective.txt`, `objective_reference.png` and `side_camera_images/` come from `MG400_MICROSCOPE_CALIBRATION_DIR` (default `/var/lib/mg400/calibration/microscope`). Experiment logs go to the run store folder.
-4. Cameras: the side camera is the AC410 on hub port 12.1.3. The camera preview's go2rtc owns it (owner, 2026-11-02). Read its frames from go2rtc on loopback, with the stream name in `MG400_MICROSCOPE_SIDE_STREAM`, instead of opening the V4L2 device. Add a per-camera capture size to the go2rtc rendering in `deploy/install.py`, so this camera runs at the size the ArUco alignment needs (the source used 3840×2160). H-21 checks the USB 2 bandwidth. Remove the Windows enumeration and the DirectShow and MSMF paths.
+4. Cameras: the side camera is the AC410 on hub port 12.1.4. The camera preview's go2rtc owns it (owner, 2026-11-02). Read its frames from go2rtc on loopback, with the stream name in `MG400_MICROSCOPE_SIDE_STREAM`, instead of opening the V4L2 device. Add a per-camera capture size to the go2rtc rendering in `deploy/install.py`, so this camera runs at the size the ArUco alignment needs (the source used 3840×2160). H-21 checks the USB 2 bandwidth. Remove the Windows enumeration and the DirectShow and MSMF paths.
 5. `motors.py` asks `VERSION` at connect. With the new firmware, focus moves wait for `DONE FOCUS POS`. With the old one, keep the computed wait.
 6. No Tk import anywhere.
 7. Group `microscope` with numpy, opencv-python-headless and pyserial, in the default groups.

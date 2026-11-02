@@ -284,7 +284,7 @@ Confirm the views on `12.1.2` and `12.1.4` in the camera preview before assignin
 | AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
 | AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera`, shared through go2rtc |
 | AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera` |
-| ToupTek USB 3 camera | `0547:1375` | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
+| ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
 Use the full serial paths for controllers. The gas controller and gripper converter share a VID:PID, but have different serial numbers.
 The thermal and Toupcam cameras use USB device nodes under `/dev/bus/usb`, without serial-port or video-device nodes.
@@ -296,6 +296,7 @@ The installer selects `config/udev/70-mg400-<name>.rules.in` only for registered
 It replaces `@SERVICE_GROUP@` with the group name for GID `1000`, from the host group database.
 Each rule matches a VID:PID and grants `MODE="0660"` to that group.
 Serial rules also match the recorded device serial number. Camera rules preserve the existing port-based names.
+The thermal rule matches the recorded P1 serial number as a prefix. The P1 adds non-printing bytes after its serial number, and udev compares the whole value.
 The templates create no new device aliases and run no reset helper.
 
 The installer writes `/etc/udev/rules.d/70-mg400-<name>.rules` as root with mode `0644`.

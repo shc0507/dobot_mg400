@@ -501,6 +501,7 @@ Never send commands to real hardware. Never weaken a safety rule to make a test 
 7. Moved code has the `Source:` and `Co-authored-by:` trailers, and the PR lists the files left behind.
 8. A new code area has its `AGENTS.md` row.
 9. The commit message says what was done.
+10. Read the PR's comments before the merge. Do what each comment from shc0507 asks, or reply on the PR with the reason. A comment that names a decision is an owner decision: change the plan per 6.8 if it needs a wider write set.
 
 ## 10. Phases and order
 

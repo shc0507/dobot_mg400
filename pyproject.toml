@@ -62,7 +62,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam", "src/furnace", "src/toupcam_camera", "src/orchestrator", "src/gateway"]
+packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "src/thermal_cam", "src/furnace", "src/toupcam_camera", "src/orchestrator", "src/gateway", "src/microscope"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

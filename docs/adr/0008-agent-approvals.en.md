@@ -36,11 +36,12 @@ The owner delegated this policy to the migration coordinator. The owner can chan
 | --- | --- |
 | Approvers | A person at the dashboard. The gateway cannot approve, and an agent cannot approve its own proposal. Each approval records the approver's client identity. |
 | Presence | Until H-24 approves unattended runs, approve a run only while a person in the lab can reach a stop control. |
-| Allowed recipes | Recipes from the repository catalog whose steps use only `wait`, `sample.record`, `robot.enable`, `robot.stop`, `robot.pick`, `robot.place`, `robot.transfer`, `crucible.load` and `crucible.unload`. |
-| Refused steps | `robot.move` with free coordinates, any furnace setpoint or sequence, any gas command, raw stage moves, microstep changes and firmware commands. |
-| Temperatures | No heating from a proposal. The crucible limits (`load_max_c`, `unload_max_c`, `awake_s`, `max_age_s`) come from the host settings. A proposal cannot set them. |
+| Allowed recipes | Recipes from the repository catalog. |
+| Refused steps | Raw stage moves, microstep changes and firmware commands. |
+| Furnace | Setpoints, sequences and gas steps are allowed within the host caps (`MG400_FURNACE_MAX_C`, `MG400_FURNACE_MAX_RAMP`), and only with gases in the host gas map. |
+| Free robot coordinates | `robot.move` is allowed only inside the workspace bounds (`MG400_ORCH_*_MIN_MM`, `MG400_ORCH_*_MAX_MM`), at the service speed cap, and with a person present during the run, also after H-24. This is the interface for later learning-from-demonstration work. |
+| Crucible limits | `load_max_c`, `unload_max_c`, `awake_s` and `max_age_s` come from the host settings. A proposal cannot set them. |
 | Speeds | No speed parameter above the recipe default. The service caps still apply. |
-| Gases | None. |
 | Expiry | 30 minutes without a decision. |
 | Pending proposals | At most 3 at a time. |
 

@@ -47,6 +47,9 @@
 #include <Arduino.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <stdint.h>
+#include "FocusConfig.h"
 
 // ---------- Pin assignment ----------
 const uint8_t MS3_PIN = 2;
@@ -116,11 +119,36 @@ MotorState focus = {
 };
 
 int currentMicrostep = 1;
+bool focusZeroed = false;
+bool focusLimited = false;
+long focusMinimum = 0;
+long focusMaximum = 0;
+bool focusHoming = false;
+bool homeSwitchSeen = false;
+unsigned long homeStartedMs = 0;
+unsigned long homeSwitchMs = 0;
+unsigned long homeSavedSpeed = 800;
+
+void clearFocusReference() {
+  focusZeroed = false;
+  focusLimited = false;
+  focusMinimum = focusMaximum = 0;
+}
+
+void endFocusHome() {
+  if (focusHoming) {
+    focus.speedSps = homeSavedSpeed;
+    focus.stepIntervalUs = 1000000UL / homeSavedSpeed;
+  }
+  focusHoming = false;
+  homeSwitchSeen = false;
+}
 
 // ---------- Serial line buffer ----------
 const size_t LINE_BUFFER_SIZE = 96;
 char lineBuffer[LINE_BUFFER_SIZE];
 size_t lineLength = 0;
+bool discardLine = false;
 
 
 // ============================================================
@@ -134,6 +162,10 @@ void setMotorEnabled(MotorState &m, bool enabled) {
   digitalWrite(m.enPin, enabled ? LOW : HIGH);
 
   if (!enabled) {
+    if (&m == &focus) {
+      endFocusHome();
+      clearFocusReference();
+    }
     m.moving = false;
     m.remainingSteps = 0;
     digitalWrite(m.stepPin, LOW);
@@ -141,6 +173,7 @@ void setMotorEnabled(MotorState &m, bool enabled) {
 }
 
 void stopMotor(MotorState &m) {
+  if (&m == &focus) endFocusHome();
   m.moving = false;
   m.remainingSteps = 0;
   digitalWrite(m.stepPin, LOW);
@@ -177,6 +210,18 @@ bool startMove(MotorState &m, long signedSteps) {
     return false;
   }
 
+  if ((signedSteps > 0 && m.pulsePosition > INT32_MAX - signedSteps) ||
+      (signedSteps < 0 && m.pulsePosition < INT32_MIN - signedSteps)) {
+    Serial.println(F("ERR MOVE POSITION_RANGE"));
+    return false;
+  }
+  const long target = m.pulsePosition + signedSteps;
+  if (&m == &focus && focusLimited &&
+      (target < focusMinimum || target > focusMaximum)) {
+    Serial.println(F("ERR FOCUS LIMIT"));
+    return false;
+  }
+
   if (signedSteps == 0) {
     Serial.print(F("OK "));
     Serial.print(m.name);
@@ -190,7 +235,7 @@ bool startMove(MotorState &m, long signedSteps) {
   // Avoid overflow from abs(LONG_MIN); practical commands are much smaller.
   unsigned long count = (signedSteps > 0)
                       ? (unsigned long)signedSteps
-                      : (unsigned long)(-signedSteps);
+                      : (unsigned long)(-(signedSteps + 1)) + 1UL;
 
   m.remainingSteps = count;
   m.lastStepUs = micros();
@@ -204,7 +249,34 @@ bool startMove(MotorState &m, long signedSteps) {
   return true;
 }
 
+// A home attempt needs a new released-to-active switch transition. Pause
+// pulses during debounce, and bound both travel and elapsed time.
+bool serviceFocusHome() {
+  if (!focusHoming) return false;
+  const unsigned long now = millis();
+  if ((unsigned long)(now - homeStartedMs) >= FOCUS_HOME_TIMEOUT_MS) {
+    stopMotor(focus);
+    Serial.println(F("ERR FOCUS HOME TIMEOUT"));
+    return true;
+  }
+  if (digitalRead(FOCUS_HOME_PIN) == FOCUS_HOME_ACTIVE_LEVEL) {
+    if (!homeSwitchSeen) {
+      homeSwitchSeen = true;
+      homeSwitchMs = now;
+    } else if ((unsigned long)(now - homeSwitchMs) >= 20UL) {
+      stopMotor(focus);
+      focus.pulsePosition = 0;
+      focusZeroed = true;
+      Serial.println(F("DONE FOCUS HOME"));
+    }
+    return true;
+  }
+  homeSwitchSeen = false;
+  return false;
+}
+
 void serviceMotor(MotorState &m) {
+  if (&m == &focus && serviceFocusHome()) return;
   if (!m.enabled || !m.moving || m.remainingSteps == 0) {
     return;
   }
@@ -227,6 +299,11 @@ void serviceMotor(MotorState &m) {
     }
 
     if (m.remainingSteps == 0) {
+      if (&m == &focus && focusHoming) {
+        stopMotor(focus);
+        Serial.println(F("ERR FOCUS HOME TRAVEL"));
+        return;
+      }
       m.moving = false;
       Serial.print(F("DONE "));
       Serial.print(m.name);
@@ -267,6 +344,7 @@ bool setMicrostep(int microstep) {
   digitalWrite(MS2_PIN, ms2);
   digitalWrite(MS3_PIN, ms3);
 
+  if (currentMicrostep != microstep) clearFocusReference();
   currentMicrostep = microstep;
   return true;
 }
@@ -309,6 +387,16 @@ void printStatus() {
   Serial.println(currentMicrostep);
   printMotorStatus(objective);
   printMotorStatus(focus);
+  Serial.print(F("FOCUS_REF: zeroed="));
+  Serial.print(focusZeroed ? 1 : 0);
+  Serial.print(F(" limited="));
+  Serial.print(focusLimited ? 1 : 0);
+  Serial.print(F(" min="));
+  Serial.print(focusMinimum);
+  Serial.print(F(" max="));
+  Serial.print(focusMaximum);
+  Serial.print(F(" homing="));
+  Serial.println(focusHoming ? 1 : 0);
 }
 
 void printHelp() {
@@ -327,6 +415,58 @@ void printHelp() {
   Serial.println(F("  STOP ALL"));
   Serial.println(F("  STATUS"));
   Serial.println(F("  HELP"));
+  Serial.println(F("  FOCUS ZERO"));
+  Serial.println(F("  FOCUS LIMIT <min> <max>"));
+  Serial.println(F("  FOCUS HOME"));
+  Serial.println(F("  VERSION"));
+}
+
+bool parseInteger(const char* text, long &value) {
+  if (!text || !*text) return false;
+  char* end = nullptr;
+  errno = 0;
+  const long parsed = strtol(text, &end, 10);
+  if (errno == ERANGE || *end || parsed < INT32_MIN || parsed > INT32_MAX) return false;
+  value = parsed;
+  return true;
+}
+
+bool noMoreArguments() {
+  if (!strtok(nullptr, " \t")) return true;
+  Serial.println(F("ERR EXTRA_ARGUMENTS"));
+  return false;
+}
+
+void startFocusHome() {
+  if (FOCUS_HOME_PIN == 255) {
+    Serial.println(F("ERR FOCUS HOME NO_SWITCH"));
+    return;
+  }
+  if (FOCUS_HOME_DIRECTION == 0 || FOCUS_HOME_MAX_STEPS == 0) {
+    Serial.println(F("ERR FOCUS HOME NOT_CONFIGURED"));
+    return;
+  }
+  if (digitalRead(FOCUS_HOME_PIN) == FOCUS_HOME_ACTIVE_LEVEL) {
+    Serial.println(F("ERR FOCUS HOME SWITCH_ACTIVE"));
+    return;
+  }
+  const long travel = (long)FOCUS_HOME_MAX_STEPS * FOCUS_HOME_DIRECTION;
+  if ((travel > 0 && focus.pulsePosition > INT32_MAX - travel) ||
+      (travel < 0 && focus.pulsePosition < INT32_MIN - travel)) {
+    Serial.println(F("ERR MOVE POSITION_RANGE"));
+    return;
+  }
+  clearFocusReference();
+  homeSavedSpeed = focus.speedSps;
+  setMotorSpeed(focus, FOCUS_HOME_SPEED_SPS);
+  focus.directionPositive = FOCUS_HOME_DIRECTION > 0;
+  digitalWrite(focus.dirPin, focus.directionPositive ? HIGH : LOW);
+  focus.remainingSteps = FOCUS_HOME_MAX_STEPS;
+  focus.lastStepUs = micros();
+  focus.moving = focusHoming = true;
+  homeSwitchSeen = false;
+  homeStartedMs = millis();
+  Serial.println(F("OK FOCUS HOME"));
 }
 
 void processCommand(char* line) {
@@ -341,12 +481,20 @@ void processCommand(char* line) {
   if (!token1) return;
 
   if (strcmp(token1, "HELP") == 0) {
+    if (!noMoreArguments()) return;
     printHelp();
     return;
   }
 
   if (strcmp(token1, "STATUS") == 0) {
+    if (!noMoreArguments()) return;
     printStatus();
+    return;
+  }
+
+  if (strcmp(token1, "VERSION") == 0) {
+    if (!noMoreArguments()) return;
+    Serial.println(F("VERSION microscope-axes 1.0.0"));
     return;
   }
 
@@ -358,7 +506,13 @@ void processCommand(char* line) {
       return;
     }
 
-    int micro = atoi(token2);
+    if (!noMoreArguments()) return;
+    long micro;
+    if (!parseInteger(token2, micro) ||
+        !(micro == 1 || micro == 2 || micro == 4 || micro == 8 || micro == 16)) {
+      Serial.println(F("ERR MICRO VALID=1,2,4,8,16"));
+      return;
+    }
 
     if (objective.moving || focus.moving) {
       Serial.println(F("ERR MICRO WHILE_MOVING"));
@@ -382,6 +536,8 @@ void processCommand(char* line) {
       Serial.println(F("ERR STOP TARGET"));
       return;
     }
+
+    if (!noMoreArguments()) return;
 
     if (strcmp(token2, "OBJ") == 0) {
       stopMotor(objective);
@@ -421,6 +577,7 @@ void processCommand(char* line) {
   }
 
   if (strcmp(action, "ENABLE") == 0) {
+    if (!noMoreArguments()) return;
     setMotorEnabled(*motor, true);
     Serial.print(F("OK "));
     Serial.print(motor->name);
@@ -429,6 +586,7 @@ void processCommand(char* line) {
   }
 
   if (strcmp(action, "DISABLE") == 0) {
+    if (!noMoreArguments()) return;
     setMotorEnabled(*motor, false);
     Serial.print(F("OK "));
     Serial.print(motor->name);
@@ -444,7 +602,12 @@ void processCommand(char* line) {
       return;
     }
 
-    long steps = atol(value);
+    if (!noMoreArguments()) return;
+    long steps;
+    if (!parseInteger(value, steps)) {
+      Serial.println(F("ERR MOVE STEPS"));
+      return;
+    }
     startMove(*motor, steps);
     return;
   }
@@ -457,9 +620,13 @@ void processCommand(char* line) {
       return;
     }
 
-    unsigned long speed = strtoul(value, nullptr, 10);
-
-    if (!setMotorSpeed(*motor, speed)) {
+    if (!noMoreArguments()) return;
+    if (motor == &focus && focusHoming) {
+      Serial.println(F("ERR FOCUS BUSY"));
+      return;
+    }
+    long speed;
+    if (!parseInteger(value, speed) || speed < 1 || !setMotorSpeed(*motor, speed)) {
       Serial.print(F("ERR SPEED RANGE "));
       Serial.print(MIN_SPEED_SPS);
       Serial.print(F("-"));
@@ -474,32 +641,73 @@ void processCommand(char* line) {
     return;
   }
 
+  if (motor == &focus && (strcmp(action, "ZERO") == 0 ||
+                         strcmp(action, "LIMIT") == 0 || strcmp(action, "HOME") == 0)) {
+    long minimum = 0, maximum = 0;
+    if (strcmp(action, "LIMIT") == 0) {
+      char* first = strtok(nullptr, " \t");
+      char* second = strtok(nullptr, " \t");
+      if (!parseInteger(first, minimum) || !parseInteger(second, maximum) || minimum > maximum) {
+        Serial.println(F("ERR FOCUS LIMIT RANGE"));
+        return;
+      }
+    }
+    if (!noMoreArguments()) return;
+    if (!focus.enabled) {
+      Serial.println(F("ERR FOCUS DISABLED"));
+      return;
+    }
+    if (focus.moving) {
+      Serial.println(F("ERR FOCUS BUSY"));
+      return;
+    }
+    if (strcmp(action, "ZERO") == 0) {
+      clearFocusReference();
+      focus.pulsePosition = 0;
+      focusZeroed = true;
+      Serial.println(F("OK FOCUS ZERO"));
+    } else if (strcmp(action, "HOME") == 0) {
+      startFocusHome();
+    } else if (!focusZeroed) {
+      Serial.println(F("ERR FOCUS NOT_ZEROED"));
+    } else if (focus.pulsePosition < minimum || focus.pulsePosition > maximum) {
+      Serial.println(F("ERR FOCUS LIMIT POSITION"));
+    } else {
+      focusMinimum = minimum;
+      focusMaximum = maximum;
+      focusLimited = true;
+      Serial.print(F("OK FOCUS LIMIT "));
+      Serial.print(minimum);
+      Serial.print(F(" "));
+      Serial.println(maximum);
+    }
+    return;
+  }
   Serial.println(F("ERR UNKNOWN_ACTION"));
 }
 
 void serviceSerial() {
-  while (Serial.available() > 0) {
+  // Bound each pass so a continuous input stream cannot starve motor service.
+  size_t budget = LINE_BUFFER_SIZE;
+  while (budget-- && Serial.available() > 0) {
     char c = (char)Serial.read();
-
-    if (c == '\r') {
-      continue;
-    }
-
+    if (c == '\r') continue;
     if (c == '\n') {
       lineBuffer[lineLength] = '\0';
-
-      if (lineLength > 0) {
-        processCommand(lineBuffer);
-      }
-
+      if (!discardLine && lineLength > 0) processCommand(lineBuffer);
       lineLength = 0;
+      discardLine = false;
+    } else if (discardLine) {
       continue;
-    }
-
-    if (lineLength < LINE_BUFFER_SIZE - 1) {
+    } else if (((uint8_t)c < 32 && c != '\t') || (uint8_t)c > 126) {
+      lineLength = 0;
+      discardLine = true;
+      Serial.println(F("ERR LINE_CHARACTER"));
+    } else if (lineLength < LINE_BUFFER_SIZE - 1) {
       lineBuffer[lineLength++] = c;
     } else {
       lineLength = 0;
+      discardLine = true;
       Serial.println(F("ERR LINE_TOO_LONG"));
     }
   }
@@ -511,6 +719,7 @@ void serviceSerial() {
 // ============================================================
 
 void setup() {
+  if (FOCUS_HOME_PIN != 255) pinMode(FOCUS_HOME_PIN, INPUT_PULLUP);
   pinMode(MS1_PIN, OUTPUT);
   pinMode(MS2_PIN, OUTPUT);
   pinMode(MS3_PIN, OUTPUT);

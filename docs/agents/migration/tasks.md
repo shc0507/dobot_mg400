@@ -1258,6 +1258,8 @@ Steps:
 5. The same access rules as the other panels. English labels.
 6. Python tests with fake services; node tests for the page logic.
 
+Gas-only stop interface: add public `FurnaceAdapter.gas_stop(channel)` in `src/orchestrator/clients.py`. Accept only integer channels `0` to `2` and call the existing fixed gas-stop endpoint through the bounded, version-checked transport. Preserve direct requests without proxies or redirects. Select this adapter for configured furnaces and the same owned furnace demo. In `src/orchestrator/rehearsal.py`, expose the method through the existing client wrapper and preserve its lifetime, revocation, and accepted-call drain checks. Callers must use the public method, without accessing private adapter state. Do not acquire or renew a lease, replace a demo, or substitute a heat/water stop. Tests stay in `tests/test_dashboard.py` and use fakes or the owned demo.
+
 Done when: P-CHECKS pass.
 
 Docs: `docs/dashboard.md` and `.en.md`.

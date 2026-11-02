@@ -1348,6 +1348,8 @@ Steps:
    The stage and thermal pages still use root-only routes and links. Add configurable base paths in their app factories, command entry points, page links and browser requests. Keep `/` as the default, preserve their existing token, Host, Origin, lease and command checks, and test prefixed page, API and asset requests with fakes. The explicit stage and thermal write paths are limited to this integration.
 4. Unit, registry entry, tests, docs.
 
+Installed robot prefix: update `config/systemd/mg400-web-panel.service` only to pass `MG400_PANEL_BASE_PATH` through the existing `--base-path` option. Add the shared setting with `/` as its default. Preserve the existing launch arguments, checked credentials, and access controls. Cover the unit wiring in the shared deployment tests.
+
 Done when: P-CHECKS pass.
 
 Notes: optional. Skip it while one VPN rule per port stays workable.

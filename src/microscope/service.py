@@ -107,8 +107,12 @@ class _ContractLease:
 
     def acquire(self, client):
         with self.raw.control(client, require_holder=False):
+            self.service._expire_handoff_locked()
             value = self.raw.acquire(client)
-            self.service._manual_holder = None
+            self.service._expire_handoff_locked()
+            with self.service._lock:
+                self.service._handoff_deadline = None
+                self.service._manual_holder = None
             return value
 
     def renew(self, client):
@@ -119,6 +123,11 @@ class _ContractLease:
 
     def release(self, client):
         with self.raw.control(client, require_holder=False):
+            self.service._expire_handoff_locked()
+            sampled_at = self.service._clock()
+            lease_state = self.raw.snapshot()
+            if lease_state["holder"] == client:
+                self.service._prepare_idle_handoff(sampled_at + lease_state["remaining_s"])
             value = self.raw.release(client)
             self.service._manual_holder = None
             return value
@@ -127,7 +136,9 @@ class _ContractLease:
         return self.raw.control(client, require_holder=require_holder)
 
     def poll(self):
-        return self.raw.poll()
+        expired = self.raw.poll()
+        with self.raw.control("reference-handoff", require_holder=False):
+            return self.service._expire_handoff_locked() or expired
 
     def snapshot(self):
         return self.raw.snapshot()
@@ -213,7 +224,7 @@ class _DemoCamera:
     def set_auto_exposure(self, _value):
         pass
 
-    def get_frame_packet(self, after_id=None, wait=True, timeout=2.0, copy=True):
+    def get_frame_packet(self, after_id=None, wait=True, timeout=2.0, copy=True, raw=False):
         if not self.is_open:
             raise RuntimeError("Demo camera is closed")
         with self.port.lock:
@@ -227,7 +238,7 @@ class _DemoCamera:
             marker = cv2.aruco.generateImageMarker(
                 cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), ident, 80
             )
-            x = max(1, min(119, 60 + offset))
+            x = max(1, min(119, 60 - offset))
             frame[60:140, x : x + 80] = marker
             captured_at = time.monotonic()
         else:
@@ -265,7 +276,7 @@ class MicroscopeService:
                 side_stream="demo",
                 focus_limits=(-200, 200),
                 switch_focus=0,
-                home_switch=False,
+                home_switch=bool(config.home_switch),
             )
             if demo
             else config
@@ -279,6 +290,7 @@ class MicroscopeService:
         self._lease = Lease(self.config.lease_seconds, clock=clock, on_expire=self.on_lease_expired)
         self.lease = _ContractLease(self)
         self._manual_holder = None
+        self._handoff_deadline = None
         self.events = EventLog()
         self._quit = threading.Event()
         self._started = self._closed = self._starting = False
@@ -304,7 +316,6 @@ class MicroscopeService:
             "autofocus": {"mode": parameter("string", enum=["full", "local"])},
             "focus_move": {"steps": parameter("integer", minimum=-(2**31), maximum=2**31 - 1)},
             "home_focus": {},
-            "set_focus_zero": {},
             "snapshot": {"path": parameter("string", minLength=1)},
         }
         return describe(
@@ -328,6 +339,7 @@ class MicroscopeService:
         )
 
     def snapshot(self):
+        self._sync_motor_fault()
         lease_state = self._lease.snapshot()
         with self._lock:
             status = self._status
@@ -389,6 +401,7 @@ class MicroscopeService:
                 self._motor.connect(self.config.serial, reset_seconds=0 if self.demo else 1.8)
                 if not self._motor.focus_completion:
                     raise RuntimeError("Microscope service requires reference-aware firmware")
+                self._motor.safe_stop_disable()
                 self._motor.set_microstep(4)
                 self._status = self._motor.read_status()
                 self._camera.open()
@@ -414,13 +427,18 @@ class MicroscopeService:
     def _poll(self):
         while not self._quit.wait(0.05):
             try:
-                self._lease.poll()
+                self.lease.poll()
                 if self._motor is not None and self._motor.fault:
                     if self._latch_fault("motor", self._motor.fault):
                         self.stop("motor-monitor", 0)
             except Exception as error:
                 if self._latch_fault("monitor", str(error)):
                     self.stop("motor-monitor", 0)
+
+    def _sync_motor_fault(self):
+        if self._motor is not None and self._motor.fault:
+            if self._latch_fault("motor", self._motor.fault):
+                self.stop("motor-monitor", 0)
 
     def _latch_fault(self, code, message):
         with self._lock:
@@ -435,6 +453,7 @@ class MicroscopeService:
     @contextmanager
     def _manual_control(self, client, *, renew_only=False):
         with self._lease.control(client, require_holder=False):
+            self._expire_handoff_locked()
             holder = self._lease.snapshot()["holder"]
             if holder is not None and (holder != client or self._manual_holder != client):
                 raise ServiceError(409, "Automation or another operator holds control")
@@ -444,8 +463,56 @@ class MicroscopeService:
                 self._lease.renew(client)
             else:
                 self._lease.acquire(client)
+                self._expire_handoff_locked()
                 self._manual_holder = client
+            with self._lock:
+                self._handoff_deadline = None
             yield
+
+    def _expire_handoff_locked(self):
+        # The caller holds the raw lease lock, so acquisition cannot revive a
+        # reference after its original deadline even before the poller runs.
+        with self._lock:
+            if self._handoff_deadline is None or self._clock() < self._handoff_deadline:
+                return False
+            self._handoff_deadline = None
+        self.on_lease_expired()
+        return True
+
+    def _prepare_idle_handoff(self, deadline):
+        # The caller anchors this absolute deadline before sampling the lease.
+        # Neither scheduling delay nor a status read can extend its authority.
+        with self._lock:
+            candidate = self._job is None and not self._stopping and not self._fault
+            reference = self._reference
+        if candidate and reference is not None:
+            try:
+                status = self._motor.read_status(timeout=1.0)
+                with self._lock:
+                    valid = (
+                        self._clock() < deadline
+                        and self._job is None
+                        and not self._stopping
+                        and not self._fault
+                        and self._reference == reference
+                        and reference == (status.session, status.reference_epoch)
+                        and status.microstep == 4
+                        and status.zeroed
+                        and status.limited
+                        and (status.minimum, status.maximum) == self.config.focus_limits
+                        and not status.homing
+                        and not status.objective.moving
+                        and not status.focus.moving
+                        and status.focus.enabled
+                        and status.minimum <= status.focus.position <= status.maximum
+                    )
+                    if valid:
+                        self._status = status
+                        self._handoff_deadline = deadline
+                        return
+            except Exception as error:
+                self._latch_fault("reference", str(error))
+        self.stop("lease-released", 0)
 
     def manual_heartbeat(self, client, *, renew_only=False):
         with self._manual_control(client, renew_only=renew_only):
@@ -453,15 +520,25 @@ class MicroscopeService:
 
     def manual_release(self, client):
         with self._lease.control(client, require_holder=False):
+            self._expire_handoff_locked()
             holder = self._lease.snapshot()["holder"]
             if holder is not None and (holder != client or self._manual_holder != client):
                 raise ServiceError(409, "Automation or another operator holds control")
+            if holder == client:
+                sampled_at = self._clock()
+                lease_state = self._lease.snapshot()
+                self._prepare_idle_handoff(sampled_at + lease_state["remaining_s"])
             value = self._lease.release(client)
             self._manual_holder = None
             return value
 
     def manual_command(self, action, args, client):
-        if action != "set_focus_zero" or args != {"confirm": True}:
+        if (
+            action != "set_focus_zero"
+            or not isinstance(args, dict)
+            or set(args) != {"confirm"}
+            or args["confirm"] is not True
+        ):
             raise ValueError("Only confirmed manual focus zero is supported")
         with self._manual_control(client, renew_only=True):
             return self._dispatch(action, {}, client, manual=True)
@@ -474,7 +551,9 @@ class MicroscopeService:
             return self._dispatch(action, args, client)
 
     def _arguments(self, action, args):
-        if not isinstance(args, dict) or action not in self.describe()["commands"]:
+        if not isinstance(args, dict) or (
+            action not in self.describe()["commands"] and action != "set_focus_zero"
+        ):
             raise ValueError("Unknown microscope command or parameters")
         required = {"select_objective": {"id"}, "autofocus": {"mode"}, "focus_move": {"steps"}}
         allowed = required.get(action, {"path"} if action == "snapshot" else set())
@@ -497,6 +576,7 @@ class MicroscopeService:
 
     def _dispatch(self, action, args, client, *, manual=False):
         self._arguments(action, args)
+        self._sync_motor_fault()
         with self._lock:
             if not self._started or self._closed:
                 raise ServiceError(503, "Microscope is not connected")
@@ -781,6 +861,7 @@ class MicroscopeService:
             if self._job is not None:
                 self._job.cancel.set()
             self._reference = None
+            self._handoff_deadline = None
             self._seq += 1
             if not self._stopping:
                 if self._motor is None:

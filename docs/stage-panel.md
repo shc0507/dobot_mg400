@@ -263,7 +263,8 @@ reference = {stream = "camera3", marker = 12, pixel = [99.5, 99.5], tolerance_px
 | `POST /api/motors/<motor>/teach_reference` | `{"confirm": true}` |
 | `GET /api/motors/<motor>/reference` | 读取图像和标记偏移。 |
 
-契约命令 `zero` 和 `teach_reference` 要求 `motor`、`confirm: true` 和控制租约。
+契约命令 `zero` 要求 `motor`、`confirm: true` 和控制租约。
+参考示教仅限操作员页面，且不得有自动化客户端持有租约。
 页面路由保留页面令牌和访问检查。图像仅通过已认证的参考路由返回。
 普通状态回复仅含参考元数据，不含 JPEG。
 

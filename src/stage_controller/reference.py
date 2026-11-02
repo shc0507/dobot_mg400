@@ -187,5 +187,5 @@ class StageReference:
     def zero(self, motor, confirm=False, *, client=None):
         return self._confirmed_reference("zero", motor, confirm, client)
 
-    def teach_reference(self, motor, confirm=False, *, client=None):
-        return self._confirmed_reference("teach_reference", motor, confirm, client)
+    def teach_reference(self, motor, confirm=False):
+        return self._confirmed_reference("teach_reference", motor, confirm, None)

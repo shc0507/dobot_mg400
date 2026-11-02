@@ -406,3 +406,46 @@ def test_camera_slow_body_checks_budget_between_single_buffer_reads():
         ReferenceCamera(opener=Opener(response), clock=clock).read("camera3")
     assert response.calls == 3
     assert response.closed
+
+
+def test_reference_teaching_is_operator_only_not_a_contract_command(stage_rig, tmp_path):
+    controller, transport, _ = stage_rig
+    reference(controller)
+    controller._config_path = config_file(tmp_path, controller._geometry)
+    before = controller._config_path.read_bytes()
+    assert "teach_reference" not in controller.describe()["commands"]
+    controller.lease.acquire("automation")
+    with pytest.raises(ValueError, match="Unknown stage command"):
+        controller.command("teach_reference", {"motor": "insert", "confirm": True}, "automation")
+    with pytest.raises(ControllerError, match="controlled by automation"):
+        controller.teach_reference("insert", True)
+    assert controller._config_path.read_bytes() == before
+    assert not controller._frame_source.calls
+    assert not transport.commands
+
+
+def test_operator_teaching_route_retains_page_auth_and_no_automation_ownership(stage_rig, tmp_path):
+    import re
+
+    controller, transport, _ = stage_rig
+    reference(controller, pixel=(10, 10))
+    controller._config_path = config_file(tmp_path, controller._geometry)
+    client = create_app(controller, token="x" * 24).test_client()
+    control = re.search(r'name="control-token" content="([^"]+)"', client.get("/").text)[1]
+    headers = {"Authorization": "Bearer " + "x" * 24, "X-Control-Token": control}
+    endpoint = "/api/motors/insert/teach_reference"
+    assert client.post(endpoint, json={"confirm": True}).status_code == 401
+    assert (
+        client.post(
+            endpoint, json={"confirm": True}, headers={"Authorization": headers["Authorization"]}
+        ).status_code
+        == 403
+    )
+    controller.lease.acquire("automation")
+    assert client.post(endpoint, json={"confirm": True}, headers=headers).status_code == 409
+    controller.lease.release("automation")
+    assert client.post(endpoint, json={"confirm": True}, headers=headers).status_code == 200
+    assert controller._geometry.motors["insert"].reference["pixel"] == pytest.approx(
+        [99.5, 99.5], abs=1
+    )
+    assert not transport.commands

@@ -75,9 +75,6 @@ class StageContract:
                 ),
                 "home": spec(dict(motor=motor)),
                 "zero": spec(dict(motor=motor, confirm=parameter("boolean", const=True))),
-                "teach_reference": spec(
-                    dict(motor=motor, confirm=parameter("boolean", const=True))
-                ),
                 "awake": spec(
                     dict(motor=motor, seconds=parameter("number", minimum=0, maximum=60))
                 ),
@@ -173,7 +170,7 @@ class StageContract:
         if set(args) != expected:
             raise ValueError("Command arguments must match the discovery schema.")
         entry = {"id": uuid.uuid4().hex, "action": action, "client": client}
-        if action in ("zero", "teach_reference"):
+        if action == "zero":
             try:
                 getattr(self, action)(**args, client=client)
             except (ValueError, ControllerError) as exc:

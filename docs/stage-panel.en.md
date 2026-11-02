@@ -263,7 +263,8 @@ The saved file uses the supported calibration schema. Formatting and comments ar
 | `POST /api/motors/<motor>/teach_reference` | `{"confirm": true}` |
 | `GET /api/motors/<motor>/reference` | Read the image and marker offset. |
 
-The contract commands `zero` and `teach_reference` require `motor`, `confirm: true`, and the control lease.
+The contract command `zero` requires `motor`, `confirm: true`, and the control lease.
+Reference teaching is available only from the operator page, without an automation lease holder.
 The page routes retain the page token and access checks. Image responses use the authenticated reference route only.
 Ordinary state replies contain reference metadata without the JPEG.
 

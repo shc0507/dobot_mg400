@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chip passport</title>
+  <link rel="stylesheet" href="{{ base_path }}/dashboard-static/dashboard.css">
+  <link rel="stylesheet" href="{{ base_path }}/dashboard-static/passport.css">
+  <script defer src="{{ base_path }}/dashboard-static/passport.js"></script>
+</head>
+<body data-base-path="{{ base_path }}">
+  <header class="page-header">
+    <div><p class="eyebrow">Lab records</p><h1>Chip passport</h1></div>
+    <a href="{{ base_path }}/">Lab dashboard</a>
+  </header>
+  <main>
+    <section class="panel" aria-label="Find a chip">
+      <form id="passport-form" class="passport-search">
+        <label for="chip-id">QR text / chip ID</label>
+        <textarea id="chip-id" rows="2" spellcheck="false" placeholder="Paste the exact QR text."></textarea>
+        <label for="passport-token">Access token</label>
+        <input id="passport-token" type="password" autocomplete="off" spellcheck="false" placeholder="Token for this dashboard">
+        <div class="actions"><button type="submit">Search records</button><button id="forget-passport" type="button" class="secondary">Forget token</button></div>
+      </form>
+      <p class="muted search-note">Search matches the complete QR text. The token stays in this page's memory.</p>
+      <p id="passport-status" class="notice" role="status" aria-live="polite">Enter a chip ID to read its recorded history.</p>
+    </section>
+    <section aria-labelledby="passport-heading">
+      <div class="section-heading"><h2 id="passport-heading">Recorded history</h2><span class="badge neutral">Read only</span></div>
+      <p id="selected-chip" class="chip-text"></p>
+      <p id="run-count" class="muted">No records loaded.</p>
+      <div id="passport-runs" class="passport-runs"></div>
+      <button id="more-runs" class="secondary more-runs" type="button" hidden>Load more runs</button>
+    </section>
+  </main>
+  <footer>Only saved records appear here. Missing measurements do not mean zero. Open each run to read its records.</footer>
+</body>
+</html>

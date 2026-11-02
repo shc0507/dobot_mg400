@@ -13,6 +13,16 @@ port = 8766
 assets = []
 
 [[service]]
+name = "thermal"
+units = ["mg400-thermal.service"]
+optional = true
+venv = ".venv"
+groups = ["thermal"]
+token = "MG400_THERMAL_TOKEN"
+port = 8768
+assets = []
+
+[[service]]
 name = "furnace"
 units = ["mg400-furnace.service"]
 optional = true

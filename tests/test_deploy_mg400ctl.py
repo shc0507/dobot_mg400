@@ -1197,3 +1197,26 @@ def test_proxy_is_an_explicit_optional_service_and_stop_remains_available(ctl):
     ctl.host.settings.write_text(SETTINGS)
     assert ctl.call("stop", "proxy") == 0
     assert systemctl(ctl) == [["systemctl", "stop", "mg400-proxy.service"]]
+
+
+def test_thermal_is_optional_and_starts_only_when_selected(ctl):
+    assert ctl.call("start", "thermal") == 1
+    ctl.run.assert_not_called()
+    ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=thermal\n")
+    assert ctl.call("start", "thermal") == 0
+    assert systemctl(ctl) == [["systemctl", "start", "mg400-thermal.service"]]
+    ctl.run.reset_mock()
+    ctl.host.settings.write_text(SETTINGS)
+    assert ctl.call("stop", "thermal") == 0
+    assert systemctl(ctl) == [["systemctl", "stop", "mg400-thermal.service"]]
+
+
+def test_thermal_token_and_logs_use_registered_names_without_device_access(ctl):
+    ctl.host.settings.write_text(SETTINGS + "MG400_THERMAL_TOKEN=thermal-token-0123456789\n")
+    assert ctl.call("token", "thermal") == 0
+    assert ctl.out.getvalue() == "thermal-token-0123456789\n"
+    ctl.run.assert_not_called()
+    assert ctl.call("logs", "thermal") == 0
+    assert systemctl(ctl) == [
+        ["journalctl", "--no-pager", "-n", "50", "-u", "mg400-thermal.service"]
+    ]

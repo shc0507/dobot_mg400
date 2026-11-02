@@ -658,6 +658,8 @@ def install(args, host, run, chown, out):
             file=out,
             flush=True,
         )
+    if "thermal" in selected:
+        directory(host.data / "thermal", 0o750, service)
     if "furnace" in selected:
         directory(host.data / "furnace", 0o750, service)
     if "orch" in selected or "gateway" in selected:

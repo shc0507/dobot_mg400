@@ -7,6 +7,34 @@ The native temperature array is 160 × 120 pixels.
 FastAPI and uvicorn serve the dashboard without a JavaScript build step or an external CDN.
 The interactive API reference uses Swagger assets from a CDN.
 
+## Managed host service
+
+The optional `mg400-thermal.service` runs `thermal-cam` as `1000:1000`, with `UMask=0077` and no supplementary device group.
+It reads `/etc/mg400/mg400.env` and opens the P1 camera at startup.
+It retains `MG400_THERMAL_TOKEN` and excludes other service tokens and orchestrator aliases.
+Invalid CLI settings exit with status `2`, which does not trigger an automatic restart.
+The installer does not start this service, and the unit has no boot-time activation.
+
+Add `thermal` to `MG400_OPTIONAL_SERVICES`, preserving other selected services.
+Follow [host deployment](deploy.en.md) to install it. The installer prepares `/var/lib/mg400/thermal` with mode `0750` and owner `1000:1000`.
+It preserves an existing `rois.toml` and creates no region coordinates.
+Install region files with mode `0640` or `0600`. Configure the crucible region before using its readings in recipes.
+
+The USB rule matches `3474:45c2` and the serial prefix `P1016021DG040100208*`.
+The prefix accepts the P1's trailing non-printing serial bytes. The installer grants `0660` access to the group for GID `1000`.
+The device uses libusb through `/dev/bus/usb`. Keep the camera on its documented hub port and never reset the shared hub.
+
+Only the owner installs or starts the service on the lab host. Close other P1 camera applications first.
+After installation and configuration, use these commands:
+
+```sh
+mg400ctl start thermal
+mg400ctl logs thermal
+mg400ctl stop thermal
+```
+
+Complete the supervised thermal validation before using measurements for lab automation. Software installation does not confirm measurement accuracy or freshness.
+
 ## Linux setup
 
 Use Python 3.12 or later and [uv](https://docs.astral.sh/uv/getting-started/installation/).
@@ -81,6 +109,7 @@ Do not use automatic development reload while acquiring camera data.
 | --- | --- | --- |
 | `MG400_THERMAL_BIND` | `127.0.0.1` | Listen address. `--bind` overrides it. |
 | `MG400_THERMAL_PORT` | `8768` | HTTP port. `--port` overrides it. |
+| `MG400_THERMAL_BASE_PATH` | `/` | Native URL prefix. `--base-path` overrides it. |
 | `MG400_THERMAL_TOKEN` | Empty | Bearer token for camera API access. |
 
 A non-loopback bind requires a token.

@@ -372,8 +372,22 @@ def test_home_cannot_be_sped_up_or_reconfigured(firmware):
     assert lines[2:5] == ["ERR FOCUS BUSY", "ERR MICRO WHILE_MOVING", "ERR FOCUS BUSY"]
 
 
-@pytest.mark.parametrize("pin", [0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13, 20])
-def test_home_pin_conflicts_fail_compilation(tmp_path, pin):
+@pytest.mark.parametrize(
+    "definition",
+    [f"FOCUS_HOME_PIN={pin}" for pin in (0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13, 20)]
+    + [
+        "FOCUS_HOME_DIRECTION=2",
+        "FOCUS_HOME_DIRECTION=-2",
+        "FOCUS_HOME_DIRECTION=0.5",
+        "FOCUS_HOME_SPEED_SPS=0",
+        "FOCUS_HOME_SPEED_SPS=10001",
+        "FOCUS_HOME_MAX_STEPS=2147483648UL",
+        "FOCUS_HOME_TIMEOUT_MS=19",
+        "FOCUS_HOME_TIMEOUT_MS=60001",
+        "FOCUS_HOME_ACTIVE_LEVEL=2",
+    ],
+)
+def test_invalid_home_configuration_fails_compilation(tmp_path, definition):
     probe = tmp_path / "probe.cpp"
     probe.write_text('#include "Arduino.h"\n#include "FocusConfig.h"\n')
     result = subprocess.run(
@@ -385,7 +399,7 @@ def test_home_pin_conflicts_fail_compilation(tmp_path, pin):
             str(SKETCH / "tests"),
             "-I",
             str(SKETCH),
-            f"-DFOCUS_HOME_PIN={pin}",
+            f"-D{definition}",
             str(probe),
         ],
         capture_output=True,

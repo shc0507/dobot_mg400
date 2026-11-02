@@ -25,7 +25,8 @@ static_assert(FOCUS_HOME_PIN == 255 ||
               (FOCUS_HOME_PIN >= 5 && FOCUS_HOME_PIN <= 19 &&
                !(FOCUS_HOME_PIN >= 8 && FOCUS_HOME_PIN <= 13)),
               "Focus switch pin overlaps UART, driver pins, or board range");
-static_assert(FOCUS_HOME_DIRECTION >= -1 && FOCUS_HOME_DIRECTION <= 1,
+static_assert(FOCUS_HOME_DIRECTION == -1 || FOCUS_HOME_DIRECTION == 0 ||
+              FOCUS_HOME_DIRECTION == 1,
               "Focus home direction must be -1, 0 (unknown), or 1");
 static_assert(FOCUS_HOME_MAX_STEPS <= 2147483647UL,
               "Focus home travel exceeds signed position range");

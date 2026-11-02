@@ -1263,6 +1263,10 @@ Steps (P-MOVE plus):
 5. Runs that the orchestrator started also go into the run store under the chip ID.
 6. Tests moved and adapted, with a fake furnace service and the fake camera.
 
+Implementation paths for step 5: add the typed `microscope.record` skill in `src/orchestrator/skills/recording.py` and register it in `src/orchestrator/skills/__init__.py`. One finite-duration step owns start, capture, stop and exact finalization. Use the existing guarded client methods and `StepStore.artifact`, which already binds the run, step and chip ID. Write a bounded intent manifest before dispatch and a completed manifest only after the matching command and recording IDs prove successful finalization. Keep video and the unchanged timestamps CSV in the recording directory or configured archive. The run-store artifact is a small JSON manifest with bounded identifiers, status, counts, times, options and known basenames, not media bytes, absolute paths or per-frame arrays. Cancellation or uncertain outcomes must not retry, reacquire authority or publish completion. No store, client, dashboard or gateway approval-allowlist expansion is required.
+
+Test paths: port the three named upstream suites separately to `tests/test_furnace_recordings.py`, `tests/test_furnace_video.py` and `tests/test_furnace_local_run_sync.py`. Add fake-service run/chip association and cancellation coverage in `tests/test_orchestrator_recording.py`. Extend the existing `tests/test_microscope_panel.py` and `tests/test_microscope_panel.mjs` for recording controls. The sequence watcher uses explicitly armed live microscope authority; it does not acquire or renew leases itself. Missing furnace readings do not imply sequence completion.
+
 Done when: P-CHECKS pass.
 
 Docs: `furnace.md`, `microscope.md` and their `.en.md` pairs.

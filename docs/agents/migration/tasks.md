@@ -843,6 +843,8 @@ Steps (P-DEPLOY plus):
 2. Unit `mg400-thermal.service` with `ExecStart=/opt/mg400/.venv/bin/thermal-cam`. Reading the camera moves nothing, so the service connects at start as it does today.
 3. A registry entry `thermal` (optional) and the settings in the env example.
 
+Token isolation: in the existing web-panel, stage-panel, and camera-preview units, add only `MG400_THERMAL_TOKEN` to `UnsetEnvironment`. Keep each unit's checked credentials, command, device groups, and other restrictions unchanged. The new thermal unit retains only the credentials it checks.
+
 Done when: P-CHECKS pass.
 
 Docs: `thermal.md` and `.en.md`, `deploy.md` and `.en.md`.

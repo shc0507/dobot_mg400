@@ -1318,6 +1318,7 @@ deps = ["FND-09", "ORC-05"]
 writes = [
   "config/proxy/**",
   "config/systemd/mg400-proxy.service",
+  "config/systemd/mg400-web-panel.service",
   "src/stage_controller/app.py",
   "src/stage_controller/__main__.py",
   "src/stage_controller/static/app.js",

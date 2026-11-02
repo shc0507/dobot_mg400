@@ -25,6 +25,24 @@ TOKEN = "v" * 24
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def camera_settings(count=3, *, modes=""):
+    return {
+        "MG400_CAMERA_DEVICES": ",".join(
+            f"/dev/v4l/by-path/offline-camera-{number}-video-index0"
+            for number in range(1, count + 1)
+        ),
+        "MG400_CAMERA_MODES": modes,
+    }
+
+
+@pytest.fixture(autouse=True)
+def configured_fake_cameras(monkeypatch):
+    for key, value in camera_settings().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("MG400_CAMERA_CAPTURE_SIZES", raising=False)
+    monkeypatch.delenv("MG400_MICROSCOPE_SIDE_STREAM", raising=False)
+
+
 @pytest.fixture
 def make_service():
     services = []
@@ -50,13 +68,13 @@ def completed(service, command_id):
     pytest.fail("Inference did not finish")
 
 
-def jpeg():
+def jpeg(size=(640, 480)):
     encoded = io.BytesIO()
-    Image.new("RGB", (16, 12), "white").save(encoded, format="JPEG")
+    Image.new("RGB", size, "white").save(encoded, format="JPEG")
     return encoded.getvalue()
 
 
-@pytest.mark.parametrize("camera", [True, 0, 4, -1, "1", 1.0, None])
+@pytest.mark.parametrize("camera", [True, 0, 4, 5, -1, "1", 1.0, None])
 def test_invalid_camera_never_opens_a_source(camera):
     opener = Mock(side_effect=AssertionError("No source access"))
     with pytest.raises(ValueError):
@@ -75,7 +93,7 @@ def test_fixed_frame_url_timeout_short_reads_and_rgb():
     opener = Mock(return_value=stream)
     image = Go2RTCSource(opener=opener, timeout=0.75).read(2)
     opener.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera2", timeout=0.75)
-    assert image.size == (16, 12) and image.mode == "RGB"
+    assert image.size == (640, 480) and image.mode == "RGB"
     assert stream.closed
 
 
@@ -89,7 +107,7 @@ def test_frame_byte_and_pixel_limits():
     content = jpeg()
     assert Go2RTCSource(max_bytes=len(content), opener=lambda *a, **k: io.BytesIO(content)).read(
         1
-    ).size == (16, 12)
+    ).size == (640, 480)
     with pytest.raises(FrameError, match="byte limit"):
         Go2RTCSource(max_bytes=len(content) - 1, opener=lambda *a, **k: io.BytesIO(content)).read(1)
     oversized = bytearray(content)
@@ -221,7 +239,7 @@ def test_gpu_fraction_precedes_load_and_single_warmup(make_service, available, r
         order.append(("load", weights, options))
         return model
 
-    source = Mock()
+    source = Mock(camera_count=4)
     source.read.side_effect = AssertionError("Warm-up must not fetch a camera")
     service = make_service(
         demo=False,
@@ -284,7 +302,7 @@ def test_read_routes_return_pixels_and_annotated_jpeg_without_a_lease(make_servi
     ["", "?camera=0", "?camera=1&camera=2", "?camera=1&url=http://example.com", "?camera=true"],
 )
 def test_bad_read_queries_access_no_frame(make_service, route, query):
-    source = Mock()
+    source = Mock(camera_count=4)
     source.read.side_effect = AssertionError("No frame for invalid query")
     service = make_service(frames=source)
     assert_error(create_app(service).test_client().get(f"/api/{route}{query}"), 400)
@@ -293,7 +311,7 @@ def test_bad_read_queries_access_no_frame(make_service, route, query):
 
 @pytest.mark.parametrize("route", ["detect", "labels", "annotated.jpg"])
 def test_read_routes_share_token_host_origin_and_forwarded_checks(make_service, route):
-    source = Mock()
+    source = Mock(camera_count=4)
     source.read.side_effect = AssertionError("No frame for unauthorized request")
     service = make_service(frames=source)
     path = f"/api/{route}?camera=1"

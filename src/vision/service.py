@@ -75,6 +75,9 @@ class VisionService:
         self.frames = (
             frames if frames is not None else (DemoSource(fixture_dir) if demo else Go2RTCSource())
         )
+        self.camera_count = getattr(self.frames, "camera_count", 4)
+        if type(self.camera_count) is not int or not 0 <= self.camera_count <= 4:
+            raise ValueError("Frame source camera_count must be an integer from 0 through 4.")
         self.weights, self.device, self.gpu_fraction = weights, device, gpu_fraction
         self.fixture_dir = Path(fixture_dir)
         self._factory = localizer_factory
@@ -98,7 +101,7 @@ class VisionService:
         self.lease = Lease(3, clock, on_expire=self.on_lease_expired)
 
     def describe(self):
-        camera = {"type": "integer", "minimum": 1, "maximum": 3}
+        camera = {"type": "integer", "minimum": 1, "maximum": self.camera_count}
         params = {
             "type": "object",
             "properties": {"camera": camera},
@@ -119,7 +122,11 @@ class VisionService:
             demo=self.demo,
             zones=[],
             on_lease_expiry="cancel the controlling client's inference and discard late results",
-            commands={"detect": command(params), "read_labels": command(labels)},
+            commands=(
+                {"detect": command(params), "read_labels": command(labels)}
+                if self.camera_count
+                else {}
+            ),
         )
 
     def snapshot(self):
@@ -207,8 +214,7 @@ class VisionService:
         while not self._quit.wait(0.1):
             self.lease.poll()
 
-    @staticmethod
-    def _arguments(action, args):
+    def _arguments(self, action, args):
         allowed = {"camera", "region"} if action == "read_labels" else {"camera"}
         if (
             action not in {"detect", "read_labels"}
@@ -217,7 +223,7 @@ class VisionService:
             or "camera" not in args
         ):
             raise ValueError("Expected detect(camera) or read_labels(camera, optional region).")
-        camera = validate_camera(args["camera"])
+        camera = validate_camera(args["camera"], self.camera_count)
         region = args.get("region")
         if "region" in args and (
             not isinstance(region, (list, tuple))
@@ -449,8 +455,12 @@ def create_app(service, *, token=None, base_path="/"):
 
     def camera():
         values = request.args.getlist("camera")
-        if set(request.args) != {"camera"} or len(values) != 1 or values[0] not in {"1", "2", "3"}:
-            raise ValueError("Specify camera=1, camera=2, or camera=3 exactly once.")
+        if (
+            set(request.args) != {"camera"}
+            or len(values) != 1
+            or values[0] not in {str(number) for number in range(1, service.camera_count + 1)}
+        ):
+            raise ValueError("Specify one configured camera number exactly once.")
         return int(values[0])
 
     @blueprint.get("/api/detect")

@@ -577,7 +577,7 @@ def test_camera_check_passes_when_devices_services_and_streams_work(cameras):
     output = cameras.out.getvalue()
     assert output.count(" ok ") == 3
     assert f"{CAMERAS[1]} -> /dev/video2" in output
-    assert "streams  all loaded" in output
+    assert "streams  configured preloads loaded" in output
 
 
 @pytest.mark.parametrize(

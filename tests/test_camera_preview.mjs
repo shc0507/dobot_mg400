@@ -446,19 +446,33 @@ test("changed frame dimensions discard the previous geometry and active inferenc
   assert.match(page.images[0].status.textContent, /640 × 480/);
 });
 
-test("three cameras use one persistent authenticated relative request each", async () => {
-  const page = browser(3);
-  assert.equal(page.requests.length, 3);
-  assert.deepEqual(page.requests.map(request => request.source), ["camera1.mjpeg", "camera2.mjpeg", "camera3.mjpeg"]);
-  assert.ok(page.requests.every(request => request.options.cache === "no-store"));
-  for (let i = 0; i < 3; i++) {
-    await page.respond(i);
-    await page.push(i, part(jpeg(`camera-${i}`)));
-  }
-  page.decodes.forEach(decode => decode.resolve());
-  await page.advance(0);
-  assert.ok(page.images.every(image => image.shown.length === 1));
-  assert.equal(page.requests.length, 3);
+for (const count of [1, 2, 3, 4]) {
+  test(`${count} cameras use one persistent authenticated relative request each`, async () => {
+    const page = browser(count);
+    assert.equal(page.requests.length, count);
+    assert.deepEqual(page.requests.map(request => request.source),
+      Array.from({ length: count }, (_, index) => `camera${index + 1}.mjpeg`));
+    assert.ok(page.requests.every(request => request.options.cache === "no-store"));
+    for (let i = 0; i < count; i++) {
+      await page.respond(i);
+      await page.push(i, part(jpeg(`camera-${i}`)));
+    }
+    page.decodes.forEach(decode => decode.resolve());
+    await page.advance(0);
+    assert.ok(page.images.every(image => image.shown.length === 1));
+    assert.equal(page.requests.length, count);
+    await page.visible(false);
+    assert.ok(page.requests.every(request => request.options.signal.aborted));
+    assert.ok(page.images.every(image => image.src === undefined));
+    await page.advance(1000);
+    assert.equal(page.requests.length, count);
+  });
+}
+
+test("empty camera configuration starts no stream or detection request", async () => {
+  const page = browser(0);
+  await page.advance(10000);
+  assert.equal(page.requests.length, 0);
 });
 
 test("multipart headers, bodies and separators can split at every byte", async () => {

@@ -341,10 +341,10 @@ def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, 
     ("devices", "argv", "message"),
     [
         (DEVICES, [], "Pass the go2rtc 1.9.14 binary"),
-        (DEVICES[:2], [], "must list 3 devices"),
+        ([*DEVICES, *DEVICES[:2]], [], "must list 1 to 4 devices"),
         ([*DEVICES[:2], "/dev/video0&exec=x"], [], "Invalid camera device path"),
     ],
-    ids=["no-binary", "two-cameras", "unsafe-path"],
+    ids=["no-binary", "five-cameras", "unsafe-path"],
 )
 def test_camera_errors_stop_before_any_change(host, capsys, devices, argv, message):
     host.settings.parent.mkdir(parents=True)

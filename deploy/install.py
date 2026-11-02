@@ -26,7 +26,11 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import assets  # noqa: E402
+
+from cameras.config import camera_configuration  # noqa: E402
+from cameras.config import camera_devices as camera_devices  # noqa: E402
 
 SOURCE = Path(__file__).resolve().parents[1]
 TOUPCAM_VERSION = "59.30594.20260120"
@@ -34,8 +38,6 @@ TOUPCAM_SHA256 = "5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e9
 SERVICE_UID = SERVICE_GID = 1000
 COLLECTOR = "mg400-gripper-collector.service"
 REQUEST_WATCHER = "mg400-gripper-collector.path"
-CAMERA_COUNT = 3
-DEVICE = re.compile(r"/dev/[A-Za-z0-9/._:-]+")
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 JSON_SETTINGS = {"MG400_FURNACE_GAS_MAP", "MG400_FURNACE_IDLE_GAS"}
 
@@ -327,68 +329,48 @@ def merge_settings(current, example, token=lambda: secrets.token_urlsafe(32)):
     return "\n".join(lines) + "\n", changed
 
 
-def camera_devices(value):
-    """Return the camera devices from MG400_CAMERA_DEVICES. An empty value means no cameras."""
-    devices = [item.strip() for item in value.split(",") if item.strip()]
-    if not devices:
-        return []
-    if len(devices) != CAMERA_COUNT:
-        raise ValueError(f"MG400_CAMERA_DEVICES must list {CAMERA_COUNT} devices or none.")
-    for device in devices:
-        if not DEVICE.fullmatch(device):
-            raise ValueError(f"Invalid camera device path: {device!r}")
-    return devices
-
-
 def camera_capture_sizes(value, devices, side_stream=""):
-    """Resolve capture dimensions in the same order as the stable device list."""
-    if not devices:
-        if value.strip():
-            raise ValueError("Camera capture sizes require configured camera devices.")
-        return []
-    if side_stream and side_stream not in {f"camera{i}" for i in range(1, len(devices) + 1)}:
-        raise ValueError("MG400_MICROSCOPE_SIDE_STREAM must name a rendered camera stream.")
-    if not value.strip():
-        return [
-            (3840, 2160) if side_stream == f"camera{i}" else (640, 480)
-            for i in range(1, len(devices) + 1)
-        ]
-    parts = [part.strip() for part in value.split(",")]
-    if len(parts) != len(devices):
-        raise ValueError("MG400_CAMERA_CAPTURE_SIZES must give one WIDTHxHEIGHT per device.")
-    sizes = []
-    for part in parts:
-        match = re.fullmatch(r"([1-9][0-9]{0,4})x([1-9][0-9]{0,4})", part)
-        if match is None:
-            raise ValueError("Invalid camera capture size; use WIDTHxHEIGHT.")
-        width, height = map(int, match.groups())
-        if width * height > 16_000_000:
-            raise ValueError("Camera capture size exceeds the 16000000 pixel limit.")
-        sizes.append((width, height))
-    return sizes
+    """Keep the legacy size API with the shared mode and side-stream policy."""
+    configured = camera_configuration(
+        {
+            "MG400_CAMERA_DEVICES": ",".join(devices),
+            "MG400_CAMERA_CAPTURE_SIZES": value,
+            "MG400_MICROSCOPE_SIDE_STREAM": side_stream,
+        }
+    )
+    return [mode[:2] for mode in configured.modes]
 
 
-def render_go2rtc(devices, sizes=None):
+def render_go2rtc(devices, sizes=None, *, modes=None):
     """Return per-camera MJPEG capture settings, with the API on loopback only."""
-    sizes = [(640, 480)] * len(devices) if sizes is None else sizes
-    if len(sizes) != len(devices) or any(
-        len(size) != 2
-        or any(type(n) is not int or n <= 0 for n in size)
-        or size[0] * size[1] > 16_000_000
-        for size in sizes
+    if sizes is not None and modes is not None:
+        raise ValueError("Use camera sizes or modes, not both.")
+    settings = {"MG400_CAMERA_DEVICES": ",".join(devices)}
+    if modes is not None:
+        if any(len(mode) != 3 or any(type(value) is not int for value in mode) for mode in modes):
+            raise ValueError("Invalid per-camera capture mode.")
+        settings["MG400_CAMERA_MODES"] = ",".join(f"{w}x{h}@{fps}" for w, h, fps in modes)
+    elif sizes is not None:
+        if any(len(size) != 2 or any(type(value) is not int for value in size) for size in sizes):
+            raise ValueError("Invalid per-camera capture dimensions.")
+        settings["MG400_CAMERA_CAPTURE_SIZES"] = ",".join(f"{w}x{h}" for w, h in sizes)
+    configured = camera_configuration(settings)
+    if (modes is not None and len(modes) != configured.count) or (
+        sizes is not None and len(sizes) != configured.count
     ):
-        raise ValueError("Invalid per-camera capture dimensions.")
+        raise ValueError("Supply one capture mode per camera device.")
     streams = "".join(
         f"  camera{number}: v4l2:device?video={device}"
-        f"&input_format=mjpeg&video_size={size[0]}x{size[1]}&framerate=30\n"
-        for number, (device, size) in enumerate(zip(devices, sizes), 1)
+        f"&input_format=mjpeg&video_size={mode[0]}x{mode[1]}&framerate={mode[2]}\n"
+        for number, (device, mode) in enumerate(zip(configured.devices, configured.modes), 1)
     )
-    preload = "".join(f"  camera{number}: video\n" for number in range(1, len(devices) + 1))
+    preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
+    preload = f"preload:\n{preload}" if preload else "preload: {}\n"
     return (
         "api:\n  listen: 127.0.0.1:1984\n"
         'rtsp:\n  listen: ""\n'
         'webrtc:\n  listen: ""\n'
-        f"preload:\n{preload}"
+        f"{preload}"
         f"streams:\n{streams}"
     )
 
@@ -654,12 +636,8 @@ def install(args, host, run, chown, out):
         with assets._local(host.source / "config/systemd" / name) as stream:
             unit_contents[name] = stream.read().decode("utf-8")
     rendered_rules = udev_rules(host, selected)
-    devices = camera_devices(settings.get("MG400_CAMERA_DEVICES", ""))
-    capture_sizes = camera_capture_sizes(
-        settings.get("MG400_CAMERA_CAPTURE_SIZES", ""),
-        devices,
-        settings.get("MG400_MICROSCOPE_SIDE_STREAM", ""),
-    )
+    camera_config = camera_configuration(settings)
+    devices = list(camera_config.devices)
     if args.go2rtc is not None and not args.go2rtc.is_file():
         raise RuntimeError(f"The go2rtc binary does not exist: {args.go2rtc}")
     if devices and args.go2rtc is None and not host.go2rtc.exists():
@@ -775,7 +753,7 @@ def install(args, host, run, chown, out):
         if not args.dry_run:
             write_file(
                 host.go2rtc_config,
-                render_go2rtc(devices, capture_sizes),
+                render_go2rtc(devices, modes=camera_config.modes),
                 0o640,
                 (0, SERVICE_GID),
                 chown,

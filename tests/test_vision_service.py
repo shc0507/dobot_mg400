@@ -25,6 +25,24 @@ TOKEN = "v" * 24
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def camera_settings(count=3, *, modes=""):
+    return {
+        "MG400_CAMERA_DEVICES": ",".join(
+            f"/dev/v4l/by-path/offline-camera-{number}-video-index0"
+            for number in range(1, count + 1)
+        ),
+        "MG400_CAMERA_MODES": modes,
+    }
+
+
+@pytest.fixture(autouse=True)
+def configured_fake_cameras(monkeypatch):
+    for key, value in camera_settings().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("MG400_CAMERA_CAPTURE_SIZES", raising=False)
+    monkeypatch.delenv("MG400_MICROSCOPE_SIDE_STREAM", raising=False)
+
+
 @pytest.fixture
 def make_service():
     services = []
@@ -50,13 +68,13 @@ def completed(service, command_id):
     pytest.fail("Inference did not finish")
 
 
-def jpeg():
+def jpeg(size=(640, 480)):
     encoded = io.BytesIO()
-    Image.new("RGB", (16, 12), "white").save(encoded, format="JPEG")
+    Image.new("RGB", size, "white").save(encoded, format="JPEG")
     return encoded.getvalue()
 
 
-@pytest.mark.parametrize("camera", [True, 0, 4, -1, "1", 1.0, None])
+@pytest.mark.parametrize("camera", [True, 0, 4, 5, -1, "1", 1.0, None])
 def test_invalid_camera_never_opens_a_source(camera):
     opener = Mock(side_effect=AssertionError("No source access"))
     with pytest.raises(ValueError):
@@ -75,7 +93,7 @@ def test_fixed_frame_url_timeout_short_reads_and_rgb():
     opener = Mock(return_value=stream)
     image = Go2RTCSource(opener=opener, timeout=0.75).read(2)
     opener.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera2", timeout=0.75)
-    assert image.size == (16, 12) and image.mode == "RGB"
+    assert image.size == (640, 480) and image.mode == "RGB"
     assert stream.closed
 
 
@@ -89,7 +107,7 @@ def test_frame_byte_and_pixel_limits():
     content = jpeg()
     assert Go2RTCSource(max_bytes=len(content), opener=lambda *a, **k: io.BytesIO(content)).read(
         1
-    ).size == (16, 12)
+    ).size == (640, 480)
     with pytest.raises(FrameError, match="byte limit"):
         Go2RTCSource(max_bytes=len(content) - 1, opener=lambda *a, **k: io.BytesIO(content)).read(1)
     oversized = bytearray(content)
@@ -171,6 +189,87 @@ def test_demo_source_missing_and_valid_fixture(tmp_path):
     assert DemoSource().read(3).size == (96, 64)
 
 
+def test_camera_four_still_uses_the_existing_stream_and_checks_its_mode():
+    settings = camera_settings(4, modes="640x480@30,640x480@30,3840x2160@30,1280x720@30")
+    stream = io.BytesIO(jpeg((1280, 720)))
+    opener = Mock(return_value=stream)
+    image = frame_module.still(4, settings=settings, opener=opener)
+    opener.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera4", timeout=2)
+    assert image.size == (1280, 720) and stream.closed
+    mismatch = io.BytesIO(jpeg())
+    with pytest.raises(FrameError, match="differs from configured mode"):
+        Go2RTCSource(settings=settings, opener=lambda *a, **k: mismatch).still(4)
+    assert mismatch.closed
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
+def test_frame_source_rejects_unconfigured_stream_before_any_request(count):
+    opener = Mock(side_effect=AssertionError("No request to an unconfigured stream"))
+    source = Go2RTCSource(settings=camera_settings(count), opener=opener)
+    assert source.camera_count == count
+    with pytest.raises(ValueError):
+        source.still(count + 1)
+    opener.assert_not_called()
+
+
+def test_frame_configuration_rejects_conflicts_without_using_an_opener():
+    settings = camera_settings(1, modes="640x480@30")
+    settings["MG400_CAMERA_CAPTURE_SIZES"] = "640x480"
+    opener = Mock(side_effect=AssertionError("No configuration I/O"))
+    with pytest.raises(ValueError):
+        Go2RTCSource(settings=settings, opener=opener)
+    opener.assert_not_called()
+
+
+def test_camera_four_contract_and_read_route_in_demo(make_service):
+    service = make_service()
+    assert (
+        service.describe()["commands"]["detect"]["params"]["properties"]["camera"]["maximum"] == 4
+    )
+    response = create_app(service).test_client().get("/api/detect?camera=4")
+    assert response.status_code == 200 and response.json["camera"] == 4
+    assert DemoSource().still(4).size == (96, 64)
+
+
+def test_contract_limits_match_the_configured_source(make_service):
+    source = SimpleNamespace(camera_count=1, read=Mock(return_value=Image.new("RGB", (96, 64))))
+    service = make_service(frames=source)
+    params = service.describe()["commands"]["detect"]["params"]
+    assert params["properties"]["camera"]["maximum"] == 1
+    client = create_app(service).test_client()
+    assert_error(client.get("/api/detect?camera=2"), 400)
+    source.read.assert_not_called()
+    headers = {"X-MG400-Client": "operator"}
+    client.post("/api/heartbeat", headers=headers, json={})
+    assert_error(
+        client.post("/api/command", headers=headers, json={"action": "detect", "camera": 2}), 400
+    )
+    source.read.assert_not_called()
+
+
+def test_empty_camera_configuration_advertises_no_frame_commands(make_service):
+    source = Go2RTCSource(settings={})
+    service = make_service(frames=source)
+    assert service.describe()["commands"] == {}
+    assert_error(create_app(service).test_client().get("/api/detect?camera=1"), 400)
+
+
+def test_entrypoint_passes_its_camera_settings_instead_of_ambient_values(monkeypatch):
+    # Ambient fake configuration has three streams; the injected host has one.
+    settings = camera_settings(1, modes="1280x720@30")
+    captured = {}
+
+    def factory(**options):
+        captured.update(options)
+        raise ValueError("offline factory boundary")
+
+    with pytest.raises(SystemExit) as stopped:
+        entrypoint.main([], environ=settings, service_factory=factory)
+    assert stopped.value.code == 2
+    assert captured["frames"].camera_count == 1
+    assert captured["frames"].configuration.modes == ((1280, 720, 30),)
+
+
 @pytest.mark.parametrize("token", [None, TOKEN])
 @pytest.mark.parametrize("base_path", ["/", "/vision/"])
 def test_contract_conformance(make_service, token, base_path):
@@ -221,7 +320,7 @@ def test_gpu_fraction_precedes_load_and_single_warmup(make_service, available, r
         order.append(("load", weights, options))
         return model
 
-    source = Mock()
+    source = Mock(camera_count=4)
     source.read.side_effect = AssertionError("Warm-up must not fetch a camera")
     service = make_service(
         demo=False,
@@ -284,7 +383,7 @@ def test_read_routes_return_pixels_and_annotated_jpeg_without_a_lease(make_servi
     ["", "?camera=0", "?camera=1&camera=2", "?camera=1&url=http://example.com", "?camera=true"],
 )
 def test_bad_read_queries_access_no_frame(make_service, route, query):
-    source = Mock()
+    source = Mock(camera_count=4)
     source.read.side_effect = AssertionError("No frame for invalid query")
     service = make_service(frames=source)
     assert_error(create_app(service).test_client().get(f"/api/{route}{query}"), 400)
@@ -293,7 +392,7 @@ def test_bad_read_queries_access_no_frame(make_service, route, query):
 
 @pytest.mark.parametrize("route", ["detect", "labels", "annotated.jpg"])
 def test_read_routes_share_token_host_origin_and_forwarded_checks(make_service, route):
-    source = Mock()
+    source = Mock(camera_count=4)
     source.read.side_effect = AssertionError("No frame for unauthorized request")
     service = make_service(frames=source)
     path = f"/api/{route}?camera=1"

@@ -39,6 +39,7 @@
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[只读 MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
+| `mg400-proxy.service` | `proxy` | 可选的[单端口代理](olares.md#可选的单端口代理)，端口 `8080` | 无 |
 | `mg400-gripper-collector.path` | 无 | 面板请求时启动夹爪采集 | 无 |
 
 服务手动启动，不开机自启。
@@ -141,6 +142,9 @@
 选中 `gateway` 时，安装器也会准备私密的 `runs` 目录，使首次配方运行前即可记录审计。安装器不会启动网关。
 保持 `MG400_GATEWAY_BIND=127.0.0.1`。每个 MCP 请求都必须携带 `MG400_GATEWAY_TOKEN`，包括回环请求。
 
+可选服务 `proxy` 不增加 Python 依赖组。通过 `--caddy PATH` 提供 Caddy 2，并配置[单端口入口](olares.md#可选的单端口代理)。
+安装器在改文件前检查代理配置，保留已有服务选择，不会启动代理。
+
 安装器按 `venv` 合并已启用服务的 `groups`，每个环境只同步 1 次。
 同步显式使用 `--no-default-groups`，不安装项目的默认依赖组。
 必需服务使用 `stage` 和 `tools`，环境为 `/opt/mg400/.venv`。
@@ -229,16 +233,20 @@
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
+| `MG400_PROXY_BIND` | `127.0.0.1` | 代理监听地址，使用数字形式 |
+| `MG400_PROXY_PORT` | `8080` | 代理端口，范围为 `1024` 到 `65535` |
 | `MG400_OPTIONAL_SERVICES` | 空 | 服务清单中的可选服务名称，用逗号分隔 |
 | `MG400_ROBOT_HOST` | `config/robot.toml` 中的地址 | 机械臂地址 |
 | `MG400_CONTROLLER_LOCK_DIR` | 必填，示例为 `/var/lib/mg400/locks` | [面板连接锁](#面板连接锁) 的目录，必须为绝对路径 |
 | `MG400_PANEL_BIND` | `127.0.0.1` | 网页面板的监听地址 |
 | `MG400_PANEL_PORT` | `8766` | 网页面板的端口 |
+| `MG400_PANEL_BASE_PATH` | `/` | 网页面板和 API 的原生前缀 |
 | `MG400_PANEL_TOKEN` | 安装器生成 | 网页面板的访问密钥 |
 | `MG400_CAMERA_BIND` | `127.0.0.1` | 摄像头预览的监听地址 |
 | `MG400_CAMERA_DEVICES` | 空 | 3 个摄像头设备，用逗号分隔。为空时不配置摄像头 |
 | `MG400_STAGE_BIND` | `127.0.0.1` | 位移台面板的监听地址 |
 | `MG400_STAGE_PORT` | `8767` | 位移台面板的端口 |
+| `MG400_STAGE_BASE_PATH` | `/` | 位移台原生前缀，契约位于其下的 `contract/` |
 | `MG400_STAGE_TOKEN` | 安装器生成 | 位移台面板的访问密钥 |
 | `MG400_STAGE_SERIAL` | 空 | Arduino 的串口路径，见 [位移台配置项](stage-panel.md#配置项) |
 | `MG400_FURNACE_BIND` | `127.0.0.1` | 炉控监听地址 |
@@ -262,7 +270,7 @@
 | `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl status` | 显示所有服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace`、`orch`、`gateway` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace`、`orch`、`gateway`、`proxy` 或 `all` |
 | `mg400ctl stop all` | 停止服务 |
 | `mg400ctl restart web` | 重启服务 |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |

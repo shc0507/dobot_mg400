@@ -1,0 +1,57 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+	# Camera URLs contain a secret. Do not log request URLs or headers.
+	log default {
+		exclude http.log.access http.log.error
+	}
+}
+
+(instrument) {
+	reverse_proxy {args[0]} {
+		# Preserve the browser origin, including its port. Never inject credentials.
+		header_up Host {http.request.hostport}
+		header_up -Forwarded
+		header_up X-Forwarded-Host {http.request.hostport}
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up -X-Real-IP
+		transport http {
+			versions 1.1
+			dial_timeout 2s
+			response_header_timeout 60s
+			read_timeout 60s
+		}
+	}
+}
+
+http://:@PROXY_PORT@ {
+	bind @PROXY_BIND@
+	@bare path /robot /stage /camera /thermal /furnace /microscope /lab
+	redir @bare {http.request.uri.path}/ 308
+	handle /robot/* {
+		import instrument 127.0.0.1:@PANEL_PORT@
+	}
+	handle /stage/* {
+		import instrument 127.0.0.1:@STAGE_PORT@
+	}
+	# Strip only /camera. The remaining /<secret>/ path must reach the preview.
+	handle_path /camera/* {
+		import instrument 127.0.0.1:1985
+	}
+	handle /thermal/* {
+		import instrument 127.0.0.1:@THERMAL_PORT@
+	}
+	handle /furnace/* {
+		import instrument 127.0.0.1:@FURNACE_PORT@
+	}
+	handle /microscope/* {
+		import instrument 127.0.0.1:@MICROSCOPE_PORT@
+	}
+	handle /lab/* {
+		import instrument 127.0.0.1:@ORCH_PORT@
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

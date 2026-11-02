@@ -8,7 +8,7 @@ from waitress import create_server
 
 from labkit.auth import valid_token, valid_token_for_bind
 
-from .app import create_app
+from .app import create_app, normalize_base_path
 from .controller import GRIPPER_CONVERTER, MotorController, is_gripper_converter
 
 
@@ -48,6 +48,12 @@ def main(argv=None):
     parser.add_argument(
         "--config",
         help="Stage geometry TOML (default: MG400_STAGE_CONFIG or /var/lib/mg400/stage.toml)",
+    )
+    parser.add_argument(
+        "--base-path",
+        type=normalize_base_path,
+        default=os.environ.get("MG400_STAGE_BASE_PATH") or "/",
+        help="URL prefix (default: MG400_STAGE_BASE_PATH or /)",
     )
     args = parser.parse_args(argv)
     # An empty environment value counts as unset.
@@ -89,7 +95,7 @@ def main(argv=None):
     )
     controller = MotorController(demo=args.demo, serial=serial, config=config)
     server = create_server(
-        create_app(controller, token or None),
+        create_app(controller, token or None, base_path=args.base_path),
         host=bind,
         port=port,
         threads=6,
@@ -100,7 +106,9 @@ def main(argv=None):
         max_request_body_size=4097,
     )
     for url in listen_urls(server):
-        print(f"Stage Controller: {url}", flush=True)
+        print(
+            f"Stage Controller: {url}{args.base_path if args.base_path != '/' else ''}", flush=True
+        )
     if args.demo:
         print("Demo mode: no serial hardware will be opened.", flush=True)
     elif serial:

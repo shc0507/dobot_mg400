@@ -18,7 +18,13 @@ from stage_controller.controller import MotorController
 TOKEN = "stage-panel-test-token-0123456789"
 HOST = "100.64.0.1:8767"
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-SETTINGS = ("MG400_STAGE_BIND", "MG400_STAGE_PORT", "MG400_STAGE_TOKEN", "MG400_STAGE_SERIAL")
+SETTINGS = (
+    "MG400_STAGE_BIND",
+    "MG400_STAGE_PORT",
+    "MG400_STAGE_TOKEN",
+    "MG400_STAGE_SERIAL",
+    "MG400_STAGE_BASE_PATH",
+)
 SHORT_TOKEN = (
     "Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost"
 )
@@ -684,3 +690,99 @@ def test_service_signal_stops_the_motors_before_exit(service, signum):
     assert process.returncode == 0, output
     assert f"Stage Controller: http://127.0.0.1:{port}" in output
     assert "All motors stopped · disconnected" in output
+
+
+@pytest.mark.parametrize("prefix", ["/stage", "/lab/stage/"])
+def test_prefixed_stage_page_assets_legacy_api_and_browser_requests(stage_rig, prefix):
+    controller, _, _ = stage_rig
+    base = prefix.rstrip("/")
+    web = create_app(controller, TOKEN, base_path=prefix).test_client()
+    proxy = {"Host": "panel.example:8080", "X-Forwarded-Host": "panel.example:8080"}
+    page = web.get(base + "/", headers=proxy)
+    assert page.status_code == 200
+    assert f'name="base-path" content="{base}"' in page.text
+    assert f'class="brand-mark" href="{base}/"' in page.text
+    assert f'src="{base}/static/app.js"' in page.text
+    with web.get(base + "/static/app.js", headers=proxy) as response:
+        assert response.status_code == 200
+        script = response.text
+    assert web.get(base + "/api/state", headers=proxy).status_code == 401
+    access = {**proxy, "Authorization": f"Bearer {TOKEN}"}
+    assert web.get(base + "/api/state", headers=access).status_code == 200
+    assert web.get("/api/state", headers=access).status_code == 404
+    control = re.search(r'name="control-token" content="([^"]+)"', page.text)[1]
+    assert web.post(base + "/api/stop", json={}, headers=access).status_code == 403
+    assert (
+        web.post(
+            base + "/api/stop", json={}, headers={**access, "X-Control-Token": control}
+        ).status_code
+        == 200
+    )
+    declaration = re.search(r"^const basePath = .*", script, re.MULTILINE)[0]
+    function = script[
+        script.index("async function api(") : script.index("\nfunction requireToken(")
+    ]
+    program = "\n".join(
+        [
+            'const assert = require("node:assert/strict");',
+            f"const $ = () => ({{content: {json.dumps(base)}}});",
+            declaration,
+            'let accessToken = "browser-bearer"; const token = "page-token";',
+            "let captured; function tokenAccepted() {}",
+            "const fetch = async (...args) => {captured = args; "
+            "return {ok: true, status: 200, json: async () => ({ok: true})};};",
+            function,
+            '(async () => { await api("/stop", {});',
+            f"assert.equal(captured[0], {json.dumps(base + '/api/stop')});",
+            'assert.equal(captured[1].headers.Authorization, "Bearer browser-bearer");',
+            'assert.equal(captured[1].headers["X-Control-Token"], "page-token"); })();',
+        ]
+    )
+    subprocess.run(["node", "-"], input=program, text=True, capture_output=True, check=True)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        None,
+        "",
+        "stage",
+        "//stage",
+        "/stage//",
+        "/a/../stage",
+        "/a/./stage",
+        "/%73tage",
+        "/stage?x",
+        "/stage#x",
+        "/stage\\x",
+        "/sta ge",
+        "/stage\n",
+    ],
+)
+def test_invalid_stage_base_path_precedes_controller_construction(monkeypatch, prefix):
+    import stage_controller.app as stage_app
+
+    def forbidden():
+        pytest.fail("Invalid prefix constructed a controller")
+
+    monkeypatch.setattr(stage_app, "MotorController", forbidden)
+    with pytest.raises(ValueError, match="Base path"):
+        stage_app.create_app(base_path=prefix)
+
+
+def test_stage_base_path_cli_overrides_environment_without_device_access(monkeypatch, capsys):
+    monkeypatch.setenv("MG400_STAGE_BASE_PATH", "/from-env/")
+    configured = run_main(monkeypatch, ["--demo"])
+    assert configured["app"].test_client().get("/from-env/").status_code == 200
+    assert "http://127.0.0.1:8767/from-env/" in capsys.readouterr().out
+    configured = run_main(monkeypatch, ["--demo", "--base-path", "/from-cli"])
+    web = configured["app"].test_client()
+    assert web.get("/from-cli/").status_code == 200
+    assert web.get("/from-env/").status_code == 404
+    monkeypatch.setenv("MG400_STAGE_BASE_PATH", "/../invalid")
+    monkeypatch.setattr(
+        stage_main, "MotorController", lambda **kwargs: pytest.fail("controller started")
+    )
+    with pytest.raises(SystemExit) as error:
+        stage_main.main(["--demo"])
+    assert error.value.code == 2

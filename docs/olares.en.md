@@ -11,7 +11,7 @@ Run the commands on this page as root in the Olares host terminal (Control Hub â
 ## Network
 
 Clients access Olares through the LarePass VPN. The Olares VPN address is `100.64.0.1`.
-The panels and camera preview must listen on this address. Set these values in `/etc/mg400/mg400.env`:
+With separate service ports, the panels and camera preview must listen on this address. Set these values in `/etc/mg400/mg400.env`:
 
 ```ini
 MG400_PANEL_BIND=100.64.0.1
@@ -31,6 +31,96 @@ The default bind remains `127.0.0.1`. See the [recipe service](orchestrator.en.m
 
 Keep the optional [MCP gateway](agent-gateway.en.md) at `MG400_GATEWAY_BIND=127.0.0.1`, port `8773`. Do not open that port directly through the VPN.
 Remote MCP clients require an authenticated tunnel to loopback and the `MG400_GATEWAY_TOKEN` bearer credential.
+
+## Optional single-port proxy
+
+The optional `proxy` service provides 1 VPN port for the instrument services.
+It uses a Caddy 2 binary supplied through `--caddy PATH`.
+The installer writes `/etc/mg400/Caddyfile` and installs `/usr/local/lib/mg400/caddy`.
+It never downloads Caddy or starts the proxy.
+
+Add `proxy` to `MG400_OPTIONAL_SERVICES`. Preserve other selected service names.
+For a host with no other optional services, set these values in `/etc/mg400/mg400.env`:
+
+```ini
+MG400_OPTIONAL_SERVICES=proxy
+MG400_PROXY_BIND=100.64.0.1
+MG400_PROXY_PORT=8080
+MG400_PANEL_BIND=127.0.0.1
+MG400_PANEL_BASE_PATH=/robot/
+MG400_STAGE_BIND=127.0.0.1
+MG400_STAGE_BASE_PATH=/stage/
+MG400_CAMERA_BIND=127.0.0.1
+```
+
+The proxy address must be 1 numeric loopback or VPN address, without a wildcard.
+The proxy port must be from `1024` to `65535` and differ from every upstream port.
+Upstream ports must also be distinct.
+The installer checks enabled services' loopback addresses, native prefixes, and tokens before it writes files.
+
+For enabled `furnace` or `orch` services, also set their corresponding values:
+
+```ini
+MG400_FURNACE_BIND=127.0.0.1
+MG400_FURNACE_BASE_PATH=/furnace/
+MG400_ORCH_BIND=127.0.0.1
+MG400_ORCH_BASE_PATH=/lab/
+```
+
+The routes preserve each service's native prefix:
+
+| VPN path | Loopback upstream | Required native prefix |
+| --- | --- | --- |
+| `/robot/` | `127.0.0.1:8766` | `/robot/` |
+| `/stage/` | `127.0.0.1:8767` | `/stage/` |
+| `/camera/<key>/` | `127.0.0.1:1985` | `/<key>/` after removing only `/camera` |
+| `/thermal/` | `127.0.0.1:8768` | `/thermal/` |
+| `/furnace/` | `127.0.0.1:8769` | `/furnace/` |
+| `/microscope/` | `127.0.0.1:8770` | `/microscope/` |
+| `/lab/` | `127.0.0.1:8772` | `/lab/` |
+
+The camera port remains `1985`. Other upstream ports follow their `MG400_*_PORT` settings when supplied.
+The proxy does not install or enable thermal or microscope services.
+A route cannot work until its upstream service exists and runs with the required native prefix.
+Keep a separately started service on `127.0.0.1` with its own token, even though its connection is local.
+For thermal, set `MG400_THERMAL_TOKEN` and `MG400_THERMAL_BASE_PATH=/thermal/` in its startup environment.
+`thermal-cam --base-path /thermal/` overrides that prefix setting.
+
+For a separately installed microscope service, use `MG400_MICROSCOPE_TOKEN` and its `/microscope/` native prefix option.
+These direct thermal and microscope tokens are not added to the shared environment example.
+Configure their startup environments separately. Do not place tokens in Caddy configuration or URLs.
+The MCP gateway remains loopback-only and has no proxy route.
+
+Stop active work before changing service URLs. Update downstream client URLs to include the new native prefixes.
+For example, use `MG400_ORCH_ROBOT_URL=http://127.0.0.1:8766/robot/` and `MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/stage/contract/`.
+The stage contract stays separate from its legacy page API at `/stage/contract/api/`.
+Stage and thermal keep `/` as the default when no base path is configured.
+
+After configuration, install the supplied binary and check the generated configuration:
+
+```sh
+/usr/bin/python3 /opt/mg400/deploy/install.py --dry-run --caddy /path/to/caddy
+/usr/bin/python3 /opt/mg400/deploy/install.py --caddy /path/to/caddy
+/usr/local/lib/mg400/caddy validate --config /etc/mg400/Caddyfile --adapter caddyfile
+```
+
+Restart the upstream services whose settings changed through `mg400ctl`.
+Then start the proxy explicitly with `mg400ctl start proxy`.
+Permit TCP `8080` through the VPN, or the configured proxy port.
+Open `http://100.64.0.1:8080/robot/` or another route from the table.
+For cameras, retain the complete secret key from the existing preview URL.
+After an update, the installer can reuse the installed binary without `--caddy`.
+
+The proxy passes browser bearer credentials unchanged. It never supplies an upstream token.
+Each service keeps its token, Host, Origin, lease, and command checks.
+The proxy preserves the browser `Host`, including its port, and sets `X-Forwarded-Host` from that value.
+It replaces incoming forwarded address headers and removes `Forwarded` and `X-Real-IP`.
+
+Caddy forwards WebSocket `Upgrade` and `Connection` through its native reverse proxy, using HTTP/1.1 upstream.
+Upstream response-header and read timeouts are `60` s, above the robot's `5` s ping interval.
+The proxy adds no request retry. It disables its admin API and configuration persistence.
+The configuration excludes request access and error logs because camera URLs contain a secret.
+This HTTP entry uses the VPN connection. It does not enable public HTTPS.
 
 ## Get the code
 

@@ -2,6 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const cards = [...document.querySelectorAll('[data-motor]')];
 const keyButtons = [...document.querySelectorAll('[data-key]')];
 const shortcutButtons = new Map(keyButtons.map(button => [button.dataset.key, button]));
+const basePath = $('meta[name="base-path"]')?.content || '';
 const token = $('meta[name="control-token"]').content;
 let accessToken = '';
 try { accessToken = sessionStorage.getItem('stage-panel-token') || ''; } catch { /* Ask for it. */ }
@@ -33,7 +34,7 @@ async function api(path, data, extra = {}) {
     Object.assign(headers, { 'Content-Type': 'application/json', 'X-Control-Token': token });
     options.body = JSON.stringify(data);
   }
-  const response = await fetch(`/api${path}`, options);
+  const response = await fetch(`${basePath}/api${path}`, options);
   const result = await response.json();
   if (response.status === 401) {
     requireToken(sent);

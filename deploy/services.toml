@@ -71,3 +71,13 @@ groups = ["stage"]
 token = ""
 port = 0
 assets = []
+
+[[service]]
+name = "proxy"
+units = ["mg400-proxy.service"]
+optional = true
+venv = ".venv"
+groups = []
+token = ""
+port = 8080
+assets = []

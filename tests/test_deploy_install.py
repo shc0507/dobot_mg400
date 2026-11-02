@@ -37,6 +37,7 @@ def host(module, monkeypatch, tmp_path):
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
     shutil.copy(ROOT / "deploy/services.toml", code / "deploy")
     shutil.copytree(ROOT / "config/systemd", code / "config/systemd")
+    shutil.copytree(ROOT / "config/proxy", code / "config/proxy")
     (tmp_path / "proc").mkdir()
     commands = []
 
@@ -112,7 +113,12 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         path.name
         for path in (ROOT / "config/systemd").iterdir()
         if path.name
-        not in {"mg400-furnace.service", "mg400-orchestrator.service", "mg400-gateway.service"}
+        not in {
+            "mg400-furnace.service",
+            "mg400-orchestrator.service",
+            "mg400-gateway.service",
+            "mg400-proxy.service",
+        }
     }
     for unit in host.units.iterdir():
         assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
@@ -975,3 +981,241 @@ def test_selected_orchestrator_refuses_symlinked_zone_directory(host, tmp_path):
     assert host.install() == 1
     assert sentinel.read_text() == "unchanged"
     assert not (host.units / "mg400-orchestrator.service").exists()
+
+
+def proxy_settings(host, **overrides):
+    values = {
+        "MG400_OPTIONAL_SERVICES": "proxy",
+        "MG400_PANEL_BASE_PATH": "/robot/",
+        "MG400_STAGE_BASE_PATH": "/stage/",
+    }
+    values.update(overrides)
+    host.settings.parent.mkdir(parents=True, exist_ok=True)
+    host.settings.write_text(
+        (host.code / "deploy/mg400.env.example").read_text()
+        + "\n".join(f"{key}={value}" for key, value in values.items())
+        + "\n"
+    )
+    binary = host.root / "offline-caddy"
+    binary.write_bytes(b"offline Caddy fixture; never execute")
+    return binary
+
+
+def test_proxy_install_is_optional_private_and_never_starts_it(host, module):
+    binary = proxy_settings(host)
+    assert host.install("--caddy", str(binary)) == 0
+    caddy = host.root / "usr/local/lib/mg400/caddy"
+    config = host.settings.parent / "Caddyfile"
+    assert caddy.read_bytes() == binary.read_bytes()
+    assert mode(caddy) == 0o755 and host.owner(caddy) == (0, 0)
+    assert mode(config) == 0o640 and host.owner(config) == (0, 1000)
+    assert (host.units / "mg400-proxy.service").is_file()
+    text = config.read_text()
+    settings = module.parse_settings(host.settings.read_text())
+    assert all(
+        value not in text for key, value in settings.items() if key.endswith("_TOKEN") and value
+    )
+    assert "http://:8080" in text and "bind 127.0.0.1" in text
+    assert "@PANEL_PORT@" not in text
+    commands = names(host.commands)
+    assert not any(command[0] == str(caddy) for command in commands)
+    assert not any(
+        command[:2] in (["systemctl", "start"], ["systemctl", "restart"]) for command in commands
+    )
+    sync = next(command for command in commands if command[:2] == ["/usr/bin/uv", "sync"])
+    assert sync[3:] == [
+        "--no-default-groups",
+        "--group",
+        "stage",
+        "--group",
+        "tools",
+        "--python",
+        "/usr/bin/python3",
+    ]
+
+
+def test_proxy_dry_run_checks_without_any_host_mutation(host):
+    binary = proxy_settings(host)
+    before = host.settings.read_bytes()
+    assert host.install("--dry-run", "--caddy", str(binary)) == 0
+    assert host.settings.read_bytes() == before
+    assert not host.data.exists()
+    assert not host.units.exists()
+    assert not (host.root / "usr/local/lib/mg400/caddy").exists()
+    assert not (host.settings.parent / "Caddyfile").exists()
+    assert all(command[0] in {"/usr/bin/python3", "systemctl"} for command in names(host.commands))
+    assert "Would write" in host.out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"MG400_PROXY_BIND": "0.0.0.0"},
+        {"MG400_PROXY_BIND": "::"},
+        {"MG400_PROXY_BIND": "224.0.0.1"},
+        {"MG400_PROXY_BIND": "proxy.example"},
+        {"MG400_PROXY_BIND": "127.0.0.1 { respond injected }"},
+        {"MG400_PROXY_BIND": "fe80::1%eth0"},
+        {"MG400_PROXY_PORT": "80"},
+        {"MG400_PROXY_PORT": "8080.0"},
+        {"MG400_PROXY_PORT": "8080;shutdown"},
+        {"MG400_PROXY_PORT": "65536"},
+        {"MG400_PROXY_PORT": "8766"},
+        {"MG400_PANEL_PORT": "1985"},
+        {"MG400_STAGE_PORT": "8766"},
+        {"MG400_THERMAL_PORT": "http://elsewhere"},
+        {"MG400_PANEL_BIND": "0.0.0.0"},
+        {"MG400_STAGE_BIND": "localhost"},
+        {"MG400_CAMERA_BIND": "0.0.0.0"},
+        {"MG400_PANEL_BASE_PATH": "/"},
+        {"MG400_STAGE_BASE_PATH": "/stage//"},
+        {"MG400_PANEL_TOKEN": "too-short"},
+        {"MG400_STAGE_TOKEN": "nonascii-token-xxxxxxxxxxxxx-é"},
+        {"MG400_OPTIONAL_SERVICES": "proxy,furnace", "MG400_FURNACE_BASE_PATH": "/"},
+        {"MG400_OPTIONAL_SERVICES": "proxy,orch", "MG400_ORCH_BASE_PATH": "/"},
+    ],
+)
+def test_proxy_invalid_configuration_refuses_before_host_mutation(host, settings):
+    binary = proxy_settings(host, **settings)
+    before = host.settings.read_bytes()
+    assert host.install("--caddy", str(binary)) == 1
+    assert host.settings.read_bytes() == before
+    assert not host.data.exists() and not host.units.exists()
+    assert not (host.settings.parent / "Caddyfile").exists()
+
+
+@pytest.mark.parametrize("source_kind", ["missing", "empty", "symlink", "fifo"])
+def test_proxy_binary_requires_an_explicit_regular_nonempty_file(host, source_kind):
+    binary = proxy_settings(host)
+    binary.unlink()
+    if source_kind == "empty":
+        binary.touch()
+    elif source_kind == "symlink":
+        binary.symlink_to(host.settings)
+    elif source_kind == "fifo":
+        os.mkfifo(binary)
+    assert host.install("--caddy", str(binary)) == 1
+    assert not host.data.exists() and not host.units.exists()
+
+
+@pytest.mark.parametrize("destination", ["usr/local/lib/mg400/caddy", "etc/mg400/Caddyfile"])
+def test_proxy_refuses_replaced_destination_without_touching_link_target(host, destination):
+    binary = proxy_settings(host)
+    target = host.root / "untouched"
+    target.write_bytes(b"preserve")
+    path = host.root / destination
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+    assert host.install("--caddy", str(binary)) == 1
+    assert target.read_bytes() == b"preserve" and path.is_symlink()
+    assert not host.data.exists()
+
+
+def test_proxy_refuses_symlinked_binary_parent(host):
+    binary = proxy_settings(host)
+    outside = host.root / "outside"
+    outside.mkdir()
+    parent = host.root / "usr/local/lib"
+    parent.mkdir(parents=True)
+    (parent / "mg400").symlink_to(outside, target_is_directory=True)
+    assert host.install("--caddy", str(binary)) == 1
+    assert list(outside.iterdir()) == []
+    assert not host.data.exists()
+
+
+def test_proxy_requires_binary_and_explicit_optional_selection(host):
+    binary = proxy_settings(host)
+    assert host.install() == 1
+    assert not host.data.exists()
+    proxy_settings(host, MG400_OPTIONAL_SERVICES="")
+    assert host.install("--caddy", str(binary)) == 1
+    assert not host.data.exists()
+
+
+def test_proxy_rendering_keeps_verified_origins_upgrade_defaults_and_secret_path(host, module):
+    proxy_settings(host, MG400_PROXY_BIND="::1", MG400_PANEL_PORT="9001", MG400_STAGE_PORT="9002")
+    settings = module.parse_settings(host.settings.read_text())
+    settings.update(MG400_PANEL_TOKEN="p" * 32, MG400_STAGE_TOKEN="s" * 32)
+    registry = module.load_services(host.code / "deploy/services.toml")
+    config = module.render_proxy(
+        module.Host(host.root, source=host.code),
+        settings,
+        module.enabled_services(registry, "proxy"),
+    )
+    assert "bind [::1]" in config
+    assert "import instrument 127.0.0.1:9001" in config
+    assert "import instrument 127.0.0.1:9002" in config
+    assert "header_up Host {http.request.hostport}" in config
+    assert "header_up X-Forwarded-Host {http.request.hostport}" in config
+    assert "header_up X-Forwarded-For {http.request.remote.host}" in config
+    assert "header_up -Forwarded" in config and "header_up -X-Real-IP" in config
+    assert "Authorization" not in config and "Origin" not in config
+    assert "versions 1.1" in config and "read_timeout 60s" in config
+    assert "response_header_timeout 60s" in config
+    assert "Upgrade" not in config and "Connection" not in config  # Caddy forwards upgrades itself.
+    assert config.count("handle_path ") == 1 and "handle_path /camera/*" in config
+    assert all(
+        f"handle /{name}/*" in config
+        for name in ("robot", "stage", "thermal", "furnace", "microscope", "lab")
+    )
+    assert "admin off" in config and "persist_config off" in config
+    assert "http.log.access http.log.error" in config
+    assert "lb_retries" not in config and "lb_try_duration" not in config
+
+
+def installed_caddy(host, module, monkeypatch, *, owner=0, group=0, rights=0o755):
+    binary = host.root / "usr/local/lib/mg400/caddy"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"existing offline Caddy fixture")
+    binary.chmod(rights)
+    inode = binary.stat().st_ino
+    original_fstat = os.fstat
+
+    def fstat(fd):
+        info = original_fstat(fd)
+        if info.st_ino != inode:
+            return info
+        values = list(info)
+        values[4] = owner
+        values[5] = group
+        return os.stat_result(values)
+
+    monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
+    return binary
+
+
+@pytest.mark.parametrize("group,rights", [(0, 0o755), (1000, 0o750)])
+def test_proxy_reuses_a_safe_existing_binary_without_executing_or_replacing_it(
+    host, module, monkeypatch, group, rights
+):
+    proxy_settings(host)
+    binary = installed_caddy(host, module, monkeypatch, group=group, rights=rights)
+    inode = binary.stat().st_ino
+    assert host.install() == 0
+    assert binary.stat().st_ino == inode
+    assert (host.settings.parent / "Caddyfile").is_file()
+    assert not any(command[0] == str(binary) for command in names(host.commands))
+
+
+@pytest.mark.parametrize(
+    "owner,rights",
+    [(1000, 0o755), (0, 0o775), (0, 0o757), (0, 0o644), (0, 0o700), (0, 0o750), (0, 0o4755)],
+)
+def test_proxy_refuses_an_unsafe_existing_binary_before_host_changes(
+    host, module, monkeypatch, owner, rights
+):
+    proxy_settings(host)
+    binary = installed_caddy(host, module, monkeypatch, owner=owner, rights=rights)
+    assert host.install() == 1
+    assert binary.read_bytes() == b"existing offline Caddy fixture"
+    assert not host.data.exists()
+
+
+@pytest.mark.parametrize("rights", [0o701, 0o741])
+def test_proxy_other_execute_cannot_override_matching_group_permissions(
+    host, module, monkeypatch, rights
+):
+    proxy_settings(host)
+    installed_caddy(host, module, monkeypatch, group=1000, rights=rights)
+    assert host.install() == 1
+    assert not host.data.exists()

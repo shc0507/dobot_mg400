@@ -179,6 +179,7 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-stage-panel.service": ["dialout"],
         "mg400-furnace.service": ["dialout"],
         "mg400-orchestrator.service": [],
+        "mg400-proxy.service": [],
         "mg400-gateway.service": [],
     }
 
@@ -243,3 +244,37 @@ def test_service_files_and_code_hold_no_host_values():
         if path.suffix in suffixes or path.name == "mg400ctl":
             text = path.read_text()
             assert [value for value in HOST_VALUES if value in text] == [], path
+
+
+def test_proxy_runs_only_explicit_binary_and_never_receives_service_credentials():
+    service = unit_sections("mg400-proxy.service")["Service"]
+    assert command("mg400-proxy.service") == [
+        "/usr/local/lib/mg400/caddy",
+        "run",
+        "--config",
+        "/etc/mg400/Caddyfile",
+        "--adapter",
+        "caddyfile",
+    ]
+    assert service["EnvironmentFile"] == ["/etc/mg400/mg400.env"]
+    assert service["WorkingDirectory"] == ["/opt/mg400"]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    excluded = set(service["UnsetEnvironment"][0].split())
+    expected = {entry["token"] for entry in REGISTRY if entry["token"]}
+    assert expected | set(ORCHESTRATOR_TOKENS) <= excluded
+    assert {"MG400_THERMAL_TOKEN", "MG400_VISION_TOKEN", "MG400_MICROSCOPE_TOKEN"} <= excluded
+    assert {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    } <= excluded
+    entry = next(item for item in REGISTRY if item["name"] == "proxy")
+    assert entry["optional"] is True and entry["token"] == "" and entry["groups"] == []
+
+
+def test_installed_robot_panel_uses_existing_base_path_option():
+    arguments = command("mg400-web-panel.service")
+    assert arguments[arguments.index("--base-path") + 1] == "${MG400_PANEL_BASE_PATH}"

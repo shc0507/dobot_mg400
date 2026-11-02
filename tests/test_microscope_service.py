@@ -829,3 +829,26 @@ def test_expired_job_token_is_irreversible_and_wait_preserves_settle_time(monkey
     assert token.is_set()
     token.renew(100.0)
     assert token.is_set() and token.wait(0.2) is True
+
+
+def test_command_worker_start_failure_returns_json_and_stops_outputs(demo_rig, monkeypatch):
+    import threading
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    start = threading.Thread.start
+
+    def fail_worker(thread):
+        if thread.name == "microscope-command":
+            raise RuntimeError("offline thread creation failure")
+        return start(thread)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", fail_worker)
+        response = service_post(rig, "command", {"action": "focus_move", "steps": 1})
+    assert response.status_code == 503 and set(response.json) == {"error"}
+    assert rig.service._stop_done.wait(1)
+    state = rig.service.snapshot()
+    assert state["locked"] and not state["focus_zero_known"] and not state["busy"]
+    assert not rig.port.sim.focus.enabled and not rig.port.sim.objective.enabled

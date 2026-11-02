@@ -660,10 +660,15 @@ class MicroscopeService:
             job.thread = thread
             try:
                 thread.start()
-            except BaseException:
+            except BaseException as error:
+                job.cancel.set()
                 self._job = None
                 self._seq += 1
                 job.done.set()
+                self._latch_fault("worker", "Microscope command worker could not start")
+                self.stop("worker-start-failed", 0)
+                if isinstance(error, Exception):
+                    raise ServiceError(503, "Microscope command worker could not start") from error
                 raise
             return job.ident
 

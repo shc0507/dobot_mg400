@@ -342,6 +342,181 @@ def test_model_http_client_has_separate_key_and_no_retry_or_proxy(settings, monk
         http = captured["client_kwargs"]["http_client"]
         assert not http.trust_env and not http.follow_redirects
         assert captured["client_kwargs"]["max_retries"] == 0
+        assert captured["retry"] is False
         assert captured["api_key"] == MODEL_KEY and TOKEN not in str(captured)
         assert captured["api_base"] == "http://127.0.0.1:8000/v1"
     assert http.is_closed
+
+
+class GuidanceBackend:
+    def __init__(self):
+        self.store = self
+        self.calls = []
+        self.closed = False
+
+    def audit_call(self, caller, name, args):
+        self.calls.append((caller, name, args))
+        return 1
+
+    async def call(self, name, args):
+        return {"read": name}
+
+    async def close(self):
+        self.closed = True
+
+
+def test_guidance_prompt_and_resource_share_access_and_leave_tools_unchanged():
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared.exceptions import McpError
+
+    from gateway.app import create_app
+    from gateway.clients.guidance import GUIDANCE_NAME, GUIDANCE_URI
+
+    async def exercise():
+        backend = GuidanceBackend()
+        app = create_app(backend, token=TOKEN)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            ) as http:
+                async with streamable_http_client(
+                    "http://127.0.0.1:8773/mcp", http_client=http
+                ) as (read, write, _):
+                    async with ClientSession(read, write) as client:
+                        await client.initialize()
+                        prompts = (await client.list_prompts()).prompts
+                        resources = (await client.list_resources()).resources
+                        assert [prompt.name for prompt in prompts] == [GUIDANCE_NAME]
+                        assert prompts[0].arguments == []
+                        assert [str(resource.uri) for resource in resources] == [GUIDANCE_URI]
+                        prompt = await client.get_prompt(GUIDANCE_NAME)
+                        resource = await client.read_resource(GUIDANCE_URI)
+                        assert prompt.messages[0].content.text == OPERATOR_GUIDANCE
+                        assert resource.contents[0].text == OPERATOR_GUIDANCE
+                        assert resource.contents[0].mimeType == "text/plain"
+                        assert backend.calls == []
+                        assert {tool.name for tool in (await client.list_tools()).tools} == (
+                            smolagents_example.GATEWAY_TOOLS
+                        )
+                        for name, args in [("unknown", {}), (GUIDANCE_NAME, {"action": "approve"})]:
+                            with pytest.raises(McpError):
+                                await client.get_prompt(name, args)
+                        with pytest.raises(McpError):
+                            await client.read_resource("file:///private/credentials")
+                        assert backend.calls == []
+                        assert not (await client.call_tool("list_recipes", {})).isError
+                        assert backend.calls == [("gateway-agent", "list_recipes", {})]
+        assert backend.closed
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("method", ["prompts/get", "resources/read"])
+@pytest.mark.parametrize(
+    "headers,status",
+    [
+        ({}, 401),
+        ({"Authorization": "Bearer wrong-token"}, 401),
+        ({"Authorization": f"Bearer {TOKEN}", "Host": "external.invalid"}, 403),
+        ({"Authorization": f"Bearer {TOKEN}", "Origin": "http://external.invalid"}, 403),
+        ({"Authorization": f"Bearer {TOKEN}", "X-Forwarded-Host": "localhost"}, 403),
+    ],
+)
+def test_guidance_endpoints_preserve_gateway_access_rules(method, headers, status):
+    from gateway.app import create_app
+
+    async def exercise():
+        backend = GuidanceBackend()
+        app = create_app(backend, token=TOKEN)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as http:
+                response = await http.post(
+                    "http://127.0.0.1:8773/mcp",
+                    headers=headers,
+                    json={"jsonrpc": "2.0", "id": 1, "method": method, "params": {}},
+                )
+                assert response.status_code == status
+                assert backend.calls == []
+
+    asyncio.run(exercise())
+
+
+def test_ambient_custom_headers_are_refused_before_any_connection(settings, monkeypatch):
+    monkeypatch.setenv(
+        "OPENAI_CUSTOM_HEADERS", f"Authorization: Bearer {TOKEN}\nX-Private: operator-secret"
+    )
+
+    def refuse(*args, **kwargs):
+        pytest.fail("Client connected with inherited custom headers")
+
+    monkeypatch.setattr(smolagents_example.GatewayClient, "definitions", refuse)
+    with pytest.raises(ValueError, match="Unset OPENAI_CUSTOM_HEADERS") as exc:
+        with create_agent(settings):
+            pytest.fail("Ambient custom headers accepted")
+    assert TOKEN not in str(exc.value) and "operator-secret" not in str(exc.value)
+
+
+@pytest.mark.parametrize("status", [200, 307, 429, 503])
+def test_real_model_sdk_keeps_credentials_local_and_never_retries(settings, monkeypatch, status):
+    # Load the SDK's HTTP client subclass before replacing the constructor.
+    import openai
+
+    assert openai.OpenAI
+    install_fake_mcp(monkeypatch)
+    monkeypatch.delenv("OPENAI_CUSTOM_HEADERS", raising=False)
+    ambient = "ambient-operator-instrument-credential"
+    for name in ("OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_ADMIN_KEY", "OPENAI_WEBHOOK_SECRET"):
+        monkeypatch.setenv(name, ambient)
+    monkeypatch.setenv("OPENAI_API_KEY", TOKEN)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://outside.invalid/v1")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:9000")
+    requests = []
+    clients = []
+    original = httpx.Client
+
+    def respond(request):
+        requests.append(request)
+        assert str(request.url) == "http://127.0.0.1:8000/v1/chat/completions"
+        assert request.headers["Authorization"] == f"Bearer {MODEL_KEY}"
+        wire = str(request.headers) + request.content.decode()
+        assert TOKEN not in wire and ambient not in wire
+        if status == 307:
+            return httpx.Response(status, headers={"Location": "/other"})
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "Provider unavailable"}})
+        return httpx.Response(
+            200,
+            json={
+                "id": "fake-completion",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "Qwen/Qwen3-8B",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Ready to read."},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    class ModelHTTP(original):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(respond), **kwargs)
+            clients.append(self)
+
+    monkeypatch.setattr(httpx, "Client", ModelHTTP)
+    with create_agent(settings) as agent:
+        if status == 200:
+            assert agent.model.generate(
+                [ChatMessage(role="user", content="Read status.")]
+            ).content == ("Ready to read.")
+        else:
+            with pytest.raises(Exception):
+                agent.model.generate([ChatMessage(role="user", content="Read status.")])
+    assert len(requests) == 1
+    assert clients[0].is_closed

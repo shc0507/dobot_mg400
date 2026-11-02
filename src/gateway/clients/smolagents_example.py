@@ -1,6 +1,7 @@
 """Run a tool-calling client against an existing local Qwen API and MCP gateway."""
 
 import asyncio
+import os
 from contextlib import contextmanager
 from datetime import timedelta
 from functools import partial
@@ -121,6 +122,8 @@ def create_agent(settings, *, model=None):
     from mcpadapt.smolagents_adapter import SmolAgentsAdapter
     from smolagents import OpenAIServerModel, ToolCallingAgent
 
+    if model is None and os.environ.get("OPENAI_CUSTOM_HEADERS"):
+        raise ValueError("Unset OPENAI_CUSTOM_HEADERS before using the local model example.")
     client = GatewayClient(settings)
     definitions = client.definitions()
     names = [tool.name for tool in definitions]
@@ -137,7 +140,15 @@ def create_agent(settings, *, model=None):
                 model_id=settings.model_id,
                 api_base=settings.model_url,
                 api_key=settings.model_key,
-                client_kwargs={"http_client": http, "max_retries": 0},
+                organization="",
+                project="",
+                retry=False,
+                client_kwargs={
+                    "http_client": http,
+                    "max_retries": 0,
+                    "admin_api_key": "",
+                    "webhook_secret": "",
+                },
             )
         yield ToolCallingAgent(
             tools=tools,

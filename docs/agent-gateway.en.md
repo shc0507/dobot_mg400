@@ -146,6 +146,8 @@ The `gateway-clients` dependency group contains `smolagents[mcp,openai]`. It ins
 The example reads the gateway's tool definitions through the MCP SDK and adapts them with `SmolAgentsAdapter`.
 It requires exactly the 9 gateway tools. It adds no shell, code executor, direct device client, or approval tool.
 Each MCP operation uses a fresh session with a 30-second deadline. Both HTTP clients ignore environment proxies and refuse redirects.
+Unset `OPENAI_CUSTOM_HEADERS` before starting the example; it rejects inherited custom headers.
+Explicit SDK settings override inherited API credentials, organization, project, and base URL.
 The model client receives only its separate model credential. It receives no gateway credential in its instructions or tool definitions.
 
 The example permits at most 1 proposal attempt per invocation, including failed or uncertain attempts. Its tool-calling loop permits at most 8 steps.

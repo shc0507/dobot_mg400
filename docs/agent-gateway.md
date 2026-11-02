@@ -125,11 +125,11 @@ Claude Code 自行管理传输和模型提供方配置。代理配置不得把�
 
 | 客户端配置 | 用途 |
 | --- | --- |
-| `MG400_GATEWAY_URL` | HTTP 回环 URL，包含显式端口和 `/mcp`；默认 `http://127.0.0.1:8773/mcp` |
+| `MG400_GATEWAY_URL` | HTTP 回环 URL，包含显式端口和 `/mcp`，默认 `http://127.0.0.1:8773/mcp` |
 | `MG400_GATEWAY_TOKEN` | 网关 Bearer 令牌，至少 24 个可打印 ASCII 字符 |
 | `QUMUS_DEFAULT_MODEL_ID` | 必填，本地 API 提供的模型 ID |
-| `QUMUS_API_BASE` | HTTP 回环 URL，包含显式端口和 `/v1`；默认 `http://127.0.0.1:8000/v1` |
-| `QUMUS_API_KEY` | 独立模型凭据；本地服务不要求凭据时填 `unused` |
+| `QUMUS_API_BASE` | HTTP 回环 URL，包含显式端口和 `/v1`，默认 `http://127.0.0.1:8000/v1` |
+| `QUMUS_API_KEY` | 独立模型凭据，本地服务不要求凭据时填 `unused` |
 | `QUMUS_LLM_TIMEOUT` | 模型请求超时，范围为 1 到 300 秒，默认 60 |
 | `QUMUS_LLM_RETRIES` | 必须为 0，禁用模型请求自动重试 |
 
@@ -146,6 +146,8 @@ uv run --group gateway-clients python -m gateway.clients "List recipes. Do not p
 示例通过 MCP SDK 读取网关工具定义，再用 `SmolAgentsAdapter` 适配。
 它要求恰好为网关的 9 个工具，不添加 shell、代码执行器、直连设备客户端或审批工具。
 每次 MCP 操作使用新会话，时限为 30 秒。两个 HTTP 客户端都忽略环境代理，并拒绝重定向。
+启动示例前，清除 `OPENAI_CUSTOM_HEADERS`。示例拒绝继承自定义请求头。
+显式 SDK 配置覆盖继承的 API 凭据、组织、项目及基础 URL。
 模型客户端只获得独立模型凭据，其指令和工具定义均不含网关凭据。
 
 每次启动示例最多尝试 1 次提议，包括失败或结果不明的尝试。工具调用循环最多执行 8 步。

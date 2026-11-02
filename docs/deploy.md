@@ -353,13 +353,19 @@
 | `/var/lib/mg400/calibration/microscope/` | 物镜转盘、自动对焦和参考视图数据 |
 | `/var/lib/mg400/stations.toml` | 示教机械臂工位 |
 | `/var/lib/mg400/tool.toml` | 夹爪工具偏移 |
-| `/var/lib/mg400/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
+| `/var/lib/mg400/stage/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
 | `/var/lib/mg400/thermal/rois.toml` | 命名热像区域 |
 | `/var/lib/mg400/furnace/state.json` | 炉程序状态 |
 | `/var/lib/mg400/runs/` | 运行文件和 SQLite 索引 |
 | `/var/lib/mg400/recordings/` | 归档前的炉视频 |
 | `/var/lib/mg400/camera/preview.key` | 摄像头预览密钥 |
 | `/var/lib/mg400/work/` | 夹爪反馈、命令文件、持久命令锁和模式切换备份 |
+
+安装器创建 `/var/lib/mg400/stage`，所有者为 `1000:1000`，权限为 `0700`，用于写入位移台校准。
+父目录 `/var/lib/mg400` 仍由 root 拥有，权限为 `0750`。
+若 `/var/lib/mg400/stage.toml` 存在，安装器只打印移动提示，不修改文件。
+停止位移台服务后，手动将旧文件移到 `/var/lib/mg400/stage/stage.toml`，不得覆盖已有目标。
+保留所有者 `1000:1000` 和文件权限 `0600` 或 `0640`。重启前更新旧的 `MG400_STAGE_CONFIG` 覆盖配置。
 
 在新主机上手动恢复：
 

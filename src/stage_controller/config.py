@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .protocol import MICROSTEP_MODES, MOTOR_IDS
 
-DEFAULT_CONFIG = Path("/var/lib/mg400/stage.toml")
+DEFAULT_CONFIG = Path("/var/lib/mg400/stage/stage.toml")
 MAX_PULSES = 2**31 - 1
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 

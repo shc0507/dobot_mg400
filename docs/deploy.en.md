@@ -353,13 +353,19 @@ The backup includes the following paths when they exist:
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus, and reference-view data |
 | `/var/lib/mg400/stations.toml` | Taught robot stations |
 | `/var/lib/mg400/tool.toml` | Gripper tool offset |
-| `/var/lib/mg400/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
+| `/var/lib/mg400/stage/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions |
 | `/var/lib/mg400/furnace/state.json` | Furnace sequence state |
 | `/var/lib/mg400/runs/` | Run files and SQLite index |
 | `/var/lib/mg400/recordings/` | Furnace recordings before archiving |
 | `/var/lib/mg400/camera/preview.key` | Camera preview key |
 | `/var/lib/mg400/work/` | Gripper feedback, command files, persistent command locks, and mode-switch backups |
+
+The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` for writable stage calibration.
+It keeps `/var/lib/mg400` root-owned with mode `0750`.
+If `/var/lib/mg400/stage.toml` exists, it prints a move instruction and leaves the file unchanged.
+Stop the stage service before moving that file to `/var/lib/mg400/stage/stage.toml` manually. Do not overwrite an existing destination.
+Retain owner `1000:1000` and file mode `0600` or `0640`. Update any old `MG400_STAGE_CONFIG` override before restarting.
 
 Restore by hand on the new host:
 

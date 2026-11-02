@@ -165,7 +165,7 @@ Confirm each axis reference again before a named move or automated motion.
 
 Before routine hardware use, complete the supervised reference and calibration checks in H-07 and H-18.
 On a board with switches, homing finds the configured reference switch. Soft limits restrict travel from the confirmed reference.
-The service reads measured calibration from `/var/lib/mg400/stage.toml`. See [Stage calibration](#stage-calibration).
+The service reads measured calibration from `/var/lib/mg400/stage/stage.toml`. See [Stage calibration](#stage-calibration).
 
 Each motor shows its reference state:
 
@@ -354,7 +354,7 @@ The service reads configuration from environment variables. Command-line argumen
 | `MG400_STAGE_PORT` | `--port` | `8767` | Listen port, 1–65535 |
 | `MG400_STAGE_TOKEN` | None | None | Access token |
 | `MG400_STAGE_SERIAL` | `--serial` | None | Arduino serial-port path |
-| `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage.toml` | Measured stage calibration and named targets |
+| `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | Measured stage calibration and named targets |
 
 An empty environment variable has the same effect as an unset variable.
 
@@ -378,7 +378,12 @@ Demo mode ignores this setting.
 Use the measurements and travel limits from H-07. Do not infer calibration from the pulse count or copy demo geometry to hardware.
 The file contains a `motors` table and an optional `poses` table. It has no production defaults.
 Use a regular file owned by UID 1000 or the local service user, with mode `0600` or `0640`.
-The reader refuses symbolic links in the file path. Keep the host data directory at mode `0750`.
+The reader refuses symbolic links in the file path.
+The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` so the service can teach references.
+The parent `/var/lib/mg400` remains root-owned with mode `0750`.
+If `/var/lib/mg400/stage.toml` exists, installation prints a move instruction without moving or overwriting the file.
+With the stage service stopped, check both paths and move the old file to `/var/lib/mg400/stage/stage.toml` manually.
+Retain owner `1000:1000` and file mode `0600` or `0640`. Update any old `MG400_STAGE_CONFIG` override before restarting.
 Each of `motors.bottom`, `motors.top`, and `motors.insert` contains:
 
 | Field | Value |

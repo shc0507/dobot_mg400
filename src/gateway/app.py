@@ -1,4 +1,4 @@
-"""Authenticated Streamable HTTP with exactly seven audited read tools."""
+"""Authenticated MCP reads and proposals. Approval and actuation are not tools."""
 
 import json
 from contextlib import asynccontextmanager
@@ -45,6 +45,16 @@ TOOLS = {
         {"id": TEXT, "limit": LIMIT, "offset": OFFSET},
         ["id"],
     ),
+    "propose_run": (
+        "Propose a catalog recipe for human approval. This never starts a run.",
+        {
+            "recipe": TEXT,
+            "params": {"type": "object"},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+        },
+        ["recipe", "params", "reason"],
+    ),
+    "get_approval": ("Read a proposal and its decision.", {"id": TEXT}, ["id"]),
 }
 
 
@@ -60,7 +70,10 @@ def definitions():
                 "additionalProperties": False,
             },
             annotations=types.ToolAnnotations(
-                readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+                readOnlyHint=name != "propose_run",
+                destructiveHint=False,
+                idempotentHint=name != "propose_run",
+                openWorldHint=False,
             ),
         )
         for name, (description, properties, required) in TOOLS.items()
@@ -124,7 +137,7 @@ class Access:
                     )
                 except Exception:
                     return await JSONResponse(
-                        {"error": "Audit unavailable. No read was performed."}, 503
+                        {"error": "Audit unavailable. No tool operation was performed."}, 503
                     )(scope, receive, send)
                 scope = {**scope, "gateway_audit": receipt}
             original_receive = receive
@@ -153,7 +166,7 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
         raise ValueError("Gateway bind must be loopback.")
     bound_host = f"[{bind}]" if ":" in bind else bind.lower()
     allowed = sorted({"127.0.0.1", "localhost", "[::1]", bound_host})
-    server = Server("mg400-readonly-gateway", version="1.0")
+    server = Server("mg400-gateway", version="1.0")
     tools = definitions()
     schemas = {tool.name: tool.inputSchema for tool in tools}
 
@@ -169,12 +182,12 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
             return types.CallToolResult(
                 isError=True,
                 content=[
-                    types.TextContent(type="text", text="Audit unavailable. No read was performed.")
+                    types.TextContent(type="text", text="Audit unavailable. No tool operation was performed.")
                 ],
             )
         try:
             if name not in schemas:
-                raise ValueError("Unknown read-only tool.")
+                raise ValueError("Unknown gateway tool.")
             jsonschema.validate(arguments, schemas[name])
             if name == "list_runs":
                 arguments = {"limit": 100, **arguments}
@@ -186,7 +199,7 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
                 content=[types.TextContent(type="text", text=payload)], structuredContent=result
             )
         except jsonschema.ValidationError:
-            error = "Arguments do not match this read-only tool."
+            error = "Arguments do not match this gateway tool."
         except Exception:
             # HTTP errors and storage paths can contain private configuration.
             error = "Read unavailable. Check the identifier, service state, and configured data."

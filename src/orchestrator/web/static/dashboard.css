@@ -74,5 +74,7 @@ dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .camera-card { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 a { color: var(--accent); text-underline-offset: 3px; }
 footer { padding-top: 0; }
+.approval-definition { overflow: auto; max-height: 420px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+.approval-card { display: grid; gap: 12px; }
 @media (max-width: 900px) { .service-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .safety-grid { grid-template-columns: 1fr; } }
 @media (max-width: 580px) { main, .page-header, footer { padding-left: 16px; padding-right: 16px; } .page-header { align-items: flex-start; flex-direction: column; gap: 10px; } .service-grid, .camera-grid { grid-template-columns: 1fr; } .access label { width: 100%; } .panel { padding: 16px; } }

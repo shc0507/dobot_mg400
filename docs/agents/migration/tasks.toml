@@ -1028,6 +1028,24 @@ writes = [
 ]
 
 [[task]]
+id = "STG-03"
+title = "Stage manual zero with camera reference"
+phase = 3
+track = "stage"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["STG-02"]
+writes = [
+  "firmware/three-motor-demo/**",
+  "src/stage_controller/**",
+  "tests/test_stage_*.py",
+  "tests/stage_helpers.py",
+  "docs/stage-panel.md",
+  "docs/stage-panel.en.md",
+]
+
+[[task]]
 id = "XDV-01"
 title = "Crucible load and unload skills"
 phase = 3
@@ -1470,13 +1488,13 @@ writes = []
 
 [[task]]
 id = "H-07"
-title = "Stage limit switches and geometry"
+title = "Stage reference and geometry"
 phase = 3
 track = "lab"
 owner = "human"
 size = "M"
 review = "human"
-deps = ["STG-01"]
+deps = ["STG-03"]
 writes = []
 
 [[task]]
@@ -1597,7 +1615,7 @@ track = "lab"
 owner = "human"
 size = "M"
 review = "human"
-deps = ["STG-02", "H-07"]
+deps = ["STG-03", "H-07"]
 writes = []
 
 [[task]]

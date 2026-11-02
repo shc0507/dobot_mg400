@@ -1330,6 +1330,7 @@ review = "agent"
 deps = ["AGT-02"]
 writes = [
   "src/gateway/clients/**",
+  "src/gateway/app.py",
   "tests/test_gateway_clients.py",
   "pyproject.toml",
   "uv.lock",

@@ -1359,7 +1359,7 @@ Goal: Claude, a local model on Olares and smolagents can use the gateway.
 Steps:
 
 1. Configuration examples for Claude, a local Qwen model on Olares, and smolagents, which can load MCP tools.
-2. A prompt resource in the gateway with operator guidance, rewritten for recipe-level tools.
+2. A prompt resource in the gateway with operator guidance, rewritten for recipe-level tools. Register static guidance from `src/gateway/clients/**` in `src/gateway/app.py`. Limit that app change to prompt and resource registration. Preserve bearer, Host, Origin, audit and tool boundaries. Add no approval or actuation capability. Keep its tests in `tests/test_gateway_clients.py`.
 3. Smoke tests with fakes.
 
 Done when: P-CHECKS pass.

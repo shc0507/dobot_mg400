@@ -89,6 +89,121 @@ def names(commands):
     return [command for command, _ in commands]
 
 
+@pytest.fixture
+def toupcam_library(host, module, monkeypatch):
+    library = host.root / "supplied-libtoupcam.so"
+    library.write_bytes(b"synthetic SDK bytes; never load this file")
+    monkeypatch.setitem(
+        module.main.__globals__, "TOUPCAM_SHA256", hashlib.sha256(library.read_bytes()).hexdigest()
+    )
+    return library
+
+
+def test_toupcam_installs_verified_snapshot_before_microscope_service_exists(host, toupcam_library):
+    original = toupcam_library.read_bytes()
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"old SDK")
+    target.chmod(0o600)
+
+    def run(command, **options):
+        host.commands.append((command, options))
+        if command[:2] == ["/usr/bin/uv", "sync"]:
+            toupcam_library.write_bytes(b"changed after read-only checks")
+        return SimpleNamespace(returncode=0, stdout="True\n", stderr="")
+
+    assert host.install("--toupcam", str(toupcam_library), runner=run) == 0
+    assert target.read_bytes() == original
+    assert mode(target) == 0o755 and host.owner(target) == (0, 0)
+    assert mode(target.parent) == 0o755 and host.owner(target.parent) == (0, 0)
+    assert toupcam_library.read_bytes() != original
+    assert not (host.units / "mg400-microscope.service").exists()
+    assert not (host.units / "mg400-furnace.service").exists()
+    assert not any("toupcam" in command[0] for command in names(host.commands))
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_toupcam_refuses_unverified_sdk_before_changes(host, module, capsys, dry_run):
+    library = host.root / "unverified.so"
+    library.write_bytes(b"wrong SDK version")
+    # The production pin must match the owner's H-12 linux/x64 artifact.
+    assert module.TOUPCAM_VERSION == "59.30594.20260120"
+    assert module.TOUPCAM_SHA256 == (
+        "5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997"
+    )
+    args = ["--dry-run"] if dry_run else []
+    assert host.install(*args, "--toupcam", str(library)) == 1
+    assert "SHA-256 mismatch" in capsys.readouterr().err
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    assert not (host.root / "usr").exists()
+
+
+@pytest.mark.parametrize("source_kind", ["missing", "empty", "directory", "symlink", "fifo"])
+def test_toupcam_refuses_invalid_sources_before_changes(host, toupcam_library, source_kind):
+    original = toupcam_library.read_bytes()
+    toupcam_library.unlink()
+    if source_kind == "empty":
+        toupcam_library.touch()
+    elif source_kind == "directory":
+        toupcam_library.mkdir()
+    elif source_kind == "symlink":
+        real_file = host.root / "real-library"
+        real_file.write_bytes(original)
+        toupcam_library.symlink_to(real_file)
+    elif source_kind == "fifo":
+        os.mkfifo(toupcam_library)
+    assert host.install("--toupcam", str(toupcam_library)) == 1
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+def test_toupcam_refuses_symlinked_source_parent(host, toupcam_library):
+    alias = host.root / "source-alias"
+    alias.symlink_to(host.root, target_is_directory=True)
+    assert host.install("--toupcam", str(alias / toupcam_library.name)) == 1
+    assert not host.settings.exists() and not host.data.exists()
+
+
+@pytest.mark.parametrize("destination_kind", ["symlink", "directory", "fifo", "parent_symlink"])
+def test_toupcam_refuses_unsafe_destination_before_changes(host, toupcam_library, destination_kind):
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    outside = host.root / "untouched"
+    outside.mkdir()
+    marker = outside / "libtoupcam.so"
+    marker.write_bytes(b"preserve")
+    target.parent.parent.mkdir(parents=True)
+    if destination_kind == "parent_symlink":
+        target.parent.symlink_to(outside, target_is_directory=True)
+    else:
+        target.parent.mkdir()
+        if destination_kind == "symlink":
+            target.symlink_to(marker)
+        elif destination_kind == "directory":
+            target.mkdir()
+        else:
+            os.mkfifo(target)
+    assert host.install("--toupcam", str(toupcam_library)) == 1
+    assert marker.read_bytes() == b"preserve"
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+def test_toupcam_dry_run_validates_and_lists_without_changes(host, toupcam_library):
+    assert host.install("--dry-run", "--toupcam", str(toupcam_library)) == 0
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    assert not (host.root / "usr").exists()
+    assert "Would install Toupcam 59.30594.20260120" in host.out.getvalue()
+    assert all(command[0] in {"/usr/bin/python3", "systemctl"} for command in names(host.commands))
+
+
+def test_toupcam_without_option_keeps_existing_library(host):
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"existing owner-managed SDK")
+    target.chmod(0o640)
+    assert host.install() == 0
+    assert target.read_bytes() == b"existing owner-managed SDK"
+    assert mode(target) == 0o640 and host.owner(target) is None
+
+
 def test_first_install_creates_settings_data_units_and_command(module, host):
     assert host.install() == 0
 

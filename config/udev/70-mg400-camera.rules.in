@@ -1,0 +1,2 @@
+# AC410 cameras share a serial. Keep their /dev/v4l/by-path identities.
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="f326", ATTRS{idProduct}=="1306", ATTRS{serial}=="HU12321178", MODE="0660", GROUP="@SERVICE_GROUP@"

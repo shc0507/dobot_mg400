@@ -1,0 +1,4 @@
+# Turret/focus Arduino and the shared microscope/recording Toupcam camera.
+# The side AC410 camera belongs to go2rtc, through the camera service rules.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043", ATTRS{serial}=="035353433353512070D1", MODE="0660", GROUP="@SERVICE_GROUP@"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0547", ATTR{idProduct}=="1375", MODE="0660", GROUP="@SERVICE_GROUP@"

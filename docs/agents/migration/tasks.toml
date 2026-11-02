@@ -1088,6 +1088,8 @@ writes = [
 
 [[task]]
 id = "MIC-01"
+# Recovered sketch: Objective-Control@a9241a1
+# Objective_Control/Arduino_Firmware/Dual_UNO_Controller/Dual_UNO_Controller.ino
 title = "Turret and focus firmware"
 phase = 4
 track = "microscope"

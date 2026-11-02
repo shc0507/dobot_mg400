@@ -261,6 +261,55 @@ To restore the old layout, first run `mg400ctl stop all`.
 Then copy the files from `/root/mg400-old-units` to `/etc/systemd/system/` and run `systemctl daemon-reload`.
 Rename `start-terminal.sh.disabled` to its original name to restore the old terminal startup script.
 
+## USB device layout
+
+Every lab USB device connects through 1 self-powered hub on 1 host port.
+The controller is `0000:80:14.0`, with USB 2 port `12` and USB 3 port `3`.
+Keep the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
+A reset disconnects the motor, furnace, gas, gripper, and camera connections together.
+
+Keep each camera on its listed hub port.
+The 3 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
+The camera on `12.1.3` is the microscope side camera. go2rtc owns it, and the microscope reads its shared stream.
+Confirm the views on `12.1.2` and `12.1.4` in the camera preview before assigning their roles.
+
+| Device | VID:PID | Stable identity | Hub port | Service |
+| --- | --- | --- | --- | --- |
+| Stage Arduino Uno R3 | `2341:0043` | `/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_1453230313235111D1E0-if00` | `12.2.3` | `stage` (`MG400_STAGE_SERIAL`) |
+| Turret and focus Arduino Uno R3 | `2341:0043` | `/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_035353433353512070D1-if00` | `12.2.2` | `microscope` |
+| Furnace FT231X | `0403:6015` | `/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_DU0DT9G8-if00-port0` | `12.3.2` | `furnace` (`MG400_FURNACE_SERIAL`) |
+| Gas controller FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace` (`MG400_MFC_SERIAL`) |
+| Gripper converter FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0` | `12.3.3` | `collector` |
+| Thermal Master P1 | `3474:45c2` | libusb, serial `P1016021DG040100208` | `12.1.1` | `thermal` |
+| AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
+| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera`, shared through go2rtc |
+| AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera` |
+| ToupTek USB 3 camera | `0547:1375` | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
+
+Use the full serial paths for controllers. The gas controller and gripper converter share a VID:PID, but have different serial numbers.
+The thermal and Toupcam cameras use USB device nodes under `/dev/bus/usb`, without serial-port or video-device nodes.
+The bus and device numbers can change. Let libusb or the SDK find the camera.
+
+### USB access rules
+
+The installer selects `config/udev/70-mg400-<name>.rules.in` only for registered, enabled services.
+It replaces `@SERVICE_GROUP@` with the group name for GID `1000`, from the host group database.
+Each rule matches a VID:PID and grants `MODE="0660"` to that group.
+Serial rules also match the recorded device serial number. Camera rules preserve the existing port-based names.
+The templates create no new device aliases and run no reset helper.
+
+The installer writes `/etc/udev/rules.d/70-mg400-<name>.rules` as root with mode `0644`.
+It then runs `udevadm control --reload-rules` and `udevadm trigger --subsystem-match=usb`.
+The USB trigger does not reset a hub or start a service.
+TTY and video permissions apply on their next udev event. Existing service access through `dialout` and `video` remains available.
+Use the installer dry run to inspect the selected files and commands before installation.
+
+The default services select the `stage`, `collector`, and `camera` templates.
+Enabling `furnace` also selects its 2 serial-controller rules.
+The `thermal` and `microscope` templates wait for their registered services to be enabled.
+The microscope owns the Toupcam camera, including furnace recordings. The furnace rules do not grant separate access to it.
+Templates do not select device paths in service settings. Keep those paths consistent with the table.
+
 ## USB gripper adapter
 
 The adapter's USB identity is `0403:6001`, and its serial number is `BG02Q5TN`.
@@ -388,7 +437,6 @@ After increasing the resolution, check all 3 views together. Check that several 
 The resolution and frame rate shown by the browser do not rule out corrupted images or partial image damage.
 If these problems occur, restore the `640 × 480` configuration, then check the USB capture path.
 
-The cameras and gripper USB adapter share an external hub.
-Before restoring the shared upstream USB port, stop `mg400-gripper-collector.path` and `mg400-gripper-collector.service`.
-If the Arduino uses the same hub, first click `Stop all motors` and `Disconnect` in the stage panel too.
-After the operation, restore the watcher and collector service. A restored USB connection does not authorize robot or gripper motion.
+Every lab device shares the external hub. Never reset the shared upstream hub to recover a camera.
+Check the affected camera's port and logs. Follow the supervised hardware procedure before changing a device connection.
+A restored USB connection does not authorize robot, stage, gripper, furnace, or gas commands.

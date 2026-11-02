@@ -745,13 +745,19 @@ class MicroscopeService:
 
     def _autofocus(self, job, motor):
         status = self._guard_reference(job)
-        half_range = min(
-            status.focus.position - status.minimum, status.maximum - status.focus.position
-        )
+        half_range = (status.maximum - status.minimum) // 2
         if job.args["mode"] == "local":
             half_range = min(half_range, 1500)
         if half_range < 1:
-            raise ValueError("No symmetric autofocus travel remains inside the focus limits")
+            raise ValueError("No two-sided autofocus window fits inside the focus limits")
+        center = status.minimum + half_range
+        if job.args["mode"] == "local":
+            center = max(center, min(status.focus.position, status.maximum - half_range))
+        # The preserved algorithm scans symmetrically around its starting point.
+        # Place that window inside measured bounds, including clearance at an end.
+        if center != status.focus.position:
+            motor.focus_move(center - status.focus.position)
+        self._guard_reference(job)
         options = dict(speed=self.config.focus_speed, cancel_event=job.cancel)
         if self.demo:
             options.update(

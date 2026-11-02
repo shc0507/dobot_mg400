@@ -741,3 +741,21 @@ def test_acquire_crossing_handoff_deadline_cannot_preserve_reference(demo_rig, m
     assert rig.service._stop_done.wait(1)
     assert not rig.service.snapshot()["focus_zero_known"] and not rig.port.sim.focus.enabled
     assert rig.service.expiry_count == 1
+
+
+@pytest.mark.parametrize("mode", ["full", "local"])
+def test_autofocus_from_clearance_at_limit_endpoint_uses_a_bounded_window(demo_rig, mode):
+    from dataclasses import replace
+
+    rig = demo_rig()
+    rig.service.config = replace(rig.service.config, focus_limits=(-120, 0)).validate()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    state = dispatch(rig, "autofocus", mode=mode)
+    assert state["last_command"]["result"] == "ok", state
+    position = 0
+    for text in rig.port.commands:
+        if text.startswith("FOCUS MOVE "):
+            position += int(text.split()[-1])
+            assert -120 <= position <= 0
+    assert position == state["focus_position_pulses"]

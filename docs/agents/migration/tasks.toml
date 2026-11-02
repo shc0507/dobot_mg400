@@ -654,6 +654,7 @@ writes = [
   "tests/test_orchestrator_app.py",
   "tests/test_orchestrator_runner.py",
   "tests/test_orchestrator_rehearsal.py",
+  "tests/test_orchestrator_zones.py",
   "tests/test_systemd_units.py",
   "tests/test_deploy_install.py",
   "docs/orchestrator.md",

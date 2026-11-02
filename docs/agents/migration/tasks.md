@@ -1339,6 +1339,8 @@ Steps:
 
 Proposal authentication: `config/systemd/mg400-orchestrator.service` may retain `MG400_GATEWAY_TOKEN` for the fixed proposal-only API. Enforce that this capability is distinct from operator and device-control credentials, and map its requester identity on the server. It must never authorize approval, rejection, ordinary orchestrator control, or device-control routes. Keep the other token exclusions and unit restrictions unchanged. This implements the existing ADR 0008 role separation; it grants no gateway actuation authority.
 
+Update only the description and comment in `config/systemd/mg400-gateway.service` to include proposal support. Keep its command, token exclusions, and device-access policy unchanged.
+
 Done when: P-CHECKS pass.
 
 Docs: `agent-gateway.md` and `.en.md`, `dashboard.md` and `.en.md`.

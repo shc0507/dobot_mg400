@@ -832,6 +832,9 @@ review = "human"
 deps = ["THM-01", "OPS-01", "H-05"]
 writes = [
   "config/systemd/mg400-thermal.service",
+  "config/systemd/mg400-web-panel.service",
+  "config/systemd/mg400-stage-panel.service",
+  "config/systemd/mg400-camera-preview.service",
   "config/udev/**",
   "deploy/services.toml",
   "deploy/install.py",

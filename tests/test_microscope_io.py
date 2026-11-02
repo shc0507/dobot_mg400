@@ -299,8 +299,9 @@ def test_image_algorithms_preserve_sharpness_displacement_and_marker_policy():
         == "image_size_mismatch"
     )
     shifted = np.roll(sharp, 4, axis=1)
-    displacement = measure_image_displacement(sharp, shifted)
-    assert displacement is not None
+    dx, dy, distance, confidence, overlap = measure_image_displacement(sharp, shifted)
+    assert (dx, dy, distance) == pytest.approx((4, 0, 4), abs=0.2)
+    assert confidence > 0.9 and overlap > 0.95
 
 
 def test_go2rtc_http_error_response_is_closed():

@@ -716,17 +716,17 @@ Goal: pixel positions from a fixed camera become robot millimetres on the tray p
 
 Steps:
 
-1. `src/vision/calibration.py`: fit a homography from image points to robot XY with `cv2.findHomography` (RANSAC, threshold 2 px). Validate on held-out points and report the RMS error in millimetres. Store JSON in `/var/lib/mg400/calibration/cameras/`, keyed by the camera's `/dev/v4l/by-path` name: matrix, plane height, image size, points, RMS, time.
+1. `src/vision/calibration.py`: fit a camera model from 3D tag points to pixels: `cv2.calibrateCamera` with `CALIB_USE_INTRINSIC_GUESS`, radial terms k1 and k2 only, the initial guess from a DLT fit, and RANSAC on the DLT with a 2 px threshold. Map a pixel to robot XY by undistorting it and intersecting its ray with the tray plane. Validate on held-out points and report the RMS error in millimetres, each point at its own height. Store JSON in `/var/lib/mg400/calibration/cameras/`, keyed by the camera's `/dev/v4l/by-path` name: camera matrix, distortion, rotation, translation, tray plane height, image size, points, RMS, time.
 2. Refuse a calibration when the live image size differs from the stored one.
-3. `src/orchestrator/skills/calibrate.py`: the robot carries the ArUco tag from H-08 to a 3 × 4 grid between two taught stations at the plane height. At each point: wait until still, take 5 frames, detect the tag center, take the median. Fit with 9 points, validate with 3. Accept when the RMS is at most 1.0 mm (setting).
+3. `src/orchestrator/skills/calibrate.py`: the robot carries the arm tag from H-08 over a 3 × 4 grid between two taught stations, at 2 flange heights at least 40 mm apart (24 points). The tag sits on the J4 axis, so its position is the flange X and Y, and the flange Z plus the tag height (setting). The tag height is D from H-08 minus the tool dz, so an error in dz cancels between the tag points and the tray plane. At each point: wait until still, take 5 frames, detect the tag center, take the median. Fit with 18 points, validate with 6. The tray plane height comes from a taught tray station: its tweezer-tip Z. Accept when the RMS is at most 1.0 mm (setting).
 4. The vision service loads the calibrations and adds `robot_mm` to detections.
-5. Tests with synthetic points from a known homography, outliers included.
+5. Tests with synthetic points from a known camera with distortion, outliers included.
 
 Done when: P-CHECKS pass; the routine runs in rehearsal.
 
 Docs: `vision.md` and `.en.md`: when and how to recalibrate.
 
-Notes: the homography is valid only for the plane at the calibration height. Plugging the camera into another USB port invalidates its file, because the key is the port path.
+Notes: the tag is about 246 mm above the tweezer tip, so it can never reach the tray plane. The two heights let the camera model map any plane. Plugging the camera into another USB port invalidates its file, because the key is the port path.
 
 ### CAL-02 · Tray model
 
@@ -751,7 +751,7 @@ Goal: stop vision-guided motion when a camera has moved.
 
 Steps:
 
-1. Project the fingertip position from the robot state into the image with the inverse homography.
+1. Project the tweezer-tip position from the robot state into the image with the CAL-01 camera model.
 2. Check that it falls inside the detected "Robotic Arm" box, with a margin from settings.
 3. Skill `vision.check_calibration(camera)`. The transfer recipe calls it before each vision-guided move. A failure holds the run with "camera moved, recalibrate".
 4. Tests with synthetic boxes.
@@ -1545,8 +1545,8 @@ Owner: human · Size: M · Review: human · Deps: none
 
 Steps:
 
-1. Measure the gripper tool offset: dx, dy, dz in mm from the flange to the fingertip center.
-2. Print and mount the ArUco calibration tag (dictionary 4x4_50). Write down its id, size and offset from the fingertip.
+1. Measure the tool offset: dx, dy, dz in mm from the flange face (tool 0) to the tweezer tip. The tool is the PGEA-2/15-10-O-S gripper (89 mm from its mounting face to the jaw ends, vendor drawing), the owner's `Gripper_To_Tweezer_Adaptor_V6` on each jaw, and tweezers. The owner's side photos (2026-11-02), scaled by the gripper body (67 mm), its front plate (17.5 mm) and the adaptor (32.1 mm), give dz = 146 mm (±3 mm) and dx = dy = 0 (±2 mm): the adaptor hangs 32 mm below the jaw ends and the tweezer tip 27 mm below the adaptor. ±3 mm is enough for `tool.toml`, because taught stations convert back with the same offset.
+2. The arm tag is mounted: ArUco `DICT_4X4_50` id 4, from Zenan's print sheet (24 mm black square), flat on the top cover of the robot's end block. That face is centered on the J4 axis. The end block does not turn with R. The photos put the tag about 100 mm above the flange face (the MG400 model says 93 mm), so about 246 mm above the tweezer tip. Write down the measured black-square size, and measure D, the vertical distance from the tag face to the tweezer tip, to ±1 mm: a steel ruler standing on the table, a straightedge on the end block's top, and a set square at the tip.
 3. Choose the safe travel height and any via points around the furnace and the microscope.
 4. Measure the tray: the text and position of its two corner QR codes, and the position of every slot.
 

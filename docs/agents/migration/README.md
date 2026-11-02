@@ -66,6 +66,7 @@ Phase 5 adds the lab dashboard and the agent gateway. Phase 6 (closed-loop optim
 - The camera setup is not final. Which camera took the YOLO training images is not known.
 - Camera positions (owner, 2026-11-02): Camera 1 is at the upper left of the arm. Camera 2, the microscope side camera on hub port 12.1.3, watches the turret. Camera 3 is at the end of the Insert rail. The thermal camera is right below Camera 2. The hub ports of Cameras 1 and 3 (12.1.2 and 12.1.4) are not confirmed yet; the camera preview page shows which stream is which.
 - The repository license is AGPL-3.0 (H-15, 2026-11-02). Vendored third-party files keep their own terms. The ToupTek wrapper `src/toupcam_camera/toupcam.py` stays in the repo (owner decision, H-12); `libtoupcam.so` stays outside Git.
+- Robot tool (owner, 2026-11-02): the PGEA-2/15-10-O-S gripper holds tweezers through the owner's 3D-printed `Gripper_To_Tweezer_Adaptor_V6`. The arm tag is ArUco `DICT_4X4_50` id 4 (24 mm black square, measured by the owner) on the top cover of the end block, on the J4 axis. The owner's side photos give a tool dz of 146 mm (±3 mm) to the tweezer tip and a tag about 100 mm above the flange face. CAL-01 solves the exact tag-to-tip distance from robot-recorded tray references, so no hand measurement is needed.
 - Olares has an RTX 5090 Laptop GPU with 24 GB, driver 595.84 (H-13, 2026-11-02). Other apps share it: Isaac Sim and a Python process used about 2.5 GB during the check. `/opt` has 74 GB free and `/var` has 1.5 TB free.
 - Every lab USB device is on one self-powered hub on one Olares port, the Toupcam camera on its USB 3 side (owner, 2026-11-02). The device table is on the H-03 issue. Each camera keeps its hub port: the three AC410 cameras report one serial number, so their stable names come from the port.
 - The AC410 on hub port 12.1.3 is the microscope side camera. The camera preview's go2rtc owns it, and the microscope reads it through go2rtc.
@@ -193,13 +194,13 @@ Data on the host:
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus and reference-view data | MIC-05 |
 | `/var/lib/mg400/stations.toml` | Taught robot stations | ORC-02 |
 | `/var/lib/mg400/tool.toml` | Gripper tool offset | ORC-02 |
-| `/var/lib/mg400/stage.toml` | Stage steps per mm, soft limits, named positions and poses | STG-02 |
+| `/var/lib/mg400/stage/stage.toml` | Stage steps per mm, soft limits, named positions, poses and camera references | STG-02, STG-03 |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions | THM-03 |
 | `/var/lib/mg400/furnace/state.json` | Running sequence state | FUR-03 |
 | `/var/lib/mg400/runs/` | Run store: SQLite index and run files | ORC-01 |
 | `/var/lib/mg400/recordings/` | Furnace video before archiving | FUR-05 |
 
-All of these use owner `1000:1000`, directories `0750`, files `0640` or `0600`. The installer creates the directories. OPS-03 adds them to backup and host migration.
+All of these use owner `1000:1000` and files `0640` or `0600`. Directories use `0750`, except the private stage calibration directory `/var/lib/mg400/stage`, which uses `0700`. The installer creates the directories. OPS-03 adds them to backup and host migration.
 
 ### 4.3 Instrument service contract v1
 
@@ -501,6 +502,7 @@ Never send commands to real hardware. Never weaken a safety rule to make a test 
 7. Moved code has the `Source:` and `Co-authored-by:` trailers, and the PR lists the files left behind.
 8. A new code area has its `AGENTS.md` row.
 9. The commit message says what was done.
+10. Read the PR's comments before the merge. Do what each comment from shc0507 asks, or reply on the PR with the reason. A comment that names a decision is an owner decision: change the plan per 6.8 if it needs a wider write set.
 
 ## 10. Phases and order
 

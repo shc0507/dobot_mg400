@@ -192,7 +192,7 @@ def test_furnace_service_uses_settings_and_allows_heat_and_gas_shutdown():
     assert "MG400_FURNACE_TOKEN" not in service["UnsetEnvironment"][0].split()
 
 
-def test_orchestrator_keeps_only_its_access_and_downstream_alias_tokens_and_drains_shutdown():
+def test_orchestrator_keeps_operator_proposal_and_alias_tokens_and_drains_shutdown():
     service = unit_sections("mg400-orchestrator.service")["Service"]
     assert command("mg400-orchestrator.service") == [
         "/opt/mg400/.venv/bin/python",
@@ -204,12 +204,13 @@ def test_orchestrator_keeps_only_its_access_and_downstream_alias_tokens_and_drai
     assert service["TimeoutStopSec"] == ["infinity"]
     assert set(service["UnsetEnvironment"][0].split()) == {
         f"MG400_{name}_TOKEN"
-        for name in ("PANEL", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE", "GATEWAY")
+        for name in ("PANEL", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
     }
     assert not set(ORCHESTRATOR_TOKENS) & set(service["UnsetEnvironment"][0].split())
+    assert "MG400_GATEWAY_TOKEN" not in service["UnsetEnvironment"][0].split()
 
 
-def test_gateway_has_no_device_groups_and_retains_only_checked_read_credentials():
+def test_gateway_has_no_device_groups_and_never_retains_operator_credential():
     service = unit_sections("mg400-gateway.service")["Service"]
     assert command("mg400-gateway.service") == ["/opt/mg400/.venv/bin/python", "-m", "gateway"]
     assert service["RestartPreventExitStatus"] == ["2"]

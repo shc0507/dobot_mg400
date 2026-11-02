@@ -39,7 +39,7 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-gripper-collector.service` | `collector` | Gripper USB collection | `dialout` |
 | `mg400-furnace.service` | `furnace` | Optional [furnace and gas page](furnace.en.md), port `8769` | `dialout` |
 | `mg400-orchestrator.service` | `orch` | Optional [recipe service](orchestrator.en.md#http-service), port `8772` | None |
-| `mg400-gateway.service` | `gateway` | Optional [read-only MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
+| `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
 | `mg400-proxy.service` | `proxy` | Optional [single-port proxy](olares.en.md#optional-single-port-proxy), port `8080` | None |
 | `mg400-gripper-collector.path` | None | Start gripper collection when the panel requests it | None |
 
@@ -140,7 +140,7 @@ Add `orch` to `MG400_OPTIONAL_SERVICES`, run the installer, and configure the [r
 The installer prepares private `runs` and `zones` directories when `orch` is selected. It does not invent zone configuration or start the service.
 The same service serves the [lab dashboard](dashboard.en.md), including status cards, run controls, camera links, and separate motion, heat, and gas stop controls.
 
-The optional `gateway` service uses the `gateway` dependency group. Add `gateway` to `MG400_OPTIONAL_SERVICES` and configure the [read-only gateway](agent-gateway.en.md).
+The optional `gateway` service uses the `gateway` dependency group. Add `gateway` to `MG400_OPTIONAL_SERVICES` and configure the [agent gateway](agent-gateway.en.md).
 Selecting `gateway` also prepares the private `runs` directory for audit records before any recipe run exists. The installer does not start the gateway.
 Keep `MG400_GATEWAY_BIND=127.0.0.1`. Every MCP request requires `MG400_GATEWAY_TOKEN`, including loopback requests.
 
@@ -231,7 +231,8 @@ The `MG400_ORCH_ROBOT_TOKEN` alias copies `MG400_PANEL_TOKEN` when blank or newl
 The `STAGE`, `THERMAL`, `VISION`, `FURNACE`, and `MICROSCOPE` aliases copy the corresponding service token after normal token generation.
 If a source token is absent, its alias stays empty. An alias never receives an independently generated token.
 Explicit nonempty aliases remain unchanged. After rotating a service token, update its alias to the same value or clear the alias and rerun the installer.
-The orchestrator unit receives its own token and these aliases. It excludes direct instrument tokens and the gateway token.
+The orchestrator unit receives its own token and these aliases. It excludes direct instrument tokens.
+It also retains `MG400_GATEWAY_TOKEN` solely for the proposal API. This token cannot authorize dashboard decisions or control requests.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |

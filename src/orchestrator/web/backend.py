@@ -71,6 +71,7 @@ class Dashboard:
         self.reading = set()
         self.operations = []
         self.closing = False
+        self.approval_generation = 0
         self.cards = {name: self._empty(name) for name in SERVICES}
         self.run = None
         self.orchestrator = {
@@ -334,6 +335,8 @@ class Dashboard:
             self.operations = [item for item in self.operations if not item["done"].is_set()] + [
                 item for item in self.operations if item["done"].is_set()
             ][-19:]
+            if action != "gas":
+                self.approval_generation += 1
             self.operations.append(operation)
             return operation, True
 

@@ -771,7 +771,11 @@ Steps:
 1. Project the tweezer-tip position from the robot state into the image with the CAL-01 camera model.
 2. Check that it falls inside the detected "Robotic Arm" box, with a margin from settings.
 3. Skill `vision.check_calibration(camera)`. The transfer recipe calls it before each vision-guided move. A failure holds the run with "camera moved, recalibrate".
-4. Tests with synthetic boxes.
+4. Tests with synthetic boxes, one-frame/one-model evidence, ownership and Stop races, negative or malformed receipts, and drift-margin propagation through live and owned-demo entry points.
+
+The vision service owns the guarded drift command. Read one current frame and load one camera-keyed calibration model for both tip projection and arm-box evidence; do not read a host model in the skill or use unrelated cached detections. Reuse the CAL-01 coordinate convention: rotate the configured tool XY by robot R, and use model tip Z `flange_z + nominal_tag_height_mm - distance_mm`. Require positive camera depth and a stationary, fresh, owned robot state before, during and after inference. A negative or malformed proof raises an error so the Runner holds; preserve an earlier cancellation or ownership error.
+
+Register `vision.check_calibration` in `src/orchestrator/skills/__init__.py`. Limit `src/orchestrator/cli.py` and `src/orchestrator/app.py` changes to preserving the supplied scalar drift-margin setting in owned demos. Keep existing endpoint, token and path filters unchanged; default and validate the bounded finite nonnegative margin in the skill and validate it in the service. Test the filters in `tests/test_vision_drift.py`; absent settings stay absent. MS-01 owns the later transfer-recipe call; this card adds no recipe path or dependency.
 
 Done when: P-CHECKS pass.
 

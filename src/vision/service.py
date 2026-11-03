@@ -395,18 +395,32 @@ class VisionService:
             return job
 
     def command(self, action, args, client):
+        ready = threading.Event()
         job = self._reserve(action, args, client)
+        accepted = False
+
+        def execute():
+            ready.wait()
+            if accepted:
+                self._execute(job)
+
         try:
-            worker = threading.Thread(
-                target=self._execute, args=(job,), name="vision-inference", daemon=True
-            )
+            worker = threading.Thread(target=execute, name="vision-inference", daemon=True)
             worker.start()
             with self._lock:
                 self._worker = worker
-        except Exception as exc:
+            accepted = True
+        except BaseException as exc:
+            accepted = False
             error = ServiceError(503, "Cannot start the inference worker.")
             self._finish(job, None, None, "failed", error)
+            if not isinstance(exc, Exception):
+                raise
             raise error from exc
+        finally:
+            # A start failure after thread acceptance must not admit inference
+            # behind a finished reservation or a confirmed Stop response.
+            ready.set()
         return job["id"]
 
     def read(self, action, camera, *, annotated=False):

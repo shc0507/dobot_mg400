@@ -911,3 +911,94 @@ def test_drift_late_bad_proof_preserves_first_instance_revocation(geometry, tmp_
         assert all("release" not in s.events for s in (robot, vision))
         vision.finish.set()
         assert_drift_held(runner, robot, vision, store, claim, reason)
+
+
+@pytest.mark.parametrize("late", [False, True])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_failed_worker_bootstrap_cannot_admit_inference_or_hide_an_active_job(
+    drift_service, monkeypatch, late, interrupt
+):
+    rig = drift_service
+    original = threading.Thread.start
+    workers = []
+
+    def failed_start(worker):
+        if worker.name != "vision-inference":
+            return original(worker)
+        if late:
+            original(worker)
+            workers.append(worker)
+        if interrupt:
+            raise KeyboardInterrupt("injected startup interruption")
+        raise RuntimeError("injected startup failure")
+
+    rig.service.lease.acquire("drift-test")
+    args = {key: value for key, value in drift_command().items() if key != "action"}
+    monkeypatch.setattr(threading.Thread, "start", failed_start)
+    try:
+        with pytest.raises(KeyboardInterrupt if interrupt else ServiceError):
+            rig.service.command("check_calibration", args, "drift-test")
+    finally:
+        for worker in workers:
+            worker.join(timeout=1)
+            assert not worker.is_alive()
+    rig.frames.read.assert_not_called()
+    rig.predictor.predict.assert_not_called()
+    state = rig.service.snapshot()
+    assert not state["busy"] and state["last_command"]["result"] == "failed"
+    assert state["last_command"]["output"] is None
+    assert rig.service.stop("other-authorized-client") == "confirmed"
+
+
+@pytest.mark.parametrize("cancel", ["stop", "close"])
+def test_stop_during_successful_worker_bootstrap_drains_without_frame_access(
+    drift_service, monkeypatch, cancel
+):
+    rig = drift_service
+    original = threading.Thread.start
+    workers = []
+
+    def stopped_start(worker):
+        original(worker)
+        if worker.name == "vision-inference":
+            workers.append(worker)
+            outcome = rig.service.stop("other") if cancel == "stop" else rig.service.close(0)
+            assert outcome == "pending"
+            assert rig.service.snapshot()["busy"]
+
+    monkeypatch.setattr(threading.Thread, "start", stopped_start)
+    identity = submit(rig)
+    result = receipt(rig, identity)
+    for worker in workers:
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+    assert result["result"] == "stopped" and result["output"] is None
+    rig.frames.read.assert_not_called()
+    rig.predictor.predict.assert_not_called()
+
+
+def test_denied_bootstrap_cannot_clobber_a_later_successful_job(drift_service, monkeypatch):
+    rig = drift_service
+    original = threading.Thread.start
+    denied = []
+
+    def failed_start(worker):
+        if worker.name == "vision-inference":
+            denied.append(worker)
+            raise RuntimeError("start denied before bootstrap")
+        return original(worker)
+
+    rig.client.post("/api/heartbeat", headers=rig.headers, json={})
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", failed_start)
+        response = rig.client.post("/api/command", headers=rig.headers, json=drift_command())
+        assert response.status_code == 503
+    successful = receipt(rig, submit(rig))
+    assert successful["result"] == "ok" and successful["output"]["passed"]
+    assert len(denied) == 1
+    original(denied[0])
+    denied[0].join(timeout=1)
+    assert not denied[0].is_alive()
+    assert rig.service.snapshot()["last_command"] == successful
+    rig.frames.read.assert_called_once_with(1)
+    rig.predictor.predict.assert_called_once()

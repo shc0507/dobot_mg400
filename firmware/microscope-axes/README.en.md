@@ -16,7 +16,16 @@ The enable pins are active low. Both drivers start disabled, with full steps. ST
 
 Before reprogramming a board, an operator must save its existing firmware. Agents compile only. H-06 establishes the focus direction, clearance position and travel limits. H-21 validates the firmware before automated use.
 
-Manual focus moves remain available without a reference for supervised setup. The firmware does not know the furnace geometry or turret clearance. The host must require a known focus zero and limits before automated motion. The host must permit turret rotation only at the verified clearance position.
+Manual focus moves remain available without a reference for supervised setup. The firmware does not know the furnace geometry or turret clearance. The host must require a known focus zero and limits before automated motion. The host must permit turret rotation only at the verified clearance position, except the bounded calibration moves below.
+
+Objective and light calibration can turn at working focus within the measured `MG400_MICROSCOPE_NUDGE_STEPS` window.
+This exception requires a known focus reference, measured limits, stationary focus, and the supervised confirmations in the [microscope guide](../../docs/microscope.en.md).
+Unset or `0` preserves the clearance rule. The allowed positive window is `1` through `20` full steps.
+Experiments and full objective switches still require clearance.
+
+For supervised `H-06` measurements, use `python -m microscope.calibrate setup` after stopping the microscope service.
+The console opens no cameras, writes no settings file, and never sends `FOCUS LIMIT`.
+Its counted positions do not measure physical travel. Follow the operator instructions and key controls in the microscope guide.
 
 ## Compile and offline tests
 

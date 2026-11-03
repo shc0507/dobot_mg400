@@ -300,11 +300,11 @@ The commands read `MG400_*` settings from the terminal environment.
 Run them as the account that owns the calibration and run directories.
 
 Set `MG400_MICROSCOPE_SERIAL` to the stable controller path.
-Select the main camera with `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
-Motion also requires the measured `H-06` limits, clearance, and home-switch configuration listed above.
+Calibration and experiments select the main camera with `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
+Their motion also requires the measured `H-06` limits, clearance, and home-switch configuration listed above.
 Missing measurements refuse startup. Do not substitute demonstration values.
 
-The tools acquire the main camera, any required side camera, and exclusive serial access before motion.
+Calibration and experiments acquire the main camera, any required side camera, and exclusive serial access before motion.
 Each required camera must supply a valid first frame.
 Side capture uses `MG400_CAMERA_DEVICES`, `MG400_CAMERA_MODES`, and `MG400_MICROSCOPE_SIDE_STREAM` to select the physical device and mode.
 The legacy `MG400_CAMERA_CAPTURE_SIZES` rules still apply.
@@ -315,6 +315,9 @@ This ownership excludes competing capture on that device. It does not exclude un
 
 ### Reference and motion rules
 
+These rules apply to calibration and experiments.
+The supervised setup console has separate manual measurement rules below.
+
 The measured limits and clearance use `MICRO 4` coordinates.
 At active microstep `m`, the lower limit is `ceil(MIN * m / 4)` and the upper limit is `floor(MAX * m / 4)`.
 This inward rounding must leave usable travel. Clearance and requested absolute positions must convert exactly.
@@ -323,7 +326,8 @@ The tools refuse fractional or out-of-range coordinates.
 Without a home switch, the operator establishes zero at clearance. `MG400_MICROSCOPE_SWITCH_FOCUS` must be `0`.
 With a configured switch, `FOCUS HOME` establishes the home origin. It never falls back to `FOCUS ZERO`.
 The measured limits and clearance must use that same home origin.
-Every focus move requires a current reference and measured limits. Every turret move also requires stationary focus at clearance.
+Every focus move requires a current reference and measured limits.
+Every turret move also requires stationary focus at clearance, except the bounded calibration moves described below.
 
 The first motion requires explicit reference confirmation.
 An actual microstep change or focus disable first moves focus to clearance with the current valid reference.
@@ -368,6 +372,80 @@ For calibration, `[focus]` supplies focus settings, `[calibrator]` supplies algo
 The tools refuse unknown sections, names, or invalid values.
 Defaults preserve the original GUI settings. The accepted names and defaults are in [calibrate.py](../src/microscope/calibrate.py).
 Camera dimensions default to `2592x1944`.
+
+### Calibration at working focus
+
+`MG400_MICROSCOPE_NUDGE_STEPS` sets the measured turret window in full steps.
+Unset or `0` keeps the clearance behavior above. Values from `1` through `20` enable bounded moves at working focus.
+Other values refuse startup. This mode applies only to objective and light calibration.
+
+Use the value measured in `H-06` at the window-side focus limit, with every objective in its working position.
+The window must preserve the physical margin in both directions for every objective.
+Do not estimate this value from calibration data or use another microscope's measurement.
+
+With a positive window, both commands require `--focus-start N` in measured `MICRO 4` coordinates, inside the focus limits:
+
+```sh
+python -m microscope.calibrate objective --focus-start N
+python -m microscope.calibrate light --focus-start N
+```
+
+Replace `N` with the measured starting focus coordinate.
+Before the first `CLEAR`, check focus at clearance and the objective in its working position.
+The tool then moves focus to `N` and runs local autofocus once with the `[focus]` settings.
+
+Each turret move requires a current reference, measured limits, and stationary focus.
+The tool counts commanded turret displacement from the position at the first confirmation, in `1/16` full steps.
+The allowed displacement is inclusive, from minus the configured window to plus that window.
+Microstep changes and later `CLEAR` answers do not reset this origin.
+A move beyond the window stops and disables both motors and ends the command before dispatch.
+
+A microstep change still moves focus to clearance before the reference becomes invalid.
+The prompt states the focus return before requesting a new `CLEAR` answer.
+After zero or home and converted limits, focus returns to its earlier position at the new microstep.
+This return rounds to the nearest pulse and must stay inside the limits.
+In this mode only, a calibration request to disable focus uses `STOP FOCUS` and preserves the reference.
+Experiments and full objective switches still turn the turret only at clearance.
+
+### Supervised setup console
+
+Use this console for the `H-06` clearance, travel-limit, and turret-window measurements:
+
+```sh
+python -m microscope.calibrate setup
+```
+
+Stop the microscope service first. Keep a person at the emergency stop who can see the focus and every objective.
+The console requires interactive input and output plus exclusive serial access.
+It needs no `H-06` values and opens no camera.
+It accepts no `--settings`, `--output`, or `--focus-start` option. It also refuses a custom `--reference`.
+It writes no settings file and never sends `FOCUS LIMIT`.
+
+The console uses `MICRO 4`, with focus speed `200` pulses/second and turret speed `40` pulses/second.
+The console completes each move before it accepts the next move key.
+Press a single key without Enter. The `0` confirmation requires `CLEAR` followed by Enter within 60 seconds.
+Enter a fresh key within 300 seconds. Earlier queued input does not authorize another move.
+
+| Key | Action |
+| --- | --- |
+| `a` / `z` | Focus `+1` / `-1` pulse. |
+| `s` / `x` | Focus `+10` / `-10` pulses. |
+| `d` / `c` | Focus `+100` / `-100` pulses. |
+| `f` / `v` | Focus `+1000` / `-1000` pulses. |
+| `j` / `l` | Turret `-1` / `+1` full step. |
+| `u` / `o` | Turret `-10` / `+10` full steps. |
+| `m` | Mark the current turret count as the display origin. |
+| `0` | Request a fresh typed `CLEAR`, then send `FOCUS ZERO`. |
+| `q` | Stop and disable both motors, then quit. |
+
+Any key without an action stops both motors, including during a move.
+During a move, `q` and end of input stop and quit.
+The console discards motion keys, `m`, and `0` pressed during a move.
+End of input, refusal, timeout, reset, or disconnect stops and disables both motors and ends the console.
+The console prints the focus count and turret displacement from completed actions, during use and at the end.
+An interrupted move can leave the current position unknown.
+These counts do not measure physical position or prove clearance.
+Observe each move and record the measured values separately. The console does not install them.
 
 ### Experiment commands
 

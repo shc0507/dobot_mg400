@@ -717,6 +717,9 @@ writes = [
   "src/vision/calibration.py",
   "src/vision/service.py",
   "src/orchestrator/skills/calibrate.py",
+  "src/orchestrator/skills/__init__.py",
+  "src/orchestrator/rehearsal.py",
+  "src/vision/__main__.py",
   "tests/test_vision_calibration.py",
   "docs/vision.md",
   "docs/vision.en.md",
@@ -776,7 +779,7 @@ writes = [
 
 [[task]]
 id = "MS-01"
-title = "Milestone: QR-verified tray transfer"
+title = "Milestone: vision-guided tray transfer"
 phase = 2
 track = "milestone"
 owner = "agent+human"

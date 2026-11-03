@@ -28,14 +28,14 @@ End state:
 1. Every lab device connects to the Olares host: robot, gripper, stage, cameras, thermal camera, furnace and gas controllers, microscope camera, objective turret and focus motors.
 2. Each device has one service on Olares. Every service speaks the same contract (section 4.3) and has a demo mode.
 3. The WuLab code lives in this repo as packages under `src/`. The WuLab repos are marked as moved.
-4. A control plane (the orchestrator) runs recipes across devices: QR-verified tray transfers, chip load into the crucible, furnace programs, unload after cooling, microscope images through the furnace window.
+4. A control plane (the orchestrator) runs recipes across devices: vision-guided tray transfers, chip load into the crucible, furnace programs, unload after cooling, microscope images through the furnace window.
 5. People use web pages. LLM agents use an MCP gateway whose actuation requests wait for human approval.
 
 The migration is done when the three milestones pass on hardware:
 
 | Milestone | Task | What runs |
 | --- | --- | --- |
-| 1 | MS-01 | The robot moves a chip between tray slots. Vision finds it, the QR label confirms it before and after. |
+| 1 | MS-01 | The robot moves a chip between tray slots. Vision finds it in the source slot, then confirms it in the target slot and gone from the source. |
 | 2 | MS-02 | The robot places a chip in the crucible, the stage inserts it, a short furnace program runs, the robot takes it back after the thermal check. |
 | 3 | MS-03 | The stage moves the chip under the furnace window. The microscope selects an objective, autofocuses and saves an image under the chip's ID. |
 
@@ -53,7 +53,7 @@ Phase 5 adds the lab dashboard and the agent gateway. Phase 6 (closed-loop optim
 | D4 | Store model weights as a GitHub Release asset with a manifest. The installer downloads the file and checks its hash. |
 | D5 | Furnace without a controlling client: a sequence runs to its planned end, an open-ended setpoint stops heating after a grace period, new commands wait until a client takes control, and gas moves into the sequence steps. |
 | D6 | Vision runs as its own process on Olares in its own environment. It may become an Olares app later. |
-| D7 | First milestone: vision-guided, QR-verified tray transfer. |
+| D7 | First milestone: vision-guided tray transfer. YOLO finds the chip and confirms it at both ends. (Amended by the owner, 2026-11-03: the chips carry no QR labels.) |
 | D8 | The LLM agent returns in phase 5, behind approval gates. |
 | D9 | Human-facing docs exist in Chinese and English. Agent-facing docs (this folder, `AGENTS.md`, `docs/agents/`) stay English only. |
 
@@ -71,6 +71,8 @@ Phase 5 adds the lab dashboard and the agent gateway. Phase 6 (closed-loop optim
 - Every lab USB device is on one self-powered hub on one Olares port, the Toupcam camera on its USB 3 side (owner, 2026-11-02). The device table is on the H-03 issue. Each camera keeps its hub port: the four AC410 cameras report one serial number, so their stable names come from the port. The fourth AC410, on hub port 12.2.1, is the tray camera (H-03 inventory, 2026-11-02). All four AC410 cameras and the thermal P1 share 1 USB 2 link at 480M (VIS-07).
 - The AC410 on hub port 12.1.4 is the microscope side camera; an earlier note named 12.1.3 by mistake. The camera preview's go2rtc owns it, and the microscope reads it through go2rtc (`MG400_MICROSCOPE_SIDE_STREAM`).
 - The stage has no limit switches. An operator sets each axis's zero by hand, checked against a camera reference (STG-03, H-07).
+- Chips are small enough to fit in the crucible and carry no labels; YOLO detects and locates them (owner, 2026-11-03). A run knows each chip by its slot and the run record, which the chip passport uses. QR labels identify wafers on the other side of the experiment table, which no milestone here uses. The QR reader (VIS-02) stays as a library for that side.
+- The tray's 4 corner markers are ArUco `DICT_4X4_50` (ids 0, 1, 2, 7) with 24 mm black squares on 30 mm pads (owner, 2026-11-03).
 
 Hardware freeze: the owner makes no hardware changes for now (answer to Q-04, 2026-10-30). The device moves are done (2026-11-02, H-04 to H-06). Wiring and mounting still wait: H-09, mounting the tag in H-08, and installing a cutoff in H-11. The stage gets no limit switches; H-07 needs only a printed marker per axis. Inventories, measurements, reviews, decisions and all software tasks go on. Software runs in demo and rehearsal mode until the freeze ends.
 

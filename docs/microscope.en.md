@@ -248,7 +248,7 @@ Do not substitute repository paths or shared public directories for the configur
 ## Side-camera stream
 
 The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches the objective turret.
-Camera preview's go2rtc process owns its V4L2 device.
+For the service and preview, go2rtc owns its V4L2 capture.
 `USBCamera` reads JPEG frames from `http://127.0.0.1:1984/api/frame.jpeg`.
 It rejects redirects and ignores environment proxy settings.
 Keep the cameras on their fixed ports and never reset the shared USB hub.
@@ -290,7 +290,124 @@ Stop requests can interrupt a completion wait.
 Unknown transport or completion outcomes latch a fault and require an explicit reconnect.
 See the [firmware guide](../firmware/microscope-axes/README.en.md) for commands, wiring, and firmware limits.
 
-## Command-line entrypoints
+## Supervised calibration and experiments
+
+These commands require a person at an interactive terminal. Both input and output must be TTYs.
+Do not run them from an agent, service contract, orchestrator, browser panel, or unattended script.
+They do not stop other services automatically.
+An operator must release conflicting microscope and camera owners before starting them.
+The commands read `MG400_*` settings from the terminal environment.
+Run them as the account that owns the calibration and run directories.
+
+Set `MG400_MICROSCOPE_SERIAL` to the stable controller path.
+Select the main camera with `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
+Motion also requires the measured `H-06` limits, clearance, and home-switch configuration listed above.
+Missing measurements refuse startup. Do not substitute demonstration values.
+
+The tools acquire the main camera, any required side camera, and exclusive serial access before motion.
+Each required camera must supply a valid first frame.
+Side capture uses `MG400_CAMERA_DEVICES`, `MG400_CAMERA_MODES`, and `MG400_MICROSCOPE_SIDE_STREAM` to select the physical device and mode.
+The legacy `MG400_CAMERA_CAPTURE_SIZES` rules still apply.
+The supervised adapter opens the stable device directly through `CAP_V4L2` and requires the `uvcvideo` driver.
+It retains the same MMAP capture queue until cleanup. An occupied go2rtc capture queue refuses startup.
+It never changes the format, reopens the device, or reconnects after capture starts.
+This ownership excludes competing capture on that device. It does not exclude unrelated control-only ioctls.
+
+### Reference and motion rules
+
+The measured limits and clearance use `MICRO 4` coordinates.
+At active microstep `m`, the lower limit is `ceil(MIN * m / 4)` and the upper limit is `floor(MAX * m / 4)`.
+This inward rounding must leave usable travel. Clearance and requested absolute positions must convert exactly.
+The tools refuse fractional or out-of-range coordinates.
+
+Without a home switch, the operator establishes zero at clearance. `MG400_MICROSCOPE_SWITCH_FOCUS` must be `0`.
+With a configured switch, `FOCUS HOME` establishes the home origin. It never falls back to `FOCUS ZERO`.
+The measured limits and clearance must use that same home origin.
+Every focus move requires a current reference and measured limits. Every turret move also requires stationary focus at clearance.
+
+The first motion requires explicit reference confirmation.
+An actual microstep change or focus disable first moves focus to clearance with the current valid reference.
+After that event, the tool stops both motors and requests another confirmation:
+
+1. Look at the focus and objectives.
+2. Check that focus is at clearance and the objectives are clear of the window.
+3. Type `CLEAR` and press Enter within 60 seconds.
+
+Each prompt discards earlier input and requires a new answer.
+After confirmation, the tool uses `FOCUS ZERO` or `FOCUS HOME` and sends the converted limits.
+Any other answer, end of input, timeout, reset, disconnect, or failed frame starts Stop/Disable cleanup for both motors.
+The command then ends with a nonzero status. It cannot retry or restore a reference automatically.
+Cleanup errors report failure. They do not prove that hardware stopped.
+Cancellation and `SIGINT`, `SIGTERM`, or `SIGHUP` use the same cleanup rule.
+
+### Calibration commands
+
+Display options without opening devices:
+
+```sh
+uv run python -m microscope.calibrate --help
+uv run python -m microscope.experiments --help
+```
+
+Run calibration commands only under the supervision rules above:
+
+| Command | Operation and default output |
+| --- | --- |
+| `python -m microscope.calibrate reference` | Capture a raw PNG as `objective_reference.png`. It does not home, set zero, or move focus. |
+| `python -m microscope.calibrate objective` | Run objective calibration and write `objective_calibration.csv`. |
+| `python -m microscope.calibrate light` | Run light-objective calibration and write `light_objective_calibration.csv`. |
+
+`--reference` selects the private calibration PNG for objective or light calibration. Its default is `objective_reference.png`.
+`--output` selects a file beneath `MG400_MICROSCOPE_CALIBRATION_DIR`.
+Calibration can replace an existing owned private output file. Select another output name to retain the previous result.
+Reference capture requires terminal and device ownership checks, but does not require motion measurements or a reference confirmation.
+It accepts camera dimensions in `[focus]` and still stops and disables motors during cleanup.
+
+`--settings FILE` reads a TOML document.
+For calibration, `[focus]` supplies focus settings, `[calibrator]` supplies algorithm options, and `[scan]` supplies scan options.
+The tools refuse unknown sections, names, or invalid values.
+Defaults preserve the original GUI settings. The accepted names and defaults are in [calibrate.py](../src/microscope/calibrate.py).
+Camera dimensions default to `2592x1944`.
+
+### Experiment commands
+
+Use `python -m microscope.experiments focus|switch|combined` with the required settings.
+Each command runs 1 pass. `--output` selects a new private directory beneath `MG400_ORCH_RUNS_DIR`.
+Without it, outputs use `microscope/experiments/` with a unique command directory.
+Settings, summary rows, focus curves, switch logs, and available final images stay in that directory.
+Failures retain partial results and a terminal failure row.
+
+Use `[focus]` and `[switch]` tables with `--settings FILE`.
+`--ids` supplies distinct objective IDs in adjacent positive turret order.
+The experiment treats that order as a bounded line, not a circular route.
+`--focus-microstep` defaults to `1` and accepts `1`, `2`, `4`, `8`, or `16`.
+Focus and combined trials require `--focus-start`, expressed in measured `MICRO 4` coordinates.
+The tool moves to that explicit start before the focus reference trial and before each combined focus trial.
+
+Focus trials retain offsets of `-2000`, `-1000`, `1000`, and `2000` active-mode pulses.
+Their full scan half-range must be at least `2000`.
+Switch trials test both adjacent directions with offsets of `0`, `-50`, `50`, `-100`, and `100` full steps.
+The offset moves use `MICRO 1`. The ArUco switcher uses `MICRO 4`.
+These changes require the supervised confirmations above.
+The tools do not shrink scans to fit limits. An incompatible move aborts before dispatch.
+
+### Import existing calibration data
+
+The operator runs the import on Olares after reviewing the source data:
+
+```sh
+sudo mg400ctl calibration import microscope DIR
+```
+
+Replace `DIR` with the data directory from Objective-Control `3a2dad0`.
+The importer selects `objective_views/`, `side_camera_images/`, `objective_reference.png`, and root-level CSV files.
+It copies directory contents, refuses symbolic links and unsafe selected files, and lists each copied path.
+It refuses existing destinations instead of overwriting them.
+Destination directories use owner `1000:1000` and mode `0750`. Files use owner `1000:1000` and mode `0640`.
+Completed copies remain if a later copy fails. Inspect them before another attempt.
+The importer opens no devices. The operator must perform the Olares import and report its result on the migration issue.
+
+## Other command-line entrypoints
 
 Display the supported options without connecting devices:
 

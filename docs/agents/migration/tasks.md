@@ -495,7 +495,7 @@ Goal: the vision service runs on Olares with the GPU and the released weights.
 Steps (P-DEPLOY plus):
 
 1. When `vision` is in `MG400_OPTIONAL_SERVICES`, the installer creates `/opt/mg400/.venv-vision` with `UV_PROJECT_ENVIRONMENT=/opt/mg400/.venv-vision uv sync --locked --no-default-groups --group vision --group vision-gpu`, installs the `vision-weights` asset and creates `/var/lib/mg400/vision`.
-2. Unit `mg400-vision.service` with `ExecStart=/opt/mg400/.venv-vision/bin/python -m vision`. Allow `.venv-vision` paths in `tests/test_systemd_units.py`.
+2. Unit `mg400-vision.service` with `ExecStart=/opt/mg400/.venv-vision/bin/python -m vision`. Allow `.venv-vision` paths in `tests/test_systemd_units.py`. Add `MG400_VISION_TOKEN` to `UnsetEnvironment` in `mg400-web-panel.service` and `mg400-stage-panel.service`; those 2 additional unit paths permit only this token exclusion. Keep the token in `mg400-camera-preview.service`, which uses it for the VIS-06 detection overlay.
 3. `mg400ctl gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID 1000.
 4. Settings `MG400_VISION_BIND`, `_PORT`, `_TOKEN`, `_WEIGHTS`, `_DEVICE`, `_GPU_FRACTION`.
 5. A registry entry with the asset and the venv.

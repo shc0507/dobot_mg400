@@ -41,6 +41,7 @@ from .runner import Runner
 from .skills import default_registry
 from .skills.crucible import CRUCIBLE_SETTINGS
 from .skills.robot import TRANSFER_SETTINGS
+from .skills.vision import DRIFT_SETTINGS
 from .store import DEFAULT_RUNS, RunStore
 from .zones import CONFIG_SETTING, STATE_SETTING, Zones, prepare_zones
 
@@ -65,6 +66,7 @@ DEMO_ENV = (
     }
     | TRANSFER_SETTINGS
     | CRUCIBLE_SETTINGS
+    | DRIFT_SETTINGS
 )
 
 

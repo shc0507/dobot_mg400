@@ -65,6 +65,7 @@ STATION_TEACH_SETTINGS = STATION_SETTINGS | {
 }
 TRANSFER_SETTINGS = STATION_SETTINGS | {"MG400_ORCH_TOOL_FILE", "MG400_ORCH_PRE_GRIP"}
 CALIBRATION_SETTINGS = {"MG400_CAMERA_CALIBRATION_REFERENCES"}
+DRIFT_SETTINGS = {"MG400_ORCH_DRIFT_MARGIN_PX"}
 CRUCIBLE_SETTINGS = {
     "MG400_ORCH_CRUCIBLE_" + suffix
     for suffix in (
@@ -86,6 +87,7 @@ ORCHESTRATOR_SETTINGS = (
     | TRANSFER_SETTINGS
     | CRUCIBLE_SETTINGS
     | CALIBRATION_SETTINGS
+    | DRIFT_SETTINGS
     | ZONE_SETTINGS
     | {"MG400_ORCH_TIMEOUT_S"}
     | {
@@ -208,7 +210,11 @@ def orchestrator(host, argv, execvpe):
         allowed = ORCHESTRATOR_SETTINGS if argv[0] == "run" else ORCHESTRATOR_DATA
         if argv[0] == "rehearse":
             allowed = (
-                ORCHESTRATOR_DATA | TRANSFER_SETTINGS | CRUCIBLE_SETTINGS | REHEARSAL_ZONE_SETTINGS
+                ORCHESTRATOR_DATA
+                | TRANSFER_SETTINGS
+                | CRUCIBLE_SETTINGS
+                | REHEARSAL_ZONE_SETTINGS
+                | DRIFT_SETTINGS
             )
         if argv[0] == "station":
             allowed = STATION_TEACH_SETTINGS if argv[1] == "save" else STATION_SETTINGS

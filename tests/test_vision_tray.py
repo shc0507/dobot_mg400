@@ -132,6 +132,7 @@ def test_owner_geometry_has_all_32_bounded_grooves_and_no_chip_labels(tray):
 
 def test_real_detector_localizes_all_markers_and_returns_xy_segments(tray, calibration):
     result = _locate(_render(tray, calibration), calibration, tray)
+    assert result["camera_device"] == DEVICE
     assert {marker["id"] for marker in result["markers"]} == {0, 1, 2, 7}
     assert result["missing_marker"] is None
     assert result["transform"]["scale"] == pytest.approx(1, abs=0.002)
@@ -142,6 +143,20 @@ def test_real_detector_localizes_all_markers_and_returns_xy_segments(tray, calib
             np.asarray(slot["centerline_mm"]), abs=0.2
         )
         assert set(observed) == {"centerline_xy_mm", "reference_xy_mm", "width_mm"}
+
+
+@pytest.mark.parametrize("device", [None, "", "/dev/video0", "camera1", True, 1])
+def test_required_camera_identity_is_checked_before_detection(
+    monkeypatch, tray, calibration, device
+):
+    image = _render(tray, calibration)
+
+    def forbidden_detection(_image):
+        pytest.fail("Invalid camera identity must fail before marker detection.")
+
+    monkeypatch.setattr(tray_module, "detect_markers", forbidden_detection)
+    with pytest.raises(ValueError, match="stable /dev/v4l/by-path"):
+        locate_tray(image, calibration, tray, device=device)
 
 
 @pytest.mark.parametrize("missing", [0, 1, 2, 7])

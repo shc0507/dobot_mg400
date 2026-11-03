@@ -10,7 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .calibration import detect_markers, image_size, robot_xy, validate_model
+from .calibration import camera_device, detect_markers, image_size, robot_xy, validate_model
 
 MAX_DOCUMENT = 64 * 1024
 _MAX_COORDINATE = 1_000_000.0
@@ -144,6 +144,7 @@ def load_tray(path):
 
 def locate_tray(image, calibration, tray, *, device, tolerance_mm=None):
     """Return localization geometry, without claiming verified station or chip data."""
+    device = camera_device(device)
     tray = validate_tray(tray)
     model = validate_model(calibration, device=device)
     tolerance = _limit(tray["tolerance_mm"] if tolerance_mm is None else tolerance_mm)

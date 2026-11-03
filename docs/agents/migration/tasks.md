@@ -1269,6 +1269,8 @@ Test paths: port the three named upstream suites separately to `tests/test_furna
 
 Private recording outputs: allow `src/toupcam_camera/camera.py` to add an opt-in private-output policy to the existing recording API/session, selected by the microscope service. Validate the owned private directory and exclusively reserve the timestamps CSV and every initial or rollover video file with no-follow protection and private permissions at creation. Reject unsafe existing outputs instead of overwriting them; do not use process-global umask changes or post-creation permission fixes. Preserve the default public API behavior, capture, segmentation and metadata. Add fake-writer tests in `tests/test_toupcam_camera.py` under umask `022`, including construction, rollover and failure cleanup, without opening native capture.
 
+Camera admission: in the same camera path, add opt-in fencing with an irreversible caller cancellation token. Check cancellation under the existing camera locks at dispatch before output allocation, after a blocking frame wait, and before stabilization changes. A service check followed by an unfenced camera call is insufficient: cancellation must prevent later output creation or stabilization mutation while accepted work follows the existing cleanup lifecycle. Do not hold a microscope service lock across native camera calls. Preserve default caller behavior and cover cancellation at each boundary with deterministic fake-camera tests in the same camera test path.
+
 Done when: P-CHECKS pass.
 
 Docs: `furnace.md`, `microscope.md` and their `.en.md` pairs.

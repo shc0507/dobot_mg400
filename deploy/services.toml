@@ -13,6 +13,16 @@ port = 8766
 assets = []
 
 [[service]]
+name = "vision"
+units = ["mg400-vision.service"]
+optional = true
+venv = ".venv-vision"
+groups = ["vision", "vision-gpu"]
+token = "MG400_VISION_TOKEN"
+port = 8771
+assets = ["vision-weights"]
+
+[[service]]
 name = "thermal"
 units = ["mg400-thermal.service"]
 optional = true

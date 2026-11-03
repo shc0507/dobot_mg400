@@ -745,6 +745,7 @@ def main(
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("assets", help="Show manifest asset status without downloads or writes")
+    commands.add_parser("gpu", help="Read GPU name and memory use as UID 1000")
     archive = commands.add_parser(
         "backup", help="Back up host settings and data without process locks"
     )
@@ -803,6 +804,21 @@ def main(
         for asset, state in states:
             print(f"{asset.name}  {state}  {assets.destination(asset, host.root)}", file=out)
         return int(any(state != "present" for _, state in states))
+    if args.command == "gpu":
+        try:
+            program = shutil.which("nvidia-smi", path="/usr/bin:/bin")
+            if program is None:
+                raise FileNotFoundError("nvidia-smi is missing. Check the host NVIDIA driver.")
+            as_service_user(
+                host,
+                {},
+                [program, "--query-gpu=name,memory.used,memory.total", "--format=csv"],
+                execvpe,
+            )
+        except (OSError, KeyError) as error:
+            print(f"Cannot read GPU status as UID {SERVICE_UID}: {error}", file=sys.stderr)
+            return 1
+        return 0
     try:
         settings = parse_settings(host.settings.read_text())
         if args.command in ("status", "start", "restart"):

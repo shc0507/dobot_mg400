@@ -11,12 +11,13 @@
 
 | 路径 | 内容 | 属主与权限 |
 | --- | --- | --- |
-| `/opt/mg400` | Git 工作副本和 Python 环境 `.venv` | `root:1000`，`0750` |
+| `/opt/mg400` | Git 工作副本和 Python 环境 `.venv`、可选的 `.venv-vision` | `root:1000`，`0750` |
 | `/etc/mg400/mg400.env` | 本主机的配置和访问密钥 | `root:root`，`0600` |
 | `/etc/mg400/go2rtc.yaml` | 摄像头采集配置，由安装器生成 | `root:1000`，`0640` |
 | `/var/lib/mg400` | 运行数据的上级目录 | `root:1000`，`0750` |
 | `/var/lib/mg400/locks` | 机械臂连接锁 | `1000:1000`，`0700` |
 | `/var/lib/mg400/work` | 夹爪反馈、夹爪命令文件和模式切换备份 | `1000:1000`，`0750` |
+| `/var/lib/mg400/vision` | 启用视觉服务时创建的数据目录 | `1000:1000`，`0750` |
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/camera` | 摄像头预览密钥 `preview.key` | `1000:1000`，`0700` |
 | `/var/lib/mg400/stage` | `stage.toml` 中可写的位移台校准和相机参考 | `1000:1000`，`0700` |
@@ -43,6 +44,7 @@
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
 | `mg400-thermal.service` | `thermal` | 可选[热像仪页面](thermal.md)，端口 `8768` | 无 |
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
+| `mg400-vision.service` | `vision` | 可选的[视觉服务](vision.md)，回环端口 `8771` | 无 |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | 可选的[单端口代理](olares.md#可选的单端口代理)，端口 `8080` | 无 |
@@ -99,13 +101,14 @@
 1. 检查 Python 版本、uv、配置文件和独立运行的夹爪采集进程。
    同时检查服务清单、服务选择、所选单元和 udev 模板。
    如指定 `--toupcam`，检查源文件、目标路径和固定的 SHA-256。
-   如指定资源，还检查资源清单、目标路径和本地文件。检查不通过时，安装器不修改主机。
+   如指定资源或启用 `vision`，还检查资源清单、目标路径和本地文件。
+   检查不通过时，安装器不修改主机。
 2. 创建配置文件，或补全缺少的配置项。先生成空的服务 `*_TOKEN` 值，再把对应服务令牌复制到空的编排器别名。非空值保持不变。
 3. 创建 `/var/lib/mg400` 下的目录和摄像头预览密钥。
    安装器拒绝其中的符号链接，也不覆盖已有的密钥。
 4. 按服务清单运行 `uv sync`，只安装已启用服务的依赖组。
    默认在 `/opt/mg400/.venv` 安装位移台和工具依赖。
-5. 安装显式指定的外部资源，先校验大小和 SHA-256，再原子替换目标。
+5. 安装指定的外部资源。启用 `vision` 时，同时安装必需的权重。先校验大小和 SHA-256，再原子替换目标。
 6. 配置了摄像头时，安装 go2rtc 并生成 `go2rtc.yaml`。未配置时，删除旧的 `go2rtc.yaml`。
    如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
@@ -173,6 +176,14 @@
 设置 `MG400_OPTIONAL_SERVICES=furnace` 后运行安装器，再明确运行 `mg400ctl start furnace`。
 安装器不会启动炉控服务。
 
+可选服务 `vision` 在独立的 `/opt/mg400/.venv-vision` 环境中使用 `vision` 和 `vision-gpu` 依赖组。
+把 `vision` 加入 `MG400_OPTIONAL_SERVICES`，保留其他选择。运行安装器。
+安装器准备 `/var/lib/mg400/vision`，属主为 `1000:1000`，权限为 `0750`，并安装已校验的 `vision-weights` 资源。
+未选中 `vision` 时，不准备该环境、目录、资源或单元。
+
+首次安装、运行 `mg400ctl start vision` 和在 Olares 检查 `mg400ctl gpu` 均由所有者执行。
+运行配置见[视觉服务](vision.md)，访问规则见 [Olares 网络](olares.md#网络)。
+
 可选服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
 此组含 Flask、waitress，以及自有演示服务所需的 `stage`、`thermal` 和 `furnace` 组。
 把 `orch` 加入 `MG400_OPTIONAL_SERVICES`，运行安装器，配置[配方服务](orchestrator.md#http-服务)，再运行 `mg400ctl start orch`。
@@ -215,12 +226,13 @@
 大小为 23,393,117 字节，SHA-256 为 `0b684c470191540b0cfc8802b0d13149b47d7be76b901ad1dd59882297407a07`。
 目标为 `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`，权限为 `0640`。
 清单按 Roboflow 声明记录许可证 `AGPL-3.0`。
-权重发布必须等待仓库许可证决定。发布中没有文件时，下载会失败。
+发布中没有文件时，下载会失败。
 
-安装器默认不下载或安装资源。资源必须属于已启用服务，并列在该服务的 `assets` 中。
-`vision-weights` 只有在 `vision` 服务条目加入清单并启用后才能安装。
-此前，`--fetch-assets` 跳过该资源，显式 `--asset NAME=PATH` 会拒绝安装。
-显式下载已启用服务的资源：
+资源必须属于已启用服务，并列在该服务的 `assets` 中。
+启用 `vision` 时，安装必须包含 `vision-weights`，即使未指定 `--fetch-assets`。
+用 `--asset vision-weights=PATH` 提供通过校验的本地文件，或让安装器下载清单中的资源。
+停用 `vision` 时，`--fetch-assets` 跳过其权重，显式 `--asset vision-weights=PATH` 拒绝安装。
+其他资源必须显式指定。下载已启用服务的资源：
 
 ```sh
 /usr/bin/python3 /opt/mg400/deploy/install.py --fetch-assets
@@ -297,6 +309,12 @@
 | `MG400_THERMAL_PORT` | `8768` | 热像仪端口 |
 | `MG400_THERMAL_BASE_PATH` | `/` | 热像仪原生路径前缀，使用代理时设为 `/thermal/` |
 | `MG400_THERMAL_TOKEN` | 安装程序生成 | 热像仪访问令牌 |
+| `MG400_VISION_BIND` | `127.0.0.1` | 视觉监听地址 |
+| `MG400_VISION_PORT` | `8771` | 视觉端口 |
+| `MG400_VISION_TOKEN` | 安装器生成 | 视觉访问令牌，配置示例初始为空 |
+| `MG400_VISION_WEIGHTS` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` | 已校验的本地模型权重 |
+| `MG400_VISION_DEVICE` | 空 | CUDA 可用时选 `cuda`，否则选 `cpu` |
+| `MG400_VISION_GPU_FRACTION` | `0.15` | PyTorch 分配比例，须为有限数，大于 0 且不超过 1 |
 | `MG400_FURNACE_BIND` | `127.0.0.1` | 炉控监听地址 |
 | `MG400_FURNACE_PORT` | `8769` | 炉控端口 |
 | `MG400_FURNACE_TOKEN` | 安装器生成 | 炉控访问密钥 |
@@ -321,8 +339,9 @@
 | --- | --- |
 | `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
+| `mg400ctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
 | `mg400ctl status` | 显示所有服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`furnace`、`orch`、`gateway`、`proxy` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`thermal`、`furnace`、`vision`、`orch`、`gateway`、`proxy` 或 `all` |
 | `mg400ctl stop all` | 停止服务 |
 | `mg400ctl restart web` | 重启服务 |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
@@ -332,6 +351,11 @@
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 | `mg400ctl token web` | 显示网页面板的访问密钥。`token stage` 显示位移台面板的密钥 |
 | `mg400ctl token orch` | 显示配方服务令牌，不显示下游别名 |
+
+`gpu` 以 UID `1000` 运行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
+此诊断只读状态，不启动服务、不加载模型，也不修改 GPU 配置。
+该命令不接收服务令牌或主机配置。
+GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl logs vision` 和经认证读取的服务状态。
 
 炉控 `stop` 和 `restart` 在修改任何所选服务前，先认证并读取实时状态。
 检查覆盖混合列表及 `all`，也覆盖 `stop all` 选中的已停用炉控服务。

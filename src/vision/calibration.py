@@ -20,6 +20,23 @@ DEFAULT_DIRECTORY = Path("/var/lib/mg400/calibration/cameras")
 MAX_DOCUMENT = 64 * 1024
 
 
+def calibration_settings(values=None):
+    values = {} if values is None else values
+    defaults = {"nominal_tag_height_mm": 100.0, "nominal_distance_mm": 246.0, "rms_limit_mm": 1.0}
+    if not isinstance(values, dict) or set(values) - set(defaults):
+        raise ValueError("Unknown camera calibration setting.")
+    result = {**defaults, **values}
+    for key, number in result.items():
+        maximum = 1.0 if key == "rms_limit_mm" else 1000.0
+        if (
+            type(number) not in (int, float)
+            or not math.isfinite(number)
+            or not 0 < number <= maximum
+        ):
+            raise ValueError(f"Invalid camera calibration setting: {key}.")
+    return result
+
+
 def camera_device(value):
     if (
         not isinstance(value, str)
@@ -75,18 +92,72 @@ def validate_model(value, *, device=None):
         or np.any(distortion[2:] != 0)
     ):
         raise ValueError("Calibration must use a pinhole matrix and radial k1 and k2 only.")
-    for name in ("tray_height_mm", "distance_mm", "nominal_tag_height_mm", "created_at"):
+    for name in (
+        "tray_height_mm",
+        "distance_mm",
+        "nominal_tag_height_mm",
+        "nominal_distance_mm",
+        "rms_limit_mm",
+        "created_at",
+    ):
         number = value.get(name)
         if type(number) not in (int, float) or not math.isfinite(number):
             raise ValueError(f"Invalid calibration {name}.")
     if not 0 < value["distance_mm"] <= 1000 or value["created_at"] <= 0:
         raise ValueError("Invalid calibration distance or time.")
+    settings = calibration_settings(
+        {
+            key: value[key]
+            for key in (
+                "nominal_tag_height_mm",
+                "nominal_distance_mm",
+                "rms_limit_mm",
+            )
+        }
+    )
+    if abs(value["distance_mm"] - settings["nominal_distance_mm"]) > 10:
+        raise ValueError("Stored tag-to-tip distance exceeds its 10 mm acceptance limit.")
     rms = value.get("rms_mm")
     if not isinstance(rms, dict) or set(rms) != {"held_out", "tray"}:
         raise ValueError("Calibration needs separate held-out and tray residuals.")
     for number in rms.values():
-        if type(number) not in (int, float) or not math.isfinite(number) or number < 0:
+        if (
+            type(number) not in (int, float)
+            or not math.isfinite(number)
+            or not 0 <= number <= settings["rms_limit_mm"]
+        ):
             raise ValueError("Calibration residuals must be finite and nonnegative.")
+    points = value.get("points")
+    if not isinstance(points, dict):
+        raise ValueError("Calibration must retain its measured points and validation split.")
+    _array(points.get("tag_flange_mm"), (24, 3), "stored tag points")
+    _array(points.get("tag_pixels"), (24, 2), "stored tag pixels")
+    references = points.get("tray_tip_xy_flange_z_mm")
+    count = len(references) if isinstance(references, list) else 0
+    if not 2 <= count <= 4:
+        raise ValueError("Calibration must retain 2 to 4 tray references.")
+    _array(references, (count, 3), "stored tray points")
+    _array(points.get("tray_pixels"), (count, 2), "stored tray pixels")
+    training = [index for index in range(24) if index not in VALIDATION_INDICES]
+    inliers = points.get("inlier_indices")
+    if (
+        points.get("training_indices") != training
+        or points.get("validation_indices") != list(VALIDATION_INDICES)
+        or not isinstance(inliers, list)
+        or not 12 <= len(inliers) <= 18
+        or any(type(index) is not int or index not in training for index in inliers)
+        or len(set(inliers)) != len(inliers)
+    ):
+        raise ValueError("Stored calibration has an invalid training or held-out split.")
+    errors = value.get("errors_mm")
+    if not isinstance(errors, dict) or set(errors) != {"held_out", "tray"}:
+        raise ValueError("Calibration must retain each point's own-height error.")
+    for name, size in (("held_out", 6), ("tray", count)):
+        data = _array(errors[name], (size,), "validation errors")
+        if np.any(data < 0) or not math.isclose(
+            float(np.sqrt(np.mean(data**2))), rms[name], rel_tol=1e-8, abs_tol=1e-8
+        ):
+            raise ValueError("Stored calibration RMS disagrees with its point errors.")
     # Decode a bounded JSON copy: callers cannot mutate stored state via arrays.
     encoded = json.dumps(value, allow_nan=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > MAX_DOCUMENT:
@@ -498,7 +569,7 @@ def _minimize_distance(objective, guess, cancelled):
 def fit_calibration(
     tag_points,
     tag_pixels,
-    tray_flange_points,
+    tray_points,
     tray_pixels,
     image_size,
     *,
@@ -510,7 +581,8 @@ def fit_calibration(
 ):
     """Fit 18 tags + tray constraints; the 6 tag holdouts never affect fitting.
 
-    Points are no-tool flange XYZ. Tags use Z+h, tray points use Z+h-D.
+    Tag points are no-tool flange XYZ. Tray points use corrected tip XY with
+    raw flange Z. Tags use Z+h, tray points use Z+h-D.
     The scalar mapping plane is the mean tray height; reference validation uses
     each reference's own height and reports fitted residuals, not holdout error.
     """
@@ -532,10 +604,10 @@ def fit_calibration(
             raise ValueError("Calibration distances and error limits must be positive")
     tags = _points(tag_points, (24, 3), "tag flange points")
     pixels = _points(tag_pixels, (24, 2), "tag pixels")
-    count = len(tray_flange_points)
+    count = len(tray_points)
     if not 2 <= count <= 4:
         raise ValueError("Calibration requires 2 to 4 tray references")
-    references = _points(tray_flange_points, (count, 3), "tray flange points")
+    references = _points(tray_points, (count, 3), "tray tip XY and flange Z")
     reference_pixels = _points(tray_pixels, (count, 2), "tray pixels")
     for values in (pixels, reference_pixels):
         if np.any(values < 0) or np.any(values >= np.asarray(image_size)):
@@ -582,11 +654,13 @@ def fit_calibration(
         "tray_height_mm": float(np.mean(reference_heights)),
         "distance_mm": float(distance),
         "nominal_tag_height_mm": float(nominal_tag_height_mm),
+        "nominal_distance_mm": float(nominal_distance_mm),
+        "rms_limit_mm": float(rms_limit_mm),
         "image_size": list(image_size),
         "points": {
             "tag_flange_mm": tags.tolist(),
             "tag_pixels": pixels.tolist(),
-            "tray_flange_mm": references.tolist(),
+            "tray_tip_xy_flange_z_mm": references.tolist(),
             "tray_pixels": reference_pixels.tolist(),
             "training_indices": training.tolist(),
             "validation_indices": validation.tolist(),

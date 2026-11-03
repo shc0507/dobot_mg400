@@ -2,7 +2,9 @@
 
 # Vision service
 
-The vision service detects chips, the robotic arm, and QR or Micro QR labels in camera frames.
+YOLO detects unlabeled chips and the robotic arm in camera frames.
+Chip identity comes from its slot and run record. QR and Micro QR readers remain available for labels on the wafer side.
+Camera calibration uses ArUco markers on the arm and tray, independently of chip detection.
 go2rtc owns the cameras. The vision service reads its JPEG endpoint and does not open a camera device.
 Model loading and inference start only when the service starts or receives a request.
 
@@ -46,6 +48,10 @@ Command-line options override environment settings. Empty environment values use
 | `MG400_VISION_DEVICE` | `--device` | `cuda` when available, otherwise `cpu`. Explicit `cuda:N` selects a device |
 | `MG400_VISION_GPU_FRACTION` | `--gpu-fraction` | `0.15`. Finite value greater than 0 and at most 1 |
 | `MG400_VISION_FRAME_TIMEOUT` | `--frame-timeout` | `2` seconds for each HTTP socket operation and the body-read deadline. Finite and greater than 0 |
+| `MG400_VISION_CALIBRATION_DIR` | None | `/var/lib/mg400/calibration/cameras/`. Private camera-model directory |
+| `MG400_VISION_TAG_HEIGHT_MM` | None | `100`. Nominal arm-tag height above the flange, in millimetres |
+| `MG400_VISION_TAG_TIP_MM` | None | `246`. Nominal vertical distance from the tag to the tweezer tip, in millimetres |
+| `MG400_VISION_CALIBRATION_RMS_MM` | None | `1`. Finite acceptance limit greater than 0 and at most 1 mm |
 | None | `--demo` | Use offline fixtures without the detector runtime |
 
 A configured token requires at least 24 characters even on loopback.
@@ -65,7 +71,7 @@ The service does not silently change an explicit CUDA request to CPU.
 Live camera numbers are integers from 1 through the configured device count, at most 4.
 The service uses the same `MG400_CAMERA_DEVICES`, `MG400_CAMERA_MODES`, and `MG400_CAMERA_CAPTURE_SIZES` settings as the installer and preview.
 See [Cameras](olares.en.md#cameras) for allowed modes and defaults. Empty device settings disable live frame commands.
-The command schema lists only configured camera numbers; unconfigured numbers are rejected before a frame request.
+The command schema lists only configured camera numbers. The service rejects unconfigured numbers before requesting a frame.
 The live source uses this fixed endpoint, replacing `N` with the camera number:
 
 ```text
@@ -89,16 +95,18 @@ Detection fields such as `xyxy`, `center_xy`, `polygon`, and `size_px` refer to 
 QR results contain `corners_px`, `center_px`, and `bounds_px` in full-frame coordinates.
 An unreadable label has `decoded=false`. Its text is not a verified identity.
 
-The service currently reports `calibrated=false` and an empty `calibrated_cameras` list.
-It does not return `robot_mm` or invent camera-to-robot transforms.
-CAL-01 adds calibration loading, image-size validation, and robot millimetres.
-Robot motion targets require validated calibration on the applicable plane.
+For a valid camera model, detections include `robot_mm` with `x` and `y` at the detection center.
+The service undistorts the pixel and intersects its ray with the stored horizontal tray plane.
+`calibrated_cameras` identifies cameras with valid loaded models. Missing calibration produces `calibrated=false` and no `robot_mm`.
+A camera-port or image-size change invalidates the calibration. The service does not reuse another port's file or resize a model.
+An image-size mismatch fails the operation without publishing robot coordinates.
+Robot motion targets still require a validated calibration on the applicable plane and the normal motion guards.
 
 ## Routes and commands
 
 Routes are relative to `--base-path` and use the [service contract](adr/0001-instrument-service-contract.en.md).
-Only 1 inference runs at a time, including detection and QR reading.
-An overlapping request returns 409. The service does not queue extra inference requests.
+Only 1 operation runs at a time, including detection, QR reading, marker reading, and calibration.
+An overlapping request returns 409. The service does not queue extra operations.
 
 | Read route | Result |
 | --- | --- |
@@ -129,6 +137,22 @@ Send commands to `POST api/command`:
 Bounds must increase, be nonnegative, and fit inside the frame.
 Returned label coordinates include the crop offset and refer to the full image.
 
+Calibration adds 2 leased commands:
+
+| Command | Parameters and result |
+| --- | --- |
+| `read_markers` | `camera`. Returns `markers` with `id` and `center_px`, plus `image_size`, `camera_device`, `frame_sha256`, and `read_at`. |
+| `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, and `image_size`. Fits and stores the model through the owned lease. |
+
+`tag_points` contains 24 uncorrected flange XYZ rows. `tag_pixels` contains their 24 pixel XY rows.
+The fitter applies the nominal tag height to these grid points.
+`tray_points` contains 2 to 4 rows with transformed fingertip XY and original contact flange Z.
+The skill rotates the configured tool XY offset by each recorded R, then adds it to the reference flange XY.
+It preserves flange Z for the unknown-distance fit, without applying the tool Z offset.
+`tray_pixels` contains the matching pixel XY rows.
+`image_size` is `[width, height]`. The request body must fit within 16 KiB.
+Use the guarded calibration skill below to collect these arrays. Do not convert historical contact data into robot move commands.
+
 A command returns 202 and `command_id` before completion.
 Read `state.last_command` for `result`, `message`, and `finished_at`.
 A successful command includes full JSON metadata in `last_command.output`.
@@ -137,6 +161,116 @@ Invalid or oversized metadata fails with 503 and is not published.
 Failed or stopped commands have `output=null`.
 `last_result` retains a small summary of the latest successful inference, including its completion time.
 A live service reports `connected=false` until its first successful frame operation.
+
+## Camera-to-robot calibration
+
+Recalibrate after moving a camera, changing its USB port, changing capture dimensions, or changing the arm-tag or tray geometry.
+An operator must prepare trusted references and taught stations before calibration.
+Review the change and complete the applicable hardware gates before deployment or a real scan.
+Software checks and rehearsal do not validate physical clearance or camera geometry.
+
+### Prepare references and safe entry
+
+The arm tag uses `DICT_4X4_50` ID `4` on the J4 axis.
+Tray references use distinct IDs from `0`, `1`, `2`, and `7` in the same dictionary.
+Configure 2 to 4 measured tray references in a private TOML file.
+The orchestrator reads `MG400_CAMERA_CALIBRATION_REFERENCES`, which defaults to `/var/lib/mg400/calibration/cameras/references.toml`.
+The file must be trusted, without links, and at most 4 KiB.
+
+This is a template, not measured coordinates. Replace `X`, `Y`, `Z`, and `R` with operator-recorded flange values:
+
+```text
+[[references]]
+id = 1
+flange_mm = [X, Y, Z, R]
+```
+
+XYZ values use millimetres. R uses degrees.
+The reference contacts from `H-08` remain calibration data, even when a contact lies outside the current automatic motion limits.
+The routine never moves to those contact poses.
+
+Teach 2 grid-corner stations with distinct X and Y, the same R, and the same explicit zone.
+Configure that zone with owner `robot`.
+Stations describe the fingertip. The skill converts them to flange poses through the existing tool definition.
+Choose 2 reachable flange heights at least 40 mm apart.
+Existing workspace, joint, path, feedback, and control checks remain in force.
+
+Before the scan, reach the first corner at the lower flange height through an approved operator or taught route.
+The robot must already be enabled, idle, freshly observed, and owned by the run at that pose.
+The calibration skill does not enable the robot, enter the zone from another pose, or recover a stopped run automatically.
+
+The scan requires the vision service to report `connected=true`. A live service initially reports `connected=false`.
+Before the scan, use an authorized preview lease to run `read_markers` for the selected camera.
+Wait for its successful command receipt, then release the preview lease.
+The scan refuses unknown vision health. It does not silently issue a preview request or move to establish health.
+
+### Run the guarded scan
+
+The typed recipe skill takes scalar parameters:
+
+```text
+vision.calibrate(camera: int, corner_a: str, corner_b: str,
+                 low_flange_z_mm: float, high_flange_z_mm: float)
+```
+
+`camera` selects a configured camera. `corner_a` and `corner_b` name the taught stations.
+The routine samples a 3-row by 4-column grid at both heights, for 24 tag points.
+At each point, a stationarity guard remains active while the service reads 5 sequential ArUco frames.
+The routine uses the median marker center. Missing or ambiguous required markers abort the scan.
+
+Each sample must have a different RGB SHA256 from the other samples at that point.
+This rejects identical image content. It does not prove sensor freshness.
+go2rtc supplies neither a capture timestamp nor a sensor frame ID. `read_at` is the service read time.
+Camera path and image size must remain unchanged throughout acquisition.
+
+The skill reads the visible tray markers after the grid, while the robot remains stationary.
+It submits the collected points in 1 request and accepts only the exact owned command receipt.
+Loss of control, cancellation, or an unknown outcome causes no retry or authority reacquisition.
+The run stores the accepted calibration as an artifact.
+
+The routine ends inside the calibration zone. Completion does not prove departure.
+Zone occupancy remains until a later explicit departure or supervised recovery establishes clearance.
+
+### Fit, acceptance, and limits
+
+The fitter starts with normalized direct linear transform (DLT) and RANSAC at a 2-pixel threshold.
+At least 12 of the 18 training tag points must be inliers.
+It uses `cv2.calibrateCamera` with `CALIB_USE_INTRINSIC_GUESS` and radial `k1` and `k2` only.
+The remaining 6 tag points never participate in fitting.
+
+The joint fit also uses the tray references to recover `D`, the vertical tag-to-tip distance.
+Its default nominal value is 246 mm, with a fixed permitted difference of 10 mm.
+The nominal tag height above the flange defaults to 100 mm.
+The fit reports `distance_mm` and separate `rms_mm.held_out` and `rms_mm.tray` values.
+
+RMS is the root mean square of horizontal position errors.
+Held-out tag RMS measures unused tag points. Tray RMS is a fitted-reference residual, not an independent holdout result.
+Each error uses that point's own height. Both RMS values must meet the configured limit, at most 1 mm.
+The mapping plane uses the mean recovered tray height in model coordinates.
+`tray_height_mm` depends on the nominal tag height and is not an independently measured physical robot Z.
+Never use it as a robot motion height. The service returns XY only.
+A tilted tray remains a limitation: this model uses a horizontal plane and does not model tilt.
+Passing RMS checks does not remove that limitation or establish a safe motion path.
+
+### Stored models and invalidation
+
+The service stores bounded JSON under `MG400_VISION_CALIBRATION_DIR`.
+The filename is SHA256 of the full `/dev/v4l/by-path/` device path, followed by `.json`.
+The document also stores that full path and its image size.
+It retains the camera matrix, distortion, rotation, translation, tray height, recovered distance, sample points, split indices, errors, and creation time.
+Model points store transformed tray XY with original flange Z under `tray_tip_xy_flange_z_mm`.
+The run artifact stores the original reference flange poses, marker IDs, and configured tool offset under `reference_provenance`.
+The calibration JSON does not contain this original-reference provenance.
+
+The directory must exist, belong to the service account, and use mode `0700` or `0750`.
+Model files must be private regular files with mode `0600` or `0640`, without symbolic or multiple hard links.
+New model files use `0600` and an atomic replacement after the final authority check. Each document is at most 64 KiB.
+Stop, lease release, or lease expiry rejects later publication.
+
+A new USB-port path selects a different calibration key. Changing image size also prevents coordinate use.
+Do not rename an old file to bypass these checks. Recalibrate with the intended camera and capture mode.
+The service cannot detect every physical camera movement from its port name alone.
+Keep the camera fixed and revalidate after physical changes.
 
 ## Stop and shutdown
 

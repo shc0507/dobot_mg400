@@ -1,6 +1,8 @@
 """Synthetic camera geometry and fake service I/O; never open a camera."""
 
+import copy
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -13,7 +15,13 @@ import cv2
 import numpy as np
 import pytest
 from PIL import Image
+from test_orchestrator_transfer import Robot
 
+from orchestrator.runner import Context, Revoked, _Authority
+from orchestrator.skills.calibrate import calibrate
+from orchestrator.stations import AXES, StationStore, Workspace
+from orchestrator.tool import Pose, ToolOffset, fingertip_to_flange
+from orchestrator.zones import ZonePlan, Zones
 from vision.calibration import (
     VALIDATION_INDICES,
     CalibrationStore,
@@ -43,9 +51,21 @@ def camera_model():
         "tray_height_mm": 0,
         "distance_mm": 246,
         "nominal_tag_height_mm": 100,
+        "nominal_distance_mm": 246,
+        "rms_limit_mm": 1,
         "image_size": [200, 160],
         "rms_mm": {"held_out": 0.1, "tray": 0.2},
         "created_at": 1,
+        "points": {
+            "tag_flange_mm": [[0, 0, 0]] * 24,
+            "tag_pixels": [[100, 80]] * 24,
+            "tray_tip_xy_flange_z_mm": [[0, 0, 0]] * 3,
+            "tray_pixels": [[100, 80]] * 3,
+            "training_indices": [index for index in range(24) if index not in VALIDATION_INDICES],
+            "validation_indices": list(VALIDATION_INDICES),
+            "inlier_indices": [index for index in range(24) if index not in VALIDATION_INDICES],
+        },
+        "errors_mm": {"held_out": [0.1] * 6, "tray": [0.2] * 3},
     }
 
 
@@ -218,11 +238,25 @@ def test_service_adds_robot_mm_and_refuses_changed_image_size(calibrated_service
     service, frames = calibrated_service
     result = service.read("detect", 1)
     assert result["calibrated"] is True
-    assert result["detections"][0]["robot_mm"] == pytest.approx({"x": 0, "y": 0, "z": 0})
+    assert result["detections"][0]["robot_mm"] == pytest.approx({"x": 0, "y": 0})
     assert service.snapshot()["calibrated_cameras"] == [1]
     frames.read = lambda _: Image.new("RGB", (400, 320))
     with pytest.raises(Exception, match="image size"):
         service.read("detect", 1)
+
+
+def test_detection_robot_xy_is_invariant_under_nominal_tag_height_gauge(calibrated_service):
+    service, _ = calibrated_service
+    first = service.read("detect", 1)["detections"][0]["robot_mm"]
+    model = service.calibrations.load(DEVICE)
+    rotation = cv2.Rodrigues(np.asarray(model["rotation"], dtype=float))[0]
+    model["nominal_tag_height_mm"] += 7
+    model["tray_height_mm"] += 7
+    model["translation"] = (np.asarray(model["translation"]) - rotation[:, 2] * 7).tolist()
+    service.calibrations.save(DEVICE, model)
+    second = service.read("detect", 1)["detections"][0]["robot_mm"]
+    assert set(first) == set(second) == {"x", "y"}
+    assert second == pytest.approx(first, abs=1e-9)
 
 
 def test_marker_commands_share_access_and_provide_bounded_frame_identity(calibrated_service):
@@ -561,3 +595,396 @@ def test_ray_inversion_refuses_unconverged_normalized_coordinates(monkeypatch):
     monkeypatch.setattr(cv2, "undistortPointsIter", lambda *args: np.zeros((1, 1, 2)))
     with pytest.raises(ValueError, match="did not converge"):
         _mapped_pixels(model, [[8.0, 8.0]], SIZE)
+
+
+@pytest.fixture
+def scan_rig(monkeypatch):
+    module = importlib.import_module("orchestrator.skills.calibrate")
+    position = [10.0, 20.0, 100.0, 0.0]
+    moves, commands, checked, zones, artifacts = [], [], [], [], []
+    state = SimpleNamespace(failure=None, count=0, revoked=False, zone_owner="robot", limit=1000)
+
+    class Transfer:
+        offset = ToolOffset(0, 0, 146)
+        stations = {
+            "a": {"x_mm": 10, "y_mm": 20, "z_mm": -46, "r_deg": 0, "zone": "tray"},
+            "b": {"x_mm": 40, "y_mm": 60, "z_mm": -46, "r_deg": 0, "zone": "tray"},
+        }
+
+        def __init__(self, ctx):
+            pass
+
+        def pose(self, station):
+            return Pose(*[station[key] for key in ("x_mm", "y_mm", "z_mm", "r_deg")])
+
+        def _inside(self, pose):
+            checked.append(pose)
+            if pose.x_mm > state.limit:
+                raise ValueError("Outside configured workspace")
+            return pose
+
+        def state(self):
+            return {"actual": list(position) + [1000]}, None
+
+        def move(self, pose):
+            check()
+            flange = fingertip_to_flange(pose, self.offset)
+            position[:] = [flange.x_mm, flange.y_mm, flange.z_mm, flange.r_deg]
+            moves.append(list(position))
+
+    class Vision:
+        receipt = None
+
+        def owned(self, snapshot):
+            return snapshot["lease"]["holder"] == "calibration"
+
+        def state(self):
+            return {
+                "lease": {"holder": "calibration"},
+                "busy": False,
+                "locked": False,
+                "fault": None,
+                "connected": True,
+                "last_command": self.receipt,
+            }
+
+        def command(self, action, **params):
+            check()
+            commands.append((action, params))
+            identity = str(len(commands))
+            if action == "read_markers":
+                state.count += 1
+                jitter = (state.count - 1) % 5 - 2
+                fingerprint = hashlib.sha256(str(state.count).encode()).hexdigest()
+                result = {
+                    "camera": 1,
+                    "camera_device": DEVICE,
+                    "image_size": {"width": 200, "height": 160},
+                    "frame_sha256": fingerprint,
+                    "markers": [
+                        {"id": marker, "center_px": [100 + position[0] / 10 + jitter, 80 + jitter]}
+                        for marker in (1, 2, 4)
+                    ],
+                }
+                if state.count == 3:
+                    if state.failure == "move":
+                        position[0] += 0.2
+                    elif state.failure == "duplicate":
+                        result["frame_sha256"] = hashlib.sha256(b"2").hexdigest()
+                    elif state.failure == "camera":
+                        result["camera_device"] = DEVICE.replace("0:1.0", "0:2.0")
+                    elif state.failure == "size":
+                        result["image_size"]["width"] = 400
+                    elif state.failure == "missing":
+                        result["markers"] = []
+                    elif state.failure == "revoke":
+                        state.revoked = True
+            else:
+                result = {"camera": 1, "calibrated": True, "calibration": camera_model()}
+            self.receipt = {
+                "id": identity,
+                "action": action,
+                "client": "calibration",
+                "result": "ok",
+                "output": result,
+            }
+            if state.failure == "receipt" and state.count == 3:
+                self.receipt["action"] = "unrelated"
+            return {"command_id": identity}
+
+    def check():
+        if state.revoked:
+            raise RuntimeError("Authority revoked")
+
+    @contextmanager
+    def guard(operation):
+        operation()
+        yield
+        operation()
+
+    def event(*args):
+        check()
+
+    ctx = SimpleNamespace(
+        clients={"vision": Vision()},
+        check=check,
+        sleep=lambda _: check(),
+        guard=guard,
+        zone_definitions=lambda: {"tray": {"owner": state.zone_owner}},
+        zones=SimpleNamespace(
+            declare=lambda name: zones.append(("enter", name)) or name,
+            finish=lambda entry, **kwargs: zones.append(("finish", entry, kwargs)),
+        ),
+        store=SimpleNamespace(event=event, artifact=lambda name, data: artifacts.append(data) or 1),
+    )
+    monkeypatch.setattr(module, "_Transfer", Transfer)
+    # This measured contact is deliberately outside the grid. It must remain data.
+    monkeypatch.setattr(
+        module,
+        "_references",
+        lambda _: [
+            (1, Pose(-107, -335, 24, -78)),
+            (2, Pose(39, -187, 22, 51)),
+        ],
+    )
+    return SimpleNamespace(
+        module=module,
+        ctx=ctx,
+        state=state,
+        moves=moves,
+        commands=commands,
+        checked=checked,
+        position=position,
+        zones=zones,
+        artifacts=artifacts,
+        transfer_type=Transfer,
+    )
+
+
+def test_scan_collects_exact_grid_and_five_frame_medians_without_commanding_contacts(scan_rig):
+    rig = scan_rig
+    result = rig.module.calibrate(rig.ctx, 1, "a", "b", 100, 140)
+    assert result["camera"] == 1
+    assert len(rig.checked) == 24 and len(rig.moves) == 23
+    assert len([action for action, _ in rig.commands if action == "read_markers"]) == 125
+    action, sent = rig.commands[-1]
+    assert action == "calibrate_camera"
+    expected = [[x, y, z] for z in (100, 140) for y in (20, 40, 60) for x in (10, 20, 30, 40)]
+    assert sent["tag_points"] == expected
+    assert sent["tag_pixels"] == [[100 + point[0] / 10, 80] for point in expected]
+    assert sent["tray_points"] == [[-107, -335, 24], [39, -187, 22]]
+    assert [move[:3] for move in rig.moves] == expected[1:]
+    assert rig.zones == [("enter", "tray"), ("finish", "tray", {})]
+    assert len(rig.artifacts) == 1
+
+
+def test_tray_contact_xy_uses_each_recorded_r_and_tool_xy_without_applying_dz(
+    scan_rig, monkeypatch
+):
+    rig = scan_rig
+    rig.transfer_type.offset = ToolOffset(2, 3, 146)
+    rig.position[:2] = [8, 17]
+    monkeypatch.setattr(
+        rig.module,
+        "_references",
+        lambda _: [
+            (1, Pose(10, 20, 24, 0)),
+            (2, Pose(30, 40, 22, 90)),
+        ],
+    )
+    rig.module.calibrate(rig.ctx, 1, "a", "b", 100, 140)
+    sent = rig.commands[-1][1]
+    assert sent["tray_points"] == [[12, 23, 24], [27, 42, 22]]
+    # Tag locations stay measured flange XYZ, independent of tip XY and dz.
+    assert sent["tag_points"][0] == [8, 17, 100]
+    provenance = json.loads(rig.artifacts[0])["reference_provenance"]
+    assert provenance == {
+        "flange_poses_mm": [[10, 20, 24, 0], [30, 40, 22, 90]],
+        "marker_ids": [1, 2],
+        "tool_offset_mm": [2, 3, 146],
+    }
+
+
+@pytest.mark.parametrize(
+    "failure", ["move", "duplicate", "camera", "size", "missing", "revoke", "receipt"]
+)
+def test_failed_acquisition_never_moves_retries_or_fits(scan_rig, failure):
+    rig = scan_rig
+    rig.state.failure = failure
+    with pytest.raises(RuntimeError):
+        rig.module.calibrate(rig.ctx, 1, "a", "b", 100, 140)
+    assert not rig.moves and not rig.artifacts
+    assert len(rig.commands) == 3 and all(action == "read_markers" for action, _ in rig.commands)
+    assert rig.zones[-1] == ("finish", "tray", {"exceptional": True})
+
+
+@pytest.mark.parametrize("failure", ["wrong-start", "grid-workspace", "vision-zone", "height"])
+def test_full_scan_admission_refuses_before_any_capture_or_motion(scan_rig, failure):
+    rig = scan_rig
+    high = 140
+    if failure == "wrong-start":
+        rig.position[0] += 1
+    elif failure == "grid-workspace":
+        rig.state.limit = 39
+    elif failure == "vision-zone":
+        rig.state.zone_owner = "vision"
+    else:
+        high = 139.9
+    with pytest.raises((ValueError, RuntimeError)):
+        rig.module.calibrate(rig.ctx, 1, "a", "b", 100, high)
+    assert not rig.commands and not rig.moves and not rig.zones
+
+
+class AuthorityVision:
+    def __init__(self):
+        self.reads = 0
+        self.calls = []
+        self.after = None
+        self.value = dict(
+            connected=True,
+            busy=False,
+            locked=False,
+            fault=None,
+            instance="vision-review",
+            lease=dict(holder="owned-run", remaining_s=2),
+            last_command=None,
+        )
+
+    def state(self):
+        return copy.deepcopy(self.value)
+
+    def owned(self, state):
+        return state.get("lease", {}).get("holder") == "owned-run"
+
+    def healthy(self, state):
+        return state.get("connected") is True
+
+    def command(self, action, **params):
+        self.calls.append((action, params))
+        identity = str(len(self.calls))
+        if action == "read_markers":
+            self.reads += 1
+            output = dict(
+                camera=1,
+                camera_device="/dev/v4l/by-path/fake-review",
+                image_size=dict(width=1280, height=720),
+                frame_sha256=f"{self.reads:064x}",
+                markers=[dict(id=i, center_px=[100 + i, 200]) for i in (0, 1, 4)],
+            )
+        else:
+            output = dict(
+                camera=1,
+                calibrated=True,
+                calibration=dict(
+                    camera_device="/dev/v4l/by-path/fake-review",
+                    image_size=[1280, 720],
+                    rms_mm={"held_out": 0.1, "tray": 0.1},
+                    distance_mm=246,
+                ),
+            )
+        self.value["last_command"] = dict(
+            id=identity, action=action, client="owned-run", result="ok", output=output
+        )
+        if self.after:
+            self.after(action)
+        return {"command_id": identity}
+
+
+@pytest.fixture
+def authority_rig(tmp_path, monkeypatch):
+    workspace = Workspace(dict(x_mm=[0, 500], y_mm=[-200, 200], z_mm=[0, 250], r_deg=[-360, 360]))
+    for field, axis in AXES.items():
+        for n, side in enumerate(("MIN", "MAX")):
+            monkeypatch.setenv(
+                f"MG400_ORCH_{axis}_{side}_{'DEG' if axis == 'R' else 'MM'}",
+                str(workspace.bounds[field][n]),
+            )
+    store = StationStore(workspace, tmp_path / "stations.toml")
+    store.save("a", Pose(200, 0, 50, 0), approach_mm=10, zone="scan")
+    store.save("b", Pose(260, 40, 50, 0), approach_mm=10, zone="scan")
+    tool = tmp_path / "tool.toml"
+    tool.write_text("offset_mm=[0,0,0]\n")
+    tool.chmod(0o640)
+    refs = tmp_path / "references.toml"
+    refs.write_text(
+        "[[references]]\nid=0\nflange_mm=[200,0,20,0]\n[[references]]\nid=1\nflange_mm=[260,40,20,0]\n"
+    )
+    refs.chmod(0o640)
+    monkeypatch.setenv("MG400_ORCH_STATIONS_FILE", str(store.path))
+    monkeypatch.setenv("MG400_ORCH_TOOL_FILE", str(tool))
+    monkeypatch.setenv("MG400_CAMERA_CALIBRATION_REFERENCES", str(refs))
+    robot = Robot()
+    vision = AuthorityVision()
+    robot.healthy = lambda state: (
+        state.get("syncing") is True and state.get("feedback_fresh") is True
+    )
+    definitions = {"scan": dict(owner="robot", conditions=())}
+    plan = ZonePlan(definitions, ("robot", "vision"), tmp_path / "occupancy.json", "a" * 64)
+    zones = Zones(
+        plan, dict(robot=robot, vision=vision), holder="review-run", audit=lambda *args: True
+    )
+    authority = _Authority(time.monotonic() + 5)
+    artifacts = []
+    storage = SimpleNamespace(
+        event=lambda *args, **kwargs: None,
+        artifact=lambda *args, **kwargs: artifacts.append(args) or "artifact",
+    )
+    ctx = Context(
+        authority, dict(robot=robot, vision=vision), storage, "review-run", 1, "chip", 0, zones
+    )
+    return SimpleNamespace(
+        ctx=ctx, robot=robot, vision=vision, zones=zones, authority=authority, artifacts=artifacts
+    )
+
+
+def test_grid_uses_exact_first_pose_23_guarded_moves_and_retains_zone(authority_rig):
+    result = calibrate(authority_rig.ctx, 1, "a", "b", 50, 90)
+    assert result["artifact_id"] == "artifact"
+    assert len(authority_rig.robot.calls) == 23
+    assert all(
+        action == "execute" and args["speed"] == 1 for action, args in authority_rig.robot.calls
+    )
+    points = authority_rig.vision.calls[-1][1]["tag_points"]
+    assert points == [
+        [200 + 20 * col, 20 * row, z] for z in (50, 90) for row in range(3) for col in range(4)
+    ]
+    assert authority_rig.vision.reads == 125  # 24*5 arm frames plus5 tray frames.
+    assert authority_rig.zones.snapshot()["scan"]["device"] == "robot"
+    assert authority_rig.zones.snapshot()["scan"]["status"] == "occupied"
+
+
+@pytest.mark.parametrize("bad", ["first", "height", "workspace", "zone"])
+def test_preflight_refuses_before_any_motion_or_vision_command(authority_rig, bad):
+    high = 90
+    if bad == "first":
+        authority_rig.robot.value["actual"][0] += 1
+    if bad == "height":
+        high = 89
+    if bad == "workspace":
+        high = 251
+    if bad == "zone":
+        authority_rig.ctx._Context__zone_definitions["scan"]["owner"] = "vision"
+    with pytest.raises((ValueError, RuntimeError)):
+        calibrate(authority_rig.ctx, 1, "a", "b", 50, high)
+    assert (
+        not authority_rig.robot.calls
+        and not authority_rig.vision.calls
+        and not authority_rig.artifacts
+    )
+
+
+@pytest.mark.parametrize("bad", ["moving", "owner", "receipt", "cancel"])
+def test_capture_failure_stops_scan_before_further_motion_or_publication(authority_rig, bad):
+    def change(action):
+        if action != "read_markers":
+            return
+        if bad == "moving":
+            authority_rig.robot.value["actual"][0] += 1
+        if bad == "owner":
+            authority_rig.robot.value["controller_id"] = "other"
+        if bad == "receipt":
+            authority_rig.vision.value["last_command"]["id"] = "superseding"
+        if bad == "cancel":
+            authority_rig.authority.revoke(RuntimeError("review cancellation"))
+
+    authority_rig.vision.after = change
+    with pytest.raises((RuntimeError, Revoked)):
+        calibrate(authority_rig.ctx, 1, "a", "b", 50, 90)
+    assert not authority_rig.robot.calls and not authority_rig.artifacts
+    assert authority_rig.zones.snapshot()["scan"]["status"] == "unknown"
+    assert len(authority_rig.vision.calls) == 1
+
+
+@pytest.mark.parametrize("health", ["fault-missing", "disconnected"])
+def test_unknown_vision_health_refuses_before_dispatch(authority_rig, health):
+    if health == "fault-missing":
+        authority_rig.vision.value.pop("fault")
+    else:
+        authority_rig.vision.value["connected"] = False
+    with pytest.raises(RuntimeError):
+        calibrate(authority_rig.ctx, 1, "a", "b", 50, 90)
+    assert (
+        authority_rig.vision.calls == []
+        and authority_rig.robot.calls == []
+        and authority_rig.artifacts == []
+    )

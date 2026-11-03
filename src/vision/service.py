@@ -24,6 +24,7 @@ from labkit.lease import Lease
 from vision.calibration import (
     DEFAULT_DIRECTORY,
     CalibrationStore,
+    calibration_settings,
     detect_markers,
     image_size,
     robot_xy,
@@ -83,6 +84,7 @@ class VisionService:
         qr_detector=detect_qr_codes,
         marker_detector=detect_markers,
         calibration_directory=DEFAULT_DIRECTORY,
+        calibration_options=None,
         clock=time.monotonic,
         wall_clock=time.time,
     ):
@@ -111,6 +113,7 @@ class VisionService:
         self._qr = qr_detector
         self._markers = marker_detector
         self.calibrations = CalibrationStore(calibration_directory)
+        self._calibration_options = calibration_settings(calibration_options)
         devices = getattr(getattr(self.frames, "configuration", None), "devices", ())
         self._devices = tuple(devices) if isinstance(devices, (tuple, list)) else ()
         self._calibrated_cameras = set()
@@ -399,6 +402,7 @@ class VisionService:
                 args["tray_pixels"],
                 args["image_size"],
                 cancelled=job["cancel"].is_set,
+                **self._calibration_options,
             )
             device = self._devices[job["camera"] - 1]
             saved = self.calibrations.save(device, model, commit_guard=lambda: self._commit(job))
@@ -466,7 +470,7 @@ class VisionService:
                     if point is None:
                         raise ValueError("Detection lacks an image-pixel center for calibration.")
                     xy = robot_xy(model, point, image.size)
-                    item["robot_mm"] = {"x": xy[0], "y": xy[1], "z": model["tray_height_mm"]}
+                    item["robot_mm"] = {"x": xy[0], "y": xy[1]}
                 result["calibrated"] = True
                 with self._lock:
                     self._calibrated_cameras.add(job["camera"])

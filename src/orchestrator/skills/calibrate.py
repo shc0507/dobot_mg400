@@ -77,7 +77,9 @@ def _vision(ctx, action, **params):
         or not client.owned(before)
         or before.get("busy") is not False
         or before.get("locked") is not False
-        or before.get("fault") is not None
+        or before.get("connected") is not True
+        or "fault" not in before
+        or before["fault"] is not None
     ):
         raise RuntimeError("Calibration requires owned, idle, unlocked vision state.")
     response = client.command(action, **params)
@@ -101,7 +103,8 @@ def _vision(ctx, action, **params):
                 or receipt.get("result") != "ok"
                 or state.get("busy") is not False
                 or state.get("connected") is not True
-                or state.get("fault") is not None
+                or "fault" not in state
+                or state["fault"] is not None
                 or not isinstance(receipt.get("output"), dict)
             ):
                 raise RuntimeError("Vision calibration failed: " + str(receipt.get("message", "")))
@@ -214,6 +217,9 @@ def calibrate(
     first, second = robot.stations[corner_a], robot.stations[corner_b]
     if not first["zone"] or first["zone"] != second["zone"]:
         raise ValueError("Both grid corners must belong to the same explicit calibration zone.")
+    zone = ctx.zone_definitions().get(first["zone"])
+    if not isinstance(zone, dict) or zone.get("owner") != "robot":
+        raise ValueError("The calibration grid zone must be configured for the robot.")
     a = fingertip_to_flange(robot.pose(first), robot.offset)
     b = fingertip_to_flange(robot.pose(second), robot.offset)
     if abs(a.x_mm - b.x_mm) < 1 or abs(a.y_mm - b.y_mm) < 1 or abs(a.r_deg - b.r_deg) > 0.1:
@@ -232,6 +238,12 @@ def calibrate(
     for pose in poses:
         ctx.check()
         robot._inside(flange_to_fingertip(pose, robot.offset))
+    tray_points = []
+    for _, contact in references:
+        corrected = flange_to_fingertip(contact, robot.offset)
+        # Measured dx/dy rotates with this contact's R. Leave Z as flange Z:
+        # the joint camera/D fit cancels the nominal tag height and tool dz.
+        tray_points.append([corrected.x_mm, corrected.y_mm, contact.z_mm])
     acquisition = _Acquisition(ctx, robot, camera)
     initial = [poses[0].x_mm, poses[0].y_mm, poses[0].z_mm, poses[0].r_deg]
     # Entry routing is deliberately explicit: the caller reaches the first
@@ -256,7 +268,7 @@ def calibrate(
                 camera=camera,
                 tag_points=tag_points,
                 tag_pixels=tag_pixels,
-                tray_points=[[pose.x_mm, pose.y_mm, pose.z_mm] for _, pose in references],
+                tray_points=tray_points,
                 tray_pixels=[tray[identity] for identity, _ in references],
                 image_size=list(acquisition.size),
             )
@@ -270,7 +282,20 @@ def calibrate(
     ):
         raise RuntimeError("Calibration result does not match the sampled camera.")
     artifact = ctx.store.artifact(
-        f"camera-{camera}-calibration.json", json.dumps(model, allow_nan=False).encode("utf-8")
+        f"camera-{camera}-calibration.json",
+        json.dumps(
+            {
+                **model,
+                "reference_provenance": {
+                    "flange_poses_mm": [
+                        [pose.x_mm, pose.y_mm, pose.z_mm, pose.r_deg] for _, pose in references
+                    ],
+                    "marker_ids": [identity for identity, _ in references],
+                    "tool_offset_mm": [robot.offset.dx_mm, robot.offset.dy_mm, robot.offset.dz_mm],
+                },
+            },
+            allow_nan=False,
+        ).encode("utf-8"),
     )
     return {
         "camera": camera,

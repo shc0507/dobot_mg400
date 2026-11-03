@@ -293,6 +293,98 @@ Do not rename an old file to bypass these checks. Recalibrate with the intended 
 The service cannot detect every physical camera movement from its port name alone.
 Keep the camera fixed and revalidate after physical changes.
 
+## Tray geometry and cross-checks
+
+`vision.tray` locates a tray from a supplied RGB image and a validated camera model.
+It does not acquire images, issue robot commands, or determine chip identity.
+Use [grooved-platform-v2.toml](../config/trays/grooved-platform-v2.toml) for `Grooved Platform V2`.
+`load_tray` reads the bounded TOML file. `validate_tray` checks an in-memory configuration.
+Call this Python library with supplied data. It adds no HTTP command or orchestrator skill.
+
+### Bounded groove geometry
+
+The tray has 32 named grooves, `groove_00` through `groove_31`.
+The origin is the plate corner beside marker ID `1`. The marker center has the offset shown below.
+All configured coordinates use millimetres in the tray frame.
+
+| Marker ID | Center XY |
+| --- | --- |
+| `1` | `(15.15, 15.0)` |
+| `0` | `(162.65, 15.0)` |
+| `7` | `(15.15, 162.8)` |
+| `2` | `(162.65, 162.8)` |
+
+For groove index `k = 0..31`, its centerline is at `x = 5.975 + 5.35 * k`.
+Grooves `k = 5..26` extend from `y = 0.0` to `y = 177.8`.
+The remaining grooves extend from `y = 30.0` to `y = 147.8`.
+Each `centerline_mm` is a bounded segment. Its `reference_mm` is the nominal midpoint, used only to describe geometry.
+A chip can occupy any valid position along its groove. Obtain its actual Y from vision.
+Do not substitute the midpoint for a chip observation or assume that it is a taught motion target.
+These chips have no label area or QR label.
+
+### Locate the tray
+
+Supply a current RGB image and chip centers mapped from that same image through the same camera model.
+The Python interfaces accept supplied data:
+
+```text
+locate_tray(image, calibration, tray, *, device, tolerance_mm=None)
+cross_check_slots(location, *, taught_stations, chips,
+                  same_location_slots=(), tolerance_mm=None)
+```
+
+`device` must match the calibration's full stable camera path. Image dimensions must also match.
+The reader uses `DICT_4X4_50` ArUco markers. It requires at least 3 unique observed corner IDs.
+Any duplicate corner ID refuses the frame before fitting, even when other corners are visible.
+Keep turret tags and spare prints out of the tray image when they repeat a corner ID.
+The arm marker ID `4` is not a tray corner.
+
+The function maps measured centers through the camera model and fits a similarity transform to the configured tray geometry.
+It returns the transform, measured marker residuals, and `slots` in `robot_xy_mm` coordinates.
+Each slot contains `centerline_xy_mm` and `reference_xy_mm`, plus its transformed `width_mm`.
+The output supplies XY geometry only. It does not establish a physical Z or a safe robot path.
+The calibration's horizontal-plane assumption also applies here. Tray tilt and chip height above that plane can affect mapped XY.
+
+With only 3 observed corners, `missing_marker` reports sampled cells at the predicted fourth-marker position.
+This result is diagnostic. It does not add an observed marker, replace missing evidence, or gate the accepted 3-marker fit.
+With all 4 corners observed, `missing_marker` is `null`.
+The diagnostic reports `match`, `mismatch`, or `unavailable`, with `used_for_pose=false`.
+The supplied tray uses a 24 mm black marker square. Sampling assumes that its edges are parallel to the tray axes.
+Sampling accepts rotations in multiples of 90 degrees. Mirrored patterns never match.
+Low resolution, occlusion, or tilt can prevent a conclusive comparison.
+
+### Check station and chip evidence
+
+Call `cross_check_slots` with explicit evidence keyed by slot ID.
+`taught_stations` maps each slot to a taught robot XY pair.
+`chips` supplies one of these observations for each slot:
+
+| Observation | Meaning |
+| --- | --- |
+| `{"state":"present","center_xy_mm":[x,y]}` | An observed chip center in robot XY millimetres. |
+| `{"state":"empty"}` | The caller explicitly establishes that the slot is empty. |
+| `{"state":"unknown"}` | The caller has no conclusive chip observation. |
+
+An omitted chip entry is unknown. Missing detection data never establishes an empty slot.
+Each groove requires a taught station and conclusive chip evidence for a complete check.
+Unknown slot IDs or malformed evidence refuse the request.
+
+The check measures each taught station and observed chip against its bounded groove segment.
+The residual includes perpendicular distance and any distance beyond either end.
+`tolerance_mm` must be finite, greater than 0, and at most 2 mm. The supplied TOML uses 2 mm.
+With `tolerance_mm=None`, `locate_tray` inherits the tray setting and `cross_check_slots` inherits the location setting.
+A residual equal to the tolerance passes. A larger residual fails.
+
+`station_chip_distance_mm` reports the full XY distance when both positions exist.
+Different valid Y positions along the groove do not indicate tray drift.
+Add a slot to `same_location_slots` only when its taught station targets that same actual chip position.
+For those slots, the full XY distance must also meet the tolerance. Both positions must exist.
+
+Each slot reports `status` as `ok`, `incomplete`, or `failed`, with `missing` and `failures` details.
+The result's `ok` is true only when every slot passes.
+An incomplete or failed check raises `TrayCheckError`. Inspect `TrayCheckError.report` for the complete per-slot report.
+Do not treat incomplete evidence as permission for motion. Normal robot limits, clearance checks, leases, and zone rules still apply.
+
 ## Stop and shutdown
 
 Any authenticated client can call `POST api/stop` without holding the lease.

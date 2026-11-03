@@ -21,6 +21,7 @@ from .runner import Runner
 from .skills import default_registry
 from .skills.crucible import CRUCIBLE_SETTINGS
 from .skills.robot import TRANSFER_SETTINGS
+from .skills.vision import DRIFT_SETTINGS
 from .stations import DEFAULT_STATIONS, DEFAULT_TOOL, StationStore, Workspace, load_tool, teach
 from .store import DEFAULT_RUNS, RunStore
 from .zones import CONFIG_SETTING, prepare_zones
@@ -45,6 +46,7 @@ def _demo_environment():
         }
         | TRANSFER_SETTINGS
         | CRUCIBLE_SETTINGS
+        | DRIFT_SETTINGS
     )
     try:
         os.environ.clear()

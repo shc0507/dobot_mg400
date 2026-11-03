@@ -2,6 +2,7 @@
 
 import errno
 import ipaddress
+import math
 import os
 import runpy
 import secrets
@@ -17,7 +18,114 @@ from mg400.web_gripper import WebGripper
 
 from .clients import FurnaceAdapter, RobotAdapter, ServiceAdapter, ThermalAdapter
 
-DEMO_SERVICES = frozenset({"robot", "stage", "thermal", "furnace"})
+DEMO_SERVICES = frozenset({"robot", "stage", "thermal", "furnace", "vision"})
+
+# Synthetic calibration geometry, never hardware stations or device paths to open.
+DEMO_CALIBRATION_DEVICE = "/dev/v4l/by-path/rehearsal-camera1-video-index0"
+DEMO_CALIBRATION_SIZE = (1920, 1080)
+DEMO_CALIBRATION_GRID = ((200.0, 0.0), (260.0, 40.0), (50.0, 90.0))
+DEMO_CALIBRATION_REFERENCES = (
+    (1, (160.0, -100.0, 100.0, 0.0)),
+    (2, (330.0, -100.0, 100.0, 0.0)),
+    (7, (160.0, 150.0, 100.0, 0.0)),
+)
+
+
+class _DemoCalibrationFrames:
+    """Render actual ArUco pixels from this rehearsal's robot pose only."""
+
+    camera_count = 1
+
+    def __init__(self, robot_state_provider):
+        import cv2
+        import numpy as np
+
+        from cameras.config import CameraConfig
+
+        self.configuration = CameraConfig((DEMO_CALIBRATION_DEVICE,), ((1920, 1080, 30),))
+        self._robot_state_provider = robot_state_provider
+        self._lock = threading.Lock()
+        self._closed = False
+        self._sequence = 0
+        self._matrix = np.array([[1200.0, 0, 960], [0, 1200.0, 540], [0, 0, 1]])
+        self._rotation = np.array([math.pi, 0.0, 0.0])
+        self._translation = np.array([-230.0, 20.0, 400.0])
+        self._distortion = np.array([-0.02, 0.005, 0, 0, 0])
+        self._dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        self._tray = np.full((1080, 1920), 255, dtype=np.uint8)
+        for identity, (x, y, flange_z, _r) in DEMO_CALIBRATION_REFERENCES:
+            self._render(self._tray, identity, (x, y, flange_z + 100 - 246))
+
+    def _render(self, image, identity, center):
+        import cv2
+        import numpy as np
+
+        # A 24 mm black square plus a 6 mm white margin on every side.
+        offsets = np.array([[-18, 18, 0], [18, 18, 0], [18, -18, 0], [-18, -18, 0]])
+        points = np.asarray(center, dtype=np.float64) + offsets
+        camera_points = points @ cv2.Rodrigues(self._rotation)[0].T + self._translation
+        if np.any(camera_points[:, 2] <= 0):
+            raise ValueError("The simulated marker is behind the calibration camera.")
+        projected = cv2.projectPoints(
+            points, self._rotation, self._translation, self._matrix, self._distortion
+        )[0].reshape(4, 2)
+        if (
+            not np.isfinite(projected).all()
+            or np.any(projected < 0)
+            or np.any(projected >= DEMO_CALIBRATION_SIZE)
+        ):
+            raise ValueError("The simulated marker is outside the calibration camera image.")
+        marker = np.full((384, 384), 255, dtype=np.uint8)
+        marker[64:320, 64:320] = cv2.aruco.generateImageMarker(self._dictionary, identity, 256)
+        transform = cv2.getPerspectiveTransform(
+            np.array([[0, 0], [383, 0], [383, 383], [0, 383]], dtype=np.float32),
+            projected.astype(np.float32),
+        )
+        warped = cv2.warpPerspective(
+            marker,
+            transform,
+            DEMO_CALIBRATION_SIZE,
+            flags=cv2.INTER_LINEAR,
+            borderValue=255,
+        )
+        np.minimum(image, warped, out=image)
+
+    def read(self, camera):
+        import numpy as np
+        from PIL import Image
+
+        from vision.frames import FrameError, validate_camera
+
+        validate_camera(camera, self.camera_count)
+        with self._lock:
+            if self._closed:
+                raise FrameError("The rehearsal camera source is closed.")
+            robot = self._robot_state_provider()
+            if robot is None:
+                raise FrameError("Calibration rehearsal needs its owned robot service.")
+            state = robot.snapshot()
+            actual = state.get("actual")
+            if (
+                state.get("demo") is not True
+                or state.get("feedback_fresh") is not True
+                or state.get("busy") is not False
+                or not isinstance(actual, (list, tuple))
+                or len(actual) < 3
+                or any(
+                    type(value) not in (int, float) or not math.isfinite(value)
+                    for value in actual[:3]
+                )
+            ):
+                raise FrameError("The owned rehearsal robot has no stationary fresh pose.")
+            image = self._tray.copy()
+            self._render(image, 4, (actual[0], actual[1], actual[2] + 100))
+            self._sequence += 1
+            image[0, :8] = np.frombuffer(self._sequence.to_bytes(8, "big"), dtype=np.uint8)
+            return Image.fromarray(image).convert("RGB")
+
+    def close(self):
+        with self._lock:
+            self._closed = True
 
 
 class _DemoClient:
@@ -111,7 +219,7 @@ class _DemoRobot(RobotPanelState):
 
 
 class Rehearsal:
-    def __init__(self, directory, required, *, identity):
+    def __init__(self, directory, required, *, identity, robot_state_provider=None):
         self.directory, self.required, self.identity = (
             Path(directory),
             tuple(required),
@@ -121,6 +229,8 @@ class Rehearsal:
             raise ValueError("Rehearsal has no demo factory for a required service.")
         self.clients = {}
         self.simulator = self.robot_state = None
+        self._robot_state_provider = robot_state_provider
+        self.calibration_references_file = None
         self._stack = ExitStack()
         self._condition = threading.Condition(threading.RLock())
         self._entered = self._starting = self._active = False
@@ -300,6 +410,54 @@ class Rehearsal:
         url = f"http://127.0.0.1:{server.server_port}"
         self._endpoints["furnace"] = (FurnaceAdapter, url)
         self.clients["furnace"] = FurnaceAdapter(url, "", self.identity)
+
+    def _vision(self):
+        from werkzeug.serving import make_server
+
+        from vision.service import VisionService, create_app
+
+        def robot_state():
+            if self.robot_state is not None:
+                return self.robot_state
+            return None if self._robot_state_provider is None else self._robot_state_provider()
+
+        frames = _DemoCalibrationFrames(robot_state)
+        self._stack.callback(frames.close)
+        directory = self.directory / "vision-calibration"
+        directory.mkdir(mode=0o750)
+        references = directory / "references.toml"
+        descriptor = os.open(
+            references,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            for identity, pose in DEMO_CALIBRATION_REFERENCES:
+                target.write(f"[[references]]\nid = {identity}\nflange_mm = {list(pose)}\n")
+        self.calibration_references_file = references
+
+        class EmptyModel:
+            def predict(self, image):
+                return image, {
+                    "image_size": {"width": image.width, "height": image.height},
+                    "coordinate_system": "oriented_original_image_pixels",
+                    "counts": {},
+                    "detections": [],
+                }
+
+        service = VisionService(
+            demo=True,
+            frames=frames,
+            localizer_factory=EmptyModel,
+            calibration_directory=directory,
+        )
+        self._stack.callback(service.close)
+        service.start()
+        server = make_server("127.0.0.1", 0, create_app(service, token=""), threaded=True)
+        self._serve(server)
+        url = f"http://127.0.0.1:{server.server_port}"
+        self._endpoints["vision"] = (ServiceAdapter, url)
+        self.clients["vision"] = ServiceAdapter(url, "", self.identity)
 
     def __exit__(self, *exc):
         with self._condition:

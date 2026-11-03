@@ -189,6 +189,29 @@ class _Acquisition:
         }
 
 
+def calibration_skill(reference_provider):
+    """Bind only demo reference data without mutating process-wide settings."""
+    if not callable(reference_provider):
+        raise ValueError("A demo calibration reference provider must be callable.")
+
+    def demo_calibrate(
+        ctx,
+        camera: int,
+        corner_a: str,
+        corner_b: str,
+        low_flange_z_mm: float,
+        high_flange_z_mm: float,
+    ):
+        reference_file = reference_provider()
+        if reference_file is None:
+            raise ValueError("The owned demo calibration references are unavailable.")
+        return _calibrate(
+            ctx, camera, corner_a, corner_b, low_flange_z_mm, high_flange_z_mm, reference_file
+        )
+
+    return demo_calibrate
+
+
 def calibrate(
     ctx,
     camera: int,
@@ -197,6 +220,18 @@ def calibrate(
     low_flange_z_mm: float,
     high_flange_z_mm: float,
 ):
+    return _calibrate(
+        ctx,
+        camera,
+        corner_a,
+        corner_b,
+        low_flange_z_mm,
+        high_flange_z_mm,
+        os.environ.get("MG400_CAMERA_CALIBRATION_REFERENCES") or REFERENCE_FILE,
+    )
+
+
+def _calibrate(ctx, camera, corner_a, corner_b, low_flange_z_mm, high_flange_z_mm, reference_file):
     """Collect a 3 by 4 grid at 2 heights, then fit and publish through vision."""
     if type(camera) is not int or not 1 <= camera <= 4:
         raise ValueError("Calibration camera must be from 1 to 4.")
@@ -208,9 +243,7 @@ def calibrate(
         or high_flange_z_mm - low_flange_z_mm < 40
     ):
         raise ValueError("The 2 flange heights must be finite and at least 40 mm apart.")
-    references = _references(
-        os.environ.get("MG400_CAMERA_CALIBRATION_REFERENCES") or REFERENCE_FILE
-    )
+    references = _references(reference_file)
     robot = _Transfer(ctx)
     if corner_a == corner_b or corner_a not in robot.stations or corner_b not in robot.stations:
         raise ValueError("Choose 2 distinct taught grid-corner stations.")

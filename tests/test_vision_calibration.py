@@ -1,27 +1,45 @@
 """Synthetic camera geometry and fake service I/O; never open a camera."""
 
 import copy
+import gc
 import hashlib
 import importlib
+import io
+import ipaddress
 import json
 import math
 import os
+import signal
+import socket
+import stat
 import threading
 import time
+import tomllib
 from contextlib import contextmanager
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import cv2
 import numpy as np
 import pytest
 from PIL import Image
+from test_deploy_mg400ctl import ctl as ctl
 from test_orchestrator_transfer import Robot
 
+from orchestrator.rehearsal import (
+    DEMO_CALIBRATION_DEVICE,
+    DEMO_CALIBRATION_GRID,
+    DEMO_CALIBRATION_REFERENCES,
+    DEMO_CALIBRATION_SIZE,
+    Rehearsal,
+    _DemoCalibrationFrames,
+)
 from orchestrator.runner import Context, Revoked, _Authority
 from orchestrator.skills.calibrate import calibrate
 from orchestrator.stations import AXES, StationStore, Workspace
 from orchestrator.tool import Pose, ToolOffset, fingertip_to_flange
 from orchestrator.zones import ZonePlan, Zones
+from vision import __main__ as vision_main
 from vision.calibration import (
     VALIDATION_INDICES,
     CalibrationStore,
@@ -35,6 +53,7 @@ from vision.calibration import (
     robot_xy,
     validate_model,
 )
+from vision.frames import FrameError
 from vision.service import VisionService, create_app
 
 DEVICE = "/dev/v4l/by-path/platform-offline-usb-0:1.0-video-index0"
@@ -988,3 +1007,486 @@ def test_unknown_vision_health_refuses_before_dispatch(authority_rig, health):
         and authority_rig.robot.calls == []
         and authority_rig.artifacts == []
     )
+
+
+def test_registry_declares_robot_and_vision_and_scalar_calibration_parameters():
+    from orchestrator.skills import default_registry
+
+    skill = default_registry()["vision.calibrate"]
+    assert skill.services == ("robot", "vision")
+    assert skill.function is calibrate
+    supplied = dict(camera=1, corner_a="a", corner_b="b", low_flange_z_mm=50, high_flange_z_mm=90)
+    assert skill.validate(supplied) == supplied
+    with pytest.raises(ValueError):
+        skill.validate({**supplied, "camera": True})
+
+
+def test_entrypoint_calibration_settings_and_bounded_server_cap(tmp_path):
+    captured = {}
+    server = SimpleNamespace(run=lambda: None, close=Mock())
+    directory = tmp_path / "private-camera-models"
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def factory(**options):
+        captured.update(options)
+        return VisionService(**options)
+
+    def serve(app, **options):
+        captured["server"] = options
+        assert app.config["MAX_CONTENT_LENGTH"] == 16384
+        return server
+
+    assert (
+        vision_main.main(
+            ["--demo"],
+            environ={
+                "MG400_VISION_CALIBRATION_DIR": str(directory),
+                "MG400_VISION_TAG_HEIGHT_MM": "101",
+                "MG400_VISION_TAG_TIP_MM": "247",
+                "MG400_VISION_CALIBRATION_RMS_MM": "0.8",
+            },
+            service_factory=factory,
+            server_factory=serve,
+        )
+        == 0
+    )
+    assert captured["calibration_directory"] == str(directory)
+    assert captured["calibration_options"] == {
+        "nominal_tag_height_mm": 101,
+        "nominal_distance_mm": 247,
+        "rms_limit_mm": 0.8,
+    }
+    assert captured["server"]["max_request_body_size"] == 16385
+    assert not directory.exists()  # startup does not create a host calibration
+    assert signal.getsignal(signal.SIGTERM) == previous
+    server.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [
+        ("MG400_VISION_TAG_HEIGHT_MM", "nan"),
+        ("MG400_VISION_TAG_TIP_MM", "inf"),
+        ("MG400_VISION_CALIBRATION_RMS_MM", "1.01"),
+        ("MG400_VISION_CALIBRATION_RMS_MM", "0"),
+        ("MG400_VISION_CALIBRATION_DIR", "relative/data"),
+    ],
+)
+def test_entrypoint_rejects_invalid_calibration_configuration_before_server(setting, value):
+    server = Mock(side_effect=AssertionError("No server for invalid calibration settings"))
+    with pytest.raises(SystemExit) as stopped:
+        vision_main.main(["--demo"], environ={setting: value}, server_factory=server)
+    assert stopped.value.code == 2
+    server.assert_not_called()
+
+
+@pytest.fixture
+def cold_fake_service(calibration_store):
+    image = Image.new("RGB", (200, 160), "white")
+    frames = SimpleNamespace(
+        camera_count=1, configuration=SimpleNamespace(devices=(DEVICE,)), read=lambda _: image
+    )
+    model = SimpleNamespace(predict=lambda image: (image, {"detections": []}))
+    service = VisionService(
+        demo=False,
+        frames=frames,
+        device="cpu",
+        localizer_factory=lambda *args, **kwargs: model,
+        torch_loader=lambda: SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+        calibration_directory=calibration_store.directory,
+    )
+    service.start()
+    yield service
+    service.close()
+
+
+def test_cold_contract_requires_explicit_preview_before_guarded_scan(cold_fake_service):
+    from orchestrator.skills.calibrate import _vision
+
+    service = cold_fake_service
+    service._markers = lambda _: [{"id": 4, "center_px": [100, 80]}]
+    http = create_app(service).test_client()
+    dispatched = []
+    headers = {"X-MG400-Client": "calibration"}
+
+    class Client:
+        def state(self):
+            return http.get("/api/state").get_json()
+
+        def owned(self, state):
+            return state["lease"]["holder"] == "calibration"
+
+        def command(self, action, **params):
+            dispatched.append(action)
+            response = http.post("/api/command", headers=headers, json={"action": action, **params})
+            assert response.status_code == 202
+            return response.get_json()
+
+    client = Client()
+    ctx = SimpleNamespace(clients={"vision": client}, check=lambda: None, sleep=time.sleep)
+    assert client.state()["connected"] is False
+    assert http.post("/api/heartbeat", headers=headers, json={}).status_code == 200
+    with pytest.raises(RuntimeError, match="owned, idle"):
+        _vision(ctx, "read_markers", camera=1)
+    assert dispatched == [] and service.snapshot()["last_command"] is None
+    assert http.post("/api/release", headers=headers, json={}).status_code == 200
+    # Explicit operator preview is separately acquired, completed, and released.
+    operator = {"X-MG400-Client": "operator-preview"}
+    assert http.post("/api/heartbeat", headers=operator, json={}).status_code == 200
+    response = http.post(
+        "/api/command", headers=operator, json={"action": "read_markers", "camera": 1}
+    )
+    deadline = time.monotonic() + 2
+    while service.snapshot()["busy"] and time.monotonic() < deadline:
+        time.sleep(0.001)
+    state = client.state()
+    assert state["last_command"]["id"] == response.json["command_id"]
+    assert state["last_command"]["result"] == "ok" and state["connected"] is True
+    assert http.post("/api/release", headers=operator, json={}).status_code == 200
+    assert http.post("/api/heartbeat", headers=headers, json={}).status_code == 200
+    assert _vision(ctx, "read_markers", camera=1)["markers"][0]["id"] == 4
+    assert dispatched == ["read_markers"]
+
+
+@pytest.mark.parametrize("root", [True, False])
+@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
+def test_installed_calibration_data_setting_keeps_identity_and_credential_boundaries(
+    ctl, monkeypatch, root, command
+):
+    key = "MG400_CAMERA_CALIBRATION_REFERENCES"
+    monkeypatch.setenv(key, "/synthetic/references.toml")
+    monkeypatch.setenv("MG400_VISION_TOKEN", "must-not-pass")
+    monkeypatch.setenv("MG400_CAMERA_DEVICES", "/dev/must-not-pass")
+    monkeypatch.setenv("MG400_VISION_CALIBRATION_DIR", "/host/must-not-pass")
+    if root and command != "rehearse":
+        ctl.host.settings.write_text(
+            f"{key}=/trusted/references.toml\nMG400_VISION_TOKEN=must-not-pass\n"
+        )
+    else:
+        ctl.host.settings.unlink()
+    if not root:
+        for name in ("getuid", "geteuid", "getgid", "getegid"):
+            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
+    argument = "list" if command == "station" else "synthetic-recipe"
+    assert ctl.call(command, argument) == 0
+    program, argv, environment = ctl.execvpe.call_args.args
+    expected = (
+        "/trusted/references.toml" if root and command == "run" else "/synthetic/references.toml"
+    )
+    assert environment.get(key) == (expected if command == "run" else None)
+    assert (
+        not {"MG400_VISION_TOKEN", "MG400_CAMERA_DEVICES", "MG400_VISION_CALIBRATION_DIR"}
+        & environment.keys()
+    )
+    python = str(ctl.host.code / ".venv/bin/python")
+    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, argument]
+    assert program == ("/usr/sbin/runuser" if root else python)
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["missing", "error"])
+def test_demo_reference_provider_never_falls_back_to_host(scan_rig, monkeypatch, failure):
+    from orchestrator.skills import default_registry
+
+    monkeypatch.setenv("MG400_CAMERA_CALIBRATION_REFERENCES", "/host/never-read.toml")
+
+    def provider():
+        if failure == "error":
+            raise RuntimeError("Owned fixture is unavailable")
+        return None
+
+    registry = default_registry(calibration_reference_provider=provider)
+    with pytest.raises((ValueError, RuntimeError), match="unavailable"):
+        registry["vision.calibrate"].function(scan_rig.ctx, 1, "a", "b", 100, 140)
+    assert scan_rig.commands == [] and scan_rig.moves == [] and scan_rig.artifacts == []
+
+
+def test_two_demo_pools_bind_own_reference_files_and_preserve_host_isolation(tmp_path, monkeypatch):
+    from orchestrator.app import DemoResources, OrchestratorService, demo_environment
+    from orchestrator.cli import _demo_environment
+    from orchestrator.rehearsal import DEMO_CALIBRATION_REFERENCES
+
+    module = importlib.import_module("orchestrator.skills.calibrate")
+    key = "MG400_CAMERA_CALIBRATION_REFERENCES"
+    poison = str(tmp_path / "host-must-not-be-read.toml")
+    monkeypatch.setenv(key, poison)
+    assert key not in demo_environment(dict(os.environ))
+    with _demo_environment():
+        assert key not in os.environ
+    assert os.environ[key] == poison
+    actual_read = module._references
+    read_paths = []
+
+    def bounded_reference_read(ctx, camera, a, b, low, high, reference_file):
+        assert str(reference_file) != poison
+        read_paths.append(reference_file)
+        return actual_read(reference_file)
+
+    monkeypatch.setattr(module, "_calibrate", bounded_reference_read)
+    first = DemoResources(tmp_path / "one")
+    second = DemoResources(tmp_path / "two")
+    clients = []
+    try:
+        for index, pool in enumerate((first, second)):
+            clients.extend(pool.clients(("vision",), f"pool-{index}").values())
+        services = [OrchestratorService(demo=True, settings={}) for _ in range(2)]
+        for service, pool in zip(services, (first, second)):
+            service.resources = pool
+            references = service.registry["vision.calibrate"].function(None, 1, "a", "b", 50, 90)
+            assert [
+                (identity, [pose.x_mm, pose.y_mm, pose.z_mm, pose.r_deg])
+                for identity, pose in references
+            ] == [(identity, list(pose)) for identity, pose in DEMO_CALIBRATION_REFERENCES]
+        assert read_paths[0] != read_paths[1]
+        for path, pool in zip(read_paths, (first, second)):
+            assert path.is_relative_to(pool.directory)
+            assert path.stat().st_mode & 0o777 == 0o600
+        assert os.environ[key] == poison and not os.path.exists(poison)
+        # No robot service was started merely by creating a vision client.
+        assert all(set(pool.resources) == {"vision"} for pool in (first, second))
+    finally:
+        for client in clients:
+            client.close()
+        second.close()
+        first.close()
+
+
+class SnapshotRobot:
+    def __init__(self):
+        self.state = {
+            "demo": True,
+            "feedback_fresh": True,
+            "busy": False,
+            "actual": [200.0, 0.0, 50.0, 0.0],
+        }
+
+    def snapshot(self):
+        return self.state
+
+
+def test_rendered_rehearsal_grid_fits_through_the_real_marker_detector():
+    robot = SnapshotRobot()
+    source = _DemoCalibrationFrames(lambda: robot)
+    first, second, heights = DEMO_CALIBRATION_GRID
+    points, pixels = [], []
+    try:
+        for height in heights:
+            for row in range(3):
+                for column in range(4):
+                    pose = [
+                        first[0] + (second[0] - first[0]) * column / 3,
+                        first[1] + (second[1] - first[1]) * row / 2,
+                        height,
+                        0.0,
+                    ]
+                    robot.state["actual"] = pose
+                    image = source.read(1)
+                    markers = {item["id"]: item["center_px"] for item in detect_markers(image)}
+                    assert set(markers) == {1, 2, 4, 7}
+                    points.append(pose[:3])
+                    pixels.append(markers[4])
+        again = source.read(1)
+        assert hashlib.sha256(image.tobytes()).digest() != hashlib.sha256(again.tobytes()).digest()
+        model = fit_calibration(
+            points,
+            pixels,
+            [pose[:3] for _, pose in DEMO_CALIBRATION_REFERENCES],
+            [markers[identity] for identity, _ in DEMO_CALIBRATION_REFERENCES],
+            DEMO_CALIBRATION_SIZE,
+        )
+        assert abs(model["distance_mm"] - 246) <= 10
+        assert max(model["rms_mm"].values()) <= 1
+        assert source.configuration.devices == (DEMO_CALIBRATION_DEVICE,)
+    finally:
+        source.close()
+    with pytest.raises(FrameError, match="closed"):
+        source.read(1)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("demo", False), ("feedback_fresh", False), ("busy", True), ("actual", [None] * 4)],
+)
+def test_rehearsal_frames_refuse_unowned_stale_or_moving_pose(field, value):
+    robot = SnapshotRobot()
+    robot.state[field] = value
+    source = _DemoCalibrationFrames(lambda: robot)
+    try:
+        with pytest.raises(FrameError, match="stationary fresh"):
+            source.read(1)
+    finally:
+        source.close()
+
+
+def test_rehearsal_frames_follow_late_owned_robot_without_starting_one():
+    current = []
+    source = _DemoCalibrationFrames(lambda: current[0] if current else None)
+    try:
+        with pytest.raises(FrameError, match="owned robot"):
+            source.read(1)
+        current.append(SnapshotRobot())
+        assert {item["id"] for item in detect_markers(source.read(1))} == {1, 2, 4, 7}
+        with pytest.raises(ValueError):
+            source.read(2)
+    finally:
+        source.close()
+
+
+def test_owned_vision_rehearsal_is_isolated_and_has_private_synthetic_references(
+    tmp_path, monkeypatch
+):
+    import cv2
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Rehearsal must never open native capture")
+
+    monkeypatch.setattr(cv2, "VideoCapture", forbidden)
+    monkeypatch.setenv("MG400_CAMERA_DEVICES", "/dev/must-not-open")
+    monkeypatch.setenv("MG400_CAMERA_CALIBRATION_REFERENCES", "/host/must-not-read.toml")
+    with Rehearsal(tmp_path, ("robot", "vision"), identity="synthetic-calibration") as demo:
+        references = demo.calibration_references_file
+        assert references.is_relative_to(tmp_path)
+        assert stat.S_IMODE(references.stat().st_mode) == 0o600
+        values = tomllib.loads(references.read_text())["references"]
+        assert values == [
+            {"id": identity, "flange_mm": list(pose)}
+            for identity, pose in DEMO_CALIBRATION_REFERENCES
+        ]
+        client = demo.clients["vision"]
+        assert client.describe()["demo"] is True
+        assert client.state()["lease"]["holder"] is None
+        demo.clients["robot"].acquire()
+        client.acquire()
+        response = client.command("read_markers", camera=1)
+        deadline = time.monotonic() + 3
+        while True:
+            state = client.state()
+            receipt = state.get("last_command")
+            if receipt and receipt.get("id") == response["command_id"]:
+                assert receipt["result"] == "ok", receipt
+                assert {marker["id"] for marker in receipt["output"]["markers"]} == {1, 2, 4, 7}
+                assert receipt["output"]["camera_device"] == DEMO_CALIBRATION_DEVICE
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        fresh = demo.new_clients("next-calibration")
+        client.stop()
+        client.release()
+        demo.clients["robot"].stop()
+        demo.clients["robot"].release()
+    with pytest.raises(RuntimeError, match="no longer active"):
+        fresh["vision"].state()
+
+
+def test_public_cli_runs_full_calibration_through_owned_services_only(tmp_path, monkeypatch):
+    from orchestrator import cli
+
+    connect = socket.socket.connect
+    connections = []
+
+    def only_loopback(sock, address):
+        assert ipaddress.ip_address(address[0]).is_loopback
+        connections.append(address)
+        return connect(sock, address)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Calibration rehearsal must not open lab hardware")
+
+    monkeypatch.setattr(socket.socket, "connect", only_loopback)
+    monkeypatch.setattr(cv2, "VideoCapture", forbidden)
+    import serial
+    import usb.core
+
+    monkeypatch.setattr(serial, "Serial", forbidden)
+    monkeypatch.setattr(usb.core, "find", forbidden)
+    workspace = Workspace(
+        dict(x_mm=[150, 350], y_mm=[-150, 180], z_mm=[-150, 100], r_deg=[-180, 180])
+    )
+    for field, axis in AXES.items():
+        for index, side in enumerate(("MIN", "MAX")):
+            monkeypatch.setenv(
+                f"MG400_ORCH_{axis}_{side}_{'DEG' if axis == 'R' else 'MM'}",
+                str(workspace.bounds[field][index]),
+            )
+    stations = StationStore(workspace, tmp_path / "stations.toml")
+    stations.save("a", Pose(200, 0, -96, 0), approach_mm=10, zone="scan")
+    stations.save("b", Pose(260, 40, -96, 0), approach_mm=10, zone="scan")
+    tool = tmp_path / "tool.toml"
+    tool.write_text("offset_mm=[0,0,146]\n")
+    tool.chmod(0o640)
+    zone_file = tmp_path / "zones.toml"
+    zone_file.write_text('[zones.scan]\nowner="robot"\nconditions=[]\n')
+    zone_file.chmod(0o640)
+    monkeypatch.setenv("MG400_ORCH_STATIONS_FILE", str(stations.path))
+    monkeypatch.setenv("MG400_ORCH_TOOL_FILE", str(tool))
+    monkeypatch.setenv("MG400_ORCH_ZONES_FILE", str(zone_file))
+    hostile = {
+        "MG400_CAMERA_CALIBRATION_REFERENCES",
+        "MG400_CAMERA_DEVICES",
+        "MG400_ROBOT_HOST",
+        "MG400_ORCH_VISION_URL",
+        "MG400_ORCH_VISION_TOKEN",
+        "MG400_VISION_CALIBRATION_DIR",
+        "MG400_ORCH_ROBOT_URL",
+        "MG400_ORCH_ROBOT_TOKEN",
+        "HTTP_PROXY",
+        "PYTHONPATH",
+    }
+    for key in hostile:
+        monkeypatch.setenv(key, "/host-must-not-be-used")
+    evidence = {}
+
+    class ObservedRehearsal(Rehearsal):
+        def __enter__(self):
+            assert hostile.isdisjoint(os.environ)
+            super().__enter__()
+            assert set(self.clients) == {"robot", "vision"}
+            assert self.calibration_references_file.is_relative_to(self.directory)
+            return self
+
+        def __exit__(self, *exc):
+            try:
+                evidence["model"] = CalibrationStore(self.calibration_references_file.parent).load(
+                    DEMO_CALIBRATION_DEVICE
+                )
+                evidence["commands"] = self.simulator.controller.sent()
+            finally:
+                super().__exit__(*exc)
+
+    monkeypatch.setattr(cli, "Rehearsal", ObservedRehearsal)
+    recipe = tmp_path / "calibrate.toml"
+    recipe.write_text("""name="Synthetic camera calibration"
+version=1
+params={}
+[[steps]]
+skill="robot.enable"
+params={}
+timeout_s=5
+[[steps]]
+skill="robot.move"
+params={x_mm=200,y_mm=0,z_mm=50,r_deg=0}
+timeout_s=5
+[[steps]]
+skill="vision.calibrate"
+params={camera=1,corner_a="a",corner_b="b",low_flange_z_mm=50,high_flange_z_mm=90}
+timeout_s=120
+""")
+    output = io.StringIO()
+    # Collect unreachable prior-test objects before starting the unchanged real-time watchdog.
+    gc.collect()
+    result = cli.main(
+        ["rehearse", str(recipe), "--runs-dir", str(tmp_path / "runs")],
+        out=output,
+        read=lambda _: "abort",
+    )
+    reports = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+    assert result == 0, reports
+    assert reports[-1]["status"] == "completed"
+    assert "scan" in reports[-1]["zones"]  # End-of-scan occupancy is not a departure proof.
+    assert connections and evidence["model"] is not None
+    model = evidence["model"]
+    assert model["points"]["validation_indices"] == list(VALIDATION_INDICES)
+    assert len(model["points"]["tag_flange_mm"]) == 24
+    assert max(model["rms_mm"].values()) <= 1
+    assert abs(model["distance_mm"] - 246) <= 10
+    assert len([command for command in evidence["commands"] if command.startswith("MovL(")]) == 24

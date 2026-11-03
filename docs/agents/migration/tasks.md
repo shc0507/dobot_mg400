@@ -1211,7 +1211,7 @@ Docs: `microscope.md` and `.en.md`.
 
 ### MIC-05 · Microscope calibration tools and data import
 
-Owner: agent+human · Size: M · Review: agent · Deps: MIC-02, FND-09
+Owner: agent+human · Size: M · Review: human · Deps: MIC-02, FND-09
 
 Source: the calibration workers in `Dual_A4988_GUI.py` (`_objective_calibration_worker`, `_light_objective_calibration_worker`, `remember_objective_reference`) and the trials in `experiment_gui.py` (focus, switch, combined).
 
@@ -1223,6 +1223,15 @@ Steps:
 2. `python -m microscope.experiments focus|switch|combined`: the trial logic of `experiment_gui.py`, writing to the run store folder.
 3. `mg400ctl calibration import microscope DIR` copies `objective_views/`, `side_camera_images/`, `objective_reference.png` and the CSV files into the calibration folder with owner 1000:1000 and mode 0640. It refuses symbolic links and lists what it copies.
 4. Tests with a fake root and the simulator.
+
+Supervised reference (owner decision, 2026-11-03, option 1 on #78): the source routines change the shared microstep mode mid-scan (`MICRO 1` for the switch-offset trials, `MICRO 4` for the ArUco switcher), and light calibration disables focus. The MIC-01 firmware forgets the focus zero and limits on both. Keep the source microstep policy and make every such point a supervised re-zero:
+
+- The calibration and experiment commands run only from an interactive terminal with a person present. They never run from the service contract, the orchestrator, the panel or an agent. They refuse to start without a TTY or while the microscope service holds the devices, and they own the serial port and cameras alone while they run.
+- Before every turret move and every focus move, require a known focus reference, the measured limits and the clearance rule of MIC-03. Real motion needs the H-06 values; missing values fail closed.
+- Before a microstep change, a focus disable or any other event that forgets the reference, move focus to the clearance position with the still-valid reference. After the event, stop both motors and ask the operator to confirm by looking that the focus is at clearance and the objectives are clear of the window.
+- On an explicit confirmation, set zero at the current position (`FOCUS ZERO`), or use `FOCUS HOME` when a switch exists. Then send the focus limits converted to the active microstep (rounded inward), and continue.
+- Any other answer, a timeout, a reset or a disconnect stops both motors, disables them and ends the command. Never re-zero without the operator, and never turn the turret without a confirmed reference and clearance.
+- Tests: the simulator and scripted operator answers cover each re-zero point, refusal and timeout.
 
 Done when: P-CHECKS pass; the operator imports the data from Objective-Control `3a2dad0` on Olares and comments on the issue.
 

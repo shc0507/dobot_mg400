@@ -1196,7 +1196,7 @@ phase = 4
 track = "microscope"
 owner = "agent+human"
 size = "M"
-review = "agent"
+review = "human"
 deps = ["MIC-02", "FND-09"]
 writes = [
   "src/microscope/calibrate.py",

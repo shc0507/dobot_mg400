@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -787,6 +788,66 @@ def _home_owned_demo(stage):
         stage.release()
 
 
+def _robot_failure_sample(robot):
+    """Read only bounded local state; never query the demo's sockets or clients."""
+    with robot._lock:
+        sampled_at = time.monotonic()
+        feedback = robot._sample
+        return {
+            "message": str(robot._message)[:400],
+            "locked": robot._locked,
+            "fault": robot._fault,
+            "syncing": robot._syncing,
+            "busy": robot._busy,
+            "owner_present": robot._owner is not None,
+            "mode": feedback.mode if feedback is not None else None,
+            "error_status": feedback.error_status if feedback is not None else None,
+            "feedback_age_s": sampled_at - robot._received if robot._received else None,
+            "lease_renewal_age_s": sampled_at - robot._heartbeat if robot._heartbeat else None,
+        }
+
+
+def _observe_robot_stops(robot, diagnostics):
+    """Preserve the initiating evidence before stop workers or cleanup replace it."""
+    original = robot._request_stop
+    had_override = "_request_stop" in vars(robot)
+    previous_override = vars(robot).get("_request_stop")
+
+    def observed(**kwargs):
+        try:
+            with robot._lock:
+                diagnostics["stop_count"] += 1
+                reason = kwargs.get("reason")
+                if len(diagnostics["stops"]) < 8 or (
+                    reason is not None and diagnostics["first_reason"] is None
+                ):
+                    record = {
+                        **_robot_failure_sample(robot),
+                        "caller": sys._getframe(1).f_code.co_name[:80],
+                        "reason": str(reason)[:400] if reason is not None else None,
+                        "disabling": bool(kwargs.get("disabling", False)),
+                        "disconnect": bool(kwargs.get("disconnect", False)),
+                    }
+                    if len(diagnostics["stops"]) < 8:
+                        diagnostics["stops"].append(record)
+                    if reason is not None and diagnostics["first_reason"] is None:
+                        diagnostics["first_reason"] = record
+        except Exception as error:
+            # Observation must not replace or suppress the real stop operation.
+            diagnostics["observer_error"] = type(error).__name__
+        return original(**kwargs)
+
+    def restore():
+        with robot._lock:
+            if had_override:
+                robot._request_stop = previous_override
+            else:
+                del robot._request_stop
+
+    robot._request_stop = observed
+    return restore
+
+
 @pytest.mark.parametrize("scenario", ["complete", "unhomed", "hot"])
 def test_public_rehearsal_load_unload_uses_owned_four_services_only(
     crucible_geometry,
@@ -810,14 +871,27 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
     for key in forbidden:
         monkeypatch.setenv(key, "production-must-not-be-used")
     demos = []
+    robot_stops = {"stop_count": 0, "stops": [], "first_reason": None}
+
+    def diagnostics():
+        try:
+            current = _robot_failure_sample(demos[0].robot_state) if demos else None
+            return "robot_diagnostics=" + json.dumps(
+                {**robot_stops, "current": current}, sort_keys=True
+            )
+        except Exception as error:
+            return f"robot_diagnostics_unavailable={type(error).__name__}; {robot_stops!r}"
 
     class Demo(Rehearsal):
         def __enter__(self):
-            assert forbidden.isdisjoint(os.environ)
+            assert forbidden.isdisjoint(os.environ), diagnostics()
             super().__enter__()
             demos.append(self)
-            assert set(self.clients) == {"robot", "stage", "thermal", "furnace"}
-            assert all(client.describe()["demo"] for client in self.clients.values())
+            # Restore the instance method before resource teardown. Earlier stop
+            # records survive runner cleanup and the service's final message.
+            self._stack.callback(_observe_robot_stops(self.robot_state, robot_stops))
+            assert set(self.clients) == {"robot", "stage", "thermal", "furnace"}, diagnostics()
+            assert all(client.describe()["demo"] for client in self.clients.values()), diagnostics()
             if scenario != "unhomed":
                 _home_owned_demo(self.clients["stage"])
 
@@ -862,19 +936,24 @@ timeout_s = """
         read=Mock(side_effect=EOFError()),
     )
     reports = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
-    assert reports, output.getvalue()
+    assert reports, (output.getvalue(), diagnostics())
     if scenario == "complete":
-        assert code == 0, [(item["status"], item["step"], item["detail"]) for item in reports]
-        assert reports[-1]["status"] == "completed" and reports[-1]["zones"] == {}
-        assert demos[0].simulator.collector.targets("answered").count(400) == 2
+        assert code == 0, (
+            [(item["status"], item["step"], item["detail"]) for item in reports],
+            diagnostics(),
+        )
+        assert reports[-1]["status"] == "completed" and reports[-1]["zones"] == {}, diagnostics()
+        assert demos[0].simulator.collector.targets("answered").count(400) == 2, diagnostics()
     else:
-        assert code == 1 and reports[-1]["status"] == "aborted", output.getvalue()
-        assert any(report["status"] == "held" for report in reports)
+        assert code == 1 and reports[-1]["status"] == "aborted", (output.getvalue(), diagnostics())
+        assert any(report["status"] == "held" for report in reports), diagnostics()
         targets = demos[0].simulator.collector.targets("answered")
-        assert targets.count(400) == (1 if scenario == "hot" else 0)
+        assert targets.count(400) == (1 if scenario == "hot" else 0), diagnostics()
         if scenario == "hot":
             held = next(item for item in reports if item["status"] == "held")
-            assert any(word in held["detail"] for word in ("timed out", "permission", "deadline"))
+            assert any(
+                word in held["detail"] for word in ("timed out", "permission", "deadline")
+            ), diagnostics()
 
 
 def test_service_demo_factory_returns_context_bound_furnace_and_roi_clients(

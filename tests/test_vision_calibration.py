@@ -1356,6 +1356,20 @@ def test_owned_vision_rehearsal_is_isolated_and_has_private_synthetic_references
         assert client.describe()["demo"] is True
         assert client.state()["lease"]["holder"] is None
         demo.clients["robot"].acquire()
+        ready_by = time.monotonic() + 2
+        while True:
+            robot_state = demo.robot_state.snapshot()
+            if (
+                robot_state["feedback_fresh"]
+                and robot_state["busy"] is False
+                and all(
+                    type(value) in (int, float) and math.isfinite(value)
+                    for value in robot_state["actual"][:3]
+                )
+            ):
+                break
+            assert time.monotonic() < ready_by, robot_state
+            time.sleep(0.01)
         client.acquire()
         response = client.command("read_markers", camera=1)
         deadline = time.monotonic() + 3
@@ -1363,7 +1377,7 @@ def test_owned_vision_rehearsal_is_isolated_and_has_private_synthetic_references
             state = client.state()
             receipt = state.get("last_command")
             if receipt and receipt.get("id") == response["command_id"]:
-                assert receipt["result"] == "ok", receipt
+                assert receipt["result"] == "ok", receipt.get("message")
                 assert {marker["id"] for marker in receipt["output"]["markers"]} == {1, 2, 4, 7}
                 assert receipt["output"]["camera_device"] == DEMO_CALIBRATION_DEVICE
                 break

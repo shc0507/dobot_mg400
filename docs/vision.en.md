@@ -231,6 +231,27 @@ The run stores the accepted calibration as an artifact.
 The routine ends inside the calibration zone. Completion does not prove departure.
 Zone occupancy remains until a later explicit departure or supervised recovery establishes clearance.
 
+### Offline calibration rehearsal
+
+The public rehearsal CLI and demo registry use owned synthetic robot and vision services from the same rehearsal pool.
+The synthetic camera follows that robot and renders ArUco images for camera `1` at `1920x1080`.
+They generate their own synthetic reference data and do not read the host `MG400_CAMERA_CALIBRATION_REFERENCES` path or camera-model files.
+Rehearsal opens no camera device or native capture.
+
+Use the synthetic tool offset `[0, 0, 146]` and prepare the grid in flange coordinates:
+
+| Parameter | Synthetic value |
+| --- | --- |
+| X range | 200 to 260 mm |
+| Y range | 0 to 40 mm |
+| Lower and upper Z | 50 and 90 mm |
+| R | 0 degrees |
+
+Define the corresponding fingertip corner stations with this tool offset and the same explicit `robot`-owned zone.
+Earlier recipe steps must enable the synthetic robot and reach the first lower corner before the scan.
+The calibration skill does not silently enable the robot or acquire extra authority.
+A successful rehearsal validates the software flow, not hardware reachability, measured camera geometry, or physical clearance.
+
 ### Fit, acceptance, and limits
 
 The fitter starts with normalized direct linear transform (DLT) and RANSAC at a 2-pixel threshold.

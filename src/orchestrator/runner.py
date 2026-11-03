@@ -866,7 +866,7 @@ class Runner:
             except BaseException as exc:
                 # Revocation is immediate and does not wait for the skill's
                 # zone guard or its possibly blocked device operation.
-                authority.revoke()
+                authority.revoke(exc)
                 outcome["guard_error"] = exc
                 monitor_stop.set()
 

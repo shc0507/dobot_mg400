@@ -849,6 +849,100 @@ def _feedback_reader_failure_stack(robot):
         frames.clear()
 
 
+def _robot_operation_exception(error=None):
+    """Copy the active operation's traceback without retaining exception objects."""
+    if error is None:
+        error_type, error, trace = sys.exc_info()
+    else:
+        error_type, trace = type(error), error.__traceback__
+    records, traversed = [], 0
+    try:
+        while trace is not None and traversed < 32:
+            frame = trace.tb_frame
+            record = {
+                "file": os.path.basename(frame.f_code.co_filename)[:100],
+                "function": frame.f_code.co_name[:80],
+                "line": trace.tb_lineno,
+            }
+            if (
+                frame.f_code.co_name == "_fresh"
+                and frame.f_globals.get("__name__") == "mg400.joint_control"
+            ):
+                local = frame.f_locals
+                age, received = local.get("age"), local.get("received")
+                allowed = local.get("allowed_modes")
+                sample = local.get("sample")
+                sample_mode = getattr(sample, "mode", None)
+                sample_error = getattr(sample, "error_status", None)
+                record.update(
+                    age_s=age if type(age) in (int, float) else None,
+                    received_monotonic=received if type(received) in (int, float) else None,
+                    allowed_modes=(
+                        sorted(allowed)
+                        if isinstance(allowed, (set, frozenset, list, tuple))
+                        and len(allowed) <= 8
+                        and all(type(mode) is int for mode in allowed)
+                        else None
+                    ),
+                    sample_mode=sample_mode if type(sample_mode) is int else None,
+                    sample_error_status=sample_error if type(sample_error) is bool else None,
+                )
+            records.append(record)
+            records = records[-8:]
+            traversed += 1
+            trace = trace.tb_next
+        return {
+            "type": error_type.__name__[:80] if error_type is not None else None,
+            "captured_monotonic": time.monotonic(),
+            "frames": records,
+            "truncated": traversed > 8 or trace is not None,
+        }
+    except Exception as observer_error:
+        return {"frames": records, "observer_error": type(observer_error).__name__}
+    finally:
+        # The result contains only primitive values, never traceback/frame locals.
+        del error, trace
+
+
+def _observe_robot_operation_failures(robot, diagnostics):
+    """Observe the first rejected operation before its internal stop clears state."""
+    control = robot._control
+    original = control._failed
+    had_override = "_failed" in vars(control)
+    previous_override = vars(control).get("_failed")
+
+    def observed(*args, **kwargs):
+        try:
+            if "first_operation_failure" not in diagnostics:
+                error = args[0] if args else kwargs.get("error")
+                record = {
+                    "caller": sys._getframe(1).f_code.co_name[:80],
+                    "operation_exception": _robot_operation_exception(error),
+                    "feedback_reader": _feedback_reader_failure_stack(robot),
+                }
+                # Never wait for the publication lock before the original stop.
+                if robot._lock.acquire(blocking=False):
+                    try:
+                        record.update(_robot_failure_sample(robot), panel_lock_busy=False)
+                    finally:
+                        robot._lock.release()
+                else:
+                    record["panel_lock_busy"] = True
+                diagnostics["first_operation_failure"] = record
+        except Exception as observer_error:
+            diagnostics["operation_observer_error"] = type(observer_error).__name__
+        return original(*args, **kwargs)
+
+    def restore():
+        if had_override:
+            control._failed = previous_override
+        else:
+            del control._failed
+
+    control._failed = observed
+    return restore
+
+
 def _observe_robot_stops(robot, diagnostics):
     """Preserve the initiating evidence before stop workers or cleanup replace it."""
     original = robot._request_stop
@@ -871,6 +965,7 @@ def _observe_robot_stops(robot, diagnostics):
                         "disconnect": bool(kwargs.get("disconnect", False)),
                     }
                     if diagnostics["stop_count"] == 1:
+                        record["operation_exception"] = _robot_operation_exception()
                         record["feedback_reader"] = _feedback_reader_failure_stack(robot)
                     if len(diagnostics["stops"]) < 8:
                         diagnostics["stops"].append(record)
@@ -938,6 +1033,7 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
             # Restore the instance method before resource teardown. Earlier stop
             # records survive runner cleanup and the service's final message.
             self._stack.callback(_observe_robot_stops(self.robot_state, robot_stops))
+            self._stack.callback(_observe_robot_operation_failures(self.robot_state, robot_stops))
             assert set(self.clients) == {"robot", "stage", "thermal", "furnace"}, diagnostics()
             assert all(client.describe()["demo"] for client in self.clients.values()), diagnostics()
             if scenario != "unhomed":
@@ -1605,6 +1701,72 @@ def test_guard_failure_stops_before_blocked_monitor_read_drains(tmp_path, failur
         assert not runner.wait_closed(0.02)
         assert "release" not in service.events
         release.set()
+        assert runner.wait_closed(3)
+        assert runner.status == "aborted"
+        assert service.events.count("stop") >= 2
+        assert service.events[-2:] == ["release", "close"]
+        assert "next-phase" not in service.events
+
+
+def test_monitor_error_survives_worker_revocation_before_outcome_publication(tmp_path, monkeypatch):
+    registry, service = Registry(), FakeService()
+    guard_entered, monitor_revoked, worker_unwound, release_monitor = (
+        threading.Event() for _ in range(4)
+    )
+    original_error = RuntimeError("robot_clear: original feedback sample is stale")
+    recorded = {}
+    revoke = _Authority.revoke
+    check_held = runner_module.Zones.check_held
+
+    def observed_revoke(authority, error=None):
+        revoke(authority, error)
+        if threading.current_thread().name == "orch-zones":
+            recorded["error"] = error
+            recorded["authority"] = authority
+            monitor_revoked.set()
+            # Model preemption after immediate revocation, before the monitor
+            # publishes its outcome. The skill can unwind in this interval.
+            assert release_monitor.wait(4)
+
+    def failing_monitor(zones, authority):
+        if threading.current_thread().name == "orch-zones":
+            assert guard_entered.wait(2)
+            raise original_error
+        return check_held(zones, authority)
+
+    monkeypatch.setattr(_Authority, "revoke", observed_revoke)
+    monkeypatch.setattr(runner_module.Zones, "check_held", failing_monitor)
+
+    def skill(ctx):
+        try:
+            with ctx.guard(lambda: None):
+                guard_entered.set()
+                ctx.sleep(3)
+        finally:
+            worker_unwound.set()
+        service.events.append("next-phase")
+
+    registry.register("first", skill, services=("robot",))
+    with running(
+        tmp_path, registry, ["first"], {"robot": service}, timeout=3, gates=(release_monitor,)
+    ) as (runner, _):
+        assert monitor_revoked.wait(2)
+        assert worker_unwound.wait(2)
+        until(lambda: runner.status == "held" and "stop" in service.events)
+        snapshot = runner.snapshot()
+        assert snapshot["detail"] == str(original_error)
+        assert recorded["error"] is original_error
+        assert recorded["authority"].revocation_error is original_error
+        assert recorded["authority"].cancelled.is_set()
+        assert runner._monitor.is_alive()
+        assert not snapshot["settled"]
+        assert service.events.count("acquire") == 1
+        assert "release" not in service.events
+        assert "next-phase" not in service.events
+        runner.abort()
+        assert not runner.wait_closed(0.02)
+        assert "release" not in service.events
+        release_monitor.set()
         assert runner.wait_closed(3)
         assert runner.status == "aborted"
         assert service.events.count("stop") >= 2

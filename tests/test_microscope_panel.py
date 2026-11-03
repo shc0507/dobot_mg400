@@ -562,18 +562,23 @@ class RecordingCamera(Camera):
         self.recording_segments = []
         self.stabilization_enabled = False
         self.start_gate = self.stop_gate = None
-        self.start_calls = self.stop_calls = 0
+        self.start_calls = self.stop_calls = self.stabilization_calls = 0
         self.metadata = []
 
     def open(self):
         self.is_open = True
 
-    def set_stabilization(self, enabled):
+    def set_stabilization(self, enabled, *, cancel=None):
+        if cancel is not None and cancel.is_set():
+            raise RuntimeError("Camera admission cancelled")
+        self.stabilization_calls += 1
         self.stabilization_enabled = enabled
 
     def start_recording(self, path, **options):
         from furnace.recordings import private_open
 
+        if options.get("cancel") is not None and options["cancel"].is_set():
+            raise RuntimeError("Camera admission cancelled")
         self.start_calls += 1
         self.entered.set()
         if self.start_gate:
@@ -732,6 +737,65 @@ def test_active_recording_authority_is_irreversible(recording_rig, revoke):
     assert not state["recording_sequence"]["armed"]
     assert not rig.calls and rig.camera.stop_calls >= 1
     assert state["recording"]["summary"] is None
+
+
+@pytest.mark.parametrize("action", ["start_recording", "set_stabilization"])
+@pytest.mark.parametrize("revoke", ["stop", "release", "expiry", "same-id"])
+def test_camera_admission_rechecks_revoked_service_authority(
+    recording_rig, monkeypatch, action, revoke
+):
+    rig = recording_rig
+    entered, resume = threading.Event(), threading.Event()
+    captured = []
+    original = getattr(rig.camera, action)
+
+    def before_admission(*args, **options):
+        # The service's last guard has passed, but the camera has not yet
+        # admitted any writer or stabilization change.
+        captured.append(options.get("cancel"))
+        entered.set()
+        assert resume.wait(3)
+        return original(*args, **options)
+
+    monkeypatch.setattr(rig.camera, action, before_admission)
+    recording_id = "d" * 32
+    args = {"recording_id": recording_id} if action == "start_recording" else {"enabled": True}
+    ident = rig.service.command(action, args, "operator")
+    assert entered.wait(1)
+    job, recording = rig.service._job, rig.service._recording
+    token = recording.cancel if recording is not None else job.cancel
+    try:
+        assert captured == [token] and not token.is_set()
+        assert rig.camera.start_calls == rig.camera.stabilization_calls == 0
+        if revoke == "stop":
+            rig.service.stop("emergency", 0)
+        elif revoke == "release":
+            rig.service.lease.release("operator")
+        else:
+            rig.clock[0] += 31
+            if revoke == "same-id":
+                rig.service.lease.acquire("operator")
+            else:
+                rig.service.lease.poll()
+        assert token.is_set()
+        assert rig.service._stop_done.wait(1)
+        assert not rig.camera.is_recording and not rig.camera.stabilization_enabled
+    finally:
+        resume.set()
+    assert job.done.wait(2)
+    if recording is not None:
+        assert recording.done.wait(2)
+    state = rig.service.snapshot()
+    assert state["last_command"]["id"] == ident
+    assert state["last_command"]["result"] == "stopped" and state["last_result"] is None
+    assert rig.camera.start_calls == rig.camera.stabilization_calls == 0
+    assert not rig.camera.is_recording and not rig.camera.stabilization_enabled
+    assert not rig.calls
+    if recording is not None:
+        assert state["recording"]["status"] == "stopped"
+        assert state["recording"]["summary"] is None
+        # Reserving the persistent attempt ID is allowed; camera output is not.
+        assert {path.name for path in (rig.root / recording_id).iterdir()} == {"run.json"}
 
 
 def test_recording_heartbeat_extends_only_current_live_authority(recording_rig):
@@ -1041,10 +1105,12 @@ def test_close_retains_all_owners_until_accepted_camera_command_drains(recording
     stabilize = rig.camera.set_stabilization
     stop = rig.service._motor.safe_stop_disable
 
-    def blocked_stabilization(enabled):
+    def blocked_stabilization(enabled, *, cancel=None):
+        # Admission precedes the blocked native call: close must retain its
+        # owners until the accepted operation returns, even after cancellation.
+        stabilize(enabled, cancel=cancel)
         entered.set()
         assert release.wait(3)
-        stabilize(enabled)
 
     def observed_stop():
         stopped.set()

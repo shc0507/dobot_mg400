@@ -748,7 +748,7 @@ class MicroscopeService:
     def _recording_command(self, job):
         self._check_job(job)
         if job.action == "set_stabilization":
-            self._camera.set_stabilization(job.args["enabled"])
+            self._camera.set_stabilization(job.args["enabled"], cancel=job.cancel)
             self._check_job(job)
             return {"stabilization": bool(self._camera.stabilization_enabled)}
         if job.action == "stop_recording" or job.args.get("enabled") is False:
@@ -886,6 +886,7 @@ class MicroscopeService:
                 capture_interval_seconds=recording.options["capture_interval_seconds"],
                 output_fps=recording.options["output_fps"],
                 private_output=True,
+                cancel=recording.cancel,
             )
             self._check_recording(recording)
             with self._lock:

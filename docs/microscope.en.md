@@ -404,7 +404,7 @@ A microstep change still moves focus to clearance before the reference becomes i
 The prompt states the focus return before requesting a new `CLEAR` answer.
 After zero or home and converted limits, focus returns to its earlier position at the new microstep.
 This return rounds to the nearest pulse and must stay inside the limits.
-In this mode only, a calibration request to disable focus uses `FOCUS STOP` and preserves the reference.
+In this mode only, a calibration request to disable focus uses `STOP FOCUS` and preserves the reference.
 Experiments and full objective switches still turn the turret only at clearance.
 
 ### Supervised setup console

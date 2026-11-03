@@ -1553,22 +1553,25 @@ def test_at_focus_initial_reference_and_one_pinned_local_scan(at_focus_rig):
 
 
 @pytest.mark.parametrize("generic", [False, True])
-def test_at_focus_turret_edge_and_rejection_never_moves_to_clearance(at_focus_rig, generic):
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_at_focus_turret_edge_and_rejection_never_moves_to_clearance(
+    at_focus_rig, generic, direction
+):
     rig = at_focus_rig(window=2)
     rig.session.motor.objective_enable()
     before = len(rig.port.commands)
     if generic:
-        rig.session.motor.send_and_wait("OBJ MOVE 8", "DONE OBJ")
+        rig.session.motor.send_and_wait(f"OBJ MOVE {8 * direction}", "DONE OBJ")
     else:
-        rig.session.motor.objective_move(8)
+        rig.session.motor.objective_move(8 * direction)
         with rig.port.lock:
             rig.port.emit(rig.port.sim.advance(1))
-    assert rig.session._turret_units == 32
+    assert rig.session._turret_units == 32 * direction
     assert rig.raw.read_status().focus.position == 103
     with pytest.raises(ValueError, match="measured at-focus window"):
-        rig.session.motor.objective_move(1)
+        rig.session.motor.objective_move(direction)
     commands = rig.port.commands[before:]
-    assert "OBJ MOVE 8" in commands and "OBJ MOVE 1" not in commands
+    assert f"OBJ MOVE {8 * direction}" in commands and f"OBJ MOVE {direction}" not in commands
     assert not any(command.startswith("FOCUS MOVE") for command in commands)
     assert commands[-1] == "FOCUS DISABLE"
     assert rig.session.cancel_event.is_set()
@@ -1687,6 +1690,7 @@ class SetupOperator(ScriptedOperator):
         super().__init__(*answers)
         self.keys = iter(keys)
         self.controls = iter(controls)
+        self.control_ready = lambda: True
 
     def key(self, check):
         check()
@@ -1696,7 +1700,7 @@ class SetupOperator(ScriptedOperator):
     def motion_controls(self, check):
         def poll():
             check()
-            return next(self.controls, "")
+            return next(self.controls, "") if self.control_ready() else ""
 
         yield poll
 
@@ -1727,6 +1731,7 @@ def test_setup_controls_stop_accepted_move_before_full_completion(supervised_rig
 
     rig = supervised_rig()
     rig.session.operator = SetupOperator("fq", controls=[key])
+    rig.session.operator.control_ready = lambda: "FOCUS MOVE 1000" in rig.port.commands
     original = rig.port.sim.advance
     # Freeze fake movement; only STOP can make the accepted move idle.
     monkeypatch.setattr(rig.port.sim, "advance", lambda seconds: [])
@@ -1746,6 +1751,7 @@ def test_setup_ignores_queued_motion_controls(supervised_rig):
 
     rig = supervised_rig()
     rig.session.operator = SetupOperator("fq", controls=["a", "s", "m", "0", "?"])
+    rig.session.operator.control_ready = lambda: "FOCUS MOVE 1000" in rig.port.commands
     run_setup(rig.session, progress=lambda _: None)
     assert [cmd for cmd in rig.port.commands if cmd.startswith("FOCUS MOVE")] == ["FOCUS MOVE 1000"]
     assert "FOCUS ZERO" not in rig.port.commands
@@ -1783,3 +1789,280 @@ def test_setup_refused_zero_stops_and_disables_without_zero(supervised_rig, answ
     assert "FOCUS ZERO" not in rig.port.commands
     assert not rig.raw.read_status().focus.enabled and not rig.raw.read_status().objective.enabled
     assert rig.session.cancel_event.is_set()
+
+
+def test_nearest_focus_return_outside_inward_limit_aborts_before_microstep(at_focus_rig):
+    rig = at_focus_rig(start=3, reference=ReferenceSettings(-5, 5, 0, False))
+    assert rig.raw.read_status().focus.position == 5
+    before = len(rig.port.commands)
+    with pytest.raises(ValueError, match="inward-rounded"):
+        rig.session.motor.set_microstep(2)
+    assert "MICRO 2" not in rig.port.commands[before:]
+    assert not any(cmd.startswith("FOCUS MOVE") for cmd in rig.port.commands[before:])
+    assert rig.session.cancel_event.is_set()
+
+
+def test_home_based_return_keeps_measured_origin_and_never_uses_zero(at_focus_rig):
+    rig = at_focus_rig(
+        "CLEAR", "CLEAR", start=100, home=True, reference=ReferenceSettings(-8000, 8000, 40, True)
+    )
+    rig.port.sim.set_home_switch(False)  # Simulate leaving the switch at working focus.
+    rig.session.motor.set_microstep(2)
+    status = rig.raw.read_status()
+    assert status.focus.position == 51 and status.zeroed and status.limited
+    assert rig.port.commands.count("FOCUS HOME") == 2
+    assert "FOCUS ZERO" not in rig.port.commands
+    assert "FOCUS MOVE -62" in rig.port.commands  # MICRO4 position102 to measured clearance40.
+
+
+def test_environment_window_cannot_change_experiment_session_clearance(supervised_rig, monkeypatch):
+    monkeypatch.setenv("MG400_MICROSCOPE_NUDGE_STEPS", "20")
+    rig = supervised_rig("CLEAR", "CLEAR")
+    rig.session.motor.set_microstep(4)
+    rig.session.move_focus_to(100)
+    before = len(rig.port.commands)
+    rig.session.motor.objective_enable()
+    rig.session.motor.send_and_wait("OBJ MOVE 4", "DONE OBJ")
+    commands = rig.port.commands[before:]
+    assert commands.index("FOCUS MOVE -100") < commands.index("OBJ MOVE 4")
+    assert rig.session._nudge_window == 0 and rig.session._turret_units is None
+
+
+def test_at_focus_turret_refuses_moving_focus_without_dispatch(at_focus_rig, monkeypatch):
+    rig = at_focus_rig()
+    monkeypatch.setattr(rig.port.sim, "advance", lambda seconds: [])
+    rig.raw.focus_move_async(100)
+    before = len(rig.port.commands)
+    with pytest.raises(SideCaptureCancelled, match="reference, measured limits or clearance"):
+        rig.session.motor.objective_move(1)
+    assert not any(cmd.startswith("OBJ MOVE") for cmd in rig.port.commands[before:])
+    assert rig.session.cancel_event.is_set()
+
+
+@pytest.mark.parametrize("failure", ["disconnect", "reset", "timeout"])
+def test_setup_terminal_failure_never_dispatches_later_key(supervised_rig, failure):
+    from microscope.calibrate import run_setup
+
+    rig = supervised_rig()
+
+    class FailureOperator(SetupOperator):
+        def key(self, check):
+            if failure == "disconnect":
+                rig.raw.disconnect()
+            elif failure == "reset":
+                rig.port.emit(rig.port.sim.reset())
+                deadline = time.monotonic() + 1
+                while not rig.raw.fault and time.monotonic() < deadline:
+                    time.sleep(0.001)
+            else:
+                raise TimeoutError("setup input expired")
+            return "f"
+
+    rig.session.operator = FailureOperator("")
+    with pytest.raises((SideCaptureCancelled, TimeoutError)):
+        run_setup(rig.session, progress=lambda _: None)
+    assert "FOCUS MOVE 1000" not in rig.port.commands
+    assert rig.session.cancel_event.is_set()
+
+
+def test_setup_key_flushes_stale_input_and_restores_terminal_modes(monkeypatch):
+    import pty
+    import termios
+
+    from microscope.calibrate import TerminalOperator
+
+    master, slave = pty.openpty()  # Owned pseudo-terminal, no serial or lab device.
+    ready = threading.Event()
+    original = termios.tcsetattr
+
+    def mode(fd, when, attrs):
+        original(fd, when, attrs)
+        if not attrs[3] & termios.ICANON:
+            ready.set()
+
+    monkeypatch.setattr(termios, "tcsetattr", mode)
+
+    def send():
+        assert ready.wait(2)
+        os.write(master, b"a")
+
+    try:
+        with os.fdopen(slave, "r") as source:
+            saved = termios.tcgetattr(source.fileno())
+            operator = TerminalOperator(
+                source,
+                SimpleNamespace(isatty=lambda: True, write=lambda _: None, flush=lambda: None),
+            )
+            os.write(master, b"ffq")
+            sender = threading.Thread(target=send)
+            sender.start()
+            assert operator.key(lambda: None) == "a"
+            sender.join(2)
+            assert not sender.is_alive()
+            assert termios.tcgetattr(source.fileno()) == saved
+            with pytest.raises(RuntimeError, match="scripted cancellation"):
+                with operator.motion_controls(
+                    lambda: (_ for _ in ()).throw(RuntimeError("scripted cancellation"))
+                ) as poll:
+                    poll()
+            assert termios.tcgetattr(source.fileno()) == saved
+    finally:
+        os.close(master)
+
+
+@pytest.mark.parametrize("phase", ["ack", "status"])
+@pytest.mark.parametrize("control", ["?", "q", None])
+def test_setup_controls_remain_live_during_blocked_ack_and_status(
+    supervised_rig, phase, control, monkeypatch
+):
+    from microscope.calibrate import run_setup
+
+    rig = supervised_rig()
+    withheld = threading.Event()
+    hold_status = threading.Event()
+    emit = rig.port.emit
+
+    def filtered(lines):
+        if (
+            phase == "status"
+            and hold_status.is_set()
+            and any(line.startswith("MICRO=") for line in lines)
+        ):
+            withheld.set()
+            return
+        kept = []
+        for line in lines:
+            if phase == "ack" and line == "OK FOCUS MOVE 1000":
+                withheld.set()
+            else:
+                kept.append(line)
+        emit(kept)
+
+    monkeypatch.setattr(rig.port, "emit", filtered)
+
+    class Operator(SetupOperator):
+        def key(self, check):
+            key = super().key(check)
+            if key == "f":
+                hold_status.set()
+            return key
+
+    rig.session.operator = Operator("fq", controls=[control])
+    rig.session.operator.control_ready = withheld.is_set
+    output = []
+    if phase == "status":
+        # The deliberately incomplete STATUS remains an unknown outcome; a Stop
+        # must still dispatch immediately, without reporting successful recovery.
+        with pytest.raises(RuntimeError, match="status is incomplete|unknown command outcome"):
+            run_setup(rig.session, progress=output.append)
+        assert rig.raw.fault is not None
+    else:
+        run_setup(rig.session, progress=output.append)
+    assert withheld.is_set()
+    commands = rig.port.commands
+    if phase == "ack":
+        move = commands.index("FOCUS MOVE 1000")
+        assert "STOP ALL" in commands[move + 1 :]
+        assert rig.port.sim.focus.position < 1000
+    else:
+        assert "FOCUS MOVE 1000" not in commands
+        assert commands.count("STOP ALL") >= 2
+    assert not rig.port.sim.focus.enabled and not rig.port.sim.objective.enabled
+    assert not any(thread.name == "microscope-setup-action" for thread in threading.enumerate())
+
+
+def test_setup_unknown_stop_revokes_waiting_status_before_later_enable(supervised_rig, monkeypatch):
+    import microscope.calibrate as module
+
+    rig = supervised_rig()
+    entered, release = threading.Event(), threading.Event()
+    original = rig.raw.read_status
+    original_stop = rig.raw.stop_all
+
+    def read_status(**kwargs):
+        entered.set()
+        assert release.wait(2)
+        return original(**kwargs)
+
+    def stop_all(**kwargs):
+        reply = original_stop(**kwargs)
+        release.set()
+        return reply
+
+    monkeypatch.setattr(rig.raw, "read_status", read_status)
+    monkeypatch.setattr(rig.raw, "stop_all", stop_all)
+    rig.session.operator = SetupOperator("", controls=["?"])
+    rig.session.operator.control_ready = entered.is_set
+
+    def action(operation):
+        operation.call("read_status")
+        operation.call("focus_enable")
+
+    assert module._setup_io(rig.session, action) is module._SETUP_STOPPED
+    assert "FOCUS ENABLE" not in rig.port.commands
+    assert not rig.session.cancel_event.is_set()
+
+
+def test_setup_late_thread_start_cannot_admit_after_interruption(supervised_rig, monkeypatch):
+    import microscope.calibrate as module
+
+    rig = supervised_rig()
+    rig.session.operator = SetupOperator("")
+    threads = []
+    start = threading.Thread.start
+
+    def fail(thread):
+        if thread.name == "microscope-setup-action":
+            threads.append(thread)
+            raise KeyboardInterrupt("scripted start interruption")
+        return start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail)
+    with pytest.raises(KeyboardInterrupt, match="scripted start interruption"):
+        module._setup_io(rig.session, lambda operation: operation.call("focus_enable"))
+    assert rig.session.cancel_event.is_set()
+    start(threads[0])
+    threads[0].join(2)
+    assert not threads[0].is_alive()
+    assert "FOCUS ENABLE" not in rig.port.commands
+
+
+def test_setup_undrained_accepted_call_retains_serial_owner(session_factories, monkeypatch):
+    import microscope.calibrate as module
+
+    rig = session_factories
+    entered, release = threading.Event(), threading.Event()
+    real_join = threading.Thread.join
+
+    def no_wait(thread, timeout=None):
+        if thread.name == "microscope-setup-action":
+            return None  # Deterministically represent expiry of the unchanged drain budget.
+        return real_join(thread, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", no_wait)
+    operator = SetupOperator("", controls=["q"])
+    operator.control_ready = entered.is_set
+    kept = []
+    try:
+        with pytest.raises(RuntimeError, match="serial ownership retained"):
+            with module.setup_session(
+                environ=rig.settings, operator=operator, motor_factory=rig.factories["motor"]
+            ) as session:
+                kept.append(session)
+
+                def action(operation):
+                    operation.check()
+                    entered.set()
+                    assert release.wait(3)
+                    operation.check()
+
+                module._setup_io(session, action)
+        assert kept[0]._raw_motor.connected
+        assert "serial close" not in rig.events
+        assert not rig.port.sim.focus.enabled and not rig.port.sim.objective.enabled
+    finally:
+        release.set()
+        worker = kept[0]._setup_worker
+        real_join(worker, 2)
+        assert not worker.is_alive()
+        kept[0]._raw_motor.disconnect()

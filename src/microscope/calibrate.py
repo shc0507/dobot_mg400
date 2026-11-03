@@ -253,6 +253,8 @@ class TerminalOperator:
         try:
             termios.tcflush(descriptor, termios.TCIFLUSH)
             termios.tcsetattr(descriptor, termios.TCSANOW, changed)
+            self.output.write("Setup key> ")
+            self.output.flush()
             deadline = self.clock() + self.timeout
             while True:
                 check()
@@ -314,6 +316,8 @@ class SupervisedSession:
         self._frame_progress = {}
         self._nudge_window = 0
         self._turret_units = None
+        self._setup_worker = None
+        self._setup_complete = False
         self.motor = GuardedMotor(self)
         self.camera = GuardedCamera(self, camera)
         self.side = GuardedCamera(self, side) if side is not None else None
@@ -1195,7 +1199,8 @@ def setup_session(*, environ=None, operator=None, motor_factory=None):
         session.start_watch()
         session.check()
         yield session
-        session.check()
+        if not session._setup_complete:
+            session.check()
     except BaseException as error:
         if session is not None:
             session.abort(error)
@@ -1205,6 +1210,7 @@ def setup_session(*, environ=None, operator=None, motor_factory=None):
             if session is not None:
                 session.abort("Supervised setup ended")
                 session.finish_watch()
+                _drain_setup_worker(session)
             elif motor is not None and motor.connected:
                 motor.safe_stop_disable()
             if motor is not None:
@@ -1214,19 +1220,131 @@ def setup_session(*, environ=None, operator=None, motor_factory=None):
                 signal.signal(number, previous)
 
 
+class _SetupQuit(Exception):
+    pass
+
+
+_SETUP_STOPPED = object()
+_SETUP_MOTION_KEYS = frozenset("azsxdcfvjluom0")
+
+
+def _drain_setup_worker(session):
+    worker = session._setup_worker
+    if worker is not None and worker.ident is not None:
+        worker.join(3)
+        if worker.is_alive():
+            raise RuntimeError("Setup command is still draining; serial ownership retained")
+    session._setup_worker = None
+
+
+class _SetupOperation:
+    """One revocable admission token; a stopped action cannot dispatch later work."""
+
+    def __init__(self, session):
+        self.session = session
+        self.cancelled = threading.Event()
+
+    def is_set(self):
+        return self.cancelled.is_set() or self.session.cancel_event.is_set()
+
+    def check(self):
+        if self.is_set():
+            raise SideCaptureCancelled("Setup action was stopped")
+        self.session.check()
+
+    def call(self, method, *args, **kwargs):
+        self.check()
+        value = getattr(self.session._raw_motor, method)(*args, cancel_event=self, **kwargs)
+        self.check()
+        return value
+
+    def status(self):
+        status = self.call("read_status")
+        if (
+            status.session != self.session._session
+            or status.microstep != 4
+            or status.homing
+            or status.focus.moving
+            or status.objective.moving
+        ):
+            raise RuntimeError("Setup mode or stationary motor state was lost")
+        return status
+
+
+def _setup_io(session, action):
+    """Keep terminal controls live through every accepted serial ACK/status/DONE wait."""
+    operation = _SetupOperation(session)
+    admitted = threading.Event()
+    done = threading.Event()
+    result, errors = [], []
+    stopped = quit_requested = False
+
+    def worker():
+        try:
+            admitted.wait()
+            operation.check()
+            result.append(action(operation))
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=worker, name="microscope-setup-action", daemon=True)
+    session._setup_worker = thread
+    try:
+        with session.operator.motion_controls(session.check) as poll:
+            try:
+                thread.start()
+                operation.check()
+                admitted.set()
+            except BaseException:
+                operation.cancelled.set()
+                admitted.set()  # A late-starting thread may exit, but cannot dispatch.
+                raise
+            while True:
+                control = poll()
+                quit_requested = control is None or control == "q"
+                if quit_requested:
+                    operation.cancelled.set()
+                    session.abort("Setup quit requested", operator=True)
+                    break
+                if control and control not in _SETUP_MOTION_KEYS:
+                    stopped = True
+                    operation.cancelled.set()
+                    session._raw_motor.stop_all()
+                    break
+                if done.wait(0.01):
+                    break
+                session.check()
+    except BaseException as error:
+        operation.cancelled.set()
+        admitted.set()
+        session.abort(error)
+        raise
+    finally:
+        # Do not restore ownership to another command while an old call can still write.
+        _drain_setup_worker(session)
+    if quit_requested:
+        if errors and not isinstance(errors[0], SideCaptureCancelled):
+            raise errors[0]
+        raise _SetupQuit
+    if stopped:
+        session.check()
+        if errors and not isinstance(errors[0], SideCaptureCancelled):
+            raise errors[0]
+        return _SETUP_STOPPED
+    if errors:
+        raise errors[0]
+    return result[0]
+
+
 def run_setup(session, *, progress=print):
     """One fresh bounded action at a time, with no limits or settings writes."""
     focus_keys = {"a": 1, "z": -1, "s": 10, "x": -10, "d": 100, "c": -100, "f": 1000, "v": -1000}
     turret_keys = {"j": -4, "l": 4, "u": -40, "o": 40}
-    motor, cancel = session._raw_motor, session.cancel_event
     focus_count = turret_count = 0
-    known = True
-
-    def idle():
-        status = session._status()
-        if status.microstep != 4 or status.focus.moving or status.objective.moving:
-            raise RuntimeError("Setup mode or stationary motor state was lost")
-        return status
+    known = False
+    previous = None
 
     def show():
         progress(
@@ -1235,105 +1353,107 @@ def run_setup(session, *, progress=print):
             + ("" if known else " Current position is unconfirmed.")
         )
 
+    def initialize(operation):
+        operation.check()
+        session._raw_motor.safe_stop_disable()
+        operation.call("set_microstep", 4)
+        operation.call("focus_speed", 200)
+        operation.call("objective_speed", 40)
+        return operation.status()
+
+    def move(operation, axis, steps):
+        before = operation.status()
+        target = getattr(before, axis).position + steps
+        if not -(2**31) <= target < 2**31:
+            raise ValueError("Setup move exceeds the firmware coordinate range")
+        operation.call(f"{axis}_enable")
+        if axis == "focus":
+            operation.call("focus_move", steps)
+        else:
+            operation.call("send_and_wait", f"OBJ MOVE {steps}", "DONE OBJ", timeout=3)
+        after = operation.status()
+        if getattr(after, axis).position != target:
+            raise RuntimeError("Setup move completion position is not confirmed")
+        return after
+
+    def zero(operation):
+        operation.status()
+        operation.call("focus_enable")
+        operation.call("focus_zero")
+        after = operation.status()
+        if not after.zeroed or after.focus.position != 0 or after.limited:
+            raise RuntimeError("Setup focus zero was not confirmed")
+        return after
+
     try:
-        session.check()
-        motor.safe_stop_disable()
-        session.check()
-        motor.set_microstep(4, cancel_event=cancel)
-        motor.focus_speed(200, cancel_event=cancel)
-        motor.objective_speed(40, cancel_event=cancel)
-        idle()
         progress(
             "Setup only: observe every move. Focus a/z ±1, s/x ±10, d/c ±100, f/v ±1000 "
             "pulses; turret j/l -/+1, u/o -/+10 full steps. "
             "m marks turret origin; 0 requests CLEAR then focus zero; q quits. "
             "Other keys stop both motors. No limits or settings are written."
         )
+        previous = _setup_io(session, initialize)
+        if previous is _SETUP_STOPPED:
+            raise RuntimeError("Setup initialization was stopped")
+        known = True
         show()
         while True:
-            before = idle()
+            current = _setup_io(session, lambda operation: operation.status())
+            if current is _SETUP_STOPPED:
+                known = False
+                show()
+                continue  # Read-only reconciliation; never retry an interrupted move.
+            focus_count += current.focus.position - previous.focus.position
+            turret_count += current.objective.position - previous.objective.position
+            previous = current
+            known = True
             key = session.operator.key(session.check)
             session.check()
-            idle()
             if key is None or key == "q":
+                session._setup_complete = True
                 return
             if key == "m":
                 turret_count = 0
             elif key == "0":
-                motor.stop_all()
+                stopped = _setup_io(session, lambda operation: operation.call("stop_all"))
+                if stopped is _SETUP_STOPPED:
+                    continue
                 session.operator.confirm(
                     "Set the counted focus origin at observed clearance", session.check
                 )
                 session.check()
-                motor.focus_enable(cancel_event=cancel)
-                motor.focus_zero(cancel_event=cancel)
-                after = idle()
-                if not after.zeroed or after.focus.position != 0 or after.limited:
-                    raise RuntimeError("Setup focus zero was not confirmed")
+                known = False
+                after = _setup_io(session, zero)
+                if after is _SETUP_STOPPED:
+                    raise RuntimeError("Setup zero completion is unconfirmed")
+                previous = after
                 focus_count = 0
+                known = True
             elif key in focus_keys or key in turret_keys:
                 steps = (focus_keys if key in focus_keys else turret_keys)[key]
                 axis = "focus" if key in focus_keys else "objective"
-                target = getattr(before, axis).position + steps
-                if not -(2**31) <= target < 2**31:
-                    raise ValueError("Setup move exceeds the firmware coordinate range")
                 known = False
-                quit_requested = stopped = False
-                with session.operator.motion_controls(session.check) as poll:
-                    getattr(motor, f"{axis}_enable")(cancel_event=cancel)
-                    deadline = time.monotonic() + abs(steps) / (200 if axis == "focus" else 40) + 2
-                    ticket = None
-                    if axis == "focus":
-                        ticket = motor.focus_move_async(steps, cancel_event=cancel)
-                    else:
-                        motor.objective_move(steps, cancel_event=cancel)
-                    next_status = 0.0
-                    while True:
-                        control = poll()
-                        quit_requested = control is None or control == "q"
-                        if quit_requested or (
-                            control and control not in focus_keys | turret_keys | {"m": 0, "0": 0}
-                        ):
-                            motor.stop_all()
-                            stopped = True
-                            break
-                        now = time.monotonic()
-                        if now >= next_status:
-                            status = session._status()
-                            next_status = now + 0.5
-                            # Bound diagnostic STATUS rows while preserving the
-                            # pending focus ticket's completion response history.
-                            if status.microstep != 4:
-                                raise RuntimeError("Setup microstep mode changed during motion")
-                            if not status.focus.moving and not status.objective.moving:
-                                if ticket is not None:
-                                    motor.wait_focus_done(ticket, cancel_event=cancel)
-                                break
-                        if now >= deadline:
-                            raise TimeoutError("Setup move did not finish within its bounded wait")
-                        cancel.wait(0.01)
-                after = idle()
-                if not stopped and getattr(after, axis).position != target:
-                    raise RuntimeError("Setup move completion position is not confirmed")
-                travelled = getattr(after, axis).position - getattr(before, axis).position
-                if axis == "focus":
-                    focus_count += travelled
-                else:
-                    turret_count += travelled
-                known = True
-                if quit_requested:
-                    return
+                after = _setup_io(session, lambda operation: move(operation, axis, steps))
+                if after is not _SETUP_STOPPED:
+                    focus_count += after.focus.position - previous.focus.position
+                    turret_count += after.objective.position - previous.objective.position
+                    previous = after
+                    known = True
             else:
-                motor.stop_all()
-                idle()
+                _setup_io(session, lambda operation: operation.call("stop_all"))
             show()
+    except _SetupQuit:
+        session._setup_complete = True
     except BaseException as error:
+        known = False
         session.abort(error, operator=isinstance(error, (KeyboardInterrupt, TimeoutError)))
         raise
     finally:
-        if motor.connected:
-            motor.safe_stop_disable()
-        show()
+        try:
+            session.abort("Setup console ended", operator=True)
+            _drain_setup_worker(session)
+        finally:
+            show()
 
 
 # Defaults are the pinned GUI values, including its overrides of class defaults.

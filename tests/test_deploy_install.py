@@ -234,6 +234,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         not in {
             "mg400-furnace.service",
             "mg400-thermal.service",
+            "mg400-vision.service",
             "mg400-orchestrator.service",
             "mg400-gateway.service",
             "mg400-proxy.service",
@@ -651,7 +652,7 @@ def add_optional_service(
         stream.write(
             f'\n[[service]]\nname = "{name}"\nunits = ["mg400-{name}.service"]\n'
             f'optional = true\nvenv = "{venv}"\ngroups = {json.dumps(list(groups))}\n'
-            f'token = "MG400_{name.upper()}_TOKEN"\nport = 8771\n'
+            f'token = "MG400_{name.upper()}_TOKEN"\nport = 8799\n'
             f"assets = {json.dumps(list(asset_names))}\n"
         )
     (host.code / "config/systemd" / f"mg400-{name}.service").write_text("[Service]\n")
@@ -662,6 +663,147 @@ def select_optional(host, value):
     example.write_text(
         example.read_text().replace("MG400_OPTIONAL_SERVICES=", f"MG400_OPTIONAL_SERVICES={value}")
     )
+
+
+@pytest.fixture
+def vision_asset(host, module, monkeypatch):
+    source = host.root / "offline-vision.dat"
+    source.write_bytes(b"synthetic vision model; never load as a model")
+    (host.code / "config/assets.toml").write_text(
+        '[vision-weights]\nurl = "https://assets.example/vision"\n'
+        f'sha256 = "{hashlib.sha256(source.read_bytes()).hexdigest()}"\n'
+        f"bytes = {source.stat().st_size}\n"
+        'install = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"\n'
+        'mode = "0640"\nservice = "vision"\nsource = "test fixture"\nlicense = "AGPL-3.0"\n'
+    )
+    opener = Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(source.read_bytes()))
+    monkeypatch.setattr(module.main.__globals__["assets"], "open_download", opener)
+    return source, opener
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_vision_selection_installs_isolated_runtime_required_weights_and_private_data(
+    module, host, vision_asset, monkeypatch, offline
+):
+    source, opener = vision_asset
+    select_optional(host, "vision")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/unrelated/environment")
+    arguments = ["--asset", f"vision-weights={source}"] if offline else []
+    assert host.install(*arguments) == 0
+    syncs = [(cmd, opts) for cmd, opts in host.commands if cmd[0] == "/usr/bin/uv"]
+    assert len(syncs) == 2
+    assert "vision-gpu" not in syncs[0][0]
+    assert syncs[1][0] == [
+        "/usr/bin/uv",
+        "sync",
+        "--locked",
+        "--no-default-groups",
+        "--group",
+        "vision",
+        "--group",
+        "vision-gpu",
+        "--python",
+        "/usr/bin/python3",
+    ]
+    assert syncs[1][1]["env"]["UV_PROJECT_ENVIRONMENT"] == str(host.code / ".venv-vision")
+    assert syncs[1][1]["cwd"] == host.code
+    assert mode(host.data / "vision") == 0o750
+    assert host.owner(host.data / "vision") == (1000, 1000)
+    target = host.data / "models/chip-arm-yolo26s-seg-v1.pt"
+    assert target.read_bytes() == source.read_bytes()
+    assert mode(target) == 0o640 and host.owner(target) == (1000, 1000)
+    assert opener.call_count == (0 if offline else 1)
+    settings = module.parse_settings(host.settings.read_text())
+    assert len(settings["MG400_VISION_TOKEN"]) >= 24
+    assert settings["MG400_ORCH_VISION_TOKEN"] == settings["MG400_VISION_TOKEN"]
+    assert (host.units / "mg400-vision.service").read_bytes() == (
+        ROOT / "config/systemd/mg400-vision.service"
+    ).read_bytes()
+    assert not any(
+        cmd[:2] in (["systemctl", "start"], ["systemctl", "restart"]) for cmd, _ in host.commands
+    )
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_vision_dry_run_is_conditional_and_never_syncs_downloads_or_writes(
+    host, vision_asset, enabled
+):
+    _, opener = vision_asset
+    if enabled:
+        select_optional(host, "vision")
+    assert host.install("--dry-run") == 0
+    report = host.out.getvalue()
+    for expected in (
+        ".venv-vision",
+        "--group vision --group vision-gpu",
+        "install asset vision-weights",
+        "/var/lib/mg400/vision (0750, 1000:1000)",
+        "mg400-vision.service",
+    ):
+        assert (expected in report) is enabled
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    assert len(host.commands) == 2  # Injected Python-version and collector read-only checks.
+    opener.assert_not_called()
+
+
+def test_disabled_vision_never_installs_model_or_gpu_group_even_with_fetch_assets(
+    host, vision_asset
+):
+    _, opener = vision_asset
+    assert host.install("--fetch-assets") == 0
+    assert not (host.data / "vision").exists()
+    assert not (host.data / "models").exists()
+    assert not (host.units / "mg400-vision.service").exists()
+    assert all("vision-gpu" not in command for command, _ in host.commands)
+    opener.assert_not_called()
+
+
+def test_vision_refuses_bad_local_weights_before_any_host_mutation(host, vision_asset):
+    source, opener = vision_asset
+    select_optional(host, "vision")
+    source.write_bytes(b"corrupt")
+    assert host.install("--asset", f"vision-weights={source}") == 1
+    assert not host.settings.exists() and not host.data.exists()
+    opener.assert_not_called()
+
+
+def test_vision_failed_download_preserves_existing_weights_and_installs_no_unit(host, vision_asset):
+    _, opener = vision_asset
+    select_optional(host, "vision")
+    target = host.data / "models/chip-arm-yolo26s-seg-v1.pt"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"previous verified model")
+    opener.side_effect = lambda *_args, **_kwargs: io.BytesIO(b"wrong content")
+    assert host.install() == 1
+    assert target.read_bytes() == b"previous verified model"
+    assert not (host.units / "mg400-vision.service").exists()
+    assert sorted(path.name for path in target.parent.iterdir()) == [target.name]
+
+
+@pytest.mark.parametrize("damage", ["missing", "unregistered", "wrong-service", "symlink"])
+def test_vision_asset_preflight_refuses_invalid_manifest_or_target_before_changes(
+    host, vision_asset, damage
+):
+    _, opener = vision_asset
+    select_optional(host, "vision")
+    manifest = host.code / "config/assets.toml"
+    if damage == "missing":
+        manifest.unlink()
+    elif damage == "unregistered":
+        registry = host.code / "deploy/services.toml"
+        registry.write_text(
+            registry.read_text().replace('assets = ["vision-weights"]', "assets = []")
+        )
+    elif damage == "wrong-service":
+        manifest.write_text(manifest.read_text().replace('service = "vision"', 'service = "web"'))
+    else:
+        target = host.data / "models/chip-arm-yolo26s-seg-v1.pt"
+        target.parent.mkdir(parents=True)
+        target.symlink_to(host.root / "never-follow-this")
+    assert host.install() == 1
+    assert not host.settings.exists() and not host.units.exists()
+    assert len(host.commands) == 2
+    opener.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -905,6 +1047,7 @@ def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
         "Would ensure <host>/var/lib/mg400/calibration/cameras (0700, 1000:1000)",
         "Would create <host>/var/lib/mg400/camera/preview.key",
         "Would ensure <host>/opt/mg400 (0750, 0:1000)",
+        "Would prepare Python environment <host>/opt/mg400/.venv",
         "Would run: /usr/bin/uv sync --locked --no-default-groups "
         "--group stage --group tools --python /usr/bin/python3",
         "Would install <host>/etc/systemd/system/mg400-camera-capture.service",

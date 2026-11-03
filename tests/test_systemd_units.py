@@ -49,7 +49,10 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
     service = unit_sections(name)["Service"]
     assert (service["User"], service["Group"]) == (["1000"], ["1000"])
     program = command(name)[0]
-    assert program.startswith(("/opt/mg400/.venv/bin/", "/usr/local/lib/mg400/")), program
+    if name == "mg400-vision.service":
+        assert program == "/opt/mg400/.venv-vision/bin/python"
+    else:
+        assert program.startswith(("/opt/mg400/.venv/bin/", "/usr/local/lib/mg400/")), program
     assert service["UMask"] == ["0077"]
     assert service["Restart"] == ["on-failure"]
     # Services start only by hand or on a panel request.
@@ -64,6 +67,7 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-stage-panel.service",
         "mg400-furnace.service",
         "mg400-thermal.service",
+        "mg400-vision.service",
         "mg400-orchestrator.service",
         "mg400-gateway.service",
     ],
@@ -183,9 +187,36 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-stage-panel.service": ["dialout"],
         "mg400-furnace.service": ["dialout"],
         "mg400-thermal.service": [],
+        "mg400-vision.service": [],
         "mg400-orchestrator.service": [],
         "mg400-proxy.service": [],
         "mg400-gateway.service": [],
+    }
+
+
+def test_vision_uses_the_isolated_environment_and_keeps_only_its_token():
+    service = unit_sections("mg400-vision.service")["Service"]
+    assert command("mg400-vision.service") == ["/opt/mg400/.venv-vision/bin/python", "-m", "vision"]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    assert int(service["TimeoutStopSec"][0]) >= 30
+    excluded = set(service["UnsetEnvironment"][0].split())
+    assert excluded == {
+        *(
+            f"MG400_{name}_TOKEN"
+            for name in ("PANEL", "STAGE", "THERMAL", "FURNACE", "MICROSCOPE", "GATEWAY")
+        ),
+        *ORCHESTRATOR_TOKENS,
+    }
+    entry = next(item for item in REGISTRY if item["name"] == "vision")
+    assert entry == {
+        "name": "vision",
+        "units": ["mg400-vision.service"],
+        "optional": True,
+        "venv": ".venv-vision",
+        "groups": ["vision", "vision-gpu"],
+        "token": "MG400_VISION_TOKEN",
+        "port": 8771,
+        "assets": ["vision-weights"],
     }
 
 

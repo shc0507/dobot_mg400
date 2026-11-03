@@ -29,6 +29,17 @@ Add `thermal` to `MG400_OPTIONAL_SERVICES` before installation. See the [thermal
 If the optional furnace service is enabled, set `MG400_FURNACE_BIND=100.64.0.1` and permit TCP `8769` through the VPN.
 Keep `MG400_FURNACE_TOKEN` private. Enter it on the [furnace page](furnace.en.md), never in its URL.
 
+The optional vision service defaults to `MG400_VISION_BIND=127.0.0.1` and port `8771`.
+Keep these values for camera-preview detection overlays, which use a fixed loopback endpoint.
+For direct VPN access, set `MG400_VISION_BIND=100.64.0.1` and permit TCP `8771` through the VPN.
+The preview's loopback detection proxy cannot reach this bind.
+
+Keep `MG400_VISION_TOKEN` private and send it in the bearer header, never the URL.
+For non-loopback access, the token must have at least 24 printable ASCII characters. A configured token must meet this rule on loopback too.
+
+Add `vision` to `MG400_OPTIONAL_SERVICES` before installation. See [Host deployment](deploy.en.md#service-registry) for the isolated runtime and required weights.
+The owner installs and starts the service, then runs `mg400ctl gpu` to read GPU memory as UID `1000`.
+
 If the optional recipe service must accept VPN clients, set `MG400_ORCH_BIND=100.64.0.1` and permit TCP `8772` through the VPN.
 Send `MG400_ORCH_TOKEN` in the bearer header, never in the URL. Keep downstream token aliases private on the host.
 The default bind remains `127.0.0.1`. See the [recipe service](orchestrator.en.md#http-service) for access and recovery rules.
@@ -451,7 +462,8 @@ It rejects invalid JSON and detection responses larger than 256 KiB.
 
 On any vision error, the route returns `{"available":false}` and the tile shows `识别不可用`.
 Video continues independently of vision.
-The preview does not start the vision service. See [Vision service](vision.en.md) for its runtime and startup requirements.
+The preview does not start the vision service. The owner starts it with `mg400ctl start vision` after [installation](deploy.en.md#service-registry).
+See [Vision service](vision.en.md) for runtime and startup requirements.
 
 ### Camera failures
 

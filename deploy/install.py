@@ -645,8 +645,13 @@ def install(args, host, run, chown, out):
     proxy_config, caddy_binary = prepare_proxy(args, host, settings, selected)
     toupcam_binary = prepare_toupcam(args.toupcam, host)
 
-    manifest = assets.load_manifest(host.asset_manifest) if args.asset or args.fetch_assets else {}
-    available_assets = service_assets(selected, manifest) if args.asset or args.fetch_assets else {}
+    # Vision requires the released model even without the optional bulk-fetch flag.
+    required_assets = {"vision-weights"} if "vision" in selected else set()
+    load_assets = bool(required_assets or args.asset or args.fetch_assets)
+    manifest = assets.load_manifest(host.asset_manifest) if load_assets else {}
+    available_assets = service_assets(selected, manifest) if load_assets else {}
+    if not required_assets <= available_assets.keys():
+        raise ValueError("The vision service must register its vision-weights asset.")
     local_assets = {}
     for specification in args.asset:
         name, equals, path = specification.partition("=")
@@ -660,7 +665,9 @@ def install(args, host, run, chown, out):
     selected_assets = (
         available_assets
         if args.fetch_assets
-        else {name: available_assets[name] for name in local_assets}
+        else {
+            name: available_assets[name] for name in sorted(required_assets | local_assets.keys())
+        }
     )
     for name, asset in selected_assets.items():
         assets.check_destination(asset, host.root)
@@ -705,6 +712,8 @@ def install(args, host, run, chown, out):
         )
     if "thermal" in selected:
         directory(host.data / "thermal", 0o750, service)
+    if "vision" in selected:
+        directory(host.data / "vision", 0o750, service)
     if "furnace" in selected:
         directory(host.data / "furnace", 0o750, service)
     if "orch" in selected or "gateway" in selected:
@@ -719,6 +728,7 @@ def install(args, host, run, chown, out):
     directory(host.code, 0o750, (0, SERVICE_GID))
     # The system Python keeps the environment readable for the service user.
     for venv, groups in service_environments(selected).items():
+        step(f"prepare Python environment {host.code / venv}")
         system(
             [
                 uv,

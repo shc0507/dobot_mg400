@@ -487,6 +487,68 @@ def test_mode_runs_the_switch_script_as_the_service_user(ctl, switch):
     ]
 
 
+def test_gpu_uses_a_fixed_read_only_query_as_uid_1000_without_service_secrets(ctl, monkeypatch):
+    lookup = Mock(
+        side_effect=lambda name, **_: {
+            "nvidia-smi": "/usr/bin/nvidia-smi",
+            "runuser": "/usr/sbin/runuser",
+        }[name]
+    )
+    monkeypatch.setattr(ctl.module.main.__globals__["shutil"], "which", lookup)
+    monkeypatch.setenv("LD_PRELOAD", "/untrusted/library.so")
+    monkeypatch.setenv("MG400_VISION_TOKEN", "root-only-secret")
+    # GPU status does not require loading service settings or their credentials.
+    ctl.host.settings.unlink()
+    assert ctl.call("gpu") == 0
+    ctl.getpwuid.assert_called_once_with(1000)
+    ctl.module.main.__globals__["grp"].getgrgid.assert_called_once_with(1000)
+    program, argv, environment = ctl.execvpe.call_args.args
+    assert program == "/usr/sbin/runuser"
+    assert argv == [
+        "runuser",
+        "--pty",
+        "-u",
+        "mg400user",
+        "-g",
+        "mg400group",
+        "--",
+        "/usr/bin/nvidia-smi",
+        "--query-gpu=name,memory.used,memory.total",
+        "--format=csv",
+    ]
+    lookup.assert_any_call("nvidia-smi", path="/usr/bin:/bin")
+    assert not any(key.startswith("MG400_") for key in environment)
+    assert "LD_PRELOAD" not in environment
+    ctl.run.assert_not_called()
+
+
+@pytest.mark.parametrize("missing", ["nvidia-smi", "runuser", "user", "group"])
+def test_gpu_refuses_missing_program_or_service_identity(ctl, monkeypatch, capsys, missing):
+    globals_ = ctl.module.main.__globals__
+    monkeypatch.setattr(
+        globals_["shutil"],
+        "which",
+        lambda name, **_: None if name == missing else f"/usr/bin/{name}",
+    )
+    if missing == "user":
+        globals_["pwd"].getpwuid.side_effect = KeyError(1000)
+    elif missing == "group":
+        globals_["grp"].getgrgid.side_effect = KeyError(1000)
+    assert ctl.call("gpu") == 1
+    assert "Cannot read GPU status as UID 1000" in capsys.readouterr().err
+    ctl.execvpe.assert_not_called()
+    ctl.run.assert_not_called()
+
+
+def test_gpu_requires_root_and_accepts_no_extra_query_or_write_arguments(ctl, monkeypatch):
+    with pytest.raises(SystemExit):
+        ctl.call("gpu", "--reset-gpu-clocks")
+    monkeypatch.setattr(ctl.module.main.__globals__["os"], "geteuid", lambda: 1000)
+    assert ctl.call("gpu") == 1
+    ctl.execvpe.assert_not_called()
+    ctl.run.assert_not_called()
+
+
 def test_camera_url_uses_the_key_and_default_bind(ctl):
     key = ctl.host.data / "camera/preview.key"
     key.parent.mkdir(parents=True)
@@ -700,7 +762,7 @@ def optional_ctl(ctl, tmp_path):
         (ROOT / "deploy/services.toml").read_text()
         + '\n[[service]]\nname = "optional"\nunits = ["mg400-optional.service"]\n'
         'optional = true\nvenv = ".venv-vision"\ngroups = ["vision"]\n'
-        'token = "MG400_OPTIONAL_TOKEN"\nport = 8771\nassets = []\n'
+        'token = "MG400_OPTIONAL_TOKEN"\nport = 8799\nassets = []\n'
     )
     ctl.host.registry = registry
     return ctl

@@ -1,0 +1,19 @@
+[Unit]
+Description=Vision inference service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+# go2rtc owns the cameras. Vision reads its loopback streams.
+EnvironmentFile=/etc/mg400/mg400.env
+UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN MG400_THERMAL_TOKEN MG400_FURNACE_TOKEN MG400_MICROSCOPE_TOKEN MG400_ORCH_TOKEN MG400_GATEWAY_TOKEN MG400_ORCH_ROBOT_TOKEN MG400_ORCH_STAGE_TOKEN MG400_ORCH_THERMAL_TOKEN MG400_ORCH_VISION_TOKEN MG400_ORCH_FURNACE_TOKEN MG400_ORCH_MICROSCOPE_TOKEN
+WorkingDirectory=/opt/mg400
+ExecStart=/opt/mg400/.venv-vision/bin/python -m vision
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=2
+UMask=0077
+TimeoutStopSec=30

@@ -1,14 +1,17 @@
 """Offline checks for the XDV authority-bound read interfaces."""
 
 import copy
+import gc
 import io
 import ipaddress
 import json
 import os
 import socket
+import sys
 import threading
 import time
 import urllib.error
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -787,12 +790,277 @@ def _home_owned_demo(stage):
         stage.release()
 
 
+@pytest.fixture
+def crucible_gc_observer():
+    """Observe GC pauses only during this test, without changing collection policy."""
+    clock = time.monotonic
+    starts = [None, None, None]
+    counts = [0, 0, 0]
+    maximum = [None, None, None]
+    recent = deque(maxlen=8)
+
+    def observe(phase, info):
+        generation = info["generation"]
+        sampled_at = clock()
+        if phase == "start":
+            starts[generation] = sampled_at
+        elif phase == "stop" and starts[generation] is not None:
+            started_at = starts[generation]
+            starts[generation] = None
+            event = (
+                generation,
+                started_at,
+                sampled_at,
+                sampled_at - started_at,
+                info.get("collected", 0),
+                info.get("uncollectable", 0),
+            )
+            if generation == 2:
+                recent.append(event)
+            counts[generation] += 1
+            if maximum[generation] is None or event[3] > maximum[generation][3]:
+                maximum[generation] = event
+
+    def snapshot():
+        # Copy bounded tuples before allocating dictionaries that can themselves trigger GC.
+        latest, maxima = tuple(recent), tuple(maximum)
+        fields = (
+            "generation",
+            "started_monotonic",
+            "stopped_monotonic",
+            "duration_s",
+            "collected",
+            "uncollectable",
+        )
+        return {
+            "captured_monotonic": clock(),
+            "enabled": gc.isenabled(),
+            "thresholds": list(gc.get_threshold()),
+            "counts": list(counts),
+            "active_starts": list(starts),
+            "recent_generation_2": [dict(zip(fields, event)) for event in latest],
+            "maximum_by_generation": [
+                dict(zip(fields, event)) if event else None for event in maxima
+            ],
+        }
+
+    gc.callbacks.append(observe)
+    try:
+        yield snapshot
+    finally:
+        # Other observers can be installed during the test. Remove only ours.
+        if observe in gc.callbacks:
+            gc.callbacks.remove(observe)
+
+
+def _robot_failure_sample(robot):
+    """Read only bounded local state; never query the demo's sockets or clients."""
+    with robot._lock:
+        sampled_at = time.monotonic()
+        feedback = robot._sample
+        return {
+            "message": str(robot._message)[:400],
+            "locked": robot._locked,
+            "fault": robot._fault,
+            "syncing": robot._syncing,
+            "busy": robot._busy,
+            "owner_present": robot._owner is not None,
+            "mode": feedback.mode if feedback is not None else None,
+            "error_status": feedback.error_status if feedback is not None else None,
+            "feedback_age_s": sampled_at - robot._received if robot._received else None,
+            "lease_renewal_age_s": sampled_at - robot._heartbeat if robot._heartbeat else None,
+        }
+
+
+def _feedback_reader_failure_stack(robot):
+    """Inspect only the first failure, without instrumenting successful reads."""
+    frames = sys._current_frames()
+    frame = frames.get(robot._reader.ident) if robot._reader is not None else None
+    records = []
+    try:
+        while frame is not None and len(records) < 8:
+            record = {
+                "file": os.path.basename(frame.f_code.co_filename)[:100],
+                "function": frame.f_code.co_name[:80],
+                "line": frame.f_lineno,
+            }
+            if (
+                frame.f_code.co_name == "read_latest"
+                and frame.f_globals.get("__name__") == "mg400.feedback"
+            ):
+                local = frame.f_locals
+                connection = local.get("self")
+                buffer = vars(connection).get("_buffer") if connection is not None else None
+                timeout = vars(connection).get("timeout_s") if connection is not None else None
+                deadline = local.get("deadline")
+                drains = local.get("drain_reads")
+                record.update(
+                    drain_reads=drains if type(drains) is int else None,
+                    latest_present=local.get("latest") is not None,
+                    deadline_remaining_s=(
+                        deadline - time.monotonic() if type(deadline) in (int, float) else None
+                    ),
+                    buffered_bytes=len(buffer) if isinstance(buffer, (bytes, bytearray)) else None,
+                    timeout_s=timeout if type(timeout) in (int, float) else None,
+                )
+            records.append(record)
+            frame = frame.f_back
+        return {"frames": records}
+    except Exception as error:
+        return {"frames": records, "observer_error": type(error).__name__}
+    finally:
+        # Never retain live frames or their locals in the failure records.
+        del frame
+        frames.clear()
+
+
+def _robot_operation_exception(error=None):
+    """Copy the active operation's traceback without retaining exception objects."""
+    if error is None:
+        error_type, error, trace = sys.exc_info()
+    else:
+        error_type, trace = type(error), error.__traceback__
+    records, traversed = [], 0
+    try:
+        while trace is not None and traversed < 32:
+            frame = trace.tb_frame
+            record = {
+                "file": os.path.basename(frame.f_code.co_filename)[:100],
+                "function": frame.f_code.co_name[:80],
+                "line": trace.tb_lineno,
+            }
+            if (
+                frame.f_code.co_name == "_fresh"
+                and frame.f_globals.get("__name__") == "mg400.joint_control"
+            ):
+                local = frame.f_locals
+                age, received = local.get("age"), local.get("received")
+                allowed = local.get("allowed_modes")
+                sample = local.get("sample")
+                sample_mode = getattr(sample, "mode", None)
+                sample_error = getattr(sample, "error_status", None)
+                record.update(
+                    age_s=age if type(age) in (int, float) else None,
+                    received_monotonic=received if type(received) in (int, float) else None,
+                    allowed_modes=(
+                        sorted(allowed)
+                        if isinstance(allowed, (set, frozenset, list, tuple))
+                        and len(allowed) <= 8
+                        and all(type(mode) is int for mode in allowed)
+                        else None
+                    ),
+                    sample_mode=sample_mode if type(sample_mode) is int else None,
+                    sample_error_status=sample_error if type(sample_error) is bool else None,
+                )
+            records.append(record)
+            records = records[-8:]
+            traversed += 1
+            trace = trace.tb_next
+        return {
+            "type": error_type.__name__[:80] if error_type is not None else None,
+            "captured_monotonic": time.monotonic(),
+            "frames": records,
+            "truncated": traversed > 8 or trace is not None,
+        }
+    except Exception as observer_error:
+        return {"frames": records, "observer_error": type(observer_error).__name__}
+    finally:
+        # The result contains only primitive values, never traceback/frame locals.
+        del error, trace
+
+
+def _observe_robot_operation_failures(robot, diagnostics, gc_snapshot):
+    """Observe the first rejected operation before its internal stop clears state."""
+    control = robot._control
+    original = control._failed
+    had_override = "_failed" in vars(control)
+    previous_override = vars(control).get("_failed")
+
+    def observed(*args, **kwargs):
+        try:
+            if "first_operation_failure" not in diagnostics:
+                error = args[0] if args else kwargs.get("error")
+                record = {
+                    "caller": sys._getframe(1).f_code.co_name[:80],
+                    "operation_exception": _robot_operation_exception(error),
+                    "feedback_reader": _feedback_reader_failure_stack(robot),
+                    "gc": gc_snapshot(),
+                }
+                # Never wait for the publication lock before the original stop.
+                if robot._lock.acquire(blocking=False):
+                    try:
+                        record.update(_robot_failure_sample(robot), panel_lock_busy=False)
+                    finally:
+                        robot._lock.release()
+                else:
+                    record["panel_lock_busy"] = True
+                diagnostics["first_operation_failure"] = record
+        except Exception as observer_error:
+            diagnostics["operation_observer_error"] = type(observer_error).__name__
+        return original(*args, **kwargs)
+
+    def restore():
+        if had_override:
+            control._failed = previous_override
+        else:
+            del control._failed
+
+    control._failed = observed
+    return restore
+
+
+def _observe_robot_stops(robot, diagnostics, gc_snapshot):
+    """Preserve the initiating evidence before stop workers or cleanup replace it."""
+    original = robot._request_stop
+    had_override = "_request_stop" in vars(robot)
+    previous_override = vars(robot).get("_request_stop")
+
+    def observed(**kwargs):
+        try:
+            with robot._lock:
+                diagnostics["stop_count"] += 1
+                reason = kwargs.get("reason")
+                if len(diagnostics["stops"]) < 8 or (
+                    reason is not None and diagnostics["first_reason"] is None
+                ):
+                    record = {
+                        **_robot_failure_sample(robot),
+                        "caller": sys._getframe(1).f_code.co_name[:80],
+                        "reason": str(reason)[:400] if reason is not None else None,
+                        "disabling": bool(kwargs.get("disabling", False)),
+                        "disconnect": bool(kwargs.get("disconnect", False)),
+                    }
+                    if diagnostics["stop_count"] == 1:
+                        record["operation_exception"] = _robot_operation_exception()
+                        record["feedback_reader"] = _feedback_reader_failure_stack(robot)
+                        record["gc"] = gc_snapshot()
+                    if len(diagnostics["stops"]) < 8:
+                        diagnostics["stops"].append(record)
+                    if reason is not None and diagnostics["first_reason"] is None:
+                        diagnostics["first_reason"] = record
+        except Exception as error:
+            # Observation must not replace or suppress the real stop operation.
+            diagnostics["observer_error"] = type(error).__name__
+        return original(**kwargs)
+
+    def restore():
+        with robot._lock:
+            if had_override:
+                robot._request_stop = previous_override
+            else:
+                del robot._request_stop
+
+    robot._request_stop = observed
+    return restore
+
+
 @pytest.mark.parametrize("scenario", ["complete", "unhomed", "hot"])
 def test_public_rehearsal_load_unload_uses_owned_four_services_only(
     crucible_geometry,
     tmp_path,
     monkeypatch,
     scenario,
+    crucible_gc_observer,
 ):
     _crucible_files(tmp_path, monkeypatch)
     forbidden = {
@@ -810,14 +1078,40 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
     for key in forbidden:
         monkeypatch.setenv(key, "production-must-not-be-used")
     demos = []
+    robot_stops = {"stop_count": 0, "stops": [], "first_reason": None}
+
+    def diagnostics():
+        try:
+            current = _robot_failure_sample(demos[0].robot_state) if demos else None
+            data = json.dumps(
+                {**robot_stops, "current": current, "gc": crucible_gc_observer()}, sort_keys=True
+            )
+            (tmp_path / "robot-failure.json").write_text(data, encoding="utf-8")
+            report = "robot_diagnostics=" + data
+            # Assertion tuple reprs can be truncated by pytest. Captured output
+            # and this fixture sidecar preserve the complete bounded evidence.
+            print(report)
+            return report
+        except Exception as error:
+            return f"robot_diagnostics_unavailable={type(error).__name__}; {robot_stops!r}"
 
     class Demo(Rehearsal):
         def __enter__(self):
-            assert forbidden.isdisjoint(os.environ)
+            assert forbidden.isdisjoint(os.environ), diagnostics()
             super().__enter__()
             demos.append(self)
-            assert set(self.clients) == {"robot", "stage", "thermal", "furnace"}
-            assert all(client.describe()["demo"] for client in self.clients.values())
+            # Restore the instance method before resource teardown. Earlier stop
+            # records survive runner cleanup and the service's final message.
+            self._stack.callback(
+                _observe_robot_stops(self.robot_state, robot_stops, crucible_gc_observer)
+            )
+            self._stack.callback(
+                _observe_robot_operation_failures(
+                    self.robot_state, robot_stops, crucible_gc_observer
+                )
+            )
+            assert set(self.clients) == {"robot", "stage", "thermal", "furnace"}, diagnostics()
+            assert all(client.describe()["demo"] for client in self.clients.values()), diagnostics()
             if scenario != "unhomed":
                 _home_owned_demo(self.clients["stage"])
 
@@ -856,25 +1150,38 @@ timeout_s = """
         + "\n"
     )
     output = io.StringIO()
+    # Clear prior-suite cycles before owned services start their real 250 ms watchdog.
+    started = time.monotonic()
+    collected = gc.collect()
+    robot_stops["gc_preflight"] = {
+        "started_monotonic": started,
+        "completed_monotonic": time.monotonic(),
+        "collected": collected,
+    }
     code = cli.main(
         ["rehearse", str(recipe), "--runs-dir", str(tmp_path / "runs")],
         out=output,
         read=Mock(side_effect=EOFError()),
     )
     reports = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
-    assert reports, output.getvalue()
+    assert reports, (output.getvalue(), diagnostics())
     if scenario == "complete":
-        assert code == 0, [(item["status"], item["step"], item["detail"]) for item in reports]
-        assert reports[-1]["status"] == "completed" and reports[-1]["zones"] == {}
-        assert demos[0].simulator.collector.targets("answered").count(400) == 2
+        assert code == 0, (
+            [(item["status"], item["step"], item["detail"]) for item in reports],
+            diagnostics(),
+        )
+        assert reports[-1]["status"] == "completed" and reports[-1]["zones"] == {}, diagnostics()
+        assert demos[0].simulator.collector.targets("answered").count(400) == 2, diagnostics()
     else:
-        assert code == 1 and reports[-1]["status"] == "aborted", output.getvalue()
-        assert any(report["status"] == "held" for report in reports)
+        assert code == 1 and reports[-1]["status"] == "aborted", (output.getvalue(), diagnostics())
+        assert any(report["status"] == "held" for report in reports), diagnostics()
         targets = demos[0].simulator.collector.targets("answered")
-        assert targets.count(400) == (1 if scenario == "hot" else 0)
+        assert targets.count(400) == (1 if scenario == "hot" else 0), diagnostics()
         if scenario == "hot":
             held = next(item for item in reports if item["status"] == "held")
-            assert any(word in held["detail"] for word in ("timed out", "permission", "deadline"))
+            assert any(
+                word in held["detail"] for word in ("timed out", "permission", "deadline")
+            ), diagnostics()
 
 
 def test_service_demo_factory_returns_context_bound_furnace_and_roi_clients(
@@ -1478,6 +1785,144 @@ def test_guard_failure_stops_before_blocked_monitor_read_drains(tmp_path, failur
         assert not runner.wait_closed(0.02)
         assert "release" not in service.events
         release.set()
+        assert runner.wait_closed(3)
+        assert runner.status == "aborted"
+        assert service.events.count("stop") >= 2
+        assert service.events[-2:] == ["release", "close"]
+        assert "next-phase" not in service.events
+
+
+def test_monitor_error_survives_worker_revocation_before_outcome_publication(tmp_path, monkeypatch):
+    registry, service = Registry(), FakeService()
+    guard_entered, monitor_revoked, worker_unwound, release_monitor = (
+        threading.Event() for _ in range(4)
+    )
+    original_error = RuntimeError("robot_clear: original feedback sample is stale")
+    recorded = {}
+    revoke = _Authority.revoke
+    check_held = runner_module.Zones.check_held
+
+    def observed_revoke(authority, error=None):
+        revoke(authority, error)
+        if threading.current_thread().name == "orch-zones":
+            recorded["error"] = error
+            recorded["authority"] = authority
+            monitor_revoked.set()
+            # Model preemption after immediate revocation, before the monitor
+            # publishes its outcome. The skill can unwind in this interval.
+            assert release_monitor.wait(4)
+
+    def failing_monitor(zones, authority):
+        if threading.current_thread().name == "orch-zones":
+            assert guard_entered.wait(2)
+            raise original_error
+        return check_held(zones, authority)
+
+    monkeypatch.setattr(_Authority, "revoke", observed_revoke)
+    monkeypatch.setattr(runner_module.Zones, "check_held", failing_monitor)
+
+    def skill(ctx):
+        try:
+            with ctx.guard(lambda: None):
+                guard_entered.set()
+                ctx.sleep(3)
+        finally:
+            worker_unwound.set()
+        service.events.append("next-phase")
+
+    registry.register("first", skill, services=("robot",))
+    with running(
+        tmp_path, registry, ["first"], {"robot": service}, timeout=3, gates=(release_monitor,)
+    ) as (runner, _):
+        assert monitor_revoked.wait(2)
+        assert worker_unwound.wait(2)
+        until(lambda: runner.status == "held" and "stop" in service.events)
+        snapshot = runner.snapshot()
+        assert snapshot["detail"] == str(original_error)
+        assert recorded["error"] is original_error
+        assert recorded["authority"].revocation_error is original_error
+        assert recorded["authority"].cancelled.is_set()
+        assert runner._monitor.is_alive()
+        assert not snapshot["settled"]
+        assert service.events.count("acquire") == 1
+        assert "release" not in service.events
+        assert "next-phase" not in service.events
+        runner.abort()
+        assert not runner.wait_closed(0.02)
+        assert "release" not in service.events
+        release_monitor.set()
+        assert runner.wait_closed(3)
+        assert runner.status == "aborted"
+        assert service.events.count("stop") >= 2
+        assert service.events[-2:] == ["release", "close"]
+        assert "next-phase" not in service.events
+
+
+@pytest.mark.parametrize("source", ["clients", "zones"])
+def test_guard_unwind_preserves_first_service_or_zone_failure(tmp_path, monkeypatch, source):
+    registry, service = Registry(), FakeService()
+    coordinator_joining, runner_ready, release_monitor = (threading.Event() for _ in range(3))
+    observed = {}
+    original_thread = threading.Thread
+    original_check_held = runner_module.Zones.check_held
+    reason = f"{source}: original ownership or interlock failure"
+
+    class CoordinatedThread(original_thread):
+        def join(self, timeout=None):
+            if self.name == "orch-skill":
+                # Release the skill only after the coordinator has checked the
+                # healthy state and committed to waiting for this worker.
+                coordinator_joining.set()
+                return super().join(2)
+            return super().join(timeout)
+
+    def blocked_monitor(zones, authority):
+        if threading.current_thread().name == "orch-zones":
+            assert release_monitor.wait(4)
+        return original_check_held(zones, authority)
+
+    monkeypatch.setattr(runner_module.threading, "Thread", CoordinatedThread)
+    monkeypatch.setattr(runner_module.Zones, "check_held", blocked_monitor)
+
+    def skill(ctx):
+        with ctx.guard(lambda: None):
+            assert coordinator_joining.wait(2)
+            assert runner_ready.wait(2)
+            runner = observed["runner"]
+            target = runner.clients if source == "clients" else runner.zones
+            target.error = reason
+            ctx.check()
+        service.events.append("next-phase")
+
+    registry.register("first", skill, services=("robot",))
+    with running(
+        tmp_path, registry, ["first"], {"robot": service}, timeout=3, gates=(release_monitor,)
+    ) as (runner, _):
+        observed["runner"] = runner
+        runner_ready.set()
+        until(lambda: runner.status == "held" and "stop" in service.events)
+        snapshot = runner.snapshot()
+        stored = runner._authority.revocation_error
+        assert isinstance(stored, Revoked)
+        assert snapshot["detail"] == reason
+        assert str(stored) == snapshot["detail"]
+        assert runner._authority.cancelled.is_set()
+        assert not runner._worker.is_alive()
+        assert runner._monitor.is_alive()
+        assert not snapshot["settled"]
+        assert service.events.count("acquire") == 1
+        assert "release" not in service.events
+        assert "next-phase" not in service.events
+        # A later diagnostic cannot overwrite the first recorded cause.
+        runner._authority.revoke(RuntimeError("later cleanup failure"))
+        assert runner._authority.revocation_error is stored
+        with pytest.raises(Revoked) as cancelled:
+            runner._authority.check()
+        assert str(cancelled.value) == str(stored)
+        runner.abort()
+        assert not runner.wait_closed(0.02)
+        assert "release" not in service.events
+        release_monitor.set()
         assert runner.wait_closed(3)
         assert runner.status == "aborted"
         assert service.events.count("stop") >= 2

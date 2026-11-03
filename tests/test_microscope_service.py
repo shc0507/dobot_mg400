@@ -852,3 +852,93 @@ def test_command_worker_start_failure_returns_json_and_stops_outputs(demo_rig, m
     state = rig.service.snapshot()
     assert state["locked"] and not state["focus_zero_known"] and not state["busy"]
     assert not rig.port.sim.focus.enabled and not rig.port.sim.objective.enabled
+
+
+@pytest.mark.parametrize("outcome", ["confirmed", "pending", "unconfirmed"])
+def test_stop_wait_rechecks_rearmed_cleanup_with_original_budget(monkeypatch, outcome):
+    import threading
+    import time
+
+    import microscope.service as module
+
+    now, waits, replies = [0.0], [], []
+    first_woke, resume_waiter = threading.Event(), threading.Event()
+    second_entered, finish_second = threading.Event(), threading.Event()
+    caller = None
+
+    class Motor:
+        calls = 0
+        outputs_enabled = True
+
+        def safe_stop_disable(self):
+            self.calls += 1
+            if self.calls == 2:
+                second_entered.set()
+                assert finish_second.wait(5)
+                if outcome == "unconfirmed":
+                    raise RuntimeError("Offline cleanup acknowledgement lost")
+            self.outputs_enabled = False
+
+    class Completion:
+        def __init__(self):
+            self.event = threading.Event()
+
+        def set(self):
+            self.event.set()
+
+        def clear(self):
+            self.event.clear()
+
+        def is_set(self):
+            return self.event.is_set()
+
+        def wait(self, timeout=None):
+            if threading.current_thread() is not caller:
+                return self.event.wait(timeout)
+            waits.append(timeout)
+            if len(waits) == 1:
+                assert self.event.wait(5)
+                first_woke.set()
+                assert resume_waiter.wait(5)
+                return True
+            if outcome == "pending":
+                # The newer cleanup stays blocked through the original deadline.
+                now[0] = 1.0
+                return False
+            finish_second.set()
+            assert self.event.wait(5)
+            now[0] = 0.5
+            return True
+
+    monkeypatch.setattr(
+        module, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time, sleep=time.sleep)
+    )
+    motor = Motor()
+    service = module.MicroscopeService(demo=True, motor=motor)
+    service._stop_done = Completion()
+    service._stop_done.set()
+    caller = threading.Thread(target=lambda: replies.append(service.stop("operator", 1)))
+    caller.start()
+    try:
+        assert first_woke.wait(5)
+        assert not motor.outputs_enabled and service._stop_outcome == "confirmed"
+        now[0] = 0.25
+        # The cancellation handler uses this same entry point after unwinding.
+        assert service.stop("command-cancel", 0) == "pending"
+        assert second_entered.wait(5)
+        resume_waiter.set()
+        caller.join(5)
+        assert not caller.is_alive()
+        assert replies == [outcome]
+        assert waits == [1.0, 0.75]  # Never start a fresh one-second wait.
+        assert not motor.outputs_enabled
+        if outcome == "pending":
+            assert not service._stop_done.is_set()
+        if outcome == "unconfirmed":
+            assert service._fault["code"] == "stop"
+    finally:
+        resume_waiter.set()
+        finish_second.set()
+        caller.join(5)
+        service._stop_thread.join(5)
+        assert not service._stop_thread.is_alive()

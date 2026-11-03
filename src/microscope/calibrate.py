@@ -824,7 +824,37 @@ class NativeSideCamera(USBCamera):
                     return self
                 raise RuntimeError("The native side-camera session cannot be reopened")
             self._used = True
-            return super().open()
+            self._stop_event = threading.Event()
+            self._error = None
+            self._latest_frame = None
+            self._captured_at = None
+            gate = threading.Event()
+            stop = self._stop_event
+
+            def reader(capture):
+                gate.wait()
+                if not stop.is_set():
+                    self._acquisition_loop(capture, stop)
+
+            try:
+                capture = self._open_capture(self.stream)
+                self._capture = capture
+                self._thread = threading.Thread(
+                    target=reader,
+                    args=(capture,),
+                    name="microscope-native-side-camera",
+                    daemon=True,
+                )
+                self._thread.start()
+                # A start failure may still leave an OS thread about to start.
+                # Admit native reads only after start returns successfully.
+                gate.set()
+            except BaseException:
+                stop.set()
+                gate.set()
+                self.close()
+                raise
+            return self
 
     def close(self):
         with self._lifecycle:
@@ -836,11 +866,14 @@ class NativeSideCamera(USBCamera):
             if self._thread is not None:
                 if self._thread is threading.current_thread():
                     raise RuntimeError("The native side-camera reader cannot close itself")
-                self._thread.join(timeout=self._close_timeout)
-                if self._thread.is_alive():
-                    raise RuntimeError(
-                        "Native side-camera read is still draining; ownership retained"
-                    )
+                # An interrupted start can leave a thread that cannot yet join.
+                # Its cancelled gate prevents a late bootstrap from reading.
+                if self._thread.ident is not None:
+                    self._thread.join(timeout=self._close_timeout)
+                    if self._thread.is_alive():
+                        raise RuntimeError(
+                            "Native side-camera read is still draining; ownership retained"
+                        )
                 self._thread = None
             owner = self._native_owner
             if owner is not None:

@@ -1377,3 +1377,115 @@ def test_reference_check_revalidates_snapshot_across_transition(
     else:
         assert len(errors) == 1 and isinstance(errors[0], SideCaptureCancelled)
         assert rig.session.failure == "explicit test stop"
+
+
+def test_native_unstarted_reader_cleanup_can_retry_release_failure(monkeypatch):
+    device, queue = FakeDevice(), FakeQueue()
+    queue.configure = lambda video: setattr(video, "release_error", RuntimeError("release failed"))
+    side = NativeSideCamera(DEVICE, MODE, capture_factory=lambda *args: make_capture(device, queue))
+
+    def start(_thread):
+        raise RuntimeError("start failed")
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError, match="release failed"):
+        side.open()
+    assert side._thread is None and side._native_owner is not None
+    assert queue.owner is queue.videos[0] and device.descriptors
+    assert not any(call[0] == "read" for call in queue.calls)
+    queue.videos[0].release_error = None
+    side.close()
+    assert queue.owner is None and not device.descriptors
+
+
+def test_native_start_exception_cancels_gate_before_reader_admission(monkeypatch):
+    device, queue = FakeDevice(), FakeQueue()
+    threads = []
+    side = NativeSideCamera(DEVICE, MODE, capture_factory=lambda *args: make_capture(device, queue))
+    original = threading.Thread.start
+
+    def start(thread):
+        threads.append(thread)
+        original(thread)
+        assert not any(call[0] == "read" for call in queue.calls)
+        raise KeyboardInterrupt("start interrupted")
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(KeyboardInterrupt, match="start interrupted"):
+        side.open()
+    assert not threads[0].is_alive()
+    assert not any(call[0] == "read" for call in queue.calls)
+    assert queue.owner is None and not device.descriptors
+
+
+def test_native_late_bootstrap_after_interrupted_start_cannot_read(monkeypatch):
+    device, queue = FakeDevice(), FakeQueue()
+    pending = []
+    side = NativeSideCamera(DEVICE, MODE, capture_factory=lambda *args: make_capture(device, queue))
+
+    class LateThread:
+        ident = None
+
+        def __init__(self, *, target, args, **kwargs):
+            pending.append(lambda: target(*args))
+
+        def start(self):
+            raise KeyboardInterrupt("bootstrap pending")
+
+        def join(self, **kwargs):
+            raise AssertionError("An unstarted thread must not be joined")
+
+    monkeypatch.setattr(threading, "Thread", LateThread)
+    with pytest.raises(KeyboardInterrupt, match="bootstrap pending"):
+        side.open()
+    assert queue.owner is None and not device.descriptors
+    pending[0]()
+    assert not any(call[0] == "read" for call in queue.calls)
+
+
+def test_native_interruption_after_gate_admission_retains_accepted_read(monkeypatch):
+    device, queue = FakeDevice(), FakeQueue()
+    entered, proceed = threading.Event(), threading.Event()
+    side = NativeSideCamera(
+        DEVICE, MODE, capture_factory=lambda *args: make_capture(device, queue), close_timeout=0.01
+    )
+
+    def block(video):
+        video.entered, video.proceed = entered, proceed
+
+    queue.configure = block
+    original = threading.Event
+    created = 0
+
+    class InterruptedGate:
+        def __init__(self):
+            self.event = original()
+            self.interrupted = False
+
+        def wait(self):
+            return self.event.wait()
+
+        def set(self):
+            self.event.set()
+            if not self.interrupted:
+                self.interrupted = True
+                assert entered.wait(1)
+                raise KeyboardInterrupt("interrupted after admission")
+
+    def event():
+        nonlocal created
+        created += 1
+        return InterruptedGate() if created == 2 else original()
+
+    monkeypatch.setattr(threading, "Event", event)
+    try:
+        with pytest.raises(RuntimeError, match="ownership retained"):
+            side.open()
+        assert side._thread.is_alive() and side._native_owner is not None
+        assert queue.owner is queue.videos[0] and not queue.videos[0].released
+        assert device.descriptors
+    finally:
+        proceed.set()
+        side._thread.join(1)
+        side.close()
+    assert queue.owner is None and not device.descriptors

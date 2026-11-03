@@ -748,15 +748,15 @@ Notes: the tag is about 246 mm above the tweezer tip, so it can never reach the 
 
 Owner: agent · Size: M · Review: agent · Deps: CAL-01, VIS-02
 
-Goal: slot positions from the tray's corner ArUco markers, as a check on the taught stations and on detections.
+Goal: bounded groove geometry from the tray's corner ArUco markers, as a check on taught stations and chip detections.
 
 Steps:
 
-1. `config/trays/<name>.toml` from H-08: the ArUco id of each corner marker, its center in the tray frame, and each slot's position and label area in millimetres. Tray `Grooved Platform V2` (owner, 2026-11-02): the markers are `DICT_4X4_50` ids 0, 1, 2 and 7. The tray origin is the id 1 corner. The marker centers in mm are id 1 (15.15, 15.0), id 0 (162.65, 15.0), id 7 (15.15, 162.8) and id 2 (162.65, 162.8). The arm tag is id 4, so the ids do not clash.
-2. `src/vision/tray.py`: find the corner markers with OpenCV `cv2.aruco` and `DICT_4X4_50`, not with the QR reader `src/vision/qr.py`. Use `detect` and `marker_center` in `src/microscope/aruco_locator.py` as the pattern. Map the marker centers to robot XY with the calibration, fit a similarity transform, and return every slot in robot coordinates.
-3. Do not require all 4 markers. Any 3 detected markers fix the tray pose. The tray model then predicts the center of the 4th marker. Sample its cells at that position, compare them with the bits of its id, and report the result. The default detector often misses id 0.
-4. Cross-check each slot against its taught station and, when a chip is present, against the YOLO chip center. Report the residuals and fail above 2 mm (setting).
-5. Tests with synthetic images, one of them with only 3 markers.
+1. `config/trays/<name>.toml` from H-08: the ArUco id of each corner marker, its center in the tray frame, and each groove's bounded centerline and nominal reference center in millimetres. Chips have no label area. Tray `Grooved Platform V2` (owner, 2026-11-02): the markers are `DICT_4X4_50` ids 0, 1, 2 and 7. The tray origin is the id 1 corner. The marker centers in mm are id 1 (15.15, 15.0), id 0 (162.65, 15.0), id 7 (15.15, 162.8) and id 2 (162.65, 162.8). The arm tag is id 4, so the ids do not clash. There are 32 grooves with centerlines at `x = 5.975 + 5.35 * k`, for `k = 0..31`. Grooves `k = 5..26` span `y = 0..177.8`; the other grooves span `y = 30.0..147.8`. A nominal midpoint describes geometry only. A chip can sit anywhere along its groove, so its actual Y comes from vision.
+2. `src/vision/tray.py`: find the corner markers with OpenCV `cv2.aruco` and `DICT_4X4_50`, not with the QR reader `src/vision/qr.py`. Use `detect` and `marker_center` in `src/microscope/aruco_locator.py` as the pattern. Map the marker centers to robot XY with the calibration, fit a similarity transform, and return each bounded centerline and its nominal reference center in robot XY. Do not substitute the midpoint for an observed chip position.
+3. Refuse a frame with more than one detection of any corner id before fitting the tray pose. The microscope turret uses `DICT_4X4_50` ids 0 to 3, so a turret tag or a spare print can duplicate a corner id. Do not require all 4 markers. Any 3 detected markers fix the tray pose. The tray model then predicts the center of the 4th marker. Sample its cells at that position, compare them with the bits of its id, and report the result. The default detector often misses id 0.
+4. Cross-check a taught station XY and any observed YOLO chip XY against the transformed bounded centerline segment for that groove. The residual includes perpendicular distance and any distance beyond an end. Keep 2 mm as the default and maximum allowed residual. Report the full taught-to-chip XY delta, but a difference along the free Y range is not tray drift. When the caller explicitly identifies a taught target for the same actual chip location, enforce the full XY residual within 2 mm as well. Mark absent station or detection evidence as missing, not as a successful cross-check or an empty slot.
+5. Tests with synthetic images, including only 3 detected markers, a duplicate corner id, chip positions along a groove, end-bound failures, missing evidence, and the full XY check for an explicit same-location target.
 
 Done when: P-CHECKS pass.
 
@@ -771,7 +771,11 @@ Steps:
 1. Project the tweezer-tip position from the robot state into the image with the CAL-01 camera model.
 2. Check that it falls inside the detected "Robotic Arm" box, with a margin from settings.
 3. Skill `vision.check_calibration(camera)`. The transfer recipe calls it before each vision-guided move. A failure holds the run with "camera moved, recalibrate".
-4. Tests with synthetic boxes.
+4. Tests with synthetic boxes, one-frame/one-model evidence, ownership and Stop races, negative or malformed receipts, and drift-margin propagation through live and owned-demo entry points.
+
+The vision service owns the guarded drift command. Read one current frame and load one camera-keyed calibration model for both tip projection and arm-box evidence; do not read a host model in the skill or use unrelated cached detections. Reuse the CAL-01 coordinate convention: rotate the configured tool XY by robot R, and use model tip Z `flange_z + nominal_tag_height_mm - distance_mm`. Require positive camera depth and a stationary, fresh, owned robot state before, during and after inference. A negative or malformed proof raises an error so the Runner holds; preserve an earlier cancellation or ownership error.
+
+Register `vision.check_calibration` in `src/orchestrator/skills/__init__.py`. Limit `src/orchestrator/cli.py` and `src/orchestrator/app.py` changes to preserving the supplied scalar drift-margin setting in owned demos. Keep existing endpoint, token and path filters unchanged; default and validate the bounded finite nonnegative margin in the skill and validate it in the service. Test the filters in `tests/test_vision_drift.py`; absent settings stay absent. MS-01 owns the later transfer-recipe call; this card adds no recipe path or dependency.
 
 Done when: P-CHECKS pass.
 

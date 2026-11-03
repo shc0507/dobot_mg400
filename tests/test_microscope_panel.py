@@ -1034,6 +1034,132 @@ def test_stabilization_command_does_not_start_recording_or_change_lease(recordin
     assert rig.service.lease.snapshot() == before
 
 
+def test_close_retains_all_owners_until_accepted_camera_command_drains(recording_rig, monkeypatch):
+    rig = recording_rig
+    entered, release, stopped = (threading.Event() for _ in range(3))
+    closes = []
+    stabilize = rig.camera.set_stabilization
+    stop = rig.service._motor.safe_stop_disable
+
+    def blocked_stabilization(enabled):
+        entered.set()
+        assert release.wait(3)
+        stabilize(enabled)
+
+    def observed_stop():
+        stopped.set()
+        return stop()
+
+    for name, owner, method in (
+        ("readings", rig.readings, "close"),
+        ("side", rig.service._side, "close"),
+        ("camera", rig.camera, "close"),
+        ("motor", rig.service._motor, "disconnect"),
+    ):
+        original = getattr(owner, method)
+
+        def close_owner(original=original, name=name):
+            closes.append(name)
+            return original()
+
+        monkeypatch.setattr(owner, method, close_owner)
+    monkeypatch.setattr(rig.camera, "set_stabilization", blocked_stabilization)
+    monkeypatch.setattr(rig.service._motor, "safe_stop_disable", observed_stop)
+    ident = rig.service.command("set_stabilization", {"enabled": True}, "operator")
+    assert entered.wait(1)
+    job = rig.service._job
+    try:
+        # Simulate the bounded drain deadline while the accepted call is still
+        # blocked; the production timeout and Stop path remain unchanged.
+        with monkeypatch.context() as patch:
+            patch.setattr(job.done, "wait", lambda _timeout: False)
+            with pytest.raises(RuntimeError, match="command is still stopping"):
+                rig.service.close()
+        assert stopped.is_set() and job.cancel.is_set() and not job.done.is_set()
+        assert closes == []
+        assert rig.camera.is_open and rig.service._side.is_open and rig.service._motor.connected
+        assert not rig.service._shutdown_complete
+        with pytest.raises(ServiceError) as denied:
+            rig.service.command("set_stabilization", {"enabled": False}, "operator")
+        assert denied.value.status == 503
+    finally:
+        release.set()
+    assert job.done.wait(2)
+    state = rig.service.snapshot()
+    assert state["last_command"]["id"] == ident
+    assert state["last_command"]["result"] == "stopped" and state["last_result"] is None
+    rig.service.close()
+    rig.service.close()
+    assert rig.service._shutdown_complete
+    assert closes == ["readings", "side", "camera", "motor"]
+    assert not rig.camera.is_open and not rig.service._motor.connected
+
+
+@pytest.mark.parametrize("terminal", ["failed", "stopped"])
+def test_terminal_recording_cleanup_blocks_mutations_until_slot_clears(
+    recording_rig, monkeypatch, terminal
+):
+    rig = recording_rig
+    rig.command("start_recording", {"recording_id": "2" * 32})
+    recording = rig.service._recording
+    cleanup_entered = threading.Event()
+    rig.camera.stop_gate = threading.Event()
+    stop_recording = rig.camera.stop_recording
+
+    def blocked_cleanup():
+        cleanup_entered.set()
+        stop_recording()
+
+    monkeypatch.setattr(rig.camera, "stop_recording", blocked_cleanup)
+    if terminal == "failed":
+        rig.camera.recording_error = "synthetic asynchronous recording failure"
+    else:
+        rig.service.stop("operator-stop", 0)
+    try:
+        assert cleanup_entered.wait(2)
+        assert rig.service._stop_done.wait(2)
+        state = rig.service.snapshot()
+        assert state["recording"]["status"] == terminal
+        assert not recording.done.is_set() and rig.service._recording is recording
+        assert not rig.service._stopping and rig.service._job is None
+        assert state["busy"] and rig.camera.is_recording
+        assert state["recording"]["summary"] is None and not rig.calls
+        for action, args in (
+            ("set_stabilization", {"enabled": True}),
+            ("focus_move", {"steps": 1}),
+            ("start_recording", {"recording_id": "3" * 32}),
+        ):
+            with pytest.raises(ServiceError, match="busy") as denied:
+                rig.service.command(action, args, "operator")
+            assert denied.value.status == 409
+        assert not rig.camera.stabilization_enabled and rig.camera.start_calls == 1
+        assert rig.service.stop("emergency", 0) == "pending"
+    finally:
+        rig.camera.stop_gate.set()
+    assert recording.done.wait(2) and rig.service._stop_done.wait(2)
+    state = rig.service.snapshot()
+    assert rig.service._recording is None and not state["busy"]
+    assert state["recording"]["status"] == terminal and state["recording"]["summary"] is None
+    assert not rig.camera.is_recording and not rig.calls
+    state = rig.command("set_stabilization", {"enabled": True})
+    assert state["last_command"]["result"] == "ok" and state["stabilization"]
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_live_or_armed_recording_keeps_ordinary_camera_commands_available(recording_rig, armed):
+    rig = recording_rig
+    action = "record_with_sequence" if armed else "start_recording"
+    args = {"recording_id": "4" * 32, **({"enabled": True} if armed else {})}
+    state = rig.command(action, args)
+    recording = rig.service._recording
+    assert not state["busy"]
+    state = rig.command("set_stabilization", {"enabled": True})
+    assert state["last_command"]["result"] == "ok" and state["stabilization"]
+    assert rig.service._recording is recording and not recording.cancel.is_set()
+    assert state["recording_sequence"]["armed"] is armed
+    assert rig.camera.start_calls == (0 if armed else 1)
+
+
 @pytest.mark.parametrize(
     "args",
     [

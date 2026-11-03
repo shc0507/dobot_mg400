@@ -720,7 +720,9 @@ class MicroscopeService:
     def _recording_draining(self):
         recording = self._recording
         return recording is not None and (
-            recording.cancel.is_set() or recording.data["status"] == "finalizing"
+            recording.cancel.is_set()
+            # A terminal status can precede camera cleanup and slot release.
+            or recording.data["status"] in {"finalizing", "completed", "stopped", "failed"}
         )
 
     def _check_recording(self, recording):
@@ -1851,9 +1853,11 @@ class MicroscopeService:
                 raise RuntimeError(
                     "Microscope recording is still stopping; camera owner is retained"
                 )
-            self._readings.close()
             if job is not None and not job.done.wait(3):
-                failures.append("Microscope command did not stop")
+                raise RuntimeError(
+                    "Microscope command is still stopping; camera and motor owners are retained"
+                )
+            self._readings.close()
             with self._frame_condition:
                 if not self._frame_condition.wait_for(lambda: self._frame_reads == 0, timeout=2.0):
                     # Keep both owners intact until the accepted read returns.

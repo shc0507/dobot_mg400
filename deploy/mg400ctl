@@ -30,7 +30,7 @@ from install import (  # noqa: E402
     SERVICE_GID,
     SERVICE_UID,
     Host,
-    camera_devices,
+    camera_configuration,
     check_settings,
     enabled_services,
     finite_json_number,
@@ -631,7 +631,7 @@ def status(run, out, services):
     return 0
 
 
-def camera_check(host, devices, run, out, services):
+def camera_check(host, devices, run, out, services, *, preloaded=None):
     """Check the cameras from the USB devices up to the capture streams. Return 0 if all work.
 
     A service in the active state only shows that its process runs, so check the devices first.
@@ -670,16 +670,23 @@ def camera_check(host, devices, run, out, services):
     if not all(states.get(unit, "").startswith("active ") for unit in services["camera"]):
         print("Start the cameras: mg400ctl start camera", file=out)
         return 1
+    names = [f"camera{number}" for number in range(1, len(devices) + 1)]
+    expected = names if preloaded is None else list(preloaded)
+    for name in names:
+        if name not in expected:
+            print(f"streams  {name} starts on demand", file=out)
+    if not expected:
+        print("streams  no continuous preloads configured", file=out)
+        return 0
     preload = run(
         ["curl", "-s", "--max-time", "3", PRELOAD], capture_output=True, text=True, check=False
     )
-    names = [f"camera{number}" for number in range(1, len(devices) + 1)]
-    absent = [name for name in names if name not in preload.stdout]
+    absent = [name for name in expected if name not in preload.stdout]
     if absent:
         print(f"streams  not loaded: {' '.join(absent)}", file=out)
         print("Run mg400ctl restart camera, wait 2 seconds, then check again.", file=out)
         return 1
-    print("streams  all loaded", file=out)
+    print("streams  configured preloads loaded", file=out)
     return 0
 
 
@@ -798,7 +805,8 @@ def main(
                     raise ValueError(f"Optional services are not enabled: {', '.join(disabled)}")
             services = {name: entry["units"] for name, entry in enabled.items()}
         if args.command == "camera-check":
-            devices = camera_devices(settings.get("MG400_CAMERA_DEVICES", ""))
+            camera_config = camera_configuration(settings)
+            devices = list(camera_config.devices)
         if args.command in ("terminal", "mode"):
             check_settings(settings)
             pwd.getpwuid(SERVICE_UID)
@@ -828,7 +836,7 @@ def main(
     if args.command == "status":
         return status(run, out, services)
     if args.command == "camera-check":
-        return camera_check(host, devices, run, out, services)
+        return camera_check(host, devices, run, out, services, preloaded=camera_config.preloaded)
     if args.command in ("start", "stop", "restart"):
         if (
             args.command != "start"

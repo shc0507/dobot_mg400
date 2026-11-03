@@ -1,7 +1,9 @@
 """Reusable Toupcam microscope feed, stabilization, snapshots, and recording."""
 
 import csv
+import os
 import shutil
+import stat
 import threading
 import time
 from pathlib import Path
@@ -10,6 +12,103 @@ import cv2
 import numpy as np
 
 from .capture import ToupcamCapture, selection
+
+
+def _check_cancel(cancel):
+    if cancel is not None and cancel.is_set():
+        raise RuntimeError("Camera operation was cancelled before admission")
+
+
+class _PrivateRecordingOutputs:
+    """Reserve files under one pinned, owned directory with no untrusted writers.
+
+    OpenCV reopens a filename. The private directory is its trust boundary;
+    a directory descriptor prevents writable ancestors from redirecting that open.
+    """
+
+    def __init__(self, video, timestamps):
+        for path in (video, timestamps):
+            if (
+                not path.is_absolute()
+                or ".." in path.parts
+                or any(ord(char) < 32 or ord(char) == 127 for char in str(path))
+            ):
+                raise ValueError("Private recording paths must be absolute without traversal")
+        if video.parent != timestamps.parent or video == timestamps:
+            raise ValueError("Private recording outputs need distinct names in one directory")
+        self.parent = video.parent
+        self.descriptor = self._open_parent()
+        self._identity = self._identity_of(os.fstat(self.descriptor))
+        self._files = {}
+
+    @staticmethod
+    def _identity_of(info):
+        return info.st_dev, info.st_ino
+
+    def _open_parent(self):
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        descriptor = os.open(self.parent.anchor, flags)
+        try:
+            for component in self.parent.parts[1:]:
+                child = os.open(component, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            info = os.fstat(descriptor)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o027:
+                raise ValueError("Private recording directory must be owned and private")
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def check(self, name=None):
+        current = self._open_parent()
+        try:
+            if self._identity_of(os.fstat(current)) != self._identity:
+                raise ValueError("Private recording directory changed")
+        finally:
+            os.close(current)
+        names = self._files if name is None else (name,)
+        for filename in names:
+            info = os.stat(filename, dir_fd=self.descriptor, follow_symlinks=False)
+            if (
+                self._identity_of(info) != self._files[filename]
+                or not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or info.st_mode & 0o037
+            ):
+                raise ValueError("Private recording output changed or is unsafe")
+
+    def reserve(self, name):
+        self.check()
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=self.descriptor,
+        )
+        self._files[name] = self._identity_of(os.fstat(descriptor))
+        return descriptor
+
+    def writer_path(self, name):
+        self.check(name)
+        return f"/proc/self/fd/{self.descriptor}/{name}"
+
+    def discard_empty(self):
+        # Failed startup owns only its reservations, never a colliding/replaced file.
+        for name, identity in self._files.items():
+            try:
+                info = os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
+                if self._identity_of(info) == identity and info.st_size == 0:
+                    os.unlink(name, dir_fd=self.descriptor)
+            except FileNotFoundError:
+                pass
+
+    def close(self):
+        if self.descriptor is not None:
+            os.close(self.descriptor)
+            self.descriptor = None
 
 
 # Owns one recording run, including video segments and synchronized metadata.
@@ -29,9 +128,12 @@ class _RecordingSession:
         metadata_provider,
         metadata_fields,
         capture_interval_seconds=None,
+        *,
+        private_output=False,
     ):
         self.output_path = Path(path)
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not private_output:
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.frame_size = frame_size
         self.fps = float(fps)
         self.codec = codec
@@ -45,7 +147,8 @@ class _RecordingSession:
         self.metadata_provider = metadata_provider
         self.metadata_fields = tuple(metadata_fields or ())
         self.timestamps_path = Path(timestamps_path)
-        self.timestamps_path.parent.mkdir(parents=True, exist_ok=True)
+        if not private_output:
+            self.timestamps_path.parent.mkdir(parents=True, exist_ok=True)
         self.segments = []
         self.segment_index = 0
         self.segment_frame = 0
@@ -53,19 +156,49 @@ class _RecordingSession:
         self.segment_started_at = None
         self._last_disk_check = 0.0
         self._writer = None
+        self._segment_fd = None
+        self._timestamp_file = None
         self._last_captured_at = None
-        # Line buffering keeps long-run metadata durable without flushing each frame.
-        self._timestamp_file = self.timestamps_path.open(
-            "w", newline="", encoding="utf-8", buffering=1
-        )
-        self._csv = csv.writer(self._timestamp_file)
-        self._csv.writerow(
-            ("frame_index", "segment_index", "segment_frame", "unix_time", *self.metadata_fields)
+        self._private_outputs = (
+            _PrivateRecordingOutputs(self.output_path, self.timestamps_path)
+            if private_output
+            else None
         )
         try:
+            # Line buffering keeps long-run metadata durable without flushing each frame.
+            if self._private_outputs is None:
+                self._timestamp_file = self.timestamps_path.open(
+                    "w", newline="", encoding="utf-8", buffering=1
+                )
+            else:
+                descriptor = self._private_outputs.reserve(self.timestamps_path.name)
+                try:
+                    self._timestamp_file = os.fdopen(
+                        descriptor, "w", newline="", encoding="utf-8", buffering=1
+                    )
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+            self._csv = csv.writer(self._timestamp_file)
+            self._csv.writerow(
+                (
+                    "frame_index",
+                    "segment_index",
+                    "segment_frame",
+                    "unix_time",
+                    *self.metadata_fields,
+                )
+            )
             self._open_segment(time.time())
-        except Exception:
-            self._timestamp_file.close()
+        except BaseException:
+            try:
+                self._close_outputs()
+            finally:
+                if self._private_outputs is not None:
+                    try:
+                        self._private_outputs.discard_empty()
+                    finally:
+                        self._private_outputs.close()
             raise
 
     # Choose the base filename or the next numbered filename for segmented output.
@@ -80,13 +213,31 @@ class _RecordingSession:
     # Create and validate an OpenCV writer for the next video segment.
     def _open_segment(self, started_at):
         path = self._next_path()
-        writer = cv2.VideoWriter(
-            str(path), cv2.VideoWriter_fourcc(*self.codec), self.fps, self.frame_size
-        )
-        if not writer.isOpened():
-            writer.release()
-            raise RuntimeError(f"Could not open video for writing: {path}")
+        descriptor = None
+        writer = None
+        try:
+            if self._private_outputs is None:
+                writer_path = str(path)
+            else:
+                descriptor = self._private_outputs.reserve(path.name)
+                writer_path = self._private_outputs.writer_path(path.name)
+            writer = cv2.VideoWriter(
+                writer_path, cv2.VideoWriter_fourcc(*self.codec), self.fps, self.frame_size
+            )
+            if not writer.isOpened():
+                raise RuntimeError(f"Could not open video for writing: {path}")
+            if self._private_outputs is not None:
+                self._private_outputs.check(path.name)
+        except BaseException:
+            try:
+                if writer is not None:
+                    writer.release()
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+            raise
         self._writer = writer
+        self._segment_fd = descriptor
         self.segment_started_at = started_at
         self.segment_frame = 0
         self.segments.append(path)
@@ -105,12 +256,17 @@ class _RecordingSession:
             self.segment_seconds is not None
             and captured_at - self.segment_started_at >= self.segment_seconds
         ):
-            self._writer.release()
+            self._close_segment()
             self.segment_index += 1
             self._open_segment(captured_at)
         if self.minimum_free_bytes is not None and captured_at - self._last_disk_check >= 10:
             self._last_disk_check = captured_at
-            free = shutil.disk_usage(self.output_path.parent).free
+            if self._private_outputs is None:
+                disk_path = self.output_path.parent
+            else:
+                self._private_outputs.check()
+                disk_path = f"/proc/self/fd/{self._private_outputs.descriptor}"
+            free = shutil.disk_usage(disk_path).free
             if free < self.minimum_free_bytes:
                 raise RuntimeError(
                     f"Recording stopped: less than {self.minimum_free_bytes / 1024**3:.1f} GB free"
@@ -131,13 +287,32 @@ class _RecordingSession:
 
     # Finalize the writer and CSV; repeated calls are harmless.
     def close(self):
-        if self._writer is not None:
-            self._writer.release()
-            self._writer = None
-        if self._timestamp_file is not None:
-            self._timestamp_file.flush()
-            self._timestamp_file.close()
-            self._timestamp_file = None
+        try:
+            self._close_outputs()
+        finally:
+            if self._private_outputs is not None and self._private_outputs.descriptor is not None:
+                try:
+                    self._private_outputs.check()
+                finally:
+                    self._private_outputs.close()
+
+    def _close_segment(self):
+        writer, self._writer = self._writer, None
+        descriptor, self._segment_fd = self._segment_fd, None
+        try:
+            if writer is not None:
+                writer.release()
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _close_outputs(self):
+        try:
+            self._close_segment()
+        finally:
+            stream, self._timestamp_file = self._timestamp_file, None
+            if stream is not None:
+                stream.close()
 
 
 # GUI-independent camera API used by Flask now and reusable by a future desktop UI.
@@ -368,13 +543,19 @@ class MicroscopeCamera:
         mode="time_lapse",
         capture_interval_seconds=None,
         output_fps=None,
+        *,
+        private_output=False,
+        cancel=None,
     ):
         """Start recording; one-hour segments are used by default.
 
         Set mode="time_lapse" to record only every N seconds while keeping the live
-        preview running in real time.
+        preview running in real time. Private output reserves new files under an
+        existing owned private directory. An optional irreversible cancellation
+        token fences admission; an already admitted native call can finish.
         """
         with self._lifecycle_lock:
+            _check_cancel(cancel)
             if not self.is_open:
                 raise RuntimeError("Camera is not open; call open() first")
             if mode not in {"live", "time_lapse"}:
@@ -400,6 +581,7 @@ class MicroscopeCamera:
             if minimum_free_gb is not None and minimum_free_gb < 0:
                 raise ValueError("minimum_free_gb cannot be negative")
             frame = self.get_frame(wait=True, timeout=3.0, copy=False)
+            _check_cancel(cancel)
             if frame is None:
                 raise RuntimeError("No camera frame is available")
             path = Path(path)
@@ -410,6 +592,7 @@ class MicroscopeCamera:
             )
             height, width = frame.shape[:2]
             with self._recording_lock:
+                _check_cancel(cancel)
                 if self._recording is not None:
                     raise RuntimeError("Recording is already in progress")
                 session = _RecordingSession(
@@ -423,6 +606,7 @@ class MicroscopeCamera:
                     metadata_provider,
                     metadata_fields,
                     effective_capture_interval,
+                    private_output=private_output,
                 )
                 self._recording = session
                 self._recording_error = None
@@ -457,8 +641,9 @@ class MicroscopeCamera:
 
     # Optional image stabilization and camera controls ---------------------
     # Toggle stabilization and reset its accumulated motion estimate.
-    def set_stabilization(self, enabled):
+    def set_stabilization(self, enabled, *, cancel=None):
         with self._stabilization_lock:
+            _check_cancel(cancel)
             self.stabilization_enabled = bool(enabled)
             self._reset_stabilization_unlocked()
 

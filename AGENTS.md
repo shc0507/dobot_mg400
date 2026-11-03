@@ -60,7 +60,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
 | Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
-| Camera preview | `scripts/camera_preview.py`, `camera_preview.js` | `test_camera_preview.py`, `test_camera_preview.mjs` | [olares.md](docs/olares.md#摄像头) |
+| Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py`, `camera_preview.js` | `test_deploy_install.py`, `test_camera_preview.py`, `test_camera_preview.mjs` | [olares.md](docs/olares.md#摄像头) |
 | Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
 | QR reader | `src/vision/qr.py`, `qr_micro.py` | `test_vision_qr*.py` | Module docstrings |
 | Simulator | `src/mg400/sim/` | `test_mg400_sim.py`, `sim_mg400.py`, `test_web_keyboard_integration.py`, `test_robot_service_e2e.py` | [development.md](docs/development.md#离线机器人模拟器) |
@@ -70,12 +70,13 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Toupcam capture and recording | `src/toupcam_camera/camera.py`, `capture.py` | `test_toupcam_camera.py` | Module docstrings; keep vendor `toupcam.py` unchanged |
 | Furnace and gas drivers | `src/furnace/controller.py`, `config.py` | `test_furnace_controller.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Furnace web service and operator page | `src/furnace/app.py`, `__main__.py`, `templates/`, `static/` | `test_furnace_app.py` | [furnace.md](docs/furnace.md) |
+| Microscope recordings and furnace metadata | `src/furnace/recordings.py`, `video.py`, `src/microscope/service.py`, `src/orchestrator/skills/recording.py` | `test_furnace_recordings.py`, `test_furnace_video.py`, `test_furnace_local_run_sync.py`, `test_microscope_panel.py`, `test_microscope_panel.mjs`, `test_orchestrator_recording.py` | [microscope.md](docs/microscope.md), [furnace.md](docs/furnace.md) |
 | Furnace run lifecycle and recovery | `src/furnace/service.py`, `state.py`, `sim.py` | `test_furnace_service.py`, `test_furnace_sim.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Recipe orchestration and rehearsal | `src/orchestrator/`, `recipes/`, `deploy/mg400ctl` | `test_orchestrator_*.py`, `test_deploy_mg400ctl.py` | [orchestrator.md](docs/orchestrator.md) |
 | Lab dashboard | `src/orchestrator/web/`, `src/orchestrator/app.py` | `test_dashboard.py`, `test_dashboard.mjs`, `test_dashboard_passport.py` | [dashboard.md](docs/dashboard.md) |
 | MCP gateway and approval policy | `src/gateway/`, `src/orchestrator/approvals.py`, `src/orchestrator/store.py` | `test_gateway*.py`, `test_approvals.py` | [agent-gateway.md](docs/agent-gateway.md) |
 | Microscope motor firmware and simulator | `firmware/microscope-axes/`, `src/microscope/sim.py` | `test_microscope_protocol.py` | [Firmware guide](firmware/microscope-axes/README.md) |
-| Microscope algorithms, motors, and camera input | `src/microscope/`, `src/cameras/` | `test_microscope_calibration_policy.py`, `test_microscope_focus_completion.py`, `test_microscope_motors.py`, `test_microscope_io.py` | [microscope.md](docs/microscope.md) |
+| Microscope algorithms, service and panel, motors, and camera input | `src/microscope/`, `src/cameras/` | `test_microscope_calibration_policy.py`, `test_microscope_focus_completion.py`, `test_microscope_motors.py`, `test_microscope_io.py`, `test_microscope_service.py`, `test_microscope_panel.py`, `test_microscope_panel.mjs` | [microscope.md](docs/microscope.md) |
 | Migration plan | `docs/agents/migration/tasks.toml`, `tasks.md` | `test_migration_plan.py` | [migration README](docs/agents/migration/README.md) |
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_camera_preview.mjs`.

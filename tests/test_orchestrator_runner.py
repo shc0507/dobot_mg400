@@ -311,8 +311,11 @@ def test_inflight_helper_drains_and_is_stopped_before_any_next_step(tmp_path, sk
         for worker in helpers:
             worker.join(1)
         settled(runner)
-        assert service.events.index("late-write") < len(service.events) - 1
-        assert service.events[-1] == "stop"
+        # A held run keeps renewing its lease after the final stop.
+        before_recovery = [event for event in tuple(service.events) if event != "renew"]
+        assert before_recovery.index("late-write") < len(before_recovery) - 1
+        assert before_recovery[-1] == "stop"
+        assert "next-step" not in before_recovery and "release" not in before_recovery
         runner.resume(manually_completed=True, note="late operation inspected and completed")
         until(lambda: runner.status == "completed")
         assert (

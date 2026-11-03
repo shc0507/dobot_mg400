@@ -28,6 +28,16 @@ def load_preview():
 @pytest.fixture
 def preview(monkeypatch):
     monkeypatch.delenv("MG400_CAMERA_KEY_FILE", raising=False)
+    monkeypatch.setenv(
+        "MG400_CAMERA_DEVICES",
+        ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in (1, 2, 3)),
+    )
+    for setting in (
+        "MG400_CAMERA_MODES",
+        "MG400_CAMERA_CAPTURE_SIZES",
+        "MG400_MICROSCOPE_SIDE_STREAM",
+    ):
+        monkeypatch.delenv(setting, raising=False)
     read_bytes = Path.read_bytes
     monkeypatch.setattr(
         Path,
@@ -506,6 +516,7 @@ def test_mjpeg_route_streams_complete_parts_and_closes_connection(preview, monke
     connection.settimeout.assert_called_with(1.5)
     connection.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
     feed.start.assert_called_once_with()
+    feed.release.assert_called_once_with()
     assert [call.args[0] for call in feed.wait_after.call_args_list] == [0, 1, 4]
     upstream.assert_not_called()
 
@@ -518,6 +529,7 @@ def test_mjpeg_route_returns_error_when_no_first_frame(preview, monkeypatch):
     status, headers, _ = request(module, "camera1.mjpeg")
     assert status == 502
     assert headers["Cache-Control"] == "no-store"
+    feed.release.assert_called_once_with()
     upstream.assert_not_called()
 
 
@@ -536,6 +548,7 @@ def test_mjpeg_stream_stops_reading_when_client_write_times_out(preview):
     assert handler.close_connection is True
     handler.connection.settimeout.assert_called_with(1.5)
     feed.wait_after.assert_called_once_with(0)
+    feed.release.assert_called_once_with()
 
 
 def test_mjpeg_parser_rejects_oversized_headers_even_with_complete_body_in_one_chunk(preview):
@@ -561,3 +574,139 @@ def test_short_key_is_refused(monkeypatch, tmp_path):
     monkeypatch.setenv("MG400_CAMERA_KEY_FILE", str(key_file))
     with pytest.raises(ValueError, match="at least 32 bytes"):
         load_preview()
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
+def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkeypatch, count):
+    _, upstream = preview
+    monkeypatch.setenv(
+        "MG400_CAMERA_DEVICES",
+        ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, count + 1)),
+    )
+    module = load_preview()
+    page = request(module, "")[2].decode()
+    assert page.count('type="checkbox" data-overlay') == count
+    assert page.count('<canvas hidden aria-hidden="true">') == count
+    assert tuple(module.FEEDS) == tuple(f"camera{camera}" for camera in range(1, count + 1))
+    assert all(feed.thread is None for feed in module.FEEDS.values())
+    assert not any(feed.on_demand for feed in module.FEEDS.values())
+    assert ("摄像头 4 · 托盘" in page) is (count == 4)
+    for camera in range(count + 1, 6):
+        for route in (
+            f"camera{camera}.jpg",
+            f"camera{camera}.mjpeg",
+            f"camera{camera}/detections.json",
+        ):
+            assert request(module, route)[0] == 404
+    upstream.assert_not_called()
+
+
+def test_fourth_camera_still_and_detection_routes_keep_key_and_fixed_destinations(
+    preview, monkeypatch
+):
+    _, upstream = preview
+    monkeypatch.setenv(
+        "MG400_CAMERA_DEVICES",
+        ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)),
+    )
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,1280x720@30")
+    module = load_preview()
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, True]
+    for route in ("camera4.jpg", "camera4.mjpeg", "camera4/detections.json"):
+        assert request(module, route, key="wrong-key")[0] == 404
+    upstream.assert_not_called()
+    assert request(module, "camera4.jpg")[2] == b"\xff\xd8camera-frame\xff\xd9"
+    upstream.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera4", timeout=2)
+    detections = Mock(return_value={"available": False})
+    monkeypatch.setattr(module, "vision_detections", detections)
+    assert json.loads(request(module, "camera4/detections.json")[2]) == {"available": False}
+    detections.assert_called_once_with(4)
+    assert all(feed.thread is None for feed in module.FEEDS.values())
+
+
+def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(preview, monkeypatch):
+    monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera2")
+    module = load_preview()
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False]
+    monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,1280x720,320x240")
+    module = load_preview()
+    assert module.CAMERAS.mode(2) == (1280, 720, 30)
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False]
+    monkeypatch.setenv("MG400_CAMERA_MODES", "1920x1080@60,640x480@30,640x480@30")
+    with pytest.raises(ValueError):
+        load_preview()
+    monkeypatch.delenv("MG400_CAMERA_CAPTURE_SIZES")
+    module = load_preview()
+    assert module.CAMERAS.mode(1) == (1920, 1080, 60)
+    assert "预览每路最高 30 帧/秒" in module.PAGE
+
+
+def test_on_demand_feed_releases_last_viewer_and_can_start_again(preview, monkeypatch):
+    module, upstream = preview
+    threads = Mock(side_effect=lambda **kwargs: Mock(target=kwargs["target"]))
+    monkeypatch.setattr(module, "Thread", threads)
+    feed = module.CameraFeed("camera4", on_demand=True)
+    feed.run()
+    upstream.assert_not_called()
+    feed.start()
+    feed.start()
+    threads.assert_called_once()
+    assert feed.viewers == 2
+    feed.publish(b"frame")
+    feed.release()
+    assert feed.viewers == 1 and feed.active()
+    assert feed.wait_after(0, timeout=0) == (1, b"frame")
+    feed.release()
+    assert feed.viewers == 0 and not feed.active()
+    assert feed.frame is None
+    feed.publish(b"late frame")
+    assert feed.frame is None
+    feed.run()
+    assert feed.thread is None
+    feed.start()
+    assert threads.call_count == 2 and feed.viewers == 1
+    assert not feed.error
+    upstream.assert_not_called()
+
+
+def test_high_mode_reader_closes_mid_frame_when_last_viewer_leaves(preview, monkeypatch):
+    module, upstream = preview
+    monkeypatch.setattr(module, "Thread", Mock())
+    feed = module.CameraFeed("camera4", on_demand=True)
+    feed.start()
+    response = Mock()
+    response.headers = {"Content-Type": "multipart/x-mixed-replace; boundary=frame"}
+
+    def first_chunk(size):
+        feed.release()
+        return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8partial"
+
+    response.read1.side_effect = first_chunk
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    upstream.return_value = response
+    upstream.side_effect = None
+    feed.run()
+    response.read1.assert_called_once()
+    response.__exit__.assert_called_once()
+    assert feed.thread is None and feed.frame is None and feed.viewers == 0
+    upstream.assert_called_once_with(
+        "http://127.0.0.1:1984/api/stream.mjpeg?src=camera4", timeout=2
+    )
+
+
+def test_high_mode_reader_hands_off_to_new_viewer_without_duplicate_reader(preview, monkeypatch):
+    module, upstream = preview
+    factory = Mock()
+    monkeypatch.setattr(module, "Thread", factory)
+    feed = module.CameraFeed("camera4", on_demand=True)
+    feed.start()
+    active_thread = feed.thread
+    feed.release()
+    feed.start()
+    assert feed.thread is active_thread and feed.viewers == 1
+    factory.assert_called_once()
+    feed.release()
+    feed.run()
+    assert feed.thread is None
+    upstream.assert_not_called()

@@ -40,7 +40,11 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
             "or leave it unset and bind to loopback"
         )
     try:
-        source = DemoSource(FIXTURES) if args.demo else Go2RTCSource(timeout=args.frame_timeout)
+        source = (
+            DemoSource(FIXTURES)
+            if args.demo
+            else Go2RTCSource(timeout=args.frame_timeout, settings=env)
+        )
         service = service_factory(
             demo=args.demo,
             frames=source,

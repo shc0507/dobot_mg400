@@ -686,13 +686,22 @@ deps = ["FND-09", "H-09", "DOC-07"]
 writes = [
   "deploy/install.py",
   "deploy/mg400.env.example",
+  "src/cameras/config.py",
   "src/vision/frames.py",
+  "src/vision/service.py",
+  "src/vision/__main__.py",
+  "scripts/camera_preview.py",
+  "scripts/camera_preview.js",
   "tests/test_deploy_install.py",
   "tests/test_vision_service.py",
+  "tests/test_camera_preview.py",
+  "tests/test_camera_preview.mjs",
   "docs/deploy.md",
   "docs/deploy.en.md",
   "docs/olares.md",
   "docs/olares.en.md",
+  "docs/vision.md",
+  "docs/vision.en.md",
 ]
 
 [[task]]
@@ -992,9 +1001,18 @@ writes = [
   "src/microscope/app.py",
   "src/microscope/templates/**",
   "src/microscope/static/**",
+  "src/orchestrator/skills/recording.py",
+  "src/orchestrator/skills/__init__.py",
+  "src/toupcam_camera/camera.py",
   "config/systemd/mg400-furnace.service",
   "deploy/mg400.env.example",
   "tests/test_furnace_recordings.py",
+  "tests/test_furnace_video.py",
+  "tests/test_furnace_local_run_sync.py",
+  "tests/test_orchestrator_recording.py",
+  "tests/test_toupcam_camera.py",
+  "tests/test_microscope_panel.py",
+  "tests/test_microscope_panel.mjs",
   "tests/test_systemd_units.py",
   "docs/furnace.md",
   "docs/furnace.en.md",
@@ -1144,7 +1162,9 @@ writes = [
   "src/microscope/service.py",
   "src/microscope/app.py",
   "src/microscope/__main__.py",
+  "src/microscope/motors.py",
   "tests/test_microscope_service.py",
+  "tests/test_microscope_motors.py",
   "docs/microscope.md",
   "docs/microscope.en.md",
 ]
@@ -1159,6 +1179,7 @@ size = "L"
 review = "agent"
 deps = ["MIC-03"]
 writes = [
+  "src/microscope/service.py",
   "src/microscope/templates/**",
   "src/microscope/static/**",
   "src/microscope/app.py",
@@ -1175,7 +1196,7 @@ phase = 4
 track = "microscope"
 owner = "agent+human"
 size = "M"
-review = "agent"
+review = "human"
 deps = ["MIC-02", "FND-09"]
 writes = [
   "src/microscope/calibrate.py",

@@ -577,7 +577,7 @@ def test_camera_check_passes_when_devices_services_and_streams_work(cameras):
     output = cameras.out.getvalue()
     assert output.count(" ok ") == 3
     assert f"{CAMERAS[1]} -> /dev/video2" in output
-    assert "streams  all loaded" in output
+    assert "streams  configured preloads loaded" in output
 
 
 @pytest.mark.parametrize(
@@ -612,6 +612,38 @@ def test_camera_check_without_cameras(ctl):
     assert ctl.call("camera-check") == 0
     assert "Cameras are off" in ctl.out.getvalue()
     ctl.run.assert_not_called()
+
+
+def test_camera_check_expects_only_low_resolution_preloads(cameras):
+    plug(cameras, CAMERAS)
+    with cameras.host.settings.open("a") as settings:
+        settings.write("MG400_CAMERA_MODES=640x480@30,1280x720@30,3840x2160@30\n")
+    cameras.run.side_effect = answer(ACTIVE, preload='{"camera1": {}}')
+    assert cameras.call("camera-check") == 0
+    assert "camera2 starts on demand" in cameras.out.getvalue()
+    assert "camera3 starts on demand" in cameras.out.getvalue()
+    assert sum(command[0] == "curl" for command in systemctl(cameras)) == 1
+
+
+def test_camera_check_all_large_streams_does_not_open_them(cameras):
+    plug(cameras, CAMERAS)
+    with cameras.host.settings.open("a") as settings:
+        settings.write("MG400_CAMERA_MODES=1280x720@30,1920x1080@60,3840x2160@30\n")
+    cameras.run.side_effect = answer(ACTIVE, preload="")
+    assert cameras.call("camera-check") == 0
+    assert "no continuous preloads" in cameras.out.getvalue()
+    assert not any(command[0] == "curl" for command in systemctl(cameras))
+
+
+def test_camera_check_rejects_conflicting_modes_before_device_or_service_checks(cameras, capsys):
+    with cameras.host.settings.open("a") as settings:
+        settings.write(
+            "MG400_CAMERA_MODES=640x480@30,640x480@30,640x480@30\n"
+            "MG400_CAMERA_CAPTURE_SIZES=640x480,640x480,640x480\n"
+        )
+    assert cameras.call("camera-check") == 1
+    assert "MG400_CAMERA" in capsys.readouterr().err
+    cameras.run.assert_not_called()
 
 
 def test_assets_reports_verified_missing_and_mismatched_without_commands(

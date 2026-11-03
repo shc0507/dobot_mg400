@@ -256,7 +256,7 @@ Do this migration only once. Before migration, close all panel pages and interac
    If `is-enabled` shows `static` for all 3 services, they will not start at boot.
 
 8. Check the following:
-   - The link from `mg400ctl camera-url` opens all 3 camera views.
+   - The link from `mg400ctl camera-url` opens all configured camera views.
    - The web panel accepts the original access key.
    - After you click `Connect & take control` in the web panel, `mg400ctl status` shows the gripper collector as `active`.
    - The stage panel can connect to the Arduino.
@@ -274,9 +274,10 @@ Keep the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
 A reset disconnects the motor, furnace, gas, gripper, and camera connections together.
 
 Keep each camera on its listed hub port.
-The 3 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
-The camera on `12.1.3` is the microscope side camera. go2rtc owns it, and the microscope reads its shared stream.
-Confirm the views on `12.1.2` and `12.1.4` in the camera preview before assigning their roles.
+The 4 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
+The camera on `12.1.4` is the microscope side camera. It watches the objective turret. go2rtc owns it, and the microscope reads its shared stream.
+The camera on `12.1.2` sees the stage from above. The camera on `12.1.3` looks along the Insert rail, with the tray behind it.
+The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in the preview.
 
 | Device | VID:PID | Stable identity | Hub port | Service |
 | --- | --- | --- | --- | --- |
@@ -286,9 +287,10 @@ Confirm the views on `12.1.2` and `12.1.4` in the camera preview before assignin
 | Gas controller FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace` (`MG400_MFC_SERIAL`) |
 | Gripper converter FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0` | `12.3.3` | `collector` |
 | Thermal Master P1 | `3474:45c2` | libusb, serial `P1016021DG040100208` | `12.1.1` | `thermal` |
-| AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
-| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera`, shared through go2rtc |
-| AC410 camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera` |
+| AC410 stage camera, from above | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
+| AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera` |
+| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera`, shared through go2rtc |
+| AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0` | `12.2.1` | `camera` |
 | ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
 Use the full serial paths for controllers. The gas controller and gripper converter share a VID:PID, but have different serial numbers.
@@ -365,10 +367,41 @@ mg400ctl start collector
 
 ## Cameras
 
-3 AC410 cameras connect to Olares USB. Their configuration uses USB port paths.
-The preview resolution is `640 × 480`. Each camera uses 1 continuous MJPEG stream at up to 30 frames per second.
-Keep each camera on its original USB port.
-After changing a port, update `MG400_CAMERA_DEVICES`, then run the installer again and restart the cameras.
+Configure 1 to 4 AC410 cameras with distinct USB port paths in `MG400_CAMERA_DEVICES`.
+Stream names follow device order, from `camera1` through `camera4`. Empty settings disable cameras.
+Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only these modes are accepted:
+
+```text
+1920x1080@60, 1920x1080@30, 4000x3000@15, 3840x2160@30,
+2592x1944@30, 2560x1440@30, 2048x1536@30, 1600x1200@30,
+1280x720@30, 1024x768@30, 1024x576@30, 800x600@30,
+640x480@30, 640x360@30, 320x240@30
+```
+
+The legacy `MG400_CAMERA_CAPTURE_SIZES` list supplies `WIDTHxHEIGHT` values at 30 fps.
+Do not set both lists. With both lists empty, ordinary streams use `640x480@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
+An explicit list overrides these defaults, including the side stream.
+The following 4-camera configuration uses the port order in the table above and sets the tray to `1280x720@30`:
+
+```ini
+MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
+MG400_CAMERA_MODES=640x480@30,640x480@30,3840x2160@30,1280x720@30
+MG400_CAMERA_CAPTURE_SIZES=
+MG400_MICROSCOPE_SIDE_STREAM=camera3
+```
+
+Only streams with width at most 640 and height at most 480 are preloaded.
+Larger streams start when a preview, microscope, or still consumer requests them.
+After the last browser viewer leaves a large stream, the preview clears its frame and releases its upstream reader between body reads.
+Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
+The preview display is capped at 30 fps, including when capture uses `1920x1080@60`.
+Single-frame requests use the same go2rtc stream, at its configured resolution; they do not switch mode or open another device capture.
+
+The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large streams can exceed its periodic transfer budget together.
+H-21 requires supervised bandwidth checks before simultaneous hardware use.
+The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
+At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
+Keep each camera on its listed USB port. After changing devices or modes, run the installer again and restart the cameras.
 
 Start the preview, then show the link that contains the access key:
 
@@ -423,23 +456,24 @@ The preview does not start the vision service. See [Vision service](vision.en.md
 ### Camera failures
 
 If an image looks wrong, first run `mg400ctl camera-check`.
-It checks the 3 cameras by their configured USB port paths, then checks the 2 services and go2rtc preloaded streams.
+It checks configured cameras by their USB port paths, then checks the 2 services and the expected go2rtc preloaded streams.
+It reports larger streams as demand-started and does not require or start a continuous preload for them.
 It exits with code 0 if all checks pass. If a check fails, it exits with code 1 and shows the next action.
 If a camera is missing, it does not check the services.
 
-If all 3 streams stop together, first use `lsusb -t` and `ls -l /dev/video*` to check that the host still recognizes the devices.
+If all streams stop together, first use `lsusb -t` and `ls -l /dev/video*` to check that the host still recognizes the devices.
 An `active` service status only means that the process is alive.
 When an image request returns `200`, also check that the image is not empty and can be decoded.
 If the host recognizes neither the hub nor the cameras, a preview service restart cannot replace a USB connection check.
 
 If the host recognizes the cameras but the preview frame rate is very low, run
 `curl -s http://127.0.0.1:1984/api/preload` on the Olares host.
-Check that the output includes `camera1`, `camera2`, and `camera3`.
-If any are missing, run `mg400ctl restart camera`, wait 2 seconds, and query again.
+Check that the output includes each configured stream whose width is at most 640 and height is at most 480.
+If an expected preload is missing, run `mg400ctl restart camera`, wait 2 seconds, and query again.
 Preloading might not start if a device is missing when the capture service starts.
-The web video streams reconnect automatically. The retained single-frame endpoints `camera1.jpg`, `camera2.jpg`, and `camera3.jpg` can be slow without continuous capture.
+The web video streams reconnect automatically. The configured `camera<N>.jpg` single-frame endpoints can be slow when a stream starts on demand.
 
-After increasing the resolution, check all 3 views together. Check that several consecutive JPEG images decode completely.
+After increasing the resolution, check all required views together under H-21. Check that several consecutive JPEG images decode completely.
 The resolution and frame rate shown by the browser do not rule out corrupted images or partial image damage.
 If these problems occur, restore the `640 × 480` configuration, then check the USB capture path.
 

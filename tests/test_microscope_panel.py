@@ -1104,3 +1104,157 @@ def test_recording_cleanup_failure_keeps_stop_unconfirmed(recording_rig):
         # The fixture must observe, not conceal, this intentionally latched failure.
         with pytest.raises(RuntimeError, match="shutdown is unconfirmed"):
             rig.service.close()
+
+
+@pytest.mark.parametrize("revoke", ["release", "expiry", "same-id"])
+def test_armed_sequence_cannot_start_after_authority_is_lost(recording_rig, revoke):
+    import time
+
+    rig = recording_rig
+    rig.command("record_with_sequence", {"recording_id": "9" * 32, "enabled": True})
+    recording = rig.service._recording
+    if revoke == "release":
+        rig.service.lease.release("operator")
+    else:
+        rig.clock[0] += 31
+        if revoke == "same-id":
+            rig.service.lease.acquire("operator")
+        else:
+            rig.service.lease.poll()
+    assert recording.done.wait(1)
+    rig.readings.value["sequence"] = dict(
+        running=True, started_at=100, phase="holding", healthy=True
+    )
+    time.sleep(0.08)
+    assert recording.cancel.is_set() and not rig.camera.start_calls
+    assert not rig.service.snapshot()["recording_sequence"]["armed"]
+
+
+def test_provider_close_discards_late_read_without_publishing_or_rearming():
+    from microscope.service import FurnaceReadings
+
+    entered, release = threading.Event(), threading.Event()
+
+    def read():
+        entered.set()
+        assert release.wait(3)
+        return furnace_reading_state()
+
+    events = EventLog()
+    provider = FurnaceReadings(SimpleNamespace(state=read), events)
+    worker, outcomes = launch(provider.poll_once)
+    assert entered.wait(1)
+    provider.close()
+    release.set()
+    finish(worker)
+    assert outcomes == [None] and not provider.snapshot()["available"]
+    assert events.since()["events"] == []
+
+
+def test_readings_http_error_does_not_echo_remote_details_or_leave_response_open():
+    import io
+    import urllib.error
+
+    from microscope.service import FurnaceReadingsClient
+
+    body = io.BytesIO(b"secret-remote-error")
+    error = urllib.error.HTTPError("http://127.0.0.1/", 401, "secret-remote-error", {}, body)
+
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            raise error
+
+    client = FurnaceReadingsClient("http://127.0.0.1/")
+    client._opener = Opener()
+    with pytest.raises(ServiceError, match="request was refused") as caught:
+        client._request("api/state")
+    assert "secret" not in str(caught.value) and body.closed
+
+
+def test_stop_can_drain_old_recording_while_same_client_acquires_new_lease(recording_rig):
+    rig = recording_rig
+    rig.camera.stop_gate = threading.Event()
+    rig.command("start_recording", {"recording_id": "a1" * 16})
+    old = rig.service._recording
+    rig.service.lease.release("operator")
+    rig.service.lease.acquire("operator")
+    assert old.cancel.is_set()
+    with pytest.raises(ServiceError, match="busy"):
+        rig.service.command("start_recording", {"recording_id": "b1" * 16}, "operator")
+    rig.camera.stop_gate.set()
+    assert old.done.wait(1)
+    assert old.data["status"] == "stopped" and not rig.calls
+
+
+def test_actual_app_recording_contract_uses_flat_arguments_and_exact_stop_receipt(recording_rig):
+    import time
+
+    rig = recording_rig
+    client = create_app(rig.service, base_path="/scope", token="s" * 32).test_client()
+    headers = {"Authorization": "Bearer " + "s" * 32, "X-MG400-Client": "operator"}
+
+    def issue(action):
+        response = client.post(
+            "/scope/api/command",
+            json={"action": action, "recording_id": "c1" * 16},
+            headers=headers,
+        )
+        assert response.status_code == 202
+        command_id = response.json["command_id"]
+        until = time.monotonic() + 3
+        while time.monotonic() < until:
+            state = client.get("/scope/api/state", headers=headers).json
+            if state["last_command"] and state["last_command"]["id"] == command_id:
+                return state
+            time.sleep(0.005)
+        pytest.fail("HTTP command did not settle")
+
+    assert client.get("/scope/api/state").status_code == 401
+    assert issue("start_recording")["recording"]["status"] == "recording"
+    state = issue("stop_recording")
+    assert state["last_result"]["recording"] == state["recording"]
+    assert state["recording"]["status"] == "completed"
+
+
+@pytest.mark.parametrize("mode", ["time_lapse", "live"])
+def test_typed_recording_skill_consumes_actual_service_receipts(recording_rig, mode):
+    import json
+    import time
+
+    from orchestrator.skills.recording import record
+
+    rig = recording_rig
+    api = create_app(rig.service).test_client()
+    headers = {"X-MG400-Client": "operator"}
+    artifacts = []
+
+    class Client:
+        def state(self):
+            return api.get("/api/state").json
+
+        def owned(self, state):
+            return state["lease"]["holder"] == "operator"
+
+        def command(self, action, **args):
+            response = api.post("/api/command", json={"action": action, **args}, headers=headers)
+            assert response.status_code == 202
+            return response.json
+
+    def artifact(name, data):
+        artifacts.append((name, json.loads(data)))
+        return len(artifacts)
+
+    context = SimpleNamespace(
+        clients={"microscope": Client()},
+        remaining_s=lambda: 10,
+        sleep=time.sleep,
+        store=SimpleNamespace(artifact=artifact),
+    )
+    result = record(context, "chip-offline", 0.01, mode=mode)
+    assert result["status"] == "completed" and len(artifacts) == 2
+    intent, completed = artifacts[0][1], artifacts[1][1]
+    assert intent["recording_id"] == completed["recording_id"] == result["recording_id"]
+    assert completed["chip_id"] == "chip-offline" and completed["mode"] == mode
+    assert completed["segments"] == ["video_0001.mp4"]
+    assert completed["summary"] == f"{result['recording_id']}_shortened_3_min.mp4"
+    assert str(rig.root) not in json.dumps(artifacts)

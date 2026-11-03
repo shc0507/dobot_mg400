@@ -49,6 +49,9 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | Required measured `MIN,MAX` integer pulses, including zero, with nonzero travel. |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | Required measured clearance position, in pulses within the limits. Without a home switch, it must be `0`. |
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
+| `MG400_MICROSCOPE_FURNACE_URL` | Furnace metadata endpoint. Defaults to `http://127.0.0.1:8769/`. |
+| `MG400_FURNACE_TOKEN` | Existing furnace API token for metadata reads. The microscope does not acquire furnace control. |
+| `MG400_FURNACE_ARCHIVE_DIR` | Empty by default. Set an absolute directory only after the operator mounts the archive share. |
 
 Real startup requires reference-aware firmware and explicit focus settings.
 Use the measurements from `H-06`. Do not copy demo limits to hardware.
@@ -75,7 +78,7 @@ A full autofocus scan uses a window centered inside the measured range.
 A local scan uses a smaller window near the current position.
 The service first moves the scan center inside the limits when clearance is at a range endpoint.
 Snapshot creates a new PNG under the run root and refuses an existing destination.
-Its returned `captured_at` preserves the source clock. The real main camera uses host wall time, while demo frames use monotonic time.
+Its returned `captured_at` preserves the source clock. Real and demo main-camera frames use host wall time. Side-camera frames use monotonic receive time.
 These values do not measure sensor exposure time.
 
 ## Focus zero and control handoff
@@ -137,6 +140,62 @@ The browser uses authenticated fetch requests and discards stale preview results
 At most 4 MJPEG responses can remain open. Extra streams return `503`. Close another preview before reconnecting.
 This limit leaves workers available for control requests, but does not guarantee a stop response time.
 Preview reads do not acquire or renew control, and shutdown waits for accepted reads before closing camera owners.
+
+## Recording and furnace sequences
+
+Use the microscope panel to record from the camera that this service already owns.
+Recording commands require live ordinary control and an idle service. They do not acquire furnace control or start a furnace sequence.
+Keep the page connected with control during capture and finalization.
+
+| Action | Parameters and result |
+| --- | --- |
+| `start_recording` | Supply a new `recording_id` containing exactly 32 lowercase hexadecimal characters. Optional fields are `run_name`, `mode`, `capture_interval_seconds`, and `output_fps`. |
+| `stop_recording` | Supply the active `recording_id` owned by the same client. Completion includes capture shutdown, summary compilation, and any configured archive copy. |
+| `record_with_sequence` | Use `enabled: true`, a new `recording_id`, and optional recording fields to arm once. Use `enabled: false` with that ID to cancel. |
+| `set_stabilization` | Supply the boolean `enabled` to change camera stabilization. |
+
+The panel offers **Start recording**, **Finish recording**, and separate sequence arm and cancellation controls.
+An optional run name contains at most 80 printable characters. It does not select a file path.
+The `time_lapse` defaults are a 30-second capture interval and 1 output frame per second.
+The `live` default is 30 output frames per second, with no capture interval.
+Explicit `capture_interval_seconds` values range from 0.1 to 3600. Explicit `output_fps` values range from 0.1 to 120.
+
+Read `recording`, `recording_sequence`, and `last_result` with the matching `last_command` receipt.
+Check the recording ID, command ID, action, client, and expected result before claiming success.
+The panel observes finalization for at most 600 seconds. Other command observations use 120 seconds.
+These are observation limits, not encoder completion guarantees. An unknown result causes no automatic retry.
+Global Stop remains available while ordinary recording controls are unavailable during motion or finalization.
+
+Sequence recording requires fresh, healthy, idle furnace state when armed.
+It waits for a new sequence `started_at`, then records only that sequence.
+The same sequence must finish in `complete` or `cooling` before normal finalization.
+Arming applies once. The watcher cannot acquire or renew a control lease.
+
+The service polls furnace state at 1 Hz and reads cached values for frame metadata.
+The columns in `video.timestamps.csv` remain unchanged.
+Demo mode uses generated frames without a furnace connection. Its metadata stays blank unless an embedding supplies fake readings.
+
+Unavailable furnace readings leave metadata fields blank and add a service event while capture continues.
+A missing reply does not mean sequence completion. A changed sequence identity or an unhealthy sequence refuses normal completion.
+
+The service reserves recording IDs exclusively under `/var/lib/mg400/recordings/`.
+It creates private output files and refuses existing or unsafe destinations.
+Finalized recordings retain video segments, `video.timestamps.csv`, and a summary targeting 3 minutes. Shorter clips are not lengthened.
+Cancelled or failed recordings retain their local partial files without a promised summary.
+Finalization requires recorded frames and valid media. It requires FFmpeg and ffprobe on the host.
+If you set `MG400_FURNACE_ARCHIVE_DIR`, finalization verifies the archive copy and retains the local files.
+Archive failure leaves local files available and does not report successful finalization.
+
+Stop, release, lease expiry, and shutdown revoke recording authority without waiting for the encoder in the request handler.
+The service remains busy until accepted recording work ends. Check the stop result before new work.
+Compiler and archive callbacks check cancellation before publishing success. Revoked work cannot resume or automatically retry.
+
+The orchestrator skill `microscope.record(chip_id, seconds, run_name='', mode='time_lapse')` uses the same owned command flow.
+Use a finite positive duration and a step deadline that also permits finalization.
+It stores a bounded JSON intent before dispatch and a completed manifest only after an exact finalization receipt.
+The manifest links the chip, run, step, recording ID, and media basenames. Media and per-frame CSV data stay in the recording directory.
+The chip passport can download the manifest. It does not follow its filenames or serve the video through the run store.
+Cancellation or an unknown outcome leaves the intent without a false completed artifact.
 
 ## Python interfaces
 

@@ -3,7 +3,8 @@
 # Furnace and gas control
 
 The furnace page controls temperature, gas flow, and bounded sequences through the same service as automation clients.
-Camera and recording controls are unavailable. See [Host deployment](deploy.en.md) and the [furnace lifecycle decision](adr/0005-furnace-lifecycle.en.md).
+Use the [microscope panel](microscope.en.md) for camera previews and recording. The microscope remains the camera's only owner.
+See [Host deployment](deploy.en.md) and the [furnace lifecycle decision](adr/0005-furnace-lifecycle.en.md).
 
 ## Before hardware use
 
@@ -124,6 +125,20 @@ The gas panel shows requested percent, measured percent, and valve readback sepa
 A missing optional reply means unverified. It does not prove zero flow or a closed valve.
 A transport or invalid-reply failure locks control. **Close valve** and **Stop all gas flow** remain available.
 Check physical flow and use independent isolation when required.
+
+## Microscope recording
+
+Start recording or arm the next furnace sequence from the microscope panel while holding its control lease.
+The microscope reads furnace state through `MG400_MICROSCOPE_FURNACE_URL` and the existing `MG400_FURNACE_TOKEN`.
+It does not acquire a furnace lease or change furnace outputs.
+Arming requires fresh, healthy, idle furnace state and applies to one new sequence identity.
+Missing furnace replies leave recording metadata blank and add an event. Capture continues until an explicit stop or another valid completion condition.
+
+Recordings stay under `/var/lib/mg400/recordings/`. Finalized recordings include the timestamps CSV and a summary targeting 3 minutes. Shorter clips are not lengthened.
+Cancelled or failed recordings retain local partial files without a promised summary.
+Set `MG400_FURNACE_ARCHIVE_DIR` only after the operator mounts the archive share.
+The service retains local files after a verified archive copy. An archive failure does not remove local data or count as successful finalization.
+See the [recording instructions](microscope.en.md) for command receipts, cancellation, and chip-linked manifests.
 
 ## Client loss, recovery, and shutdown
 

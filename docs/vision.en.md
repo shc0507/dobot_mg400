@@ -105,7 +105,7 @@ Robot motion targets still require a validated calibration on the applicable pla
 ## Routes and commands
 
 Routes are relative to `--base-path` and use the [service contract](adr/0001-instrument-service-contract.en.md).
-Only 1 operation runs at a time, including detection, QR reading, marker reading, and calibration.
+Only 1 operation runs at a time, including detection, QR reading, marker reading, calibration, and drift checks.
 An overlapping request returns 409. The service does not queue extra operations.
 
 | Read route | Result |
@@ -137,12 +137,13 @@ Send commands to `POST api/command`:
 Bounds must increase, be nonnegative, and fit inside the frame.
 Returned label coordinates include the crop offset and refer to the full image.
 
-Calibration adds 2 leased commands:
+Calibration uses 3 leased commands:
 
 | Command | Parameters and result |
 | --- | --- |
 | `read_markers` | `camera`. Returns `markers` with `id` and `center_px`, plus `image_size`, `camera_device`, `frame_sha256`, and `read_at`. |
 | `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, and `image_size`. Fits and stores the model through the owned lease. |
+| `check_calibration` | `camera`, `flange_mm`, `tool_offset_mm`, and optional `margin_px`. Returns the tip/arm check from the same frame. |
 
 `tag_points` contains 24 uncorrected flange XYZ rows. `tag_pixels` contains their 24 pixel XY rows.
 The fitter applies the nominal tag height to these grid points.
@@ -292,6 +293,75 @@ A new USB-port path selects a different calibration key. Changing image size als
 Do not rename an old file to bypass these checks. Recalibrate with the intended camera and capture mode.
 The service cannot detect every physical camera movement from its port name alone.
 Keep the camera fixed and revalidate after physical changes.
+
+## Calibration drift check
+
+Use `vision.check_calibration(camera)` before each vision-guided move in a transfer recipe.
+This typed skill requires the robot and vision services under the run's existing ownership.
+It reads the measured robot pose and configured tool offset. It does not move or enable the robot.
+The check uses the existing workspace, gripper, feedback, and ownership requirements.
+
+The vision service must already report `connected=true` with no fault.
+For a cold live service, complete the authorized `read_markers` preview and release its lease as described above.
+The drift check does not acquire a separate preview lease or automatically restore service health.
+
+### Margin and command data
+
+`MG400_ORCH_DRIFT_MARGIN_PX` sets the orchestrator's required pixel inset. It defaults to `0` and accepts finite values from `0` through `4096`.
+A larger margin shrinks the acceptable area inside the arm box. It never expands that box.
+An inset that leaves no usable box fails the check.
+Live runs and owned demos preserve this supplied scalar setting. An absent setting stays absent until the skill applies its default.
+Other device, endpoint, token, and path filters remain unchanged.
+
+The skill sends the leased `check_calibration` command with these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `camera` | Configured camera number. |
+| `flange_mm` | Measured `[X,Y,Z,R]`. XYZ uses millimetres and R uses degrees. |
+| `tool_offset_mm` | Configured `[dx,dy,dz]` in millimetres. |
+| `margin_px` | Optional finite inward inset, from `0` through `4096` pixels. The command default is `0`. |
+
+The service reads 1 current frame, loads 1 model for that camera path, and runs 1 detector prediction on that frame.
+It uses the same model and frame for projection and arm-box evidence. It does not reuse cached boxes or rewrite the calibration.
+The skill does not load a separate host model.
+
+### Geometry and result
+
+Tip XY uses the tool's XY offset rotated by measured R and added to flange XY.
+Projection uses model tip Z `flange_z + nominal_tag_height_mm - distance_mm`.
+The configured tool `dz` does not supply projection height.
+The projected tip must have positive camera depth and lie inside the calibrated image.
+The live camera path and image size must match the stored model.
+
+The detector must supply exactly 1 valid `Robotic Arm` box.
+Label comparison ignores case, spaces, and underscores.
+The box must contain finite, ordered XYXY coordinates inside the image.
+The projected tip must lie inside that box after the inward margin.
+Missing, malformed, or ambiguous arm evidence fails the check.
+
+A successful command receipt contains `camera`, `calibrated=true`, and these check fields:
+
+| Field | Meaning |
+| --- | --- |
+| `passed`, `reason` | Boolean result and failure reason, or `null` when no reason applies. |
+| `projected_tip_px` | Projected `[x,y]`, or `null` when unavailable. |
+| `arm_box_px` | Detected `[x0,y0,x1,y1]`, or `null` when unavailable. |
+| `margin_px` | Applied inward margin. |
+| `camera_device`, `image_size` | Camera path and `{width,height}` for this frame and model. |
+| `model_created_at` | Creation time of the model used for this check. |
+
+A successful command receipt alone is insufficient. The skill requires a valid positive check result.
+It accepts only the exact command, action, and controlling-client receipt.
+A guard checks stationary flange XYZ and R plus unchanged robot owner and instance before, during, and after inference.
+
+A negative or malformed check result raises `camera moved, recalibrate`. The run enters `held` before the next step.
+An earlier Stop, lease loss, or robot-motion error keeps its original cause.
+The Runner stops and drains accepted work and retains occupied zones.
+The skill does not retry, reacquire authority, clear a zone, or recalibrate automatically.
+
+Perspective makes this a coarse check. A pass does not detect every camera movement or validate small calibration errors.
+It does not replace physical clearance, joint and workspace limits, or the applicable hardware checks.
 
 ## Tray geometry and cross-checks
 

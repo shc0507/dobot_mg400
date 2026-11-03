@@ -67,6 +67,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Vision localizer | `src/vision/localizer.py` | `test_vision_localizer.py` | Module docstrings |
 | Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md) |
 | Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py` | [vision.md](docs/vision.md) |
+| Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md) |
 | Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/` | `test_vision_tray.py` | [vision.md](docs/vision.md) |
 | Thermal camera | `src/thermal_cam/` | `test_thermal_*.py` | [thermal.md](docs/thermal.md) |
 | Toupcam capture and recording | `src/toupcam_camera/camera.py`, `capture.py` | `test_toupcam_camera.py` | Module docstrings; keep vendor `toupcam.py` unchanged |

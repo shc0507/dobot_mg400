@@ -25,7 +25,10 @@ from vision.calibration import (
     DEFAULT_DIRECTORY,
     CalibrationStore,
     calibration_settings,
+    camera_device,
     detect_markers,
+    drift_inputs,
+    drift_proof,
     image_size,
     robot_xy,
 )
@@ -178,6 +181,22 @@ class VisionService:
             "items": {"type": "integer", "minimum": 1},
         }
         calibration["required"].append("image_size")
+        drift = copy.deepcopy(params)
+        for name, length in (("flange_mm", 4), ("tool_offset_mm", 3)):
+            drift["properties"][name] = {
+                "type": "array",
+                "minItems": length,
+                "maxItems": length,
+                "items": {"type": "number", "minimum": -1_000_000, "maximum": 1_000_000},
+            }
+            drift["required"].append(name)
+        drift["properties"]["margin_px"] = {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 4096,
+            "default": 0,
+            "description": "Nonnegative inward inset of the observed arm box, in pixels.",
+        }
         return describe(
             service="vision",
             version="1.0",
@@ -190,6 +209,7 @@ class VisionService:
                     "read_labels": command(labels),
                     "read_markers": command(params),
                     "calibrate_camera": command(calibration),
+                    "check_calibration": command(drift),
                 }
                 if self.camera_count
                 else {}
@@ -285,8 +305,17 @@ class VisionService:
         allowed = {"camera", "region"} if action == "read_labels" else {"camera"}
         if action == "calibrate_camera":
             allowed |= {"tag_points", "tag_pixels", "tray_points", "tray_pixels", "image_size"}
+        if action == "check_calibration":
+            allowed |= {"flange_mm", "tool_offset_mm", "margin_px"}
         if (
-            action not in {"detect", "read_labels", "read_markers", "calibrate_camera"}
+            action
+            not in {
+                "detect",
+                "read_labels",
+                "read_markers",
+                "calibrate_camera",
+                "check_calibration",
+            }
             or not isinstance(args, dict)
             or set(args) - allowed
             or "camera" not in args
@@ -321,6 +350,15 @@ class VisionService:
                     raise ValueError("Calibration points must be bounded finite coordinate arrays.")
             if camera > len(self._devices):
                 raise ValueError("Camera calibration requires a configured stable port identity.")
+        if action == "check_calibration":
+            if not {"flange_mm", "tool_offset_mm"}.issubset(args):
+                raise ValueError("Drift checking requires a measured flange pose and tool offset.")
+            drift_inputs(args["flange_mm"], args["tool_offset_mm"], args.get("margin_px", 0))
+            if camera > len(self._devices):
+                raise ValueError(
+                    "Drift checking requires a configured stable camera port identity."
+                )
+            camera_device(self._devices[camera - 1])
         region = args.get("region")
         if "region" in args and (
             not isinstance(region, (list, tuple))
@@ -410,6 +448,41 @@ class VisionService:
                 self._calibrated_cameras.add(job["camera"])
             result = {"camera": job["camera"], "calibrated": True, "calibration": saved}
             return self._bounded_result(result), image
+        if job["action"] == "check_calibration":
+            device = self._devices[job["camera"] - 1]
+            model = self.calibrations.load(device)
+            if model is None:
+                raise ValueError("camera moved, recalibrate: no camera calibration is installed")
+            if image.size != image_size(model["image_size"]):
+                raise ValueError("camera moved, recalibrate: calibrated image dimensions changed")
+            if job["cancel"].is_set():
+                raise DetectionCancelled()
+            _, prediction = self._model.predict(image)
+            if job["cancel"].is_set():
+                raise DetectionCancelled()
+            expected_size = {"width": image.width, "height": image.height}
+            detections = None
+            if (
+                isinstance(prediction, dict)
+                and prediction.get("image_size") == expected_size
+                and prediction.get("coordinate_system") == "oriented_original_image_pixels"
+            ):
+                detections = prediction.get("detections")
+            args = job["args"]
+            result = drift_proof(
+                model,
+                args["flange_mm"],
+                args["tool_offset_mm"],
+                detections,
+                image.size,
+                device=device,
+                margin_px=args.get("margin_px", 0),
+            )
+            if job["cancel"].is_set():
+                raise DetectionCancelled()
+            result.update(camera=job["camera"], calibrated=True)
+            # This branch never reloads the model or maps unrelated detection centers.
+            return self._bounded_result(result), image
         if job["action"] == "read_markers":
             result = {
                 "image_size": {"width": image.width, "height": image.height},
@@ -481,8 +554,8 @@ class VisionService:
 
     @contextmanager
     def _commit(self, job):
-        # The potentially expensive solve and staging write precede this short
-        # commit. Stop and lease expiry serialize with the atomic file rename.
+        # Slow solving, staging and inference precede this short authority fence.
+        # Stop and lease expiry serialize with model installation or drift-result publication.
         with self.lease.control(job["client"]):
             with self._lock:
                 if self._closed or self._active is not job or job["cancel"].is_set():
@@ -531,6 +604,18 @@ class VisionService:
         self._finish(job, result, image, outcome, error)
 
     def _finish(self, job, result, image, outcome, error):
+        if job["action"] == "check_calibration" and outcome == "ok":
+            try:
+                with self._commit(job):
+                    return self._finish_result(job, result, image, outcome, error)
+            except (ServiceError, DetectionCancelled):
+                outcome, error = (
+                    "stopped",
+                    ServiceError(409, "Drift check lost control; its proof was discarded."),
+                )
+        return self._finish_result(job, result, image, outcome, error)
+
+    def _finish_result(self, job, result, image, outcome, error):
         with self._lock:
             # Stop can arrive after processing finishes but before publication.
             if job["cancel"].is_set():

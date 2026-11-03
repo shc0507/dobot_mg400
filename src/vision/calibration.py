@@ -669,3 +669,126 @@ def fit_calibration(
         "rms_mm": {"held_out": held_rms, "tray": reference_rms},
         "errors_mm": {"held_out": held_errors.tolist(), "tray": reference_errors.tolist()},
     }
+
+
+def drift_margin(value=0):
+    """Validate a finite nonnegative inset, bounded to 4096 image pixels."""
+    if type(value) not in (int, float) or not 0 <= value <= 4096:
+        raise ValueError("Drift margin must be a finite number from 0 to 4096 pixels.")
+    return float(value)
+
+
+def _drift_vector(value, length, label):
+    try:
+        raw = np.asarray(value, dtype=object)
+        if raw.shape != (length,) or any(
+            isinstance(item, (bool, np.bool_))
+            or not isinstance(item, (int, float, np.integer, np.floating))
+            for item in raw
+        ):
+            raise ValueError
+        result = np.asarray(value, np.float64)
+        if not np.isfinite(result).all() or np.any(np.abs(result) > 1_000_000):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{label} must contain {length} finite bounded numbers.") from None
+    return result
+
+
+def drift_inputs(flange_mm, tool_offset_mm, margin_px=0):
+    """Validate command arguments before frame acquisition or job admission."""
+    return (
+        _drift_vector(flange_mm, 4, "Robot flange pose").tolist(),
+        _drift_vector(tool_offset_mm, 3, "Tool offset").tolist(),
+        drift_margin(margin_px),
+    )
+
+
+def drift_proof(model, flange_mm, tool_offset_mm, detections, live_size, *, device, margin_px=0):
+    """Project the model-coordinate tip and require one observed arm box.
+
+    This is a coarse image-consistency proof, not independent physical clearance
+    or robot authority. The caller owns frame/model identity and robot guards.
+    """
+    geometry = validate_model(model, device=camera_device(device))
+    width, height = image_size(live_size)
+    if (width, height) != image_size(geometry["image_size"]):
+        raise ValueError("Live image size differs from the stored camera calibration.")
+    flange, tool, margin = drift_inputs(flange_mm, tool_offset_mm, margin_px)
+    result = {
+        "passed": False,
+        "reason": None,
+        "projected_tip_px": None,
+        "arm_box_px": None,
+        "margin_px": margin,
+        "camera_device": geometry["camera_device"],
+        "image_size": {"width": width, "height": height},
+        "model_created_at": geometry["created_at"],
+    }
+
+    def negative(reason):
+        result["reason"] = reason
+        return result
+
+    # Tool XY follows the measured flange R. The nominal-height gauge belongs
+    # only to model Z; physical tool dz must not replace the recovered distance.
+    angle = math.radians(flange[3] % 360)
+    c, s = math.cos(angle), math.sin(angle)
+    tip = np.array(
+        [
+            flange[0] + c * tool[0] - s * tool[1],
+            flange[1] + s * tool[0] + c * tool[1],
+            flange[2] + geometry["nominal_tag_height_mm"] - geometry["distance_mm"],
+        ],
+        np.float64,
+    )
+    rotation = np.asarray(geometry["rotation"], np.float64)
+    translation = np.asarray(geometry["translation"], np.float64)
+    camera_tip = cv2.Rodrigues(rotation)[0] @ tip + translation
+    if not np.isfinite(camera_tip).all() or camera_tip[2] <= 0:
+        return negative("tip_behind_camera")
+    point = cv2.projectPoints(
+        tip.reshape(1, 3),
+        rotation,
+        translation,
+        np.asarray(geometry["camera_matrix"], np.float64),
+        np.asarray(geometry["distortion"], np.float64),
+    )[0].reshape(2)
+    if not np.isfinite(point).all():
+        return negative("invalid_tip_projection")
+    if np.all(np.abs(point) <= 1_000_000):
+        result["projected_tip_px"] = point.tolist()
+    if not 0 <= point[0] < width or not 0 <= point[1] < height:
+        return negative("tip_outside_image")
+    if not isinstance(detections, list) or len(detections) > 1024:
+        return negative("arm_detection_malformed")
+    arm = []
+    for detection in detections:
+        if not isinstance(detection, dict):
+            return negative("arm_detection_malformed")
+        label = detection.get("label")
+        if not isinstance(label, str) or not 1 <= len(label) <= 128:
+            return negative("arm_detection_malformed")
+        if label.lower().replace(" ", "").replace("_", "") == "roboticarm":
+            arm.append(detection)
+    if not arm:
+        return negative("arm_detection_missing")
+    if len(arm) != 1:
+        return negative("arm_detection_ambiguous")
+    try:
+        box = _drift_vector(arm[0].get("xyxy"), 4, "Robotic Arm box")
+    except ValueError:
+        return negative("arm_detection_malformed")
+    left, top, right, bottom = box
+    if not 0 <= left < right <= width or not 0 <= top < bottom <= height:
+        return negative("arm_detection_malformed")
+    result["arm_box_px"] = box.tolist()
+    if left + margin >= right - margin or top + margin >= bottom - margin:
+        return negative("margin_excludes_box")
+    if (
+        not left + margin <= point[0] <= right - margin
+        or not top + margin <= point[1] <= bottom - margin
+    ):
+        return negative("tip_outside_arm_box")
+    result["passed"] = True
+    return result

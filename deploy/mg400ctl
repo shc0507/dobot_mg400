@@ -630,6 +630,31 @@ def unit_states(run, chosen):
     return states
 
 
+def missing_units(run, chosen):
+    """Return the chosen units that systemd reports as not installed and inactive.
+
+    A failed or incomplete answer returns no units, so every stop guard still runs.
+    A deleted unit file of a running service stays active, so its unit is not missing.
+    """
+    try:
+        shown = run(
+            ["systemctl", "show", "--property=Id,LoadState,ActiveState", *chosen],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return set()
+    if shown.returncode != 0 or not isinstance(shown.stdout, str):
+        return set()
+    missing = set()
+    for block in shown.stdout.strip().split("\n\n"):
+        values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        if values.get("LoadState") == "not-found" and values.get("ActiveState") == "inactive":
+            missing.add(values.get("Id"))
+    return missing & set(chosen)
+
+
 def status(run, out, services):
     rows = [(name, unit) for name, chosen in services.items() for unit in chosen]
     rows.append(("collector", WATCHER))
@@ -862,10 +887,20 @@ def main(
     if args.command == "camera-check":
         return camera_check(host, devices, run, out, services, preloaded=camera_config.preloaded)
     if args.command in ("start", "stop", "restart"):
-        if (
+        chosen = units(args.names, args.command, services)
+        furnace_selected = (
             args.command != "start"
             and "furnace" in services
             and ("furnace" in args.names or "all" in args.names)
+        )
+        # Stop reaches every registered unit, including optional ones never installed.
+        # Read-only: systemd reports which of them are not installed and not running.
+        missing = set()
+        if args.command == "stop" and ("all" in args.names or furnace_selected):
+            missing = missing_units(run, chosen)
+        if (
+            furnace_selected
+            and not set(services["furnace"]) <= missing
             and not args.force
         ):
             try:
@@ -877,13 +912,18 @@ def main(
                     file=sys.stderr,
                 )
                 return 1
+        if "all" in args.names:
+            chosen = [unit for unit in chosen if unit not in missing]
+            for unit in sorted(missing):
+                print(f"Skipping {unit}: it is not installed and not running.", file=out)
+            if not chosen:
+                print(f"No installed unit to {args.command}.", file=out)
+                return 0
         if args.command != "start" and any(name in ("web", "all") for name in args.names):
             print(
                 "The web panel can take up to 60 seconds to confirm that the arm stopped.", file=out
             )
-        return run(
-            ["systemctl", args.command, *units(args.names, args.command, services)]
-        ).returncode
+        return run(["systemctl", args.command, *chosen]).returncode
     if args.command == "logs":
         command = ["journalctl", "--no-pager", "-n", str(args.lines)]
         for unit in services[args.name]:

@@ -73,6 +73,27 @@ def systemctl(ctl):
     return [args[0] for args, _ in ctl.run.call_args_list]
 
 
+def mutations(ctl):
+    """Return the systemctl commands that can change a unit; show only reads."""
+    return [command for command in systemctl(ctl) if command[:2] != ["systemctl", "show"]]
+
+
+def systemd_units(ctl, missing=(), running=()):
+    """Answer systemctl show like systemd for not-found or loaded units."""
+
+    def run(command, **kwargs):
+        if command[:2] == ["systemctl", "show"]:
+            blocks = [
+                f"Id={unit}\nLoadState={'not-found' if unit in missing else 'loaded'}\n"
+                f"ActiveState={'active' if unit in running else 'inactive'}"
+                for unit in command[3:]
+            ]
+            return SimpleNamespace(returncode=0, stdout="\n\n".join(blocks))
+        return SimpleNamespace(returncode=0, stdout="")
+
+    ctl.run.side_effect = run
+
+
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
@@ -798,7 +819,7 @@ def test_start_all_selects_only_enabled_services(optional_ctl):
 def test_stop_remains_available_after_optional_service_is_disabled(optional_ctl, target):
     optional_ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=unknown,unknown\n")
     assert optional_ctl.call("stop", target) == 0
-    assert "mg400-optional.service" in systemctl(optional_ctl)[0]
+    assert "mg400-optional.service" in mutations(optional_ctl)[0]
 
 
 def test_logs_remain_available_for_disabled_registered_services(optional_ctl):
@@ -1116,10 +1137,10 @@ def test_furnace_shutdown_guard_precedes_all_systemctl_mutations(
     ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=furnace\n")
     ctl.state.return_value["sequence"] = {"phase": phase, "running": running}
     assert ctl.call(action, *targets) == 1
-    ctl.run.assert_not_called()
+    assert mutations(ctl) == []
     assert "--force" in capsys.readouterr().err
     assert ctl.call(action, *targets, "--force") == 0
-    assert "mg400-furnace.service" in systemctl(ctl)[0]
+    assert "mg400-furnace.service" in mutations(ctl)[0]
     assert ctl.state.call_count == 1
 
 
@@ -1150,17 +1171,77 @@ def test_furnace_shutdown_guard_precedes_all_systemctl_mutations(
 def test_furnace_shutdown_refuses_unknown_state_even_after_optional_disable(ctl, state):
     ctl.state.return_value = state
     assert ctl.call("stop", "all") == 1
-    ctl.run.assert_not_called()
+    assert mutations(ctl) == []
     assert ctl.call("stop", "furnace", "--force") == 0
 
 
 def test_furnace_shutdown_refuses_unavailable_status_and_skips_disabled_restart_all(ctl):
     ctl.state.side_effect = OSError("offline")
     assert ctl.call("stop", "furnace") == 1
-    ctl.run.assert_not_called()
+    assert mutations(ctl) == []
     assert ctl.call("restart", "all") == 0
-    assert "mg400-furnace.service" not in systemctl(ctl)[0]
+    assert "mg400-furnace.service" not in mutations(ctl)[0]
     assert ctl.state.call_count == 1
+
+
+def registered_units(ctl, optional):
+    registry = ctl.module.load_services(ctl.host.registry)
+    return {
+        unit
+        for entry in registry.values()
+        if entry["optional"] is optional
+        for unit in entry["units"]
+    }
+
+
+def test_stop_all_skips_uninstalled_units_and_their_furnace_check(ctl):
+    systemd_units(ctl, missing=registered_units(ctl, True))
+    ctl.state.side_effect = OSError("offline")
+    assert ctl.call("stop", "all") == 0
+    ctl.state.assert_not_called()
+    (stop,) = mutations(ctl)
+    assert stop[:2] == ["systemctl", "stop"]
+    assert set(stop[2:]) == registered_units(ctl, False)
+    assert "Skipping mg400-furnace.service: it is not installed" in ctl.out.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("missing", "running"),
+    [((), ()), (("mg400-furnace.service",), ("mg400-furnace.service",))],
+    ids=["installed-and-disabled", "unit-file-removed-while-running"],
+)
+def test_stop_all_keeps_the_furnace_check_while_its_unit_exists_or_runs(ctl, missing, running):
+    systemd_units(ctl, missing=missing, running=running)
+    ctl.state.side_effect = OSError("offline")
+    assert ctl.call("stop", "all") == 1
+    assert ctl.state.call_count == 1
+    assert mutations(ctl) == []
+
+
+@pytest.mark.parametrize("returncode", [1, 0], ids=["systemd-error", "no-answer"])
+def test_unreadable_systemd_state_keeps_the_furnace_check(ctl, returncode):
+    answer = "Id=mg400-furnace.service\nLoadState=not-found\nActiveState=inactive"
+    ctl.run.return_value = SimpleNamespace(
+        returncode=returncode, stdout=answer if returncode else ""
+    )
+    ctl.state.side_effect = OSError("offline")
+    assert ctl.call("stop", "all") == 1
+    assert mutations(ctl) == []
+
+
+def test_named_stop_of_an_uninstalled_furnace_skips_only_the_check(ctl):
+    systemd_units(ctl, missing={"mg400-furnace.service"})
+    ctl.state.side_effect = OSError("offline")
+    assert ctl.call("stop", "furnace") == 0
+    ctl.state.assert_not_called()
+    assert mutations(ctl) == [["systemctl", "stop", "mg400-furnace.service"]]
+
+
+def test_stop_all_with_no_installed_unit_runs_no_stop(ctl):
+    systemd_units(ctl, missing=registered_units(ctl, True) | registered_units(ctl, False))
+    assert ctl.call("stop", "all") == 0
+    assert mutations(ctl) == []
+    assert "No installed unit to stop." in ctl.out.getvalue()
 
 
 class FurnaceHTTP:

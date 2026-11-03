@@ -213,6 +213,7 @@ Stop an optional service before removing its name from the setting.
 Removing its name does not stop processes or delete existing files or rules.
 `start`, `restart`, and `status` use only enabled services.
 `stop` and `logs` can still access disabled registered services. `stop all` includes all registered services.
+`stop all` skips a unit that systemd reports as not installed and inactive, and prints the unit name.
 
 ## External assets
 
@@ -359,6 +360,7 @@ GPU output alone does not confirm that vision selected CUDA. Check `mg400ctl log
 
 Furnace `stop` and `restart` query authenticated live state before changing any selected service.
 The check includes mixed lists and `all`, including a disabled furnace selected by `stop all`.
+`stop` skips the check only when systemd reports every furnace unit as not installed and inactive. If systemd gives no clear answer, the check runs.
 An active sequence or cooling gas plan requires `--force`. Unavailable, malformed, disconnected, or locked status also requires `--force`.
 Coordinate with all clients before using `mg400ctl stop furnace --force` or `mg400ctl restart furnace --force`.
 Forced shutdown requests that the service stop heat and gas. Verify the stop result. The check is advisory: a sequence can start between the status read and systemd action.

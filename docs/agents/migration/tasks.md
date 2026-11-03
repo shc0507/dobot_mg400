@@ -748,15 +748,15 @@ Notes: the tag is about 246 mm above the tweezer tip, so it can never reach the 
 
 Owner: agent · Size: M · Review: agent · Deps: CAL-01, VIS-02
 
-Goal: slot positions from the tray's corner ArUco markers, as a check on the taught stations and on detections.
+Goal: bounded groove geometry from the tray's corner ArUco markers, as a check on taught stations and chip detections.
 
 Steps:
 
-1. `config/trays/<name>.toml` from H-08: the ArUco id of each corner marker, its center in the tray frame, and each slot's position and label area in millimetres. Tray `Grooved Platform V2` (owner, 2026-11-02): the markers are `DICT_4X4_50` ids 0, 1, 2 and 7. The tray origin is the id 1 corner. The marker centers in mm are id 1 (15.15, 15.0), id 0 (162.65, 15.0), id 7 (15.15, 162.8) and id 2 (162.65, 162.8). The arm tag is id 4, so the ids do not clash.
-2. `src/vision/tray.py`: find the corner markers with OpenCV `cv2.aruco` and `DICT_4X4_50`, not with the QR reader `src/vision/qr.py`. Use `detect` and `marker_center` in `src/microscope/aruco_locator.py` as the pattern. Map the marker centers to robot XY with the calibration, fit a similarity transform, and return every slot in robot coordinates.
+1. `config/trays/<name>.toml` from H-08: the ArUco id of each corner marker, its center in the tray frame, and each groove's bounded centerline and nominal reference center in millimetres. Chips have no label area. Tray `Grooved Platform V2` (owner, 2026-11-02): the markers are `DICT_4X4_50` ids 0, 1, 2 and 7. The tray origin is the id 1 corner. The marker centers in mm are id 1 (15.15, 15.0), id 0 (162.65, 15.0), id 7 (15.15, 162.8) and id 2 (162.65, 162.8). The arm tag is id 4, so the ids do not clash. There are 32 grooves with centerlines at `x = 5.975 + 5.35 * k`, for `k = 0..31`. Grooves `k = 5..26` span `y = 0..177.8`; the other grooves span `y = 30.0..147.8`. A nominal midpoint describes geometry only. A chip can sit anywhere along its groove, so its actual Y comes from vision.
+2. `src/vision/tray.py`: find the corner markers with OpenCV `cv2.aruco` and `DICT_4X4_50`, not with the QR reader `src/vision/qr.py`. Use `detect` and `marker_center` in `src/microscope/aruco_locator.py` as the pattern. Map the marker centers to robot XY with the calibration, fit a similarity transform, and return each bounded centerline and its nominal reference center in robot XY. Do not substitute the midpoint for an observed chip position.
 3. Do not require all 4 markers. Any 3 detected markers fix the tray pose. The tray model then predicts the center of the 4th marker. Sample its cells at that position, compare them with the bits of its id, and report the result. The default detector often misses id 0.
-4. Cross-check each slot against its taught station and, when a chip is present, against the YOLO chip center. Report the residuals and fail above 2 mm (setting).
-5. Tests with synthetic images, one of them with only 3 markers.
+4. Cross-check a taught station XY and any observed YOLO chip XY against the transformed bounded centerline segment for that groove. The residual includes perpendicular distance and any distance beyond an end. Keep 2 mm as the default and maximum allowed residual. Report the full taught-to-chip XY delta, but a difference along the free Y range is not tray drift. When the caller explicitly identifies a taught target for the same actual chip location, enforce the full XY residual within 2 mm as well. Mark absent station or detection evidence as missing, not as a successful cross-check or an empty slot.
+5. Tests with synthetic images, including only 3 detected markers, chip positions along a groove, end-bound failures, missing evidence, and the full XY check for an explicit same-location target.
 
 Done when: P-CHECKS pass.
 

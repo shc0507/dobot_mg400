@@ -32,7 +32,7 @@ This repository owns the migrated WuLab code and keeps its repository name. The 
 - Open no device, start no thread, and write no file at import time. Give every service `--demo`.
 - Record source repository, commit, and paths with `Source:` trailers. Credit source authors with `Co-authored-by:` trailers. List omitted files and reasons in each migration PR.
 
-The first milestone is a vision-guided chip transfer between tray slots, with QR identity checks before and after the transfer.
+The first milestone is a vision-guided chip transfer between tray slots. YOLO locates the chip and confirms the transfer result. The run record associates the chip ID with its slot.
 
 ## Consequences
 

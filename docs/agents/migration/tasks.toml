@@ -737,6 +737,7 @@ owner = "agent"
 size = "M"
 review = "agent"
 deps = ["CAL-01", "VIS-02"]
+# Slots are bounded groove centerlines; vision supplies each chip's position along Y.
 writes = [
   "config/trays/**",
   "src/vision/tray.py",

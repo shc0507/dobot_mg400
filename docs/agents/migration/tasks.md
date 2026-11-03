@@ -1233,7 +1233,7 @@ Supervised reference (owner decision, 2026-11-03, option 1 on #78): the source r
 - Before every turret move and every focus move, require a known focus reference, the measured limits and the clearance rule of MIC-03. Real motion needs the H-06 values; missing values fail closed.
 - Before a microstep change, a focus disable or any other event that forgets the reference, move focus to the clearance position with the still-valid reference. After the event, stop both motors and ask the operator to confirm by looking that the focus is at clearance and the objectives are clear of the window.
 - On an explicit confirmation, set zero at the current position (`FOCUS ZERO`), or use `FOCUS HOME` when a switch exists. Then send the focus limits converted to the active microstep (rounded inward), and continue.
-- Any other answer, a timeout, a reset or a disconnect stops both motors, disables them and ends the command. Never re-zero without the operator, and never turn the turret without a confirmed reference and clearance.
+- Any other answer, a timeout, a reset or a disconnect stops both motors, disables them and ends the command. Never re-zero without the operator, and never turn the turret without a confirmed reference and clearance. MIC-07 adds small calibration moves at working focus, inside a window that the operator measures in H-06.
 - Tests: the simulator and scripted operator answers cover each re-zero point, refusal and timeout.
 
 Done when: P-CHECKS pass; the operator imports the data from Objective-Control `3a2dad0` on Olares and comments on the issue.
@@ -1255,6 +1255,29 @@ Steps (P-DEPLOY plus):
 Done when: P-CHECKS pass.
 
 Docs: `microscope.md` and `.en.md`, `deploy.md` and `.en.md`.
+
+### MIC-07 · Calibration turret moves at working focus
+
+Owner: agent · Size: M · Review: human · Deps: MIC-02, FND-09
+
+Source: owner decision, 2026-11-03 on #78. The objective and light calibrations of `Dual_A4988_GUI.py` turn the turret by small amounts at working focus. The saved data at Objective-Control `3a2dad0` spans −5.25 to +9.75 full steps (objective) and −10 to +10 full steps (light). The source `before_move` hook only pauses for the operator. The MIC-05 tools in `src/microscope/calibrate.py` raise focus to clearance before every turret move and before every re-zero, so these 2 calibrations image out of focus.
+
+Goal: objective and light calibration image at working focus. Every turret move at focus stays inside a window that the operator measures in H-06. A guided console replaces raw serial commands for the H-06 measurements.
+
+Steps:
+
+1. Setting `MG400_MICROSCOPE_NUDGE_STEPS`: an integer from 0 to 20 full steps, from H-06 step 6. Unset or 0 keeps the MIC-05 behavior exactly. Other values fail closed.
+2. `python -m microscope.calibrate objective|light --focus-start N`: with a window above 0, these 2 commands work at focus. After the first confirmation, move focus from clearance to `N` (MICRO 4 coordinates, inside the limits). Then run the pinned local autofocus once around `N` with the `[focus]` settings. A window above 0 without `--focus-start` refuses to start. The first prompt also asks the operator to check that the objective is in its working position.
+3. Turret moves at focus in these 2 commands: no clearance move. Count the commanded turret displacement from the turret position at the first confirmation, in 1/16 full steps, across microstep changes. Before each turret move, require the confirmed reference, the measured limits, stationary focus, and a displacement that stays inside the window after the move. A move that would leave the window ends the command, and stops and disables both motors.
+4. Keep the working focus across reference events in these 2 commands. When the source calibration disables focus, send `FOCUS STOP` instead and keep the reference. For a microstep change, keep the MIC-05 sequence: clearance, the change, stop, confirmation, zero and limits. Then move focus back to its earlier position, converted to the new microstep, rounded to the nearest pulse and checked against the limits. The prompt states this return before the operator answers.
+5. `python -m microscope.calibrate setup`: a supervised console for H-06 steps 4 to 6, under the MIC-05 terminal and device-ownership rules. It needs no H-06 values and opens no camera. It runs at `MICRO 4` with a fixed low speed for each motor. Each key press sends 1 bounded move and waits for its completion: focus ±1, ±10, ±100 or ±1000 pulses, turret ±1 or ±10 full steps. The console shows the counted focus position, and the turret displacement in full steps from a point that the operator marks. One key sets `FOCUS ZERO` after the operator types `CLEAR`. A key without an action stops both motors. Quit, end of input, a reset or a disconnect stops and disables both motors. The console prints the counted values at the end. It never writes a settings file and never sends `FOCUS LIMIT`.
+6. The experiments and every full objective switch keep the clearance rule of MIC-03 and MIC-05.
+7. Firmware guides: the host turns the turret only at the verified clearance position, except the bounded calibration moves of this task.
+8. Tests with the simulator and scripted operator input: window unset, 0, inside, at the edge and beyond; displacement across microstep changes; the focus return after a re-zero; `FOCUS STOP` in place of the light-calibration disable; a missing `--focus-start`; console moves, keys without an action, end of input and disconnect; experiments still at clearance.
+
+Done when: P-CHECKS pass.
+
+Docs: `microscope.md` and `.en.md`, the firmware guides, `deploy/mg400.env.example`.
 
 ### FUR-05 · Recordings with furnace metadata
 
@@ -1558,8 +1581,9 @@ Steps:
 1. Move the Toupcam camera, the turret and focus Arduino and the side AC410 camera to Olares per the H-03 layout.
 2. Write down the Toupcam VID and PID, the Arduino's `/dev/serial/by-id/` name and the side camera's `/dev/v4l/by-path/` name.
 3. Do not move the side camera or the ArUco markers relative to the turret. The calibration data depends on their positions.
-4. Keep the microscope aligned over the furnace window. Find the clearance position: a focus position at which the turret turns every objective clear of the window, with a margin. Mark it so that an operator can find it again, and write down its distance from the focus switch if one is fitted.
+4. Keep the microscope aligned over the furnace window. Find the clearance position: a focus position at which the turret turns every objective clear of the window, with a margin. Mark it so that an operator can find it again, and write down its distance from the focus switch if one is fitted. For steps 4 to 6, use the setup console of MIC-07 (`python -m microscope.calibrate setup`) when it is merged. Stop the microscope service first.
 5. Find the focus limits: the focus range in which every objective stays clear of the window, with a margin, measured from the clearance position.
+6. Check the turret window at working focus. Set focus to the window-side focus limit. Put each objective in its working position in turn. Turn the turret up to 20 full steps each way, 1 full step at a time, and watch every objective. Write down the largest number of full steps, at most 20, at which every objective keeps the margin in both directions. This is `MG400_MICROSCOPE_NUDGE_STEPS`. Write down 0 if an objective comes near the window at 1 full step. Without this value, calibration turns the turret only at the clearance position.
 
 Unblocks MIC-06, H-21.
 
@@ -1742,7 +1766,7 @@ Owner: human · Size: M · Review: human · Deps: MIC-06, MIC-04, MIC-05, H-06
 Steps (P-HW):
 
 1. With the furnace cold, check the focus zero (home or operator zero), the focus limits and the clearance position against the window.
-2. Switch through every objective in both directions. The turret turns only at the clearance position.
+2. Switch through every objective in both directions. Full switches turn the turret only at the clearance position.
 3. Autofocus, full and local. Check that both stay inside the focus limits.
 4. Take a snapshot from the panel.
 

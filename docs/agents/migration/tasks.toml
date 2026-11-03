@@ -1237,6 +1237,25 @@ writes = [
 ]
 
 [[task]]
+id = "MIC-07"
+title = "Calibration turret moves at working focus"
+phase = 4
+track = "microscope"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["MIC-02", "FND-09"]
+writes = [
+  "src/microscope/calibrate.py",
+  "tests/test_microscope_calibrate.py",
+  "docs/microscope.md",
+  "docs/microscope.en.md",
+  "firmware/microscope-axes/README.md",
+  "firmware/microscope-axes/README.en.md",
+  "deploy/mg400.env.example",
+]
+
+[[task]]
 id = "MS-03"
 title = "Milestone: microscope image under the chip's ID"
 phase = 4

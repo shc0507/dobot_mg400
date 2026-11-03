@@ -1,0 +1,186 @@
+# Geometry in millimetres. The origin is the plate corner beside marker 1.
+# Reference centers describe the grooves; vision supplies each chip's actual Y.
+schema = 1
+name = "Grooved Platform V2"
+dictionary = "DICT_4X4_50"
+origin_marker_id = 1
+plate_size_mm = [177.8, 177.8]
+marker_size_mm = 24.0
+groove_width_mm = 4.85
+tolerance_mm = 2.0
+
+[[markers]]
+id = 1
+center_mm = [15.15, 15.0]
+
+[[markers]]
+id = 0
+center_mm = [162.65, 15.0]
+
+[[markers]]
+id = 7
+center_mm = [15.15, 162.8]
+
+[[markers]]
+id = 2
+center_mm = [162.65, 162.8]
+
+[[slots]]
+id = "groove_00"
+centerline_mm = [[5.975, 30.0], [5.975, 147.8]]
+reference_mm = [5.975, 88.9]
+
+[[slots]]
+id = "groove_01"
+centerline_mm = [[11.325, 30.0], [11.325, 147.8]]
+reference_mm = [11.325, 88.9]
+
+[[slots]]
+id = "groove_02"
+centerline_mm = [[16.675, 30.0], [16.675, 147.8]]
+reference_mm = [16.675, 88.9]
+
+[[slots]]
+id = "groove_03"
+centerline_mm = [[22.025, 30.0], [22.025, 147.8]]
+reference_mm = [22.025, 88.9]
+
+[[slots]]
+id = "groove_04"
+centerline_mm = [[27.375, 30.0], [27.375, 147.8]]
+reference_mm = [27.375, 88.9]
+
+[[slots]]
+id = "groove_05"
+centerline_mm = [[32.725, 0.0], [32.725, 177.8]]
+reference_mm = [32.725, 88.9]
+
+[[slots]]
+id = "groove_06"
+centerline_mm = [[38.075, 0.0], [38.075, 177.8]]
+reference_mm = [38.075, 88.9]
+
+[[slots]]
+id = "groove_07"
+centerline_mm = [[43.425, 0.0], [43.425, 177.8]]
+reference_mm = [43.425, 88.9]
+
+[[slots]]
+id = "groove_08"
+centerline_mm = [[48.775, 0.0], [48.775, 177.8]]
+reference_mm = [48.775, 88.9]
+
+[[slots]]
+id = "groove_09"
+centerline_mm = [[54.125, 0.0], [54.125, 177.8]]
+reference_mm = [54.125, 88.9]
+
+[[slots]]
+id = "groove_10"
+centerline_mm = [[59.475, 0.0], [59.475, 177.8]]
+reference_mm = [59.475, 88.9]
+
+[[slots]]
+id = "groove_11"
+centerline_mm = [[64.825, 0.0], [64.825, 177.8]]
+reference_mm = [64.825, 88.9]
+
+[[slots]]
+id = "groove_12"
+centerline_mm = [[70.175, 0.0], [70.175, 177.8]]
+reference_mm = [70.175, 88.9]
+
+[[slots]]
+id = "groove_13"
+centerline_mm = [[75.525, 0.0], [75.525, 177.8]]
+reference_mm = [75.525, 88.9]
+
+[[slots]]
+id = "groove_14"
+centerline_mm = [[80.875, 0.0], [80.875, 177.8]]
+reference_mm = [80.875, 88.9]
+
+[[slots]]
+id = "groove_15"
+centerline_mm = [[86.225, 0.0], [86.225, 177.8]]
+reference_mm = [86.225, 88.9]
+
+[[slots]]
+id = "groove_16"
+centerline_mm = [[91.575, 0.0], [91.575, 177.8]]
+reference_mm = [91.575, 88.9]
+
+[[slots]]
+id = "groove_17"
+centerline_mm = [[96.925, 0.0], [96.925, 177.8]]
+reference_mm = [96.925, 88.9]
+
+[[slots]]
+id = "groove_18"
+centerline_mm = [[102.275, 0.0], [102.275, 177.8]]
+reference_mm = [102.275, 88.9]
+
+[[slots]]
+id = "groove_19"
+centerline_mm = [[107.625, 0.0], [107.625, 177.8]]
+reference_mm = [107.625, 88.9]
+
+[[slots]]
+id = "groove_20"
+centerline_mm = [[112.975, 0.0], [112.975, 177.8]]
+reference_mm = [112.975, 88.9]
+
+[[slots]]
+id = "groove_21"
+centerline_mm = [[118.325, 0.0], [118.325, 177.8]]
+reference_mm = [118.325, 88.9]
+
+[[slots]]
+id = "groove_22"
+centerline_mm = [[123.675, 0.0], [123.675, 177.8]]
+reference_mm = [123.675, 88.9]
+
+[[slots]]
+id = "groove_23"
+centerline_mm = [[129.025, 0.0], [129.025, 177.8]]
+reference_mm = [129.025, 88.9]
+
+[[slots]]
+id = "groove_24"
+centerline_mm = [[134.375, 0.0], [134.375, 177.8]]
+reference_mm = [134.375, 88.9]
+
+[[slots]]
+id = "groove_25"
+centerline_mm = [[139.725, 0.0], [139.725, 177.8]]
+reference_mm = [139.725, 88.9]
+
+[[slots]]
+id = "groove_26"
+centerline_mm = [[145.075, 0.0], [145.075, 177.8]]
+reference_mm = [145.075, 88.9]
+
+[[slots]]
+id = "groove_27"
+centerline_mm = [[150.425, 30.0], [150.425, 147.8]]
+reference_mm = [150.425, 88.9]
+
+[[slots]]
+id = "groove_28"
+centerline_mm = [[155.775, 30.0], [155.775, 147.8]]
+reference_mm = [155.775, 88.9]
+
+[[slots]]
+id = "groove_29"
+centerline_mm = [[161.125, 30.0], [161.125, 147.8]]
+reference_mm = [161.125, 88.9]
+
+[[slots]]
+id = "groove_30"
+centerline_mm = [[166.475, 30.0], [166.475, 147.8]]
+reference_mm = [166.475, 88.9]
+
+[[slots]]
+id = "groove_31"
+centerline_mm = [[171.825, 30.0], [171.825, 147.8]]
+reference_mm = [171.825, 88.9]

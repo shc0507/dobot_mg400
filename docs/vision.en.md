@@ -350,7 +350,7 @@ This result is diagnostic. It does not add an observed marker, replace missing e
 With all 4 corners observed, `missing_marker` is `null`.
 The diagnostic reports `match`, `mismatch`, or `unavailable`, with `used_for_pose=false`.
 The supplied tray uses a 24 mm black marker square. Sampling assumes that its edges are parallel to the tray axes.
-Sampling accepts rotations in multiples of 90 degrees. Mirrored patterns never match.
+The comparison tests only rotations in multiples of 90 degrees. It does not test reflected candidates.
 Low resolution, occlusion, or tilt can prevent a conclusive comparison.
 
 ### Check station and chip evidence

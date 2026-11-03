@@ -351,7 +351,7 @@ cross_check_slots(location, *, taught_stations, chips,
 全部 4 个角点可见时，`missing_marker` 为 `null`。
 诊断报告 `match`、`mismatch` 或 `unavailable`，且 `used_for_pose=false`。
 所提供托盘采用 24 mm 的黑色标记方块。采样假定其边缘平行于托盘坐标轴。
-采样接受 90 度整数倍旋转，镜像图案绝不匹配。
+比较仅测试 90 度整数倍旋转，不测试镜像候选图案。
 分辨率低、遮挡或倾斜可能使比较无法得出明确结果。
 
 ### 检查工位与芯片证据

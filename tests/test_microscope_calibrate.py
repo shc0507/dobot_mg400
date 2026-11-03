@@ -5,6 +5,7 @@ import os
 import stat
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -1489,3 +1490,296 @@ def test_native_interruption_after_gate_admission_retains_accepted_read(monkeypa
         side._thread.join(1)
         side.close()
     assert queue.owner is None and not device.descriptors
+
+
+@pytest.mark.parametrize("value,expected", [(None, 0), ("", 0), ("0", 0), ("1", 1), ("20", 20)])
+def test_measured_nudge_window_accepts_only_explicit_bounded_integer(value, expected):
+    from microscope.calibrate import nudge_steps
+
+    environ = {} if value is None else {"MG400_MICROSCOPE_NUDGE_STEPS": value}
+    assert nudge_steps(environ) == expected
+
+
+@pytest.mark.parametrize("value", ["-1", "21", "1.0", " 1", "true", "NaN", 1, True])
+def test_invalid_nudge_window_fails_before_hardware(value, monkeypatch):
+    import microscope.calibrate as module
+
+    with pytest.raises(ValueError, match="0..20"):
+        module.nudge_steps({"MG400_MICROSCOPE_NUDGE_STEPS": value})
+    monkeypatch.setenv("MG400_MICROSCOPE_NUDGE_STEPS", str(value))
+    monkeypatch.setattr(module, "supervised_session", lambda **_: pytest.fail("device admitted"))
+    assert module.main(["objective"]) == 1
+
+
+@pytest.fixture
+def at_focus_rig(supervised_rig, monkeypatch):
+    import microscope.calibrate as module
+
+    def make(*answers, start=101, window=2, home=False, reference=None):
+        rig = supervised_rig(*(answers or ("CLEAR",)), home=home, reference=reference)
+        calls = []
+
+        class LocalFocus:
+            def __init__(self, camera, motor, **kwargs):
+                assert camera is rig.session.camera and motor is rig.session.motor
+                calls.append(("init", kwargs))
+
+            def run_local(self, **kwargs):
+                calls.append(("local", kwargs))
+                rig.session.motor.focus_move(2)
+
+        monkeypatch.setattr(module, "AutoFocuser", LocalFocus)
+        rig.session.prepare_at_focus(window, start, validated_focus_settings(), lambda _: None)
+        rig.calls = calls
+        return rig
+
+    return make
+
+
+def test_at_focus_initial_reference_and_one_pinned_local_scan(at_focus_rig):
+    rig = at_focus_rig()
+    commands = rig.port.commands
+    assert (
+        commands.index("MICRO 4") < commands.index("FOCUS ZERO") < commands.index("FOCUS MOVE 101")
+    )
+    assert len(rig.operator.prompts) == 1 and "working position" in rig.operator.prompts[0]
+    assert [kind for kind, _ in rig.calls] == ["init", "local"]
+    assert rig.calls[0][1]["frames_per_position"] == 2
+    assert rig.calls[0][1]["precision_frames_per_position"] == 3
+    assert rig.calls[1][1] == dict(
+        half_range=1500, step=100, fine_radius=200, min_step=10, lock_exposure=True
+    )
+    assert rig.raw.read_status().focus.position == 103
+
+
+@pytest.mark.parametrize("generic", [False, True])
+def test_at_focus_turret_edge_and_rejection_never_moves_to_clearance(at_focus_rig, generic):
+    rig = at_focus_rig(window=2)
+    rig.session.motor.objective_enable()
+    before = len(rig.port.commands)
+    if generic:
+        rig.session.motor.send_and_wait("OBJ MOVE 8", "DONE OBJ")
+    else:
+        rig.session.motor.objective_move(8)
+        with rig.port.lock:
+            rig.port.emit(rig.port.sim.advance(1))
+    assert rig.session._turret_units == 32
+    assert rig.raw.read_status().focus.position == 103
+    with pytest.raises(ValueError, match="measured at-focus window"):
+        rig.session.motor.objective_move(1)
+    commands = rig.port.commands[before:]
+    assert "OBJ MOVE 8" in commands and "OBJ MOVE 1" not in commands
+    assert not any(command.startswith("FOCUS MOVE") for command in commands)
+    assert commands[-1] == "FOCUS DISABLE"
+    assert rig.session.cancel_event.is_set()
+
+
+@pytest.mark.parametrize("start,expected", [(101, 52), (-101, -50)])
+def test_reference_event_returns_nearest_focus_without_resetting_turret_budget(
+    at_focus_rig, start, expected
+):
+    rig = at_focus_rig("CLEAR", "CLEAR", "CLEAR", start=start, window=2)
+    motor = rig.session.motor
+    motor.objective_enable()
+    motor.send_and_wait("OBJ MOVE 4", "DONE OBJ")  # 1 full step at MICRO4.
+    before = len(rig.port.commands)
+    motor.set_microstep(2)
+    commands = rig.port.commands[before:]
+    assert commands.index(f"FOCUS MOVE {-start - 2}") < commands.index("MICRO 2")
+    assert (
+        commands.index("MICRO 2")
+        < commands.index("FOCUS ZERO")
+        < commands.index(f"FOCUS MOVE {expected}")
+    )
+    assert f"return to {expected} pulses at MICRO 2" in rig.operator.prompts[-1]
+    assert rig.raw.read_status().focus.position == expected
+    motor.send_and_wait("OBJ MOVE 2", "DONE OBJ")  # Another full step at MICRO2.
+    motor.set_microstep(16)
+    assert rig.session._turret_units == 32
+    with pytest.raises(ValueError, match="window"):
+        motor.objective_move(1)
+    assert len(rig.operator.prompts) == 3
+
+
+def test_active_focus_disable_is_stop_and_retains_reference(at_focus_rig):
+    rig = at_focus_rig()
+    before = len(rig.port.commands)
+    epoch = rig.raw.reference_epoch
+    rig.session.motor.focus_disable()
+    commands = rig.port.commands[before:]
+    assert "STOP FOCUS" in commands
+    assert "FOCUS DISABLE" not in commands and "FOCUS ZERO" not in commands
+    status = rig.raw.read_status()
+    assert (
+        status.focus.position == 103 and status.focus.enabled and status.zeroed and status.limited
+    )
+    assert rig.raw.reference_epoch == epoch and len(rig.operator.prompts) == 1
+
+
+@pytest.mark.parametrize("event", ["refusal", "reset", "disconnect"])
+def test_at_focus_failure_never_returns_or_restarts_motion(at_focus_rig, event):
+    rig = at_focus_rig("CLEAR", "no")
+    before = len(rig.port.commands)
+    if event == "refusal":
+        with pytest.raises(RuntimeError, match="refused"):
+            rig.session.motor.set_microstep(2)
+    else:
+        if event == "reset":
+            rig.port.emit(rig.port.sim.reset())
+            deadline = time.monotonic() + 1
+            while rig.raw.fault is None and time.monotonic() < deadline:
+                time.sleep(0.001)
+        else:
+            rig.raw.disconnect()
+        with pytest.raises(SideCaptureCancelled):
+            rig.session.before_turret_move()
+    assert rig.session.cancel_event.is_set()
+    assert not any(command.startswith("OBJ MOVE") for command in rig.port.commands[before:])
+    assert "FOCUS MOVE 52" not in rig.port.commands[before:]
+
+
+def test_window_requires_focus_start_before_settings_or_device_access(monkeypatch):
+    import microscope.calibrate as module
+
+    monkeypatch.setenv("MG400_MICROSCOPE_NUDGE_STEPS", "1")
+    monkeypatch.setattr(module, "load_settings", lambda _: pytest.fail("settings opened"))
+    monkeypatch.setattr(module, "supervised_session", lambda **_: pytest.fail("device opened"))
+    assert module.main(["light"]) == 1
+
+
+@pytest.mark.parametrize("window", [0, 2])
+def test_only_explicit_calibration_window_changes_algorithm_move_callback(
+    window, supervised_rig, tmp_path, monkeypatch
+):
+    import microscope.calibrate as module
+
+    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(tmp_path / "calibration"))
+    rig = supervised_rig()
+    entered, options = [], []
+    monkeypatch.setattr(rig.session, "prepare_at_focus", lambda *args: entered.append(args))
+
+    class Algorithm:
+        def __init__(self, camera, motor, **kwargs):
+            self.measurements = []
+            if camera is not None:
+                options.append(kwargs)
+
+        def run(self, **kwargs):
+            return "source result"
+
+    monkeypatch.setattr(module, "ObjectiveCalibrator", Algorithm)
+    module.run_calibration(
+        "objective",
+        rig.session,
+        window=window,
+        focus_start=100,
+        reference_frame=np.zeros((4, 4, 3), np.uint8),
+        progress=lambda _: None,
+    )
+    assert bool(entered) is bool(window)
+    assert options[0]["before_move"] == (
+        rig.session.before_turret_move if window else rig.session.move_to_clearance
+    )
+
+
+class SetupOperator(ScriptedOperator):
+    def __init__(self, keys, *answers, controls=()):
+        super().__init__(*answers)
+        self.keys = iter(keys)
+        self.controls = iter(controls)
+
+    def key(self, check):
+        check()
+        return next(self.keys, None)
+
+    @contextmanager
+    def motion_controls(self, check):
+        def poll():
+            check()
+            return next(self.controls, "")
+
+        yield poll
+
+
+def test_setup_keys_counts_zero_unknown_stop_and_no_limits(supervised_rig):
+    from microscope.calibrate import run_setup
+
+    rig = supervised_rig()
+    rig.session.operator = SetupOperator("azsxdcfvjluom0?aq", "CLEAR")
+    output = []
+    run_setup(rig.session, progress=output.append)
+    commands = rig.port.commands
+    for steps in (1, -1, 10, -10, 100, -100, 1000, -1000):
+        assert f"FOCUS MOVE {steps}" in commands
+    for steps in (-4, 4, -40, 40):
+        assert f"OBJ MOVE {steps}" in commands
+    assert "MICRO 4" in commands and "FOCUS SPEED 200" in commands and "OBJ SPEED 40" in commands
+    assert commands.count("FOCUS ZERO") == 1
+    assert not any(command.startswith("FOCUS LIMIT") for command in commands)
+    assert "focus count: 1 MICRO 4" in output[-1]
+    assert "turret displacement: 0 full steps" in output[-1]
+    assert not rig.raw.read_status().focus.enabled and not rig.raw.read_status().objective.enabled
+
+
+@pytest.mark.parametrize("key", [None, "q", "?"])
+def test_setup_controls_stop_accepted_move_before_full_completion(supervised_rig, key, monkeypatch):
+    from microscope.calibrate import run_setup
+
+    rig = supervised_rig()
+    rig.session.operator = SetupOperator("fq", controls=[key])
+    original = rig.port.sim.advance
+    # Freeze fake movement; only STOP can make the accepted move idle.
+    monkeypatch.setattr(rig.port.sim, "advance", lambda seconds: [])
+    output = []
+    run_setup(rig.session, progress=output.append)
+    commands = rig.port.commands
+    move = commands.index("FOCUS MOVE 1000")
+    assert "STOP ALL" in commands[move + 1 :]
+    assert not rig.raw.read_status().focus.moving
+    assert "focus count: 0 MICRO 4" in output[-1]
+    assert commands.count("FOCUS MOVE 1000") == 1
+    monkeypatch.setattr(rig.port.sim, "advance", original)
+
+
+def test_setup_ignores_queued_motion_controls(supervised_rig):
+    from microscope.calibrate import run_setup
+
+    rig = supervised_rig()
+    rig.session.operator = SetupOperator("fq", controls=["a", "s", "m", "0", "?"])
+    run_setup(rig.session, progress=lambda _: None)
+    assert [cmd for cmd in rig.port.commands if cmd.startswith("FOCUS MOVE")] == ["FOCUS MOVE 1000"]
+    assert "FOCUS ZERO" not in rig.port.commands
+
+
+def test_setup_context_needs_only_serial_and_never_constructs_cameras(session_factories):
+    from microscope.calibrate import run_setup, setup_session
+
+    rig = session_factories
+    with setup_session(
+        environ={"MG400_MICROSCOPE_SERIAL": rig.settings["MG400_MICROSCOPE_SERIAL"]},
+        operator=SetupOperator("q"),
+        motor_factory=rig.factories["motor"],
+    ) as session:
+        run_setup(session, progress=lambda _: None)
+    assert rig.events == [
+        "motor construct",
+        "serial connect",
+        "stop disable",
+        "stop disable",
+        "stop disable",
+        "serial close",
+    ]
+    assert not any(cmd.startswith("FOCUS LIMIT") for cmd in rig.port.commands)
+
+
+@pytest.mark.parametrize("answer", ["no", TimeoutError("setup timeout")])
+def test_setup_refused_zero_stops_and_disables_without_zero(supervised_rig, answer):
+    from microscope.calibrate import run_setup
+
+    rig = supervised_rig()
+    rig.session.operator = SetupOperator("0", answer)
+    with pytest.raises((RuntimeError, TimeoutError)):
+        run_setup(rig.session, progress=lambda _: None)
+    assert "FOCUS ZERO" not in rig.port.commands
+    assert not rig.raw.read_status().focus.enabled and not rig.raw.read_status().objective.enabled
+    assert rig.session.cancel_event.is_set()

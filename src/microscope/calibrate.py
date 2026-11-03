@@ -27,6 +27,7 @@ import numpy as np
 from cameras.config import MJPEG_MODES, camera_devices
 from cameras.uvc import USBCamera
 
+from .autofocus import AutoFocuser
 from .light_calibration import LightObjectiveCalibrator, save_light_objective_measurements
 from .motors import MotorController
 from .objective_calibration import ObjectiveCalibrator, save_objective_measurements
@@ -34,6 +35,7 @@ from .paths import calibration_path, private_open
 from .side_capture import SideCaptureCancelled
 
 MODES = (1, 2, 4, 8, 16)
+NUDGE_SETTING = "MG400_MICROSCOPE_NUDGE_STEPS"
 FOCUS_DEFAULTS = {
     "half_range": 5000,
     "coarse_step": 1000,
@@ -113,6 +115,19 @@ def load_settings(path):
     if any(not isinstance(section, dict) for section in value.values()):
         raise ValueError("Settings sections must be tables")
     return value
+
+
+def nudge_steps(environ):
+    """Require an explicit measured integer window; empty keeps MIC-05 behavior."""
+    value = environ.get(NUDGE_SETTING, "")
+    if value == "":
+        return 0
+    if not isinstance(value, str) or not re.fullmatch(r"\d{1,2}", value):
+        raise ValueError(f"{NUDGE_SETTING} must be an integer within 0..20")
+    window = int(value)
+    if not 0 <= window <= 20:
+        raise ValueError(f"{NUDGE_SETTING} must be an integer within 0..20")
+    return window
 
 
 @dataclass(frozen=True)
@@ -225,6 +240,59 @@ class TerminalOperator:
                     raise RuntimeError("Operator confirmation was refused")
                 return
 
+    def key(self, check):
+        """Read one fresh key, restoring terminal mode before any command runs."""
+        self.require_interactive()
+        descriptor = self.source.fileno()
+        saved = termios.tcgetattr(descriptor)
+        changed = list(saved)
+        changed[6] = list(saved[6])
+        changed[3] &= ~(termios.ICANON | termios.ECHO)
+        changed[6][termios.VMIN] = 0
+        changed[6][termios.VTIME] = 0
+        try:
+            termios.tcflush(descriptor, termios.TCIFLUSH)
+            termios.tcsetattr(descriptor, termios.TCSANOW, changed)
+            deadline = self.clock() + self.timeout
+            while True:
+                check()
+                remaining = deadline - self.clock()
+                if remaining <= 0:
+                    raise TimeoutError("Setup input timed out")
+                if select.select([descriptor], [], [], min(0.1, remaining))[0]:
+                    data = os.read(descriptor, 1)
+                    check()
+                    if self.clock() >= deadline:
+                        raise TimeoutError("Setup input timed out")
+                    return None if not data or data == b"\x04" else data.decode("ascii", "replace")
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSANOW, saved)
+
+    @contextmanager
+    def motion_controls(self, check):
+        """Observe Stop/quit during an accepted move without queuing more motion."""
+        self.require_interactive()
+        descriptor = self.source.fileno()
+        saved = termios.tcgetattr(descriptor)
+        changed = list(saved)
+        changed[6] = list(saved[6])
+        changed[3] &= ~(termios.ICANON | termios.ECHO)
+        changed[6][termios.VMIN] = 0
+        changed[6][termios.VTIME] = 0
+
+        def poll():
+            check()
+            if not select.select([descriptor], [], [], 0)[0]:
+                return ""
+            data = os.read(descriptor, 1)
+            return None if not data or data == b"\x04" else data.decode("ascii", "replace")
+
+        try:
+            termios.tcsetattr(descriptor, termios.TCSANOW, changed)
+            yield poll
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSANOW, saved)
+
 
 class SupervisedSession:
     """One nonrenewable operator session around already admitted fake or real owners."""
@@ -244,6 +312,8 @@ class SupervisedSession:
         self._quit = threading.Event()
         self._watcher = None
         self._frame_progress = {}
+        self._nudge_window = 0
+        self._turret_units = None
         self.motor = GuardedMotor(self)
         self.camera = GuardedCamera(self, camera)
         self.side = GuardedCamera(self, side) if side is not None else None
@@ -435,7 +505,86 @@ class SupervisedSession:
         self.move_focus_to(self.reference.clearance)
         self._guard(clearance=True)
 
+    def before_turret_move(self):
+        if not self._nudge_window:
+            self.move_to_clearance()
+        return self._guard(clearance=not self._nudge_window)
+
+    def reserve_turret_move(self, steps, status):
+        """Count each admitted command once, independently of firmware coordinates."""
+        if not self._nudge_window:
+            return
+        if type(steps) is not int or self._turret_units is None:
+            self.abort("The calibration turret origin is not confirmed")
+            raise ValueError(self.failure)
+        target = self._turret_units + steps * (16 // status.microstep)
+        if abs(target) > self._nudge_window * 16:
+            self.abort("Turret move exceeds the measured at-focus window")
+            raise ValueError(self.failure)
+        self._turret_units = target
+
+    def prepare_at_focus(self, window, focus_start, focus, progress):
+        if type(window) is not int or not 1 <= window <= 20:
+            raise ValueError("At-focus calibration needs a measured window within 1..20")
+        if (
+            self.reference is None
+            or type(focus_start) is not int
+            or not self.reference.minimum <= focus_start <= self.reference.maximum
+            or self._reference is not None
+            or self._nudge_window
+        ):
+            raise ValueError("At-focus calibration needs a fresh session and a safe --focus-start")
+        try:
+            self._raw_motor.stop_all()
+            self._status()
+            self._raw_motor.set_microstep(4, cancel_event=self.cancel_event)
+            self.confirm_reference(
+                "Initial at-focus calibration: check the objective is in its working position. "
+                f"After confirmation focus will move to {focus_start} MICRO 4 pulses "
+                "and run local autofocus."
+            )
+            self._nudge_window, self._turret_units = window, 0
+            self.move_focus_to(focus_start)
+            focuser = AutoFocuser(
+                self.camera,
+                self.motor,
+                speed=focus["speed"],
+                settle_seconds=focus["settle"],
+                frames_per_position=focus["frames"],
+                precision_settle_seconds=focus["precision_settle"],
+                precision_frames_per_position=focus["precision_frames"],
+                frame_interval=focus["frame_interval"],
+                roi_fraction=focus["roi"],
+                backlash_steps=focus["backlash"],
+                progress=progress,
+                cancel_event=self.cancel_event,
+            )
+            focuser.run_local(
+                half_range=focus["local_half_range"],
+                step=focus["local_step"],
+                fine_radius=focus["local_fine_radius"],
+                min_step=focus["local_min_step"],
+                lock_exposure=focus["lock_exposure"],
+            )
+            self._guard()
+        except BaseException as error:
+            self.abort(error)
+            raise
+
     def reference_event(self, reason, operation, *, microstep=None):
+        restore = None
+        if self._nudge_window:
+            earlier = self._guard()
+            mode = earlier.microstep if microstep is None else microstep
+            lower, upper, _ = self.reference.scaled(mode)
+            numerator = earlier.focus.position * mode
+            # Integer nearest-pulse conversion, with half pulses away from zero.
+            restore = (2 * abs(numerator) + earlier.microstep) // (2 * earlier.microstep)
+            restore *= -1 if numerator < 0 else 1
+            if not lower <= restore <= upper:
+                self.abort("Focus return is outside the inward-rounded measured limits")
+                raise ValueError(self.failure)
+            reason += f". After CLEAR, focus will return to {restore} pulses at MICRO {mode}."
         self.move_to_clearance()
         status = self._guard(clearance=True)
         self.reference.scaled(status.microstep if microstep is None else microstep)
@@ -443,6 +592,11 @@ class SupervisedSession:
         try:
             reply = operation()
             self.confirm_reference(reason)
+            if restore is not None:
+                current = self._guard()
+                if current.focus.position != restore:
+                    self.motor.focus_move(restore - current.focus.position)
+                self._guard()
             return reply
         except BaseException as error:
             self.abort(error)
@@ -551,7 +705,7 @@ class GuardedMotor:
         return self._call("focus_enable")
 
     def objective_enable(self):
-        self._session.move_to_clearance()
+        self._session.before_turret_move()
         return self._call("objective_enable")
 
     def focus_speed(self, speed):
@@ -581,8 +735,8 @@ class GuardedMotor:
         return self.wait_focus_done(self.focus_move_async(steps, cancel_event=cancel_event))
 
     def objective_move(self, steps):
-        self._session.move_to_clearance()
-        self._session._guard(clearance=True)
+        status = self._session.before_turret_move()
+        self._session.reserve_turret_move(steps, status)
         return self._call("objective_move", steps)
 
     def set_microstep(self, microstep):
@@ -599,6 +753,9 @@ class GuardedMotor:
     def focus_disable(self):
         if self._session.cancel_event.is_set():
             return self._session._raw_motor.safe_stop_disable()
+        if self._session._nudge_window:
+            self._session._guard()
+            return self._call("focus_stop")
         return self._session.reference_event(
             "FOCUS DISABLE cleared the focus reference", lambda: self._call("focus_disable")
         )
@@ -638,8 +795,8 @@ class GuardedMotor:
             return self.focus_speed(value)
         if action == "FOCUS MOVE":
             return self.focus_move(value)
-        self._session.move_to_clearance()
-        self._session._guard(clearance=True)
+        status = self._session.before_turret_move()
+        self._session.reserve_turret_move(value, status)
         try:
             reply = self._session._raw_motor.send_and_wait(
                 command, response_prefix, timeout=timeout, cancel_event=self._session.cancel_event
@@ -1005,6 +1162,180 @@ def supervised_session(
                 signal.signal(number, previous)
 
 
+@contextmanager
+def setup_session(*, environ=None, operator=None, motor_factory=None):
+    """Own only the serial transport for a supervised, unreferenced setup console."""
+    settings = os.environ if environ is None else environ
+    serial = settings.get("MG400_MICROSCOPE_SERIAL", "")
+    if not isinstance(serial, str) or not re.fullmatch(
+        r"/dev/serial/by-id/[A-Za-z0-9_.:+-]+", serial
+    ):
+        raise ValueError("Set the stable MG400_MICROSCOPE_SERIAL device path")
+    operator = TerminalOperator() if operator is None else operator
+    operator.require_interactive()
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Supervised setup must run in the terminal's main thread")
+    motor_factory = MotorController if motor_factory is None else motor_factory
+    saved_signals = {}
+    cancel = threading.Event()
+    motor = session = None
+
+    def interrupted(_number, _frame):
+        cancel.set()
+        raise KeyboardInterrupt("Supervised setup interrupted")
+
+    try:
+        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            saved_signals[number] = signal.signal(number, interrupted)
+        motor = motor_factory()
+        motor.connect(serial)
+        if not motor.focus_completion:
+            raise RuntimeError("Supervised setup requires MIC-01 firmware status and completion")
+        session = SupervisedSession(motor, None, None, None, operator, cancel_event=cancel)
+        session.start_watch()
+        session.check()
+        yield session
+        session.check()
+    except BaseException as error:
+        if session is not None:
+            session.abort(error)
+        raise
+    finally:
+        try:
+            if session is not None:
+                session.abort("Supervised setup ended")
+                session.finish_watch()
+            elif motor is not None and motor.connected:
+                motor.safe_stop_disable()
+            if motor is not None:
+                motor.disconnect()
+        finally:
+            for number, previous in saved_signals.items():
+                signal.signal(number, previous)
+
+
+def run_setup(session, *, progress=print):
+    """One fresh bounded action at a time, with no limits or settings writes."""
+    focus_keys = {"a": 1, "z": -1, "s": 10, "x": -10, "d": 100, "c": -100, "f": 1000, "v": -1000}
+    turret_keys = {"j": -4, "l": 4, "u": -40, "o": 40}
+    motor, cancel = session._raw_motor, session.cancel_event
+    focus_count = turret_count = 0
+    known = True
+
+    def idle():
+        status = session._status()
+        if status.microstep != 4 or status.focus.moving or status.objective.moving:
+            raise RuntimeError("Setup mode or stationary motor state was lost")
+        return status
+
+    def show():
+        progress(
+            f"Last confirmed focus count: {focus_count} MICRO 4 pulses; "
+            f"turret displacement: {turret_count / 4:g} full steps from mark."
+            + ("" if known else " Current position is unconfirmed.")
+        )
+
+    try:
+        session.check()
+        motor.safe_stop_disable()
+        session.check()
+        motor.set_microstep(4, cancel_event=cancel)
+        motor.focus_speed(200, cancel_event=cancel)
+        motor.objective_speed(40, cancel_event=cancel)
+        idle()
+        progress(
+            "Setup only: observe every move. Focus a/z ±1, s/x ±10, d/c ±100, f/v ±1000 "
+            "pulses; turret j/l -/+1, u/o -/+10 full steps. "
+            "m marks turret origin; 0 requests CLEAR then focus zero; q quits. "
+            "Other keys stop both motors. No limits or settings are written."
+        )
+        show()
+        while True:
+            before = idle()
+            key = session.operator.key(session.check)
+            session.check()
+            idle()
+            if key is None or key == "q":
+                return
+            if key == "m":
+                turret_count = 0
+            elif key == "0":
+                motor.stop_all()
+                session.operator.confirm(
+                    "Set the counted focus origin at observed clearance", session.check
+                )
+                session.check()
+                motor.focus_enable(cancel_event=cancel)
+                motor.focus_zero(cancel_event=cancel)
+                after = idle()
+                if not after.zeroed or after.focus.position != 0 or after.limited:
+                    raise RuntimeError("Setup focus zero was not confirmed")
+                focus_count = 0
+            elif key in focus_keys or key in turret_keys:
+                steps = (focus_keys if key in focus_keys else turret_keys)[key]
+                axis = "focus" if key in focus_keys else "objective"
+                target = getattr(before, axis).position + steps
+                if not -(2**31) <= target < 2**31:
+                    raise ValueError("Setup move exceeds the firmware coordinate range")
+                known = False
+                quit_requested = stopped = False
+                with session.operator.motion_controls(session.check) as poll:
+                    getattr(motor, f"{axis}_enable")(cancel_event=cancel)
+                    deadline = time.monotonic() + abs(steps) / (200 if axis == "focus" else 40) + 2
+                    ticket = None
+                    if axis == "focus":
+                        ticket = motor.focus_move_async(steps, cancel_event=cancel)
+                    else:
+                        motor.objective_move(steps, cancel_event=cancel)
+                    next_status = 0.0
+                    while True:
+                        control = poll()
+                        quit_requested = control is None or control == "q"
+                        if quit_requested or (
+                            control and control not in focus_keys | turret_keys | {"m": 0, "0": 0}
+                        ):
+                            motor.stop_all()
+                            stopped = True
+                            break
+                        now = time.monotonic()
+                        if now >= next_status:
+                            status = session._status()
+                            next_status = now + 0.5
+                            # Bound diagnostic STATUS rows while preserving the
+                            # pending focus ticket's completion response history.
+                            if status.microstep != 4:
+                                raise RuntimeError("Setup microstep mode changed during motion")
+                            if not status.focus.moving and not status.objective.moving:
+                                if ticket is not None:
+                                    motor.wait_focus_done(ticket, cancel_event=cancel)
+                                break
+                        if now >= deadline:
+                            raise TimeoutError("Setup move did not finish within its bounded wait")
+                        cancel.wait(0.01)
+                after = idle()
+                if not stopped and getattr(after, axis).position != target:
+                    raise RuntimeError("Setup move completion position is not confirmed")
+                travelled = getattr(after, axis).position - getattr(before, axis).position
+                if axis == "focus":
+                    focus_count += travelled
+                else:
+                    turret_count += travelled
+                known = True
+                if quit_requested:
+                    return
+            else:
+                motor.stop_all()
+                idle()
+            show()
+    except BaseException as error:
+        session.abort(error, operator=isinstance(error, (KeyboardInterrupt, TimeoutError)))
+        raise
+    finally:
+        if motor.connected:
+            motor.safe_stop_disable()
+        show()
+
+
 # Defaults are the pinned GUI values, including its overrides of class defaults.
 OBJECTIVE_OPTIONS = dict(
     reference_threshold=0.2,
@@ -1160,10 +1491,22 @@ def read_reference(value):
 
 
 def run_calibration(
-    kind, session, *, settings=None, reference_frame=None, output=None, progress=print
+    kind,
+    session,
+    *,
+    settings=None,
+    reference_frame=None,
+    output=None,
+    progress=print,
+    window=0,
+    focus_start=None,
 ):
     """Run the source worker once with its original algorithm and microstep policy."""
     focus, options, scan = validated_calibration_settings(kind, settings)
+    if type(window) is not int or not 0 <= window <= 20:
+        raise ValueError("Measured turret window must be within 0..20 full steps")
+    if window and kind in ("objective", "light") and type(focus_start) is not int:
+        raise ValueError("At-focus calibration requires --focus-start in MICRO 4 coordinates")
     default = {
         "reference": "objective_reference.png",
         "objective": "objective_calibration.csv",
@@ -1187,13 +1530,15 @@ def run_calibration(
         return destination
     if reference_frame is None:
         raise ValueError("A decoded reference image is required")
+    if window:
+        session.prepare_at_focus(window, focus_start, focus, progress)
     algorithm = LightObjectiveCalibrator if kind == "light" else ObjectiveCalibrator
     writer = save_light_objective_measurements if kind == "light" else save_objective_measurements
     parameters = dict(
         options,
         reference_frame=reference_frame,
         progress=progress,
-        before_move=session.move_to_clearance,
+        before_move=session.before_turret_move if window else session.move_to_clearance,
         cancel_event=session.cancel_event,
     )
     parameters["focus_progress" if kind == "light" else "position_progress"] = progress
@@ -1226,7 +1571,8 @@ def run_calibration(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", choices=("objective", "light", "reference"))
+    parser.add_argument("kind", choices=("objective", "light", "reference", "setup"))
+    parser.add_argument("--focus-start", type=int, help="Working focus in measured MICRO 4 pulses")
     parser.add_argument("--settings", help="TOML focus, calibrator and scan settings")
     parser.add_argument(
         "--reference", default="objective_reference.png", help="Private calibration PNG"
@@ -1234,6 +1580,26 @@ def main(argv=None):
     parser.add_argument("--output", help="File beneath MG400_MICROSCOPE_CALIBRATION_DIR")
     args = parser.parse_args(argv)
     try:
+        if args.kind == "setup":
+            if (
+                args.settings
+                or args.output
+                or args.focus_start is not None
+                or args.reference != "objective_reference.png"
+            ):
+                raise ValueError(
+                    "Setup accepts no settings, reference, output or focus-start option"
+                )
+            with setup_session() as session:
+                run_setup(session)
+            return 0
+        window = nudge_steps(os.environ)
+        if window and args.kind in ("objective", "light"):
+            if args.focus_start is None:
+                raise ValueError("At-focus calibration requires --focus-start")
+            measured = ReferenceSettings.from_env(os.environ)
+            if not measured.minimum <= args.focus_start <= measured.maximum:
+                raise ValueError("--focus-start is outside the measured focus limits")
         settings = load_settings(args.settings)
         focus, _, _ = validated_calibration_settings(args.kind, settings)
         if args.output is not None:
@@ -1244,7 +1610,13 @@ def main(argv=None):
             motion=args.kind != "reference",
         ) as session:
             destination = run_calibration(
-                args.kind, session, settings=settings, reference_frame=reference, output=args.output
+                args.kind,
+                session,
+                settings=settings,
+                reference_frame=reference,
+                output=args.output,
+                window=window,
+                focus_start=args.focus_start,
             )
         print(destination)
     except KeyboardInterrupt:

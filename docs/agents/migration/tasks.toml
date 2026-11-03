@@ -757,7 +757,11 @@ review = "human"
 deps = ["CAL-01"]
 writes = [
   "src/vision/calibration.py",
+  "src/vision/service.py",
   "src/orchestrator/skills/vision.py",
+  "src/orchestrator/skills/__init__.py",
+  "src/orchestrator/cli.py",
+  "src/orchestrator/app.py",
   "tests/test_vision_drift.py",
   "docs/vision.md",
   "docs/vision.en.md",

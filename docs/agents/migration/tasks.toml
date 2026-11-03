@@ -719,8 +719,11 @@ writes = [
   "src/orchestrator/skills/calibrate.py",
   "src/orchestrator/skills/__init__.py",
   "src/orchestrator/rehearsal.py",
+  "src/orchestrator/cli.py",
+  "src/orchestrator/app.py",
   "src/vision/__main__.py",
   "tests/test_vision_calibration.py",
+  "tests/test_vision_service.py",
   "docs/vision.md",
   "docs/vision.en.md",
 ]

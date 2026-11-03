@@ -1809,11 +1809,23 @@ class MicroscopeService:
                     self._stop_done.set()
                     self._latch_fault("stop", str(error))
             done = self._stop_done
-        done.wait(wait_s)
-        with self._lock:
-            if self._recording_stop_fault:
-                return "unconfirmed"
-            return self._stop_outcome if done.is_set() and self._recording is None else "pending"
+        deadline = time.monotonic() + wait_s
+        while True:
+            done.wait(max(0, deadline - time.monotonic()))
+            with self._lock:
+                motor_done = self._stop_done.is_set()
+                if self._recording_stop_fault or (
+                    motor_done and self._stop_outcome == "unconfirmed"
+                ):
+                    return "unconfirmed"
+                if motor_done and self._recording is None:
+                    return self._stop_outcome
+                if time.monotonic() >= deadline:
+                    return "pending"
+                # A new cleanup can rearm the motor event. Once motors are done,
+                # block on the current recorder instead of spinning on that set
+                # event. Both waits share the caller's original deadline.
+                done = self._stop_done if not motor_done else self._recording.done
 
     def _finish_stop(self):
         outcome = "confirmed"

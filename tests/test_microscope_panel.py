@@ -1384,3 +1384,94 @@ def test_typed_recording_skill_consumes_actual_service_receipts(recording_rig, m
     assert completed["segments"] == ["video_0001.mp4"]
     assert completed["summary"] == f"{result['recording_id']}_shortened_3_min.mp4"
     assert str(rig.root) not in json.dumps(artifacts)
+
+
+@pytest.mark.parametrize("outcome", ["confirmed", "pending", "camera-failure", "motor-failure"])
+def test_stop_waits_for_current_recording_with_remaining_motor_budget(
+    recording_rig, monkeypatch, outcome
+):
+    import time
+
+    import microscope.service as module
+
+    rig = recording_rig
+    rig.command("start_recording", {"recording_id": "d1" * 16})
+    recording = rig.service._recording
+    recording_entered, release_recording = threading.Event(), threading.Event()
+    now, motor_waits, recording_waits, results = [0.0], [], [], []
+    caller = None
+    original_stop = rig.camera.stop_recording
+
+    def close_capture():
+        recording_entered.set()
+        assert release_recording.wait(5)
+        if outcome == "camera-failure":
+            raise RuntimeError("Offline capture shutdown failed")
+        original_stop()
+
+    class Wait:
+        def __init__(self, event, *, motor):
+            self.event, self.motor = event, motor
+
+        def set(self):
+            self.event.set()
+
+        def clear(self):
+            self.event.clear()
+
+        def is_set(self):
+            return self.event.is_set()
+
+        def wait(self, timeout=None):
+            if threading.current_thread() is not caller:
+                return self.event.wait(timeout)
+            if self.motor:
+                motor_waits.append(timeout)
+                assert self.event.wait(5)
+                now[0] = 0.25
+                return True
+            recording_waits.append(timeout)
+            if outcome == "pending":
+                now[0] = 1.0
+                return False
+            release_recording.set()
+            assert self.event.wait(5)
+            now[0] = 0.5
+            return True
+
+    monkeypatch.setattr(rig.camera, "stop_recording", close_capture)
+    monkeypatch.setattr(
+        module, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time, sleep=time.sleep)
+    )
+    rig.service._stop_done = Wait(rig.service._stop_done, motor=True)
+    recording.done = Wait(recording.done, motor=False)
+    if outcome == "motor-failure":
+
+        def fail_motor():
+            raise RuntimeError("Offline motor shutdown failed")
+
+        monkeypatch.setattr(rig.service._motor, "safe_stop_disable", fail_motor)
+    caller = threading.Thread(target=lambda: results.append(rig.service.stop("operator", 1)))
+    caller.start()
+    try:
+        assert recording_entered.wait(5)
+        caller.join(5)
+        assert not caller.is_alive()
+        expected = "unconfirmed" if outcome.endswith("failure") else outcome
+        assert results == [expected]
+        assert motor_waits == [1.0]
+        assert recording_waits == ([] if outcome == "motor-failure" else [0.75])
+        if outcome in {"pending", "motor-failure"}:
+            assert not recording.done.is_set() and rig.camera.is_recording
+            assert rig.service.snapshot()["busy"]
+        else:
+            assert recording.done.is_set()
+        assert recording.data["status"] != "completed"
+    finally:
+        release_recording.set()
+        caller.join(5)
+        assert recording.done.wait(5)
+        if outcome.endswith("failure"):
+            monkeypatch.setattr(rig.camera, "stop_recording", original_stop)
+            with pytest.raises(RuntimeError, match="shutdown is unconfirmed"):
+                rig.service.close()

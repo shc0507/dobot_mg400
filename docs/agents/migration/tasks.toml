@@ -466,6 +466,9 @@ review = "human"
 deps = ["VIS-03", "VIS-04", "FND-09", "H-13", "H-14"]
 writes = [
   "config/systemd/mg400-vision.service",
+  # Existing units: exclude MG400_VISION_TOKEN only; camera preview retains its overlay token.
+  "config/systemd/mg400-web-panel.service",
+  "config/systemd/mg400-stage-panel.service",
   "config/assets.toml",
   "deploy/services.toml",
   "deploy/install.py",

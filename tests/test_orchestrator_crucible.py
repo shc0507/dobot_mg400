@@ -807,6 +807,48 @@ def _robot_failure_sample(robot):
         }
 
 
+def _feedback_reader_failure_stack(robot):
+    """Inspect only the first failure, without instrumenting successful reads."""
+    frames = sys._current_frames()
+    frame = frames.get(robot._reader.ident) if robot._reader is not None else None
+    records = []
+    try:
+        while frame is not None and len(records) < 8:
+            record = {
+                "file": os.path.basename(frame.f_code.co_filename)[:100],
+                "function": frame.f_code.co_name[:80],
+                "line": frame.f_lineno,
+            }
+            if (
+                frame.f_code.co_name == "read_latest"
+                and frame.f_globals.get("__name__") == "mg400.feedback"
+            ):
+                local = frame.f_locals
+                connection = local.get("self")
+                buffer = vars(connection).get("_buffer") if connection is not None else None
+                timeout = vars(connection).get("timeout_s") if connection is not None else None
+                deadline = local.get("deadline")
+                drains = local.get("drain_reads")
+                record.update(
+                    drain_reads=drains if type(drains) is int else None,
+                    latest_present=local.get("latest") is not None,
+                    deadline_remaining_s=(
+                        deadline - time.monotonic() if type(deadline) in (int, float) else None
+                    ),
+                    buffered_bytes=len(buffer) if isinstance(buffer, (bytes, bytearray)) else None,
+                    timeout_s=timeout if type(timeout) in (int, float) else None,
+                )
+            records.append(record)
+            frame = frame.f_back
+        return {"frames": records}
+    except Exception as error:
+        return {"frames": records, "observer_error": type(error).__name__}
+    finally:
+        # Never retain live frames or their locals in the failure records.
+        del frame
+        frames.clear()
+
+
 def _observe_robot_stops(robot, diagnostics):
     """Preserve the initiating evidence before stop workers or cleanup replace it."""
     original = robot._request_stop
@@ -828,6 +870,8 @@ def _observe_robot_stops(robot, diagnostics):
                         "disabling": bool(kwargs.get("disabling", False)),
                         "disconnect": bool(kwargs.get("disconnect", False)),
                     }
+                    if diagnostics["stop_count"] == 1:
+                        record["feedback_reader"] = _feedback_reader_failure_stack(robot)
                     if len(diagnostics["stops"]) < 8:
                         diagnostics["stops"].append(record)
                     if reason is not None and diagnostics["first_reason"] is None:

@@ -694,19 +694,19 @@ Done when: P-CHECKS pass.
 
 Owner: agent · Size: M · Review: human · Deps: FND-09, H-09, DOC-07
 
-Goal: the tray camera gives enough pixels for Micro QR labels, and the 4 AC410 cameras share the hub's USB 2 link without overload.
+Goal: the tray camera gives enough pixels for YOLO chip detection and the 24 mm corner ArUco markers, and the 4 AC410 cameras share the hub's USB 2 link without overload.
 
 Facts (H-03 and H-09 data, read from the USB descriptors on 2026-11-02; no camera was opened):
 
 - There are 4 AC410 cameras (`f326:1306`), on hub ports 12.1.2, 12.1.3, 12.1.4 and 12.2.1. The tray camera is camera 4, on 12.2.1. All 4 cameras and the thermal P1 share 1 USB 2 link at 480M.
 - MJPEG modes of every AC410: 1920x1080@60, 1920x1080@30, 4000x3000@15, 3840x2160@30, 2592x1944@30, 2560x1440@30, 2048x1536@30, 1600x1200@30, 1280x720@30, 1024x768@30, 1024x576@30, 800x600@30, 640x480@30, 640x360@30, 320x240@30. The uncompressed modes are slower and are not used.
 - The largest isochronous setting is 3 × 1024 bytes per microframe. The USB 2 periodic budget is about 6000 bytes per microframe for the whole link, so at most 1 camera can use the largest setting at a time.
-- The Micro QR labels are about 30 mm (owner). About 2.3 px/mm gives 70 px across a label.
+- Chips carry no QR labels (owner, 2026-11-03). The tray camera serves YOLO and the corner markers. If CAL-02 cannot find all 4 corner markers at 1280x720@30, use 1920x1080@30.
 
 Decisions (coordinator, 2026-11-02):
 
 - Still method: `still(camera)` returns 1 frame from that camera's go2rtc stream at its configured mode. There is no separate still capture.
-- The tray camera uses 1280x720@30. It gives 2.3 px/mm across a field of view up to 556 mm wide.
+- The tray camera uses 1280x720@30 for YOLO and the corner markers, or 1920x1080@30 if CAL-02 misses a corner marker at 1280x720.
 
 Steps:
 
@@ -720,7 +720,7 @@ Implementation paths: share the camera device and mode parser through `src/camer
 
 Done when: P-CHECKS pass.
 
-Notes: H-21 runs all streams together on the hardware and checks the kernel log for USB bandwidth errors. If the link is over budget, the owner chooses: a smaller side camera mode, or a camera on another host USB port after the hardware freeze. Aim for about 4 pixels per module, about 70 pixels across a 17-module Micro QR label.
+Notes: H-21 runs all streams together on the hardware and checks the kernel log for USB bandwidth errors. If the link is over budget, the owner chooses: a smaller side camera mode, or a camera on another host USB port after the hardware freeze.
 
 ### CAL-01 · Camera-to-robot calibration
 
@@ -790,7 +790,7 @@ Steps:
 
 Done when: the evaluation report is on the issue; the manifest points to the new weights if the model changed.
 
-### MS-01 · Milestone: QR-verified tray transfer
+### MS-01 · Milestone: vision-guided tray transfer
 
 Owner: agent+human · Size: M · Review: human · Deps: ORC-03, ORC-04, ORC-05, CAL-02, CAL-03, VIS-05, H-17
 
@@ -798,13 +798,13 @@ Goal: D7. The first end-to-end automated task.
 
 Steps:
 
-1. `recipes/tray-transfer.toml` with the params `from_slot`, `to_slot`, `expect_label`.
-2. Skills in `src/orchestrator/skills/vision.py`: `vision.find_chip(slot)` (present, center, angle) and `vision.verify_label(slot, expect)`.
-3. Steps: check the calibration, verify the label at the source, find the chip, transfer with R from the chip angle, verify the label at the target.
-4. Rehearsal tests for success and for each failure: no chip, wrong label, empty grasp, drop, moved camera. Each failure holds the run.
+1. `recipes/tray-transfer.toml` with the params `from_slot` and `to_slot`.
+2. Skills in `src/orchestrator/skills/vision.py`: `vision.find_chip(slot)` (present, center, angle) and `vision.slot_state(slot)` (a chip is present or the slot is empty, from YOLO on the tray camera). Chips carry no labels.
+3. Steps: check the calibration, find the chip in the source slot, check that the target slot is empty, transfer with R from the chip angle, then confirm the chip in the target slot and the source slot empty.
+4. Rehearsal tests for success and for each failure: no chip at the source, an occupied target, no chip at the target after the place, the chip still at the source, empty grasp, drop, moved camera. Each failure holds the run.
 5. The operator runs it on hardware with P-HW.
 
-Done when: three supervised transfers in a row succeed with the label verified at both ends (the owner may change the count); the results are on the issue.
+Done when: three supervised transfers in a row succeed, with YOLO confirming the chip in the target slot and the source slot empty (the owner may change the count); the results are on the issue.
 
 Docs: `orchestrator.md` and `.en.md`: running it.
 
@@ -1102,7 +1102,7 @@ Goal: the full hot-side loop once, supervised.
 
 Steps:
 
-1. `recipes/furnace-cycle.toml`: verify the label, load, run a short low-temperature sequence (the owner sets the temperature and time; inert gas only), wait for completion, unload after the thermal check, verify the label.
+1. `recipes/furnace-cycle.toml`: confirm the chip in its slot with YOLO, load, run a short low-temperature sequence (the owner sets the temperature and time; inert gas only), wait for completion, unload after the thermal check, confirm the chip back in its slot with YOLO.
 2. Rehearsal tests for success, a furnace fault, a crucible that does not cool in time, and an unhomed stage.
 3. The operator runs it on hardware with P-HW.
 
@@ -1294,7 +1294,7 @@ Goal: the first automated image of a chip through the furnace window, with full 
 Steps:
 
 1. `src/orchestrator/skills/microscope.py`: `microscope.select`, `microscope.autofocus`, `microscope.snapshot`. `src/orchestrator/skills/stage.py`: `stage.pose(name)`, which holds the zone `furnace-tube` while the stage moves to a named pose (STG-02).
-2. `recipes/microscope-image.toml` with the params `chip_id`, `objective` and `pose`: verify the label, load the chip (`crucible.load`), move to the imaging pose, select the objective, autofocus, snapshot, move to the pose `furnace`, unload (`crucible.unload`), verify the label. The image goes to the run store under the chip ID.
+2. `recipes/microscope-image.toml` with the params `chip_id`, `objective` and `pose`: confirm the chip in its slot with YOLO, load the chip (`crucible.load`), move to the imaging pose, select the objective, autofocus, snapshot, move to the pose `furnace`, unload (`crucible.unload`), confirm the chip back in its slot with YOLO. The image goes to the run store under the chip ID, which the run assigns to the slot.
 3. The furnace stays in STOP for the whole run (room temperature). Imaging during heating is a later recipe, after the owner sets its limits.
 4. Rehearsal tests for success, an unhomed stage, an unknown pose, an unknown focus zero and an autofocus failure.
 5. The operator runs it with P-HW.

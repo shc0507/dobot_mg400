@@ -776,7 +776,7 @@ writes = [
 
 [[task]]
 id = "MS-01"
-title = "Milestone: QR-verified tray transfer"
+title = "Milestone: vision-guided tray transfer"
 phase = 2
 track = "milestone"
 owner = "agent+human"

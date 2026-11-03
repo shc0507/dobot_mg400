@@ -35,13 +35,25 @@ const state = overrides => ({
   focus_position_pulses: 0, focus_limits_pulses: [-200, 200], objective_id: 2,
   cameras: { microscope: false, side: false }, last_command: null, ...overrides,
 });
+const recordingId = '12'.repeat(16);
+const recording = overrides => ({
+  id: recordingId, status: 'recording', client, start_command_id: 'record-start', stop_command_id: null,
+  run_name: 'Example', mode: 'time_lapse', capture_interval_seconds: 30, output_fps: 1,
+  frame_count: 3, started_at: 123, finished_at: null, segments: ['capture.avi'],
+  timestamps: 'capture.timestamps.csv', summary: null, archived: false, error: null, ...overrides,
+});
+const recordState = overrides => owned({
+  cameras: { microscope: true, side: false }, recording: { status: 'idle' },
+  recording_sequence: { armed: false, id: null, client: null, sequence_started_at: null },
+  stabilization: false, ...overrides,
+});
 const owned = overrides => state({ lease: lease(), ...overrides });
 const manual = overrides => owned({ manual_client: client, ...overrides });
 const completed = (id = 'zero-one', result = 'ok') => ({ id, action: 'set_focus_zero', client, result, message: '', finished_at: 123 });
-const description = { contract: 1, renew_only_heartbeat: true, commands: Object.fromEntries(['select_objective', 'autofocus', 'focus_move', 'home_focus', 'snapshot'].map(name => [name, {}])) };
+const description = { contract: 1, renew_only_heartbeat: true, commands: Object.fromEntries(['select_objective', 'autofocus', 'focus_move', 'home_focus', 'snapshot', 'start_recording', 'stop_recording', 'record_with_sequence', 'set_stabilization'].map(name => [name, {}])) };
 
 function browser({ base = '/lab', identity = true } = {}) {
-  let now = 0, timerId = 0, objectId = 0;
+  let now = 0, timerId = 0, objectId = 0, randomCall = 0;
   const nodes = new Map(), timers = new Map(), requests = [], windowListeners = new Map(), documentListeners = new Map();
   const revoked = [], blobs = new Map(), confirmations = [];
   for (const match of html.matchAll(/<(\w+)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
@@ -51,6 +63,7 @@ function browser({ base = '/lab', identity = true } = {}) {
     element.value = /\bvalue="([^"]*)"/.exec(match[0])?.[1] || '';
     nodes.set(match[2], element);
   }
+  nodes.get('recording-mode').value = 'time_lapse';
   const document = {
     hidden: false, body: { dataset: { basePath: base } },
     getElementById: id => { assert.ok(nodes.has(id), `Template contains ${id}`); return nodes.get(id); },
@@ -82,6 +95,7 @@ function browser({ base = '/lab', identity = true } = {}) {
     async chunk(request, bytes) { request.stream.enqueue(bytes); await drain(); },
     async click(id) { (typeof id === 'string' ? page.get(id) : id).emit('click'); await drain(); },
     async input(id, value) { page.get(id).value = value; page.get(id).emit('input'); await drain(); },
+    async select(id, value) { page.get(id).value = value; page.get(id).emit('change'); await drain(); },
     async submit() { page.get('access-form').emit('submit'); await drain(); },
     async hide() { windowListeners.get('pagehide')(); await drain(); },
     async visibility(hidden) { document.hidden = hidden; documentListeners.get('visibilitychange')(); await drain(); },
@@ -101,7 +115,7 @@ function browser({ base = '/lab', identity = true } = {}) {
       addEventListener: (event, callback) => windowListeners.set(event, callback),
       confirm: message => { confirmations.push(message); return page.confirm; },
     },
-    crypto: { getRandomValues: bytes => { if (!identity) throw new Error('Missing identity'); return bytes.fill(17); } },
+    crypto: { getRandomValues: bytes => { if (!identity) throw new Error('Missing identity'); return bytes.fill(17 + randomCall++); } },
     AbortController, Uint8Array, TextDecoder, Blob,
     URL: { createObjectURL: blob => { const url = `blob:fake-${++objectId}`; blobs.set(url, blob); return url; }, revokeObjectURL: url => revoked.push(url) },
     performance: { now: () => now },
@@ -444,4 +458,207 @@ test('event text is bounded and never parsed as HTML', async () => {
   await page.respond('/api/describe', description); await page.respond('/api/state', state());
   await page.respond('/api/events?since=0', { events: Array.from({ length: 100 }, (_, i) => ({ level: 'info', message: '<script>' + i })), next: 100 });
   assert.equal(page.get('events').children.length, 50); assert.match(page.get('events').textContent, /<script>99/);
+});
+
+async function recordingPage(overrides = {}) {
+  const page = browser(); await connect(page, state()); await acquire(page, recordState(overrides)); return page;
+}
+async function recordingReceipt(page, action, value, id = 'record-start') {
+  const result = action === 'record_with_sequence' ? { recording_sequence: value.recording_sequence } : { recording: value.recording };
+  await page.respond('/api/command', { command_id: id, state: { last_result: result, ...value, last_command: { ...completed(id), action } } }, 202);
+}
+
+test('recording requires explicit ordinary control and never claims authority on load', async () => {
+  const page = browser(); await connect(page, state({ ...recordState(), lease: lease('automation') }));
+  for (const id of ['recording-start', 'recording-stop', 'sequence-arm', 'sequence-disarm', 'stabilization']) assert.equal(page.get(id).disabled, true, id);
+  assert.equal(page.get('stop').disabled, false); assert.equal(posts(page).length, 0);
+});
+
+test('missing recording state cannot enable a new recording or sequence arm', async () => {
+  const page = await recordingPage({ recording: undefined });
+  assert.equal(page.get('recording-start').disabled, true);
+  assert.equal(page.get('sequence-arm').disabled, true);
+  await page.click('recording-start'); assert.deepEqual(paths(page), ['/api/heartbeat']);
+});
+
+test('time-lapse start sends a new caller ID and explicit defaults, then confirms the exact recording receipt', async () => {
+  const page = await recordingPage(); await page.input('recording-name', 'Chip <one>'); await page.click('recording-start');
+  const body = JSON.parse(posts(page).at(-1).options.body);
+  assert.deepEqual(body, { action: 'start_recording', recording_id: recordingId, run_name: 'Chip <one>', mode: 'time_lapse', output_fps: 1, capture_interval_seconds: 30 });
+  assert.match(page.get('recording-attempt').textContent, new RegExp(recordingId));
+  assert.equal(page.get('recording-start').disabled, true);
+  await recordingReceipt(page, 'start_recording', recordState({ recording: recording() }));
+  assert.match(page.get('recording-attempt').textContent, /recording started/);
+  assert.equal(page.get('recording-stop').disabled, false);
+  assert.equal(page.get('focus-plus').disabled, false, 'Recording does not replace motion busy state');
+});
+
+test('live mode omits a time-lapse interval and changes the output default to 30 fps', async () => {
+  const page = await recordingPage(); await page.select('recording-mode', 'live');
+  assert.equal(page.get('recording-interval').disabled, true);
+  assert.equal(page.get('recording-fps').value, '30');
+  await page.input('recording-interval', 'invalid'); await page.click('recording-start');
+  assert.deepEqual(JSON.parse(posts(page).at(-1).options.body), { action: 'start_recording', recording_id: recordingId, mode: 'live', output_fps: 30 });
+});
+
+test('recording options reject nonfinite, out-of-range, and oversized values before a request', async () => {
+  const page = await recordingPage();
+  for (const [id, bad] of [['recording-fps', 'Infinity'], ['recording-fps', '0.09'], ['recording-fps', '120.1'], ['recording-interval', '3601'], ['recording-interval', '-1'], ['recording-name', 'x'.repeat(81)]]) {
+    const previous = page.get(id).value;
+    await page.input(id, bad); await page.click('recording-start'); assert.equal(paths(page).length, 1, `${id}=${bad}`);
+    await page.input(id, previous);
+  }
+  await page.input('recording-fps', '0.1'); await page.input('recording-interval', '3600'); await page.click('recording-start');
+  const body = JSON.parse(posts(page).at(-1).options.body); assert.equal(body.output_fps, 0.1); assert.equal(body.capture_interval_seconds, 3600);
+});
+
+test('a lost start reply retains its recording ID without replay or implicit reacquisition', async () => {
+  const page = await recordingPage(); await page.click('recording-start'); await page.reject('/api/command');
+  assert.match(page.get('recording-attempt').textContent, new RegExp(recordingId));
+  assert.match(page.get('recording-attempt').textContent, /outcome unknown/);
+  await page.advance(10000);
+  assert.equal(paths(page).filter(path => path === '/api/command').length, 1);
+  assert.equal(paths(page).filter(path => path === '/api/heartbeat').length, 1);
+});
+
+for (const event of ['token', 'expiry', 'stop', 'pagehide']) {
+  test(`${event} cancels a pending recording request without losing its ID or retrying`, async () => {
+    const page = await recordingPage(); await page.click('recording-start');
+    if (event === 'token') await page.input('access-token', 'different-token');
+    if (event === 'expiry') await page.advance(3100);
+    if (event === 'stop') await page.click('stop');
+    if (event === 'pagehide') await page.hide();
+    assert.match(page.get('recording-attempt').textContent, new RegExp(recordingId));
+    assert.match(page.get('recording-attempt').textContent, /outcome unknown/);
+    await page.advance(5000);
+    assert.equal(paths(page).filter(path => path === '/api/command').length, 1);
+    assert.equal(paths(page).filter(path => path === '/api/heartbeat').length, 1);
+  });
+}
+
+test('a new explicit recording attempt uses a fresh ID and never replays the earlier one', async () => {
+  const page = await recordingPage(); await page.click('recording-start');
+  await recordingReceipt(page, 'start_recording', recordState({ recording: recording() }));
+  await page.click('recording-stop');
+  await recordingReceipt(page, 'stop_recording', recordState({ recording: recording({ status: 'completed', stop_command_id: 'record-stop', finished_at: 140 }) }), 'record-stop');
+  await page.click('recording-start');
+  const starts = posts(page).map(request => JSON.parse(request.options.body)).filter(body => body.action === 'start_recording');
+  assert.equal(starts.length, 2); assert.match(starts[1].recording_id, /^[0-9a-f]{32}$/); assert.notEqual(starts[0].recording_id, starts[1].recording_id);
+});
+
+test('finish recording targets the exact current ID and waits for matched finalization', async () => {
+  const page = await recordingPage({ recording: recording() }); await page.click('recording-stop');
+  assert.deepEqual(JSON.parse(posts(page).at(-1).options.body), { action: 'stop_recording', recording_id: recordingId });
+  await page.respond('/api/command', { command_id: 'record-stop', state: recordState({ recording: recording({ status: 'finalizing', stop_command_id: 'record-stop' }) }) }, 202);
+  assert.match(page.get('recording-attempt').textContent, /waiting/); assert.doesNotMatch(page.get('recording-attempt').textContent, /finalized/);
+  await page.advance(750);
+  const finalized = recording({ status: 'completed', stop_command_id: 'record-stop', summary: 'recording.json', archived: true });
+  await page.respond('/api/state', recordState({ recording: finalized, last_result: { recording: finalized }, last_command: { ...completed('record-stop'), action: 'stop_recording' } }));
+  assert.match(page.get('recording-attempt').textContent, /recording finalized/);
+  assert.match(page.get('recording-status').textContent, /Archive copy saved/);
+  assert.deepEqual(page.get('recording-files').children.map(item => item.textContent), ['capture.avi', 'capture.timestamps.csv', 'recording.json']);
+});
+
+for (const mismatch of [{ id: 'ff'.repeat(16) }, { stop_command_id: 'other-stop' }, { status: 'finalizing' }, { status: 'failed', error: 'Fake archive failure' }]) {
+  test(`stop receipt does not claim completion for mismatched state ${JSON.stringify(mismatch)}`, async () => {
+    const page = await recordingPage({ recording: recording() }); await page.click('recording-stop');
+    await recordingReceipt(page, 'stop_recording', recordState({ recording: recording({ status: 'completed', stop_command_id: 'record-stop', ...mismatch }) }), 'record-stop');
+    assert.doesNotMatch(page.get('recording-attempt').textContent, /recording finalized/);
+    assert.match(page.get('recording-attempt').textContent, /outcome unknown/);
+    assert.match(page.get('command-status').textContent, /outcome unknown/);
+    assert.equal(page.get('recording-start').disabled, true);
+  });
+}
+
+test('sequence recording arms once and cancels only its exact arm ID', async () => {
+  const page = await recordingPage(); await page.click('sequence-arm');
+  assert.deepEqual(JSON.parse(posts(page).at(-1).options.body), { action: 'record_with_sequence', recording_id: recordingId, enabled: true, mode: 'time_lapse', output_fps: 1, capture_interval_seconds: 30 });
+  await recordingReceipt(page, 'record_with_sequence', recordState({ recording_sequence: { armed: true, id: recordingId, client, sequence_started_at: null } }), 'arm-one');
+  assert.match(page.get('sequence-status').textContent, /Armed for the next/);
+  assert.equal(page.get('recording-start').disabled, true); assert.equal(page.get('sequence-arm').disabled, true);
+  await page.click('sequence-disarm');
+  assert.deepEqual(JSON.parse(posts(page).at(-1).options.body), { action: 'record_with_sequence', recording_id: recordingId, enabled: false });
+  await recordingReceipt(page, 'record_with_sequence', recordState({ last_result: { recording_sequence: { armed: false, id: recordingId, client, sequence_started_at: null } } }), 'disarm-one');
+  assert.match(page.get('recording-attempt').textContent, /sequence recording cancelled/);
+  assert.equal(paths(page).filter(path => path === '/api/heartbeat').length, 1);
+});
+
+test('stabilization changes only after an explicit command, never from a read or reconnect', async () => {
+  const page = await recordingPage(); await page.click('stabilization');
+  assert.deepEqual(JSON.parse(posts(page).at(-1).options.body), { action: 'set_stabilization', enabled: true });
+  await recordingReceipt(page, 'set_stabilization', recordState({ stabilization: true }), 'stabilize');
+  assert.equal(page.get('stabilization').textContent, 'Disable stabilization');
+  assert.equal(paths(page).filter(path => path === '/api/command').length, 1);
+  await page.click('stabilization'); assert.equal(JSON.parse(posts(page).at(-1).options.body).enabled, false);
+});
+
+test('recording status cannot enable another client ID or parse filenames and errors as HTML', async () => {
+  const page = await recordingPage({ recording: recording({ client: 'another-page', segments: ['<video>.avi', '/private/data.avi'], error: '<script>untrusted</script>' }) });
+  assert.equal(page.get('recording-stop').disabled, true); assert.equal(page.get('recording-start').disabled, true);
+  assert.equal(page.get('recording-error').textContent, '<script>untrusted</script>');
+  assert.deepEqual(page.get('recording-files').children.map(item => item.textContent), ['<video>.avi', 'capture.timestamps.csv']);
+  assert.equal(page.get('stop').disabled, false);
+});
+
+for (const [name, mismatch] of [
+  ['missing result', { last_result: null }],
+  ['wrong recording ID', { last_result: { recording: recording({ id: 'ff'.repeat(16) }) } }],
+  ['wrong start ID', { last_result: { recording: recording({ start_command_id: 'other-start' }) } }],
+  ['wrong action', { last_command: { ...completed('record-start'), action: 'snapshot' } }],
+  ['wrong client', { last_command: { ...completed('record-start'), action: 'start_recording', client: 'other-page' } }],
+]) {
+  test(`start receipt rejects ${name}`, async () => {
+    const page = await recordingPage(); await page.click('recording-start');
+    await page.respond('/api/command', { command_id: 'record-start', state: recordState({ recording: recording(), last_result: { recording: recording() }, last_command: { ...completed('record-start'), action: 'start_recording' }, ...mismatch }) }, 202);
+    assert.match(page.get('recording-attempt').textContent, /outcome unknown/);
+    assert.doesNotMatch(page.get('recording-attempt').textContent, /recording started/);
+  });
+}
+
+test('an accepted arm snapshot stays valid after the watcher consumes the arm, without claiming finalization', async () => {
+  const page = await recordingPage(); await page.click('sequence-arm');
+  await recordingReceipt(page, 'record_with_sequence', recordState({
+    recording: recording({ start_command_id: 'arm-one' }),
+    last_result: { recording_sequence: { armed: true, id: recordingId, client, sequence_started_at: null } },
+  }), 'arm-one');
+  assert.match(page.get('recording-attempt').textContent, /sequence recording armed/);
+  assert.doesNotMatch(page.get('recording-attempt').textContent, /finalized|recording started/);
+  assert.match(page.get('recording-status').textContent, /recording/);
+});
+
+test('disarm cannot confirm from an unrelated armed=false state or wrong arm result ID', async () => {
+  for (const result of [null, { recording_sequence: { armed: false, id: 'ff'.repeat(16), client } }, { recording_sequence: { armed: false, id: recordingId, client: 'another-page' } }]) {
+    const page = await recordingPage({ recording_sequence: { armed: true, id: recordingId, client, sequence_started_at: null } });
+    await page.click('sequence-disarm');
+    await recordingReceipt(page, 'record_with_sequence', recordState({ last_result: result }), 'disarm-one');
+    assert.match(page.get('recording-attempt').textContent, /outcome unknown/);
+    assert.doesNotMatch(page.get('recording-attempt').textContent, /sequence recording cancelled/);
+  }
+});
+
+test('completed current state cannot replace a missing or mismatched immutable stop result', async () => {
+  for (const result of [null, { recording: recording({ status: 'completed', stop_command_id: 'other-stop' }) }]) {
+    const page = await recordingPage({ recording: recording() }); await page.click('recording-stop');
+    await recordingReceipt(page, 'stop_recording', recordState({ recording: recording({ status: 'completed', stop_command_id: 'record-stop' }), last_result: result }), 'record-stop');
+    assert.match(page.get('recording-attempt').textContent, /outcome unknown/);
+    assert.doesNotMatch(page.get('recording-attempt').textContent, /recording finalized/);
+  }
+});
+
+test('recording finalization has a finite 600-second observation budget and leaves Stop available', async () => {
+  for (const [elapsed, expired] of [[121000, false], [601000, true]]) {
+    const page = browser(); await connect(page); await page.click('acquire');
+    // A long fake lease isolates the observation budget from independent expiry tests.
+    await page.respond('/api/heartbeat', { lease: lease(client, 1000) });
+    const longLease = recordState({ lease: lease(client, 1000), recording: recording() });
+    await page.respond('/api/state', longLease); await page.click('recording-stop');
+    const finalizing = { ...longLease, recording: recording({ status: 'finalizing', stop_command_id: 'record-stop' }) };
+    await page.respond('/api/command', { command_id: 'record-stop', state: finalizing }, 202);
+    await page.advance(750); await page.jump(elapsed); await page.respond('/api/state', finalizing);
+    assert.equal(page.get('stop').disabled, false);
+    assert.match(page.get('recording-attempt').textContent, expired ? /outcome unknown/ : /waiting/);
+    assert.doesNotMatch(page.get('recording-attempt').textContent, /recording finalized/);
+    assert.equal(paths(page).filter(path => path === '/api/command').length, 1);
+    assert.equal(paths(page).filter(path => path === '/api/heartbeat').length, 1);
+  }
 });

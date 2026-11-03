@@ -9,6 +9,7 @@
   let token = '', epoch = 0, flow = 0, closed = false, active = false;
   let state = null, info = null, discovery = null, stateAt = 0, cursor = 0, stateRevision = 0;
   let mode = null, deadline = 0, transition = false, pending = null;
+  let recordingAttempt = null;
   let pollTimer = null, renewTimer = null, expiryTimer = null, renewPromise = null, renewPaused = false;
   let client;
   try {
@@ -39,6 +40,7 @@
     if (!live()) throw new Error('Control expired. Acquire control explicitly.');
   }
   function cancelControl() {
+    if (recordingAttempt && ['sending', 'waiting'].includes(recordingAttempt.status)) recordingAttempt.status = 'outcome unknown; no retry sent';
     flow++;
     mode = null;
     deadline = 0;
@@ -102,6 +104,7 @@
     $('zero').hidden = info?.home_switch !== false;
     $('home').disabled = $('zero').disabled = !ready();
     $('snapshot').disabled = !ready() || state?.cameras?.microscope !== true;
+    renderRecording();
     if (state?.fault) notice(state.fault.message || 'The service is locked. Only stop is available.');
   }
   function validJog(direction) {
@@ -110,6 +113,86 @@
     return /^\d+$/.test(raw) && Number.isSafeInteger(amount) && amount > 0 && amount <= 2147483647 &&
       Number.isSafeInteger(position) && Array.isArray(limits) && limits.length === 2 && limits.every(Number.isSafeInteger) &&
       position + direction * amount >= limits[0] && position + direction * amount <= limits[1];
+  }
+  function recordingId(value) { return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value); }
+  function supports(action) { return Boolean(discovery?.commands?.[action]); }
+  function renderRecording() {
+    const recording = state?.recording, sequence = state?.recording_sequence;
+    const available = ready(), armed = sequence?.armed === true;
+    const canStart = available && ['idle', 'completed', 'stopped', 'failed'].includes(recording?.status) && sequence?.armed === false && state?.cameras?.microscope === true;
+    $('recording-start').disabled = !canStart || !supports('start_recording');
+    $('sequence-arm').disabled = !canStart || !supports('record_with_sequence');
+    $('recording-stop').disabled = !available || !supports('stop_recording') || recording?.status !== 'recording' || recording.client !== client || !recordingId(recording.id);
+    $('sequence-disarm').disabled = !available || !supports('record_with_sequence') || !armed || sequence.client !== client || !recordingId(sequence.id);
+    $('stabilization').disabled = !available || !supports('set_stabilization') || typeof state?.stabilization !== 'boolean';
+    $('stabilization').textContent = state?.stabilization === true ? 'Disable stabilization' : 'Enable stabilization';
+    for (const id of ['recording-name', 'recording-mode', 'recording-fps']) $(id).disabled = !canStart;
+    $('recording-interval').disabled = !canStart || $('recording-mode').value === 'live';
+    $('recording-status').textContent = !recording ? 'Recording state unavailable' : recordingId(recording.id) ?
+      `${safe(recording.status)} · ${recording.id} · ${Number.isSafeInteger(recording.frame_count) && recording.frame_count >= 0 ? recording.frame_count : '?'} frames${recording.archived === true ? ' · Archive copy saved' : ''}` : 'No recording';
+    $('recording-error').textContent = safe(recording?.error || '');
+    $('sequence-status').textContent = armed ? `Armed for the next furnace sequence · ${safe(sequence.id)}` : 'Sequence recording is not armed';
+    $('recording-files').replaceChildren();
+    const files = [...(Array.isArray(recording?.segments) ? recording.segments.slice(0, 32) : []), recording?.timestamps, recording?.summary];
+    for (const name of files) if (typeof name === 'string' && name.length <= 255 && name && !/[\\/\x00-\x1f\x7f]/.test(name)) {
+      const item = document.createElement('li'); item.textContent = name; $('recording-files').append(item);
+    }
+    $('recording-attempt').textContent = recordingAttempt ? `${recordingAttempt.action}: ${recordingAttempt.status} · Recording ${recordingAttempt.id}${recordingAttempt.commandId ? ' · Command ' + safe(recordingAttempt.commandId) : ''}` : '';
+  }
+  function recordingOptions() {
+    const options = { mode: $('recording-mode').value }, name = $('recording-name').value.trim();
+    if (!['time_lapse', 'live'].includes(options.mode) || name.length > 80 || /[\x00-\x1f\x7f]/.test(name)) throw new Error('Use a valid recording mode and a run name of at most 80 characters.');
+    if (name) options.run_name = name;
+    for (const [id, field, maximum] of [['recording-fps', 'output_fps', 120], ['recording-interval', 'capture_interval_seconds', 3600]]) {
+      if (field === 'capture_interval_seconds' && options.mode === 'live') continue;
+      const raw = $(id).value, value = Number(raw);
+      if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw) || !Number.isFinite(value) || value < 0.1 || value > maximum) throw new Error(`Enter ${field === 'output_fps' ? 'output frames per second' : 'a capture interval'} from 0.1 to ${maximum}.`);
+      options[field] = value;
+    }
+    return options;
+  }
+  function beginRecording(sequence = false) {
+    if ($(sequence ? 'sequence-arm' : 'recording-start').disabled || !ready()) return;
+    try {
+      const options = recordingOptions();
+      const id = [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      if (id === recordingAttempt?.id) throw new Error('A new recording ID could not be generated. No command was sent.');
+      const action = sequence ? 'record_with_sequence' : 'start_recording';
+      recordingAttempt = { id, action, status: 'sending', commandId: null };
+      command(action, { recording_id: id, ...(sequence ? { enabled: true } : {}), ...options });
+    } catch (error) { notice(error.message); }
+  }
+  function endRecording(sequence = false) {
+    if ($(sequence ? 'sequence-disarm' : 'recording-stop').disabled || !ready()) return;
+    const id = sequence ? state.recording_sequence.id : state.recording.id;
+    if (!recordingId(id)) return;
+    const action = sequence ? 'record_with_sequence' : 'stop_recording';
+    recordingAttempt = { id, action, status: 'sending', commandId: null };
+    command(action, { recording_id: id, ...(sequence ? { enabled: false } : {}) });
+  }
+  function settleRecording(receipt, result, value) {
+    if (!receipt.recordingId || recordingAttempt?.commandId !== receipt.id) return true;
+    const attempt = recordingAttempt;
+    if (result.action !== receipt.action || result.client !== client) {
+      attempt.status = 'outcome unknown; command identity does not match';
+      return false;
+    }
+    if (result.result !== 'ok') { attempt.status = safe(result.result); return true; }
+    const recording = value.recording, accepted = value.last_result?.recording;
+    const matches = (item, status, commandKey) => item?.id === receipt.recordingId && item.client === client && item[commandKey] === receipt.id && item.status === status;
+    let confirmed = false;
+    if (receipt.action === 'start_recording') {
+      confirmed = matches(accepted, 'recording', 'start_command_id') && matches(recording, 'recording', 'start_command_id');
+      attempt.status = confirmed ? 'recording started' : 'outcome unknown; recording receipt does not match';
+    } else if (receipt.action === 'stop_recording') {
+      confirmed = matches(accepted, 'completed', 'stop_command_id') && matches(recording, 'completed', 'stop_command_id');
+      attempt.status = confirmed ? 'recording finalized' : 'outcome unknown; finalization is not confirmed';
+    } else {
+      const sequence = value.last_result?.recording_sequence;
+      confirmed = sequence?.armed === receipt.enabled && sequence.id === receipt.recordingId && sequence.client === client;
+      attempt.status = confirmed ? (receipt.enabled ? 'sequence recording armed' : 'sequence recording cancelled') : 'outcome unknown; sequence receipt does not match';
+    }
+    return confirmed;
   }
   function applyState(value, sampled = now()) {
     if (!value || typeof value !== 'object' || !value.lease) throw new Error('Invalid service state.');
@@ -120,13 +203,15 @@
       loseControl('Control was lost. Check the state before acquiring control again.');
     }
     if (mode && (!value.connected || value.locked || value.fault)) loseControl('The service cannot accept control. Only stop is available.');
+    if (pending && now() - pending.started > pending.waitMs) loseControl('Command completion is unknown. No command will be retried.');
     if (pending && value.last_command?.id === pending.id) {
       const result = value.last_command;
-      $('command-status').textContent = `${safe(result.action)}: ${safe(result.result)}${result.message ? ' · ' + safe(result.message) : ''}`;
+      const recordingConfirmed = settleRecording(pending, result, value);
+      $('command-status').textContent = `${safe(result.action)}: ${recordingConfirmed ? safe(result.result) : 'outcome unknown'}${result.message ? ' · ' + safe(result.message) : ''}`;
       pending = null;
       if (result.result !== 'ok') loseControl('The command did not complete successfully. Check the state before acquiring control.');
+      else if (!recordingConfirmed) loseControl('The recording outcome is unknown. Inspect its ID and state. No retry was sent.');
     }
-    if (pending && now() - pending.started > 120000) loseControl('Command completion is unknown. No command will be retried.');
     render();
     syncPreviews();
   }
@@ -211,7 +296,12 @@
       const { data, sent } = await api('/api/command', 'POST', { action, ...args }, version);
       requireLive(version, generation);
       if (typeof data.command_id !== 'string' || !data.command_id) throw new Error('No command receipt.');
-      pending = { id: data.command_id, started: now() };
+      // This is a browser observation budget, not a compiler completion promise.
+      pending = { id: data.command_id, started: now(), waitMs: action === 'stop_recording' ? 600000 : 120000, action, recordingId: args.recording_id, enabled: args.enabled };
+      if (args.recording_id && recordingAttempt?.id === args.recording_id && recordingAttempt.action === action) {
+        recordingAttempt.commandId = data.command_id;
+        recordingAttempt.status = 'waiting';
+      }
       $('command-status').textContent = `${action}: waiting for completion`;
       transition = false;
       applyState(data.state, sent);
@@ -486,6 +576,17 @@
     const path = $('snapshot-path').value;
     if (path && (path.length > 4096 || path.startsWith('/') || path.includes('\\') || path.split('/').some(part => !part || part === '.' || part === '..') || /[\x00-\x1f\x7f]/.test(path))) { notice('Use a relative run path without empty or traversal components.'); return; }
     if (state?.cameras?.microscope) command('snapshot', path ? { path } : {});
+  });
+  $('recording-start').addEventListener('click', () => beginRecording());
+  $('recording-stop').addEventListener('click', () => endRecording());
+  $('sequence-arm').addEventListener('click', () => beginRecording(true));
+  $('sequence-disarm').addEventListener('click', () => endRecording(true));
+  $('recording-mode').addEventListener('change', () => {
+    $('recording-fps').value = $('recording-mode').value === 'live' ? '30' : '1';
+    renderRecording();
+  });
+  $('stabilization').addEventListener('click', () => {
+    if (!$('stabilization').disabled && ready() && typeof state?.stabilization === 'boolean') command('set_stabilization', { enabled: !state.stabilization });
   });
   document.addEventListener('visibilitychange', syncPreviews);
   window.addEventListener('pagehide', () => { closed = true; disconnect(); token = ''; $('access-token').value = ''; });

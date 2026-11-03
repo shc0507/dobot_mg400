@@ -1161,6 +1161,136 @@ def test_close_retains_all_owners_until_accepted_camera_command_drains(recording
     assert not rig.camera.is_open and not rig.service._motor.connected
 
 
+@pytest.mark.parametrize("outcome", ["confirmed", "pending", "failure", "camera-fault-pending"])
+def test_close_observes_current_cleanup_after_accepted_job_drains(
+    recording_rig, monkeypatch, outcome
+):
+    import time
+
+    import microscope.service as module
+
+    rig = recording_rig
+    entered, release_job, second_stop, release_stop = (threading.Event() for _ in range(4))
+    original_stabilize = rig.camera.set_stabilization
+    original_stop = rig.service._motor.safe_stop_disable
+    stop_rounds, waits, results = [], [], []
+    now, closer = [0.0], None
+
+    def stabilize(enabled, *, cancel=None):
+        original_stabilize(enabled, cancel=cancel)
+        entered.set()
+        assert release_job.wait(3)
+
+    def stop_motor():
+        stop_rounds.append(1)
+        if len(stop_rounds) == 2:
+            second_stop.set()
+            assert release_stop.wait(3)
+            if outcome == "failure":
+                raise RuntimeError("Second cleanup failed")
+        return original_stop()
+
+    class StopEvent:
+        def __init__(self, event):
+            self.event = event
+
+        def set(self):
+            self.event.set()
+
+        def clear(self):
+            self.event.clear()
+
+        def is_set(self):
+            return self.event.is_set()
+
+        def wait(self, timeout=None):
+            if threading.current_thread() is not closer:
+                return self.event.wait(timeout)
+            waits.append(timeout)
+            if len(waits) == 1:
+                assert self.event.wait(3)
+                now[0] = 1.0
+                return True
+            assert second_stop.is_set()
+            if outcome.endswith("pending"):
+                now[0] = 15.0
+                return False
+            release_stop.set()
+            assert self.event.wait(3)
+            now[0] = 5.0
+            return True
+
+    monkeypatch.setattr(rig.camera, "set_stabilization", stabilize)
+    monkeypatch.setattr(rig.service._motor, "safe_stop_disable", stop_motor)
+    monkeypatch.setattr(
+        module, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time, sleep=time.sleep)
+    )
+    rig.service._stop_done = StopEvent(rig.service._stop_done)
+    rig.service.command("set_stabilization", {"enabled": True}, "operator")
+    assert entered.wait(1)
+    job = rig.service._job
+    job_wait = job.done.wait
+
+    def drain_job(timeout=None):
+        if threading.current_thread() is closer:
+            # The first cleanup has already been confirmed. Only now let the
+            # accepted camera call return and schedule its cancellation cleanup.
+            assert waits == [15.0]
+            now[0] = 4.0
+            if outcome == "camera-fault-pending":
+                rig.service._recording_stop_fault = True
+            release_job.set()
+            assert second_stop.wait(1)
+        return job_wait(timeout)
+
+    monkeypatch.setattr(job.done, "wait", drain_job)
+
+    def close():
+        try:
+            rig.service.close()
+            results.append("closed")
+        except RuntimeError as error:
+            results.append(str(error))
+
+    closer = threading.Thread(target=close)
+    closer.start()
+    try:
+        closer.join(3)
+        assert not closer.is_alive()
+        assert waits == [15.0, 11.0]
+        assert len(stop_rounds) == 2
+        if outcome.endswith("pending"):
+            assert "motor cleanup is still stopping" in results[0]
+            assert not rig.service._shutdown_complete and not rig.service._owners_closing
+            assert rig.camera.is_open and rig.service._motor.connected and not rig.readings.closed
+        else:
+            assert rig.service._stop_done.is_set()
+            if outcome == "confirmed":
+                assert results == ["closed"]
+            else:
+                assert "unconfirmed" in results[0]
+            assert rig.service._shutdown_complete
+            assert not rig.camera.is_open and not rig.service._motor.connected
+            # Once teardown owns drained devices, another Stop observes that
+            # result instead of dispatching to a disconnected motor.
+            assert rig.service.stop("late-stop", 0) == (
+                "confirmed" if outcome == "confirmed" else "unconfirmed"
+            )
+            assert len(stop_rounds) == 2
+    finally:
+        release_job.set()
+        release_stop.set()
+        closer.join(3)
+        assert rig.service._stop_done.wait(2)
+    if outcome.endswith("pending"):
+        if outcome == "camera-fault-pending":
+            with pytest.raises(RuntimeError, match="unconfirmed"):
+                rig.service.close()
+        else:
+            rig.service.close()
+        assert rig.service._shutdown_complete and not rig.service._motor.connected
+
+
 @pytest.mark.parametrize("terminal", ["failed", "stopped"])
 def test_terminal_recording_cleanup_blocks_mutations_until_slot_clears(
     recording_rig, monkeypatch, terminal

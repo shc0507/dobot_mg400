@@ -637,6 +637,7 @@ class MicroscopeService:
         self._quit = threading.Event()
         self._started = self._closed = self._starting = False
         self._shutdown_complete = False
+        self._owners_closing = False
         self._poller = None
         self._job = None
         self._stopping = False
@@ -1783,6 +1784,10 @@ class MicroscopeService:
         ):
             raise ValueError("Stop wait must be within 0..15 seconds")
         with self._lock:
+            if self._owners_closing:
+                # All accepted work and the current motor cleanup have drained.
+                # Teardown owns the devices now; Stop cannot reopen dispatch.
+                return "unconfirmed" if self._recording_stop_fault else self._stop_outcome
             if self._job is not None:
                 self._job.cancel.set()
             if self._recording is not None:
@@ -1809,14 +1814,17 @@ class MicroscopeService:
                     self._stop_outcome = "unconfirmed"
                     self._stop_done.set()
                     self._latch_fault("stop", str(error))
+        return self._wait_stop(time.monotonic() + wait_s)
+
+    def _wait_stop(self, deadline, *, drain_motor=False):
+        with self._lock:
             done = self._stop_done
-        deadline = time.monotonic() + wait_s
         while True:
             done.wait(max(0, deadline - time.monotonic()))
             with self._lock:
                 motor_done = self._stop_done.is_set()
-                if self._recording_stop_fault or (
-                    motor_done and self._stop_outcome == "unconfirmed"
+                if (motor_done or not drain_motor) and (
+                    self._recording_stop_fault or self._stop_outcome == "unconfirmed"
                 ):
                     return "unconfirmed"
                 if motor_done and self._recording is None:
@@ -1856,12 +1864,8 @@ class MicroscopeService:
                 self._closed = True
                 self._quit.set()
                 job, recording = self._job, self._recording
-            self.stop("shutdown", 15)
-            failures = (
-                []
-                if self._stop_outcome == "confirmed" and not self._recording_stop_fault
-                else ["Motor or recording shutdown is unconfirmed"]
-            )
+            deadline = time.monotonic() + 15
+            self.stop("shutdown", max(0, deadline - time.monotonic()))
             if recording is not None and not recording.done.wait(3):
                 raise RuntimeError(
                     "Microscope recording is still stopping; camera owner is retained"
@@ -1870,6 +1874,25 @@ class MicroscopeService:
                 raise RuntimeError(
                     "Microscope command is still stopping; camera and motor owners are retained"
                 )
+            # A cancelled accepted job can request another cleanup before setting
+            # done. Observe that current round without starting a new one or
+            # renewing shutdown's original motor/recording wait budget.
+            while True:
+                self._wait_stop(deadline, drain_motor=True)
+                with self._lock:
+                    if not self._stop_done.is_set():
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError(
+                                "Microscope motor cleanup is still stopping; owners are retained"
+                            )
+                        continue
+                    self._owners_closing = True
+                    failures = (
+                        []
+                        if self._stop_outcome == "confirmed" and not self._recording_stop_fault
+                        else ["Motor or recording shutdown is unconfirmed"]
+                    )
+                    break
             self._readings.close()
             with self._frame_condition:
                 if not self._frame_condition.wait_for(lambda: self._frame_reads == 0, timeout=2.0):

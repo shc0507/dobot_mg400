@@ -1409,6 +1409,88 @@ def test_actual_app_recording_contract_uses_flat_arguments_and_exact_stop_receip
 
 
 @pytest.mark.parametrize("mode", ["time_lapse", "live"])
+def test_demo_public_camera_owner_records_private_media_and_metadata(tmp_path, monkeypatch, mode):
+    import csv
+    import stat
+    from pathlib import Path
+
+    from furnace.recordings import FRAME_METADATA_FIELDS, private_open
+    from toupcam_camera import MicroscopeCamera
+
+    wrote, writers = threading.Event(), []
+
+    class Writer:
+        def __init__(self, path, _codec, _fps, dimensions):
+            assert path.startswith("/proc/self/fd/") and path.endswith(".mp4")
+            assert stat.S_IMODE(Path(path).stat().st_mode) == 0o600
+            assert dimensions == (200, 200)
+            self.stream = open(path, "ab")
+            writers.append(self)
+
+        def isOpened(self):
+            return not self.stream.closed
+
+        def write(self, frame):
+            assert frame.shape == (200, 200, 3)
+            self.stream.write(b"synthetic-frame")
+            wrote.set()
+
+        def release(self):
+            self.stream.close()
+
+    def finalize(directory, *, recordings_root, check_cancel):
+        check_cancel()
+        assert all(writer.stream.closed for writer in writers)
+        output = directory / f"{directory.name}_shortened_3_min.mp4"
+        with private_open(output, "xb", root=recordings_root) as stream:
+            stream.write(b"fake-summary")
+        return None, output, None
+
+    monkeypatch.setattr("toupcam_camera.camera.cv2.VideoWriter", Writer)
+    service = MicroscopeService(
+        demo=True,
+        recordings_root=tmp_path / "recordings",
+        recording_finalizer=finalize,
+    )
+    rig = SimpleNamespace(service=service, client=create_app(service).test_client())
+    recording_id = "ab" * 16
+    try:
+        service.start(background=False)
+        assert isinstance(service._camera, MicroscopeCamera)
+        service.lease.acquire("operator")
+        reply = service_post(
+            rig,
+            "command",
+            {"action": "start_recording", "recording_id": recording_id, "mode": mode},
+        )
+        assert reply.status_code == 202
+        started = wait_command(rig, reply.json["command_id"])
+        assert started["last_command"]["result"] == "ok"
+        assert wrote.wait(2)
+        reply = service_post(
+            rig, "command", {"action": "stop_recording", "recording_id": recording_id}
+        )
+        assert reply.status_code == 202
+        state = wait_command(rig, reply.json["command_id"])
+        assert state["last_command"]["result"] == "ok"
+        assert state["recording"]["status"] == "completed"
+        assert state["last_result"]["recording"] == state["recording"]
+        assert state["recording"]["segments"] == ["video_0001.mp4"]
+        assert state["recording"]["summary"] == f"{recording_id}_shortened_3_min.mp4"
+        directory = tmp_path / "recordings" / recording_id
+        assert (directory / "video_0001.mp4").read_bytes().startswith(b"synthetic-frame")
+        with (directory / "video.timestamps.csv").open() as stream:
+            rows = list(csv.DictReader(stream))
+        assert len(rows) == state["recording"]["frame_count"] >= 1
+        assert all(row[field] == "" for row in rows for field in FRAME_METADATA_FIELDS)
+        assert all(path.stat().st_mode & 0o037 == 0 for path in directory.iterdir())
+    finally:
+        service.close()
+    assert writers and all(writer.stream.closed for writer in writers)
+    assert not service._camera.is_open and not service._motor.connected
+
+
+@pytest.mark.parametrize("mode", ["time_lapse", "live"])
 def test_typed_recording_skill_consumes_actual_service_receipts(recording_rig, mode):
     import json
     import time

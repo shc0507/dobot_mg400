@@ -2066,3 +2066,34 @@ def test_setup_undrained_accepted_call_retains_serial_owner(session_factories, m
         real_join(worker, 2)
         assert not worker.is_alive()
         kept[0]._raw_motor.disconnect()
+
+
+@pytest.mark.parametrize("quit_key", ["q", None])
+def test_setup_earlier_worker_failure_cannot_be_relabelled_by_later_quit(quit_key):
+    from microscope.calibrate import _setup_io
+
+    motor = SimpleNamespace(
+        session=1, reference_epoch=1, connected=True, fault=None, safe_stop_disable=lambda: None
+    )
+
+    class Operator:
+        @contextmanager
+        def motion_controls(self, check):
+            def poll():
+                # Force the worker failure to finish before the queued quit.
+                session._setup_worker.join(1)
+                assert not session._setup_worker.is_alive()
+                return quit_key
+
+            yield poll
+
+    session = SupervisedSession(motor, None, None, None, Operator())
+
+    def action(operation):
+        raise ValueError("worker failed before quit")
+
+    with pytest.raises(ValueError, match="worker failed before quit"):
+        _setup_io(session, action)
+    assert session.failure == "worker failed before quit"
+    assert session.operator_stopped is False
+    assert session.cancel_event.is_set()

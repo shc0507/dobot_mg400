@@ -1278,6 +1278,7 @@ def _setup_io(session, action):
     done = threading.Event()
     result, errors = [], []
     stopped = quit_requested = False
+    failure = None
 
     def worker():
         try:
@@ -1285,6 +1286,15 @@ def _setup_io(session, action):
             operation.check()
             result.append(action(operation))
         except BaseException as error:
+            if not isinstance(error, SideCaptureCancelled):
+                try:
+                    # Latch a device/worker failure before publishing it to the
+                    # terminal thread. A later quit cannot relabel that cause.
+                    session.abort(error)
+                except BaseException:
+                    # Keep the initiating exception. The parent still performs
+                    # cleanup and must retain ownership if cleanup fails.
+                    pass
             errors.append(error)
         finally:
             done.set()
@@ -1319,19 +1329,19 @@ def _setup_io(session, action):
     except BaseException as error:
         operation.cancelled.set()
         admitted.set()
+        failure = error
         session.abort(error)
-        raise
     finally:
         # Do not restore ownership to another command while an old call can still write.
         _drain_setup_worker(session)
+    if errors and not isinstance(errors[0], SideCaptureCancelled):
+        raise errors[0]
+    if failure is not None:
+        raise failure
     if quit_requested:
-        if errors and not isinstance(errors[0], SideCaptureCancelled):
-            raise errors[0]
         raise _SetupQuit
     if stopped:
         session.check()
-        if errors and not isinstance(errors[0], SideCaptureCancelled):
-            raise errors[0]
         return _SETUP_STOPPED
     if errors:
         raise errors[0]

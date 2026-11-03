@@ -844,3 +844,263 @@ def test_recording_missing_furnace_metadata_still_captures(recording_rig):
         rig.command("stop_recording", {"recording_id": "2" * 32})["recording"]["status"]
         == "completed"
     )
+
+
+def furnace_reading_state():
+    return dict(
+        service="furnace",
+        connected=True,
+        locked=False,
+        fault=None,
+        sequence=dict(running=False, phase="idle", current_index=None, started_at=None),
+        sample_time=100.0,
+        pv=22.5,
+        sv=30.0,
+        ramp=2.0,
+        run_state="STOP",
+        flow=dict(gas_channels=[dict(channel_index=0, target_percent=12.0)]),
+    )
+
+
+def test_metadata_provider_preserves_columns_blanks_failure_and_bounds_events():
+    from furnace.service import FRAME_METADATA_FIELDS
+    from microscope.service import FurnaceReadings
+
+    state, now = furnace_reading_state(), [0.0]
+    events = EventLog()
+    provider = FurnaceReadings(SimpleNamespace(state=lambda: state), events, clock=lambda: now[0])
+    assert not provider.snapshot()["available"]
+    provider.poll_once()
+    value = provider.snapshot()
+    assert value["available"]
+    assert tuple(value["metadata"]) == FRAME_METADATA_FIELDS
+    assert value["metadata"]["temperature_c"] == 22.5
+    assert value["metadata"]["gas_1_target_percent"] == 12.0
+    assert value["metadata"]["gas_2_target_percent"] is None
+    now[0] += 3
+    assert provider.snapshot()["metadata"] == dict.fromkeys(FRAME_METADATA_FIELDS)
+    state["connected"] = False
+    provider.poll_once()
+    provider.poll_once()
+    assert len(events.since()["events"]) == 2  # available, then one failure transition
+    state["connected"] = True
+    state["locked"], state["fault"] = True, {"message": "fault"}
+    provider.poll_once()
+    value = provider.snapshot()
+    assert not value["available"] and not value["sequence"]["healthy"]
+    assert value["metadata"] == dict.fromkeys(FRAME_METADATA_FIELDS)
+    provider.close()
+    state["fault"], state["locked"] = None, False
+    provider.poll_once()
+    assert not provider.snapshot()["available"]
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("flow", None),
+        ("flow", {"gas_channels": [None]}),
+        ("flow", {"gas_channels": [{"channel_index": 0, "target_percent": float("nan")}]}),
+        ("flow", {"gas_channels": [{"channel_index": 0, "target_percent": 10}] * 2}),
+        ("pv", float("inf")),
+        ("locked", None),
+        ("sequence", None),
+        ("sequence", dict(running=True, phase="holding", started_at=None)),
+    ],
+)
+def test_metadata_provider_refuses_malformed_shapes(key, value):
+    from microscope.service import FurnaceReadings
+
+    state = furnace_reading_state()
+    state[key] = value
+    with pytest.raises(ValueError):
+        FurnaceReadings._validate(state)
+
+
+def test_metadata_provider_worker_start_failure_rolls_back(monkeypatch):
+    from microscope.service import FurnaceReadings
+
+    provider = FurnaceReadings(SimpleNamespace(state=furnace_reading_state), EventLog())
+
+    def fail(_thread):
+        raise RuntimeError("fake start failure")
+
+    monkeypatch.setattr(threading.Thread, "start", fail)
+    with pytest.raises(RuntimeError, match="fake start"):
+        provider.start()
+    assert provider._thread is None
+    provider.close()
+
+
+def test_readings_client_allows_only_bounded_get_with_header_token():
+    import io
+    import json
+
+    from microscope.service import FurnaceReadingsClient
+
+    captured = []
+
+    class Opener:
+        def open(self, request, **kwargs):
+            captured.append((request, kwargs))
+            return io.BytesIO(json.dumps({"service": "furnace"}).encode())
+
+    client = FurnaceReadingsClient("http://127.0.0.1:8769/", "x" * 32)
+    client._opener = Opener()
+    assert client._request("api/state") == {"service": "furnace"}
+    request, options = captured[0]
+    assert request.get_method() == "GET" and request.data is None
+    assert request.get_header("Authorization") == "Bearer " + "x" * 32
+    assert "x" * 32 not in request.full_url and options == {"timeout": 0.5}
+    for path, data in (
+        ("api/command", {}),
+        ("api/state", {}),
+        ("api/lease", None),
+        ("../api/state", None),
+    ):
+        with pytest.raises(ServiceError):
+            client._request(path, data)
+    assert len(captured) == 1
+    with pytest.raises(ServiceError, match="size limit"):
+        client._body(io.BytesIO(b"x" * (256 * 1024 + 1)))
+
+
+def test_readings_client_rejects_trickling_body_and_redirect(monkeypatch):
+    import io
+
+    import microscope.service as module
+
+    client = module.FurnaceReadingsClient("http://127.0.0.1:8769/")
+    ticks = iter((0.0, 0.2, 1.1))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(ServiceError, match="deadline"):
+        client._body(io.BytesIO(b"{}"))
+    assert (
+        module._NoMetadataRedirect().redirect_request(
+            None, None, 302, "", {}, "http://outside.invalid/"
+        )
+        is None
+    )
+
+
+def test_wrong_recording_id_and_duplicate_start_do_not_cancel_current(recording_rig):
+    rig = recording_rig
+    rig.command("start_recording", {"recording_id": "3" * 32})
+    for action, args in (
+        ("stop_recording", {"recording_id": "4" * 32}),
+        ("start_recording", {"recording_id": "5" * 32}),
+    ):
+        with pytest.raises(ServiceError):
+            rig.service.command(action, args, "operator")
+    assert not rig.service._recording.cancel.is_set() and rig.camera.is_recording
+    assert (
+        rig.command("stop_recording", {"recording_id": "3" * 32})["recording"]["status"]
+        == "completed"
+    )
+
+
+def test_recording_worker_start_failure_is_terminal_and_retains_no_live_authority(
+    recording_rig, monkeypatch
+):
+    rig = recording_rig
+    original = threading.Thread.start
+
+    def start(thread):
+        if thread.name == "microscope-recording":
+            raise RuntimeError("fake recorder start failure")
+        return original(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    state = rig.command("start_recording", {"recording_id": "6" * 32})
+    assert state["last_command"]["result"] == "failed"
+    assert state["recording"]["status"] == "failed" and rig.service._recording is None
+    assert not rig.camera.start_calls
+
+
+def test_camera_error_cannot_finalize_partial_capture(recording_rig):
+    rig = recording_rig
+    rig.command("start_recording", {"recording_id": "7" * 32})
+    rig.camera.recording_error = "synthetic writer failure"
+    state = wait_recording(rig, "failed")
+    assert state["recording"]["summary"] is None and not rig.calls
+
+
+def test_stabilization_command_does_not_start_recording_or_change_lease(recording_rig):
+    rig = recording_rig
+    before = rig.service.lease.snapshot()
+    state = rig.command("set_stabilization", {"enabled": True})
+    assert state["last_result"] == {"stabilization": True}
+    assert state["stabilization"] and not rig.camera.start_calls
+    assert rig.service.lease.snapshot() == before
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"recording_id": 11111111111111111111111111111111},
+        {"recording_id": "a" * 32, "output_fps": 10**1000},
+        {"recording_id": "a" * 32, "run_name": "control\u0085"},
+    ],
+)
+def test_recording_strict_types_remain_client_errors(recording_rig, args):
+    rig = recording_rig
+    client = create_app(rig.service).test_client()
+    reply = client.post(
+        "/api/command",
+        json={"action": "start_recording", "args": args},
+        headers={"X-MG400-Client": "operator"},
+    )
+    assert reply.status_code == 400 and not rig.camera.start_calls
+
+
+@pytest.mark.parametrize("enabled", [True, False, 1, None])
+def test_stop_recording_rejects_enabled_field_before_dispatch(recording_rig, enabled):
+    with pytest.raises(ValueError):
+        recording_rig.service.command(
+            "stop_recording", {"recording_id": "a" * 32, "enabled": enabled}, "operator"
+        )
+
+
+def test_recording_columns_match_existing_furnace_source_schema():
+    from furnace.recordings import FRAME_METADATA_FIELDS
+    from furnace.service import FRAME_METADATA_FIELDS as SOURCE_FIELDS
+
+    assert FRAME_METADATA_FIELDS == SOURCE_FIELDS
+
+
+def test_furnace_provider_settings_reuse_existing_secret_without_public_disclosure():
+    from microscope.service import MicroscopeConfig
+
+    token = "test-secret-only" * 2
+    config = MicroscopeConfig.from_env(
+        {
+            "MG400_MICROSCOPE_FURNACE_URL": "http://127.0.0.1:8769/heat/",
+            "MG400_FURNACE_TOKEN": token,
+        }
+    )
+    assert config.furnace_url.endswith("/heat/") and config.furnace_token == token
+    assert token not in repr(config)
+    service = MicroscopeService(config)
+    assert token not in str(service.snapshot()) and token not in str(service.describe())
+    service.close()
+
+
+def test_recording_cleanup_failure_keeps_stop_unconfirmed(recording_rig):
+    rig = recording_rig
+    rig.command("start_recording", {"recording_id": "8" * 32})
+    original = rig.camera.stop_recording
+
+    def fail():
+        raise RuntimeError("synthetic close failure")
+
+    rig.camera.stop_recording = fail
+    try:
+        rig.service.stop("emergency", 0)
+        state = wait_recording(rig, "failed")
+        assert state["locked"] and "shutdown is unconfirmed" in state["fault"]["message"]
+        assert rig.service.stop("emergency", 1) == "unconfirmed"
+    finally:
+        rig.camera.stop_recording = original
+        # The fixture must observe, not conceal, this intentionally latched failure.
+        with pytest.raises(RuntimeError, match="shutdown is unconfirmed"):
+            rig.service.close()

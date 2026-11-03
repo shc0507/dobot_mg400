@@ -8,14 +8,18 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
-import tempfile
+import uuid
+from contextlib import ExitStack, contextmanager
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Iterable
 
 from .recordings import (
     LOCAL_RECORDINGS_DIRECTORY,
+    _check_cancel,
     _path,
     directory_fd,
     private_open,
@@ -117,7 +121,8 @@ def speed_factor_for_target(actual_minutes: float, target_minutes: float) -> flo
     return max(1.0, actual_minutes / target_minutes)
 
 
-def _ffprobe_duration(ffprobe_path: str, video_path: Path) -> float:
+def _ffprobe_duration(ffprobe_path: str, video_fd: int) -> float:
+    video_path = f"/proc/self/fd/{video_fd}"
     cmd = [
         ffprobe_path,
         "-v",
@@ -129,7 +134,13 @@ def _ffprobe_duration(ffprobe_path: str, video_path: Path) -> float:
         str(video_path),
     ]
     result = subprocess.run(
-        cmd, capture_output=True, text=True, check=False, timeout=30, umask=0o077
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        umask=0o077,
+        pass_fds=(video_fd,),
     )
     if result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip()
@@ -144,21 +155,74 @@ def _ffprobe_duration(ffprobe_path: str, video_path: Path) -> float:
     return seconds
 
 
-def _concat_segments(segments: Iterable[Path], concat_path: Path) -> None:
-    # FFmpeg concat quoting must also preserve apostrophes in a configured root.
-    names = [segment.as_posix().replace("'", "'\\''") for segment in segments]
-    content = "\n".join(f"file '{name}'" for name in names) + "\n"
-    with private_open(concat_path, "x", root=concat_path.parent, encoding="utf-8") as output:
-        output.write(content)
+@contextmanager
+def _private_file_fd(parent_fd, name):
+    descriptor = os.open(
+        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent_fd
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or info.st_mode & 0o037
+        ):
+            raise ValueError("Video inputs must be owned private regular files with one link")
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
-def _run_ffmpeg(cmd: list[str]) -> None:
+def _concat_segments(segments: Iterable[int], concat_fd: int) -> None:
+    # Numeric descriptor names cannot inject FFmpeg concat directives.
+    with os.fdopen(os.dup(concat_fd), "w", encoding="utf-8") as output:
+        for descriptor in segments:
+            output.write(f"file '/proc/self/fd/{descriptor}'\n")
+
+
+def _run_ffmpeg(cmd: list[str], *, pass_fds=()) -> None:
     result = subprocess.run(
-        cmd, capture_output=True, text=True, check=False, timeout=300, umask=0o077
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+        umask=0o077,
+        pass_fds=pass_fds,
     )
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip() or "Unknown ffmpeg error"
         raise RuntimeError(f"ffmpeg failed: {stderr}")
+
+
+@contextmanager
+def _compile_directory(run_fd):
+    name = ".compile-" + uuid.uuid4().hex
+    os.mkdir(name, 0o700, dir_fd=run_fd)
+    descriptor = os.open(
+        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=run_fd
+    )
+    try:
+        yield descriptor
+    finally:
+        try:
+            for filename in ("segments.txt", "summary.mp4"):
+                try:
+                    os.unlink(filename, dir_fd=descriptor)
+                except FileNotFoundError:
+                    pass
+            os.rmdir(name, dir_fd=run_fd)
+        finally:
+            os.close(descriptor)
+
+
+def _check_run_identity(run_dir, root, run_fd):
+    """Never return a path that no longer identifies the pinned recording run."""
+    with directory_fd(run_dir, root=root) as current:
+        expected, observed = os.fstat(run_fd), os.fstat(current)
+        if (expected.st_dev, expected.st_ino) != (observed.st_dev, observed.st_ino):
+            raise RuntimeError("The recording directory changed during compilation")
 
 
 def combine_run_to_target(
@@ -168,63 +232,91 @@ def combine_run_to_target(
     output_path: str | Path | None = None,
     ffmpeg_path: str = "ffmpeg",
     ffprobe_path: str = "ffprobe",
+    *,
+    check_cancel=None,
 ) -> Path:
     """Create a shortened single video for a run using ffmpeg."""
+    _check_cancel(check_cancel)
     speed_factor_for_target(1, target_minutes)
     root = _path(recordings_root) if recordings_root is not None else DEFAULT_RECORDINGS_ROOT
     run_dir = find_run_directory(root, run_name)
-    segments = list_segment_files(run_dir)
     if output_path is None:
         output_path = run_dir / f"{run_dir.name}_shortened_{target_minutes:g}_min.mp4"
     output_path = _path(output_path)
     if output_path.parent != run_dir or output_path.suffix != ".mp4":
         raise ValueError("The summary must be an MP4 basename inside the selected run")
     output_path = recording_output_path(run_dir, output_path.name, root)
-    if shutil.which(ffprobe_path) is None or shutil.which(ffmpeg_path) is None:
-        raise RuntimeError("FFmpeg and ffprobe are required to compile a recording summary")
-    total_seconds = sum(_ffprobe_duration(ffprobe_path, segment) for segment in segments)
-    actual_minutes = total_seconds / 60.0
-    speed = speed_factor_for_target(actual_minutes, target_minutes)
-    # Only this invocation's private temporary directory is removed on failure.
-    with tempfile.TemporaryDirectory(prefix=".compile-", dir=run_dir) as temporary:
-        temporary = Path(temporary)
-        concat_path = temporary / "segments.txt"
-        _concat_segments(segments, concat_path)
-        temp_output = temporary / "summary.mp4"
-        ffmpeg_cmd = [
-            ffmpeg_path,
-            "-n",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_path),
-            "-filter:v",
-            f"setpts=PTS/{speed}",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-an",
-            str(temp_output),
-        ]
-        _run_ffmpeg(ffmpeg_cmd)
-        with private_open(temp_output, "rb", root=temporary) as summary:
-            if os.fstat(summary.fileno()).st_size == 0:
-                raise RuntimeError("FFmpeg produced an empty summary")
-        # A hard link publishes atomically and refuses any existing destination.
-        with directory_fd(temporary, root=root) as source_fd:
-            with directory_fd(run_dir, root=root) as target_fd:
-                os.link(
-                    temp_output.name,
-                    output_path.name,
-                    src_dir_fd=source_fd,
-                    dst_dir_fd=target_fd,
-                    follow_symlinks=False,
-                )
-                os.unlink(temp_output.name, dir_fd=source_fd)
+    # Every process input, temporary output and publication remains relative to
+    # these validated descriptors, even if an ancestor is renamed or replaced.
+    with directory_fd(run_dir, root=root) as run_fd, ExitStack() as opened:
+        names = sorted(
+            (name for name in os.listdir(run_fd) if fnmatchcase(name, "video*.mp4")),
+            key=lambda name: _segment_sort_key(Path(name)),
+        )
+        if not names:
+            raise FileNotFoundError("No video segments were found in the selected run")
+        segments = [opened.enter_context(_private_file_fd(run_fd, name)) for name in names]
+        if shutil.which(ffprobe_path) is None or shutil.which(ffmpeg_path) is None:
+            raise RuntimeError("FFmpeg and ffprobe are required to compile a recording summary")
+        total_seconds = 0
+        for descriptor in segments:
+            _check_cancel(check_cancel)
+            total_seconds += _ffprobe_duration(ffprobe_path, descriptor)
+        _check_cancel(check_cancel)
+        actual_minutes = total_seconds / 60.0
+        speed = speed_factor_for_target(actual_minutes, target_minutes)
+        with _compile_directory(run_fd) as temporary_fd:
+            concat_fd = os.open(
+                "segments.txt",
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=temporary_fd,
+            )
+            try:
+                _concat_segments(segments, concat_fd)
+                ffmpeg_cmd = [
+                    ffmpeg_path,
+                    "-n",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    f"/proc/self/fd/{concat_fd}",
+                    "-filter:v",
+                    f"setpts=PTS/{speed}",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-an",
+                    "-f",
+                    "mp4",
+                    f"/proc/self/fd/{temporary_fd}/summary.mp4",
+                ]
+                _check_cancel(check_cancel)
+                _run_ffmpeg(ffmpeg_cmd, pass_fds=(*segments, concat_fd, temporary_fd))
+                _check_cancel(check_cancel)
+            finally:
+                os.close(concat_fd)
+            with _private_file_fd(temporary_fd, "summary.mp4") as summary_fd:
+                if os.fstat(summary_fd).st_size == 0:
+                    raise RuntimeError("FFmpeg produced an empty summary")
+            _check_run_identity(run_dir, root, run_fd)
+            _check_cancel(check_cancel)
+            # Atomic publication refuses any existing destination without unlinking it.
+            os.link(
+                "summary.mp4",
+                output_path.name,
+                src_dir_fd=temporary_fd,
+                dst_dir_fd=run_fd,
+                follow_symlinks=False,
+            )
+            os.unlink("summary.mp4", dir_fd=temporary_fd)
+            _check_run_identity(run_dir, root, run_fd)
+            _check_cancel(check_cancel)
 
+    _check_cancel(check_cancel)
     print(
         f"Created {output_path} from {len(segments)} segment(s). "
         f"Original duration: {actual_minutes:.2f} min, target: {target_minutes:.2f} min, "

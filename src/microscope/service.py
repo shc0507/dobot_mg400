@@ -24,8 +24,12 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from furnace.recordings import create_run, finalize_run_recording, normalize_recording_settings
-from furnace.service import FRAME_METADATA_FIELDS
+from furnace.recordings import (
+    FRAME_METADATA_FIELDS,
+    create_run,
+    finalize_run_recording,
+    normalize_recording_settings,
+)
 from labkit.client import ServiceClient
 from labkit.describe import command, describe, parameter
 from labkit.errors import ServiceError
@@ -299,7 +303,7 @@ class FurnaceReadings:
                 and 0 <= self.clock() - self._received <= 2.5
             )
             return {
-                "available": fresh,
+                "available": fresh and self._error is None,
                 "error": self._error if fresh else self._error or "Furnace readings are stale",
                 "metadata": copy.deepcopy(self._sample["metadata"])
                 if fresh
@@ -543,6 +547,27 @@ class _DemoCamera:
         return self._serial, captured_at, cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
 
+class _DemoCapture:
+    """Synthetic input to the same public camera/recording owner used on Linux."""
+
+    def __init__(self, port):
+        self._camera = _DemoCamera(port).open()
+        self._closed = threading.Event()
+        self.width = self.height = 200
+        self.sdk_camera = SimpleNamespace(
+            get_AutoExpoEnable=lambda: False, put_AutoExpoEnable=lambda _value: None
+        )
+
+    def read(self, timeout=0.5):
+        if self._closed.wait(min(0.04, timeout)):
+            return False, None
+        return True, self._camera.get_frame_packet()[2]
+
+    def release(self):
+        self._closed.set()
+        self._camera.close()
+
+
 @dataclass(frozen=True)
 class PreviewFrame:
     frame_id: int
@@ -606,6 +631,7 @@ class MicroscopeService:
         self._recordings_root = recordings_root
         self._recording_finalizer = recording_finalizer
         self._recording = None
+        self._recording_stop_fault = False
         self._recording_data = self._empty_recording()
         self._recording_sequence = dict(armed=False, id=None, client=None, sequence_started_at=None)
         self._quit = threading.Event()
@@ -668,26 +694,24 @@ class MicroscopeService:
             allowed.add("enabled")
             if type(args.get("enabled")) is not bool:
                 raise ValueError("Record with sequence requires enabled: boolean")
-        if action == "stop_recording" or args.get("enabled") is False:
-            allowed = {"recording_id"} | ({"enabled"} if "enabled" in args else set())
-        if set(args) - allowed or not re.fullmatch(
-            r"[0-9a-f]{32}", str(args.get("recording_id", ""))
+        if action == "stop_recording":
+            allowed = {"recording_id"}
+        elif args.get("enabled") is False:
+            allowed = {"recording_id", "enabled"}
+        if (
+            set(args) - allowed
+            or not isinstance(args.get("recording_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", args.get("recording_id", ""))
         ):
             raise ValueError("Recording requires a new 32-character lowercase hexadecimal ID")
         name = args.get("run_name", "")
-        if (
-            not isinstance(name, str)
-            or len(name) > 80
-            or any(ord(c) < 32 or ord(c) == 127 for c in name)
-        ):
+        if not isinstance(name, str) or len(name) > 80 or any(not c.isprintable() for c in name):
             raise ValueError("Recording name must contain at most 80 printable characters")
         if args.get("mode", "time_lapse") not in ("time_lapse", "live"):
             raise ValueError("Recording mode must be time_lapse or live")
         for key, maximum in (("capture_interval_seconds", 3600), ("output_fps", 120)):
             if key in args and (
-                type(args[key]) not in (int, float)
-                or not math.isfinite(args[key])
-                or not 0.1 <= args[key] <= maximum
+                type(args[key]) not in (int, float) or not 0.1 <= args[key] <= maximum
             ):
                 raise ValueError("Recording timing is outside its allowed range")
         if args.get("mode") == "live" and "capture_interval_seconds" in args:
@@ -872,7 +896,11 @@ class MicroscopeService:
             recording.started.set()
             while not recording.finish.wait(0.05):
                 self._check_recording(recording)
-                if self._camera.recording_error or not self._camera.is_recording:
+                if (
+                    self._camera.recording_error
+                    or getattr(self._camera, "last_error", None)
+                    or not self._camera.is_recording
+                ):
                     raise RuntimeError("Camera recording stopped unexpectedly")
                 if len(self._camera.recording_segments) > 128:
                     raise RuntimeError("Recording segment limit reached")
@@ -898,6 +926,7 @@ class MicroscopeService:
             segments = [Path(path).name for path in self._camera.recording_segments]
             if (
                 self._camera.recording_error
+                or getattr(self._camera, "last_error", None)
                 or not recording.data["frame_count"]
                 or not 1 <= len(segments) <= 128
                 or len(set(segments)) != len(segments)
@@ -942,6 +971,7 @@ class MicroscopeService:
                     self._camera.stop_recording()
                 except Exception:
                     with self._lock:
+                        self._recording_stop_fault = True
                         recording.data.update(
                             status="failed", error="Camera recording shutdown is unconfirmed"
                         )
@@ -1187,7 +1217,16 @@ class MicroscopeService:
                 if self.demo and self._motor is None:
                     self._demo_port = _DemoSerial(home_switch=self.config.home_switch)
                     self._motor = MotorController(serial_factory=lambda **_: self._demo_port)
-                    self._camera = self._camera or _DemoCamera(self._demo_port)
+                    if self._camera is None:
+                        from toupcam_camera import MicroscopeCamera
+
+                        self._camera = MicroscopeCamera(
+                            camera_index=0,
+                            resolution=(200, 200),
+                            settings={},
+                            stabilization=False,
+                            capture_factory=lambda *_args, **_kwargs: _DemoCapture(self._demo_port),
+                        )
                     self._side = self._side or _DemoCamera(self._demo_port, side=True)
                 if self._motor is None:
                     self._motor = MotorController()
@@ -1250,6 +1289,10 @@ class MicroscopeService:
             self._seq += 1
             if self._job is not None:
                 self._job.cancel.set()
+            if self._recording is not None:
+                self._recording.cancel.set()
+                self._recording.finish.set()
+                self._recording_sequence["armed"] = False
             return first
 
     @contextmanager
@@ -1414,6 +1457,20 @@ class MicroscopeService:
                 raise ServiceError(409, "Microscope is locked; only stop is allowed")
             if self._job is not None or self._stopping or self._recording_draining():
                 raise ServiceError(409, "Microscope is busy")
+            if action == "start_recording" or (
+                action == "record_with_sequence" and args["enabled"]
+            ):
+                if self._recording is not None:
+                    raise ServiceError(409, "A recording or sequence arm is already active")
+            if action == "stop_recording" or (
+                action == "record_with_sequence" and not args["enabled"]
+            ):
+                if (
+                    self._recording is None
+                    or self._recording.ident != args["recording_id"]
+                    or self._recording.client != client
+                ):
+                    raise ServiceError(409, "The recording ID is not active for this client")
             if (
                 action in ("focus_move", "select_objective", "autofocus")
                 and self._reference is None
@@ -1752,6 +1809,8 @@ class MicroscopeService:
             done = self._stop_done
         done.wait(wait_s)
         with self._lock:
+            if self._recording_stop_fault:
+                return "unconfirmed"
             return self._stop_outcome if done.is_set() and self._recording is None else "pending"
 
     def _finish_stop(self):
@@ -1784,7 +1843,9 @@ class MicroscopeService:
                 job, recording = self._job, self._recording
             self.stop("shutdown", 15)
             failures = (
-                [] if self._stop_outcome == "confirmed" else ["Motor shutdown is unconfirmed"]
+                []
+                if self._stop_outcome == "confirmed" and not self._recording_stop_fault
+                else ["Motor or recording shutdown is unconfirmed"]
             )
             if recording is not None and not recording.done.wait(3):
                 raise RuntimeError(

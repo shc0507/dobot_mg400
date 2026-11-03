@@ -142,7 +142,8 @@ def test_existing_archive_is_never_replaced_and_local_summary_survives(tmp_path)
 
 
 def test_archive_verification_failure_keeps_local_files(tmp_path, monkeypatch):
-    from types import SimpleNamespace
+    import io
+    from contextlib import contextmanager
 
     import pytest
 
@@ -151,11 +152,18 @@ def test_archive_verification_failure_keeps_local_files(tmp_path, monkeypatch):
     root, archive = tmp_path / "local", tmp_path / "archive"
     _, run = create_run("Verification", "manual_recording", recordings_root=root)
     private_file(run / "video_0001.mp4")
-    monkeypatch.setattr(
-        recordings.hashlib,
-        "file_digest",
-        lambda *args: SimpleNamespace(digest=lambda: b"incorrect hash"),
-    )
+    original_open = recordings.private_open
+
+    @contextmanager
+    def corrupt_read(path, mode, **kwargs):
+        with original_open(path, mode, **kwargs) as stream:
+            yield (
+                io.BytesIO(b"corrupt archive")
+                if mode == "rb" and path.is_relative_to(archive)
+                else stream
+            )
+
+    monkeypatch.setattr(recordings, "private_open", corrupt_read)
     with pytest.raises(RuntimeError, match="verification"):
         finalize_run_recording(
             run, recordings_root=root, server_root=archive, compiler=summary_compiler
@@ -236,3 +244,100 @@ def test_persistent_recording_identity_is_exclusive_and_manifest_reserved(tmp_pa
         with pytest.raises(ValueError, match="recording_id"):
             create_run("Bad", "manual_recording", recordings_root=root, recording_id=invalid)
     assert list(root.iterdir()) == [run]
+
+
+def test_cancelled_finalization_starts_no_io(tmp_path):
+    import pytest
+
+    def cancelled():
+        raise RuntimeError("recording authority revoked")
+
+    def compiler(**kwargs):
+        pytest.fail("Revoked recording started its compiler")
+
+    with pytest.raises(RuntimeError, match="authority revoked"):
+        finalize_run_recording(
+            tmp_path / "absent",
+            recordings_root=tmp_path / "root",
+            server_root=tmp_path / "archive",
+            compiler=compiler,
+            check_cancel=cancelled,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cancellation_after_compile_retains_local_summary_and_prevents_archive(tmp_path):
+    import pytest
+
+    root, archive = tmp_path / "local", tmp_path / "archive"
+    _, run = create_run("Cancelled", "manual_recording", recordings_root=root)
+    segment = private_file(run / "video.mp4")
+    revoked = False
+
+    def check():
+        if revoked:
+            raise RuntimeError("recording authority revoked")
+
+    def compiler(**kwargs):
+        nonlocal revoked
+        assert kwargs["check_cancel"] is check
+        private_file(kwargs["output_path"], b"finished local summary")
+        revoked = True
+
+    with pytest.raises(RuntimeError, match="authority revoked"):
+        finalize_run_recording(
+            run, recordings_root=root, server_root=archive, compiler=compiler, check_cancel=check
+        )
+    assert segment.read_bytes() == b"segment"
+    assert (run / f"{run.name}_shortened_3_min.mp4").read_bytes() == b"finished local summary"
+    assert not archive.exists()
+
+
+def test_cancellation_between_archive_chunks_retains_local_data(tmp_path):
+    import pytest
+
+    from furnace.recordings import sync_run_to_server
+
+    root, archive = tmp_path / "local", tmp_path / "archive"
+    _, run = create_run("Large", "manual_recording", recordings_root=root)
+    source = private_file(run / "video.mp4", b"x" * (3 * 1024 * 1024))
+    target = archive / run.name / "video.mp4"
+
+    def check():
+        if target.exists() and target.stat().st_size >= 1024 * 1024:
+            raise RuntimeError("recording authority revoked")
+
+    with pytest.raises(RuntimeError, match="authority revoked"):
+        sync_run_to_server(run, archive, recordings_root=root, check_cancel=check)
+    assert target.stat().st_size == 1024 * 1024
+    assert source.read_bytes() == b"x" * (3 * 1024 * 1024)
+    assert (run / "run.json").is_file()
+
+
+def test_cancellation_after_verified_archive_copy_refuses_success(tmp_path, monkeypatch):
+    import pytest
+
+    from furnace import recordings
+
+    root, archive = tmp_path / "local", tmp_path / "archive"
+    _, run = create_run("Copied", "manual_recording", recordings_root=root)
+    segment = private_file(run / "video.mp4")
+    original_copy = recordings._copy_verified
+    revoked = False
+
+    def copy(*args, **kwargs):
+        nonlocal revoked
+        result = original_copy(*args, **kwargs)
+        if args[0].name == "video.mp4":
+            revoked = True
+        return result
+
+    def check():
+        if revoked:
+            raise RuntimeError("recording authority revoked")
+
+    monkeypatch.setattr(recordings, "_copy_verified", copy)
+    with pytest.raises(RuntimeError, match="authority revoked"):
+        recordings.sync_run_to_server(run, archive, recordings_root=root, check_cancel=check)
+    assert segment.read_bytes() == b"segment"
+    assert (archive / run.name / "video.mp4").read_bytes() == b"segment"

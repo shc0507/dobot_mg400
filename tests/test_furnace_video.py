@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 from furnace.video import find_run_directory, list_segment_files, speed_factor_for_target
 
 
@@ -67,7 +69,7 @@ def test_video_compilation_uses_ordered_segments_and_private_no_replace_output(
     root = tmp_path / "camera's recordings"
     _, run = create_run("Example", "manual_recording", recordings_root=root)
     for number in (10, 2, 1):
-        private_video(run / f"video_{number:04}.mp4")
+        private_video(run / f"video_{number:04}.mp4", str(number).encode())
     calls = []
 
     def fake_process(command, **kwargs):
@@ -77,9 +79,13 @@ def test_video_compilation_uses_ordered_segments_and_private_no_replace_output(
             return SimpleNamespace(returncode=0, stdout="120", stderr="")
         assert "-n" in command and "-y" not in command
         manifest = Path(command[command.index("-i") + 1]).read_text()
-        assert "camera'\\''s recordings" in manifest
-        assert manifest.index("video_0001.mp4") < manifest.index("video_0002.mp4")
-        assert manifest.index("video_0002.mp4") < manifest.index("video_0010.mp4")
+        inputs = [
+            Path(line.removeprefix("file '").removesuffix("'")) for line in manifest.splitlines()
+        ]
+        assert [path.read_bytes() for path in inputs] == [b"1", b"2", b"10"]
+        assert all(int(path.name) in kwargs["pass_fds"] for path in inputs)
+        assert int(Path(command[command.index("-i") + 1]).name) in kwargs["pass_fds"]
+        assert int(Path(command[-1]).parent.name) in kwargs["pass_fds"]
         assert command[command.index("-filter:v") + 1] == "setpts=PTS/2.0"
         private_video(Path(command[-1]), b"compiled")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -124,7 +130,7 @@ def test_failed_compilation_keeps_segments_and_unrelated_files(tmp_path, monkeyp
     monkeypatch.setattr(video.shutil, "which", lambda name: f"/fake/{name}")
     monkeypatch.setattr(video, "_ffprobe_duration", lambda *args: 300)
 
-    def fail(command):
+    def fail(command, **kwargs):
         private_video(Path(command[-1]), b"partial")
         raise RuntimeError("failed compilation")
 
@@ -153,3 +159,135 @@ def test_nonfinite_video_durations_are_rejected():
     for value in (float("nan"), float("inf"), -1, 0, True):
         with pytest.raises(ValueError):
             speed_factor_for_target(30, value)
+
+
+@pytest.mark.parametrize("replace_with", ["symlink", "directory"])
+@pytest.mark.parametrize("swap_at", ["discovery", "compiler"])
+def test_root_swap_never_changes_process_inputs_or_output_tree(
+    tmp_path, monkeypatch, replace_with, swap_at
+):
+    import os
+    from types import SimpleNamespace
+
+    from furnace import video
+    from furnace.recordings import create_run
+
+    parent = tmp_path / "writable-parent"
+    parent.mkdir()
+    parent.chmod(0o777)
+    root, saved = parent / "recordings", parent / "original-recordings"
+    identity = "a" * 32
+    _, run = create_run("Pinned", "manual_recording", recordings_root=root, recording_id=identity)
+    original = private_video(run / "video.mp4", b"original")
+    original_inode = original.stat().st_ino
+    replacement = parent / "replacement"
+    replacement.mkdir(mode=0o750)
+    other_run = replacement / identity
+    other_run.mkdir(mode=0o750)
+    private_video(other_run / "video.mp4", b"replacement")
+    swapped = False
+    consumed = []
+    inherited = []
+
+    def swap():
+        nonlocal swapped
+        if swapped:
+            return
+        root.rename(saved)
+        if replace_with == "symlink":
+            root.symlink_to(replacement, target_is_directory=True)
+        else:
+            replacement.rename(root)
+        swapped = True
+
+    def which(name):
+        if swap_at == "discovery":
+            swap()
+        return f"/fake/{name}"
+
+    def process(command, **kwargs):
+        inherited.extend(kwargs["pass_fds"])
+        assert kwargs["umask"] == 0o077
+        if command[0] == "ffprobe":
+            source = Path(command[-1])
+            assert int(source.name) in kwargs["pass_fds"]
+            assert source.stat().st_ino == original_inode
+            consumed.append(source.read_bytes())
+            return SimpleNamespace(returncode=0, stdout="120", stderr="")
+        if swap_at == "compiler":
+            swap()
+        manifest = Path(command[command.index("-i") + 1])
+        assert int(manifest.name) in kwargs["pass_fds"]
+        source = Path(manifest.read_text().strip().removeprefix("file '").removesuffix("'"))
+        assert int(source.name) in kwargs["pass_fds"]
+        assert source.stat().st_ino == original_inode
+        consumed.append(source.read_bytes())
+        output = Path(command[-1])
+        assert int(output.parent.name) in kwargs["pass_fds"]
+        assert output.parent.resolve().parent == saved / identity
+        private_video(output, b"compiled-original")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(video.shutil, "which", which)
+    monkeypatch.setattr(video.subprocess, "run", process)
+    with pytest.raises((OSError, RuntimeError)):
+        video.combine_run_to_target(identity, 3, root)
+    assert consumed == [b"original", b"original"]
+    assert (saved / identity / "video.mp4").read_bytes() == b"original"
+    assert not list((saved / identity).glob(".compile-*"))
+    current_other = replacement / identity if replace_with == "symlink" else root / identity
+    assert list(current_other.iterdir()) == [current_other / "video.mp4"]
+    assert (current_other / "video.mp4").read_bytes() == b"replacement"
+    for descriptor in set(inherited):
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.parametrize("when", ["before", "probe", "compiler", "publication"])
+def test_video_cancellation_blocks_later_work_and_retains_sources(tmp_path, monkeypatch, when):
+    from types import SimpleNamespace
+
+    from furnace import video
+    from furnace.recordings import create_run
+
+    root = tmp_path / "local"
+    _, run = create_run("Cancel", "manual_recording", recordings_root=root)
+    source = private_video(run / "video.mp4")
+    output = run / f"{run.name}_shortened_3_min.mp4"
+    revoked = when == "before"
+    calls = []
+    original_link = video.os.link
+
+    def check():
+        if revoked:
+            raise RuntimeError("recording authority revoked")
+
+    def process(command, **kwargs):
+        nonlocal revoked
+        calls.append(command[0])
+        if command[0] == "ffprobe":
+            revoked = when == "probe"
+            return SimpleNamespace(returncode=0, stdout="120", stderr="")
+        private_video(Path(command[-1]), b"summary")
+        revoked = when == "compiler"
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def publish(*args, **kwargs):
+        nonlocal revoked
+        original_link(*args, **kwargs)
+        revoked = when == "publication"
+
+    monkeypatch.setattr(video.shutil, "which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(video.subprocess, "run", process)
+    monkeypatch.setattr(video.os, "link", publish)
+    with pytest.raises(RuntimeError, match="authority revoked"):
+        video.combine_run_to_target(run.name, 3, root, check_cancel=check)
+    assert calls == (
+        [] if when == "before" else ["ffprobe"] if when == "probe" else ["ffprobe", "ffmpeg"]
+    )
+    assert source.read_bytes() == b"segment"
+    assert not list(run.glob(".compile-*"))
+    if when == "publication":
+        assert output.read_bytes() == b"summary"
+    else:
+        assert not output.exists()

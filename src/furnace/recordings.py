@@ -15,6 +15,22 @@ LOCAL_RECORDINGS_DIRECTORY = Path("/var/lib/mg400/recordings")
 SHORTENED_RUN_TARGET_MINUTES = 3.0
 
 
+# Existing furnace CSV columns, independent of the furnace driver/service imports.
+FRAME_METADATA_FIELDS = (
+    "temperature_sample_time",
+    "temperature_c",
+    "target_c",
+    "ramp_rate_c_per_min",
+    "furnace_state",
+    "sequence_running",
+    "sequence_step",
+    "sequence_phase",
+    "gas_1_target_percent",
+    "gas_2_target_percent",
+    "gas_3_target_percent",
+)
+
+
 def _path(value):
     path = Path(value)
     if (
@@ -156,9 +172,16 @@ def create_run(run_name, run_type, details=None, recordings_root=None, *, record
     return run_directory / "video.mp4", run_directory
 
 
-def _tree_files(source, root):
+def _check_cancel(check_cancel):
+    if check_cancel is not None:
+        check_cancel()
+
+
+def _tree_files(source, root, check_cancel=None):
     directories, files = [], []
+    _check_cancel(check_cancel)
     for path in sorted(source.rglob("*")):
+        _check_cancel(check_cancel)
         info = path.lstat()
         if stat.S_ISDIR(info.st_mode):
             with directory_fd(path, root=root):
@@ -169,26 +192,44 @@ def _tree_files(source, root):
     return directories, files
 
 
-def _copy_verified(source, destination, source_root, destination_root):
+def _copy_verified(source, destination, source_root, destination_root, check_cancel=None):
+    _check_cancel(check_cancel)
     digest = hashlib.sha256()
     with private_open(source, "rb", root=source_root) as original:
         before = os.fstat(original.fileno())
-        with private_open(destination, "xb", root=destination_root) as copied:
-            while block := original.read(1024 * 1024):
+        _check_cancel(check_cancel)
+        # No buffered output remains to flush after the cancellation callback raises.
+        with private_open(destination, "xb", root=destination_root, buffering=0) as copied:
+            while True:
+                _check_cancel(check_cancel)
+                block = original.read(1024 * 1024)
+                if not block:
+                    break
+                _check_cancel(check_cancel)
                 digest.update(block)
                 copied.write(block)
-            copied.flush()
+            _check_cancel(check_cancel)
             os.fsync(copied.fileno())
         after = os.fstat(original.fileno())
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise RuntimeError("Recording changed during its archive copy")
+    _check_cancel(check_cancel)
+    verified = hashlib.sha256()
     with private_open(destination, "rb", root=destination_root) as copied:
-        if hashlib.file_digest(copied, "sha256").digest() != digest.digest():
-            raise RuntimeError("Recording archive verification failed")
+        while True:
+            _check_cancel(check_cancel)
+            block = copied.read(1024 * 1024)
+            if not block:
+                break
+            verified.update(block)
+    _check_cancel(check_cancel)
+    if verified.digest() != digest.digest():
+        raise RuntimeError("Recording archive verification failed")
 
 
-def sync_run_to_server(run_directory, server_root=None, *, recordings_root=None):
+def sync_run_to_server(run_directory, server_root=None, *, recordings_root=None, check_cancel=None):
     """Copy a completed run without replacing any archive or deleting local data."""
+    _check_cancel(check_cancel)
     destination_root = _archive_root(server_root)
     if destination_root is None:
         return None
@@ -196,19 +237,26 @@ def sync_run_to_server(run_directory, server_root=None, *, recordings_root=None)
     source = validated_run_directory(run_directory, root)
     if destination_root.is_relative_to(source):
         raise ValueError("The recording archive cannot be inside the source run")
-    directories, files = _tree_files(source, root)
+    directories, files = _tree_files(source, root, check_cancel)
+    _check_cancel(check_cancel)
     with directory_fd(destination_root, root=destination_root, create=True):
         pass
+    _check_cancel(check_cancel)
     destination = destination_root / source.name
     with directory_fd(destination, root=destination_root, exclusive=True):
         pass
+    _check_cancel(check_cancel)
     for directory in directories:
+        _check_cancel(check_cancel)
         with directory_fd(
             destination / directory.relative_to(source), root=destination_root, exclusive=True
         ):
             pass
     for path in files:
-        _copy_verified(path, destination / path.relative_to(source), root, destination_root)
+        _copy_verified(
+            path, destination / path.relative_to(source), root, destination_root, check_cancel
+        )
+    _check_cancel(check_cancel)
     return destination
 
 
@@ -218,16 +266,21 @@ def create_shortened_run_upload(
     recordings_root=None,
     server_root=None,
     compiler=None,
+    *,
+    check_cancel=None,
 ):
     """Compile a local summary and optionally copy it to the private archive."""
     from .video import combine_run_to_target, speed_factor_for_target
 
+    _check_cancel(check_cancel)
     speed_factor_for_target(1, target_minutes)
     root = _root(recordings_root)
     source = validated_run_directory(run_directory, root)
     local_output = recording_output_path(
         source, f"{source.name}_shortened_{target_minutes:g}_min.mp4", root
     )
+    _check_cancel(check_cancel)
+    cancellation = {} if check_cancel is None else {"check_cancel": check_cancel}
     (compiler or combine_run_to_target)(
         run_name=source.name,
         target_minutes=float(target_minutes),
@@ -235,19 +288,25 @@ def create_shortened_run_upload(
         output_path=local_output,
         ffmpeg_path="ffmpeg",
         ffprobe_path="ffprobe",
+        **cancellation,
     )
+    _check_cancel(check_cancel)
     with private_open(local_output, "rb", root=root):
         pass
     archive_root = _archive_root(server_root)
     if archive_root is None:
+        _check_cancel(check_cancel)
         return local_output, None
     if archive_root.is_relative_to(source):
         raise ValueError("The recording archive cannot be inside the source run")
+    _check_cancel(check_cancel)
     server_run_directory = archive_root / source.name
     with directory_fd(server_run_directory, root=archive_root, create=True):
         pass
+    _check_cancel(check_cancel)
     server_output = server_run_directory / local_output.name
-    _copy_verified(local_output, server_output, root, archive_root)
+    _copy_verified(local_output, server_output, root, archive_root, check_cancel)
+    _check_cancel(check_cancel)
     return local_output, server_output
 
 
@@ -257,17 +316,26 @@ def finalize_run_recording(
     recordings_root=None,
     server_root=None,
     compiler=None,
+    *,
+    check_cancel=None,
 ):
     """Compile then verify an optional archive; always retain the local recording."""
+    _check_cancel(check_cancel)
+    cancellation = {} if check_cancel is None else {"check_cancel": check_cancel}
     local_summary, _ = create_shortened_run_upload(
         run_directory,
         target_minutes=target_minutes,
         recordings_root=recordings_root,
         server_root="",
         compiler=compiler,
+        **cancellation,
     )
-    archived_run = sync_run_to_server(run_directory, server_root, recordings_root=recordings_root)
+    _check_cancel(check_cancel)
+    archived_run = sync_run_to_server(
+        run_directory, server_root, recordings_root=recordings_root, **cancellation
+    )
     archived_summary = None if archived_run is None else archived_run / local_summary.name
+    _check_cancel(check_cancel)
     return archived_run, local_summary, archived_summary
 
 

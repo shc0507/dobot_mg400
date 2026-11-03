@@ -38,8 +38,22 @@ class _Authority:
 
     def check(self):
         with self._lock:
-            if self.cancelled.is_set() or time.monotonic() >= self.deadline or self._failure():
-                raise Revoked("This step no longer has permission to act.")
+            generic = "This step no longer has permission to act."
+            if self.cancelled.is_set():
+                error = self._revocation_error
+                raise Revoked(str(error) if error is not None else generic)
+            if time.monotonic() >= self.deadline:
+                raise Revoked(generic)
+            failure = self._failure()
+            if failure:
+                # Keep the first observed cause before a cancelled worker or
+                # monitor can replace it with a generic revocation error.
+                if self._revocation_error is None:
+                    self._revocation_error = Revoked(
+                        str(failure) if isinstance(failure, (str, BaseException)) else generic
+                    )
+                self.cancelled.set()
+                raise Revoked(str(self._revocation_error))
 
     @property
     def drained(self):

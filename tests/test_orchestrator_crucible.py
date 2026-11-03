@@ -1150,6 +1150,14 @@ timeout_s = """
         + "\n"
     )
     output = io.StringIO()
+    # Clear prior-suite cycles before owned services start their real 250 ms watchdog.
+    started = time.monotonic()
+    collected = gc.collect()
+    robot_stops["gc_preflight"] = {
+        "started_monotonic": started,
+        "completed_monotonic": time.monotonic(),
+        "collected": collected,
+    }
     code = cli.main(
         ["rehearse", str(recipe), "--runs-dir", str(tmp_path / "runs")],
         out=output,
@@ -1839,6 +1847,78 @@ def test_monitor_error_survives_worker_revocation_before_outcome_publication(tmp
         assert service.events.count("acquire") == 1
         assert "release" not in service.events
         assert "next-phase" not in service.events
+        runner.abort()
+        assert not runner.wait_closed(0.02)
+        assert "release" not in service.events
+        release_monitor.set()
+        assert runner.wait_closed(3)
+        assert runner.status == "aborted"
+        assert service.events.count("stop") >= 2
+        assert service.events[-2:] == ["release", "close"]
+        assert "next-phase" not in service.events
+
+
+@pytest.mark.parametrize("source", ["clients", "zones"])
+def test_guard_unwind_preserves_first_service_or_zone_failure(tmp_path, monkeypatch, source):
+    registry, service = Registry(), FakeService()
+    coordinator_joining, runner_ready, release_monitor = (threading.Event() for _ in range(3))
+    observed = {}
+    original_thread = threading.Thread
+    original_check_held = runner_module.Zones.check_held
+    reason = f"{source}: original ownership or interlock failure"
+
+    class CoordinatedThread(original_thread):
+        def join(self, timeout=None):
+            if self.name == "orch-skill":
+                # Release the skill only after the coordinator has checked the
+                # healthy state and committed to waiting for this worker.
+                coordinator_joining.set()
+                return super().join(2)
+            return super().join(timeout)
+
+    def blocked_monitor(zones, authority):
+        if threading.current_thread().name == "orch-zones":
+            assert release_monitor.wait(4)
+        return original_check_held(zones, authority)
+
+    monkeypatch.setattr(runner_module.threading, "Thread", CoordinatedThread)
+    monkeypatch.setattr(runner_module.Zones, "check_held", blocked_monitor)
+
+    def skill(ctx):
+        with ctx.guard(lambda: None):
+            assert coordinator_joining.wait(2)
+            assert runner_ready.wait(2)
+            runner = observed["runner"]
+            target = runner.clients if source == "clients" else runner.zones
+            target.error = reason
+            ctx.check()
+        service.events.append("next-phase")
+
+    registry.register("first", skill, services=("robot",))
+    with running(
+        tmp_path, registry, ["first"], {"robot": service}, timeout=3, gates=(release_monitor,)
+    ) as (runner, _):
+        observed["runner"] = runner
+        runner_ready.set()
+        until(lambda: runner.status == "held" and "stop" in service.events)
+        snapshot = runner.snapshot()
+        stored = runner._authority.revocation_error
+        assert isinstance(stored, Revoked)
+        assert snapshot["detail"] == reason
+        assert str(stored) == snapshot["detail"]
+        assert runner._authority.cancelled.is_set()
+        assert not runner._worker.is_alive()
+        assert runner._monitor.is_alive()
+        assert not snapshot["settled"]
+        assert service.events.count("acquire") == 1
+        assert "release" not in service.events
+        assert "next-phase" not in service.events
+        # A later diagnostic cannot overwrite the first recorded cause.
+        runner._authority.revoke(RuntimeError("later cleanup failure"))
+        assert runner._authority.revocation_error is stored
+        with pytest.raises(Revoked) as cancelled:
+            runner._authority.check()
+        assert str(cancelled.value) == str(stored)
         runner.abort()
         assert not runner.wait_closed(0.02)
         assert "release" not in service.events

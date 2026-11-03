@@ -876,9 +876,13 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
     def diagnostics():
         try:
             current = _robot_failure_sample(demos[0].robot_state) if demos else None
-            return "robot_diagnostics=" + json.dumps(
-                {**robot_stops, "current": current}, sort_keys=True
-            )
+            data = json.dumps({**robot_stops, "current": current}, sort_keys=True)
+            (tmp_path / "robot-failure.json").write_text(data, encoding="utf-8")
+            report = "robot_diagnostics=" + data
+            # Assertion tuple reprs can be truncated by pytest. Captured output
+            # and this fixture sidecar preserve the complete bounded evidence.
+            print(report)
+            return report
         except Exception as error:
             return f"robot_diagnostics_unavailable={type(error).__name__}; {robot_stops!r}"
 

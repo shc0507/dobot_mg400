@@ -1250,6 +1250,7 @@ owner = "agent"
 size = "M"
 review = "human"
 deps = ["MIC-02", "FND-09"]
+# The existing focus_stop method sends the firmware command STOP FOCUS.
 writes = [
   "src/microscope/calibrate.py",
   "tests/test_microscope_calibrate.py",

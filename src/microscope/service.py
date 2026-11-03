@@ -1104,9 +1104,19 @@ class MicroscopeService:
                     self._stop_done.set()
                     self._latch_fault("stop", str(error))
             done = self._stop_done
-        done.wait(wait_s)
-        with self._lock:
-            return self._stop_outcome if done.is_set() else "pending"
+        deadline = time.monotonic() + wait_s
+        while True:
+            done.wait(max(0, deadline - time.monotonic()))
+            with self._lock:
+                # A cancelled command can request another cleanup after this
+                # event wakes us. Observe the current cleanup within the same
+                # deadline; neither return its predecessor's confirmation nor
+                # abandon the remaining wait when the shared event is cleared.
+                if self._stop_done.is_set():
+                    return self._stop_outcome
+                if time.monotonic() >= deadline:
+                    return "pending"
+                done = self._stop_done
 
     def _finish_stop(self):
         outcome = "confirmed"

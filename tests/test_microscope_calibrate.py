@@ -2097,3 +2097,68 @@ def test_setup_earlier_worker_failure_cannot_be_relabelled_by_later_quit(quit_ke
     assert session.failure == "worker failed before quit"
     assert session.operator_stopped is False
     assert session.cancel_event.is_set()
+
+
+@pytest.mark.parametrize(
+    "action,elapsed,expires",
+    [
+        ("key", 61, False),
+        ("key", 299, False),
+        ("key", 300, True),
+        ("confirm", 59, False),
+        ("confirm", 60, True),
+    ],
+)
+def test_setup_idle_keys_allow_300_seconds_but_clear_confirmation_stays_60(
+    action, elapsed, expires, monkeypatch
+):
+    import microscope.calibrate as module
+
+    clock = [0.0]
+    source = SimpleNamespace(isatty=lambda: True, fileno=lambda: 42)
+    output = SimpleNamespace(isatty=lambda: True, write=lambda _: None, flush=lambda: None)
+    attributes = [0, 0, 0, module.termios.ICANON | module.termios.ECHO, 0, 0, [0] * 32]
+    restored = []
+    monkeypatch.setattr(module.termios, "tcgetattr", lambda _: attributes)
+    monkeypatch.setattr(module.termios, "tcflush", lambda *_: None)
+    monkeypatch.setattr(module.termios, "tcsetattr", lambda *args: restored.append(args[2]))
+    monkeypatch.setattr(module.select, "select", lambda *_: ([42], [], []))
+    monkeypatch.setattr(module.os, "read", lambda *_: b"a" if action == "key" else b"CLEAR\n")
+    operator = module.TerminalOperator(source, output, clock=lambda: clock[0])
+
+    def check():
+        clock[0] = elapsed
+
+    def invoke():
+        return operator.key(check) if action == "key" else operator.confirm("reference", check)
+
+    if expires:
+        with pytest.raises(TimeoutError, match="timed out"):
+            invoke()
+    else:
+        assert invoke() == ("a" if action == "key" else None)
+    assert operator.timeout == 60
+    if action == "key":
+        assert restored[-1] == attributes
+
+
+def test_setup_idle_timeout_stops_disables_and_clears_declared_zero(supervised_rig):
+    from microscope.calibrate import run_setup
+
+    rig = supervised_rig()
+
+    class TimedOut(SetupOperator):
+        def key(self, check):
+            key = super().key(check)
+            if key is None:
+                assert rig.raw.read_status().zeroed
+                raise TimeoutError("Setup input timed out")
+            return key
+
+    rig.session.operator = TimedOut("0", "CLEAR")
+    with pytest.raises(TimeoutError, match="Setup input timed out"):
+        run_setup(rig.session, progress=lambda _: None)
+    assert rig.port.commands.count("FOCUS ZERO") == 1
+    status = rig.raw.read_status()
+    assert not status.focus.enabled and not status.objective.enabled and not status.zeroed
+    assert rig.session.cancel_event.is_set()

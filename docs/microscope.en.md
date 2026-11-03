@@ -423,8 +423,8 @@ It writes no settings file and never sends `FOCUS LIMIT`.
 
 The console uses `MICRO 4`, with focus speed `200` pulses/second and turret speed `40` pulses/second.
 The console completes each move before it accepts the next move key.
-Press a single key without Enter. The `0` confirmation requires `CLEAR` followed by Enter.
-Enter a fresh key within 60 seconds. Earlier queued input does not authorize another move.
+Press a single key without Enter. The `0` confirmation requires `CLEAR` followed by Enter within 60 seconds.
+Enter a fresh key within 300 seconds. Earlier queued input does not authorize another move.
 
 | Key | Action |
 | --- | --- |

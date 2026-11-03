@@ -255,7 +255,7 @@ class TerminalOperator:
             termios.tcsetattr(descriptor, termios.TCSANOW, changed)
             self.output.write("Setup key> ")
             self.output.flush()
-            deadline = self.clock() + self.timeout
+            deadline = self.clock() + 300.0
             while True:
                 check()
                 remaining = deadline - self.clock()

@@ -1,6 +1,7 @@
 """Offline checks for the XDV authority-bound read interfaces."""
 
 import copy
+import gc
 import io
 import ipaddress
 import json
@@ -10,6 +11,7 @@ import sys
 import threading
 import time
 import urllib.error
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -788,6 +790,69 @@ def _home_owned_demo(stage):
         stage.release()
 
 
+@pytest.fixture
+def crucible_gc_observer():
+    """Observe GC pauses only during this test, without changing collection policy."""
+    clock = time.monotonic
+    starts = [None, None, None]
+    counts = [0, 0, 0]
+    maximum = [None, None, None]
+    recent = deque(maxlen=8)
+
+    def observe(phase, info):
+        generation = info["generation"]
+        sampled_at = clock()
+        if phase == "start":
+            starts[generation] = sampled_at
+        elif phase == "stop" and starts[generation] is not None:
+            started_at = starts[generation]
+            starts[generation] = None
+            event = (
+                generation,
+                started_at,
+                sampled_at,
+                sampled_at - started_at,
+                info.get("collected", 0),
+                info.get("uncollectable", 0),
+            )
+            if generation == 2:
+                recent.append(event)
+            counts[generation] += 1
+            if maximum[generation] is None or event[3] > maximum[generation][3]:
+                maximum[generation] = event
+
+    def snapshot():
+        # Copy bounded tuples before allocating dictionaries that can themselves trigger GC.
+        latest, maxima = tuple(recent), tuple(maximum)
+        fields = (
+            "generation",
+            "started_monotonic",
+            "stopped_monotonic",
+            "duration_s",
+            "collected",
+            "uncollectable",
+        )
+        return {
+            "captured_monotonic": clock(),
+            "enabled": gc.isenabled(),
+            "thresholds": list(gc.get_threshold()),
+            "counts": list(counts),
+            "active_starts": list(starts),
+            "recent_generation_2": [dict(zip(fields, event)) for event in latest],
+            "maximum_by_generation": [
+                dict(zip(fields, event)) if event else None for event in maxima
+            ],
+        }
+
+    gc.callbacks.append(observe)
+    try:
+        yield snapshot
+    finally:
+        # Other observers can be installed during the test. Remove only ours.
+        if observe in gc.callbacks:
+            gc.callbacks.remove(observe)
+
+
 def _robot_failure_sample(robot):
     """Read only bounded local state; never query the demo's sockets or clients."""
     with robot._lock:
@@ -904,7 +969,7 @@ def _robot_operation_exception(error=None):
         del error, trace
 
 
-def _observe_robot_operation_failures(robot, diagnostics):
+def _observe_robot_operation_failures(robot, diagnostics, gc_snapshot):
     """Observe the first rejected operation before its internal stop clears state."""
     control = robot._control
     original = control._failed
@@ -919,6 +984,7 @@ def _observe_robot_operation_failures(robot, diagnostics):
                     "caller": sys._getframe(1).f_code.co_name[:80],
                     "operation_exception": _robot_operation_exception(error),
                     "feedback_reader": _feedback_reader_failure_stack(robot),
+                    "gc": gc_snapshot(),
                 }
                 # Never wait for the publication lock before the original stop.
                 if robot._lock.acquire(blocking=False):
@@ -943,7 +1009,7 @@ def _observe_robot_operation_failures(robot, diagnostics):
     return restore
 
 
-def _observe_robot_stops(robot, diagnostics):
+def _observe_robot_stops(robot, diagnostics, gc_snapshot):
     """Preserve the initiating evidence before stop workers or cleanup replace it."""
     original = robot._request_stop
     had_override = "_request_stop" in vars(robot)
@@ -967,6 +1033,7 @@ def _observe_robot_stops(robot, diagnostics):
                     if diagnostics["stop_count"] == 1:
                         record["operation_exception"] = _robot_operation_exception()
                         record["feedback_reader"] = _feedback_reader_failure_stack(robot)
+                        record["gc"] = gc_snapshot()
                     if len(diagnostics["stops"]) < 8:
                         diagnostics["stops"].append(record)
                     if reason is not None and diagnostics["first_reason"] is None:
@@ -993,6 +1060,7 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
     tmp_path,
     monkeypatch,
     scenario,
+    crucible_gc_observer,
 ):
     _crucible_files(tmp_path, monkeypatch)
     forbidden = {
@@ -1015,7 +1083,9 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
     def diagnostics():
         try:
             current = _robot_failure_sample(demos[0].robot_state) if demos else None
-            data = json.dumps({**robot_stops, "current": current}, sort_keys=True)
+            data = json.dumps(
+                {**robot_stops, "current": current, "gc": crucible_gc_observer()}, sort_keys=True
+            )
             (tmp_path / "robot-failure.json").write_text(data, encoding="utf-8")
             report = "robot_diagnostics=" + data
             # Assertion tuple reprs can be truncated by pytest. Captured output
@@ -1032,8 +1102,14 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
             demos.append(self)
             # Restore the instance method before resource teardown. Earlier stop
             # records survive runner cleanup and the service's final message.
-            self._stack.callback(_observe_robot_stops(self.robot_state, robot_stops))
-            self._stack.callback(_observe_robot_operation_failures(self.robot_state, robot_stops))
+            self._stack.callback(
+                _observe_robot_stops(self.robot_state, robot_stops, crucible_gc_observer)
+            )
+            self._stack.callback(
+                _observe_robot_operation_failures(
+                    self.robot_state, robot_stops, crucible_gc_observer
+                )
+            )
             assert set(self.clients) == {"robot", "stage", "thermal", "furnace"}, diagnostics()
             assert all(client.describe()["demo"] for client in self.clients.values()), diagnostics()
             if scenario != "unhomed":

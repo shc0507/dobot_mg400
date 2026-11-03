@@ -186,7 +186,9 @@ Finalization requires recorded frames and valid media. It requires FFmpeg and ff
 If you set `MG400_FURNACE_ARCHIVE_DIR`, finalization verifies the archive copy and retains the local files.
 Archive failure leaves local files available and does not report successful finalization.
 
-Stop, release, lease expiry, and shutdown revoke recording authority without waiting for the encoder in the request handler.
+Stop, release, lease expiry, and shutdown revoke recording authority immediately. The service sends the motor stop commands without waiting for the encoder.
+The optional `wait_s` observes motor and recording cleanup within one budget of `0..15` seconds.
+`pending` means accepted cleanup remains. `unconfirmed` reports a cleanup failure.
 The service remains busy until accepted recording work ends. Check the stop result before new work.
 Compiler and archive callbacks check cancellation before publishing success. Revoked work cannot resume or automatically retry.
 

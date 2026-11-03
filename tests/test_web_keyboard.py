@@ -52,6 +52,7 @@ class Control:
         self.calls = []
         self.stopped = False
         self.command_pending = False
+        self.rejection = None
         self.busy = False
         self.retention = None
         self.stop_ok = True

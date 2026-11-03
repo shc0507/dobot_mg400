@@ -1994,6 +1994,17 @@ def test_transport_rejects_bad_ack_or_wrong_command_echo(monkeypatch, reply):
 
 
 @pytest.mark.parametrize(
+    ("reply", "rejection"),
+    [(b"-1,{},ResetRobot();", "-1,{},ResetRobot();"), (b"-2,{},ResetRobot();", None), (b"", None)],
+)
+def test_stop_records_only_a_minus_one_rejection(monkeypatch, reply, rejection):
+    fake_connection(monkeypatch, [reply])
+    control = JointControl("robot.test", lambda: (Feedback(START, 4, 0, False), time.monotonic()))
+    assert not control.stop()["ok"]
+    assert control.rejection == rejection
+
+
+@pytest.mark.parametrize(
     "parts,failure",
     [([b"0,{", b""], ConnectionError), ([TimeoutError("ACK lost")], TimeoutError)],
 )

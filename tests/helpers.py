@@ -108,6 +108,7 @@ class PanelControl:
         self.on_clear = lambda: None
         self.ordering_unknown = False
         self.command_pending = False
+        self.rejection = None
         self.release_disable = threading.Event()
         self.release_disable.set()
 

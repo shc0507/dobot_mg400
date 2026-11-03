@@ -692,6 +692,8 @@ def install(args, host, run, chown, out):
     directory(host.data / "work", 0o750, service)
     directory(host.data / "camera", 0o700, service)
     directory(host.data / "stage", 0o700, service)
+    directory(host.data / "calibration", 0o750, service)
+    directory(host.data / "calibration/cameras", 0o700, service)
     legacy_stage = host.data / "stage.toml"
     if os.path.lexists(legacy_stage):
         print(

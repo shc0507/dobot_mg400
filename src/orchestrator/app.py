@@ -195,14 +195,23 @@ class DemoResources:
         from .rehearsal import Rehearsal
 
         if set(required) - DEMO_SERVICES:
-            raise ValueError("Demo supports only robot, stage, thermal and furnace services.")
+            raise ValueError(
+                "Demo supports only robot, stage, thermal, furnace and vision services."
+            )
         result = {}
         try:
             for name in required:
                 if name not in self.resources:
                     self.resources[name] = self.stack.enter_context(
                         Rehearsal(
-                            self.directory / name, (name,), identity="demo-" + uuid.uuid4().hex
+                            self.directory / name,
+                            (name,),
+                            identity="demo-" + uuid.uuid4().hex,
+                            **(
+                                {"robot_state_provider": self._robot_state}
+                                if name == "vision"
+                                else {}
+                            ),
                         )
                     )
                 result.update(self.resources[name].new_clients(identity))
@@ -211,6 +220,16 @@ class DemoResources:
                 client.close()
             raise
         return result
+
+    def _robot_state(self):
+        resource = self.resources.get("robot")
+        return None if resource is None else resource.robot_state
+
+    def calibration_references(self):
+        resource = self.resources.get("vision")
+        if resource is None or resource.calibration_references_file is None:
+            raise ValueError("The owned demo calibration references are unavailable.")
+        return resource.calibration_references_file
 
     def close(self):
         self.stack.close()
@@ -357,7 +376,10 @@ class OrchestratorService:
             recipes_dir or self.settings.get("MG400_ORCH_RECIPES_DIR") or CATALOG_DEFAULT
         )
         self.runs_dir = Path(runs_dir or self.settings.get("MG400_ORCH_RUNS_DIR") or DEFAULT_RUNS)
-        self.demo, self.registry = bool(demo), registry or default_registry()
+        self.demo = bool(demo)
+        self.registry = registry or default_registry(
+            calibration_reference_provider=self._demo_calibration_references if self.demo else None
+        )
         self.client_factory, self.runner_factory = client_factory, runner_factory
         self.events = EventLog()
         self.lease = ControlLease(self._lost, clock=clock)
@@ -377,6 +399,11 @@ class OrchestratorService:
 
         self.dashboard = Dashboard(self, clock=clock)
         self.approvals = Approvals(self, clock=clock)
+
+    def _demo_calibration_references(self):
+        if not self.demo or self.resources is None:
+            raise ValueError("The owned demo calibration references are unavailable.")
+        return self.resources.calibration_references()
 
     def start(self, *, background=True):
         with self.lock:
@@ -684,7 +711,9 @@ class OrchestratorService:
         recipe = validate(self.catalog.read(data["recipe"]), self.registry, data.get("params"))
         plan = prepare_zones(recipe, self.registry, self.settings)
         if self.demo and set(plan.required_services) - DEMO_SERVICES:
-            raise ValueError("Demo supports only robot, stage, thermal and furnace services.")
+            raise ValueError(
+                "Demo supports only robot, stage, thermal, furnace and vision services."
+            )
         return recipe, plan
 
     def approval_ticket(self, client):

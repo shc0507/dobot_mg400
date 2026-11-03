@@ -217,6 +217,8 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         key: value for key, value in example.items() if not key.endswith("_TOKEN")
     }
     assert [(path.name, mode(path)) for path in sorted(host.data.rglob("*")) if path.is_dir()] == [
+        ("calibration", 0o750),
+        ("cameras", 0o700),
         ("camera", 0o700),
         ("locks", 0o700),
         ("stage", 0o700),
@@ -267,7 +269,15 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     ]
     assert uv[0]["cwd"] == host.code and uv[0]["env"]["UV_LINK_MODE"] == "copy"
     assert host.owner(host.code) == host.owner(host.data) == (0, 1000)
-    for name in ("locks", "work", "camera", "stage", "camera/preview.key"):
+    for name in (
+        "locks",
+        "work",
+        "camera",
+        "stage",
+        "calibration",
+        "calibration/cameras",
+        "camera/preview.key",
+    ):
         assert host.owner(host.data / name) == (1000, 1000), name
     assert host.owner(host.settings) == (0, 0)
     report = host.out.getvalue()
@@ -891,6 +901,8 @@ def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
         "Would ensure <host>/var/lib/mg400/work (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/camera (0700, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/stage (0700, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/calibration (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/calibration/cameras (0700, 1000:1000)",
         "Would create <host>/var/lib/mg400/camera/preview.key",
         "Would ensure <host>/opt/mg400 (0750, 0:1000)",
         "Would run: /usr/bin/uv sync --locked --no-default-groups "

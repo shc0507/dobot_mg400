@@ -550,7 +550,7 @@ def test_demo_entrypoint_startup_signal_shutdown_and_defaults():
     )
     assert captured["host"] == "127.0.0.1" and captured["port"] == 8771
     assert captured["clear_untrusted_proxy_headers"] is False
-    assert captured["max_request_body_size"] == 4097
+    assert captured["max_request_body_size"] == 16385
     assert service._closed and not service._poller.is_alive()
     server.close.assert_called_once()
     assert signal.getsignal(signal.SIGTERM) == previous

@@ -7,8 +7,9 @@ import signal
 
 from labkit.auth import valid_token_for_bind
 
+from .calibration import DEFAULT_DIRECTORY, calibration_settings
 from .frames import DemoSource, Go2RTCSource
-from .service import DEFAULT_WEIGHTS, FIXTURES, VisionService, create_app
+from .service import DEFAULT_WEIGHTS, FIXTURES, MAX_REQUEST_BYTES, VisionService, create_app
 
 
 def main(argv=None, *, environ=None, service_factory=VisionService, server_factory=None):
@@ -40,6 +41,13 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
             "or leave it unset and bind to loopback"
         )
     try:
+        calibration_options = calibration_settings(
+            {
+                "nominal_tag_height_mm": float(env.get("MG400_VISION_TAG_HEIGHT_MM") or "100"),
+                "nominal_distance_mm": float(env.get("MG400_VISION_TAG_TIP_MM") or "246"),
+                "rms_limit_mm": float(env.get("MG400_VISION_CALIBRATION_RMS_MM") or "1"),
+            }
+        )
         source = (
             DemoSource(FIXTURES)
             if args.demo
@@ -51,6 +59,8 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
             weights=args.weights,
             device=args.device,
             gpu_fraction=args.gpu_fraction,
+            calibration_directory=env.get("MG400_VISION_CALIBRATION_DIR") or DEFAULT_DIRECTORY,
+            calibration_options=calibration_options,
         )
         app = create_app(service, token=token, base_path=args.base_path)
     except (ValueError, OSError) as error:
@@ -79,7 +89,7 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
             port=args.port,
             threads=6,
             clear_untrusted_proxy_headers=False,
-            max_request_body_size=4097,
+            max_request_body_size=MAX_REQUEST_BYTES + 1,
         )
         service.start()
         server.run()

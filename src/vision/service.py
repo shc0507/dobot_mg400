@@ -1,6 +1,7 @@
 """Serialized vision inference with contract leases and explicit startup."""
 
 import copy
+import hashlib
 import importlib
 import io
 import json
@@ -8,6 +9,7 @@ import math
 import re
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +21,14 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.flask import contract_blueprint
 from labkit.lease import Lease
+from vision.calibration import (
+    DEFAULT_DIRECTORY,
+    CalibrationStore,
+    calibration_settings,
+    detect_markers,
+    image_size,
+    robot_xy,
+)
 from vision.frames import DemoSource, FrameError, Go2RTCSource, validate_camera
 from vision.localizer import Detection, Localizer, draw_detections
 from vision.qr import DetectionCancelled, detect_qr_codes
@@ -26,6 +36,21 @@ from vision.qr import DetectionCancelled, detect_qr_codes
 FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/vision"
 DEFAULT_WEIGHTS = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
 MAX_RESULT_BYTES = 256 * 1024
+MAX_REQUEST_BYTES = 16 * 1024
+
+
+class _VisionLease(Lease):
+    """Release irreversibly cancels jobs, including same-client reacquisition."""
+
+    def __init__(self, *args, on_release, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_release = on_release
+
+    def release(self, client):
+        with self.control(client, require_holder=False):
+            if self.snapshot()["holder"] == client:
+                self._on_release(client)
+            return super().release(client)
 
 
 class DemoLocalizer:
@@ -57,6 +82,9 @@ class VisionService:
         localizer_factory=None,
         torch_loader=None,
         qr_detector=detect_qr_codes,
+        marker_detector=detect_markers,
+        calibration_directory=DEFAULT_DIRECTORY,
+        calibration_options=None,
         clock=time.monotonic,
         wall_clock=time.time,
     ):
@@ -83,6 +111,12 @@ class VisionService:
         self._factory = localizer_factory
         self._torch_loader = torch_loader or (lambda: importlib.import_module("torch"))
         self._qr = qr_detector
+        self._markers = marker_detector
+        self.calibrations = CalibrationStore(calibration_directory)
+        self._calibration_options = calibration_settings(calibration_options)
+        devices = getattr(getattr(self.frames, "configuration", None), "devices", ())
+        self._devices = tuple(devices) if isinstance(devices, (tuple, list)) else ()
+        self._calibrated_cameras = set()
         self._wall_clock = wall_clock
         self._lock = threading.RLock()
         self._inference = threading.Lock()
@@ -98,7 +132,9 @@ class VisionService:
         self._next = self._seq = self.expiry_count = 0
         self._fault = self._last_command = self._summary = None
         self.events = EventLog(clock=wall_clock)
-        self.lease = Lease(3, clock, on_expire=self.on_lease_expired)
+        self.lease = _VisionLease(
+            3, clock, on_expire=self.on_lease_expired, on_release=self._released
+        )
 
     def describe(self):
         camera = {"type": "integer", "minimum": 1, "maximum": self.camera_count}
@@ -116,6 +152,32 @@ class VisionService:
             "maxItems": 4,
             "description": "Pixel crop [x0, y0, x1, y1], with exclusive upper bounds.",
         }
+        calibration = copy.deepcopy(params)
+        for name, count, columns in (
+            ("tag_points", 24, 3),
+            ("tag_pixels", 24, 2),
+            ("tray_points", 4, 3),
+            ("tray_pixels", 4, 2),
+        ):
+            calibration["properties"][name] = {
+                "type": "array",
+                "minItems": count if count == 24 else 2,
+                "maxItems": count,
+                "items": {
+                    "type": "array",
+                    "minItems": columns,
+                    "maxItems": columns,
+                    "items": {"type": "number"},
+                },
+            }
+            calibration["required"].append(name)
+        calibration["properties"]["image_size"] = {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": "integer", "minimum": 1},
+        }
+        calibration["required"].append("image_size")
         return describe(
             service="vision",
             version="1.0",
@@ -123,7 +185,12 @@ class VisionService:
             zones=[],
             on_lease_expiry="cancel the controlling client's inference and discard late results",
             commands=(
-                {"detect": command(params), "read_labels": command(labels)}
+                {
+                    "detect": command(params),
+                    "read_labels": command(labels),
+                    "read_markers": command(params),
+                    "calibrate_camera": command(calibration),
+                }
                 if self.camera_count
                 else {}
             ),
@@ -147,7 +214,7 @@ class VisionService:
                     "model_loaded": self._model is not None and self._started,
                     "device": self.device,
                     "last_result": self._summary,
-                    "calibrated_cameras": [],
+                    "calibrated_cameras": sorted(self._calibrated_cameras),
                 }
             )
 
@@ -216,14 +283,44 @@ class VisionService:
 
     def _arguments(self, action, args):
         allowed = {"camera", "region"} if action == "read_labels" else {"camera"}
+        if action == "calibrate_camera":
+            allowed |= {"tag_points", "tag_pixels", "tray_points", "tray_pixels", "image_size"}
         if (
-            action not in {"detect", "read_labels"}
+            action not in {"detect", "read_labels", "read_markers", "calibrate_camera"}
             or not isinstance(args, dict)
             or set(args) - allowed
             or "camera" not in args
         ):
-            raise ValueError("Expected detect(camera) or read_labels(camera, optional region).")
+            raise ValueError("Expected a configured vision command with its declared parameters.")
         camera = validate_camera(args["camera"], self.camera_count)
+        if action == "calibrate_camera":
+            if set(args) != allowed:
+                raise ValueError("Calibration needs all 24 tag points and 2 to 4 tray references.")
+            image_size(args["image_size"])
+            count = len(args["tray_points"]) if isinstance(args["tray_points"], list) else 0
+            for name, rows, columns in (
+                ("tag_points", 24, 3),
+                ("tag_pixels", 24, 2),
+                ("tray_points", count, 3),
+                ("tray_pixels", count, 2),
+            ):
+                value = args[name]
+                if (
+                    not 2 <= count <= 4
+                    or not isinstance(value, list)
+                    or len(value) != rows
+                    or any(not isinstance(row, list) or len(row) != columns for row in value)
+                    or any(
+                        type(item) not in (int, float)
+                        or not math.isfinite(item)
+                        or abs(item) > 1_000_000
+                        for row in value
+                        for item in row
+                    )
+                ):
+                    raise ValueError("Calibration points must be bounded finite coordinate arrays.")
+            if camera > len(self._devices):
+                raise ValueError("Camera calibration requires a configured stable port identity.")
         region = args.get("region")
         if "region" in args and (
             not isinstance(region, (list, tuple))
@@ -250,6 +347,7 @@ class VisionService:
                 "action": action,
                 "camera": camera,
                 "region": region,
+                "args": copy.deepcopy(args),
                 "client": client,
                 "cancel": threading.Event(),
                 "done": threading.Event(),
@@ -291,7 +389,42 @@ class VisionService:
         image = self.frames.read(job["camera"])
         if job["cancel"].is_set():
             raise DetectionCancelled()
-        if job["action"] == "detect":
+        if job["action"] == "calibrate_camera":
+            from vision.calibration import fit_calibration
+
+            args = job["args"]
+            if image.size != image_size(args["image_size"]):
+                raise ValueError("Camera image size changed during calibration.")
+            model = fit_calibration(
+                args["tag_points"],
+                args["tag_pixels"],
+                args["tray_points"],
+                args["tray_pixels"],
+                args["image_size"],
+                cancelled=job["cancel"].is_set,
+                **self._calibration_options,
+            )
+            device = self._devices[job["camera"] - 1]
+            saved = self.calibrations.save(device, model, commit_guard=lambda: self._commit(job))
+            with self._lock:
+                self._calibrated_cameras.add(job["camera"])
+            result = {"camera": job["camera"], "calibrated": True, "calibration": saved}
+            return self._bounded_result(result), image
+        if job["action"] == "read_markers":
+            result = {
+                "image_size": {"width": image.width, "height": image.height},
+                "coordinate_system": "oriented_original_image_pixels",
+                "markers": self._markers(image),
+                "frame_sha256": hashlib.sha256(image.tobytes()).hexdigest(),
+                "read_at": self._wall_clock(),
+                "camera_device": (
+                    self._devices[job["camera"] - 1]
+                    if job["camera"] <= len(self._devices)
+                    else None
+                ),
+            }
+            annotated = image
+        elif job["action"] == "detect":
             annotated, result = self._model.predict(image)
             result = copy.deepcopy(result)
         else:
@@ -327,7 +460,40 @@ class VisionService:
         if job["cancel"].is_set():
             raise DetectionCancelled()
         result.update(camera=job["camera"], calibrated=False)
+        if job["action"] != "read_markers" and job["camera"] <= len(self._devices):
+            model = self.calibrations.load(self._devices[job["camera"] - 1])
+            if model is not None:
+                if image.size != image_size(model["image_size"]):
+                    raise ValueError("Live image size differs from the stored camera calibration.")
+                for item in result.get("detections", result.get("labels", [])):
+                    point = item.get("center_px", item.get("center_xy"))
+                    if point is None:
+                        raise ValueError("Detection lacks an image-pixel center for calibration.")
+                    xy = robot_xy(model, point, image.size)
+                    item["robot_mm"] = {"x": xy[0], "y": xy[1]}
+                result["calibrated"] = True
+                with self._lock:
+                    self._calibrated_cameras.add(job["camera"])
+            else:
+                with self._lock:
+                    self._calibrated_cameras.discard(job["camera"])
         return self._bounded_result(result), annotated
+
+    @contextmanager
+    def _commit(self, job):
+        # The potentially expensive solve and staging write precede this short
+        # commit. Stop and lease expiry serialize with the atomic file rename.
+        with self.lease.control(job["client"]):
+            with self._lock:
+                if self._closed or self._active is not job or job["cancel"].is_set():
+                    raise DetectionCancelled()
+                yield
+
+    def _released(self, client):
+        with self._lock:
+            if self._active is not None and self._active["client"] == client:
+                self._active["cancel"].set()
+                self._seq += 1
 
     @staticmethod
     def _bounded_result(result):
@@ -450,7 +616,7 @@ class VisionService:
 
 def create_app(service, *, token=None, base_path="/"):
     app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = 4096
+    app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
     blueprint = contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
 
     def camera():

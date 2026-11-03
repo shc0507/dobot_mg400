@@ -20,6 +20,8 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400/models` | Model weights installed from the asset manifest, with file permissions `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
 | `/var/lib/mg400/stage` | Writable stage calibration and camera references in `stage.toml` | `1000:1000`, `0700` |
+| `/var/lib/mg400/calibration` | Parent directory for instrument calibration | `1000:1000`, `0750` |
+| `/var/lib/mg400/calibration/cameras` | Camera-to-robot calibration JSON and owner-taught references, files `0600` or `0640` | `1000:1000`, `0700` |
 | `/var/lib/mg400/thermal` | Named thermal regions in `rois.toml`, files `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/furnace` | Furnace state and persistent lock, files `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/runs` | Orchestrator run records, files `0600` | `1000:1000`, `0750` |
@@ -458,7 +460,7 @@ Restore by hand on the new host:
 6. Adjust `/etc/mg400/mg400.env` for the new bind addresses and camera device paths. Keep owner `root:root` and mode `0600`.
    Preserving access tokens avoids another token entry by users. Restoring `/var/lib/mg400/camera/preview.key` preserves preview links.
    The data paths above use owner `1000:1000` and file modes `0640` or `0600`.
-   Keep directory mode `0750`, except the camera and stage directories, which require `0700`. Preserve the archive's owners and modes for other existing data.
+   Keep directory mode `0750`, except the camera, stage and `calibration/cameras` directories, which require `0700`. Preserve the archive's owners and modes for other existing data.
 7. If `/var/lib/mg400/work/gripper_feedback.json.command-lock.json` exists, a gripper command outcome is unconfirmed.
    Confirm the gripper state and preserve this file with owner `1000:1000` and mode `0600`.
    The collection service stays locked when it reads the restored file. Do not remove it to resume commands.

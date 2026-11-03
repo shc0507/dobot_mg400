@@ -86,7 +86,8 @@ class Registry:
             raise ValueError(f"Unknown skill: {name!r}") from None
 
 
-def default_registry():
+def default_registry(*, calibration_reference_provider=None):
+    from .calibrate import calibrate, calibration_skill
     from .crucible import load, unload
     from .recording import record
     from .robot import pick, place, transfer
@@ -121,6 +122,13 @@ def default_registry():
     registry.register("robot.move", move, services=("robot",))
     registry.register("robot.stop", stop, services=("robot",))
     registry.register("sample.record", sample)
+    registry.register(
+        "vision.calibrate",
+        calibrate
+        if calibration_reference_provider is None
+        else calibration_skill(calibration_reference_provider),
+        services=("robot", "vision"),
+    )
     registry.register("microscope.record", record, services=("microscope",))
     registry.register("robot.pick", pick, services=("robot",))
     registry.register("robot.place", place, services=("robot",))

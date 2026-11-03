@@ -226,7 +226,16 @@ def main(argv=None, *, out=None, read=None):
                 result = store.get(args.run_id) if args.run_id else store.runs()
                 print(json.dumps(result, ensure_ascii=False, allow_nan=False), file=out)
             return 0
-        registry = default_registry()
+        demo = None
+
+        def demo_references():
+            if demo is None or demo.calibration_references_file is None:
+                raise ValueError("The owned demo calibration references are unavailable.")
+            return demo.calibration_references_file
+
+        registry = default_registry(
+            calibration_reference_provider=demo_references if args.command == "rehearse" else None
+        )
         recipe = load_recipe(args.recipe, registry, overrides=_overrides(args.param))
         scale = positive(args.time_scale, "time scale") if args.command == "rehearse" else 1
         identity = "orch-" + uuid.uuid4().hex

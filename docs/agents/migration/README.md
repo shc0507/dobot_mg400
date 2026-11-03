@@ -237,7 +237,7 @@ Contract rules:
 | --- | --- | --- |
 | Inside one device | The device's service | Limits, stop confirmation, leases, hold timeouts, unknown-outcome lock. Existing robot and stage rules stay. |
 | Between devices | Orchestrator | Zones (`tray`, `crucible-load`, `furnace-tube`) and preconditions such as "furnace in STOP/COOLING" or "crucible below the thermal limit" (ORC-04, XDV-01). |
-| Furnace window | Stage and microscope services | Stage soft limits in the firmware and the host keep the crucible clear of the tube and the window (STG-01, STG-02). Focus limits and a known focus zero keep the objectives off the window, and the turret turns only at the clearance position (MIC-01, MIC-03). |
+| Furnace window | Stage and microscope services | Stage soft limits in the firmware and the host keep the crucible clear of the tube and the window (STG-01, STG-02). Focus limits and a known focus zero keep the objectives off the window. The turret turns only at the clearance position (MIC-01, MIC-03), except small supervised calibration moves inside the window measured in H-06 (MIC-07). |
 | People and automation | Services | While the orchestrator holds a service's lease, the panels of that service can only stop it. |
 | Physical | Lab (H-11) | E-stop chain, independent over-temperature cutoff. Software never replaces them. |
 
@@ -554,7 +554,7 @@ Human tasks to start now, because they take long and change no hardware: H-02 (f
 | Collision during automated transfers | Damage | Taught stations with safe heights and via points, speed caps, rehearsal first, P-HW, zones |
 | Process safety in the furnace | Fire, gas, damaged samples | D5 rules, caps, simulator tests, H-10, H-11, P-HW with inert gas |
 | Firmware changes | Stage or turret moves wrongly | Backward-compatible protocol additions, manual zero with a camera reference on the stage, human review, P-HW |
-| The crucible or an objective hits the furnace window | A broken window over a hot furnace | Stage soft limits (STG-01, STG-02), focus limits and a known focus zero (MIC-01, MIC-03), turret turns only at the clearance position (MIC-03), P-HW at room temperature first (H-18, H-21) |
+| The crucible or an objective hits the furnace window | A broken window over a hot furnace | Stage soft limits (STG-01, STG-02), focus limits and a known focus zero (MIC-01, MIC-03), turret turns only at the clearance position (MIC-03) or inside the measured calibration window (MIC-07, H-06), P-HW at room temperature first (H-18, H-21) |
 | Docs drift between languages | Operators follow wrong steps | Pair check in CI, both files in the same PR |
 | Conflicts in shared files | Merge delays | Section 6.3 rules |
 | GPU memory shared with another app | Vision or the LLM fails to load | Memory cap, `mg400ctl gpu`, H-13 |

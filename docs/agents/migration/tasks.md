@@ -732,7 +732,7 @@ Steps:
 
 1. `src/vision/calibration.py`: fit a camera model from 3D tag points to pixels: `cv2.calibrateCamera` with `CALIB_USE_INTRINSIC_GUESS`, radial terms k1 and k2 only, the initial guess from a DLT fit, and RANSAC on the DLT with a 2 px threshold. Map a pixel to robot XY by undistorting it and intersecting its ray with the tray plane. Validate on held-out points and report the RMS error in millimetres, each point at its own height. Store JSON in `/var/lib/mg400/calibration/cameras/`, keyed by the camera's `/dev/v4l/by-path` name: camera matrix, distortion, rotation, translation, tray plane height, image size, points, RMS, time.
 2. Refuse a calibration when the live image size differs from the stored one.
-3. `src/orchestrator/skills/calibrate.py`: the robot carries the arm tag from H-08 over a 3 × 4 grid between two taught stations, at 2 flange heights at least 40 mm apart (24 points). The tag sits on the J4 axis, so its position is the flange X and Y, and the flange Z plus a nominal tag height of 100 mm (setting). At each point: wait until still, take 5 frames, detect the tag center, take the median. Then read the tray references from H-08 step 4: the QR reader finds each code's center in the same camera, and the recorded robot position gives the point on the tray plane. Fit the camera model together with 1 more unknown, D, the vertical distance from the tag to the tweezer tip. The tray plane then follows from the references, and errors in the tool dz and the nominal tag height cancel. Report D. Refuse a D more than 10 mm from 246 mm (setting). Fit with 18 tag points, validate with 6 tag points and the tray references. Accept when the RMS is at most 1.0 mm (setting).
+3. `src/orchestrator/skills/calibrate.py`: the robot carries the arm tag from H-08 over a 3 × 4 grid between two taught stations, at 2 flange heights at least 40 mm apart (24 points). The tag sits on the J4 axis, so its position is the flange X and Y, and the flange Z plus a nominal tag height of 100 mm (setting). At each point: wait until still, take 5 frames, detect the tag center, take the median. Then read the tray references from H-08 step 4: the ArUco reader finds each corner marker's center in the same camera, and the recorded robot position gives the point on the tray plane. Fit the camera model together with 1 more unknown, D, the vertical distance from the tag to the tweezer tip. The tray plane then follows from the references, and errors in the tool dz and the nominal tag height cancel. Report D. Refuse a D more than 10 mm from 246 mm (setting). Fit with 18 tag points, validate with 6 tag points and the tray references. Accept when the RMS is at most 1.0 mm (setting).
 4. The vision service loads the calibrations and adds `robot_mm` to detections.
 5. Tests with synthetic points from a known camera with distortion, outliers included.
 
@@ -746,14 +746,15 @@ Notes: the tag is about 246 mm above the tweezer tip, so it can never reach the 
 
 Owner: agent · Size: M · Review: agent · Deps: CAL-01, VIS-02
 
-Goal: slot positions from the tray's two corner QR codes, as a check on the taught stations and on detections.
+Goal: slot positions from the tray's corner ArUco markers, as a check on the taught stations and on detections.
 
 Steps:
 
-1. `config/trays/<name>.toml` from H-08: the text of each corner QR code, its position in the tray frame, and each slot's position and label area in millimetres.
-2. `src/vision/tray.py`: find both corner codes, map their centers to robot XY with the calibration, fit a similarity transform, and return every slot in robot coordinates.
-3. Cross-check each slot against its taught station and, when a chip is present, against the YOLO chip center. Report the residuals and fail above 2 mm (setting).
-4. Tests with synthetic images.
+1. `config/trays/<name>.toml` from H-08: the ArUco id of each corner marker, its center in the tray frame, and each slot's position and label area in millimetres. Tray `Grooved Platform V2` (owner, 2026-11-02): the markers are `DICT_4X4_50` ids 0, 1, 2 and 7. The tray origin is the id 1 corner. The marker centers in mm are id 1 (15.15, 15.0), id 0 (162.65, 15.0), id 7 (15.15, 162.8) and id 2 (162.65, 162.8). The arm tag is id 4, so the ids do not clash.
+2. `src/vision/tray.py`: find the corner markers with OpenCV `cv2.aruco` and `DICT_4X4_50`, not with the QR reader `src/vision/qr.py`. Use `detect` and `marker_center` in `src/microscope/aruco_locator.py` as the pattern. Map the marker centers to robot XY with the calibration, fit a similarity transform, and return every slot in robot coordinates.
+3. Do not require all 4 markers. Any 3 detected markers fix the tray pose. The tray model then predicts the center of the 4th marker. Sample its cells at that position, compare them with the bits of its id, and report the result. The default detector often misses id 0.
+4. Cross-check each slot against its taught station and, when a chip is present, against the YOLO chip center. Report the residuals and fail above 2 mm (setting).
+5. Tests with synthetic images, one of them with only 3 markers.
 
 Done when: P-CHECKS pass.
 
@@ -1586,7 +1587,7 @@ Steps:
 1. Measure the tool offset: dx, dy, dz in mm from the flange face (tool 0) to the tweezer tip. The tool is the PGEA-2/15-10-O-S gripper (89 mm from its mounting face to the jaw ends, vendor drawing), the owner's `Gripper_To_Tweezer_Adaptor_V6` on each jaw, and tweezers. The owner's side photos (2026-11-02), scaled by the gripper body (67 mm), its front plate (17.5 mm) and the adaptor (32.1 mm), give dz = 146 mm (±3 mm) and dx = dy = 0 (±2 mm): the adaptor hangs 32 mm below the jaw ends and the tweezer tip 27 mm below the adaptor. ±3 mm is enough for `tool.toml`, because taught stations convert back with the same offset.
 2. The arm tag is mounted: ArUco `DICT_4X4_50` id 4, from Zenan's print sheet (24 mm black square), flat on the top cover of the robot's end block. That face is centered on the J4 axis. The end block does not turn with R. The black square measures 24 mm (owner, 2026-11-02). The photos put the tag about 100 mm above the flange face (the MG400 model says 93 mm), so about 246 mm above the tweezer tip. Nobody measures the exact tag-to-tip distance by hand: CAL-01 solves it from the tray references in step 4.
 3. Choose the safe travel height and any via points around the furnace and the microscope.
-4. Tray, without ruler measurements: the text of its corner QR codes, and the positions of the QR codes and slots in the tray frame from the tray's design file. Then record 2 to 4 tray references: jog the tweezer tip onto the center of a corner QR code and write down the X, Y, Z and R that the robot panel shows, with no tool set.
+4. Tray, without ruler measurements: the ArUco ids of its corner markers, and the positions of the markers and slots in the tray frame from the tray's design file. Then record 2 to 4 tray references: jog the tweezer tip onto the center of a corner marker and write down the X, Y, Z and R that the robot panel shows, with no tool set.
 
 Output on the issue. Unblocks CAL-01, CAL-02, H-17.
 

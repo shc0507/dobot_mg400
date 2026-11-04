@@ -69,7 +69,9 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
       return { outcome: "accepted" };
     },
     async consoleRequest(path) { calls.push(["console", path]); return { events: [] }; },
-    async describe() { return { commands: { execute: { params: { properties: { speed: { maximum: 20 } } } } } }; },
+    async describe() {
+      return { commands: { execute: { params: { properties: { speed: { maximum: 20 } } } }, keyboard: { params: { properties: { speed: { maximum: 100 } } } } } };
+    },
     async relay(device, action, params) { calls.push(["relay", device, action, params]); return { outcome: "accepted" }; },
     async stop(device) { calls.push(["stop", device]); return { device, outcome: "confirmed" }; },
     take: async () => {}, release: async () => {},
@@ -185,4 +187,75 @@ test("Check reference shows the marked frame and Teach reference needs a confirm
   page.find("Confirm").click();
   await page.settle();
   assert.deepEqual(page.calls.filter(call => call[1] === "stage/teach"), [["request", "stage/teach", { motor: "insert", confirmed: true }]]);
+});
+
+/** A window and a document with listeners, and interval callbacks the test runs by hand. */
+async function keyboardPage() {
+  const win = new Map(), docListeners = new Map(), intervals = [];
+  const saved = { add: globalThis.addEventListener, document: globalThis.document, set: globalThis.setInterval, clear: globalThis.clearInterval };
+  globalThis.addEventListener = (event, callback) => win.set(event, callback);
+  globalThis.document = { visibilityState: "visible", hasFocus: () => true, addEventListener: (event, callback) => docListeners.set(event, callback) };
+  const page = await mounted();
+  globalThis.setInterval = callback => intervals.push(callback);
+  globalThis.clearInterval = id => { if (id) intervals[id - 1] = null; };
+  page.ws.show();
+  await page.settle();
+  page.calls.length = 0;
+  const restore = () => {
+    globalThis.addEventListener = saved.add; globalThis.document = saved.document;
+    globalThis.setInterval = saved.set; globalThis.clearInterval = saved.clear;
+  };
+  const key = (type, code, extra = {}) => win.get(type)({ code, target: null, preventDefault() {}, ...extra });
+  const keyCalls = () => page.calls.filter(call => (call[0] === "request" && call[1] === "keys") || (call[0] === "relay" && call[2] === "keyboard"));
+  return { ...page, win, docListeners, intervals, restore, key, keyCalls };
+}
+
+test("keyboard jog arms, refreshes held keys and releases them on blur", async () => {
+  const page = await keyboardPage();
+  try {
+    const before = page.intervals.length;
+    page.find("Keyboard").click();
+    await page.settle();
+    page.key("keydown", "KeyW");
+    page.key("keydown", "KeyW", { repeat: true });
+    page.key("keydown", "KeyP");
+    await page.settle();
+    // The refresh timer resends the held set while a key is held.
+    const refreshTimer = page.intervals.slice(before).find(Boolean);
+    refreshTimer();
+    await page.settle();
+    page.win.get("blur")();
+    await page.settle();
+    assert.deepEqual(page.keyCalls(), [
+      ["relay", "robot", "keyboard", { enabled: true, seq: 1, speed: 10 }],
+      ["request", "keys", { seq: 2, held: ["W"] }],
+      ["request", "keys", { seq: 3, held: ["W"] }],
+      ["request", "keys", { seq: 4, held: [] }],
+      ["relay", "robot", "keyboard", { enabled: false, seq: 5, reason: "focus" }],
+    ]);
+    assert.equal(page.ws._test.kb.on, false);
+  } finally { page.restore(); }
+});
+
+test("keyboard jog disarms when the tab is hidden and when the Motion tab is left", async () => {
+  const page = await keyboardPage();
+  try {
+    page.find("Keyboard").click();
+    await page.settle();
+    globalThis.document.visibilityState = "hidden";
+    page.docListeners.get("visibilitychange")();
+    await page.settle();
+    globalThis.document.visibilityState = "visible";
+    page.find("Keyboard").click();
+    await page.settle();
+    page.ws.hide();
+    await page.settle();
+    assert.deepEqual(page.keyCalls().filter(call => call[3]?.enabled === false).map(call => call[3]), [
+      { enabled: false, seq: 2, reason: "focus" }, { enabled: false, seq: 4, reason: "focus" },
+    ]);
+    // With the keyboard off no key is sent.
+    page.ws.show();
+    page.key("keydown", "KeyW");
+    assert.equal(page.keyCalls().some(call => call[1] === "keys"), false);
+  } finally { page.restore(); }
 });

@@ -391,6 +391,23 @@ class Console:
             if fresh is not None:
                 self._close(fresh)
 
+    def keys(self, page, seq, held):
+        """Send one robot held-key set once on this page's robot session. Never retried."""
+        item = self._owned("robot", page)
+        if item is None:
+            raise ServiceError(409, "Take control of this device first.")
+        try:
+            result = item.adapter.keys(seq, held)
+        except Exception as exc:
+            outcome = classify(exc)
+            message = str(exc) if outcome == "refused" else "The outcome is unknown."
+            return {"outcome": outcome, "error": self.service.dashboard.text(message)}
+        status = result.get("status") if isinstance(result, dict) else None
+        if type(status) is int and status >= 400:
+            error = str(result.get("error", "Refused."))
+            return {"outcome": "refused", "error": self.service.dashboard.text(error)}
+        return {"outcome": "accepted"}
+
     def operator(self, device, page, path, data):
         """Send one operator-only service request on this page's lease, once.
 

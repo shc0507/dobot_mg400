@@ -215,6 +215,9 @@ class RobotAdapter(ServiceAdapter):
     def command(self, action, **params):
         return self._robot.command(action, **params)
 
+    def keys(self, seq, held):
+        return self._robot.keys(seq, held)
+
     def stop(self):
         # The robot's dedicated HTTP transport includes X-MG400-Panel and
         # remains independent of an in-flight WebSocket command.

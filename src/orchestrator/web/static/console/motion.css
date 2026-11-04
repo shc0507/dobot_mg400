@@ -52,3 +52,7 @@
   #ws-motion .mo-pose { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #ws-motion .mo-grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+#ws-motion .mo-keys { display: grid; gap: 6px; }
+#ws-motion .mo-keyrow { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+#ws-motion .mo-key { min-width: 32px; padding: 4px 0; text-align: center; border-radius: 6px; border: 1px solid var(--line2); color: var(--soft); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+#ws-motion .mo-key.mo-on { border-color: var(--accent); background: var(--tab); color: var(--text); }

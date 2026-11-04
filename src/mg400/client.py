@@ -426,6 +426,10 @@ class RobotClient:
         with self._command_lock:
             return self._command(action, fields, self.timeout)
 
+    def keys(self, seq, held):
+        """Send one held-key set once and return the protocol reply. Never retried."""
+        return self._request("keys", {"seq": seq, "held": list(held)}, self.timeout)
+
     def _command(self, action, fields, timeout):
         if not isinstance(action, str):
             raise ValueError("Action must be a string.")

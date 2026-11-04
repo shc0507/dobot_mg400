@@ -8,7 +8,6 @@ units = ["mg400-web-panel.service"]
 optional = false
 venv = ".venv"
 groups = ["tools"]
-token = "MG400_PANEL_TOKEN"
 port = 8766
 assets = []
 
@@ -18,7 +17,6 @@ units = ["mg400-vision.service"]
 optional = true
 venv = ".venv-vision"
 groups = ["vision", "vision-gpu"]
-token = "MG400_VISION_TOKEN"
 port = 8771
 assets = ["vision-weights"]
 
@@ -28,27 +26,24 @@ units = ["mg400-thermal.service"]
 optional = true
 venv = ".venv"
 groups = ["thermal"]
-token = "MG400_THERMAL_TOKEN"
 port = 8768
 assets = []
 
 [[service]]
 name = "furnace"
 units = ["mg400-furnace.service"]
-optional = true
+optional = false
 venv = ".venv"
 groups = ["furnace"]
-token = "MG400_FURNACE_TOKEN"
 port = 8769
 assets = []
 
 [[service]]
 name = "microscope"
 units = ["mg400-microscope.service"]
-optional = true
+optional = false
 venv = ".venv"
 groups = ["microscope"]
-token = "MG400_MICROSCOPE_TOKEN"
 port = 8770
 assets = []
 
@@ -58,7 +53,6 @@ units = ["mg400-orchestrator.service"]
 optional = true
 venv = ".venv"
 groups = ["orchestrator"]
-token = "MG400_ORCH_TOKEN"
 port = 8772
 assets = []
 
@@ -68,7 +62,6 @@ units = ["mg400-gateway.service"]
 optional = true
 venv = ".venv"
 groups = ["gateway"]
-token = "MG400_GATEWAY_TOKEN"
 port = 8773
 assets = []
 
@@ -78,7 +71,6 @@ units = ["mg400-stage-panel.service"]
 optional = false
 venv = ".venv"
 groups = ["stage"]
-token = "MG400_STAGE_TOKEN"
 port = 8767
 assets = []
 
@@ -88,7 +80,6 @@ units = ["mg400-camera-preview.service", "mg400-camera-capture.service"]
 optional = false
 venv = ".venv"
 groups = []
-token = ""
 port = 1985
 assets = []
 
@@ -98,7 +89,6 @@ units = ["mg400-gripper-collector.service"]
 optional = false
 venv = ".venv"
 groups = ["stage"]
-token = ""
 port = 0
 assets = []
 
@@ -108,6 +98,5 @@ units = ["mg400-proxy.service"]
 optional = true
 venv = ".venv"
 groups = []
-token = ""
 port = 8080
 assets = []

@@ -7,9 +7,15 @@ After=network-online.target
 Type=simple
 User=1000
 Group=1000
+# Fixed defaults. The proxy serves the console at /lab/.
+Environment=MG400_ORCH_BASE_PATH=/lab/
+Environment=MG400_ORCH_ROBOT_URL=http://127.0.0.1:8766/
+Environment=MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/
+Environment=MG400_ORCH_THERMAL_URL=http://127.0.0.1:8768/
+Environment=MG400_ORCH_FURNACE_URL=http://127.0.0.1:8769/
+Environment=MG400_ORCH_MICROSCOPE_URL=http://127.0.0.1:8770/
+Environment=MG400_ORCH_VISION_URL=http://127.0.0.1:8771/
 EnvironmentFile=/etc/mg400/mg400.env
-# Keep the operator token, downstream aliases, and proposal-only gateway credential.
-UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN MG400_THERMAL_TOKEN MG400_VISION_TOKEN MG400_FURNACE_TOKEN MG400_MICROSCOPE_TOKEN
 WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/python -m orchestrator serve
 Restart=on-failure

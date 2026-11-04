@@ -8,8 +8,6 @@ Type=simple
 User=1000
 Group=1000
 EnvironmentFile=/etc/mg400/mg400.env
-# Keep the gateway token for MCP/proposals and downstream aliases for GET requests only.
-UnsetEnvironment=MG400_PANEL_TOKEN MG400_STAGE_TOKEN MG400_THERMAL_TOKEN MG400_VISION_TOKEN MG400_FURNACE_TOKEN MG400_MICROSCOPE_TOKEN MG400_ORCH_TOKEN
 WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/python -m gateway
 Restart=on-failure

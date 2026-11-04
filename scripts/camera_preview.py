@@ -1,4 +1,3 @@
-import hmac
 import os
 import socket
 import sys
@@ -8,16 +7,10 @@ import urllib.request
 from email.message import Message
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from threading import Condition, Thread
 
 from cameras.config import camera_configuration
 
-# An empty environment value counts as unset.
-KEY_FILE = Path(os.environ.get("MG400_CAMERA_KEY_FILE") or "/var/lib/mg400/camera/preview.key")
-KEY = KEY_FILE.read_bytes().strip()
-if len(KEY) < 32:
-    raise ValueError("The camera access key must contain at least 32 bytes.")
 CAMERAS = camera_configuration(os.environ)
 STREAMS = {f"{stream}.jpg": stream for stream in CAMERAS.streams}
 MAX_FRAME = 4 * 1024 * 1024
@@ -213,10 +206,10 @@ class Preview(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parts = self.path.split("/")
-        if len(parts) != 3 or not hmac.compare_digest(parts[1].encode(), KEY):
+        if len(parts) != 2:
             self.send_error(404)
             return
-        route = parts[2]
+        route = parts[1]
         if route in {source + ".mjpeg" for source in FEEDS}:
             self.stream(FEEDS[route.removesuffix(".mjpeg")])
             return

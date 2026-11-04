@@ -563,10 +563,16 @@ deps = ["ROB-02"]
 writes = [
   "src/mg400/web_control.py",
   "src/mg400/client.py",
+  "src/mg400/terminal_control.py",
   "tests/test_web_control.py",
   "tests/test_robot_client.py",
+  "tests/test_web_keyboard_safety.py",
+  "tests/test_mg400_sim.py",
+  "tests/test_terminal_control.py",
   "docs/control-panel.md",
   "docs/control-panel.en.md",
+  "docs/terminal-control.md",
+  "docs/terminal-control.en.md",
 ]
 
 [[task]]

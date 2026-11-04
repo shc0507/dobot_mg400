@@ -5,7 +5,7 @@ This document provides permanent information/instructions for the convenience of
 ## The Workflow
 
 - 操作 Chrome 时只控制需要的 page，不要再申请整个 Chrome 应用的权限。
-- Olares is a cloud host. It runs the web control panel, the stage motor panel, the USB gripper collector, and the camera preview. [docs/deploy.md](docs/deploy.md) describes the services, the settings, and the `mg400ctl` command. Agents can control Olares through its web interface. Check the Chrome browser for tabs that are already open. If no tab is open, ask the user to open the Olares web interface and log in. The URL is: [https://desktop.qumusphusis.olares.com/](https://desktop.qumusphusis.olares.com/)
+- Olares is the lab host. It runs the lab services behind the Lab Console, which the proxy serves at `http://100.64.0.1:8080/` (it opens `/lab/`). [docs/deploy.md](docs/deploy.md) describes the services, the settings, and the `mg400ctl` command. Agents can control Olares through its web interface. Check the Chrome browser for tabs that are already open. If no tab is open, ask the user to open the Olares web interface and log in. The URL is: [https://desktop.qumusphusis.olares.com/](https://desktop.qumusphusis.olares.com/)
 - VPN is necessary to access services on Olares (`100.64.0.1`). Turn it on with the LarePass application.
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
 - 排查真机报警或碰撞时，先读 [报警与历史日志](docs/hardware.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
@@ -33,7 +33,7 @@ This document provides permanent information/instructions for the convenience of
 - This rule covers `README.md`, `docs/*.md`, `docs/adr/*.md`, and `firmware/*/README.md`. Agent docs stay English only.
 - `AGENTS.md`, `docs/agents/**`, `.agents/**`, `GLOSSARY.md` (one bilingual table), and `tests/fixtures/**` are exempt.
 - `scripts/check_doc_pairs.py` checks code blocks, inline code, numbers, link targets, and heading counts through pytest. Write numbers as digits in both languages.
-- The checker permits missing pairs listed in `docs/agents/migration/doc-pairs-pending.txt`. Until a pair exists, edit the Chinese file. Remove its entry when you add the pair.
+- The checker permits missing pairs listed in `docs/agents/doc-pairs-pending.txt`. Until a pair exists, edit the Chinese file. Remove its entry when you add the pair.
 
 ## UX design
 
@@ -81,13 +81,20 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | MCP gateway and approval policy | `src/gateway/`, `src/orchestrator/approvals.py`, `src/orchestrator/store.py` | `test_gateway*.py`, `test_approvals.py` | [agent-gateway.md](docs/agent-gateway.md) |
 | Microscope motor firmware and simulator | `firmware/microscope-axes/`, `src/microscope/sim.py` | `test_microscope_protocol.py` | [Firmware guide](firmware/microscope-axes/README.md) |
 | Microscope algorithms, service and panel, motors, and camera input | `src/microscope/`, `src/cameras/` | `test_microscope_calibrate.py`, `test_microscope_calibration_policy.py`, `test_microscope_focus_completion.py`, `test_microscope_motors.py`, `test_microscope_io.py`, `test_microscope_service.py`, `test_microscope_panel.py`, `test_microscope_panel.mjs` | [microscope.md](docs/microscope.md) |
-| Migration plan | `docs/agents/migration/tasks.toml`, `tasks.md` | `test_migration_plan.py` | [migration README](docs/agents/migration/README.md) |
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_camera_preview.mjs`.
 
-## Lab integration migration
+## Test stage
 
-- The plan that moves the WuLab instrument code into this repo is in [docs/agents/migration/](docs/agents/migration/README.md). Read its README before you start a migration task. `tasks.md` has one card per task, and `tasks.toml` is the task graph.
+- The lab is a test stage. The owner needs every device to run and to be tested freely.
+- Keep changes minimal. Do not add settings, tokens, access checks, task cards, plan documents or review processes. Use fixed defaults in code.
+- Keep only these protections:
+  - Stop and STOP ALL work at any time, need no control and are never blocked.
+  - One controller per device at a time, through the lease.
+  - Furnace: the maximum temperature and ramp caps, heat off and gas off.
+  - Robot: the speed cap, and no move while the controller reports an alarm.
+  - Microscope: the focus limits, and full turret switches only at the clearance position.
+  - Stage: soft limits, when they are configured.
 - Files in `docs/agents/` are for agents. Write them in English only.
 
 ## Agent skills

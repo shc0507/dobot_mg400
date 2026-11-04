@@ -286,7 +286,7 @@ The database is `runs.db` inside the record directory. Run files use a separate 
 
 A station stores a measured fingertip pose, its approach clearance, and an optional route through other stations. Keep the controller at `User=0,Tool=0`. The tool offset applies in software only.
 
-The operator must supply the measured offset from H-08 in `/var/lib/mg400/tool.toml`. Its only field is `offset_mm = [dx, dy, dz]`. Replace these names with the measured finite numbers in millimetres. The offset has no default. Missing or invalid measurements prevent teaching.
+The operator must supply the measured offset from H-08 in `/var/lib/mg400/robot/tool.toml`. Its only field is `offset_mm = [dx, dy, dz]`. Replace these names with the measured finite numbers in millimetres. The offset has no default. Missing or invalid measurements prevent teaching.
 
 The conversion rotates `(dx, dy)` by the flange angle R, then adds the result to flange XY. Fingertip Z equals flange Z minus dz. The inverse conversion subtracts the rotated XY offset and adds dz. Both conversions preserve R, including its sign and complete turns.
 
@@ -294,8 +294,8 @@ Configure every workspace bound before teaching or reading stations:
 
 | Setting | Meaning |
 | --- | --- |
-| `MG400_ORCH_TOOL_FILE` | Tool file, default `/var/lib/mg400/tool.toml` |
-| `MG400_ORCH_STATIONS_FILE` | Station file, default `/var/lib/mg400/stations.toml` |
+| `MG400_ORCH_TOOL_FILE` | Tool file, default `/var/lib/mg400/robot/tool.toml` |
+| `MG400_ORCH_STATIONS_FILE` | Station file, default `/var/lib/mg400/robot/stations.toml` |
 | `MG400_ORCH_X_MIN_MM`, `MG400_ORCH_X_MAX_MM` | Fingertip X bounds in millimetres |
 | `MG400_ORCH_Y_MIN_MM`, `MG400_ORCH_Y_MAX_MM` | Fingertip Y bounds in millimetres |
 | `MG400_ORCH_Z_MIN_MM`, `MG400_ORCH_Z_MAX_MM` | Fingertip Z bounds in millimetres |
@@ -321,6 +321,12 @@ Names use 1 to 64 letters, digits, underscores, or hyphens. Start a name with a 
 Every edit checks the complete station graph before publication. Concurrent edits serialize, and the file replacement is atomic. The file mode is `0640`. The parent directory must have mode `0700` or `0750`.
 
 Data under `/var/lib/mg400` requires owner `1000:1000`. Other paths require the caller's owner. Files may use `0600` or `0640` when read. The store refuses symbolic links, special files, and public permissions.
+
+The installer creates `/var/lib/mg400/robot` with owner `1000:1000` and mode `0750`, including when the optional orchestrator service is disabled.
+The parent `/var/lib/mg400` remains owned by `root:1000` with mode `0750`.
+Legacy files at `/var/lib/mg400/tool.toml` or `/var/lib/mg400/stations.toml` remain unchanged. The installer prints a manual move notice.
+Follow the [robot data migration instructions](deploy.en.md#migration-to-a-new-host) before using those files with the new defaults.
+Existing `MG400_ORCH_TOOL_FILE` and `MG400_ORCH_STATIONS_FILE` overrides are preserved. Update an old override after moving its file.
 
 A write or file-sync failure preserves the old file. A directory-sync failure after replacement reports an error but can leave the new file visible. Inspect the station file before repeating an edit after that error.
 

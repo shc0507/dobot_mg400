@@ -29,6 +29,12 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 启用可选炉控服务时，设置 `MG400_FURNACE_BIND=100.64.0.1`，并在 VPN 规则中允许 TCP `8769`。
 保持 `MG400_FURNACE_TOKEN` 私密。在[炉控网页](furnace.md)中输入密钥，不得放入 URL。
 
+可选显微镜服务默认使用 `MG400_MICROSCOPE_BIND=127.0.0.1`，端口为 `8770`。
+通过 VPN 直接访问时，设置 `MG400_MICROSCOPE_BIND=100.64.0.1`，并放行 TCP `8770`。
+妥善保管 `MG400_MICROSCOPE_TOKEN`。在显微镜网页中输入，不得放入 URL。
+令牌必须至少含 24 个可打印 ASCII 字符。
+安装前，把 `microscope` 加入 `MG400_OPTIONAL_SERVICES`。物理配置和启动顺序见[显微镜指南](microscope.md#主机托管服务)。
+
 可选视觉服务默认使用 `MG400_VISION_BIND=127.0.0.1` 和端口 `8771`。
 摄像头预览的识别叠加使用固定回环端点，必须保留这些值。
 通过 VPN 直接访问时，设置 `MG400_VISION_BIND=100.64.0.1`，并放行 TCP `8771`。
@@ -102,8 +108,9 @@ MG400_ORCH_BASE_PATH=/lab/
 `MG400_THERMAL_TOKEN` 为空时，安装程序生成令牌。已配置的令牌保持不变。
 `thermal-cam --base-path /thermal/` 覆盖该前缀配置。
 
-单独安装的显微镜服务使用 `MG400_MICROSCOPE_TOKEN`，并配置其原生前缀选项为 `/microscope/`。
-共享环境示例仍不包含显微镜的直接访问令牌。单独配置其启动环境。
+使用显微镜代理路由时，在 `/etc/mg400/mg400.env` 中设置 `MG400_MICROSCOPE_BIND=127.0.0.1` 和 `MG400_MICROSCOPE_BASE_PATH=/microscope/`。
+`MG400_MICROSCOPE_TOKEN` 为空时，安装器生成令牌。已有令牌保持不变。
+除 `proxy` 外，还要单独选择 `microscope`。炉控原生前缀变化时，更新显微镜的炉控元数据 URL。
 不得把服务令牌放入 Caddy 配置或 URL。
 MCP 网关仍只监听回环地址，不提供代理路由。
 
@@ -324,7 +331,7 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 
 默认服务选择 `stage`、`collector` 和 `camera` 模板。
 启用 `furnace` 后，还会选择其 2 条串口控制器规则。
-启用 `thermal` 后会选择 P1 模板。`microscope` 模板等待对应服务注册并启用。
+启用 `thermal` 后会选择 P1 模板。启用 `microscope` 后，要求并选择其模板。
 显微镜独占 Toupcam，也提供炉子录像。炉子规则不另行授予该摄像头的访问权限。
 模板不选择服务配置中的设备路径。保持这些路径与表格一致。
 

@@ -14,8 +14,8 @@ from pathlib import Path
 
 from .tool import Pose, ToolOffset, finite, flange_to_fingertip
 
-DEFAULT_STATIONS = Path("/var/lib/mg400/stations.toml")
-DEFAULT_TOOL = Path("/var/lib/mg400/tool.toml")
+DEFAULT_STATIONS = Path("/var/lib/mg400/robot/stations.toml")
+DEFAULT_TOOL = Path("/var/lib/mg400/robot/tool.toml")
 AXES = {"x_mm": "X", "y_mm": "Y", "z_mm": "Z", "r_deg": "R"}
 BOUND_SETTINGS = {
     f"MG400_ORCH_{axis}_{side}_{'DEG' if axis == 'R' else 'MM'}"

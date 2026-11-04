@@ -17,15 +17,18 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400` | Parent directory for runtime data | `root:1000`, `0750` |
 | `/var/lib/mg400/locks` | Robot connection locks | `1000:1000`, `0700` |
 | `/var/lib/mg400/work` | Gripper feedback, gripper command files, and mode-switch backups | `1000:1000`, `0750` |
+| `/var/lib/mg400/robot` | Measured tool offset in `tool.toml` and taught stations in `stations.toml`, files `0600` or `0640` | `1000:1000`, `0750` |
 | `/var/lib/mg400/vision` | Data directory for the enabled vision service | `1000:1000`, `0750` |
 | `/var/lib/mg400/models` | Model weights installed from the asset manifest, with file permissions `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
 | `/var/lib/mg400/stage` | Writable stage calibration and camera references in `stage.toml` | `1000:1000`, `0700` |
 | `/var/lib/mg400/calibration` | Parent directory for instrument calibration | `1000:1000`, `0750` |
 | `/var/lib/mg400/calibration/cameras` | Camera-to-robot calibration JSON and owner-taught references, files `0600` or `0640` | `1000:1000`, `0700` |
+| `/var/lib/mg400/calibration/microscope` | Imported microscope calibration for the selected microscope service | `1000:1000`, `0750` |
+| `/var/lib/mg400/recordings` | Local microscope recordings before verified archival | `1000:1000`, `0750` |
 | `/var/lib/mg400/thermal` | Named thermal regions in `rois.toml`, files `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/furnace` | Furnace state and persistent lock, files `0600` | `1000:1000`, `0750` |
-| `/var/lib/mg400/runs` | Orchestrator run records, files `0600` | `1000:1000`, `0750` |
+| `/var/lib/mg400/runs` | Orchestrator records and microscope run outputs, files `0600` or `0640` | `1000:1000`, `0750` |
 | `/var/lib/mg400/zones` | Zone configuration and retained occupancy, files `0640` or `0600` | `1000:1000`, `0750` |
 | `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program | `root:root`, `0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | Optional Toupcam 59.30594.20260120 Linux x64 library | `root:root`, `0755` |
@@ -44,6 +47,7 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-gripper-collector.service` | `collector` | Gripper USB collection | `dialout` |
 | `mg400-thermal.service` | `thermal` | Optional [thermal camera page](thermal.en.md), port `8768` | None |
 | `mg400-furnace.service` | `furnace` | Optional [furnace and gas page](furnace.en.md), port `8769` | `dialout` |
+| `mg400-microscope.service` | `microscope` | Optional [microscope page](microscope.en.md), loopback port `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | Optional [vision service](vision.en.md), loopback port `8771` | None |
 | `mg400-orchestrator.service` | `orch` | Optional [recipe service](orchestrator.en.md#http-service), port `8772` | None |
 | `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
@@ -135,11 +139,13 @@ It copies the verified bytes atomically to `/usr/local/lib/mg400/libtoupcam.so`,
 It does not load the library or open a camera. Add `--dry-run` to validate and list the steps without changing files.
 Without `--toupcam`, an existing library stays unchanged.
 
-You can install the library before the microscope service is available.
-The microscope service owns this camera and furnace recordings. Its unit must set `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400` when that service is added.
-This installer option does not create a microscope unit or change the furnace unit.
+Selecting `microscope` requires this library before installation can proceed.
+Supply `--toupcam PATH`, or retain an installed library with the pinned hash and safe ownership and permissions.
+The installer rejects untrusted destination directories before changing the host.
+Existing destination directories must be root-owned, traversable by UID `1000`, and not writable by the service or other users.
+The microscope service owns this camera and furnace recordings. Its unit sets `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`.
 The existing `config/udev/70-mg400-microscope.rules.in` template grants the service group `0660` access to C3CMOS05100KPA USB3 `0547:1375` and USB2 `0547:1376` devices.
-The installer renders this template when the microscope service is registered and selected.
+When you select the microscope service, the installer requires and renders this template.
 Do not install the vendor's `99-toupcam.rules`: it grants broad `0666` access to vendors `0547` and `04b4`.
 
 ## Service registry
@@ -175,6 +181,12 @@ The optional `furnace` service uses the `furnace` dependency group.
 Configure its serial paths and operator-supplied gas map before enabling hardware use.
 Set `MG400_OPTIONAL_SERVICES=furnace`, run the installer, then start it explicitly with `mg400ctl start furnace`.
 The installer does not start the furnace.
+
+The optional `microscope` service uses the `microscope` dependency group in `/opt/mg400/.venv`.
+Add `microscope` to `MG400_OPTIONAL_SERVICES`, preserving other selections, and configure the [microscope](microscope.en.md#managed-host-service).
+The installer prepares its default private calibration, recording, and run directories without replacing imported data.
+When `MG400_MICROSCOPE_TOKEN` is blank, the installer generates a token. It preserves an existing token.
+The owner starts `camera` before `microscope`. The installer does not start either service.
 
 The optional `vision` service uses the `vision` and `vision-gpu` dependency groups in the isolated `/opt/mg400/.venv-vision` environment.
 Add `vision` to `MG400_OPTIONAL_SERVICES`, preserving other selections. Run the installer.
@@ -321,6 +333,12 @@ It also retains `MG400_GATEWAY_TOKEN` solely for the proposal API. This token ca
 | `MG400_FURNACE_TOKEN` | Generated by the installer | Furnace access token |
 | `MG400_FURNACE_SERIAL` | Empty | Furnace serial device |
 | `MG400_MFC_SERIAL` | Empty | Separate gas-controller serial device |
+| `MG400_MICROSCOPE_BIND` | `127.0.0.1` | Microscope listen address |
+| `MG400_MICROSCOPE_PORT` | `8770` | Microscope port |
+| `MG400_MICROSCOPE_BASE_PATH` | `/` | Native microscope page and API prefix |
+| `MG400_MICROSCOPE_TOKEN` | Generated by the installer | Microscope access token |
+
+Configure microscope device selection, focus limits, and camera streams as described in the [microscope guide](microscope.en.md#contract-service).
 
 When a panel listens on a non-loopback address, its access token must have at least 24 characters.
 Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
@@ -342,7 +360,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 | `mg400ctl assets` | Check external asset content, ownership, and permissions |
 | `mg400ctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
 | `mg400ctl status` | Show the status of all services |
-| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, `thermal`, `furnace`, `vision`, `orch`, `gateway`, `proxy`, or `all` |
+| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `collector`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `gateway`, `proxy`, or `all` |
 | `mg400ctl stop all` | Stop services |
 | `mg400ctl restart web` | Restart services |
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
@@ -428,8 +446,8 @@ The backup includes the following paths when they exist:
 | `/var/lib/mg400/models/` | Installed model weights |
 | `/var/lib/mg400/calibration/cameras/` | Camera-to-robot homographies for each camera path |
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus, and reference-view data |
-| `/var/lib/mg400/stations.toml` | Taught robot stations |
-| `/var/lib/mg400/tool.toml` | Gripper tool offset |
+| `/var/lib/mg400/robot/stations.toml` | Taught robot stations |
+| `/var/lib/mg400/robot/tool.toml` | Gripper tool offset |
 | `/var/lib/mg400/stage/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions |
 | `/var/lib/mg400/furnace/state.json` | Furnace sequence state |
@@ -437,6 +455,12 @@ The backup includes the following paths when they exist:
 | `/var/lib/mg400/recordings/` | Furnace recordings before archiving |
 | `/var/lib/mg400/camera/preview.key` | Camera preview key |
 | `/var/lib/mg400/work/` | Gripper feedback, command files, persistent command locks, and mode-switch backups |
+
+The installer creates `/var/lib/mg400/robot` with owner `1000:1000` and mode `0750` for tool and station data.
+If `/var/lib/mg400/tool.toml` or `/var/lib/mg400/stations.toml` exists, it prints a move instruction and leaves that file unchanged.
+Stop services and CLI processes that use the robot data before moving each old file into `/var/lib/mg400/robot` manually.
+Do not overwrite an existing destination. Retain owner `1000:1000` and file mode `0600` or `0640`.
+The installer preserves existing `MG400_ORCH_TOOL_FILE` and `MG400_ORCH_STATIONS_FILE` values. Update an old override before restarting its users.
 
 The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` for writable stage calibration.
 It keeps `/var/lib/mg400` root-owned with mode `0750`.

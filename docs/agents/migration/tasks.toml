@@ -563,10 +563,16 @@ deps = ["ROB-02"]
 writes = [
   "src/mg400/web_control.py",
   "src/mg400/client.py",
+  "src/mg400/terminal_control.py",
   "tests/test_web_control.py",
   "tests/test_robot_client.py",
+  "tests/test_web_keyboard_safety.py",
+  "tests/test_mg400_sim.py",
+  "tests/test_terminal_control.py",
   "docs/control-panel.md",
   "docs/control-panel.en.md",
+  "docs/terminal-control.md",
+  "docs/terminal-control.en.md",
 ]
 
 [[task]]
@@ -1315,6 +1321,10 @@ review = "human"
 deps = ["MIC-03", "TPC-02", "FND-09", "H-06"]
 writes = [
   "config/systemd/mg400-microscope.service",
+  # Existing units: exclude the microscope token only.
+  "config/systemd/mg400-web-panel.service",
+  "config/systemd/mg400-stage-panel.service",
+  "config/systemd/mg400-camera-preview.service",
   "deploy/services.toml",
   "deploy/install.py",
   "deploy/mg400.env.example",

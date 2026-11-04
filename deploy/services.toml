@@ -43,6 +43,16 @@ port = 8769
 assets = []
 
 [[service]]
+name = "microscope"
+units = ["mg400-microscope.service"]
+optional = true
+venv = ".venv"
+groups = ["microscope"]
+token = "MG400_MICROSCOPE_TOKEN"
+port = 8770
+assets = []
+
+[[service]]
 name = "orch"
 units = ["mg400-orchestrator.service"]
 optional = true

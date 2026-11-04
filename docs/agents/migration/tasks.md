@@ -585,6 +585,8 @@ Steps:
    - feedback lost during the lock: `stop_unconfirmed`, as now;
    - `stop_sync` while disabled: unchanged;
    - a `RobotClient` `with` block that exits with the arm enabled.
+5. Update the three existing keyboard safety regressions in `tests/test_web_keyboard_safety.py` for retained feedback until confirmed disable. Preserve their stop ordering, worker-drain, lock and process-ownership checks. In `tests/test_mg400_sim.py`, explicitly disable before `stop_sync` to retain the existing sequence's disabled-stop coverage. Tests of the new behavior use in-process transports or socket pairs, with no bound ports.
+6. Align `src/mg400/terminal_control.py`, its tests and the paired terminal guides with retained feedback. After a confirmed stop with the arm still enabled, keep the terminal open and prompt for explicit disable before quit. Preserve actual unknown-outcome and physical emergency-stop guidance, force-exit behavior, and the rule against automatic disable.
 
 Done when: P-CHECKS pass.
 
@@ -1338,8 +1340,9 @@ Goal: the microscope service runs on Olares with its devices.
 Steps (P-DEPLOY plus):
 
 1. Unit `mg400-microscope.service` with `SupplementaryGroups=dialout video`, `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400` (TPC-02 installs the library there; allow it in the unit tests for this unit only), port 8770.
-2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_CAMERA`, `_CAMERA_SERIAL`, `_CALIBRATION_DIR`, `_SWITCH_FOCUS`, `_FOCUS_LIMITS`, `_BIND`, `_PORT`, `_TOKEN`. The focus values come from H-06.
+2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_STREAM`, `_CALIBRATION_DIR`, `_SWITCH_FOCUS`, `_FOCUS_LIMITS`, `_HOME_SWITCH`, `_BIND`, `_PORT`, `_TOKEN`. The focus values and home-switch setting come from H-06. Preserve the existing Toupcam selection settings: optional `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
 3. A registry entry `microscope` (optional).
+4. Add `MG400_MICROSCOPE_TOKEN` to `UnsetEnvironment` in the web-panel, stage-panel and camera-preview units. Limit edits to those existing units to this exclusion. Preserve the camera preview's `MG400_VISION_TOKEN` and the microscope's `MG400_FURNACE_TOKEN` for their existing clients.
 
 Done when: P-CHECKS pass.
 

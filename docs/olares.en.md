@@ -29,6 +29,12 @@ Add `thermal` to `MG400_OPTIONAL_SERVICES` before installation. See the [thermal
 If the optional furnace service is enabled, set `MG400_FURNACE_BIND=100.64.0.1` and permit TCP `8769` through the VPN.
 Keep `MG400_FURNACE_TOKEN` private. Enter it on the [furnace page](furnace.en.md), never in its URL.
 
+The optional microscope service defaults to `MG400_MICROSCOPE_BIND=127.0.0.1` and port `8770`.
+For direct VPN access, set `MG400_MICROSCOPE_BIND=100.64.0.1` and permit TCP `8770` through the VPN.
+Keep `MG400_MICROSCOPE_TOKEN` private. Enter it on the microscope page, never in its URL.
+The token must contain at least 24 printable ASCII characters.
+Add `microscope` to `MG400_OPTIONAL_SERVICES` before installation. See the [microscope guide](microscope.en.md#managed-host-service) for physical configuration and startup order.
+
 The optional vision service defaults to `MG400_VISION_BIND=127.0.0.1` and port `8771`.
 Keep these values for camera-preview detection overlays, which use a fixed loopback endpoint.
 For direct VPN access, set `MG400_VISION_BIND=100.64.0.1` and permit TCP `8771` through the VPN.
@@ -102,8 +108,9 @@ For thermal, set `MG400_THERMAL_BIND=127.0.0.1` and `MG400_THERMAL_BASE_PATH=/th
 The installer fills a blank `MG400_THERMAL_TOKEN` and preserves a configured token.
 `thermal-cam --base-path /thermal/` overrides that prefix setting.
 
-For a separately installed microscope service, use `MG400_MICROSCOPE_TOKEN` and its `/microscope/` native prefix option.
-The direct microscope token remains outside the shared environment example. Configure its startup environment separately.
+For the microscope proxy route, set `MG400_MICROSCOPE_BIND=127.0.0.1` and `MG400_MICROSCOPE_BASE_PATH=/microscope/` in `/etc/mg400/mg400.env`.
+When `MG400_MICROSCOPE_TOKEN` is blank, the installer generates a token. It preserves an existing token.
+Select `microscope` separately from `proxy`. Update its furnace metadata URL when the furnace native prefix changes.
 Do not place service tokens in Caddy configuration or URLs.
 The MCP gateway remains loopback-only and has no proxy route.
 
@@ -325,7 +332,7 @@ Use the installer dry run to inspect the selected files and commands before inst
 
 The default services select the `stage`, `collector`, and `camera` templates.
 Enabling `furnace` also selects its 2 serial-controller rules.
-Enabling `thermal` selects the P1 template. The `microscope` template waits for its service to be registered and enabled.
+Enabling `thermal` selects the P1 template. Enabling `microscope` requires and selects its template.
 The microscope owns the Toupcam camera, including furnace recordings. The furnace rules do not grant separate access to it.
 Templates do not select device paths in service settings. Keep those paths consistent with the table.
 

@@ -23,6 +23,27 @@ The Toupcam adapter is `toupcam_camera.MicroscopeCamera`.
 Real Toupcam capture requires the matching Linux vendor library and device permissions.
 See the [deployment guide](deploy.en.md) for host configuration.
 
+## Managed host service
+
+Add `microscope` to `MG400_OPTIONAL_SERVICES` in `/etc/mg400/mg400.env`. Preserve the other selections.
+Install the pinned [Toupcam library](deploy.en.md#toupcam-library) and configure the settings below before starting the service.
+The installer prepares the `microscope` group in `/opt/mg400/.venv`, the USB access rule, and the default private data directories.
+Custom calibration and run roots need operator-prepared private directories.
+It does not start devices or create calibration values.
+
+The unit runs as `1000:1000` with `dialout` and `video` access.
+It sets `LD_LIBRARY_PATH=/usr/local/lib/mg400` and listens on `127.0.0.1:8770` by default.
+It retains `MG400_FURNACE_TOKEN` only for the existing furnace metadata client.
+If you use a proxy prefix, include the furnace's native prefix in `MG400_MICROSCOPE_FURNACE_URL`.
+The camera preview retains its vision credential. Unrelated services exclude the microscope token.
+
+Stop conflicting camera and motor programs before use.
+Start the configured side-camera service with `mg400ctl start camera`, then start `mg400ctl start microscope`.
+The microscope unit does not start the camera service automatically.
+Use `mg400ctl logs microscope` to inspect failures and `mg400ctl stop microscope` to stop the service.
+The unit permits cleanup to finish without a systemd stop timeout. A cleanup error requires inspection before restart.
+An operator must complete `H-21` before routine hardware use.
+
 ## Contract service
 
 Display service options without opening devices, or start the simulator:
@@ -46,6 +67,8 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_TOKEN` | At least 24 printable ASCII characters. Required for a non-loopback bind. |
 | `MG400_MICROSCOPE_SERIAL` | The controller's stable `/dev/serial/by-id/` path. |
 | `MG400_MICROSCOPE_SIDE_STREAM` | The stream owned by go2rtc for the side camera. |
+| `MG400_TOUPCAM_SERIAL` | Optional camera serial. Set this or the index, never both. |
+| `MG400_TOUPCAM_INDEX` | Optional nonnegative camera index. With both selectors empty, the index is `0`. |
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | Required measured `MIN,MAX` integer pulses, including zero, with nonzero travel. |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | Required measured clearance position, in pulses within the limits. Without a home switch, it must be `0`. |
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
@@ -54,7 +77,17 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_FURNACE_ARCHIVE_DIR` | Empty by default. Set an absolute directory only after the operator mounts the archive share. |
 
 Real startup requires reference-aware firmware and explicit focus settings.
-Use the measurements from `H-06`. Do not copy demo limits to hardware.
+The generic environment example leaves the physical focus settings empty and sets the turret nudge window to `0`.
+For the current microscope, use these settings from `H-06`:
+
+```ini
+MG400_MICROSCOPE_SWITCH_FOCUS=0
+MG400_MICROSCOPE_HOME_SWITCH=0
+MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
+MG400_MICROSCOPE_NUDGE_STEPS=20
+```
+
+Do not copy demo limits to hardware.
 All requests retain the shared Host, Origin, and forwarded-header checks.
 Protected data and action routes also require the configured token.
 Without a token, the service accepts only loopback Host values without forwarded headers.
@@ -86,6 +119,9 @@ These values do not measure sensor exposure time.
 With a configured home switch, `home_focus` establishes zero and installs the configured firmware limits.
 Without a switch, an operator must place focus at the verified clearance position before setting zero.
 That position is `0`. The service does not move to an unknown clearance position automatically.
+The current focus gears can slip. Pulse counts are relative to the last zero.
+Before each use, refocus the 50x objective on the sample and set zero through the manual panel.
+This focus position is the clearance zero. Positive focus motion raises the objectives.
 
 For the operator flow, send an empty object to `POST /api/manual/heartbeat` to acquire manual control.
 Use `POST /api/manual/renew` to retain it.
@@ -248,6 +284,8 @@ Do not substitute repository paths or shared public directories for the configur
 ## Side-camera stream
 
 The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches the objective turret.
+Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
+Before `H-21`, restore this camera to its earlier position on the turret.
 For the service and preview, go2rtc owns its V4L2 capture.
 `USBCamera` reads JPEG frames from `http://127.0.0.1:1984/api/frame.jpeg`.
 It rejects redirects and ignores environment proxy settings.

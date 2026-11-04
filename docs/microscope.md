@@ -23,6 +23,27 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 真实 Toupcam 采集必须具备匹配的 Linux 厂商库和设备权限。
 主机配置见[部署指南](deploy.md)。
 
+## 主机托管服务
+
+在 `/etc/mg400/mg400.env` 的 `MG400_OPTIONAL_SERVICES` 中加入 `microscope`。保留其他选项。
+启动服务前，安装锁定版本的 [Toupcam 库](deploy.md#toupcam-库)，并配置下文参数。
+安装器在 `/opt/mg400/.venv` 中准备 `microscope` 依赖组，并安装 USB 访问规则。
+它还准备默认的私有数据目录，不启动设备，也不创建校准值。
+自定义校准和运行根目录须由操作员准备，并保持私有权限。
+
+单元以 `1000:1000` 运行，具有 `dialout` 和 `video` 访问权限。
+它设置 `LD_LIBRARY_PATH=/usr/local/lib/mg400`，默认监听 `127.0.0.1:8770`。
+它保留 `MG400_FURNACE_TOKEN`，仅供现有炉控元数据客户端使用。
+使用代理前缀时，在 `MG400_MICROSCOPE_FURNACE_URL` 中配置炉控原生前缀。
+摄像头预览保留视觉令牌。无关服务排除显微镜令牌。
+
+使用前，停止冲突的相机和电机程序。
+先用 `mg400ctl start camera` 启动已配置的侧视相机服务，再运行 `mg400ctl start microscope`。
+显微镜单元不会自动启动相机服务。
+用 `mg400ctl logs microscope` 检查故障，用 `mg400ctl stop microscope` 停止服务。
+单元没有 systemd 停止超时，允许清理完成。清理出错后，检查原因再重启。
+日常真机使用前，操作员必须完成 `H-21`。
+
 ## 契约服务
 
 显示服务选项时不会打开设备。以下命令也可启动模拟器：
@@ -46,6 +67,8 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 | `MG400_MICROSCOPE_TOKEN` | 至少 24 个可打印 ASCII 字符。绑定非回环地址时必须配置。 |
 | `MG400_MICROSCOPE_SERIAL` | 控制板的稳定 `/dev/serial/by-id/` 路径。 |
 | `MG400_MICROSCOPE_SIDE_STREAM` | go2rtc 独占的侧视相机流。 |
+| `MG400_TOUPCAM_SERIAL` | 可选相机序列号。它与索引只能设置一项。 |
+| `MG400_TOUPCAM_INDEX` | 可选的非负相机索引。两项选择器都为空时，索引为 `0`。 |
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | 必填的实测 `MIN,MAX` 整数脉冲，包含零点，且行程不为零。 |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | 必填的实测避让位置，单位为脉冲，必须在限位内。没有归零开关时，必须为 `0`。 |
 | `MG400_MICROSCOPE_HOME_SWITCH` | 必填硬件事实：有已配置的调焦归零开关时为 `1`，没有时为 `0`。 |
@@ -54,7 +77,17 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 | `MG400_FURNACE_ARCHIVE_DIR` | 默认为空。操作员挂载归档共享目录后，才能配置绝对路径。 |
 
 真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
-使用 `H-06` 的实测值，不得把演示限位复制到硬件。
+通用环境示例的物理调焦参数为空，转盘微调范围为 `0`。
+当前显微镜使用以下 `H-06` 配置：
+
+```ini
+MG400_MICROSCOPE_SWITCH_FOCUS=0
+MG400_MICROSCOPE_HOME_SWITCH=0
+MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
+MG400_MICROSCOPE_NUDGE_STEPS=20
+```
+
+不得把演示限位复制到硬件。
 所有请求保留共用的 Host、Origin 和转发头检查。
 受保护的数据和动作路由还要求配置的令牌。
 没有令牌时，只接受没有转发头的回环 Host 值。
@@ -86,6 +119,9 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 有已配置的归零开关时，`home_focus` 建立零点并写入配置的固件限位。
 没有开关时，操作员必须先把调焦轴放到已验证的避让位置，再设置零点。
 该位置为 `0`，服务不会自动移动到未知的避让位置。
+当前调焦齿轮可能打滑。脉冲计数相对于上次零点。
+每次使用前，重新用 50x 物镜对焦样品，再通过手动面板设零。
+此焦点是避让零点。调焦正向运动抬高物镜。
 
 操作员先向 `POST /api/manual/heartbeat` 发送空对象，取得手动控制权。
 通过 `POST /api/manual/renew` 保留控制权。
@@ -248,6 +284,8 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 ## 侧视相机流
 
 显微镜侧视相机为固定集线器端口 `12.1.4` 上的 AC410，拍摄物镜转盘。
+当前视频流顺序使用 `MG400_MICROSCOPE_SIDE_STREAM=camera3`。
+执行 `H-21` 前，把此相机放回转盘上的原位置。
 服务与预览通过 go2rtc 采集该 V4L2 设备。
 `USBCamera` 从 `http://127.0.0.1:1984/api/frame.jpeg` 读取 JPEG 图像。
 它拒绝重定向，忽略环境代理配置。

@@ -13,6 +13,7 @@ Model loading and inference start only when the service starts or receives a req
 The live service requires the `vision` and `vision-gpu` dependency groups and verified local model weights.
 Use the runtime described in [Vision runtime and GPU use](adr/0006-vision-runtime.en.md).
 The service never downloads a model during prediction.
+Before it loads Ultralytics, the service sets `YOLO_OFFLINE=1`. Ultralytics then sends no usage events or error reports and runs no package update checks, whatever its `settings.json` says.
 Deployment remains a separate procedure in [Host deployment](deploy.en.md).
 
 For an offline demo from the repository root:

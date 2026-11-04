@@ -456,7 +456,8 @@ def test_manual_zero_sets_fixed_microstep_then_limits_and_blocks_automation_zero
     acquire_automation(rig)
     before = list(commands)
     assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code == 400
-    assert service_post(rig, "manual/set_focus_zero", {"confirm": True}).status_code == 409
+    other = service_post(rig, "manual/set_focus_zero", {"confirm": True}, actor="orchestrator-step")
+    assert other.status_code == 409
     assert commands == before
     state = dispatch(rig, "focus_move", steps=60)
     assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 60

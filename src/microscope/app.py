@@ -1,4 +1,4 @@
-"""Microscope contract routes and explicit operator focus-reference requests.
+"""Microscope contract routes, camera previews and the confirmed operator focus zero.
 
 The service owns both lease classifications and every device operation. Creating
 this app does not start the service, connect devices, or infer operator authority
@@ -6,9 +6,8 @@ from a client identifier.
 """
 
 import threading
-from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from labkit.auth import bearer_matches, host_allowed, same_origin
@@ -27,22 +26,12 @@ def create_app(service, *, token=None, base_path="/"):
     # The CLI has six workers. Bound long-lived responses to leave workers for
     # state and control requests; individual frame reads also remain bounded.
     stream_slots = threading.BoundedSemaphore(4)
-    assets = Path(__file__).parent / "static"
 
     @app.before_request
     def access():
         if not host_allowed(request.headers, token):
             raise ServiceError(403, "Use a loopback Host without forwarded headers.")
-        public = request.method in ("GET", "HEAD") and request.endpoint in (
-            "panel",
-            "panel_app",
-            "panel_css",
-        )
-        if (
-            not public
-            and token
-            and not bearer_matches(request.headers.get("Authorization", ""), token)
-        ):
+        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
             raise ServiceError(401, "Invalid service access token.")
         if not same_origin(request.headers):
             raise ServiceError(403, "The request origin is not allowed.")
@@ -83,22 +72,6 @@ def create_app(service, *, token=None, base_path="/"):
 
     def state():
         return {**service.snapshot(), "lease": service.lease.snapshot()}
-
-    @app.get(prefix + "/")
-    def panel():
-        return render_template("index.html", base_path=prefix)
-
-    @app.get(prefix + "/static/app.js")
-    def panel_app():
-        return send_file(assets / "app.js", mimetype="application/javascript")
-
-    @app.get(prefix + "/static/styles.css")
-    def panel_css():
-        return send_file(assets / "styles.css", mimetype="text/css")
-
-    @app.get(prefix + "/api/panel-info")
-    def panel_info():
-        return jsonify(service.panel_info())
 
     def camera_arguments(camera):
         if camera not in ("microscope", "side"):

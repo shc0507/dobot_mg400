@@ -95,6 +95,7 @@ class TerminalSession:
         self.messages = deque(maxlen=80)
         self.last_message = None
         self.quitting = False
+        self._quit_baseline = None
         self.finished = False
         self.exit_code = 0
         self.messages.extend(HELP)
@@ -108,6 +109,14 @@ class TerminalSession:
         if self.quitting and not snapshot["busy"]:
             if not snapshot["syncing"] and not snapshot["stop_unconfirmed"]:
                 self.finished = True
+            elif self._quit_feedback(snapshot) == "disable":
+                self.quitting = False
+                self.messages.append(
+                    "Stop is confirmed. Feedback remains connected. Enter disable, then quit."
+                )
+            elif self._quit_feedback(snapshot) == "draining":
+                # A confirmed disable does not finish the disconnect before old work drains.
+                pass
             else:
                 self.quitting = False
                 self.messages.append(
@@ -118,6 +127,40 @@ class TerminalSession:
                     "After a physical stop, quit --force exits without confirming robot rest."
                 )
         return snapshot
+
+    def _quit_feedback(self, snapshot):
+        """Identify verified retained feedback, without sending any command."""
+        result = snapshot.get("last_command")
+        if not (
+            snapshot.get("syncing") is True
+            and snapshot.get("feedback_fresh") is True
+            and snapshot.get("locked") is True
+            and snapshot.get("stop_unconfirmed") is False
+            and snapshot.get("robot_error") is False
+            and "controller_id" in snapshot
+            and snapshot["controller_id"] is None
+            and isinstance(result, dict)
+            and isinstance(result.get("id"), str)
+            and result["id"]
+            and result["id"] != self._quit_baseline
+            and result.get("client") == self.client_id
+        ):
+            return None
+        if (
+            snapshot.get("robot_mode") == 5
+            and snapshot.get("enabled") is True
+            and result.get("action") == "stop_sync"
+            and result.get("result") == "stopped"
+        ):
+            return "disable"
+        if (
+            snapshot.get("robot_mode") == 4
+            and snapshot.get("enabled") is False
+            and result.get("action") in {"stop_sync", "disable"}
+            and result.get("result") == "ok"
+        ):
+            return "draining"
+        return None
 
     def submit(self, line):
         if line.strip():
@@ -141,7 +184,9 @@ class TerminalSession:
                         "After a physical stop, quit --force exits without confirming robot rest."
                     )
                 elif snapshot["syncing"] or snapshot["busy"]:
+                    baseline = (snapshot.get("last_command") or {}).get("id")
                     self.state.command({"action": "stop_sync"}, self.client_id)
+                    self._quit_baseline = baseline
                     self.quitting = True
                     self.messages.append("Waiting for confirmed arm stop and pending operations.")
                 else:

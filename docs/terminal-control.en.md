@@ -57,7 +57,7 @@ Enter `help` for command descriptions. Enter `status` for the current state.
 | Command | Behavior |
 | --- | --- |
 | `connect` | Connect to the robot and acquire the connection lock |
-| `disconnect` | Request a controlled stop, then disconnect after confirmation |
+| `disconnect` | Request a controlled stop and release control. Keep feedback until explicit disable confirmation |
 | `enable` | Enable the robot |
 | `disable` | Disable the robot |
 | `move X Y Z R` | Move to absolute coordinates |
@@ -125,9 +125,15 @@ If the stop or command outcome cannot be confirmed, use the physical emergency s
 
 Enter `quit` or press Ctrl+D to request a controlled stop and disconnection.
 The terminal exits only after it confirms disconnection and no tasks remain in progress.
-If it cannot confirm the stop, the terminal stays open and keeps the connection lock.
-Exiting does not automatically disable the robot.
+If the stop is confirmed while the robot remains enabled, the terminal keeps feedback connected and retains the connection lock.
+It stays open and asks you to enter `disable`, then `quit`.
+The terminal does not send disable automatically.
+
+After explicit disable, the service requires fresh disabled feedback, confirmed rest, and completion of pending tasks before it disconnects.
+While these tasks finish, the terminal continues to wait.
 For a normal exit, enter `disable`, then `quit`.
+If feedback is lost or the stop cannot be confirmed, the terminal stays open and keeps the connection lock.
+Use the physical emergency stop when the terminal reports an unconfirmed stop.
 
 Use `quit --force` only after a physical stop at the site.
 A forced exit returns exit code 1 and releases the process lock.

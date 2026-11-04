@@ -6,6 +6,7 @@ import pytest
 from helpers import Feed, PanelControl, block_network, wait_for
 
 from mg400 import terminal_control
+from mg400.feedback import Feedback
 from mg400.terminal_control import TerminalSession, parse_command, run_terminal, status_lines
 from mg400.web_control import RobotPanelState
 
@@ -237,6 +238,111 @@ def test_quit_with_unconfirmed_stop_and_no_feedback_keeps_terminal_open():
     assert "physical emergency stop" in " ".join(session.messages)
 
 
+def confirmed_quit_snapshot(state, session):
+    state.values.update(
+        syncing=True,
+        busy=False,
+        feedback_fresh=True,
+        locked=True,
+        stop_unconfirmed=False,
+        robot_error=False,
+        robot_mode=5,
+        enabled=True,
+        controller_id=None,
+        last_command={
+            "id": "new-stop",
+            "action": "stop_sync",
+            "client": session.client_id,
+            "result": "stopped",
+        },
+    )
+
+
+def test_confirmed_enabled_quit_prompts_disable_without_sending_it():
+    state = State()
+    state.values.update(syncing=True, busy=True)
+    session = TerminalSession(state)
+    session.messages.clear()
+    session.submit("quit")
+    confirmed_quit_snapshot(state, session)
+    session.tick()
+    assert not session.quitting and not session.finished
+    assert state.commands == [({"action": "stop_sync"}, session.client_id)]
+    assert "Enter disable, then quit" in " ".join(session.messages)
+    assert "physical emergency stop" not in " ".join(session.messages)
+    assert "quit --force" not in " ".join(session.messages)
+    session.submit("disable")
+    assert state.commands[-1][0] == {"action": "disable"}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"feedback_fresh": False},
+        {"feedback_fresh": None},
+        {"robot_error": True},
+        {"robot_error": None},
+        {"stop_unconfirmed": True},
+        {"locked": False},
+        {"robot_mode": 7},
+        {"enabled": None},
+        {"controller_id": "someone-else"},
+        {"last_command": None},
+    ],
+)
+def test_quit_never_calls_missing_or_unsafe_feedback_a_confirmed_stop(change):
+    state = State()
+    state.values.update(syncing=True, busy=True)
+    session = TerminalSession(state)
+    session.messages.clear()
+    session.submit("quit")
+    confirmed_quit_snapshot(state, session)
+    state.values.update(change)
+    session.tick()
+    assert not session.finished and not session.quitting
+    assert "Enter disable, then quit" not in " ".join(session.messages)
+    assert "physical emergency stop" in " ".join(session.messages)
+    assert state.commands == [({"action": "stop_sync"}, session.client_id)]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"id": "old-stop"}, {"client": "other"}, {"action": "execute"}, {"result": "failed"}],
+)
+def test_quit_needs_a_new_matching_safety_receipt(change):
+    state = State()
+    state.values.update(syncing=True, busy=True, last_command={"id": "old-stop"})
+    session = TerminalSession(state)
+    session.messages.clear()
+    session.submit("quit")
+    confirmed_quit_snapshot(state, session)
+    state.values["last_command"].update(change)
+    session.tick()
+    assert not session.finished and not session.quitting
+    assert "Enter disable, then quit" not in " ".join(session.messages)
+    assert "physical emergency stop" in " ".join(session.messages)
+
+
+@pytest.mark.parametrize("action", ["disable", "stop_sync"])
+def test_quit_waits_for_confirmed_disabled_cleanup_without_false_warning(action):
+    state = State()
+    state.values.update(syncing=True, busy=True)
+    session = TerminalSession(state)
+    session.messages.clear()
+    session.submit("quit")
+    confirmed_quit_snapshot(state, session)
+    state.values.update(robot_mode=4, enabled=False)
+    state.values["last_command"].update(action=action, result="ok")
+    session.tick()
+    assert session.quitting and not session.finished
+    assert "physical emergency stop" not in " ".join(session.messages)
+    assert "Enter disable, then quit" not in " ".join(session.messages)
+    assert len(state.commands) == 1
+    state.values.update(syncing=False, locked=False)
+    session.tick()
+    assert session.finished and session.exit_code == 0
+
+
 def test_ui_preserves_input_and_handles_ctrl_c_while_operation_is_busy():
     state = State()
     session = TerminalSession(state)
@@ -304,6 +410,17 @@ def test_terminal_stop_interrupts_waiting_robot_move():
         control.release_move.set()
         wait_for(lambda: not session.tick()["busy"])
         assert state.snapshot()["locked"]
+        session.messages.clear()
+        session.submit("quit")
+        wait_for(lambda: session.tick() and not session.quitting)
+        assert not session.finished
+        assert "Enter disable, then quit" in " ".join(session.messages)
+        assert "physical emergency stop" not in " ".join(session.messages)
+        assert "disable" not in control.calls
+        feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+        wait_for(lambda: session.tick()["robot_mode"] == 4)
+        session.submit("disable")
+        wait_for(lambda: not session.tick()["syncing"] and not session.tick()["busy"])
         session.submit("quit")
         wait_for(lambda: session.tick() and session.finished)
     finally:

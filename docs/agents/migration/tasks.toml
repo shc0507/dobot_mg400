@@ -896,6 +896,7 @@ writes = [
   "docs/vision.md",
   "docs/vision.en.md",
   "tests/test_recipe_tray_transfer.py",
+  "tests/test_orchestrator_transfer.py",
   "docs/orchestrator.md",
   "docs/orchestrator.en.md",
 ]

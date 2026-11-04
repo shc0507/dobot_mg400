@@ -14,7 +14,7 @@
 | 配置依赖并运行离线检查 | [开发检查](#开发检查) |
 | 查找入口与模块 | [代码结构](#代码结构) |
 | 编写机器人服务的客户端 | [机器人服务接口](#机器人服务接口) |
-| 编写位移台面板的客户端 | [位移台面板接口](#位移台面板接口) |
+| 编写位移台服务的客户端 | [位移台服务接口](#位移台服务接口) |
 | 修改关节范围、运动参数或夹爪协议 | [真机控制参考](#真机控制参考) |
 
 ## 开发检查
@@ -31,12 +31,12 @@ uv run ruff format --check .
 ```
 
 `uv sync` 默认安装 `dev` 和 `stage` 依赖组。
-`stage` 组含位移台面板使用的 Flask、waitress 和 pySerial。
-机械臂的网页服务和交互终端只用标准库，不依赖 `stage` 组。
+`stage` 组含位移台服务使用的 Flask、waitress 和 pySerial。
+机器人服务和交互终端只用标准库，不依赖 `stage` 组。
 
 测试不连接机械臂或 Arduino。
 拉取请求和推送到 `main` 时，GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.12 上运行以上检查。
-`pytest` 运行 Python 测试，`node --test` 运行摄像头预览和网页按键测试。
+`pytest` 运行 Python 测试，`node --test` 运行实验室控制台的 JavaScript 测试。
 离线检查不能替代真机验证。
 
 测试共用的 fixture 位于 `tests/conftest.py`。
@@ -68,15 +68,15 @@ kill "$sim_pid"
 wait "$sim_pid"
 ```
 
-打开 `http://127.0.0.1:18766/`，按以下顺序操作：
+在另一个终端用 [Python 客户端](#python-客户端) 连接 `http://127.0.0.1:18766/`，按以下顺序发送命令：
 
-1. 点击 `Connect & take control`，等待反馈更新。
-2. 点击 `Enable robot`，等待使能完成。
-3. 点击 `Use actual`，填写目标坐标，再点击 `Execute targets`。
-4. 发送夹爪目标，确认反馈位置更新。
-5. 点击 `Disconnect`，等待停止确认。
+1. 运行 `start_sync`，等待反馈更新。
+2. 运行 `enable`，等待使能完成。
+3. 用 `execute` 发送目标坐标。
+4. 用 `grip` 发送夹爪目标，确认反馈位置更新。
+5. 运行 `stop_sync`，等待停止确认，再运行 `disable`。
 
-在终端按 `Ctrl+C` 结束网页服务。
+在终端按 `Ctrl+C` 结束机器人服务。
 随后两条命令结束本次模拟器进程。
 每次启动使用新目录。模拟器拒绝覆盖已有的反馈文件、命令文件或命令锁。
 
@@ -90,13 +90,13 @@ wait "$sim_pid"
 | 路径 | 用途 |
 | --- | --- |
 | `config/robot.toml` | 机器人地址，`MG400_ROBOT_HOST` 未设置时使用 |
-| `apps/control_panel/` | 独立 Python 网页服务和界面 |
+| `apps/control_panel/` | 独立 Python 机器人服务，不提供网页 |
 | `apps/layout-studio/` | 离线布局编辑器，使用模拟数据，不发送控制命令 |
 | `config/systemd/` | 所有服务的 systemd 定义，配置从 `/etc/mg400/mg400.env` 读取 |
 | `deploy/` | 安装器 `install.py`、日常命令 `mg400ctl` 和配置示例 |
 | `src/mg400/` | 后端、控制协议和反馈处理 |
 | `src/mg400/sim/` | 回环控制器和文件夹爪模拟器，共用测试模型 |
-| `src/stage_controller/` | 位移台面板：Flask 服务、串口协议和界面 |
+| `src/stage_controller/` | 位移台服务：Flask 接口和串口协议 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
 | `scripts/` | 摄像头预览、控制模式切换和 USB 采集 |
 | `examples/` | 单文件教学和 notebook |
@@ -109,20 +109,21 @@ wait "$sim_pid"
 `terminal_control.py` 提供 `mg400-robot` 真机交互终端。
 它复用 `web_control.py` 的连接锁、反馈检查和动作执行，不启动 HTTP 服务。
 
-`apps/control_panel/server.py` 是机器人服务，提供网页面板、HTTP 接口和 WebSocket 接口。
+`apps/control_panel/server.py` 是机器人服务，提供 HTTP 接口和 WebSocket 接口，不提供网页。
+实验室控制台的 Motion 工作区通过该服务控制机械臂和夹爪。
 `websocket.py` 用标准库实现 WebSocket 帧编解码和连接写线程。
 接口说明见 [机器人服务接口](#机器人服务接口)。
 
-网页键盘点动由 `web_control.py` 调度，机械臂长按复用 `keyboard_jog.py`。
+WebSocket 按键点动由 `web_control.py` 调度，机械臂长按复用 `keyboard_jog.py`。
 `web_keyboard.py` 校验按键输入并执行夹爪小步。
 
-真机面板通过 TCP 协议控制机械臂。
+机器人服务通过 TCP 协议控制机械臂。
 `controller_protocol.py` 解析命令应答，`feedback.py` 读取关节反馈。
 `joint_control.py` 执行受限运动，`gripper_feedback.py` 处理夹爪反馈。
 TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 当前没有 ROS 2 后端或视觉感知。
 
-`src/stage_controller/` 是位移台面板，不导入 `mg400`，也不使用机械臂的连接锁。
+`src/stage_controller/` 是位移台服务，不导入 `mg400`，也不使用机械臂的连接锁。
 `__main__.py` 读取 `MG400_STAGE_*` 环境变量和命令行参数，再启动 waitress。
 收到 SIGINT、SIGTERM 或 SIGHUP 时，它先停止电机并断开串口，再退出。
 `app.py` 提供 HTTP 接口和访问检查。
@@ -130,12 +131,12 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 `protocol.py` 实现 Arduino 串口协议和演示模式。
 所有串口命令都在 `MotorController` 的锁内执行，一次移动的命令不与其他请求交错。
 修改串口命令时，同时修改固件和 `DemoTransport`。
-接口说明见 [位移台面板接口](#位移台面板接口)。
+接口说明见 [位移台服务接口](#位移台服务接口)。
 
 ## 机器人服务接口
 
 机器人服务执行 `start_sync` 后连接机械臂，并持有连接锁。
-网页面板和自写客户端通过服务读取状态和发送命令。
+实验室控制台和自写客户端通过服务读取状态和发送命令。
 `mg400-robot` 和 `scripts/mg400_control_mode.py` 直接连接机械臂。
 它们与服务共用连接锁，不能与服务同时连接。
 服务只使用 Python 标准库。
@@ -160,15 +161,14 @@ HTTP 请求用 `Authorization: Bearer <密钥>` 发送密钥。
 WebSocket 在 hello 消息中发送密钥。
 
 未设置访问密钥时，服务只接受 `Host` 为 `127.0.0.1`、`localhost` 或 `[::1]` 的请求。
-此限制阻止 DNS 重绑定（恶意网页把自己的域名解析到本机）访问面板。
+此限制阻止 DNS 重绑定（恶意网页把自己的域名解析到本机）访问服务。
 此时服务也拒绝带 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 或 `X-Real-IP` 的请求。
 经反向代理访问时，必须设置访问密钥。
 
-真机控制模式用客户端 ID 区分页面和程序，长度为 1–128 个可打印 ASCII 字符。
+真机控制模式用客户端 ID 区分客户端，长度为 1–128 个可打印 ASCII 字符。
 同一时刻只有一个客户端 ID 持有控制权。
 控制者必须在 3 秒内续期控制租约（控制权的有效期）。
 心跳和按键更新都能续期。
-网页面板每 0.5 秒发送一次心跳。
 服务 3 秒内未收到续期时，请求停止机械臂并锁定控制。
 
 ### HTTP 接口
@@ -213,7 +213,7 @@ POST 请求必须满足以下条件：
 这些配置不改变 `home`、全局 `SpeedFactor` 或键盘点动。
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
-`recoverable` 为 `true` 时也可用：报警期间的停止未确认已锁定控制，报警已在面板外清除。
+`recoverable` 为 `true` 时也可用：报警期间的停止未确认已锁定控制，报警已在服务外清除。
 此时服务不发送 `ClearError()`，只下使能并确认静止。
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
@@ -230,7 +230,7 @@ POST 请求必须满足以下条件：
 `contract` 为 1，`demo` 为 `false`。
 每个命令的 `params` 用 JSON Schema 描述参数，不含 `action`。
 `stop` 和 `disable` 的 `any_client` 为 `true`。
-`keyboard` 的 `ui_only` 为 `true`，供网页面板使用。
+`keyboard` 的 `ui_only` 为 `true`，只供交互界面使用。
 `start_sync` 取得控制权，原心跳接口只续期。
 
 `api/stop` 的正文为 `{"wait_s": 0}`。
@@ -274,7 +274,7 @@ POST 请求必须满足以下条件：
 支持 `http://`、`https://`、`ws://` 和 `wss://`。如果服务配置了基础路径，URL 必须包含该路径。
 令牌遵循机器人服务的访问规则。空令牌仅适用于允许的环回主机。
 
-运行示例前，启动[离线模拟器和面板](#离线机器人模拟器)。
+运行示例前，启动[离线模拟器和机器人服务](#离线机器人模拟器)。
 示例向该模拟器发送运动命令。
 
 ```python
@@ -379,37 +379,14 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 服务或代理关闭连接、客户端 3 秒内重连并续期时，保留控制权。
 网络中断时，服务可能检测不到连接关闭，由按键超时和控制租约停止机械臂。
 
-## 位移台面板接口
+## 位移台服务接口
 
-位移台面板的 HTTP 接口使用 JSON。
+位移台服务的 HTTP 接口使用 JSON，全部位于 `{前缀}contract/api/`。
+`{前缀}` 是 `MG400_STAGE_BASE_PATH`，默认为 `/`。
 服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
-
-| 接口 | 正文字段 | 用途 |
-| --- | --- | --- |
-| `GET /api/ports` | 无 | 列出可连接的串口，不含夹爪转换器。设置 `MG400_STAGE_SERIAL` 时只列出该设备 |
-| `GET /api/state` | 无 | 读取连接、电机、细分模式和活动日志 |
-| `POST /api/connect` | `port` | 连接 `api/ports` 列出的串口，演示模式只接受 `DEMO` |
-| `POST /api/disconnect` | 无 | 发送 `stop all`，确认后断开 |
-| `POST /api/stop` | 无 | 停止所有电机 |
-| `POST /api/microstep` | `microstep`：1、2、4、8 或 16 | 所有电机静止时设置细分模式 |
-| `POST /api/motors/<电机>/move` | `direction`、`speed`、`steps` | 固定步数移动 |
-| `POST /api/motors/<电机>/hold` | `direction`、`speed`、`hold_id`、`sampled_at` | 开始长按移动 |
-| `POST /api/motors/<电机>/hold/keepalive` | `hold_id` | 续期长按 |
-| `POST /api/motors/<电机>/hold/stop` | `hold_id` | 结束长按 |
-
-`<电机>` 取 `bottom`、`top` 或 `insert`，`direction` 取 `cw` 或 `ccw`。
-`speed` 是 1–1000 的整数，`steps` 是 1–100000 的整数。
-`hold_id` 由客户端生成，长度为 16–64 个字符，只含字母、数字、`_` 和 `-`。
-每次长按必须使用新的 `hold_id`。
-`sampled_at` 取自 `api/state` 的同名字段，必须在服务时钟的最近 2 秒内。
-客户端必须在 1 秒内续期长按，网页每 200 ms 续期一次。
-`hold/stop` 可以重复发送。
-`hold/stop` 先于同一 `hold_id` 的 `hold` 到达时，服务拒绝之后到达的 `hold`。
 
 ### 位移台自动化契约
 
-自动化接口位于 `/contract/api/`，与现有面板接口并存。
-先通过面板连接 Arduino，再使用自动化接口。
 `labkit.client.ServiceClient` 的基地址为 `http://127.0.0.1:8767/contract`，包含 `/contract`。
 接口遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)。
 
@@ -417,23 +394,30 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 | --- | --- |
 | `GET /contract/api/describe` | 读取命令参数、限制、演示标志和租约规则 |
 | `GET /contract/api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command` |
-| `POST /contract/api/heartbeat` | 取得或续期控制租约；其他客户端占用时返回 409 |
+| `POST /contract/api/heartbeat` | 取得或续期控制租约。其他客户端占用时返回 409 |
 | `POST /contract/api/renew` | 仅续期调用者持有且未过期的租约，否则返回 409 |
 | `POST /contract/api/release` | 释放调用者的控制租约，不发送停止命令 |
-| `POST /contract/api/command` | 正文携带 `action` 和对应参数；接受后返回 202、`command_id` 和 `state` |
-| `POST /contract/api/stop` | 任意客户端可请求停止，无须租约；`wait_s` 为 0–15 秒，默认 0 |
-| `GET /contract/api/events?since=0` | 读取活动事件和 `next` 游标；每条活动只记录一次，同时写入服务日志 |
+| `POST /contract/api/command` | 正文携带 `action` 和对应参数。接受后返回 202、`command_id` 和 `state` |
+| `POST /contract/api/stop` | 任意客户端可请求停止，无须租约。`wait_s` 为 0–15 秒，默认 0 |
+| `GET /contract/api/events?since=0` | 读取活动事件和 `next` 游标。每条活动只记录一次，同时写入服务日志 |
 
 | `action` | 参数 | 完成判定 |
 | --- | --- | --- |
 | `move` | `motor`、`direction`、`speed`、`steps` | 新鲜反馈确认目标电机空闲后，更新 `last_command` |
-| `hold` | `motor`、`direction`、`speed`、`hold_id`、`sampled_at` | Arduino 确认开始长按；电机继续运动 |
+| `hold` | `motor`、`direction`、`speed`、`hold_id`、`sampled_at` | Arduino 确认开始长按。电机继续运动 |
 | `keepalive` | `motor`、`hold_id` | Arduino 确认续期长按 |
 | `release_hold` | `motor`、`hold_id` | 结束对应长按 |
-| `stop_all` | 无 | Arduino 确认停止请求；无须持有租约。故障锁定时使用专用停止接口 |
+| `stop_all` | 无 | Arduino 确认停止请求。无须持有租约。故障锁定时使用专用停止接口 |
 | `set_microstep` | `microstep` | Arduino 确认细分模式 |
 
-参数范围与面板接口相同，拒绝缺少或多余的参数。
+`motor` 取 `bottom`、`top` 或 `insert`，`direction` 取 `cw` 或 `ccw`。
+`speed` 是 1–1000 的整数，`steps` 是 1–100000 的整数，`microstep` 取 1、2、4、8 或 16。
+`hold_id` 由客户端生成，长度为 16–64 个字符，只含字母、数字、`_` 和 `-`。
+每次长按必须使用新的 `hold_id`。
+`sampled_at` 取自 `api/state` 的同名字段，必须在服务时钟的最近 2 秒内。
+`release_hold` 可以重复发送。它先于同一 `hold_id` 的 `hold` 到达时，服务拒绝之后到达的 `hold`。
+服务拒绝缺少或多余的参数。
+
 控制租约默认有效 3 秒，长按仍须在 1 秒内单独续期。
 长按续期不续期控制租约。
 labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
@@ -444,51 +428,47 @@ labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
 原有 `heartbeat()` 和默认 `heartbeat_thread()` 保留取得或续期租约的行为。
 续期失败后，先停止运动并核对服务状态，再明确取得控制权。
 租约过期时，服务请求停止所有电机。
-释放租约不停止运动；先等待完成或请求停止，再交还控制权。
-租约有效时，面板移动、长按续期和细分接口返回 409，错误为 `Stage is controlled by automation`。
-面板停止和结束长按仍可用。
+释放租约不停止运动。先等待完成或请求停止，再交还控制权。
 
 专用停止接口返回 `stop` 和 `state`，`stop` 为 `confirmed`、`pending` 或 `unconfirmed`。
 仅确认所有电机空闲后才返回 `confirmed`。
 等待反馈时，服务允许其他停止请求，但禁止新运动。
 停止等待到期或串口结果未知时，`locked` 为真且 `fault` 非空。
-后续空闲反馈不清除故障。核对现场状态后，手动断开并重新连接，确认所有电机空闲后才清除。
+后续空闲反馈不清除故障。核对现场状态后，运行 `mg400ctl restart stage`，再重新连接。确认所有电机空闲后才清除。
 停止确认尚未结束时，重新连接请求返回 409，防止用新连接的反馈确认旧设备已停止。
-`last_command` 区分 `ok`、`failed`、`rejected` 和 `stopped`；服务不自动重试运动。
+`last_command` 区分 `ok`、`failed`、`rejected` 和 `stopped`。服务不自动重试运动。
 
-契约接口使用同一 `MG400_STAGE_TOKEN`，并检查 `Host`、`Origin` 和转发请求头。
-POST 必须带 `Content-Type: application/json` 和 `X-MG400-Client`，正文必须是 JSON 对象。
-客户端 ID 为 1–128 个可打印 ASCII 字符。
-契约接口不使用 `X-Control-Token`，也不能用客户端 ID 绕过旧面板接口的该项检查。
-正文大小上限仍为 4096 字节。
+### 操作接口
+
+实验室控制台还使用以下 4 个接口，前缀与契约相同：
+
+| 接口 | 正文 | 用途 |
+| --- | --- | --- |
+| `GET /contract/api/ports` | 无 | 列出可连接的串口，不含夹爪转换器。设置 `MG400_STAGE_SERIAL` 时只列出该设备 |
+| `POST /contract/api/connect` | `{"port": "..."}` | 连接 `api/ports` 列出的串口，演示模式只接受 `DEMO`。调用者必须持有位移台租约 |
+| `GET /contract/api/motors/<motor>/reference` | 无 | 读取相机图像和标记的像素偏移 |
+| `POST /contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | 把当前标记位置保存为该轴的参考。调用者必须持有位移台租约 |
+
+`api/ports` 返回 `{"ports": [{"device": "...", "description": "..."}]}`。
+`api/connect` 和 `teach_reference` 成功时返回状态对象和 `lease`。
 
 ### 访问检查
 
-以下检查适用于原有 `/api/` 面板接口。
-
-设置 `MG400_STAGE_TOKEN` 后，每个 `/api/` 请求都必须带 `Authorization: Bearer <密钥>`。
-此时服务接受任何 `Host` 和转发请求头。
-`/` 和 `/static/` 不要求访问密钥，页面不含串口、日志和电机位置。
+所有接口使用同一 `MG400_STAGE_TOKEN`。设置该密钥后，每个请求都必须带 `Authorization: Bearer <密钥>`。
 未设置访问密钥时，`Host` 和转发请求头的规则同 [认证与客户端 ID](#认证与客户端-id)。
+POST 必须带 `Content-Type: application/json` 和 `X-MG400-Client`，正文必须是 JSON 对象。
+客户端 ID 为 1–128 个可打印 ASCII 字符。
+正文大小上限为 4096 字节。
 
-POST 请求还必须满足以下条件：
-
-1. 带 `Content-Type: application/json`。
-2. 带 `X-Control-Token`，值取自页面的 `<meta name="control-token">`，服务每次启动生成新值。
-3. 正文不超过 4096 字节。有正文字段的接口，正文必须是 JSON 对象。
-
-成功时返回 200 和状态对象，字段与 `api/state` 相同。
-`api/ports` 返回 `{"ports": [{"device": "...", "description": "..."}]}`。
-状态对象的 `motors` 列出每个电机的 `mode`（`idle`、`moving` 或 `continuous`）、`position`、`cooldown` 和 `available` 等字段。
-拒绝时，正文为 `{"error": "..."}`，状态码如下：
+操作接口拒绝时，正文为 `{"error": "..."}`，状态码如下：
 
 | 状态码 | 含义 |
 | --- | --- |
 | 400 | 请求无效，或串口不在当前列表中 |
 | 401 | 缺少访问密钥或密钥错误 |
-| 403 | `Host`、转发请求头或 `X-Control-Token` 不符合要求 |
-| 409 | 状态冲突，例如未连接、电机仍在运动或冷却 |
-| 413 | 请求正文超过 4096 字节。此时响应正文是 waitress 生成的纯文本 |
+| 403 | `Host` 或转发请求头不符合要求 |
+| 409 | 状态冲突，例如未持有租约、已连接或电机仍在运动 |
+| 413 | 请求正文超过 4096 字节 |
 | 415 | 不是 JSON 请求 |
 | 503 | 串口通信失败，服务已关闭串口连接 |
 
@@ -534,7 +514,7 @@ J4 使用厂家 ±360° 范围，目标允许范围为 ±358.95°。
 
 ### 运动命令与坐标缓存
 
-手动 `Execute targets` 的 `MovL` 使用 `SpeedL=1,AccL=1`。
+未提供 `speed` 时，`execute` 的 `MovL` 使用 `SpeedL=1,AccL=1`。
 键盘有限轨迹中，W/S、R/F、Q/E 的 `MovL` 使用 `SpeedL=2,AccL=20`。
 控制器逆解验证目标关节范围，控制器规划直线路径。
 复位使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
@@ -543,7 +523,7 @@ A/D 的有限轨迹使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=20`。
 机械臂运动不修改全局速度或工具配置。
 
 A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
-动作结束后读取坐标，更新面板。
+动作结束后读取坐标，更新状态。
 其余六个方向可复用同一控制实例读取的实测坐标。
 复用时，测量不得超过 0.25 秒。
 测量前后关节反馈还须与当前关节反馈一致。
@@ -566,11 +546,11 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 
 命令文件的 `deadline_monotonic` 表示单调时钟上的截止时间。
 单调时钟用于计时，不随系统日期调整。
-面板与采集进程必须位于同一主机，并共享同一单调时钟域。
+机器人服务与采集进程必须位于同一主机，并共享同一单调时钟域。
 位置命令不支持跨主机传递，也不支持带时钟偏移的时间命名空间。
 文件准备、采集接收、寄存器操作和到位确认共用命令时限。
 位置命令为 5 秒，初始化为 15 秒。
-面板在准备命令文件前开始计时，采集进程不得重新计时。
+机器人服务在准备命令文件前开始计时，采集进程不得重新计时。
 
 采集进程在每次串口请求前检查截止时间，包括模式写入和目标写入。
 若请求已发送，采集进程仍按原有 1 秒应答时限接收并校验完整应答。

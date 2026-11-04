@@ -1,56 +1,58 @@
 [中文](stage-panel.md)
 
-# Stage panel
+# Stage
 
 [Return to the project home page](../README.en.md)
 
-The stage panel is a web service that controls the three-motor stage. It runs separately from the robot web panel.
+The stage service controls the three-motor stage. Its command is `stage-panel`, and its systemd service is `mg400-stage-panel.service`.
+The service has no web page. The operator uses the `Stage · 3 axes` card in the Motion workspace of the Lab Console.
 The stage's three stepper motors connect to one Arduino. Each motor uses an A4988 driver.
-The panel sends commands to the Arduino through a USB serial port at 115200 baud.
+The service sends commands to the Arduino through a USB serial port at 115200 baud.
 The service uses Flask, waitress, and pySerial.
 
-The motor directions and keys are:
+The motor directions and buttons are:
 
-| Motor | Action | Page label | Serial direction | Key |
+| Motor | Axis on the card | Action | Button | Serial direction |
 | --- | --- | --- | --- | --- |
-| `bottom` | Raise | `Up` | `ccw` | W |
-| `bottom` | Lower | `Down` | `cw` | S |
-| `top` | Right | `Right` | `ccw` | D |
-| `top` | Left | `Left` | `cw` | A |
-| `insert` | Insert | `Insert In` | `ccw` | J |
-| `insert` | Withdraw | `Insert Out` | `cw` | K |
+| `bottom` | `Bottom` | Raise | `Step −` | `ccw` |
+| `bottom` | `Bottom` | Lower | `Step +` | `cw` |
+| `top` | `Top` | Right | `Step −` | `ccw` |
+| `top` | `Top` | Left | `Step +` | `cw` |
+| `insert` | `Insert` | Insert | `Step −` | `ccw` |
+| `insert` | `Insert` | Withdraw | `Step +` | `cw` |
 
-Hold buttons add `Hold` before the label, for example, `Hold Up`.
-Labels identify only the serial direction. The actual rotation depends on the motor wiring and viewing direction.
+`cw` increases the pulse count. `ccw` decreases the pulse count.
+Actions identify only the serial direction. The actual rotation depends on the motor wiring and viewing direction.
 
 ## Before use
 
 A person who can disconnect motor power must be present during use.
-`Stop all motors` is a software stop, not an emergency stop.
+`Stop stage` is a software stop, not an emergency stop.
 
 The Arduino connects to a USB port on the Olares host and must run the `firmware/three-motor-demo` firmware.
 See the [firmware guide](../firmware/three-motor-demo/README.en.md) for upload instructions, wiring, and serial commands.
-The panel uses a file lock for exclusive access to the serial port.
-A program that does not use the lock can still open the same port. The panel cannot detect that program.
+The service uses a file lock for exclusive access to the serial port.
+A program that does not use the lock can still open the same port. The service cannot detect that program.
 
 For an Olares deployment, upload the firmware from a computer with the Arduino IDE:
 
-1. Click `Stop all motors` and `Disconnect` in the panel.
-2. Disconnect the Arduino from the Olares host. Connect it to that computer.
-3. Upload the firmware as the firmware guide specifies.
-4. Reconnect the Arduino to a USB port on the Olares host.
-5. Run `ls -l /dev/serial/by-id/` on the host. Confirm that the Arduino path matches `MG400_STAGE_SERIAL`.
-6. Click `Connect` in the panel.
+1. Click `Stop stage` in the console.
+2. Run `mg400ctl stop stage` on the host. The service sends `stop all`, then closes the serial port.
+3. Disconnect the Arduino from the Olares host. Connect it to that computer.
+4. Upload the firmware as the firmware guide specifies.
+5. Reconnect the Arduino to a USB port on the Olares host.
+6. Run `ls -l /dev/serial/by-id/` on the host. Confirm that the Arduino path matches `MG400_STAGE_SERIAL`.
+7. Run `mg400ctl start stage`. Then connect the Arduino as [Connection](#connection) specifies.
 
-When you run the panel locally, click `Disconnect` in the panel before uploading firmware.
+When you run the service locally, stop the `stage-panel` process before uploading firmware.
 
 The stage uses open-loop control: it sends pulses without reading the actual position. It has no encoders.
 The stage has no limit switches. Updated firmware supports confirmed manual zero and soft limits.
-A board with configured switches can still use homing. Old firmware keeps manual control.
-The page count is a signed STEP pulse count. Reset, homing, and manual zero reset its reference. It is not measured travel.
+A board with configured switches can still use homing.
+The count on the card is a signed STEP pulse count. Reset, homing, and manual zero reset its reference. It is not measured travel.
 Before moving, confirm that sufficient travel remains in that direction.
 
-Most Arduino boards reset when the serial port opens. The panel opens the serial port on every connection.
+Most Arduino boards reset when the serial port opens. The service opens the serial port on every connection.
 During reset, the drivers may briefly wake, and the motors may move to the A4988 Home microstep position.
 After reset, the counts return to zero. The microstep mode, which sets the fraction of a full step per pulse, returns to full step.
 After the firmware starts, all three drivers enter sleep mode.
@@ -61,25 +63,15 @@ The firmware's `SleepTimeoutMs` setting controls this period. The default is 10 
 External forces can turn a sleeping motor. The count does not record these rotations.
 When the driver wakes, the motor may move to the A4988 Home microstep position.
 
-The panel does not distinguish between operators.
-Every page with the panel open can send commands.
-All pages share the connection, motion state, activity log, and cooldown times.
-Speed and step inputs belong only to the current page. Refreshing the page restores their defaults.
-
-## Open the panel
+## Open the console
 
 ### Use the service deployed on Olares
 
 Keep LarePass VPN connected.
-The VPN access-control rules must allow TCP `8767`.
-Open the [Olares stage panel](http://100.64.0.1:8767/).
-
-When the page shows the `Panel access token` input, enter the access token. Click the adjacent `Connect` button.
-The access token is the `MG400_STAGE_TOKEN` value in `/etc/mg400/mg400.env` on the host.
-The page stores the token in the current tab. You do not need to enter it again after a refresh.
-If the service rejects the token, the page deletes the saved token and shows the input again.
-While the input is visible, the page pauses status reads.
-If the service is not running, see [Service configuration](#service-configuration).
+Open the [Lab Console](http://100.64.0.1:8080/). Go to the `Motion` workspace.
+The stage service listens only on a loopback address. The console process calls it on the host through `127.0.0.1`.
+The console uses `MG400_ORCH_STAGE_URL` and `MG400_ORCH_STAGE_TOKEN` to connect to the service. See [Recipe service](orchestrator.en.md).
+If the card shows `Not running` or `Not reachable`, see [Service configuration](#service-configuration).
 
 ### Start locally
 
@@ -90,144 +82,120 @@ uv sync
 uv run stage-panel
 ```
 
-Open the [local stage panel](http://127.0.0.1:8767/) on that computer.
 `uv run python -m stage_controller` is equivalent to `uv run stage-panel`.
 Local operation also reads the environment variables and arguments in [Configuration](#configuration).
 On Linux, the service user must have read and write access to the serial device, for example, through the `dialout` group.
 Log in again after joining the group.
+When you start the console, set `MG400_ORCH_STAGE_URL` to `http://127.0.0.1:8767/contract/`.
 
-Without an Arduino, use demo mode to view the interface:
+Without an Arduino, use the console demo mode to view the stage card:
 
 ```sh
-uv run stage-panel --demo
+MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
 ```
 
-Select `DEMO` in the serial-port list. Click `Connect`.
+Open the [local console](http://127.0.0.1:8790/lab/) on that computer.
+`uv run stage-panel --demo` starts a demo service. Its serial-port list contains only `DEMO`.
 Demo mode does not open a serial port. Its simulated motion times exclude acceleration and deceleration.
 
 ## Controls
 
-### Automation control
+### Control ownership
 
-While an automation client holds the control lease, the page shows `Stage is controlled by automation`.
-Fixed-step, hold, keyboard motion, microstep, Home, manual zero, reference teaching, named position, and pose controls are unavailable.
-`Stop all motors` and hold release remain available.
+Click `Take control` to get the stage control lease.
+Without control, connection, stepping, step moves, homing, zero, reference teaching, and named positions are unavailable.
+`Stop stage` and `STOP ALL MOTION` do not need control.
+While another client holds the lease, the card shows `Another client controls it`.
 The lease lasts 3 seconds by default. The client must renew it.
 On expiry, the service requests that all motors stop.
 Releasing the lease only returns control ownership. It does not stop motion.
-Before releasing control, the client must wait for motion to finish or request a stop.
+Before you release control, wait for motion to finish or click `Stop stage`.
 
-If the stop cannot be confirmed, the page shows a fault and blocks new motion.
-First use the physical emergency stop and check the motors. Then manually disconnect and reconnect the Arduino.
-Wait until the stop request finishes before reconnecting.
-Reconnection clears the fault only after all motors report idle.
-Idle feedback alone does not automatically clear the fault.
+If the stop cannot be confirmed, the card shows a fault and the service blocks new motion.
+First use the physical emergency stop and check the motors.
+After the stop request finishes, run `mg400ctl restart stage`. Then connect again.
 See [Stage automation contract](development.en.md#stage-automation-contract) for the interface.
 
 ### Connection
 
+While the Arduino is not connected, the card shows `Arduino not connected`, the `Serial port` list, and the `Connect` button.
 Use this sequence:
 
-1. Select the Arduino in the serial-port list under `Device connection`.
-2. Click `Connect`. Wait for the status to show `Arduino connected`.
-3. When finished, click `Disconnect`.
+1. Click `Take control`.
+2. Select the Arduino in the `Serial port` list.
+3. Click `Connect`. Wait for the status to show `Connected`.
 
 The serial-port list shows ports on the host that runs the service.
 For an Olares deployment, the list comes from the Olares host, not the computer with the browser.
-After connecting the Arduino, click the refresh button to update the list.
+After you connect the Arduino, reload the console page to update the list.
 The list excludes the gripper's USB converter, which has serial number `BG02Q5TN`.
 When `MG400_STAGE_SERIAL` is set, the list shows only that device. See [Configuration](#configuration).
 Otherwise, the list may contain other serial ports.
 Run `ls -l /dev/serial/by-id/` on the host. Find the Arduino by its device name.
 Do not connect to an unidentified serial port.
-During connection, the service sends `status` and the read-only `features` query to that port.
-Old firmware can refuse `features` and keep its current controls.
 
 The service opens only serial ports that currently appear in the list.
 During connection, the service opens the serial port and waits about 2 seconds for the Arduino to reset.
+The service sends `status` and the read-only `features` query to that port.
+Old firmware can refuse `features`.
 Controls unlock only after the Arduino returns the status of all three motors.
-`Disconnect` sends `stop all`. It closes the serial port after receiving confirmation.
+The console has no disconnect button. When the service stops, it sends `stop all` and closes the serial port after confirmation.
 
 ### Microstep mode
 
-`Stepping mode` applies to all three motors. Select full step, 1/2, 1/4, 1/8, or 1/16 step.
-While all motors are stationary, select the mode. Click `Apply to all`.
-The page separately shows the current mode reported by the Arduino.
+`Stepping` applies to all three motors. Select full step, 1/2, 1/4, 1/8, or 1/16 step.
+While all motors are stationary, click a mode. Then confirm on the card.
+The highlighted mode is the current mode reported by the Arduino.
 
 Speed and steps both count STEP pulses in the current mode.
-The panel does not convert speed or steps when you change the mode.
+The service does not convert speed or steps when you change the mode.
 For example, in 1/16-step mode, 50 pulses equal 3.125 full steps.
 Counts from different modes cannot be converted to the same distance.
-Changing the microstep mode clears the home reference and soft limits for all 3 axes.
-Confirm each axis reference again before a named move or automated motion.
+Changing the microstep mode clears the zero and soft limits for all 3 axes.
+After that, confirm each axis reference again.
 
-### Homing and named moves
+### Reference state and homing
 
 Before routine hardware use, complete the supervised reference and calibration checks in H-07 and H-18.
-On a board with switches, homing finds the configured reference switch. Soft limits restrict travel from the confirmed reference.
+Soft limits restrict travel from the confirmed reference.
 The service reads measured calibration from `/var/lib/mg400/stage/stage.toml`. See [Stage calibration](#stage-calibration).
 
-Each motor shows its reference state:
+Each axis shows its reference state:
 
 | Badge | Meaning |
 | --- | --- |
-| `Homing unavailable` | The motor is disconnected, firmware lacks support, or calibration is unavailable. Manual controls remain available when connected. |
-| `Home required` | The service has not confirmed homing and the configured soft limits for this connection and microstep mode. |
-| `Homing…` | Homing or soft-limit confirmation is in progress. |
+| `Reference unavailable` | The motor is disconnected, firmware lacks support, or calibration is unavailable. |
+| `Zero required` | No switches. The service has not confirmed zero and soft limits for this connection and microstep mode. |
+| `Home required` | Switches. The service has not confirmed homing and soft limits for this connection and microstep mode. |
+| `Zero confirmed` | The service confirmed zero and soft limits. |
 | `Homed` | The service confirmed homing and soft limits. |
 
-Clear the travel path before clicking `Home` for an axis.
-Wait for `Homed` before selecting an Insert named position, such as `load` or `furnace`.
-Named positions use millimetres from home. The millimetres shown come from pulse counts and calibration, not measured travel.
-The host refuses automated motion without a confirmed reference with `position unknown, home first`.
-
-Confirm the reference and soft limits of all 3 axes before selecting a button under `Named poses`.
-A pose moves each axis to its configured position, 1 axis at a time in the configured order.
-New motion controls remain unavailable while homing or a named move is active. `Stop all motors` remains available.
-The page does not queue or automatically retry these actions.
+Step moves and named positions require `Zero confirmed` or `Homed`.
+Without a confirmed reference, the service refuses motion with `position unknown, home first`.
 Reset, reconnection, and a microstep change require fresh reference and soft-limit confirmation.
 
-State reports `feedback_age_s` from the last complete board reply. `feedback_fresh` requires that reply to be at most 2 s old.
-Each motor's `automation_ready` requires fresh feedback and a confirmed reference and soft range for the current microstep.
-Its `at_positions` lists named targets only while idle at the exact configured pulse count. Do not assume `load` is zero.
-These fields do not use the HTTP response timestamp as board feedback.
-Releasing a lease cancels the remaining sequence, even if the same client acquires control again. Renewal preserves the current sequence.
+An axis with configured switches shows `Home…`:
 
-The page routes are:
-
-| POST route | JSON body |
-| --- | --- |
-| `/api/motors/<motor>/home` | `{}` |
-| `/api/motors/<motor>/awake` | `{"seconds": 30}` |
-| `/api/motors/<motor>/goto` | `{"name": "load"}` |
-| `/api/poses/<name>` | `{}` |
-
-These routes use the same page authentication and automation ownership rules as manual motion.
-An accepted request returns a snapshot. Poll state to check completion.
-An awake request extends driver energization for 0–60 seconds. It sends no STEP pulses and does not establish a reference.
-An extension of 0 cancels the extension. The normal 10-second idle hold still applies.
-The page does not renew awake requests. The hold watchdog remains 1 second.
-
-The contract adds `home` with `motor`, `awake` with `motor` and `seconds`, `goto` with `motor` and `name`, and `pose` with `name`.
-A positive contract `awake` requires a confirmed reference. An owning client can cancel the extension with 0 without homing.
-The manual awake route requires updated firmware but does not require homing.
+1. Clear the travel path of the axis.
+2. Click `Home…`. Confirm on the card. The axis moves to its reference switch.
+3. Wait for `Homed`.
 
 ### Manual zero and camera reference
 
-Without switches, the page shows `Set zero here`, `Zero required`, and `Zero confirmed` for each axis.
-The service shows `Home` for boards with switches and keeps the existing controls for older firmware.
+Without switches, each axis shows `Set zero…`.
+An axis with a configured camera reference also shows `Check reference` and `Teach reference…`.
 The demo transport also supports simulated switches for homing practice.
 
-1. Use manual controls to place the axis at its measured safe zero position.
-2. Stop the axis. Wait for idle feedback and the cooldown to end.
-3. If a reference is configured, click `Check reference`. Check the image and marker offset.
-4. Click `Set zero here`. Confirm the physical position in the dialog.
-5. Wait for `Zero confirmed` before an automated move.
+1. Put the axis at its measured safe zero position.
+2. Wait until the axis is idle and the cooldown ends.
+3. If a reference is configured, click `Check reference`. The card shows the camera image and the `Marker offset` in pixels.
+4. Click `Set zero…`. Check the physical position, then confirm on the card.
+5. Wait for `Zero confirmed` before you move the axis.
 
 Zeroing sends no motion. It resets the pulse count, clears the firmware soft range, and then installs the configured soft limits.
 Both zero and soft limits must be confirmed by fresh board replies. The configured range must contain zero.
 Reset, reconnection, or an actual microstep change invalidates this confirmation.
-The activity log identifies the client that set zero. Page requests use `stage-panel` as the client identity.
+The activity log identifies the client that set zero.
 
 Each axis can have this optional entry in its calibration table:
 
@@ -250,98 +218,102 @@ The service refuses a missing, duplicated, or out-of-tolerance marker before sen
 If the stage state or control lease changes during capture, it refuses the operation.
 Without a reference, zero still requires explicit confirmation. Demo references require an offline frame source.
 
-To teach a configured marker, put the axis at its safe physical zero and stop it.
-Click `Teach reference here` and confirm. This stores the detected centre, including when it differs from the old centre.
-Teaching invalidates the previous host zero confirmation. Click `Set zero here` afterwards.
+Reference teaching stores the detected marker centre as the axis reference, including when it differs from the old centre:
+
+1. Put the axis at its safe physical zero. Wait until it is idle.
+2. Click `Teach reference…`. Confirm on the card.
+3. Teaching invalidates the previous zero confirmation. Click `Set zero…` afterwards.
+
+Teaching requires control and the same conditions as zero.
 Teaching requires a configuration file and an owned directory with mode `0700` or `0750`.
 It replaces the file atomically, retains its owner and permissions, and refuses concurrent calibration changes or links.
 The saved file uses the supported calibration schema. Formatting and comments are not retained.
 
-| Route | Request |
-| --- | --- |
-| `POST /api/motors/<motor>/zero` | `{"confirm": true}` |
-| `POST /api/motors/<motor>/teach_reference` | `{"confirm": true}` |
-| `GET /api/motors/<motor>/reference` | Read the image and marker offset. |
+### Named positions
 
-The contract command `zero` requires `motor`, `confirm: true`, and the control lease.
-Reference teaching is available only from the operator page, without an automation lease holder.
-The page routes retain the page token and access checks. Image responses use the authenticated reference route only.
-Ordinary state replies contain reference metadata without the JPEG.
+`Named positions` shows one button for each configured position, for example, `Insert → load`.
+The button is highlighted while the axis is idle at the exact target pulse count.
+Named positions use millimetres from zero. The millimetres shown come from pulse counts and calibration, not measured travel.
+During motion, the move buttons of that axis are unavailable. `Stop stage` remains available.
+The console does not queue or automatically retry movements.
 
-### Fixed-step movement
+### Step moves
 
-Each motor has its own `Speed` and `Steps per click`:
+Each axis has its own `Steps` and `Pulses/s` inputs:
 
 | Input | Range | Default |
 | --- | --- | --- |
-| `Speed` | 1–1000 pulses/second | 50 |
-| `Steps per click` | 1–100000 pulses | 50 |
+| `Steps` | 1–100000 pulses | 50 |
+| `Pulses/s` | 1–1000 pulses/second | 50 |
 
-When you click a direction button, the motor moves the specified number of steps at the specified speed.
-Fixed-step movements accelerate and decelerate. The default acceleration is 50 pulses/second².
+When you click `Step −` or `Step +`, the motor moves the specified number of steps at the specified speed.
+If the target is outside the soft limits, the service refuses the move with `Stage target is outside the configured soft limits.`.
+Step moves accelerate and decelerate. The default acceleration is 50 pulses/second².
 For short distances, the motor may not reach the specified speed.
 
-After a fixed-step movement ends, that motor has a 1-second cooldown before it can move again.
+After a step move ends, that motor has a 1-second cooldown before it can move again. The state shows `Cooling down`.
 The service also enforces the cooldown. Multiple pages or rapid repeated clicks cannot bypass it.
-The panel does not queue movements or retry them automatically.
 This cooldown does not affect other motors.
-
-Changing speed or steps affects only the next movement.
-`Reset defaults` restores the current page's speed and steps to 50.
-It does not change the microstep mode or stop motors that are moving.
-
-### Hold-to-move
-
-While you press a `Hold` button, the motor runs continuously at the specified speed. It stops when you release the button.
-Hold-to-move has no acceleration or deceleration and does not use `Steps per click`.
-You can also focus the button and hold the space bar or Enter key.
-You cannot change the speed during a hold.
-
-The hold stops when you release the button, move the pointer outside it, press Esc, switch pages, or close the page.
-After stopping, that motor has a 1-second cooldown.
-
-The page renews the hold about every 200 ms to tell the service and Arduino that the button is still pressed.
-If the Arduino receives no renewal for 1 second, it stops that motor.
-The service also stops an unrenewed hold after 1 second.
-If the browser, VPN, service, or USB connection fails, the held motor stops within about 1 second.
-
-### Keyboard controls
-
-`Keyboard controls` starts at `Off` whenever the page loads.
-Click the switch to select `On`. Then hold a key or its corresponding button on the page.
-The table at the start of this page lists the keys.
-
-Keyboard controls use each motor's `Speed` and hold rules. They do not use `Steps per click`.
-Multiple motors can run under hold control at the same time.
-Letter keys have no effect while you edit an input or hold Ctrl, Alt, or Meta.
-If you keep a key pressed through a cooldown or stop, the motor does not restart. Release the key, then press it again.
-When you switch keyboard controls off, holds started from that area stop.
+The inputs belong only to the current page. Refreshing the page restores their defaults.
 
 ### Stop
 
-`Stop all motors` stops pulse output to all motors. It is available during motion and cooldown.
+`Stop stage` stops pulse output to all motors. It is available during motion and cooldown.
+`STOP ALL MOTION` in the console also stops the stage.
 After stopping, the coils remain energized until the drivers sleep.
-Esc stops only hold-to-move motion.
-
-If the page cannot reach the service, it shows `Cannot reach the stage panel service. Motion status is unknown.` and ends the hold.
-When the page closes or the network connection fails, the service keeps running. Fixed-step movements continue to their endpoints.
 
 When the service stops, it first sends `stop all` and disconnects the serial port, then exits.
-If the process is killed or crashes, the service sends no stop command.
-In that case, the Arduino stops held motors after 1 second. Fixed-step movements continue to their endpoints.
+If the process is killed or crashes, the service sends no stop command. Step moves that already started continue to their endpoints.
 
-If USB disconnects, the service cannot guarantee a stop. A fixed-step movement that already started may finish.
+If USB disconnects, the service cannot guarantee a stop. A step move that already started may finish.
 When the service loses the Arduino connection, it attempts to send `stop all`, then closes the connection.
-The page then shows `Connection lost; motor stop could not be confirmed.`.
+The card status then shows `Connection lost; motor stop could not be confirmed.`.
 Go to the equipment and confirm that the motors stopped before reconnecting.
-The panel does not reconnect automatically or retry movements.
+The service does not reconnect automatically or retry movements.
+
+## API
+
+All routes are under `<base>/contract/api/`. `<base>` is `MG400_STAGE_BASE_PATH`. The default is `/`.
+For an Olares deployment, `<base>` is `/stage/`.
+When `MG400_STAGE_TOKEN` is set, all routes require the bearer token.
+POST requests must have a JSON body and `X-MG400-Client`.
+
+| Route | Request | Purpose |
+| --- | --- | --- |
+| `GET contract/api/describe` | None | Read command parameters, limits, the demo flag, and lease rules |
+| `GET contract/api/state` | None | Read the connection, motors, microstep mode, reference metadata, and lease |
+| `GET contract/api/events?since=0` | None | Read activity events |
+| `POST contract/api/heartbeat` | `{}` | Get or renew the control lease |
+| `POST contract/api/renew` | `{}` | Renew the lease that the caller holds |
+| `POST contract/api/release` | `{}` | Release the lease without stopping motion |
+| `POST contract/api/command` | `action` and its parameters | Send a contract command |
+| `POST contract/api/stop` | `{"wait_s": 0}` | Stop all motors. No lease is necessary |
+| `GET contract/api/ports` | None | List the serial ports that the service can connect |
+| `POST contract/api/connect` | `{"port": "..."}` | Connect a listed serial port. Requires the lease |
+| `GET contract/api/motors/<motor>/reference` | None | Read the camera image and marker offset |
+| `POST contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | Store the current marker position as the reference. Requires the lease |
+
+`<motor>` is `bottom`, `top`, or `insert`.
+The contract commands are `move`, `hold`, `keepalive`, `release_hold`, `stop_all`, `set_microstep`, `home`, `zero`, `awake`, `goto`, and `pose`.
+`zero` requires `motor` and `confirm: true`.
+`pose` moves each axis to its configured position, 1 axis at a time in the configured order.
+`awake` extends driver energization for 0–60 seconds. It sends no STEP pulses and does not establish a reference. A positive `awake` requires a confirmed reference. 0 cancels the extension.
+In demo mode, `connect` accepts only `DEMO`.
+While a board is connected, `connect` returns `Disconnect the current board before choosing another port.`.
+Images come only from the reference route. State replies contain reference metadata without the JPEG.
+
+State reports `feedback_age_s` from the last complete board reply. `feedback_fresh` requires that reply to be at most 2 s old.
+Each motor's `automation_ready` requires fresh feedback and a confirmed reference and soft range for the current microstep.
+Its `at_positions` lists named targets only while idle at the exact configured pulse count. Do not assume `load` is zero.
+Releasing a lease cancels the remaining sequence, even if the same client acquires control again. Renewal preserves the current sequence.
+See [Stage automation contract](development.en.md#stage-automation-contract) for parameters and completion rules.
 
 ## Service configuration
 
 [Host deployment](deploy.en.md) installs the `mg400-stage-panel.service` service. Its `mg400ctl` name is `stage`.
 The service runs as a user and group with numeric ID `1000`. It also joins `dialout` for serial-port read and write access.
 The service starts manually. It is not configured to start at boot.
-Starting the service does not open a serial port. The port opens only after you click `Connect` on the page.
+Starting the service does not open a serial port. The port opens only after you click `Connect` in the console.
 Reference teaching updates the stage calibration file. The service sends output to the systemd journal.
 
 ### Configuration
@@ -352,6 +324,7 @@ The service reads configuration from environment variables. Command-line argumen
 | --- | --- | --- | --- |
 | `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | Listen address |
 | `MG400_STAGE_PORT` | `--port` | `8767` | Listen port, 1–65535 |
+| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | URL prefix. The contract is at `contract/` below it |
 | `MG400_STAGE_TOKEN` | None | None | Access token |
 | `MG400_STAGE_SERIAL` | `--serial` | None | Arduino serial-port path |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | Measured stage calibration and named targets |
@@ -364,9 +337,8 @@ Otherwise, the service refuses to start.
 With an access token set, the service accepts any host name, including when it listens on a loopback address.
 Without an access token, the service accepts only `127.0.0.1`, `localhost`, or `[::1]` addresses.
 It also rejects requests with `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, or `X-Real-IP` headers in that case.
-See [Stage panel API](development.en.md#stage-panel-api) for the interface.
 
-When `MG400_STAGE_SERIAL` is set, the serial-port list shows only that device, and `Connect` accepts only that device.
+When `MG400_STAGE_SERIAL` is set, the serial-port list shows only that device, and `connect` accepts only that device.
 Use a path under `/dev/serial/by-id/` where possible. This path stays the same after disconnecting and reconnecting the device.
 If the device is absent, the list is empty.
 If the path points to the gripper converter, the service refuses to start.
@@ -390,7 +362,7 @@ Each of `motors.bottom`, `motors.top`, and `motors.insert` contains:
 | --- | --- |
 | `steps_per_mm` | Positive, finite pulse count per millimetre at the calibration microstep mode. |
 | `microstep` | Calibration mode: 1, 2, 4, 8, or 16. |
-| `min_mm`, `max_mm` | Finite, ordered travel bounds from home. |
+| `min_mm`, `max_mm` | Finite, ordered travel bounds from zero. |
 | `positions` | Optional table of names and positions in millimetres. Insert requires `load` and `furnace`. |
 | `reference` | Optional camera reference with `stream`, `marker`, `pixel`, and `tolerance_px`. |
 
@@ -398,11 +370,12 @@ Each `poses.<name>` table contains `order` and `positions`.
 `order` lists `bottom`, `top`, and `insert` exactly 1 time, in the required movement order.
 `positions` maps each axis to a position in millimetres within its bounds.
 The `furnace` pose identifies the inserted position from which crucible unloading starts.
+The console shows no pose buttons. Use poses through the contract command `pose`.
 
 The host computes pulses per millimetre as `steps_per_mm * current_microstep / microstep`.
 It rounds boundaries inward and targets to the nearest pulse. It checks the rounded target against the pulse boundaries again.
-After homing or manual zero, the host sends the soft limits and waits for confirmation before enabling named or automated motion.
-An absent or invalid file disables these controls and shows the configuration error. Manual controls and Stop remain available.
+After homing or manual zero, the host sends the soft limits and waits for confirmation before it enables motion.
+An absent or invalid file disables the reference and motion controls. `Stop stage` remains available.
 
 Without an explicit configuration override, demo mode uses separate synthetic geometry for offline practice.
 An explicit `--config` or `MG400_STAGE_CONFIG` also applies in demo mode.
@@ -411,7 +384,7 @@ Synthetic geometry is not real calibration. Check the hardware configuration bef
 ### Configuration file
 
 The service reads configuration from `/etc/mg400/mg400.env`.
-The installer generates `MG400_STAGE_TOKEN`. Adjust the other settings for this host.
+The installer generates `MG400_STAGE_TOKEN` and sets an empty `MG400_ORCH_STAGE_TOKEN` to the same value. Adjust the other settings for this host.
 
 After connecting the Arduino, find its serial-port path:
 
@@ -427,7 +400,7 @@ Set `MG400_STAGE_SERIAL` to `/dev/serial/by-id/` followed by the Arduino's name.
 
 View the access token with `sudo mg400ctl token stage`.
 Restart the service after changing the configuration file.
-After changing the access token, enter the new token on the page.
+After changing the access token, set `MG400_ORCH_STAGE_TOKEN` to the same value. Then restart the console service.
 
 ### Start and stop
 
@@ -443,30 +416,26 @@ When `MG400_STAGE_SERIAL` is set, the journal also shows `Serial port:` and that
 When the service stops, the journal records the stop result, for example, `All motors stopped · disconnected`.
 After an abnormal service exit, systemd waits 3 seconds before restarting the service.
 If the service refuses to start because of a configuration error, systemd does not restart it. The status shows `failed`.
-After a restart, the panel is disconnected from the Arduino. Reconnect on the page.
+After a restart, the service is disconnected from the Arduino. Connect again in the console.
 After a host reboot, start the service manually.
 
-After updating the code, run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies.
-Then run `mg400ctl restart stage` and reload any open panel pages.
-The service generates a new command token, a random value sent with page commands, on every startup.
-The service rejects commands from old pages.
+After updating the code, run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies. Then run `mg400ctl restart stage`.
 
 ## Troubleshooting
 
-The following errors appear on the panel page. Errors that prevent service startup appear in the service journal.
+The following errors appear on the stage card or in console notices. Errors that prevent service startup appear in the service journal.
 
 | Symptom | Action |
 | --- | --- |
-| The serial-port list shows `No serial ports found`, or the Arduino is missing | Run `ls -l /dev/serial/by-id/` on the host. If the Arduino is absent, inspect its USB data cable and power, then click the refresh button. If `MG400_STAGE_SERIAL` is set, confirm that it matches the Arduino path. |
-| `That port is no longer available. Refresh the port list.` | Click the refresh button. Select the serial port again. |
+| The serial-port list shows `No serial port found`, or the Arduino is missing | Run `ls -l /dev/serial/by-id/` on the host. If the Arduino is absent, inspect its USB data cable and power, then reload the console page. If `MG400_STAGE_SERIAL` is set, confirm that it matches the Arduino path. |
+| `That port is no longer available. Refresh the port list.` | Reload the console page. Select the serial port again. |
 | `Cannot open <串口>: ...`, containing `Permission denied` | The service user cannot read or write the serial port. Confirm that the device group is `dialout`. For local operation, add the user to `dialout` and log in again. |
 | `<串口> is in use by another program.` | Another program has the serial port open. Close that program, for example, the Arduino IDE serial monitor or another `stage-panel` process. |
-| `Arduino did not reply in time. Check the port and uploaded sketch.` | Confirm that the selected port is the Arduino and that `firmware/three-motor-demo` is uploaded. The panel disconnects after this error. After fixing the problem, click `Connect` again. |
-| `Hold to move was rejected. Upload the updated three-motor-demo sketch.`, or `Stepping mode` shows `Stepping mode unavailable on this firmware` | The Arduino runs old firmware. Upload this project's `firmware/three-motor-demo`. |
-| The page shows the `Panel access token` input or `Enter the panel access token` | Enter the `MG400_STAGE_TOKEN` value from `/etc/mg400/mg400.env`. |
-| The browser shows only JSON containing `Open the panel at 127.0.0.1 or localhost`, with no panel | The service has no access token, and the request uses another host name or a proxy. Open the `127.0.0.1` address on the service host, or set `MG400_STAGE_TOKEN` to at least 24 characters. |
-| `Reload this page before sending another command.` | The service restarted. Reload the page. |
-| `Cannot reach the stage panel service. Motion status is unknown.` | Inspect the VPN connection. Then run `mg400ctl status` on the host. |
+| `Arduino did not reply in time. Check the port and uploaded sketch.` | Confirm that the selected port is the Arduino and that `firmware/three-motor-demo` is uploaded. The service disconnects after this error. After fixing the problem, click `Connect` again. |
+| `Another client controls it` | Another client holds the lease. Wait until it releases control, then click `Take control`. |
+| `position unknown, home first` | The axis has no confirmed reference. Set zero as [Manual zero and camera reference](#manual-zero-and-camera-reference) specifies, or home the axis. |
+| `Stage target is outside the configured soft limits.` | Decrease the steps, or change the direction. |
+| The card shows `Not running` or `Not reachable` | Run `mg400ctl status` on the host. Confirm that `stage` is running. Then check `MG400_ORCH_STAGE_URL` and `MG400_ORCH_STAGE_TOKEN`. |
 | The service journal shows `Failed to load environment files` | Run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies to create `/etc/mg400/mg400.env`. Start the service again. |
 | The service journal shows `Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost` | If the existing `MG400_STAGE_TOKEN` has fewer than 24 characters, change that line to `MG400_STAGE_TOKEN=`. Run the installer to generate an access token, then start the service. |
 | The service journal shows `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | Find the Arduino path as [Configuration file](#configuration-file) specifies. Update `MG400_STAGE_SERIAL`, then start the service. |

@@ -2,10 +2,10 @@
 
 # Thermal Master P1 camera
 
-The thermal package provides a Python controller, acquisition service, and browser dashboard for the Thermal Master P1, USB `3474:45C2`.
+The thermal package provides a Python controller and acquisition service for the Thermal Master P1, USB `3474:45C2`.
 The native temperature array is 160 × 120 pixels.
-FastAPI and uvicorn serve the dashboard without a JavaScript build step or an external CDN.
-The interactive API reference uses Swagger assets from a CDN.
+FastAPI and uvicorn serve the HTTP API. The service has no web page.
+The Cameras workspace of the Lab Console shows the thermal view. The Furnace + microscope workspace shows the crucible region reading.
 
 ## Managed host service
 
@@ -55,7 +55,7 @@ Close other camera applications before connecting.
 Only 1 process can own the camera at a time.
 
 The following commands access real USB hardware.
-An operator must run them with the dashboard and other camera owners stopped:
+An operator must run them with the thermal service and other camera owners stopped:
 
 ```sh
 uv run thermal-cam --diagnose
@@ -66,7 +66,7 @@ The diagnostic reports backend and device access without initializing the camera
 The probe opens the camera, captures the requested frames, reports the result, and closes the camera.
 The optional output saves the final frame as a lossless NPZ file.
 
-## Start the dashboard
+## Start the service
 
 For synthetic data without a camera:
 
@@ -74,8 +74,7 @@ For synthetic data without a camera:
 uv run thermal-cam --demo
 ```
 
-Open `http://127.0.0.1:8768`.
-Demo mode is visibly marked as simulated.
+In demo mode, `GET /api/state` reports `demo: true`.
 A failed camera connection never switches to demo data.
 
 For a real camera, the default command starts acquisition automatically:
@@ -86,8 +85,7 @@ uv run thermal-cam
 
 Startup reserves the HTTP port before creating the camera application.
 If the port is occupied, startup exits without opening the camera.
-Keep the terminal open while using the dashboard.
-Closing a browser tab does not stop the server.
+Keep the terminal open while the service runs.
 Use Ctrl+C in the original terminal to stop the server and release the camera.
 
 Other startup options:
@@ -98,7 +96,7 @@ uv run thermal-cam --demo --bind 127.0.0.1 --port 8768
 uv run thermal-cam --help
 ```
 
-With `--no-connect`, the server waits for a Connect request from the dashboard or API.
+With `--no-connect`, the server waits for the `connect` command. In the console, use **Connect** on the thermal view to send it.
 Use `python -m thermal_cam` as an alternative entrypoint.
 Run 1 server process and 1 worker.
 Do not use automatic development reload while acquiring camera data.
@@ -118,33 +116,31 @@ Invalid settings exit with status 2 before opening a listener or camera.
 Without a token, requests require a loopback Host and no forwarded headers.
 Browser requests must retain the same origin.
 
-When a token is configured, enter it in the dashboard's Access token field.
-The page holds it only in memory and sends it in the Authorization header.
-It does not save the token in browser storage or URLs.
-The static dashboard remains accessible, but camera routes require the token.
-The `/docs` and `/openapi.json` routes also require it.
+When a token is configured, all routes require it. Clients send the token in the Authorization header.
 
-## Use the dashboard
+## Console thermal view
+
+In the Cameras workspace of the Lab Console, select the thermal view.
 
 | Control or display | Behavior |
 | --- | --- |
-| Live view | Colors and min/max/center markers use the same temperature frame. |
-| Image rendering | Smooth mode displays 240 × 320 pixels. Native mode displays 120 × 160 pixels. Both rotate the view 90° counterclockwise. |
-| Measurements | Maximum, minimum, center, mean, range, and population standard deviation use the full native temperature matrix. |
-| Pixel inspection | Point at or select a pixel. Arrow keys move the selected pixel in the displayed direction. |
+| Live view | Colors and min/max/center markers use the same temperature frame. The view does not rotate. |
+| Readings | Maximum, minimum, center, and mean use the full native temperature matrix. |
 | Palette and scale | Change colors or automatic/fixed limits without changing measured temperatures. |
-| Units | Display Celsius, Fahrenheit, or Kelvin. API and CSV temperatures remain Celsius. |
-| Freeze | Keep the displayed frame for inspection and export. Acquisition continues. |
-| Exports | Save the displayed frame as CSV, JSON, or PNG. The API also provides NPZ arrays. |
-| Connect / Disconnect | Acquire or release the camera without restarting the server. |
-| Calibrate shutter / NUC | Request sensor nonuniformity correction. |
-| Gain | Only high gain is supported. Low gain is disabled because its P1 temperature conversion is not validated. |
+| Units | Display Celsius, Fahrenheit, or Kelvin. CSV uses the selected unit. API temperatures remain Celsius. |
+| Freeze view | Keep the displayed frame for inspection and export. Acquisition continues. |
+| Exports | Save the current frame as CSV, raw JSON, or PNG. |
+| Draw region | Drag a crucible region on the view and show its bounds. Put the bounds in `rois.toml`, as described below. |
+| Connect | Send the `connect` command to start acquisition. |
+| Calibrate shutter | After confirmation, send the `shutter` command to request sensor nonuniformity correction (NUC). |
+
+Connect and shutter correction do not require thermal control.
+Gain is fixed to high, and there is no gain control. The P1 temperature conversion for low gain is not validated.
 
 Coordinates use the original sensor orientation: `x` is the column and `y` is the row.
-Sensor `(0, 0)` appears at the bottom-left of the rotated view.
 The center is the single pixel at `x=80, y=60`, not an average of the 4 central pixels.
 A frozen frame or an image retained after disconnection is not a current measurement.
-The dashboard displays connection errors and stale data.
+The console shows stale and offline states.
 
 ## Resolution and temperature meaning
 
@@ -152,15 +148,10 @@ The P1 provides its full native 160 × 120 stream at approximately 25 frames per
 The [manufacturer's 320 × 240 Super IR image](https://thermalmaster.com/products/thermal-master-p1) derives from that sensor.
 The [upstream USB protocol](https://github.com/jvdillon/p3-ir-camera/blob/e3205dca5727682ff2d903585d1dce5a1d19f1f6/P3_PROTOCOL.md#supported-devices) exposes no higher-resolution measurement mode.
 
-The dashboard uses standard image interpolation, not the manufacturer's X³IR processing.
-Its canvas ranges from 720 × 960 to 2880 × 3840 pixels according to available space and display density.
-These display pixels add no temperature samples.
-The native aspect ratio is 4:3, and the rotated view is 3:4.
-Normal and full-screen views retain the whole image without stretching or cropping.
+The console enlarges each sensor pixel. It does not use the manufacturer's X³IR processing.
+Display pixels add no temperature samples.
 
-PNG exports include the rotated canvas and a footer.
-CSV, JSON, and NPZ retain 120 rows × 160 columns of native measurements.
-JSON records the display mode and rotation separately.
+CSV and JSON exports and the NPZ file of the probe command retain 120 rows × 160 columns of native measurements.
 
 The upstream protocol represents each thermal pixel as an unsigned 16-bit value in 1/64 kelvin units:
 
@@ -175,7 +166,7 @@ Surface emissivity, reflections, camera state, and measurement conditions affect
 Compare with a suitable temperature reference before relying on absolute measurements.
 
 Let the connected camera warm for approximately 5 minutes before interpreting measurements.
-Then use Calibrate shutter / NUC.
+Then calibrate the shutter (NUC).
 The [upstream troubleshooting guide](https://github.com/jvdillon/p3-ir-camera/blob/e3205dca5727682ff2d903585d1dce5a1d19f1f6/P3_PROTOCOL.md#troubleshooting) recommends warmup and shutter correction for drift.
 Shutter correction improves sensor uniformity and operating stability.
 It does not establish absolute temperature accuracy or replace a known temperature reference.
@@ -203,7 +194,7 @@ finally:
 `open()` returns device information.
 The adapter also provides `shutter()`, `set_gain("high")`, and `stats()`.
 Low gain requests raise an error.
-Do not share an adapter between concurrent readers or use it while the dashboard owns the camera.
+Do not share an adapter between concurrent readers or use it while the thermal service owns the camera.
 
 The application factory opens no camera on import.
 Its lifespan starts and stops acquisition:
@@ -219,7 +210,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8768, workers=1)
 ```
 
-Use `create_app(demo=True)` for synthetic data or `create_app(auto_connect=False)` to wait for a connection request.
+Use `create_app(demo=True)` for synthetic data or `create_app(auto_connect=False)` to wait for the `connect` command.
 Bind and port environment settings belong to the CLI. An embedded server supplies its own settings.
 For a mounted ASGI application, the parent must manage the acquisition lifespan.
 [FastAPI does not run mounted application lifespan hooks automatically](https://fastapi.tiangolo.com/advanced/events/#sub-applications).
@@ -242,46 +233,42 @@ with np.load("captures/probe.npz", allow_pickle=False) as frame:
 
 | Method | Path | Result |
 | --- | --- | --- |
-| `GET` | `/api/status` | State, source, error, device details, frame count, acquisition rate, and frame age. |
 | `GET` | `/api/frame` | 1 coherent frame with sequence, timestamp, dimensions, statistics, Celsius, raw, and brightness matrices. |
-| `GET` | `/api/snapshot.npz` | Numerical arrays and metadata from 1 frame. |
-| `POST` | `/api/connect` | Request connection and start acquisition. |
-| `POST` | `/api/disconnect` | Stop acquisition and release the device. |
-| `POST` | `/api/shutter` | Request shutter correction. |
-| `POST` | `/api/gain` | Set high gain with `{"gain":"high"}`. Low gain is rejected. |
+
+Connection, shutter correction, state, and region readings use the contract routes below.
 
 For a token-protected server, send the configured token in a bearer header:
 
 ```sh
 curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
-  http://127.0.0.1:8768/api/status
+  http://127.0.0.1:8768/api/frame
 ```
 
 Without a token, omit that header.
 Temperature arrays use `temperatures_c[y][x]`.
-Each response is internally consistent, but separate frame and snapshot requests can refer to different frames.
+Each response is internally consistent, but separate requests can refer to different frames.
 Use the sequence and timestamp to associate measurements.
 Unavailable or stale frames return HTTP 503 instead of fabricated readings.
 The acquisition worker owns USB reads and commands. HTTP viewers read snapshots.
 
 ## Automation contract and regions
 
-The read-only [instrument contract](adr/0001-instrument-service-contract.en.md) uses the base URL `http://127.0.0.1:8768`.
-It adds these routes beside the dashboard API:
+The [instrument contract](adr/0001-instrument-service-contract.en.md) uses the base URL `http://127.0.0.1:8768`.
+It adds these routes beside `/api/frame`:
 
 | Method | Path | Result |
 | --- | --- | --- |
-| `GET` | `/api/describe` | Contract version, demo flag, region definitions, and the maximum frame age. `commands` is empty. |
+| `GET` | `/api/describe` | Contract version, demo flag, region definitions, and the maximum frame age. `commands` lists `connect` and `shutter`, both with `any_client: true`. |
 | `GET` | `/api/state` | Contract fields plus camera status, `frame_sequence`, and `frame_age_s`. |
 | `GET` | `/api/events?since=0` | Activity after the given sequence, with a `next` cursor. The same events enter the service journal. |
 | `POST` | `/api/heartbeat` | Acquire or renew the informational lease. |
 | `POST` | `/api/renew` | Renew only the caller's existing lease. Return HTTP 409 if it is absent, expired, or held by another client. |
 | `POST` | `/api/release` | Release the caller's lease. |
 | `POST` | `/api/stop` | Return `stop: "confirmed"`. This no-op leaves acquisition running. |
-| `POST` | `/api/command` | Return HTTP 400 because the contract has no commands. |
+| `POST` | `/api/command` | Start acquisition with `{"action":"connect"}`, or request shutter correction with `{"action":"shutter"}`. Return HTTP 202 with a `command_id`. |
 | `GET` | `/api/roi` | Read a named region or an explicit sensor rectangle. |
 
-The lease lasts 3 seconds. Reads and stop do not require ownership.
+The lease lasts 3 seconds. Reads, stop, and commands do not require ownership.
 
 Discovery reports `renew_only_heartbeat: true` as an informational flag for the dedicated `/api/renew` route.
 Renewal checks ownership and extends the lease atomically. It never acquires a missing or expired lease.
@@ -289,10 +276,13 @@ Clients can call `/api/renew` directly.
 An older service without this route returns HTTP 404, so renewal fails without acquiring a lease.
 Clients must not fall back to `/api/heartbeat` when renewal fails.
 
+Commands take no other parameters. An unknown action or a command with parameters returns HTTP 400. `shutter` returns HTTP 409 when the camera is not streaming.
+`connect` does nothing when acquisition already runs.
+Read the command result in `last_command` of `GET /api/state`.
+
 Lease expiry and release leave acquisition running.
-The lease does not restrict the existing dashboard controls.
-Use `/api/disconnect` to stop acquisition and release the camera.
-Contract state reports `busy: false`, `locked: false`, and `last_command: null` because this contract controls no output.
+There is no disconnect command. Stop the service to stop acquisition and release the camera.
+Contract state reports `busy: false` and `locked: false` because this contract controls no output.
 Inspect `connected`, `fault`, and frame age before using readings.
 
 These routes retain the token, Host, Origin, and forwarded-header checks described above.
@@ -375,11 +365,11 @@ They do not certify a camera or absolute temperature accuracy.
 | --- | --- |
 | No camera found | Inspect the USB data cable and power. Identify the device by USB ID `3474:45C2`. |
 | Access denied or device busy | Inspect Linux USB group permissions. Close other camera owners before connecting. |
-| Repeated timeout or stream error | Disconnect in the dashboard. Reconnect the USB cable, then connect again. Inspect the cable and port. |
-| Temperatures stop changing | Inspect errors and frame age. Resume a frozen view if applicable. |
+| Repeated timeout or stream error | Stop the thermal service. Reconnect the USB cable, then start the service. Inspect the cable and port. |
+| Temperatures stop changing | Inspect errors and frame age. If the console view is frozen, select Resume view. |
 | Implausible temperatures | Inspect the target's pixel coverage and emissivity/reflections. Compare with a known reference. A palette change does not calibrate temperature. |
-| Occupied HTTP port | Open the existing dashboard, or stop its original process before restarting. Changing the port does not permit another camera owner. |
-| HTTP 401 | Enter the configured token or supply its bearer header. |
+| Occupied HTTP port | Stop the original process before restarting. Changing the port does not permit another camera owner. |
+| HTTP 401 | Supply the bearer header with the configured token. |
 | HTTP 400 or 403 | Inspect Host, Origin, and forwarded headers. A tokenless server permits only loopback access. |
 
 ## Attribution

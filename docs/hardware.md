@@ -8,10 +8,10 @@
 现有真机功能直接通过 TCP 接入，不提供通用抓放接口。
 日常操作请使用对应指南：
 
-- [网页面板](control-panel.md)：独立网页真机控制。
+- [机器人服务](control-panel.md)：Lab Console 运动工作区使用的真机控制服务。
 - [交互终端](terminal-control.md)：终端命令控制机械臂和夹爪。
 
-网页面板和交互终端共用机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
+机器人服务和交互终端共用机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
 
 ## 直接 TCP 接口
 
@@ -41,7 +41,7 @@
 mg400ctl mode
 ```
 
-`mg400ctl` 以 UID 1000 运行脚本，与面板共用 [面板连接锁](deploy.md#面板连接锁)。
+`mg400ctl` 以 UID 1000 运行脚本，与机器人服务共用 [面板连接锁](deploy.md#面板连接锁)。
 脚本使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
 直接以 root 运行脚本时，脚本拒绝取得连接锁，不连接控制器。
 
@@ -114,7 +114,7 @@ TCP 响应 `ErrorID,{values},Command(...);` 中的成功码只表示命令成功
 
 控制器地址见 `config/robot.toml`，当前为 `192.168.1.6`。
 SMB 使用 TCP `445`，共享为 `project`，日志目录为 `/logs`。
-此路径独立于 dashboard 查询，不必关闭网页面板。
+此路径独立于机器人服务的查询，不必在 Lab Console 释放机械臂。
 只读排查期间，不清除报警、不使能、不发送运动命令。
 
 | 控制器共享内的路径 | 用途 |
@@ -173,12 +173,12 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
   出现这些记录，不等于读到了数值报警码。
 - 报警 `85` 表示硬件急停按钮按下或软件急停触发。
   后出现的 `85` 不能替代最初事件。
-- 控制器时钟与面板日志时钟可能不同。
+- 控制器时钟与机器人服务日志时钟可能不同。
   保留原始时间，先比较同一控制器内的顺序和间隔。
   跨日志对齐前，核对时区和时钟偏差。
 
-查询当前报警码时，先断开网页面板和交互终端，再独立连接 `29999` 调用 `GetErrorID()`。
-面板轮询与外部查询可能互相断开连接。
+查询当前报警码时，先在 Lab Console 下使能并释放机械臂，关闭交互终端，再独立连接 `29999` 调用 `GetErrorID()`。
+服务轮询与外部查询可能互相断开连接。
 
 路径参考：[MG400 日志导出说明](https://techshare.co.jp/faq/dobot/mg400/support.html)。
 报警码参考：[Dobot 4 轴报警表](https://raw.githubusercontent.com/Dobot-Arm/TCP-IP-4Axis-Python/main/files/alarm_controller.json)。

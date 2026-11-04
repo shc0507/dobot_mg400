@@ -5,7 +5,7 @@
 The `microscope` package provides autofocus, objective switching, image calibration, and side-camera capture on Linux.
 It runs without a desktop or Tk.
 The contract service enforces focus-reference, travel-limit, and turret-clearance checks.
-The browser panel uses the service for daily controls. Direct algorithm calls do not acquire the service lease or provide its interlocks.
+The Furnace + microscope workspace of the Lab Console uses the service for daily controls. Direct algorithm calls do not acquire the service lease or provide its interlocks.
 Before real motion, an operator must establish safe focus travel and clearance from the furnace window.
 
 ## Linux environment
@@ -120,17 +120,18 @@ With a configured home switch, `home_focus` establishes zero and installs the co
 Without a switch, an operator must place focus at the verified clearance position before setting zero.
 That position is `0`. The service does not move to an unknown clearance position automatically.
 The current focus gears can slip. Pulse counts are relative to the last zero.
-Before each use, refocus the 50x objective on the sample and set zero through the manual panel.
+Before each use, refocus the 50x objective on the sample and set zero in the console (see [Lab Console operation](#lab-console-operation)).
 This focus position is the clearance zero. Positive focus motion raises the objectives.
 
-For the operator flow, send an empty object to `POST /api/manual/heartbeat` to acquire manual control.
-Use `POST /api/manual/renew` to retain it.
-Only after physical confirmation, send `{"confirm": true}` to `POST /api/manual/set_focus_zero` and wait for the command result.
-Manual zero is unavailable through ordinary contract commands and must not be called by automation.
-An automation lease blocks manual acquisition, even if a request reuses the same client ID.
+`POST /api/manual/set_focus_zero` accepts only the current lease holder, with an ordinary or a manual lease. Other clients receive HTTP 409.
+Send `{"confirm": true}` only after physical confirmation. A `202` response returns a command ID. Read the command result before the next action.
+The service refuses this operation when a home switch is configured.
+`POST /api/command` refuses `set_focus_zero`, and `GET /api/describe` does not list it. Thus agents, recipes, and the runner cannot set zero.
 The service checks stationary axes, sets `MICRO 4`, establishes zero, installs limits, and verifies the firmware result.
 
-After zero succeeds, release manual control through `POST /api/manual/release` before another client acquires ordinary control.
+`POST /api/manual/heartbeat` with an empty object acquires manual control. `POST /api/manual/renew` retains manual control.
+An automation lease blocks manual acquisition, even if a request reuses the same client ID.
+After zero succeeds with manual control, release manual control through `POST /api/manual/release` before another client acquires ordinary control.
 A healthy idle release can retain the verified reference only until the former lease's remaining deadline.
 The fresh check requires stationary axes, enabled focus, and matching zero, limits, and firmware session.
 The next client must acquire control before that deadline. Release does not grant an additional lease period.
@@ -142,46 +143,50 @@ Stop remains available, but successful stop does not clear that fault.
 After resolving the cause, reconnect through a controlled service restart and establish zero again.
 Never retry unknown motion automatically or re-establish zero from a cached position.
 
-## Browser panel
+## Lab Console operation
 
-Open `/` under the configured base path. For the demo command above, open `http://127.0.0.1:8770/`.
-The fixed page and assets contain no service state or access token.
-If the service requires a token, enter it and select **Connect**.
-The page keeps the token in memory and sends it in the `Authorization` header. It does not put tokens in URLs or browser storage.
+The microscope service has no web page. Operate the microscope in the Furnace + microscope workspace of the Lab Console:
 
-Select **Acquire control** before an ordinary action. The page renews its existing lease while connected.
-An existing lease held by another client blocks acquisition. The page does not take over automation control.
-Objective buttons use IDs from loaded calibration references. Missing or invalid references leave these buttons unavailable.
-Install valid reference images, then restart the service to reload cached calibration metadata.
-Full and local autofocus, bounded focus jog, and snapshot use the contract commands above.
-Read the command result before another action. **Stop** remains available without a controlling lease.
+1. On the microscope card, select **Take control**. If another client holds the lease, the console cannot get control. It does not take over automation control.
+2. Before motion, read the focus position and zero state on the card.
+3. Use the objective buttons to change the objective. The buttons use the objective IDs of `select_objective` in `GET /api/describe`.
+4. Use **Local autofocus** or **Full autofocus** to focus automatically.
+5. Enter a pulse count in **Jog pulses**, then use **− Jog** or **+ Jog** to jog within the limits.
+6. Use **Save snapshot** to save a snapshot.
 
-Without a home switch, select **Set focus zero…** only after placing focus at the verified clearance position.
-Accept the dialog only after you check the physical position. The page releases its idle ordinary lease, acquires manual control, and submits the zero command.
-After successful completion, it releases manual control and immediately acquires ordinary control within the remaining handoff deadline.
-Any failed request stops this sequence. Reconnect explicitly after access or lease failure.
-With a configured home switch, **Home focus…** asks for confirmation before homing.
-Closing the page stops local requests and renewals. Lease expiry then stops and disables both motors and invalidates zero.
+When zero is unknown, the objective and jog buttons are unavailable.
+The console sends each command 1 time and does not retry it. Read the command result before the next action.
+**Stop** does not require control.
+When the console stops renewing, lease expiry stops and disables both motors and invalidates zero.
+
+Set focus zero:
+
+1. Take microscope control.
+2. Focus the 50x objective on the sample. This position is the verified clearance position.
+3. Select **Set focus zero…**.
+4. Check the physical position, then confirm in the page.
+
+The console sends the zero command 1 time with its own lease.
+The card shows a reminder: the focus gears can slip, so re-zero at the 50x focus before each use.
+The console has no focus homing action, because the lab microscope has no home switch.
 
 | Preview route | Result |
 | --- | --- |
-| `GET /api/panel-info` | Calibrated objective IDs, calibration availability, and home-switch configuration. |
 | `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | Authenticated MJPEG views from the existing camera owners. |
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG, or `204` when no newer frame is available. |
 
 Preview requests accept an optional nonnegative `after_id` cursor.
 Each JPEG carries `X-Frame-Id` and `X-Captured-At` headers. Main-camera timestamps use host wall time, while side-camera timestamps use monotonic receive time.
 Do not compare timestamps across cameras or treat them as sensor exposure times.
-The browser uses authenticated fetch requests and discards stale preview results.
 At most 4 MJPEG responses can remain open. Extra streams return `503`. Close another preview before reconnecting.
 This limit leaves workers available for control requests, but does not guarantee a stop response time.
 Preview reads do not acquire or renew control, and shutdown waits for accepted reads before closing camera owners.
 
 ## Recording and furnace sequences
 
-Use the microscope panel to record from the camera that this service already owns.
+Use the Furnace + microscope workspace to record from the camera that this service already owns.
 Recording commands require live ordinary control and an idle service. They do not acquire furnace control or start a furnace sequence.
-Keep the page connected with control during capture and finalization.
+Keep the console open and hold control during capture and finalization.
 
 | Action | Parameters and result |
 | --- | --- |
@@ -190,7 +195,8 @@ Keep the page connected with control during capture and finalization.
 | `record_with_sequence` | Use `enabled: true`, a new `recording_id`, and optional recording fields to arm once. Use `enabled: false` with that ID to cancel. |
 | `set_stabilization` | Supply the boolean `enabled` to change camera stabilization. |
 
-The panel offers **Start recording**, **Finish recording**, and separate sequence arm and cancellation controls.
+The console offers **Start recording** and **Stop recording**. **Record next furnace sequence** arms sequence recording, and **Cancel sequence recording** cancels it.
+**Turn stabilization on** and **Turn stabilization off** change camera stabilization.
 An optional run name contains at most 80 printable characters. It does not select a file path.
 The `time_lapse` defaults are a 30-second capture interval and 1 output frame per second.
 The `live` default is 30 output frames per second, with no capture interval.
@@ -198,9 +204,8 @@ Explicit `capture_interval_seconds` values range from 0.1 to 3600. Explicit `out
 
 Read `recording`, `recording_sequence`, and `last_result` with the matching `last_command` receipt.
 Check the recording ID, command ID, action, client, and expected result before claiming success.
-The panel observes finalization for at most 600 seconds. Other command observations use 120 seconds.
-These are observation limits, not encoder completion guarantees. An unknown result causes no automatic retry.
-Global Stop remains available while ordinary recording controls are unavailable during motion or finalization.
+Do not retry an unknown result automatically.
+During motion or finalization, the ordinary recording controls in the console are unavailable, but Stop remains available.
 
 Sequence recording requires fresh, healthy, idle furnace state when armed.
 It waits for a new sequence `started_at`, then records only that sequence.
@@ -331,7 +336,7 @@ See the [firmware guide](../firmware/microscope-axes/README.en.md) for commands,
 ## Supervised calibration and experiments
 
 These commands require a person at an interactive terminal. Both input and output must be TTYs.
-Do not run them from an agent, service contract, orchestrator, browser panel, or unattended script.
+Do not run them from an agent, service contract, orchestrator, Lab Console, or unattended script.
 They do not stop other services automatically.
 An operator must release conflicting microscope and camera owners before starting them.
 The commands read `MG400_*` settings from the terminal environment.

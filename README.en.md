@@ -3,8 +3,8 @@
 # MG400 control
 
 Hardware control project for the Dobot MG400 and PGEA electric gripper.
-Control the hardware through an interactive terminal or a web page.
-The project also includes a web panel for a stage with 3 motors.
+Control the hardware through an interactive terminal or the Lab Console.
+The Lab Console is the only operator web page. It also controls the 3-motor stage, the cameras, the furnace, and the microscope.
 
 ## Choose an interface
 
@@ -13,8 +13,9 @@ Choose an operation guide for your task:
 | Goal | Guide and description |
 | --- | --- |
 | View state and enter control commands in a terminal | [Interactive terminal](docs/terminal-control.en.md). Run `uv run mg400-robot` |
-| Control the robot and gripper through a web page or keyboard, or view state in read-only mode | [Web panel](docs/control-panel.en.md) |
-| Control the stage's 3 motors through a web page or keyboard | [Stage panel](docs/stage-panel.en.md) |
+| Control the robot, gripper, and stage, view the cameras, and operate the furnace and microscope in a web page | [Lab Console](docs/dashboard.en.md#lab-console). Open `http://100.64.0.1:8080/` |
+| Read about robot and gripper control, stop, and recovery, and configure the robot service | [Robot service](docs/control-panel.en.md) |
+| Read about stage control and stop, and configure the stage service | [Stage](docs/stage-panel.en.md) |
 
 Before hardware operation, read the prerequisites and stop instructions in your selected guide.
 

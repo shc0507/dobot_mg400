@@ -1,56 +1,58 @@
 [English](stage-panel.en.md)
 
-# 位移台面板
+# 位移台
 
 [返回项目首页](../README.md)
 
-位移台面板是控制三电机位移台的网页服务，与机械臂的网页面板分开运行。
+位移台服务控制三电机位移台，命令名为 `stage-panel`，systemd 服务名为 `mg400-stage-panel.service`。
+服务没有网页。操作员在 Lab Console 运动工作区（Motion）的位移台卡片 `Stage · 3 axes` 上操作。
 位移台的三个步进电机接在一块 Arduino 上，各由一块 A4988 驱动器驱动。
-面板通过 USB 串口向 Arduino 发送命令，波特率为 115200。
+服务通过 USB 串口向 Arduino 发送命令，波特率为 115200。
 服务使用 Flask、waitress 和 pySerial。
 
-三个电机的方向和按键如下：
+三个电机的方向和按钮如下：
 
-| 电机 | 动作 | 页面标签 | 串口方向 | 按键 |
+| 电机 | 卡片中的轴 | 动作 | 按钮 | 串口方向 |
 | --- | --- | --- | --- | --- |
-| `bottom` | 升 | `Up` | `ccw` | W |
-| `bottom` | 降 | `Down` | `cw` | S |
-| `top` | 右 | `Right` | `ccw` | D |
-| `top` | 左 | `Left` | `cw` | A |
-| `insert` | 插入 | `Insert In` | `ccw` | J |
-| `insert` | 退出 | `Insert Out` | `cw` | K |
+| `bottom` | `Bottom` | 升 | `Step −` | `ccw` |
+| `bottom` | `Bottom` | 降 | `Step +` | `cw` |
+| `top` | `Top` | 右 | `Step −` | `ccw` |
+| `top` | `Top` | 左 | `Step +` | `cw` |
+| `insert` | `Insert` | 插入 | `Step −` | `ccw` |
+| `insert` | `Insert` | 退出 | `Step +` | `cw` |
 
-长按按钮在标签前加 `Hold`，例如 `Hold Up`。
-标签只对应串口方向，实际转向取决于电机接线和观察方向。
+`cw` 增加脉冲计数，`ccw` 减少脉冲计数。
+动作只对应串口方向，实际转向取决于电机接线和观察方向。
 
 ## 使用前
 
 使用时，现场必须有人能切断电机电源。
-`Stop all motors` 是软件停止，不是急停。
+`Stop stage` 是软件停止，不是急停。
 
 Arduino 接在 Olares 宿主机的 USB 上，必须运行 `firmware/three-motor-demo` 固件。
 上传、接线和串口命令见 [固件说明](../firmware/three-motor-demo/README.md)。
-面板用文件锁独占串口。
-不加锁的程序仍能同时打开该串口，面板不能发现它。
+服务用文件锁独占串口。
+不加锁的程序仍能同时打开该串口，服务不能发现它。
 
 部署在 Olares 时，在装有 Arduino IDE 的电脑上传固件：
 
-1. 在面板点击 `Stop all motors` 和 `Disconnect`。
-2. 从 Olares 宿主机拔下 Arduino，接到该电脑。
-3. 按固件说明上传固件。
-4. 把 Arduino 接回 Olares 宿主机的 USB。
-5. 在宿主机运行 `ls -l /dev/serial/by-id/`，确认 Arduino 的路径与 `MG400_STAGE_SERIAL` 相同。
-6. 在面板点击 `Connect`。
+1. 在控制台点击 `Stop stage`。
+2. 在宿主机运行 `mg400ctl stop stage`。服务发送 `stop all`，再关闭串口。
+3. 从 Olares 宿主机拔下 Arduino，接到该电脑。
+4. 按固件说明上传固件。
+5. 把 Arduino 接回 Olares 宿主机的 USB。
+6. 在宿主机运行 `ls -l /dev/serial/by-id/`，确认 Arduino 的路径与 `MG400_STAGE_SERIAL` 相同。
+7. 运行 `mg400ctl start stage`，再按 [连接](#连接) 连接 Arduino。
 
-在本地运行面板时，上传前在面板点击 `Disconnect`。
+在本地运行服务时，上传前停止 `stage-panel` 进程。
 
 位移台是开环控制（只发脉冲，不读取实际位置），没有编码器。
 位移台没有限位开关。新版固件支持确认后手动设零和软限位。
-配置了开关的开发板仍可回零。旧版固件保留手动控制。
-页面计数是有符号 STEP 脉冲数。复位、回零和手动设零会重设参考位置，计数不是实测行程。
+配置了开关的开发板仍可回零。
+卡片显示的计数是有符号 STEP 脉冲数。复位、回零和手动设零会重设参考位置，计数不是实测行程。
 移动前，确认该方向有足够行程。
 
-多数 Arduino 在串口打开时复位，面板每次连接都打开串口。
+多数 Arduino 在串口打开时复位，服务每次连接都打开串口。
 复位期间，驱动器可能短时唤醒，电机可能转到 A4988 的 Home 细分位置。
 复位后，计数归零，细分模式（一个脉冲走几分之一整步）恢复整步。
 固件启动后，三个驱动器进入睡眠。
@@ -61,25 +63,15 @@ Arduino 接在 Olares 宿主机的 USB 上，必须运行 `firmware/three-motor-
 驱动器睡眠时，外力能转动电机，计数不记录这些转动。
 驱动器唤醒时，电机可能转到 A4988 的 Home 细分位置。
 
-面板不区分控制者。
-打开面板的每个页面都能发送命令。
-连接、运动状态、活动日志和冷却时间在所有页面共享。
-速度和步数输入只属于当前页面，刷新后恢复默认值。
-
-## 打开面板
+## 打开控制台
 
 ### 使用 Olares 已部署的服务
 
 保持 LarePass VPN 连接。
-VPN 访问控制规则必须允许 TCP `8767`。
-打开 [Olares 位移台面板](http://100.64.0.1:8767/)。
-
-页面显示 `Panel access token` 输入框时，输入访问密钥，再点击旁边的 `Connect`。
-访问密钥是宿主机 `/etc/mg400/mg400.env` 中 `MG400_STAGE_TOKEN` 的值。
-页面在当前标签页保存密钥，刷新后不必重新输入。
-服务拒绝密钥时，页面删除保存的密钥，再次显示输入框。
-输入框显示期间，页面暂停读取状态。
-服务未启动时，参见 [服务配置](#服务配置)。
+打开 [Lab Console](http://100.64.0.1:8080/)，进入 `Motion` 工作区。
+位移台服务只监听回环地址。控制台进程在宿主机上通过 `127.0.0.1` 调用它。
+控制台使用 `MG400_ORCH_STAGE_URL` 和 `MG400_ORCH_STAGE_TOKEN` 连接服务，见 [配方服务](orchestrator.md)。
+卡片显示 `Not running` 或 `Not reachable` 时，参见 [服务配置](#服务配置)。
 
 ### 在本地启动
 
@@ -90,144 +82,120 @@ uv sync
 uv run stage-panel
 ```
 
-在该电脑打开 [本地位移台面板](http://127.0.0.1:8767/)。
 `uv run python -m stage_controller` 与 `uv run stage-panel` 等效。
 本地运行也读取 [配置项](#配置项) 中的环境变量和参数。
 在 Linux 上，运行服务的用户必须能读写串口设备，例如加入 `dialout` 组。
 加入组后，重新登录。
+启动控制台时，把 `MG400_ORCH_STAGE_URL` 设为 `http://127.0.0.1:8767/contract/`。
 
-没有 Arduino 时，用演示模式查看界面：
+没有 Arduino 时，用控制台的演示模式查看位移台卡片：
 
 ```sh
-uv run stage-panel --demo
+MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
 ```
 
-在串口列表选择 `DEMO`，再点击 `Connect`。
+在该电脑打开 [本地控制台](http://127.0.0.1:8790/lab/)。
+`uv run stage-panel --demo` 启动演示服务。它的串口列表只有 `DEMO`。
 演示模式不打开串口，模拟的运动时间不含加减速。
 
 ## 控制
 
-### 自动化控制
+### 控制权
 
-自动化客户端持有控制租约时，页面显示 `Stage is controlled by automation`。
-固定步数、长按、键盘移动、细分、Home、手动设零、参考示教、命名位置和位姿控件不可用。
-`Stop all motors` 和结束长按仍可用。
+点击 `Take control` 取得位移台的控制租约。
+没有控制权时，连接、细分、步进移动、回零、设零、参考示教和命名位置不可用。
+`Stop stage` 和 `STOP ALL MOTION` 不需要控制权。
+其他客户端持有租约时，卡片显示 `Another client controls it`。
 租约默认有效 3 秒，客户端必须续期。
 租约过期时，服务请求停止所有电机。
 释放租约只交还控制权，不会停止运动。
-客户端交还控制权前，先等待运动完成或请求停止。
+交还控制权前，先等待运动完成或点击 `Stop stage`。
 
-停止无法确认时，页面显示故障并禁止新运动。
-先使用现场物理急停并核对电机状态，再手动断开和连接 Arduino。
-停止请求结束后再重新连接。
-重新连接读到所有电机空闲后才清除故障。
-仅收到空闲反馈不会自动清除故障。
+停止无法确认时，卡片显示故障，服务禁止新运动。
+先使用现场物理急停并核对电机状态。
+停止请求结束后，运行 `mg400ctl restart stage`，再重新连接。
 接口说明见 [位移台自动化契约](development.md#位移台自动化契约)。
 
 ### 连接
 
+Arduino 未连接时，卡片显示 `Arduino not connected`、`Serial port` 列表和 `Connect` 按钮。
 按以下顺序操作：
 
-1. 在 `Device connection` 的串口列表选择 Arduino。
-2. 点击 `Connect`，等待状态显示 `Arduino connected`。
-3. 结束时，点击 `Disconnect`。
+1. 点击 `Take control`。
+2. 在 `Serial port` 列表选择 Arduino。
+3. 点击 `Connect`，等待状态显示 `Connected`。
 
 串口列表显示运行服务的主机的串口。
 部署在 Olares 时，列表来自 Olares 宿主机，不是浏览器所在的电脑。
-插入 Arduino 后，点击刷新按钮更新列表。
+插入 Arduino 后，重新加载控制台页面以更新列表。
 列表不显示夹爪的 USB 转换器（序列号 `BG02Q5TN`）。
 设置 `MG400_STAGE_SERIAL` 时，列表只显示该设备，见 [配置项](#配置项)。
 未设置时，列表可能含有其他串口。
 在宿主机运行 `ls -l /dev/serial/by-id/`，按设备名找到 Arduino。
 不要连接身份不明的串口。
-连接时，服务向该串口发送 `status` 和只读查询 `features`。
-旧版固件可拒绝 `features`，并保留原有控件。
 
 服务只打开列表中当前存在的串口。
 连接时，服务打开串口，等待约 2 秒让 Arduino 复位。
+服务向该串口发送 `status` 和只读查询 `features`。
+旧版固件可拒绝 `features`。
 Arduino 返回三个电机的状态后，控制才解锁。
-`Disconnect` 发送 `stop all`，收到确认后关闭串口。
+控制台没有断开按钮。停止服务时，服务发送 `stop all`，收到确认后关闭串口。
 
 ### 细分模式
 
-`Stepping mode` 对三个电机同时生效，可选整步、1/2、1/4、1/8 或 1/16 步。
-所有电机静止时，选择模式，再点击 `Apply to all`。
-页面另行显示 Arduino 报告的当前模式。
+`Stepping` 对三个电机同时生效，可选整步、1/2、1/4、1/8 或 1/16 步。
+所有电机静止时，点击一个模式，再在卡片中确认。
+高亮的模式是 Arduino 报告的当前模式。
 
 速度和步数都按当前模式的 STEP 脉冲计数。
-切换模式时，面板不换算速度和步数。
+切换模式时，服务不换算速度和步数。
 例如 1/16 步时，50 个脉冲等于 3.125 个整步。
 不同模式下的计数不能换算成同一距离。
-切换细分模式会清除全部 3 轴的原点参考和软限位。
-移动到命名目标或自动移动前，再次确认各轴参考。
+切换细分模式会清除全部 3 轴的零点和软限位。
+之后，再次确认各轴参考。
 
-### 回零与命名移动
+### 参考状态与回零
 
 硬件日常使用前，完成 H-07 和 H-18 的监督参考与校准检查。
-配置了开关的开发板通过回零寻找原点开关。软限位限制相对于已确认参考的行程。
+软限位限制相对于已确认参考的行程。
 服务从 `/var/lib/mg400/stage/stage.toml` 读取实测校准，见[位移台校准](#位移台校准)。
 
-各电机显示参考状态：
+各轴显示参考状态：
 
 | 标记 | 含义 |
 | --- | --- |
-| `Homing unavailable` | 电机未连接、固件不支持，或校准不可用。连接后仍可手动控制。 |
-| `Home required` | 服务尚未确认当前连接和细分模式下的回零与配置软限位。 |
-| `Homing…` | 正在回零或确认软限位。 |
+| `Reference unavailable` | 电机未连接、固件不支持，或校准不可用。 |
+| `Zero required` | 没有开关。服务尚未确认当前连接和细分模式下的零点与软限位。 |
+| `Home required` | 有开关。服务尚未确认当前连接和细分模式下的回零与软限位。 |
+| `Zero confirmed` | 服务已确认零点和软限位。 |
 | `Homed` | 服务已确认回零和软限位。 |
 
-点击某轴的 `Home` 前，清空行程路径。
-等待 `Homed`，再选择 Insert 命名位置，如 `load` 或 `furnace`。
-命名位置以原点为基准，单位为毫米。显示的毫米值来自脉冲计数和校准，不是实测行程。
-缺少已确认的参考时，主机拒绝自动移动，返回 `position unknown, home first`。
-
-选择 `Named poses` 下的按钮前，确认全部 3 轴的参考和软限位。
-位姿按配置顺序逐轴移动，每次只移动 1 轴。
-回零或命名移动期间，新移动控件不可用，`Stop all motors` 仍可用。
-页面不排队，也不自动重试这些操作。
+步进移动和命名位置要求 `Zero confirmed` 或 `Homed`。
+缺少已确认的参考时，服务拒绝移动，返回 `position unknown, home first`。
 复位、重新连接和切换细分后，必须重新确认参考和软限位。
 
-状态中的 `feedback_age_s` 从最近一次完整开发板回复计时。只有回复不超过 2 s，`feedback_fresh` 才为真。
-各电机的 `automation_ready` 要求反馈新鲜，并已确认当前细分模式下的参考和软限位。
-只有电机空闲且脉冲计数精确匹配配置目标时，`at_positions` 才列出该命名位置。不要假定 `load` 为零。
-这些字段不用 HTTP 响应时间代替开发板反馈时间。
-释放租约会取消序列的剩余步骤，即使同一客户端再次取得控制权。续期保留当前序列。
+配置了开关的轴显示 `Home…`：
 
-页面路由如下：
+1. 清空该轴的行程路径。
+2. 点击 `Home…`，在卡片中确认。该轴移动到参考开关。
+3. 等待 `Homed`。
 
-| POST 路由 | JSON 请求体 |
-| --- | --- |
-| `/api/motors/<motor>/home` | `{}` |
-| `/api/motors/<motor>/awake` | `{"seconds": 30}` |
-| `/api/motors/<motor>/goto` | `{"name": "load"}` |
-| `/api/poses/<name>` | `{}` |
+### 设零与相机参考
 
-这些路由与手动移动使用相同的页面认证和自动化控制权规则。
-请求被接受后返回状态快照。轮询状态以确认完成。
-保持唤醒请求延长驱动器通电 0–60 秒，不发送 STEP 脉冲，也不建立参考。
-延长时间为 0 时，取消延长，常规 10 秒空闲保持仍然生效。
-页面不续期保持唤醒请求。长按看门狗仍为 1 秒。
-
-契约新增 `home`（`motor`）、`awake`（`motor` 和 `seconds`）、`goto`（`motor` 和 `name`）、`pose`（`name`）。
-正数契约 `awake` 必须有已确认的参考。持有控制权的客户端可以用 0 取消延长，无须回零。
-手动保持唤醒路由要求新版固件，但不要求回零。
-
-### 手动设零与相机参考
-
-没有开关时，各轴显示 `Set zero here`、`Zero required` 和 `Zero confirmed`。
-配置了开关的开发板显示 `Home`，旧版固件保留原有控件。
+没有开关时，各轴显示 `Set zero…`。
+配置了相机参考的轴还显示 `Check reference` 和 `Teach reference…`。
 演示传输也支持模拟开关，用于练习回零。
 
-1. 用手动控件将该轴移到实测的安全零点。
-2. 停止该轴，等待空闲反馈和冷却结束。
-3. 若已配置参考，点击 `Check reference`，检查图像和标记偏移。
-4. 点击 `Set zero here`，在对话框确认物理位置。
-5. 等待 `Zero confirmed`，再自动移动。
+1. 将该轴放在实测的安全零点。
+2. 等待该轴空闲，冷却结束。
+3. 若已配置参考，点击 `Check reference`。卡片显示相机图像和 `Marker offset` 像素偏移。
+4. 点击 `Set zero…`，检查物理位置，再在卡片中确认。
+5. 等待 `Zero confirmed`，再移动。
 
 设零不发送运动。它重设脉冲计数，清除固件软限位，再写入配置的软限位。
 设零和软限位都必须得到新鲜的开发板回复确认。配置范围必须包含零。
 复位、重新连接或实际切换细分都会使确认失效。
-活动日志记录设零的客户端。页面请求的客户端身份为 `stage-panel`。
+活动日志记录设零的客户端。
 
 各轴校准表可添加以下可选条目：
 
@@ -250,98 +218,102 @@ reference = {stream = "camera3", marker = 12, pixel = [99.5, 99.5], tolerance_px
 取图期间位移台状态或控制租约改变时，服务拒绝操作。
 没有参考时，设零仍须明确确认。演示参考必须使用离线帧源。
 
-示教已配置的标记前，将该轴放在安全物理零点并停止。
-点击 `Teach reference here` 并确认，保存检测到的中心，即使它与原中心不同。
-示教会使原主机零点确认失效。之后点击 `Set zero here`。
+示教参考把当前检测到的标记中心保存为该轴的参考，即使它与原中心不同：
+
+1. 将该轴放在安全物理零点，等待空闲。
+2. 点击 `Teach reference…`，在卡片中确认。
+3. 示教使原零点确认失效。之后点击 `Set zero…`。
+
+示教要求持有控制权，条件与设零相同。
 示教要求配置文件及归属正确的目录，目录权限为 `0700` 或 `0750`。
 服务原子替换文件，保留所有者和权限，拒绝并发校准变更或链接。
 保存的文件采用支持的校准结构，不保留格式和注释。
 
-| 路由 | 请求 |
-| --- | --- |
-| `POST /api/motors/<motor>/zero` | `{"confirm": true}` |
-| `POST /api/motors/<motor>/teach_reference` | `{"confirm": true}` |
-| `GET /api/motors/<motor>/reference` | 读取图像和标记偏移。 |
+### 命名位置
 
-契约命令 `zero` 要求 `motor`、`confirm: true` 和控制租约。
-参考示教仅限操作员页面，且不得有自动化客户端持有租约。
-页面路由保留页面令牌和访问检查。图像仅通过已认证的参考路由返回。
-普通状态回复仅含参考元数据，不含 JPEG。
+`Named positions` 为每个配置的位置显示一个按钮，例如 `Insert → load`。
+该轴空闲且脉冲计数精确匹配目标时，按钮高亮。
+命名位置以零点为基准，单位为毫米。显示的毫米值来自脉冲计数和校准，不是实测行程。
+运动期间，该轴的移动按钮不可用，`Stop stage` 仍可用。
+控制台不排队，也不自动重试移动。
 
-### 固定步数移动
+### 步进移动
 
-每个电机有独立的 `Speed` 和 `Steps per click`：
+每个轴有独立的 `Steps` 和 `Pulses/s` 输入：
 
 | 输入 | 范围 | 默认值 |
 | --- | --- | --- |
-| `Speed` | 1–1000 脉冲/秒 | 50 |
-| `Steps per click` | 1–100000 脉冲 | 50 |
+| `Steps` | 1–100000 脉冲 | 50 |
+| `Pulses/s` | 1–1000 脉冲/秒 | 50 |
 
-点击方向按钮时，电机按设定速度移动设定的步数。
-固定步数移动有加减速，默认加速度为 50 脉冲/秒²。
+点击 `Step −` 或 `Step +` 时，电机按设定速度移动设定的步数。
+目标超出软限位时，服务拒绝移动，返回 `Stage target is outside the configured soft limits.`。
+步进移动有加减速，默认加速度为 50 脉冲/秒²。
 距离短时，电机可能达不到设定速度。
 
-固定步数移动结束后，该电机冷却 1 秒，之后才能再次移动。
+步进移动结束后，该电机冷却 1 秒，之后才能再次移动，状态显示 `Cooling down`。
 服务也检查冷却，多个页面或快速连击都不能绕过。
-面板不排队，也不自动重试移动。
 其他电机不受此冷却影响。
-
-修改速度或步数只影响下一次移动。
-`Reset defaults` 把当前页面的速度和步数恢复为 50。
-它不改变细分模式，也不停止正在运动的电机。
-
-### 长按移动
-
-按住 `Hold` 按钮时，电机以设定速度连续运动，松开后停止。
-长按移动没有加减速，不使用 `Steps per click`。
-也可以聚焦按钮，再按住空格键或回车键。
-长按期间，速度不能修改。
-
-松开按钮、指针移出按钮、按 Esc、切换页面或关闭页面时，长按停止。
-停止后，该电机冷却 1 秒。
-
-页面约每 200 ms 续期一次长按（告诉服务和 Arduino 按钮仍按住）。
-Arduino 1 秒内未收到续期时，停止该电机。
-服务也在 1 秒后停止未续期的长按。
-浏览器、VPN、服务或 USB 中断时，长按的电机约 1 秒内停止。
-
-### 键盘控制
-
-每次加载页面时，`Keyboard controls` 为 `Off`。
-点击开关切换为 `On`，再按住按键或页面上的对应按钮。
-按键见本页开头的表格。
-
-键盘控制使用各电机的 `Speed` 和长按规则，不使用 `Steps per click`。
-多个电机可以同时长按。
-编辑输入框或按住 Ctrl、Alt、Meta 时，字母键无效。
-冷却或停止期间一直按住按键，电机不会重新启动，松开后再按。
-关闭开关时，从该区域开始的长按停止。
+输入只属于当前页面，刷新后恢复默认值。
 
 ### 停止
 
-`Stop all motors` 停止所有电机的脉冲输出，移动和冷却期间都可用。
+`Stop stage` 停止所有电机的脉冲输出，移动和冷却期间都可用。
+控制台的 `STOP ALL MOTION` 也停止位移台。
 停止后，线圈保持通电，直到驱动器睡眠。
-Esc 只停止长按移动。
-
-页面连不上服务时，显示 `Cannot reach the stage panel service. Motion status is unknown.`，并结束长按。
-关闭页面或网络中断时，服务继续运行，固定步数移动继续到终点。
 
 停止服务时，服务先发送 `stop all` 并断开串口，再退出。
-进程被强制结束或崩溃时，服务不发送停止命令。
-此时长按的电机由 Arduino 在 1 秒后停止，固定步数移动继续到终点。
+进程被强制结束或崩溃时，服务不发送停止命令，已开始的步进移动继续到终点。
 
-USB 断开时，服务不能保证停止，已开始的固定步数移动可能走完。
+USB 断开时，服务不能保证停止，已开始的步进移动可能走完。
 服务失去 Arduino 连接时，尝试发送 `stop all`，再关闭连接。
-此时页面显示 `Connection lost; motor stop could not be confirmed.`。
+此时卡片状态显示 `Connection lost; motor stop could not be confirmed.`。
 到现场确认电机已停止，再重新连接。
-面板不自动重连，也不重试移动。
+服务不自动重连，也不重试移动。
+
+## 接口
+
+所有路由位于 `<base>/contract/api/` 下。`<base>` 是 `MG400_STAGE_BASE_PATH`，默认 `/`。
+部署在 Olares 时，`<base>` 为 `/stage/`。
+设置 `MG400_STAGE_TOKEN` 时，所有路由都要求 bearer 令牌。
+POST 必须带 JSON 正文和 `X-MG400-Client`。
+
+| 路由 | 请求 | 用途 |
+| --- | --- | --- |
+| `GET contract/api/describe` | 无 | 读取命令参数、限制、演示标志和租约规则 |
+| `GET contract/api/state` | 无 | 读取连接、电机、细分模式、参考元数据和租约 |
+| `GET contract/api/events?since=0` | 无 | 读取活动事件 |
+| `POST contract/api/heartbeat` | `{}` | 取得或续期控制租约 |
+| `POST contract/api/renew` | `{}` | 续期调用者持有的租约 |
+| `POST contract/api/release` | `{}` | 释放租约，不停止运动 |
+| `POST contract/api/command` | `action` 和参数 | 发送契约命令 |
+| `POST contract/api/stop` | `{"wait_s": 0}` | 停止所有电机，不需要租约 |
+| `GET contract/api/ports` | 无 | 列出可连接的串口 |
+| `POST contract/api/connect` | `{"port": "..."}` | 连接列出的串口，要求租约 |
+| `GET contract/api/motors/<motor>/reference` | 无 | 读取相机图像和标记偏移 |
+| `POST contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | 保存当前标记位置为参考，要求租约 |
+
+`<motor>` 取 `bottom`、`top` 或 `insert`。
+契约命令为 `move`、`hold`、`keepalive`、`release_hold`、`stop_all`、`set_microstep`、`home`、`zero`、`awake`、`goto` 和 `pose`。
+`zero` 要求 `motor` 和 `confirm: true`。
+`pose` 按配置顺序逐轴移动，每次只移动 1 轴。
+`awake` 延长驱动器通电 0–60 秒，不发送 STEP 脉冲，也不建立参考。正数 `awake` 必须有已确认的参考，0 取消延长。
+演示模式的 `connect` 只接受 `DEMO`。
+已连接时，`connect` 返回 `Disconnect the current board before choosing another port.`。
+图像仅通过参考路由返回。状态回复仅含参考元数据，不含 JPEG。
+
+状态中的 `feedback_age_s` 从最近一次完整开发板回复计时。只有回复不超过 2 s，`feedback_fresh` 才为真。
+各电机的 `automation_ready` 要求反馈新鲜，并已确认当前细分模式下的参考和软限位。
+只有电机空闲且脉冲计数精确匹配配置目标时，`at_positions` 才列出该命名位置。不要假定 `load` 为零。
+释放租约会取消序列的剩余步骤，即使同一客户端再次取得控制权。续期保留当前序列。
+参数和完成判定见 [位移台自动化契约](development.md#位移台自动化契约)。
 
 ## 服务配置
 
 服务名为 `mg400-stage-panel.service`，由 [主机部署](deploy.md) 安装，`mg400ctl` 名称为 `stage`。
 服务以数字 ID `1000` 的用户和组运行，并加入 `dialout` 组，用于读写串口。
 服务手动启动，未设置开机自启。
-服务启动不打开串口，在页面点击 `Connect` 后才打开。
+服务启动不打开串口，在控制台点击 `Connect` 后才打开。
 参考示教会更新位移台校准文件。服务将输出发送到 systemd 日志。
 
 ### 配置项
@@ -352,6 +324,7 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 | --- | --- | --- | --- |
 | `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | 监听地址 |
 | `MG400_STAGE_PORT` | `--port` | `8767` | 监听端口，1–65535 |
+| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | URL 前缀，契约位于其下的 `contract/` |
 | `MG400_STAGE_TOKEN` | 无 | 无 | 访问密钥 |
 | `MG400_STAGE_SERIAL` | `--serial` | 无 | Arduino 的串口路径 |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | 位移台实测校准和命名目标 |
@@ -364,9 +337,8 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 设置访问密钥后，服务接受任何主机名，监听回环地址时也一样。
 未设置访问密钥时，服务只接受 `127.0.0.1`、`localhost` 或 `[::1]` 地址。
 此时服务也拒绝带 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 或 `X-Real-IP` 的请求。
-接口说明见 [位移台面板接口](development.md#位移台面板接口)。
 
-设置 `MG400_STAGE_SERIAL` 时，串口列表只显示该设备，`Connect` 也只接受该设备。
+设置 `MG400_STAGE_SERIAL` 时，串口列表只显示该设备，`connect` 也只接受该设备。
 建议使用 `/dev/serial/by-id/` 下的路径，重新插拔后路径不变。
 该设备不存在时，列表为空。
 路径指向夹爪转换器时，服务拒绝启动。
@@ -390,7 +362,7 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 | --- | --- |
 | `steps_per_mm` | 校准细分模式下，每毫米的脉冲数，必须为有限正数。 |
 | `microstep` | 校准模式：1、2、4、8 或 16。 |
-| `min_mm`、`max_mm` | 相对于原点的行程边界，必须有限且按大小排列。 |
+| `min_mm`、`max_mm` | 相对于零点的行程边界，必须有限且按大小排列。 |
 | `positions` | 可选的名称与毫米位置表。Insert 必须包含 `load` 和 `furnace`。 |
 | `reference` | 可选相机参考，含 `stream`、`marker`、`pixel` 和 `tolerance_px`。 |
 
@@ -398,11 +370,12 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 `order` 按移动顺序列出 `bottom`、`top` 和 `insert`，各出现 1 次。
 `positions` 给出各轴限位范围内的毫米位置。
 `furnace` 位姿表示坩埚卸载开始时的插入位置。
+控制台不显示位姿按钮。位姿通过契约命令 `pose` 使用。
 
 主机按 `steps_per_mm * current_microstep / microstep` 计算每毫米的脉冲数。
 边界向内取整，目标取最近的脉冲。取整后再次检查目标是否位于脉冲边界内。
-回零或手动设零后，主机发送软限位并等待确认，再启用命名移动或自动移动。
-文件缺失或无效时，这些控件不可用，并显示配置错误。手动控件和 Stop 仍可用。
+回零或手动设零后，主机发送软限位并等待确认，再启用移动。
+文件缺失或无效时，参考和移动控件不可用，`Stop stage` 仍可用。
 
 未显式指定配置时，演示模式使用独立的合成几何值，供离线练习。
 显式指定的 `--config` 或 `MG400_STAGE_CONFIG` 也适用于演示模式。
@@ -411,7 +384,7 @@ USB 断开时，服务不能保证停止，已开始的固定步数移动可能�
 ### 配置文件
 
 服务从 `/etc/mg400/mg400.env` 读取配置。
-安装器生成 `MG400_STAGE_TOKEN`，其余各项按本主机修改。
+安装器生成 `MG400_STAGE_TOKEN`，并把空的 `MG400_ORCH_STAGE_TOKEN` 设为相同的值。其余各项按本主机修改。
 
 接上 Arduino 后，查找它的串口路径：
 
@@ -427,7 +400,7 @@ ls -lL /dev/serial/by-id/
 
 查看访问密钥：`sudo mg400ctl token stage`。
 修改配置文件后，重启服务。
-修改访问密钥后，在页面输入新密钥。
+修改访问密钥后，把 `MG400_ORCH_STAGE_TOKEN` 改为相同的值，再重启控制台服务。
 
 ### 启动与停止
 
@@ -443,29 +416,26 @@ mg400ctl stop stage
 停止服务时，日志记录停止结果，例如 `All motors stopped · disconnected`。
 服务异常退出后，systemd 等待 3 秒再启动服务。
 服务因配置错误拒绝启动时，systemd 不重启服务，状态显示 `failed`。
-重启后，面板未连接 Arduino，在页面重新连接。
+重启后，服务未连接 Arduino，在控制台重新连接。
 主机重启后，手动启动服务。
 
-更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `mg400ctl restart stage`，并重新加载已打开的面板页面。
-服务每次启动生成新的命令令牌（页面发送命令时附带的随机值）。
-服务拒绝旧页面发送的命令。
+更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `mg400ctl restart stage`。
 
 ## 故障排查
 
-以下报错显示在面板页面上，服务启动失败的报错显示在服务日志中。
+以下报错显示在位移台卡片或控制台通知中，服务启动失败的报错显示在服务日志中。
 
 | 现象 | 处理 |
 | --- | --- |
-| 串口列表显示 `No serial ports found`，或找不到 Arduino | 在宿主机运行 `ls -l /dev/serial/by-id/`。没有 Arduino 时，检查 USB 数据线和 Arduino 供电，再点击刷新按钮。设置了 `MG400_STAGE_SERIAL` 时，确认它与 Arduino 的路径相同。 |
-| `That port is no longer available. Refresh the port list.` | 点击刷新按钮，再选择串口。 |
+| 串口列表显示 `No serial port found`，或找不到 Arduino | 在宿主机运行 `ls -l /dev/serial/by-id/`。没有 Arduino 时，检查 USB 数据线和 Arduino 供电，再重新加载控制台页面。设置了 `MG400_STAGE_SERIAL` 时，确认它与 Arduino 的路径相同。 |
+| `That port is no longer available. Refresh the port list.` | 重新加载控制台页面，再选择串口。 |
 | `Cannot open <串口>: ...`，其中含 `Permission denied` | 服务用户不能读写该串口。确认设备属组为 `dialout`。本地运行时，把用户加入 `dialout` 组并重新登录。 |
 | `<串口> is in use by another program.` | 另一个程序占用该串口。关闭该程序，例如 Arduino IDE 的串口监视器或另一个 `stage-panel` 进程。 |
-| `Arduino did not reply in time. Check the port and uploaded sketch.` | 确认所选串口是 Arduino，并已上传 `firmware/three-motor-demo`。出错后面板断开连接，修复后再点击 `Connect`。 |
-| `Hold to move was rejected. Upload the updated three-motor-demo sketch.`，或 `Stepping mode` 区域显示 `Stepping mode unavailable on this firmware` | Arduino 运行旧固件。上传本项目的 `firmware/three-motor-demo`。 |
-| 页面显示 `Panel access token` 输入框，或提示 `Enter the panel access token` | 输入 `/etc/mg400/mg400.env` 中的 `MG400_STAGE_TOKEN`。 |
-| 浏览器不显示面板，只显示含 `Open the panel at 127.0.0.1 or localhost` 的 JSON | 服务未设置访问密钥，请求来自其他主机名或代理。在服务主机打开 `127.0.0.1` 地址，或设置至少 24 个字符的 `MG400_STAGE_TOKEN`。 |
-| `Reload this page before sending another command.` | 服务已重启。重新加载页面。 |
-| `Cannot reach the stage panel service. Motion status is unknown.` | 检查 VPN 连接，再在宿主机运行 `mg400ctl status`。 |
+| `Arduino did not reply in time. Check the port and uploaded sketch.` | 确认所选串口是 Arduino，并已上传 `firmware/three-motor-demo`。出错后服务断开连接，修复后再点击 `Connect`。 |
+| `Another client controls it` | 另一个客户端持有租约。等它释放控制权，再点击 `Take control`。 |
+| `position unknown, home first` | 该轴没有已确认的参考。按 [设零与相机参考](#设零与相机参考) 设零，或回零。 |
+| `Stage target is outside the configured soft limits.` | 减少步数，或改变方向。 |
+| 卡片显示 `Not running` 或 `Not reachable` | 在宿主机运行 `mg400ctl status`，确认 `stage` 已启动。再检查 `MG400_ORCH_STAGE_URL` 和 `MG400_ORCH_STAGE_TOKEN`。 |
 | 服务日志显示 `Failed to load environment files` | 按 [主机部署](deploy.md#安装与更新) 运行安装器，创建 `/etc/mg400/mg400.env`，再启动服务。 |
 | 服务日志显示 `Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost` | 已有的 `MG400_STAGE_TOKEN` 少于 24 个字符时，把该行改为 `MG400_STAGE_TOKEN=`，再运行安装器生成访问密钥，然后启动服务。 |
 | 服务日志显示 `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | 按 [配置文件](#配置文件) 查找 Arduino 的路径，改写 `MG400_STAGE_SERIAL`，再启动服务。 |

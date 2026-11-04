@@ -800,3 +800,31 @@ def test_start_is_rechecked_after_zone_admission_before_any_motion(geometry):
         transfer(ctx, "source", "target", 400, 900)
     assert not ctx.robot.calls
     assert any(event[:2] == ("unknown", "source") for event in ctx.events)
+
+
+def test_readonly_state_does_not_require_robot_motion_capabilities(geometry):
+    from orchestrator.skills.robot import _Transfer
+
+    ctx = Context()
+    ctx.robot.describe = Mock(side_effect=AssertionError("Read-only check queried motion schema"))
+    state, pose = _Transfer(ctx).state()
+    assert state["actual"] == ctx.robot.value["actual"]
+    assert pose == ctx.tip()
+    ctx.robot.describe.assert_not_called()
+    assert not ctx.robot.calls
+
+
+@pytest.mark.parametrize("action", ["plan", "move"])
+def test_motion_capabilities_are_required_at_plan_and_direct_move_boundaries(geometry, action):
+    from orchestrator.skills.robot import _Transfer
+
+    ctx = Context()
+    ctx.robot.describe = Mock(return_value={})
+    robot = _Transfer(ctx)
+    with pytest.raises(ValueError, match="advertise.*speed cap"):
+        if action == "plan":
+            robot.plan(robot.route("source"))
+        else:
+            robot.move(robot.pose(geometry.load()["source"]))
+    ctx.robot.describe.assert_called_once_with()
+    assert not ctx.robot.calls

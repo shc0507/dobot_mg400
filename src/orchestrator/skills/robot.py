@@ -80,6 +80,20 @@ class _Transfer:
         self.ctx, self.robot = ctx, ctx.clients["robot"]
         if type(speed) is not int or not 1 <= speed <= 100:
             raise ValueError("Transfer speed must be an integer from 1 to the robot service cap.")
+        self.speed = speed
+        self._speed_checked = False
+        self.workspace = Workspace.from_settings(os.environ)
+        self.stations = StationStore(
+            self.workspace, os.environ.get("MG400_ORCH_STATIONS_FILE") or DEFAULT_STATIONS
+        ).load()
+        self.offset = load_tool(os.environ.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
+        self.owner = self.instance = None
+
+    def check_speed(self):
+        # Read-only users of state() do not need motion capabilities. Planning
+        # checks before any command; move() also protects direct calibration moves.
+        if self._speed_checked:
+            return
         self.ctx.check()
         try:
             spec = self.robot.describe()["commands"]["execute"]["params"]["properties"]["speed"]
@@ -89,15 +103,9 @@ class _Transfer:
             )
         except (KeyError, TypeError):
             raise ValueError("Robot service must advertise its execute speed cap.") from None
-        if not valid or type(cap) is not int or not 1 <= cap <= 100 or speed > cap:
+        if not valid or type(cap) is not int or not 1 <= cap <= 100 or self.speed > cap:
             raise ValueError("Transfer speed must not exceed a valid robot service cap.")
-        self.speed = speed
-        self.workspace = Workspace.from_settings(os.environ)
-        self.stations = StationStore(
-            self.workspace, os.environ.get("MG400_ORCH_STATIONS_FILE") or DEFAULT_STATIONS
-        ).load()
-        self.offset = load_tool(os.environ.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
-        self.owner = self.instance = None
+        self._speed_checked = True
 
     def _inside(self, pose):
         for axis, (low, high) in self.workspace.bounds.items():
@@ -179,6 +187,7 @@ class _Transfer:
         return route
 
     def move(self, pose, expected=None):
+        self.check_speed()
         self.state(expected)
         target = fingertip_to_flange(self._inside(pose), self.offset)
         self.robot.run(
@@ -235,6 +244,7 @@ class _Transfer:
         return matches[0]
 
     def plan(self, *routes):
+        self.check_speed()
         # Check complete routes, including conversions that a later leg needs,
         # before any arm, gripper or crucible stage command is admitted.
         for route in routes:

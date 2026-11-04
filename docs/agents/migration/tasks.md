@@ -1460,6 +1460,121 @@ Steps:
 
 Done when: P-CHECKS pass.
 
+### DSH-03 · Lab Console shell and overview
+
+Owner: agent · Size: L · Review: human · Deps: DSH-01, OPS-02
+
+Source: owner request, 2026-11-04, with a design canvas that the owner keeps. The lab has 7 separate pages: robot, stage, camera preview, thermal, microscope, furnace and the lab dashboard. Each has its own port, token and control rules. The console becomes the operator's single entry. The old pages stay as fallbacks. DSH-03 to DSH-06 build it in this order, because they share `src/orchestrator/web/`.
+
+Goal: one page at the proxy root for the whole lab, with a shared frame, the Overview workspace, and a command relay that the later workspaces use.
+
+Steps:
+
+1. Entry: the orchestrator service serves the console at `/lab/`, and the proxy redirects `/` there. The browser talks only to the console origin. The console server keeps every service token, as DSH-01 does. No CORS headers.
+2. Frame on every workspace:
+   - a header with the console name, the deployed commit, the tabs Overview, Motion, Cameras and Furnace + microscope, a language switch (English and 中文, kept in the browser), the devices that this browser controls, and an always-visible STOP ALL MOTION button (the DSH-01 stop fan-out);
+   - a status strip with 1 chip per service (Robot, Stage, Cameras, Thermal, Vision, Microscope, Furnace, Runs): a dot and a short text, never color alone, marked stale after 3 s.
+3. Command relay for the later workspaces:
+   - The console server forwards a workspace's manual command to that service's contract API with the server-side token. Only the commands in the service's `api/describe` are allowed; this task adds no device command.
+   - The console takes a service lease only when the operator presses Take control for that device, and never takes it over from another holder.
+   - It renews the lease while the browser's heartbeat reaches the console at least every second. It releases the lease when the heartbeat stops for 3 s or the page closes.
+   - Stop needs no control and never waits for a lease. An unknown outcome is shown and never retried.
+4. Overview workspace:
+   - Readiness before a run: 1 row per item, with Ready, To do or Blocked, a short reason and a link to the workspace that fixes it. Items: the tool offset file, the camera calibration models (vision `calibrated_cameras`), the stage zero and soft limits, the microscope focus zero, the gas map, and the over-temperature cutoff. The cutoff has no machine-readable state: a host setting `MG400_DASH_CUTOFF_CONFIRMED`, which the owner sets after H-11, and Blocked while it is unset.
+   - The current run with its steps, Hold and Abort, and the agent proposals (DSH-01).
+   - The safety card: stop, heat off and gas off, with the result for each target (DSH-01).
+   - Who holds each service's lease, and Release all for the console's own leases.
+   - 1 event list merged from every service's `api/events`, newest first, with filters for warnings and per service.
+5. Layout: a dark theme, text contrast of at least 4.5:1, buttons at least 44 px high, and a real button or input with a label for every control. At phone width the columns stack.
+6. Tests: Python tests with fake services for the aggregation, the relay and its lease rules, the readiness items and the event merge. Node tests for the page logic and the language switch.
+
+Done when: P-CHECKS pass.
+
+Docs: `dashboard.md` and `.en.md`, `olares.md` and `.en.md` for the proxy root.
+
+### DSH-04 · Console camera workspace
+
+Owner: agent · Size: M · Review: human · Deps: DSH-03, VIS-06, THM-02, MIC-04
+
+Goal: all 6 camera views in one place.
+
+Steps:
+
+1. A grid of 6 tiles: camera1 to camera4 from the camera preview, the thermal camera and the microscope (Toupcam) camera.
+   - Each tile shows its name and role, LIVE, STALE or OFFLINE with the frame age, and its mode. It has Snapshot and Expand buttons.
+   - A Focus layout shows 1 large view and a strip of the others.
+2. The console server relays the video and the frames, so the browser gets no camera key and no service token: the go2rtc MJPEG for camera1 to camera4, the thermal frame API, and the microscope MJPEG. Bound the number of relayed streams; the microscope allows at most 4. Stop a relay when its viewer leaves.
+3. Overlays, each one switchable: the chip detections on camera 4 (VIS-06 data), and the thermal minimum, maximum and center markers with the color bar.
+4. A side panel for the selected view. For the thermal camera:
+   - display-only settings: units, palette, auto or fixed scale, freeze;
+   - the CSV, raw and PNG exports;
+   - through the relay (DSH-03): the `crucible` region editor and shutter calibration.
+5. Tests with fake streams: stale and offline states, the stream bound, the relay end when a viewer leaves, and no secret in any page response.
+
+Done when: P-CHECKS pass.
+
+Docs: `dashboard.md` and `.en.md`.
+
+### DSH-05 · Console motion workspace
+
+Owner: agent · Size: L · Review: human · Deps: DSH-04, ROB-03, ORC-07
+
+Goal: arm and stage control in one place, next to the cameras that watch them.
+
+Steps:
+
+1. Three columns (they stack at phone width), and below them 1 activity list for both devices:
+   - the arm;
+   - the cameras: camera2 large, camera4 and camera3 small, swappable;
+   - the stage.
+2. Arm, through the relay (DSH-03):
+   - Take control, Enable and Disable, the actual pose, and Clear alarm.
+   - A jog pad (±X, ±Y, Z up and down, R ±) with a step of 0.5, 2 or 10 mm, sent as single bounded `execute` moves. Keyboard jog stays in the robot panel.
+   - Move to a pose, with Use actual and Execute, at a speed from 1 to the service cap.
+   - The gripper (open, close, initialize) and its outcome.
+3. Stations: the taught stations from the ORC-02 store. Go via route starts a one-step orchestrator run that travels the route at the taught heights (ORC-07). It never makes a direct move.
+4. Stage, through the relay:
+   - Take control, the stepping mode, and Stop stage.
+   - Per axis: the position in pulses and in mm, the reference status, and Check reference and Set zero, with a confirmation.
+   - The moves that the stage contract lists, and the named positions. Hold-to-move is offered only if the contract offers it.
+5. Tests with the robot and stage simulators:
+   - taking and releasing control, and the loss of the heartbeat;
+   - a jog outside the workspace is refused;
+   - Go via route uses a run;
+   - stop works without control.
+
+Done when: P-CHECKS pass.
+
+Docs: `dashboard.md` and `.en.md`.
+
+### DSH-06 · Console furnace and microscope workspace
+
+Owner: agent · Size: M · Review: human · Deps: DSH-05, FUR-04, MIC-04
+
+Goal: the hot side and the microscope in one place.
+
+Steps:
+
+1. Furnace, through the relay (DSH-03):
+   - PV, SV and the mode, and the crucible temperature from the thermal `crucible` region;
+   - a 60-minute PV and SV chart;
+   - the target and ramp with Apply and run, behind a confirmation;
+   - the sequence editor with the FUR-04 page features;
+   - the gas channels, refused until the gas map names real gases;
+   - Stop heat and gas.
+   - Until the owner sets `MG400_DASH_CUTOFF_CONFIRMED`, a banner says not to heat before H-11 and H-20.
+2. Microscope, through the relay:
+   - the Toupcam view and the side camera;
+   - the objective buttons, which switch at clearance;
+   - the focus position on a bar of the measured limits, jog, and local and full autofocus;
+   - Set focus zero, behind a confirmation, with a reminder to re-zero at the 50x focus;
+   - snapshot and recording (FUR-05).
+3. Tests with the furnace and microscope demos.
+
+Done when: P-CHECKS pass.
+
+Docs: `dashboard.md` and `.en.md`.
+
 ### AGT-01 · MCP gateway with read-only tools
 
 Owner: agent · Size: L · Review: human · Deps: ORC-05, GOV-02

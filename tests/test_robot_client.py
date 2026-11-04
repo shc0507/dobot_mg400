@@ -1,13 +1,14 @@
 """Exercise the Python client through a real local PanelServer and simulator rig."""
 
 import concurrent.futures
+import io
 import json
 import socket
 import threading
 import time
 
 import pytest
-from panel_ws import PanelServer, RealSocket, running
+from panel_ws import PANEL, PanelServer, RealSocket, running
 from sim_mg400 import wait_for
 
 import mg400.client as client_module
@@ -61,6 +62,84 @@ def make_client(service, rig):
         return client
 
     yield make
+    for client in clients:
+        client.close()
+
+
+@pytest.fixture
+def in_process_client(make_sim_rig, monkeypatch):
+    """Exercise real client workers and context cleanup without a listening socket."""
+    rig = make_sim_rig()
+    clients = []
+
+    class Transport:
+        def __init__(self, identity):
+            self.identity = identity
+            self.changed = threading.Condition()
+            self.buffer = bytearray()
+            self.closed = False
+
+        def sendall(self, payload):
+            kind, text = MessageReader(io.BytesIO(payload).read, masked=True).next()
+            assert kind == "text"
+            message = json.loads(text)
+            result = PANEL["dispatch"](rig.state, message["type"], message["body"], self.identity)
+            reply = {"type": "reply", "id": message["id"], "status": 200, "state": result}
+            with self.changed:
+                if self.closed:
+                    raise OSError("In-process transport is closed")
+                self.buffer.extend(encode_frame(TEXT, json.dumps(reply).encode()))
+                self.changed.notify_all()
+
+        def recv(self, count):
+            with self.changed:
+                if not self.buffer and not self.closed:
+                    self.changed.wait(0.01)
+                if self.closed:
+                    return b""
+                if not self.buffer:
+                    update = {"type": "state", "state": rig.snapshot()}
+                    self.buffer.extend(encode_frame(TEXT, json.dumps(update).encode()))
+                result = bytes(self.buffer[:count])
+                del self.buffer[:count]
+                return result
+
+        def shutdown(self, *_):
+            with self.changed:
+                self.closed = True
+                self.changed.notify_all()
+
+        close = shutdown
+
+    def refuse_network(*args):
+        pytest.fail("Context lifecycle tests must not dial a service socket")
+
+    monkeypatch.setattr(client_module, "_connect_socket", refuse_network)
+
+    def make():
+        client = RobotClient("http://localhost/robot", TOKEN, "automation")
+        clients.append(client)
+        transport = Transport(client.client_id)
+
+        def http(route, body=None, *, timeout=None):
+            if route == "describe":
+                assert body is None
+                return rig.state.describe()
+            assert route == "command" and body["action"] == "disable"
+            return PANEL["dispatch"](rig.state, route, body, client.client_id)
+
+        def open_transport(deadline):
+            client._check_contract(client.timeout)
+            reader = MessageReader(
+                lambda n: client._read_exact(transport, n), masked=False, max_bytes=1_048_576
+            )
+            return transport, reader, rig.snapshot()
+
+        monkeypatch.setattr(client, "_http", http)
+        monkeypatch.setattr(client, "_open", open_transport)
+        return client
+
+    yield make, rig
     for client in clients:
         client.close()
 
@@ -265,12 +344,33 @@ def test_http_safety_fallback_when_socket_down(make_client, rig, action):
         client.command("execute", targets=TARGET)
 
 
-def test_context_stops_sync_and_keep_control_only_skips_cleanup(make_client, rig):
+def test_context_enabled_stop_keeps_feedback_for_explicit_disable(in_process_client):
+    make_client, rig = in_process_client
     with make_client() as client:
         client.run("start_sync")
     assert not client.connected
-    assert not rig.snapshot()["syncing"]
+    snapshot = rig.snapshot()
+    assert snapshot["syncing"] and snapshot["feedback_fresh"]
+    assert snapshot["locked"] and snapshot["controller_id"] is None
+    assert snapshot["robot_mode"] == 5 and not snapshot["stop_unconfirmed"]
     assert "ResetRobot()" in rig.controller.sent()
+    assert "DisableRobot()" not in rig.controller.sent()
+    # The client is closed, but an explicit HTTP disable still has feedback to confirm it.
+    assert client.command("disable")["status"] == 200
+    rig.wait(lambda s: not s["busy"] and not s["syncing"] and not s["locked"])
+    assert rig.snapshot()["robot_mode"] == 4 and not rig.snapshot()["stop_unconfirmed"]
+    assert rig.controller.sent().count("DisableRobot()") == 1
+
+
+def test_context_exit_while_disabled_still_closes_feedback(in_process_client):
+    make_client, rig = in_process_client
+    rig.controller.update(mode=4)
+    with make_client() as client:
+        client.run("start_sync")
+    snapshot = rig.snapshot()
+    assert not client.connected and not snapshot["syncing"]
+    assert not snapshot["locked"] and not snapshot["stop_unconfirmed"]
+    assert snapshot["controller_id"] is None and snapshot["robot_mode"] == 4
 
 
 def test_context_keep_control_allows_lease_to_expire(make_client, rig):

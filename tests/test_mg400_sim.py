@@ -218,13 +218,14 @@ def test_real_panel_sequence_over_loopback(loopback_host, tmp_path):
                 settled(lambda s: s["actual"][:4] == list(target.values()))
                 command("grip", position=725)
                 settled(lambda s: s["actual"][4] == 725)
+                command("disable")
+                settled(lambda s: s["robot_mode"] == 4 and not s["locked"])
                 command("stop_sync")
                 wait_for(lambda: not state.snapshot()["syncing"], timeout=8)
-                # The production stop latch remains set until a verified disable.
-                assert state.snapshot()["locked"]
-                assert state.snapshot()["message"].startswith("Robot stop is confirmed.")
+                assert not state.snapshot()["locked"]
+                assert state.snapshot()["message"] == "Robot disable and rest are confirmed."
                 assert not state.snapshot()["stop_unconfirmed"]
-                assert simulator.controller.sample.mode == 5
+                assert simulator.controller.sample.mode == 4
         finally:
             state.close()
 

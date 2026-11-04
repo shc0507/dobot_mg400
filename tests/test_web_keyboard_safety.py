@@ -514,7 +514,7 @@ def test_disable_during_arm_hold_waits_for_hold_exit_and_recovers(rig, actions):
 
 
 @pytest.mark.parametrize("confirmed", [True, False])
-def test_stop_sync_during_arm_hold_disconnects_only_after_confirmed_stop(rig, confirmed):
+def test_stop_sync_during_arm_hold_keeps_feedback_after_stop(rig, confirmed):
     state = rig.state
     rig.connect()
     session = rig.arm_ready()
@@ -539,10 +539,17 @@ def test_stop_sync_during_arm_hold_disconnects_only_after_confirmed_stop(rig, co
     assert at_stop == [(True, OWNER, False)]
     snapshot = state.snapshot()
     assert snapshot["locked"]
+    assert snapshot["syncing"] and state._ownership.held
+    assert "control1.disable" not in rig.log
     if confirmed:
-        assert not snapshot["syncing"]
         assert snapshot["controller_id"] is None
         assert not snapshot["stop_unconfirmed"]
+        rig.feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+        wait_for(lambda: state.snapshot()["robot_mode"] == 4)
+        state.command({"action": "disable"}, OTHER)
+        wait_for(lambda: not state.snapshot()["syncing"] and not state.snapshot()["locked"])
+        rig.log.assert_order("control1.stop", "control1.disable", "control1.stationary")
+        assert not state.snapshot()["stop_unconfirmed"]
     else:
         assert snapshot["syncing"]
         assert snapshot["controller_id"] == OWNER
@@ -980,7 +987,7 @@ def test_close_during_gripper_hold_stops_at_once_and_closes_gripper_after_step(r
         contender.release()
 
 
-def test_close_requests_stop_while_only_keyboard_worker_runs(rig):
+def test_close_repeats_stop_while_disconnected_keyboard_worker_runs(rig):
     state = rig.state
     state.KEYBOARD_JOIN_SECONDS = 0.2
     rig.connect()
@@ -988,14 +995,15 @@ def test_close_requests_stop_while_only_keyboard_worker_runs(rig):
     session.ignore_release = True
     worker = rig.hold("W")
     state.command({"action": "stop_sync"}, OWNER)
-    wait_for(lambda: not state.snapshot()["syncing"])
     wait_for(lambda: state._safety_workers == 0)
+    assert state.snapshot()["controller_id"] is None
+    assert state.snapshot()["syncing"] and state.snapshot()["locked"]
     assert worker.is_alive()
     assert rig.log.count("control1.stop") == 1
     closer = threading.Thread(target=state.close, daemon=True)
     closer.start()
     try:
-        # Keyboard activity alone makes close() request another stop.
+        # Close still requests another stop while the old keyboard worker is active.
         wait_for(lambda: rig.log.count("control1.stop") == 2)
     finally:
         session.finish_gate.set()
@@ -1359,16 +1367,28 @@ def test_disconnect_keeps_ownership_until_keyboard_worker_exits(rig):
     contender = ControllerOwnership("robot.test")
     try:
         state.command({"action": "stop_sync"}, OWNER)
-        wait_for(lambda: not state.snapshot()["syncing"])
-        state._reader.join(1)
-        assert not state._reader.is_alive()
+        wait_for(lambda: state._safety_workers == 0)
+        assert state.snapshot()["controller_id"] is None
+        assert state.snapshot()["syncing"] and state._reader.is_alive()
         assert worker.is_alive()
         assert state.snapshot()["busy"]
         stays(lambda: not acquired(contender), 0.15)
+        assert "control1.disable" not in rig.log
+
+        rig.feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+        wait_for(lambda: state.snapshot()["robot_mode"] == 4)
+        state.command({"action": "disable"}, OTHER)
+        wait_for(lambda: "control1.stationary" in rig.log and state._safety_workers == 0)
+        assert state.snapshot()["syncing"] and state.snapshot()["locked"]
+        stays(lambda: not acquired(contender), 0.15)
 
         session.finish_gate.set()
+        wait_for(lambda: not state.snapshot()["syncing"] and not state.snapshot()["locked"])
+        state._reader.join(1)
+        assert not state._reader.is_alive()
         wait_for(lambda: acquired(contender))
         assert not state.snapshot()["busy"]
+        rig.log.assert_order("control1.stop", "control1.disable", "session1.run.exit")
     finally:
         session.finish_gate.set()
         contender.release()

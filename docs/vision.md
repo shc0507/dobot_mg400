@@ -473,3 +473,31 @@ QR 处理在各阶段之间检查取消状态。
 SIGINT、SIGTERM 和 SIGHUP 会在退出时请求取消。
 退出最多等待当前推理或启动 15 秒，并结束租约轮询。
 服务不控制机器人、位移台、夹爪或摄像头设备。
+
+## 检测模型评估
+
+`scripts/vision_eval.py` 用带标签的数据集评估芯片检测。它不训练模型，也不读取摄像头。
+数据集和权重不得放入 Git。
+H-22 评估集位于 Olares Files 的 `Home/Datasets/h22-tray-eval-v1/`。它的托盘比例为 1.554 px/mm。
+
+数据集目录包含 `images/` 和 `labels/`。标签文件与图像同名，格式为 YOLO 多边形。
+类别 `0` 是芯片。其他类别只用于给帧分组。
+
+在 Linux 上，从仓库根目录运行：
+
+```bash
+uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval-v1 --weights chip-arm-yolo26s-seg-v1.pt --px-per-mm 1.554
+```
+
+锁定的 `torch` 没有 macOS 版本。在 macOS 上，在另一个环境中安装锁定版本的 `ultralytics`。运行脚本前，设置 `PYTHONPATH=src`。
+
+评估规则：
+
+- 脚本把每帧交给 `Localizer.predict`，与视觉服务相同。该函数把图像拉伸到 640x640。
+- 脚本使用 `Localizer.predict` 的默认置信度阈值，与服务相同。如果要评估其他阈值，设置 `--confidence`。
+- 检测框与标签框的 IoU（交并比）不小于 0.5 时，二者匹配。脚本按置信度从高到低匹配。每个标签最多匹配 1 个检测。
+- 未匹配的检测计为误检。未匹配的标签计为漏检。
+- 精确率等于匹配数除以检测数。召回率等于匹配数除以标签数。
+- 中心误差是匹配框的中心距离。`--px-per-mm` 把像素换算为毫米。
+
+输出是 Markdown 报告。报告列出各组帧的计数、芯片精确率和召回率、中心误差，以及有误检或漏检的帧。

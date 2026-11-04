@@ -9,8 +9,6 @@ import sys
 import time
 from pathlib import Path
 
-from labkit.auth import valid_token_for_bind
-
 from .camera import P1Camera, diagnose
 from .service import ThermalFrame
 
@@ -91,12 +89,6 @@ def main():
         parser.error("--port must be between 1 and 65535")
     if not args.bind or args.bind != args.bind.strip():
         parser.error("--bind must be a nonempty address without surrounding whitespace")
-    token = os.environ.get("MG400_THERMAL_TOKEN", "")
-    if not valid_token_for_bind(token, args.bind):
-        parser.error(
-            "MG400_THERMAL_TOKEN must have at least 24 printable ASCII characters "
-            "with no leading or trailing spaces when set, and is required outside loopback"
-        )
     if args.diagnose:
         print(json.dumps(diagnose(), indent=2))
         return 0
@@ -141,9 +133,7 @@ def main():
         from .app import create_app
 
         print(f"Thermal Master P1 {'[SIMULATED DEMO]' if args.demo else '[REAL CAMERA]'}: {url}")
-        app = create_app(
-            demo=args.demo, auto_connect=not args.no_connect, token=token, base_path=prefix or "/"
-        )
+        app = create_app(demo=args.demo, auto_connect=not args.no_connect, base_path=prefix or "/")
         server = uvicorn.Server(uvicorn.Config(app, host=host, port=args.port, workers=1))
         try:
             server.run(sockets=[listener])

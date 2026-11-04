@@ -13,7 +13,6 @@ import time
 from contextlib import nullcontext
 from urllib.parse import urlsplit
 
-from labkit.auth import valid_token_for_bind
 from labkit.lease import validate_client
 
 from .websocket import PONG, TEXT, MessageReader, ProtocolError, accept_key, encode_frame
@@ -56,7 +55,7 @@ class RobotClient:
     HEARTBEAT_SECONDS = 0.5
     RECONNECT_SECONDS = 2.5
 
-    def __init__(self, url, token, client_id, *, timeout=5, keep_control=False):
+    def __init__(self, url, client_id, *, timeout=5, keep_control=False):
         parts = urlsplit(url)
         if (
             parts.scheme not in {"http", "https", "ws", "wss"}
@@ -70,14 +69,9 @@ class RobotClient:
             or any(part in {".", ".."} for part in parts.path.split("/"))
         ):
             raise ValueError("Expected a service base URL without credentials, query, or fragment.")
-        if not isinstance(token, str) or not valid_token_for_bind(
-            token, parts.hostname, require_long_token=False
-        ):
-            raise ValueError("Invalid robot service token.")
         self.client_id = validate_client(client_id)
         if not self.client_id.strip():
             raise ValueError("Client identity must not be blank.")
-        self.token = token
         self.timeout = _positive(timeout)
         self.keep_control = keep_control
         self._secure = parts.scheme in {"https", "wss"}
@@ -128,8 +122,6 @@ class RobotClient:
             "Connection: close",
             "Accept: application/json",
         ]
-        if self.token:
-            headers.append(f"Authorization: Bearer {self.token}")
         if body is not None:
             headers += [
                 "Content-Type: application/json",
@@ -236,7 +228,6 @@ class RobotClient:
                         "type": "hello",
                         "protocol": self.PROTOCOL,
                         "client": self.client_id,
-                        "token": self.token,
                     }
                 ).encode(),
             )

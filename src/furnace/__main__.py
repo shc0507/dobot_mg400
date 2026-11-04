@@ -5,8 +5,6 @@ import logging
 import os
 import signal
 
-from labkit.auth import valid_token_for_bind
-
 from .app import create_app, make_service
 from .config import FurnaceConfig
 
@@ -23,11 +21,6 @@ def main(argv=None, *, environ=None, service_factory=make_service, server_factor
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
-    token = env.get("MG400_FURNACE_TOKEN") or None
-    if not valid_token_for_bind(token, args.bind):
-        parser.error(
-            "Set MG400_FURNACE_TOKEN to at least 24 printable ASCII characters, or bind to loopback"
-        )
     service = None
     try:
         if args.demo:
@@ -48,7 +41,7 @@ def main(argv=None, *, environ=None, service_factory=make_service, server_factor
                 idle_gas=env.get("MG400_FURNACE_IDLE_GAS") or {},
                 orphan_grace_min=env.get("MG400_FURNACE_ORPHAN_GRACE_MIN") or 15,
             )
-        app = create_app(service, token=token, base_path=args.base_path)
+        app = create_app(service, base_path=args.base_path)
     except (ValueError, OSError) as error:
         # No device started yet. In demo mode only an owned temporary directory
         # exists; cleanup still goes through the public service close method.

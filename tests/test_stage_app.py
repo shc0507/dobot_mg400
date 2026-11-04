@@ -13,18 +13,13 @@ from stage_helpers import home_stage
 import stage_controller.__main__ as stage_main
 from stage_controller.app import create_app
 
-TOKEN = "stage-panel-test-token-0123456789"
 HOST = "100.64.0.1:8767"
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 SETTINGS = (
     "MG400_STAGE_BIND",
     "MG400_STAGE_PORT",
-    "MG400_STAGE_TOKEN",
     "MG400_STAGE_SERIAL",
     "MG400_STAGE_BASE_PATH",
-)
-SHORT_TOKEN = (
-    "Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost"
 )
 
 
@@ -37,14 +32,12 @@ def no_settings(monkeypatch):
 
 OPERATOR = "stage-operator"
 CLIENT = {"X-MG400-Client": OPERATOR}
-OPEN = "Use a loopback Host without forwarded headers."
-ACCESS = "Invalid service access token."
 REMOVED = ("/", "/api/state", "/api/ports", "/api/motors/top/move", "/static/app.js")
 
 
-def panel(controller, token=None):
+def panel(controller):
     """Return a test client of the stage service."""
-    app = create_app(controller, token)
+    app = create_app(controller)
     app.config["TESTING"] = True
     return app.test_client()
 
@@ -53,13 +46,6 @@ def panel(controller, token=None):
 def web(stage_rig):
     controller, _, _ = stage_rig
     return panel(controller), dict(CLIENT)
-
-
-@pytest.fixture
-def secured(stage_rig):
-    """A service with an access token, reached through the VPN address."""
-    controller, _, _ = stage_rig
-    return panel(controller, TOKEN), {**CLIENT, "Host": HOST, "Authorization": f"Bearer {TOKEN}"}
 
 
 def command(client, action, headers=CLIENT, **params):
@@ -73,8 +59,8 @@ def test_ports_are_served_and_the_page_routes_are_removed(web):
         assert client.get(path).status_code == 404
 
 
-def test_with_token_removed_routes_return_not_found(secured):
-    client, headers = secured
+def test_removed_routes_return_not_found(web):
+    client, headers = web
     for path in REMOVED:
         assert client.get(path, headers=headers).status_code == 404
     for path in (
@@ -144,7 +130,7 @@ def test_operator_routes_reject_invalid_payloads(web, stage_rig, path, data):
     assert not transport.commands
 
 
-def test_cross_site_commands_and_untrusted_hosts_are_rejected(web):
+def test_commands_need_a_client_and_json(web):
     client, headers = web
     for invalid in ({}, {"X-MG400-Client": ""}, {"X-MG400-Client": "caf\xe9"}):
         response = client.post("/contract/api/connect", json={"port": "DEMO"}, headers=invalid)
@@ -153,9 +139,6 @@ def test_cross_site_commands_and_untrusted_hosts_are_rejected(web):
         "/contract/api/connect", data="{}", content_type="text/plain", headers=headers
     )
     assert plain.status_code == 415
-    assert (
-        client.get("/contract/api/ports", headers={"Host": "attacker.example"}).status_code == 403
-    )
     response = client.get("/contract/api/ports")
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
@@ -240,9 +223,9 @@ def test_connect_api_refuses_an_unlisted_port(web, stage_rig, port):
 
 
 @pytest.mark.parametrize(
-    "host", ["localhost", "localhost:8767", "LOCALHOST", "127.0.0.1:8767", "[::1]:8767"]
+    "host", ["localhost", "127.0.0.1:8767", "[::1]:8767", HOST, "stage.example"]
 )
-def test_without_token_loopback_hosts_are_served(web, stage_rig, host):
+def test_any_host_is_served(web, stage_rig, host):
     client, headers = web
     controller, _, _ = stage_rig
     controller.disconnect()
@@ -252,77 +235,6 @@ def test_without_token_loopback_hosts_are_served(web, stage_rig, host):
         "/contract/api/connect", json={"port": "DEMO"}, headers={**headers, "Host": host}
     )
     assert response.status_code == 200
-
-
-@pytest.mark.parametrize(
-    "host",
-    [HOST, "attacker.example", "localhost.attacker.example", "user@localhost", "localhost/x", ""],
-)
-def test_without_token_other_hosts_are_refused(web, host):
-    client, headers = web
-    for response in (
-        client.get("/", headers={"Host": host}),
-        client.get("/contract/api/ports", headers={"Host": host}),
-        client.get("/contract/api/motors/insert/reference", headers={"Host": host}),
-        client.post(
-            "/contract/api/connect", json={"port": "DEMO"}, headers={**headers, "Host": host}
-        ),
-    ):
-        assert response.status_code == 403
-        assert response.json == {"error": OPEN}
-
-
-@pytest.mark.parametrize("name", ["Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"])
-def test_without_token_proxied_requests_are_refused(web, name):
-    client, headers = web
-    assert client.get("/contract/api/ports", headers={name: "127.0.0.1"}).status_code == 403
-    proxied = {**headers, name: "127.0.0.1"}
-    assert (
-        client.post("/contract/api/connect", json={"port": "DEMO"}, headers=proxied).status_code
-        == 403
-    )
-
-
-@pytest.mark.parametrize(
-    "authorization",
-    [None, "", TOKEN, f"Basic {TOKEN}", f"Bearer {TOKEN}x", f"Bearer {TOKEN}\xe9", "Bearer wrong"],
-)
-def test_with_token_every_request_needs_the_bearer_token(secured, stage_rig, authorization):
-    client, headers = secured
-    controller, transport, _ = stage_rig
-    controller.disconnect()
-    controller.lease.acquire(OPERATOR)
-    transport.commands.clear()
-    headers = {name: value for name, value in headers.items() if name != "Authorization"}
-    if authorization is not None:
-        headers["Authorization"] = authorization
-    for response in (
-        client.get("/", headers=headers),
-        client.get("/api/state", headers=headers),
-        client.get("/contract/api/ports", headers=headers),
-        client.get("/contract/api/motors/insert/reference", headers=headers),
-        client.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers),
-        client.post(
-            "/contract/api/motors/insert/teach_reference", json={"confirm": True}, headers=headers
-        ),
-    ):
-        assert response.status_code == 401
-        assert response.json == {"error": ACCESS}
-    assert not controller.snapshot()["connected"]
-    assert not transport.commands
-
-
-def test_with_token_any_host_reaches_the_api_with_the_bearer_token(secured, stage_rig):
-    client, headers = secured
-    controller, _, _ = stage_rig
-    assert client.get("/contract/api/ports", headers=headers).json["ports"][0]["device"] == "DEMO"
-    proxied = {**headers, "Host": "stage.example", "X-Forwarded-For": "100.64.0.2"}
-    assert client.get("/contract/api/ports", headers=proxied).status_code == 200
-    controller.disconnect()
-    assert client.post("/contract/api/heartbeat", json={}, headers=proxied).status_code == 200
-    response = client.post("/contract/api/connect", json={"port": "DEMO"}, headers=proxied)
-    assert response.status_code == 200
-    assert response.json["connected"] is True
 
 
 def run_main(monkeypatch, argv, server=None):
@@ -344,37 +256,6 @@ def run_main(monkeypatch, argv, server=None):
     return started
 
 
-@pytest.mark.parametrize("bind", ["0.0.0.0", "100.64.0.1", "::", "stage.example"])
-@pytest.mark.parametrize("token", [None, "", "x" * 23])
-def test_bind_outside_localhost_needs_a_long_access_token(monkeypatch, capsys, bind, token):
-    if token is not None:
-        monkeypatch.setenv("MG400_STAGE_TOKEN", token)
-    with pytest.raises(SystemExit) as exit_info:
-        run_main(monkeypatch, ["--demo", "--bind", bind])
-    assert exit_info.value.code == 2
-    assert SHORT_TOKEN in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("bind", ["127.0.0.1", "localhost", "::1"])
-def test_loopback_bind_refuses_a_short_access_token(monkeypatch, capsys, bind):
-    # With an access token, the panel accepts any host name, also on a loopback bind.
-    monkeypatch.setenv("MG400_STAGE_TOKEN", "x" * 23)
-    with pytest.raises(SystemExit) as exit_info:
-        run_main(monkeypatch, ["--demo", "--bind", bind])
-    assert exit_info.value.code == 2
-    assert SHORT_TOKEN in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("token", [" " + TOKEN, TOKEN + " ", TOKEN + "\n", TOKEN + "é"])
-def test_access_token_must_be_sendable_by_a_browser(monkeypatch, capsys, token):
-    monkeypatch.setenv("MG400_STAGE_TOKEN", token)
-    with pytest.raises(SystemExit):
-        run_main(monkeypatch, ["--demo"])
-    assert "MG400_STAGE_TOKEN must contain only printable ASCII characters" in (
-        capsys.readouterr().err
-    )
-
-
 @pytest.mark.parametrize("port", ["0", "65536"])
 def test_port_must_be_a_tcp_port(monkeypatch, capsys, port):
     with pytest.raises(SystemExit):
@@ -383,10 +264,9 @@ def test_port_must_be_a_tcp_port(monkeypatch, capsys, port):
 
 
 @pytest.mark.parametrize("bind", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
-def test_loopback_bind_starts_without_token(monkeypatch, capsys, bind):
+def test_loopback_bind_starts(monkeypatch, capsys, bind):
     started = run_main(monkeypatch, ["--demo", "--bind", bind])
     options = {key: value for key, value in started.items() if key != "app"}
-    # waitress must pass proxy headers on: without a token, the app refuses them.
     # waitress must refuse a large body before it reads the body.
     assert options == {
         "host": bind,
@@ -398,34 +278,13 @@ def test_loopback_bind_starts_without_token(monkeypatch, capsys, bind):
     assert "Stage Controller: http://127.0.0.1:8767" in capsys.readouterr().out
 
 
-def test_vpn_bind_with_token_serves_the_api_only_with_the_bearer_token(monkeypatch, capsys):
-    monkeypatch.setenv("MG400_STAGE_TOKEN", TOKEN)
-
-    class Server:
-        effective_host, effective_port = "100.64.0.1", 8770
-
-        def run(self):
-            pass
-
-    started = run_main(monkeypatch, ["--demo", "--bind", "100.64.0.1", "--port", "8770"], Server())
-    assert (started["host"], started["port"]) == ("100.64.0.1", 8770)
-    assert "Stage Controller: http://100.64.0.1:8770" in capsys.readouterr().out
-    client = started["app"].test_client()
-    assert client.get("/contract/api/ports", headers={"Host": "100.64.0.1:8770"}).status_code == 401
-    authorized = {"Host": "100.64.0.1:8770", "Authorization": f"Bearer {TOKEN}"}
-    assert client.get("/contract/api/ports", headers=authorized).status_code == 200
-
-
 def test_settings_come_from_the_environment(monkeypatch, capsys):
     monkeypatch.setenv("MG400_STAGE_BIND", "100.64.0.1")
     monkeypatch.setenv("MG400_STAGE_PORT", "8770")
-    monkeypatch.setenv("MG400_STAGE_TOKEN", TOKEN)
     started = run_main(monkeypatch, ["--demo"])
     assert (started["host"], started["port"]) == ("100.64.0.1", 8770)
     client = started["app"].test_client()
-    assert client.get("/contract/api/ports", headers={"Host": "100.64.0.1:8770"}).status_code == 401
-    authorized = {"Host": "100.64.0.1:8770", "Authorization": f"Bearer {TOKEN}"}
-    assert client.get("/contract/api/ports", headers=authorized).status_code == 200
+    assert client.get("/contract/api/ports", headers={"Host": "100.64.0.1:8770"}).status_code == 200
 
 
 @pytest.mark.parametrize("port", ["8770", "not-a-port"])
@@ -632,15 +491,13 @@ def service():
     """Start the stage panel as a process on a free loopback port. Return it and its port."""
     processes = []
 
-    def start(token=None):
+    def start():
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         # Like the systemd unit, pass the settings in the environment.
         env = {key: value for key, value in os.environ.items() if key not in SETTINGS}
         env["MG400_STAGE_PORT"] = str(port)
-        if token:
-            env["MG400_STAGE_TOKEN"] = token
         process = subprocess.Popen(
             [sys.executable, "-m", "stage_controller", "--demo"],
             stdout=subprocess.PIPE,
@@ -669,29 +526,12 @@ def service():
         process.communicate()
 
 
-@pytest.mark.parametrize("name", ["Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"])
-def test_service_refuses_proxied_requests_without_token(service, name):
-    _, port = service()
-    assert http_request(port, "GET", "/contract/api/ports")[0] == 200
-    assert http_request(port, "GET", "/contract/api/ports", headers={name: "127.0.0.1"})[0] == 403
-
-
-def test_service_with_token_accepts_the_vpn_host_with_the_bearer_token(service):
-    _, port = service(TOKEN)
-    vpn = {"Host": f"100.64.0.1:{port}"}
-    assert http_request(port, "GET", "/", headers=vpn)[0] == 401
-    assert http_request(port, "GET", "/contract/api/ports", headers=vpn)[0] == 401
-    authorized = {**vpn, "Authorization": f"Bearer {TOKEN}", "X-Forwarded-For": "100.64.0.2"}
-    assert http_request(port, "GET", "/contract/api/ports", headers=authorized)[0] == 200
-    assert http_request(port, "GET", "/", headers=authorized)[0] == 404
-
-
 def test_service_refuses_a_large_body_before_it_reads_the_body(service):
-    _, port = service(TOKEN)
-    # A body of 4096 bytes reaches the access check, which refuses the request without the token.
+    _, port = service()
+    # A body of 4096 bytes reaches the app, which refuses it without a JSON content type.
     status, _ = http_request(port, "POST", "/contract/api/connect", b"{" + b" " * 4094 + b"}")
-    assert status == 401
-    # A larger body is refused before the access check. Send only the headers:
+    assert status == 415
+    # A larger body is refused before the app reads it. Send only the headers:
     # waitress must answer without waiting for the body.
     status, body = http_request(
         port, "POST", "/contract/api/connect", headers={"Content-Length": "4097"}
@@ -731,13 +571,12 @@ def test_service_signal_stops_the_motors_before_exit(service, signum):
 
 
 @pytest.mark.parametrize("prefix", ["/stage", "/lab/stage/"])
-def test_prefixed_stage_operator_routes_need_the_bearer_token(stage_rig, prefix):
+def test_prefixed_stage_operator_routes(stage_rig, prefix):
     controller, _, _ = stage_rig
     base = prefix.rstrip("/")
-    web = create_app(controller, TOKEN, base_path=prefix).test_client()
+    web = create_app(controller, base_path=prefix).test_client()
     proxy = {"Host": "panel.example:8080", "X-Forwarded-Host": "panel.example:8080"}
-    assert web.get(base + "/contract/api/ports", headers=proxy).status_code == 401
-    access = {**proxy, "Authorization": f"Bearer {TOKEN}", **CLIENT}
+    access = {**proxy, **CLIENT}
     assert web.get(base + "/contract/api/ports", headers=access).status_code == 200
     assert web.get(base + "/", headers=access).status_code == 404
     assert web.get("/contract/api/ports", headers=access).status_code == 404

@@ -295,10 +295,10 @@ def test_detection_robot_xy_is_invariant_under_nominal_tag_height_gauge(calibrat
 def test_marker_commands_share_access_and_provide_bounded_frame_identity(calibrated_service):
     service, _ = calibrated_service
     service._markers = lambda _: [{"id": 4, "center_px": [100, 80]}]
-    client = create_app(service, token="x" * 24).test_client()
+    client = create_app(service).test_client()
     body = {"action": "read_markers", "camera": 1}
-    assert client.post("/api/command", json=body).status_code in (400, 401)
-    headers = {"Authorization": "Bearer " + "x" * 24, "X-MG400-Client": "calibration"}
+    assert client.post("/api/command", json=body).status_code == 400
+    headers = {"X-MG400-Client": "calibration"}
     assert client.post("/api/command", headers=headers, json=body).status_code == 409
     assert client.post("/api/heartbeat", headers=headers, json={}).status_code == 200
     response = client.post("/api/command", headers=headers, json=body)

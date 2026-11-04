@@ -51,19 +51,11 @@ def test_stage_contract_conformance(contract):
     assert controller.describe()["on_lease_expiry"] == "stop_all"
 
 
-def test_contract_uses_the_existing_access_token_and_origin_rules(stage_rig):
+def test_contract_accepts_any_host_and_origin(stage_rig):
     controller, _, _ = stage_rig
-    token = "stage-contract-access-token-0123456789"
-    web = create_app(controller, token).test_client()
-    headers = {"Host": "stage.example", "Authorization": f"Bearer {token}"}
-    assert web.get("/contract/api/state", headers={"Host": "stage.example"}).status_code == 401
+    web = create_app(controller).test_client()
+    headers = {"Host": "stage.example", "Origin": "https://other.example"}
     assert web.get("/contract/api/state", headers=headers).status_code == 200
-    assert (
-        web.get(
-            "/contract/api/state", headers={**headers, "Origin": "https://evil.example"}
-        ).status_code
-        == 403
-    )
     assert (
         web.post("/contract/api/heartbeat", json={}, headers={**headers, **CLIENT}).status_code
         == 200
@@ -103,7 +95,9 @@ def test_contract_maps_microstep_hold_keepalive_release_and_stop(contract):
     controller, transport, clock, web, _ = contract
     acquire(web)
     assert post(web, "command", dict(action="set_microstep", microstep=2)).status_code == 202
-    assert move(web).status_code == 409  # A real mode change invalidates every reference.
+    # A real mode change invalidates every reference. A manual move needs none.
+    assert not any(m["automation_ready"] for m in controller.snapshot()["motors"])
+    assert move(web).status_code == 202
     assert post(web, "command", dict(action="home", motor="top")).status_code == 202
     clock.advance(0.5)
     controller.poll()
@@ -399,31 +393,17 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     assert "motor top" not in transport.commands
 
 
-def test_prefixed_contract_keeps_its_access_lease_and_operator_guard_boundaries(stage_rig):
+def test_prefixed_contract_keeps_its_lease_and_operator_guard_boundaries(stage_rig):
     controller, transport, clock = stage_rig
     home_stage(controller, clock)
-    token = "prefixed-stage-access-token-0123456789"
-    web = create_app(controller, token, base_path="/lab/stage/").test_client()
+    web = create_app(controller, base_path="/lab/stage/").test_client()
     base = "/lab/stage"
     proxy = {"Host": "lab.example:8080", "X-Forwarded-Host": "lab.example:8080"}
-    access = {**proxy, "Authorization": f"Bearer {token}"}
+    access = dict(proxy)
     headers = {**access, **CLIENT}
-    assert web.get(base + "/contract/api/state", headers=proxy).status_code == 401
     assert web.get(base + "/contract/api/state", headers=headers).status_code == 200
-    for origin in ("http://evil.example:8080", "http://lab.example:9999"):
-        assert (
-            web.get(base + "/contract/api/state", headers={**headers, "Origin": origin}).status_code
-            == 403
-        )
-    assert (
-        web.get(
-            base + "/contract/api/state", headers={**headers, "Origin": "http://lab.example:8080"}
-        ).status_code
-        == 200
-    )
     assert web.post(base + "/contract/api/heartbeat", json={}, headers=headers).status_code == 200
     assert web.post(base + "/contract/api/stop", json={}, headers=access).status_code == 400
-    assert web.get(base + "/contract/api/ports", headers=proxy).status_code == 401
     assert web.get(base + "/contract/api/ports", headers=access).status_code == 200
     teach = base + "/contract/api/motors/insert/teach_reference"
     other = {**access, "X-MG400-Client": "other"}
@@ -434,11 +414,3 @@ def test_prefixed_contract_keeps_its_access_lease_and_operator_guard_boundaries(
         ).status_code
         == 200
     )
-    tokenless = create_app(controller, base_path=base).test_client()
-    for path in ("/contract/api/ports", "/contract/api/state"):
-        assert (
-            tokenless.get(
-                base + path, headers={"Host": "localhost", "X-Forwarded-Host": "localhost"}
-            ).status_code
-            == 403
-        )

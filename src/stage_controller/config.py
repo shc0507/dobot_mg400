@@ -167,32 +167,13 @@ def parse_geometry(data):
 
 
 def load_geometry(path):
-    path = Path(path).absolute()
-    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        for part in path.parts[1:-1]:
-            if part in (".", ".."):
-                raise ValueError("Stage configuration must use a normalized path.")
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-            os.close(directory)
-            directory = child
-        descriptor = os.open(
-            path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
-        )
+        stream = Path(path).open("rb")
     except OSError as exc:
-        raise ValueError("Cannot read stage configuration without following symlinks.") from exc
-    finally:
-        os.close(directory)
-    with os.fdopen(descriptor, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid not in (1000, os.geteuid())
-            or stat.S_IMODE(info.st_mode) not in (0o600, 0o640)
-        ):
-            raise ValueError(
-                "Stage configuration must be an owned regular file with mode 0600 or 0640."
-            )
+        raise ValueError(f"Cannot read stage configuration: {exc}") from exc
+    with stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Stage configuration must be a regular file.")
         data = stream.read(1_048_577)
         if len(data) > 1_048_576:
             raise ValueError("Stage configuration exceeds 1 MiB.")

@@ -21,7 +21,6 @@ from vision.frames import DemoSource, FrameError, Go2RTCSource
 from vision.qr import DetectionCancelled, QRCode
 from vision.service import DemoLocalizer, VisionService, create_app
 
-TOKEN = "v" * 24
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -270,18 +269,16 @@ def test_entrypoint_passes_its_camera_settings_instead_of_ambient_values(monkeyp
     assert captured["frames"].configuration.modes == ((1280, 720, 30),)
 
 
-@pytest.mark.parametrize("token", [None, TOKEN])
 @pytest.mark.parametrize("base_path", ["/", "/vision/"])
-def test_contract_conformance(make_service, token, base_path):
+def test_contract_conformance(make_service, base_path):
     now = [10.0]
     service = make_service(clock=lambda: now[0])
-    app = create_app(service, token=token, base_path=base_path)
+    app = create_app(service, base_path=base_path)
     check_contract(
         app.test_client(),
         advance=lambda seconds: now.__setitem__(0, now[0] + seconds),
         expiry_count=lambda: service.expiry_count,
         base_path=base_path,
-        headers={"Authorization": f"Bearer {token}"} if token else {},
     )
 
 
@@ -390,27 +387,6 @@ def test_bad_read_queries_access_no_frame(make_service, route, query):
     source.read.assert_not_called()
 
 
-@pytest.mark.parametrize("route", ["detect", "labels", "annotated.jpg"])
-def test_read_routes_share_token_host_origin_and_forwarded_checks(make_service, route):
-    source = Mock(camera_count=4)
-    source.read.side_effect = AssertionError("No frame for unauthorized request")
-    service = make_service(frames=source)
-    path = f"/api/{route}?camera=1"
-    client = create_app(service).test_client()
-    assert_error(client.get(path, headers={"Host": "evil.example"}), 403)
-    assert_error(client.get(path, headers={"X-Forwarded-For": ""}), 403)
-    assert_error(client.get(path, headers={"Origin": "null"}), 403)
-    secured = create_app(service, token=TOKEN).test_client()
-    assert_error(secured.get(path), 401)
-    assert_error(
-        secured.get(
-            path, headers={"Authorization": f"Bearer {TOKEN}", "Origin": "http://other.example"}
-        ),
-        403,
-    )
-    source.read.assert_not_called()
-
-
 def test_labels_decode_existing_qr_fixture(make_service):
     with Image.open(ROOT / "tests/fixtures/qr/image2-stamp-1.png") as image:
         fixture = image.convert("RGB")
@@ -512,8 +488,6 @@ def test_stop_or_expiry_keeps_inference_serial_and_discards_late_result(make_ser
 @pytest.mark.parametrize(
     "environ,argv",
     [
-        ({"MG400_VISION_TOKEN": "short"}, []),
-        ({}, ["--bind", "0.0.0.0"]),
         ({"MG400_VISION_PORT": "bad"}, []),
         ({}, ["--port", "0"]),
         ({}, ["--gpu-fraction", "nan"]),

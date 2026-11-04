@@ -15,7 +15,6 @@ from sim_mg400 import CLIENT, JOGS, RADIAL_FRAME, READY, wait_for
 
 from mg400.web_control import RobotPanelState
 
-TOKEN = "e2e-test-token"
 CLOSED = "browser connection closed."
 
 pytestmark = pytest.mark.usefixtures("closed_clients", "isolated_controller_locks")
@@ -36,7 +35,7 @@ class SimulatedNetworkServer(PanelServer):
 def service():
     # The listener must exist before make_sim_rig replaces socket.socket.
     assert socket.socket is RealSocket
-    with running(None, token=TOKEN, server_class=SimulatedNetworkServer) as server:
+    with running(None, server_class=SimulatedNetworkServer) as server:
         yield server
 
 
@@ -58,7 +57,7 @@ class Page:
 
     def connect(self):
         self.client = WsClient(self.server)
-        return self.client.hello(CLIENT, TOKEN)
+        return self.client.hello(CLIENT)
 
     def command(self, body):
         reply = self.client.request("command", body)

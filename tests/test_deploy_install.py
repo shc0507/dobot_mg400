@@ -1963,7 +1963,7 @@ def test_microscope_requires_its_udev_template_before_mutation(host, toupcam_lib
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
 
 
-@pytest.mark.parametrize("missing", ["user", "memberships", "dialout", "video"])
+@pytest.mark.parametrize("missing", ["user", "memberships", "groups", "dialout", "video"])
 def test_microscope_requires_resolvable_service_account_and_device_groups(
     host, inventory_udev, toupcam_library, module, monkeypatch, capsys, missing
 ):
@@ -1974,6 +1974,8 @@ def test_microscope_requires_resolvable_service_account_and_device_groups(
         monkeypatch.setattr(
             module.main.__globals__["os"], "getgrouplist", Mock(side_effect=OSError)
         )
+    elif missing == "groups":
+        monkeypatch.setattr(module.main.__globals__["grp"], "getgrnam", Mock(side_effect=OSError))
     else:
 
         def group(name):
@@ -1984,7 +1986,9 @@ def test_microscope_requires_resolvable_service_account_and_device_groups(
         monkeypatch.setattr(module.main.__globals__["grp"], "getgrnam", group)
     assert host.install("--toupcam", str(toupcam_library)) == 1
     message = (
-        "Microscope requires" if missing in {"dialout", "video"} else "Cannot resolve microscope"
+        "Microscope requires"
+        if missing in {"groups", "dialout", "video"}
+        else "Cannot resolve microscope"
     )
     assert message in capsys.readouterr().err
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()

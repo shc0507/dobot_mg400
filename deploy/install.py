@@ -487,7 +487,7 @@ def microscope_groups():
     for name in ("dialout", "video"):
         try:
             groups.add(grp.getgrnam(name).gr_gid)
-        except KeyError as error:
+        except (KeyError, OSError) as error:
             raise ValueError(f"Microscope requires the {name} device group.") from error
     return groups
 

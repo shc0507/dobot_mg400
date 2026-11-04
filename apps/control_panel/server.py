@@ -1,4 +1,4 @@
-"""Serve the MG400 robot service and its browser panel.
+"""Serve the MG400 robot service API: state, contract routes and the WebSocket.
 
 Run with Python 3.12 or later. Robot mode can send hardware commands.
 """
@@ -43,7 +43,6 @@ from mg400.websocket import (  # noqa: E402
     valid_client_key,
 )
 
-ASSETS = Path(__file__).resolve().parent
 MAX_SEQUENCE = 2**53
 # The WebSocket message format. Change it when a message changes incompatibly.
 PROTOCOL = 1
@@ -618,16 +617,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         base = self.server.base_path.rstrip("/")
-        if base and path == base:
-            self.send_response(308)
-            self.send_header("Location", self.server.base_path)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
         path = path[len(base) :] if path.startswith(base + "/") else None
-        if path in {"/", "/index.html"}:
-            self._send(200, (ASSETS / "index.html").read_bytes(), "text/html; charset=utf-8")
-        elif path == "/api/state":
+        if path == "/api/state":
             if self._authorized():
                 self._send(200, self.server.state.snapshot())
         elif path in {"/api/describe", "/api/events"}:
@@ -699,10 +690,6 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path == self.server.base_path + "api/keys":
-            # A page loaded before a service update still posts key updates here.
-            self._send(404, {"error": "The robot service was updated. Reload the page."})
-            return
         if path not in {
             self.server.base_path + "api/command",
             self.server.base_path + "api/heartbeat",

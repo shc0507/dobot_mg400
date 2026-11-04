@@ -899,7 +899,8 @@ Steps:
 6. In `src/vision/service.py`, obtain slot evidence from one current frame and one camera-bound calibration model per observation. Use the existing tray and calibration helpers. Preserve access, lease, Stop and result-publication guards. Missing or invalid evidence must not report an empty slot. The skill sends a validated tray-model document, not a host file path, within the existing 16 KiB request bound.
 7. Require explicit taught targets for the exact slot IDs, the measured chip-axis-to-flange-R convention, and grasp settings. Missing inputs refuse before motion. Do not use raw image angles or groove midpoints as robot targets, or invent physical defaults. Use the existing `TRANSFER_SETTINGS` propagation for these inputs without admitting service endpoints, tokens or device settings into demos.
 8. Extend the owned synthetic vision data in `src/orchestrator/rehearsal.py` and the all-recipes fixture in `tests/test_orchestrator_rehearsal.py` for tray occupancy and the required temporary configuration. Keep new targeted coverage in `tests/test_recipe_tray_transfer.py`, with no live-device fallback or new bound ports.
-9. The operator runs it on hardware with P-HW.
+9. Update the existing public-transfer fixture in `tests/test_orchestrator_transfer.py` to preserve only explicitly supplied transfer settings. Assert that absent optional tray settings remain absent, with no injected defaults. Keep its equality, forbidden endpoint/proxy, contact, empty-grasp and drop checks. This fixture correction adds no new bound ports or production behavior.
+10. The operator runs it on hardware with P-HW.
 
 Done when: three supervised transfers in a row succeed, with YOLO confirming the chip in the target slot and the source slot empty (the owner may change the count); the results are on the issue.
 

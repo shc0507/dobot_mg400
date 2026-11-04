@@ -16,8 +16,8 @@
 #ws-motion .mo-primary { border: 0; background: var(--accent); color: #0B1A2A; font-weight: 700; }
 #ws-motion .mo-danger { border-color: var(--bad); color: #FF9A9A; }
 #ws-motion .mo-pose { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-#ws-motion .mo-tile { display: flex; flex-direction: column; gap: 2px; padding: 10px; border-radius: 8px; background: #1B232A; min-width: 0; }
-#ws-motion .mo-value { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
+#ws-motion .mo-tile { display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: 8px; background: #1B232A; min-width: 0; }
+#ws-motion .mo-value { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #ws-motion .mo-jogrow { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
 #ws-motion .mo-pad { display: grid; grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px); gap: 6px; }
 #ws-motion .mo-pad-mid { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
@@ -29,7 +29,7 @@
 #ws-motion .mo-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
 #ws-motion .mo-inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 #ws-motion .mo-input { min-height: 44px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; min-width: 0; width: 100%; }
-#ws-motion .mo-narrow { width: 88px; }
+#ws-motion .mo-narrow { width: 76px; }
 #ws-motion .mo-speed { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--soft); }
 #ws-motion .mo-speed input { flex: 1 1 auto; min-height: 44px; accent-color: var(--accent); }
 #ws-motion .mo-grip-state { font-size: 13px; font-weight: 600; color: var(--soft); }

@@ -617,7 +617,8 @@
       const mine = api.owns(device);
       item.button.textContent = mine ? t("ctl.release") : t("ctl.take");
       item.button.setAttribute("aria-label", t(mine ? "ctl.releaseLabel" : "ctl.takeLabel", { device: api.deviceName(device) }));
-      item.button.disabled = !mine && (!info?.available || (info.holder && info.holder !== "mine"));
+      // A demo device starts on its first Take control, so "offline" stays clickable.
+      item.button.disabled = !mine && (info?.reason === "unconfigured" || Boolean(info?.available && info.holder && info.holder !== "mine"));
       item.status.textContent = info?.available ? holderText(device, info) : "";
     }
 
@@ -651,7 +652,7 @@
       refs.enable.disabled = !ready || robot.enabled === true || busy("robot");
       refs.disable.disabled = !robot;
       refs.clear.disabled = !(robot && ownsRobot);
-      AXES.forEach((axis, i) => { refs.pose[i].textContent = pose ? fixed(pose[i]) : "—"; });
+      AXES.forEach((axis, i) => { refs.pose[i].textContent = pose ? fixed(pose[i], 2) : "—"; });
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;
       refs.steps.forEach((node, i) => {

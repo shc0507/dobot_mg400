@@ -128,7 +128,8 @@ READERS = {"robot": _robot, "stage": _stage}
 def read(service, device, page):
     """Read one device once. Any failure becomes an unavailable row, never an error."""
     if not service.dashboard_configured(device):
-        return {"available": False, "reason": "unconfigured"}
+        # Demo: Take control starts the owned demo service on first use.
+        return {"available": False, "reason": "offline" if service.demo else "unconfigured"}
     adapter = None
     try:
         adapter = service.console_client(device, f"console-motion-{uuid.uuid4().hex}")

@@ -43,6 +43,30 @@ The workspaces send manual commands through the console. The console forwards ea
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
 - **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
 
+### Motion workspace
+
+The Motion workspace has 3 columns: the robot arm, the cameras and the stage. At phone width they stack. **Robot and stage activity** below them lists the events of both devices and the outcome of each command from this page.
+
+Robot arm:
+
+- **Take control**, **Enable**, **Disable** and **Clear alarm**. **Disable** needs no control.
+- The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves.
+- The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose. Keyboard jog stays in the robot panel.
+- **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
+- Before it sends a jog or a pose, the console checks the fingertip target against `MG400_ORCH_X_MIN_MM` to `MG400_ORCH_R_MAX_DEG` and the tool offset in `MG400_ORCH_TOOL_FILE`. If a bound or the tool file is missing, the console refuses the move. Demo mode without bounds uses a synthetic box.
+- **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. The gripper outcome shows beside the title.
+
+Stage:
+
+- **Take control**, **Stepping** and **Stop stage**. **Stop stage** needs no control.
+- A change of the stepping mode clears the zero and soft limits of all 3 axes and needs a confirmation.
+- Each axis shows its position in pulses and in mm, and its reference state. **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. The stage accepts a move only after the reference is confirmed.
+- **Home…** (boards with switches) and **Set zero…** need a confirmation. **Check reference** opens the stage panel for an axis with a camera reference.
+- **Named positions** sends `goto` for each named position of an axis.
+- Hold-to-move stays in the stage panel. The contract `hold` needs the service clock time of a fresh state and a renewal every 200 ms.
+
+Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a small view in the large tile. Without the Cameras workspace a tile shows OFFLINE.
+
 ### Run offline
 
 ```sh

@@ -193,7 +193,8 @@
       let holder = card?.lease_holder || t("control.free");
       if (session) holder = session.mine ? t("control.thisPage") : t("control.console");
       const mine = session?.mine && session.state === "held";
-      const configured = card && card.phase !== "unconfigured";
+      // In demo mode Take control starts the owned demo, so offer it for those devices.
+      const configured = (card && card.phase !== "unconfigured") || (snapshot?.console?.demo === true && device !== "microscope");
       return el("div", { class: "lc-row" },
         el("span", { class: "lc-strong lc-row-name", text: deviceName(device) }),
         el("span", { class: "lc-muted lc-row-main", text: holder }),

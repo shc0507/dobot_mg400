@@ -94,7 +94,8 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
             app,
             host=args.bind,
             port=args.port,
-            threads=6,
+            # Camera relays hold one worker each (at most 6); keep 10 for the API.
+            threads=16,
             clear_untrusted_proxy_headers=False,
             max_request_body_size=65537,
         )

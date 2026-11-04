@@ -1,4 +1,4 @@
-"""Independent synthetic camera/box proofs, without cameras or services."""
+"""Synthetic marker images from a known camera, without cameras or services."""
 
 import copy
 import json
@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import cv2
 import numpy as np
 import pytest
 from PIL import Image
@@ -24,24 +25,82 @@ from orchestrator.skills import Registry
 from orchestrator.skills.vision import DRIFT_SETTING, check_calibration
 from orchestrator.store import RunStore
 from orchestrator.zones import ZonePlan, Zones
-from vision.calibration import VALIDATION_INDICES, drift_inputs, drift_margin, drift_proof
+from vision.calibration import (
+    VALIDATION_INDICES,
+    detect_markers,
+    drift_inputs,
+    drift_limit,
+    drift_proof,
+)
 from vision.service import VisionService, create_app
 
 DEVICE = "/dev/v4l/by-path/platform-offline-drift-video-index0"
-FLANGE = [0, 0, 146, 0]
-TOOL = [0, 0, 146]
+SIZE = (640, 480)
+MATRIX = np.array([[700.0, 0, 320], [0, 700.0, 240], [0, 0, 1]])
+DISTORTION = np.array([-0.05, 0.01, 0, 0, 0])
+# The known camera: its center in robot millimetres and a slightly tilted downward view.
+CAMERA_CENTER = np.array([230.0, 20.0, 600.0])
+CAMERA_ROTATION = np.array([math.pi - 0.08, 0.05, 0.0])
+# The scan collects 3 rows by 4 columns at 2 flange heights, all at R 0.
+GRID = [[200 + 20 * col, 20 * row, z] for z in (50, 90) for row in range(3) for col in range(4)]
+POSE = [230, 20, 70, 0]
+DICTIONARY = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+# A 24 mm black square plus a 6 mm white margin on every side.
+CORNERS = [[-18, 18, 0], [18, 18, 0], [18, -18, 0], [-18, -18, 0]]
 
 
-def model():
+def camera(shift=(0, 0, 0), turn=(0, 0, 0)):
+    """Return the known camera's rotation vector and translation after a movement.
+
+    The shift moves the camera center in robot millimetres. The turn rotates the
+    camera about its own axes, in radians.
+    """
+    rotation = cv2.Rodrigues(np.asarray(turn, float))[0] @ cv2.Rodrigues(CAMERA_ROTATION)[0]
+    return cv2.Rodrigues(rotation)[0].reshape(3), -rotation @ (CAMERA_CENTER + shift)
+
+
+def marker_center(pose):
+    """Marker 4 sits on the J4 axis, at the nominal 100 mm tag height above the flange."""
+    return [pose[0], pose[1], pose[2] + 100]
+
+
+def project(view, point):
+    return cv2.projectPoints(np.array([point], float), *view, MATRIX, DISTORTION)[0].reshape(2)
+
+
+def render(view, *markers):
+    """Draw 24 mm markers, given as (ID, 3D center), at 4 times the scale, then reduce."""
+    scale = 4
+    fine = MATRIX * [[scale], [scale], [1]] + [[0, 0, 1.5], [0, 0, 1.5], [0, 0, 0]]
+    image = np.full((SIZE[1] * scale, SIZE[0] * scale), 255, np.uint8)
+    for identity, center in markers:
+        printed = np.full((384, 384), 255, np.uint8)
+        printed[64:320, 64:320] = cv2.aruco.generateImageMarker(DICTIONARY, identity, 256)
+        corners = np.asarray(center, float) + CORNERS
+        target = cv2.projectPoints(corners, *view, fine, DISTORTION)[0].reshape(4, 2)
+        transform = cv2.getPerspectiveTransform(
+            np.float32([[-0.5, -0.5], [383.5, -0.5], [383.5, 383.5], [-0.5, 383.5]]),
+            target.astype(np.float32),
+        )
+        warped = cv2.warpPerspective(printed, transform, image.shape[::-1], borderValue=255)
+        np.minimum(image, warped, out=image)
+    reduced = cv2.resize(image, SIZE, interpolation=cv2.INTER_AREA)
+    return Image.fromarray(reduced).convert("RGB")
+
+
+def model(**changes):
+    """The stored model is the known camera before any movement."""
+    rotation, translation = camera()
     training = [index for index in range(24) if index not in VALIDATION_INDICES]
     return {
-        "schema": 1,
+        "schema": 2,
+        "scan_r_deg": 0,
         "camera_device": DEVICE,
-        "image_size": [320, 240],
-        "camera_matrix": [[300, 0, 160], [0, 280, 120], [0, 0, 1]],
-        "distortion": [0, 0, 0, 0, 0],
-        "rotation": [0, 0, 0],
-        "translation": [0, 0, 500],
+        "image_size": list(SIZE),
+        "camera_matrix": MATRIX.tolist(),
+        "distortion": DISTORTION.tolist(),
+        "rotation": rotation.tolist(),
+        "translation": translation.tolist(),
         "tray_height_mm": 0,
         "distance_mm": 246,
         "nominal_tag_height_mm": 100,
@@ -51,228 +110,280 @@ def model():
         "rms_mm": {"held_out": 0.1, "tray": 0.2},
         "errors_mm": {"held_out": [0.1] * 6, "tray": [0.2] * 3},
         "points": {
-            "tag_flange_mm": [[0, 0, 0]] * 24,
-            "tag_pixels": [[160, 120]] * 24,
+            "tag_flange_mm": GRID,
+            "tag_pixels": [[320, 240]] * 24,
             "tray_tip_xy_flange_z_mm": [[0, 0, 0]] * 3,
-            "tray_pixels": [[160, 120]] * 3,
+            "tray_pixels": [[320, 240]] * 3,
             "training_indices": training,
             "validation_indices": list(VALIDATION_INDICES),
             "inlier_indices": training,
         },
+        **changes,
     }
 
 
-def arm(box=(0, 0, 320, 240), label="Robotic Arm"):
-    return {"label": label, "xyxy": list(box)}
+def expected(pose=POSE):
+    return project(camera(), marker_center(pose))
 
 
-def proof(detections=None, **kwargs):
-    return drift_proof(
-        model(),
-        FLANGE,
-        TOOL,
-        [arm()] if detections is None else detections,
-        [320, 240],
-        device=DEVICE,
-        **kwargs,
-    )
+def at(offset, identity=4, pose=POSE):
+    """A detection placed at an exact pixel offset from the expected marker 4 center."""
+    return {"id": identity, "center_px": (expected(pose) + offset).tolist()}
 
 
-@pytest.mark.parametrize("label", ["Robotic Arm", "roboticarm", "ROBOTIC_ARM", "robotic_arm"])
-def test_one_box_proof_is_explicit_and_json_safe(label):
-    result = proof([{"label": "Chip"}, arm(label=label)])
+def proof(markers=None, pose=POSE, **kwargs):
+    if markers is None:
+        markers = detect_markers(render(camera(), (4, marker_center(pose))))
+    return drift_proof(model(), pose, markers, list(SIZE), device=DEVICE, **kwargs)
+
+
+def test_marker_proof_is_explicit_and_json_safe():
+    result = proof()
     assert result == {
         "passed": True,
         "reason": None,
-        "projected_tip_px": [160, 120],
-        "arm_box_px": [0, 0, 320, 240],
-        "margin_px": 0,
+        "detected_center_px": pytest.approx(expected().tolist(), abs=0.25),
+        "expected_center_px": pytest.approx(expected().tolist(), abs=1e-9),
+        "distance_px": pytest.approx(0, abs=0.25),
+        "limit_px": 3,
         "camera_device": DEVICE,
-        "image_size": {"width": 320, "height": 240},
+        "image_size": {"width": 640, "height": 480},
         "model_created_at": 1234,
     }
+    assert result["distance_px"] == pytest.approx(
+        math.dist(result["detected_center_px"], result["expected_center_px"]), abs=1e-12
+    )
     json.dumps(result, allow_nan=False)
 
 
-def test_r_rotates_nonzero_tool_xy_and_model_z_does_not_use_physical_tool_dz():
-    calibration = model()
-    result = drift_proof(
-        calibration, [20, 30, 146, 90], [2, 3, -999], [arm()], [320, 240], device=DEVICE
-    )
+@pytest.mark.parametrize(
+    "shift,turn,passes",
+    [
+        ((1, 0, 0), (0, 0, 0), True),
+        ((3, 0, 0), (0, 0, 0), False),
+        ((0, 0, 0), (0, math.radians(0.12), 0), True),
+        ((0, 0, 0), (math.radians(0.4), 0, 0), False),
+    ],
+)
+def test_camera_movement_beyond_the_limit_fails_and_smaller_movement_passes(shift, turn, passes):
+    moved = camera(shift, turn)
+    movement = np.linalg.norm(project(moved, marker_center(POSE)) - expected())
+    assert abs(movement - 3) > 1  # Each case stays clear of the 3 px limit.
+    result = proof(detect_markers(render(moved, (4, marker_center(POSE)))))
+    assert result["distance_px"] == pytest.approx(movement, abs=0.3)
+    assert result["passed"] is passes
+    assert result["reason"] == (None if passes else "marker_beyond_limit")
+
+
+def test_expected_center_matches_an_independent_radial_pinhole_formula():
+    rotation, translation = camera()
+    point = cv2.Rodrigues(rotation)[0] @ marker_center(POSE) + translation
+    x, y = point[:2] / point[2]
+    radial = 1 - 0.05 * (x * x + y * y) + 0.01 * (x * x + y * y) ** 2
+    result = proof([at([0, 0])])
     assert result["passed"]
-    assert result["projected_tip_px"] == pytest.approx([160 + 300 * 17 / 500, 120 + 280 * 32 / 500])
-    wrapped = drift_proof(
-        calibration, [20, 30, 146, 450], [2, 3, 999], [arm()], [320, 240], device=DEVICE
-    )
-    assert wrapped["projected_tip_px"] == pytest.approx(result["projected_tip_px"])
-
-
-def test_radial_projection_matches_independent_pinhole_formula():
-    calibration = model()
-    calibration["distortion"] = [0.2, -0.1, 0, 0, 0]
-    result = drift_proof(
-        calibration, [100, 80, 146, 45], [20, 30, 146], [arm()], [320, 240], device=DEVICE
-    )
-    x, y = (100 - 10 / math.sqrt(2)) / 500, (80 + 50 / math.sqrt(2)) / 500
-    radial = 1 + 0.2 * (x * x + y * y) - 0.1 * (x * x + y * y) ** 2
-    assert result["passed"]
-    assert result["projected_tip_px"] == pytest.approx(
-        [160 + 300 * x * radial, 120 + 280 * y * radial]
+    assert result["expected_center_px"] == pytest.approx(
+        [320 + 700 * x * radial, 240 + 700 * y * radial]
     )
 
 
-def test_nominal_height_gauge_preserves_projection():
+def test_nominal_height_gauge_preserves_the_expected_center():
     original = model()
     shifted = copy.deepcopy(original)
+    rotation = cv2.Rodrigues(np.asarray(original["rotation"]))[0]
     shifted["nominal_tag_height_mm"] += 7
     shifted["tray_height_mm"] += 7
-    shifted["translation"][2] -= 7
-    before = drift_proof(
-        original, [20, 30, 146, 90], [2, 3, 146], [arm()], [320, 240], device=DEVICE
-    )
-    after = drift_proof(shifted, [20, 30, 146, 90], [2, 3, 146], [arm()], [320, 240], device=DEVICE)
-    assert before == after
+    shifted["translation"] = (np.asarray(original["translation"]) - rotation[:, 2] * 7).tolist()
+    markers = [at([1, 0])]
+    before = drift_proof(original, POSE, markers, list(SIZE), device=DEVICE)
+    after = drift_proof(shifted, POSE, markers, list(SIZE), device=DEVICE)
+    assert before["passed"] and after["passed"]
+    assert after["expected_center_px"] == pytest.approx(before["expected_center_px"], abs=1e-9)
     assert original == model()
 
 
-@pytest.mark.parametrize("z,reason", [(-500, "tip_behind_camera"), (0, "tip_behind_camera")])
-def test_nonpositive_camera_depth_never_passes(z, reason):
+@pytest.mark.parametrize("z", [-2000, 0])
+def test_expected_center_behind_the_camera_never_passes(z):
+    calibration = model(translation=[0, 0, z])
+    result = drift_proof(calibration, POSE, [at([0, 0])], list(SIZE), device=DEVICE)
+    assert result["passed"] is False and result["reason"] == "expected_behind_camera"
+    assert result["expected_center_px"] is None
+
+
+def test_offimage_expected_center_cannot_be_rescued_by_any_marker():
     calibration = model()
-    calibration["translation"][2] = z
-    result = drift_proof(calibration, FLANGE, TOOL, [arm()], [320, 240], device=DEVICE)
-    assert result["passed"] is False and result["reason"] == reason
-    assert result["projected_tip_px"] is None
-
-
-def test_finite_offimage_projection_cannot_be_rescued_by_bad_box():
-    result = drift_proof(
-        model(), [1000, 0, 146, 0], TOOL, [arm([-1e6, -1e6, 1e6, 1e6])], [320, 240], device=DEVICE
-    )
-    assert result["passed"] is False
-    assert result["reason"] == "tip_outside_image"
-    assert result["projected_tip_px"][0] > 320
+    calibration["camera_matrix"][0][2] += 1000
+    markers = [{"id": 4, "center_px": [639, 295]}]
+    result = drift_proof(calibration, POSE, markers, list(SIZE), device=DEVICE)
+    assert result["passed"] is False and result["reason"] == "expected_outside_image"
+    assert result["expected_center_px"][0] >= 640
+    assert result["detected_center_px"] is None
 
 
 @pytest.mark.parametrize(
-    "detections,reason",
+    "markers,reason",
     [
-        ([], "arm_detection_missing"),
-        ([{"label": "Chip"}], "arm_detection_missing"),
-        ([arm(), arm([159, 119, 161, 121])], "arm_detection_ambiguous"),
-        ([arm([0, 0, 100, 100]), arm([200, 140, 320, 240])], "arm_detection_ambiguous"),
-        ([arm(label="robotic-arm")], "arm_detection_missing"),
-        ([None], "arm_detection_malformed"),
-        ([{}], "arm_detection_malformed"),
-        ([{"label": True}], "arm_detection_malformed"),
-        ([arm()] * 1025, "arm_detection_malformed"),
-        ({"detections": [arm()]}, "arm_detection_malformed"),
+        ([], "marker_missing"),
+        ([at([0, 0], identity=7)], "marker_missing"),
+        ([at([0, 0]), at([40, 0])], "marker_duplicate"),
+        ([at([0, 0]), at([0, 0])], "marker_duplicate"),
+        ([None], "marker_detection_malformed"),
+        ([{}], "marker_detection_malformed"),
+        ([at([0, 0]), {"id": True, "center_px": [1, 1]}], "marker_detection_malformed"),
+        ([{"id": "4", "center_px": [1, 1]}], "marker_detection_malformed"),
+        ([{"id": 4.0, "center_px": [1, 1]}], "marker_detection_malformed"),
+        ([at([0, 0], identity=7)] * 1025, "marker_detection_malformed"),
+        ({"markers": []}, "marker_detection_malformed"),
     ],
 )
-def test_absent_malformed_and_multiple_arm_evidence_is_negative(detections, reason):
-    result = proof(detections)
+def test_missing_duplicate_or_malformed_marker_evidence_is_negative(markers, reason):
+    result = proof(markers)
     assert result["passed"] is False and result["reason"] == reason
-    assert result["arm_box_px"] is None
+    assert result["detected_center_px"] is None and result["distance_px"] is None
+    assert result["expected_center_px"] == pytest.approx(expected().tolist())
 
 
 @pytest.mark.parametrize(
-    "box",
+    "center",
     [
-        [160, 100, 150, 140],
-        [160, 100, 160, 140],
-        [-1, 0, 320, 240],
-        [0, 0, 321, 240],
-        [0, 0, 320, 241],
-        [0, 0, float("nan"), 240],
-        [0, 0, float("inf"), 240],
-        [True, 0, 320, 240],
-        [0, 0, 320],
+        [640, 240],
+        [-1, 240],
+        [320, 480],
+        [float("nan"), 240],
+        [float("inf"), 240],
+        [True, 240],
+        [320],
         "bad",
         None,
-        [0, 0, 10**400, 240],
+        [10**400, 240],
     ],
 )
-def test_arm_box_must_be_finite_ordered_and_inside_frame(box):
-    result = proof([{"label": "Robotic Arm", "xyxy": box}])
-    assert result["passed"] is False and result["reason"] == "arm_detection_malformed"
+def test_marker_center_must_be_finite_and_inside_the_frame(center):
+    result = proof([{"id": 4, "center_px": center}])
+    assert result["passed"] is False and result["reason"] == "marker_detection_malformed"
+    assert result["detected_center_px"] is None
 
 
-def test_margin_is_an_inset_and_collapsed_region_cannot_pass():
-    box = [160, 100, 200, 140]
-    assert proof([arm(box)], margin_px=0)["passed"]
-    result = proof([arm(box)], margin_px=1)
-    assert result["passed"] is False and result["reason"] == "tip_outside_arm_box"
-    assert proof([arm(box)], margin_px=20)["reason"] == "margin_excludes_box"
-    assert proof([arm()], margin_px=4096)["reason"] == "margin_excludes_box"
-    assert proof([arm([150, 110, 170, 130])], margin_px=9.5)["passed"]
+def test_rendered_frame_without_marker_4_never_passes():
+    frame = render(camera(), (7, [240, 30, 170]))
+    assert [marker["id"] for marker in detect_markers(frame)] == [7]
+    assert proof(detect_markers(frame))["reason"] == "marker_missing"
+
+
+def test_limit_defaults_to_3_px_and_a_lower_limit_is_stricter():
+    assert proof([at([2.9, 0])])["passed"]
+    assert proof([at([3.1, 0])])["reason"] == "marker_beyond_limit"
+    assert proof([at([0, 1.5])], limit_px=2)["passed"]
+    result = proof([at([0, 2.5])], limit_px=2)
+    assert result["reason"] == "marker_beyond_limit" and result["limit_px"] == 2
+    assert result["distance_px"] == pytest.approx(2.5)
 
 
 @pytest.mark.parametrize(
-    "value", [True, -1, 4096.001, float("nan"), float("inf"), 10**400, "1", None]
+    "value", [True, 0, -1, 3.001, 4096, float("nan"), float("inf"), 10**400, "1", None]
 )
-def test_margin_rejects_invalid_command_values(value):
+def test_limit_rejects_invalid_or_raised_values(value):
     with pytest.raises(ValueError):
-        drift_margin(value)
+        drift_limit(value)
     with pytest.raises(ValueError):
-        proof(margin_px=value)
+        proof([at([0, 0])], limit_px=value)
 
 
 @pytest.mark.parametrize(
-    "flange,tool",
+    "flange",
     [
-        ([True, 0, 146, 0], TOOL),
-        ([0, 0, 146], TOOL),
-        ([0, 0, 146, float("nan")], TOOL),
-        ([0, 0, 146, 10**400], TOOL),
-        (FLANGE, [0, False, 146]),
-        (FLANGE, [0, 0, np.inf]),
-        (FLANGE, [0, 0, 1_000_001]),
+        [True, 20, 70, 0],
+        [230, 20, 70],
+        [230, 20, 70, float("nan")],
+        [230, 20, 70, 10**400],
+        [230, 20, np.inf, 0],
+        "bad",
     ],
 )
-def test_command_vectors_reject_mixed_bool_nonfinite_or_unbounded_values(flange, tool):
+def test_flange_pose_rejects_mixed_bool_nonfinite_or_unbounded_values(flange):
     with pytest.raises(ValueError):
-        drift_inputs(flange, tool)
+        drift_inputs(flange)
     with pytest.raises(ValueError):
-        drift_proof(model(), flange, tool, [arm()], [320, 240], device=DEVICE)
+        drift_proof(model(), flange, [at([0, 0])], list(SIZE), device=DEVICE)
+
+
+@pytest.mark.parametrize(
+    "pose",
+    [
+        [199.9, 20, 70, 0],
+        [260.1, 20, 70, 0],
+        [230, -0.1, 70, 0],
+        [230, 40.1, 70, 0],
+        [230, 20, 49.9, 0],
+        [230, 20, 90.1, 0],
+        [230, 20, 70, 0.2],
+        [230, 20, 70, -0.2],
+        [230, 20, 70, 180],
+    ],
+)
+def test_pose_outside_the_grid_or_away_from_the_scan_r_is_refused(pose):
+    with pytest.raises(ValueError, match="inside the calibration grid at the scan R"):
+        drift_proof(model(), pose, [at([0, 0], pose=pose)], list(SIZE), device=DEVICE)
+
+
+@pytest.mark.parametrize(
+    "pose",
+    [[200, 0, 50, 0.1], [260, 40, 90, -0.1], [230, 20, 70, 360.05], [230, 20, 70, -719.95]],
+)
+def test_grid_corners_and_whole_turns_of_the_scan_r_are_inside(pose):
+    result = drift_proof(model(), pose, [at([0, 0], pose=pose)], list(SIZE), device=DEVICE)
+    assert result["passed"]
+
+
+def test_check_uses_the_stored_scan_r():
+    calibration = model(scan_r_deg=-90)
+    pose = [230, 20, 70, 270]
+    assert drift_proof(calibration, pose, [at([0, 0])], list(SIZE), device=DEVICE)["passed"]
+    with pytest.raises(ValueError, match="scan R"):
+        drift_proof(calibration, POSE, [at([0, 0])], list(SIZE), device=DEVICE)
+
+
+def test_older_model_without_scan_r_is_refused():
+    calibration = model(schema=1)
+    del calibration["scan_r_deg"]
+    with pytest.raises(ValueError, match="^camera moved, recalibrate: "):
+        drift_proof(calibration, POSE, [at([0, 0])], list(SIZE), device=DEVICE)
 
 
 def test_wrong_port_size_or_model_is_a_configuration_error():
     with pytest.raises(ValueError, match="port"):
-        drift_proof(model(), FLANGE, TOOL, [arm()], [320, 240], device=DEVICE + "-other")
+        drift_proof(model(), POSE, [at([0, 0])], list(SIZE), device=DEVICE + "-other")
     with pytest.raises(ValueError, match="image size"):
-        drift_proof(model(), FLANGE, TOOL, [arm()], [640, 480], device=DEVICE)
+        drift_proof(model(), POSE, [at([0, 0])], [1280, 960], device=DEVICE)
     calibration = model()
     calibration["translation"][0] = float("nan")
     with pytest.raises(ValueError):
-        drift_proof(calibration, FLANGE, TOOL, [arm()], [320, 240], device=DEVICE)
+        drift_proof(calibration, POSE, [at([0, 0])], list(SIZE), device=DEVICE)
+    for value in (None, float("nan"), True, "0", 1_000_001):
+        with pytest.raises(ValueError, match="scan R"):
+            drift_proof(model(scan_r_deg=value), POSE, [at([0, 0])], list(SIZE), device=DEVICE)
 
 
 @pytest.mark.parametrize("device", [None, "", "/dev/video0", "/dev/v4l/by-path/..", True])
 def test_drift_requires_explicit_stable_caller_identity(device):
     with pytest.raises(ValueError, match="stable"):
-        drift_proof(model(), FLANGE, TOOL, [arm()], [320, 240], device=device)
+        drift_proof(model(), POSE, [at([0, 0])], list(SIZE), device=device)
 
 
 @pytest.fixture
 def drift_service(tmp_path):
-    image = Image.new("RGB", (320, 240), "white")
     frames = SimpleNamespace(
         camera_count=1,
         configuration=SimpleNamespace(devices=(DEVICE,)),
-        read=Mock(return_value=image),
+        read=Mock(return_value=render(camera(), (4, marker_center(POSE)))),
     )
-
-    def predict(current):
-        return current, {
-            "image_size": {"width": current.width, "height": current.height},
-            "coordinate_system": "oriented_original_image_pixels",
-            "detections": [arm()],
-        }
-
-    predictor = SimpleNamespace(predict=Mock(side_effect=predict))
+    predictor = SimpleNamespace(predict=Mock(side_effect=lambda image: (image, {"detections": []})))
+    detector = Mock(side_effect=detect_markers)
     service = VisionService(
         demo=True,
         frames=frames,
         localizer_factory=lambda: predictor,
+        marker_detector=detector,
         calibration_directory=tmp_path,
     )
     service.calibrations.save(DEVICE, model())
@@ -285,19 +396,18 @@ def drift_service(tmp_path):
     client = create_app(service, token="d" * 24).test_client()
     headers = {"Authorization": "Bearer " + "d" * 24, "X-MG400-Client": "drift-test"}
     yield SimpleNamespace(
-        service=service, frames=frames, predictor=predictor, client=client, headers=headers
+        service=service,
+        frames=frames,
+        predictor=predictor,
+        detector=detector,
+        client=client,
+        headers=headers,
     )
     service.close(wait_s=1)
 
 
 def drift_command(**changes):
-    return {
-        "action": "check_calibration",
-        "camera": 1,
-        "flange_mm": FLANGE,
-        "tool_offset_mm": TOOL,
-        **changes,
-    }
+    return {"action": "check_calibration", "camera": 1, "flange_mm": POSE, **changes}
 
 
 def submit(rig, **changes):
@@ -318,39 +428,33 @@ def receipt(rig, identity):
     pytest.fail("Drift command did not drain")
 
 
-def test_service_checks_one_owned_frame_model_and_prediction_without_tray_mapping(
+def test_service_checks_one_owned_frame_model_and_marker_read_without_yolo(
     drift_service, monkeypatch
 ):
     rig = drift_service
     monkeypatch.setattr("vision.service.robot_xy", Mock(side_effect=AssertionError("No tray map")))
     result = receipt(rig, submit(rig))
     assert result["result"] == "ok" and result["output"]["passed"] is True
-    assert result["output"]["camera"] == 1 and result["output"]["calibrated"] is True
-    assert result["output"]["camera_device"] == DEVICE
+    output = result["output"]
+    assert output["camera"] == 1 and output["calibrated"] is True
+    assert output["camera_device"] == DEVICE and output["limit_px"] == 3
+    assert output["distance_px"] < 0.25
     rig.frames.read.assert_called_once_with(1)
     rig.service.calibrations.load.assert_called_once_with(DEVICE)
-    rig.predictor.predict.assert_called_once_with(rig.frames.read.return_value)
+    rig.detector.assert_called_once_with(rig.frames.read.return_value)
+    rig.predictor.predict.assert_not_called()
     rig.service.calibrations.save.assert_not_called()
 
 
-@pytest.mark.parametrize("change", ["missing-box", "ambiguous", "wrong-size", "wrong-coordinate"])
+@pytest.mark.parametrize("change", ["missing-marker", "moved-camera", "malformed"])
 def test_negative_visual_proof_is_explicit_success_not_positive_evidence(drift_service, change):
     rig = drift_service
-    original = rig.predictor.predict.side_effect
-
-    def predict(image):
-        current, data = original(image)
-        if change == "missing-box":
-            data["detections"] = []
-        elif change == "ambiguous":
-            data["detections"] *= 2
-        elif change == "wrong-size":
-            data["image_size"]["width"] += 1
-        else:
-            data["coordinate_system"] = "model_input_pixels"
-        return current, data
-
-    rig.predictor.predict.side_effect = predict
+    if change == "missing-marker":
+        rig.frames.read.return_value = render(camera(), (7, [240, 30, 170]))
+    elif change == "moved-camera":
+        rig.frames.read.return_value = render(camera((3, 0, 0)), (4, marker_center(POSE)))
+    else:
+        rig.detector.side_effect = lambda image: {"markers": []}
     result = receipt(rig, submit(rig))
     assert result["result"] == "ok"
     assert result["output"]["passed"] is False and result["output"]["reason"]
@@ -358,26 +462,59 @@ def test_negative_visual_proof_is_explicit_success_not_positive_evidence(drift_s
 
 
 @pytest.mark.parametrize("failure", ["missing-model", "wrong-size"])
-def test_missing_or_mismatched_model_fails_before_inference(drift_service, failure):
+def test_missing_or_mismatched_model_fails_before_marker_detection(drift_service, failure):
     rig = drift_service
     if failure == "missing-model":
         rig.service.calibrations.load.side_effect = lambda _: None
     else:
-        rig.frames.read.return_value = Image.new("RGB", (640, 480))
+        rig.frames.read.return_value = Image.new("RGB", (320, 240))
     result = receipt(rig, submit(rig))
     assert result["result"] == "failed" and result["output"] is None
     assert "recalibrate" in result["message"]
-    rig.predictor.predict.assert_not_called()
+    rig.detector.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "case,message",
+    [
+        ("older-model", "camera moved, recalibrate: "),
+        ("outside-grid", "inside the calibration grid"),
+        ("other-r", "at the scan R"),
+        ("duplicate-marker", "duplicate"),
+    ],
+)
+def test_refused_model_pose_or_marker_identity_publishes_no_proof(drift_service, case, message):
+    rig = drift_service
+    changes = {}
+    if case == "older-model":
+        older = model(schema=1)
+        del older["scan_r_deg"]
+        rig.service.calibrations.load.side_effect = lambda _: older
+    elif case == "outside-grid":
+        changes = dict(flange_mm=[260.5, 20, 70, 0])
+    elif case == "other-r":
+        changes = dict(flange_mm=[230, 20, 70, 0.5])
+    else:
+        rig.frames.read.return_value = render(
+            camera(), (4, marker_center(POSE)), (4, [180, 60, 170])
+        )
+    result = receipt(rig, submit(rig, **changes))
+    assert result["result"] == "failed" and result["output"] is None
+    assert message in result["message"]
+    rig.service.calibrations.save.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "bad",
     [
-        dict(margin_px=True),
-        dict(margin_px=-1),
-        dict(margin_px="1"),
-        dict(flange_mm=[0, 0, 1]),
-        dict(tool_offset_mm=[0, False, 0]),
+        dict(limit_px=True),
+        dict(limit_px=0),
+        dict(limit_px=3.5),
+        dict(limit_px="1"),
+        dict(flange_mm=[230, 20, 70]),
+        dict(flange_mm=[230, False, 70, 0]),
+        dict(tool_offset_mm=[0, 0, 146]),
+        dict(margin_px=0),
         dict(camera=True),
         dict(extra="not-allowed"),
     ],
@@ -408,29 +545,27 @@ def test_drift_keeps_bearer_lease_and_declared_parameter_guards(drift_service):
         == 409
     )
     params = rig.service.describe()["commands"]["check_calibration"]["params"]
-    assert set(params["required"]) == {"camera", "flange_mm", "tool_offset_mm"}
-    assert params["properties"]["margin_px"]["default"] == 0
+    assert set(params["required"]) == {"camera", "flange_mm"}
+    assert set(params["properties"]) == {"camera", "flange_mm", "limit_px"}
+    assert params["properties"]["limit_px"]["default"] == 3
+    assert params["properties"]["limit_px"]["maximum"] == 3
     rig.frames.read.assert_not_called()
 
 
 @pytest.mark.parametrize("cancel", ["stop", "release-reacquire", "expiry-reacquire", "close"])
 @pytest.mark.parametrize("positive", [True, False])
-def test_interrupted_inference_never_publishes_or_revives_a_drift_proof(
+def test_interrupted_marker_read_never_publishes_or_revives_a_drift_proof(
     drift_service, cancel, positive
 ):
     rig = drift_service
     entered, finish = threading.Event(), threading.Event()
-    original = rig.predictor.predict.side_effect
 
-    def predict(image):
+    def detect(image):
         entered.set()
         assert finish.wait(2)
-        image, data = original(image)
-        if not positive:
-            data["detections"] = []
-        return image, data
+        return detect_markers(image) if positive else []
 
-    rig.predictor.predict.side_effect = predict
+    rig.detector.side_effect = detect
     identity = submit(rig)
     try:
         assert entered.wait(2)
@@ -457,7 +592,7 @@ def test_interrupted_inference_never_publishes_or_revives_a_drift_proof(
     result = receipt(rig, identity)
     assert result["result"] == "stopped" and result["output"] is None
     rig.frames.read.assert_called_once_with(1)
-    rig.predictor.predict.assert_called_once()
+    rig.detector.assert_called_once()
     rig.service.calibrations.save.assert_not_called()
 
 
@@ -475,7 +610,9 @@ def test_publication_checks_expiry_even_when_background_poll_has_not_run(
     def processed(job):
         result, image = original(job)
         if not positive:
-            result.update(passed=False, reason="arm_detection_missing", arm_box_px=None)
+            result.update(
+                passed=False, reason="marker_missing", detected_center_px=None, distance_px=None
+            )
         rig.service.lease.clock = lambda: time.monotonic() + 10
         assert not job["cancel"].is_set()  # The publication fence must discover expiry itself.
         return result, image
@@ -539,10 +676,7 @@ def test_guarded_skill_checks_without_robot_commands_or_zone_clearance(drift_rig
     result = check_calibration(rig.ctx, 1)
     assert result == rig.vision.output and result["passed"] is True
     assert rig.vision.calls == [
-        (
-            "check_calibration",
-            dict(camera=1, flange_mm=[200, 0, 50, 0], tool_offset_mm=[3, 4, 5], margin_px=0),
-        )
+        ("check_calibration", dict(camera=1, flange_mm=[200, 0, 50, 0], limit_px=3))
     ]
     assert rig.robot.reads >= 3 and rig.robot.calls == []
     assert rig.zones.snapshot() == {}
@@ -552,25 +686,27 @@ def test_guarded_skill_checks_without_robot_commands_or_zone_clearance(drift_rig
 @pytest.mark.parametrize(
     "changes",
     [
-        {"passed": False, "reason": "tip_outside_arm_box"},
+        {"passed": False, "reason": "marker_beyond_limit"},
         {"passed": 1},
         {"calibrated": 1},
         {"camera": True},
         {"camera": 2},
-        {"margin_px": 1},
-        {"margin_px": float("nan")},
+        {"limit_px": 2},
+        {"limit_px": float("nan")},
         {"reason": "unexpected"},
         {"model_created_at": 0},
         {"model_created_at": 10**400},
         {"camera_device": None},
         {"camera_device": "/dev/video0"},
-        {"image_size": {"width": True, "height": 240}},
-        {"image_size": {"width": 320, "height": 240, "extra": 1}},
-        {"projected_tip_px": [320, 120]},
-        {"projected_tip_px": [float("nan"), 120]},
-        {"arm_box_px": [170, 100, 200, 140]},
-        {"arm_box_px": [-1, 0, 320, 240]},
-        {"arm_box_px": [0, 0, 10**400, 240]},
+        {"image_size": {"width": True, "height": 480}},
+        {"image_size": {"width": 640, "height": 480, "extra": 1}},
+        {"image_size": {"width": 200, "height": 480}},
+        {"detected_center_px": [float("nan"), 240]},
+        {"detected_center_px": [True, 240]},
+        {"expected_center_px": [-1, 240]},
+        {"expected_center_px": None},
+        {"distance_px": 3.5},
+        {"distance_px": -0.1},
         {"unknown": "extra-field"},
     ],
 )
@@ -582,7 +718,29 @@ def test_negative_or_malformed_proof_raises_drift_failure_without_motion(drift_r
     assert len(rig.vision.calls) == 1 and rig.robot.calls == []
 
 
-@pytest.mark.parametrize("field", ["camera_device", "arm_box_px", "model_created_at"])
+@pytest.mark.parametrize("change", ["far-center", "wrong-distance"])
+def test_reported_distance_must_agree_with_the_reported_centers(drift_rig, change):
+    output = drift_rig.vision.output
+    if change == "far-center":
+        x, y = output["expected_center_px"]
+        output["detected_center_px"] = [x + 4, y]
+    else:
+        output["distance_px"] += 0.5
+    with pytest.raises(RuntimeError, match="^camera moved, recalibrate$"):
+        check_calibration(drift_rig.ctx, 1)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "camera_device",
+        "detected_center_px",
+        "expected_center_px",
+        "distance_px",
+        "limit_px",
+        "model_created_at",
+    ],
+)
 def test_missing_proof_evidence_is_not_success(drift_rig, field):
     del drift_rig.vision.output[field]
     with pytest.raises(RuntimeError, match="^camera moved, recalibrate$"):
@@ -592,7 +750,7 @@ def test_missing_proof_evidence_is_not_success(drift_rig, field):
 @pytest.mark.parametrize("mutation", ["x", "r", "owner", "instance", "stale", "disabled"])
 def test_robot_guard_preserves_motion_or_identity_failure_before_proof(drift_rig, mutation):
     rig = drift_rig
-    rig.vision.output.update(passed=False, reason="arm_detection_missing")
+    rig.vision.output.update(passed=False, reason="marker_missing")
 
     def change():
         if mutation in {"x", "r"}:
@@ -615,7 +773,7 @@ def test_prior_cancellation_cause_is_not_replaced_with_drift(drift_rig):
     rig = drift_rig
     cause = RuntimeError("operator Stop won first")
     rig.vision.after = lambda: rig.authority.revoke(cause)
-    rig.vision.output.update(passed=False, reason="arm_detection_missing")
+    rig.vision.output.update(passed=False, reason="marker_missing")
     with pytest.raises(RuntimeError, match="operator Stop won first") as caught:
         check_calibration(rig.ctx, 1)
     assert str(caught.value) == str(cause)
@@ -634,19 +792,21 @@ def test_skill_requires_exact_action_client_and_success_receipt(drift_rig, field
     assert len(rig.vision.calls) == 1 and rig.robot.calls == []
 
 
-@pytest.mark.parametrize("value", ["", "nan", "inf", "-1", "4097", "not-a-number"])
-def test_bad_margin_setting_fails_before_service_or_robot_reads(drift_rig, monkeypatch, value):
+@pytest.mark.parametrize("value", ["", "nan", "inf", "-1", "0", "3.01", "4096", "not-a-number"])
+def test_bad_or_raised_limit_setting_fails_before_service_or_robot_reads(
+    drift_rig, monkeypatch, value
+):
     monkeypatch.setenv(DRIFT_SETTING, value)
     with pytest.raises(ValueError, match=DRIFT_SETTING):
         check_calibration(drift_rig.ctx, 1)
     assert drift_rig.robot.reads == 0 and drift_rig.vision.calls == []
 
 
-def test_supplied_margin_is_forwarded_and_must_match_the_receipt(drift_rig, monkeypatch):
+def test_lower_limit_setting_is_forwarded_and_must_match_the_receipt(drift_rig, monkeypatch):
     monkeypatch.setenv(DRIFT_SETTING, "2.5")
-    drift_rig.vision.output["margin_px"] = 2.5
-    assert check_calibration(drift_rig.ctx, 1)["margin_px"] == 2.5
-    assert drift_rig.vision.calls[0][1]["margin_px"] == 2.5
+    drift_rig.vision.output["limit_px"] = 2.5
+    assert check_calibration(drift_rig.ctx, 1)["limit_px"] == 2.5
+    assert drift_rig.vision.calls[0][1]["limit_px"] == 2.5
 
 
 def test_registry_exposes_only_the_typed_camera_scalar():
@@ -655,13 +815,13 @@ def test_registry_exposes_only_the_typed_camera_scalar():
     skill = default_registry()["vision.check_calibration"]
     assert skill.services == ("robot", "vision")
     assert skill.validate({"camera": 1}) == {"camera": 1}
-    for params in ({}, {"camera": True}, {"camera": 1, "margin_px": 1}):
+    for params in ({}, {"camera": True}, {"camera": 1, "limit_px": 1}):
         with pytest.raises(ValueError):
             skill.validate(params)
 
 
 @pytest.mark.parametrize("present", [False, True])
-def test_owned_demo_filters_preserve_only_supplied_margin(monkeypatch, present):
+def test_owned_demo_filters_preserve_only_supplied_limit(monkeypatch, present):
     import os
 
     from orchestrator.app import demo_environment
@@ -674,6 +834,7 @@ def test_owned_demo_filters_preserve_only_supplied_margin(monkeypatch, present):
         "HTTP_PROXY": "bad",
         "PYTHONPATH": "/host/python",
         "MG400_CAMERA_CALIBRATION_REFERENCES": "/host/ref",
+        "MG400_ORCH_DRIFT_MARGIN_PX": "0",
     }
     for key, value in poisoned.items():
         monkeypatch.setenv(key, value)
@@ -693,15 +854,16 @@ def test_owned_demo_filters_preserve_only_supplied_margin(monkeypatch, present):
 
 @pytest.mark.parametrize("root", [True, False])
 @pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
-def test_installed_margin_filter_preserves_execution_identity_and_secret_boundaries(
+def test_installed_limit_filter_preserves_execution_identity_and_secret_boundaries(
     ctl, monkeypatch, root, command
 ):
     monkeypatch.setenv(DRIFT_SETTING, "2.5")
+    monkeypatch.setenv("MG400_ORCH_DRIFT_MARGIN_PX", "0")
     monkeypatch.setenv("MG400_VISION_TOKEN", "must-not-pass")
     monkeypatch.setenv("MG400_CAMERA_DEVICES", "/dev/must-not-pass")
     monkeypatch.setenv("MG400_VISION_CALIBRATION_DIR", "/host/must-not-pass")
     if root and command != "rehearse":
-        ctl.host.settings.write_text(f"{DRIFT_SETTING}=3.5\nMG400_VISION_TOKEN=must-not-pass\n")
+        ctl.host.settings.write_text(f"{DRIFT_SETTING}=1.5\nMG400_VISION_TOKEN=must-not-pass\n")
     else:
         ctl.host.settings.unlink()
     if not root:
@@ -710,10 +872,15 @@ def test_installed_margin_filter_preserves_execution_identity_and_secret_boundar
     argument = "list" if command == "station" else "synthetic-recipe"
     assert ctl.call(command, argument) == 0
     program, argv, environment = ctl.execvpe.call_args.args
-    expected = "3.5" if root and command == "run" else "2.5"
+    expected = "1.5" if root and command == "run" else "2.5"
     assert environment.get(DRIFT_SETTING) == (expected if command in {"run", "rehearse"} else None)
     assert (
-        not {"MG400_VISION_TOKEN", "MG400_CAMERA_DEVICES", "MG400_VISION_CALIBRATION_DIR"}
+        not {
+            "MG400_ORCH_DRIFT_MARGIN_PX",
+            "MG400_VISION_TOKEN",
+            "MG400_CAMERA_DEVICES",
+            "MG400_VISION_CALIBRATION_DIR",
+        }
         & environment.keys()
     )
     python = str(ctl.host.code / ".venv/bin/python")
@@ -728,11 +895,12 @@ def runner_proof():
         "calibrated": True,
         "passed": True,
         "reason": None,
-        "projected_tip_px": [160, 120],
-        "arm_box_px": [0, 0, 320, 240],
-        "margin_px": 0,
-        "camera_device": "/dev/v4l/by-path/platform-offline-drift-video-index0",
-        "image_size": {"width": 320, "height": 240},
+        "detected_center_px": [321.0, 240.0],
+        "expected_center_px": [320.0, 240.0],
+        "distance_px": 1.0,
+        "limit_px": 3.0,
+        "camera_device": DEVICE,
+        "image_size": {"width": 640, "height": 480},
         "model_created_at": 1234,
     }
 
@@ -747,12 +915,7 @@ class RunnerDriftVision(FakeService):
 
     def command(self, action, **params):
         assert action == "check_calibration"
-        assert params == {
-            "camera": 1,
-            "flange_mm": [200, 0, 50, 0],
-            "tool_offset_mm": [3, 4, 5],
-            "margin_px": 0,
-        }
+        assert params == {"camera": 1, "flange_mm": [200, 0, 50, 0], "limit_px": 3}
         self.events.append(action)
         self.value["busy"] = True
         self.entered.set()
@@ -772,7 +935,7 @@ class RunnerDriftVision(FakeService):
 
 @contextmanager
 def drift_runner(tmp_path, monkeypatch, result):
-    monkeypatch.setenv("MG400_ORCH_DRIFT_MARGIN_PX", "0")
+    monkeypatch.setenv(DRIFT_SETTING, "3")
     robot, vision, registry = FakeService(), RunnerDriftVision(result), Registry()
     robot.value.update(
         enabled=True,
@@ -863,7 +1026,7 @@ def test_drift_proof_holds_before_next_move_and_retains_prior_zone(
     result = runner_proof()
     reason = "camera moved, recalibrate"
     if kind == "negative":
-        result.update(passed=False, reason="tip_outside_arm_box")
+        result.update(passed=False, reason="marker_beyond_limit")
     elif kind == "malformed":
         del result["model_created_at"]
     else:
@@ -915,7 +1078,7 @@ def test_drift_late_bad_proof_preserves_first_instance_revocation(geometry, tmp_
 
 @pytest.mark.parametrize("late", [False, True])
 @pytest.mark.parametrize("interrupt", [False, True])
-def test_failed_worker_bootstrap_cannot_admit_inference_or_hide_an_active_job(
+def test_failed_worker_bootstrap_cannot_admit_a_marker_read_or_hide_an_active_job(
     drift_service, monkeypatch, late, interrupt
 ):
     rig = drift_service
@@ -943,7 +1106,7 @@ def test_failed_worker_bootstrap_cannot_admit_inference_or_hide_an_active_job(
             worker.join(timeout=1)
             assert not worker.is_alive()
     rig.frames.read.assert_not_called()
-    rig.predictor.predict.assert_not_called()
+    rig.detector.assert_not_called()
     state = rig.service.snapshot()
     assert not state["busy"] and state["last_command"]["result"] == "failed"
     assert state["last_command"]["output"] is None
@@ -974,7 +1137,7 @@ def test_stop_during_successful_worker_bootstrap_drains_without_frame_access(
         assert not worker.is_alive()
     assert result["result"] == "stopped" and result["output"] is None
     rig.frames.read.assert_not_called()
-    rig.predictor.predict.assert_not_called()
+    rig.detector.assert_not_called()
 
 
 def test_denied_bootstrap_cannot_clobber_a_later_successful_job(drift_service, monkeypatch):
@@ -1001,4 +1164,4 @@ def test_denied_bootstrap_cannot_clobber_a_later_successful_job(drift_service, m
     assert not denied[0].is_alive()
     assert rig.service.snapshot()["last_command"] == successful
     rig.frames.read.assert_called_once_with(1)
-    rig.predictor.predict.assert_called_once()
+    rig.detector.assert_called_once()

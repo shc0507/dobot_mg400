@@ -23,6 +23,7 @@ from labkit.flask import contract_blueprint
 from labkit.lease import Lease
 from vision.calibration import (
     DEFAULT_DIRECTORY,
+    DRIFT_LIMIT_PX,
     CalibrationStore,
     calibration_settings,
     camera_device,
@@ -31,6 +32,7 @@ from vision.calibration import (
     drift_proof,
     image_size,
     robot_xy,
+    scan_r,
 )
 from vision.frames import DemoSource, FrameError, Go2RTCSource, validate_camera
 from vision.localizer import Detection, Localizer, draw_detections
@@ -181,21 +183,27 @@ class VisionService:
             "items": {"type": "integer", "minimum": 1},
         }
         calibration["required"].append("image_size")
-        drift = copy.deepcopy(params)
-        for name, length in (("flange_mm", 4), ("tool_offset_mm", 3)):
-            drift["properties"][name] = {
-                "type": "array",
-                "minItems": length,
-                "maxItems": length,
-                "items": {"type": "number", "minimum": -1_000_000, "maximum": 1_000_000},
-            }
-            drift["required"].append(name)
-        drift["properties"]["margin_px"] = {
+        calibration["properties"]["scan_r_deg"] = {
             "type": "number",
-            "minimum": 0,
-            "maximum": 4096,
-            "default": 0,
-            "description": "Nonnegative inward inset of the observed arm box, in pixels.",
+            "minimum": -1_000_000,
+            "maximum": 1_000_000,
+            "description": "Flange R of all 24 scan points, in degrees.",
+        }
+        calibration["required"].append("scan_r_deg")
+        drift = copy.deepcopy(params)
+        drift["properties"]["flange_mm"] = {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {"type": "number", "minimum": -1_000_000, "maximum": 1_000_000},
+        }
+        drift["required"].append("flange_mm")
+        drift["properties"]["limit_px"] = {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": DRIFT_LIMIT_PX,
+            "default": DRIFT_LIMIT_PX,
+            "description": "Maximum distance from the detected to the expected marker 4 center.",
         }
         return describe(
             service="vision",
@@ -304,9 +312,16 @@ class VisionService:
     def _arguments(self, action, args):
         allowed = {"camera", "region"} if action == "read_labels" else {"camera"}
         if action == "calibrate_camera":
-            allowed |= {"tag_points", "tag_pixels", "tray_points", "tray_pixels", "image_size"}
+            allowed |= {
+                "tag_points",
+                "tag_pixels",
+                "tray_points",
+                "tray_pixels",
+                "image_size",
+                "scan_r_deg",
+            }
         if action == "check_calibration":
-            allowed |= {"flange_mm", "tool_offset_mm", "margin_px"}
+            allowed |= {"flange_mm", "limit_px"}
         if (
             action
             not in {
@@ -324,8 +339,11 @@ class VisionService:
         camera = validate_camera(args["camera"], self.camera_count)
         if action == "calibrate_camera":
             if set(args) != allowed:
-                raise ValueError("Calibration needs all 24 tag points and 2 to 4 tray references.")
+                raise ValueError(
+                    "Calibration needs all 24 tag points, 2 to 4 tray references and the scan R."
+                )
             image_size(args["image_size"])
+            scan_r(args["scan_r_deg"])
             count = len(args["tray_points"]) if isinstance(args["tray_points"], list) else 0
             for name, rows, columns in (
                 ("tag_points", 24, 3),
@@ -351,9 +369,9 @@ class VisionService:
             if camera > len(self._devices):
                 raise ValueError("Camera calibration requires a configured stable port identity.")
         if action == "check_calibration":
-            if not {"flange_mm", "tool_offset_mm"}.issubset(args):
-                raise ValueError("Drift checking requires a measured flange pose and tool offset.")
-            drift_inputs(args["flange_mm"], args["tool_offset_mm"], args.get("margin_px", 0))
+            if "flange_mm" not in args:
+                raise ValueError("Drift checking requires a measured flange pose.")
+            drift_inputs(args["flange_mm"], args.get("limit_px", DRIFT_LIMIT_PX))
             if camera > len(self._devices):
                 raise ValueError(
                     "Drift checking requires a configured stable camera port identity."
@@ -453,6 +471,7 @@ class VisionService:
                 args["tray_points"],
                 args["tray_pixels"],
                 args["image_size"],
+                scan_r_deg=args["scan_r_deg"],
                 cancelled=job["cancel"].is_set,
                 **self._calibration_options,
             )
@@ -471,31 +490,22 @@ class VisionService:
                 raise ValueError("camera moved, recalibrate: calibrated image dimensions changed")
             if job["cancel"].is_set():
                 raise DetectionCancelled()
-            _, prediction = self._model.predict(image)
+            markers = self._markers(image)
             if job["cancel"].is_set():
                 raise DetectionCancelled()
-            expected_size = {"width": image.width, "height": image.height}
-            detections = None
-            if (
-                isinstance(prediction, dict)
-                and prediction.get("image_size") == expected_size
-                and prediction.get("coordinate_system") == "oriented_original_image_pixels"
-            ):
-                detections = prediction.get("detections")
             args = job["args"]
             result = drift_proof(
                 model,
                 args["flange_mm"],
-                args["tool_offset_mm"],
-                detections,
+                markers,
                 image.size,
                 device=device,
-                margin_px=args.get("margin_px", 0),
+                limit_px=args.get("limit_px", DRIFT_LIMIT_PX),
             )
             if job["cancel"].is_set():
                 raise DetectionCancelled()
             result.update(camera=job["camera"], calibrated=True)
-            # This branch never reloads the model or maps unrelated detection centers.
+            # This branch never reloads the model or maps marker centers to robot coordinates.
             return self._bounded_result(result), image
         if job["action"] == "read_markers":
             result = {

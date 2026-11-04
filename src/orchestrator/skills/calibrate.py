@@ -304,6 +304,7 @@ def _calibrate(ctx, camera, corner_a, corner_b, low_flange_z_mm, high_flange_z_m
                 tray_points=tray_points,
                 tray_pixels=[tray[identity] for identity, _ in references],
                 image_size=list(acquisition.size),
+                scan_r_deg=a.r_deg,
             )
     model = result.get("calibration")
     if (

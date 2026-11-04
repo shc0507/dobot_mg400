@@ -49,6 +49,7 @@ from vision.calibration import (
     _project_dlt,
     _ransac,
     detect_markers,
+    drift_proof,
     fit_calibration,
     robot_xy,
     validate_model,
@@ -194,6 +195,19 @@ def test_loaded_geometry_must_have_finite_supported_parameters(field, value):
         validate_model({**camera_model(), field: value})
 
 
+def test_schema_2_requires_the_scan_r_and_schema_1_still_maps():
+    assert validate_model(camera_model())["schema"] == 1
+    current = validate_model({**camera_model(), "schema": 2, "scan_r_deg": -37.5})
+    assert current["scan_r_deg"] == -37.5
+    for value in (None, True, "0", float("nan"), float("inf"), 1_000_001):
+        with pytest.raises(ValueError, match="scan R"):
+            validate_model({**camera_model(), "schema": 2, "scan_r_deg": value})
+    with pytest.raises(ValueError, match="scan R"):
+        validate_model({**camera_model(), "schema": 2})
+    with pytest.raises(ValueError, match="schema"):
+        validate_model({**camera_model(), "schema": 3, "scan_r_deg": 0})
+
+
 def test_distorted_pixel_ray_uses_each_points_own_height():
     model = camera_model()
     xyz = np.array([[30.0, -20.0, 45.0]])
@@ -327,6 +341,7 @@ def test_interrupted_solve_cannot_publish_or_revive_after_same_client_reacquisit
             "tray_points": [[0, 0, 0]] * 3,
             "tray_pixels": [[100, 80]] * 3,
             "image_size": [200, 160],
+            "scan_r_deg": 0,
         },
     )
     try:
@@ -348,6 +363,31 @@ def test_interrupted_solve_cannot_publish_or_revive_after_same_client_reacquisit
     assert receipt["id"] == response.json["command_id"] and receipt["result"] == "stopped"
     assert receipt["output"] is None
     assert service.calibrations.load(DEVICE) == original
+
+
+@pytest.mark.parametrize("scan", ["missing", None, True, "0", 1_000_001])
+def test_calibration_command_requires_a_finite_scan_r_before_frame_access(calibrated_service, scan):
+    service, frames = calibrated_service
+    frames.read = Mock(side_effect=AssertionError("Invalid commands never read a frame"))
+    params = service.describe()["commands"]["calibrate_camera"]["params"]
+    assert "scan_r_deg" in params["required"]
+    client = create_app(service).test_client()
+    headers = {"X-MG400-Client": "calibration"}
+    assert client.post("/api/heartbeat", headers=headers, json={}).status_code == 200
+    body = {
+        "action": "calibrate_camera",
+        "camera": 1,
+        "tag_points": [[0, 0, 0]] * 24,
+        "tag_pixels": [[100, 80]] * 24,
+        "tray_points": [[0, 0, 0]] * 3,
+        "tray_pixels": [[100, 80]] * 3,
+        "image_size": [200, 160],
+        "scan_r_deg": scan,
+    }
+    if scan == "missing":
+        del body["scan_r_deg"]
+    assert client.post("/api/command", headers=headers, json=body).status_code == 400
+    frames.read.assert_not_called()
 
 
 # The numerical cases use the same public ray mapping as service detections.
@@ -397,7 +437,7 @@ def synthetic(*, distance=250.0, noise=0.02, outliers=()):
 
 def test_joint_fit_distortion_outliers_and_own_height_validation():
     tags, pixels, references, reference_pixels = synthetic(outliers=(2, 14))
-    result = fit_calibration(tags, pixels, references, reference_pixels, SIZE)
+    result = fit_calibration(tags, pixels, references, reference_pixels, SIZE, scan_r_deg=0.0)
     assert abs(result["distance_mm"] - 250) < 0.5
     assert result["rms_mm"]["held_out"] < 0.2
     assert result["rms_mm"]["tray"] < 0.2
@@ -410,6 +450,15 @@ def test_joint_fit_distortion_outliers_and_own_height_validation():
         assert np.linalg.norm(xy[0] - point[:2]) < 0.3
     with pytest.raises(ValueError, match="image size"):
         _mapped_pixels(result, [[100, 100]], (640, 480))
+
+
+def test_fit_stores_the_scan_r_in_a_schema_2_model():
+    inputs = synthetic(noise=0)
+    result = fit_calibration(*inputs, SIZE, scan_r_deg=-37.5)
+    assert result["schema"] == 2 and result["scan_r_deg"] == -37.5
+    for value in (None, True, "0", float("nan"), 1_000_001):
+        with pytest.raises(ValueError, match="scan R"):
+            fit_calibration(*inputs, SIZE, scan_r_deg=value)
 
 
 def test_dlt_recovers_projective_camera_without_coordinate_scale_bias():
@@ -437,13 +486,13 @@ def test_cancel_during_ransac_does_not_return_calibration():
         return calls > 8
 
     with pytest.raises(RuntimeError, match="cancelled"):
-        fit_calibration(*inputs, SIZE, cancelled=cancelled)
+        fit_calibration(*inputs, SIZE, scan_r_deg=0.0, cancelled=cancelled)
 
 
 def test_offset_gauge_changes_camera_translation_but_not_physical_distance():
     inputs = synthetic(noise=0.0)
-    first = fit_calibration(*inputs, SIZE)
-    second = fit_calibration(*inputs, SIZE, nominal_tag_height_mm=107.0)
+    first = fit_calibration(*inputs, SIZE, scan_r_deg=0.0)
+    second = fit_calibration(*inputs, SIZE, scan_r_deg=0.0, nominal_tag_height_mm=107.0)
     assert abs(first["distance_mm"] - 250) < 0.01
     assert abs(second["distance_mm"] - first["distance_mm"]) < 0.01
     assert abs(second["tray_height_mm"] - first["tray_height_mm"] - 7) < 0.01
@@ -458,28 +507,28 @@ def test_offset_gauge_changes_camera_translation_but_not_physical_distance():
 def test_out_of_range_distance_is_recovered_then_refused_without_boundary_clipping():
     inputs = synthetic(distance=268, noise=0)
     with pytest.raises(ValueError, match="nominal difference"):
-        fit_calibration(*inputs, SIZE)
-    unaccepted = fit_calibration(*inputs, SIZE, distance_tolerance_mm=30)
+        fit_calibration(*inputs, SIZE, scan_r_deg=0.0)
+    unaccepted = fit_calibration(*inputs, SIZE, scan_r_deg=0.0, distance_tolerance_mm=30)
     assert abs(unaccepted["distance_mm"] - 268) < 0.01
 
 
 def test_holdout_pixels_cannot_change_fitted_model_or_distance():
     inputs = list(synthetic(noise=0))
-    before = fit_calibration(*inputs, SIZE)
+    before = fit_calibration(*inputs, SIZE, scan_r_deg=0.0)
     inputs[1] = inputs[1].copy()
     inputs[1][list(VALIDATION_INDICES)] += [0.2, -0.2]
-    after = fit_calibration(*inputs, SIZE)
+    after = fit_calibration(*inputs, SIZE, scan_r_deg=0.0)
     for field in ("camera_matrix", "distortion", "rotation", "translation", "distance_mm"):
         np.testing.assert_array_equal(after[field], before[field])
     assert after["rms_mm"]["held_out"] > before["rms_mm"]["held_out"]
     inputs[1][VALIDATION_INDICES[0]] += [40, 0]
     with pytest.raises(ValueError, match="RMS"):
-        fit_calibration(*inputs, SIZE)
+        fit_calibration(*inputs, SIZE, scan_r_deg=0.0)
 
 
 def test_reference_residuals_are_measured_at_each_own_height():
     inputs = synthetic(noise=0)
-    result = fit_calibration(*inputs, SIZE)
+    result = fit_calibration(*inputs, SIZE, scan_r_deg=0.0)
     references, pixels = inputs[2:]
     expected_heights = references[:, 2] + 100 - result["distance_mm"]
     assert np.ptp(expected_heights) > 1
@@ -522,7 +571,7 @@ def test_cancel_during_joint_distance_search_stops_refinement():
         return calls >= 520
 
     with pytest.raises(RuntimeError, match="cancelled"):
-        fit_calibration(*inputs, SIZE, cancelled=cancelled)
+        fit_calibration(*inputs, SIZE, scan_r_deg=0.0, cancelled=cancelled)
     assert calls == 520
 
 
@@ -772,6 +821,7 @@ def test_scan_collects_exact_grid_and_five_frame_medians_without_commanding_cont
     assert sent["tag_points"] == expected
     assert sent["tag_pixels"] == [[100 + point[0] / 10, 80] for point in expected]
     assert sent["tray_points"] == [[-107, -335, 24], [39, -187, 22]]
+    assert sent["scan_r_deg"] == 0  # The corner R, not either contact R.
     assert [move[:3] for move in rig.moves] == expected[1:]
     assert rig.zones == [("enter", "tray"), ("finish", "tray", {})]
     assert len(rig.artifacts) == 1
@@ -948,6 +998,7 @@ def test_grid_uses_exact_first_pose_23_guarded_moves_and_retains_zone(authority_
         [200 + 20 * col, 20 * row, z] for z in (50, 90) for row in range(3) for col in range(4)
     ]
     assert authority_rig.vision.reads == 125  # 24*5 arm frames plus5 tray frames.
+    assert authority_rig.vision.calls[-1][1]["scan_r_deg"] == 0
     assert authority_rig.zones.snapshot()["scan"]["device"] == "robot"
     assert authority_rig.zones.snapshot()["scan"]["status"] == "occupied"
 
@@ -1293,10 +1344,21 @@ def test_rendered_rehearsal_grid_fits_through_the_real_marker_detector():
             [pose[:3] for _, pose in DEMO_CALIBRATION_REFERENCES],
             [markers[identity] for identity, _ in DEMO_CALIBRATION_REFERENCES],
             DEMO_CALIBRATION_SIZE,
+            scan_r_deg=0.0,
         )
         assert abs(model["distance_mm"] - 246) <= 10
         assert max(model["rms_mm"].values()) <= 1
         assert source.configuration.devices == (DEMO_CALIBRATION_DEVICE,)
+        # The fitted model passes the marker drift check at a pose inside the grid.
+        robot.state["actual"] = [230.0, 20.0, 70.0, 0.0]
+        result = drift_proof(
+            {**model, "camera_device": DEMO_CALIBRATION_DEVICE, "created_at": 1.0},
+            robot.state["actual"],
+            detect_markers(source.read(1)),
+            list(DEMO_CALIBRATION_SIZE),
+            device=DEMO_CALIBRATION_DEVICE,
+        )
+        assert result["passed"] and result["distance_px"] < 1
     finally:
         source.close()
     with pytest.raises(FrameError, match="closed"):
@@ -1499,6 +1561,7 @@ timeout_s=120
     assert "scan" in reports[-1]["zones"]  # End-of-scan occupancy is not a departure proof.
     assert connections and evidence["model"] is not None
     model = evidence["model"]
+    assert model["schema"] == 2 and model["scan_r_deg"] == 0
     assert model["points"]["validation_indices"] == list(VALIDATION_INDICES)
     assert len(model["points"]["tag_flange_mm"]) == 24
     assert max(model["rms_mm"].values()) <= 1

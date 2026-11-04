@@ -12,6 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import cv2
 import numpy as np
 from flask import Flask, Response, jsonify, request
 from PIL import Image
@@ -37,11 +38,183 @@ from vision.calibration import (
 from vision.frames import DemoSource, FrameError, Go2RTCSource, validate_camera
 from vision.localizer import Detection, Localizer, draw_detections
 from vision.qr import DetectionCancelled, detect_qr_codes
+from vision.tray import cross_check_slots, locate_tray, validate_tray
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/vision"
 DEFAULT_WEIGHTS = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
 MAX_RESULT_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 16 * 1024
+
+
+def _slot_arguments(args):
+    """Validate bounded data, never a server-side tray filename."""
+    if set(args) != {"camera", "tray", "targets", "axis"}:
+        raise ValueError("Slot observation needs camera, tray, targets and axis.")
+    if args["axis"] not in ("long", "short"):
+        raise ValueError("Chip axis must be explicitly long or short.")
+    tray = validate_tray(args["tray"])
+    targets = args["targets"]
+    ids = {slot["id"] for slot in tray["slots"]}
+    if not isinstance(targets, dict) or not 1 <= len(targets) <= 128:
+        raise ValueError("Slot observation requires explicit taught XY targets.")
+    for ident, point in targets.items():
+        if (
+            ident not in ids
+            or not isinstance(point, list)
+            or len(point) != 2
+            or any(
+                type(value) not in (int, float)
+                or not -1_000_000 <= value <= 1_000_000
+                or not math.isfinite(value)
+                for value in point
+            )
+        ):
+            raise ValueError("Slot targets must name configured slots with finite taught XY.")
+    # Match ServiceClient's complete JSON envelope and encoding, including whitespace.
+    if (
+        len(json.dumps({"action": "observe_slots", **args}, allow_nan=False).encode())
+        > MAX_REQUEST_BYTES
+    ):
+        raise ValueError("Slot command exceeds the complete 16 KiB request limit.")
+    return tray
+
+
+def _slot_observations(image, model, location, detections, axis, requested=None):
+    """Associate complete current-frame masks with visible grooves in robot XY.
+
+    An arm box overlapping a groove, a clipped mask, or competing assignments
+    prevents an empty/present assertion. Image rectangle angles are not used.
+    """
+    if (
+        not isinstance(detections, dict)
+        or detections.get("image_size") != {"width": image.width, "height": image.height}
+        or detections.get("coordinate_system") != "oriented_original_image_pixels"
+        or not isinstance(detections.get("detections"), list)
+        or len(detections["detections"]) > 128
+    ):
+        raise ValueError("Incomplete current-frame detector evidence.")
+    requested = set(location["slots"]) if requested is None else set(requested)
+    slots, pixels = {}, {}
+    for ident, geometry in location["slots"].items():
+        segment = np.asarray(geometry["centerline_xy_mm"], np.float64)
+        vector = segment[1] - segment[0]
+        unit = vector / np.linalg.norm(vector)
+        normal = np.array([-unit[1], unit[0]])
+        margin = geometry["width_mm"] / 2 + location["tolerance_mm"]
+        start, end = segment[0] - unit * margin, segment[1] + unit * margin
+        polygon = np.array(
+            [
+                start + normal * margin,
+                end + normal * margin,
+                end - normal * margin,
+                start - normal * margin,
+            ]
+        )
+        slots[ident] = cv2.convexHull(polygon.astype(np.float32))
+        if ident not in requested:
+            continue
+        xyz = np.column_stack((polygon, np.full(4, model["tray_height_mm"])))
+        rotation = np.asarray(model["rotation"], np.float64)
+        translation = np.asarray(model["translation"], np.float64)
+        depth = (xyz @ cv2.Rodrigues(rotation)[0].T + translation)[:, 2]
+        projected = cv2.projectPoints(
+            xyz,
+            rotation,
+            translation,
+            np.asarray(model["camera_matrix"], np.float64),
+            np.asarray(model["distortion"], np.float64),
+        )[0].reshape(-1, 2)
+        if (
+            not np.isfinite(projected).all()
+            or np.any(depth <= 0)
+            or any(
+                not 0 < x < image.width - 1 or not 0 < y < image.height - 1 for x, y in projected
+            )
+        ):
+            raise ValueError("A requested groove is not fully visible in the current frame.")
+        pixels[ident] = cv2.convexHull(projected.astype(np.float32))
+    found = {ident: [] for ident in requested}
+    counts = {}
+    for item in detections["detections"]:
+        if not isinstance(item, dict) or item.get("label") not in ("Chip", "Robotic Arm"):
+            raise ValueError("Unknown detector class in slot evidence.")
+        label = item["label"]
+        counts[label] = counts.get(label, 0) + 1
+        confidence = item.get("confidence")
+        if type(confidence) not in (int, float) or not 0 < confidence <= 1:
+            raise ValueError("Invalid detector confidence.")
+        if label == "Robotic Arm":
+            box = item.get("xyxy")
+            if (
+                not isinstance(box, (list, tuple))
+                or len(box) != 4
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in box)
+                or not (
+                    0 <= box[0] < box[2] <= image.width and 0 <= box[1] < box[3] <= image.height
+                )
+            ):
+                raise ValueError("Incomplete arm occlusion evidence.")
+            x0, y0, x1, y1 = box
+            hull = np.float32([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+            if any(cv2.intersectConvexConvex(hull, groove)[0] > 0 for groove in pixels.values()):
+                raise ValueError("An arm occludes a requested groove.")
+            continue
+        polygon = item.get("polygon")
+        if (
+            not isinstance(polygon, (list, tuple))
+            or not 3 <= len(polygon) <= 4096
+            or any(
+                not isinstance(point, (list, tuple))
+                or len(point) != 2
+                or any(
+                    type(value) not in (int, float) or not math.isfinite(value) for value in point
+                )
+                or not (0 < point[0] < image.width - 1 and 0 < point[1] < image.height - 1)
+                for point in polygon
+            )
+        ):
+            raise ValueError("A chip mask is missing, clipped or invalid.")
+        mapped = np.float32([robot_xy(model, point, image.size) for point in polygon])
+        hull = cv2.convexHull(mapped)
+        if cv2.contourArea(hull) <= 1e-6:
+            raise ValueError("Degenerate chip geometry.")
+        matches = [
+            ident
+            for ident, groove in slots.items()
+            if cv2.intersectConvexConvex(hull, groove)[0] > 0
+        ]
+        if not requested.intersection(matches):
+            continue
+        if len(matches) > 1:
+            raise ValueError("One chip overlaps multiple configured grooves.")
+        if not matches:
+            continue
+        center, size, angle = cv2.minAreaRect(mapped)
+        if min(size) <= 1e-6 or abs(size[0] - size[1]) <= max(size) * 0.01:
+            raise ValueError("Chip axis is ambiguous.")
+        # OpenCV's width axis is mapped into the calibrated robot plane first.
+        if (size[1] > size[0]) == (axis == "long"):
+            angle += 90
+        found[matches[0]].append(
+            {
+                "state": "present",
+                "center_xy_mm": list(center),
+                "angle_deg": angle % 180,
+                "reason": None,
+            }
+        )
+    if detections.get("counts") != counts:
+        raise ValueError("Detector counts do not match the current frame's masks.")
+    result = {}
+    for ident, candidates in found.items():
+        if len(candidates) > 1:
+            raise ValueError("Multiple chips occupy a requested groove.")
+        result[ident] = (
+            candidates[0]
+            if candidates
+            else {"state": "empty", "center_xy_mm": None, "angle_deg": None, "reason": None}
+        )
+    return result
 
 
 class _VisionLease(Lease):
@@ -205,6 +378,13 @@ class VisionService:
             "default": DRIFT_LIMIT_PX,
             "description": "Maximum distance from the detected to the expected marker 4 center.",
         }
+        slots = copy.deepcopy(params)
+        slots["properties"].update(
+            tray={"type": "object", "description": "Bounded tray model data, never a file path."},
+            targets={"type": "object", "minProperties": 1, "maxProperties": 128},
+            axis={"type": "string", "enum": ["long", "short"]},
+        )
+        slots["required"] += ["tray", "targets", "axis"]
         return describe(
             service="vision",
             version="1.0",
@@ -218,6 +398,7 @@ class VisionService:
                     "read_markers": command(params),
                     "calibrate_camera": command(calibration),
                     "check_calibration": command(drift),
+                    "observe_slots": command(slots),
                 }
                 if self.camera_count
                 else {}
@@ -322,6 +503,8 @@ class VisionService:
             }
         if action == "check_calibration":
             allowed |= {"flange_mm", "limit_px"}
+        if action == "observe_slots":
+            allowed |= {"tray", "targets", "axis"}
         if (
             action
             not in {
@@ -330,6 +513,7 @@ class VisionService:
                 "read_markers",
                 "calibrate_camera",
                 "check_calibration",
+                "observe_slots",
             }
             or not isinstance(args, dict)
             or set(args) - allowed
@@ -337,6 +521,11 @@ class VisionService:
         ):
             raise ValueError("Expected a configured vision command with its declared parameters.")
         camera = validate_camera(args["camera"], self.camera_count)
+        if action == "observe_slots":
+            _slot_arguments(args)
+            if camera > len(self._devices):
+                raise ValueError("Slot evidence requires a configured stable camera port identity.")
+            camera_device(self._devices[camera - 1])
         if action == "calibrate_camera":
             if set(args) != allowed:
                 raise ValueError(
@@ -459,6 +648,44 @@ class VisionService:
         image = self.frames.read(job["camera"])
         if job["cancel"].is_set():
             raise DetectionCancelled()
+        if job["action"] == "observe_slots":
+            args = job["args"]
+            device = self._devices[job["camera"] - 1]
+            model = self.calibrations.load(device)
+            if model is None:
+                raise ValueError("Slot evidence requires an installed camera calibration.")
+            location = locate_tray(np.asarray(image), model, args["tray"], device=device)
+            if job["cancel"].is_set():
+                raise DetectionCancelled()
+            _, detections = self._model.predict(image)
+            slots = _slot_observations(
+                image, model, location, detections, args["axis"], args["targets"]
+            )
+            location["slots"] = {name: location["slots"][name] for name in args["targets"]}
+            evidence = {
+                name: {
+                    "state": item["state"],
+                    **(
+                        {"center_xy_mm": item["center_xy_mm"]} if item["state"] == "present" else {}
+                    ),
+                }
+                for name, item in slots.items()
+            }
+            cross_check_slots(location, taught_stations=args["targets"], chips=evidence)
+            if job["cancel"].is_set():
+                raise DetectionCancelled()
+            result = {
+                "camera": job["camera"],
+                "camera_device": device,
+                "calibrated": True,
+                "model_created_at": model["created_at"],
+                "image_size": {"width": image.width, "height": image.height},
+                "frame_sha256": hashlib.sha256(image.tobytes()).hexdigest(),
+                "read_at": self._wall_clock(),
+                "axis": args["axis"],
+                "slots": slots,
+            }
+            return self._bounded_result(result), image
         if job["action"] == "calibrate_camera":
             from vision.calibration import fit_calibration
 
@@ -628,14 +855,14 @@ class VisionService:
         self._finish(job, result, image, outcome, error)
 
     def _finish(self, job, result, image, outcome, error):
-        if job["action"] == "check_calibration" and outcome == "ok":
+        if job["action"] in {"check_calibration", "observe_slots"} and outcome == "ok":
             try:
                 with self._commit(job):
                     return self._finish_result(job, result, image, outcome, error)
             except (ServiceError, DetectionCancelled):
                 outcome, error = (
                     "stopped",
-                    ServiceError(409, "Drift check lost control; its proof was discarded."),
+                    ServiceError(409, "Vision check lost control; its proof was discarded."),
                 )
         return self._finish_result(job, result, image, outcome, error)
 

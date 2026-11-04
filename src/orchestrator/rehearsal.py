@@ -1,7 +1,9 @@
 """Own isolated loopback demo services. Never load production endpoint settings."""
 
+import copy
 import errno
 import ipaddress
+import json
 import math
 import os
 import runpy
@@ -128,6 +130,307 @@ class _DemoCalibrationFrames:
             self._closed = True
 
 
+# These fixtures are an invented scene, not measured lab geometry or defaults.
+DEMO_TRAY_INITIAL_FLANGE = (210.0, 10.0, 180.0, 0.0)
+DEMO_TRAY_CENTERS = {"source": (220.0, 20.0), "target": (260.0, 20.0)}
+DEMO_TRAY_HEIGHT = -46.0
+DEMO_TRAY_GRIP = 400
+DEMO_TRAY_RELEASE = 900
+
+
+def demo_tray_document():
+    """Return an independent, explicit synthetic tray document."""
+    return {
+        "schema": 1,
+        "name": "Owned synthetic rehearsal tray",
+        "dictionary": "DICT_4X4_50",
+        "origin_marker_id": 1,
+        "plate_size_mm": [210.0, 290.0],
+        "marker_size_mm": 24.0,
+        "groove_width_mm": 8.0,
+        "tolerance_mm": 2.0,
+        "markers": [
+            {"id": ident, "center_mm": [x, y]}
+            for ident, x, y in ((1, 20, 20), (2, 190, 20), (7, 20, 270), (0, 190, 270))
+        ],
+        "slots": [
+            {
+                "id": name,
+                "centerline_mm": [[x - 140, y + 100], [x - 140, y + 140]],
+                "reference_mm": [x - 140, y + 120],
+            }
+            for name, (x, y) in DEMO_TRAY_CENTERS.items()
+        ],
+    }
+
+
+def write_demo_tray_configuration(directory):
+    """Create one private synthetic fixture directory; return settings, never apply them.
+
+    The caller must explicitly select these settings and arrange initial robot
+    readiness. No service address, credential, camera endpoint or host data is read.
+    """
+    from .stations import AXES, StationStore, Workspace
+    from .tool import Pose
+
+    directory = Path(directory)
+    directory.mkdir(mode=0o700)
+
+    def write(name, text):
+        path = directory / name
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        return str(path)
+
+    tray = demo_tray_document()
+    text = "\n".join(
+        f"{key} = {json.dumps(value)}"
+        for key, value in tray.items()
+        if key not in {"markers", "slots"}
+    )
+    for section, fields in (
+        ("markers", ("id", "center_mm")),
+        ("slots", ("id", "centerline_mm", "reference_mm")),
+    ):
+        for entry in tray[section]:
+            text += f"\n\n[[{section}]]\n" + "\n".join(
+                f"{key} = {json.dumps(entry[key])}" for key in fields
+            )
+    workspace = Workspace(
+        {"x_mm": [140, 350], "y_mm": [-120, 170], "z_mm": [-100, 100], "r_deg": [-90, 90]}
+    )
+    stations = StationStore(workspace, directory / "stations.toml")
+    for name, (x, y) in DEMO_TRAY_CENTERS.items():
+        stations.save(name, Pose(x, y, DEMO_TRAY_HEIGHT, 0), approach_mm=20, zone="tray")
+    stations.save("drift-check", Pose(210, 10, 34, 0), approach_mm=20, zone="tray")
+    settings = {
+        "MG400_ORCH_TRAY_FILE": write("tray.toml", text + "\n"),
+        "MG400_ORCH_TRAY_CAMERA": "1",
+        "MG400_ORCH_TRAY_GRIP": str(DEMO_TRAY_GRIP),
+        "MG400_ORCH_TRAY_RELEASE": str(DEMO_TRAY_RELEASE),
+        "MG400_ORCH_CHIP_AXIS": "long",
+        "MG400_ORCH_CHIP_R_OFFSET_DEG": "0",
+        "MG400_ORCH_CHIP_R_MIN_DEG": "-20",
+        "MG400_ORCH_CHIP_R_MAX_DEG": "20",
+        "MG400_ORCH_STATIONS_FILE": str(stations.path),
+        "MG400_ORCH_TOOL_FILE": write("tool.toml", "offset_mm = [0, 0, 146]\n"),
+        "MG400_ORCH_PRE_GRIP": "900",
+        "MG400_ORCH_ZONES_FILE": write(
+            "zones.toml", '[zones.tray]\nowner = "robot"\nconditions = []\n'
+        ),
+    }
+    for field, axis in AXES.items():
+        for index, bound in enumerate(("MIN", "MAX")):
+            unit = "DEG" if axis == "R" else "MM"
+            settings[f"MG400_ORCH_{axis}_{bound}_{unit}"] = str(workspace.bounds[field][index])
+    return settings
+
+
+class DemoTrayScene(_DemoCalibrationFrames):
+    """Owned RGB tray/arm/chip pixels and matching synthetic model, with no I/O.
+
+    Gripper completions update this scene only at explicitly taught synthetic
+    targets. The localizer measures colored chip contours in the supplied frame,
+    so an old frame cannot silently obtain a later occupancy result.
+    """
+
+    def __init__(self, robot_state_provider, *, failure=None):
+        if failure not in {
+            None,
+            "no-source",
+            "occupied-target",
+            "no-target",
+            "source-remains",
+            "moved-camera",
+        }:
+            raise ValueError("Unknown synthetic tray failure.")
+        super().__init__(robot_state_provider)
+        self._lock = threading.RLock()
+        self.failure = failure
+        self._occupied = {"source"} if failure != "no-source" else set()
+        if failure == "occupied-target":
+            self._occupied.add("target")
+        self._carrying = False
+        self._calibration = self._make_calibration()
+        if failure == "moved-camera":
+            self._translation[0] += 10
+        self._tray.fill(255)
+        for marker in demo_tray_document()["markers"]:
+            x, y = marker["center_mm"]
+            self._render(self._tray, marker["id"], (x + 140, y - 120, DEMO_TRAY_HEIGHT))
+
+    @property
+    def tray(self):
+        return demo_tray_document()
+
+    @property
+    def occupancy(self):
+        with self._lock:
+            return {name: name in self._occupied for name in DEMO_TRAY_CENTERS}
+
+    def _project(self, points):
+        import cv2
+        import numpy as np
+
+        return cv2.projectPoints(
+            np.asarray(points, dtype=np.float64),
+            self._rotation,
+            self._translation,
+            self._matrix,
+            self._distortion,
+        )[0].reshape(-1, 2)
+
+    def _make_calibration(self):
+        from vision.calibration import VALIDATION_INDICES, validate_model
+
+        points = [
+            [x, y, z]
+            for z in (160.0, 200.0)
+            for y in (0.0, 20.0, 40.0)
+            for x in (200.0, 220.0, 240.0, 260.0)
+        ]
+        references = [[x, y, 100.0] for _, (x, y, _z, _r) in DEMO_CALIBRATION_REFERENCES]
+        training = [i for i in range(24) if i not in VALIDATION_INDICES]
+        return validate_model(
+            {
+                "schema": 2,
+                "camera_device": DEMO_CALIBRATION_DEVICE,
+                "camera_matrix": self._matrix.tolist(),
+                "distortion": self._distortion.tolist(),
+                "rotation": self._rotation.tolist(),
+                "translation": self._translation.tolist(),
+                "tray_height_mm": DEMO_TRAY_HEIGHT,
+                "distance_mm": 246.0,
+                "nominal_tag_height_mm": 100.0,
+                "nominal_distance_mm": 246.0,
+                "rms_limit_mm": 1.0,
+                "image_size": list(DEMO_CALIBRATION_SIZE),
+                "rms_mm": {"held_out": 0.0, "tray": 0.0},
+                "created_at": 1.0,
+                "scan_r_deg": 0.0,
+                "points": {
+                    "tag_flange_mm": points,
+                    "tag_pixels": self._project([[x, y, z + 100] for x, y, z in points]).tolist(),
+                    "tray_tip_xy_flange_z_mm": references,
+                    "tray_pixels": self._project(
+                        [[x, y, DEMO_TRAY_HEIGHT] for x, y, _ in references]
+                    ).tolist(),
+                    "training_indices": training,
+                    "validation_indices": list(VALIDATION_INDICES),
+                    "inlier_indices": training,
+                },
+                "errors_mm": {"held_out": [0.0] * 6, "tray": [0.0] * len(references)},
+            }
+        )
+
+    def calibration_model(self):
+        return copy.deepcopy(self._calibration)
+
+    def read(self, camera):
+        import cv2
+        import numpy as np
+        from PIL import Image
+
+        with self._lock:
+            pixels = np.asarray(super().read(camera)).copy()
+            robot = self._robot_state_provider()
+            # Dashboard demos own one resource per service. Read the scene of
+            # that same owned robot instead of creating an independent chip.
+            owned_scene = getattr(robot, "_tray_scene", None)
+            occupied = owned_scene.occupancy if owned_scene is not None else self.occupancy
+            for name in sorted(name for name, present in occupied.items() if present):
+                x, y = DEMO_TRAY_CENTERS[name]
+                polygon = self._project(
+                    [
+                        [x + dx, y + dy, DEMO_TRAY_HEIGHT]
+                        for dx, dy in ((-6, -2), (6, -2), (6, 2), (-6, 2))
+                    ]
+                )
+                cv2.fillConvexPoly(pixels, np.rint(polygon).astype(np.int32), (200, 30, 30))
+            return Image.fromarray(pixels)
+
+    def localizer(self):
+        return _DemoTrayLocalizer()
+
+    @staticmethod
+    def _slot(state):
+        actual = state.get("actual") if isinstance(state, dict) else None
+        if not isinstance(actual, (list, tuple)) or len(actual) < 4:
+            return None
+        if any(type(item) not in (int, float) or not math.isfinite(item) for item in actual[:4]):
+            return None
+        for name, (x, y) in DEMO_TRAY_CENTERS.items():
+            if math.dist(actual[:3], (x, y, 100.0)) <= 0.1:
+                return name
+        return None
+
+    def collector_answer(self, request):
+        if request.get("operation") == "initialize":
+            return {"init": 1, "state": 1, "position": 1000}
+        target = request["position"]
+        robot = self._robot_state_provider()
+        slot = self._slot(robot.snapshot()) if robot is not None else None
+        with self._lock:
+            if target == DEMO_TRAY_GRIP and slot in self._occupied:
+                return {"init": 1, "state": 2, "position": 600}
+        return {"init": 1, "state": 1, "position": target}
+
+    def gripper_completed(self, target, state):
+        slot = self._slot(state)
+        outcome = state.get("gripper", {}).get("outcome")
+        with self._lock:
+            if target == DEMO_TRAY_GRIP and outcome == "contact" and slot in self._occupied:
+                self._carrying = True
+                if self.failure != "source-remains":
+                    self._occupied.remove(slot)
+            elif target == DEMO_TRAY_RELEASE and outcome == "arrived" and self._carrying:
+                if slot is not None and self.failure != "no-target":
+                    self._occupied.add(slot)
+                self._carrying = False
+
+
+class _DemoTrayLocalizer:
+    def predict(self, image):
+        import cv2
+        import numpy as np
+
+        from vision.localizer import Detection, draw_detections
+
+        pixels = np.asarray(image)
+        mask = (
+            (pixels[:, :, 0] == 200) & (pixels[:, :, 1] == 30) & (pixels[:, :, 2] == 30)
+        ).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        detections = []
+        for contour in contours:
+            if cv2.contourArea(contour) <= 1:
+                continue
+            (x, y), size, angle = cv2.minAreaRect(contour)
+            polygon = cv2.boxPoints(((x, y), size, angle))
+            lower, upper = polygon.min(axis=0), polygon.max(axis=0)
+            detections.append(
+                Detection(
+                    0,
+                    "Chip",
+                    1.0,
+                    (*lower.tolist(), *upper.tolist()),
+                    (float(x), float(y)),
+                    tuple(map(tuple, polygon.tolist())),
+                    float(angle),
+                    tuple(size),
+                )
+            )
+        from dataclasses import asdict
+
+        return draw_detections(image, detections), {
+            "image_size": {"width": image.width, "height": image.height},
+            "coordinate_system": "oriented_original_image_pixels",
+            "counts": {"Chip": len(detections)} if detections else {},
+            "detections": [asdict(item) for item in detections],
+        }
+
+
 class _DemoClient:
     """A fresh adapter that cannot outlive its owned rehearsal services."""
 
@@ -205,11 +508,17 @@ class _DemoClient:
 
 
 class _DemoRobot(RobotPanelState):
-    def __init__(self, host, lock_directory, gripper_feedback):
+    def __init__(self, host, lock_directory, gripper_feedback, *, tray_scene=None):
+        self._tray_scene = tray_scene
         gripper = WebGripper(gripper_feedback)
         gripper.poll()
         super().__init__(host, gripper=gripper)
         self._ownership = ControllerOwnership(host, directory=lock_directory)
+
+    def _move_gripper(self, target):
+        super()._move_gripper(target)
+        if self._tray_scene is not None:
+            self._tray_scene.gripper_completed(target, self.snapshot())
 
     def describe(self):
         return {**super().describe(), "demo": True}
@@ -231,6 +540,7 @@ class Rehearsal:
         self.simulator = self.robot_state = None
         self._robot_state_provider = robot_state_provider
         self.calibration_references_file = None
+        self.tray_scene = None
         self._stack = ExitStack()
         self._condition = threading.Condition(threading.RLock())
         self._entered = self._starting = self._active = False
@@ -245,6 +555,14 @@ class Rehearsal:
             self._entered = self._starting = True
         try:
             self.directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+            tray_path = os.environ.get("MG400_ORCH_TRAY_FILE")
+            if tray_path and {"robot", "vision"} & set(self.required):
+                from vision.tray import load_tray
+
+                if load_tray(tray_path) != demo_tray_document():
+                    raise ValueError("Tray rehearsal requires its explicit synthetic tray fixture.")
+                self.tray_scene = DemoTrayScene(self._owned_robot_state)
+                self._stack.callback(self.tray_scene.close)
             for name in self.required:
                 getattr(self, f"_{name}")()
                 self._stack.callback(self.clients[name].close)
@@ -287,6 +605,11 @@ class Rehearsal:
                 client.close()
             raise
 
+    def _owned_robot_state(self):
+        if self.robot_state is not None:
+            return self.robot_state
+        return None if self._robot_state_provider is None else self._robot_state_provider()
+
     def _robot(self):
         # SIM-01 uses the controller's three standard ports. Bind those ports
         # atomically on a fresh numeric loopback address; never reuse a live rig.
@@ -299,6 +622,9 @@ class Rehearsal:
             # Set only the owned simulation's initial state. Never send an
             # initialization command or use a host collector path.
             simulator.collector.set(init=1, state=1, position=1000)
+            if self.tray_scene is not None:
+                simulator.controller.pose = DEMO_TRAY_INITIAL_FLANGE
+                simulator.collector.answer = self.tray_scene.collector_answer
             try:
                 simulator.start()
             except OSError as exc:
@@ -314,7 +640,9 @@ class Rehearsal:
         if not panel_path.is_file():
             raise RuntimeError("Robot rehearsal requires the repository checkout's control panel.")
         panel_server = runpy.run_path(str(panel_path))["PanelServer"]
-        state = self.robot_state = _DemoRobot(host, self.directory / "controller-locks", feedback)
+        state = self.robot_state = _DemoRobot(
+            host, self.directory / "controller-locks", feedback, tray_scene=self.tray_scene
+        )
         self._stack.callback(state.close)
         server = panel_server(("127.0.0.1", 0), state)
         self._serve(server)
@@ -416,12 +744,7 @@ class Rehearsal:
 
         from vision.service import VisionService, create_app
 
-        def robot_state():
-            if self.robot_state is not None:
-                return self.robot_state
-            return None if self._robot_state_provider is None else self._robot_state_provider()
-
-        frames = _DemoCalibrationFrames(robot_state)
+        frames = self.tray_scene or _DemoCalibrationFrames(self._owned_robot_state)
         self._stack.callback(frames.close)
         directory = self.directory / "vision-calibration"
         directory.mkdir(mode=0o750)
@@ -448,9 +771,11 @@ class Rehearsal:
         service = VisionService(
             demo=True,
             frames=frames,
-            localizer_factory=EmptyModel,
+            localizer_factory=(self.tray_scene.localizer if self.tray_scene else EmptyModel),
             calibration_directory=directory,
         )
+        if self.tray_scene is not None:
+            service.calibrations.save(DEMO_CALIBRATION_DEVICE, self.tray_scene.calibration_model())
         self._stack.callback(service.close)
         service.start()
         server = make_server("127.0.0.1", 0, create_app(service, token=""), threaded=True)

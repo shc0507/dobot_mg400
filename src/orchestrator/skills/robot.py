@@ -19,6 +19,14 @@ TRANSFER_SETTINGS = BOUND_SETTINGS | {
     "MG400_ORCH_STATIONS_FILE",
     "MG400_ORCH_TOOL_FILE",
     "MG400_ORCH_PRE_GRIP",
+    "MG400_ORCH_TRAY_FILE",
+    "MG400_ORCH_TRAY_CAMERA",
+    "MG400_ORCH_TRAY_GRIP",
+    "MG400_ORCH_TRAY_RELEASE",
+    "MG400_ORCH_CHIP_AXIS",
+    "MG400_ORCH_CHIP_R_OFFSET_DEG",
+    "MG400_ORCH_CHIP_R_MIN_DEG",
+    "MG400_ORCH_CHIP_R_MAX_DEG",
 }
 
 
@@ -88,6 +96,9 @@ class _Transfer:
         ).load()
         self.offset = load_tool(os.environ.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
         self.owner = self.instance = None
+        self._station_names = {id(station): name for name, station in self.stations.items()}
+        self._measured_source = None
+        self._planned = False
 
     def check_speed(self):
         # Read-only users of state() do not need motion capabilities. Planning
@@ -186,6 +197,47 @@ class _Transfer:
                 stack.extend((other, False) for other in reversed(self.stations[current]["via"]))
         return route
 
+    def measured_source(self, name, *, x_mm, y_mm, r_deg):
+        """Copy one validated observed source, retaining its taught physical constraints.
+
+        The tray skill supplies calibrated robot XY and an explicitly resolved
+        flange R. This method does not infer a chip angle, target, height or route.
+        Configure the copy once, before complete route preflight. Stored stations
+        and the ordinary route lookup remain unchanged.
+        """
+        if self._planned or self._measured_source is not None:
+            raise ValueError("Configure one measured source before planning the transfer.")
+        route = self.route(name)
+        taught = route[-1]
+        observed = {
+            **taught,
+            "x_mm": finite(x_mm, "measured source x_mm"),
+            "y_mm": finite(y_mm, "measured source y_mm"),
+            "r_deg": finite(r_deg, "measured source r_deg"),
+            "via": list(taught["via"]),
+        }
+        for approach in (False, True):
+            fingertip_to_flange(self._inside(self.pose(observed, approach=approach)), self.offset)
+        self._station_names[id(observed)] = name
+        self._measured_source = observed
+        try:
+            # A measured point may move along a groove, but cannot acquire a
+            # second logical station identity at contact or departure height.
+            for approach in (False, True):
+                flange = fingertip_to_flange(self.pose(observed, approach=approach), self.offset)
+                self.starting_station(
+                    {"actual": [flange.x_mm, flange.y_mm, flange.z_mm, flange.r_deg]},
+                    preferred=observed,
+                )
+        except BaseException:
+            del self._station_names[id(observed)]
+            self._measured_source = None
+            raise
+        return [*route[:-1], observed]
+
+    def same_station(self, first, second):
+        return self._station_names[id(first)] == self._station_names[id(second)]
+
     def move(self, pose, expected=None):
         self.check_speed()
         self.state(expected)
@@ -228,22 +280,30 @@ class _Transfer:
             station["r_deg"],
         )
 
-    def starting_station(self, state):
+    def starting_station(self, state, *, preferred=None):
         matches = []
-        for station in self.stations.values():
+        stations = list(self.stations.values())
+        if self._measured_source is not None:
+            stations.append(self._measured_source)
+        for station in stations:
             self.ctx.check()
             if self.matches(state, self.pose(station)) or self.matches(
                 state, self.pose(station, approach=True)
             ):
                 matches.append(station)
-        if len(matches) != 1:
+        if len({self._station_names[id(station)] for station in matches}) != 1:
             raise ValueError(
                 "Position the robot at one unambiguous taught station or its approach "
                 "before starting a transfer."
             )
+        # Original and observed poses can share one logical station. A planned
+        # departure must still match its exact physical variant after a wait.
+        if preferred is not None and any(station is preferred for station in matches):
+            return preferred
         return matches[0]
 
     def plan(self, *routes):
+        self._planned = True
         self.check_speed()
         # Check complete routes, including conversions that a later leg needs,
         # before any arm, gripper or crucible stage command is admitted.
@@ -258,17 +318,18 @@ class _Transfer:
         plans = []
         for route in routes:
             destination = route[-1]
-            via = list(route[:-1]) if destination is not start else []
+            via = list(route[:-1]) if not self.same_station(destination, start) else []
             # A leading start waypoint is already visited. Keep every other
             # taught via in its declared order, including repeated later visits.
-            if via and via[0] is start:
+            if via and self.same_station(via[0], start):
                 via.pop(0)
             for station in (start, destination):
                 fingertip_to_flange(self._inside(self.pose(station, approach=True)), self.offset)
             departure = fingertip_to_flange(self.pose(start, approach=True), self.offset)
             if (
                 self.starting_station(
-                    {"actual": [departure.x_mm, departure.y_mm, departure.z_mm, departure.r_deg]}
+                    {"actual": [departure.x_mm, departure.y_mm, departure.z_mm, departure.r_deg]},
+                    preferred=start,
                 )
                 is not start
             ):
@@ -279,13 +340,13 @@ class _Transfer:
 
     def travel(self, route, zones, expected=None):
         state, _ = self.state(expected)
-        if self.starting_station(state) is not route.start:
+        if self.starting_station(state, preferred=route.start) is not route.start:
             raise RuntimeError("Robot left the planned starting station before travel.")
         zones.enter(route.start["zone"])
         # Zone admission may wait. Its earlier measured pose cannot authorize
         # a rise after the robot has moved away from the planned station.
         state, _ = self.state(expected)
-        if self.starting_station(state) is not route.start:
+        if self.starting_station(state, preferred=route.start) is not route.start:
             raise RuntimeError("Robot left the planned starting station during zone admission.")
         approach = self.pose(route.start, approach=True)
         if not self.matches(state, approach):

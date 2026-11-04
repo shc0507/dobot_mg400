@@ -91,7 +91,7 @@ def default_registry(*, calibration_reference_provider=None):
     from .crucible import load, unload
     from .recording import record
     from .robot import pick, place, transfer
-    from .vision import check_calibration
+    from .vision import check_calibration, find_chip, slot_state, tray_transfer
 
     registry = Registry()
 
@@ -124,6 +124,9 @@ def default_registry(*, calibration_reference_provider=None):
     registry.register("robot.stop", stop, services=("robot",))
     registry.register("sample.record", sample)
     registry.register("vision.check_calibration", check_calibration, services=("robot", "vision"))
+    registry.register("vision.find_chip", find_chip, services=("robot", "vision"))
+    registry.register("vision.slot_state", slot_state, services=("robot", "vision"))
+    registry.register("vision.tray_transfer", tray_transfer, services=("robot", "vision"))
     registry.register(
         "vision.calibrate",
         calibrate

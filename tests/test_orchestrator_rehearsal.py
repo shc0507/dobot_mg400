@@ -51,8 +51,22 @@ def wait_for(predicate, timeout=5):
 
 
 @pytest.mark.parametrize("path", RECIPES, ids=lambda path: path.name)
-def test_every_recipe_rehearses_without_hardware(tmp_path, path):
+def test_every_recipe_rehearses_without_hardware(tmp_path, path, monkeypatch):
     assert RECIPES
+    if path.name == "tray-transfer.toml":
+        from test_recipe_tray_transfer import run_tray_rehearsal
+
+        def no_port(*args, **kwargs):
+            pytest.fail("The new tray acceptance case must not bind or connect a port")
+
+        with monkeypatch.context() as patch:
+            for method in ("bind", "listen", "connect"):
+                patch.setattr(socket.socket, method, no_port)
+            result = run_tray_rehearsal(tmp_path, patch)
+        assert result["status"] == "completed", result
+        assert all(step["status"] == "completed" for step in result["row"]["steps"])
+        assert result["occupancy"] == {"source": False, "target": True}
+        return
     registry = default_registry()
     recipe = load_recipe(path, registry)
     identity = "orch-" + uuid.uuid4().hex
@@ -329,3 +343,191 @@ def test_fresh_client_io_does_not_hold_factory_lock_and_exit_drains_registered_c
             closer.join(2)
         else:
             demo.__exit__(None, None, None)
+
+
+@pytest.fixture
+def tray_scene(tmp_path, monkeypatch):
+    """Owned image/math fixtures: no sockets, device libraries, or native capture."""
+    import copy
+    import ctypes
+
+    import cv2
+
+    from orchestrator.rehearsal import DEMO_TRAY_INITIAL_FLANGE, DemoTrayScene
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("New tray rehearsal coverage must remain in-process")
+
+    monkeypatch.setattr(socket.socket, "bind", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(cv2, "VideoCapture", forbidden)
+    monkeypatch.setattr(ctypes, "CDLL", forbidden)
+
+    class Robot:
+        def __init__(self):
+            self.value = {
+                "demo": True,
+                "feedback_fresh": True,
+                "busy": False,
+                "actual": [*DEMO_TRAY_INITIAL_FLANGE, 1000],
+                "gripper": {"outcome": None},
+            }
+
+        def snapshot(self):
+            return copy.deepcopy(self.value)
+
+    robot = Robot()
+    scenes = []
+
+    def make(failure=None):
+        scene = DemoTrayScene(lambda: robot, failure=failure)
+        scenes.append(scene)
+        return scene, robot
+
+    yield make
+    for scene in scenes:
+        scene.close()
+
+
+def test_synthetic_tray_configuration_is_explicit_private_and_request_bounded(tray_scene, tmp_path):
+    import json
+    import os
+
+    from orchestrator.rehearsal import demo_tray_document, write_demo_tray_configuration
+    from orchestrator.stations import StationStore, Workspace
+    from vision.service import MAX_REQUEST_BYTES
+    from vision.tray import load_tray
+
+    before = dict(os.environ)
+    settings = write_demo_tray_configuration(tmp_path / "owned-fixture")
+    assert dict(os.environ) == before
+    assert not any("TOKEN" in name or name.endswith("_URL") for name in settings)
+    assert load_tray(settings["MG400_ORCH_TRAY_FILE"]) == demo_tray_document()
+    stations = StationStore(
+        Workspace.from_settings(settings), settings["MG400_ORCH_STATIONS_FILE"]
+    ).load()
+    assert set(stations) == {"source", "target", "drift-check"}
+    assert stations["drift-check"]["z_mm"] == 34
+    assert all(station["zone"] == "tray" for station in stations.values())
+    for key in ("TRAY_FILE", "TOOL_FILE", "STATIONS_FILE", "ZONES_FILE"):
+        assert Path(settings["MG400_ORCH_" + key]).stat().st_mode & 0o777 in {0o600, 0o640}
+    document = {
+        "action": "observe_slots",
+        "camera": 1,
+        "tray": demo_tray_document(),
+        "targets": {
+            name: [stations[name]["x_mm"], stations[name]["y_mm"]] for name in ("source", "target")
+        },
+        "axis": "long",
+    }
+    assert len(json.dumps(document, allow_nan=False).encode()) < MAX_REQUEST_BYTES
+    with pytest.raises(FileExistsError):
+        write_demo_tray_configuration(tmp_path / "owned-fixture")
+
+
+def test_synthetic_tray_pixels_match_model_markers_and_chip_geometry(tray_scene):
+    import hashlib
+
+    from vision.calibration import detect_markers, drift_proof, robot_xy
+    from vision.tray import locate_tray
+
+    scene, robot = tray_scene()
+    image = scene.read(1)
+    model = scene.calibration_model()
+    markers = detect_markers(image)
+    assert {marker["id"] for marker in markers} == {0, 1, 2, 4, 7}
+    proof = drift_proof(
+        model, robot.value["actual"][:4], markers, image.size, device=model["camera_device"]
+    )
+    assert proof["passed"] is True and proof["distance_px"] < 1
+    location = locate_tray(image, model, scene.tray, device=model["camera_device"])
+    assert set(location["slots"]) == {"source", "target"}
+    assert location["slots"]["source"]["reference_xy_mm"] == pytest.approx([220, 20], abs=0.5)
+    _, result = scene.localizer().predict(image)
+    assert result["counts"] == {"Chip": 1}
+    center = robot_xy(model, result["detections"][0]["center_xy"], image.size)
+    assert center == pytest.approx([220, 20], abs=0.5)
+    assert (
+        hashlib.sha256(image.tobytes()).digest() != hashlib.sha256(scene.read(1).tobytes()).digest()
+    )
+
+
+@pytest.mark.parametrize(
+    "failure,initial,final",
+    [
+        (None, {"source": True, "target": False}, {"source": False, "target": True}),
+        ("no-source", {"source": False, "target": False}, {"source": False, "target": False}),
+        ("occupied-target", {"source": True, "target": True}, {"source": False, "target": True}),
+        ("no-target", {"source": True, "target": False}, {"source": False, "target": False}),
+        ("source-remains", {"source": True, "target": False}, {"source": True, "target": True}),
+    ],
+)
+def test_synthetic_tray_occupancy_changes_only_on_completed_grips(
+    tray_scene, failure, initial, final
+):
+    scene, robot = tray_scene(failure)
+    assert scene.occupancy == initial
+    old_image = scene.read(1)
+    robot.value.update(actual=[220, 20, 100, 0, 600], gripper={"outcome": None})
+    scene.gripper_completed(400, robot.snapshot())
+    assert scene.occupancy == initial
+    answer = scene.collector_answer({"position": 400})
+    assert answer["state"] == (2 if initial["source"] else 1)
+    robot.value["gripper"]["outcome"] = "contact" if initial["source"] else "arrived"
+    scene.gripper_completed(400, robot.snapshot())
+    robot.value.update(actual=[260, 20, 100, 0, 900], gripper={"outcome": "arrived"})
+    scene.gripper_completed(900, robot.snapshot())
+    assert scene.occupancy == final
+    # Inference reads only the supplied image, not the scene's changed occupancy.
+    assert len(scene.localizer().predict(old_image)[1]["detections"]) == sum(initial.values())
+
+
+def test_synthetic_moved_camera_fails_drift_without_changing_installed_model(tray_scene):
+    from vision.calibration import detect_markers, drift_proof
+
+    scene, robot = tray_scene("moved-camera")
+    model = scene.calibration_model()
+    image = scene.read(1)
+    proof = drift_proof(
+        model,
+        robot.value["actual"][:4],
+        detect_markers(image),
+        image.size,
+        device=model["camera_device"],
+    )
+    assert proof["passed"] is False and proof["distance_px"] > 3
+    assert scene.calibration_model() == model
+
+
+def test_synthetic_separate_vision_pool_reads_only_its_owned_robot_scene(tray_scene):
+    first, robot = tray_scene()
+    second, _ = tray_scene()
+    robot._tray_scene = first
+    robot.value.update(actual=[220, 20, 100, 0, 600], gripper={"outcome": "contact"})
+    first.gripper_completed(400, robot.snapshot())
+    robot.value.update(actual=[260, 20, 100, 0, 900], gripper={"outcome": "arrived"})
+    first.gripper_completed(900, robot.snapshot())
+    robot.value["actual"] = [210, 10, 180, 0, 900]
+    from vision.calibration import robot_xy
+
+    image = second.read(1)
+    detection = second.localizer().predict(image)[1]["detections"][0]
+    assert robot_xy(
+        second.calibration_model(), detection["center_xy"], image.size
+    ) == pytest.approx([260, 20], abs=0.5)
+
+
+def test_tray_rehearsal_rejects_other_geometry_before_starting_services(
+    tray_scene, tmp_path, monkeypatch
+):
+    from orchestrator.rehearsal import write_demo_tray_configuration
+
+    settings = write_demo_tray_configuration(tmp_path / "synthetic")
+    path = Path(settings["MG400_ORCH_TRAY_FILE"])
+    path.write_text(
+        path.read_text().replace("Owned synthetic rehearsal tray", "Other measured tray")
+    )
+    monkeypatch.setenv("MG400_ORCH_TRAY_FILE", str(path))
+    with pytest.raises(ValueError, match="explicit synthetic tray"):
+        with Rehearsal(tmp_path / "demos", ("robot", "vision"), identity="in-process-only"):
+            pytest.fail("Unmatched geometry must not start a rehearsal")

@@ -48,9 +48,9 @@
 | `mg400-furnace.service` | `furnace` | [炉温与气体服务](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-microscope.service` | `microscope` | [显微镜服务](microscope.md)，回环端口 `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | 可选的[视觉服务](vision.md)，回环端口 `8771` | 无 |
-| `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
+| `mg400-orchestrator.service` | `orch` | [配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
-| `mg400-proxy.service` | `proxy` | 可选的[单端口代理](olares.md#可选的单端口代理)，端口 `8080` | 无 |
+| `mg400-proxy.service` | `proxy` | [单端口代理](olares.md#单端口代理)，端口 `8080` | 无 |
 | `mg400-gripper-collector.path` | 无 | 机器人服务请求时启动夹爪采集 | 无 |
 
 服务手动启动，不开机自启。
@@ -89,9 +89,10 @@
 2. 运行安装器：
 
    ```sh
-   /usr/bin/python3 /opt/mg400/deploy/install.py
+   /usr/bin/python3 /opt/mg400/deploy/install.py --caddy /path/to/caddy
    ```
 
+   首次安装时，`--caddy` 指定 Caddy 2 程序。之后安装器复用已安装的程序。
    使用摄像头时，首次安装加 `--go2rtc <go2rtc 程序路径>`。
    使用 Toupcam 时，加 `--toupcam PATH`，指定下文说明的已校验库文件。
    加 `--dry-run` 时，安装器只列出步骤，不修改主机。
@@ -192,10 +193,9 @@
 首次安装、运行 `mg400ctl start vision` 和在 Olares 检查 `mg400ctl gpu` 均由所有者执行。
 运行配置见[视觉服务](vision.md)，访问规则见 [Olares 网络](olares.md#网络)。
 
-可选服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
+服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
 此组含 Flask、waitress，以及自有演示服务所需的 `stage`、`thermal` 和 `furnace` 组。
-把 `orch` 加入 `MG400_OPTIONAL_SERVICES`，运行安装器，再运行 `mg400ctl start orch`。
-选中 `orch` 时，安装器准备 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
+安装器准备 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
 同一服务还提供[实验室控制台](dashboard.md#实验室控制台)。它是唯一的操作网页，含 Overview、Motion、Cameras 和 Furnace + microscope 工作区，以及独立的运动、加热和气体停止操作。
 控制台没有配方运行控制。启动、终止和恢复运行使用[配方服务接口](orchestrator.md#http-服务)。
 
@@ -203,8 +203,8 @@
 选中 `gateway` 时，安装器也会准备 `runs` 目录，用于审计记录。安装器不会启动网关。
 每个 MCP 请求都必须携带 `MG400_GATEWAY_TOKEN`。安装器不生成它，须在配置文件中手动设置。
 
-可选服务 `proxy` 不增加 Python 依赖组。通过 `--caddy PATH` 提供 Caddy 2，并配置[单端口入口](olares.md#可选的单端口代理)。
-安装器在改文件前检查代理配置，保留已有服务选择，不会启动代理。
+服务 `proxy` 不增加 Python 依赖组。首次安装时通过 `--caddy PATH` 提供 Caddy 2，并配置[单端口入口](olares.md#单端口代理)。
+安装器在改文件前检查代理配置，不会启动代理。
 
 安装器按 `venv` 合并已启用服务的 `groups`，每个环境只同步 1 次。
 同步显式使用 `--no-default-groups`，不安装项目的默认依赖组。

@@ -12,7 +12,7 @@ Run the commands on this page as root in the Olares host terminal (Control Hub â
 
 Clients access Olares through the LarePass VPN. The Olares VPN address is `100.64.0.1`.
 The VPN is the access boundary. The services do not check tokens, Host headers, or origins.
-All services listen on `127.0.0.1`. The [single-port proxy](#optional-single-port-proxy) is the only entry from the VPN.
+All services listen on `127.0.0.1`. The [single-port proxy](#single-port-proxy) is the only entry from the VPN.
 The Olares network interface connected directly to the robot uses `192.168.1.10/24`. The robot address is `192.168.1.6`.
 
 | Service | Loopback port |
@@ -34,17 +34,16 @@ The owner installs and starts vision, then runs `mg400ctl gpu` to read GPU memor
 The optional [MCP gateway](agent-gateway.en.md) stays on loopback and has no proxy route.
 Remote MCP clients require a tunnel to loopback and the `MG400_GATEWAY_TOKEN` bearer credential.
 
-## Optional single-port proxy
+## Single-port proxy
 
-The optional `proxy` service provides 1 VPN port for the Lab Console and the camera streams.
+The `proxy` service provides 1 VPN port for the Lab Console and the camera streams.
 It uses a Caddy 2 binary supplied through `--caddy PATH`.
 The installer writes `/etc/mg400/Caddyfile` and installs `/usr/local/lib/mg400/caddy`.
 It never downloads Caddy or starts the proxy.
 
-Set these values in `/etc/mg400/mg400.env`. Preserve other selected service names:
+Set these values in `/etc/mg400/mg400.env`:
 
 ```ini
-MG400_OPTIONAL_SERVICES=orch,proxy
 MG400_PROXY_BIND=100.64.0.1
 MG400_PROXY_PORT=8080
 ```
@@ -196,7 +195,7 @@ Do this migration only once. Before migration, close all panel pages and interac
    install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
    ```
 
-6. Set the proxy address as described in [Optional single-port proxy](#optional-single-port-proxy).
+6. Set the proxy address as described in [Single-port proxy](#single-port-proxy).
 7. Remove the old service override files and boot autostart links, then start the services.
    Step 1 copied these files as a backup:
 

@@ -31,7 +31,7 @@ def mode(path):
 
 
 @pytest.fixture
-def host(module, monkeypatch, tmp_path):
+def host(module, monkeypatch, tmp_path, tmp_path_factory):
     code = tmp_path / "opt/mg400"
     (code / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
@@ -71,9 +71,14 @@ def host(module, monkeypatch, tmp_path):
 
     out = io.StringIO()
 
-    def install(*argv, runner=None):
+    caddy = tmp_path_factory.mktemp("caddy") / "caddy"
+    caddy.write_bytes(b"offline Caddy fixture; never execute")
+
+    def install(*argv, runner=None, caddy_binary=True):
+        # The proxy is mandatory. Supply a Caddy binary unless the test gives its own.
+        extra = ["--caddy", str(caddy)] if caddy_binary and "--caddy" not in argv else []
         return module.main(
-            ["--uv", "/usr/bin/uv", *argv],
+            ["--uv", "/usr/bin/uv", *argv, *extra],
             host=module.Host(tmp_path, source=code),
             run=runner or run,
             chown=chown,
@@ -220,6 +225,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         ("runs", 0o750),
         ("stage", 0o700),
         ("work", 0o750),
+        ("zones", 0o750),
     ]
     assert mode(host.data) == 0o750
     assert not (host.data / "camera/preview.key").exists()
@@ -230,9 +236,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         not in {
             "mg400-thermal.service",
             "mg400-vision.service",
-            "mg400-orchestrator.service",
             "mg400-gateway.service",
-            "mg400-proxy.service",
         }
     }
     for unit in host.units.iterdir():
@@ -256,6 +260,8 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
             "furnace",
             "--group",
             "microscope",
+            "--group",
+            "orchestrator",
             "--group",
             "stage",
             "--group",
@@ -886,6 +892,8 @@ def test_mandatory_groups_are_explicit_and_ignore_external_venv(host, monkeypatc
         "--group",
         "microscope",
         "--group",
+        "orchestrator",
+        "--group",
         "stage",
         "--group",
         "tools",
@@ -903,11 +911,13 @@ def test_enabled_optional_service_uses_its_separate_environment(host):
         (command, options) for command, options in host.commands if command[0] == "/usr/bin/uv"
     ]
     assert len(syncs) == 2
-    assert syncs[0][0][4:12] == [
+    assert syncs[0][0][4:14] == [
         "--group",
         "furnace",
         "--group",
         "microscope",
+        "--group",
+        "orchestrator",
         "--group",
         "stage",
         "--group",
@@ -942,6 +952,8 @@ def test_optional_groups_in_shared_environment_are_deduplicated(host):
             "furnace",
             "--group",
             "microscope",
+            "--group",
+            "orchestrator",
             "--group",
             "stage",
             "--group",
@@ -1068,7 +1080,9 @@ def test_udev_symlinks_are_refused_before_changes(host, optional_udev, tmp_path,
 
 
 def test_default_dry_run_lists_every_step(host):
-    assert host.install("--dry-run") == 0
+    binary = host.root / "offline-caddy"
+    binary.write_bytes(b"offline Caddy fixture; never execute")
+    assert host.install("--dry-run", "--caddy", str(binary)) == 0
     assert host.out.getvalue().replace(str(host.root), "<host>").splitlines() == [
         "The Toupcam library is not installed. Pass it with --toupcam PATH.",
         "Would ensure <host>/etc/mg400 (0755, 0:0)",
@@ -1085,16 +1099,23 @@ def test_default_dry_run_lists_every_step(host):
         "Would ensure <host>/var/lib/mg400/calibration/microscope (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/recordings (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/runs (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/zones (0750, 1000:1000)",
         "Would ensure <host>/opt/mg400 (0750, 0:1000)",
         "Would prepare Python environment <host>/opt/mg400/.venv",
         "Would run: /usr/bin/uv sync --locked --no-default-groups --group furnace "
-        "--group microscope --group stage --group tools --python /usr/bin/python3",
+        "--group microscope --group orchestrator --group stage --group tools "
+        "--python /usr/bin/python3",
+        "Would ensure <host>/usr/local/lib/mg400 (0755, 0:0)",
+        "Would install <host>/offline-caddy as <host>/usr/local/lib/mg400/caddy",
+        "Would write <host>/etc/mg400/Caddyfile",
         "Would install <host>/etc/systemd/system/mg400-camera-capture.service",
         "Would install <host>/etc/systemd/system/mg400-camera-preview.service",
         "Would install <host>/etc/systemd/system/mg400-furnace.service",
         "Would install <host>/etc/systemd/system/mg400-gripper-collector.path",
         "Would install <host>/etc/systemd/system/mg400-gripper-collector.service",
         "Would install <host>/etc/systemd/system/mg400-microscope.service",
+        "Would install <host>/etc/systemd/system/mg400-orchestrator.service",
+        "Would install <host>/etc/systemd/system/mg400-proxy.service",
         "Would install <host>/etc/systemd/system/mg400-stage-panel.service",
         "Would install <host>/etc/systemd/system/mg400-web-panel.service",
         "Would run: systemctl daemon-reload",
@@ -1197,7 +1218,6 @@ def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricatin
     directory = host.data / "runs"
     assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
     assert list(directory.iterdir()) == []
-    assert not (host.data / "zones").exists()
     assert (host.units / "mg400-gateway.service").exists()
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("gateway") - 1] == "--group"
@@ -1205,14 +1225,6 @@ def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricatin
         command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
         for command, _ in host.commands
     )
-
-
-def test_disabled_orchestrator_has_no_zone_directory_unit_or_group(host):
-    assert host.install() == 0
-    assert not (host.data / "zones").exists()
-    assert not (host.units / "mg400-orchestrator.service").exists()
-    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
-    assert "orchestrator" not in sync
 
 
 def test_selected_orchestrator_refuses_symlinked_zone_directory(host, tmp_path):
@@ -1242,7 +1254,7 @@ def proxy_settings(host, **overrides):
     return binary
 
 
-def test_proxy_install_is_optional_private_and_never_starts_it(host, module):
+def test_proxy_install_is_private_and_never_starts_it(host, module):
     binary = proxy_settings(host)
     assert host.install("--caddy", str(binary)) == 0
     caddy = host.root / "usr/local/lib/mg400/caddy"
@@ -1266,6 +1278,8 @@ def test_proxy_install_is_optional_private_and_never_starts_it(host, module):
         "furnace",
         "--group",
         "microscope",
+        "--group",
+        "orchestrator",
         "--group",
         "stage",
         "--group",
@@ -1354,12 +1368,8 @@ def test_proxy_refuses_symlinked_binary_parent(host):
     assert not host.data.exists()
 
 
-def test_proxy_requires_binary_and_explicit_optional_selection(host):
-    binary = proxy_settings(host)
-    assert host.install() == 1
-    assert not host.data.exists()
-    proxy_settings(host, MG400_OPTIONAL_SERVICES="")
-    assert host.install("--caddy", str(binary)) == 1
+def test_proxy_requires_a_caddy_binary(host):
+    assert host.install(caddy_binary=False) == 1
     assert not host.data.exists()
 
 
@@ -1423,7 +1433,7 @@ def test_proxy_reuses_a_safe_existing_binary_without_executing_or_replacing_it(
     proxy_settings(host)
     binary = installed_caddy(host, module, monkeypatch, group=group, rights=rights)
     inode = binary.stat().st_ino
-    assert host.install() == 0
+    assert host.install(caddy_binary=False) == 0
     assert binary.stat().st_ino == inode
     assert (host.settings.parent / "Caddyfile").is_file()
     assert not any(command[0] == str(binary) for command in names(host.commands))
@@ -1438,7 +1448,7 @@ def test_proxy_refuses_an_unsafe_existing_binary_before_host_changes(
 ):
     proxy_settings(host)
     binary = installed_caddy(host, module, monkeypatch, owner=owner, rights=rights)
-    assert host.install() == 1
+    assert host.install(caddy_binary=False) == 1
     assert binary.read_bytes() == b"existing offline Caddy fixture"
     assert not host.data.exists()
 
@@ -1449,7 +1459,7 @@ def test_proxy_other_execute_cannot_override_matching_group_permissions(
 ):
     proxy_settings(host)
     installed_caddy(host, module, monkeypatch, group=1000, rights=rights)
-    assert host.install() == 1
+    assert host.install(caddy_binary=False) == 1
     assert not host.data.exists()
 
 

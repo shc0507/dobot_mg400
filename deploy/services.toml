@@ -50,7 +50,7 @@ assets = []
 [[service]]
 name = "orch"
 units = ["mg400-orchestrator.service"]
-optional = true
+optional = false
 venv = ".venv"
 groups = ["orchestrator"]
 port = 8772
@@ -95,7 +95,7 @@ assets = []
 [[service]]
 name = "proxy"
 units = ["mg400-proxy.service"]
-optional = true
+optional = false
 venv = ".venv"
 groups = []
 port = 8080

@@ -12,7 +12,7 @@
 
 客户端通过 LarePass VPN 访问 Olares。Olares 的 VPN 地址为 `100.64.0.1`。
 VPN 是访问边界。服务不检查令牌、Host 标头或来源。
-所有服务监听 `127.0.0.1`。[单端口代理](#可选的单端口代理)是 VPN 上唯一的入口。
+所有服务监听 `127.0.0.1`。[单端口代理](#单端口代理)是 VPN 上唯一的入口。
 Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 `192.168.1.6`。
 
 | 服务 | 回环端口 |
@@ -34,17 +34,16 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 可选的 [MCP 网关](agent-gateway.md) 只监听回环地址，没有代理路由。
 远程 MCP 客户端须使用到回环接口的隧道，并携带 `MG400_GATEWAY_TOKEN` Bearer 凭据。
 
-## 可选的单端口代理
+## 单端口代理
 
-可选服务 `proxy` 用 1 个 VPN 端口提供实验室控制台和摄像头视频流。
+服务 `proxy` 用 1 个 VPN 端口提供实验室控制台和摄像头视频流。
 通过 `--caddy PATH` 提供 Caddy 2 二进制文件。
 安装器写入 `/etc/mg400/Caddyfile`，并安装 `/usr/local/lib/mg400/caddy`。
 安装器不会下载 Caddy，也不会启动代理。
 
-在 `/etc/mg400/mg400.env` 中设置以下值，保留其他已选服务：
+在 `/etc/mg400/mg400.env` 中设置以下值：
 
 ```ini
-MG400_OPTIONAL_SERVICES=orch,proxy
 MG400_PROXY_BIND=100.64.0.1
 MG400_PROXY_PORT=8080
 ```
@@ -196,7 +195,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
    ```
 
-6. 按 [可选的单端口代理](#可选的单端口代理) 设置代理地址。
+6. 按 [单端口代理](#单端口代理) 设置代理地址。
 7. 删除旧服务的附加配置和开机自启链接，再启动服务。
    第 1 步已备份这些文件：
 

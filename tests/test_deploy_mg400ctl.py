@@ -104,10 +104,12 @@ def systemd_units(ctl, missing=(), running=()):
                 "mg400-web-panel.service",
                 "mg400-furnace.service",
                 "mg400-microscope.service",
+                "mg400-orchestrator.service",
                 "mg400-stage-panel.service",
                 "mg400-camera-preview.service",
                 "mg400-camera-capture.service",
                 "mg400-gripper-collector.service",
+                "mg400-proxy.service",
             ],
         ),
     ],
@@ -242,9 +244,9 @@ def test_status_lists_every_service_and_the_request_watcher(ctl):
     assert ctl.call("status") == 0
     command = systemctl(ctl)[0]
     assert command[:3] == ["systemctl", "show", "--property=Id,ActiveState,SubState"]
-    assert len(command) == 3 + 8
+    assert len(command) == 3 + 10
     lines = ctl.out.getvalue().splitlines()
-    assert len(lines) == 8
+    assert len(lines) == 10
     assert lines[0].split() == ["web", "mg400-web-panel.service", "active", "(running)"]
     assert lines[-1].split() == ["collector", "mg400-gripper-collector.path", "active", "(waiting)"]
     assert lines[1].split()[-1] == "unknown"
@@ -376,11 +378,11 @@ def test_gpu_requires_root_and_accepts_no_extra_query_or_write_arguments(ctl, mo
     ctl.run.assert_not_called()
 
 
-def test_camera_url_lists_each_camera_on_the_default_bind(ctl):
+def test_camera_url_lists_each_camera_through_the_proxy(ctl):
     ctl.host.settings.write_text(SETTINGS + "MG400_CAMERA_DEVICES=" + ",".join(CAMERAS[:2]) + "\n")
     assert ctl.call("camera-url") == 0
     assert ctl.out.getvalue() == (
-        "http://127.0.0.1:1985/camera1.mjpeg\nhttp://127.0.0.1:1985/camera2.mjpeg\n"
+        "http://127.0.0.1:8080/camera/camera1.mjpeg\nhttp://127.0.0.1:8080/camera/camera2.mjpeg\n"
     )
 
 
@@ -630,9 +632,11 @@ def test_start_all_selects_only_enabled_services(optional_ctl):
             "mg400-web-panel.service",
             "mg400-furnace.service",
             "mg400-microscope.service",
+            "mg400-orchestrator.service",
             "mg400-stage-panel.service",
             "mg400-camera-preview.service",
             "mg400-gripper-collector.service",
+            "mg400-proxy.service",
             "mg400-optional.service",
         ]
     ]
@@ -1174,10 +1178,7 @@ def test_furnace_guard_closes_dripping_body_at_monotonic_deadline(ctl):
     assert response.read1.call_count == 2 and response.closed
 
 
-def test_proxy_is_an_explicit_optional_service_and_stop_remains_available(ctl):
-    assert ctl.call("start", "proxy") == 1
-    ctl.run.assert_not_called()
-    ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=proxy\n")
+def test_proxy_is_a_mandatory_service_and_stop_remains_available(ctl):
     assert ctl.call("start", "proxy") == 0
     assert systemctl(ctl) == [["systemctl", "start", "mg400-proxy.service"]]
     ctl.run.reset_mock()

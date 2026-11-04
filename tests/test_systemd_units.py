@@ -276,7 +276,7 @@ def test_proxy_runs_only_explicit_binary_without_outbound_proxy_settings():
         "all_proxy",
     }
     entry = next(item for item in REGISTRY if item["name"] == "proxy")
-    assert entry["optional"] is True and entry["groups"] == []
+    assert entry["optional"] is False and entry["groups"] == []
 
 
 def test_thermal_service_uses_primary_group_usb_access():

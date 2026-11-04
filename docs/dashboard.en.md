@@ -2,9 +2,9 @@
 
 [中文](dashboard.md)
 
-The existing optional `orch` service serves the Lab Console and the chip passport pages. See [deployment](deploy.en.md) and [recipe service configuration](orchestrator.en.md#http-service).
+The `orch` service serves the Lab Console and the chip passport pages. See [deployment](deploy.en.md) and [recipe service configuration](orchestrator.en.md#http-service).
 The installed unit serves the console at `http://127.0.0.1:8772/lab/`.
-The optional proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN and open `http://100.64.0.1:8080/`.
+The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN and open `http://100.64.0.1:8080/`.
 
 ## Lab Console
 
@@ -15,7 +15,7 @@ The console is the only operator web page.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
 - A service that is not configured shows Not configured on every workspace.
-- The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#optional-single-port-proxy) for remote access.
+- The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 
 **STOP ALL MOTION** sends independent stop requests to the robot, the stage and the microscope. A stop needs no control and does not wait for a lease. See [stop controls](#stop-controls).
 

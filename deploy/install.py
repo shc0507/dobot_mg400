@@ -408,7 +408,7 @@ def render_proxy(host, settings, selected):
 
 
 def prepare_proxy(args, host, settings, selected):
-    """Check the optional proxy without starting its binary or changing files."""
+    """Check the proxy without starting its binary or changing files."""
     if "proxy" not in selected:
         if args.caddy is not None:
             raise ValueError("Select proxy in MG400_OPTIONAL_SERVICES before using --caddy.")
@@ -856,7 +856,7 @@ def main(argv=None, *, host=None, run=subprocess.run, chown=os.fchown, out=sys.s
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="Print the steps. Change nothing.")
     parser.add_argument("--go2rtc", type=Path, help="go2rtc 1.9.14 binary to install")
-    parser.add_argument("--caddy", type=Path, help="Caddy 2 binary for the optional proxy")
+    parser.add_argument("--caddy", type=Path, help="Caddy 2 binary for the proxy")
     parser.add_argument(
         "--toupcam", type=Path, help=f"Verified Toupcam {TOUPCAM_VERSION} Linux x64 library"
     )

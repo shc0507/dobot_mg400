@@ -26,7 +26,7 @@ uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-run
 
 ## HTTP 服务
 
-可选服务 `orch` 通过 Flask 和 waitress 运行 `python -m orchestrator serve`。
+服务 `orch` 通过 Flask 和 waitress 运行 `python -m orchestrator serve`。
 按[服务清单](deploy.md#服务清单)安装。它不使用设备组，也不自动启动配方。
 现有的 `run`、`rehearse`、`runs` 和 `station` 命令保持可用。
 
@@ -306,7 +306,7 @@ labctl station rm tray-pick
 
 每次编辑都先检查完整工位图，再发布文件。并发编辑按顺序执行，文件以原子替换写入。记录库拒绝符号链接和特殊文件。
 
-安装器创建 `/var/lib/mg400/robot`，属主为 `1000:1000`，模式为 `0750`。未启用可选编排器服务时也会创建。
+安装器创建 `/var/lib/mg400/robot`，属主为 `1000:1000`，模式为 `0750`。
 父目录 `/var/lib/mg400` 的属主仍为 `root:1000`，模式仍为 `0750`。
 旧路径 `/var/lib/mg400/tool.toml` 或 `/var/lib/mg400/stations.toml` 中的文件保持不变，安装器只打印手动移动提示。
 按[机器人数据迁移说明](deploy.md#迁移到新主机)处理后，再通过新默认路径使用这些文件。

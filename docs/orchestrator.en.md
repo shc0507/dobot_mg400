@@ -26,7 +26,7 @@ uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-run
 
 ## HTTP service
 
-The optional `orch` service runs `python -m orchestrator serve` with Flask and waitress.
+The `orch` service runs `python -m orchestrator serve` with Flask and waitress.
 Install it through the [service registry](deploy.en.md#service-registry). It uses no device groups and starts no recipe automatically.
 The existing `run`, `rehearse`, `runs`, and `station` commands remain available.
 
@@ -307,7 +307,7 @@ Names use 1 to 64 letters, digits, underscores, or hyphens. Start a name with a 
 
 Every edit checks the complete station graph before publication. Concurrent edits serialize, and the file replacement is atomic. The store refuses symbolic links and special files.
 
-The installer creates `/var/lib/mg400/robot` with owner `1000:1000` and mode `0750`, including when the optional orchestrator service is disabled.
+The installer creates `/var/lib/mg400/robot` with owner `1000:1000` and mode `0750`.
 The parent `/var/lib/mg400` remains owned by `root:1000` with mode `0750`.
 Legacy files at `/var/lib/mg400/tool.toml` or `/var/lib/mg400/stations.toml` remain unchanged. The installer prints a manual move notice.
 Follow the [robot data migration instructions](deploy.en.md#migration-to-a-new-host) before using those files with the new defaults.

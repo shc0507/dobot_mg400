@@ -48,9 +48,9 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-furnace.service` | `furnace` | [Furnace and gas service](furnace.en.md), port `8769` | `dialout` |
 | `mg400-microscope.service` | `microscope` | [Microscope service](microscope.en.md), loopback port `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | Optional [vision service](vision.en.md), loopback port `8771` | None |
-| `mg400-orchestrator.service` | `orch` | Optional [recipe service](orchestrator.en.md#http-service), port `8772` | None |
+| `mg400-orchestrator.service` | `orch` | [Recipe service](orchestrator.en.md#http-service), port `8772` | None |
 | `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
-| `mg400-proxy.service` | `proxy` | Optional [single-port proxy](olares.en.md#optional-single-port-proxy), port `8080` | None |
+| `mg400-proxy.service` | `proxy` | [Single-port proxy](olares.en.md#single-port-proxy), port `8080` | None |
 | `mg400-gripper-collector.path` | None | Start gripper collection when the robot service requests it | None |
 
 Start services manually. They do not start automatically at boot.
@@ -89,9 +89,10 @@ Before an update, stop the services with `mg400ctl stop all`.
 2. Run the installer:
 
    ```sh
-   /usr/bin/python3 /opt/mg400/deploy/install.py
+   /usr/bin/python3 /opt/mg400/deploy/install.py --caddy /path/to/caddy
    ```
 
+   On the first installation, `--caddy` gives the Caddy 2 program. Later runs reuse the installed program.
    For cameras, add `--go2rtc <go2rtc 程序路径>` with the go2rtc program path on the first installation.
    For Toupcam, add `--toupcam PATH` with the verified library described below.
    With `--dry-run`, the installer only lists its steps and does not change the host.
@@ -192,10 +193,9 @@ Without `vision` in the selection, it does not prepare this environment, directo
 The owner performs the first installation, runs `mg400ctl start vision`, and checks `mg400ctl gpu` on Olares.
 See [Vision service](vision.en.md) for runtime settings and [Olares networking](olares.en.md#network) for access rules.
 
-The optional `orch` service uses the `orchestrator` dependency group in `/opt/mg400/.venv`.
+The `orch` service uses the `orchestrator` dependency group in `/opt/mg400/.venv`.
 This group includes Flask, waitress, and the `stage`, `thermal`, and `furnace` groups for supported owned demos.
-Add `orch` to `MG400_OPTIONAL_SERVICES`, run the installer, then run `mg400ctl start orch`.
-The installer prepares the `runs` and `zones` directories when `orch` is selected. It does not invent zone configuration or start the service.
+The installer prepares the `runs` and `zones` directories. It does not invent zone configuration or start the service.
 The same service serves the [Lab Console](dashboard.en.md#lab-console). It is the only operator web page. It has the Overview, Motion, Cameras, and Furnace + microscope workspaces, and separate motion, heat, and gas stop controls.
 The console has no recipe run controls. Use the [recipe service interface](orchestrator.en.md#http-service) to start, abort, and recover runs.
 
@@ -203,8 +203,8 @@ The optional `gateway` service uses the `gateway` dependency group. Its work is 
 Selecting `gateway` also prepares the `runs` directory for audit records. The installer does not start the gateway.
 Every MCP request requires `MG400_GATEWAY_TOKEN`. The installer does not generate it. Set it by hand in the configuration file.
 
-The optional `proxy` service adds no Python dependency group. Supply Caddy 2 through `--caddy PATH` and configure the [single-port entry](olares.en.md#optional-single-port-proxy).
-The installer checks the proxy before changing files. It preserves existing service selections and never starts the proxy.
+The `proxy` service adds no Python dependency group. On the first installation, supply Caddy 2 through `--caddy PATH` and configure the [single-port entry](olares.en.md#single-port-proxy).
+The installer checks the proxy before changing files and never starts the proxy.
 
 The installer combines enabled services' `groups` by `venv` and synchronizes each environment only 1 time.
 Synchronization explicitly uses `--no-default-groups` and does not install the project's default dependency groups.

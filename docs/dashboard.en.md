@@ -55,6 +55,7 @@ Robot arm:
 - **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
 - The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
 - **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. The gripper outcome shows beside the title.
+- **Keyboard**: when this page holds control and the robot is enabled, turn on the switch to start keyboard jog at the selected speed. The speed is from 1 to the `keyboard` speed cap that the robot service describes. While the switch is on and the page has focus, hold W/S (reach out and in), A/D (base J1), R/F (Z up and down), Q/E (flange J4) or Z/X (gripper open and close). The page sends the held keys through `ws/motion/keys` on each change and every 150 ms while a key is held. The arm stops 0.4 s after the last update. A window focus loss, a hidden tab, leaving the Motion tab, the switch off or a loss of control releases all keys and turns the keyboard off. Stop and **STOP ALL MOTION** work at all times.
 
 Stage:
 

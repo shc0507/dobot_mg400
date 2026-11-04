@@ -450,9 +450,9 @@ class _DemoClient:
         "roi",
         "gas_stop",
     }
-    # The console reads events and relays manual commands. It renews only
-    # when a browser heartbeat asks, so the profile adds no renewal thread.
-    _PROFILES = {"runner": frozenset(_METHODS), "console": frozenset(_METHODS | {"events"})}
+    # The console reads events, relays manual commands and keyboard keys. It renews
+    # only when a browser heartbeat asks, so the profile adds no renewal thread.
+    _PROFILES = {"runner": frozenset(_METHODS), "console": frozenset(_METHODS | {"events", "keys"})}
 
     def __init__(self, owner, adapter, *, profile="runner"):
         if profile not in self._PROFILES:

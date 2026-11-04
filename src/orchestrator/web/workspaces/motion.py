@@ -10,6 +10,9 @@ adds these routes under ``<base>/api/console/ws/motion``:
   ``service.console.command``. The robot service applies its speed cap and refuses
   a move while the controller reports an alarm. A jog adds one step on one axis
   to a fresh read of the actual pose.
+- ``POST keys`` ``{"seq", "held"}`` forwards one held-key set of keyboard jog
+  once on the robot session of the page that holds robot control. The page arms
+  and disarms the keyboard with the described ``keyboard`` command.
 
 The stage operator routes reach stage routes that are not in its description,
 so the relay and the runner never send them. Each change needs this page's
@@ -57,6 +60,8 @@ ROBOT_FIELDS = (
     "gripper_message",
     "gripper",
     "keyboard_enabled",
+    "keyboard_arming",
+    "keyboard_speed_percent",
     "demo",
 )
 STAGE_FIELDS = (
@@ -275,6 +280,16 @@ def register(blueprint, service):
         target = dict(zip(AXES, (float(value) for value in pose)))
         target[axis] = round(target[axis] + direction * step, 3)
         return _send(service, page, target, speed)
+
+    @blueprint.post("/keys")
+    def keys():
+        page = _page()
+        data = _body({"seq", "held"})
+        if type(data["seq"]) is not int or data["seq"] < 0 or not isinstance(data["held"], list):
+            raise ValueError("Send seq as a whole number and held as a list of keys.")
+        result = service.console.keys(page, data["seq"], data["held"])
+        status = {"accepted": 200, "refused": 409, "unknown": 502}[result["outcome"]]
+        return jsonify(result), status
 
     @blueprint.post("/move")
     def move():

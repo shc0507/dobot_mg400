@@ -353,3 +353,30 @@ def test_generic_relay_and_the_move_route_both_send_robot_execute(sim):
     status, body = ws(sim, "move", params)
     assert status == 202 and body["outcome"] == "accepted", body
     assert settled(sim)["actual"][0] == pytest.approx(x - 4, abs=0.05)
+
+
+def test_keys_route_forwards_held_keys_only_for_the_controlling_page(sim):
+    take(sim, "robot")
+    enable_robot(sim)
+    arm = {"enabled": True, "seq": 1, "speed": 1}
+    assert command(sim, "robot", "keyboard", arm)[0] == 202
+    wait_for(lambda: motion_state(sim)["robot"]["keyboard_enabled"])
+    sent = []
+    session = sim.service.console.sessions["robot"]
+    original = session.adapter.keys
+    session.adapter.keys = lambda seq, held: sent.append((seq, held)) or original(seq, held)
+    status, body = ws(sim, "keys", {"seq": 2, "held": ["W"]})
+    assert status == 200 and body == {"outcome": "accepted"}, body
+    status, body = ws(sim, "keys", {"seq": 3, "held": []})
+    assert status == 200, body
+    # Another page and a page without an identity are refused and nothing is sent.
+    assert ws(sim, "keys", {"seq": 4, "held": ["W"]}, page="console-page-b")[0] == 409
+    assert ws(sim, "keys", {"seq": 4, "held": ["W"]}, page=None)[0] == 400
+    assert ws(sim, "keys", {"seq": "4", "held": ["W"]})[0] == 400
+    assert sent == [(2, ["W"]), (3, [])]
+    # The service validates the key names.
+    status, body = ws(sim, "keys", {"seq": 5, "held": ["P"]})
+    assert status == 409 and body["outcome"] == "refused"
+    disarm = {"enabled": False, "seq": 6, "reason": "user"}
+    assert command(sim, "robot", "keyboard", disarm)[0] == 202
+    wait_for(lambda: not motion_state(sim)["robot"]["keyboard_enabled"])

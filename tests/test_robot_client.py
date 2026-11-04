@@ -656,3 +656,20 @@ def test_http_fallback_checks_contract_before_sending_any_command(
         client.command("stop")
     assert error.value.status == 409
     assert rig.controller.sent() == before
+
+
+def test_keys_sends_one_keys_message_once(make_client, rig, monkeypatch):
+    sent = []
+    original = client_module.RobotClient._write
+
+    def capture(self, sock, opcode, data):
+        sent.append(json.loads(data))
+        return original(self, sock, opcode, data)
+
+    client = started(make_client)
+    monkeypatch.setattr(client_module.RobotClient, "_write", capture)
+    reply = client.keys(1, ["W"])
+    assert reply["status"] == 200
+    assert [(item["type"], item["body"]) for item in sent if item["type"] != "heartbeat"] == [
+        ("keys", {"seq": 1, "held": ["W"]})
+    ]

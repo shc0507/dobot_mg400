@@ -14,6 +14,10 @@
     { id: "z-", axis: "z", sign: -1, label: "Z ↓" }, { id: "r-", axis: "r", sign: -1, label: "R −" },
   ];
   const CAMERAS = ["camera2", "camera4", "camera3"];
+  // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
+  const KEYS = "WASDQERFZX";
+  const KEY_MAP = [["W", "S", "kb.reach"], ["A", "D", "kb.base"], ["R", "F", "kb.z"], ["Q", "E", "kb.yaw"], ["Z", "X", "kb.grip"]];
+  const KEYS_MS = 150;
   const POLL_MS = 1000;
   const EVENTS_MS = 2000;
   const LOG_LIMIT = 40;
@@ -105,7 +109,20 @@
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
   }
 
-  const logic = { actualPose, jogTarget, parsePose, speedCap, clampSpeed, parseCount, axisReference, axisState, activityRows, clock, fixed, STEPS, CAMERAS };
+  /** The keyboard speed cap from the robot's described schema, or null. */
+  function keyboardCap(description) {
+    const cap = description?.commands?.keyboard?.params?.properties?.speed?.maximum;
+    return Number.isInteger(cap) && cap >= 1 ? cap : null;
+  }
+
+  /** The jog key of one keyboard event (W, A, …), or null. */
+  function jogKey(event) {
+    const code = String(event?.code || "");
+    const key = code.startsWith("Key") ? code.slice(3) : String(event?.key || "").toUpperCase();
+    return key.length === 1 && KEYS.includes(key) ? key : null;
+  }
+
+  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, clampSpeed, parseCount, axisReference, axisState, activityRows, clock, fixed, STEPS, CAMERAS };
 
   const i18n = {
     en: {
@@ -122,6 +139,8 @@
       "jog.move": "Move {label} by the jog step",
       "move.title": "Move to a pose", "move.speed": "Speed", "move.speedLabel": "Speed, 1 to {cap}",
       "move.useActual": "Use actual", "move.execute": "Execute ↗", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
+      "kb.title": "Keyboard", "kb.speedLabel": "Keyboard speed, 1 to {cap}",
+      "kb.reach": "Reach out / in", "kb.base": "Base J1 + / −", "kb.z": "Z up / down", "kb.yaw": "Flange J4 + / −", "kb.grip": "Gripper open / close",
       "grip.title": "Gripper", "grip.open": "Open", "grip.close": "Close", "grip.init": "Initialize…",
       "grip.initConfirm": "Initialization opens the jaws. Remove any held object first.",
       "grip.state": "{position} / 1000 · {outcome}", "grip.busy": "Moving…", "grip.none": "No outcome yet",
@@ -166,6 +185,8 @@
       "jog.move": "按点动步长移动 {label}",
       "move.title": "移动到位姿", "move.speed": "速度", "move.speedLabel": "速度，1 到 {cap}",
       "move.useActual": "使用当前值", "move.execute": "执行 ↗", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
+      "kb.title": "键盘", "kb.speedLabel": "键盘速度，1 到 {cap}",
+      "kb.reach": "伸出 / 收回", "kb.base": "底座 J1 + / −", "kb.z": "Z 上 / 下", "kb.yaw": "法兰 J4 + / −", "kb.grip": "夹爪张开 / 闭合",
       "grip.title": "夹爪", "grip.open": "张开", "grip.close": "闭合", "grip.init": "初始化…",
       "grip.initConfirm": "初始化会张开夹爪。请先取下夹持的物体。",
       "grip.state": "{position} / 1000 · {outcome}", "grip.busy": "运动中…", "grip.none": "尚无结果",
@@ -199,8 +220,10 @@
   };
 
   function workspace() {
-    let api = null, rootNode = null, timer = null, eventsTimer = null;
-    const data = { robot: null, stage: null, events: [], cap: null, loaded: false };
+    let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false;
+    const data = { robot: null, stage: null, events: [], cap: null, kbCap: null, loaded: false };
+    // on: this page armed the keyboard. seen: the service reported it on or arming since then.
+    const kb = { on: false, seen: false, speed: null, held: new Set(), seq: 0, timer: null, pending: 0 };
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, cams: CAMERAS.slice(),
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
@@ -267,8 +290,11 @@
       if (model.describing || data.cap) return;
       model.describing = true;
       try {
-        data.cap = speedCap(await api.describe("robot"));
+        const description = await api.describe("robot");
+        data.cap = speedCap(description);
+        data.kbCap = keyboardCap(description);
         if (data.cap) model.speed = clampSpeed(model.speed || Math.min(10, data.cap), data.cap);
+        if (data.kbCap) kb.speed = clampSpeed(kb.speed || Math.min(10, data.kbCap), data.kbCap);
       } catch { /* The robot may be offline. Try again on the next state. */ }
       finally { model.describing = false; }
       build();
@@ -389,6 +415,22 @@
         type: "button", class: "lc-button", text: t("grip.init"),
         onclick: () => askConfirm("arm", t("grip.initConfirm"), () => send("robot", "initialize_gripper", {}, "grip")),
       });
+      refs.kbSwitch = el("button", { type: "button", role: "switch", class: "mo-chip", text: t("kb.title"), onclick: () => (kb.on ? disarm("user") : arm()) });
+      refs.kbSpeed = el("input", {
+        type: "range", min: "1", max: String(data.kbCap || 1), step: "1",
+        "aria-label": t("kb.speedLabel", { cap: data.kbCap || 1 }),
+        oninput: event => { kb.speed = clampSpeed(event.target.value, data.kbCap); update(); },
+      });
+      refs.kbSpeed.value = String(clampSpeed(kb.speed, data.kbCap));
+      refs.kbSpeedText = el("span", { class: "mo-value" });
+      refs.kbKeys = {};
+      const keyCap = key => (refs.kbKeys[key] = el("kbd", { class: "mo-key", text: key }));
+      const kbBox = el("div", { class: "mo-block" },
+        el("div", { class: "mo-head" }, el("h3", { text: t("kb.title") }), refs.kbSwitch),
+        el("label", { class: "mo-speed" }, t("move.speed"), refs.kbSpeed, refs.kbSpeedText),
+        el("div", { class: "mo-keys" }, ...KEY_MAP.map(([a, b, label]) => el("div", { class: "mo-keyrow" },
+          keyCap(a), keyCap(b), el("span", { class: "lc-muted", text: t(label) })))));
+
       const gripBox = el("div", { class: "mo-block" },
         el("div", { class: "mo-head" }, el("h3", { text: t("grip.title") }), refs.gripState),
         el("div", { class: "mo-grid3" }, refs.gripOpen, refs.gripClose, refs.gripInit));
@@ -399,12 +441,105 @@
         controlButton("robot"),
         el("div", { class: "mo-grid2" }, refs.enable, refs.disable),
         refs.clear,
-        poseTiles, jogBox, moveBox, gripBox, confirmSlot("arm"), refs.armLast);
+        poseTiles, jogBox, kbBox, moveBox, gripBox, confirmSlot("arm"), refs.armLast);
     }
 
     function jog(item) {
       if (!jogTarget(actualPose(data.robot), item.axis, item.sign, model.step)) return;
       send("robot", "jog " + item.label, { axis: item.axis, direction: item.sign, step: model.step, speed: clampSpeed(model.speed, data.cap) }, "move", "jog");
+    }
+
+    // Keyboard jog ----------------------------------------------------------
+
+    function focused() {
+      const doc = root.document;
+      return shown && (!doc || ((doc.visibilityState || "visible") === "visible" && (typeof doc.hasFocus !== "function" || doc.hasFocus())));
+    }
+
+    /** Arm the keyboard through the relay with this page's control. */
+    async function arm() {
+      if (kb.on || !api.owns("robot") || !data.kbCap) return;
+      releaseKeys();
+      kb.on = true;
+      kb.seen = false;
+      const result = await send("robot", "keyboard", { enabled: true, seq: ++kb.seq, speed: clampSpeed(kb.speed, data.kbCap) }, "keyboard");
+      if (result?.outcome !== "accepted" && kb.on) { kb.on = false; releaseKeys(); update(); }
+    }
+
+    /** Release every key, then disarm once. Without control the service already turned keys off. */
+    function disarm(reason) {
+      releaseKeys();
+      if (!kb.on) return;
+      kb.on = kb.seen = false;
+      if (api.owns("robot")) send("robot", "keyboard", { enabled: false, seq: ++kb.seq, reason }, "keyboard-off");
+      update();
+    }
+
+    /** Send the held set once. The robot service validates it and never retries. */
+    async function sendKeys() {
+      kb.pending++;
+      let result = null;
+      try { result = await api.request("keys", { seq: ++kb.seq, held: [...kb.held] }, { accept: [409, 502], timeout: 2000 }); }
+      catch (error) { result = { outcome: error.status === 0 ? "unknown" : "refused", error: error.message }; }
+      finally { kb.pending--; }
+      if (result?.outcome !== "accepted" && kb.held.size) {
+        note("robot", "warning", t(result?.outcome === "unknown" ? "out.unknown" : "out.refused", { device: api.deviceName("robot"), action: "keys", error: result?.error || "" }));
+        releaseKeys();
+      }
+    }
+
+    function releaseKeys() {
+      if (kb.timer) clearInterval(kb.timer);
+      kb.timer = null;
+      if (!kb.held.size) return;
+      kb.held.clear();
+      sendKeys();
+      renderKeys();
+    }
+
+    function keysChanged() {
+      sendKeys();
+      if (!kb.held.size && kb.timer) { clearInterval(kb.timer); kb.timer = null; }
+      if (kb.held.size && !kb.timer) {
+        kb.timer = setInterval(() => {
+          if (!focused()) disarm("focus");
+          else if (kb.pending < 2) sendKeys();
+        }, KEYS_MS);
+      }
+      renderKeys();
+    }
+
+    function onKeyDown(event) {
+      if (!kb.on || event.ctrlKey || event.metaKey || event.altKey) return;
+      const key = jogKey(event);
+      const tag = String(event.target?.tagName || "").toUpperCase();
+      if (!key || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      event.preventDefault?.();
+      if (event.repeat || kb.held.has(key) || !api.owns("robot") || !focused()) return;
+      kb.held.add(key);
+      keysChanged();
+    }
+
+    function onKeyUp(event) {
+      const key = jogKey(event);
+      if (key && kb.held.delete(key)) keysChanged();
+    }
+
+    function renderKeys() {
+      for (const [key, node] of Object.entries(refs.kbKeys || {})) node.className = "mo-key" + (kb.held.has(key) ? " mo-on" : "");
+    }
+
+    function updateKeyboard(robot, ready) {
+      if (kb.on && !api.owns("robot")) { kb.on = kb.seen = false; releaseKeys(); }
+      if (kb.on && robot && (robot.keyboard_enabled || robot.keyboard_arming)) kb.seen = true;
+      // The service turned keys off (Stop, a button command, an alarm): follow it.
+      else if (kb.on && kb.seen && robot && !model.inflight.has("robot:keyboard")) { kb.on = kb.seen = false; releaseKeys(); }
+      refs.kbSwitch.setAttribute("aria-checked", kb.on ? "true" : "false");
+      refs.kbSwitch.className = "mo-chip" + (kb.on ? " mo-on" : "");
+      refs.kbSwitch.disabled = !kb.on && !(ready && robot.enabled === true && !robot.busy && data.kbCap && !model.inflight.has("robot:keyboard-off"));
+      refs.kbSpeed.disabled = kb.on || !data.kbCap;
+      refs.kbSpeedText.textContent = data.kbCap ? `${clampSpeed(kb.speed, data.kbCap)} / ${data.kbCap}` : "—";
+      renderKeys();
     }
 
     function useActual() {
@@ -691,6 +826,7 @@
       refs.gripOpen.disabled = refs.gripClose.disabled = !gripReady;
       refs.gripInit.disabled = !(ready && robot.gripper_can_initialize && !robot.gripper_busy && !robot.busy);
       refs.armLast.textContent = robot ? lastText(robot.last_command) : "";
+      updateKeyboard(robot, ready);
 
       // Stage.
       const stageMissing = deviceStatus(data.stage);
@@ -807,12 +943,19 @@
         rootNode = node;
         api.onLanguage(build);
         api.onState(update);
+        shown = true;
+        if (typeof root.addEventListener === "function") {
+          root.addEventListener("keydown", onKeyDown);
+          root.addEventListener("keyup", onKeyUp);
+          root.addEventListener("blur", () => disarm("focus"));
+        }
+        root.document?.addEventListener?.("visibilitychange", () => { if (root.document.visibilityState !== "visible") disarm("focus"); });
         build();
         start();
       },
-      show() { if (api) { renderCameras(); start(); } },
-      hide() { stop(); dropTiles(); if (refs.cams) refs.cams.replaceChildren(); },
-      _test: { data, model, refs: () => refs, refresh, update },
+      show() { shown = true; if (api) { renderCameras(); start(); } },
+      hide() { disarm("focus"); shown = false; stop(); dropTiles(); if (refs.cams) refs.cams.replaceChildren(); },
+      _test: { data, model, kb, refs: () => refs, refresh, update },
     };
   }
 

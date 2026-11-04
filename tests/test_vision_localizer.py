@@ -82,25 +82,6 @@ def test_masks_restore_polygon_and_angle_after_anisotropic_stretch():
     np.testing.assert_array_equal(stretched, before)
 
 
-def test_masks_give_the_four_rectangle_corners_in_original_pixels():
-    original = cv2.boxPoints(((600, 350), (200, 80), 30))
-    found = map_detections(
-        [[200, 200, 400, 500]],
-        [0],
-        [0.9],
-        {0: "Chip"},
-        1280,
-        640,
-        640,
-        polygons=[original / [2, 1]],
-    )
-    corners = found[0].corners_px
-    assert len(corners) == 4
-    found_sorted = sorted(corners)
-    expected = sorted(tuple(point) for point in original.tolist())
-    np.testing.assert_allclose(found_sorted, expected, atol=0.001)
-
-
 def test_masks_keep_alignment_when_earlier_boxes_are_filtered():
     first = [[0, 0], [20, 0], [20, 20]]
     second = [[100, 100], [200, 100], [200, 200], [100, 200]]
@@ -147,22 +128,12 @@ def test_invalid_mask_geometry_keeps_the_valid_box(polygon):
     )
     assert len(found) == 1
     assert found[0].xyxy == (0, 0, 50, 50)
-    assert (found[0].polygon, found[0].angle_deg, found[0].size_px, found[0].corners_px) == (
-        None,
-        None,
-        None,
-        None,
-    )
+    assert (found[0].polygon, found[0].angle_deg, found[0].size_px) == (None, None, None)
 
 
 def test_missing_masks_leave_box_only_geometry():
     found = map_detections([[0, 0, 50, 50]], [0], [0.9], {0: "Chip"}, 640, 640, 640)
-    assert (found[0].polygon, found[0].angle_deg, found[0].size_px, found[0].corners_px) == (
-        None,
-        None,
-        None,
-        None,
-    )
+    assert (found[0].polygon, found[0].angle_deg, found[0].size_px) == (None, None, None)
 
 
 def test_mismatched_masks_cannot_silently_attach_to_another_box():
@@ -279,18 +250,11 @@ def test_predict_serializes_masks_in_original_image_coordinates(fake_detector, m
     assert item["xyxy"] == [200, 100, 400, 200]
     assert item["polygon"] == [[200, 100], [400, 100], [400, 200], [200, 200]]
     assert sorted(item["size_px"]) == pytest.approx([100, 200])
-    assert sorted(map(tuple, item["corners_px"])) == [
-        (200, 100),
-        (200, 200),
-        (400, 100),
-        (400, 200),
-    ]
     assert metadata["counts"] == {"Chip": 1}
 
     prediction.masks = None
     _, metadata = Localizer(weights).predict(image)
     assert metadata["detections"][0]["polygon"] is None
-    assert metadata["detections"][0]["corners_px"] is None
 
 
 def test_import_needs_no_detector_runtime_and_creates_no_files(tmp_path):

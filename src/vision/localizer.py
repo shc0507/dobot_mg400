@@ -29,24 +29,21 @@ class Detection:
     polygon: tuple[tuple[float, float], ...] | None = None
     angle_deg: float | None = None
     size_px: tuple[float, float] | None = None
-    corners_px: tuple[tuple[float, float], ...] | None = None
 
 
 def _mask_geometry(polygon, width, height, input_size):
-    """Map a contour, then return its rectangle angle, width/height and 4 corners."""
+    """Map a contour, then return OpenCV's rectangle angle and width/height."""
     points = np.array(polygon, dtype=np.float32, copy=True)
     if points.ndim != 2 or points.shape[1] != 2 or len(points) < 3:
-        return None, None, None, None
+        return None, None, None
     if not np.all(np.isfinite(points)):
-        return None, None, None, None
+        return None, None, None
     points *= [width / input_size, height / input_size]
     points[:, 0] = np.clip(points[:, 0], 0, width)
     points[:, 1] = np.clip(points[:, 1], 0, height)
-    rect = cv2.minAreaRect(points)
-    _, size, angle = rect
+    _, size, angle = cv2.minAreaRect(points)
     mapped = tuple((float(x), float(y)) for x, y in points)
-    corners = tuple((float(x), float(y)) for x, y in cv2.boxPoints(rect))
-    return mapped, float(angle), (float(size[0]), float(size[1])), corners
+    return mapped, float(angle), (float(size[0]), float(size[1]))
 
 
 def load_image(source: str | Path | Image.Image | np.ndarray) -> Image.Image:
@@ -87,11 +84,9 @@ def map_detections(
         if x2 <= x1 or y2 <= y1:
             continue
         cid = int(class_id)
-        polygon, angle, size, corners = (None, None, None, None)
+        polygon, angle, size = (None, None, None)
         if polygons is not None:
-            polygon, angle, size, corners = _mask_geometry(
-                polygons[index], width, height, input_size
-            )
+            polygon, angle, size = _mask_geometry(polygons[index], width, height, input_size)
         mapped.append(
             Detection(
                 cid,
@@ -102,7 +97,6 @@ def map_detections(
                 polygon,
                 angle,
                 size,
-                corners,
             )
         )
     return mapped

@@ -1315,7 +1315,7 @@ def test_proxy_install_is_optional_private_and_never_starts_it(host, module):
         value not in text for key, value in settings.items() if key.endswith("_TOKEN") and value
     )
     assert "http://:8080" in text and "bind 127.0.0.1" in text
-    assert "@PANEL_PORT@" not in text
+    assert "@ORCH_PORT@" not in text and "/robot" not in text
     commands = names(host.commands)
     assert not any(command[0] == str(caddy) for command in commands)
     assert not any(
@@ -1359,18 +1359,10 @@ def test_proxy_dry_run_checks_without_any_host_mutation(host):
         {"MG400_PROXY_PORT": "8080.0"},
         {"MG400_PROXY_PORT": "8080;shutdown"},
         {"MG400_PROXY_PORT": "65536"},
-        {"MG400_PROXY_PORT": "8766"},
-        {"MG400_PANEL_PORT": "1985"},
-        {"MG400_STAGE_PORT": "8766"},
-        {"MG400_THERMAL_PORT": "http://elsewhere"},
-        {"MG400_PANEL_BIND": "0.0.0.0"},
-        {"MG400_STAGE_BIND": "localhost"},
+        {"MG400_PROXY_PORT": "8772"},
+        {"MG400_ORCH_PORT": "1985"},
+        {"MG400_ORCH_PORT": "http://elsewhere"},
         {"MG400_CAMERA_BIND": "0.0.0.0"},
-        {"MG400_PANEL_BASE_PATH": "/"},
-        {"MG400_STAGE_BASE_PATH": "/stage//"},
-        {"MG400_PANEL_TOKEN": "too-short"},
-        {"MG400_STAGE_TOKEN": "nonascii-token-xxxxxxxxxxxxx-é"},
-        {"MG400_OPTIONAL_SERVICES": "proxy,furnace", "MG400_FURNACE_BASE_PATH": "/"},
         {"MG400_OPTIONAL_SERVICES": "proxy,orch", "MG400_ORCH_BASE_PATH": "/"},
     ],
 )
@@ -1432,9 +1424,8 @@ def test_proxy_requires_binary_and_explicit_optional_selection(host):
 
 
 def test_proxy_rendering_keeps_verified_origins_upgrade_defaults_and_secret_path(host, module):
-    proxy_settings(host, MG400_PROXY_BIND="::1", MG400_PANEL_PORT="9001", MG400_STAGE_PORT="9002")
+    proxy_settings(host, MG400_PROXY_BIND="::1", MG400_ORCH_PORT="9001")
     settings = module.parse_settings(host.settings.read_text())
-    settings.update(MG400_PANEL_TOKEN="p" * 32, MG400_STAGE_TOKEN="s" * 32)
     registry = module.load_services(host.code / "deploy/services.toml")
     config = module.render_proxy(
         module.Host(host.root, source=host.code),
@@ -1443,7 +1434,7 @@ def test_proxy_rendering_keeps_verified_origins_upgrade_defaults_and_secret_path
     )
     assert "bind [::1]" in config
     assert "import instrument 127.0.0.1:9001" in config
-    assert "import instrument 127.0.0.1:9002" in config
+    assert "import instrument 127.0.0.1:1985" in config
     assert "header_up Host {http.request.hostport}" in config
     assert "header_up X-Forwarded-Host {http.request.hostport}" in config
     assert "header_up X-Forwarded-For {http.request.remote.host}" in config
@@ -1453,10 +1444,12 @@ def test_proxy_rendering_keeps_verified_origins_upgrade_defaults_and_secret_path
     assert "response_header_timeout 60s" in config
     assert "Upgrade" not in config and "Connection" not in config  # Caddy forwards upgrades itself.
     assert config.count("handle_path ") == 1 and "handle_path /camera/*" in config
-    assert all(
-        f"handle /{name}/*" in config
-        for name in ("robot", "stage", "thermal", "furnace", "microscope", "lab")
+    # Only the Lab Console and the camera streams are proxied.
+    assert config.count("handle /") == 1 and "handle /lab/*" in config
+    assert not any(
+        f"/{name}" in config for name in ("robot", "stage", "thermal", "furnace", "microscope")
     )
+    assert "redir / /lab/ 302" in config
     assert "admin off" in config and "persist_config off" in config
     assert "http.log.access http.log.error" in config
     assert "lb_retries" not in config and "lb_try_duration" not in config

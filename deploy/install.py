@@ -473,10 +473,37 @@ def prepare_proxy(args, host, settings, selected):
     return config, binary if args.caddy is not None else None
 
 
+def check_toupcam_directories(host):
+    """Require a trusted destination chain, without changing existing directories."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with assets._directory(host.root) as anchor:
+        parent = os.dup(anchor)
+        try:
+            for component in host.toupcam.parent.relative_to(host.root).parts:
+                try:
+                    child = os.open(component, flags, dir_fd=parent)
+                except FileNotFoundError:
+                    return  # Installation creates the missing suffix as root.
+                os.close(parent)
+                parent = child
+                info = os.fstat(parent)
+                execute_bit = 0o010 if info.st_gid == SERVICE_GID else 0o001
+                if info.st_uid != 0 or info.st_mode & 0o7022 or not info.st_mode & execute_bit:
+                    raise ValueError(
+                        "Toupcam destination directories must be root-owned and traversable "
+                        "by the service, "
+                        "without special mode bits or group or other write access."
+                    )
+        finally:
+            os.close(parent)
+
+
 def prepare_toupcam(source, host, *, required=False):
     """Keep verified SDK bytes without loading the library or changing the host."""
     if source is None and not required:
         return None
+    if required:
+        check_toupcam_directories(host)
     try:
         with assets._directory(host.toupcam.parent) as directory:
             assets._regular(host.toupcam, directory)

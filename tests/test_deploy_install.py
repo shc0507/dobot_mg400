@@ -2020,16 +2020,20 @@ def test_microscope_rejects_unsafe_installed_library_before_mutation(
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
 
 
-def microscope_library_owner(module, monkeypatch, path, *, owner=0, group=0):
-    """Model the root-owned installed file while tests run without root."""
-    inode, original_fstat = path.stat().st_ino, os.fstat
+def microscope_library_owner(module, monkeypatch, path, *, owner=0, group=0, directory_owners=None):
+    """Model the root-owned destination chain while tests run without root."""
+    identities = {parent.stat().st_ino: (0, 0) for parent in path.parents[:4]}
+    identities[path.stat().st_ino] = (owner, group)
+    for directory, ownership in (directory_owners or {}).items():
+        identities[directory.stat().st_ino] = ownership
+    original_fstat = os.fstat
 
     def fstat(fd):
         info = original_fstat(fd)
-        if info.st_ino != inode:
+        if info.st_ino not in identities:
             return info
         values = list(info)
-        values[4], values[5] = owner, group
+        values[4], values[5] = identities[info.st_ino]
         return os.stat_result(values)
 
     monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
@@ -2056,4 +2060,41 @@ def test_microscope_rejects_unsafe_existing_library_permissions(
     target.chmod(rights)
     microscope_library_owner(module, monkeypatch, target, owner=owner, group=group)
     assert host.install() == 1
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2, 3])
+@pytest.mark.parametrize("source", [False, True])
+@pytest.mark.parametrize(
+    "owner,group,rights",
+    [(1000, 0, 0o755), (0, 0, 0o775), (0, 0, 0o757), (0, 0, 0o700), (0, 1000, 0o701)],
+)
+def test_microscope_refuses_unsafe_library_ancestors_before_mutation(
+    host,
+    inventory_udev,
+    toupcam_library,
+    module,
+    monkeypatch,
+    capsys,
+    depth,
+    source,
+    owner,
+    group,
+    rights,
+):
+    select_optional(host, "microscope")
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(toupcam_library.read_bytes())
+    target.chmod(0o755)
+    directory = target.parents[depth]
+    directory.chmod(rights)
+    microscope_library_owner(
+        module, monkeypatch, target, directory_owners={directory: (owner, group)}
+    )
+    args = ["--toupcam", str(toupcam_library)] if source else []
+    assert host.install(*args) == 1
+    assert "destination directories" in capsys.readouterr().err
+    assert mode(directory) == rights
+    assert target.read_bytes() == toupcam_library.read_bytes()
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()

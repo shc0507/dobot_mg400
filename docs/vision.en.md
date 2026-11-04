@@ -106,7 +106,7 @@ Robot motion targets still require a validated calibration on the applicable pla
 ## Routes and commands
 
 Routes are relative to `--base-path` and use the [service contract](adr/0001-instrument-service-contract.en.md).
-Only 1 operation runs at a time, including detection, QR reading, marker reading, calibration, and drift checks.
+Only 1 operation runs at a time, including detection, QR reading, marker reading, calibration, drift checks, and slot observations.
 An overlapping request returns 409. The service does not queue extra operations.
 
 | Read route | Result |
@@ -383,7 +383,38 @@ A pass does not detect every camera movement. It does not replace physical clear
 It does not acquire images, issue robot commands, or determine chip identity.
 Use [grooved-platform-v2.toml](../config/trays/grooved-platform-v2.toml) for `Grooved Platform V2`.
 `load_tray` reads the bounded TOML file. `validate_tray` checks an in-memory configuration.
-Call this Python library with supplied data. It adds no HTTP command or orchestrator skill.
+The library accepts supplied data. The leased `observe_slots` command combines it with current frame and detector evidence.
+
+### Guarded slot evidence
+
+Send `observe_slots` through the existing `POST api/command` route with the normal token, client, and lease checks.
+It uses these fields:
+
+| Field | Requirement |
+| --- | --- |
+| `camera` | Calibrated camera number, from 1 to 4. |
+| `tray` | Validated tray-model document, not a host file path. |
+| `targets` | Requested slot IDs mapped to their exact taught robot XY pairs. |
+| `axis` | `long` or `short`, according to the explicit grasp convention. |
+
+The complete JSON command must fit within 16 KiB. A valid tray file does not guarantee that its command fits.
+Each observation uses 1 current frame and the camera-bound calibration model.
+The service locates the tray and maps detector evidence from that frame into robot XY.
+An empty result requires successful inference and valid tray, target, and calibration evidence.
+Missing data or ambiguous chip association does not establish an empty slot.
+The entire requested groove must be visible. Either arm occlusion or a clipped chip mask prevents conclusive evidence.
+Chip evidence for a requested groove must not overlap another configured groove.
+An axis is ambiguous when mask side lengths differ by at most 1% of the longer side.
+
+Output contains `camera`, `camera_device`, `calibrated`, `image_size`, `model_created_at`, `frame_sha256`, `read_at`, and `axis`.
+Each slot reports `state`, `center_xy_mm`, `angle_deg`, and `reason`. Position and angle can be null.
+The angle describes the selected chip axis in robot XY. It is not a raw image angle or a flange R command.
+Stop, lease loss, invalid metadata, or revoked publication prevents the service from publishing a successful result.
+
+The `vision.find_chip(slot)` and `vision.slot_state(slot)` skills require fresh owned stationary robot state and a calibration drift check.
+The composite `vision.tray_transfer` also requires a measured grasp convention and exact taught slot targets.
+It keeps observation results within the guarded step and checks camera, image dimensions, and calibration identity across the observations.
+See [vision-guided tray transfer](orchestrator.en.md#vision-guided-tray-transfer) for configuration and the supervised workflow.
 
 ### Bounded groove geometry
 

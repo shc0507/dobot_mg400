@@ -436,14 +436,20 @@ def test_public_cli_transfer_rehearses_with_owned_collector_and_no_production_se
     }
     for key in forbidden:
         monkeypatch.setenv(key, "production-must-not-be-used")
-    explicit = {key: os.environ[key] for key in TRANSFER_SETTINGS}
+    monkeypatch.delenv("MG400_ORCH_TRAY_FILE", raising=False)
+    monkeypatch.setenv("MG400_ORCH_TRAY_CAMERA", "2")
+    explicit = {key: os.environ[key] for key in TRANSFER_SETTINGS if key in os.environ}
+    absent = TRANSFER_SETTINGS - explicit.keys()
     demos = []
 
     class Demo(Rehearsal):
         def __enter__(self):
             assert forbidden.isdisjoint(os.environ)
             assert os.environ["MG400_ORCH_ZONES_FILE"] == str(zone_config)
-            assert {key: os.environ[key] for key in TRANSFER_SETTINGS} == explicit
+            assert absent.isdisjoint(os.environ)
+            assert {
+                key: os.environ[key] for key in TRANSFER_SETTINGS if key in os.environ
+            } == explicit
             super().__enter__()
             demos.append(self)
             collector = self.simulator.collector

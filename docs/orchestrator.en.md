@@ -120,6 +120,9 @@ A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter wit
 | `robot.pick` | `station`, `grip` | Robot |
 | `robot.place` | `station`, `release` | Robot |
 | `robot.transfer` | `from`, `to`, `grip`, `release` | Robot |
+| `vision.find_chip` | `slot` | Robot, vision |
+| `vision.slot_state` | `slot` | Robot, vision |
+| `vision.tray_transfer` | `from_slot`, `to_slot`, optional `speed` | Robot, vision |
 | `crucible.load` | `from_slot`, optional limits below | Robot, stage, furnace |
 | `crucible.unload` | `to_slot`, optional limits below | Robot, stage, furnace, thermal |
 | `sample.record` | `chip_id`, `note` | None |
@@ -361,6 +364,72 @@ Each move waits for completion and the next fresh measured pose. The measured fl
 The skill enters the starting station's zone before its initial rise. It enters each later named station zone before moving toward it. During a transfer, it retains the source zone until measured arrival toward the next station. Standalone pick and place release their final zone only after measured arrival at the raised endpoint. Failures retain durable claims for physical checks and audited recovery.
 
 The operator must verify that every endpoint approach is reachable, clears its working zone, and connects to an unobstructed route. At C, do not assume that the minimum 10 mm rise is reachable. Over the tray, the approach must keep flange Z below the camera 4 limit of 154 mm. Re-teach an unsuitable endpoint or route before use. The minimum approach and workspace bounds do not prove physical clearance. Software waypoint checks do not validate collisions or joint reachability.
+
+## Vision-guided tray transfer
+
+`recipes/tray-transfer.toml` requires the string parameters `from_slot` and `to_slot`.
+Its guarded `vision.tray_transfer` step checks calibration, observes both slots, transfers the chip, and checks both slots again.
+It requires a chip at the source and an empty target before motion.
+After placement, it requires a chip at the target and an empty source.
+Missing or ambiguous evidence, an empty grasp, a drop, or failed calibration holds the run.
+
+Configure these explicit inputs. They have no hardware defaults:
+
+| Setting | Requirement |
+| --- | --- |
+| `MG400_ORCH_TRAY_FILE` | Private tray-model TOML file, at most 16 KiB. |
+| `MG400_ORCH_TRAY_CAMERA` | Calibrated tray camera, from 1 to 4. |
+| `MG400_ORCH_TRAY_GRIP` | Measured closing target, an integer from 0 to 1000. |
+| `MG400_ORCH_TRAY_RELEASE` | Measured release, an integer from 0 to 1000, greater than the closing target and actual contact width. |
+| `MG400_ORCH_CHIP_AXIS` | `long` or `short`, according to the measured grasp convention. |
+| `MG400_ORCH_CHIP_R_OFFSET_DEG` | Measured offset from the chip axis in robot XY to flange R, in degrees. |
+| `MG400_ORCH_CHIP_R_MIN_DEG` | Lower permitted flange R for this grasp convention. |
+| `MG400_ORCH_CHIP_R_MAX_DEG` | Upper permitted flange R. The finite interval must increase and have width less than 180 degrees. |
+
+Place the selected model in the private robot-data directory, for example `/var/lib/mg400/robot/tray.toml`.
+The directory and file must belong to the service user.
+Use directory mode `0700` or `0750` and file mode `0600` or `0640`.
+Symbolic links, nonregular files, multiple hard links, unsafe permissions, and concurrent file changes refuse the step.
+
+The ordinary tool offset, fingertip workspace, station file, and `MG400_ORCH_PRE_GRIP` remain required.
+Teach an actual pick or place target for each exact slot ID.
+Use a safe contact depth and an operator-validated approach of at least 10 mm.
+Travel references and calibration contacts do not replace these targets. A groove midpoint is not a taught target.
+
+The service maps the observed chip axis into robot XY before the skill applies the measured R offset.
+Equivalent orientations differ by multiples of 180 degrees. The permitted interval must select exactly 1.
+The result must also satisfy the ordinary workspace and robot limits. A raw image angle is not a flange R target.
+
+Before entry, the robot must satisfy the [calibration drift check](vision.en.md#calibration-drift-check) at the stored scan R inside its calibrated grid.
+It must also match an unambiguous taught station or its approach, with a verified route to the source.
+The skill does not position the robot for the drift check or initialize its gripper.
+
+The source endpoint uses observed XY and the permitted R, with the taught depth, approach, zone, and vias.
+The destination remains the exact taught slot target. Stored stations do not change.
+The skill checks every waypoint and conversion before motion. Speed defaults to 1 and remains bounded by the robot service cap.
+Observation results stay inside the guarded step, with stable camera, image dimensions, and calibration identity.
+See [guarded slot evidence](vision.en.md#guarded-slot-evidence) for the observation contract.
+
+For hardware use, an operator must validate the settings, clearance, reach, and grasp convention before the supervised procedure.
+After an enabled robot receives `stop_sync` or its client context exits, feedback and the motion lock remain until explicit disable.
+Prepare subsequent runs through that explicit operator workflow. The recipe does not recover or retry automatically.
+Hardware acceptance requires 3 consecutive supervised transfers with vision confirmation and results recorded on the task issue.
+
+Run the offline acceptance cases without opening device or network ports:
+
+```sh
+uv run pytest -q tests/test_recipe_tray_transfer.py
+```
+
+These cases use explicit synthetic inputs and an in-process ready robot.
+Ordinary owned rehearsal starts disabled. The production tray recipe does not enable the robot or initialize its gripper.
+After the operator completes measured configuration and hardware readiness, run the recipe through the configured services:
+
+```sh
+uv run labctl run recipes/tray-transfer.toml --param 'from_slot="YOUR_SOURCE_SLOT"' --param 'to_slot="YOUR_TARGET_SLOT"'
+```
+
+Replace both placeholders with exact taught slot IDs. Keep the operator at the emergency stop throughout the hardware run.
 
 ## Crucible load and unload
 

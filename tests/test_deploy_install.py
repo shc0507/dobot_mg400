@@ -221,6 +221,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         ("cameras", 0o700),
         ("camera", 0o700),
         ("locks", 0o700),
+        ("robot", 0o750),
         ("stage", 0o700),
         ("work", 0o750),
     ]
@@ -275,6 +276,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         "locks",
         "work",
         "camera",
+        "robot",
         "stage",
         "calibration",
         "calibration/cameras",
@@ -449,6 +451,7 @@ def test_dry_run_changes_nothing_and_runs_only_checks(host):
     report = host.out.getvalue()
     assert "Would run: /usr/bin/uv sync" in report
     assert "Would run: systemctl enable --now mg400-gripper-collector.path" in report
+    assert f"Would ensure {host.data / 'robot'} (0750, 1000:1000)" in report
 
 
 def test_failed_dependency_sync_installs_no_units(host):
@@ -1044,6 +1047,7 @@ def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
         "Would ensure <host>/var/lib/mg400/work (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/camera (0700, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/stage (0700, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/robot (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/calibration (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/calibration/cameras (0700, 1000:1000)",
         "Would create <host>/var/lib/mg400/camera/preview.key",
@@ -2169,3 +2173,79 @@ def test_microscope_refuses_unsafe_library_ancestors_before_mutation(
     assert mode(directory) == rights
     assert target.read_bytes() == toupcam_library.read_bytes()
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+@pytest.mark.parametrize(
+    "name,setting",
+    [
+        ("tool.toml", "MG400_ORCH_TOOL_FILE"),
+        ("stations.toml", "MG400_ORCH_STATIONS_FILE"),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("destination_exists", [False, True])
+def test_legacy_robot_data_and_explicit_paths_stay_unchanged(
+    host, module, name, setting, dry_run, destination_exists
+):
+    host.data.mkdir(parents=True)
+    legacy = host.data / name
+    legacy.write_bytes(b"operator-owned legacy data\n")
+    legacy.chmod(0o640)
+    before = legacy.stat()
+    destination = host.data / "robot" / name
+    if destination_exists:
+        destination.parent.mkdir(mode=0o750)
+        destination.write_bytes(b"existing robot data\n")
+        destination.chmod(0o600)
+        destination_before = destination.stat()
+    host.settings.parent.mkdir(parents=True)
+    configured_path = f"/var/lib/mg400/{name}"
+    host.settings.write_text(f"{setting}={configured_path}\n")
+    assert host.install(*(["--dry-run"] if dry_run else [])) == 0
+    assert legacy.read_bytes() == b"operator-owned legacy data\n"
+    assert (legacy.stat().st_ino, legacy.stat().st_uid, legacy.stat().st_gid) == (
+        before.st_ino,
+        before.st_uid,
+        before.st_gid,
+    )
+    assert mode(legacy) == 0o640
+    if destination_exists:
+        assert destination.read_bytes() == b"existing robot data\n"
+        assert destination.stat().st_ino == destination_before.st_ino
+        assert mode(destination) == 0o600
+    else:
+        assert not destination.exists()
+    assert module.parse_settings(host.settings.read_text())[setting] == configured_path
+    report = host.out.getvalue()
+    assert f"Legacy robot data exists at {legacy}" in report
+    assert f"Move it manually to {destination}" in report
+    assert f"Update an old {setting} override" in report
+    assert "Do not overwrite an existing destination" in report
+    assert "No robot data file was moved" in report
+
+
+def test_legacy_robot_symlink_is_reported_without_following_or_replacing_it(host, tmp_path):
+    host.data.mkdir(parents=True)
+    target = tmp_path / "unavailable-data"
+    legacy = host.data / "tool.toml"
+    legacy.symlink_to(target)
+    before = legacy.lstat()
+    assert host.install() == 0
+    assert legacy.is_symlink() and legacy.readlink() == target
+    assert legacy.lstat().st_ino == before.st_ino
+    assert not target.exists()
+    assert not (host.data / "robot/tool.toml").exists()
+    assert f"Legacy robot data exists at {legacy}" in host.out.getvalue()
+
+
+def test_robot_directory_link_is_refused_without_changing_its_target(host, tmp_path):
+    target = tmp_path / "operator-data"
+    target.mkdir(mode=0o700)
+    marker = target / "keep.toml"
+    marker.write_bytes(b"preserve operator data\n")
+    host.data.mkdir(parents=True)
+    (host.data / "robot").symlink_to(target, target_is_directory=True)
+    assert host.install() == 1
+    assert (host.data / "robot").is_symlink()
+    assert mode(target) == 0o700
+    assert marker.read_bytes() == b"preserve operator data\n"

@@ -285,7 +285,7 @@ EOF、Ctrl-C、SIGTERM 和 SIGHUP 都会请求终止。CLI 等待活动操作和
 
 工位保存测得的指尖位姿、接近间隙，以及可选的途经工位路线。控制器必须保持 `User=0,Tool=0`。工具偏移只在软件中换算。
 
-操作员必须把 H-08 测得的偏移写入 `/var/lib/mg400/tool.toml`。文件只含 `offset_mm = [dx, dy, dz]`。用测得的有限数替换这些名称，单位为毫米。偏移没有默认值。测量值缺失或无效时，不能示教。
+操作员必须把 H-08 测得的偏移写入 `/var/lib/mg400/robot/tool.toml`。文件只含 `offset_mm = [dx, dy, dz]`。用测得的有限数替换这些名称，单位为毫米。偏移没有默认值。测量值缺失或无效时，不能示教。
 
 换算先按法兰角度 R 旋转 `(dx, dy)`，再加到法兰 XY 上。指尖 Z 等于法兰 Z 减去 dz。反向换算减去旋转后的 XY 偏移，并加上 dz。两种换算都保留 R，包括正负号和完整转数。
 
@@ -293,8 +293,8 @@ EOF、Ctrl-C、SIGTERM 和 SIGHUP 都会请求终止。CLI 等待活动操作和
 
 | 配置项 | 含义 |
 | --- | --- |
-| `MG400_ORCH_TOOL_FILE` | 工具文件，默认为 `/var/lib/mg400/tool.toml` |
-| `MG400_ORCH_STATIONS_FILE` | 工位文件，默认为 `/var/lib/mg400/stations.toml` |
+| `MG400_ORCH_TOOL_FILE` | 工具文件，默认为 `/var/lib/mg400/robot/tool.toml` |
+| `MG400_ORCH_STATIONS_FILE` | 工位文件，默认为 `/var/lib/mg400/robot/stations.toml` |
 | `MG400_ORCH_X_MIN_MM`、`MG400_ORCH_X_MAX_MM` | 指尖 X 边界，单位为毫米 |
 | `MG400_ORCH_Y_MIN_MM`、`MG400_ORCH_Y_MAX_MM` | 指尖 Y 边界，单位为毫米 |
 | `MG400_ORCH_Z_MIN_MM`、`MG400_ORCH_Z_MAX_MM` | 指尖 Z 边界，单位为毫米 |
@@ -320,6 +320,12 @@ labctl station rm tray-pick
 每次编辑都先检查完整工位图，再发布文件。并发编辑按顺序执行，文件以原子替换写入。文件模式为 `0640`。父目录模式必须为 `0700` 或 `0750`。
 
 `/var/lib/mg400` 下的数据属主必须为 `1000:1000`。其他路径要求调用者属主。读取时，文件可使用 `0600` 或 `0640`。记录库拒绝符号链接、特殊文件和公开权限。
+
+安装器创建 `/var/lib/mg400/robot`，属主为 `1000:1000`，模式为 `0750`。未启用可选编排器服务时也会创建。
+父目录 `/var/lib/mg400` 的属主仍为 `root:1000`，模式仍为 `0750`。
+旧路径 `/var/lib/mg400/tool.toml` 或 `/var/lib/mg400/stations.toml` 中的文件保持不变，安装器只打印手动移动提示。
+按[机器人数据迁移说明](deploy.md#迁移到新主机)处理后，再通过新默认路径使用这些文件。
+已有的 `MG400_ORCH_TOOL_FILE` 和 `MG400_ORCH_STATIONS_FILE` 覆盖配置会保留。移动文件后，更新旧的覆盖配置。
 
 写入或文件同步失败时，旧文件保持不变。替换后的目录同步失败会报错，但新文件可能已经可见。遇到该错误后，先检查工位文件，再重复编辑。
 

@@ -17,6 +17,7 @@
 | `/var/lib/mg400` | 运行数据的上级目录 | `root:1000`，`0750` |
 | `/var/lib/mg400/locks` | 机械臂连接锁 | `1000:1000`，`0700` |
 | `/var/lib/mg400/work` | 夹爪反馈、夹爪命令文件和模式切换备份 | `1000:1000`，`0750` |
+| `/var/lib/mg400/robot` | `tool.toml` 中的实测工具偏移与 `stations.toml` 中的示教工位，文件为 `0600` 或 `0640` | `1000:1000`，`0750` |
 | `/var/lib/mg400/vision` | 启用视觉服务时创建的数据目录 | `1000:1000`，`0750` |
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/camera` | 摄像头预览密钥 `preview.key` | `1000:1000`，`0700` |
@@ -445,8 +446,8 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 | `/var/lib/mg400/models/` | 已安装的模型权重 |
 | `/var/lib/mg400/calibration/cameras/` | 按相机路径保存的相机到机械臂单应矩阵 |
 | `/var/lib/mg400/calibration/microscope/` | 物镜转盘、自动对焦和参考视图数据 |
-| `/var/lib/mg400/stations.toml` | 示教机械臂工位 |
-| `/var/lib/mg400/tool.toml` | 夹爪工具偏移 |
+| `/var/lib/mg400/robot/stations.toml` | 示教机械臂工位 |
+| `/var/lib/mg400/robot/tool.toml` | 夹爪工具偏移 |
 | `/var/lib/mg400/stage/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
 | `/var/lib/mg400/thermal/rois.toml` | 命名热像区域 |
 | `/var/lib/mg400/furnace/state.json` | 炉程序状态 |
@@ -454,6 +455,12 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 | `/var/lib/mg400/recordings/` | 归档前的炉视频 |
 | `/var/lib/mg400/camera/preview.key` | 摄像头预览密钥 |
 | `/var/lib/mg400/work/` | 夹爪反馈、命令文件、持久命令锁和模式切换备份 |
+
+安装器创建 `/var/lib/mg400/robot`，属主为 `1000:1000`，模式为 `0750`，用于工具和工位数据。
+若 `/var/lib/mg400/tool.toml` 或 `/var/lib/mg400/stations.toml` 存在，安装器只打印移动提示，不修改该文件。
+停止使用机器人数据的服务和 CLI 进程后，再手动将各旧文件移入 `/var/lib/mg400/robot`。
+不得覆盖已有目标。保留 `1000:1000` 属主以及 `0600` 或 `0640` 文件模式。
+安装器保留已有的 `MG400_ORCH_TOOL_FILE` 和 `MG400_ORCH_STATIONS_FILE` 值。重新启动使用这些数据的进程前，更新旧的覆盖配置。
 
 安装器创建 `/var/lib/mg400/stage`，所有者为 `1000:1000`，权限为 `0700`，用于写入位移台校准。
 父目录 `/var/lib/mg400` 仍由 root 拥有，权限为 `0750`。

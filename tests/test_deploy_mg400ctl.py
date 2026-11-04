@@ -889,6 +889,8 @@ def test_backup_preserves_host_data_owners_modes_and_persistent_command_locks(ba
     files = {
         "stations.toml": b"[station]\n",
         "tool.toml": b"offset = 1\n",
+        "robot/stations.toml": b"[stations]\n",
+        "robot/tool.toml": b"offset_mm = [0, 0, 146]\n",
         "stage.toml": b"steps_per_mm = 1\n",
         "calibration/cameras/arm.toml": b"homography = []\n",
         "calibration/microscope/reference.json": b"{}\n",

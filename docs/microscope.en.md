@@ -25,17 +25,14 @@ See the [deployment guide](deploy.en.md) for host configuration.
 
 ## Managed host service
 
-Add `microscope` to `MG400_OPTIONAL_SERVICES` in `/etc/mg400/mg400.env`. Preserve the other selections.
+The installer installs the `microscope` service by default.
 Install the pinned [Toupcam library](deploy.en.md#toupcam-library) and configure the settings below before starting the service.
-The installer prepares the `microscope` group in `/opt/mg400/.venv`, the USB access rule, and the default private data directories.
-Custom calibration and run roots need operator-prepared private directories.
+The installer prepares the `microscope` group in `/opt/mg400/.venv`, the USB access rule, and the default data directories.
 It does not start devices or create calibration values.
 
 The unit runs as `1000:1000` with `dialout` and `video` access.
-It sets `LD_LIBRARY_PATH=/usr/local/lib/mg400` and listens on `127.0.0.1:8770` by default.
-It retains `MG400_FURNACE_TOKEN` only for the existing furnace metadata client.
-If you use a proxy prefix, include the furnace's native prefix in `MG400_MICROSCOPE_FURNACE_URL`.
-The camera preview retains its vision credential. Unrelated services exclude the microscope token.
+It sets `LD_LIBRARY_PATH=/usr/local/lib/mg400` and listens on `127.0.0.1:8770`.
+It reads furnace metadata from `http://127.0.0.1:8769/`.
 
 Stop conflicting camera and motor programs before use.
 Start the configured side-camera service with `mg400ctl start camera`, then start `mg400ctl start microscope`.
@@ -61,10 +58,6 @@ Cleanup failures produce a nonzero exit status.
 
 | Setting | Configuration |
 | --- | --- |
-| `MG400_MICROSCOPE_BIND` | Defaults to `127.0.0.1`. |
-| `MG400_MICROSCOPE_PORT` | Defaults to `8770`. |
-| `MG400_MICROSCOPE_BASE_PATH` | Defaults to `/`. Route paths below are relative to this prefix. |
-| `MG400_MICROSCOPE_TOKEN` | At least 24 printable ASCII characters. Required for a non-loopback bind. |
 | `MG400_MICROSCOPE_SERIAL` | The controller's stable `/dev/serial/by-id/` path. |
 | `MG400_MICROSCOPE_SIDE_STREAM` | The stream owned by go2rtc for the side camera. |
 | `MG400_TOUPCAM_SERIAL` | Optional camera serial. Set this or the index, never both. |
@@ -72,9 +65,6 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | Required measured `MIN,MAX` integer pulses, including zero, with nonzero travel. |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | Required measured clearance position, in pulses within the limits. Without a home switch, it must be `0`. |
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
-| `MG400_MICROSCOPE_FURNACE_URL` | Furnace metadata endpoint. Defaults to `http://127.0.0.1:8769/`. On Olares the furnace binds to the VPN address, so set `http://100.64.0.1:8769/`. |
-| `MG400_FURNACE_TOKEN` | Existing furnace API token for metadata reads. The microscope does not acquire furnace control. |
-| `MG400_FURNACE_ARCHIVE_DIR` | Empty by default. Set an absolute directory only after the operator mounts the archive share. |
 
 Real startup requires reference-aware firmware and explicit focus settings.
 The generic environment example leaves the physical focus settings empty and sets the turret nudge window to `0`.
@@ -88,9 +78,8 @@ MG400_MICROSCOPE_NUDGE_STEPS=20
 ```
 
 Do not copy demo limits to hardware.
-All requests retain the shared Host, Origin, and forwarded-header checks.
-Protected data and action routes also require the configured token.
-Without a token, the service accepts only loopback Host values without forwarded headers.
+Route paths below are relative to the base path `/`.
+The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 POST requests require `Content-Type: application/json` and `X-MG400-Client`.
 The control lease lasts 3 seconds and must be renewed during work.
 
@@ -224,8 +213,7 @@ It creates private output files and refuses existing or unsafe destinations.
 Finalized recordings retain video segments, `video.timestamps.csv`, and a summary targeting 3 minutes. Shorter clips are not lengthened.
 Cancelled or failed recordings retain their local partial files without a promised summary.
 Finalization requires recorded frames and valid media. It requires FFmpeg and ffprobe on the host.
-If you set `MG400_FURNACE_ARCHIVE_DIR`, finalization verifies the archive copy and retains the local files.
-Archive failure leaves local files available and does not report successful finalization.
+Finalization keeps the recordings in `/var/lib/mg400/recordings`.
 
 Stop, release, lease expiry, and shutdown revoke recording authority immediately. The service sends the motor stop commands without waiting for the encoder.
 The optional `wait_s` observes motor and recording cleanup within one budget of `0..15` seconds.
@@ -263,10 +251,10 @@ The caller must handle cancellation, close camera connections, and stop or disab
 
 ## Calibration and run files
 
-| Setting | Default | Contents |
-| --- | --- | --- |
-| `MG400_MICROSCOPE_CALIBRATION_DIR` | `/var/lib/mg400/calibration/microscope` | Calibration CSV files, reference images, and side-camera calibration captures. |
-| `MG400_ORCH_RUNS_DIR` | `/var/lib/mg400/runs` | Autofocus curves, objective-switch logs, and image analysis outputs. |
+| Directory | Contents |
+| --- | --- |
+| `/var/lib/mg400/calibration/microscope` | Calibration CSV files, reference images, and side-camera calibration captures. |
+| `/var/lib/mg400/runs` | Autofocus curves, objective-switch logs, and image analysis outputs. |
 
 Use `microscope.paths.calibration_path()` for calibration paths and `microscope.paths.run_path()` for run paths.
 Relative paths resolve under the corresponding root.
@@ -301,7 +289,6 @@ Keep the cameras on their fixed ports and never reset the shared USB hub.
 | `MG400_CAMERA_DEVICES` | Stable device paths in the order used by the camera preview installer. |
 | `MG400_MICROSCOPE_SIDE_STREAM` | The configured go2rtc stream for the side camera. There is no default stream. |
 | `MG400_CAMERA_MODES` | Optional comma-separated `WIDTHxHEIGHT@FPS` values, with 1 value for each configured device. |
-| `MG400_CAMERA_CAPTURE_SIZES` | Legacy comma-separated `WIDTHxHEIGHT` values, with 1 value for each configured device. |
 
 Map the side-camera device path to its stream before enabling capture.
 Configure only one mode or size list. The installer rejects configurations with both lists.
@@ -350,7 +337,6 @@ Missing measurements refuse startup. Do not substitute demonstration values.
 Calibration and experiments acquire the main camera, any required side camera, and exclusive serial access before motion.
 Each required camera must supply a valid first frame.
 Side capture uses `MG400_CAMERA_DEVICES`, `MG400_CAMERA_MODES`, and `MG400_MICROSCOPE_SIDE_STREAM` to select the physical device and mode.
-The legacy `MG400_CAMERA_CAPTURE_SIZES` rules still apply.
 The supervised adapter opens the stable device directly through `CAP_V4L2` and requires the `uvcvideo` driver.
 It retains the same MMAP capture queue until cleanup. An occupied go2rtc capture queue refuses startup.
 It never changes the format, reopens the device, or reconnects after capture starts.
@@ -405,7 +391,7 @@ Run calibration commands only under the supervision rules above:
 | `python -m microscope.calibrate light` | Run light-objective calibration and write `light_objective_calibration.csv`. |
 
 `--reference` selects the private calibration PNG for objective or light calibration. Its default is `objective_reference.png`.
-`--output` selects a file beneath `MG400_MICROSCOPE_CALIBRATION_DIR`.
+`--output` selects a file beneath `/var/lib/mg400/calibration/microscope`.
 Calibration can replace an existing owned private output file. Select another output name to retain the previous result.
 Reference capture requires terminal and device ownership checks, but does not require motion measurements or a reference confirmation.
 It accepts camera dimensions in `[focus]` and still stops and disables motors during cleanup.
@@ -493,7 +479,7 @@ Observe each move and record the measured values separately. The console does no
 ### Experiment commands
 
 Use `python -m microscope.experiments focus|switch|combined` with the required settings.
-Each command runs 1 pass. `--output` selects a new private directory beneath `MG400_ORCH_RUNS_DIR`.
+Each command runs 1 pass. `--output` selects a new private directory beneath `/var/lib/mg400/runs`.
 Without it, outputs use `microscope/experiments/` with a unique command directory.
 Settings, summary rows, focus curves, switch logs, and available final images stay in that directory.
 Failures retain partial results and a terminal failure row.

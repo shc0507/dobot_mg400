@@ -11,45 +11,28 @@
 ## 网络
 
 客户端通过 LarePass VPN 访问 Olares。Olares 的 VPN 地址为 `100.64.0.1`。
-客户端程序通过各服务的独立端口直接访问时，机器人、位移台和摄像头服务必须监听该地址。在 `/etc/mg400/mg400.env` 中设置：
-
-```ini
-MG400_PANEL_BIND=100.64.0.1
-MG400_CAMERA_BIND=100.64.0.1
-MG400_STAGE_BIND=100.64.0.1
-```
-
-Olares 的 VPN 访问控制规则必须允许 TCP `8766`、`8767` 和 `1985`。
+VPN 是访问边界。服务不检查令牌、Host 标头或来源。
+所有服务监听 `127.0.0.1`。[单端口代理](#可选的单端口代理)是 VPN 上唯一的入口。
 Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 `192.168.1.6`。
 
-可选热像服务通过 VPN 直接访问时，设置 `MG400_THERMAL_BIND=100.64.0.1`，并放行 TCP `8768`。
-默认值仍为 `127.0.0.1`。妥善保管 `MG400_THERMAL_TOKEN`，通过 Bearer 头发送，不得放入 URL。
-安装前，把 `thermal` 加入 `MG400_OPTIONAL_SERVICES`。见[热像服务说明](thermal.md#主机托管服务)。
+| 服务 | 回环端口 |
+| --- | --- |
+| 机器人 | `8766` |
+| 位移台 | `8767` |
+| 热像仪 | `8768` |
+| 炉控 | `8769` |
+| 显微镜 | `8770` |
+| 视觉 | `8771` |
+| 实验室控制台和配方服务 | `8772` |
+| MCP 网关 | `8773` |
+| 摄像头视频流 | `1985` |
 
-启用可选炉控服务时，设置 `MG400_FURNACE_BIND=100.64.0.1`，并在 VPN 规则中允许 TCP `8769`。
-保持 `MG400_FURNACE_TOKEN` 私密，通过 Bearer 头发送，不得放入 URL。见[炉控服务](furnace.md)。
+安装前，把 `thermal`、`vision` 等可选服务加入 `MG400_OPTIONAL_SERVICES`。
+服务列表和视觉运行环境见[主机部署](deploy.md#服务清单)。
+所有者安装并启动视觉服务后，运行 `mg400ctl gpu`，以 UID `1000` 读取 GPU 内存。
 
-可选显微镜服务默认使用 `MG400_MICROSCOPE_BIND=127.0.0.1`，端口为 `8770`。
-通过 VPN 直接访问时，设置 `MG400_MICROSCOPE_BIND=100.64.0.1`，并放行 TCP `8770`。
-妥善保管 `MG400_MICROSCOPE_TOKEN`，通过 Bearer 头发送，不得放入 URL。
-令牌必须至少含 24 个可打印 ASCII 字符。
-安装前，把 `microscope` 加入 `MG400_OPTIONAL_SERVICES`。物理配置和启动顺序见[显微镜指南](microscope.md#主机托管服务)。
-
-可选视觉服务默认使用 `MG400_VISION_BIND=127.0.0.1` 和端口 `8771`。
-通过 VPN 直接访问时，设置 `MG400_VISION_BIND=100.64.0.1`，并放行 TCP `8771`。
-
-保护 `MG400_VISION_TOKEN`，通过 Bearer 请求头发送，不得放入 URL。
-非回环访问必须配置至少 24 个可打印 ASCII 字符的令牌。配置了令牌时，回环访问也必须满足此要求。
-
-安装前，把 `vision` 加入 `MG400_OPTIONAL_SERVICES`。独立运行环境和必需权重见[主机部署](deploy.md#服务清单)。
-所有者安装并启动服务后，运行 `mg400ctl gpu`，以 UID `1000` 读取 GPU 内存。
-
-可选配方服务必须接受 VPN 客户端时，设置 `MG400_ORCH_BIND=100.64.0.1`，并在 VPN 规则中允许 TCP `8772`。
-通过 bearer 标头发送 `MG400_ORCH_TOKEN`，不得放入 URL。下游令牌别名必须保存在主机上，不得公开。
-默认监听地址仍为 `127.0.0.1`。访问与恢复规则见[配方服务](orchestrator.md#http-服务)。
-
-可选的 [MCP 网关](agent-gateway.md) 必须保持 `MG400_GATEWAY_BIND=127.0.0.1`，端口为 `8773`。不得通过 VPN 直接开放此端口。
-远程 MCP 客户端必须使用到回环接口的已认证隧道，并携带 `MG400_GATEWAY_TOKEN` Bearer 凭据。
+可选的 [MCP 网关](agent-gateway.md) 只监听回环地址，没有代理路由。
+远程 MCP 客户端须使用到回环接口的隧道，并携带 `MG400_GATEWAY_TOKEN` Bearer 凭据。
 
 ## 可选的单端口代理
 
@@ -58,63 +41,29 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 安装器写入 `/etc/mg400/Caddyfile`，并安装 `/usr/local/lib/mg400/caddy`。
 安装器不会下载 Caddy，也不会启动代理。
 
-把 `proxy` 加入 `MG400_OPTIONAL_SERVICES`，保留其他已选服务。
-如果没有其他可选服务，在 `/etc/mg400/mg400.env` 中设置：
+在 `/etc/mg400/mg400.env` 中设置以下值，保留其他已选服务：
 
 ```ini
-MG400_OPTIONAL_SERVICES=proxy
+MG400_OPTIONAL_SERVICES=orch,proxy
 MG400_PROXY_BIND=100.64.0.1
 MG400_PROXY_PORT=8080
-MG400_PANEL_BIND=127.0.0.1
-MG400_PANEL_BASE_PATH=/robot/
-MG400_STAGE_BIND=127.0.0.1
-MG400_STAGE_BASE_PATH=/stage/
-MG400_CAMERA_BIND=127.0.0.1
 ```
 
 代理地址必须是 1 个数字形式的回环或 VPN 地址，不得使用通配地址。
 代理端口必须在 `1024` 到 `65535` 之间，且不同于所有上游端口。
-各上游端口也必须互不相同。
-写文件前，安装器检查已启用服务的回环地址、原生前缀和令牌。
-
-如果启用了 `furnace` 或 `orch`，还必须设置对应项：
-
-```ini
-MG400_FURNACE_BIND=127.0.0.1
-MG400_FURNACE_BASE_PATH=/furnace/
-MG400_ORCH_BIND=127.0.0.1
-MG400_ORCH_BASE_PATH=/lab/
-```
 
 代理只有以下路由：
 
-| VPN 路径 | 回环上游 | 必需的原生前缀 |
-| --- | --- | --- |
-| `/lab/` | `127.0.0.1:8772` | `/lab/` |
-| `/camera/<key>/<stream>.mjpeg`、`/camera/<key>/<stream>.jpg` | `127.0.0.1:1985` | 仅移除 `/camera`，保留 `/<key>/` |
+| VPN 路径 | 回环上游 |
+| --- | --- |
+| `/lab/` | `127.0.0.1:8772`，固定基础路径为 `/lab/` |
+| `/camera/<view>.mjpeg`、`/camera/<view>.jpg` | `127.0.0.1:1985`，仅移除 `/camera` |
 
+`<view>` 为 `camera1` 到 `camera4`。
 代理把根路径 `/` 重定向到实验室控制台 `/lab/`。参见[实验室控制台](dashboard.md#实验室控制台)。
 摄像头路由只转发视频流和单帧图像，供控制台的 Cameras 工作区使用。
-代理不转发机器人、位移台、热像仪、炉控和显微镜服务。
-这些服务监听回环端口，使用各自的原生前缀。控制台、命令行工具和配方运行器在 `127.0.0.1` 直接调用它们。
-摄像头端口固定为 `1985`。其他上游端口采用已提供的 `MG400_*_PORT` 配置。
-选择 `proxy` 不会选择 `thermal`。把 `thermal` 单独加入 `MG400_OPTIONAL_SERVICES` 才会安装其服务。
-只有上游服务存在且使用必需的原生前缀运行，路由和控制台才能工作。
-单独启动的服务必须监听 `127.0.0.1`。即使连接来自本机，也必须配置服务令牌。
-在 `/etc/mg400/mg400.env` 中设置 `MG400_THERMAL_BIND=127.0.0.1` 和 `MG400_THERMAL_BASE_PATH=/thermal/`。
-`MG400_THERMAL_TOKEN` 为空时，安装程序生成令牌。已配置的令牌保持不变。
-`thermal-cam --base-path /thermal/` 覆盖该前缀配置。
-
-使用代理时，在 `/etc/mg400/mg400.env` 中设置 `MG400_MICROSCOPE_BIND=127.0.0.1` 和 `MG400_MICROSCOPE_BASE_PATH=/microscope/`。
-`MG400_MICROSCOPE_TOKEN` 为空时，安装器生成令牌。已有令牌保持不变。
-除 `proxy` 外，还要单独选择 `microscope`。炉控原生前缀变化时，更新显微镜的炉控元数据 URL。
-不得把服务令牌放入 Caddy 配置或 URL。
-MCP 网关仍只监听回环地址，不提供代理路由。
-
-更改服务 URL 前，停止正在运行的操作。更新下游客户端 URL，加入新的原生前缀。
-例如，使用 `MG400_ORCH_ROBOT_URL=http://127.0.0.1:8766/robot/` 和 `MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/stage/contract/`。
-位移台契约和操作接口位于 `/stage/contract/api/`。
-未配置基本路径时，位移台和热成像服务仍默认使用 `/`。
+代理不转发机器人、位移台、热像仪、炉控、显微镜和视觉服务。
+控制台、命令行工具和配方运行器在 `127.0.0.1` 直接调用它们。
 
 配置完成后，安装提供的二进制文件并检查生成的配置：
 
@@ -124,21 +73,16 @@ MCP 网关仍只监听回环地址，不提供代理路由。
 /usr/local/lib/mg400/caddy validate --config /etc/mg400/Caddyfile --adapter caddyfile
 ```
 
-通过 `mg400ctl` 重启配置已改变的上游服务。
-然后明确运行 `mg400ctl start proxy` 启动代理。
+明确运行 `mg400ctl start proxy` 启动代理。
 在 VPN 规则中允许 TCP `8080`，或已配置的代理端口。
 打开 `http://100.64.0.1:8080/`。代理把它重定向到实验室控制台。
 后续更新可复用已安装的二进制文件，不必再次传入 `--caddy`。
 
-代理原样传递浏览器的 bearer 凭据，不会代填上游令牌。
-各服务保留令牌、Host、Origin、租约和命令检查。
 代理保留浏览器 `Host` 的端口，并用该值设置 `X-Forwarded-Host`。
 它替换请求中的转发地址标头，并移除 `Forwarded` 和 `X-Real-IP`。
-
 Caddy 原生反向代理转发 WebSocket 的 `Upgrade` 和 `Connection`，上游使用 HTTP/1.1。
 上游响应头和读取超时均为 `60` s。
-代理不新增请求重试，并禁用管理 API 和配置持久化。
-摄像头 URL 包含密钥，因此配置排除了请求访问日志和请求错误日志。
+代理不新增请求重试，并禁用管理 API、配置持久化和请求日志。
 此 HTTP 入口使用 VPN 连接，不启用公共 HTTPS。
 
 ## 获取代码
@@ -201,11 +145,11 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 
 | 旧位置 | 内容 | 新位置 |
 | --- | --- | --- |
-| `/opt/mg400-web-control` | 网页面板代码，`.env` 含 `MG400_PANEL_TOKEN` | `/opt/mg400`，`/etc/mg400/mg400.env` |
+| `/opt/mg400-web-control` | 网页面板代码 | `/opt/mg400`，`/etc/mg400/mg400.env` |
 | `$DOCS/mg400-isaac` | 夹爪采集代码 | `/opt/mg400` |
 | `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `mg400ctl terminal`、`mg400ctl mode` |
 | `$DOCS/mg400-data` | 连接锁、夹爪反馈、模式切换备份 | `/var/lib/mg400` |
-| `/opt/mg400-camera-preview` | go2rtc、采集配置、预览程序和密钥 | `/usr/local/lib/mg400`、`/etc/mg400`、`/var/lib/mg400/camera` |
+| `/opt/mg400-camera-preview` | go2rtc、采集配置和预览程序 | `/usr/local/lib/mg400`、`/etc/mg400` |
 
 迁移只做一次。迁移前，关闭所有面板页面和交互终端，下使能机械臂。
 
@@ -221,10 +165,9 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    ```
 
 2. 按 [获取代码](#获取代码) 把 `/opt/mg400` 切换到目标提交。
-3. 把旧的网页面板访问密钥和摄像头设备写入配置文件。用户不必换密钥：
+3. 把摄像头设备写入配置文件：
 
    ```sh
-   grep '^MG400_PANEL_TOKEN=' /opt/mg400-web-control/.env >> /etc/mg400/mg400.env
    grep -o '/dev/v4l/by-path/[^&]*' /opt/mg400-camera-preview/go2rtc.yaml | paste -sd, | sed 's/^/MG400_CAMERA_DEVICES=/' >> /etc/mg400/mg400.env
    ```
 
@@ -234,10 +177,9 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc
    ```
 
-5. 复制摄像头密钥和模式切换备份：
+5. 复制模式切换备份：
 
    ```sh
-   install -o 1000 -g 1000 -m 0600 /opt/mg400-camera-preview/preview.key /var/lib/mg400/camera/preview.key
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
@@ -254,7 +196,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
    ```
 
-6. 按 [网络](#网络) 设置监听地址。
+6. 按 [可选的单端口代理](#可选的单端口代理) 设置代理地址。
 7. 删除旧服务的附加配置和开机自启链接，再启动服务。
    第 1 步已备份这些文件：
 
@@ -325,9 +267,9 @@ USB trigger 不会复位集线器或启动服务。
 TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 `dialout` 和 `video` 组访问设备。
 安装前，用安装程序的 dry run 检查所选文件和命令。
 
-默认服务选择 `stage`、`collector` 和 `camera` 模板。
-启用 `furnace` 后，还会选择其 2 条串口控制器规则。
-启用 `thermal` 后会选择 P1 模板。启用 `microscope` 后，要求并选择其模板。
+默认服务选择 `stage`、`collector`、`camera`、`furnace` 和 `microscope` 模板。
+`furnace` 模板含 2 条串口控制器规则。
+启用 `thermal` 后会选择 P1 模板。
 显微镜独占 Toupcam，也提供炉子录像。炉子规则不另行授予该摄像头的访问权限。
 模板不选择服务配置中的设备路径。保持这些路径与表格一致。
 
@@ -391,8 +333,7 @@ mg400ctl start collector
 640x480@30, 640x360@30, 320x240@30
 ```
 
-旧版 `MG400_CAMERA_CAPTURE_SIZES` 列表使用 `WIDTHxHEIGHT`，帧率为 30 fps。
-不得同时设置两个列表。均为空时，普通流使用 `640x480@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
+列表为空时，普通流使用 `640x480@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 显式列表覆盖这些默认值，包括侧视流。
 以下 4 台摄像头的配置按上表接口顺序排列，所有摄像头均使用 `640x480@30`。
 这是 Olares 上已验证的设置（2026-11-03）。托盘使用 `1280x720@30` 时，共享 USB 2 链路截断了 `camera2` 的图像帧。
@@ -401,7 +342,6 @@ mg400ctl start collector
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
 MG400_CAMERA_MODES=640x480@30,640x480@30,640x480@30,640x480@30
-MG400_CAMERA_CAPTURE_SIZES=
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
@@ -425,8 +365,7 @@ mg400ctl start camera
 ```
 
 在实验室控制台的 Cameras 工作区查看画面。
-启用 `proxy` 服务时，视频流前缀为 `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`。
-视频流路径包含访问密钥，服务重启后保持不变。
+启用 `proxy` 服务时，视频流链接为 `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`，`mg400ctl camera-url` 会列出这些链接。
 关闭终端不会停止预览服务。
 停止预览服务时，摄像头采集服务也停止。
 启动失败时，运行 `mg400ctl logs camera`。

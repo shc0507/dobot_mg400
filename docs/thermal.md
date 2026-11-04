@@ -11,7 +11,6 @@ Lab Console 的 Cameras 工作区显示热像画面。Furnace + microscope 工�
 
 可选单元 `mg400-thermal.service` 以 `1000:1000` 运行 `thermal-cam`，使用 `UMask=0077`，不添加设备附加组。
 它读取 `/etc/mg400/mg400.env`，并在启动时打开 P1 摄像头。
-它保留 `MG400_THERMAL_TOKEN`，排除其他服务令牌和编排器别名。
 CLI 配置无效时以状态码 `2` 退出，不自动重启。
 安装程序不启动此服务，单元也不随主机开机启动。
 
@@ -103,20 +102,9 @@ uv run thermal-cam --help
 
 ### 配置与访问
 
-| 配置项 | 默认值 | 用途 |
-| --- | --- | --- |
-| `MG400_THERMAL_BIND` | `127.0.0.1` | 监听地址。`--bind` 覆盖此值。 |
-| `MG400_THERMAL_PORT` | `8768` | HTTP 端口。`--port` 覆盖此值。 |
-| `MG400_THERMAL_BASE_PATH` | `/` | 原生 URL 前缀。`--base-path` 覆盖此值。 |
-| `MG400_THERMAL_TOKEN` | 空 | 相机 API 的 Bearer 令牌。 |
-
-监听非回环地址时，必须配置令牌。
-令牌必须至少有 24 个可打印 ASCII 字符，首尾不能有空格。回环地址也遵守此规则。
+服务监听 `127.0.0.1:8768`，基础路径为 `/`。`--bind`、`--port` 和 `--base-path` 覆盖这些固定默认值。
 配置无效时，程序以状态码 2 退出，不打开监听端口或相机。
-未配置令牌时，请求的 Host 必须是回环地址，且不能带转发头。
-浏览器请求必须保持同源。
-
-配置令牌后，所有路由都要求令牌。客户端通过 Authorization 请求头发送令牌。
+服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 ## 控制台热像画面
 
@@ -200,11 +188,10 @@ finally:
 应用生命周期负责启动和停止采集：
 
 ```python
-import os
 import uvicorn
 from thermal_cam.app import create_app
 
-app = create_app(auto_connect=True, token=os.environ.get("MG400_THERMAL_TOKEN"))
+app = create_app(auto_connect=True)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8768, workers=1)
@@ -237,14 +224,12 @@ with np.load("captures/probe.npz", allow_pickle=False) as frame:
 
 连接、快门校正、状态和区域读数使用下文的契约路由。
 
-访问受令牌保护的服务器时，通过 Bearer 请求头发送已配置的令牌：
+读取 1 帧：
 
 ```sh
-curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
-  http://127.0.0.1:8768/api/frame
+curl --fail http://127.0.0.1:8768/api/frame
 ```
 
-未配置令牌时，省略该请求头。
 温度数组使用 `temperatures_c[y][x]`。
 每个响应内部一致，但分别请求的响应可能来自不同帧。
 用序号和时间戳关联测量值。
@@ -285,13 +270,12 @@ curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
 契约不控制输出，所以状态中的 `busy: false` 和 `locked: false` 固定不变。
 使用读数前，检查 `connected`、`fault` 和帧龄。
 
-这些路由保留上文的令牌、Host、Origin 和转发头检查。
 契约 POST 请求必须包含 `Content-Type: application/json`，并且只能有 1 个 `X-MG400-Client` 请求头。
 客户端 ID 必须包含 1–128 个可打印 ASCII 字符。
 发送不超过 4096 字节的 JSON 对象。`/api/stop` 接受 `{"wait_s":0}`，其值必须是 0–15 的有限数值。
 因为没有输出可停止，此请求立即返回。
 契约错误使用 `{"error":"..."}`。
-输入无效为 HTTP 400，令牌错误为 401，访问遭拒为 403，租约冲突为 409，非 JSON 输入为 415。
+输入无效为 HTTP 400，租约冲突为 409，非 JSON 输入为 415。
 
 ### 具名传感器区域
 
@@ -331,13 +315,10 @@ y1 = 80
 例如：
 
 ```sh
-curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
-  'http://127.0.0.1:8768/api/roi?name=crucible'
-curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
-  'http://127.0.0.1:8768/api/roi?x0=60&y0=40&x1=100&y1=80'
+curl --fail 'http://127.0.0.1:8768/api/roi?name=crucible'
+curl --fail 'http://127.0.0.1:8768/api/roi?x0=60&y0=40&x1=100&y1=80'
 ```
 
-未配置令牌时，省略 Bearer 请求头。
 响应包含以 °C 表示的 `min_c`、`mean_c` 和 `max_c`，以及边界和 `name`（按坐标查询时为 `null`）。
 所有统计值、`frame_sequence`、`timestamp`、`source`、`demo` 和 `frame_age_s` 来自同 1 个内部一致的帧。
 帧龄使用单调时钟，以秒为单位。
@@ -369,8 +350,7 @@ uv run pytest -q tests/test_thermal_*.py
 | 温度停止变化 | 检查错误和帧龄。如果控制台画面已冻结，选择 Resume view。 |
 | 温度不合理 | 检查目标覆盖的像素及发射率／反射。与已知参考比较。修改调色板不会校准温度。 |
 | HTTP 端口已占用 | 先停止原进程再重启。修改端口不会允许其他程序同时占用相机。 |
-| HTTP 401 | 提供已配置令牌的 Bearer 请求头。 |
-| HTTP 400 或 403 | 检查 Host、Origin 和转发头。无令牌服务器只允许回环访问。 |
+| HTTP 400 | 检查请求正文和查询参数。 |
 
 ## 来源说明
 

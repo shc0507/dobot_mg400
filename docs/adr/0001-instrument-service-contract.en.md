@@ -28,8 +28,8 @@ Use contract version 1. Paths are relative to the configured service base path.
 - `fault` is `null` or `{code, message}`. `last_command` is `null` or `{id, action, client, result, message, finished_at}`. Results are `ok`, `failed`, `rejected`, or `stopped`.
 - Include units in device fields: `pv_c`, `ramp_c_per_min`, `flow_pct`, `x_mm`, `r_deg`.
 - POST requests require `Content-Type: application/json` and `X-MG400-Client`. A client ID contains 1 to 128 printable ASCII characters.
-- Errors use `{"error": "..."}`: `400` invalid request, `401` token, `403` access rule, `409` state or lease conflict, `415` non-JSON, `503` lost device link.
-- Bearer tokens contain at least 24 printable ASCII characters. Without a token, accept only loopback `Host` values and reject forwarded headers. Preserve Host, Origin, and forwarded-header checks.
+- Errors use `{"error": "..."}`: `400` invalid request, `409` state or lease conflict, `415` non-JSON, `503` lost device link.
+- Services listen on loopback and check no token, `Host`, or `Origin`. The VPN is the access boundary.
 - There is 1 controlling client. The default lease lasts 3 s. Reads and `stop` require no lease. Motion stops on expiry. The furnace follows [0005](0005-furnace-lifecycle.en.md). Declare the action in `on_lease_expiry`.
 - An unknown command outcome sets `locked` and a `fault`. Refuse commands except `stop` until a person clears the lock. Never retry motion automatically.
 - `--demo` substitutes simulated devices. Report it in `state.demo` and `describe.demo`. Clients reject a different `contract` version.

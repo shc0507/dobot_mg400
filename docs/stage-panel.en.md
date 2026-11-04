@@ -70,7 +70,7 @@ When the driver wakes, the motor may move to the A4988 Home microstep position.
 Keep LarePass VPN connected.
 Open the [Lab Console](http://100.64.0.1:8080/). Go to the `Motion` workspace.
 The stage service listens only on a loopback address. The console process calls it on the host through `127.0.0.1`.
-The console uses `MG400_ORCH_STAGE_URL` and `MG400_ORCH_STAGE_TOKEN` to connect to the service. See [Recipe service](orchestrator.en.md).
+The console connects to `http://127.0.0.1:8767/contract/`. See [Recipe service](orchestrator.en.md).
 If the card shows `Not running` or `Not reachable`, see [Service configuration](#service-configuration).
 
 ### Start locally
@@ -91,7 +91,7 @@ When you start the console, set `MG400_ORCH_STAGE_URL` to `http://127.0.0.1:8767
 Without an Arduino, use the console demo mode to view the stage card:
 
 ```sh
-MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
+uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 --base-path /lab/
 ```
 
 Open the [local console](http://127.0.0.1:8790/lab/) on that computer.
@@ -170,8 +170,9 @@ Each axis shows its reference state:
 | `Zero confirmed` | The service confirmed zero and soft limits. |
 | `Homed` | The service confirmed homing and soft limits. |
 
-Step moves and named positions require `Zero confirmed` or `Homed`.
-Without a confirmed reference, the service refuses motion with `position unknown, home first`.
+Step moves and press-and-hold motion need no reference. Soft limits apply only to an axis with a confirmed reference.
+Named positions and millimetre targets require `Zero confirmed` or `Homed`, because they need an absolute position.
+Without a confirmed reference, the service refuses them with `position unknown, home first`.
 Reset, reconnection, and a microstep change require fresh reference and soft-limit confirmation.
 
 An axis with configured switches shows `Home…`:
@@ -225,7 +226,7 @@ Reference teaching stores the detected marker centre as the axis reference, incl
 3. Teaching invalidates the previous zero confirmation. Click `Set zero…` afterwards.
 
 Teaching requires control and the same conditions as zero.
-Teaching requires a configuration file and an owned directory with mode `0700` or `0750`.
+Teaching requires a configuration file.
 It replaces the file atomically, retains its owner and permissions, and refuses concurrent calibration changes or links.
 The saved file uses the supported calibration schema. Formatting and comments are not retained.
 
@@ -273,9 +274,7 @@ The service does not reconnect automatically or retry movements.
 
 ## API
 
-All routes are under `<base>/contract/api/`. `<base>` is `MG400_STAGE_BASE_PATH`. The default is `/`.
-For an Olares deployment, `<base>` is `/stage/`.
-When `MG400_STAGE_TOKEN` is set, all routes require the bearer token.
+All routes are under `<base>/contract/api/`. `<base>` is `/`.
 POST requests must have a JSON body and `X-MG400-Client`.
 
 | Route | Request | Purpose |
@@ -297,7 +296,7 @@ POST requests must have a JSON body and `X-MG400-Client`.
 The contract commands are `move`, `hold`, `keepalive`, `release_hold`, `stop_all`, `set_microstep`, `home`, `zero`, `awake`, `goto`, and `pose`.
 `zero` requires `motor` and `confirm: true`.
 `pose` moves each axis to its configured position, 1 axis at a time in the configured order.
-`awake` extends driver energization for 0–60 seconds. It sends no STEP pulses and does not establish a reference. A positive `awake` requires a confirmed reference. 0 cancels the extension.
+`awake` extends driver energization for 0–60 seconds. It sends no STEP pulses and does not establish a reference. 0 cancels the extension.
 In demo mode, `connect` accepts only `DEMO`.
 While a board is connected, `connect` returns `Disconnect the current board before choosing another port.`.
 Images come only from the reference route. State replies contain reference metadata without the JPEG.
@@ -318,25 +317,16 @@ Reference teaching updates the stage calibration file. The service sends output 
 
 ### Configuration
 
-The service reads configuration from environment variables. Command-line arguments override their corresponding environment variables:
+The service listens on `127.0.0.1:8767` with the base path `/`. The contract is at `contract/` below it.
+The arguments `--bind`, `--port`, and `--base-path` override these fixed defaults.
+The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 | Environment variable | Argument | Default | Purpose |
 | --- | --- | --- | --- |
-| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | Listen address |
-| `MG400_STAGE_PORT` | `--port` | `8767` | Listen port, 1–65535 |
-| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | URL prefix. The contract is at `contract/` below it |
-| `MG400_STAGE_TOKEN` | None | None | Access token |
 | `MG400_STAGE_SERIAL` | `--serial` | None | Arduino serial-port path |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | Measured stage calibration and named targets |
 
 An empty environment variable has the same effect as an unset variable.
-
-You must set `MG400_STAGE_TOKEN` when listening on a non-loopback address.
-The access token must contain at least 24 characters. Use only printable ASCII characters, with no space at either end.
-Otherwise, the service refuses to start.
-With an access token set, the service accepts any host name, including when it listens on a loopback address.
-Without an access token, the service accepts only `127.0.0.1`, `localhost`, or `[::1]` addresses.
-It also rejects requests with `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, or `X-Real-IP` headers in that case.
 
 When `MG400_STAGE_SERIAL` is set, the serial-port list shows only that device, and `connect` accepts only that device.
 Use a path under `/dev/serial/by-id/` where possible. This path stays the same after disconnecting and reconnecting the device.
@@ -349,8 +339,7 @@ Demo mode ignores this setting.
 
 Use the measurements and travel limits from H-07. Do not infer calibration from the pulse count or copy demo geometry to hardware.
 The file contains a `motors` table and an optional `poses` table. It has no production defaults.
-Use a regular file owned by UID 1000 or the local service user, with mode `0600` or `0640`.
-The reader refuses symbolic links in the file path.
+Use a regular file. The reader refuses symbolic links in the file path.
 The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` so the service can teach references.
 The parent `/var/lib/mg400` remains root-owned with mode `0750`.
 If `/var/lib/mg400/stage.toml` exists, installation prints a move instruction without moving or overwriting the file.
@@ -384,7 +373,7 @@ Synthetic geometry is not real calibration. Check the hardware configuration bef
 ### Configuration file
 
 The service reads configuration from `/etc/mg400/mg400.env`.
-The installer generates `MG400_STAGE_TOKEN` and sets an empty `MG400_ORCH_STAGE_TOKEN` to the same value. Adjust the other settings for this host.
+Adjust the settings for this host.
 
 After connecting the Arduino, find its serial-port path:
 
@@ -398,9 +387,7 @@ The entry containing `BG02Q5TN` is the gripper converter, not the Arduino.
 Confirm that the Arduino device's group is `dialout`.
 Set `MG400_STAGE_SERIAL` to `/dev/serial/by-id/` followed by the Arduino's name.
 
-View the access token with `sudo mg400ctl token stage`.
 Restart the service after changing the configuration file.
-After changing the access token, set `MG400_ORCH_STAGE_TOKEN` to the same value. Then restart the console service.
 
 ### Start and stop
 
@@ -433,10 +420,8 @@ The following errors appear on the stage card or in console notices. Errors that
 | `<串口> is in use by another program.` | Another program has the serial port open. Close that program, for example, the Arduino IDE serial monitor or another `stage-panel` process. |
 | `Arduino did not reply in time. Check the port and uploaded sketch.` | Confirm that the selected port is the Arduino and that `firmware/three-motor-demo` is uploaded. The service disconnects after this error. After fixing the problem, click `Connect` again. |
 | `Another client controls it` | Another client holds the lease. Wait until it releases control, then click `Take control`. |
-| `position unknown, home first` | The axis has no confirmed reference. Set zero as [Manual zero and camera reference](#manual-zero-and-camera-reference) specifies, or home the axis. |
+| `position unknown, home first` | A named position or millimetre target needs a confirmed reference. Set zero as [Manual zero and camera reference](#manual-zero-and-camera-reference) specifies, or home the axis. |
 | `Stage target is outside the configured soft limits.` | Decrease the steps, or change the direction. |
-| The card shows `Not running` or `Not reachable` | Run `mg400ctl status` on the host. Confirm that `stage` is running. Then check `MG400_ORCH_STAGE_URL` and `MG400_ORCH_STAGE_TOKEN`. |
+| The card shows `Not running` or `Not reachable` | Run `mg400ctl status` on the host. Confirm that `stage` is running. |
 | The service journal shows `Failed to load environment files` | Run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies to create `/etc/mg400/mg400.env`. Start the service again. |
-| The service journal shows `Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost` | If the existing `MG400_STAGE_TOKEN` has fewer than 24 characters, change that line to `MG400_STAGE_TOKEN=`. Run the installer to generate an access token, then start the service. |
 | The service journal shows `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | Find the Arduino path as [Configuration file](#configuration-file) specifies. Update `MG400_STAGE_SERIAL`, then start the service. |
-| The service journal shows `MG400_STAGE_PORT must be a whole number between 1 and 65535` | Set `MG400_STAGE_PORT` to an integer from 1–65535, then start the service. |

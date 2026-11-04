@@ -156,16 +156,9 @@ The service uses only the Python standard library.
 `{前缀}` means the prefix: the value of `--base-path`, which defaults to `/`.
 Keys can only be sent through WebSocket.
 
-### Authentication and client ID
+### Access and client ID
 
-When `MG400_PANEL_TOKEN` is set, every request must include the access token.
-HTTP requests send the token through `Authorization: Bearer <密钥>`, where the placeholder means the token.
-WebSocket sends the token in the hello message.
-
-Without an access token, the service accepts requests only when `Host` is `127.0.0.1`, `localhost`, or `[::1]`.
-This restriction prevents DNS rebinding access to the service, where a malicious webpage resolves its domain name to the local machine.
-The service also rejects requests with `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, or `X-Real-IP` headers in this mode.
-You must set an access token for access through a reverse proxy.
+The service listens on `127.0.0.1` and does not check tokens, `Host`, or `Origin`. The VPN is the access boundary.
 
 Physical robot control mode identifies clients by a client ID of 1–128 printable ASCII characters.
 Only one client ID has control at a time.
@@ -182,7 +175,7 @@ POST requests must meet these conditions:
 3. Send a JSON object of 1–4096 bytes, with its length specified by `Content-Length`.
 
 Successful `api/command` and `api/heartbeat` requests return 200 and the state object.
-Rejection returns 400 (invalid request), 401 (incorrect access token), 403 (unauthorized), or 409 (state conflict).
+Rejection returns 400 (invalid request), 403 (refused), or 409 (state conflict).
 The rejection body is `{"error": "..."}`.
 
 The command body is `{"action": "<命令>", ...}`, where the placeholder means the command. It must contain no fields beyond those listed:
@@ -215,8 +208,8 @@ Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher ca
 These settings do not change `home`, global `SpeedFactor`, or keyboard jogging.
 An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
-It is also available when `recoverable` is `true`: an unconfirmed stop during an alarm locked control, and the alarm was cleared outside the service.
-In this case, the service does not send `ClearError()`. It only disables the robot and confirms that it is stationary.
+It is also available when `recoverable` is `true`: a stop or disable is unconfirmed, the controller reports no alarm, and feedback is fresh.
+In this case, the service does not send `ClearError()`. It only disables the robot, confirms that it is stationary, and clears the warning.
 The state object's `alarms` field lists current alarms. It is `null` when there are no alarms.
 Each item contains `id`, `source` (`controller` or `J1`–`J4`), `description`, and `solution`.
 The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
@@ -224,9 +217,7 @@ The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
 ### Contract discovery, stop, and events
 
 Physical robot control mode provides `api/describe`, `api/stop`, and `api/events`.
-These routes check the access token, `Host`, and `Origin`.
-Without an access token, they still reject forwarded headers.
-`api/stop` also checks the POST headers and client ID described above.
+`api/stop` checks the POST headers and client ID described above.
 
 `api/describe` returns `service`, `version`, `contract`, `demo`, `zones`, `lease_seconds`, `on_lease_expiry`, and `commands`.
 `contract` is 1, and `demo` is `false`.
@@ -270,11 +261,10 @@ Events correspond to existing state messages, locks, alarms, keyboard close reas
 
 ### Python client
 
-`mg400.client.RobotClient(url, token, client_id)` uses the service base URL and an explicit client ID.
+`mg400.client.RobotClient(url, client_id)` uses the service base URL and an explicit client ID.
 Use a unique ID for each program. Do not share an ID between active programs.
 Construction opens no connection. `connect()` checks WebSocket protocol 1 and service contract 1, then starts the client threads.
 Use `http://`, `https://`, `ws://`, or `wss://`, including the service base path when configured.
-The token follows the robot service's access rules. An empty token works only with the permitted loopback hosts.
 
 Start the [offline simulator and robot service](#offline-robot-simulator) before this example.
 The example sends movement commands to that simulator.
@@ -282,7 +272,7 @@ The example sends movement commands to that simulator.
 ```python
 from mg400.client import RobotClient
 
-with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
+with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
     robot.run("start_sync")
     robot.run("enable")
     result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
@@ -304,15 +294,15 @@ While this client holds control, it sends heartbeats every 0.5 seconds.
 After a dropped socket, it attempts transport reconnection for up to 2.5 seconds, within the 3-second lease.
 It never replays a command. A lost reply or timeout can leave delivery or completion unknown.
 Inspect the service state before another action. Do not automatically retry motion.
-Authentication, protocol, and replacement failures end the connection attempts.
+Hello, protocol, and replacement failures end the connection attempts.
 
-When the socket is unavailable, `command("stop")` and `command("disable")` use HTTP with the same token and client ID.
+When the socket is unavailable, `command("stop")` and `command("disable")` use HTTP with the same client ID.
 The fallback checks contract 1 before sending a command.
 Its replies preserve `locked` and `stop_unconfirmed`. A reply still means acceptance, not verified completion.
 Other commands have no HTTP fallback. HTTP requests follow no redirects and have no automatic retries.
 
 Context exit runs `stop_sync` while this client holds control, then closes the connection and stops its threads.
-If the arm is enabled, the service keeps feedback and locks control until an explicit `disable` confirms mode 4 and rest.
+If the arm is enabled, the service keeps feedback and blocks motion until an explicit `disable` confirms mode 4 and rest.
 The client does not disable the arm automatically. After a confirmed stop, `disable` can complete the disconnect without a service restart.
 The optional `keep_control=True` skips `stop_sync`. It does not keep heartbeats running after exit.
 Calling `close()` directly also ends the threads without renewing or releasing control.
@@ -323,13 +313,12 @@ The optional `timeout=5` sets the connection and reply timeout in seconds.
 
 Communicate in this sequence:
 
-1. Within 3 seconds of connection, send `{"type":"hello","protocol":1,"client":"<客户端 ID>","token":"<密钥>"}`. The placeholders mean client ID and token.
+1. Within 3 seconds of connection, send `{"type":"hello","protocol":1,"client":"<客户端 ID>"}`. The placeholder means the client ID.
 2. Wait for the service to send `{"type":"state","state":{...}}`.
 3. Send a request: `{"type":"<类型>","id":<整数>,"body":{...}}`. The placeholders mean type and integer.
 4. Match the reply by `id`.
 
-`protocol` is the message format version, currently 1.
-Without an access token, `token` can be an empty string.
+`protocol` is the message format version, currently 1. The hello must contain no other fields.
 The fields in `state` are the same as in `api/state`.
 The service sends state updates when the state changes.
 It also sends an update after each reply.
@@ -357,24 +346,22 @@ The service ignores messages whose value is not greater than the previous value.
 The client must resend the message at intervals of 100 ms while a key is held.
 If the service receives no update within 0.4 seconds, it stops jogging and disables keyboard control.
 
-For close codes 4400, 4401, 4426, or 1013, the service sends `{"type":"error","status":<状态码>,"error":"..."}` before it closes the connection.
+For close codes 4400, 4426, or 1013, the service sends `{"type":"error","status":<状态码>,"error":"..."}` before it closes the connection.
 
 | Close code | Meaning |
 | --- | --- |
 | 4400 | Invalid hello or request format |
-| 4401 | Incorrect access token |
 | 4426 | `protocol` does not match the service. Update the client |
 | 4409 | A new connection with the same client ID replaced this connection |
-| 1013 | Authenticated connection capacity is full |
+| 1013 | Connection capacity is full |
 | 1001 | Service shutdown. The service sends the final state before closure |
 | 1002, 1003, 1007, 1009 | Invalid frame format, binary message, text that is not UTF-8, or an oversized message |
 
 Connection rules:
 
 - Messages must be UTF-8 text of no more than 4096 bytes.
-- For browser connections, `Origin` must match the service address. Programs can omit `Origin`.
 - The service sends a ping every 5 seconds. It closes the connection if it receives no frames for 15 seconds.
-- Up to 8 client IDs can have authenticated connections at the same time.
+- Up to 8 client IDs can have connections after hello at the same time.
 - When the same client ID sends hello again, the service closes the old connection.
 - The service immediately disables a client's keyboard control when its latest connection closes.
   The same applies when a new connection with the same client ID replaces it.
@@ -386,7 +373,7 @@ During a network interruption, the service might not detect connection closure. 
 ## Stage service API
 
 The stage service HTTP interface uses JSON. All routes are under `{前缀}contract/api/`.
-`{前缀}` is `MG400_STAGE_BASE_PATH`. The default is `/`.
+`{前缀}` is the stage base path, fixed at `/`.
 The service queries Arduino state every 0.2 seconds and stops expired press-and-hold motion during each query.
 
 ### Stage automation contract
@@ -458,8 +445,7 @@ On success, `api/connect` and `teach_reference` return the state object with `le
 
 ### Access checks
 
-All routes use the same `MG400_STAGE_TOKEN`. When it is set, every request must include `Authorization: Bearer <密钥>`.
-Without an access token, the `Host` and forwarding header rules are the same as in [Authentication and client ID](#authentication-and-client-id).
+The service checks no token, `Host`, or `Origin`. See [Access and client ID](#access-and-client-id).
 POST requests must include `Content-Type: application/json` and `X-MG400-Client`. The body must be a JSON object.
 Client IDs contain 1–128 printable ASCII characters.
 The body limit is 4096 bytes.
@@ -469,8 +455,6 @@ On rejection, the operator routes return the body `{"error": "..."}`, with these
 | Status code | Meaning |
 | --- | --- |
 | 400 | Invalid request, or the serial port is not in the current list |
-| 401 | Missing or incorrect access token |
-| 403 | `Host` or forwarding headers do not meet the requirements |
 | 409 | State conflict, such as no lease, an existing connection, or a motor still moving |
 | 413 | The request body exceeds 4096 bytes |
 | 415 | The request is not JSON |

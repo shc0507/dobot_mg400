@@ -19,9 +19,9 @@ Olares 配备 24 GB 的 RTX 5090 笔记本 GPU（H-13，2026-11-02）。其他�
 - 如果 uv 拒绝该覆盖规则，停止并报告失败。后备方案是独立的 uv 视觉项目。`vision-gpu` 不加入默认依赖组。默认 CI 不安装 torch。
 - 通过 `MG400_OPTIONAL_SERVICES` 启用安装。使用 `UV_PROJECT_ENVIRONMENT=/opt/mg400/.venv-vision uv sync --locked --no-default-groups --group vision --group vision-gpu`。安装经过校验的 `vision-weights`，并创建 `/var/lib/mg400/vision`。
 - `mg400-vision.service` 使用 `/opt/mg400/.venv-vision/bin/python -m vision` 启动。默认绑定回环地址，端口为 8771。
-- `MG400_VISION_DEVICE` 在可用时默认为 `cuda`，否则为 `cpu`。加载模型前，通过 `torch.cuda.set_per_process_memory_fraction` 应用 `MG400_VISION_GPU_FRACTION`，默认值为 0.15。
+- `MG400_VISION_DEVICE` 在可用时默认为 `cuda`，否则为 `cpu`。加载模型前，通过 `torch.cuda.set_per_process_memory_fraction` 应用内存比例 0.15。
 - 启动时执行 1 次预热推理，同时只执行 1 次推理。演示模式使用测试检测结果，不要求 torch。go2rtc 继续管理摄像头。
-- 配置 `MG400_VISION_BIND`、`MG400_VISION_PORT`、`MG400_VISION_TOKEN` 和 `MG400_VISION_WEIGHTS`。`mg400ctl gpu` 以 UID 1000 执行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
+- 配置 `MG400_VISION_WEIGHTS` 和 `MG400_VISION_DEVICE`。`mg400ctl gpu` 以 UID 1000 执行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
 
 ## 影响
 

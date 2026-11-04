@@ -3,7 +3,7 @@
 [English](dashboard.en.md)
 
 现有可选服务 `orch` 提供实验室控制台和芯片履历页。参见[部署](deploy.md)和[配方服务配置](orchestrator.md#http-服务)。
-使用默认配置时，控制台在 `http://127.0.0.1:8772/`。配置 `MG400_ORCH_BASE_PATH` 后，使用对应前缀。
+安装的单元在 `http://127.0.0.1:8772/lab/` 提供控制台。
 可选代理使用 `/lab/`，并把 `/` 重定向到 `/lab/`。在 Olares 上，连接 VPN 后打开 `http://100.64.0.1:8080/`。
 
 ## 实验室控制台
@@ -15,9 +15,7 @@
 - 语言切换在 English 和中文之间切换。浏览器保存所选语言。
 - 状态条为每个服务显示 1 个标签：圆点和文字。状态超过 3 秒即显示过期。
 - 未配置的服务在每个工作区都显示 Not configured。
-- Cameras 标签显示控制台中转的 camera1 到 camera4 的状态。未设置 `MG400_ORCH_CAMERA_URL` 时显示 Not configured。有画面打开时显示 Live 或 Stale，最近一次中转失败时显示 Unavailable，否则显示 Configured。
-- 如果设置了 `MG400_ORCH_TOKEN`，在 **Console access token** 中输入它，再选 **Connect**。页面只在内存中保存此令牌。不得把此令牌放入页面 URL。
-- 页面外壳及其固定资源不要求 bearer 令牌。Host 和 Origin 检查仍然有效。远程访问参见[单端口代理](olares.md#可选的单端口代理)。
+- 控制台不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。远程访问参见[单端口代理](olares.md#可选的单端口代理)。
 
 **STOP ALL MOTION** 向机器人、平台和显微镜分别发出停止请求。停止不需要控制权，也不等待租约。参见[停止控制](#停止控制)。
 
@@ -31,7 +29,7 @@
 
 ### 命令转发
 
-工作区通过控制台发送手动命令。控制台使用服务端令牌转发命令。浏览器不会收到服务令牌。
+工作区通过控制台发送手动命令。控制台把命令转发给服务。
 
 - 只允许服务 `api/describe` 列出的命令。租约操作不能转发。
 - 命令需要本页控制权，服务标为 `any_client` 的命令除外。
@@ -39,9 +37,6 @@
 
 ### 总览工作区
 
-- **Readiness before a run**：工具偏移文件、相机标定、平台零点和软限位、显微镜对焦零点、气体映射和超温切断。每行显示就绪、待办或受阻，并链接到对应工作区。
-- 超温切断没有机器可读状态。负责人完成 H-11 后，在主机上设置 `MG400_DASH_CUTOFF_CONFIRMED=1`。未设置时此行受阻。
-- 气体映射行在每路气体都有实际名称后才就绪。
 - **Run** 显示当前运行及其步骤。参见[运行控制与恢复](#运行控制与恢复)。
 - **Events** 合并各服务的 `api/events`，最新事件在前。可筛选警告或单个服务。
 - **Safety** 提供停止全部运动、关闭加热和关闭气体，并显示每个目标的结果。关闭加热和关闭气体需要在页面中确认。
@@ -54,10 +49,11 @@
 机械臂：
 
 - **Take control**、**Enable**、**Disable** 和 **Clear alarm**。**Disable** 不需要控制权。
+- 停止未确认时，卡片显示警告，**Clear alarm** 变为 **Recover**。检查机械臂，再选 **Recover**。不需要重启服务。
 - 位姿格显示当前 X、Y、Z 和 R。机械臂运动时显示 `—`。
 - 点动键盘按 0.5、2 或 10 mm 的 1 个步长移动 ±X、±Y、Z 上下或 R ±（R 的单位是度）。每次按下都根据新读取的当前位姿发送 1 条 `execute` 移动。
 - **Move to a pose**：**Use actual** 复制当前位姿，**Execute** 移动到输入的位姿。速度为 1 到机械臂服务描述的 `execute` 速度上限。
-- 发送点动或位姿前，控制台用 `MG400_ORCH_X_MIN_MM` 到 `MG400_ORCH_R_MAX_DEG` 和 `MG400_ORCH_TOOL_FILE` 中的工具偏移检查指尖目标。缺少边界或工具文件时，控制台拒绝移动。没有边界的演示模式使用合成范围。通用 `command/robot` 路由以 409 拒绝 `execute`。请使用 `ws/motion/jog` 和 `ws/motion/move` 路由。
+- 控制台发送点动和位姿目标，不检查边界，也不需要工具文件。机器人服务应用速度上限，控制器报警时拒绝运动。点动和位姿使用 `ws/motion/jog` 和 `ws/motion/move` 路由。
 - **Gripper**：**Open**（1000）、**Close**（0）和 **Initialize…**。初始化会张开夹爪，需要确认。夹爪结果显示在标题旁。
 
 位移台：
@@ -65,7 +61,7 @@
 - **Take control**、**Stepping** 和 **Stop stage**。**Stop stage** 不需要控制权。
 - Arduino 未连接时，从列出的串口中选择 1 个，再选 **Connect**。
 - 更改细分模式会清除全部 3 轴的零点和软限位，需要确认。
-- 每个轴显示以脉冲和 mm 为单位的位置及参考状态。**Step −** 和 **Step +** 按输入的步数和脉冲/秒发送 1 条 `move`。参考确认后位移台才接受移动。
+- 每个轴显示以脉冲和 mm 为单位的位置及参考状态。**Step −** 和 **Step +** 按输入的步数和脉冲/秒发送 1 条 `move`。步进移动不需要参考。轴有已确认的参考时，应用软限位。
 - **Home…**（带开关的板）和 **Set zero…** 需要确认。**Set zero…** 设置零点和软限位。
 - 轴配置了相机参考时，**Check reference** 显示带标记的相机画面和以像素为单位的标记偏移。
 - **Teach reference…** 需要确认。它把当前标记位置保存为该轴在位移台配置中的相机参考。
@@ -76,19 +72,14 @@
 ### 相机工作区
 
 - 网格显示 6 个画面：camera1 到 camera4、热像仪和显微镜（Toupcam）。每个画面显示名称和用途、LIVE、STALE 或 OFFLINE 及帧龄、模式，以及 **Snapshot** 和 **Expand**。**Focus · 1 + strip** 显示 1 个大画面和其余画面的条带。
-- 控制台服务中转全部画面。浏览器得不到摄像头密钥和服务令牌。`<img>` 流使用短时一次性票据：20 秒内有效，只能用 1 次，只对 1 个画面有效。
-- 中转只发送最新的完整画面。网络慢时跳过旧画面，延迟不累积。网格和条带中的画面最多每秒 10 帧，大画面最多每秒 30 帧。
-- 中转最多同时打开 6 路流，每个画面最多 2 路，显微镜最多 2 路。离开工作区、隐藏浏览器标签页或关闭页面时，中转停止。
+- camera1 到 camera4 直接从代理的 `/camera/<view>.mjpeg` 和 `/camera/<view>.jpg` 加载。摄像头预览只向每个观看者发送最新画面。
+- 控制台中转热像帧和显微镜视频流。显微镜中转只发送最新的完整画面。网格和条带中的画面最多每秒 10 帧，大画面最多每秒 30 帧。显微镜最多同时打开 2 路流。
+- 离开工作区、隐藏浏览器标签页或关闭页面时，视频流停止。
 - 叠加可分别开关：camera 4 的芯片识别框，以及热像仪的最低、最高、中心标记和色标。
 - 选中热像仪后，侧栏提供单位、色板、自动或固定色标范围和冻结画面。这些设置只改变显示。可导出 CSV、原始 + JSON 和 PNG。
 - 热像仪服务未连接相机时，侧栏显示 **Connect camera**。**Calibrate shutter** 需要确认。这 2 条命令是 `any_client` 命令，不需要控制权。
 - **Draw region** 在热像画面上拖出 `crucible` 区域并显示边界。热像仪服务在 `api/describe` 中提供 `set_region` 后，**Save region** 才可用，并且需要在页面中确认。否则把边界写入 `rois.toml`。
-- 在主机上配置 camera1 到 camera4 的来源。其他画面使用已有的 `MG400_ORCH_<SERVICE>_URL` 和 `_TOKEN`：
-
-```sh
-MG400_ORCH_CAMERA_URL=http://127.0.0.1:1985
-MG400_CAMERA_KEY_FILE=/var/lib/mg400/camera/preview.key
-```
+- 按[摄像头](olares.md#摄像头)在主机上配置摄像头设备。
 
 ### 炉子与显微镜工作区
 
@@ -98,9 +89,8 @@ MG400_CAMERA_KEY_FILE=/var/lib/mg400/camera/preview.key
 - 温度曲线显示最近 60 分钟的 PV 和 SV。控制台进程在页面打开时每 5 s 记录 1 个点，重启后从空曲线开始。
 - **Apply and run…** 和 **Start sequence…** 会加热炉子，需要在页面中确认。目标和速率不能超过服务描述的上限。
 - 程序编辑器可以添加和删除步骤，设置每步的目标、速率、保持时间和 3 路气体，以及结束气体和结束温度。步骤设置了气体时，必须填写结束温度。页面首次读取时载入炉子中的程序。
-- 每路气体都有实际名称前，**Send flow** 不可用，服务也拒绝气体命令。**Stop all gas** 使用总览的关闭气体路由。
+- 未设置 `MG400_FURNACE_GAS_MAP` 时，各路气体命名为 Gas 1 到 Gas 3。**Stop all gas** 使用总览的关闭气体路由。
 - 炉子因故障锁定时，显示 **Acknowledge fault…**。它需要炉子控制权和页面中的确认。确认前，先确认控制器显示 STOP。
-- 未设置 `MG400_DASH_CUTOFF_CONFIRMED` 时，页面顶部提示：完成 H-11 和 H-20 前不要加热。
 - 显微镜显示 Toupcam 画面和 camera3 侧面画面。Cameras 工作区提供 `window.LabCameras.tile` 时使用该画面，否则显示 OFFLINE。
 - 物镜按钮、点动和自动对焦只在对焦零点已知时可用。服务先把焦距升到安全高度，再切换物镜。对焦条按测量的限位显示位置。
 - **Set focus zero…** 需要显微镜控制权和页面中的确认。控制台只发送 1 次。对焦齿轮可能打滑。每次使用前，在 50x 焦点处重新设零。智能体、配方和运行器不能设置对焦零点。
@@ -109,7 +99,7 @@ MG400_CAMERA_KEY_FILE=/var/lib/mg400/camera/preview.key
 ### 离线运行
 
 ```sh
-MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
+uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 --base-path /lab/
 ```
 
 打开 `http://127.0.0.1:8790/lab/`。在演示模式下，首次 **Take control** 会启动该设备的自有演示服务。显微镜没有自有演示。
@@ -117,7 +107,7 @@ MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-d
 ## 停止控制
 
 保持物理急停按钮可触及。网页请求和显示的确认不能充当物理安全联锁。
-这些停止操作要求认证，但不要求 **Take control** 或控制租约。
+这些停止操作不要求 **Take control** 或控制租约。
 页头有 **STOP ALL MOTION**。总览的 **Safety** 卡片有全部 3 个按钮：
 
 | 按钮 | 作用 |
@@ -144,15 +134,12 @@ MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-d
 ## 芯片履历
 
 打开服务前缀下的 `/chip`。
-输入编排服务令牌，再用芯片的完整 QR 文本搜索。
+用芯片的完整 QR 文本搜索。
 搜索保留大小写、空格、斜杠和标点，不会裁剪或规范化标识符。
 直接链接使用 `/chip?id=`，后接 URL 编码后的标识符。
 普通路径 `/chip/<id>` 也会打开履历页面外壳。
-不得在这两种 URL 中包含访问令牌。
 
-固定履历页面外壳和资源沿用控制台的 Host 和 Origin 检查。
-所有历史、搜索数据和文件请求都必须携带 bearer 令牌。
-页面只在内存中保存令牌，不获取控制租约，也不连接仪器。
+页面不获取控制租约，也不连接仪器。
 履历只显示已保存记录。结果为空不能证明未发生物理操作。
 
 运行摘要包含与完整芯片标识符关联的运行。

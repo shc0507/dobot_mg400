@@ -6,13 +6,13 @@ This is the contract for the workspace tasks DSH-04 (Cameras), DSH-05 (Motion) a
 
 - The orchestrator service serves the console at `<base>/`. On Olares, `<base>` is `/lab`, and the proxy redirects `/` to `/lab/`.
 - The DSH-01 dashboard moved to `<base>/dashboard/`. The passport pages stay at `<base>/chip/…`.
-- The page, `<base>/console-static/<name>.js|css` and the dashboard shells are public. Every API route needs `Authorization: Bearer <MG400_ORCH_TOKEN>` when that token is set. The page asks the operator for this token and keeps it in memory only.
-- Service tokens (`MG400_ORCH_<SERVICE>_TOKEN`) stay in the console process. No response contains them. The console sends no CORS headers.
+- The page, `<base>/console-static/<name>.js|css`, the dashboard shells and every API route are public. The console checks no token, Host or Origin. The VPN is the access boundary.
+- The console sends no CORS headers.
 - Every POST needs `Content-Type: application/json`, a JSON object body and `X-MG400-Client: <page id>`. The shell makes a random page id per page load (`console-page-<hex>`). Console control is bound to this page id.
 
 ## 2. Devices
 
-The devices are the service names in `orchestrator.clients.SERVICES`: `robot`, `stage`, `thermal`, `vision`, `furnace`, `microscope`. The status strip also shows `cameras` (camera1 to camera4 through the console relay) and `runs` (the orchestrator).
+The devices are the service names in `orchestrator.clients.SERVICES`: `robot`, `stage`, `thermal`, `vision`, `furnace`, `microscope`. The status strip also shows `cameras` (camera1 to camera4 from the proxy) and `runs` (the orchestrator).
 
 ## 3. HTTP API
 
@@ -40,17 +40,13 @@ The DSH-01 routes stay: `GET <base>/api/dashboard/state`, `POST <base>/api/dashb
 ```json
 {
   "console": {"commit": "c6d5f14", "demo": false},
-  "camera_preview": {"state": "live"},
   "control": [{"device": "stage", "holder": "console-control-…", "mine": true, "state": "held", "message": null, "held_s": 12.5}],
-  "readiness": [{"id": "gas-map", "state": "blocked", "detail": "…", "workspace": "process"}],
   "workspaces": [{"id": "overview", "title": {"en": "Overview", "zh": "总览"}}]
 }
 ```
 
 - A service card has `id`, `phase` (`unconfigured`, `loading`, `ready`, `stale`, `unavailable`), `connected`, `busy`, `locked`, `fault`, `lease_holder` and `demo`. A card is `stale` 3 s after its last read.
-- `camera_preview.state` is `unconfigured` (no `MG400_ORCH_CAMERA_URL`), `live` or `stale` (a relayed view has frames), `unavailable` (the last relay attempt failed) or `idle`. It never contains a URL or the camera key.
 - An unconfigured service keeps `phase` `unconfigured` between reads. Only a configured service shows `loading` before its first read.
-- `readiness[].state` is `ready`, `todo` or `blocked`. The ids are `tool-offset`, `camera-calibration`, `stage-reference`, `focus-zero`, `gas-map` and `cutoff`.
 - An Event is `{"service", "seq", "ts_unix", "level", "message"}`. `service` is a device name or `runs`.
 
 ### 3.2 Relay rules
@@ -105,7 +101,7 @@ The `api` object:
 
 | Path | Owner |
 | --- | --- |
-| `src/orchestrator/web/console.py`, `console_routes.py` | DSH-03 (relay, leases, events, readiness) |
+| `src/orchestrator/web/console.py`, `console_routes.py` | DSH-03 (relay, leases, events) |
 | `src/orchestrator/web/templates/console.html`, `static/console/shell.*`, `overview.*` | DSH-03 |
 | `src/orchestrator/web/workspaces/__init__.py`, `overview.py` | DSH-03 |
 | `src/orchestrator/web/workspaces/<id>.py`, `static/console/<id>.js`, `<id>.css` | The workspace task. `motion`: DSH-05, `cameras`: DSH-04, `process`: DSH-06. |
@@ -124,7 +120,7 @@ from . import Workspace
 
 
 def register(blueprint, service):
-    # Mounted at <base>/api/console/ws/motion. The operator token is checked for you.
+    # Mounted at <base>/api/console/ws/motion.
     @blueprint.get("/stations")
     def stations():
         return jsonify(stations=[])
@@ -136,7 +132,7 @@ WORKSPACE = Workspace(
 ```
 
 - Use `service.console` for device access: `service.console.command(device, page, action, params)`, `service.console.stop(device)`, `service.console.describe(device)`. Read the page id from the `X-MG400-Client` header.
-- Do not add a device command or a second lease path. Do not send a service token to the browser.
+- Do not add a device command or a second lease path.
 - A relay for streams (DSH-04) adds its own routes here and bounds its streams.
 
 ## 7. Tests
@@ -148,10 +144,10 @@ WORKSPACE = Workspace(
 ## 8. Run offline
 
 ```sh
-MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
+uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 --base-path /lab/
 ```
 
-Open `http://127.0.0.1:8790/lab/`. In demo mode, Take control starts that device's owned demo service (robot, stage, thermal, furnace or vision) on the first use. The microscope has no owned demo here. Without `MG400_ORCH_TOKEN` the console accepts only a loopback Host.
+Open `http://127.0.0.1:8790/lab/`. In demo mode, Take control starts that device's owned demo service (robot, stage, thermal, furnace or vision) on the first use. The microscope has no owned demo here.
 
 ## 9. Camera tiles and the stream relay (DSH-04)
 
@@ -174,23 +170,23 @@ root.append(node);
 
 ### 9.2 Server routes
 
-All paths start with `<base>/api/console/ws/cameras/`. They need the operator token, except the two ticket routes.
+camera1 to camera4 load directly from the proxy at `/camera/<view>.mjpeg` and `/camera/<view>.jpg`. The camera preview sends each viewer only the newest frame.
+
+The console routes start with `<base>/api/console/ws/cameras/`.
 
 | Method and path | Response |
 | --- | --- |
-| `GET status` | `{"views": [{"id", "configured", "state": "live" \| "stale" \| "offline", "age_s", "streams", "error", "mode"}], "limits", "ticket_ttl_s"}` |
-| `POST ticket` `{"view", "kind": "stream" \| "snapshot", "fps"?}` | `{"url", "expires_s"}`. Only for `camera1` to `camera4` and `microscope`. `fps` is an integer from 1 to 30; the default is 10. |
-| `GET stream/<view>?ticket=…` | The MJPEG stream (`multipart/x-mixed-replace`). `503` at the stream bound. `502` if the source fails. |
-| `GET snapshot/<view>?ticket=…` | One JPEG as an attachment. |
+| `GET status` | `{"views": [{"id", "configured", "url"?, "state"?, "age_s"?, "streams"?, "error"?, "mode"}], "limits"}`. camera1 to camera4 carry `url`; relayed views carry the relay state. |
+| `GET stream/microscope?fps=…` | The microscope MJPEG stream (`multipart/x-mixed-replace`). `fps` is an integer from 1 to 30; the default is 10. `503` at the stream bound. `502` if the source fails. |
+| `GET snapshot/microscope` | One JPEG as an attachment. |
 | `GET thermal/frame` | The thermal frame: `sequence`, `timestamp`, `stats`, `temperatures_c` ([y][x] in °C) and `age_s`. `?full=1` adds `raw`, `ir` and `raw_unit`. |
 | `GET thermal/regions` | `{"regions": {"<name>": {"x0", "y0", "x1", "y1"}}}` in sensor pixels. |
 | `GET detections/4` | `{"available", "image_size", "detections": [{"label", "confidence", "xyxy"}]}` from the vision service. |
 
-- **Tickets.** An `<img>` cannot send the token. The page sends `POST ticket` with the token and puts the returned `url` in `img.src`. A ticket is random, used once, bound to one view and one kind, and expires after 20 s. Any use spends it. A ticket route accepts no other query parameter. The console never puts the token or the camera key in a URL.
-- **Bounds.** At most 6 relayed streams in total, 2 per view, and 2 for the microscope (its service allows 4; 2 stay for the microscope page). The orchestrator serves with 16 worker threads, so open streams leave workers for the API.
-- **Newest frame only.** Each view has one upstream reader, shared by all its viewers. A viewer gets the newest complete JPEG as its own multipart part (boundary `frame`, with `Content-Length`), at most `fps` parts a second. A slow viewer skips frames and never gets a backlog. The server blocks a slow viewer when its output buffer passes 256 KiB (waitress `outbuf_high_watermark`), so its next frame is the newest one.
+- **Bounds.** At most 2 relayed microscope streams (its service allows 4; 2 stay for the microscope page).
+- **Newest frame only.** The microscope has one upstream reader, shared by all its viewers. A viewer gets the newest complete JPEG as its own multipart part (boundary `frame`, with `Content-Length`), at most `fps` parts a second. A slow viewer skips frames and never gets a backlog.
 - **Frame rate per tile.** `LabCameras.tile` asks for `fps` 10 for a grid or strip tile, and 30 for a large tile (`large: true`, the Focus view). A tile restarts its stream when it changes size.
-- **Relay end.** When the last viewer of a view closes its connection, the console closes the upstream connection. Each viewer frees its own slot. When the upstream ends or fails, the stream ends and the tile asks for a new ticket after a back-off of 1 s to 15 s.
+- **Relay end.** When the last viewer of a view closes its connection, the console closes the upstream connection. Each viewer frees its own slot. When the upstream ends or fails, the stream ends and the tile reconnects after a back-off of 1 s to 15 s.
 - **States.** A view is `live` when its last frame is at most 2 s old, `stale` when it is older, and `offline` when no stream is open for 5 s, the source failed, or no frame came. The thermal state comes from the frame timestamp.
-- **Sources.** camera1 to camera4 come from the camera preview at `MG400_ORCH_CAMERA_URL` with the key in `MG400_CAMERA_KEY_FILE`. The thermal, vision and microscope views use the `MG400_ORCH_<SERVICE>_URL` and `_TOKEN` settings (the demo services in demo mode). Tests attach fake sources as `service.camera_sources`.
+- **Sources.** camera1 to camera4 come from the proxy. The thermal, vision and microscope views use the console service clients (the demo services in demo mode). Tests attach fake sources as `service.camera_sources`.
 - **Thermal commands.** The region editor sends `set_region` (`{"name": "crucible", "x0", "y0", "x1", "y1"}`) and the shutter button sends `shutter` (`{}`) through `api.relay("thermal", …)`, each after an in-page confirmation. The buttons are disabled until the thermal `api/describe` lists the command.

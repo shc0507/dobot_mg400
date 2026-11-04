@@ -72,7 +72,7 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | Required measured `MIN,MAX` integer pulses, including zero, with nonzero travel. |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | Required measured clearance position, in pulses within the limits. Without a home switch, it must be `0`. |
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
-| `MG400_MICROSCOPE_FURNACE_URL` | Furnace metadata endpoint. Defaults to `http://127.0.0.1:8769/`. |
+| `MG400_MICROSCOPE_FURNACE_URL` | Furnace metadata endpoint. Defaults to `http://127.0.0.1:8769/`. On Olares the furnace binds to the VPN address, so set `http://100.64.0.1:8769/`. |
 | `MG400_FURNACE_TOKEN` | Existing furnace API token for metadata reads. The microscope does not acquire furnace control. |
 | `MG400_FURNACE_ARCHIVE_DIR` | Empty by default. Set an absolute directory only after the operator mounts the archive share. |
 
@@ -302,8 +302,8 @@ Map the side-camera device path to its stream before enabling capture.
 Configure only one mode or size list. The installer rejects configurations with both lists.
 Explicit values control each stream. When both lists are empty, the selected side stream uses `3840x2160@30`.
 Other camera streams retain `640x480@30`. Large streams start on demand.
-`USBCamera` expects `3840x2160` by default and rejects frames with a different size.
-Changing capture dimensions also requires compatible reference images and an explicit expected resolution in the caller.
+The microscope service expects the side stream's configured mode and rejects frames with a different size. Without camera settings, it expects `3840x2160`.
+Changing capture dimensions also requires compatible reference images. `H-21` checks objective switching at the configured mode.
 The supervised `H-21` checks must cover USB 2 bandwidth and microscope operation before lab use.
 
 `USBCamera.get_frame_packet()` returns a frame ID, a monotonic receive time, and an image.

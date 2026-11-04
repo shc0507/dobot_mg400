@@ -2039,6 +2039,23 @@ def microscope_library_owner(module, monkeypatch, path, *, owner=0, group=0, dir
     monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
 
 
+@pytest.mark.parametrize("group,rights", [(0, 0o644), (1000, 0o640)])
+def test_microscope_reuses_service_readable_library_without_replacement(
+    host, inventory_udev, toupcam_library, module, monkeypatch, group, rights
+):
+    select_optional(host, "microscope")
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(toupcam_library.read_bytes())
+    target.chmod(rights)
+    inode = target.stat().st_ino
+    microscope_library_owner(module, monkeypatch, target, group=group)
+    assert host.install() == 0
+    assert target.stat().st_ino == inode and mode(target) == rights
+    assert (host.units / "mg400-microscope.service").exists()
+    assert not any(command[0] == str(target) for command in names(host.commands))
+
+
 @pytest.mark.parametrize(
     "owner,group,rights",
     [

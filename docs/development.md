@@ -154,16 +154,9 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 `{前缀}` 是 `--base-path` 的值，默认为 `/`。
 按键只能经 WebSocket 发送。
 
-### 认证与客户端 ID
+### 访问与客户端 ID
 
-设置 `MG400_PANEL_TOKEN` 后，每个请求都必须带访问密钥。
-HTTP 请求用 `Authorization: Bearer <密钥>` 发送密钥。
-WebSocket 在 hello 消息中发送密钥。
-
-未设置访问密钥时，服务只接受 `Host` 为 `127.0.0.1`、`localhost` 或 `[::1]` 的请求。
-此限制阻止 DNS 重绑定（恶意网页把自己的域名解析到本机）访问服务。
-此时服务也拒绝带 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 或 `X-Real-IP` 的请求。
-经反向代理访问时，必须设置访问密钥。
+服务监听 `127.0.0.1`，不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 真机控制模式用客户端 ID 区分客户端，长度为 1–128 个可打印 ASCII 字符。
 同一时刻只有一个客户端 ID 持有控制权。
@@ -180,7 +173,7 @@ POST 请求必须满足以下条件：
 3. 正文为 1–4096 字节的 JSON 对象，用 `Content-Length` 标明长度。
 
 `api/command` 和 `api/heartbeat` 成功时返回 200 和状态对象。
-拒绝时返回 400（请求无效）、401（访问密钥错误）、403（无权）或 409（状态冲突）。
+拒绝时返回 400（请求无效）、403（拒绝）或 409（状态冲突）。
 拒绝的正文为 `{"error": "..."}`。
 
 命令正文为 `{"action": "<命令>", ...}`，不得包含其他字段：
@@ -213,8 +206,8 @@ POST 请求必须满足以下条件：
 这些配置不改变 `home`、全局 `SpeedFactor` 或键盘点动。
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
-`recoverable` 为 `true` 时也可用：报警期间的停止未确认已锁定控制，报警已在服务外清除。
-此时服务不发送 `ClearError()`，只下使能并确认静止。
+`recoverable` 为 `true` 时也可用：停止或下使能未确认，控制器无报警，且反馈新鲜。
+此时服务不发送 `ClearError()`，只下使能、确认静止并清除警告。
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
@@ -222,9 +215,7 @@ POST 请求必须满足以下条件：
 ### 契约发现、停止与事件
 
 真机控制模式提供 `api/describe`、`api/stop` 和 `api/events`。
-这些接口检查访问密钥、`Host` 和 `Origin`。
-无访问密钥时，仍拒绝转发头。
-`api/stop` 也检查上述 POST 请求头和客户端 ID。
+`api/stop` 检查上述 POST 请求头和客户端 ID。
 
 `api/describe` 返回 `service`、`version`、`contract`、`demo`、`zones`、`lease_seconds`、`on_lease_expiry` 和 `commands`。
 `contract` 为 1，`demo` 为 `false`。
@@ -268,11 +259,10 @@ POST 请求必须满足以下条件：
 
 ### Python 客户端
 
-`mg400.client.RobotClient(url, token, client_id)` 使用服务基础 URL 和明确的客户端 ID。
+`mg400.client.RobotClient(url, client_id)` 使用服务基础 URL 和明确的客户端 ID。
 每个程序使用独立 ID。运行中的程序不得共用 ID。
 构造对象不会连接服务。`connect()` 检查 WebSocket 协议 1 和服务契约 1，然后启动客户端线程。
 支持 `http://`、`https://`、`ws://` 和 `wss://`。如果服务配置了基础路径，URL 必须包含该路径。
-令牌遵循机器人服务的访问规则。空令牌仅适用于允许的环回主机。
 
 运行示例前，启动[离线模拟器和机器人服务](#离线机器人模拟器)。
 示例向该模拟器发送运动命令。
@@ -280,7 +270,7 @@ POST 请求必须满足以下条件：
 ```python
 from mg400.client import RobotClient
 
-with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
+with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
     robot.run("start_sync")
     robot.run("enable")
     result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
@@ -302,15 +292,15 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 套接字断开后，客户端最多尝试重连传输连接 2.5 秒，短于 3 秒租约。
 客户端不会重发命令。回复丢失或超时后，命令是否送达或完成可能未知。
 再次操作前，检查服务状态。不得自动重试运动。
-认证失败、协议错误或连接被替换后，客户端停止尝试连接。
+hello 失败、协议错误或连接被替换后，客户端停止尝试连接。
 
-套接字不可用时，`command("stop")` 和 `command("disable")` 通过 HTTP 发送，保留令牌和客户端 ID。
+套接字不可用时，`command("stop")` 和 `command("disable")` 通过 HTTP 发送，保留客户端 ID。
 改用 HTTP 时，先检查契约 1。
 回复保留 `locked` 和 `stop_unconfirmed`。回复仍只表示接受请求，不表示停止已获确认。
 其他命令不会改用 HTTP。HTTP 请求不跟随重定向，也不会自动重试。
 
 退出上下文时，如果客户端持有控制权，先运行 `stop_sync`，再关闭连接并停止线程。
-机械臂仍使能时，服务保留反馈并锁定控制，直到显式 `disable` 确认模式 4 和停稳。
+机械臂仍使能时，服务保留反馈并阻止运动，直到显式 `disable` 确认模式 4 和停稳。
 客户端不会自动下使能。停止获确认后，发送 `disable` 即可完成断开，无须重启服务。
 可选参数 `keep_control=True` 跳过 `stop_sync`。退出后仍会停止心跳。
 直接调用 `close()` 也会停止线程，不续期或释放控制权。
@@ -321,13 +311,12 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 
 按以下顺序通信：
 
-1. 连接后 3 秒内，发送 `{"type":"hello","protocol":1,"client":"<客户端 ID>","token":"<密钥>"}`。
+1. 连接后 3 秒内，发送 `{"type":"hello","protocol":1,"client":"<客户端 ID>"}`。
 2. 等待服务推送 `{"type":"state","state":{...}}`。
 3. 发送请求 `{"type":"<类型>","id":<整数>,"body":{...}}`。
 4. 按 `id` 匹配回复。
 
-`protocol` 是消息格式版本，当前为 1。
-未设置访问密钥时，`token` 可以为空字符串。
+`protocol` 是消息格式版本，当前为 1。hello 不得含其他字段。
 `state` 的字段与 `api/state` 相同。
 状态变化时，服务推送状态。
 每次回复后，服务也推送一次。
@@ -354,24 +343,22 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 按住按键时，客户端必须每 100 ms 重发一次。
 服务 0.4 秒内未收到更新时，停止点动并关闭键盘控制。
 
-关闭码为 4400、4401、4426 或 1013 时，服务先发送 `{"type":"error","status":<状态码>,"error":"..."}`，再关闭连接。
+关闭码为 4400、4426 或 1013 时，服务先发送 `{"type":"error","status":<状态码>,"error":"..."}`，再关闭连接。
 
 | 关闭码 | 含义 |
 | --- | --- |
 | 4400 | hello 或请求格式无效 |
-| 4401 | 访问密钥错误 |
 | 4426 | `protocol` 与服务不一致，客户端必须更新 |
 | 4409 | 同一客户端 ID 的新连接替换了此连接 |
-| 1013 | 已认证连接数已满 |
+| 1013 | 连接数已满 |
 | 1001 | 服务停止，关闭前推送最后状态 |
 | 1002、1003、1007、1009 | 帧格式错误、二进制消息、文本不是 UTF-8 或消息过长 |
 
 连接规则如下：
 
 - 消息只能是不超过 4096 字节的 UTF-8 文本。
-- 浏览器连接时，`Origin` 必须与服务地址一致，程序可以省略 `Origin`。
 - 服务每 5 秒发送 ping，15 秒未收到任何帧时关闭连接。
-- 最多 8 个客户端 ID 同时保持已认证连接。
+- 最多 8 个客户端 ID 同时保持 hello 后的连接。
 - 同一客户端 ID 再次发送 hello 时，服务关闭旧连接。
 - 客户端的最新连接关闭，或同一客户端 ID 的新连接替换它时，服务立即关闭该客户端的键盘控制。
 
@@ -382,7 +369,7 @@ with RobotClient("http://127.0.0.1:8766/", "", "recipe-example") as robot:
 ## 位移台服务接口
 
 位移台服务的 HTTP 接口使用 JSON，全部位于 `{前缀}contract/api/`。
-`{前缀}` 是 `MG400_STAGE_BASE_PATH`，默认为 `/`。
+`{前缀}` 是位移台基础路径，固定为 `/`。
 服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
 
 ### 位移台自动化契约
@@ -454,8 +441,7 @@ labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
 
 ### 访问检查
 
-所有接口使用同一 `MG400_STAGE_TOKEN`。设置该密钥后，每个请求都必须带 `Authorization: Bearer <密钥>`。
-未设置访问密钥时，`Host` 和转发请求头的规则同 [认证与客户端 ID](#认证与客户端-id)。
+服务不检查令牌、`Host` 或 `Origin`，见 [访问与客户端 ID](#访问与客户端-id)。
 POST 必须带 `Content-Type: application/json` 和 `X-MG400-Client`，正文必须是 JSON 对象。
 客户端 ID 为 1–128 个可打印 ASCII 字符。
 正文大小上限为 4096 字节。
@@ -465,8 +451,6 @@ POST 必须带 `Content-Type: application/json` 和 `X-MG400-Client`，正文必
 | 状态码 | 含义 |
 | --- | --- |
 | 400 | 请求无效，或串口不在当前列表中 |
-| 401 | 缺少访问密钥或密钥错误 |
-| 403 | `Host` 或转发请求头不符合要求 |
 | 409 | 状态冲突，例如未持有租约、已连接或电机仍在运动 |
 | 413 | 请求正文超过 4096 字节 |
 | 415 | 不是 JSON 请求 |

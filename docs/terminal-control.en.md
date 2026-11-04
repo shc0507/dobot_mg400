@@ -19,7 +19,7 @@ A PTY is an interactive terminal allocated by SSH. Request it with `ssh -t`.
 Before use, close other robot control programs.
 The terminal shares the robot connection lock with the robot service.
 All processes must use the same robot address.
-They must also share `MG400_CONTROLLER_LOCK_DIR`.
+They must also share the lock directory `/var/lib/mg400/locks`. `mg400ctl terminal` sets it.
 For directory and permission requirements, see [Panel connection lock](deploy.en.md#panel-connection-lock).
 This lock cannot prevent DobotStudio or other hosts from connecting.
 

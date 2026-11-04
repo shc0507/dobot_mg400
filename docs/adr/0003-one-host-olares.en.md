@@ -24,7 +24,7 @@ Connect every lab device to Olares and run its services there. Each device has 1
 | Orchestrator and dashboard | 8772 |
 | Agent gateway | 8773, loopback |
 
-- Store settings in `/etc/mg400/mg400.env`. Services read `<PREFIX>BIND`, `<PREFIX>PORT`, and `<PREFIX>TOKEN`. Code and units contain no host-specific addresses or paths.
+- Store settings in `/etc/mg400/mg400.env`. The file holds only hardware facts. Bind addresses and ports are fixed defaults in code. Code and units contain no host-specific addresses or paths.
 - `MG400_OPTIONAL_SERVICES` selects optional services. The installer prepares only those. Most services use `/opt/mg400/.venv`. Vision uses `/opt/mg400/.venv-vision`.
 - Keep models, calibration, taught stations, tool offsets, stage configuration, thermal regions, furnace state, runs, and recordings under `/var/lib/mg400`.
 - Data ownership is `1000:1000`, directory mode `0750`, and file mode `0640` or `0600`. The private stage calibration directory `/var/lib/mg400/stage` uses mode `0700`. The installer creates data directories.

@@ -41,25 +41,17 @@ Command-line options override environment settings. Empty environment values use
 
 | Setting | Option | Default and meaning |
 | --- | --- | --- |
-| `MG400_VISION_BIND` | `--bind` | `127.0.0.1` |
-| `MG400_VISION_PORT` | `--port` | `8771` |
-| `MG400_VISION_BASE_PATH` | `--base-path` | `/`. Prefix for all routes |
-| `MG400_VISION_TOKEN` | None | Empty on loopback. Otherwise at least 24 printable ASCII characters |
+| None | `--bind` | `127.0.0.1` |
+| None | `--port` | `8771` |
+| None | `--base-path` | `/`. Prefix for all routes |
 | `MG400_VISION_WEIGHTS` | `--weights` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` |
 | `MG400_VISION_DEVICE` | `--device` | `cuda` when available, otherwise `cpu`. Explicit `cuda:N` selects a device |
-| `MG400_VISION_GPU_FRACTION` | `--gpu-fraction` | `0.15`. Finite value greater than 0 and at most 1 |
+| None | `--gpu-fraction` | `0.15`. Finite value greater than 0 and at most 1 |
 | `MG400_VISION_FRAME_TIMEOUT` | `--frame-timeout` | `2` seconds for each HTTP socket operation and the body-read deadline. Finite and greater than 0 |
-| `MG400_VISION_CALIBRATION_DIR` | None | `/var/lib/mg400/calibration/cameras/`. Private camera-model directory |
-| `MG400_VISION_TAG_HEIGHT_MM` | None | `100`. Nominal arm-tag height above the flange, in millimetres |
-| `MG400_VISION_TAG_TIP_MM` | None | `246`. Nominal vertical distance from the tag to the tweezer tip, in millimetres |
-| `MG400_VISION_CALIBRATION_RMS_MM` | None | `1`. Finite acceptance limit greater than 0 and at most 1 mm |
 | None | `--demo` | Use offline fixtures without the detector runtime |
 
-A configured token requires at least 24 characters even on loopback.
-Without a token, requests require a loopback `Host` and must not contain forwarded headers.
-With a token, send `Authorization: Bearer <token>`.
-The service also checks `Origin` and rejects cross-site requests.
-These rules apply to image and result routes as well as contract routes.
+Calibration uses fixed defaults: the camera-model directory `/var/lib/mg400/calibration/cameras/`, a nominal arm-tag height of `100` mm above the flange, a nominal tag-to-tip distance of `246` mm, and an acceptance limit of `1` mm RMS.
+The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 Configuration and startup failures exit with status 2.
 
 For CUDA, the service calls `torch.cuda.set_per_process_memory_fraction` before loading the localizer.
@@ -70,7 +62,7 @@ The service does not silently change an explicit CUDA request to CPU.
 ## Frame sources and coordinates
 
 Live camera numbers are integers from 1 through the configured device count, at most 4.
-The service uses the same `MG400_CAMERA_DEVICES`, `MG400_CAMERA_MODES`, and `MG400_CAMERA_CAPTURE_SIZES` settings as the installer and preview.
+The service uses the same `MG400_CAMERA_DEVICES` and `MG400_CAMERA_MODES` settings as the installer and preview.
 See [Cameras](olares.en.md#cameras) for allowed modes and defaults. Empty device settings disable live frame commands.
 The command schema lists only configured camera numbers. The service rejects unconfigured numbers before requesting a frame.
 The live source uses this fixed endpoint, replacing `N` with the camera number:
@@ -177,7 +169,7 @@ Software checks and rehearsal do not validate physical clearance or camera geome
 The arm tag uses `DICT_4X4_50` ID `4` on the J4 axis.
 Tray references use distinct IDs from `0`, `1`, `2`, and `7` in the same dictionary.
 Configure 2 to 4 measured tray references in a private TOML file.
-The orchestrator reads `MG400_CAMERA_CALIBRATION_REFERENCES`, which defaults to `/var/lib/mg400/calibration/cameras/references.toml`.
+The orchestrator reads `/var/lib/mg400/calibration/cameras/references.toml`.
 The file must be trusted, without links, and at most 4 KiB.
 
 This is a template, not measured coordinates. Replace `X`, `Y`, `Z`, and `R` with operator-recorded flange values:
@@ -238,7 +230,7 @@ Zone occupancy remains until a later explicit departure or supervised recovery e
 
 The public rehearsal CLI and demo registry use owned synthetic robot and vision services from the same rehearsal pool.
 The synthetic camera follows that robot and renders ArUco images for camera `1` at `1920x1080`.
-They generate their own synthetic reference data and do not read the host `MG400_CAMERA_CALIBRATION_REFERENCES` path or camera-model files.
+They generate their own synthetic reference data and do not read the host reference file or camera-model files.
 Rehearsal opens no camera device or native capture.
 
 Use the synthetic tool offset `[0, 0, 146]` and prepare the grid in flange coordinates:
@@ -278,7 +270,7 @@ Passing RMS checks does not remove that limitation or establish a safe motion pa
 
 ### Stored models and invalidation
 
-The service stores bounded JSON under `MG400_VISION_CALIBRATION_DIR`.
+The service stores bounded JSON under `/var/lib/mg400/calibration/cameras/`.
 The filename is SHA256 of the full `/dev/v4l/by-path/` device path, followed by `.json`.
 The document also stores that full path and its image size.
 It retains the camera matrix, distortion, rotation, translation, tray height, recovered distance, scan R, sample points, split indices, errors, and creation time.
@@ -322,10 +314,7 @@ An arm tag that is not exactly on the J4 axis moves when R changes.
 
 ### Limit and command data
 
-`MG400_ORCH_DRIFT_LIMIT_PX` sets the pixel limit. It defaults to `3`.
-A value must be greater than `0` and at most `3`. The setting can lower the limit, but it cannot raise it.
-Live runs and owned demos preserve this supplied scalar setting. An absent setting stays absent until the skill applies its default.
-Other device, endpoint, token, and path filters remain unchanged.
+The pixel limit is `3`.
 
 The skill sends the leased `check_calibration` command with these fields:
 
@@ -387,7 +376,7 @@ The library accepts supplied data. The leased `observe_slots` command combines i
 
 ### Guarded slot evidence
 
-Send `observe_slots` through the existing `POST api/command` route with the normal token, client, and lease checks.
+Send `observe_slots` through the existing `POST api/command` route with the normal client and lease checks.
 It uses these fields:
 
 | Field | Requirement |

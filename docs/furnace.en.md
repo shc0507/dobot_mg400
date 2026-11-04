@@ -25,47 +25,40 @@ uv run python -m furnace --demo --bind 127.0.0.1 --port 8769
 `GET /api/describe` and `GET /api/state` report `demo: true`.
 Demo mode uses simulated serial transports and an isolated temporary state directory.
 It ignores production serial paths and gas settings. It does not model process safety or physical furnace accuracy.
-The access token and bind rules still apply. Closing the process stops simulated outputs and removes its temporary state.
+Closing the process stops simulated outputs and removes its temporary state.
 
 ## Configuration
 
-The host service reads `/etc/mg400/mg400.env`. The installer installs it only when `MG400_OPTIONAL_SERVICES` includes `furnace`.
+The host service reads `/etc/mg400/mg400.env`. The installer installs it by default.
 It installs the `furnace` dependency group into `.venv` and grants the service only the `dialout` supplementary group.
 The installer creates `/var/lib/mg400/furnace` with owner `1000:1000` and mode `0750`.
 
 | Setting | Default | Rule |
 | --- | --- | --- |
-| `MG400_FURNACE_BIND` | `127.0.0.1` | Listen address |
-| `MG400_FURNACE_PORT` | `8769` | Port from `1` to `65535` |
-| `MG400_FURNACE_BASE_PATH` | `/` | API prefix, for example `/heat/` |
-| `MG400_FURNACE_TOKEN` | Installer-generated | At least `24` printable ASCII characters |
 | `MG400_FURNACE_SERIAL` | Empty | Furnace device under `/dev/serial/by-id/`, required before startup |
 | `MG400_MFC_SERIAL` | Empty | Separate gas-controller device under `/dev/serial/by-id/`, required for gas access |
 | `MG400_FURNACE_SLAVE` | `1` | Integer address from `1` to `247` |
 | `MG400_FURNACE_MAX_C` | `1000` | Finite cap greater than `0`, at most `1000` °C |
 | `MG400_FURNACE_MAX_RAMP` | `100` | Finite cap greater than `0`, at most `100` °C/min |
-| `MG400_FURNACE_GAS_MAP` | Empty | Operator-supplied JSON map from channel to gas label |
+| `MG400_FURNACE_GAS_MAP` | `Gas 1` to `Gas 3` | JSON map from channel to gas label |
 | `MG400_FURNACE_IDLE_GAS` | All off | JSON map from channel to percent for orphan expiry, cooling completion, or uncertain recovery |
-| `MG400_FURNACE_ORPHAN_GRACE_MIN` | `15` | Finite grace period at least `0`, in minutes |
 
 The gas map uses channel keys `0`, `1`, and `2`, which address MFC units `7`, `8`, and `9`.
 Percent means percent of that controller's full-scale flow. Do not interpret it as a generic volumetric flow rate.
-Until the operator supplies the gas map, gas commands are refused. Stop remains available.
+The service listens on `127.0.0.1:8769` with the base path `/`. The orphan grace period is `15` min.
 Idle gas defaults to all off. Any nonzero idle plan requires the operator's process decision.
 
 In the settings file, enclose the gas map and idle gas JSON objects in single quotes.
 The installer preserves the inner double quotes exactly. It rejects escapes, apostrophes, control characters, duplicate keys, and nonfinite numbers.
 All other settings retain the usual quote and backslash restrictions.
-These empty objects show syntax only. They do not identify gases or authorize output:
+These empty objects show syntax only:
 
 ```ini
 MG400_FURNACE_GAS_MAP='{}'
 MG400_FURNACE_IDLE_GAS='{}'
 ```
 
-Keep the configuration file private. Do not put the access token in a URL or a shared screenshot.
-For VPN access, use the bind address and TCP rule in [Olares networking](olares.en.md#network).
-A non-loopback bind requires a valid token. Without a token, only loopback hosts without forwarded headers are accepted.
+The service checks no token, `Host`, or `Origin`. The VPN is the access boundary. See [Olares networking](olares.en.md#network).
 
 ## Take control in the console
 
@@ -118,7 +111,7 @@ Changing only its hold duration or later steps preserves the current output sett
 Accepted edits are persisted, including future gas plans.
 
 The gas area shows the measured percent of each gas. Without readback, it shows unverified.
-**Send flow** applies the entered percent. The service refuses it until the gas map names real gases.
+**Send flow** applies the entered percent.
 **Stop all gas** stops all gas channels and does not require control.
 A missing optional reply means unverified. It does not prove zero flow or a closed valve.
 A transport or invalid-reply failure locks control. **Stop all gas**, `POST /api/flow/gas/stop`, and `POST /api/flow/stop-all` remain available.
@@ -127,15 +120,13 @@ Check physical flow and use independent isolation when required.
 ## Microscope recording
 
 While you hold the microscope control lease, start recording on the microscope card of the same workspace. Or use **Record next furnace sequence** to arm recording of the next furnace sequence.
-The microscope reads furnace state through `MG400_MICROSCOPE_FURNACE_URL` and the existing `MG400_FURNACE_TOKEN`.
+The microscope reads furnace state from `http://127.0.0.1:8769/`.
 It does not acquire a furnace lease or change furnace outputs.
 Arming requires fresh, healthy, idle furnace state and applies to one new sequence identity.
 Missing furnace replies leave recording metadata blank and add an event. Capture continues until an explicit stop or another valid completion condition.
 
 Recordings stay under `/var/lib/mg400/recordings/`. Finalized recordings include the timestamps CSV and a summary targeting 3 minutes. Shorter clips are not lengthened.
 Cancelled or failed recordings retain local partial files without a promised summary.
-Set `MG400_FURNACE_ARCHIVE_DIR` only after the operator mounts the archive share.
-The service retains local files after a verified archive copy. An archive failure does not remove local data or count as successful finalization.
 See the [recording instructions](microscope.en.md) for command receipts, cancellation, and chip-linked manifests.
 
 ## Client loss, recovery, and shutdown
@@ -175,8 +166,8 @@ See [routine deployment commands](deploy.en.md#routine-commands).
 ## API and troubleshooting
 
 The service provides the [instrument contract](adr/0001-instrument-service-contract.en.md), stop routes, and operator routes.
-All routes use the same lifecycle, caps, and gas policy. All requests require the configured token.
-Mutations require JSON and `X-MG400-Client`. Host, Origin, and forwarded-header checks apply to all routes.
+All routes use the same lifecycle, caps, and gas policy.
+Mutations require JSON and `X-MG400-Client`.
 All paths follow the configured base prefix.
 
 | Route | Use |
@@ -194,6 +185,6 @@ All paths follow the configured base prefix.
 
 If connection fails, check the configured stable device paths and access permissions.
 The furnace uses `9600` baud, `8` data bits, no parity, and `1` stop bit. Match its configured slave address.
-If control is refused, check the lease holder, gas map, caps, and fault before retrying explicitly.
+If control is refused, check the lease holder, caps, and fault before retrying explicitly.
 If a stop is unconfirmed, inspect the device and use physical protection. Do not treat a successful HTTP response as physical confirmation.
 Use `mg400ctl logs furnace` to read service events.

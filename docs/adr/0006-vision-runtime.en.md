@@ -19,9 +19,9 @@ Run vision as its own process on Olares in `/opt/mg400/.venv-vision`. A separate
 - If uv rejects that override, stop and report the failure. The fallback is a separate uv project for vision. Keep `vision-gpu` outside default dependency groups. Default CI installs no torch.
 - Enable installation through `MG400_OPTIONAL_SERVICES`. Use `UV_PROJECT_ENVIRONMENT=/opt/mg400/.venv-vision uv sync --locked --no-default-groups --group vision --group vision-gpu`. Install the verified `vision-weights` asset and create `/var/lib/mg400/vision`.
 - Start `mg400-vision.service` with `/opt/mg400/.venv-vision/bin/python -m vision`. Default binding is loopback on port 8771.
-- `MG400_VISION_DEVICE` defaults to `cuda` when available, otherwise `cpu`. Apply `MG400_VISION_GPU_FRACTION`, default 0.15, through `torch.cuda.set_per_process_memory_fraction` before loading the model.
+- `MG400_VISION_DEVICE` defaults to `cuda` when available, otherwise `cpu`. Apply a memory fraction of 0.15 through `torch.cuda.set_per_process_memory_fraction` before loading the model.
 - Perform 1 warm-up inference at startup and only 1 inference at a time. Demo mode uses fixture detections without torch. go2rtc remains the camera owner.
-- Configure `MG400_VISION_BIND`, `MG400_VISION_PORT`, `MG400_VISION_TOKEN`, and `MG400_VISION_WEIGHTS`. `mg400ctl gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID 1000.
+- Configure `MG400_VISION_WEIGHTS` and `MG400_VISION_DEVICE`. `mg400ctl gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID 1000.
 
 ## Consequences
 

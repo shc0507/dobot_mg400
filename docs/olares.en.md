@@ -11,45 +11,28 @@ Run the commands on this page as root in the Olares host terminal (Control Hub â
 ## Network
 
 Clients access Olares through the LarePass VPN. The Olares VPN address is `100.64.0.1`.
-For direct client access through separate service ports, the robot, stage, and camera services must listen on this address. Set these values in `/etc/mg400/mg400.env`:
-
-```ini
-MG400_PANEL_BIND=100.64.0.1
-MG400_CAMERA_BIND=100.64.0.1
-MG400_STAGE_BIND=100.64.0.1
-```
-
-The Olares VPN access rules must allow TCP `8766`, `8767`, and `1985`.
+The VPN is the access boundary. The services do not check tokens, Host headers, or origins.
+All services listen on `127.0.0.1`. The [single-port proxy](#optional-single-port-proxy) is the only entry from the VPN.
 The Olares network interface connected directly to the robot uses `192.168.1.10/24`. The robot address is `192.168.1.6`.
 
-For the optional thermal service, set `MG400_THERMAL_BIND=100.64.0.1` and permit TCP `8768` through the VPN for direct access.
-The default remains `127.0.0.1`. Keep `MG400_THERMAL_TOKEN` private and send it in the bearer header, never the URL.
-Add `thermal` to `MG400_OPTIONAL_SERVICES` before installation. See the [thermal service guide](thermal.en.md#managed-host-service).
+| Service | Loopback port |
+| --- | --- |
+| Robot | `8766` |
+| Stage | `8767` |
+| Thermal | `8768` |
+| Furnace | `8769` |
+| Microscope | `8770` |
+| Vision | `8771` |
+| Lab Console and recipe service | `8772` |
+| MCP gateway | `8773` |
+| Camera streams | `1985` |
 
-If the optional furnace service is enabled, set `MG400_FURNACE_BIND=100.64.0.1` and permit TCP `8769` through the VPN.
-Keep `MG400_FURNACE_TOKEN` private and send it in the bearer header, never the URL. See the [furnace service](furnace.en.md).
+Add optional services such as `thermal` and `vision` to `MG400_OPTIONAL_SERVICES` before installation.
+See [Host deployment](deploy.en.md#service-registry) for the service list and the vision runtime.
+The owner installs and starts vision, then runs `mg400ctl gpu` to read GPU memory as UID `1000`.
 
-The optional microscope service defaults to `MG400_MICROSCOPE_BIND=127.0.0.1` and port `8770`.
-For direct VPN access, set `MG400_MICROSCOPE_BIND=100.64.0.1` and permit TCP `8770` through the VPN.
-Keep `MG400_MICROSCOPE_TOKEN` private and send it in the bearer header, never the URL.
-The token must contain at least 24 printable ASCII characters.
-Add `microscope` to `MG400_OPTIONAL_SERVICES` before installation. See the [microscope guide](microscope.en.md#managed-host-service) for physical configuration and startup order.
-
-The optional vision service defaults to `MG400_VISION_BIND=127.0.0.1` and port `8771`.
-For direct VPN access, set `MG400_VISION_BIND=100.64.0.1` and permit TCP `8771` through the VPN.
-
-Keep `MG400_VISION_TOKEN` private and send it in the bearer header, never the URL.
-For non-loopback access, the token must have at least 24 printable ASCII characters. A configured token must meet this rule on loopback too.
-
-Add `vision` to `MG400_OPTIONAL_SERVICES` before installation. See [Host deployment](deploy.en.md#service-registry) for the isolated runtime and required weights.
-The owner installs and starts the service, then runs `mg400ctl gpu` to read GPU memory as UID `1000`.
-
-If the optional recipe service must accept VPN clients, set `MG400_ORCH_BIND=100.64.0.1` and permit TCP `8772` through the VPN.
-Send `MG400_ORCH_TOKEN` in the bearer header, never in the URL. Keep downstream token aliases private on the host.
-The default bind remains `127.0.0.1`. See the [recipe service](orchestrator.en.md#http-service) for access and recovery rules.
-
-Keep the optional [MCP gateway](agent-gateway.en.md) at `MG400_GATEWAY_BIND=127.0.0.1`, port `8773`. Do not open that port directly through the VPN.
-Remote MCP clients require an authenticated tunnel to loopback and the `MG400_GATEWAY_TOKEN` bearer credential.
+The optional [MCP gateway](agent-gateway.en.md) stays on loopback and has no proxy route.
+Remote MCP clients require a tunnel to loopback and the `MG400_GATEWAY_TOKEN` bearer credential.
 
 ## Optional single-port proxy
 
@@ -58,63 +41,29 @@ It uses a Caddy 2 binary supplied through `--caddy PATH`.
 The installer writes `/etc/mg400/Caddyfile` and installs `/usr/local/lib/mg400/caddy`.
 It never downloads Caddy or starts the proxy.
 
-Add `proxy` to `MG400_OPTIONAL_SERVICES`. Preserve other selected service names.
-For a host with no other optional services, set these values in `/etc/mg400/mg400.env`:
+Set these values in `/etc/mg400/mg400.env`. Preserve other selected service names:
 
 ```ini
-MG400_OPTIONAL_SERVICES=proxy
+MG400_OPTIONAL_SERVICES=orch,proxy
 MG400_PROXY_BIND=100.64.0.1
 MG400_PROXY_PORT=8080
-MG400_PANEL_BIND=127.0.0.1
-MG400_PANEL_BASE_PATH=/robot/
-MG400_STAGE_BIND=127.0.0.1
-MG400_STAGE_BASE_PATH=/stage/
-MG400_CAMERA_BIND=127.0.0.1
 ```
 
 The proxy address must be 1 numeric loopback or VPN address, without a wildcard.
 The proxy port must be from `1024` to `65535` and differ from every upstream port.
-Upstream ports must also be distinct.
-The installer checks enabled services' loopback addresses, native prefixes, and tokens before it writes files.
-
-For enabled `furnace` or `orch` services, also set their corresponding values:
-
-```ini
-MG400_FURNACE_BIND=127.0.0.1
-MG400_FURNACE_BASE_PATH=/furnace/
-MG400_ORCH_BIND=127.0.0.1
-MG400_ORCH_BASE_PATH=/lab/
-```
 
 The proxy has only these routes:
 
-| VPN path | Loopback upstream | Required native prefix |
-| --- | --- | --- |
-| `/lab/` | `127.0.0.1:8772` | `/lab/` |
-| `/camera/<key>/<stream>.mjpeg`, `/camera/<key>/<stream>.jpg` | `127.0.0.1:1985` | `/<key>/` after removing only `/camera` |
+| VPN path | Loopback upstream |
+| --- | --- |
+| `/lab/` | `127.0.0.1:8772`, with the fixed base path `/lab/` |
+| `/camera/<view>.mjpeg`, `/camera/<view>.jpg` | `127.0.0.1:1985`, after removing only `/camera` |
 
+`<view>` is `camera1` to `camera4`.
 The proxy redirects the root path `/` to the Lab Console at `/lab/`. See the [Lab Console](dashboard.en.md#lab-console).
 The camera routes forward only video streams and single frames. The Cameras workspace of the console uses them.
-The proxy does not forward the robot, stage, thermal, furnace, or microscope services.
-These services listen on loopback ports with their native prefixes. The console, the command-line tools, and the recipe runner call them directly on `127.0.0.1`.
-The camera port remains `1985`. Other upstream ports follow their `MG400_*_PORT` settings when supplied.
-Selecting `proxy` does not select `thermal`. Add `thermal` separately to `MG400_OPTIONAL_SERVICES` to install its service.
-A route and the console cannot work until the upstream service exists and runs with the required native prefix.
-Keep a separately started service on `127.0.0.1` with its own token, even though its connection is local.
-For thermal, set `MG400_THERMAL_BIND=127.0.0.1` and `MG400_THERMAL_BASE_PATH=/thermal/` in `/etc/mg400/mg400.env`.
-The installer fills a blank `MG400_THERMAL_TOKEN` and preserves a configured token.
-`thermal-cam --base-path /thermal/` overrides that prefix setting.
-
-For the microscope with the proxy, set `MG400_MICROSCOPE_BIND=127.0.0.1` and `MG400_MICROSCOPE_BASE_PATH=/microscope/` in `/etc/mg400/mg400.env`.
-When `MG400_MICROSCOPE_TOKEN` is blank, the installer generates a token. It preserves an existing token.
-Select `microscope` separately from `proxy`. Update its furnace metadata URL when the furnace native prefix changes.
-Do not place service tokens in Caddy configuration or URLs.
-The MCP gateway remains loopback-only and has no proxy route.
-
-Stop active work before changing service URLs. Update downstream client URLs to include the new native prefixes.
-For example, use `MG400_ORCH_ROBOT_URL=http://127.0.0.1:8766/robot/` and `MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/stage/contract/`.
-The stage contract and operator routes are at `/stage/contract/api/`.
-Stage and thermal keep `/` as the default when no base path is configured.
+The proxy does not forward the robot, stage, thermal, furnace, microscope, or vision services.
+The console, the command-line tools, and the recipe runner call them directly on `127.0.0.1`.
 
 After configuration, install the supplied binary and check the generated configuration:
 
@@ -124,21 +73,16 @@ After configuration, install the supplied binary and check the generated configu
 /usr/local/lib/mg400/caddy validate --config /etc/mg400/Caddyfile --adapter caddyfile
 ```
 
-Restart the upstream services whose settings changed through `mg400ctl`.
-Then start the proxy explicitly with `mg400ctl start proxy`.
+Start the proxy explicitly with `mg400ctl start proxy`.
 Permit TCP `8080` through the VPN, or the configured proxy port.
 Open `http://100.64.0.1:8080/`. The proxy redirects it to the Lab Console.
 After an update, the installer can reuse the installed binary without `--caddy`.
 
-The proxy passes browser bearer credentials unchanged. It never supplies an upstream token.
-Each service keeps its token, Host, Origin, lease, and command checks.
 The proxy preserves the browser `Host`, including its port, and sets `X-Forwarded-Host` from that value.
 It replaces incoming forwarded address headers and removes `Forwarded` and `X-Real-IP`.
-
 Caddy forwards WebSocket `Upgrade` and `Connection` through its native reverse proxy, using HTTP/1.1 upstream.
 Upstream response-header and read timeouts are `60` s.
-The proxy adds no request retry. It disables its admin API and configuration persistence.
-The configuration excludes request access and error logs because camera URLs contain a secret.
+The proxy adds no request retry. It disables its admin API, configuration persistence, and request logs.
 This HTTP entry uses the VPN connection. It does not enable public HTTPS.
 
 ## Get the code
@@ -201,11 +145,11 @@ Below, `$DOCS` means `/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqntt
 
 | Old location | Contents | New location |
 | --- | --- | --- |
-| `/opt/mg400-web-control` | Web panel code, with `MG400_PANEL_TOKEN` in `.env` | `/opt/mg400`, `/etc/mg400/mg400.env` |
+| `/opt/mg400-web-control` | Web panel code | `/opt/mg400`, `/etc/mg400/mg400.env` |
 | `$DOCS/mg400-isaac` | Gripper collector code | `/opt/mg400` |
 | `$DOCS/mg400-terminal`, `$DOCS/mg400-tools` | Interactive terminal code, startup scripts, and mode switch tools | `mg400ctl terminal`, `mg400ctl mode` |
 | `$DOCS/mg400-data` | Connection locks, gripper feedback, and mode switch backups | `/var/lib/mg400` |
-| `/opt/mg400-camera-preview` | go2rtc, capture configuration, preview program, and keys | `/usr/local/lib/mg400`, `/etc/mg400`, `/var/lib/mg400/camera` |
+| `/opt/mg400-camera-preview` | go2rtc, capture configuration, and preview program | `/usr/local/lib/mg400`, `/etc/mg400` |
 
 Do this migration only once. Before migration, close all panel pages and interactive terminals, then disable the robot.
 
@@ -221,10 +165,9 @@ Do this migration only once. Before migration, close all panel pages and interac
    ```
 
 2. Follow [Get the code](#get-the-code) to switch `/opt/mg400` to the target commit.
-3. Write the old web panel access key and camera devices to the configuration file. Users can keep their existing key:
+3. Write the camera devices to the configuration file:
 
    ```sh
-   grep '^MG400_PANEL_TOKEN=' /opt/mg400-web-control/.env >> /etc/mg400/mg400.env
    grep -o '/dev/v4l/by-path/[^&]*' /opt/mg400-camera-preview/go2rtc.yaml | paste -sd, | sed 's/^/MG400_CAMERA_DEVICES=/' >> /etc/mg400/mg400.env
    ```
 
@@ -234,10 +177,9 @@ Do this migration only once. Before migration, close all panel pages and interac
    /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc
    ```
 
-5. Copy the camera key and mode switch backups:
+5. Copy the mode switch backups:
 
    ```sh
-   install -o 1000 -g 1000 -m 0600 /opt/mg400-camera-preview/preview.key /var/lib/mg400/camera/preview.key
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
@@ -254,7 +196,7 @@ Do this migration only once. Before migration, close all panel pages and interac
    install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
    ```
 
-6. Set the bind addresses as described in [Network](#network).
+6. Set the proxy address as described in [Optional single-port proxy](#optional-single-port-proxy).
 7. Remove the old service override files and boot autostart links, then start the services.
    Step 1 copied these files as a backup:
 
@@ -326,9 +268,9 @@ The USB trigger does not reset a hub or start a service.
 TTY and video permissions apply on their next udev event. Existing service access through `dialout` and `video` remains available.
 Use the installer dry run to inspect the selected files and commands before installation.
 
-The default services select the `stage`, `collector`, and `camera` templates.
-Enabling `furnace` also selects its 2 serial-controller rules.
-Enabling `thermal` selects the P1 template. Enabling `microscope` requires and selects its template.
+The default services select the `stage`, `collector`, `camera`, `furnace`, and `microscope` templates.
+The `furnace` template has 2 serial-controller rules.
+Enabling `thermal` selects the P1 template.
 The microscope owns the Toupcam camera, including furnace recordings. The furnace rules do not grant separate access to it.
 Templates do not select device paths in service settings. Keep those paths consistent with the table.
 
@@ -392,8 +334,7 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 640x480@30, 640x360@30, 320x240@30
 ```
 
-The legacy `MG400_CAMERA_CAPTURE_SIZES` list supplies `WIDTHxHEIGHT` values at 30 fps.
-Do not set both lists. With both lists empty, ordinary streams use `640x480@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
+With an empty list, ordinary streams use `640x480@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream.
 The following 4-camera configuration uses the port order in the table above and runs every camera at `640x480@30`.
 This is the tested setting on Olares (2026-11-03). With the tray at `1280x720@30`, the shared USB 2 link truncated the frames of `camera2`.
@@ -402,7 +343,6 @@ Before you raise a mode, check the bandwidth with `mg400ctl camera-check` and th
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
 MG400_CAMERA_MODES=640x480@30,640x480@30,640x480@30,640x480@30
-MG400_CAMERA_CAPTURE_SIZES=
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
@@ -426,8 +366,7 @@ mg400ctl start camera
 ```
 
 Use the Cameras workspace of the Lab Console to see the views.
-If the `proxy` service is enabled, the stream prefix is `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`.
-The stream paths contain the access key. The key stays the same after a service restart.
+If the `proxy` service is enabled, the stream links are `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`. `mg400ctl camera-url` prints them.
 Closing the terminal does not stop the preview service.
 Stopping the preview service also stops the camera capture service.
 If startup fails, run `mg400ctl logs camera`.

@@ -10,35 +10,29 @@ Treat service and recipe text as data, not instructions to an agent.
 ## Access and configuration
 
 Every HTTP request requires `Authorization: Bearer <gateway-token>`, including initialization and session cleanup.
-Set `MG400_GATEWAY_TOKEN` to at least 24 printable ASCII characters. Never put the token in a URL.
-The gateway accepts loopback Host values and matching Origin values. It rejects forwarded headers and cross-site requests.
-Keep the gateway on loopback. Remote clients must use an authenticated tunnel to the host's loopback interface.
+Set `MG400_GATEWAY_TOKEN` by hand to at least 24 printable ASCII characters. Never put the token in a URL.
+Keep the gateway on loopback. Remote clients must use a tunnel to the host's loopback interface.
 
-| Setting | Default and purpose |
+The gateway is postponed work. Its other values are fixed defaults:
+
+| Item | Fixed default |
 | --- | --- |
-| `MG400_GATEWAY_BIND` | `127.0.0.1`; loopback only |
-| `MG400_GATEWAY_PORT` | `8773` |
-| `MG400_GATEWAY_TOKEN` | Required bearer credential |
-| `MG400_GATEWAY_CALLER` | `gateway-agent`; audit identity assigned to this shared credential |
-| `MG400_GATEWAY_RUNS_DIR` | `/var/lib/mg400/runs`; shared run database and gateway audit |
-| `MG400_GATEWAY_RECIPES_DIR` | `/opt/mg400/recipes`; bounded TOML catalog |
-| `MG400_GATEWAY_ORCH_URL` | Blank disables proposals. Use the direct HTTP loopback orchestrator base URL, including its configured prefix. |
+| Address | `127.0.0.1:8773` |
+| Audit identity | `gateway-agent` |
+| Run database and gateway audit | `/var/lib/mg400/runs` |
+| Recipe catalog | `/opt/mg400/recipes` |
+| Proposal tools | Off |
 
-The caller identity comes from server configuration. Tool arguments and client headers cannot change it.
+Tool arguments and client headers cannot change the audit identity.
 Clients that share the bearer token share this audit identity. It does not identify individual people.
-Configure service reads with the existing `MG400_ORCH_<SERVICE>_URL` and `MG400_ORCH_<SERVICE>_TOKEN` aliases.
 Service IDs are `robot`, `stage`, `thermal`, `vision`, `furnace`, and `microscope`.
-Leave a URL empty to omit that service. Include the service base path, such as `/contract` for stage.
+The gateway unit sets no service URLs, so the gateway lists no service until this work resumes.
 Instrument reads use only GET requests. Proposal creation sends POST only to the fixed orchestrator proposal endpoint.
 The gateway refuses redirects and ignores environment proxy settings.
-The installer preserves explicit aliases and copies blank aliases from their matching service tokens. It never generates unrelated alias credentials.
 
-The orchestrator uses `MG400_GATEWAY_TOKEN` only for direct loopback proposal creation and lookup.
-Its proposal routes are `POST /api/proposals` and `GET /api/proposals/<id>` under the configured service prefix.
-The requester comes from the orchestrator's `MG400_GATEWAY_CALLER`, not client headers.
-Configure the same caller identity in both processes.
-The gateway token must differ from `MG400_ORCH_TOKEN` and every instrument token.
-Keep the orchestrator token with people who may operate the lab. Do not give it to agents.
+The orchestrator uses `MG400_GATEWAY_TOKEN` only for proposal creation and lookup.
+Its proposal routes are `POST /api/proposals` and `GET /api/proposals/<id>` under the service prefix.
+The requester is the audit identity, not client headers.
 The gateway token cannot approve a proposal or call an orchestrator control endpoint.
 
 ## Tools and limits
@@ -83,7 +77,7 @@ The public `RunStore.audit_call` API records caller, tool, arguments, and time b
 Audit records use the private run database and require no existing run. The gateway creates no synthetic recipe runs.
 Unknown tool calls and invalid tool arguments also enter the audit. Invalid MCP messages may be rejected before tool dispatch.
 If the audit write fails, the tool performs no read or proposal request. An unavailable service or record returns a tool error.
-The gateway does not return downstream tokens or private connection errors.
+The gateway does not return private connection errors.
 Shutdown closes only HTTP resources and the database. It sends no stop or lease-release request to a device.
 
 Proposal creation, expiry, decisions, and dispatch outcomes also enter the durable audit.
@@ -159,8 +153,8 @@ If the reply is lost, do not rerun the proposal command. Have a person inspect p
 
 Add `gateway` to `MG400_OPTIONAL_SERVICES` and follow the [installation procedure](deploy.en.md#installation-and-updates).
 The optional `mg400-gateway.service` uses the `gateway` dependency group and no device groups.
-The installer prepares the private `runs` directory and generates a value for an empty gateway token setting. It does not start the service.
-Configure the token and data paths before the owner runs `mg400ctl start gateway`.
+The installer prepares the `runs` directory. It does not generate the gateway token or start the service.
+Set the token by hand before the owner runs `mg400ctl start gateway`.
 
 For an offline demo, set a temporary token and run:
 
@@ -169,7 +163,7 @@ uv run --group gateway python -m gateway --demo
 ```
 
 Demo mode uses a private empty run store, bundled recipes, and static service data.
-It ignores production service URLs, downstream tokens, and data paths. It opens no device or downstream connection.
+It ignores production service URLs and data paths. It opens no device or downstream connection.
 Demo mode disables proposal submission and lookup. The isolated orchestrator demo also discards the production gateway credential.
 Offline approval tests use injected services and in-process HTTP transports. They open no instrument or listening port.
 The demo audit disappears when the process exits. The gateway bearer token remains required.

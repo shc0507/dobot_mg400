@@ -70,7 +70,7 @@ Arduino 接在 Olares 宿主机的 USB 上，必须运行 `firmware/three-motor-
 保持 LarePass VPN 连接。
 打开 [Lab Console](http://100.64.0.1:8080/)，进入 `Motion` 工作区。
 位移台服务只监听回环地址。控制台进程在宿主机上通过 `127.0.0.1` 调用它。
-控制台使用 `MG400_ORCH_STAGE_URL` 和 `MG400_ORCH_STAGE_TOKEN` 连接服务，见 [配方服务](orchestrator.md)。
+控制台连接 `http://127.0.0.1:8767/contract/`，见 [配方服务](orchestrator.md)。
 卡片显示 `Not running` 或 `Not reachable` 时，参见 [服务配置](#服务配置)。
 
 ### 在本地启动
@@ -91,7 +91,7 @@ uv run stage-panel
 没有 Arduino 时，用控制台的演示模式查看位移台卡片：
 
 ```sh
-MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
+uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 --base-path /lab/
 ```
 
 在该电脑打开 [本地控制台](http://127.0.0.1:8790/lab/)。
@@ -170,8 +170,9 @@ Arduino 返回三个电机的状态后，控制才解锁。
 | `Zero confirmed` | 服务已确认零点和软限位。 |
 | `Homed` | 服务已确认回零和软限位。 |
 
-步进移动和命名位置要求 `Zero confirmed` 或 `Homed`。
-缺少已确认的参考时，服务拒绝移动，返回 `position unknown, home first`。
+步进移动和长按运动不需要参考。只有已确认参考的轴才应用软限位。
+命名位置和毫米目标需要绝对位置，因此要求 `Zero confirmed` 或 `Homed`。
+缺少已确认的参考时，服务拒绝这些移动，返回 `position unknown, home first`。
 复位、重新连接和切换细分后，必须重新确认参考和软限位。
 
 配置了开关的轴显示 `Home…`：
@@ -225,7 +226,7 @@ reference = {stream = "camera3", marker = 12, pixel = [99.5, 99.5], tolerance_px
 3. 示教使原零点确认失效。之后点击 `Set zero…`。
 
 示教要求持有控制权，条件与设零相同。
-示教要求配置文件及归属正确的目录，目录权限为 `0700` 或 `0750`。
+示教要求配置文件。
 服务原子替换文件，保留所有者和权限，拒绝并发校准变更或链接。
 保存的文件采用支持的校准结构，不保留格式和注释。
 
@@ -273,9 +274,7 @@ USB 断开时，服务不能保证停止，已开始的步进移动可能走完�
 
 ## 接口
 
-所有路由位于 `<base>/contract/api/` 下。`<base>` 是 `MG400_STAGE_BASE_PATH`，默认 `/`。
-部署在 Olares 时，`<base>` 为 `/stage/`。
-设置 `MG400_STAGE_TOKEN` 时，所有路由都要求 bearer 令牌。
+所有路由位于 `<base>/contract/api/` 下。`<base>` 为 `/`。
 POST 必须带 JSON 正文和 `X-MG400-Client`。
 
 | 路由 | 请求 | 用途 |
@@ -297,7 +296,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 契约命令为 `move`、`hold`、`keepalive`、`release_hold`、`stop_all`、`set_microstep`、`home`、`zero`、`awake`、`goto` 和 `pose`。
 `zero` 要求 `motor` 和 `confirm: true`。
 `pose` 按配置顺序逐轴移动，每次只移动 1 轴。
-`awake` 延长驱动器通电 0–60 秒，不发送 STEP 脉冲，也不建立参考。正数 `awake` 必须有已确认的参考，0 取消延长。
+`awake` 延长驱动器通电 0–60 秒，不发送 STEP 脉冲，也不建立参考。0 取消延长。
 演示模式的 `connect` 只接受 `DEMO`。
 已连接时，`connect` 返回 `Disconnect the current board before choosing another port.`。
 图像仅通过参考路由返回。状态回复仅含参考元数据，不含 JPEG。
@@ -318,25 +317,16 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 
 ### 配置项
 
-服务从环境变量读取配置，命令行参数覆盖对应的环境变量：
+服务监听 `127.0.0.1:8767`，基础路径为 `/`，契约位于其下的 `contract/`。
+参数 `--bind`、`--port` 和 `--base-path` 覆盖这些固定默认值。
+服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 | 环境变量 | 参数 | 默认值 | 用途 |
 | --- | --- | --- | --- |
-| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | 监听地址 |
-| `MG400_STAGE_PORT` | `--port` | `8767` | 监听端口，1–65535 |
-| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | URL 前缀，契约位于其下的 `contract/` |
-| `MG400_STAGE_TOKEN` | 无 | 无 | 访问密钥 |
 | `MG400_STAGE_SERIAL` | `--serial` | 无 | Arduino 的串口路径 |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | 位移台实测校准和命名目标 |
 
 值为空的环境变量等同于未设置。
-
-监听非回环地址时，必须设置 `MG400_STAGE_TOKEN`。
-访问密钥至少 24 个字符，只能包含可打印 ASCII 字符，不得以空格开头或结尾。
-不满足时，服务拒绝启动。
-设置访问密钥后，服务接受任何主机名，监听回环地址时也一样。
-未设置访问密钥时，服务只接受 `127.0.0.1`、`localhost` 或 `[::1]` 地址。
-此时服务也拒绝带 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 或 `X-Real-IP` 的请求。
 
 设置 `MG400_STAGE_SERIAL` 时，串口列表只显示该设备，`connect` 也只接受该设备。
 建议使用 `/dev/serial/by-id/` 下的路径，重新插拔后路径不变。
@@ -349,8 +339,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 
 使用 H-07 的测量值和行程限位。不要根据脉冲计数推测校准，也不要把演示几何值用于硬件。
 文件包含 `motors` 表和可选的 `poses` 表，没有生产默认值。
-使用 UID 1000 或本地服务用户拥有的普通文件，权限为 `0600` 或 `0640`。
-读取器拒绝文件路径中的符号链接。
+使用普通文件。读取器拒绝文件路径中的符号链接。
 安装器创建 `/var/lib/mg400/stage`，所有者为 `1000:1000`，权限为 `0700`，供服务写入示教参考。
 父目录 `/var/lib/mg400` 仍由 root 拥有，权限为 `0750`。
 若 `/var/lib/mg400/stage.toml` 存在，安装器只打印移动提示，不移动或覆盖文件。
@@ -384,7 +373,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 ### 配置文件
 
 服务从 `/etc/mg400/mg400.env` 读取配置。
-安装器生成 `MG400_STAGE_TOKEN`，并把空的 `MG400_ORCH_STAGE_TOKEN` 设为相同的值。其余各项按本主机修改。
+按本主机修改各项。
 
 接上 Arduino 后，查找它的串口路径：
 
@@ -398,9 +387,7 @@ ls -lL /dev/serial/by-id/
 确认 Arduino 一项的属组为 `dialout`。
 将 `MG400_STAGE_SERIAL` 设为 `/dev/serial/by-id/` 加 Arduino 的名称。
 
-查看访问密钥：`sudo mg400ctl token stage`。
 修改配置文件后，重启服务。
-修改访问密钥后，把 `MG400_ORCH_STAGE_TOKEN` 改为相同的值，再重启控制台服务。
 
 ### 启动与停止
 
@@ -433,10 +420,8 @@ mg400ctl stop stage
 | `<串口> is in use by another program.` | 另一个程序占用该串口。关闭该程序，例如 Arduino IDE 的串口监视器或另一个 `stage-panel` 进程。 |
 | `Arduino did not reply in time. Check the port and uploaded sketch.` | 确认所选串口是 Arduino，并已上传 `firmware/three-motor-demo`。出错后服务断开连接，修复后再点击 `Connect`。 |
 | `Another client controls it` | 另一个客户端持有租约。等它释放控制权，再点击 `Take control`。 |
-| `position unknown, home first` | 该轴没有已确认的参考。按 [设零与相机参考](#设零与相机参考) 设零，或回零。 |
+| `position unknown, home first` | 命名位置或毫米目标需要已确认的参考。按 [设零与相机参考](#设零与相机参考) 设零，或回零。 |
 | `Stage target is outside the configured soft limits.` | 减少步数，或改变方向。 |
-| 卡片显示 `Not running` 或 `Not reachable` | 在宿主机运行 `mg400ctl status`，确认 `stage` 已启动。再检查 `MG400_ORCH_STAGE_URL` 和 `MG400_ORCH_STAGE_TOKEN`。 |
+| 卡片显示 `Not running` 或 `Not reachable` | 在宿主机运行 `mg400ctl status`，确认 `stage` 已启动。 |
 | 服务日志显示 `Failed to load environment files` | 按 [主机部署](deploy.md#安装与更新) 运行安装器，创建 `/etc/mg400/mg400.env`，再启动服务。 |
-| 服务日志显示 `Set MG400_STAGE_TOKEN to at least 24 characters, or leave it unset and bind to localhost` | 已有的 `MG400_STAGE_TOKEN` 少于 24 个字符时，把该行改为 `MG400_STAGE_TOKEN=`，再运行安装器生成访问密钥，然后启动服务。 |
 | 服务日志显示 `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | 按 [配置文件](#配置文件) 查找 Arduino 的路径，改写 `MG400_STAGE_SERIAL`，再启动服务。 |
-| 服务日志显示 `MG400_STAGE_PORT must be a whole number between 1 and 65535` | 把 `MG400_STAGE_PORT` 改为 1–65535 的整数，再启动服务。 |

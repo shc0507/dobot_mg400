@@ -63,7 +63,7 @@ function statusBody(overrides = {}) {
     },
     microscope: {
       connected: true, busy: false, locked: false, objective_id: 2, focus_position_pulses: 1200, focus_zero_known: true,
-      focus_limits_pulses: [0, 10000], recording: { status: "idle" }, recording_sequence: { armed: false },
+      focus_limits_pulses: [0, 10000], recording: { status: "idle" }, recording_sequence: { armed: false }, stabilization: false,
     },
     ...overrides,
   };
@@ -298,4 +298,11 @@ test("the language switch rebuilds the workspace in Chinese", async () => {
   setLang("zh");
   assert.match(root.textContent, /炉子 · AI-808/);
   assert.equal(role(root, "stop-furnace").textContent, "停止加热和气体");
+});
+
+test("the stabilization toggle relays set_stabilization once", async () => {
+  const { root, calls } = await load();
+  role(root, "stabilization").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(calls.filter(call => call[0] === "relay" && call[2] === "set_stabilization"), [["relay", "microscope", "set_stabilization", { enabled: true }]]);
 });

@@ -57,6 +57,7 @@
       "zero.done": "Focus zero sent.",
       "rec.snapshot": "Save snapshot", "rec.start": "Start recording", "rec.stop": "Stop recording",
       "rec.arm": "Record next furnace sequence", "rec.disarm": "Cancel sequence recording",
+      "rec.stabOn": "Turn stabilization on", "rec.stabOff": "Turn stabilization off",
       "rec.state": "Recording: {status} · {frames} frames", "rec.armed": "Armed for the next furnace sequence.",
       "sent": "{action} sent.", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
       "stop.result": "{device} stop: {outcome}", "gas.stopResult": "Gas stop sent.",
@@ -111,6 +112,7 @@
       "zero.done": "已发送对焦零点。",
       "rec.snapshot": "保存快照", "rec.start": "开始录制", "rec.stop": "停止录制",
       "rec.arm": "录制下一次炉子程序", "rec.disarm": "取消程序录制",
+      "rec.stabOn": "开启防抖", "rec.stabOff": "关闭防抖",
       "rec.state": "录制：{status} · {frames} 帧", "rec.armed": "已准备录制下一次炉子程序。",
       "sent": "已发送 {action}。", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
       "stop.result": "{device}停止：{outcome}", "gas.stopResult": "已发送气体停止。",
@@ -435,6 +437,7 @@
     n.snapshot = button(t("rec.snapshot"), () => send("microscope", "snapshot", {}), { "data-role": "snapshot" });
     n.record = button(t("rec.start"), toggleRecording, { "data-role": "record" });
     n.arm = button(t("rec.arm"), toggleArm, { "data-role": "arm" });
+    n.stab = button(t("rec.stabOn"), () => send("microscope", "set_stabilization", { enabled: view.status?.microscope?.stabilization !== true }, "stab"), { "data-role": "stabilization" });
     n.recState = el("p", { class: "lc-muted", "data-role": "rec-state" });
 
     const scope = el("section", { class: "lc-card pr-card", "aria-labelledby": "pr-scope-title" },
@@ -458,7 +461,7 @@
         el("p", { class: "pr-warn", text: t("zero.reminder") }),
         n.zero = button(t("zero.set"), () => ask("zero"), { class: "lc-danger pr-danger", "data-role": "zero" }),
         zeroConfirm),
-      el("div", { class: "pr-row" }, n.snapshot, n.record, n.arm),
+      el("div", { class: "pr-row" }, n.snapshot, n.record, n.arm, n.stab),
       n.recState);
 
     view.root.replaceChildren(el("div", { class: "pr-workspace" }, n.banner, n.stale = el("p", { class: "pr-warn", hidden: true }),
@@ -623,6 +626,8 @@
     n.record.disabled = !mMine || !scope?.connected || busy("record") || (!active && (armed || !idle));
     setText(n.arm, t(armed ? "rec.disarm" : "rec.arm"));
     n.arm.disabled = !mMine || !scope?.connected || busy("arm") || (!armed && (active || !idle));
+    setText(n.stab, t(scope?.stabilization === true ? "rec.stabOff" : "rec.stabOn"));
+    n.stab.disabled = !idle || typeof scope?.stabilization !== "boolean" || busy("stab");
     setText(n.recState, armed ? t("rec.armed") : recording.status && recording.status !== "idle"
       ? t("rec.state", { status: recording.status, frames: String(recording.frame_count ?? 0) }) : "");
   }

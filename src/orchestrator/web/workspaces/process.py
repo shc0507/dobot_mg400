@@ -74,6 +74,7 @@ MICROSCOPE_KEYS = (
     "last_command",
     "recording",
     "recording_sequence",
+    "stabilization",
 )
 RECORDING_KEYS = ("id", "status", "client", "run_name", "mode", "frame_count", "error")
 

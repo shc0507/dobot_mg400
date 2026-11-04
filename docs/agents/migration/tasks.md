@@ -1338,8 +1338,9 @@ Goal: the microscope service runs on Olares with its devices.
 Steps (P-DEPLOY plus):
 
 1. Unit `mg400-microscope.service` with `SupplementaryGroups=dialout video`, `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400` (TPC-02 installs the library there; allow it in the unit tests for this unit only), port 8770.
-2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_CAMERA`, `_CAMERA_SERIAL`, `_CALIBRATION_DIR`, `_SWITCH_FOCUS`, `_FOCUS_LIMITS`, `_BIND`, `_PORT`, `_TOKEN`. The focus values come from H-06.
+2. Settings `MG400_MICROSCOPE_SERIAL`, `_SIDE_STREAM`, `_CALIBRATION_DIR`, `_SWITCH_FOCUS`, `_FOCUS_LIMITS`, `_HOME_SWITCH`, `_BIND`, `_PORT`, `_TOKEN`. The focus values and home-switch setting come from H-06. Preserve the existing Toupcam selection settings: optional `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
 3. A registry entry `microscope` (optional).
+4. Add `MG400_MICROSCOPE_TOKEN` to `UnsetEnvironment` in the web-panel, stage-panel and camera-preview units. Limit edits to those existing units to this exclusion. Preserve the camera preview's `MG400_VISION_TOKEN` and the microscope's `MG400_FURNACE_TOKEN` for their existing clients.
 
 Done when: P-CHECKS pass.
 

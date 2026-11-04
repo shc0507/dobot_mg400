@@ -169,6 +169,26 @@ def test_contract_hold_retains_the_original_shorter_watchdog(contract):
     assert transport.commands == before
 
 
+def test_an_accepted_keepalive_adds_no_activity_event(contract):
+    controller, _, clock, web, _ = contract
+    acquire(web)
+    start = dict(
+        action="hold", motor="bottom", direction="cw", speed=10, hold_id=HOLD_ID, sampled_at=clock()
+    )
+    renew = dict(action="keepalive", motor="bottom", hold_id=HOLD_ID)
+    assert post(web, "command", start).status_code == 202
+    cursor = web.get("/contract/api/events?since=0").json["next"]
+    assert post(web, "command", renew).status_code == 202
+    assert web.get(f"/contract/api/events?since={cursor}").json["events"] == []
+    assert controller.snapshot()["last_command"]["action"] == "keepalive"
+    # A refused keepalive is still logged.
+    clock.advance(1.1)
+    controller.poll()
+    assert post(web, "command", renew).status_code == 409
+    events = web.get(f"/contract/api/events?since={cursor}").json["events"]
+    assert any("keepalive rejected" in event["message"] for event in events)
+
+
 def test_activity_entries_are_mirrored_once_without_poll_replay(contract):
     controller, _, _, web, _ = contract
     acquire(web)

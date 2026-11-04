@@ -63,6 +63,10 @@ Stage:
 - If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**.
 - A change of the stepping mode clears the zero and soft limits of all 3 axes and needs a confirmation.
 - Each axis shows its position in pulses and in mm, and its reference state. **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
+- **Hold −** and **Hold +** move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
+- The console sends the stage commands of a hold. It sends 1 `hold`, then 1 `keepalive` every 0.2 s while the page refreshes the hold. The page refreshes the hold through `ws/motion/stage/hold` every 150 ms. When no refresh arrives for 0.5 s, the console releases the hold. If the console stops, the firmware stops the axis 1 s after the last `keepalive`.
+- **Keyboard**: when this page holds stage control, turn on the switch. While the page has focus, hold I/K (Bottom − and +), J/L (Top − and +) or U/O (Insert − and +). Each key moves its axis like the Hold button. The page releases the hold and turns the keyboard off on a window focus loss or a hidden tab. It does the same when you leave the Motion tab, turn off the switch or lose control.
+- After a refused or interrupted hold, release the button or the key, then press again. **Stop stage** and **STOP ALL MOTION** stop a held axis at all times.
 - **Home…** (boards with switches) and **Set zero…** need a confirmation. **Set zero…** sets the zero and the soft limits.
 - For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels.
 - **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.

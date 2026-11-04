@@ -105,13 +105,14 @@ class StageContract:
             "last_command": dict(self._last_command) if self._last_command else None,
         }
 
-    def _finish_command(self, entry, result, message):
+    def _finish_command(self, entry, result, message, *, log=True):
         self._last_command = {key: entry[key] for key in ("id", "action", "client")} | {
             "result": result,
             "message": message,
             "finished_at": time.time(),
         }
-        self._event(f"Automation {entry['action']} {result}: {message}")
+        if log:
+            self._event(f"Automation {entry['action']} {result}: {message}")
 
     def _complete_motion_commands(self, result="ok"):
         for command_id, entry in list(self._pending_commands.items()):
@@ -233,7 +234,10 @@ class StageContract:
             elif action in ("home", "goto", "pose") and self._automation:
                 self._automation["entry"] = entry
             else:
-                self._finish_command(entry, "ok", "Command acknowledged.")
+                # A held axis is renewed about 5 times a second: log only refusals.
+                self._finish_command(
+                    entry, "ok", "Command acknowledged.", log=action != "keepalive"
+                )
         return entry["id"]
 
     def stop(self, client, wait_s):

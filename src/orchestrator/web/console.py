@@ -5,6 +5,10 @@ The browser names a page identity in
 device. A browser heartbeat drives every renewal. Without a heartbeat for
 ``BEAT_TIMEOUT_S`` the console releases the lease. Commands and stops are sent
 once and never retried.
+
+A stage hold runs on the console: a worker sends ``hold`` once, a ``keepalive``
+every ``HOLD_KEEPALIVE_S`` while the page refreshes the hold within
+``HOLD_DEADMAN_S``, then ``release_hold`` once.
 """
 
 import copy
@@ -24,6 +28,11 @@ EVENT_LIMIT = 500
 EVENT_REFRESH_S = 1.0
 # Lease operations have their own routes. The relay never forwards them.
 LEASE_ACTIONS = frozenset({"start_sync", "stop_sync", "heartbeat", "renew", "release"})
+# Stage hold: the stage firmware stops a hold 1 s after the last keepalive.
+HOLD_DEADMAN_S = 0.5
+HOLD_KEEPALIVE_S = 0.2
+HOLD_JOIN_S = 2.0
+HOLD_ENDED = "Hold has ended. Release and press again."
 
 
 def _status(error):
@@ -74,6 +83,21 @@ class Session:
         self.state = "held"
         self.renewing = False
         self.message = None
+        # Stage only: the latest hold and the identities of ended holds.
+        self.hold = None
+        self.closed = deque(maxlen=32)
+
+
+class Hold:
+    """One stage hold of one page. The page refreshes it; a console worker sends it."""
+
+    def __init__(self, hold_id, motor, direction, speed, now):
+        self.id, self.motor, self.direction, self.speed = hold_id, motor, direction, speed
+        self.seen = now
+        self.released = self.ended = False
+        self.outcome = self.message = None
+        self.wake = threading.Event()
+        self.worker: threading.Thread | None = None
 
 
 class Console:
@@ -159,6 +183,15 @@ class Console:
 
     def _end(self, item, *, release):
         """Release once, close the transport and forget the session. Never reacquire."""
+        # Let the hold worker send release_hold while the lease is still held.
+        with self.lock:
+            hold = item.hold
+            worker = hold.worker if hold is not None and not hold.ended else None
+            if worker is not None:
+                hold.released = True
+                hold.wake.set()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(HOLD_JOIN_S)
         error = None
         if release:
             try:
@@ -407,6 +440,95 @@ class Console:
             error = str(result.get("error", "Refused."))
             return {"outcome": "refused", "error": self.service.dashboard.text(error)}
         return {"outcome": "accepted"}
+
+    def stage_hold(self, page, hold_id, motor, direction, speed):
+        """Start or refresh this page's stage hold. One axis moves at a time."""
+        while True:
+            with self.lock:
+                item = self.sessions.get("stage")
+                if item is None or item.page != page or item.state != "held":
+                    raise ServiceError(409, "Take control of this device first.")
+                current = item.hold
+                if current is not None and current.id == hold_id:
+                    if current.ended or current.released:
+                        error = self.service.dashboard.text(current.message or HOLD_ENDED)
+                        return {"outcome": current.outcome or "refused", "error": error}
+                    current.seen = self.clock()
+                    return {"outcome": "accepted"}
+                if hold_id in item.closed:
+                    return {"outcome": "refused", "error": HOLD_ENDED}
+                if current is None or current.ended:
+                    hold = Hold(hold_id, motor, direction, speed, self.clock())
+                    # The worker waits for this lock, so it always sees its own thread.
+                    hold.worker = self._spawn(lambda: self._keep_hold(item, hold), "stage-hold")
+                    item.hold = hold
+                    return {"outcome": "accepted"}
+                if not current.released:
+                    return {"outcome": "refused", "error": "Release the held axis first."}
+                worker = current.worker
+            # The previous hold was released and its worker sends release_hold now.
+            worker.join(HOLD_JOIN_S)
+            if worker.is_alive():
+                return {"outcome": "refused", "error": "The previous hold is still ending."}
+
+    def stage_release(self, page, hold_id):
+        """End this page's stage hold. A release that arrives first also cancels its start."""
+        with self.lock:
+            item = self.sessions.get("stage")
+            if item is not None and item.page == page:
+                item.closed.append(hold_id)
+                if item.hold is not None and item.hold.id == hold_id:
+                    item.hold.released = True
+                    item.hold.wake.set()
+        return {"outcome": "accepted"}
+
+    def _keep_hold(self, item, hold):
+        """Send hold once, a keepalive while the page refreshes it, then release_hold once."""
+        adapter, sent, outcome, reason = item.adapter, False, None, None
+        try:
+            while True:
+                with self.lock:
+                    if hold.released or item.state != "held" or self.closing:
+                        break
+                    if self.clock() - hold.seen > HOLD_DEADMAN_S:
+                        outcome, reason = "refused", "No page update for 0.5 s. " + HOLD_ENDED
+                        break
+                if sent:
+                    adapter.command("keepalive", motor=hold.motor, hold_id=hold.id)
+                else:
+                    state = adapter.state()
+                    with self.lock:
+                        if hold.released:
+                            break
+                    sent = True
+                    adapter.command(
+                        "hold",
+                        motor=hold.motor,
+                        direction=hold.direction,
+                        speed=hold.speed,
+                        hold_id=hold.id,
+                        sampled_at=state.get("sampled_at") if isinstance(state, dict) else None,
+                    )
+                if hold.wake.wait(HOLD_KEEPALIVE_S):
+                    break
+        except Exception as exc:
+            outcome = classify(exc)
+            reason = str(exc) if outcome == "refused" else "The stage hold outcome is unknown."
+        finally:
+            if sent:
+                try:
+                    adapter.command("release_hold", motor=hold.motor, hold_id=hold.id)
+                except Exception:
+                    pass
+            with self.lock:
+                hold.ended, hold.outcome, hold.message = True, outcome, reason
+                item.closed.append(hold.id)
+            if reason is not None:
+                self.service.events.add(
+                    "warning",
+                    "Console stage hold ended: " + (self.service.dashboard.text(reason) or ""),
+                    device="stage",
+                )
 
     def operator(self, device, page, path, data):
         """Send one operator-only service request on this page's lease, once.

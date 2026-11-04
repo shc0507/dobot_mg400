@@ -54,7 +54,7 @@ const STAGE = {
     homing_available: false, zero_available: true, named_positions: ["load"], at_positions: [], available: true, cooldown: 0 }],
 };
 
-async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE } = {}) {
+async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE, replies = {} } = {}) {
   const calls = [];
   const tables = { en: i18n.en };
   const api = {
@@ -63,6 +63,7 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
     owns: device => owns.includes(device), deviceName: id => id[0].toUpperCase() + id.slice(1),
     async request(path, data) {
       calls.push(["request", path, data]);
+      if (replies[path]) return replies[path](data);
       if (path === "state") return { robot, stage };
       if (path === "stage/ports") return { ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] };
       if (path.startsWith("stage/reference/")) return { image: "data:image/jpeg;base64,AAAA", offset_px: [1.5, -2], distance_px: 2.5 };
@@ -190,12 +191,12 @@ test("Check reference shows the marked frame and Teach reference needs a confirm
 });
 
 /** A window and a document with listeners, and interval callbacks the test runs by hand. */
-async function keyboardPage() {
+async function keyboardPage(options = {}) {
   const win = new Map(), docListeners = new Map(), intervals = [];
   const saved = { add: globalThis.addEventListener, document: globalThis.document, set: globalThis.setInterval, clear: globalThis.clearInterval };
   globalThis.addEventListener = (event, callback) => win.set(event, callback);
   globalThis.document = { visibilityState: "visible", hasFocus: () => true, addEventListener: (event, callback) => docListeners.set(event, callback) };
-  const page = await mounted();
+  const page = await mounted(options);
   globalThis.setInterval = callback => intervals.push(callback);
   globalThis.clearInterval = id => { if (id) intervals[id - 1] = null; };
   page.ws.show();
@@ -207,7 +208,8 @@ async function keyboardPage() {
   };
   const key = (type, code, extra = {}) => win.get(type)({ code, target: null, preventDefault() {}, ...extra });
   const keyCalls = () => page.calls.filter(call => (call[0] === "request" && call[1] === "keys") || (call[0] === "relay" && call[2] === "keyboard"));
-  return { ...page, win, docListeners, intervals, restore, key, keyCalls };
+  const holdCalls = () => page.calls.filter(call => call[0] === "request" && (call[1] === "stage/hold" || call[1] === "stage/release"));
+  return { ...page, win, docListeners, intervals, restore, key, keyCalls, holdCalls };
 }
 
 test("keyboard jog arms, refreshes held keys and releases them on blur", async () => {
@@ -258,4 +260,124 @@ test("keyboard jog disarms when the tab is hidden and when the Motion tab is lef
     page.key("keydown", "KeyW");
     assert.equal(page.keyCalls().some(call => call[1] === "keys"), false);
   } finally { page.restore(); }
+});
+
+test("stage hold keys map to 1 axis and 1 direction", () => {
+  assert.deepEqual(logic.holdKey({ code: "KeyI" }), { key: "I", motor: "bottom", direction: "ccw" });
+  assert.deepEqual(logic.holdKey({ code: "KeyK" }), { key: "K", motor: "bottom", direction: "cw" });
+  assert.deepEqual(logic.holdKey({ code: "KeyJ" }), { key: "J", motor: "top", direction: "ccw" });
+  assert.deepEqual(logic.holdKey({ key: "o" }), { key: "O", motor: "insert", direction: "cw" });
+  assert.equal(logic.holdKey({ code: "KeyW" }), null);
+  assert.match(logic.holdId(), /^hold-[0-9a-f]{24}$/);
+  assert.notEqual(logic.holdId(), logic.holdId());
+});
+
+const press = { button: 0, pointerId: 1, preventDefault() {} };
+
+test("a Hold button refreshes the hold while pressed and releases it on pointerup", async () => {
+  const stage = structuredClone(STAGE);
+  const page = await keyboardPage({ stage });
+  try {
+    const before = page.intervals.length;
+    const button = page.find("Hold to move Insert plus");
+    button.listeners.get("pointerdown")(press);
+    await page.settle();
+    page.intervals[before]();
+    // The page's own hold makes the axis busy. The held button stays enabled for its pointerup.
+    Object.assign(stage, { busy: true });
+    Object.assign(stage.motors[0], { mode: "continuous", available: false });
+    await page.ws._test.refresh();
+    assert.equal(button.disabled, false);
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    assert.equal(page.find("Move Insert plus by the steps").disabled, true);
+    button.listeners.get("pointerup")({});
+    button.listeners.get("lostpointercapture")({});
+    await page.settle();
+    const calls = page.holdCalls();
+    const id = calls[0][2].id;
+    assert.deepEqual(calls, [
+      ["request", "stage/hold", { id, motor: "insert", direction: "cw", speed: 50 }],
+      ["request", "stage/hold", { id, motor: "insert", direction: "cw", speed: 50 }],
+      ["request", "stage/release", { id }],
+    ]);
+    assert.equal(page.intervals[before], null);
+    assert.equal(button.getAttribute("aria-pressed"), "false");
+    // A pointerup anywhere in the window also ends a button hold.
+    page.find("Hold to move Insert minus").listeners.get("pointerdown")(press);
+    page.win.get("pointerup")({});
+    await page.settle();
+    assert.deepEqual(page.holdCalls().slice(3).map(call => call[1]), ["stage/hold", "stage/release"]);
+  } finally { page.restore(); }
+});
+
+test("a refused hold ends at once and needs a new press", async () => {
+  let sent = 0;
+  const refused = { outcome: "refused", error: "Hold has ended. Release and press again." };
+  const page = await keyboardPage({ replies: { "stage/hold": () => (++sent > 1 ? refused : { outcome: "accepted" }) } });
+  try {
+    const before = page.intervals.length;
+    const button = page.find("Hold to move Insert minus");
+    button.listeners.get("pointerdown")(press);
+    await page.settle();
+    page.intervals[before]();
+    await page.settle();
+    assert.equal(page.ws._test.sh.active, null);
+    assert.deepEqual(page.holdCalls().map(call => call[1]), ["stage/hold", "stage/hold", "stage/release"]);
+    assert.match(page.root.textContent, /Stage hold: refused · Hold has ended/);
+    button.listeners.get("pointerup")({});
+    assert.equal(page.holdCalls().length, 3);
+  } finally { page.restore(); }
+});
+
+test("the stage keyboard holds 1 axis and stops on keyup, blur, a hidden tab, loss of control and leaving Motion", async () => {
+  const owns = ["robot", "stage"];
+  const page = await keyboardPage({ owns });
+  try {
+    const sw = page.find("Stage keyboard");
+    page.key("keydown", "KeyO");
+    assert.equal(page.holdCalls().length, 0);
+    sw.click();
+    page.key("keydown", "KeyO");
+    page.key("keydown", "KeyO", { repeat: true });
+    // A second axis key waits for the first to be released.
+    page.key("keydown", "KeyU");
+    page.key("keyup", "KeyU");
+    assert.equal(page.holdCalls().length, 1);
+    page.key("keyup", "KeyO");
+    await page.settle();
+    const ends = [];
+    const holdOn = () => { if (!page.ws._test.sh.on) sw.click(); page.key("keydown", "KeyU"); };
+    holdOn();
+    page.win.get("blur")();
+    ends.push(page.ws._test.sh.on);
+    holdOn();
+    globalThis.document.visibilityState = "hidden";
+    page.docListeners.get("visibilitychange")();
+    globalThis.document.visibilityState = "visible";
+    ends.push(page.ws._test.sh.on);
+    holdOn();
+    owns.splice(owns.indexOf("stage"), 1);
+    page.ws._test.update();
+    ends.push(page.ws._test.sh.on);
+    owns.push("stage");
+    page.ws._test.update();
+    holdOn();
+    page.ws.hide();
+    ends.push(page.ws._test.sh.on);
+    await page.settle();
+    assert.deepEqual(ends, [false, false, false, false]);
+    const calls = page.holdCalls();
+    assert.deepEqual(calls.map(call => [call[1], call[2].motor, call[2].direction]), [
+      ["stage/hold", "insert", "cw"], ["stage/release", undefined, undefined],
+      ...Array(4).fill([["stage/hold", "insert", "ccw"], ["stage/release", undefined, undefined]]).flat(),
+    ]);
+    // The robot keyboard stays off: stage keys never reach the robot.
+    assert.equal(page.keyCalls().length, 0);
+  } finally { page.restore(); }
+});
+
+test("without stage control the Hold buttons and the stage keyboard are unavailable", async () => {
+  const page = await mounted({ owns: [], stage: { ...STAGE, holder: null } });
+  assert.equal(page.find("Hold to move Insert plus").disabled, true);
+  assert.equal(page.find("Stage keyboard").disabled, true);
 });

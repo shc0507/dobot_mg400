@@ -9,7 +9,7 @@ import pytest
 
 from orchestrator.app import DemoResources, OrchestratorService, create_app
 from orchestrator.web import console as console_module
-from orchestrator.web.workspaces import discover
+from orchestrator.web.workspaces import discover, motion
 
 PRIVATE = "private-robot-service-token-0123456789"
 
@@ -380,3 +380,113 @@ def test_keys_route_forwards_held_keys_only_for_the_controlling_page(sim):
     disarm = {"enabled": False, "seq": 6, "reason": "user"}
     assert command(sim, "robot", "keyboard", disarm)[0] == 202
     wait_for(lambda: not motion_state(sim)["robot"]["keyboard_enabled"])
+
+
+# Stage hold ----------------------------------------------------------------
+
+HOLD = "hold-0123456789abcdef"
+
+
+def stage_motors(rig):
+    stage = motion.read(rig.service, "stage", None)
+    return {item["id"]: item for item in stage.get("motors") or ()}
+
+
+def stage_ready(rig):
+    take(rig, "stage")
+    return list(wait_for(lambda: stage_motors(rig)))
+
+
+def mode(rig, motor):
+    return stage_motors(rig)[motor]["mode"]
+
+
+def hold(rig, hold_id=HOLD, motor="bottom", direction="cw", speed=50, page="console-page-a"):
+    body = {"id": hold_id, "motor": motor, "direction": direction, "speed": speed}
+    return ws(rig, "stage/hold", body, page)
+
+
+def release_hold(rig, hold_id=HOLD, page="console-page-a"):
+    return ws(rig, "stage/release", {"id": hold_id}, page)
+
+
+def test_stage_hold_moves_while_the_page_refreshes_it_and_stops_on_release(sim):
+    motor = stage_ready(sim)[0]
+    start = stage_motors(sim)[motor]["position"]
+    assert hold(sim, motor=motor) == (200, {"outcome": "accepted"})
+    wait_for(lambda: mode(sim, motor) == "continuous")
+    # The console renews the hold, so it outlives the 1 s firmware watchdog.
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        assert hold(sim, motor=motor)[0] == 200
+        time.sleep(0.1)
+    assert mode(sim, motor) == "continuous"
+    assert release_hold(sim) == (200, {"outcome": "accepted"})
+    wait_for(lambda: mode(sim, motor) == "idle")
+    assert stage_motors(sim)[motor]["position"] > start
+    # A released hold cannot restart. The page must press again with a new id.
+    status, body = hold(sim, motor=motor)
+    assert status == 409 and "press again" in body["error"]
+
+
+def test_stage_hold_stops_when_the_page_stops_refreshing_it(sim):
+    motor = stage_ready(sim)[0]
+    sent = []
+    adapter = sim.service.console.sessions["stage"].adapter
+    command = adapter.command
+    adapter.command = lambda action, **params: sent.append(action) or command(action, **params)
+    assert hold(sim, motor=motor)[0] == 200
+    wait_for(lambda: mode(sim, motor) == "continuous")
+    wait_for(lambda: "keepalive" in sent)
+    # The console clock: no page update for 0.6 s.
+    sim.clock.value += 0.6
+    wait_for(lambda: "release_hold" in sent)
+    wait_for(lambda: mode(sim, motor) == "idle")
+    assert sent[0] == "hold" and sent[-1] == "release_hold"
+    status, body = hold(sim, motor=motor)
+    assert status == 409 and "No page update for 0.5 s" in body["error"]
+    events = sim.service.events.since(0)["events"]
+    assert any("No page update" in item["message"] for item in events)
+
+
+def test_stage_hold_needs_this_pages_control_and_moves_one_axis(sim):
+    status, body = hold(sim)
+    assert status == 409 and "Take control" in body["error"]
+    first, second = stage_ready(sim)[:2]
+    assert hold(sim, motor=first, page="console-page-b")[0] == 409
+    assert hold(sim, motor=first, page=None)[0] == 400
+    assert hold(sim, hold_id="short", motor=first)[0] == 400
+    assert hold(sim, motor=first, direction="up")[0] == 400
+    assert hold(sim, motor=first, speed="50")[0] == 400
+    assert ws(sim, "stage/hold", {"id": HOLD, "motor": first})[0] == 400
+    # A release that arrives before its start cancels the start.
+    early = "hold-early-0123456789"
+    assert release_hold(sim, early)[0] == 200
+    assert hold(sim, hold_id=early, motor=first)[0] == 409
+    assert hold(sim, motor=first)[0] == 200
+    status, body = hold(sim, hold_id="hold-second-0123456789", motor=second)
+    assert status == 409 and "Release the held axis first" in body["error"]
+    assert release_hold(sim)[0] == 200
+    wait_for(lambda: mode(sim, first) == "idle")
+    assert mode(sim, second) == "idle"
+
+
+def test_stop_and_release_of_control_end_the_stage_hold(sim):
+    first, second = stage_ready(sim)[:2]
+    assert hold(sim, motor=first)[0] == 200
+    wait_for(lambda: mode(sim, first) == "continuous")
+    # Stop needs no control. The next keepalive is refused and ends the hold.
+    assert post(sim, "stop/stage", page="console-page-b").status_code == 200
+    wait_for(lambda: mode(sim, first) == "idle")
+    wait_for(lambda: hold(sim, motor=first)[0] == 409)
+    # Release of control sends release_hold before it releases the lease.
+    sent = []
+    adapter = sim.service.console.sessions["stage"].adapter
+    command, release = adapter.command, adapter.release
+    adapter.command = lambda action, **params: sent.append(action) or command(action, **params)
+    adapter.release = lambda: sent.append("release lease") or release()
+    assert hold(sim, hold_id="hold-other-axis-0123", motor=second)[0] == 200
+    wait_for(lambda: mode(sim, second) == "continuous")
+    assert post(sim, "control/stage/release").get_json()["result"] == "released"
+    assert sent[0] == "hold" and sent[-2:] == ["release_hold", "release lease"]
+    wait_for(lambda: mode(sim, second) == "idle")

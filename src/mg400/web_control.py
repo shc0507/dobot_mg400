@@ -152,6 +152,7 @@ class RobotPanelState:
         self._wake = threading.Event()
         self._reader_stop = threading.Event()
         self._reader = None
+        self._feedback_failed = False
         self._sample = None
         self._received = 0.0
         self._pose = [None] * 4
@@ -695,6 +696,7 @@ class RobotPanelState:
             raise RuntimeError("Feedback reader is stopping. Retry start sync.")
         self._ownership.acquire()
         self._reader_stop = threading.Event()
+        self._feedback_failed = False
         self._sample = None
         self._pose = [None] * 4
         self._syncing = True
@@ -746,6 +748,7 @@ class RobotPanelState:
         except Exception as error:
             with self._lock:
                 if not self._reader_stop.is_set():
+                    self._feedback_failed = True
                     if self._sample is None and not self._busy:
                         self._syncing = False
                         self._message = f"Robot feedback connection failed: {error}"
@@ -814,6 +817,8 @@ class RobotPanelState:
                 if not result["ok"]:
                     raise RuntimeError(result.get("error", "Robot stop was not confirmed"))
             with self._lock:
+                if self._feedback_failed:
+                    raise RuntimeError("Robot feedback is lost; use the physical emergency stop")
                 if disabling:
                     self._disable_verified = True
                 self._message = (
@@ -853,11 +858,7 @@ class RobotPanelState:
                 self._finish_stop_results()
                 self._stop_changed.notify_all()
                 if self._disconnect_requested and not self._safety_workers and not self._fault:
-                    self._syncing = False
-                    self._reader_stop.set()
                     self._owner = None
-                    self._disconnect_requested = False
-                    self._finish_commands("sync", "stopped", self._message)
                 self._recover_disabled()
 
     def _disabled_at_rest(self, control):
@@ -920,6 +921,14 @@ class RobotPanelState:
             self._disable_verified = False
             if self._kb_session is not None:
                 self._kb_close(self._kb_session)
+            if self._disconnect_requested:
+                # An enabled stop releases the browser lease but retains feedback
+                # until an explicit disable and all previous work are confirmed.
+                self._syncing = False
+                self._reader_stop.set()
+                self._owner = None
+                self._disconnect_requested = False
+                self._finish_commands("sync", "stopped", self._message)
 
     def _start_alarm_clear(self):
         if not self._fresh():
@@ -1154,6 +1163,17 @@ class RobotPanelState:
     def _watch_once(self):
         self._release_ownership_if_idle()
         self._kb_watch()
+        if (
+            self._disconnect_requested
+            and self._syncing
+            and not self._fault
+            and not self._feedback_failed
+            and not self._fresh()
+        ):
+            # A cached stop verdict cannot confirm safety after feedback is lost.
+            # This check also runs after stop_sync releases the browser lease.
+            self._feedback_failed = True
+            self._request_stop(reason="Robot feedback is stale; use the physical emergency stop")
         if self._owner is None:
             return
         now = time.monotonic()

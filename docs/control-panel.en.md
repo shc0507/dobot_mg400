@@ -236,6 +236,16 @@ When you finish normally, click `Disable robot`, then `Disconnect`.
 `Stop arm` requests a controlled stop. It is not a physical emergency stop.
 If a stop or command result cannot be confirmed, use the physical emergency stop on site.
 
+If the robot is enabled, `Disconnect` (`stop_sync`) stops it and releases browser control, but keeps feedback connected and control locked.
+The service does not disable the robot automatically.
+Click `Disable robot` to confirm disabled mode 4 and rest before feedback disconnects and control unlocks.
+Feedback stays connected until previous operations finish.
+If feedback is lost or stale, the stop becomes unconfirmed and the lock stays. Use the physical emergency stop on site.
+
+When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control.
+After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.
+If the robot is already disabled, `stop_sync` confirms disable and rest, then disconnects.
+
 Only one page holds control at a time.
 The page sends a heartbeat through the WebSocket connection every 0.5 seconds.
 If the page closes or sends no heartbeat within 3 seconds, the service requests a robot stop and locks control.

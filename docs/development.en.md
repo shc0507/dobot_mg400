@@ -190,7 +190,7 @@ The command body is `{"action": "<命令>", ...}`, where the placeholder means t
 | Command | Additional fields | Behavior |
 | --- | --- | --- |
 | `start_sync` | None | Connect to the robot and take control |
-| `stop_sync` | None | Stop the robot and disconnect after confirmation |
+| `stop_sync` | None | Stop the robot and release control. Keep feedback until disable and rest are confirmed |
 | `enable` | None | Enable the robot |
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
@@ -312,6 +312,8 @@ Its replies preserve `locked` and `stop_unconfirmed`. A reply still means accept
 Other commands have no HTTP fallback. HTTP requests follow no redirects and have no automatic retries.
 
 Context exit runs `stop_sync` while this client holds control, then closes the connection and stops its threads.
+If the arm is enabled, the service keeps feedback and locks control until an explicit `disable` confirms mode 4 and rest.
+The client does not disable the arm automatically. After a confirmed stop, `disable` can complete the disconnect without a service restart.
 The optional `keep_control=True` skips `stop_sync`. It does not keep heartbeats running after exit.
 Calling `close()` directly also ends the threads without renewing or releasing control.
 The service then applies its normal lease-expiry stop and lock.

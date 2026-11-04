@@ -1,1 +1,55 @@
-/* Styles for the Cameras workspace. Prefix every rule with #ws-cameras. */
+/* Styles for the Cameras workspace and the shared camera tile. Workspace rules start with #ws-cameras;
+ * tile rules use .lcam-tile so the Motion and Furnace + microscope workspaces can show tiles too. */
+#ws-cameras .lcam-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+#ws-cameras .lcam-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+#ws-cameras .lcam-focus { display: flex; flex-direction: column; }
+#ws-cameras .lcam-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+#ws-cameras .lcam-strip .lcam-foot .lcam-buttons { display: none; }
+#ws-cameras .lcam-strip .lcam-note { display: none; }
+#ws-cameras .lcam-side { position: sticky; top: 16px; }
+#ws-cameras .lcam-h3 { margin: 4px 0 0; font-size: 14px; font-weight: 600; }
+#ws-cameras .lcam-group { display: flex; flex-direction: column; gap: 8px; }
+#ws-cameras .lcam-field { display: flex; flex-direction: column; gap: 6px; }
+#ws-cameras .lcam-label { font-size: 13px; color: var(--muted); }
+#ws-cameras .lcam-select, #ws-cameras .lcam-input { min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); width: 100%; }
+#ws-cameras .lcam-input:disabled { opacity: 0.55; }
+#ws-cameras .lcam-reading { display: flex; flex-direction: column; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+#ws-cameras .lcam-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+#ws-cameras .lc-confirm .lc-danger { min-width: 120px; }
+#ws-cameras .lcam-selected { border: 2px solid var(--accent); }
+
+.lcam-tile { margin: 0; display: flex; flex-direction: column; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.lcam-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; padding: 10px 12px; }
+.lcam-names { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; min-width: 0; }
+.lcam-title { font-weight: 600; }
+.lcam-role { color: var(--soft); }
+.lcam-role::before { content: "· "; color: var(--muted); }
+.lcam-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
+.lcam-badge.tone-ok { color: var(--ok); } .lcam-badge.tone-warn { color: var(--warn); }
+.lcam-badge.tone-off { color: var(--muted); } .lcam-badge.tone-bad { color: var(--bad); }
+.lcam-stage { position: relative; aspect-ratio: 4 / 3; background: #0A0E11; cursor: pointer; }
+.lcam-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.lcam-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; image-rendering: pixelated; }
+img.lcam-media { image-rendering: auto; }
+.lcam-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.lcam-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; background: #0A0E11; }
+.lcam-colorbar { position: absolute; top: 8px; right: 8px; bottom: 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); pointer-events: none; }
+.lcam-cb-bar { flex: 1 1 auto; width: 10px; border-radius: 3px; }
+.lcam-cb-label { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+.lcam-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 10px 12px; }
+.lcam-meta { display: flex; flex-direction: column; min-width: 0; font-size: 12px; }
+.lcam-mode { color: var(--soft); font-variant-numeric: tabular-nums; }
+.lcam-note { color: var(--muted); }
+.lcam-buttons { display: flex; gap: 8px; }
+.lcam-small { padding: 0 12px; font-size: 13px; }
+.lcam-large .lcam-stage { aspect-ratio: 16 / 10; }
+
+@media (max-width: 1100px) {
+  #ws-cameras .lcam-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #ws-cameras .lcam-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  #ws-cameras .lcam-grid { grid-template-columns: minmax(0, 1fr); }
+  #ws-cameras .lcam-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #ws-cameras .lcam-side { position: static; }
+}

@@ -1089,6 +1089,11 @@ def create_app(service, *, token=None, base_path="/"):
             "console.index",
             "console.asset",
         }
+        # A console camera stream or snapshot checks its own single-use ticket.
+        public = public or (
+            request.method in {"GET", "HEAD"}
+            and getattr(app.view_functions.get(request.endpoint), "console_ticket", False) is True
+        )
         proposal = request.endpoint in {"propose", "get_proposal"}
         if proposal:
             if not proposal_token:

@@ -100,6 +100,7 @@ The routes preserve each service's native prefix:
 | `/microscope/` | `127.0.0.1:8770` | `/microscope/` |
 | `/lab/` | `127.0.0.1:8772` | `/lab/` |
 
+The proxy redirects the root path `/` to the Lab Console at `/lab/`. See the [Lab Console](dashboard.en.md#lab-console).
 The camera port remains `1985`. Other upstream ports follow their `MG400_*_PORT` settings when supplied.
 Selecting `proxy` does not select `thermal`. Add `thermal` separately to `MG400_OPTIONAL_SERVICES` to install its service.
 A route cannot work until its upstream service exists and runs with the required native prefix.

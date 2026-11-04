@@ -450,9 +450,15 @@ class _DemoClient:
         "roi",
         "gas_stop",
     }
+    # The console reads events and relays manual commands. It renews only
+    # when a browser heartbeat asks, so the profile adds no renewal thread.
+    _PROFILES = {"runner": frozenset(_METHODS), "console": frozenset(_METHODS | {"events"})}
 
-    def __init__(self, owner, adapter):
+    def __init__(self, owner, adapter, *, profile="runner"):
+        if profile not in self._PROFILES:
+            raise ValueError("Unknown rehearsal client profile.")
         self._owner, self._adapter = owner, adapter
+        self._methods = self._PROFILES[profile]
         self._closed = False
         self._calls = 0
         self._close_done = threading.Event()
@@ -466,7 +472,7 @@ class _DemoClient:
         return self._adapter.timeout
 
     def __getattr__(self, name):
-        if name not in self._METHODS:
+        if name.startswith("_") or name not in self.__dict__.get("_methods", ()):
             raise AttributeError(name)
         operation = getattr(self._adapter, name)
 
@@ -584,8 +590,11 @@ class Rehearsal:
                 self._starting = False
                 self._condition.notify_all()
 
-    def new_clients(self, identity):
+    def new_clients(self, identity, *, profile="runner"):
         """Create unacquired, fresh identities for these same active demos.
+
+        The console profile also reads events. Neither profile renews a lease
+        on its own.
 
         The context owns their lifetime. Callers must stop and drain work before
         leaving the context; it never re-creates servers or acquires a lease.
@@ -600,7 +609,7 @@ class Rehearsal:
                     raise ValueError("A rehearsal client identity cannot be reused.")
                 self._identities.add(identity)
                 for name, (adapter, url) in self._endpoints.items():
-                    client = _DemoClient(self, adapter(url, "", identity))
+                    client = _DemoClient(self, adapter(url, "", identity), profile=profile)
                     self._stack.callback(client.close)
                     created[name] = client
             return created

@@ -100,6 +100,7 @@ MG400_ORCH_BASE_PATH=/lab/
 | `/microscope/` | `127.0.0.1:8770` | `/microscope/` |
 | `/lab/` | `127.0.0.1:8772` | `/lab/` |
 
+代理把根路径 `/` 重定向到实验室控制台 `/lab/`。参见[实验室控制台](dashboard.md#实验室控制台)。
 摄像头端口固定为 `1985`。其他上游端口采用已提供的 `MG400_*_PORT` 配置。
 选择 `proxy` 不会选择 `thermal`。把 `thermal` 单独加入 `MG400_OPTIONAL_SERVICES` 才会安装其服务。
 只有上游服务存在且使用必需的原生前缀运行，路由才能工作。

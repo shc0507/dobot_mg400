@@ -2,10 +2,58 @@
 
 [中文](dashboard.md)
 
-The dashboard shows service status, the current run, its steps, and links to camera pages.
-The existing optional `orch` service serves the page. See [deployment](deploy.en.md) and [recipe service configuration](orchestrator.en.md#http-service).
-With the default configuration, open `http://127.0.0.1:8772/`.
-If you configure `MG400_ORCH_BASE_PATH`, use that prefix. The optional proxy uses `/lab/`.
+The existing optional `orch` service serves the Lab Console and the dashboard. See [deployment](deploy.en.md) and [recipe service configuration](orchestrator.en.md#http-service).
+With the default configuration, the console is at `http://127.0.0.1:8772/` and the dashboard is at `http://127.0.0.1:8772/dashboard/`.
+If you configure `MG400_ORCH_BASE_PATH`, use that prefix. The optional proxy uses `/lab/` and redirects `/` to `/lab/`.
+
+## Lab Console
+
+The console is the single entry for the operator. The old service pages stay as fallbacks.
+
+- The header shows the console name, the deployed commit, the workspace tabs, the language switch, the devices that this page controls, and **STOP ALL MOTION**.
+- The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**. A workspace that is not built yet links to the old pages.
+- The language switch changes between English and 中文. The browser keeps the selected language.
+- The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
+- If `MG400_ORCH_TOKEN` is set, enter it in **Console access token**, then select **Connect**. The page keeps this token only in memory.
+
+**STOP ALL MOTION** uses the same stop fan-out as the dashboard: the robot, the stage and the microscope. A stop needs no control and does not wait for a lease.
+
+### Control
+
+- In the **Control** card, select **Take control** for 1 device. The console requests the lease from that service with a new identity.
+- The service refuses the request when another client holds the lease. The console never takes a lease from another holder.
+- The page sends a heartbeat every 500 ms. Each heartbeat renews the lease 1 time.
+- The console releases the lease when no heartbeat arrives for 3 seconds, or when the page closes. If a renewal fails, the control ends and the console does not request it again.
+- **Release all** releases only the console's own leases.
+
+### Command relay
+
+The workspaces send manual commands through the console. The console forwards each command with the server-side token. The browser never receives a service token.
+
+- Only the commands in the service's `api/describe` are permitted. Lease operations cannot be forwarded.
+- A command needs control by this page, except a command that the service marks `any_client`.
+- Each command is sent 1 time. If the outcome is unknown, the page shows unknown and does not retry. Check the device before you continue.
+
+### Overview workspace
+
+- **Readiness before a run**: the tool offset file, the camera calibration, the stage zero and soft limits, the microscope focus zero, the gas map and the over-temperature cutoff. Each row shows ready, to do or blocked, and links to the workspace that fixes it.
+- The over-temperature cutoff has no machine-readable state. After H-11, the owner sets `MG400_DASH_CUTOFF_CONFIRMED=1` on the host. While it is not set, the row is blocked.
+- The gas map row is ready only when each gas channel has a real gas name.
+- **Run** shows the current run and its steps. Hold and Abort are in the dashboard.
+- **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
+- **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
+
+### Run offline
+
+```sh
+MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
+```
+
+Open `http://127.0.0.1:8790/lab/`. In demo mode, the first **Take control** starts the owned demo service of that device. The microscope has no owned demo.
+
+## Dashboard
+
+The dashboard shows service status, the current run, its steps, and links to camera pages. It stays at `/dashboard/` as a fallback.
 
 ## Access and status
 

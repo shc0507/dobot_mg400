@@ -1,0 +1,151 @@
+# Lab Console contract (DSH-03)
+
+This is the contract for the workspace tasks DSH-04 (Cameras), DSH-05 (Motion) and DSH-06 (Furnace + microscope). The shell, the relay and the Overview belong to DSH-03. Work in your own files. Do not edit the shell files. If the shell needs a change, say so in your PR body and keep the change small.
+
+## 1. Entry and access
+
+- The orchestrator service serves the console at `<base>/`. On Olares, `<base>` is `/lab`, and the proxy redirects `/` to `/lab/`.
+- The DSH-01 dashboard moved to `<base>/dashboard/`. The passport pages stay at `<base>/chip/…`.
+- The page, `<base>/console-static/<name>.js|css` and the dashboard shells are public. Every API route needs `Authorization: Bearer <MG400_ORCH_TOKEN>` when that token is set. The page asks the operator for this token and keeps it in memory only.
+- Service tokens (`MG400_ORCH_<SERVICE>_TOKEN`) stay in the console process. No response contains them. The console sends no CORS headers.
+- Every POST needs `Content-Type: application/json`, a JSON object body and `X-MG400-Client: <page id>`. The shell makes a random page id per page load (`console-page-<hex>`). Console control is bound to this page id.
+
+## 2. Devices
+
+The devices are the service names in `orchestrator.clients.SERVICES`: `robot`, `stage`, `thermal`, `vision`, `furnace`, `microscope`. The status strip also shows `cameras` (the camera preview link) and `runs` (the orchestrator).
+
+## 3. HTTP API
+
+All paths start with `<base>/api/console/`. Errors are `{"error": "<text>"}` with a 4xx or 5xx status.
+
+| Method and path | Body | Response |
+| --- | --- | --- |
+| `GET state` | none | Frame state, see 3.1. Send `X-MG400-Client` to get `mine` flags. |
+| `GET events` | none | `{"events": [Event…], "errors": {"<device>": "<text>"}}`, newest first, at most 500. |
+| `GET describe/<device>` | none | `{"device", "commands": {"<action>": {"params": <JSON Schema>, "any_client": bool}}}` from the service `api/describe`, without lease actions. |
+| `POST control/<device>/take` | `{}` | `200 {"control": Control}`. `409` if any other client holds the lease. `502` if the outcome is unknown. |
+| `POST control/<device>/release` | `{}` | `{"device", "result": "released" \| "unconfirmed" \| "not-held"}`. `409` if another page holds it. |
+| `POST heartbeat` | `{}` | `{"control": [Control…]}`. Renews this page's leases once each. |
+| `POST release-page` | `{}` | `{"results": {"<device>": "released" \| "unconfirmed"}}` for this page. |
+| `POST release-all` | `{}` | The same for every console lease. Other holders are not touched. |
+| `POST command/<device>` | `{"action": "<name>", "params": {…}}` | `202 {"outcome": "accepted", "command_id"}`, `409 {"outcome": "refused", "error"}` or `502 {"outcome": "unknown", "error"}`. |
+| `POST stop/<device>` | `{}` | `{"device", "outcome": "confirmed" \| "pending" \| "unconfirmed" \| "unknown"}` |
+
+The DSH-01 routes stay: `GET <base>/api/dashboard/state`, `POST <base>/api/dashboard/motion` (`{}`), `heat` and `gas` (`{"confirmed": true}`), and the run routes in [orchestrator.md](../../orchestrator.md).
+
+### 3.1 State
+
+`GET state` returns the DSH-01 dashboard snapshot (`services`, `cameras`, `orchestrator`, `run`, `operations`, `approvals`) and these keys:
+
+```json
+{
+  "console": {"commit": "c6d5f14", "demo": false},
+  "control": [{"device": "stage", "holder": "console-control-…", "mine": true, "state": "held", "message": null, "held_s": 12.5}],
+  "readiness": [{"id": "gas-map", "state": "blocked", "detail": "…", "workspace": "process"}],
+  "workspaces": [{"id": "overview", "title": {"en": "Overview", "zh": "总览"}}]
+}
+```
+
+- A service card has `id`, `phase` (`unconfigured`, `loading`, `ready`, `stale`, `unavailable`), `connected`, `busy`, `locked`, `fault`, `lease_holder` and `demo`. A card is `stale` 3 s after its last read.
+- `readiness[].state` is `ready`, `todo` or `blocked`. The ids are `tool-offset`, `camera-calibration`, `stage-reference`, `focus-zero`, `gas-map` and `cutoff`.
+- An Event is `{"service", "seq", "ts_unix", "level", "message"}`. `service` is a device name or `runs`.
+
+### 3.2 Relay rules
+
+- The relay forwards only an action that the service lists in `api/describe`. It never forwards `start_sync`, `stop_sync`, `heartbeat`, `renew` or `release`.
+- A command needs this page's control, unless the service marks it `any_client`. Then the relay uses a fresh identity and no lease.
+- The service validates `params` against its schema. The relay checks only that `params` is an object.
+- The relay sends a command once. A transport failure, a timeout or a 5xx is `unknown`. Show it to the operator. Do not retry it.
+- Stop needs no control, never waits for a lease and is sent once.
+
+### 3.3 Lease rules
+
+- Take control creates a fresh service identity and calls the service `api/heartbeat` once. The service refuses it if another client holds the lease. The console never takes a lease over.
+- If the take outcome is unknown, the console releases that fresh identity once.
+- Each page heartbeat renews each of the page's leases once (`api/renew`). The shell sends a heartbeat every 500 ms while the page holds control.
+- If no heartbeat arrives for 3 s, the console releases the lease. On `pagehide` the shell sends `release-page` with `keepalive`.
+- If a renewal fails, the session ends as `lost`. The console does not release or reacquire it.
+- The robot client keeps its own WebSocket heartbeat while it is connected. The console ends that connection after 3 s without a browser heartbeat.
+
+## 4. Browser API for workspaces
+
+The shell loads `shell.js` first and then one script per workspace, all with `defer`. Register on load:
+
+```js
+window.LabConsole.register({
+  id: "motion",
+  i18n: { en: { "jog.title": "Jog" }, zh: { "jog.title": "点动" } },
+  mount(root, api) { /* Build the workspace in root once, on the first visit. */ },
+  show() {}, hide() {},  // Optional: called when the tab is shown or hidden.
+});
+```
+
+The `api` object:
+
+| Member | Use |
+| --- | --- |
+| `api.relay(device, action, params)` | Promise of `{outcome, command_id?, error?}`. Shows a notice for `unknown`. |
+| `api.stop(device)` | Promise of the stop result. Needs no control. |
+| `api.stopAll()` | The DSH-01 stop fan-out (robot, stage, microscope). |
+| `api.take(device)`, `api.release(device)`, `api.releaseAll()` | Control. `take` rejects with the service message on refusal. |
+| `api.owns(device)`, `api.controls()` | Whether this page holds a device; the control list. |
+| `api.describe(device)` | Promise of the described commands. |
+| `api.state()`, `api.fresh()`, `api.onState(fn)` | The latest state, whether it is less than 3 s old, and a listener (returns an unsubscribe function). The shell polls every 1 s. |
+| `api.t(key, vars)`, `api.lang()`, `api.onLanguage(fn)` | Strings from your `i18n`, then the shell. `{name}` fills `vars`. The language is `en` or `zh`. Re-render in `onLanguage`. |
+| `api.notify(text, level)` | The page notice. `level` is `info`, `warn` or `error`. |
+| `api.request(path, data, options)` | A call to your own routes at `<base>/api/console/ws/<id>/<path>`. With `data` it is a POST. |
+| `api.consoleRequest(path, data)` | A call to any console API path that starts with `/api/`. |
+| `api.el(tag, props, ...children)` | Make an element. `text` sets text content; `on<event>` adds a listener. Never use `innerHTML` with data. |
+| `api.deviceName(id)` | The localized device name. |
+
+## 5. Files
+
+| Path | Owner |
+| --- | --- |
+| `src/orchestrator/web/console.py`, `console_routes.py` | DSH-03 (relay, leases, events, readiness) |
+| `src/orchestrator/web/templates/console.html`, `static/console/shell.*`, `overview.*` | DSH-03 |
+| `src/orchestrator/web/workspaces/__init__.py`, `overview.py` | DSH-03 |
+| `src/orchestrator/web/workspaces/<id>.py`, `static/console/<id>.js`, `<id>.css` | The workspace task. `motion`: DSH-05, `cameras`: DSH-04, `process`: DSH-06. |
+| `tests/test_console_<id>.py`, `tests/test_console_<id>.mjs` | The workspace task. |
+
+Replace the placeholder files for your workspace. Prefix every CSS rule with `#ws-<id>`. Use the shell classes (`lc-card`, `lc-button`, `lc-danger`, `lc-row`, `lc-muted`, `lc-layout`, `lc-col-main`, `lc-col-side`) and colors from `shell.css`. Follow the boards in this folder.
+
+## 6. Server routes for a workspace
+
+`workspaces/<id>.py` defines `WORKSPACE`. The console finds it without a shared list.
+
+```python
+from flask import jsonify
+
+from . import Workspace
+
+
+def register(blueprint, service):
+    # Mounted at <base>/api/console/ws/motion. The operator token is checked for you.
+    @blueprint.get("/stations")
+    def stations():
+        return jsonify(stations=[])
+
+
+WORKSPACE = Workspace(
+    id="motion", order=20, title={"en": "Motion", "zh": "运动"}, register=register
+)
+```
+
+- Use `service.console` for device access: `service.console.command(device, page, action, params)`, `service.console.stop(device)`, `service.console.describe(device)`. Read the page id from the `X-MG400-Client` header.
+- Do not add a device command or a second lease path. Do not send a service token to the browser.
+- A relay for streams (DSH-04) adds its own routes here and bounds its streams.
+
+## 7. Tests
+
+- Python: copy the `rig` fixture and the `Device` fake from `tests/test_console.py`. They use `client_factory`, a fake clock and no bound ports. `rig.client` is a Flask test client with `/lab` as the base.
+- Node: `tests/test_console.mjs` loads `shell.js` with `require` and a small fake DOM. Load your workspace script after it with `globalThis.window = globalThis` and a stub `LabConsole`, or test your pure functions.
+- Run `uv run pytest -q tests/test_console*.py` and `node --test tests/test_console*.mjs`.
+
+## 8. Run offline
+
+```sh
+MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
+```
+
+Open `http://127.0.0.1:8790/lab/`. In demo mode, Take control starts that device's owned demo service (robot, stage, thermal, furnace or vision) on the first use. The microscope has no owned demo here. Without `MG400_ORCH_TOKEN` the console accepts only a loopback Host.

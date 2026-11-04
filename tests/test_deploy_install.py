@@ -112,12 +112,30 @@ def toupcam_library(host, module, monkeypatch):
     return library
 
 
-def test_toupcam_installs_verified_snapshot(host, toupcam_library):
+def root_owned_directories(module, monkeypatch, *directories):
+    """Model directories that root created, also when the tests do not run as root."""
+    inodes = {directory.stat().st_ino for directory in directories}
+    original_fstat = os.fstat
+
+    def fstat(fd):
+        info = original_fstat(fd)
+        if info.st_ino not in inodes:
+            return info
+        values = list(info)
+        values[4] = values[5] = 0
+        return os.stat_result(values)
+
+    monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
+
+
+def test_toupcam_installs_verified_snapshot(host, module, monkeypatch, toupcam_library):
     original = toupcam_library.read_bytes()
     target = host.root / "usr/local/lib/mg400/libtoupcam.so"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"old SDK")
     target.chmod(0o600)
+    directories = ("usr", "usr/local", "usr/local/lib", "usr/local/lib/mg400")
+    root_owned_directories(module, monkeypatch, *(host.root / name for name in directories))
 
     def run(command, **options):
         host.commands.append((command, options))

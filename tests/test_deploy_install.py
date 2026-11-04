@@ -1929,7 +1929,7 @@ def test_microscope_dry_run_lists_without_writes_or_service_start(
 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_microscope_requires_verified_library_before_mutation(
-    host, inventory_udev, toupcam_library, capsys, dry_run
+    host, inventory_udev, toupcam_library, module, monkeypatch, capsys, dry_run
 ):
     select_optional(host, "microscope")
     args = ["--dry-run"] if dry_run else []
@@ -1940,6 +1940,7 @@ def test_microscope_requires_verified_library_before_mutation(
     target.parent.mkdir(parents=True)
     target.write_bytes(b"wrong installed SDK")
     target.chmod(0o755)
+    microscope_library_owner(module, monkeypatch, target)
     assert host.install(*args) == 1
     assert "SHA-256 mismatch" in capsys.readouterr().err
     assert target.read_bytes() == b"wrong installed SDK"
@@ -1954,12 +1955,13 @@ def test_microscope_requires_its_udev_template_before_mutation(host, toupcam_lib
 
 
 def test_microscope_upgrade_preserves_library_data_measured_settings_and_tokens(
-    host, inventory_udev, toupcam_library, module
+    host, inventory_udev, toupcam_library, module, monkeypatch
 ):
     select_optional(host, "microscope")
     assert host.install("--toupcam", str(toupcam_library)) == 0
     library = host.root / "usr/local/lib/mg400/libtoupcam.so"
     original_inode = library.stat().st_ino
+    microscope_library_owner(module, monkeypatch, library)
     original_tokens = {
         key: value
         for key, value in module.parse_settings(host.settings.read_text()).items()
@@ -2018,6 +2020,21 @@ def test_microscope_rejects_unsafe_installed_library_before_mutation(
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
 
 
+def microscope_library_owner(module, monkeypatch, path, *, owner=0, group=0):
+    """Model the root-owned installed file while tests run without root."""
+    inode, original_fstat = path.stat().st_ino, os.fstat
+
+    def fstat(fd):
+        info = original_fstat(fd)
+        if info.st_ino != inode:
+            return info
+        values = list(info)
+        values[4], values[5] = owner, group
+        return os.stat_result(values)
+
+    monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
+
+
 @pytest.mark.parametrize(
     "owner,group,rights",
     [
@@ -2037,16 +2054,6 @@ def test_microscope_rejects_unsafe_existing_library_permissions(
     target.parent.mkdir(parents=True)
     target.write_bytes(toupcam_library.read_bytes())
     target.chmod(rights)
-    inode, original_fstat = target.stat().st_ino, os.fstat
-
-    def fstat(fd):
-        info = original_fstat(fd)
-        if info.st_ino != inode:
-            return info
-        values = list(info)
-        values[4], values[5] = owner, group
-        return os.stat_result(values)
-
-    monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
+    microscope_library_owner(module, monkeypatch, target, owner=owner, group=group)
     assert host.install() == 1
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()

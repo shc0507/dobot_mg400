@@ -152,11 +152,8 @@ test("Set zero sends only after the page confirmation", async () => {
   assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "zero", { motor: "insert", confirm: true }]]);
 });
 
-test("a stage step needs a confirmed reference", async () => {
-  const page = await mounted();
-  assert.equal(page.find("Move Insert plus by the steps").disabled, true);
-  const ready = { ...STAGE, motors: [{ ...STAGE.motors[0], automation_ready: true }] };
-  const second = await mounted({ stage: ready });
+test("a stage step needs no zero or reference", async () => {
+  const second = await mounted();
   second.find("Move Insert plus by the steps").click();
   await second.settle();
   assert.deepEqual(second.calls.filter(call => call[0] === "relay"), [["relay", "stage", "move", { motor: "insert", direction: "cw", speed: 50, steps: 50 }]]);

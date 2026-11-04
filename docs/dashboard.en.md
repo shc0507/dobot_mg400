@@ -2,9 +2,9 @@
 
 [中文](dashboard.md)
 
-The existing optional `orch` service serves the Lab Console and the chip passport pages. See [deployment](deploy.en.md) and [recipe service configuration](orchestrator.en.md#http-service).
-With the default configuration, the console is at `http://127.0.0.1:8772/`. If you configure `MG400_ORCH_BASE_PATH`, use that prefix.
-The optional proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN and open `http://100.64.0.1:8080/`.
+The `orch` service serves the Lab Console and the chip passport pages. See [deployment](deploy.en.md) and [recipe service configuration](orchestrator.en.md#http-service).
+The installed unit serves the console at `http://127.0.0.1:8772/lab/`.
+The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN and open `http://100.64.0.1:8080/`.
 
 ## Lab Console
 
@@ -15,9 +15,7 @@ The console is the only operator web page.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
 - A service that is not configured shows Not configured on every workspace.
-- The Cameras chip shows the state of camera1 to camera4 that the console relays. If `MG400_ORCH_CAMERA_URL` is not set, it shows Not configured. While a view is open, it shows Live or Stale. If the last relay attempt failed, it shows Unavailable. Otherwise it shows Configured.
-- If `MG400_ORCH_TOKEN` is set, enter it in **Console access token**, then select **Connect**. The page keeps this token only in memory. Do not put this token in page URLs.
-- The page shell and its fixed assets do not require a bearer token. Host and Origin checks still apply. See the [single-port proxy](olares.en.md#optional-single-port-proxy) for remote access.
+- The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 
 **STOP ALL MOTION** sends independent stop requests to the robot, the stage and the microscope. A stop needs no control and does not wait for a lease. See [stop controls](#stop-controls).
 
@@ -31,7 +29,7 @@ The console is the only operator web page.
 
 ### Command relay
 
-The workspaces send manual commands through the console. The console forwards each command with the server-side token. The browser never receives a service token.
+The workspaces send manual commands through the console. The console forwards each command to the service.
 
 - Only the commands in the service's `api/describe` are permitted. Lease operations cannot be forwarded.
 - A command needs control by this page, except a command that the service marks `any_client`.
@@ -39,9 +37,6 @@ The workspaces send manual commands through the console. The console forwards ea
 
 ### Overview workspace
 
-- **Readiness before a run**: the tool offset file, the camera calibration, the stage zero and soft limits, the microscope focus zero, the gas map and the over-temperature cutoff. Each row shows ready, to do or blocked, and links to the workspace that fixes it.
-- The over-temperature cutoff has no machine-readable state. After H-11, the owner sets `MG400_DASH_CUTOFF_CONFIRMED=1` on the host. While it is not set, the row is blocked.
-- The gas map row is ready only when each gas channel has a real gas name.
 - **Run** shows the current run and its steps. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
 - **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
@@ -54,10 +49,11 @@ The Motion workspace has 3 columns: the robot arm, the cameras and the stage. At
 Robot arm:
 
 - **Take control**, **Enable**, **Disable** and **Clear alarm**. **Disable** needs no control.
+- After an unconfirmed stop, the card shows a warning and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
 - The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves.
 - The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose.
 - **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
-- Before it sends a jog or a pose, the console checks the fingertip target against `MG400_ORCH_X_MIN_MM` to `MG400_ORCH_R_MAX_DEG` and the tool offset in `MG400_ORCH_TOOL_FILE`. If a bound or the tool file is missing, the console refuses the move. Demo mode without bounds uses a synthetic box. The generic `command/robot` route refuses `execute` with 409. Use the `ws/motion/jog` and `ws/motion/move` routes.
+- The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
 - **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. The gripper outcome shows beside the title.
 
 Stage:
@@ -65,7 +61,7 @@ Stage:
 - **Take control**, **Stepping** and **Stop stage**. **Stop stage** needs no control.
 - If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**.
 - A change of the stepping mode clears the zero and soft limits of all 3 axes and needs a confirmation.
-- Each axis shows its position in pulses and in mm, and its reference state. **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. The stage accepts a move only after the reference is confirmed.
+- Each axis shows its position in pulses and in mm, and its reference state. **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
 - **Home…** (boards with switches) and **Set zero…** need a confirmation. **Set zero…** sets the zero and the soft limits.
 - For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels.
 - **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
@@ -76,19 +72,14 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 ### Cameras workspace
 
 - The grid shows 6 views: camera1 to camera4, the thermal camera and the microscope (Toupcam). Each view shows its name and role, LIVE, STALE or OFFLINE with the frame age, its mode, and **Snapshot** and **Expand**. **Focus · 1 + strip** shows 1 large view and a strip of the others.
-- The console service relays all views. The browser gets no camera key and no service token. An `<img>` stream uses a short-lived single-use ticket: it is valid for 20 seconds, for 1 use and for 1 view.
-- The relay sends only the newest complete frame. On a slow network it skips old frames, so the delay does not grow. Grid and strip views get at most 10 frames a second, and a large view at most 30.
-- The relay opens at most 6 streams at a time, at most 2 per view and at most 2 for the microscope. The relay stops when you leave the workspace, hide the browser tab or close the page.
+- camera1 to camera4 load directly from the proxy at `/camera/<view>.mjpeg` and `/camera/<view>.jpg`. The camera preview sends each viewer only the newest frame.
+- The console relays the thermal frame and the microscope stream. The microscope relay sends only the newest complete frame. Grid and strip views get at most 10 frames a second, and a large view at most 30. It opens at most 2 microscope streams.
+- The streams stop when you leave the workspace, hide the browser tab or close the page.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.
 - When the thermal camera is selected, the side panel gives the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. You can export CSV, Raw + JSON and PNG.
 - When the thermal service has no camera connection, the side panel shows **Connect camera**. **Calibrate shutter** needs a confirmation. These 2 commands are `any_client` commands and need no control.
 - **Draw region** drags the `crucible` region on the thermal view and shows its bounds. **Save region** is available only when the thermal service lists `set_region` in `api/describe`, and it needs a confirmation in the page. Otherwise, put the bounds in `rois.toml`.
-- Set the source of camera1 to camera4 on the host. The other views use the existing `MG400_ORCH_<SERVICE>_URL` and `_TOKEN`:
-
-```sh
-MG400_ORCH_CAMERA_URL=http://127.0.0.1:1985
-MG400_CAMERA_KEY_FILE=/var/lib/mg400/camera/preview.key
-```
+- Set the camera devices on the host as described in [Cameras](olares.en.md#cameras).
 
 ### Furnace + microscope workspace
 
@@ -98,9 +89,8 @@ Every device command goes through the console relay. Use **Take control** for th
 - The chart shows PV and SV for the last 60 minutes. The console process records 1 point every 5 s while a page is open. After a restart the chart starts empty.
 - **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes.
 - The sequence editor adds and removes steps and sets the target, ramp, hold and 3 gas channels of each step, and the end gas and end temperature. When a step sets gas, the end temperature is necessary. The page loads the furnace sequence on its first read.
-- Until each gas channel has a real gas name, **Send flow** is not available and the service refuses gas commands. **Stop all gas** uses the gas-off route of the Overview.
+- Without `MG400_FURNACE_GAS_MAP`, the gas channels are named Gas 1 to Gas 3. **Stop all gas** uses the gas-off route of the Overview.
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
-- While `MG400_DASH_CUTOFF_CONFIRMED` is not set, a banner says: do not heat before H-11 and H-20.
 - The microscope shows the Toupcam view and the camera3 side view. It uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
 - The objective buttons, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
 - **Set focus zero…** needs microscope control and a confirmation in the page. The console sends it 1 time. The focus gears can slip. Re-zero at the 50x focus before each use. Agents, recipes and the runner cannot set the focus zero.
@@ -109,7 +99,7 @@ Every device command goes through the console relay. Use **Take control** for th
 ### Run offline
 
 ```sh
-MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790
+uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 --base-path /lab/
 ```
 
 Open `http://127.0.0.1:8790/lab/`. In demo mode, the first **Take control** starts the owned demo service of that device. The microscope has no owned demo.
@@ -117,7 +107,7 @@ Open `http://127.0.0.1:8790/lab/`. In demo mode, the first **Take control** star
 ## Stop controls
 
 Keep the physical emergency stop reachable. A web request or a displayed confirmation is not a physical safety interlock.
-These stop controls require authentication but do not require **Take control** or a control lease.
+These stop controls do not require **Take control** or a control lease.
 The header has **STOP ALL MOTION**. The **Safety** card of the Overview has all 3 buttons:
 
 | Button | Effect |
@@ -144,15 +134,12 @@ The console has no controls yet to approve agent proposals. The Overview shows o
 ## Chip passport
 
 Open `/chip` under the configured service prefix.
-Enter the orchestrator token, then search with the chip's exact QR text.
+Search with the chip's exact QR text.
 Search preserves case, spaces, slashes, and punctuation. It does not trim or normalize the identifier.
 For a direct link, use `/chip?id=` followed by the URL-encoded identifier.
 The ordinary `/chip/<id>` route also opens the passport shell.
-Do not include the access token in either URL.
 
-The fixed passport shell and assets keep the console's Host and Origin checks.
-All history, search-data, and artifact requests require the bearer token.
-The page keeps the token only in memory. It does not acquire a control lease or contact instruments.
+The page does not acquire a control lease or contact instruments.
 The passport shows saved records only. An empty result does not prove that no physical work occurred.
 
 Run summaries include runs associated with the exact chip identifier.

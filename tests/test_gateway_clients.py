@@ -419,12 +419,9 @@ def test_guidance_prompt_and_resource_share_access_and_leave_tools_unchanged():
     [
         ({}, 401),
         ({"Authorization": "Bearer wrong-token"}, 401),
-        ({"Authorization": f"Bearer {TOKEN}", "Host": "external.invalid"}, 403),
-        ({"Authorization": f"Bearer {TOKEN}", "Origin": "http://external.invalid"}, 403),
-        ({"Authorization": f"Bearer {TOKEN}", "X-Forwarded-Host": "localhost"}, 403),
     ],
 )
-def test_guidance_endpoints_preserve_gateway_access_rules(method, headers, status):
+def test_guidance_endpoints_need_the_gateway_token(method, headers, status):
     from gateway.app import create_app
 
     async def exercise():

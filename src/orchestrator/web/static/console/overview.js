@@ -1,4 +1,4 @@
-/* Overview workspace: readiness, the current run, merged events, safety and control. */
+/* Overview workspace: the current run, merged events, safety and control. */
 (function () {
   "use strict";
   const LabConsole = (typeof window !== "undefined" && window.LabConsole) || null;
@@ -8,14 +8,6 @@
 
   const i18n = {
     en: {
-      "ready.title": "Readiness before a run",
-      "ready.summary": "{ready} ready · {todo} to do · {blocked} blocked",
-      "ready.ready": "Ready", "ready.todo": "To do", "ready.blocked": "Blocked",
-      "ready.open": "Open {workspace} →",
-      "item.tool-offset": "Robot tool offset", "item.camera-calibration": "Camera-to-robot calibration",
-      "item.stage-reference": "Stage zero and soft limits", "item.focus-zero": "Microscope focus zero",
-      "item.gas-map": "Gas map", "item.cutoff": "Over-temperature cutoff",
-      "ws.motion": "Motion", "ws.cameras": "Cameras", "ws.process": "Furnace",
       "run.title": "Run", "run.none": "No run is active.", "run.status": "Status: {status}",
       "events.title": "Events · all services", "events.all": "All", "events.warnings": "Warnings",
       "events.service": "Service", "events.none": "No events yet.", "events.unavailable": "Events unavailable: {services}",
@@ -35,14 +27,6 @@
       "proposals.none": "No proposal waiting.",
     },
     zh: {
-      "ready.title": "运行前检查",
-      "ready.summary": "{ready} 项就绪 · {todo} 项待办 · {blocked} 项受阻",
-      "ready.ready": "就绪", "ready.todo": "待办", "ready.blocked": "受阻",
-      "ready.open": "打开{workspace} →",
-      "item.tool-offset": "机械臂工具偏移", "item.camera-calibration": "相机到机械臂标定",
-      "item.stage-reference": "位移台零点和软限位", "item.focus-zero": "显微镜对焦零点",
-      "item.gas-map": "气体映射", "item.cutoff": "超温切断",
-      "ws.motion": "运动", "ws.cameras": "相机", "ws.process": "炉子",
       "run.title": "运行", "run.none": "当前没有运行。", "run.status": "状态：{status}",
       "events.title": "事件 · 全部服务", "events.all": "全部", "events.warnings": "警告",
       "events.service": "服务", "events.none": "暂无事件。", "events.unavailable": "事件不可用：{services}",
@@ -68,22 +52,6 @@
   function section(id, title, ...children) {
     const { el } = view.api;
     return el("section", { class: "lc-card", "aria-labelledby": id }, el("h2", { id, text: title }), ...children);
-  }
-
-  function readinessCard(rows) {
-    const { el, t } = view.api;
-    const counts = logic.readinessSummary(rows);
-    const head = el("div", { class: "lc-card-head" },
-      el("h2", { id: "ov-ready", text: t("ready.title") }),
-      el("span", { class: "lc-muted", text: t("ready.summary", counts) }));
-    const list = el("div", { class: "lc-rows" }, ...(rows || []).map(row => el("div", { class: "lc-row" },
-      el("span", { class: "lc-state tone-" + ({ ready: "ok", todo: "warn", blocked: "bad" }[row.state] || "off") },
-        el("span", { class: "lc-dot", "aria-hidden": "true" }), t("ready." + row.state)),
-      el("div", { class: "lc-row-main" },
-        el("span", { class: "lc-strong", text: t("item." + row.id) }),
-        el("span", { class: "lc-muted", text: row.detail })),
-      el("a", { href: "#" + row.workspace, class: "lc-link", text: t("ready.open", { workspace: t("ws." + row.workspace) }) }))));
-    return el("section", { class: "lc-card", "aria-labelledby": "ov-ready" }, head, list);
   }
 
   function runCard(run) {
@@ -216,7 +184,7 @@
     const { el } = view.api;
     const scroll = view.root.querySelector?.(".lc-events")?.scrollTop || 0;
     view.root.replaceChildren(el("div", { class: "lc-layout" },
-      el("div", { class: "lc-col-main" }, readinessCard(snapshot?.readiness || []), runCard(snapshot?.run), eventsCard()),
+      el("div", { class: "lc-col-main" }, runCard(snapshot?.run), eventsCard()),
       el("aside", { class: "lc-col-side" }, safetyCard(snapshot), controlCard(snapshot), proposalsCard(snapshot))));
     const events = view.root.querySelector?.(".lc-events");
     if (events) events.scrollTop = scroll;

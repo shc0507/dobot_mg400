@@ -1083,18 +1083,6 @@ def test_clear_alarm_confirms_disable_and_rest_before_unlocking(rig):
     assert state.snapshot()["alarms"] is None
 
 
-def test_clear_alarm_keeps_the_lock_when_command_ordering_is_unknown(rig):
-    state, feed, controls = alarm_rig(rig)
-    controls[0].alarm_ids = ((), (), (), (), (), ())
-    controls[0].ordering_unknown = True
-    controls[0].on_clear = lambda: setattr(feed, "sample", Feedback((1, 2, 3, 4), 5, 0, False))
-    state.command({"action": "clear_alarm"}, "browser-a")
-    wait_for(lambda: not state.snapshot()["busy"])
-    assert state.snapshot()["locked"]
-    assert "ordering remains unknown" in state.snapshot()["message"]
-    assert len(controls) == 1
-
-
 def test_stop_failure_during_alarm_recovery_keeps_the_lock(rig):
     state, feed, controls = alarm_rig(rig)
     controls[0].alarm_ids = ((), (), (), (), (), ())
@@ -1154,26 +1142,22 @@ def test_recover_confirms_rest_after_the_alarm_cleared_elsewhere(rig):
     assert not snapshot["stop_unconfirmed"] and not snapshot["recoverable"]
 
 
-def test_a_stop_that_failed_without_an_alarm_is_not_recoverable(rig):
+def test_a_stop_that_failed_without_an_alarm_warns_and_recovers(rig):
     state, feed, controls = rig
     connect(state)
     controls[0].stop_ok = False
     state.command({"action": "stop"}, "browser-a")
     wait_for(lambda: state.snapshot()["stop_unconfirmed"] and not state.snapshot()["busy"])
-    assert not state.snapshot()["recoverable"]
-    with pytest.raises(RuntimeError, match="no alarm"):
-        state.command({"action": "clear_alarm"}, "browser-a")
-    # A later alarm can be cleared, but the earlier verdict keeps the lock.
-    controls[0].alarm_ids = ((), (), (), (), (), ())
-    controls[0].on_clear = lambda: setattr(feed, "sample", Feedback((1, 2, 3, 4), 4, 0, False))
-    feed.sample = Feedback((1, 2, 3, 4), 9, 0, True)
-    wait_for(lambda: state.snapshot()["robot_mode"] == 9)
+    snapshot = state.snapshot()
+    assert snapshot["locked"] and snapshot["recoverable"]
+    assert snapshot["message"].startswith("Warning: robot stop or disable is unconfirmed")
+    assert "click Recover" in snapshot["message"]
+    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
     state.command({"action": "clear_alarm"}, "browser-a")
-    wait_for(
-        lambda: not state.snapshot()["busy"] and "without an alarm" in state.snapshot()["message"]
-    )
-    assert state.snapshot()["locked"] and state.snapshot()["stop_unconfirmed"]
-    assert len(controls) == 1
+    wait_for(lambda: not state.snapshot()["locked"])
+    assert "clear_alarms" not in controls[0].calls
+    assert controls[1].calls[:2] == ["disable", "stationary"]
+    assert not state.snapshot()["stop_unconfirmed"]
 
 
 def test_a_later_confirmed_stop_does_not_hide_the_unconfirmed_one(rig):
@@ -1209,7 +1193,9 @@ def test_an_unconfirmed_stop_logs_its_reason_and_the_lock(rig, caplog):
     assert "Robot mode 5, error=False" in log
     assert "Control locked." in log
     assert "Stop or disable unconfirmed." in log
-    assert any(line.startswith("Message: Robot stop or disable is unconfirmed:") for line in log)
+    assert any(
+        line.startswith("Message: Warning: robot stop or disable is unconfirmed:") for line in log
+    )
     assert log.index("Control locked.") < log.index("Stop or disable unconfirmed.")
 
 
@@ -1634,7 +1620,7 @@ def test_rejected_commands_while_disabled_at_rest_point_to_tcp_mode(make_sim_rig
     assert "sudo mg400ctl mode --switch-to-tcp" in snapshot["message"]
     assert "physical emergency stop" not in snapshot["message"]
     # A rejected stop is never a confirmed stop.
-    assert snapshot["locked"] and snapshot["stop_unconfirmed"] and not snapshot["recoverable"]
+    assert snapshot["locked"] and snapshot["stop_unconfirmed"]
     # The failed disable sends ResetRobot() again as its fallback stop.
     assert rig.controller.sent() == [
         "GetPose(0,0)",
@@ -1652,6 +1638,6 @@ def test_rejected_commands_while_enabled_still_require_the_physical_stop(make_si
     rig.command("disable")
     rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "disable")
     snapshot = rig.snapshot()
-    assert snapshot["message"].endswith("use the physical emergency stop")
+    assert "use the physical emergency stop" in snapshot["message"]
     assert "TCP/IP" not in snapshot["message"]
     assert snapshot["locked"] and snapshot["stop_unconfirmed"]

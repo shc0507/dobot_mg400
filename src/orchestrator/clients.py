@@ -20,6 +20,16 @@ from .recipe import positive
 
 SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
 
+# Fixed loopback addresses of the lab services. A nonempty setting overrides one.
+SERVICE_URLS = {
+    "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
+    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
+    "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
+    "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
+    "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",
+    "MG400_ORCH_VISION_URL": "http://127.0.0.1:8771/",
+}
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, new_url):
@@ -29,10 +39,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class ServiceAdapter:
     _client_type = ServiceClient
 
-    def __init__(self, url, token, identity, *, timeout=2):
+    def __init__(self, url, identity, *, timeout=2):
         self.identity, self.timeout = identity, timeout
         self._lease_seconds = 0
-        self._http = self._client_type(url, token, identity, timeout=timeout)
+        self._http = self._client_type(url, identity, timeout=timeout)
         # Instrument endpoints are direct. In particular, generated rehearsal
         # URLs must never travel through an ambient HTTP_PROXY.
         self._http._opener = urllib.request.build_opener(
@@ -138,8 +148,6 @@ class _GasStopClient(ServiceClient):
 
     def _request(self, path, data=None):
         headers = {"Accept": "application/json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
         encoded = None
         if data is not None:
             encoded = json.dumps(data, allow_nan=False).encode("utf-8")
@@ -168,9 +176,9 @@ class _GasStopClient(ServiceClient):
 
 
 class FurnaceAdapter(ServiceAdapter):
-    def __init__(self, url, token, identity, *, timeout=2):
-        super().__init__(url, token, identity, timeout=timeout)
-        self._gas_http = _GasStopClient(url, token, identity, timeout=timeout)
+    def __init__(self, url, identity, *, timeout=2):
+        super().__init__(url, identity, timeout=timeout)
+        self._gas_http = _GasStopClient(url, identity, timeout=timeout)
         self._gas_http._opener = self._http._opener
 
     def gas_stop(self, channel):
@@ -181,9 +189,9 @@ class FurnaceAdapter(ServiceAdapter):
 
 
 class RobotAdapter(ServiceAdapter):
-    def __init__(self, url, token, identity, *, timeout=2):
-        super().__init__(url, token, identity, timeout=timeout)
-        self._robot = RobotClient(url, token or "", identity, timeout=timeout)
+    def __init__(self, url, identity, *, timeout=2):
+        super().__init__(url, identity, timeout=timeout)
+        self._robot = RobotClient(url, identity, timeout=timeout)
 
     def acquire(self):
         self._robot.connect()
@@ -284,9 +292,7 @@ def from_settings(settings=None, *, identity):
                 "thermal": ThermalAdapter,
                 "furnace": FurnaceAdapter,
             }.get(name, ServiceAdapter)
-            result[name] = adapter(
-                url, settings.get(prefix + "_TOKEN", ""), identity, timeout=timeout
-            )
+            result[name] = adapter(url, identity, timeout=timeout)
     return result
 
 

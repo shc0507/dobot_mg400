@@ -322,19 +322,14 @@ def test_gas_recipe_needs_complete_end_plan_before_io(lab, kwargs):
     assert not lab.mfc.requests
 
 
-def test_unset_map_refuses_gas_but_stop_remains_available(lab):
+def test_unset_map_allows_gas_with_default_labels_and_stop(lab):
     service = lab.make(gas_map={})
     service.start(background=False)
     service.lease.acquire("operator")
-    with pytest.raises(ValueError, match="GAS_MAP"):
-        service.set_gas_flow(0, 1, client="operator")
-    with pytest.raises(ValueError, match="GAS_MAP"):
-        service.start_sequence(
-            recipe(gas={0: 0}), end_gas={}, end_gas_until_c=30, client="operator"
-        )
-    assert not lab.mfc.requests
-    assert service.stop_furnace()["run_state_code"] == 1
+    service.set_gas_flow(0, 1, client="operator")
     assert lab.mfc.requests
+    assert service.flow_status()["gas_channels"][0]["gas_name"] == "Gas 1"
+    assert service.stop_furnace()["run_state_code"] == 1
 
 
 @pytest.mark.parametrize(

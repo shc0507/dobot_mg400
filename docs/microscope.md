@@ -25,17 +25,14 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 
 ## 主机托管服务
 
-在 `/etc/mg400/mg400.env` 的 `MG400_OPTIONAL_SERVICES` 中加入 `microscope`。保留其他选项。
+安装器默认安装 `microscope` 服务。
 启动服务前，安装锁定版本的 [Toupcam 库](deploy.md#toupcam-库)，并配置下文参数。
 安装器在 `/opt/mg400/.venv` 中准备 `microscope` 依赖组，并安装 USB 访问规则。
-它还准备默认的私有数据目录，不启动设备，也不创建校准值。
-自定义校准和运行根目录须由操作员准备，并保持私有权限。
+它还准备默认的数据目录，不启动设备，也不创建校准值。
 
 单元以 `1000:1000` 运行，具有 `dialout` 和 `video` 访问权限。
-它设置 `LD_LIBRARY_PATH=/usr/local/lib/mg400`，默认监听 `127.0.0.1:8770`。
-它保留 `MG400_FURNACE_TOKEN`，仅供现有炉控元数据客户端使用。
-使用代理前缀时，在 `MG400_MICROSCOPE_FURNACE_URL` 中配置炉控原生前缀。
-摄像头预览保留视觉令牌。无关服务排除显微镜令牌。
+它设置 `LD_LIBRARY_PATH=/usr/local/lib/mg400`，监听 `127.0.0.1:8770`。
+它从 `http://127.0.0.1:8769/` 读取炉控元数据。
 
 使用前，停止冲突的相机和电机程序。
 先用 `mg400ctl start camera` 启动已配置的侧视相机服务，再运行 `mg400ctl start microscope`。
@@ -61,10 +58,6 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 
 | 配置项 | 配置内容 |
 | --- | --- |
-| `MG400_MICROSCOPE_BIND` | 默认为 `127.0.0.1`。 |
-| `MG400_MICROSCOPE_PORT` | 默认为 `8770`。 |
-| `MG400_MICROSCOPE_BASE_PATH` | 默认为 `/`。下列路由路径相对于此前缀。 |
-| `MG400_MICROSCOPE_TOKEN` | 至少 24 个可打印 ASCII 字符。绑定非回环地址时必须配置。 |
 | `MG400_MICROSCOPE_SERIAL` | 控制板的稳定 `/dev/serial/by-id/` 路径。 |
 | `MG400_MICROSCOPE_SIDE_STREAM` | go2rtc 独占的侧视相机流。 |
 | `MG400_TOUPCAM_SERIAL` | 可选相机序列号。它与索引只能设置一项。 |
@@ -72,9 +65,6 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | 必填的实测 `MIN,MAX` 整数脉冲，包含零点，且行程不为零。 |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | 必填的实测避让位置，单位为脉冲，必须在限位内。没有归零开关时，必须为 `0`。 |
 | `MG400_MICROSCOPE_HOME_SWITCH` | 必填硬件事实：有已配置的调焦归零开关时为 `1`，没有时为 `0`。 |
-| `MG400_MICROSCOPE_FURNACE_URL` | 炉控元数据接口，默认为 `http://127.0.0.1:8769/`。Olares 上的炉控服务绑定 VPN 地址，应设置为 `http://100.64.0.1:8769/`。 |
-| `MG400_FURNACE_TOKEN` | 读取元数据所用的现有炉控 API 令牌。显微镜不取得炉控控制权。 |
-| `MG400_FURNACE_ARCHIVE_DIR` | 默认为空。操作员挂载归档共享目录后，才能配置绝对路径。 |
 
 真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
 通用环境示例的物理调焦参数为空，转盘微调范围为 `0`。
@@ -88,9 +78,8 @@ MG400_MICROSCOPE_NUDGE_STEPS=20
 ```
 
 不得把演示限位复制到硬件。
-所有请求保留共用的 Host、Origin 和转发头检查。
-受保护的数据和动作路由还要求配置的令牌。
-没有令牌时，只接受没有转发头的回环 Host 值。
+下列路由路径相对于基础路径 `/`。
+服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 控制租约为 3 秒，工作期间必须续租。
 
@@ -224,8 +213,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 完成收尾的录像保留视频分段、`video.timestamps.csv` 和目标时长为 3 分钟的摘要视频。较短片段不会延长。
 取消或失败的录像保留已有本地文件，不保证生成摘要视频。
 收尾要求已有采集帧和有效媒体，主机必须装有 FFmpeg 和 ffprobe。
-配置 `MG400_FURNACE_ARCHIVE_DIR` 后，收尾会验证归档副本，并保留本地文件。
-归档失败时，本地文件仍可用，服务不报告收尾成功。
+收尾后，录像保存在 `/var/lib/mg400/recordings`。
 
 Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。电机停止指令不等待编码器。
 可选参数 `wait_s` 在同一个 `0..15` 秒限时内观察电机和录像的清理结果。
@@ -263,10 +251,10 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 ## 校准与运行文件
 
-| 配置项 | 默认值 | 内容 |
-| --- | --- | --- |
-| `MG400_MICROSCOPE_CALIBRATION_DIR` | `/var/lib/mg400/calibration/microscope` | 校准 CSV、参考图像和侧视相机校准采集。 |
-| `MG400_ORCH_RUNS_DIR` | `/var/lib/mg400/runs` | 自动调焦曲线、物镜切换日志和图像分析输出。 |
+| 目录 | 内容 |
+| --- | --- |
+| `/var/lib/mg400/calibration/microscope` | 校准 CSV、参考图像和侧视相机校准采集。 |
+| `/var/lib/mg400/runs` | 自动调焦曲线、物镜切换日志和图像分析输出。 |
 
 校准路径使用 `microscope.paths.calibration_path()`，运行路径使用 `microscope.paths.run_path()`。
 相对路径按对应根目录解析。
@@ -301,7 +289,6 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 | `MG400_CAMERA_DEVICES` | 按相机预览安装程序顺序排列的稳定设备路径。 |
 | `MG400_MICROSCOPE_SIDE_STREAM` | 侧视相机对应的已配置 go2rtc 流。默认不选择任何流。 |
 | `MG400_CAMERA_MODES` | 可选的逗号分隔 `WIDTHxHEIGHT@FPS` 列表，每个已配置设备对应 1 个值。 |
-| `MG400_CAMERA_CAPTURE_SIZES` | 旧版逗号分隔 `WIDTHxHEIGHT` 列表，每个已配置设备对应 1 个值。 |
 
 启用采集前，确认侧视相机设备路径对应的流。
 模式列表和尺寸列表只能配置其一，同时配置时安装程序拒绝执行。
@@ -350,7 +337,6 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 校准和实验运动前，工具取得主相机、所需侧视相机和独占串口。
 每个所需相机都必须先提供有效首帧。
 侧视采集通过 `MG400_CAMERA_DEVICES`、`MG400_CAMERA_MODES` 和 `MG400_MICROSCOPE_SIDE_STREAM` 选择物理设备及模式。
-旧版 `MG400_CAMERA_CAPTURE_SIZES` 规则仍然适用。
 受监督适配器通过 `CAP_V4L2` 直接打开稳定设备路径，并要求 `uvcvideo` 驱动。
 它在清理前始终保留同一个 MMAP 采集队列。go2rtc 已占用该队列时，工具拒绝启动。
 采集开始后，工具不会修改格式、重新打开设备或重连。
@@ -405,7 +391,7 @@ uv run python -m microscope.experiments --help
 | `python -m microscope.calibrate light` | 执行轻量物镜校准，写入 `light_objective_calibration.csv`。 |
 
 `--reference` 为物镜或轻量物镜校准选择私有校准 PNG，默认为 `objective_reference.png`。
-`--output` 选择 `MG400_MICROSCOPE_CALIBRATION_DIR` 内的文件。
+`--output` 选择 `/var/lib/mg400/calibration/microscope` 内的文件。
 校准可以替换现有的自有私有输出文件。若要保留原结果，选择其他输出名称。
 参考图像采集必须通过终端和设备占用检查，但不要求运动测量值或零点确认。
 它接受 `[focus]` 中的相机尺寸，并在清理时停止和禁用电机。
@@ -493,7 +479,7 @@ python -m microscope.calibrate setup
 ### 实验命令
 
 使用 `python -m microscope.experiments focus|switch|combined` 并提供所需配置。
-每条命令只执行 1 轮。`--output` 选择 `MG400_ORCH_RUNS_DIR` 内的新私有目录。
+每条命令只执行 1 轮。`--output` 选择 `/var/lib/mg400/runs` 内的新私有目录。
 未指定时，输出位于 `microscope/experiments/` 下的独立命令目录。
 配置、汇总行、调焦曲线、切换日志和可用的最终图像都保留在该目录。
 失败时保留部分结果和终止失败行。

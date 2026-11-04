@@ -166,8 +166,6 @@ class RobotPanelState:
         self._locked = False
         self._fault = False
         self._faults = 0
-        # Set when a stop or disable failed while the controller reported no alarm.
-        self._non_alarm_fault = False
         self._disable_verified = False
         self._safety_workers = 0
         self._safety_actions = set()
@@ -850,8 +848,11 @@ class RobotPanelState:
         except Exception as error:
             with self._lock:
                 self._record_fault()
-                self._message = f"Robot stop or disable is unconfirmed: {error}"
-            # Only the message changes. The fault and the lock stay.
+                self._message = (
+                    f"Warning: robot stop or disable is unconfirmed: {error}. "
+                    + self._recovery_hint()
+                )
+            # Only the message changes. The fault and the lock stay until Recover.
             if control.rejection is not None and self._disabled_at_rest(control):
                 with self._lock:
                     self._message = (
@@ -897,22 +898,12 @@ class RobotPanelState:
     def _record_fault(self):
         self._fault = True
         self._faults += 1
-        if not self._alarm_now():
-            self._non_alarm_fault = True
 
     def _recoverable(self):
-        """Whether Recover may confirm rest after the alarm behind the fault cleared elsewhere."""
-        return (
-            self._fault
-            and not self._non_alarm_fault
-            and not self._clearing
-            and self._fresh()
-            and not self._alarm_now()
-        )
+        """Whether Recover may confirm rest after an unconfirmed stop, without an alarm."""
+        return self._fault and not self._clearing and self._fresh() and not self._alarm_now()
 
     def _recovery_hint(self):
-        if self._non_alarm_fault:
-            return "Check the robot, then restart the panel service."
         if self._alarm_now():
             return "Fix the alarm cause, then click Clear alarm."
         return "Check the robot, then click Recover."
@@ -975,8 +966,8 @@ class RobotPanelState:
         In an alarm the controller refuses DisableRobot() and has already halted motion.
         A verified disable and rest after the alarm clears replace the stop that the
         alarm prevented. clear is False when the alarm already cleared elsewhere, for
-        example with Collision Resume on the arm. Unknown command ordering, or a stop
-        that failed without an alarm, still keeps control locked.
+        example with Collision Resume on the arm. Recover also clears a stop that failed
+        without an alarm.
         """
         succeeded = False
         try:
@@ -991,18 +982,6 @@ class RobotPanelState:
                         for alarm in alarms
                     )
                     self._message = f"The alarm remains: {names or 'robot still reports an error'}."
-                    return
-                if control.ordering_unknown or control.command_pending:
-                    self._message = (
-                        "The alarm is cleared, but command ordering remains unknown. "
-                        "Check the robot, then restart the panel service."
-                    )
-                    return
-                if self._non_alarm_fault:
-                    self._message = (
-                        "The alarm is cleared, but an earlier stop failed without an alarm. "
-                        "Check the robot, then restart the panel service."
-                    )
                     return
                 recovery = self._control = self._new_control()
                 faults = self._faults

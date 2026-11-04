@@ -31,7 +31,7 @@ def mode(path):
 
 
 @pytest.fixture
-def host(module, monkeypatch, tmp_path):
+def host(module, monkeypatch, tmp_path, tmp_path_factory):
     code = tmp_path / "opt/mg400"
     (code / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
@@ -54,6 +54,14 @@ def host(module, monkeypatch, tmp_path):
     globals_ = module.main.__globals__
     monkeypatch.setattr(globals_["sys"], "platform", "linux")
     monkeypatch.setattr(globals_["os"], "geteuid", lambda: 0)
+    # The microscope is a default service. Model its account and device groups.
+    monkeypatch.setattr(
+        globals_["grp"],
+        "getgrnam",
+        lambda name: SimpleNamespace(gr_gid={"dialout": 20, "video": 44}[name]),
+    )
+    monkeypatch.setattr(globals_["pwd"], "getpwuid", lambda uid: SimpleNamespace(pw_name="lab1000"))
+    monkeypatch.setattr(globals_["os"], "getgrouplist", lambda name, gid: [gid, 27])
     owners = {}
 
     def chown(fd, uid, gid):
@@ -63,9 +71,14 @@ def host(module, monkeypatch, tmp_path):
 
     out = io.StringIO()
 
-    def install(*argv, runner=None):
+    caddy = tmp_path_factory.mktemp("caddy") / "caddy"
+    caddy.write_bytes(b"offline Caddy fixture; never execute")
+
+    def install(*argv, runner=None, caddy_binary=True):
+        # The proxy is mandatory. Supply a Caddy binary unless the test gives its own.
+        extra = ["--caddy", str(caddy)] if caddy_binary and "--caddy" not in argv else []
         return module.main(
-            ["--uv", "/usr/bin/uv", *argv],
+            ["--uv", "/usr/bin/uv", *argv, *extra],
             host=module.Host(tmp_path, source=code),
             run=runner or run,
             chown=chown,
@@ -99,12 +112,30 @@ def toupcam_library(host, module, monkeypatch):
     return library
 
 
-def test_toupcam_installs_verified_snapshot_before_microscope_service_exists(host, toupcam_library):
+def root_owned_directories(module, monkeypatch, *directories):
+    """Model directories that root created, also when the tests do not run as root."""
+    inodes = {directory.stat().st_ino for directory in directories}
+    original_fstat = os.fstat
+
+    def fstat(fd):
+        info = original_fstat(fd)
+        if info.st_ino not in inodes:
+            return info
+        values = list(info)
+        values[4] = values[5] = 0
+        return os.stat_result(values)
+
+    monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
+
+
+def test_toupcam_installs_verified_snapshot(host, module, monkeypatch, toupcam_library):
     original = toupcam_library.read_bytes()
     target = host.root / "usr/local/lib/mg400/libtoupcam.so"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"old SDK")
     target.chmod(0o600)
+    directories = ("usr", "usr/local", "usr/local/lib", "usr/local/lib/mg400")
+    root_owned_directories(module, monkeypatch, *(host.root / name for name in directories))
 
     def run(command, **options):
         host.commands.append((command, options))
@@ -117,8 +148,6 @@ def test_toupcam_installs_verified_snapshot_before_microscope_service_exists(hos
     assert mode(target) == 0o755 and host.owner(target) == (0, 0)
     assert mode(target.parent) == 0o755 and host.owner(target.parent) == (0, 0)
     assert toupcam_library.read_bytes() != original
-    assert not (host.units / "mg400-microscope.service").exists()
-    assert not (host.units / "mg400-furnace.service").exists()
     assert not any("toupcam" in command[0] for command in names(host.commands))
 
 
@@ -194,52 +223,38 @@ def test_toupcam_dry_run_validates_and_lists_without_changes(host, toupcam_libra
     assert all(command[0] in {"/usr/bin/python3", "systemctl"} for command in names(host.commands))
 
 
-def test_toupcam_without_option_keeps_existing_library(host):
-    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
-    target.parent.mkdir(parents=True)
-    target.write_bytes(b"existing owner-managed SDK")
-    target.chmod(0o640)
-    assert host.install() == 0
-    assert target.read_bytes() == b"existing owner-managed SDK"
-    assert mode(target) == 0o640 and host.owner(target) is None
-
-
 def test_first_install_creates_settings_data_units_and_command(module, host):
     assert host.install() == 0
 
     settings = module.parse_settings(host.settings.read_text())
     example = module.parse_settings((ROOT / "deploy/mg400.env.example").read_text())
-    assert settings.keys() == example.keys()
-    tokens = [settings["MG400_PANEL_TOKEN"], settings["MG400_STAGE_TOKEN"]]
-    assert all(len(token) >= 24 for token in tokens) and tokens[0] != tokens[1]
+    assert settings == example
+    assert not any(key.endswith("_TOKEN") for key in settings)
     assert mode(host.settings) == 0o600
-    assert {key: value for key, value in settings.items() if not key.endswith("_TOKEN")} == {
-        key: value for key, value in example.items() if not key.endswith("_TOKEN")
-    }
     assert [(path.name, mode(path)) for path in sorted(host.data.rglob("*")) if path.is_dir()] == [
         ("calibration", 0o750),
         ("cameras", 0o700),
+        ("microscope", 0o750),
         ("camera", 0o700),
+        ("furnace", 0o750),
         ("locks", 0o700),
+        ("recordings", 0o750),
         ("robot", 0o750),
+        ("runs", 0o750),
         ("stage", 0o700),
         ("work", 0o750),
+        ("zones", 0o750),
     ]
     assert mode(host.data) == 0o750
-    assert len((host.data / "camera/preview.key").read_text().strip()) >= 32
-    assert mode(host.data / "camera/preview.key") == 0o600
+    assert not (host.data / "camera/preview.key").exists()
     assert {path.name for path in host.units.iterdir()} == {
         path.name
         for path in (ROOT / "config/systemd").iterdir()
         if path.name
         not in {
-            "mg400-furnace.service",
             "mg400-thermal.service",
             "mg400-vision.service",
-            "mg400-microscope.service",
-            "mg400-orchestrator.service",
             "mg400-gateway.service",
-            "mg400-proxy.service",
         }
     }
     for unit in host.units.iterdir():
@@ -259,6 +274,12 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
             "sync",
             "--locked",
             "--no-default-groups",
+            "--group",
+            "furnace",
+            "--group",
+            "microscope",
+            "--group",
+            "orchestrator",
             "--group",
             "stage",
             "--group",
@@ -280,54 +301,65 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         "stage",
         "calibration",
         "calibration/cameras",
-        "camera/preview.key",
+        "calibration/microscope",
+        "furnace",
+        "recordings",
+        "runs",
     ):
         assert host.owner(host.data / name) == (1000, 1000), name
     assert host.owner(host.settings) == (0, 0)
     report = host.out.getvalue()
     assert "Installed commit abc1234." in report
     assert "Cameras are off" in report
+    assert "The Toupcam library is not installed" in report
     assert "No service was started, stopped or restarted" in report
     # The installer never starts, stops or restarts a robot service.
     assert not [command for command in names(host.commands) if "start" in command[1:2]]
 
 
-def test_repeated_install_keeps_tokens_keys_and_settings(module, host):
+def test_repeated_install_keeps_settings(module, host):
     assert host.install() == 0
     settings = host.settings.read_text()
-    key = (host.data / "camera/preview.key").read_text()
     assert host.install() == 0
     assert host.settings.read_text() == settings
-    assert (host.data / "camera/preview.key").read_text() == key
     assert str(host.settings) not in host.out.getvalue().split("Installed")[1]
 
 
 def test_existing_settings_keep_their_values_and_gain_missing_keys(module, host):
     host.settings.parent.mkdir(parents=True)
     host.settings.write_text(
-        "# Olares\nMG400_STAGE_BIND=100.0.0.1\nMG400_STAGE_TOKEN=\nMG400_STAGE_SERIAL=/dev/x\n"
+        "# Olares\nMG400_STAGE_BIND=100.0.0.1\nMG400_STAGE_TOKEN=x\nMG400_STAGE_SERIAL=/dev/x\n"
     )
     assert host.install() == 0
     text = host.settings.read_text()
     settings = module.parse_settings(text)
-    assert text.startswith("# Olares\nMG400_STAGE_BIND=100.0.0.1\nMG400_STAGE_TOKEN=")
+    assert text.startswith("# Olares\nMG400_STAGE_BIND=100.0.0.1\nMG400_STAGE_SERIAL=/dev/x\n")
     assert settings["MG400_STAGE_SERIAL"] == "/dev/x"
-    assert len(settings["MG400_STAGE_TOKEN"]) >= 24
-    assert settings["MG400_PANEL_BIND"] == "127.0.0.1"
-    assert len(settings["MG400_PANEL_TOKEN"]) >= 24
+    assert "MG400_STAGE_TOKEN" not in settings
+    assert settings["MG400_PROXY_PORT"] == "8080"
     assert text.count("MG400_STAGE_BIND=") == 1
-    assert f"add to {host.settings}: MG400_STAGE_TOKEN, MG400_ROBOT_HOST" in host.out.getvalue()
+    assert f"update {host.settings}: MG400_STAGE_TOKEN, MG400_ROBOT_HOST" in host.out.getvalue()
 
 
 def test_merge_keeps_set_values_comments_and_quotes(module):
-    example = "# Example\nA=1\nB_TOKEN=\nC=3\n"
-    current = '# Mine\nA="custom value"\nB_TOKEN=keep\n'
-    text, changed = module.merge_settings(current, example, token=lambda: "new")
-    assert text == '# Mine\nA="custom value"\nB_TOKEN=keep\nC=3\n'
+    example = "# Example\nA=1\nC=3\n"
+    current = '# Mine\nA="custom value"\nB=keep\n'
+    text, changed = module.merge_settings(current, example)
+    assert text == '# Mine\nA="custom value"\nB=keep\nC=3\n'
     assert changed == ["C"]
-    assert module.parse_settings(text) == {"A": "custom value", "B_TOKEN": "keep", "C": "3"}
-    text, changed = module.merge_settings(None, example, token=lambda: "new")
-    assert (text, changed) == ("# Example\nA=1\nB_TOKEN=new\nC=3\n", ["B_TOKEN"])
+    assert module.parse_settings(text) == {"A": "custom value", "B": "keep", "C": "3"}
+    assert module.merge_settings(None, example) == (example, [])
+
+
+def test_merge_removes_service_tokens_and_empty_removed_settings(module):
+    example = "A=\n"
+    current = (
+        "A=\nMG400_PANEL_TOKEN=old\nMG400_ORCH_ROBOT_TOKEN=\nMG400_ORCH_ROBOT_URL=\n"
+        "MG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=keep\n"
+    )
+    text, changed = module.merge_settings(current, example)
+    assert text == "A=\nMG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=keep\n"
+    assert changed == ["MG400_PANEL_TOKEN", "MG400_ORCH_ROBOT_TOKEN", "MG400_ORCH_ROBOT_URL"]
 
 
 def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, tmp_path):
@@ -487,22 +519,19 @@ def test_settings_lines_that_systemd_could_read_differently_are_refused(module, 
         module.parse_settings(f"# ok\n{line}\n")
 
 
-def test_merge_sees_spaced_keys_and_fills_a_quoted_empty_token(module):
-    example = "MG400_ROBOT_HOST=\nB_TOKEN=\n"
-    current = 'MG400_ROBOT_HOST = robot.test\nB_TOKEN=""\n'
-    text, changed = module.merge_settings(current, example, token=lambda: "new")
-    assert text == "MG400_ROBOT_HOST = robot.test\nB_TOKEN=new\n"
-    assert changed == ["B_TOKEN"]
+def test_merge_sees_spaced_keys(module):
+    example = "MG400_ROBOT_HOST=\nB=\n"
+    current = 'MG400_ROBOT_HOST = robot.test\nB=""\n'
+    text, changed = module.merge_settings(current, example)
+    assert text == current and changed == []
 
 
 @pytest.mark.parametrize(
     ("settings", "message"),
     [
         ("MG400_PANEL_BIND 0.0.0.0\n", "is not KEY=VALUE"),
-        ("MG400_CONTROLLER_LOCK_DIR=\n", "MG400_CONTROLLER_LOCK_DIR to an absolute path"),
-        ("MG400_CONTROLLER_LOCK_DIR=locks\n", "MG400_CONTROLLER_LOCK_DIR to an absolute path"),
     ],
-    ids=["unreadable-line", "empty-lock-directory", "relative-lock-directory"],
+    ids=["unreadable-line"],
 )
 def test_unsafe_settings_stop_before_any_change(host, capsys, settings, message):
     host.settings.parent.mkdir(parents=True)
@@ -542,16 +571,6 @@ def test_symbolic_link_in_the_data_directory_is_refused(host, capsys, tmp_path):
     assert host.install() == 1
     assert "is not a directory" in capsys.readouterr().err
     assert mode(victim) == 0o755 and host.owner(victim) is None
-
-
-def test_planted_key_link_is_kept_and_never_followed(host, tmp_path):
-    victim = tmp_path / "victim"
-    victim.write_text("keep\n")
-    (host.data / "camera").mkdir(parents=True)
-    (host.data / "camera/preview.key").symlink_to(victim)
-    assert host.install() == 0
-    assert victim.read_text() == "keep\n" and host.owner(victim) is None
-    assert (host.data / "camera/preview.key").is_symlink()
 
 
 def test_settings_rights_are_repaired_on_every_run(host):
@@ -656,7 +675,7 @@ def add_optional_service(
         stream.write(
             f'\n[[service]]\nname = "{name}"\nunits = ["mg400-{name}.service"]\n'
             f'optional = true\nvenv = "{venv}"\ngroups = {json.dumps(list(groups))}\n'
-            f'token = "MG400_{name.upper()}_TOKEN"\nport = 8799\n'
+            f"port = 8799\n"
             f"assets = {json.dumps(list(asset_names))}\n"
         )
     (host.code / "config/systemd" / f"mg400-{name}.service").write_text("[Service]\n")
@@ -717,9 +736,6 @@ def test_vision_selection_installs_isolated_runtime_required_weights_and_private
     assert target.read_bytes() == source.read_bytes()
     assert mode(target) == 0o640 and host.owner(target) == (1000, 1000)
     assert opener.call_count == (0 if offline else 1)
-    settings = module.parse_settings(host.settings.read_text())
-    assert len(settings["MG400_VISION_TOKEN"]) >= 24
-    assert settings["MG400_ORCH_VISION_TOKEN"] == settings["MG400_VISION_TOKEN"]
     assert (host.units / "mg400-vision.service").read_bytes() == (
         ROOT / "config/systemd/mg400-vision.service"
     ).read_bytes()
@@ -843,7 +859,7 @@ def test_vision_asset_preflight_refuses_invalid_manifest_or_target_before_change
         ('units = ["mg400-stage-panel.service"]', 'units = ["mg400-web-panel.service"]'),
         ('groups = ["stage"]', 'groups = ["stage", "stage"]'),
         ('groups = ["tools"]', 'groups = ["--all-groups"]'),
-        ('token = "MG400_PANEL_TOKEN"', 'token = "OTHER_TOKEN"'),
+        ("port = 8766", 'port = 8766\ntoken = "MG400_PANEL_TOKEN"'),
         ("port = 8766", "port = true"),
         ("port = 8766", "port = 65536"),
         ("port = 8766", "port = -1"),
@@ -868,7 +884,7 @@ def test_registry_loader_refuses_symlink(module, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "selection", ["unknown", "optional,optional", "optional,", ",optional", "web", "optional,,web"]
+    "selection", ["unknown", "optional,optional", "optional,", ",optional", "optional,,web"]
 )
 def test_bad_optional_selection_refuses_before_host_changes(host, selection):
     add_optional_service(host)
@@ -890,6 +906,12 @@ def test_mandatory_groups_are_explicit_and_ignore_external_venv(host, monkeypatc
         "--locked",
         "--no-default-groups",
         "--group",
+        "furnace",
+        "--group",
+        "microscope",
+        "--group",
+        "orchestrator",
+        "--group",
         "stage",
         "--group",
         "tools",
@@ -907,7 +929,18 @@ def test_enabled_optional_service_uses_its_separate_environment(host):
         (command, options) for command, options in host.commands if command[0] == "/usr/bin/uv"
     ]
     assert len(syncs) == 2
-    assert syncs[0][0][4:8] == ["--group", "stage", "--group", "tools"]
+    assert syncs[0][0][4:14] == [
+        "--group",
+        "furnace",
+        "--group",
+        "microscope",
+        "--group",
+        "orchestrator",
+        "--group",
+        "stage",
+        "--group",
+        "tools",
+    ]
     assert syncs[1][0] == [
         "/usr/bin/uv",
         "sync",
@@ -933,6 +966,12 @@ def test_optional_groups_in_shared_environment_are_deduplicated(host):
             "sync",
             "--locked",
             "--no-default-groups",
+            "--group",
+            "furnace",
+            "--group",
+            "microscope",
+            "--group",
+            "orchestrator",
             "--group",
             "stage",
             "--group",
@@ -1058,9 +1097,12 @@ def test_udev_symlinks_are_refused_before_changes(host, optional_udev, tmp_path,
     assert sentinel.read_text() == "keep"
 
 
-def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
-    assert host.install("--dry-run") == 0
+def test_default_dry_run_lists_every_step(host):
+    binary = host.root / "offline-caddy"
+    binary.write_bytes(b"offline Caddy fixture; never execute")
+    assert host.install("--dry-run", "--caddy", str(binary)) == 0
     assert host.out.getvalue().replace(str(host.root), "<host>").splitlines() == [
+        "The Toupcam library is not installed. Pass it with --toupcam PATH.",
         "Would ensure <host>/etc/mg400 (0755, 0:0)",
         "Would create <host>/etc/mg400/mg400.env",
         "Would ensure <host>/var/lib/mg400 (0750, 0:1000)",
@@ -1071,15 +1113,27 @@ def test_default_dry_run_preserves_existing_steps_and_adds_only_labctl(host):
         "Would ensure <host>/var/lib/mg400/robot (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/calibration (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/calibration/cameras (0700, 1000:1000)",
-        "Would create <host>/var/lib/mg400/camera/preview.key",
+        "Would ensure <host>/var/lib/mg400/furnace (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/calibration/microscope (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/recordings (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/runs (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/zones (0750, 1000:1000)",
         "Would ensure <host>/opt/mg400 (0750, 0:1000)",
         "Would prepare Python environment <host>/opt/mg400/.venv",
-        "Would run: /usr/bin/uv sync --locked --no-default-groups "
-        "--group stage --group tools --python /usr/bin/python3",
+        "Would run: /usr/bin/uv sync --locked --no-default-groups --group furnace "
+        "--group microscope --group orchestrator --group stage --group tools "
+        "--python /usr/bin/python3",
+        "Would ensure <host>/usr/local/lib/mg400 (0755, 0:0)",
+        "Would install <host>/offline-caddy as <host>/usr/local/lib/mg400/caddy",
+        "Would write <host>/etc/mg400/Caddyfile",
         "Would install <host>/etc/systemd/system/mg400-camera-capture.service",
         "Would install <host>/etc/systemd/system/mg400-camera-preview.service",
+        "Would install <host>/etc/systemd/system/mg400-furnace.service",
         "Would install <host>/etc/systemd/system/mg400-gripper-collector.path",
         "Would install <host>/etc/systemd/system/mg400-gripper-collector.service",
+        "Would install <host>/etc/systemd/system/mg400-microscope.service",
+        "Would install <host>/etc/systemd/system/mg400-orchestrator.service",
+        "Would install <host>/etc/systemd/system/mg400-proxy.service",
         "Would install <host>/etc/systemd/system/mg400-stage-panel.service",
         "Would install <host>/etc/systemd/system/mg400-web-panel.service",
         "Would run: systemctl daemon-reload",
@@ -1127,8 +1181,7 @@ def test_furnace_json_exception_does_not_apply_to_other_settings(module):
         module.parse_settings("OTHER='{\"0\":0}'\n")
 
 
-def test_enabled_furnace_installs_private_state_directory_and_own_group(module, host):
-    select_optional(host, "furnace")
+def test_furnace_installs_by_default_with_private_state_directory_and_own_group(module, host):
     example = host.code / "deploy/mg400.env.example"
     example.write_text(
         example.read_text().replace(
@@ -1143,7 +1196,6 @@ def test_enabled_furnace_installs_private_state_directory_and_own_group(module, 
         module.parse_settings(host.settings.read_text())["MG400_FURNACE_GAS_MAP"]
         == '{"0":"Operator label"}'
     )
-    assert len(module.parse_settings(host.settings.read_text())["MG400_FURNACE_TOKEN"]) >= 24
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("furnace") - 1] == "--group"
     assert not any(
@@ -1157,67 +1209,6 @@ def test_furnace_json_setting_rejects_del(module):
         module.parse_settings('MG400_FURNACE_GAS_MAP=\'{"0":"bad\x7flabel"}\'')
 
 
-@pytest.mark.parametrize(
-    "service,source",
-    [
-        ("ROBOT", "PANEL"),
-        *[(name, name) for name in ("STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")],
-    ],
-)
-def test_blank_alias_copies_generated_source_even_when_alias_precedes_it(module, service, source):
-    alias, token_key = f"MG400_ORCH_{service}_TOKEN", f"MG400_{source}_TOKEN"
-    generate = Mock(return_value="generated-direct-token")
-    text, changed = module.merge_settings(None, f'{alias}=""\n{token_key}=\n', token=generate)
-    assert module.parse_settings(text) == {
-        alias: "generated-direct-token",
-        token_key: "generated-direct-token",
-    }
-    generate.assert_called_once_with()
-    assert set(changed) == {alias, token_key}
-    again, changed = module.merge_settings(text, f"{alias}=\n{token_key}=\n", token=generate)
-    assert again == text and changed == []
-    generate.assert_called_once_with()
-
-
-def test_missing_alias_copies_existing_source_without_generating_a_token(module):
-    text, changed = module.merge_settings(
-        'MG400_PANEL_TOKEN=" token with significant spaces "\n',
-        "MG400_ORCH_ROBOT_TOKEN=\n",
-        token=Mock(side_effect=AssertionError("An alias is never generated")),
-    )
-    assert (
-        module.parse_settings(text)["MG400_ORCH_ROBOT_TOKEN"] == " token with significant spaces "
-    )
-    assert changed == ["MG400_ORCH_ROBOT_TOKEN"]
-
-
-@pytest.mark.parametrize("last_alias", ['""', '"explicit alias"'])
-def test_alias_merge_uses_last_source_and_alias_without_changing_nonempty_values(
-    module, last_alias
-):
-    current = (
-        "MG400_PANEL_TOKEN=earlier-source\nMG400_ORCH_ROBOT_TOKEN=earlier-alias\n"
-        f"MG400_PANEL_TOKEN=final-source\nMG400_ORCH_ROBOT_TOKEN={last_alias}\n"
-    )
-    text, changed = module.merge_settings(
-        current, "", token=Mock(side_effect=AssertionError("No independent alias token"))
-    )
-    settings = module.parse_settings(text)
-    assert settings["MG400_ORCH_ROBOT_TOKEN"] == (
-        "final-source" if last_alias == '""' else "explicit alias"
-    )
-    assert text.startswith(current.rsplit("MG400_ORCH_ROBOT_TOKEN=", 1)[0])
-    assert changed == (["MG400_ORCH_ROBOT_TOKEN"] if last_alias == '""' else [])
-
-
-def test_alias_without_a_source_stays_empty_and_is_never_generated(module):
-    example = "MG400_ORCH_THERMAL_TOKEN=\n"
-    text, changed = module.merge_settings(
-        None, example, token=Mock(side_effect=AssertionError("No source token exists"))
-    )
-    assert text == example and changed == []
-
-
 def test_enabled_orchestrator_installs_private_data_and_group_without_starting_it(module, host):
     select_optional(host, "orch")
     assert host.install() == 0
@@ -1226,11 +1217,9 @@ def test_enabled_orchestrator_installs_private_data_and_group_without_starting_i
         assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
         assert list(directory.iterdir()) == []
     assert (host.units / "mg400-orchestrator.service").exists()
-    settings = module.parse_settings(host.settings.read_text())
-    assert len(settings["MG400_ORCH_TOKEN"]) >= 24
-    for service, source in (("ROBOT", "PANEL"), ("STAGE", "STAGE"), ("FURNACE", "FURNACE")):
-        assert settings[f"MG400_ORCH_{service}_TOKEN"] == settings[f"MG400_{source}_TOKEN"]
-    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
+    assert not any(
+        key.endswith("_TOKEN") for key in module.parse_settings(host.settings.read_text())
+    )
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("orchestrator") - 1] == "--group"
     assert not any(
@@ -1247,26 +1236,13 @@ def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricatin
     directory = host.data / "runs"
     assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
     assert list(directory.iterdir()) == []
-    assert not (host.data / "zones").exists()
     assert (host.units / "mg400-gateway.service").exists()
-    settings = module.parse_settings(host.settings.read_text())
-    assert len(settings["MG400_GATEWAY_TOKEN"]) >= 24
-    assert settings["MG400_ORCH_STAGE_TOKEN"] == settings["MG400_STAGE_TOKEN"]
-    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("gateway") - 1] == "--group"
     assert not any(
         command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
         for command, _ in host.commands
     )
-
-
-def test_disabled_orchestrator_has_no_directories_unit_or_group(host):
-    assert host.install() == 0
-    assert not (host.data / "runs").exists() and not (host.data / "zones").exists()
-    assert not (host.units / "mg400-orchestrator.service").exists()
-    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
-    assert "orchestrator" not in sync
 
 
 def test_selected_orchestrator_refuses_symlinked_zone_directory(host, tmp_path):
@@ -1283,11 +1259,7 @@ def test_selected_orchestrator_refuses_symlinked_zone_directory(host, tmp_path):
 
 
 def proxy_settings(host, **overrides):
-    values = {
-        "MG400_OPTIONAL_SERVICES": "proxy",
-        "MG400_PANEL_BASE_PATH": "/robot/",
-        "MG400_STAGE_BASE_PATH": "/stage/",
-    }
+    values = {"MG400_OPTIONAL_SERVICES": "proxy"}
     values.update(overrides)
     host.settings.parent.mkdir(parents=True, exist_ok=True)
     host.settings.write_text(
@@ -1300,7 +1272,7 @@ def proxy_settings(host, **overrides):
     return binary
 
 
-def test_proxy_install_is_optional_private_and_never_starts_it(host, module):
+def test_proxy_install_is_private_and_never_starts_it(host, module):
     binary = proxy_settings(host)
     assert host.install("--caddy", str(binary)) == 0
     caddy = host.root / "usr/local/lib/mg400/caddy"
@@ -1310,10 +1282,6 @@ def test_proxy_install_is_optional_private_and_never_starts_it(host, module):
     assert mode(config) == 0o640 and host.owner(config) == (0, 1000)
     assert (host.units / "mg400-proxy.service").is_file()
     text = config.read_text()
-    settings = module.parse_settings(host.settings.read_text())
-    assert all(
-        value not in text for key, value in settings.items() if key.endswith("_TOKEN") and value
-    )
     assert "http://:8080" in text and "bind 127.0.0.1" in text
     assert "@ORCH_PORT@" not in text and "/robot" not in text
     commands = names(host.commands)
@@ -1324,6 +1292,12 @@ def test_proxy_install_is_optional_private_and_never_starts_it(host, module):
     sync = next(command for command in commands if command[:2] == ["/usr/bin/uv", "sync"])
     assert sync[3:] == [
         "--no-default-groups",
+        "--group",
+        "furnace",
+        "--group",
+        "microscope",
+        "--group",
+        "orchestrator",
         "--group",
         "stage",
         "--group",
@@ -1362,8 +1336,6 @@ def test_proxy_dry_run_checks_without_any_host_mutation(host):
         {"MG400_PROXY_PORT": "8772"},
         {"MG400_ORCH_PORT": "1985"},
         {"MG400_ORCH_PORT": "http://elsewhere"},
-        {"MG400_CAMERA_BIND": "0.0.0.0"},
-        {"MG400_OPTIONAL_SERVICES": "proxy,orch", "MG400_ORCH_BASE_PATH": "/"},
     ],
 )
 def test_proxy_invalid_configuration_refuses_before_host_mutation(host, settings):
@@ -1414,16 +1386,12 @@ def test_proxy_refuses_symlinked_binary_parent(host):
     assert not host.data.exists()
 
 
-def test_proxy_requires_binary_and_explicit_optional_selection(host):
-    binary = proxy_settings(host)
-    assert host.install() == 1
-    assert not host.data.exists()
-    proxy_settings(host, MG400_OPTIONAL_SERVICES="")
-    assert host.install("--caddy", str(binary)) == 1
+def test_proxy_requires_a_caddy_binary(host):
+    assert host.install(caddy_binary=False) == 1
     assert not host.data.exists()
 
 
-def test_proxy_rendering_keeps_verified_origins_upgrade_defaults_and_secret_path(host, module):
+def test_proxy_rendering_keeps_verified_origins_and_upgrade_defaults(host, module):
     proxy_settings(host, MG400_PROXY_BIND="::1", MG400_ORCH_PORT="9001")
     settings = module.parse_settings(host.settings.read_text())
     registry = module.load_services(host.code / "deploy/services.toml")
@@ -1483,7 +1451,7 @@ def test_proxy_reuses_a_safe_existing_binary_without_executing_or_replacing_it(
     proxy_settings(host)
     binary = installed_caddy(host, module, monkeypatch, group=group, rights=rights)
     inode = binary.stat().st_ino
-    assert host.install() == 0
+    assert host.install(caddy_binary=False) == 0
     assert binary.stat().st_ino == inode
     assert (host.settings.parent / "Caddyfile").is_file()
     assert not any(command[0] == str(binary) for command in names(host.commands))
@@ -1498,7 +1466,7 @@ def test_proxy_refuses_an_unsafe_existing_binary_before_host_changes(
 ):
     proxy_settings(host)
     binary = installed_caddy(host, module, monkeypatch, owner=owner, rights=rights)
-    assert host.install() == 1
+    assert host.install(caddy_binary=False) == 1
     assert binary.read_bytes() == b"existing offline Caddy fixture"
     assert not host.data.exists()
 
@@ -1509,7 +1477,7 @@ def test_proxy_other_execute_cannot_override_matching_group_permissions(
 ):
     proxy_settings(host)
     installed_caddy(host, module, monkeypatch, group=1000, rights=rights)
-    assert host.install() == 1
+    assert host.install(caddy_binary=False) == 1
     assert not host.data.exists()
 
 
@@ -1534,14 +1502,9 @@ def inventory_udev(module, host, monkeypatch):
     return host.code / "config/udev"
 
 
-@pytest.mark.parametrize("furnace", [False, True])
-def test_inventory_udev_install_selects_only_registered_enabled_services(
-    host, inventory_udev, furnace
-):
-    if furnace:
-        select_optional(host, "furnace")
+def test_inventory_udev_install_selects_only_registered_enabled_services(host, inventory_udev):
     assert host.install() == 0
-    expected = {"camera", "collector", "stage"} | ({"furnace"} if furnace else set())
+    expected = {"camera", "collector", "stage", "furnace", "microscope"}
     rules = host.root / "etc/udev/rules.d"
     assert {p.name for p in rules.iterdir()} == {f"70-mg400-{name}.rules" for name in expected}
     for name in expected:
@@ -1556,16 +1519,14 @@ def test_inventory_udev_install_selects_only_registered_enabled_services(
 
 
 def test_inventory_udev_dry_run_writes_nothing_and_executes_no_udev(host, inventory_udev):
-    select_optional(host, "furnace")
     assert host.install("--dry-run") == 0
     assert not host.settings.exists()
     assert not (host.root / "etc/udev").exists()
     assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]
     output = host.out.getvalue()
-    for name in ("camera", "collector", "stage", "furnace"):
+    for name in ("camera", "collector", "stage", "furnace", "microscope"):
         assert f"70-mg400-{name}.rules" in output
-    for name in ("thermal", "microscope"):
-        assert f"70-mg400-{name}.rules" not in output
+    assert "70-mg400-thermal.rules" not in output
     assert "Would run: udevadm control --reload-rules" in output
     assert "Would run: udevadm trigger --subsystem-match=usb" in output
 
@@ -1769,12 +1730,6 @@ def test_enabled_thermal_installs_private_roi_directory_group_and_usb_rule(
     assert rule.read_text() == expected.replace("@SERVICE_GROUP@", "lab1000")
     assert 'ATTR{serial}=="P1016021DG040100208*"' in rule.read_text()
     assert mode(rule) == 0o644 and host.owner(rule) == (0, 0)
-    settings = module.parse_settings(host.settings.read_text())
-    assert settings["MG400_THERMAL_BIND"] == "127.0.0.1"
-    assert settings["MG400_THERMAL_PORT"] == "8768"
-    assert settings["MG400_THERMAL_BASE_PATH"] == "/"
-    assert len(settings["MG400_THERMAL_TOKEN"]) >= 24
-    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("thermal") - 1] == "--group"
     assert not any(
@@ -1807,9 +1762,7 @@ def test_thermal_dry_run_lists_preparation_without_writes_or_commands(host, inve
     assert "--group thermal" in output
 
 
-def test_thermal_install_preserves_existing_regions_and_explicit_token(
-    module, host, inventory_udev
-):
+def test_thermal_install_preserves_existing_regions(module, host, inventory_udev):
     from thermal_cam.roi import load_regions
 
     select_optional(host, "thermal")
@@ -1819,15 +1772,10 @@ def test_thermal_install_preserves_existing_regions_and_explicit_token(
     regions.write_text("[regions.crucible]\nx0=1\ny0=2\nx1=3\ny1=4\n")
     regions.chmod(0o640)
     original = regions.read_bytes()
-    host.settings.parent.mkdir(parents=True)
-    host.settings.write_text("MG400_THERMAL_TOKEN=operator-token-0123456789abcdef\n")
     assert host.install() == 0
     assert regions.read_bytes() == original
     assert mode(regions) == 0o640
     assert load_regions(regions)["crucible"].bounds() == {"x0": 1, "y0": 2, "x1": 3, "y1": 4}
-    settings = module.parse_settings(host.settings.read_text())
-    assert settings["MG400_THERMAL_TOKEN"] == "operator-token-0123456789abcdef"
-    assert settings["MG400_ORCH_THERMAL_TOKEN"] == settings["MG400_THERMAL_TOKEN"]
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -1890,10 +1838,9 @@ def test_installed_stage_directory_supports_atomic_reference_teaching(host, monk
     assert updated.motors["insert"].reference["pixel"] == [99.5, 99.5]
 
 
-def test_microscope_selection_prepares_sdk_udev_private_data_and_runtime(
+def test_microscope_installs_by_default_with_sdk_udev_private_data_and_runtime(
     host, inventory_udev, toupcam_library, module
 ):
-    select_optional(host, "microscope")
     assert host.install("--toupcam", str(toupcam_library)) == 0
     for relative in ("calibration/microscope", "recordings", "runs"):
         directory = host.data / relative
@@ -1911,11 +1858,6 @@ def test_microscope_selection_prepares_sdk_udev_private_data_and_runtime(
     assert library.read_bytes() == toupcam_library.read_bytes()
     assert mode(library) == 0o755 and host.owner(library) == (0, 0)
     settings = module.parse_settings(host.settings.read_text())
-    assert settings["MG400_MICROSCOPE_BIND"] == "127.0.0.1"
-    assert settings["MG400_MICROSCOPE_PORT"] == "8770"
-    assert settings["MG400_MICROSCOPE_BASE_PATH"] == "/"
-    assert len(settings["MG400_MICROSCOPE_TOKEN"]) >= 24
-    assert settings["MG400_ORCH_MICROSCOPE_TOKEN"] == settings["MG400_MICROSCOPE_TOKEN"]
     for key in ("SWITCH_FOCUS", "HOME_SWITCH", "FOCUS_LIMITS", "SERIAL", "SIDE_STREAM"):
         assert settings["MG400_MICROSCOPE_" + key] == ""
     assert settings["MG400_MICROSCOPE_NUDGE_STEPS"] == "0"
@@ -1931,21 +1873,9 @@ def test_microscope_selection_prepares_sdk_udev_private_data_and_runtime(
     )
 
 
-def test_disabled_microscope_adds_no_library_rule_unit_data_or_group(host, inventory_udev):
-    assert host.install() == 0
-    assert not (host.units / "mg400-microscope.service").exists()
-    assert not (host.root / "etc/udev/rules.d/70-mg400-microscope.rules").exists()
-    assert not (host.root / "usr/local/lib/mg400/libtoupcam.so").exists()
-    assert not (host.data / "calibration/microscope").exists()
-    assert not (host.data / "recordings").exists()
-    assert not (host.data / "runs").exists()
-    assert not any("microscope" in command for command in names(host.commands))
-
-
 def test_microscope_dry_run_lists_without_writes_or_service_start(
     host, inventory_udev, toupcam_library
 ):
-    select_optional(host, "microscope")
     assert host.install("--dry-run", "--toupcam", str(toupcam_library)) == 0
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
     assert not (host.root / "usr").exists() and not (host.root / "etc/udev").exists()
@@ -1955,14 +1885,10 @@ def test_microscope_dry_run_lists_without_writes_or_service_start(
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_microscope_requires_verified_library_before_mutation(
+def test_microscope_refuses_unverified_installed_library_before_mutation(
     host, inventory_udev, toupcam_library, module, monkeypatch, capsys, dry_run
 ):
-    select_optional(host, "microscope")
     args = ["--dry-run"] if dry_run else []
-    assert host.install(*args) == 1
-    assert "--toupcam" in capsys.readouterr().err
-    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
     target = host.root / "usr/local/lib/mg400/libtoupcam.so"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"wrong installed SDK")
@@ -1974,18 +1900,10 @@ def test_microscope_requires_verified_library_before_mutation(
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
 
 
-def test_microscope_requires_its_udev_template_before_mutation(host, toupcam_library, capsys):
-    select_optional(host, "microscope")
-    assert host.install("--toupcam", str(toupcam_library)) == 1
-    assert "70-mg400-microscope.rules.in" in capsys.readouterr().err
-    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
-
-
 @pytest.mark.parametrize("missing", ["user", "memberships", "groups", "dialout", "video"])
 def test_microscope_requires_resolvable_service_account_and_device_groups(
     host, inventory_udev, toupcam_library, module, monkeypatch, capsys, missing
 ):
-    select_optional(host, "microscope")
     if missing == "user":
         monkeypatch.setattr(module.main.__globals__["pwd"], "getpwuid", Mock(side_effect=KeyError))
     elif missing == "memberships":
@@ -2012,19 +1930,13 @@ def test_microscope_requires_resolvable_service_account_and_device_groups(
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
 
 
-def test_microscope_upgrade_preserves_library_data_measured_settings_and_tokens(
+def test_microscope_upgrade_preserves_library_data_and_measured_settings(
     host, inventory_udev, toupcam_library, module, monkeypatch
 ):
-    select_optional(host, "microscope")
     assert host.install("--toupcam", str(toupcam_library)) == 0
     library = host.root / "usr/local/lib/mg400/libtoupcam.so"
     original_inode = library.stat().st_ino
     microscope_library_owner(module, monkeypatch, library)
-    original_tokens = {
-        key: value
-        for key, value in module.parse_settings(host.settings.read_text()).items()
-        if key.endswith("_TOKEN")
-    }
     values = dict(SWITCH_FOCUS="0", HOME_SWITCH="0", FOCUS_LIMITS="0,10000", NUDGE_STEPS="20")
     lines = host.settings.read_text().splitlines()
     for index, line in enumerate(lines):
@@ -2048,7 +1960,6 @@ def test_microscope_upgrade_preserves_library_data_measured_settings_and_tokens(
         path.read_bytes() == b"existing host data" and mode(path) == 0o640 for path in originals
     )
     settings = module.parse_settings(host.settings.read_text())
-    assert {key: settings[key] for key in original_tokens} == original_tokens
     assert {key: settings[f"MG400_MICROSCOPE_{key}"] for key in values} == values
 
 
@@ -2056,7 +1967,6 @@ def test_microscope_upgrade_preserves_library_data_measured_settings_and_tokens(
 def test_microscope_rejects_unsafe_installed_library_before_mutation(
     host, inventory_udev, toupcam_library, kind
 ):
-    select_optional(host, "microscope")
     target = host.root / "usr/local/lib/mg400/libtoupcam.so"
     target.parent.parent.mkdir(parents=True)
     if kind == "parent_symlink":
@@ -2103,7 +2013,6 @@ def microscope_library_owner(module, monkeypatch, path, *, owner=0, group=0, dir
 def test_microscope_reuses_service_readable_library_without_replacement(
     host, inventory_udev, toupcam_library, module, monkeypatch, group, rights
 ):
-    select_optional(host, "microscope")
     target = host.root / "usr/local/lib/mg400/libtoupcam.so"
     target.parent.mkdir(parents=True)
     target.write_bytes(toupcam_library.read_bytes())
@@ -2133,7 +2042,6 @@ def test_microscope_reuses_service_readable_library_without_replacement(
 def test_microscope_rejects_unsafe_existing_library_permissions(
     host, inventory_udev, toupcam_library, module, monkeypatch, owner, group, rights
 ):
-    select_optional(host, "microscope")
     target = host.root / "usr/local/lib/mg400/libtoupcam.so"
     target.parent.mkdir(parents=True)
     target.write_bytes(toupcam_library.read_bytes())
@@ -2171,7 +2079,6 @@ def test_microscope_refuses_unsafe_library_ancestors_before_mutation(
     group,
     rights,
 ):
-    select_optional(host, "microscope")
     target = host.root / "usr/local/lib/mg400/libtoupcam.so"
     target.parent.mkdir(parents=True)
     target.write_bytes(toupcam_library.read_bytes())
@@ -2233,7 +2140,6 @@ def test_legacy_robot_data_and_explicit_paths_stay_unchanged(
     report = host.out.getvalue()
     assert f"Legacy robot data exists at {legacy}" in report
     assert f"Move it manually to {destination}" in report
-    assert f"Update an old {setting} override" in report
     assert "Do not overwrite an existing destination" in report
     assert "No robot data file was moved" in report
 

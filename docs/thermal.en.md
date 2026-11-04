@@ -11,7 +11,6 @@ The Cameras workspace of the Lab Console shows the thermal view. The Furnace + m
 
 The optional `mg400-thermal.service` runs `thermal-cam` as `1000:1000`, with `UMask=0077` and no supplementary device group.
 It reads `/etc/mg400/mg400.env` and opens the P1 camera at startup.
-It retains `MG400_THERMAL_TOKEN` and excludes other service tokens and orchestrator aliases.
 Invalid CLI settings exit with status `2`, which does not trigger an automatic restart.
 The installer does not start this service, and the unit has no boot-time activation.
 
@@ -103,20 +102,9 @@ Do not use automatic development reload while acquiring camera data.
 
 ### Settings and access
 
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `MG400_THERMAL_BIND` | `127.0.0.1` | Listen address. `--bind` overrides it. |
-| `MG400_THERMAL_PORT` | `8768` | HTTP port. `--port` overrides it. |
-| `MG400_THERMAL_BASE_PATH` | `/` | Native URL prefix. `--base-path` overrides it. |
-| `MG400_THERMAL_TOKEN` | Empty | Bearer token for camera API access. |
-
-A non-loopback bind requires a token.
-A configured token must have at least 24 printable ASCII characters, without leading or trailing spaces, including on loopback.
+The service listens on `127.0.0.1:8768` with the base path `/`. `--bind`, `--port`, and `--base-path` override these fixed defaults.
 Invalid settings exit with status 2 before opening a listener or camera.
-Without a token, requests require a loopback Host and no forwarded headers.
-Browser requests must retain the same origin.
-
-When a token is configured, all routes require it. Clients send the token in the Authorization header.
+The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 ## Console thermal view
 
@@ -200,11 +188,10 @@ The application factory opens no camera on import.
 Its lifespan starts and stops acquisition:
 
 ```python
-import os
 import uvicorn
 from thermal_cam.app import create_app
 
-app = create_app(auto_connect=True, token=os.environ.get("MG400_THERMAL_TOKEN"))
+app = create_app(auto_connect=True)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8768, workers=1)
@@ -237,14 +224,12 @@ with np.load("captures/probe.npz", allow_pickle=False) as frame:
 
 Connection, shutter correction, state, and region readings use the contract routes below.
 
-For a token-protected server, send the configured token in a bearer header:
+Read 1 frame:
 
 ```sh
-curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
-  http://127.0.0.1:8768/api/frame
+curl --fail http://127.0.0.1:8768/api/frame
 ```
 
-Without a token, omit that header.
 Temperature arrays use `temperatures_c[y][x]`.
 Each response is internally consistent, but separate requests can refer to different frames.
 Use the sequence and timestamp to associate measurements.
@@ -285,13 +270,12 @@ There is no disconnect command. Stop the service to stop acquisition and release
 Contract state reports `busy: false` and `locked: false` because this contract controls no output.
 Inspect `connected`, `fault`, and frame age before using readings.
 
-These routes retain the token, Host, Origin, and forwarded-header checks described above.
 Contract POST requests require `Content-Type: application/json` and exactly 1 `X-MG400-Client` header.
 The client ID must contain 1–128 printable ASCII characters.
 Send a JSON object of at most 4096 bytes. `/api/stop` accepts `{"wait_s":0}` with a finite value from 0–15.
 It returns immediately because there is no output to stop.
 Contract errors use `{"error":"..."}`.
-HTTP 400 means invalid input, 401 token failure, 403 access denial, 409 lease conflict, and 415 non-JSON input.
+HTTP 400 means invalid input, 409 lease conflict, and 415 non-JSON input.
 
 ### Named sensor regions
 
@@ -331,13 +315,10 @@ Do not combine them or repeat query parameters.
 For example:
 
 ```sh
-curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
-  'http://127.0.0.1:8768/api/roi?name=crucible'
-curl --fail -H "Authorization: Bearer $MG400_THERMAL_TOKEN" \
-  'http://127.0.0.1:8768/api/roi?x0=60&y0=40&x1=100&y1=80'
+curl --fail 'http://127.0.0.1:8768/api/roi?name=crucible'
+curl --fail 'http://127.0.0.1:8768/api/roi?x0=60&y0=40&x1=100&y1=80'
 ```
 
-Without a token, omit the bearer header.
 The response contains `min_c`, `mean_c`, and `max_c` in °C, plus the bounds and `name` (`null` for explicit coordinates).
 All statistics, `frame_sequence`, `timestamp`, `source`, `demo`, and `frame_age_s` refer to 1 coherent frame.
 Frame age uses a monotonic clock and is measured in seconds.
@@ -369,8 +350,7 @@ They do not certify a camera or absolute temperature accuracy.
 | Temperatures stop changing | Inspect errors and frame age. If the console view is frozen, select Resume view. |
 | Implausible temperatures | Inspect the target's pixel coverage and emissivity/reflections. Compare with a known reference. A palette change does not calibrate temperature. |
 | Occupied HTTP port | Stop the original process before restarting. Changing the port does not permit another camera owner. |
-| HTTP 401 | Supply the bearer header with the configured token. |
-| HTTP 400 or 403 | Inspect Host, Origin, and forwarded headers. A tokenless server permits only loopback access. |
+| HTTP 400 | Inspect the request body and query parameters. |
 
 ## Attribution
 

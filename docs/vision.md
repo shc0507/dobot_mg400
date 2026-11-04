@@ -41,25 +41,17 @@ GPU 内存配置在模型加载前执行。
 
 | 配置项 | 选项 | 默认值与含义 |
 | --- | --- | --- |
-| `MG400_VISION_BIND` | `--bind` | `127.0.0.1` |
-| `MG400_VISION_PORT` | `--port` | `8771` |
-| `MG400_VISION_BASE_PATH` | `--base-path` | `/`，所有路由的前缀 |
-| `MG400_VISION_TOKEN` | 无 | 回环地址可为空，否则至少 24 个可打印 ASCII 字符 |
+| 无 | `--bind` | `127.0.0.1` |
+| 无 | `--port` | `8771` |
+| 无 | `--base-path` | `/`，所有路由的前缀 |
 | `MG400_VISION_WEIGHTS` | `--weights` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` |
 | `MG400_VISION_DEVICE` | `--device` | CUDA 可用时为 `cuda`，否则为 `cpu`。显式 `cuda:N` 选择设备 |
-| `MG400_VISION_GPU_FRACTION` | `--gpu-fraction` | `0.15`，必须有限、大于 0 且不大于 1 |
+| 无 | `--gpu-fraction` | `0.15`，必须有限、大于 0 且不大于 1 |
 | `MG400_VISION_FRAME_TIMEOUT` | `--frame-timeout` | 每次 HTTP 套接字操作和响应正文读取的时限均为 `2` 秒。必须有限且大于 0 |
-| `MG400_VISION_CALIBRATION_DIR` | 无 | `/var/lib/mg400/calibration/cameras/`，私有相机模型目录 |
-| `MG400_VISION_TAG_HEIGHT_MM` | 无 | `100`，机械臂标记高于法兰的名义高度，单位为毫米 |
-| `MG400_VISION_TAG_TIP_MM` | 无 | `246`，标记到镊尖的名义垂直距离，单位为毫米 |
-| `MG400_VISION_CALIBRATION_RMS_MM` | 无 | `1`，有限的验收阈值，大于 0 且不大于 1 mm |
 | 无 | `--demo` | 使用离线数据，不加载检测运行库 |
 
-配置了密钥时，即使绑定回环地址，也必须至少有 24 个字符。
-未配置密钥时，请求的 `Host` 必须是回环地址，且不得含转发请求头。
-配置了密钥时，发送 `Authorization: Bearer <token>`。
-服务还检查 `Origin` 并拒绝跨站请求。
-图像和结果路由与契约路由使用相同的访问检查。
+校准使用固定默认值：相机模型目录 `/var/lib/mg400/calibration/cameras/`，机械臂标记高于法兰的名义高度 `100` mm，标记到镊尖的名义距离 `246` mm，验收阈值 `1` mm RMS。
+服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 配置或启动失败时，退出码为 2。
 
 使用 CUDA 时，服务先调用 `torch.cuda.set_per_process_memory_fraction`，再加载定位器。
@@ -70,7 +62,7 @@ GPU 内存配置在模型加载前执行。
 ## 图像来源与坐标
 
 真实模式的摄像头编号为 1 到已配置设备数量的整数，最多为 4。
-服务与安装器、预览使用相同的 `MG400_CAMERA_DEVICES`、`MG400_CAMERA_MODES` 和 `MG400_CAMERA_CAPTURE_SIZES` 配置。
+服务与安装器、预览使用相同的 `MG400_CAMERA_DEVICES` 和 `MG400_CAMERA_MODES` 配置。
 允许的模式和默认值见[摄像头](olares.md#摄像头)。设备配置为空时，关闭真实图像命令。
 命令参数说明只列出已配置的摄像头编号。服务在请求图像前拒绝未配置的编号。
 真实模式使用以下固定地址，把 `N` 替换为摄像头编号：
@@ -178,7 +170,7 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 机械臂标记位于 J4 轴线上，使用 `DICT_4X4_50` 的 ID `4`。
 托盘参考标记使用同一字典，从 `0`、`1`、`2`、`7` 中选取不重复 ID。
 在私有 TOML 文件中配置 2 到 4 个实测托盘参考点。
-编排器读取 `MG400_CAMERA_CALIBRATION_REFERENCES`，默认为 `/var/lib/mg400/calibration/cameras/references.toml`。
+编排器读取 `/var/lib/mg400/calibration/cameras/references.toml`。
 文件必须可信、没有链接，且不超过 4 KiB。
 
 以下是模板，不是实测坐标。用操作员记录的法兰数值替换 `X`、`Y`、`Z` 和 `R`：
@@ -239,7 +231,7 @@ go2rtc 不提供采集时间戳或传感器帧 ID。`read_at` 是服务读取时
 
 公开演练 CLI 和演示注册表使用同一演练池拥有的合成机器人与视觉服务。
 合成相机跟随该机器人，为相机 `1` 生成 `1920x1080` 的 ArUco 图像。
-它们自行生成合成参考数据，不读取主机的 `MG400_CAMERA_CALIBRATION_REFERENCES` 路径或相机模型文件。
+它们自行生成合成参考数据，不读取主机的参考文件或相机模型文件。
 演练不打开相机设备，也不启动原生采集。
 
 使用合成工具偏移 `[0, 0, 146]`，按法兰坐标准备网格：
@@ -279,7 +271,7 @@ RMS 为水平位置误差的均方根值。
 
 ### 模型保存与失效
 
-服务在 `MG400_VISION_CALIBRATION_DIR` 下保存有大小限制的 JSON。
+服务在 `/var/lib/mg400/calibration/cameras/` 下保存有大小限制的 JSON。
 文件名为完整 `/dev/v4l/by-path/` 设备路径的 SHA256，加上 `.json`。
 文档也保存该完整路径和图像尺寸。
 它保留相机矩阵、畸变、旋转、平移、托盘高度、恢复距离、扫描 R、采样点、划分索引、误差和创建时间。
@@ -323,10 +315,7 @@ RMS 为水平位置误差的均方根值。
 
 ### 限值与命令数据
 
-`MG400_ORCH_DRIFT_LIMIT_PX` 配置像素限值，默认为 `3`。
-取值必须大于 `0` 且不超过 `3`。此配置只能降低限值，不能提高限值。
-真实运行和自有演示都保留显式提供的标量配置。未提供时保持缺失，由技能应用默认值。
-其他设备、接口、令牌和路径过滤规则保持不变。
+像素限值为 `3`。
 
 技能通过租约发送 `check_calibration` 命令，字段如下：
 
@@ -388,7 +377,7 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 
 ### 受保护的槽位证据
 
-通过现有 `POST api/command` 路由发送 `observe_slots`，保留常规令牌、客户端和租约检查。
+通过现有 `POST api/command` 路由发送 `observe_slots`，保留常规客户端和租约检查。
 命令使用以下字段：
 
 | 字段 | 要求 |

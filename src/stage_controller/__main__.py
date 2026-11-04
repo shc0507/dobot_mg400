@@ -6,8 +6,6 @@ import signal
 
 from waitress import create_server
 
-from labkit.auth import valid_token, valid_token_for_bind
-
 from .app import create_app, normalize_base_path
 from .controller import GRIPPER_CONVERTER, MotorController, is_gripper_converter
 
@@ -76,18 +74,6 @@ def main(argv=None):
             f"{source} points to the gripper USB converter ({GRIPPER_CONVERTER[2]}). "
             "Set it to the Arduino serial device"
         )
-    token = os.environ.get("MG400_STAGE_TOKEN")
-    if token and not valid_token(token):
-        parser.error(
-            "MG400_STAGE_TOKEN must contain only printable ASCII characters "
-            "and must not begin or end with a space"
-        )
-    # With an access token, the app accepts any host name, also on a loopback bind.
-    if not valid_token_for_bind(token, bind):
-        parser.error(
-            "Set MG400_STAGE_TOKEN to at least 24 characters, "
-            "or leave it unset and bind to localhost"
-        )
     logging.basicConfig(level=logging.INFO)
     # Do not open the port here: opening it resets the Arduino.
     config = (
@@ -95,11 +81,10 @@ def main(argv=None):
     )
     controller = MotorController(demo=args.demo, serial=serial, config=config)
     server = create_server(
-        create_app(controller, token or None, base_path=args.base_path),
+        create_app(controller, base_path=args.base_path),
         host=bind,
         port=port,
         threads=6,
-        # Pass proxy headers through unused: without a token, the app refuses proxied requests.
         clear_untrusted_proxy_headers=False,
         # Refuse a larger body before reading it, as MAX_CONTENT_LENGTH does in the app.
         # waitress refuses a body of this size or more, and keeps a smaller one in memory.

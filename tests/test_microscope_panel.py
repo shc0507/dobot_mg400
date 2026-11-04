@@ -241,33 +241,11 @@ def test_removed_panel_routes_are_not_served():
     assert service.calls == []
 
 
-@pytest.mark.parametrize(
-    "path",
-    ["/api/state", "/api/camera/side/frame.jpg"],
-)
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"Host": "outside.invalid"},
-        {"Forwarded": ""},
-        {"Origin": "https://outside.invalid"},
-        {"Origin": "null"},
-        {"Sec-Fetch-Site": "cross-site"},
-    ],
-)
-def test_shell_and_data_retain_host_origin_checks_without_token(path, headers):
-    service = PanelService()
-    assert create_app(service).test_client().get(path, headers=headers).status_code == 403
-    assert service.calls == []
-
-
 @pytest.mark.parametrize("route", ["state", "events", "camera/side/frame.jpg", "camera/side/mjpeg"])
-def test_data_routes_require_header_token_and_allow_authorized_head(route):
+def test_data_routes_allow_head(route):
     service = PanelService()
-    client = create_app(service, token="t" * 24).test_client()
-    assert client.get("/api/" + route).status_code == 401
-    assert client.get("/api/" + route, headers={"Authorization": "Bearer wrong"}).status_code == 401
-    response = client.head("/api/" + route, headers={"Authorization": "Bearer " + "t" * 24})
+    client = create_app(service).test_client()
+    response = client.head("/api/" + route)
     assert response.status_code == 200
     assert not response.data and service.calls == []
 
@@ -883,7 +861,7 @@ def test_metadata_provider_worker_start_failure_rolls_back(monkeypatch):
     provider.close()
 
 
-def test_readings_client_allows_only_bounded_get_with_header_token():
+def test_readings_client_allows_only_bounded_get():
     import io
     import json
 
@@ -896,13 +874,12 @@ def test_readings_client_allows_only_bounded_get_with_header_token():
             captured.append((request, kwargs))
             return io.BytesIO(json.dumps({"service": "furnace"}).encode())
 
-    client = FurnaceReadingsClient("http://127.0.0.1:8769/", "x" * 32)
+    client = FurnaceReadingsClient("http://127.0.0.1:8769/")
     client._opener = Opener()
     assert client._request("api/state") == {"service": "furnace"}
     request, options = captured[0]
     assert request.get_method() == "GET" and request.data is None
-    assert request.get_header("Authorization") == "Bearer " + "x" * 32
-    assert "x" * 32 not in request.full_url and options == {"timeout": 0.5}
+    assert options == {"timeout": 0.5}
     for path, data in (
         ("api/command", {}),
         ("api/state", {}),
@@ -1277,21 +1254,13 @@ def test_recording_columns_match_existing_furnace_source_schema():
     assert FRAME_METADATA_FIELDS == SOURCE_FIELDS
 
 
-def test_furnace_provider_settings_reuse_existing_secret_without_public_disclosure():
+def test_furnace_provider_settings_read_the_furnace_url():
     from microscope.service import MicroscopeConfig
 
-    token = "test-secret-only" * 2
     config = MicroscopeConfig.from_env(
-        {
-            "MG400_MICROSCOPE_FURNACE_URL": "http://127.0.0.1:8769/heat/",
-            "MG400_FURNACE_TOKEN": token,
-        }
+        {"MG400_MICROSCOPE_FURNACE_URL": "http://127.0.0.1:8769/heat/"}
     )
-    assert config.furnace_url.endswith("/heat/") and config.furnace_token == token
-    assert token not in repr(config)
-    service = MicroscopeService(config)
-    assert token not in str(service.snapshot()) and token not in str(service.describe())
-    service.close()
+    assert config.furnace_url.endswith("/heat/")
 
 
 def test_recording_cleanup_failure_keeps_stop_unconfirmed(recording_rig):
@@ -1406,8 +1375,8 @@ def test_actual_app_recording_contract_uses_flat_arguments_and_exact_stop_receip
     import time
 
     rig = recording_rig
-    client = create_app(rig.service, base_path="/scope", token="s" * 32).test_client()
-    headers = {"Authorization": "Bearer " + "s" * 32, "X-MG400-Client": "operator"}
+    client = create_app(rig.service, base_path="/scope").test_client()
+    headers = {"X-MG400-Client": "operator"}
 
     def issue(action):
         response = client.post(
@@ -1425,7 +1394,6 @@ def test_actual_app_recording_contract_uses_flat_arguments_and_exact_stop_receip
             time.sleep(0.005)
         pytest.fail("HTTP command did not settle")
 
-    assert client.get("/scope/api/state").status_code == 401
     assert issue("start_recording")["recording"]["status"] == "recording"
     state = issue("stop_recording")
     assert state["last_result"]["recording"] == state["recording"]

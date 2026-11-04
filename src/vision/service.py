@@ -950,10 +950,10 @@ class VisionService:
         return outcome
 
 
-def create_app(service, *, token=None, base_path="/"):
+def create_app(service, *, base_path="/"):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
-    blueprint = contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
+    blueprint = contract_blueprint(service, base_path=base_path, lease=service.lease)
 
     def camera():
         values = request.args.getlist("camera")

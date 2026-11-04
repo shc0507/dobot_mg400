@@ -34,8 +34,8 @@ class Element {
 function page() {
   const nodes = new Map();
   const make = (tag, id) => { const node = new Element(tag, id); nodes.set(id, node); return node; };
-  for (const id of ["lc-lang", "lc-stop-all", "lc-connect"]) make("button", id);
-  for (const id of ["lc-strip", "lc-access", "lc-notice", "lc-controls", "lc-controls-text", "lc-token"]) make("div", id);
+  for (const id of ["lc-lang", "lc-stop-all"]) make("button", id);
+  for (const id of ["lc-strip", "lc-notice", "lc-controls", "lc-controls-text"]) make("div", id);
   const i18n = new Element("span"); i18n.dataset.i18n = "stop.all";
   const tabs = ["overview", "motion"].map(id => {
     const link = new Element("a");
@@ -164,11 +164,10 @@ test("event filters select warnings or one service", () => {
     { service: "stage", level: "warning" },
     { service: "stage", level: "error" },
   ];
-  const { filterEvents, readinessSummary, latestOperation } = LabConsole.logic;
+  const { filterEvents, latestOperation } = LabConsole.logic;
   assert.equal(filterEvents(events, "all").length, 3);
   assert.equal(filterEvents(events, "warnings").length, 2);
   assert.deepEqual(filterEvents(events, "robot"), [events[0]]);
-  assert.deepEqual(readinessSummary([{ state: "ready" }, { state: "todo" }, { state: "blocked" }, { state: "blocked" }]), { ready: 1, todo: 1, blocked: 2 });
   assert.equal(latestOperation([{ action: "motion", id: 1 }, { action: "heat", id: 2 }, { action: "motion", id: 3 }], "motion").id, 3);
 });
 
@@ -178,14 +177,13 @@ test("relay sends one request with the page identity and reports an unknown outc
   LabConsole.shell.doc = view.doc;
   LabConsole.shell.base = "/lab";
   LabConsole.shell.page = "console-page-test";
-  LabConsole.shell.token = "secret-token-value";
   const result = await LabConsole._internal.relay("stage", "move", { motor: 1 });
   assert.equal(result.outcome, "unknown");
   assert.equal(calls.length, 1);
   const { url, init } = calls[0];
   assert.equal(url, "/lab/api/console/command/stage");
   assert.equal(init.headers["X-MG400-Client"], "console-page-test");
-  assert.equal(init.headers.Authorization, "Bearer secret-token-value");
+  assert.equal(init.headers.Authorization, undefined);
   assert.deepEqual(JSON.parse(init.body), { action: "move", params: { motor: 1 } });
   assert.equal(init.credentials, "omit");
   assert.match(view.nodes.get("lc-notice").textContent, /unknown/);

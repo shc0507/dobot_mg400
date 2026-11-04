@@ -15,13 +15,6 @@ with (ROOT / "deploy/services.toml").open("rb") as stream:
     REGISTRY = tomllib.load(stream)["service"]
 SERVICES = tuple(unit for entry in REGISTRY for unit in entry["units"])
 FEEDBACK = "/var/lib/mg400/work/gripper_feedback.json"
-ORCHESTRATOR_TOKENS = [
-    "MG400_ORCH_TOKEN",
-    *[
-        f"MG400_ORCH_{name}_TOKEN"
-        for name in ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
-    ],
-]
 
 
 def unit_sections(name):
@@ -80,98 +73,30 @@ def test_services_with_settings_read_the_shared_environment_file(name):
     assert "network-online.target" in sections["Unit"]["Wants"]
 
 
-@pytest.mark.parametrize(
-    ("name", "unset"),
-    [
-        (
-            "mg400-web-panel.service",
-            [
-                "MG400_MICROSCOPE_TOKEN",
-                "MG400_STAGE_TOKEN",
-                "MG400_FURNACE_TOKEN",
-                "MG400_THERMAL_TOKEN",
-                "MG400_VISION_TOKEN",
-                *ORCHESTRATOR_TOKENS,
-                "MG400_GATEWAY_TOKEN",
-            ],
-        ),
-        (
-            "mg400-stage-panel.service",
-            [
-                "MG400_MICROSCOPE_TOKEN",
-                "MG400_PANEL_TOKEN",
-                "MG400_FURNACE_TOKEN",
-                "MG400_THERMAL_TOKEN",
-                "MG400_VISION_TOKEN",
-                *ORCHESTRATOR_TOKENS,
-                "MG400_GATEWAY_TOKEN",
-            ],
-        ),
-        (
-            "mg400-camera-preview.service",
-            [
-                "MG400_MICROSCOPE_TOKEN",
-                "MG400_PANEL_TOKEN",
-                "MG400_STAGE_TOKEN",
-                "MG400_FURNACE_TOKEN",
-                "MG400_THERMAL_TOKEN",
-                *ORCHESTRATOR_TOKENS,
-                "MG400_GATEWAY_TOKEN",
-            ],
-        ),
-        (
-            "mg400-furnace.service",
-            [
-                "MG400_PANEL_TOKEN",
-                "MG400_STAGE_TOKEN",
-                "MG400_THERMAL_TOKEN",
-                "MG400_VISION_TOKEN",
-                "MG400_MICROSCOPE_TOKEN",
-                "MG400_ORCH_TOKEN",
-                "MG400_GATEWAY_TOKEN",
-                "MG400_ORCH_ROBOT_TOKEN",
-                "MG400_ORCH_STAGE_TOKEN",
-                "MG400_ORCH_THERMAL_TOKEN",
-                "MG400_ORCH_VISION_TOKEN",
-                "MG400_ORCH_FURNACE_TOKEN",
-                "MG400_ORCH_MICROSCOPE_TOKEN",
-            ],
-        ),
-    ],
-)
-def test_services_drop_the_tokens_they_do_not_check(name, unset):
-    service = unit_sections(name)["Service"]
-    assert service["UnsetEnvironment"][0].split() == unset
+def test_no_unit_names_a_service_token():
+    for name in SERVICES:
+        assert "TOKEN" not in (UNITS / name).read_text(), name
 
 
-def test_camera_preview_retains_vision_token_for_the_loopback_proxy():
-    service = unit_sections("mg400-camera-preview.service")["Service"]
-    assert service["EnvironmentFile"] == ["/etc/mg400/mg400.env"]
-    unset = {value for line in service.get("UnsetEnvironment", []) for value in line.split()}
-    assert "MG400_VISION_TOKEN" not in unset
-    assert {"MG400_PANEL_TOKEN", "MG400_STAGE_TOKEN"} <= unset
-
-
-def test_every_shared_environment_unit_keeps_only_its_required_service_tokens():
-    permitted = {
-        "mg400-web-panel.service": {"MG400_PANEL_TOKEN"},
-        "mg400-stage-panel.service": {"MG400_STAGE_TOKEN"},
-        "mg400-camera-preview.service": {"MG400_VISION_TOKEN"},
-        "mg400-furnace.service": {"MG400_FURNACE_TOKEN"},
-        "mg400-thermal.service": {"MG400_THERMAL_TOKEN"},
-        "mg400-vision.service": {"MG400_VISION_TOKEN"},
-        "mg400-microscope.service": {"MG400_MICROSCOPE_TOKEN", "MG400_FURNACE_TOKEN"},
-        "mg400-orchestrator.service": {"MG400_ORCH_TOKEN", "MG400_GATEWAY_TOKEN"},
-        "mg400-gateway.service": {"MG400_GATEWAY_TOKEN"},
-        "mg400-proxy.service": set(),
-    }
-    tokens = {entry["token"] for entry in REGISTRY if entry["token"]}
-    shared = {name for name in SERVICES if "EnvironmentFile" in unit_sections(name)["Service"]}
-    assert shared == permitted.keys()
-    for name, allowed in permitted.items():
-        service = unit_sections(name)["Service"]
-        excluded = {token for value in service["UnsetEnvironment"] for token in value.split()}
-        assert tokens - excluded == allowed
+def test_fixed_defaults_come_from_the_units():
+    panel = unit_sections("mg400-web-panel.service")["Service"]
+    assert panel["Environment"] == ["MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks"]
+    assert "--base-path" not in command("mg400-web-panel.service")
+    orchestrator = unit_sections("mg400-orchestrator.service")["Service"]
+    assert orchestrator["Environment"] == [
+        "MG400_ORCH_BASE_PATH=/lab/",
+        *(
+            f"MG400_ORCH_{name}_URL=http://127.0.0.1:{port}/{path}"
+            for name, port, path in (
+                ("ROBOT", 8766, ""),
+                ("STAGE", 8767, "contract/"),
+                ("THERMAL", 8768, ""),
+                ("FURNACE", 8769, ""),
+                ("MICROSCOPE", 8770, ""),
+                ("VISION", 8771, ""),
+            )
+        ),
+    ]
 
 
 def test_stage_service_takes_every_setting_from_the_environment():
@@ -230,19 +155,11 @@ def test_hardware_services_get_only_their_device_groups():
     }
 
 
-def test_vision_uses_the_isolated_environment_and_keeps_only_its_token():
+def test_vision_uses_the_isolated_environment():
     service = unit_sections("mg400-vision.service")["Service"]
     assert command("mg400-vision.service") == ["/opt/mg400/.venv-vision/bin/python", "-m", "vision"]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert int(service["TimeoutStopSec"][0]) >= 30
-    excluded = set(service["UnsetEnvironment"][0].split())
-    assert excluded == {
-        *(
-            f"MG400_{name}_TOKEN"
-            for name in ("PANEL", "STAGE", "THERMAL", "FURNACE", "MICROSCOPE", "GATEWAY")
-        ),
-        *ORCHESTRATOR_TOKENS,
-    }
     entry = next(item for item in REGISTRY if item["name"] == "vision")
     assert entry == {
         "name": "vision",
@@ -250,13 +167,12 @@ def test_vision_uses_the_isolated_environment_and_keeps_only_its_token():
         "optional": True,
         "venv": ".venv-vision",
         "groups": ["vision", "vision-gpu"],
-        "token": "MG400_VISION_TOKEN",
         "port": 8771,
         "assets": ["vision-weights"],
     }
 
 
-def test_microscope_uses_verified_sdk_path_and_keeps_only_its_two_credentials():
+def test_microscope_uses_verified_sdk_path_and_is_installed_by_default():
     service = unit_sections("mg400-microscope.service")["Service"]
     assert command("mg400-microscope.service") == [
         "/opt/mg400/.venv/bin/python",
@@ -266,18 +182,12 @@ def test_microscope_uses_verified_sdk_path_and_keeps_only_its_two_credentials():
     assert service["Environment"] == ["LD_LIBRARY_PATH=/usr/local/lib/mg400"]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert service["TimeoutStopSec"] == ["infinity"]
-    excluded = set(service["UnsetEnvironment"][0].split())
-    assert excluded == {
-        f"MG400_{name}_TOKEN" for name in ("PANEL", "STAGE", "THERMAL", "VISION", "GATEWAY")
-    } | set(ORCHESTRATOR_TOKENS)
-    assert not {"MG400_MICROSCOPE_TOKEN", "MG400_FURNACE_TOKEN"} & excluded
     assert next(item for item in REGISTRY if item["name"] == "microscope") == {
         "name": "microscope",
         "units": ["mg400-microscope.service"],
-        "optional": True,
+        "optional": False,
         "venv": ".venv",
         "groups": ["microscope"],
-        "token": "MG400_MICROSCOPE_TOKEN",
         "port": 8770,
         "assets": [],
     }
@@ -297,10 +207,10 @@ def test_furnace_service_uses_settings_and_allows_heat_and_gas_shutdown():
     assert command("mg400-furnace.service") == ["/opt/mg400/.venv/bin/python", "-m", "furnace"]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert int(service["TimeoutStopSec"][0]) >= 120
-    assert "MG400_FURNACE_TOKEN" not in service["UnsetEnvironment"][0].split()
+    assert next(item for item in REGISTRY if item["name"] == "furnace")["optional"] is False
 
 
-def test_orchestrator_keeps_operator_proposal_and_alias_tokens_and_drains_shutdown():
+def test_orchestrator_drains_shutdown():
     service = unit_sections("mg400-orchestrator.service")["Service"]
     assert command("mg400-orchestrator.service") == [
         "/opt/mg400/.venv/bin/python",
@@ -310,24 +220,13 @@ def test_orchestrator_keeps_operator_proposal_and_alias_tokens_and_drains_shutdo
     ]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert service["TimeoutStopSec"] == ["infinity"]
-    assert set(service["UnsetEnvironment"][0].split()) == {
-        f"MG400_{name}_TOKEN"
-        for name in ("PANEL", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
-    }
-    assert not set(ORCHESTRATOR_TOKENS) & set(service["UnsetEnvironment"][0].split())
-    assert "MG400_GATEWAY_TOKEN" not in service["UnsetEnvironment"][0].split()
 
 
-def test_gateway_has_no_device_groups_and_never_retains_operator_credential():
+def test_gateway_has_no_device_groups():
     service = unit_sections("mg400-gateway.service")["Service"]
     assert command("mg400-gateway.service") == ["/opt/mg400/.venv/bin/python", "-m", "gateway"]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert not service.get("SupplementaryGroups")
-    assert set(service["UnsetEnvironment"][0].split()) == {
-        f"MG400_{name}_TOKEN"
-        for name in ("PANEL", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE", "ORCH")
-    }
-    assert "MG400_GATEWAY_TOKEN" not in service["UnsetEnvironment"][0].split()
 
 
 def test_camera_capture_reads_the_generated_configuration():
@@ -355,7 +254,7 @@ def test_service_files_and_code_hold_no_host_values():
             assert [value for value in HOST_VALUES if value in text] == [], path
 
 
-def test_proxy_runs_only_explicit_binary_and_never_receives_service_credentials():
+def test_proxy_runs_only_explicit_binary_without_outbound_proxy_settings():
     service = unit_sections("mg400-proxy.service")["Service"]
     assert command("mg400-proxy.service") == [
         "/usr/local/lib/mg400/caddy",
@@ -368,38 +267,24 @@ def test_proxy_runs_only_explicit_binary_and_never_receives_service_credentials(
     assert service["EnvironmentFile"] == ["/etc/mg400/mg400.env"]
     assert service["WorkingDirectory"] == ["/opt/mg400"]
     assert service["RestartPreventExitStatus"] == ["2"]
-    excluded = set(service["UnsetEnvironment"][0].split())
-    expected = {entry["token"] for entry in REGISTRY if entry["token"]}
-    assert expected | set(ORCHESTRATOR_TOKENS) <= excluded
-    assert {"MG400_THERMAL_TOKEN", "MG400_VISION_TOKEN", "MG400_MICROSCOPE_TOKEN"} <= excluded
-    assert {
+    assert set(service["UnsetEnvironment"][0].split()) == {
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "ALL_PROXY",
         "http_proxy",
         "https_proxy",
         "all_proxy",
-    } <= excluded
+    }
     entry = next(item for item in REGISTRY if item["name"] == "proxy")
-    assert entry["optional"] is True and entry["token"] == "" and entry["groups"] == []
+    assert entry["optional"] is False and entry["groups"] == []
 
 
-def test_installed_robot_panel_uses_existing_base_path_option():
-    arguments = command("mg400-web-panel.service")
-    assert arguments[arguments.index("--base-path") + 1] == "${MG400_PANEL_BASE_PATH}"
-
-
-def test_thermal_service_keeps_only_its_token_and_uses_primary_group_usb_access():
+def test_thermal_service_uses_primary_group_usb_access():
     service = unit_sections("mg400-thermal.service")["Service"]
     assert command("mg400-thermal.service") == ["/opt/mg400/.venv/bin/thermal-cam"]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert service["TimeoutStopSec"] == ["30"]
     assert not service.get("SupplementaryGroups")
-    assert set(service["UnsetEnvironment"][0].split()) == {
-        f"MG400_{name}_TOKEN"
-        for name in ("PANEL", "STAGE", "VISION", "FURNACE", "MICROSCOPE", "GATEWAY")
-    } | set(ORCHESTRATOR_TOKENS)
-    assert "MG400_THERMAL_TOKEN" not in service["UnsetEnvironment"][0].split()
     entry = next(entry for entry in REGISTRY if entry["name"] == "thermal")
     assert entry == {
         "name": "thermal",
@@ -407,7 +292,6 @@ def test_thermal_service_keeps_only_its_token_and_uses_primary_group_usb_access(
         "optional": True,
         "venv": ".venv",
         "groups": ["thermal"],
-        "token": "MG400_THERMAL_TOKEN",
         "port": 8768,
         "assets": [],
     }

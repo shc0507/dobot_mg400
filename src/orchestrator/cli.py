@@ -14,7 +14,7 @@ from pathlib import Path
 
 from labkit.errors import ServiceError
 
-from .clients import ServiceAdapter, from_settings
+from .clients import SERVICE_URLS, ServiceAdapter, from_settings
 from .recipe import load_recipe, positive
 from .rehearsal import Rehearsal
 from .runner import Runner
@@ -168,17 +168,10 @@ def _station(args, settings, out):
     store = StationStore(workspace, path)
     if args.station_action == "save":
         offset = load_tool(args.tool_file or settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
-        url = settings.get("MG400_ORCH_ROBOT_URL")
-        if not url:
-            raise ValueError("Set MG400_ORCH_ROBOT_URL before teaching a station.")
+        url = settings.get("MG400_ORCH_ROBOT_URL") or SERVICE_URLS["MG400_ORCH_ROBOT_URL"]
         timeout = positive(float(settings.get("MG400_ORCH_TIMEOUT_S", "2")), "request timeout")
         # This adapter has no robot WebSocket and sends only the two GETs in teach().
-        robot = ServiceAdapter(
-            url,
-            settings.get("MG400_ORCH_ROBOT_TOKEN", ""),
-            "teach-" + uuid.uuid4().hex,
-            timeout=timeout,
-        )
+        robot = ServiceAdapter(url, "teach-" + uuid.uuid4().hex, timeout=timeout)
         result = teach(store, args.name, robot, offset, approach_mm=args.approach, zone=args.zone)
     elif args.station_action == "rm":
         store.remove(args.name)
@@ -271,7 +264,9 @@ def main(argv=None, *, out=None, read=None):
                             read,
                         )
             plan = prepare_zones(recipe, registry, os.environ)
-            services = from_settings(os.environ, identity=identity)
+            services = from_settings(
+                {**SERVICE_URLS, **{k: v for k, v in os.environ.items() if v}}, identity=identity
+            )
             with RunStore(directory) as store:
                 return _drive(Runner(recipe, registry, services, store, zone_plan=plan), out, read)
     except (OSError, ValueError, RuntimeError, sqlite3.Error, ServiceError) as error:

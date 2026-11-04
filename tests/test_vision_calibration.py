@@ -295,10 +295,10 @@ def test_detection_robot_xy_is_invariant_under_nominal_tag_height_gauge(calibrat
 def test_marker_commands_share_access_and_provide_bounded_frame_identity(calibrated_service):
     service, _ = calibrated_service
     service._markers = lambda _: [{"id": 4, "center_px": [100, 80]}]
-    client = create_app(service, token="x" * 24).test_client()
+    client = create_app(service).test_client()
     body = {"action": "read_markers", "camera": 1}
-    assert client.post("/api/command", json=body).status_code in (400, 401)
-    headers = {"Authorization": "Bearer " + "x" * 24, "X-MG400-Client": "calibration"}
+    assert client.post("/api/command", json=body).status_code == 400
+    headers = {"X-MG400-Client": "calibration"}
     assert client.post("/api/command", headers=headers, json=body).status_code == 409
     assert client.post("/api/heartbeat", headers=headers, json={}).status_code == 200
     response = client.post("/api/command", headers=headers, json=body)
@@ -1197,42 +1197,6 @@ def test_cold_contract_requires_explicit_preview_before_guarded_scan(cold_fake_s
     assert http.post("/api/heartbeat", headers=headers, json={}).status_code == 200
     assert _vision(ctx, "read_markers", camera=1)["markers"][0]["id"] == 4
     assert dispatched == ["read_markers"]
-
-
-@pytest.mark.parametrize("root", [True, False])
-@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
-def test_installed_calibration_data_setting_keeps_identity_and_credential_boundaries(
-    ctl, monkeypatch, root, command
-):
-    key = "MG400_CAMERA_CALIBRATION_REFERENCES"
-    monkeypatch.setenv(key, "/synthetic/references.toml")
-    monkeypatch.setenv("MG400_VISION_TOKEN", "must-not-pass")
-    monkeypatch.setenv("MG400_CAMERA_DEVICES", "/dev/must-not-pass")
-    monkeypatch.setenv("MG400_VISION_CALIBRATION_DIR", "/host/must-not-pass")
-    if root and command != "rehearse":
-        ctl.host.settings.write_text(
-            f"{key}=/trusted/references.toml\nMG400_VISION_TOKEN=must-not-pass\n"
-        )
-    else:
-        ctl.host.settings.unlink()
-    if not root:
-        for name in ("getuid", "geteuid", "getgid", "getegid"):
-            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
-    argument = "list" if command == "station" else "synthetic-recipe"
-    assert ctl.call(command, argument) == 0
-    program, argv, environment = ctl.execvpe.call_args.args
-    expected = (
-        "/trusted/references.toml" if root and command == "run" else "/synthetic/references.toml"
-    )
-    assert environment.get(key) == (expected if command == "run" else None)
-    assert (
-        not {"MG400_VISION_TOKEN", "MG400_CAMERA_DEVICES", "MG400_VISION_CALIBRATION_DIR"}
-        & environment.keys()
-    )
-    python = str(ctl.host.code / ".venv/bin/python")
-    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, argument]
-    assert program == ("/usr/sbin/runuser" if root else python)
-    ctl.run.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", ["missing", "error"])

@@ -7,8 +7,7 @@ modules itself, so a workspace never edits a shared list. A workspace owns:
 - ``static/console/<id>.js`` and ``static/console/<id>.css``.
 
 ``register(blueprint, service)`` adds routes to a blueprint mounted at
-``<prefix>/api/console/ws/<id>``. Those routes need the operator token, as
-every console API does.
+``<prefix>/api/console/ws/<id>``.
 """
 
 import importlib

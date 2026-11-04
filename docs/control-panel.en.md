@@ -129,7 +129,7 @@ The robot may continue to the endpoint of the trajectory already sent.
 After a confirmed stop, you can disable and re-enable the robot.
 Taking control again does not unlock an unknown command result.
 If stopping cannot be confirmed during disconnection, the service stops normal coordinate queries.
-It retains feedback, the connection lock, and the safety warning. Another client cannot take control.
+It retains feedback, the connection lock, and the warning. Another client cannot take control. Check the robot, then click `Recover`.
 Do not delete the lock file to release ownership.
 After deletion, 2 processes can each hold their own lock.
 
@@ -159,13 +159,10 @@ After jogging back, check the controller mode as described in [Switch to TCP/IP 
 When collision detection triggers, the alarm list shows `-2` (Collision detected).
 If the alarm clears outside the console, for example with the robot's Collision Resume button, check the robot state, then click `Clear alarm`.
 The service disables the robot through a new control instance and confirms that it is stationary, then unlocks control.
-This recovery works only for an unconfirmed stop that occurred during an alarm.
 
-If the command order is unknown, control stays locked after the alarm clears.
-An unconfirmed stop that occurred without an alarm also stays locked.
-Check the robot state, then run `sudo mg400ctl restart web` to restart the service.
-Before restarting, read the reason for the unconfirmed result in the [Service logs](#service-logs).
-Control also stays locked if you send a stop during recovery and the stop is unconfirmed.
+An unconfirmed stop without an alarm shows a warning, and the button reads `Recover`.
+Check the robot state, then click `Recover`. The service disables the robot through a new control instance, confirms that it is stationary, and clears the warning.
+A service restart is not necessary.
 While a stop is unconfirmed, the service message shows the recovery procedure. A later successful stop does not replace this message.
 
 ### Controller not in TCP/IP mode
@@ -226,20 +223,14 @@ The robot address defaults to `MG400_ROBOT_HOST`, or to `config/robot.toml` if t
 During service shutdown, the service can take about 60 seconds to confirm that the robot stopped.
 The service's `TimeoutStopSec` is 90 seconds, which is longer than this interval.
 
-The service reads its listen address and port from `MG400_PANEL_BIND` and `MG400_PANEL_PORT`, defaulting to `127.0.0.1:8766`.
-`--bind` and `--port` override these values.
-To listen on a non-loopback address, set `MG400_PANEL_TOKEN` to at least 24 characters.
-The access token must contain only printable ASCII characters and must not start or end with a space.
-Run `sudo mg400ctl token web` on the host to read the access token.
-Without an access token, the service accepts only requests with the host name `127.0.0.1`, `localhost`, or `[::1]`.
+The service listens on `127.0.0.1:8766`. `--bind` and `--port` override this fixed default.
+The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 Set the path prefix with `--base-path`, for example `--base-path /mg400-panel/`. All interface routes use this prefix.
 If a reverse proxy is in front of the service, the proxy must meet these requirements:
 
 - Forward `api/ws` with HTTP/1.1, including the `Upgrade` and `Connection` request headers.
-- Preserve the client's `Host` value, including its port, or pass it in `X-Forwarded-Host`. In nginx, use `$http_host`, not `$host`.
 - Set the read timeout above 5 seconds. The service pushes state at least once per second and sends a ping every 5 seconds.
-- Set `MG400_PANEL_TOKEN` even when the service listens on a loopback address.
 
 See [Robot service interface](development.en.md#robot-service-interface) for the interface reference.
 

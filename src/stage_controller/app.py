@@ -2,7 +2,7 @@
 
 Motor and serial behavior live outside the web framework. The operator routes
 share the contract prefix ``<base>/contract/api/``, so one client URL reaches
-both. Operator routes that change the stage need the bearer token, JSON,
+both. Operator routes that change the stage need JSON,
 ``X-MG400-Client`` and the caller's current stage lease.
 """
 
@@ -11,7 +11,6 @@ import re
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from labkit.auth import bearer_matches, host_allowed
 from labkit.errors import ServiceError
 from labkit.flask import contract_blueprint
 from labkit.lease import validate_client
@@ -36,28 +35,19 @@ def normalize_base_path(value):
     return value.rstrip("/") + "/"
 
 
-def create_app(
-    controller: MotorController | None = None, token: str | None = None, *, base_path="/"
-):
+def create_app(controller: MotorController | None = None, *, base_path="/"):
     prefix = normalize_base_path(base_path).rstrip("/") + "/contract"
     app = Flask(__name__, static_folder=None)
-    # Host names are checked below: with an access token, any host name is accepted.
     app.config.update(MAX_CONTENT_LENGTH=4096)
     controller = controller or MotorController()
     app.extensions["motor_controller"] = controller
-    app.register_blueprint(
-        contract_blueprint(controller, token=token, base_path=prefix, lease=controller.lease)
-    )
+    app.register_blueprint(contract_blueprint(controller, base_path=prefix, lease=controller.lease))
 
     @app.before_request
     def protect_local_control():
-        # The contract enforces its own client/JSON/access checks.
+        # The contract enforces its own client and JSON checks.
         if request.blueprint == "labkit_contract":
             return
-        if not host_allowed(request.headers, token):
-            return jsonify(error="Use a loopback Host without forwarded headers."), 403
-        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
-            return jsonify(error="Invalid service access token."), 401
         if request.method != "GET":
             if not request.is_json:
                 return jsonify(error="Expected a JSON request."), 415

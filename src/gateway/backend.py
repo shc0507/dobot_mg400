@@ -221,11 +221,11 @@ class Backend:
 
 
 def configured_endpoints(settings):
-    """Reuse explicit orchestrator read credentials without copying or generating secrets."""
+    """Reuse the explicit orchestrator service URLs. The services need no token."""
     return {
         name: (
             settings[f"MG400_ORCH_{name.upper()}_URL"],
-            settings.get(f"MG400_ORCH_{name.upper()}_TOKEN", ""),
+            "",
         )
         for name in SERVICES
         if settings.get(f"MG400_ORCH_{name.upper()}_URL")

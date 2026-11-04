@@ -57,7 +57,6 @@ class MicroscopeConfig:
     lease_seconds: float = 3.0
     focus_speed: int = 800
     furnace_url: str = "http://127.0.0.1:8769/"
-    furnace_token: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls, env=None):
@@ -88,7 +87,6 @@ class MicroscopeConfig:
             switch_focus=int(clearance) if clearance else None,
             home_switch=None if not switch else switch == "1",
             furnace_url=env.get("MG400_MICROSCOPE_FURNACE_URL", "http://127.0.0.1:8769/"),
-            furnace_token=env.get("MG400_FURNACE_TOKEN", ""),
         )
 
     def validate(self):
@@ -130,8 +128,8 @@ class FurnaceReadingsClient(ServiceClient):
     budget is checked between read1 calls; it is not a total request deadline.
     """
 
-    def __init__(self, url, token="", *, timeout=0.5):
-        super().__init__(url, token, "microscope-readings", timeout=timeout)
+    def __init__(self, url, *, timeout=0.5):
+        super().__init__(url, "microscope-readings", timeout=timeout)
         self._opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), _NoMetadataRedirect()
         )
@@ -156,8 +154,6 @@ class FurnaceReadingsClient(ServiceClient):
         if path not in ("api/describe", "api/state") or data is not None:
             raise ServiceError(403, "The furnace readings provider is read-only")
         headers = {"Accept": "application/json"}
-        if self.token:
-            headers["Authorization"] = "Bearer " + self.token
         request = urllib.request.Request(self.base_url + path, headers=headers)
         try:
             with self._opener.open(request, timeout=self.timeout) as response:
@@ -632,9 +628,7 @@ class MicroscopeService:
         self._handoff_deadline = None
         self.events = EventLog()
         self._readings = readings or FurnaceReadings(
-            _NoFurnace()
-            if self.demo
-            else FurnaceReadingsClient(self.config.furnace_url, self.config.furnace_token),
+            _NoFurnace() if self.demo else FurnaceReadingsClient(self.config.furnace_url),
             self.events,
             clock=clock,
         )

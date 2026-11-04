@@ -6,9 +6,10 @@ adds these routes under ``<base>/api/console/ws/motion``:
 - ``GET state`` reads the robot and stage state once per request with a fresh
   read identity and keeps only the fields the page shows. It never acquires,
   renews or releases a lease.
-- ``POST jog`` and ``POST move`` check one robot ``execute`` target against the
-  fingertip workspace and then send it once through ``service.console.command``.
-  A jog adds one step on one axis to a fresh read of the actual pose.
+- ``POST jog`` and ``POST move`` send one robot ``execute`` target once through
+  ``service.console.command``. The robot service applies its speed cap and refuses
+  a move while the controller reports an alarm. A jog adds one step on one axis
+  to a fresh read of the actual pose.
 
 The stage operator routes reach stage routes that are not in its description,
 so the relay and the runner never send them. Each change needs this page's
@@ -30,15 +31,10 @@ from flask import jsonify, request
 from labkit.errors import ServiceError
 from labkit.lease import validate_client
 
-from ...stations import DEFAULT_TOOL, load_tool
-from ...stations import Workspace as Bounds
-from ...tool import Pose, ToolOffset, flange_to_fingertip
 from . import Workspace
 
 JOG_STEPS = (0.5, 2, 10)
 AXES = ("x", "y", "z", "r")
-# Demo only: a synthetic flange box around the simulator's start pose.
-DEMO_BOUNDS = {"x_mm": [100, 400], "y_mm": [-250, 250], "z_mm": [-50, 200], "r_deg": [-180, 180]}
 
 DEVICES = ("robot", "stage")
 
@@ -164,36 +160,6 @@ def read(service, device, page):
     return result
 
 
-def workspace_limits(service):
-    """Return (bounds, tool). Refuse motion when the workspace is not configured."""
-    settings = service.settings
-    try:
-        bounds = Bounds.from_settings(settings)
-    except ValueError:
-        if service.demo and not any(key.startswith("MG400_ORCH_X_") for key in settings):
-            return Bounds(DEMO_BOUNDS), ToolOffset(0, 0, 0)
-        raise ServiceError(
-            409, "Set the fingertip workspace bounds before console motion."
-        ) from None
-    try:
-        tool = load_tool(settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
-    except (OSError, ValueError):
-        raise ServiceError(409, "Set a valid tool offset file before console motion.") from None
-    return bounds, tool
-
-
-def check_target(service, target):
-    """Raise a 409 refusal when the flange target puts the fingertip outside the workspace."""
-    bounds, tool = workspace_limits(service)
-    try:
-        tip = flange_to_fingertip(Pose(*(target[axis] for axis in AXES)), tool)
-    except (TypeError, ValueError, KeyError):
-        raise ValueError("Targets must contain finite x, y, z and r.") from None
-    for field, (low, high) in bounds.bounds.items():
-        if not low <= getattr(tip, field) <= high:
-            raise ServiceError(409, f"The target is outside the workspace ({field}).")
-
-
 def _targets(value):
     if not isinstance(value, dict) or set(value) != set(AXES):
         raise ValueError("Send targets with x, y, z and r only.")
@@ -218,7 +184,6 @@ def _page():
 
 
 def _send(service, page, target, speed):
-    check_target(service, target)
     result = service.console.command("robot", page, "execute", {"targets": target, "speed": speed})
     status = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
     return jsonify(result), status

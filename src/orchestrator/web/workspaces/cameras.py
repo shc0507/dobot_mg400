@@ -1,21 +1,16 @@
 """Console workspace: Cameras.
 
-The console process relays camera video and frames, so the browser never gets
-the camera preview key or a service token:
+The browser loads camera1 to camera4 from the proxy at ``/camera/<view>.mjpeg``
+and ``/camera/<view>.jpg``. The console process relays the other views:
 
-- camera1 to camera4: the camera preview MJPEG and JPEG (``MG400_ORCH_CAMERA_URL``,
-  key from ``MG400_CAMERA_KEY_FILE``);
 - thermal: the thermal frame API through the thermal service client;
 - microscope: the Toupcam MJPEG and JPEG through the microscope service client;
 - camera 4 chip detections: the vision ``api/detect`` result.
 
-An ``<img>`` cannot send the operator token. A page with the token asks for a
-ticket (``POST ticket``). A ticket is random, single use, bound to one view and
-one kind (stream or snapshot) and expires after ``TICKET_TTL_S``. The stream and
-snapshot routes accept a valid ticket instead of the token. The relay bounds the
-open streams. Each view has one upstream reader shared by its viewers; a viewer
-gets only the newest frame, at most at its ticket's frame rate, and never a
-backlog. The reader closes the upstream connection when the last viewer leaves.
+The microscope relay bounds its open streams. One upstream reader is shared by
+its viewers; a viewer gets only the newest frame, at most at the requested
+frame rate, and never a backlog. The reader closes the upstream connection when
+the last viewer leaves.
 """
 
 import json
@@ -28,7 +23,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
 
 from flask import Response, jsonify, request
 
@@ -39,13 +33,9 @@ from . import Workspace
 
 CAMERAS = ("camera1", "camera2", "camera3", "camera4")
 VIEWS = (*CAMERAS, "thermal", "microscope")
-MJPEG = (*CAMERAS, "microscope")
-MAX_STREAMS = 6
-MAX_STREAMS_PER_VIEW = 2
+MJPEG = ("microscope",)
 # The microscope service allows 4 preview streams. Keep 2 for its own panel.
 MAX_MICROSCOPE_STREAMS = 2
-TICKET_TTL_S = 20.0
-MAX_TICKETS = 64
 STALE_S = 2.0
 RECENT_S = 5.0
 THERMAL_CACHE_S = 0.2
@@ -54,11 +44,10 @@ MAX_FRAME = 8 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
 CHUNK = 64 * 1024
 UPSTREAM_TIMEOUT_S = 5.0
-# A stream ticket may cap the frame rate. Grid and strip tiles ask for TILE_FPS.
+# A stream may cap its frame rate with ?fps=. Grid and strip tiles ask for TILE_FPS.
 TILE_FPS = 10
 MAX_FPS = 30
 PART_BOUNDARY = b"frame"
-DEFAULT_KEY_FILE = "/var/lib/mg400/camera/preview.key"
 _BOUNDARY = re.compile(r'boundary="?([A-Za-z0-9\'()+_,./:=?-]{1,70})"?')
 
 
@@ -74,10 +63,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
-def _open(url, token=None, timeout=UPSTREAM_TIMEOUT_S):
+def _open(url, timeout=UPSTREAM_TIMEOUT_S):
     headers = {"Accept": "*/*"}
-    if token:
-        headers["Authorization"] = "Bearer " + token
     try:
         return _OPENER.open(urllib.request.Request(url, headers=headers), timeout=timeout)
     except urllib.error.HTTPError as error:
@@ -105,19 +92,6 @@ class HttpSources:
     def settings(self):
         return getattr(self.service, "settings", {}) or {}
 
-    def _preview(self):
-        base = self.settings.get("MG400_ORCH_CAMERA_URL", "")
-        if not base:
-            return None
-        try:
-            key = Path(self.settings.get("MG400_CAMERA_KEY_FILE") or DEFAULT_KEY_FILE).read_bytes()
-        except OSError:
-            raise SourceError("The camera preview key is not readable.") from None
-        key = key.strip().decode("ascii", "replace")
-        if len(key) < 32 or not re.fullmatch(r"[A-Za-z0-9_.~-]+", key):
-            raise SourceError("The camera preview key is not valid.")
-        return base.rstrip("/") + "/" + key + "/"
-
     def _client(self, name):
         try:
             adapter = self.service.dashboard_client(name, "console-cameras-" + secrets.token_hex(6))
@@ -127,7 +101,10 @@ class HttpSources:
 
     def configured(self, view):
         if view in CAMERAS:
-            return bool(self.settings.get("MG400_ORCH_CAMERA_URL"))
+            try:
+                return view in camera_configuration(self.settings).streams
+            except ValueError:
+                return False
         try:
             return bool(self.service.dashboard_configured(view))
         except (AttributeError, ValueError):
@@ -143,26 +120,16 @@ class HttpSources:
         return result
 
     def open_stream(self, view):
-        if view in CAMERAS:
-            base = self._preview()
-            if base is None:
-                raise SourceError("The camera preview is not configured.")
-            return _open(base + view + ".mjpeg")
         http = self._client("microscope")
         if http is None:
             raise SourceError("The microscope service is not configured.")
-        return _open(http.base_url + "api/camera/microscope/mjpeg", http.token)
+        return _open(http.base_url + "api/camera/microscope/mjpeg")
 
     def frame(self, view):
-        if view in CAMERAS:
-            base = self._preview()
-            if base is None:
-                raise SourceError("The camera preview is not configured.")
-            return _read(_open(base + view + ".jpg"), MAX_FRAME)
         http = self._client("microscope")
         if http is None:
             raise SourceError("The microscope service is not configured.")
-        response = _open(http.base_url + "api/camera/microscope/frame.jpg", http.token)
+        response = _open(http.base_url + "api/camera/microscope/frame.jpg")
         if response.status != 200:
             response.close()
             raise SourceError("The microscope has no frame.")
@@ -172,7 +139,7 @@ class HttpSources:
         http = self._client(name)
         if http is None:
             raise SourceError(f"The {name} service is not configured.")
-        body = _read(_open(http.base_url + path, http.token), MAX_JSON)
+        body = _read(_open(http.base_url + path), MAX_JSON)
         try:
             value = json.loads(body, parse_constant=_reject)
         except ValueError:
@@ -209,48 +176,22 @@ class _Slot:
 
 
 class Relay:
-    """Tickets, stream bounds and per-view frame times."""
+    """Stream bounds and per-view frame times."""
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.lock = threading.Lock()
-        self.tickets = {}
         self.open = dict.fromkeys(VIEWS, 0)
         self.frame_at = {}
         self.error = {}
         self.started = 0
         self.feeds = {view: _Feed(view, self) for view in MJPEG}
 
-    # Tickets -----------------------------------------------------------------
-
-    def issue(self, view, kind, fps=TILE_FPS):
-        now = self.clock()
-        with self.lock:
-            self.tickets = {k: v for k, v in self.tickets.items() if v[2] > now}
-            if len(self.tickets) >= MAX_TICKETS:
-                raise ServiceError(429, "Too many open camera tickets. Wait and try again.")
-            ticket = secrets.token_urlsafe(24)
-            self.tickets[ticket] = (view, kind, now + TICKET_TTL_S, fps)
-        return ticket
-
-    def redeem(self, view, kind):
-        values = request.args.getlist("ticket")
-        if set(request.args) != {"ticket"} or len(values) != 1:
-            raise ServiceError(401, "A camera ticket is required.")
-        now = self.clock()
-        with self.lock:
-            entry = self.tickets.pop(values[0], None)
-        if entry is None or entry[2] <= now or entry[:2] != (view, kind):
-            raise ServiceError(401, "The camera ticket is not valid.")
-        return entry[3]
-
     # Streams -----------------------------------------------------------------
 
     def acquire(self, view):
         with self.lock:
-            total = sum(self.open.values())
-            limit = MAX_MICROSCOPE_STREAMS if view == "microscope" else MAX_STREAMS_PER_VIEW
-            if total >= MAX_STREAMS or self.open[view] >= limit:
+            if self.open[view] >= MAX_MICROSCOPE_STREAMS:
                 raise ServiceError(503, "The camera stream limit is reached. Close another view.")
             self.open[view] += 1
             self.started += 1
@@ -582,10 +523,9 @@ class _Cache:
 
 
 def preview_state(service):
-    """Summarize camera1 to camera4 for the status strip. Never return a URL or key.
+    """Summarize camera1 to camera4 for the status strip.
 
-    unconfigured: no ``MG400_ORCH_CAMERA_URL``. live or stale: a relayed view has
-    frames. unavailable: the last relay attempt failed. idle: configured, no view open.
+    unconfigured: no camera device is set. idle: the browser loads the streams itself.
     """
     value = getattr(service, "camera_sources", None)
     source = value if value is not None else HttpSources(service)
@@ -593,18 +533,7 @@ def preview_state(service):
         configured = bool(source.configured(CAMERAS[0]))
     except Exception:
         configured = False
-    if not configured:
-        return {"state": "unconfigured"}
-    relay = getattr(service, "camera_relay", None)
-    views = [relay.view_state(view) for view in CAMERAS] if relay is not None else []
-    states = {view["state"] for view in views}
-    if "live" in states:
-        return {"state": "live"}
-    if "stale" in states:
-        return {"state": "stale"}
-    if any(view["error"] for view in views):
-        return {"state": "unavailable"}
-    return {"state": "idle"}
+    return {"state": "idle" if configured else "unconfigured"}
 
 
 def register(blueprint, service):
@@ -626,45 +555,26 @@ def register(blueprint, service):
         views = []
         for view in VIEWS:
             row = {"id": view, "configured": source.configured(view)}
-            row.update(relay.view_state(view))
+            if view in CAMERAS:
+                # The browser loads these streams from the proxy; it shows their state.
+                row["url"] = f"/camera/{view}.mjpeg"
+            else:
+                row.update(relay.view_state(view))
             row["mode"] = _mode_text(modes.get(view))
             views.append(row)
         return jsonify(
             views=views,
-            limits={
-                "streams": MAX_STREAMS,
-                "per_view": MAX_STREAMS_PER_VIEW,
-                "microscope": MAX_MICROSCOPE_STREAMS,
-            },
-            ticket_ttl_s=TICKET_TTL_S,
-        )
-
-    @blueprint.post("/ticket")
-    def ticket():
-        data = request.get_json()
-        if not {"view", "kind"} <= set(data) <= {"view", "kind", "fps"} or data["kind"] not in {
-            "stream",
-            "snapshot",
-        }:
-            raise ValueError("Send view, kind (stream or snapshot) and an optional fps.")
-        fps = data.get("fps", TILE_FPS)
-        if type(fps) is not int or not 1 <= fps <= MAX_FPS:
-            raise ValueError(f"fps must be an integer from 1 to {MAX_FPS}.")
-        view = _view(data["view"])
-        if view not in MJPEG:
-            raise ValueError("Only camera1 to camera4 and microscope use tickets.")
-        value = relay.issue(view, data["kind"], fps)
-        path = "stream" if data["kind"] == "stream" else "snapshot"
-        return jsonify(
-            url=f"{blueprint.url_prefix}/{path}/{view}?ticket={value}",
-            expires_s=TICKET_TTL_S,
+            limits={"microscope": MAX_MICROSCOPE_STREAMS},
         )
 
     def stream(view):
         _view(view)
         if view not in MJPEG:
             raise ServiceError(404, "This view has no stream.")
-        fps = relay.redeem(view, "stream")
+        fps = request.args.get("fps", str(TILE_FPS))
+        if set(request.args) - {"fps"} or not fps.isdecimal() or not 1 <= int(fps) <= MAX_FPS:
+            raise ValueError(f"fps must be an integer from 1 to {MAX_FPS}.")
+        fps = int(fps)
         slot = relay.acquire(view)
         feed = relay.feeds[view]
 
@@ -726,7 +636,6 @@ def register(blueprint, service):
         _view(view)
         if view not in MJPEG:
             raise ServiceError(404, "This view has no JPEG snapshot.")
-        relay.redeem(view, "snapshot")
         try:
             body = sources().frame(view)
         except SourceError as error:
@@ -740,9 +649,6 @@ def register(blueprint, service):
             headers={"Content-Disposition": f'attachment; filename="{name}"'},
         )
 
-    # These two routes accept a ticket instead of the operator token.
-    stream.console_ticket = True
-    snapshot.console_ticket = True
     blueprint.add_url_rule("/stream/<view>", "stream", stream, methods=["GET"])
     blueprint.add_url_rule("/snapshot/<view>", "snapshot", snapshot, methods=["GET"])
 

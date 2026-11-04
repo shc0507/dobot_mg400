@@ -19,7 +19,7 @@ PTY 是 SSH 分配的交互终端，可用 `ssh -t` 请求。
 使用前，关闭其他机械臂控制程序。
 终端与机器人服务共用机械臂连接锁。
 多个进程必须配置相同的机械臂地址。
-它们还必须共用 `MG400_CONTROLLER_LOCK_DIR`。
+它们还必须共用锁目录 `/var/lib/mg400/locks`，`mg400ctl terminal` 会设置该目录。
 目录和权限要求见 [面板连接锁](deploy.md#面板连接锁)。
 此锁不能阻止 DobotStudio 或其他主机连接。
 

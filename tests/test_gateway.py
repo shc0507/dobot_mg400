@@ -171,14 +171,10 @@ def test_audit_failure_prevents_read(env, monkeypatch):
     [
         ({}, 401),
         ({"Authorization": "Bearer wrong"}, 401),
-        ({"Authorization": f"Bearer {TOKEN}", "Host": "attacker.invalid"}, 403),
-        ({"Authorization": f"Bearer {TOKEN}", "Origin": "http://attacker.invalid"}, 403),
-        ({"Authorization": f"Bearer {TOKEN}", "X-Forwarded-Host": "127.0.0.1"}, 403),
-        ({"Authorization": f"Bearer {TOKEN}", "Sec-Fetch-Site": "cross-site"}, 403),
     ],
 )
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
-def test_every_http_request_requires_auth_and_access_rules(env, headers, status, method):
+def test_every_http_request_requires_the_gateway_token(env, headers, status, method):
     store, recipes = env
 
     async def exercise():

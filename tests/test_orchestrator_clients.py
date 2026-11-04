@@ -16,7 +16,7 @@ def lease_adapter(monkeypatch):
     now = [10.0]
     lease = Lease(clock=lambda: now[0])
     paths = []
-    adapter = ServiceAdapter("http://127.0.0.1:1", "", "orch-unique-run")
+    adapter = ServiceAdapter("http://127.0.0.1:1", "orch-unique-run")
 
     def request(path, data=None):
         paths.append(path)
@@ -141,7 +141,7 @@ def reconciliation_pool(monkeypatch, name, state):
     """An already-owned, stopped run; only adapter state reads are replaced."""
     identity = "orch-recovery-test"
     adapter_type = RobotAdapter if name == "robot" else ServiceAdapter
-    adapter = adapter_type("http://127.0.0.1:1", "", identity)
+    adapter = adapter_type("http://127.0.0.1:1", identity)
     adapter._lease_seconds = 3
     monkeypatch.setattr(adapter, "state", lambda: copy.deepcopy(state))
     pool = Clients({name: adapter})

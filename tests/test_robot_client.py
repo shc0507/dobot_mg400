@@ -16,7 +16,6 @@ from mg400.client import RobotClient, RobotClientError
 from mg400.web_control import RobotPanelState
 from mg400.websocket import TEXT, MessageReader, encode_frame
 
-TOKEN = "robot-client-offline-test-token"
 TARGET = {"x": 260, "y": 12, "z": 42, "r": 31}
 pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
@@ -29,7 +28,7 @@ class LocalPanelServer(PanelServer):
 
 @pytest.fixture
 def service():
-    with running(None, token=TOKEN, base_path="/robot/", server_class=LocalPanelServer) as server:
+    with running(None, base_path="/robot/", server_class=LocalPanelServer) as server:
         yield server
 
 
@@ -56,7 +55,7 @@ def make_client(service, rig):
 
     def make(identity="automation", **kwargs):
         client = RobotClient(
-            f"http://127.0.0.1:{service.server_address[1]}/robot", TOKEN, identity, **kwargs
+            f"http://127.0.0.1:{service.server_address[1]}/robot", identity, **kwargs
         )
         clients.append(client)
         return client
@@ -117,7 +116,7 @@ def in_process_client(make_sim_rig, monkeypatch):
     monkeypatch.setattr(client_module, "_connect_socket", refuse_network)
 
     def make():
-        client = RobotClient("http://localhost/robot", TOKEN, "automation")
+        client = RobotClient("http://localhost/robot", "automation")
         clients.append(client)
         transport = Transport(client.client_id)
 
@@ -158,7 +157,7 @@ def drop_socket(service, identity="automation"):
 def test_construct_import_and_validation_open_nothing(monkeypatch):
     monkeypatch.setattr(client_module, "_connect_socket", lambda *a: pytest.fail("Network opened"))
     before = set(threading.enumerate())
-    client = RobotClient("http://localhost/panel", "", "script")
+    client = RobotClient("http://localhost/panel", "script")
     assert client.state is None and not client.connected
     assert set(threading.enumerate()) == before
     client.close()
@@ -177,31 +176,27 @@ def test_construct_import_and_validation_open_nothing(monkeypatch):
 )
 def test_invalid_urls(url):
     with pytest.raises(ValueError):
-        RobotClient(url, TOKEN, "script")
+        RobotClient(url, "script")
 
 
 @pytest.mark.parametrize("client_id", ["", " ", "a\nb", "名字", "x" * 129, None])
 def test_invalid_identity(client_id):
     with pytest.raises(ValueError):
-        RobotClient("http://localhost", TOKEN, client_id)
+        RobotClient("http://localhost", client_id)
 
 
 @pytest.mark.parametrize("timeout", [0, -1, True, float("nan"), float("inf"), 10**1000])
 def test_invalid_timeout(timeout):
     with pytest.raises(ValueError):
-        RobotClient("http://localhost", TOKEN, "script", timeout=timeout)
+        RobotClient("http://localhost", "script", timeout=timeout)
 
 
-@pytest.mark.parametrize("setting,code", [("token", 4401), ("protocol", 4426)])
-def test_refused_hello_preserves_close_code(make_client, setting, code):
+def test_refused_hello_preserves_close_code(make_client):
     client = make_client()
-    if setting == "token":
-        client.token = "wrong-token"
-    else:
-        client.PROTOCOL = 999
+    client.PROTOCOL = 999
     with pytest.raises(RobotClientError) as error:
         client.connect()
-    assert error.value.close_code == code
+    assert error.value.close_code == 4426
     assert client._reader_thread is None and not client.connected
 
 
@@ -335,7 +330,7 @@ def test_lost_reply_is_unknown_and_not_replayed(make_client, service, rig, monke
 def test_http_safety_fallback_when_socket_down(make_client, rig, action):
     client = started(make_client)
     client.close()
-    # The HTTP path keeps the explicit token and ID and the legacy panel header.
+    # The HTTP path keeps the explicit ID and the legacy panel header.
     reply = client.command(action)
     assert reply["status"] == 200
     rig.wait(lambda s: not s["busy"])
@@ -460,16 +455,6 @@ def test_stop_can_interrupt_run_on_same_client(make_client, rig):
             future.result(3)
 
 
-def test_http_fallback_rejects_wrong_token_without_actuation(make_client, rig):
-    client = started(make_client)
-    client.close()
-    client.token = "wrong-token"
-    with pytest.raises(RobotClientError) as error:
-        client.command("stop")
-    assert error.value.status == 401
-    assert "ResetRobot()" not in rig.controller.sent()
-
-
 def test_unconfirmed_stop_cannot_be_reported_as_success(make_client, rig):
     client = started(make_client)
 
@@ -573,7 +558,7 @@ def test_close_retains_live_worker_handle_until_it_finishes():
         def join(self, timeout):
             assert timeout > 0
 
-    client = RobotClient("http://localhost/", "", "script")
+    client = RobotClient("http://localhost/", "script")
     worker = SlowWorker()
     client._reader_thread = worker
     client.close()

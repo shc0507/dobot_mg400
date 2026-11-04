@@ -4,7 +4,6 @@ Run with Python 3.12 or later. Robot mode can send hardware commands.
 """
 
 import argparse
-import hmac
 import json
 import logging
 import logging.handlers
@@ -23,13 +22,6 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from labkit.auth import (  # noqa: E402
-    bearer_matches,
-    host_allowed,
-    same_origin,
-    valid_token,
-    valid_token_for_bind,
-)
 from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
@@ -282,7 +274,7 @@ class SocketSession:
                 self._pusher.join(timeout=1)
 
     def _hello(self):
-        # A slow sender must not hold a connection slot without authenticating.
+        # A slow sender must not hold a connection slot without sending hello.
         deadline = threading.Timer(self.HELLO_SECONDS, self._connection.abort)
         deadline.daemon = True
         self._socket.settimeout(self.HELLO_SECONDS)
@@ -299,23 +291,14 @@ class SocketSession:
             message = None
         if (
             not isinstance(message, dict)
-            or set(message) != {"type", "protocol", "client", "token"}
+            or set(message) != {"type", "protocol", "client"}
             or message["type"] != "hello"
             or type(message["protocol"]) is not int
-            or not isinstance(message["token"], str)
             or not valid_client(message["client"])
         ):
-            self._refuse(
-                4400, 400, "Send hello with the protocol, a client ID and the access token first"
-            )
+            self._refuse(4400, 400, "Send hello with the protocol and a client ID first")
         if message["protocol"] != PROTOCOL:
             self._refuse(4426, 426, f"The robot service uses protocol {PROTOCOL}. Reload the page.")
-        expected = self.server.token
-        # surrogatepass: JSON can carry a lone surrogate, which must compare as unequal.
-        if expected and not hmac.compare_digest(
-            message["token"].encode("utf-8", "surrogatepass"), expected.encode("utf-8")
-        ):
-            self._refuse(4401, 401, "Enter the panel access token")
         return message["client"]
 
     def _request(self, text):
@@ -465,13 +448,12 @@ class _Replaced(Exception):
 
 class PanelServer(ThreadingHTTPServer):
     daemon_threads = True
-    # Authenticated connections, and connections that have not sent hello yet.
+    # Connections after hello, and connections that have not sent hello yet.
     MAX_SOCKETS = 8
     MAX_PENDING_SOCKETS = 8
 
-    def __init__(self, address, state, token=None, base_path="/"):
+    def __init__(self, address, state, base_path="/"):
         self.state = state
-        self.token = token
         self.base_path = normalize_base_path(base_path)
         self._sockets_lock = threading.Lock()
         self._pending = []
@@ -481,7 +463,7 @@ class PanelServer(ThreadingHTTPServer):
     def admit_socket(self, session):
         """Track a connection before hello. Evict the oldest one when the queue is full.
 
-        Eviction keeps unauthenticated peers from holding every slot.
+        Eviction keeps peers without hello from holding every slot.
         """
         with self._sockets_lock:
             evicted = self._pending[: max(0, len(self._pending) - self.MAX_PENDING_SOCKETS + 1)]
@@ -496,7 +478,7 @@ class PanelServer(ThreadingHTTPServer):
                 self._pending.remove(session)
 
     def register_socket(self, session):
-        """Make an authenticated session the live connection of its client.
+        """Make a session after hello the live connection of its client.
 
         A newer connection of the same client revokes the keys at once and ends the older
         connection, whose own end then revokes nothing. Return False when every slot is
@@ -589,44 +571,18 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _host_allowed(self):
-        """Without a token, accept only loopback host names.
-
-        A DNS rebinding page reaches a loopback server under its own host name, so its
-        requests look same-origin. A token protects the other binds.
-        """
-        if host_allowed(self.headers, self.server.token):
-            return True
-        self._send(403, {"error": "Open the panel at 127.0.0.1 or localhost"})
-        return False
-
-    def _authorized(self):
-        expected = self.server.token
-        if expected and not bearer_matches(self.headers.get("Authorization", ""), expected):
-            self._send(401, {"error": "Enter the panel access token"})
-            return False
-        return True
-
     def do_GET(self):
         # An unread body would be parsed as the next request on this connection.
         length = self.headers.get("Content-Length")
         if self.headers.get("Transfer-Encoding") is not None or length not in (None, "0"):
             self._send(400, {"error": "GET requests must not have a body"})
             return
-        if not self._host_allowed():
-            return
         path = urlsplit(self.path).path
         base = self.server.base_path.rstrip("/")
         path = path[len(base) :] if path.startswith(base + "/") else None
         if path == "/api/state":
-            if self._authorized():
-                self._send(200, self.server.state.snapshot())
+            self._send(200, self.server.state.snapshot())
         elif path in {"/api/describe", "/api/events"}:
-            if not self._authorized():
-                return
-            if not same_origin(self.headers):
-                self._send(403, {"error": "Open the panel page from this server"})
-                return
             if self.server.state.mode != "robot":
                 self._send(404, {"error": "Contract routes are only available in robot mode"})
                 return
@@ -666,9 +622,6 @@ class PanelHandler(BaseHTTPRequestHandler):
         if len(self.headers.get_all("Sec-WebSocket-Key") or []) != 1 or not valid_client_key(key):
             self._send(400, {"error": "The WebSocket key is invalid"})
             return
-        if not same_origin(self.headers):
-            self._send(403, {"error": "Open the panel page from this server"})
-            return
         self.send_response(101)
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
@@ -700,14 +653,9 @@ class PanelHandler(BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding") is not None:
             self._send(400, {"error": "Send the request body with Content-Length"})
             return
-        if not self._host_allowed():
-            return
-        if not self._authorized():
-            return
         if (
             self.headers.get("Content-Type", "").split(";")[0] != "application/json"
             or self.headers.get("X-MG400-Panel") != "1"
-            or self.headers.get("Sec-Fetch-Site") == "cross-site"
         ):
             self._send(403, {"error": "Use the panel to send commands"})
             return
@@ -725,8 +673,6 @@ class PanelHandler(BaseHTTPRequestHandler):
             if path.endswith("/stop"):
                 if state.mode != "robot":
                     raise PermissionError("Robot stop is unavailable in read-only mode")
-                if not same_origin(self.headers):
-                    raise PermissionError("Open the panel page from this server")
                 if not valid_client(client):
                     raise ValueError("A printable ASCII client ID is required")
                 if not isinstance(payload, dict) or set(payload) - {"wait_s"}:
@@ -741,7 +687,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             self._send(200, result)
 
     def log_message(self, format, *args):
-        # Keep tokens and request bodies out of the request log.
+        # Keep request bodies out of the request log.
         if format.startswith("Request timed out"):
             return
         polls = (
@@ -838,18 +784,6 @@ def main(argv=None):
         port = int(value) if re.fullmatch("[0-9]{1,5}", value) else 0
         if not 1 <= port <= 65535:
             parser.error("MG400_PANEL_PORT must be a whole number between 1 and 65535")
-    token = os.environ.get("MG400_PANEL_TOKEN")
-    if token and not valid_token(token):
-        parser.error(
-            "MG400_PANEL_TOKEN must contain only printable ASCII characters "
-            "and must not begin or end with a space"
-        )
-    if not valid_token_for_bind(
-        token, bind, require_long_token=False, case_sensitive_localhost=True
-    ):
-        parser.error(
-            "Set MG400_PANEL_TOKEN to at least 24 characters before binding outside localhost"
-        )
     caps = {}
     for suffix, parameter in (("SPEED", "max_speed_l"), ("ACC", "max_acc_l")):
         name = f"MG400_ROBOT_MAX_{suffix}_L"
@@ -872,7 +806,7 @@ def main(argv=None):
         if args.mode == "robot"
         else ReadOnlyPanelState(host)
     )
-    server = PanelServer((bind, port), state, token, args.base_path)
+    server = PanelServer((bind, port), state, args.base_path)
     print(
         f"MG400 panel: http://{bind}:{server.server_port}{args.base_path} ({args.mode})",
         flush=True,

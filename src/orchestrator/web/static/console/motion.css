@@ -35,7 +35,7 @@
 #ws-motion .mo-grip-state { font-size: 13px; font-weight: 600; color: var(--soft); }
 #ws-motion .mo-stop { min-height: 44px; padding: 0 14px; font-size: 13px; }
 #ws-motion .mo-small { font-size: 13px; }
-#ws-motion .mo-check { display: inline-flex; align-items: center; min-height: 44px; }
+#ws-motion .mo-ref-img { display: block; max-width: 100%; height: auto; border-radius: 6px; }
 #ws-motion .mo-axis { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 10px; background: #1B232A; border: 1px solid #2A353F; }
 #ws-motion .mo-readout { display: flex; flex-wrap: wrap; gap: 4px 14px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
 #ws-motion .mo-at { border-color: var(--ok); }

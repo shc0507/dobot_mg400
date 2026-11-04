@@ -118,7 +118,7 @@
       "ctl.console": "Another console page controls it", "ctl.other": "Another client controls it",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
       "arm.enable": "Enable", "arm.disable": "Disable", "arm.clear": "Clear alarm",
-      "jog.title": "Jog", "jog.step": "Jog step", "jog.keys": "Keyboard jog: robot panel",
+      "jog.title": "Jog", "jog.step": "Jog step",
       "jog.move": "Move {label} by the jog step",
       "move.title": "Move to a pose", "move.speed": "Speed", "move.speedLabel": "Speed, 1 to {cap}",
       "move.useActual": "Use actual", "move.execute": "Execute ↗", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
@@ -138,7 +138,10 @@
       "axis.minus": "Step −", "axis.plus": "Step +", "axis.minusLabel": "Move {axis} minus by the steps",
       "axis.plusLabel": "Move {axis} plus by the steps", "axis.badCount": "Enter whole steps from 1 to {max} and a speed from 1 to {speed}.",
       "axis.home": "Home…", "axis.homeConfirm": "Clear the travel path. {axis} moves to its reference switch.",
-      "axis.check": "Check reference", "axis.zero": "Set zero…",
+      "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
+      "axis.teachConfirm": "Is {axis} at its safe zero position? The current marker position replaces the camera reference.",
+      "axis.offset": "Marker offset {x}, {y} px", "axis.checkFailed": "Reference check failed: {error}",
+      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found",
       "axis.zeroConfirm": "Set the current position of {axis} as zero. Check the physical position first.",
       "named.title": "Named positions", "named.none": "No named positions are configured.",
       "named.go": "{axis} → {name}",
@@ -159,7 +162,7 @@
       "ctl.console": "另一个控制台页面持有控制权", "ctl.other": "另一个客户端持有控制权",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
       "arm.enable": "使能", "arm.disable": "下使能", "arm.clear": "清除报警",
-      "jog.title": "点动", "jog.step": "点动步长", "jog.keys": "键盘点动：机械臂面板",
+      "jog.title": "点动", "jog.step": "点动步长",
       "jog.move": "按点动步长移动 {label}",
       "move.title": "移动到位姿", "move.speed": "速度", "move.speedLabel": "速度，1 到 {cap}",
       "move.useActual": "使用当前值", "move.execute": "执行 ↗", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
@@ -179,7 +182,10 @@
       "axis.minus": "步进 −", "axis.plus": "步进 +", "axis.minusLabel": "{axis}按步数负向移动",
       "axis.plusLabel": "{axis}按步数正向移动", "axis.badCount": "请输入 1 到 {max} 的整数步数和 1 到 {speed} 的速度。",
       "axis.home": "回零…", "axis.homeConfirm": "请清空行程。{axis}将移动到参考开关。",
-      "axis.check": "检查参考", "axis.zero": "设零…",
+      "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
+      "axis.teachConfirm": "{axis}在安全零点吗？当前标记位置将替换摄像头参考。",
+      "axis.offset": "标记偏移 {x}, {y} px", "axis.checkFailed": "参考检查失败：{error}",
+      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口",
       "axis.zeroConfirm": "把{axis}的当前位置设为零点。请先检查实际位置。",
       "named.title": "命名位置", "named.none": "未配置命名位置。",
       "named.go": "{axis} → {name}",
@@ -198,6 +204,7 @@
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, cams: CAMERAS.slice(),
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
+      ports: null, port: "", portsLoading: false, refView: {},
     };
     let refs = {};
 
@@ -348,7 +355,7 @@
         onclick: () => { model.step = step; update(); },
       }));
       const jogBox = el("div", { class: "mo-block" },
-        el("div", { class: "mo-head" }, el("h3", { text: t("jog.title") }), el("a", { class: "lc-link", href: "/robot/", text: t("jog.keys") })),
+        el("div", { class: "mo-head" }, el("h3", { text: t("jog.title") })),
         el("div", { class: "mo-jogrow" }, pad, side),
         el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("jog.step") }, ...refs.steps));
 
@@ -509,7 +516,12 @@
           type: "button", class: "lc-button mo-small", text: t("axis.home"),
           onclick: () => askConfirm("stage", t("axis.homeConfirm", { axis }), () => send("stage", "home", { motor: id }, "ref-" + id)),
         }) : null;
-        row.check = el("a", { class: "lc-link mo-check", href: "/stage/", text: t("axis.check") });
+        row.check = el("button", { type: "button", class: "lc-button mo-small", text: t("axis.check"), onclick: () => checkReference(id) });
+        row.teach = el("button", {
+          type: "button", class: "lc-button mo-small", text: t("axis.teach"),
+          onclick: () => askConfirm("stage", t("axis.teachConfirm", { axis }), () => send("stage", "teach_reference", { motor: id, confirmed: true }, "ref-" + id, "stage/teach")),
+        });
+        row.view = el("div", { class: "mo-ref", hidden: true });
         row.zero = el("button", {
           type: "button", class: "lc-button mo-small", text: t("axis.zero"),
           onclick: () => askConfirm("stage", t("axis.zeroConfirm", { axis }), () => send("stage", "zero", { motor: id, confirm: true }, "ref-" + id)),
@@ -520,7 +532,8 @@
           el("div", { class: "mo-readout" }, row.pulses, row.mm, row.ref),
           el("div", { class: "mo-grid2" }, row.minus, row.plus),
           el("div", { class: "mo-row" }, input("steps", t("axis.steps")), input("speed", t("axis.speed"))),
-          el("div", { class: "mo-row" }, row.home, row.zero, row.check));
+          el("div", { class: "mo-row" }, row.home, row.zero, row.check, row.teach),
+          row.view);
       });
       refs.named = [];
       const named = [];
@@ -547,6 +560,9 @@
       refs.stageBadge = el("span", { class: "mo-badge" });
       refs.stageStop = el("button", { type: "button", class: "lc-danger mo-stop", text: t("stage.stop"), onclick: () => stopDevice("stage") });
       refs.stageBody = el("div", { class: "mo-stack" });
+      refs.portSelect = el("select", { class: "mo-input", "aria-label": t("stage.port"), onchange: event => { model.port = event.target.value; } });
+      refs.connect = el("button", { type: "button", class: "lc-button", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }, "connect", "stage/connect").then(() => { model.ports = null; }) });
+      refs.connectRow = el("div", { class: "mo-row", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect);
       refs.stageLast = el("p", { class: "lc-muted", role: "status" });
       const card = el("section", { class: "lc-card mo-col", "aria-labelledby": "mo-stage-title" },
         el("div", { class: "lc-card-head" },
@@ -554,6 +570,7 @@
           el("div", { class: "mo-row" }, refs.stageBadge, refs.stageStop)),
         controlButton("stage"),
         confirmSlot("stage"),
+        refs.connectRow,
         refs.stageBody,
         refs.stageLast);
       buildStage();
@@ -707,7 +724,10 @@
         const refBusy = model.inflight.has("stage:ref-" + motor.id);
         if (row.home) row.home.disabled = !stageReady || motor.mode !== "idle" || stage.busy || refBusy;
         row.zero.disabled = !stageReady || motor.zero_available !== true || motor.mode !== "idle" || stage.busy || refBusy;
-        row.check.hidden = motor.reference_configured !== true;
+        row.check.hidden = row.teach.hidden = motor.reference_configured !== true;
+        row.check.disabled = !stage.connected || refBusy;
+        row.teach.disabled = row.zero.disabled || motor.reference_configured !== true;
+        renderReference(row, motor.id);
       }
       for (const item of refs.named || []) {
         const motor = (stage?.motors || []).find(m => m.id === item.motor);
@@ -717,6 +737,51 @@
         item.button.disabled = !stageReady || !motor?.automation_ready || stage.busy || motor.mode !== "idle" || model.inflight.has("stage:move-" + item.motor);
       }
       refs.stageLast.textContent = stage ? lastText(stage.last_command) : "";
+      const disconnected = Boolean(stage && stage.connected !== true);
+      refs.connectRow.hidden = !disconnected;
+      if (disconnected && model.ports === null && !model.portsLoading) loadPorts();
+      refs.connect.disabled = !ownsStage || !model.port || busy("stage");
+    }
+
+    async function loadPorts() {
+      model.portsLoading = true;
+      try {
+        const body = await api.request("stage/ports");
+        model.ports = Array.isArray(body.ports) ? body.ports : [];
+      } catch { model.ports = []; }
+      finally { model.portsLoading = false; }
+      if (!model.ports.some(item => item.device === model.port)) model.port = model.ports[0]?.device || "";
+      refs.portSelect.replaceChildren(...(model.ports.length
+        ? model.ports.map(item => el("option", { value: item.device, text: item.description ? `${item.device} · ${item.description}` : item.device }))
+        : [el("option", { value: "", text: t("stage.noPorts") })]));
+      refs.portSelect.value = model.port;
+      update();
+    }
+
+    async function checkReference(id) {
+      const key = "stage:ref-" + id;
+      if (model.inflight.has(key)) return;
+      model.inflight.add(key);
+      update();
+      try {
+        model.refView[id] = await api.request("stage/reference/" + encodeURIComponent(id));
+      } catch (error) {
+        model.refView[id] = { error: error.message };
+      } finally {
+        model.inflight.delete(key);
+        update();
+      }
+    }
+
+    function renderReference(row, id) {
+      const view = model.refView[id];
+      row.view.hidden = !view;
+      if (!view || row.shown === view) return;
+      row.shown = view;
+      const offset = Array.isArray(view.offset_px) ? view.offset_px : null;
+      row.view.replaceChildren(
+        view.image ? el("img", { class: "mo-ref-img", src: view.image, alt: t("axis.check") }) : "",
+        el("p", { class: "lc-muted", text: view.error ? t("axis.checkFailed", { error: view.error }) : offset ? t("axis.offset", { x: fixed(offset[0], 1), y: fixed(offset[1], 1) }) : "" }));
     }
 
     function start() {

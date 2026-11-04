@@ -74,7 +74,7 @@ def main():
     parser.add_argument(
         "--output", type=Path, help="Save the last probe frame as a lossless .npz file"
     )
-    parser.add_argument("--no-connect", action="store_true", help="Wait for Connect in the GUI")
+    parser.add_argument("--no-connect", action="store_true", help="Wait for the connect command")
     parser.add_argument("--bind", default=os.environ.get("MG400_THERMAL_BIND", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=os.environ.get("MG400_THERMAL_PORT", "8768"))
     parser.add_argument("--base-path", default=os.environ.get("MG400_THERMAL_BASE_PATH", "/"))

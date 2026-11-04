@@ -11,7 +11,7 @@ Run the commands on this page as root in the Olares host terminal (Control Hub �
 ## Network
 
 Clients access Olares through the LarePass VPN. The Olares VPN address is `100.64.0.1`.
-With separate service ports, the panels and camera preview must listen on this address. Set these values in `/etc/mg400/mg400.env`:
+For direct client access through separate service ports, the robot, stage, and camera services must listen on this address. Set these values in `/etc/mg400/mg400.env`:
 
 ```ini
 MG400_PANEL_BIND=100.64.0.1
@@ -27,18 +27,16 @@ The default remains `127.0.0.1`. Keep `MG400_THERMAL_TOKEN` private and send it 
 Add `thermal` to `MG400_OPTIONAL_SERVICES` before installation. See the [thermal service guide](thermal.en.md#managed-host-service).
 
 If the optional furnace service is enabled, set `MG400_FURNACE_BIND=100.64.0.1` and permit TCP `8769` through the VPN.
-Keep `MG400_FURNACE_TOKEN` private. Enter it on the [furnace page](furnace.en.md), never in its URL.
+Keep `MG400_FURNACE_TOKEN` private and send it in the bearer header, never the URL. See the [furnace service](furnace.en.md).
 
 The optional microscope service defaults to `MG400_MICROSCOPE_BIND=127.0.0.1` and port `8770`.
 For direct VPN access, set `MG400_MICROSCOPE_BIND=100.64.0.1` and permit TCP `8770` through the VPN.
-Keep `MG400_MICROSCOPE_TOKEN` private. Enter it on the microscope page, never in its URL.
+Keep `MG400_MICROSCOPE_TOKEN` private and send it in the bearer header, never the URL.
 The token must contain at least 24 printable ASCII characters.
 Add `microscope` to `MG400_OPTIONAL_SERVICES` before installation. See the [microscope guide](microscope.en.md#managed-host-service) for physical configuration and startup order.
 
 The optional vision service defaults to `MG400_VISION_BIND=127.0.0.1` and port `8771`.
-Keep these values for camera-preview detection overlays, which use a fixed loopback endpoint.
 For direct VPN access, set `MG400_VISION_BIND=100.64.0.1` and permit TCP `8771` through the VPN.
-The preview's loopback detection proxy cannot reach this bind.
 
 Keep `MG400_VISION_TOKEN` private and send it in the bearer header, never the URL.
 For non-loopback access, the token must have at least 24 printable ASCII characters. A configured token must meet this rule on loopback too.
@@ -55,7 +53,7 @@ Remote MCP clients require an authenticated tunnel to loopback and the `MG400_GA
 
 ## Optional single-port proxy
 
-The optional `proxy` service provides 1 VPN port for the instrument services.
+The optional `proxy` service provides 1 VPN port for the Lab Console and the camera streams.
 It uses a Caddy 2 binary supplied through `--caddy PATH`.
 The installer writes `/etc/mg400/Caddyfile` and installs `/usr/local/lib/mg400/caddy`.
 It never downloads Caddy or starts the proxy.
@@ -88,28 +86,26 @@ MG400_ORCH_BIND=127.0.0.1
 MG400_ORCH_BASE_PATH=/lab/
 ```
 
-The routes preserve each service's native prefix:
+The proxy has only these routes:
 
 | VPN path | Loopback upstream | Required native prefix |
 | --- | --- | --- |
-| `/robot/` | `127.0.0.1:8766` | `/robot/` |
-| `/stage/` | `127.0.0.1:8767` | `/stage/` |
-| `/camera/<key>/` | `127.0.0.1:1985` | `/<key>/` after removing only `/camera` |
-| `/thermal/` | `127.0.0.1:8768` | `/thermal/` |
-| `/furnace/` | `127.0.0.1:8769` | `/furnace/` |
-| `/microscope/` | `127.0.0.1:8770` | `/microscope/` |
 | `/lab/` | `127.0.0.1:8772` | `/lab/` |
+| `/camera/<key>/<stream>.mjpeg`, `/camera/<key>/<stream>.jpg` | `127.0.0.1:1985` | `/<key>/` after removing only `/camera` |
 
 The proxy redirects the root path `/` to the Lab Console at `/lab/`. See the [Lab Console](dashboard.en.md#lab-console).
+The camera routes forward only video streams and single frames. The Cameras workspace of the console uses them.
+The proxy does not forward the robot, stage, thermal, furnace, or microscope services.
+These services listen on loopback ports with their native prefixes. The console, the command-line tools, and the recipe runner call them directly on `127.0.0.1`.
 The camera port remains `1985`. Other upstream ports follow their `MG400_*_PORT` settings when supplied.
 Selecting `proxy` does not select `thermal`. Add `thermal` separately to `MG400_OPTIONAL_SERVICES` to install its service.
-A route cannot work until its upstream service exists and runs with the required native prefix.
+A route and the console cannot work until the upstream service exists and runs with the required native prefix.
 Keep a separately started service on `127.0.0.1` with its own token, even though its connection is local.
 For thermal, set `MG400_THERMAL_BIND=127.0.0.1` and `MG400_THERMAL_BASE_PATH=/thermal/` in `/etc/mg400/mg400.env`.
 The installer fills a blank `MG400_THERMAL_TOKEN` and preserves a configured token.
 `thermal-cam --base-path /thermal/` overrides that prefix setting.
 
-For the microscope proxy route, set `MG400_MICROSCOPE_BIND=127.0.0.1` and `MG400_MICROSCOPE_BASE_PATH=/microscope/` in `/etc/mg400/mg400.env`.
+For the microscope with the proxy, set `MG400_MICROSCOPE_BIND=127.0.0.1` and `MG400_MICROSCOPE_BASE_PATH=/microscope/` in `/etc/mg400/mg400.env`.
 When `MG400_MICROSCOPE_TOKEN` is blank, the installer generates a token. It preserves an existing token.
 Select `microscope` separately from `proxy`. Update its furnace metadata URL when the furnace native prefix changes.
 Do not place service tokens in Caddy configuration or URLs.
@@ -117,7 +113,7 @@ The MCP gateway remains loopback-only and has no proxy route.
 
 Stop active work before changing service URLs. Update downstream client URLs to include the new native prefixes.
 For example, use `MG400_ORCH_ROBOT_URL=http://127.0.0.1:8766/robot/` and `MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/stage/contract/`.
-The stage contract stays separate from its legacy page API at `/stage/contract/api/`.
+The stage contract and operator routes are at `/stage/contract/api/`.
 Stage and thermal keep `/` as the default when no base path is configured.
 
 After configuration, install the supplied binary and check the generated configuration:
@@ -131,8 +127,7 @@ After configuration, install the supplied binary and check the generated configu
 Restart the upstream services whose settings changed through `mg400ctl`.
 Then start the proxy explicitly with `mg400ctl start proxy`.
 Permit TCP `8080` through the VPN, or the configured proxy port.
-Open `http://100.64.0.1:8080/robot/` or another route from the table.
-For cameras, retain the complete secret key from the existing preview URL.
+Open `http://100.64.0.1:8080/`. The proxy redirects it to the Lab Console.
 After an update, the installer can reuse the installed binary without `--caddy`.
 
 The proxy passes browser bearer credentials unchanged. It never supplies an upstream token.
@@ -141,7 +136,7 @@ The proxy preserves the browser `Host`, including its port, and sets `X-Forwarde
 It replaces incoming forwarded address headers and removes `Forwarded` and `X-Real-IP`.
 
 Caddy forwards WebSocket `Upgrade` and `Connection` through its native reverse proxy, using HTTP/1.1 upstream.
-Upstream response-header and read timeouts are `60` s, above the robot's `5` s ping interval.
+Upstream response-header and read timeouts are `60` s.
 The proxy adds no request retry. It disables its admin API and configuration persistence.
 The configuration excludes request access and error logs because camera URLs contain a secret.
 This HTTP entry uses the VPN connection. It does not enable public HTTPS.
@@ -215,7 +210,7 @@ Below, `$DOCS` means `/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqntt
 Do this migration only once. Before migration, close all panel pages and interactive terminals, then disable the robot.
 
 1. Stop the old services, copy the old service definitions as a backup, and disable the old terminal startup script.
-   The old script uses the old lock directory. It cannot prevent concurrent control with the new panel:
+   The old script uses the old lock directory. It cannot prevent concurrent control with the new services:
 
    ```sh
    DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
@@ -239,7 +234,7 @@ Do this migration only once. Before migration, close all panel pages and interac
    /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc
    ```
 
-5. Copy the camera preview key and mode switch backups. The preview link stays the same if you keep the original key:
+5. Copy the camera key and mode switch backups:
 
    ```sh
    install -o 1000 -g 1000 -m 0600 /opt/mg400-camera-preview/preview.key /var/lib/mg400/camera/preview.key
@@ -274,11 +269,11 @@ Do this migration only once. Before migration, close all panel pages and interac
 
    If `is-enabled` shows `static` for all 3 services, they will not start at boot.
 
-8. Check the following:
-   - The link from `mg400ctl camera-url` opens all configured camera views.
-   - The web panel accepts the original access key.
-   - After you click `Connect & take control` in the web panel, `mg400ctl status` shows the gripper collector as `active`.
-   - The stage panel can connect to the Arduino.
+8. Enable the [Lab Console](dashboard.en.md#lab-console), then check the following:
+   - The Cameras workspace shows all configured camera views.
+   - The Motion workspace shows the robot state.
+   - After you take control of the robot in the Motion workspace, `mg400ctl status` shows the gripper collector as `active`.
+   - The stage card in the Motion workspace can connect to the Arduino.
 
 Keep the old directories until you complete these checks.
 To restore the old layout, first run `mg400ctl stop all`.
@@ -296,7 +291,7 @@ Keep each camera on its listed hub port.
 The 4 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
 The camera on `12.1.4` is the microscope side camera. It watches the objective turret. go2rtc owns it, and the microscope reads its shared stream.
 The camera on `12.1.2` sees the stage from above. The camera on `12.1.3` looks along the Insert rail, with the tray behind it.
-The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in the preview.
+The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in the console.
 
 | Device | VID:PID | Stable identity | Hub port | Service |
 | --- | --- | --- | --- | --- |
@@ -344,17 +339,17 @@ Its stable host path is `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if0
 The `ttyUSB` number can change. The collector selects the device by its full USB identity.
 Do not substitute another serial port on the dock.
 The stage Arduino also connects to Olares USB. It is a separate entry in `/dev/serial/by-id/`.
-The gripper collector does not use the Arduino. The stage panel does not list the gripper adapter.
+The gripper collector does not use the Arduino. The stage service does not list the gripper adapter.
 
 The collector reads 3 status registers every 50 ms and atomically replaces the feedback file `/var/lib/mg400/work/gripper_feedback.json`.
-At startup, the collector service only reads status. It runs initialization or position commands only after a panel request.
-The collector keeps running after you close the panel.
+At startup, the collector service only reads status. It runs initialization or position commands only after a request from the robot service.
+The collector keeps running after you close the console.
 The collector exits if the serial port is busy, the device is missing, or a read fails.
 After an abnormal exit, the service waits 2 seconds before restarting. Retries have no limit.
-Collection resumes automatically when the USB connection returns. You do not need to open the panel again.
+Collection resumes automatically when the USB connection returns. You do not need to open the console again.
 Each start uses a new session. It does not replay old commands or clear the command lock.
 Control can remain locked if the connection fails during a command. You must first check the gripper state.
-The panel and collector must run on the same host and share the same monotonic clock domain.
+The robot service and collector must run on the same host and share the same monotonic clock domain.
 See [USB gripper protocol](development.en.md#usb-gripper-protocol) for the command file and lock formats.
 Read the logs with `mg400ctl logs collector`.
 
@@ -412,10 +407,10 @@ MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
 Only streams with width at most 640 and height at most 480 are preloaded.
-Larger streams start when a preview, microscope, or still consumer requests them.
-After the last browser viewer leaves a large stream, the preview clears its frame and releases its upstream reader between body reads.
+Larger streams start when a video stream, microscope, or still consumer requests them.
+After the last viewer leaves a large stream, the preview service releases its upstream reader between body reads.
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
-The preview display is capped at 30 fps, including when capture uses `1920x1080@60`.
+The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 Single-frame requests use the same go2rtc stream, at its configured resolution; they do not switch mode or open another device capture.
 
 The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large streams can exceed its periodic transfer budget together.
@@ -424,58 +419,21 @@ The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
 Keep each camera on its listed USB port. After changing devices or modes, run the installer again and restart the cameras.
 
-Start the preview, then show the link that contains the access key:
+Start the camera services:
 
 ```sh
 mg400ctl start camera
-mg400ctl camera-url
 ```
 
-If the `proxy` service is enabled, the link goes through the proxy: `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`.
-If it is not enabled, the link is `http://<MG400_CAMERA_BIND>:1985/<key>/`. If the address is `127.0.0.1`, the link opens only on the host.
-Connect to the LarePass VPN, then open the link in a browser.
-The link contains the access key and stays the same after a service restart.
+Use the Cameras workspace of the Lab Console to see the views.
+If the `proxy` service is enabled, the stream prefix is `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`.
+The stream paths contain the access key. The key stays the same after a service restart.
 Closing the terminal does not stop the preview service.
-Stopping the preview also stops the camera capture service.
+Stopping the preview service also stops the camera capture service.
 If startup fails, run `mg400ctl logs camera`.
 
-Below each image, the page shows the decoded dimensions and update rate. Camera, network, and browser performance affect the actual frame rate.
-The server and browser keep only the latest pending frame. They discard queued frames when the network slows.
+The server keeps only the latest pending frame. It discards queued frames when the network slows.
 The server send timeout is 1.5 seconds.
-If the page receives no complete frame for 1.5 seconds, it reconnects and temporarily keeps the previous frame.
-The page shows “Image paused · Not live” when the stream stops or the visible frame reaches 1.5 seconds since receipt.
-The page keeps the previous frame for at most 5 seconds after receipt. Reconnection does not extend this limit.
-Switching to another browser tab pauses the preview and clears the image. Returning to the preview tab resumes it.
-
-### Detection overlays
-
-Enable `识别叠加` on a camera tile to show detection boxes, outlines, class names, and confidence.
-The switch is off when the page opens.
-Chip uses green `#18b85a`. The robotic arm uses orange `#ed8a24`.
-The colors follow class names, regardless of the model's numeric class IDs.
-
-Each visible tile with a live image requests detections at most once per second.
-Enabled cameras take turns within the page. Slow requests can reduce the update rate.
-Scrolling a tile out of view, hiding the browser tab, disabling its switch, or pausing its image cancels and clears its overlay.
-These actions preserve the existing video pause rules.
-Without a new result, the overlay expires after 1.5 seconds. Browser detection requests time out after 2 seconds.
-
-Detection uses a separate frame and can lag behind the video.
-The overlay uses image pixels and accounts for blank margins around the image.
-It hides results whose image dimensions differ from the current frame.
-Do not use the overlay as a calibrated robot motion target.
-
-The access-key route `/<key>/camera<N>/detections.json` calls the fixed endpoint `http://127.0.0.1:8771/api/detect?camera=N`.
-The vision service must use port `8771` and base path `/` for this proxy.
-The preview reads `MG400_VISION_TOKEN` and sends it as a Bearer header. The browser never receives this token.
-The preview unit retains this variable from `/etc/mg400/mg400.env`.
-The proxy uses a 2-second socket timeout, bypasses environment proxies, and refuses redirects.
-It rejects invalid JSON and detection responses larger than 256 KiB.
-
-On any vision error, the route returns `{"available":false}` and the tile shows `识别不可用`.
-Video continues independently of vision.
-The preview does not start the vision service. The owner starts it with `mg400ctl start vision` after [installation](deploy.en.md#service-registry).
-See [Vision service](vision.en.md) for runtime and startup requirements.
 
 ### Camera failures
 
@@ -490,12 +448,12 @@ An `active` service status only means that the process is alive.
 When an image request returns `200`, also check that the image is not empty and can be decoded.
 If the host recognizes neither the hub nor the cameras, a preview service restart cannot replace a USB connection check.
 
-If the host recognizes the cameras but the preview frame rate is very low, run
+If the host recognizes the cameras but the stream frame rate is very low, run
 `curl -s http://127.0.0.1:1984/api/preload` on the Olares host.
 Check that the output includes each configured stream whose width is at most 640 and height is at most 480.
 If an expected preload is missing, run `mg400ctl restart camera`, wait 2 seconds, and query again.
 Preloading might not start if a device is missing when the capture service starts.
-The web video streams reconnect automatically. The configured `camera<N>.jpg` single-frame endpoints can be slow when a stream starts on demand.
+The console video streams reconnect automatically. The configured `camera<N>.jpg` single-frame endpoints can be slow when a stream starts on demand.
 
 After increasing the resolution, check all required views together under H-21. Check that several consecutive JPEG images decode completely.
 The resolution and frame rate shown by the browser do not rule out corrupted images or partial image damage.

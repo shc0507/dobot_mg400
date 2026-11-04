@@ -8,10 +8,10 @@ This page describes the TCP protocol and feedback checks for hardware control.
 Existing hardware functions connect directly through TCP. They do not provide a general pick-and-place interface.
 For routine operation, use the relevant guide:
 
-- [Web panel](control-panel.en.md): hardware control through a standalone web page.
+- [Robot service](control-panel.en.md): the hardware control service that the Motion workspace of the Lab Console uses.
 - [Interactive terminal](terminal-control.en.md): terminal commands for the robot and gripper.
 
-The web panel and interactive terminal share the robot address configuration.
+The robot service and interactive terminal share the robot address configuration.
 See `MG400_ROBOT_HOST` in [Configuration file](deploy.en.md#configuration-file).
 
 ## Direct TCP interface
@@ -42,7 +42,7 @@ On a host installed through [Host deployment](deploy.en.md), read the mode as ro
 mg400ctl mode
 ```
 
-`mg400ctl` runs the script as UID 1000 and shares the panel's [connection lock](deploy.en.md#panel-connection-lock).
+`mg400ctl` runs the script as UID 1000 and shares the robot service's [connection lock](deploy.en.md#panel-connection-lock).
 The script uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
 When run directly as root, the script refuses to acquire the connection lock and does not connect to the controller.
 
@@ -116,7 +116,7 @@ To find the initial fault, investigate in this order:
 
 The controller address is in `config/robot.toml`. It is currently `192.168.1.6`.
 SMB uses TCP `445`, the `project` share, and the `/logs` directory.
-This path is independent of dashboard queries. You do not need to close the web panel.
+This path is independent of robot service queries. You do not need to release the robot in the Lab Console.
 During read-only investigation, do not clear alarms, enable the robot, or send motion commands.
 
 | Path in the controller share | Purpose |
@@ -175,13 +175,13 @@ Keep these distinctions when interpreting the logs:
   These records do not mean that you obtained a numeric alarm code.
 - Alarm `85` means that the hardware emergency-stop button was pressed or a software emergency stop was triggered.
   A later `85` cannot replace the initial event.
-- The controller clock and panel log clock may differ.
+- The controller clock and the robot service log clock may differ.
   Keep the original timestamps. First compare order and intervals within the same controller.
   Before aligning different logs, check time zones and clock offsets.
 
-To query current alarm codes, disconnect the web panel and interactive terminal first.
+To query current alarm codes, first disable and release the robot in the Lab Console, and close the interactive terminal.
 Then connect separately to `29999` and call `GetErrorID()`.
-Panel polling and external queries may disconnect each other's connections.
+Service polling and external queries may disconnect each other's connections.
 
 Path reference: [MG400 log export instructions](https://techshare.co.jp/faq/dobot/mg400/support.html).
 Alarm code reference: [Dobot 4-axis alarm table](https://raw.githubusercontent.com/Dobot-Arm/TCP-IP-4Axis-Python/main/files/alarm_controller.json).

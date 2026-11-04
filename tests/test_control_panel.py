@@ -239,7 +239,7 @@ def request(server, method, path, body=None, headers=None):
 
 
 def test_http_authentication_and_command_guard(server):
-    assert request(server, "GET", "/")[0] == 200
+    assert request(server, "GET", "/")[0] == 404
     assert request(server, "GET", "/api/state")[0] == 401
     auth = {"Authorization": "Bearer test-token"}
     assert request(server, "GET", "/api/state", headers=auth)[0] == 200
@@ -472,8 +472,9 @@ def test_api_heartbeat_routes_under_the_base_path():
     # The --base-path value without a trailing slash, as an operator types it.
     with running(state, base_path="/mg400-panel") as server:
         auth = {"Authorization": "Bearer test-token"}
-        assert request(server, "GET", "/mg400-panel")[0] == 308
-        assert request(server, "GET", "/mg400-panel/")[0] == 200
+        assert request(server, "GET", "/mg400-panel")[0] == 404
+        assert request(server, "GET", "/mg400-panel/")[0] == 404
+        assert request(server, "GET", "/mg400-panel/index.html")[0] == 404
         assert request(server, "GET", "/mg400-panel/api/state", headers=auth)[0] == 200
         assert request(server, "GET", "/api/state", headers=auth)[0] == 404
         assert request(server, "POST", "/mg400-panel/api/heartbeat", "{}", ROBOT_HEADERS)[0] == 200

@@ -40,19 +40,19 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 
 | Service | `mg400ctl` name | Purpose | Supplementary groups |
 | --- | --- | --- | --- |
-| `mg400-web-panel.service` | `web` | [Web panel](control-panel.en.md), port `8766` | None |
-| `mg400-stage-panel.service` | `stage` | [Stage panel](stage-panel.en.md), port `8767` | `dialout` |
-| `mg400-camera-preview.service` | `camera` | Camera preview page, port `1985` | None |
+| `mg400-web-panel.service` | `web` | [Robot service](development.en.md#robot-service-interface), port `8766` | None |
+| `mg400-stage-panel.service` | `stage` | [Stage service](stage-panel.en.md), port `8767` | `dialout` |
+| `mg400-camera-preview.service` | `camera` | Camera video streams, port `1985` | None |
 | `mg400-camera-capture.service` | `camera` | go2rtc capture, listening only on `127.0.0.1:1984` | `video` |
 | `mg400-gripper-collector.service` | `collector` | Gripper USB collection | `dialout` |
-| `mg400-thermal.service` | `thermal` | Optional [thermal camera page](thermal.en.md), port `8768` | None |
-| `mg400-furnace.service` | `furnace` | Optional [furnace and gas page](furnace.en.md), port `8769` | `dialout` |
-| `mg400-microscope.service` | `microscope` | Optional [microscope page](microscope.en.md), loopback port `8770` | `dialout video` |
+| `mg400-thermal.service` | `thermal` | Optional [thermal camera service](thermal.en.md), port `8768` | None |
+| `mg400-furnace.service` | `furnace` | Optional [furnace and gas service](furnace.en.md), port `8769` | `dialout` |
+| `mg400-microscope.service` | `microscope` | Optional [microscope service](microscope.en.md), loopback port `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | Optional [vision service](vision.en.md), loopback port `8771` | None |
 | `mg400-orchestrator.service` | `orch` | Optional [recipe service](orchestrator.en.md#http-service), port `8772` | None |
 | `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
 | `mg400-proxy.service` | `proxy` | Optional [single-port proxy](olares.en.md#optional-single-port-proxy), port `8080` | None |
-| `mg400-gripper-collector.path` | None | Start gripper collection when the panel requests it | None |
+| `mg400-gripper-collector.path` | None | Start gripper collection when the robot service requests it | None |
 
 Start services manually. They do not start automatically at boot.
 After a host restart, only the gripper collection request listener resumes automatically.
@@ -121,7 +121,7 @@ The installer works in this order:
 
 The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
-After the update, start services, then reload any open panel pages.
+After the update, start services, then reload the Lab Console if it is open.
 Do not edit files in `/opt/mg400`. Modified files can cause `git switch` to abort the update.
 
 ## Toupcam library
@@ -200,7 +200,8 @@ The optional `orch` service uses the `orchestrator` dependency group in `/opt/mg
 This group includes Flask, waitress, and the `stage`, `thermal`, and `furnace` groups for supported owned demos.
 Add `orch` to `MG400_OPTIONAL_SERVICES`, run the installer, and configure the [recipe service](orchestrator.en.md#http-service) before `mg400ctl start orch`.
 The installer prepares private `runs` and `zones` directories when `orch` is selected. It does not invent zone configuration or start the service.
-The same service serves the [lab dashboard](dashboard.en.md), including status cards, run controls, camera links, and separate motion, heat, and gas stop controls.
+The same service serves the [Lab Console](dashboard.en.md#lab-console). It is the only operator web page. It has the Overview, Motion, Cameras, and Furnace + microscope workspaces, and separate motion, heat, and gas stop controls.
+The console has no recipe run controls. Use the [recipe service interface](orchestrator.en.md#http-service) to start, abort, and recover runs.
 
 The optional `gateway` service uses the `gateway` dependency group. Add `gateway` to `MG400_OPTIONAL_SERVICES` and configure the [agent gateway](agent-gateway.en.md).
 Selecting `gateway` also prepares the private `runs` directory for audit records before any recipe run exists. The installer does not start the gateway.
@@ -306,18 +307,18 @@ It also retains `MG400_GATEWAY_TOKEN` solely for the proposal API. This token ca
 | `MG400_OPTIONAL_SERVICES` | Empty | Optional service names from the registry, separated by commas |
 | `MG400_ROBOT_HOST` | Address in `config/robot.toml` | Robot address |
 | `MG400_CONTROLLER_LOCK_DIR` | Required, for example `/var/lib/mg400/locks` | [Panel connection lock](#panel-connection-lock) directory, which must be an absolute path |
-| `MG400_PANEL_BIND` | `127.0.0.1` | Web panel bind address |
-| `MG400_PANEL_PORT` | `8766` | Web panel port |
-| `MG400_PANEL_BASE_PATH` | `/` | Native web page and API prefix |
-| `MG400_PANEL_TOKEN` | Generated by the installer | Web panel access token |
+| `MG400_PANEL_BIND` | `127.0.0.1` | Robot service bind address |
+| `MG400_PANEL_PORT` | `8766` | Robot service port |
+| `MG400_PANEL_BASE_PATH` | `/` | Native robot service API prefix |
+| `MG400_PANEL_TOKEN` | Generated by the installer | Robot service access token |
 | `MG400_CAMERA_BIND` | `127.0.0.1` | Camera preview bind address |
 | `MG400_CAMERA_DEVICES` | Empty | 1 to 4 distinct camera devices separated by commas. Empty disables cameras |
 | `MG400_CAMERA_MODES` | Empty | One approved `WIDTHxHEIGHT@FPS` mode per device, in device order |
 | `MG400_CAMERA_CAPTURE_SIZES` | Empty | Legacy `WIDTHxHEIGHT` list at 30 fps. Cannot be combined with `MG400_CAMERA_MODES` |
-| `MG400_STAGE_BIND` | `127.0.0.1` | Stage panel bind address |
-| `MG400_STAGE_PORT` | `8767` | Stage panel port |
+| `MG400_STAGE_BIND` | `127.0.0.1` | Stage service bind address |
+| `MG400_STAGE_PORT` | `8767` | Stage service port |
 | `MG400_STAGE_BASE_PATH` | `/` | Native stage prefix, with the contract under `contract/` |
-| `MG400_STAGE_TOKEN` | Generated by the installer | Stage panel access token |
+| `MG400_STAGE_TOKEN` | Generated by the installer | Stage service access token |
 | `MG400_STAGE_SERIAL` | Empty | Arduino serial port path. See [Stage configuration](stage-panel.en.md#configuration) |
 | `MG400_THERMAL_BIND` | `127.0.0.1` | Thermal listen address |
 | `MG400_THERMAL_PORT` | `8768` | Thermal port |
@@ -336,14 +337,14 @@ It also retains `MG400_GATEWAY_TOKEN` solely for the proposal API. This token ca
 | `MG400_MFC_SERIAL` | Empty | Separate gas-controller serial device |
 | `MG400_MICROSCOPE_BIND` | `127.0.0.1` | Microscope listen address |
 | `MG400_MICROSCOPE_PORT` | `8770` | Microscope port |
-| `MG400_MICROSCOPE_BASE_PATH` | `/` | Native microscope page and API prefix |
+| `MG400_MICROSCOPE_BASE_PATH` | `/` | Native microscope API prefix |
 | `MG400_MICROSCOPE_TOKEN` | Generated by the installer | Microscope access token |
 
 Configure microscope device selection, focus limits, and camera streams as described in the [microscope guide](microscope.en.md#contract-service).
 
-When a panel listens on a non-loopback address, its access token must have at least 24 characters.
+When a service listens on a non-loopback address, its access token must have at least 24 characters.
 Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
-The preview shows only configured streams, named `camera1` through `camera4` in device order.
+The camera service provides only configured streams, named `camera1` through `camera4` in device order.
 With both mode lists empty, ordinary cameras use `640x480@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit mode or size list overrides these defaults. Invalid counts, paths, modes, or conflicting lists stop installation before host changes.
 Only streams with width at most 640 and height at most 480 are preloaded. Larger streams start on demand.
@@ -367,9 +368,9 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
 | `mg400ctl terminal` | Open the [interactive terminal](terminal-control.en.md) |
 | `mg400ctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
-| `mg400ctl camera-url` | Show the camera preview link with its access token. If `proxy` is enabled, show the proxy link |
+| `mg400ctl camera-url` | Show the camera stream prefix with its access key. If `proxy` is enabled, show the proxy prefix |
 | `mg400ctl camera-check` | Check camera devices, services, and capture streams in order. See [Camera failures](olares.en.md#camera-failures) |
-| `mg400ctl token web` | Show the web panel access token. `token stage` shows the stage panel token |
+| `mg400ctl token web` | Show the robot service access token. `token stage` shows the stage service token |
 | `mg400ctl token orch` | Show the recipe service token, without its downstream aliases |
 
 `gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID `1000`.
@@ -394,18 +395,18 @@ Its unit uses `TimeoutStopSec=infinity`, so systemd waits for this cleanup inste
 Restarting the service does not resume saved runs or clear retained zones. Use the [recovery procedure](orchestrator.en.md#http-service).
 
 `terminal` and `mode` use `runuser --pty` to run as UID 1000 in a separate pseudo-terminal.
-They read the configuration file and share the panel's connection lock, but do not receive access tokens.
-When the web panel stops or restarts, it can take up to approximately 60 seconds to confirm that the robot stopped.
-You do not need to start gripper collection manually. The web panel or interactive terminal requests collection when it connects to the robot.
+They read the configuration file and share the robot service's connection lock, but do not receive access tokens.
+When the robot service stops or restarts, it can take up to approximately 60 seconds to confirm that the robot stopped.
+You do not need to start gripper collection manually. The robot service or interactive terminal requests collection when it connects to the robot.
 
 ## Panel connection lock
 
-The web panel, interactive terminal, and mode-switch tool acquire a file lock before connecting to the robot.
-The web panel's read-only mode also uses this lock.
+The robot service, interactive terminal, and mode-switch tool acquire a file lock before connecting to the robot.
+The robot service's read-only mode also uses this lock.
 If another program holds the lock, a new connection returns `Robot controlled by another panel`.
-After a normal disconnect, the panel waits for the feedback thread and command tasks to end before releasing the lock.
-If it cannot confirm the stopped state, the panel stops routine coordinate queries and keeps feedback and the lock.
-Reloading the panel page cannot clear an unconfirmed stopped state.
+After a normal disconnect, the robot service waits for the feedback thread and command tasks to end before releasing the lock.
+If it cannot confirm the stopped state, the robot service stops routine coordinate queries and keeps feedback and the lock.
+Reloading the Lab Console cannot clear an unconfirmed stopped state.
 
 All programs must use the same robot address and `MG400_CONTROLLER_LOCK_DIR`.
 The lock directory must use an absolute path and support operating-system file locks.
@@ -509,7 +510,7 @@ Restore by hand on the new host:
    ```
 
 6. Adjust `/etc/mg400/mg400.env` for the new bind addresses and camera device paths. Keep owner `root:root` and mode `0600`.
-   Preserving access tokens avoids another token entry by users. Restoring `/var/lib/mg400/camera/preview.key` preserves preview links.
+   Preserving access tokens avoids another token entry by users. Restoring `/var/lib/mg400/camera/preview.key` preserves the camera stream paths.
    The data paths above use owner `1000:1000` and file modes `0640` or `0600`.
    Keep directory mode `0750`, except the camera, stage and `calibration/cameras` directories, which require `0700`. Preserve the archive's owners and modes for other existing data.
 7. If `/var/lib/mg400/work/gripper_feedback.json.command-lock.json` exists, a gripper command outcome is unconfirmed.

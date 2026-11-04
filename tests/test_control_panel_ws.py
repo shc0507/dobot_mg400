@@ -397,7 +397,7 @@ def test_tokenless_service_accepts_loopback_hosts(host):
     state = RecordingState()
     with running(state, token=None) as server:
         requests = panel_requests(host)
-        for kind in ("page", "state", "command"):
+        for kind in ("state", "command"):
             assert exchange(server, requests[kind])[0] == 200, kind
         # Without a token, hello may carry any token string.
         client = opened(server, requests["websocket"], token="anything")

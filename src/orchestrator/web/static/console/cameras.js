@@ -37,7 +37,7 @@
       "overlay.label": "Overlays", "overlay.detections": "Chip detections", "overlay.thermal": "Thermal markers",
       "snapshot.all": "Snapshot all",
       "side.title": "Selected view", "side.mode": "Mode", "side.state": "State", "side.streams": "Relayed streams",
-      "side.error": "Last error", "side.page": "Open the service page →",
+      "side.error": "Last error",
       "side.detections": "Chip detections", "side.detectionsNone": "No detections",
       "side.detectionsOff": "Vision is not available", "side.detectionsCount": "{count} found",
       "reading.max": "Max", "reading.min": "Min", "reading.center": "Center", "reading.mean": "Mean",
@@ -48,7 +48,7 @@
       "region.save": "Save region", "region.cancel": "Cancel",
       "region.manual": "The thermal service does not offer Save. Put these bounds under [regions.crucible] in rois.toml.",
       "region.confirm": "Save x {x0}–{x1}, y {y0}–{y1} as the crucible region? The furnace screen and runs read it.",
-      "shutter": "Calibrate shutter", "shutter.confirm": "Close the shutter and recalibrate the thermal camera now? The view pauses for a moment.",
+      "connect": "Connect camera", "shutter": "Calibrate shutter", "shutter.confirm": "Close the shutter and recalibrate the thermal camera now? The view pauses for a moment.",
       "confirm": "Confirm", "cancel": "Cancel",
       "command.missing": "The thermal service does not offer shutter calibration.",
       "command.control": "Take thermal control first.", "command.take": "Take thermal control", "command.release": "Release thermal control",
@@ -72,7 +72,7 @@
       "overlay.label": "叠加", "overlay.detections": "芯片识别", "overlay.thermal": "温度标记",
       "snapshot.all": "全部快照",
       "side.title": "选中画面", "side.mode": "模式", "side.state": "状态", "side.streams": "中转流",
-      "side.error": "最近错误", "side.page": "打开服务页面 →",
+      "side.error": "最近错误",
       "side.detections": "芯片识别", "side.detectionsNone": "未识别到",
       "side.detectionsOff": "视觉服务不可用", "side.detectionsCount": "找到 {count} 个",
       "reading.max": "最高", "reading.min": "最低", "reading.center": "中心", "reading.mean": "平均",
@@ -83,7 +83,7 @@
       "region.save": "保存区域", "region.cancel": "取消",
       "region.manual": "热像仪服务未提供保存。把这些边界写入 rois.toml 的 [regions.crucible]。",
       "region.confirm": "把 x {x0}–{x1}，y {y0}–{y1} 保存为 crucible 区域？炉子页面和运行会读取它。",
-      "shutter": "快门校准", "shutter.confirm": "现在关闭快门并重新校准热像仪？画面会短暂暂停。",
+      "connect": "连接热像仪", "shutter": "快门校准", "shutter.confirm": "现在关闭快门并重新校准热像仪？画面会短暂暂停。",
       "confirm": "确认", "cancel": "取消",
       "command.missing": "热像仪服务未提供快门校准。",
       "command.control": "请先获取热像仪控制。", "command.take": "获取热像仪控制", "command.release": "释放热像仪控制",
@@ -778,6 +778,8 @@
       }
       if (thermalTile.drawing && thermalTile.drawing.region && !commandInfo("set_region")) regionParts.push(h("p", { class: "lc-muted", text: api.t("region.manual") }));
       parts.push(h("div", { class: "lcam-group" }, ...regionParts));
+      const card = (api.state()?.services || []).find(item => item.id === "thermal");
+      if (card && card.connected !== true && commandInfo("connect")) parts.push(commandButton("connect", api.t("connect"), () => send("connect", {})));
       if (ui.confirm === "shutter") parts.push(confirmBox(api.t("shutter.confirm"), () => send("shutter", {})));
       else parts.push(commandButton("shutter", api.t("shutter"), () => { ui.confirm = "shutter"; renderSide(); }));
       if (!commandInfo("shutter")) parts.push(h("p", { class: "lc-muted", text: api.t("command.missing") }));
@@ -816,9 +818,6 @@
       parts.push(h("div", { class: "lc-filters" },
         h("button", { type: "button", class: "lc-button", text: api.t("tile.snapshot"), onclick: () => node.snapshot() }),
         h("button", { type: "button", class: "lc-button", text: api.t("tile.expand"), onclick: () => node.expand() })));
-      const pageId = view === "microscope" ? "microscope" : "camera";
-      const link = (api.state()?.cameras || []).find(item => item.id === pageId && item.url);
-      if (link) parts.push(h("a", { class: "lc-link", href: link.url, target: "_blank", rel: "noopener noreferrer", text: api.t("side.page") }));
       return parts;
     }
 

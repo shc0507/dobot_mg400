@@ -376,12 +376,8 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
     )
 
 
+# The proxy serves only the Lab Console and the camera streams (port 1985).
 PROXY_UPSTREAMS = {
-    "PANEL": ("web", "robot", 8766),
-    "STAGE": ("stage", "stage", 8767),
-    "THERMAL": ("thermal", "thermal", 8768),
-    "FURNACE": ("furnace", "furnace", 8769),
-    "MICROSCOPE": ("microscope", "microscope", 8770),
     "ORCH": ("orch", "lab", 8772),
 }
 

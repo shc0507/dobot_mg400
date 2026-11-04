@@ -35,6 +35,7 @@ class Device:
         self.holder = None
         self.calls = []
         self.fail = {}
+        self.replies = {}
         self.events = []
         self.seq = 0
         self.state = {
@@ -135,6 +136,17 @@ class Device:
                     "next": device.seq,
                 }
 
+            def request(self, path, data=None):
+                # Operator routes: a POST needs this identity's lease.
+                device.calls.append(("request", identity, path, data))
+                device._maybe_fail("request")
+                with device.lock:
+                    if data is not None and device.holder != identity:
+                        raise ServiceError(
+                            409, "Acquire the control lease before sending a command."
+                        )
+                return copy.deepcopy(device.replies.get(path, {"command_id": "op-1"}))
+
             def gas_stop(self, channel):
                 return {"ok": False}
 
@@ -216,7 +228,7 @@ def test_shell_is_public_and_apis_need_the_operator_token(rig):
     assert rig.client.get("/lab/console-static/shell.js").status_code == 200
     assert rig.client.get("/lab/console-static/..%2Fconsole.py").status_code in {401, 404}
     assert rig.client.get("/lab/console-static/Shell.py").status_code == 404
-    assert rig.client.get("/lab/dashboard/").status_code == 200
+    assert rig.client.get("/lab/dashboard/", headers=headers()).status_code == 404
     assert rig.client.get("/lab/api/console/state").status_code == 401
     assert rig.client.post("/lab/api/console/control/stage/take", json={}).status_code == 401
     foreign = rig.client.get(

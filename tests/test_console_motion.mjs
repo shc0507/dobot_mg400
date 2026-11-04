@@ -64,6 +64,8 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
     async request(path, data) {
       calls.push(["request", path, data]);
       if (path === "state") return { robot, stage };
+      if (path === "stage/ports") return { ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] };
+      if (path.startsWith("stage/reference/")) return { image: "data:image/jpeg;base64,AAAA", offset_px: [1.5, -2], distance_px: 2.5 };
       return { outcome: "accepted" };
     },
     async consoleRequest(path) { calls.push(["console", path]); return { events: [] }; },
@@ -158,4 +160,32 @@ test("a stage step needs a confirmed reference", async () => {
   second.find("Move Insert plus by the steps").click();
   await second.settle();
   assert.deepEqual(second.calls.filter(call => call[0] === "relay"), [["relay", "stage", "move", { motor: "insert", direction: "cw", speed: 50, steps: 50 }]]);
+});
+
+test("a disconnected stage lists ports and connects on this page's control", async () => {
+  const page = await mounted({ stage: { ...STAGE, connected: false } });
+  await page.settle();
+  assert.ok(page.calls.some(call => call[1] === "stage/ports"));
+  page.find("Connect").click();
+  await page.settle();
+  assert.deepEqual(page.calls.filter(call => call[1] === "stage/connect"), [["request", "stage/connect", { port: "/dev/ttyACM0" }]]);
+  const connected = await mounted();
+  assert.equal(connected.calls.some(call => call[1] === "stage/ports"), false);
+});
+
+test("Check reference shows the marked frame and Teach reference needs a confirmation", async () => {
+  const stage = { ...STAGE, motors: [{ ...STAGE.motors[0], reference_configured: true }] };
+  const page = await mounted({ stage });
+  assert.equal(page.root.all().some(node => node.tagName === "A"), false);
+  page.find("Check reference").click();
+  await page.settle();
+  const image = page.root.all().find(node => node.tagName === "IMG");
+  assert.equal(image.getAttribute("src"), "data:image/jpeg;base64,AAAA");
+  assert.match(page.root.textContent, /Marker offset 1\.5, -2\.0 px/);
+  page.find("Teach reference…").click();
+  await page.settle();
+  assert.equal(page.calls.some(call => call[1] === "stage/teach"), false);
+  page.find("Confirm").click();
+  await page.settle();
+  assert.deepEqual(page.calls.filter(call => call[1] === "stage/teach"), [["request", "stage/teach", { motor: "insert", confirmed: true }]]);
 });

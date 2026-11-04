@@ -1,7 +1,6 @@
 import http.client
 import json
 import os
-import re
 import signal
 import socket
 import subprocess
@@ -9,11 +8,10 @@ import sys
 
 import pytest
 from helpers import wait_for
-from stage_helpers import Clock, RecordingTransport, serial_port
+from stage_helpers import home_stage
 
 import stage_controller.__main__ as stage_main
 from stage_controller.app import create_app
-from stage_controller.controller import MotorController
 
 TOKEN = "stage-panel-test-token-0123456789"
 HOST = "100.64.0.1:8767"
@@ -37,74 +35,133 @@ def no_settings(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def panel(controller, token=None, host="localhost"):
-    """Return a test client of the panel and the command token header of its page."""
+OPERATOR = "stage-operator"
+CLIENT = {"X-MG400-Client": OPERATOR}
+OPEN = "Use a loopback Host without forwarded headers."
+ACCESS = "Invalid service access token."
+REMOVED = ("/", "/api/state", "/api/ports", "/api/motors/top/move", "/static/app.js")
+
+
+def panel(controller, token=None):
+    """Return a test client of the stage service."""
     app = create_app(controller, token)
     app.config["TESTING"] = True
-    client = app.test_client()
-    html = client.get("/", headers={"Host": host}).text
-    control = re.search(r'name="control-token" content="([^"]+)"', html)[1]
-    return client, {"X-Control-Token": control}
+    return app.test_client()
 
 
 @pytest.fixture
 def web(stage_rig):
     controller, _, _ = stage_rig
-    return panel(controller)
+    return panel(controller), dict(CLIENT)
 
 
 @pytest.fixture
 def secured(stage_rig):
-    """A panel with an access token, reached through the VPN address."""
+    """A service with an access token, reached through the VPN address."""
     controller, _, _ = stage_rig
-    client, headers = panel(controller, TOKEN, HOST)
-    return client, {**headers, "Host": HOST, "Authorization": f"Bearer {TOKEN}"}
+    return panel(controller, TOKEN), {**CLIENT, "Host": HOST, "Authorization": f"Bearer {TOKEN}"}
 
 
-def test_dashboard_assets_ports_and_state_are_served(web):
+def command(client, action, headers=CLIENT, **params):
+    return client.post("/contract/api/command", json={"action": action, **params}, headers=headers)
+
+
+def test_ports_are_served_and_the_page_routes_are_removed(web):
     client, _ = web
-    assert "Motion control" in client.get("/").text
-    for path in ("/static/app.js", "/static/app.css"):
-        with client.get(path) as response:
-            assert response.status_code == 200
-    assert client.get("/api/ports").json["ports"][0]["device"] == "DEMO"
-    assert len(client.get("/api/state").json["motors"]) == 3
+    assert client.get("/contract/api/ports").json["ports"][0]["device"] == "DEMO"
+    for path in REMOVED:
+        assert client.get(path).status_code == 404
 
 
-def test_api_move_and_cross_tab_busy_rejection(web):
+def test_with_token_removed_routes_return_not_found(secured):
+    client, headers = secured
+    for path in REMOVED:
+        assert client.get(path, headers=headers).status_code == 404
+    for path in (
+        "/api/stop",
+        "/api/connect",
+        "/api/disconnect",
+        "/api/microstep",
+        "/api/motors/top/move",
+        "/api/motors/insert/teach_reference",
+    ):
+        assert client.post(path, json={}, headers=headers).status_code == 404
+
+
+def test_connect_needs_the_lease_holder(web, stage_rig):
     client, headers = web
-    request = {"direction": "ccw", "speed": 250, "steps": 50}
-    response = client.post("/api/motors/top/move", json=request, headers=headers)
+    controller, transport, _ = stage_rig
+    controller.disconnect()
+    response = client.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
+    assert response.status_code == 409
+    assert "lease" in response.json["error"]
+    controller.lease.acquire("automation-a")
+    response = client.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
+    assert response.status_code == 409
+    assert not controller.snapshot()["connected"]
+    controller.lease.release("automation-a")
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    response = client.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
     assert response.status_code == 200
-    assert response.json["motors"][1]["mode"] == "moving"
-    assert client.post("/api/motors/top/move", json=request, headers=headers).status_code == 409
-    assert client.post("/api/stop", json={}, headers=headers).status_code == 200
-    assert client.post("/api/disconnect", json={}, headers=headers).json["connected"] is False
-    assert client.post("/api/connect", json={"port": "DEMO"}, headers=headers).status_code == 200
+    assert response.json["connected"] is True
+    assert response.json["lease"]["holder"] == OPERATOR
 
 
-@pytest.mark.parametrize("data", [[], None, {}, {"direction": "cw", "speed": 0, "steps": 3}])
-def test_api_rejects_invalid_payloads(web, data):
+def test_contract_move_and_busy_rejection(web, stage_rig):
     client, headers = web
-    response = client.post("/api/motors/bottom/move", json=data, headers=headers)
+    controller, _, clock = stage_rig
+    home_stage(controller, clock)
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    request = {"motor": "top", "direction": "cw", "speed": 250, "steps": 50}
+    response = command(client, "move", **request)
+    assert response.status_code == 202
+    assert controller.snapshot()["motors"][1]["mode"] == "moving"
+    assert command(client, "move", **request).status_code == 409
+    response = client.post("/contract/api/stop", json={}, headers={"X-MG400-Client": "other"})
+    assert response.status_code == 200
+    assert controller.snapshot()["motors"][1]["mode"] == "idle"
+
+
+@pytest.mark.parametrize(
+    "path,data",
+    [
+        ("/contract/api/connect", []),
+        ("/contract/api/connect", None),
+        ("/contract/api/connect", {}),
+        ("/contract/api/connect", {"port": "DEMO", "extra": 1}),
+        ("/contract/api/motors/insert/teach_reference", []),
+        ("/contract/api/motors/insert/teach_reference", {}),
+        ("/contract/api/motors/insert/teach_reference", {"confirm": True, "extra": 1}),
+    ],
+)
+def test_operator_routes_reject_invalid_payloads(web, stage_rig, path, data):
+    client, headers = web
+    controller, transport, _ = stage_rig
+    controller.lease.acquire(OPERATOR)
+    transport.commands.clear()
+    response = client.post(path, json=data, headers=headers)
     assert response.status_code in (400, 415)
+    assert not transport.commands
 
 
 def test_cross_site_commands_and_untrusted_hosts_are_rejected(web):
     client, headers = web
-    assert client.post("/api/stop", json={}).status_code == 403
-    for control in ("bad", "caf\xe9"):
-        response = client.post("/api/stop", json={}, headers={"X-Control-Token": control})
-        assert response.status_code == 403
-    plain = client.post("/api/stop", data="{}", content_type="text/plain", headers=headers)
+    for invalid in ({}, {"X-MG400-Client": ""}, {"X-MG400-Client": "caf\xe9"}):
+        response = client.post("/contract/api/connect", json={"port": "DEMO"}, headers=invalid)
+        assert response.status_code == 400
+    plain = client.post(
+        "/contract/api/connect", data="{}", content_type="text/plain", headers=headers
+    )
     assert plain.status_code == 415
-    assert client.get("/", headers={"Host": "attacker.example"}).status_code == 403
-    response = client.get("/")
-    assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+    assert (
+        client.get("/contract/api/ports", headers={"Host": "attacker.example"}).status_code == 403
+    )
+    response = client.get("/contract/api/ports")
     assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
 
 
-def test_unplug_returns_disconnected_status_in_api(web, stage_rig, monkeypatch):
+def test_unplug_returns_a_link_fault_in_the_contract(web, stage_rig, monkeypatch):
     from stage_controller.protocol import LinkError
 
     client, headers = web
@@ -114,88 +171,87 @@ def test_unplug_returns_disconnected_status_in_api(web, stage_rig, monkeypatch):
         raise LinkError("Port removed")
 
     monkeypatch.setattr(transport, "status", unplugged)
-    response = client.post(
-        "/api/motors/bottom/move",
-        headers=headers,
-        json={"direction": "cw", "speed": 200, "steps": 200},
-    )
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    response = command(client, "move", motor="bottom", direction="cw", speed=200, steps=200)
     assert response.status_code == 503
-    assert not client.get("/api/state").json["connected"]
+    assert not controller.snapshot()["connected"]
+    assert client.get("/contract/api/state").json["fault"]["code"] == "device_link_lost"
 
 
-def test_hold_api_runs_and_releases_one_motor(web, stage_rig):
+def test_contract_hold_runs_and_releases_one_motor(web, stage_rig):
     client, headers = web
-    _, _, clock = stage_rig
-    payload = {
-        "direction": "ccw",
-        "speed": 50,
-        "hold_id": "test-api-hold-0001",
-        "sampled_at": client.get("/api/state").json["sampled_at"],
-    }
-    response = client.post("/api/motors/top/hold", json=payload, headers=headers)
-    assert response.status_code == 200
-    assert response.json["motors"][1]["mode"] == "continuous"
+    controller, _, clock = stage_rig
+    home_stage(controller, clock)
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    hold = {"motor": "top", "hold_id": "test-api-hold-0001"}
+    response = command(client, "hold", direction="cw", speed=50, sampled_at=clock(), **hold)
+    assert response.status_code == 202
+    assert controller.snapshot()["motors"][1]["mode"] == "continuous"
     clock.advance(0.5)
-    response = client.post("/api/motors/top/hold/keepalive", json=payload, headers=headers)
-    assert response.status_code == 200
-    response = client.post("/api/motors/top/hold/stop", json=payload, headers=headers)
-    assert response.status_code == 200
-    assert response.json["motors"][1]["mode"] == "idle"
-    assert response.json["motors"][1]["position"] == -25
+    assert command(client, "keepalive", **hold).status_code == 202
+    assert command(client, "release_hold", **hold).status_code == 202
+    motor = controller.snapshot()["motors"][1]
+    assert motor["mode"] == "idle"
+    assert motor["position"] == 25
 
 
-@pytest.mark.parametrize("suffix", ["hold", "hold/keepalive", "hold/stop"])
-def test_hold_api_requires_control_token_and_valid_identifier(web, suffix):
+@pytest.mark.parametrize("action", ["hold", "keepalive", "release_hold"])
+def test_contract_hold_needs_a_valid_identifier(web, stage_rig, action):
     client, headers = web
-    path = f"/api/motors/bottom/{suffix}"
-    assert client.post(path, json={}).status_code == 403
-    assert client.post(path, json={}, headers=headers).status_code == 400
-    assert client.post(path, json=[], headers=headers).status_code == 400
+    controller, transport, clock = stage_rig
+    home_stage(controller, clock)
+    transport.commands.clear()
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    params = {"motor": "bottom", "hold_id": "short"}
+    if action == "hold":
+        params.update(direction="cw", speed=50, sampled_at=clock())
+    assert command(client, action, **params).status_code == 400
+    assert command(client, action, headers={}, **params).status_code == 400
+    assert not any(item.startswith(("hold", "keepalive")) for item in transport.commands)
 
 
-def test_global_microstep_api_and_dashboard(web):
+def test_contract_microstep_rejects_invalid_and_busy_requests(web, stage_rig):
     client, headers = web
-    html = client.get("/").text
-    assert 'aria-labelledby="microstep-title"' in html
-    assert html.index('id="microstep-title"') < html.index('id="motor-bottom"')
-    response = client.post("/api/microstep", json={"microstep": 16}, headers=headers)
-    assert response.status_code == 200
-    assert response.json["microstep"] == 16
-    assert client.get("/api/state").json["microstep"] == 16
-    assert [item["value"] for item in response.json["microstep_modes"]] == [1, 2, 4, 8, 16]
-
-
-def test_microstep_api_rejects_busy_and_untrusted_requests(web):
-    client, headers = web
-    assert client.post("/api/microstep", json={"microstep": 16}).status_code == 403
-    assert client.post("/api/microstep", json={"microstep": 3}, headers=headers).status_code == 400
-    assert client.post("/api/microstep", json=[], headers=headers).status_code == 400
-    response = client.post(
-        "/api/motors/insert/move",
-        json={"direction": "cw", "speed": 50, "steps": 500},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    response = client.post("/api/microstep", json={"microstep": 16}, headers=headers)
-    assert response.status_code == 409
-    assert client.get("/api/state").json["microstep"] == 1
+    controller, _, clock = stage_rig
+    home_stage(controller, clock)
+    assert command(client, "set_microstep", microstep=16).status_code == 409
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    assert command(client, "set_microstep", microstep=3).status_code == 400
+    response = command(client, "move", motor="insert", direction="cw", speed=50, steps=500)
+    assert response.status_code == 202
+    assert command(client, "set_microstep", microstep=16).status_code == 409
+    assert controller.snapshot()["microstep"] == 1
+    assert client.post("/contract/api/stop", json={}, headers=headers).status_code == 200
+    assert command(client, "set_microstep", microstep=16).status_code == 202
+    state = controller.snapshot()
+    assert state["microstep"] == 16
+    assert [item["value"] for item in state["microstep_modes"]] == [1, 2, 4, 8, 16]
 
 
 @pytest.mark.parametrize("port", ["/dev/ttyUSB0", "/dev/serial/by-id/usb-FTDI", "demo", 5])
-def test_connect_api_refuses_an_unlisted_port(web, port):
+def test_connect_api_refuses_an_unlisted_port(web, stage_rig, port):
     client, headers = web
-    response = client.post("/api/connect", json={"port": port}, headers=headers)
+    controller, _, _ = stage_rig
+    controller.disconnect()
+    controller.lease.acquire(OPERATOR)
+    response = client.post("/contract/api/connect", json={"port": port}, headers=headers)
     assert response.status_code == 400
+    assert not controller.snapshot()["connected"]
 
 
 @pytest.mark.parametrize(
     "host", ["localhost", "localhost:8767", "LOCALHOST", "127.0.0.1:8767", "[::1]:8767"]
 )
-def test_without_token_loopback_hosts_are_served(web, host):
+def test_without_token_loopback_hosts_are_served(web, stage_rig, host):
     client, headers = web
-    assert client.get("/", headers={"Host": host}).status_code == 200
-    assert client.get("/api/state", headers={"Host": host}).status_code == 200
-    assert client.post("/api/stop", json={}, headers={**headers, "Host": host}).status_code == 200
+    controller, _, _ = stage_rig
+    controller.disconnect()
+    controller.lease.acquire(OPERATOR)
+    assert client.get("/contract/api/ports", headers={"Host": host}).status_code == 200
+    response = client.post(
+        "/contract/api/connect", json={"port": "DEMO"}, headers={**headers, "Host": host}
+    )
+    assert response.status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -206,100 +262,67 @@ def test_without_token_other_hosts_are_refused(web, host):
     client, headers = web
     for response in (
         client.get("/", headers={"Host": host}),
-        client.get("/static/app.js", headers={"Host": host}),
-        client.get("/api/state", headers={"Host": host}),
-        client.post("/api/stop", json={}, headers={**headers, "Host": host}),
+        client.get("/contract/api/ports", headers={"Host": host}),
+        client.get("/contract/api/motors/insert/reference", headers={"Host": host}),
+        client.post(
+            "/contract/api/connect", json={"port": "DEMO"}, headers={**headers, "Host": host}
+        ),
     ):
         assert response.status_code == 403
-        assert response.json == {"error": "Open the panel at 127.0.0.1 or localhost"}
+        assert response.json == {"error": OPEN}
 
 
 @pytest.mark.parametrize("name", ["Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"])
 def test_without_token_proxied_requests_are_refused(web, name):
     client, headers = web
-    assert client.get("/", headers={name: "127.0.0.1"}).status_code == 403
-    assert client.get("/api/state", headers={name: "127.0.0.1"}).status_code == 403
+    assert client.get("/contract/api/ports", headers={name: "127.0.0.1"}).status_code == 403
     proxied = {**headers, name: "127.0.0.1"}
-    assert client.post("/api/stop", json={}, headers=proxied).status_code == 403
+    assert (
+        client.post("/contract/api/connect", json={"port": "DEMO"}, headers=proxied).status_code
+        == 403
+    )
 
 
 @pytest.mark.parametrize(
     "authorization",
     [None, "", TOKEN, f"Basic {TOKEN}", f"Bearer {TOKEN}x", f"Bearer {TOKEN}\xe9", "Bearer wrong"],
 )
-def test_with_token_every_api_request_needs_the_bearer_token(secured, authorization):
+def test_with_token_every_request_needs_the_bearer_token(secured, stage_rig, authorization):
     client, headers = secured
+    controller, transport, _ = stage_rig
+    controller.disconnect()
+    controller.lease.acquire(OPERATOR)
+    transport.commands.clear()
     headers = {name: value for name, value in headers.items() if name != "Authorization"}
     if authorization is not None:
         headers["Authorization"] = authorization
     for response in (
+        client.get("/", headers=headers),
         client.get("/api/state", headers=headers),
-        client.get("/api/ports", headers=headers),
-        client.post("/api/stop", json={}, headers=headers),
-        client.post("/api/connect", json={"port": "DEMO"}, headers=headers),
-        client.post("/api/motors/bottom/move", json={}, headers=headers),
+        client.get("/contract/api/ports", headers=headers),
+        client.get("/contract/api/motors/insert/reference", headers=headers),
+        client.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers),
+        client.post(
+            "/contract/api/motors/insert/teach_reference", json={"confirm": True}, headers=headers
+        ),
     ):
         assert response.status_code == 401
-        assert response.json == {"error": "Enter the panel access token"}
+        assert response.json == {"error": ACCESS}
+    assert not controller.snapshot()["connected"]
+    assert not transport.commands
 
 
-def test_with_token_any_host_reaches_the_api_with_the_bearer_token(secured):
+def test_with_token_any_host_reaches_the_api_with_the_bearer_token(secured, stage_rig):
     client, headers = secured
-    assert client.get("/api/state", headers=headers).json["connected"]
-    assert client.get("/api/ports", headers=headers).json["ports"][0]["device"] == "DEMO"
-    move = {"direction": "cw", "speed": 50, "steps": 50}
-    response = client.post("/api/motors/bottom/move", json=move, headers=headers)
-    assert response.status_code == 200
-    assert response.json["motors"][0]["mode"] == "moving"
-    # The bearer token does not replace the page's command token.
-    without_command_token = {**headers, "X-Control-Token": "bad"}
-    assert client.post("/api/stop", json={}, headers=without_command_token).status_code == 403
+    controller, _, _ = stage_rig
+    assert client.get("/contract/api/ports", headers=headers).json["ports"][0]["device"] == "DEMO"
     proxied = {**headers, "Host": "stage.example", "X-Forwarded-For": "100.64.0.2"}
-    assert client.get("/api/state", headers=proxied).status_code == 200
-
-
-def test_with_token_page_and_assets_load_without_the_bearer_token(secured):
-    client, _ = secured
-    response = client.get("/", headers={"Host": HOST})
+    assert client.get("/contract/api/ports", headers=proxied).status_code == 200
+    controller.disconnect()
+    assert client.post("/contract/api/heartbeat", json={}, headers=proxied).status_code == 200
+    response = client.post("/contract/api/connect", json={"port": "DEMO"}, headers=proxied)
     assert response.status_code == 200
-    assert 'name="control-token"' in response.text
-    assert 'aria-label="Panel access token"' in response.text
-    with client.get("/static/app.js", headers={"Host": HOST}) as asset:
-        assert asset.status_code == 200
-
-
-def test_page_script_avoids_apis_that_plain_http_removes(secured):
-    # Over the VPN the page is http://100.64.0.1:8767, not a secure context.
-    # There crypto.randomUUID is undefined, and every hold failed without a message.
-    client, _ = secured
-    with client.get("/static/app.js", headers={"Host": HOST}) as asset:
-        assert "randomUUID" not in asset.text
-
-
-@pytest.mark.parametrize("control", ["bad", "caf\xe9", "\xff\xfe"])
-@pytest.mark.parametrize("path", ["/", "/static/app.js", "/api/stop"])
-def test_with_token_a_wrong_command_token_is_refused(secured, path, control):
-    client, headers = secured
-    response = client.post(path, json={}, headers={**headers, "X-Control-Token": control})
-    assert response.status_code == 403
-    assert response.json == {"error": "Reload this page before sending another command."}
-
-
-def test_page_without_token_shows_no_ports_or_session_data(stage_ports):
-    stage_ports.append(serial_port("/dev/ttyACM7", 0x2341, 0x0043, "ARDUINO7", "Arduino Uno"))
-    clock = Clock()
-    controller = MotorController(transport_factory=lambda _port: RecordingTransport(clock))
-    controller.connect("/dev/ttyACM7")
-    controller.move("bottom", "cw", 50, 50)
-    try:
-        client, _ = panel(controller, TOKEN, HOST)
-        html = client.get("/", headers={"Host": HOST}).text
-    finally:
-        controller.close()
-    assert controller.snapshot()["events"]
-    for live in ("ttyACM7", "Arduino Uno", "Connected to", "pulses at"):
-        assert live not in html
-    assert 'id="motor-insert"' in html
+    assert response.json["connected"] is True
 
 
 def run_main(monkeypatch, argv, server=None):
@@ -388,9 +411,9 @@ def test_vpn_bind_with_token_serves_the_api_only_with_the_bearer_token(monkeypat
     assert (started["host"], started["port"]) == ("100.64.0.1", 8770)
     assert "Stage Controller: http://100.64.0.1:8770" in capsys.readouterr().out
     client = started["app"].test_client()
-    assert client.get("/api/state", headers={"Host": "100.64.0.1:8770"}).status_code == 401
+    assert client.get("/contract/api/ports", headers={"Host": "100.64.0.1:8770"}).status_code == 401
     authorized = {"Host": "100.64.0.1:8770", "Authorization": f"Bearer {TOKEN}"}
-    assert client.get("/api/state", headers=authorized).status_code == 200
+    assert client.get("/contract/api/ports", headers=authorized).status_code == 200
 
 
 def test_settings_come_from_the_environment(monkeypatch, capsys):
@@ -400,9 +423,9 @@ def test_settings_come_from_the_environment(monkeypatch, capsys):
     started = run_main(monkeypatch, ["--demo"])
     assert (started["host"], started["port"]) == ("100.64.0.1", 8770)
     client = started["app"].test_client()
-    assert client.get("/api/state", headers={"Host": "100.64.0.1:8770"}).status_code == 401
+    assert client.get("/contract/api/ports", headers={"Host": "100.64.0.1:8770"}).status_code == 401
     authorized = {"Host": "100.64.0.1:8770", "Authorization": f"Bearer {TOKEN}"}
-    assert client.get("/api/state", headers=authorized).status_code == 200
+    assert client.get("/contract/api/ports", headers=authorized).status_code == 200
 
 
 @pytest.mark.parametrize("port", ["8770", "not-a-port"])
@@ -436,13 +459,13 @@ def test_environment_port_must_be_a_tcp_port(monkeypatch, capsys, port):
 def test_serial_setting_limits_the_port_list(monkeypatch, capsys, stage_usb):
     monkeypatch.setenv("MG400_STAGE_SERIAL", stage_usb["arduino"])
     client = run_main(monkeypatch, [])["app"].test_client()
-    assert client.get("/api/ports").json["ports"] == [
+    assert client.get("/contract/api/ports").json["ports"] == [
         {"device": stage_usb["arduino"], "description": "Arduino Uno"}
     ]
     assert f"Serial port: {stage_usb['arduino']}" in capsys.readouterr().out
     # The option overrides the environment.
     client = run_main(monkeypatch, ["--serial", stage_usb["other"]])["app"].test_client()
-    assert client.get("/api/ports").json["ports"] == [
+    assert client.get("/contract/api/ports").json["ports"] == [
         {"device": stage_usb["other"], "description": "Arduino Mega"}
     ]
 
@@ -451,7 +474,7 @@ def test_without_serial_setting_every_port_but_the_gripper_is_listed(
     monkeypatch, stage_usb, tmp_path
 ):
     client = run_main(monkeypatch, [])["app"].test_client()
-    devices = [port["device"] for port in client.get("/api/ports").json["ports"]]
+    devices = [port["device"] for port in client.get("/contract/api/ports").json["ports"]]
     assert devices == [str(tmp_path / "ttyACM0"), str(tmp_path / "ttyACM1")]
 
 
@@ -479,7 +502,7 @@ def test_serial_setting_must_not_be_the_gripper_converter(
 def test_demo_ignores_the_serial_setting(monkeypatch, stage_usb):
     monkeypatch.setenv("MG400_STAGE_SERIAL", stage_usb["gripper"])
     client = run_main(monkeypatch, ["--demo"])["app"].test_client()
-    assert client.get("/api/ports").json["ports"][0]["device"] == "DEMO"
+    assert client.get("/contract/api/ports").json["ports"][0]["device"] == "DEMO"
 
 
 def test_printed_urls_name_every_bound_socket():
@@ -630,7 +653,7 @@ def service():
 
         def listening():
             try:
-                http_request(port, "GET", "/static/favicon.svg")
+                http_request(port, "GET", "/contract/api/ports")
             except OSError:
                 return process.poll() is not None
             return True
@@ -649,27 +672,30 @@ def service():
 @pytest.mark.parametrize("name", ["Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"])
 def test_service_refuses_proxied_requests_without_token(service, name):
     _, port = service()
-    assert http_request(port, "GET", "/api/state")[0] == 200
-    assert http_request(port, "GET", "/api/state", headers={name: "127.0.0.1"})[0] == 403
+    assert http_request(port, "GET", "/contract/api/ports")[0] == 200
+    assert http_request(port, "GET", "/contract/api/ports", headers={name: "127.0.0.1"})[0] == 403
 
 
 def test_service_with_token_accepts_the_vpn_host_with_the_bearer_token(service):
     _, port = service(TOKEN)
     vpn = {"Host": f"100.64.0.1:{port}"}
-    assert http_request(port, "GET", "/", headers=vpn)[0] == 200
-    assert http_request(port, "GET", "/api/state", headers=vpn)[0] == 401
+    assert http_request(port, "GET", "/", headers=vpn)[0] == 401
+    assert http_request(port, "GET", "/contract/api/ports", headers=vpn)[0] == 401
     authorized = {**vpn, "Authorization": f"Bearer {TOKEN}", "X-Forwarded-For": "100.64.0.2"}
-    assert http_request(port, "GET", "/api/state", headers=authorized)[0] == 200
+    assert http_request(port, "GET", "/contract/api/ports", headers=authorized)[0] == 200
+    assert http_request(port, "GET", "/", headers=authorized)[0] == 404
 
 
 def test_service_refuses_a_large_body_before_it_reads_the_body(service):
     _, port = service(TOKEN)
     # A body of 4096 bytes reaches the access check, which refuses the request without the token.
-    status, _ = http_request(port, "POST", "/api/stop", b"{" + b" " * 4094 + b"}")
+    status, _ = http_request(port, "POST", "/contract/api/connect", b"{" + b" " * 4094 + b"}")
     assert status == 401
     # A larger body is refused before the access check. Send only the headers:
     # waitress must answer without waiting for the body.
-    status, body = http_request(port, "POST", "/api/stop", headers={"Content-Length": "4097"})
+    status, body = http_request(
+        port, "POST", "/contract/api/connect", headers={"Content-Length": "4097"}
+    )
     assert status == 413
     assert "Request Entity Too Large" in body
 
@@ -677,14 +703,26 @@ def test_service_refuses_a_large_body_before_it_reads_the_body(service):
 @pytest.mark.parametrize("signum", SIGNALS, ids=["SIGINT", "SIGTERM", "SIGHUP"])
 def test_service_signal_stops_the_motors_before_exit(service, signum):
     process, port = service()
-    _, html = http_request(port, "GET", "/")
-    control = re.search(r'name="control-token" content="([^"]+)"', html)[1]
-    headers = {"Content-Type": "application/json", "X-Control-Token": control}
-    connect = json.dumps({"port": "DEMO"})
-    status, body = http_request(port, "POST", "/api/connect", connect, headers)
-    assert (status, json.loads(body)["connected"]) == (200, True)
-    move = json.dumps({"direction": "cw", "speed": 10, "steps": 1000})
-    assert http_request(port, "POST", "/api/motors/bottom/move", move, headers)[0] == 200
+    headers = {"Content-Type": "application/json", "X-MG400-Client": OPERATOR}
+
+    def post(path, body):
+        status, text = http_request(port, "POST", path, json.dumps(body), headers)
+        return status, json.loads(text)
+
+    assert post("/contract/api/heartbeat", {})[0] == 200
+    status, body = post("/contract/api/connect", {"port": "DEMO"})
+    assert (status, body["connected"]) == (200, True)
+    assert post("/contract/api/command", {"action": "home", "motor": "bottom"})[0] == 202
+
+    def homed():
+        _, text = http_request(port, "GET", "/contract/api/state")
+        last = json.loads(text)["last_command"]
+        return last is not None and last["action"] == "home" and last["result"] == "ok"
+
+    wait_for(homed, timeout=10)
+    move = {"action": "move", "motor": "bottom", "direction": "cw", "speed": 10, "steps": 1000}
+    # A refused move sends nothing. The board refuses moves during the cooldown after homing.
+    wait_for(lambda: post("/contract/api/command", move)[0] == 202, timeout=10)
     process.send_signal(signum)
     output, _ = process.communicate(timeout=20)
     assert process.returncode == 0, output
@@ -693,52 +731,26 @@ def test_service_signal_stops_the_motors_before_exit(service, signum):
 
 
 @pytest.mark.parametrize("prefix", ["/stage", "/lab/stage/"])
-def test_prefixed_stage_page_assets_legacy_api_and_browser_requests(stage_rig, prefix):
+def test_prefixed_stage_operator_routes_need_the_bearer_token(stage_rig, prefix):
     controller, _, _ = stage_rig
     base = prefix.rstrip("/")
     web = create_app(controller, TOKEN, base_path=prefix).test_client()
     proxy = {"Host": "panel.example:8080", "X-Forwarded-Host": "panel.example:8080"}
-    page = web.get(base + "/", headers=proxy)
-    assert page.status_code == 200
-    assert f'name="base-path" content="{base}"' in page.text
-    assert f'class="brand-mark" href="{base}/"' in page.text
-    assert f'src="{base}/static/app.js"' in page.text
-    with web.get(base + "/static/app.js", headers=proxy) as response:
-        assert response.status_code == 200
-        script = response.text
-    assert web.get(base + "/api/state", headers=proxy).status_code == 401
-    access = {**proxy, "Authorization": f"Bearer {TOKEN}"}
-    assert web.get(base + "/api/state", headers=access).status_code == 200
-    assert web.get("/api/state", headers=access).status_code == 404
-    control = re.search(r'name="control-token" content="([^"]+)"', page.text)[1]
-    assert web.post(base + "/api/stop", json={}, headers=access).status_code == 403
+    assert web.get(base + "/contract/api/ports", headers=proxy).status_code == 401
+    access = {**proxy, "Authorization": f"Bearer {TOKEN}", **CLIENT}
+    assert web.get(base + "/contract/api/ports", headers=access).status_code == 200
+    assert web.get(base + "/", headers=access).status_code == 404
+    assert web.get("/contract/api/ports", headers=access).status_code == 404
+    controller.disconnect()
     assert (
-        web.post(
-            base + "/api/stop", json={}, headers={**access, "X-Control-Token": control}
-        ).status_code
+        web.post(base + "/contract/api/connect", json={"port": "DEMO"}, headers=access).status_code
+        == 409
+    )
+    assert web.post(base + "/contract/api/heartbeat", json={}, headers=access).status_code == 200
+    assert (
+        web.post(base + "/contract/api/connect", json={"port": "DEMO"}, headers=access).status_code
         == 200
     )
-    declaration = re.search(r"^const basePath = .*", script, re.MULTILINE)[0]
-    function = script[
-        script.index("async function api(") : script.index("\nfunction requireToken(")
-    ]
-    program = "\n".join(
-        [
-            'const assert = require("node:assert/strict");',
-            f"const $ = () => ({{content: {json.dumps(base)}}});",
-            declaration,
-            'let accessToken = "browser-bearer"; const token = "page-token";',
-            "let captured; function tokenAccepted() {}",
-            "const fetch = async (...args) => {captured = args; "
-            "return {ok: true, status: 200, json: async () => ({ok: true})};};",
-            function,
-            '(async () => { await api("/stop", {});',
-            f"assert.equal(captured[0], {json.dumps(base + '/api/stop')});",
-            'assert.equal(captured[1].headers.Authorization, "Bearer browser-bearer");',
-            'assert.equal(captured[1].headers["X-Control-Token"], "page-token"); })();',
-        ]
-    )
-    subprocess.run(["node", "-"], input=program, text=True, capture_output=True, check=True)
 
 
 @pytest.mark.parametrize(
@@ -773,12 +785,12 @@ def test_invalid_stage_base_path_precedes_controller_construction(monkeypatch, p
 def test_stage_base_path_cli_overrides_environment_without_device_access(monkeypatch, capsys):
     monkeypatch.setenv("MG400_STAGE_BASE_PATH", "/from-env/")
     configured = run_main(monkeypatch, ["--demo"])
-    assert configured["app"].test_client().get("/from-env/").status_code == 200
+    assert configured["app"].test_client().get("/from-env/contract/api/ports").status_code == 200
     assert "http://127.0.0.1:8767/from-env/" in capsys.readouterr().out
     configured = run_main(monkeypatch, ["--demo", "--base-path", "/from-cli"])
     web = configured["app"].test_client()
-    assert web.get("/from-cli/").status_code == 200
-    assert web.get("/from-env/").status_code == 404
+    assert web.get("/from-cli/contract/api/ports").status_code == 200
+    assert web.get("/from-env/contract/api/ports").status_code == 404
     monkeypatch.setenv("MG400_STAGE_BASE_PATH", "/../invalid")
     monkeypatch.setattr(
         stage_main, "MotorController", lambda **kwargs: pytest.fail("controller started")

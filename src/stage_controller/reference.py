@@ -55,7 +55,7 @@ class StageReference:
             if lease["holder"] is not None:
                 raise ControllerError("Stage is controlled by automation")
         elif lease["holder"] != client or lease["remaining_s"] <= 0:
-            raise ControllerError("The control lease expired before zero confirmation.")
+            raise ControllerError("This client does not hold the stage lease.")
 
     def _reference_fence(self, motor):
         state = self._motors[motor]
@@ -187,5 +187,6 @@ class StageReference:
     def zero(self, motor, confirm=False, *, client=None):
         return self._confirmed_reference("zero", motor, confirm, client)
 
-    def teach_reference(self, motor, confirm=False):
-        return self._confirmed_reference("teach_reference", motor, confirm, None)
+    def teach_reference(self, motor, confirm=False, *, client=None):
+        """Replace the camera reference. With a client, it must hold the stage lease."""
+        return self._confirmed_reference("teach_reference", motor, confirm, client)

@@ -17,7 +17,6 @@
       "item.gas-map": "Gas map", "item.cutoff": "Over-temperature cutoff",
       "ws.motion": "Motion", "ws.cameras": "Cameras", "ws.process": "Furnace",
       "run.title": "Run", "run.none": "No run is active.", "run.status": "Status: {status}",
-      "run.controls": "Hold and Abort are in the lab dashboard.", "run.open": "Open the lab dashboard →",
       "events.title": "Events · all services", "events.all": "All", "events.warnings": "Warnings",
       "events.service": "Service", "events.none": "No events yet.", "events.unavailable": "Events unavailable: {services}",
       "safety.title": "Safety", "safety.motionTargets": "Robot · stage · microscope",
@@ -30,12 +29,9 @@
       "control.thisPage": "This page", "control.console": "Console (other page)", "control.unknown": "Unknown",
       "control.take": "Take control", "control.release": "Release",
       "control.takeLabel": "Take control of {device}", "control.releaseLabel": "Release {device}",
-      "pages.title": "Service pages", "pages.dashboard": "Lab dashboard",
-      "pages.robot": "Robot panel", "pages.stage": "Stage panel", "pages.camera": "Camera preview",
-      "pages.thermal": "Thermal camera", "pages.furnace": "Furnace", "pages.microscope": "Microscope",
       "result.pending": "Pending", "result.confirmed": "Confirmed", "result.unconfirmed": "Not confirmed",
       "result.failed": "Failed", "result.unavailable": "Unavailable",
-      "proposals.title": "Agent proposals", "proposals.count": "{count} waiting. Decide in the lab dashboard.",
+      "proposals.title": "Agent proposals", "proposals.count": "{count} waiting.",
       "proposals.none": "No proposal waiting.",
     },
     zh: {
@@ -48,7 +44,6 @@
       "item.gas-map": "气体映射", "item.cutoff": "超温切断",
       "ws.motion": "运动", "ws.cameras": "相机", "ws.process": "炉子",
       "run.title": "运行", "run.none": "当前没有运行。", "run.status": "状态：{status}",
-      "run.controls": "暂停和中止在实验室看板中操作。", "run.open": "打开实验室看板 →",
       "events.title": "事件 · 全部服务", "events.all": "全部", "events.warnings": "警告",
       "events.service": "服务", "events.none": "暂无事件。", "events.unavailable": "事件不可用：{services}",
       "safety.title": "安全", "safety.motionTargets": "机械臂 · 位移台 · 显微镜",
@@ -61,12 +56,9 @@
       "control.thisPage": "本页", "control.console": "控制台（其他页面）", "control.unknown": "未知",
       "control.take": "获取控制", "control.release": "释放",
       "control.takeLabel": "获取 {device} 的控制", "control.releaseLabel": "释放 {device}",
-      "pages.title": "服务页面", "pages.dashboard": "实验室看板",
-      "pages.robot": "机械臂面板", "pages.stage": "位移台面板", "pages.camera": "相机预览",
-      "pages.thermal": "热像仪", "pages.furnace": "炉子", "pages.microscope": "显微镜",
       "result.pending": "进行中", "result.confirmed": "已确认", "result.unconfirmed": "未确认",
       "result.failed": "失败", "result.unavailable": "不可用",
-      "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。请在实验室看板中决定。",
+      "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。",
       "proposals.none": "没有待处理的提议。",
     },
   };
@@ -95,7 +87,7 @@
   }
 
   function runCard(run) {
-    const { el, t, base } = view.api;
+    const { el, t } = view.api;
     const children = [];
     if (!run) children.push(el("p", { class: "lc-muted", text: t("run.none") }));
     else {
@@ -106,7 +98,6 @@
         el("span", { class: "lc-strong", text: step.skill || "" }),
         step.error ? el("span", { class: "lc-muted", text: step.error }) : null))));
     }
-    children.push(el("p", { class: "lc-muted" }, t("run.controls") + " ", el("a", { href: base + "/dashboard/", class: "lc-link", text: t("run.open") })));
     return section("ov-run", t("run.title"), ...children);
   }
 
@@ -213,18 +204,10 @@
   }
 
   function proposalsCard(snapshot) {
-    const { el, t, base } = view.api;
+    const { el, t } = view.api;
     const waiting = (snapshot?.approvals || []).filter(item => item.decision === "pending").length;
     return section("ov-proposals", t("proposals.title"),
-      el("p", { class: "lc-muted" }, waiting ? t("proposals.count", { count: waiting }) : t("proposals.none"), " ",
-        el("a", { href: base + "/dashboard/", class: "lc-link", text: t("run.open") })));
-  }
-
-  function pagesCard() {
-    const { el, t, base } = view.api;
-    const links = [["dashboard", base + "/dashboard/"], ["robot", "/robot/"], ["stage", "/stage/"], ["camera", "#cameras"], ["thermal", "/thermal/"], ["furnace", "/furnace/"], ["microscope", "/microscope/"]];
-    return section("ov-pages", t("pages.title"),
-      el("ul", { class: "lc-links" }, ...links.map(([id, href]) => el("li", {}, el("a", { href, class: "lc-link", text: t("pages." + id) })))));
+      el("p", { class: "lc-muted", text: waiting ? t("proposals.count", { count: waiting }) : t("proposals.none") }));
   }
 
   function render() {
@@ -234,7 +217,7 @@
     const scroll = view.root.querySelector?.(".lc-events")?.scrollTop || 0;
     view.root.replaceChildren(el("div", { class: "lc-layout" },
       el("div", { class: "lc-col-main" }, readinessCard(snapshot?.readiness || []), runCard(snapshot?.run), eventsCard()),
-      el("aside", { class: "lc-col-side" }, safetyCard(snapshot), controlCard(snapshot), proposalsCard(snapshot), pagesCard())));
+      el("aside", { class: "lc-col-side" }, safetyCard(snapshot), controlCard(snapshot), proposalsCard(snapshot))));
     const events = view.root.querySelector?.(".lc-events");
     if (events) events.scrollTop = scroll;
   }

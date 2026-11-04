@@ -15,7 +15,7 @@ Find the section for your change:
 | Install dependencies and run offline checks | [Development checks](#development-checks) |
 | Find entry points and modules | [Code structure](#code-structure) |
 | Write a robot service client | [Robot service interface](#robot-service-interface) |
-| Write a stage panel client | [Stage panel API](#stage-panel-api) |
+| Write a stage service client | [Stage service API](#stage-service-api) |
 | Change joint limits, motion parameters, or the gripper protocol | [Physical robot control reference](#physical-robot-control-reference) |
 
 ## Development checks
@@ -32,12 +32,12 @@ uv run ruff format --check .
 ```
 
 `uv sync` installs the `dev` and `stage` dependency groups by default.
-The `stage` group contains Flask, waitress, and pySerial for the stage panel.
-The robot web service and interactive terminal use only the standard library and do not require the `stage` group.
+The `stage` group contains Flask, waitress, and pySerial for the stage service.
+The robot service and interactive terminal use only the standard library and do not require the `stage` group.
 
 Tests do not connect to a robot or Arduino.
 For pull requests and pushes to `main`, GitHub Actions (`.github/workflows/ci.yml`) runs these checks on Python 3.12.
-`pytest` runs Python tests. `node --test` runs camera preview and web keyboard tests.
+`pytest` runs Python tests. `node --test` runs the Lab Console JavaScript tests.
 Offline checks cannot replace physical robot verification.
 
 Shared test fixtures are in `tests/conftest.py`.
@@ -70,15 +70,15 @@ kill "$sim_pid"
 wait "$sim_pid"
 ```
 
-Open `http://127.0.0.1:18766/` and do these steps in sequence:
+In another terminal, use the [Python client](#python-client) to connect to `http://127.0.0.1:18766/`. Send these commands in sequence:
 
-1. Click `Connect & take control`. Wait for feedback to update.
-2. Click `Enable robot`. Wait for the robot to become enabled.
-3. Click `Use actual`, enter the target coordinates, then click `Execute targets`.
-4. Send a gripper target. Make sure that the feedback position updates.
-5. Click `Disconnect`. Wait for stop confirmation.
+1. Run `start_sync`. Wait for feedback to update.
+2. Run `enable`. Wait for the robot to become enabled.
+3. Send the target coordinates with `execute`.
+4. Send a gripper target with `grip`. Make sure that the feedback position updates.
+5. Run `stop_sync`. Wait for stop confirmation, then run `disable`.
 
-Press `Ctrl+C` in the terminal to stop the web service.
+Press `Ctrl+C` in the terminal to stop the robot service.
 The next two commands terminate this simulator process.
 Use a new directory for each startup. The simulator refuses to overwrite existing feedback files, command files, or command locks.
 
@@ -92,13 +92,13 @@ Offline rehearsal cannot replace hardware acceptance.
 | Path | Purpose |
 | --- | --- |
 | `config/robot.toml` | Robot address, used when `MG400_ROBOT_HOST` is not set |
-| `apps/control_panel/` | Standalone Python web service and interface |
+| `apps/control_panel/` | Standalone Python robot service, without a web page |
 | `apps/layout-studio/` | Offline layout editor that uses simulated data and sends no control commands |
 | `config/systemd/` | systemd definitions for all services, with configuration from `/etc/mg400/mg400.env` |
 | `deploy/` | The `install.py` installer, the `mg400ctl` command for routine operations, and configuration examples |
 | `src/mg400/` | Backend, control protocol, and feedback processing |
 | `src/mg400/sim/` | Loopback controller and file-based gripper simulator, with a shared test model |
-| `src/stage_controller/` | Stage panel: Flask service, serial protocol, and interface |
+| `src/stage_controller/` | Stage service: Flask interface and serial protocol |
 | `firmware/three-motor-demo/` | Stage Arduino firmware and wiring instructions in English |
 | `scripts/` | Camera preview, control mode switching, and USB collection |
 | `examples/` | Single-file tutorials and notebooks |
@@ -111,20 +111,21 @@ Open the [layout editor](../apps/layout-studio/index.html) in a browser to edit 
 `terminal_control.py` provides the `mg400-robot` interactive terminal for the physical robot.
 It reuses the connection lock, feedback checks, and action execution from `web_control.py`. It does not start an HTTP service.
 
-`apps/control_panel/server.py` is the robot service. It provides the web panel, HTTP interface, and WebSocket interface.
+`apps/control_panel/server.py` is the robot service. It provides the HTTP interface and WebSocket interface, without a web page.
+The Motion workspace of the Lab Console controls the robot and gripper through this service.
 `websocket.py` uses the standard library for WebSocket frame encoding and decoding, and for connection writer threads.
 See [Robot service interface](#robot-service-interface) for interface details.
 
-`web_control.py` dispatches web keyboard jogging. Robot press-and-hold control reuses `keyboard_jog.py`.
+`web_control.py` dispatches WebSocket key jogging. Robot press-and-hold control reuses `keyboard_jog.py`.
 `web_keyboard.py` validates key input and executes small gripper steps.
 
-The physical robot panel controls the robot through the TCP protocol.
+The robot service controls the robot through the TCP protocol.
 `controller_protocol.py` parses command replies. `feedback.py` reads joint feedback.
 `joint_control.py` executes motion with limits. `gripper_feedback.py` processes gripper feedback.
 For TCP protocol references and completion criteria, see [Physical robot control interface](hardware.en.md).
 There is currently no ROS 2 backend or visual perception.
 
-`src/stage_controller/` is the stage panel. It does not import `mg400` or use the robot connection lock.
+`src/stage_controller/` is the stage service. It does not import `mg400` or use the robot connection lock.
 `__main__.py` reads `MG400_STAGE_*` environment variables and command-line arguments, then starts waitress.
 On SIGINT, SIGTERM, or SIGHUP, it stops the motors and disconnects the serial port before it exits.
 `app.py` provides the HTTP interface and access checks.
@@ -132,12 +133,12 @@ On SIGINT, SIGTERM, or SIGHUP, it stops the motors and disconnects the serial po
 `protocol.py` implements the Arduino serial protocol and demo mode.
 All serial commands execute inside the `MotorController` lock. Commands for one move do not interleave with other requests.
 When you change serial commands, update both the firmware and `DemoTransport`.
-See [Stage panel API](#stage-panel-api) for interface details.
+See [Stage service API](#stage-service-api) for interface details.
 
 ## Robot service interface
 
 After `start_sync`, the robot service connects to the robot and holds the connection lock.
-The web panel and custom clients read state and send commands through the service.
+The Lab Console and custom clients read state and send commands through the service.
 `mg400-robot` and `scripts/mg400_control_mode.py` connect directly to the robot.
 They share the connection lock with the service and cannot connect at the same time as the service.
 The service uses only the Python standard library.
@@ -162,15 +163,14 @@ HTTP requests send the token through `Authorization: Bearer <密钥>`, where the
 WebSocket sends the token in the hello message.
 
 Without an access token, the service accepts requests only when `Host` is `127.0.0.1`, `localhost`, or `[::1]`.
-This restriction prevents DNS rebinding access to the panel, where a malicious webpage resolves its domain name to the local machine.
+This restriction prevents DNS rebinding access to the service, where a malicious webpage resolves its domain name to the local machine.
 The service also rejects requests with `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, or `X-Real-IP` headers in this mode.
 You must set an access token for access through a reverse proxy.
 
-Physical robot control mode identifies pages and programs by a client ID of 1–128 printable ASCII characters.
+Physical robot control mode identifies clients by a client ID of 1–128 printable ASCII characters.
 Only one client ID has control at a time.
 The controlling client must renew the control lease within 3 seconds. The lease defines how long control remains valid.
 Heartbeats and key updates both renew the lease.
-The web panel sends a heartbeat every 0.5 seconds.
 If the service receives no renewal within 3 seconds, it requests a robot stop and locks control.
 
 ### HTTP interface
@@ -215,7 +215,7 @@ Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher ca
 These settings do not change `home`, global `SpeedFactor`, or keyboard jogging.
 An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
-It is also available when `recoverable` is `true`: an unconfirmed stop during an alarm locked control, and the alarm was cleared outside the panel.
+It is also available when `recoverable` is `true`: an unconfirmed stop during an alarm locked control, and the alarm was cleared outside the service.
 In this case, the service does not send `ClearError()`. It only disables the robot and confirms that it is stationary.
 The state object's `alarms` field lists current alarms. It is `null` when there are no alarms.
 Each item contains `id`, `source` (`controller` or `J1`–`J4`), `description`, and `solution`.
@@ -232,7 +232,7 @@ Without an access token, they still reject forwarded headers.
 `contract` is 1, and `demo` is `false`.
 Each command's `params` describes its arguments as JSON Schema, excluding `action`.
 For `stop` and `disable`, `any_client` is `true`.
-For `keyboard`, `ui_only` is `true`. The web panel uses this command.
+For `keyboard`, `ui_only` is `true`. Only interactive interfaces use this command.
 `start_sync` takes control. The existing heartbeat route only renews it.
 
 The `api/stop` body is `{"wait_s": 0}`.
@@ -276,7 +276,7 @@ Construction opens no connection. `connect()` checks WebSocket protocol 1 and se
 Use `http://`, `https://`, `ws://`, or `wss://`, including the service base path when configured.
 The token follows the robot service's access rules. An empty token works only with the permitted loopback hosts.
 
-Start the [offline simulator and panel](#offline-robot-simulator) before this example.
+Start the [offline simulator and robot service](#offline-robot-simulator) before this example.
 The example sends movement commands to that simulator.
 
 ```python
@@ -383,37 +383,14 @@ Connection closure does not end the control lease.
 If the service or proxy closes the connection, the client keeps control if it reconnects and renews within 3 seconds.
 During a network interruption, the service might not detect connection closure. The key timeout and control lease stop the robot.
 
-## Stage panel API
+## Stage service API
 
-The stage panel HTTP interface uses JSON.
+The stage service HTTP interface uses JSON. All routes are under `{前缀}contract/api/`.
+`{前缀}` is `MG400_STAGE_BASE_PATH`. The default is `/`.
 The service queries Arduino state every 0.2 seconds and stops expired press-and-hold motion during each query.
-
-| Interface | Body fields | Purpose |
-| --- | --- | --- |
-| `GET /api/ports` | None | List available serial ports, excluding the gripper converter. When `MG400_STAGE_SERIAL` is set, list only that device |
-| `GET /api/state` | None | Read the connection, motors, microstep mode, and activity log |
-| `POST /api/connect` | `port` | Connect to a serial port listed by `api/ports`. Demo mode accepts only `DEMO` |
-| `POST /api/disconnect` | None | Send `stop all` and disconnect after confirmation |
-| `POST /api/stop` | None | Stop all motors |
-| `POST /api/microstep` | `microstep`: 1, 2, 4, 8, or 16 | Set microstep mode when all motors are stationary |
-| `POST /api/motors/<电机>/move` | `direction`, `speed`, `steps` | Move a fixed number of steps |
-| `POST /api/motors/<电机>/hold` | `direction`, `speed`, `hold_id`, `sampled_at` | Start press-and-hold motion |
-| `POST /api/motors/<电机>/hold/keepalive` | `hold_id` | Renew press-and-hold motion |
-| `POST /api/motors/<电机>/hold/stop` | `hold_id` | End press-and-hold motion |
-
-`<电机>` means the motor: `bottom`, `top`, or `insert`. The values for `direction` are `cw` and `ccw`.
-`speed` is an integer from 1–1000. `steps` is an integer from 1–100000.
-The client generates `hold_id`: 16–64 characters, with only letters, digits, `_`, and `-`.
-Each press-and-hold operation must use a new `hold_id`.
-`sampled_at` comes from the field with the same name in `api/state`. It must be within the service clock's last 2 seconds.
-The client must renew press-and-hold motion within 1 second. The webpage renews it every 200 ms.
-`hold/stop` can be sent repeatedly.
-If `hold/stop` arrives before `hold` with the same `hold_id`, the service rejects the later `hold`.
 
 ### Stage automation contract
 
-Automation uses `/contract/api/` beside the existing panel routes.
-Connect the Arduino through the panel before using automation.
 The base URL for `labkit.client.ServiceClient` is `http://127.0.0.1:8767/contract`, including `/contract`.
 The interface follows the [instrument service contract](adr/0001-instrument-service-contract.en.md).
 
@@ -437,7 +414,14 @@ The interface follows the [instrument service contract](adr/0001-instrument-serv
 | `stop_all` | None | Arduino acknowledges the stop request. No lease is required. When fault-locked, use the dedicated stop interface |
 | `set_microstep` | `microstep` | Arduino confirms the microstep mode |
 
-Parameter ranges match the panel interface. Missing or extra parameters are rejected.
+The values for `motor` are `bottom`, `top`, and `insert`. The values for `direction` are `cw` and `ccw`.
+`speed` is an integer from 1–1000. `steps` is an integer from 1–100000. `microstep` is 1, 2, 4, 8, or 16.
+The client generates `hold_id`: 16–64 characters, with only letters, digits, `_`, and `-`.
+Each press-and-hold operation must use a new `hold_id`.
+`sampled_at` comes from the field with the same name in `api/state`. It must be within the service clock's last 2 seconds.
+`release_hold` can be sent repeatedly. If it arrives before `hold` with the same `hold_id`, the service rejects the later `hold`.
+The service rejects missing or extra parameters.
+
 The control lease lasts 3 seconds by default. Holds still require a separate renewal within 1 second.
 Hold renewal does not renew the control lease.
 The labkit Flask adapter advertises `renew_only_heartbeat: true` in discovery.
@@ -449,51 +433,46 @@ The existing `heartbeat()` and default `heartbeat_thread()` retain their acquire
 After a renewal failure, stop motion and reconcile the service state before explicitly taking control again.
 On lease expiry, the service requests that all motors stop.
 Releasing the lease does not stop motion. Wait for completion or request a stop before returning control.
-While a lease is active, panel motion, hold renewal, and microstep routes return 409 with `Stage is controlled by automation`.
-Panel stop and hold release remain available.
 
 The dedicated stop interface returns `stop` and `state`. The `stop` value is `confirmed`, `pending`, or `unconfirmed`.
 It returns `confirmed` only after all motors report idle.
 While waiting for feedback, the service permits other stop requests but blocks new motion.
 If the stop wait expires or a serial outcome is unknown, `locked` is true and `fault` is non-null.
-Later idle feedback does not clear the fault. Check the physical state, then manually disconnect and reconnect.
+Later idle feedback does not clear the fault. Check the physical state, then run `mg400ctl restart stage` and connect again. The fault clears only after all motors report idle.
 Reconnection returns 409 while stop confirmation is in progress. Feedback from a new connection cannot confirm that the old device stopped.
-Reconnection clears the fault only after all motors report idle.
 `last_command` distinguishes `ok`, `failed`, `rejected`, and `stopped`. The service never retries motion automatically.
 
-Contract routes use the same `MG400_STAGE_TOKEN` and check `Host`, `Origin`, and forwarding headers.
-POST requests must include `Content-Type: application/json` and `X-MG400-Client`. The body must be a JSON object.
-Client IDs contain 1–128 printable ASCII characters.
-Contract routes do not use `X-Control-Token`. A client ID cannot bypass that check on legacy panel routes.
-The body limit remains 4096 bytes.
+### Operator routes
+
+The Lab Console also uses these 4 routes, with the same prefix as the contract:
+
+| Interface | Body | Purpose |
+| --- | --- | --- |
+| `GET /contract/api/ports` | None | List available serial ports, excluding the gripper converter. When `MG400_STAGE_SERIAL` is set, list only that device |
+| `POST /contract/api/connect` | `{"port": "..."}` | Connect to a serial port listed by `api/ports`. Demo mode accepts only `DEMO`. The caller must hold the stage lease |
+| `GET /contract/api/motors/<motor>/reference` | None | Read the camera image and the marker's pixel offset |
+| `POST /contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | Save the current marker position as the reference of that axis. The caller must hold the stage lease |
+
+`api/ports` returns `{"ports": [{"device": "...", "description": "..."}]}`.
+On success, `api/connect` and `teach_reference` return the state object with `lease`.
 
 ### Access checks
 
-The following checks apply to the existing `/api/` panel routes.
-
-When `MG400_STAGE_TOKEN` is set, every `/api/` request must include `Authorization: Bearer <密钥>`.
-The service then accepts any `Host` and forwarding headers.
-`/` and `/static/` do not require an access token. The page contains no serial ports, logs, or motor positions.
+All routes use the same `MG400_STAGE_TOKEN`. When it is set, every request must include `Authorization: Bearer <密钥>`.
 Without an access token, the `Host` and forwarding header rules are the same as in [Authentication and client ID](#authentication-and-client-id).
+POST requests must include `Content-Type: application/json` and `X-MG400-Client`. The body must be a JSON object.
+Client IDs contain 1–128 printable ASCII characters.
+The body limit is 4096 bytes.
 
-POST requests must also meet these conditions:
-
-1. Include `Content-Type: application/json`.
-2. Include `X-Control-Token` from the page's `<meta name="control-token">`. The service generates a new value at each startup.
-3. The body must not exceed 4096 bytes. For interfaces with body fields, it must be a JSON object.
-
-Success returns 200 and a state object with the same fields as `api/state`.
-`api/ports` returns `{"ports": [{"device": "...", "description": "..."}]}`.
-The state object's `motors` field lists each motor's `mode` (`idle`, `moving`, or `continuous`), `position`, `cooldown`, `available`, and other fields.
-On rejection, the body is `{"error": "..."}`, with these status codes:
+On rejection, the operator routes return the body `{"error": "..."}`, with these status codes:
 
 | Status code | Meaning |
 | --- | --- |
 | 400 | Invalid request, or the serial port is not in the current list |
 | 401 | Missing or incorrect access token |
-| 403 | `Host`, forwarding headers, or `X-Control-Token` do not meet the requirements |
-| 409 | State conflict, such as no connection, a motor still moving, or cooldown |
-| 413 | The request body exceeds 4096 bytes. The response body is plain text generated by waitress |
+| 403 | `Host` or forwarding headers do not meet the requirements |
+| 409 | State conflict, such as no lease, an existing connection, or a motor still moving |
+| 413 | The request body exceeds 4096 bytes |
 | 415 | The request is not JSON |
 | 503 | Serial communication failed. The service closed the serial connection |
 
@@ -539,7 +518,7 @@ A disabled robot with no alarm also does not prove that its current pose permits
 
 ### Motion commands and coordinate cache
 
-For manual `Execute targets`, `MovL` uses `SpeedL=1,AccL=1`.
+Without `speed`, `execute` uses `MovL` with `SpeedL=1,AccL=1`.
 For finite keyboard trajectories, W/S, R/F, and Q/E use `MovL` with `SpeedL=2,AccL=20`.
 Controller inverse kinematics validates the target joint limits. The controller plans the straight path.
 Reset uses `JointMovJ` with `SpeedJ=5,AccJ=5`.
@@ -548,7 +527,7 @@ Both types of joint motion check the joint ranges along the entire segment. They
 Robot motion does not change global speed or tool configuration.
 
 A/D uses only measured joint feedback at startup and during motion. It does not query `GetPose`.
-After the action ends, it reads coordinates and updates the panel.
+After the action ends, it reads coordinates and updates the state.
 The other six directions can reuse measured coordinates read by the same control instance.
 For reuse, the measurement must be no more than 0.25 seconds old.
 Joint feedback before and after the measurement must also match the current joint feedback.
@@ -571,11 +550,11 @@ Feedback for completed initialization has `operation=initialize`, `target=null`,
 
 The command file's `deadline_monotonic` specifies a deadline on the monotonic clock.
 The monotonic clock measures elapsed time and does not change with system date adjustments.
-The panel and collector must run on the same host and share the same monotonic clock domain.
+The robot service and collector must run on the same host and share the same monotonic clock domain.
 Position commands do not support transfer between hosts or time namespaces with clock offsets.
 File preparation, collector receipt, register operations, and in-position confirmation share one command deadline.
 The time limit is 5 seconds for position commands and 15 seconds for initialization.
-The panel starts timing before it prepares the command file. The collector must not restart the timer.
+The robot service starts timing before it prepares the command file. The collector must not restart the timer.
 
 The collector checks the deadline before each serial request, including mode and target writes.
 If a request has already been sent, the collector still receives and validates the complete reply with the original 1-second reply timeout.

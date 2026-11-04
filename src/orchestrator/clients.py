@@ -70,8 +70,15 @@ class ServiceAdapter:
     def command(self, action, **params):
         return self._http.command(action, **params)
 
+    def request(self, path, data=None):
+        """Send one Lab Console operator request with this identity. Never retried.
+
+        With data it is a POST. The runner and the recipes never call this.
+        """
+        return self._http._call(path, data)
+
     def events(self, since=0):
-        """Read the contract event replay once; the robot panel serves the same route."""
+        """Read the contract event replay once; the robot service serves the same route."""
         return self._http.events(since)
 
     def stop(self):

@@ -36,11 +36,11 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.lease import Lease
 
-from .aruco_locator import REFERENCES, Locator
+from .aruco_locator import Locator
 from .aruco_switch import OBJECTIVE_ORDER, ArucoObjectiveSwitcher, SwitchSettings, select_objective
 from .autofocus import AutofocusCancelled, AutoFocuser
 from .motors import CommandRejected, MotorController
-from .paths import calibration_path, private_open, run_path
+from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
 from .sim import MicroscopeSimulator
 
@@ -626,8 +626,6 @@ class MicroscopeService:
         self._lifecycle = threading.RLock()
         self._frame_condition = threading.Condition(self._lock)
         self._frame_reads = 0
-        self._panel_info_lock = threading.Lock()
-        self._panel_info_cache = None
         self._lease = Lease(self.config.lease_seconds, clock=clock, on_expire=self.on_lease_expired)
         self.lease = _ContractLease(self)
         self._manual_holder = None
@@ -1088,68 +1086,6 @@ class MicroscopeService:
                 },
             )
 
-    def panel_info(self):
-        """Load fixed calibration metadata once, without opening a camera or moving."""
-        with self._lock:
-            if not self._started or self._closed:
-                raise ServiceError(503, "Microscope service is closed")
-            if self._panel_info_cache is not None:
-                return copy.deepcopy(self._panel_info_cache)
-        if not self._panel_info_lock.acquire(blocking=False):
-            raise ServiceError(503, "Microscope calibration metadata is loading")
-        try:
-            with self._lock:
-                if not self._started or self._closed:
-                    raise ServiceError(503, "Microscope service is closed")
-                if self._panel_info_cache is not None:
-                    return copy.deepcopy(self._panel_info_cache)
-            try:
-                if not self.demo:
-                    # The pinned locator consumes four PNG references. Bound their
-                    # declared dimensions before OpenCV allocates decoded images.
-                    for name in REFERENCES.values():
-                        path = calibration_path("side_camera_images") / name
-                        if (
-                            path.is_symlink()
-                            or not path.is_file()
-                            or path.stat().st_size > 64 * 1024 * 1024
-                        ):
-                            raise ValueError("A calibration reference is missing or invalid")
-                        with path.open("rb") as stream:
-                            header = stream.read(24)
-                        if (
-                            len(header) != 24
-                            or header[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-                        ):
-                            raise ValueError("Calibration references must be bounded PNG images")
-                        width, height = (
-                            int.from_bytes(header[16:20], "big"),
-                            int.from_bytes(header[20:24], "big"),
-                        )
-                        if not width or not height or width * height > 16_000_000:
-                            raise ValueError(
-                                "Calibration reference dimensions exceed the image limit"
-                            )
-                identifiers = sorted(set(self._locator().references) & set(OBJECTIVE_ORDER))
-                if not identifiers:
-                    raise ValueError("No calibrated objectives are available")
-                error = None
-            except Exception as problem:
-                identifiers, error = [], str(problem)
-            value = dict(
-                objective_ids=identifiers,
-                calibration_available=bool(identifiers),
-                calibration_error=error,
-                home_switch=self.config.home_switch,
-            )
-            with self._lock:
-                if self._closed or not self._started:
-                    raise ServiceError(503, "Microscope service closed during metadata loading")
-                self._panel_info_cache = value
-                return copy.deepcopy(value)
-        finally:
-            self._panel_info_lock.release()
-
     def read_frame(self, camera, *, after_id=None, timeout=0.5):
         """Read and encode one bounded copy from an already owned camera.
 
@@ -1427,14 +1363,23 @@ class MicroscopeService:
             or args["confirm"] is not True
         ):
             raise ValueError("Only confirmed manual focus zero is supported")
-        with self._manual_control(client, renew_only=True):
+        # The operator's current lease holder, of either lease class, may set
+        # zero. Agents, recipes and the runner use command(), which refuses it.
+        with self._lease.control(client, require_holder=False):
+            self._expire_handoff_locked()
+            if self._lease.snapshot()["holder"] != client:
+                raise ServiceError(409, "Take control before setting focus zero")
+            self._lease.renew(client)
+            self._renew_job_authority(client)
+            with self._lock:
+                self._handoff_deadline = None
             return self._dispatch(action, {}, client, manual=True)
 
     def command(self, action, args, client):
         with self._lease.control(client):
             self._manual_holder = None
             if action == "set_focus_zero":
-                raise ServiceError(403, "Only the operator panel can establish manual focus zero")
+                raise ServiceError(403, "Only the Lab Console operator can set focus zero")
             return self._dispatch(action, args, client)
 
     def _arguments(self, action, args):

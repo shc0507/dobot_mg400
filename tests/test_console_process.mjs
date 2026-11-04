@@ -63,7 +63,7 @@ function statusBody(overrides = {}) {
     },
     microscope: {
       connected: true, busy: false, locked: false, objective_id: 2, focus_position_pulses: 1200, focus_zero_known: true,
-      focus_limits_pulses: [0, 10000], recording: { status: "idle" }, recording_sequence: { armed: false },
+      focus_limits_pulses: [0, 10000], recording: { status: "idle" }, recording_sequence: { armed: false }, stabilization: false,
     },
     ...overrides,
   };
@@ -96,7 +96,10 @@ async function load({ owns = ["furnace", "microscope"], status = statusBody(), c
     relay: async (device, action, params) => { calls.push(["relay", device, action, params]); return { outcome: "accepted" }; },
     stop: async device => { calls.push(["stop", device]); return { device, outcome: "confirmed" }; },
     describe: async device => (device === "furnace" ? FURNACE_DESCRIBE : SCOPE_DESCRIBE),
-    request: async name => { calls.push(["request", name]); return status; },
+    request: async (name, data) => {
+      calls.push(data === undefined ? ["request", name] : ["request", name, data]);
+      return data === undefined ? status : { outcome: "accepted", command_id: "1" };
+    },
     consoleRequest: async (url, data) => { calls.push(["console", url, data]); return {}; },
     notify: (text, level) => notices.push([level, text]),
     deviceName: id => id[0].toUpperCase() + id.slice(1),
@@ -246,17 +249,39 @@ test("microscope objective, jog, autofocus and recording go through the relay", 
   ]);
 });
 
-test("motion waits for the focus zero, and Set focus zero opens the panel after a confirmation", async () => {
+test("motion waits for the focus zero, and Set focus zero is sent once after a confirmation", async () => {
   const status = statusBody();
   status.microscope.focus_zero_known = false;
   status.microscope.focus_position_pulses = null;
   const { root, calls } = await load({ status });
   assert.equal(role(root, "objective-0").disabled, true);
   assert.equal(role(root, "jog-up").disabled, true);
+  assert.equal(role(root, "zero").disabled, false);
   role(root, "zero").click();
-  const link = role(root, "zero-panel");
-  assert.equal(link.getAttribute("href"), "/microscope/");
+  assert.equal(calls.filter(call => call[1] === "focus-zero").length, 0);
+  role(root, "confirm-zero").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(calls.filter(call => call[1] === "focus-zero"), [["request", "focus-zero", { confirmed: true }]]);
   assert.equal(calls.filter(call => call[0] === "relay").length, 0);
+});
+
+test("Set focus zero needs microscope control", async () => {
+  const { root } = await load({ owns: ["furnace"] });
+  assert.equal(role(root, "zero").disabled, true);
+});
+
+test("a furnace fault shows Acknowledge, which is sent once after a confirmation", async () => {
+  const status = statusBody();
+  status.furnace.locked = true;
+  status.furnace.fault = { code: "x", message: "Saved fault requires acknowledgement" };
+  const { root, calls } = await load({ status });
+  assert.equal(role(root, "acknowledge").hidden, false);
+  role(root, "acknowledge").click();
+  role(root, "confirm-ack").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(calls.filter(call => call[1] === "acknowledge"), [["request", "acknowledge", { confirmed: true }]]);
+  const healthy = await load();
+  assert.equal(role(healthy.root, "acknowledge").hidden, true);
 });
 
 test("camera tiles come from LabCameras when it exists", async () => {
@@ -273,4 +298,11 @@ test("the language switch rebuilds the workspace in Chinese", async () => {
   setLang("zh");
   assert.match(root.textContent, /炉子 · AI-808/);
   assert.equal(role(root, "stop-furnace").textContent, "停止加热和气体");
+});
+
+test("the stabilization toggle relays set_stabilization once", async () => {
+  const { root, calls } = await load();
+  role(root, "stabilization").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(calls.filter(call => call[0] === "relay" && call[2] === "set_stabilization"), [["relay", "microscope", "set_stabilization", { enabled: true }]]);
 });

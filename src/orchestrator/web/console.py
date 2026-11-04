@@ -391,6 +391,47 @@ class Console:
             if fresh is not None:
                 self._close(fresh)
 
+    def operator(self, device, page, path, data):
+        """Send one operator-only service request on this page's lease, once.
+
+        The service refuses it unless this page's identity holds the lease.
+        The runner and the relay never reach these service routes.
+        """
+        item = self._owned(device, page)
+        if item is None:
+            raise ServiceError(409, "Take control of this device first.")
+        try:
+            result = item.adapter.request(path, data)
+        except Exception as exc:
+            outcome = classify(exc)
+            message = str(exc) if outcome == "refused" else "The outcome is unknown."
+            self.service.events.add(
+                "warning", "Console operator action " + outcome + ".", device=device, path=path
+            )
+            return {"outcome": outcome, "error": self.service.dashboard.text(message)}
+        self.service.events.add("info", "Console operator action sent.", device=device, path=path)
+        command_id = result.get("command_id") if isinstance(result, dict) else None
+        return {
+            "outcome": "accepted",
+            "command_id": command_id if isinstance(command_id, str) else None,
+            "result": result if isinstance(result, dict) else None,
+        }
+
+    def read(self, device, path):
+        """Read one service route with a fresh identity and no lease."""
+        _, adapter = self._client(device, "read")
+        try:
+            value = adapter.request(path)
+        except Exception as exc:
+            if classify(exc) == "refused":
+                raise ServiceError(409, self.service.dashboard.text(str(exc))) from exc
+            raise ServiceError(502, "The service read failed.") from exc
+        finally:
+            self._close(adapter)
+        if not isinstance(value, dict):
+            raise ServiceError(502, "The service returned an invalid object.")
+        return value
+
     def stop(self, device):
         """Stop one device without control or a lease wait. Send once; never retry."""
         _, adapter = self._client(device, "stop")

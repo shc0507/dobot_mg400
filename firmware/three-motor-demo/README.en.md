@@ -27,39 +27,15 @@ The native checks require Python and `g++`. They link the installed AccelStepper
 They also reject conflicting pins and check that a disabled minimum input refuses homing.
 Use a workspace-local Arduino CLI configuration for its data, downloads, and user directories.
 
-## Web control panel
+## Lab Console control
 
-The stage panel (`stage-panel`) is the web GUI for this sketch. It has independent
-speed and step-count settings, direction buttons, and serial port selection. It also
-has a one-second cooldown after each move completes, Stop all, reset defaults, and
-light/dark themes. This sketch works with the GUI, including separate direction
-hold buttons for continuous motion until release. Upload this sketch to enable
-held moves and their one-second timeout, plus a global stepping-mode control for
-all three motors. To install, start, and connect to the panel, see the
-[stage panel guide](../../docs/stage-panel.en.md). Close Serial Monitor before
-connecting from the GUI.
+The stage service (`stage_controller`) drives this sketch. Operators use the stage
+card in the Motion workspace of the Lab Console: Connect, Stepping, Step − / Step +,
+Home, Set zero, Check reference, named positions and Stop stage. See the
+[stage guide](../../docs/stage-panel.en.md). Close Serial Monitor before you connect.
 
 If the host has more than one serial device, set `MG400_STAGE_SERIAL` to the
-`/dev/serial/by-id/` path of the Arduino. The GUI then shows only that port.
-
-The GUI replaces CCW/CW with these labels:
-
-| Motor | CCW (`ccw`) label | CW (`cw`) label |
-| --- | --- | --- |
-| Bottom | Up | Down |
-| Top | Right | Left |
-| Insert | Insert In | Insert Out |
-
-Hold buttons add **Hold** to each label (for example, **Hold Up** / **Hold Down**),
-and movement status uses the same direction names. These are display labels only;
-serial directions remain `ccw` / `cw`, and motor behavior is unchanged.
-
-The GUI also has an optional **Keyboard controls** section, switched **Off** by
-default. Hold **W/S** for bottom Up/Down, **A/D** for top Left/Right, or **J/K** for
-Insert In/Insert Out; the displayed keys can also be pressed and held. Each uses
-its motor channel's selected speed and the same hold/release commands and timeout.
-Turning the section off releases its active holds. See the [stage panel guide](../../docs/stage-panel.en.md)
-for keyboard behavior and stopping controls.
+`/dev/serial/by-id/` path of the Arduino. The port list then shows only that port.
 
 ## Wiring
 
@@ -245,7 +221,7 @@ The mode lasts until the board resets; there is no EEPROM write. `steps`, speed,
 acceleration, position, and remaining counts use STEP pulses at the active mode.
 At sixteenth step, `steps 50` requests 3.125 full steps. `spr 200` still describes
 a 200-full-step/revolution motor: `rev` generates 3,200 pulses at sixteenth step.
-The GUI keeps its numeric speed and step settings when changing resolution.
+The console keeps its numeric speed and step settings when you change resolution.
 
 The [A4988 datasheet](https://www.allegromicro.com/-/media/files/datasheets/a4988-datasheet.ashx)
 specifies that the new mode takes effect on the next STEP rising edge. To preserve
@@ -347,7 +323,7 @@ acceleration/deceleration; `start`, `hold`, and `stop` change pulse generation i
 After a stop, the driver keeps the coils energized until its sleep timeout ends
 (see [Driver sleep](#driver-sleep)).
 
-The GUI uses `hold` and renews it about every 200 ms while a button is pressed.
+A `hold` client renews it about every 200 ms.
 Releasing sends `motor <name>` followed by `stop`. The hold timeout is per motor
 and runs on the Arduino, so it still ends held motion after a USB disconnect or
 server failure. The standalone Serial Monitor `start` command remains continuous

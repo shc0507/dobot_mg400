@@ -63,7 +63,7 @@ Unknown tools and extra arguments fail. No arbitrary URL, SQL, file path, or dev
 
 ## Approval policy
 
-A person reviews the complete definition and effective parameters on the [dashboard](dashboard.en.md#agent-proposals).
+A person reviews the complete definition and effective parameters before a decision. The console cannot approve proposals yet; see [Agent proposals](dashboard.en.md#agent-proposals).
 A proposal expires after 30 minutes without a decision. At most 3 proposals may be pending.
 Approval is single use. Rejection, expiry, a changed recipe, or a changed effective host limit cannot start the run.
 The person must hold the dashboard control lease and confirm presence in the lab throughout the run.

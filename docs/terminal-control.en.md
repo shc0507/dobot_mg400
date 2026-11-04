@@ -17,7 +17,7 @@ It supports local terminals on macOS and Linux, and SSH sessions with a PTY.
 A PTY is an interactive terminal allocated by SSH. Request it with `ssh -t`.
 
 Before use, close other robot control programs.
-The terminal shares the robot connection lock with the web panel.
+The terminal shares the robot connection lock with the robot service.
 All processes must use the same robot address.
 They must also share `MG400_CONTROLLER_LOCK_DIR`.
 For directory and permission requirements, see [Panel connection lock](deploy.en.md#panel-connection-lock).

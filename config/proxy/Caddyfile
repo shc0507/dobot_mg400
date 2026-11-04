@@ -27,28 +27,13 @@
 
 http://:@PROXY_PORT@ {
 	bind @PROXY_BIND@
-	# The Lab Console is the single entry. The old pages stay at their paths.
+	# The Lab Console is the only page. The camera streams feed its Cameras workspace.
 	redir / /lab/ 302
-	@bare path /robot /stage /camera /thermal /furnace /microscope /lab
+	@bare path /camera /lab
 	redir @bare {http.request.uri.path}/ 308
-	handle /robot/* {
-		import instrument 127.0.0.1:@PANEL_PORT@
-	}
-	handle /stage/* {
-		import instrument 127.0.0.1:@STAGE_PORT@
-	}
 	# Strip only /camera. The remaining /<secret>/ path must reach the preview.
 	handle_path /camera/* {
 		import instrument 127.0.0.1:1985
-	}
-	handle /thermal/* {
-		import instrument 127.0.0.1:@THERMAL_PORT@
-	}
-	handle /furnace/* {
-		import instrument 127.0.0.1:@FURNACE_PORT@
-	}
-	handle /microscope/* {
-		import instrument 127.0.0.1:@MICROSCOPE_PORT@
 	}
 	handle /lab/* {
 		import instrument 127.0.0.1:@ORCH_PORT@

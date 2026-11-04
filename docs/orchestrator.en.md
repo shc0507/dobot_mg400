@@ -306,7 +306,7 @@ Configure every workspace bound before teaching or reading stations:
 
 Bounds are finite, inclusive, and have no default. Each minimum must be less than its maximum. They apply to fingertip coordinates in the controller base frame. The station and its raised approach endpoint must fit these bounds. Workspace bounds do not establish obstacle clearance or joint reachability.
 
-An operator first positions the robot through its panel. The panel, or another controller, must retain control while teaching. Teaching requires fresh measured feedback, an idle robot, no lock, and no unconfirmed stop. The teaching command reads discovery and state only. It never acquires or releases a lease, changes controller tools, or sends motion.
+An operator first positions the robot in the Motion workspace of the Lab Console. The console, or another controller, must retain control while teaching. Teaching requires fresh measured feedback, an idle robot, no lock, and no unconfirmed stop. The teaching command reads discovery and state only. It never acquires or releases a lease, changes controller tools, or sends motion.
 
 ```sh
 labctl station save tray-pick --approach 20 --zone tray
@@ -494,7 +494,7 @@ Software checks do not establish physical clearance. The operator must verify th
 
 ## Rehearsal and installed commands
 
-Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, tokens, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its control panel. Demo factories cover the robot, stage, thermal camera, and furnace. Unsupported required services fail before the run starts.
+Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, tokens, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its robot service `apps/control_panel/`. Demo factories cover the robot, stage, thermal camera, and furnace. Unsupported required services fail before the run starts.
 
 Transfer rehearsal retains explicit station and tool paths, workspace bounds, the pre-grip opening, and the zone configuration path. The documented configuration path defaults still apply. Files must contain valid geometry and named zone definitions. Rehearsal does not invent an offset, workspace, or zone configuration. It resolves condition services before creating demos. Its occupancy file belongs to the temporary rehearsal directory, regardless of `MG400_ORCH_ZONE_STATE_FILE`.
 

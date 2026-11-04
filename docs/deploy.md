@@ -40,19 +40,19 @@
 
 | 服务 | `mg400ctl` 名称 | 用途 | 附加组 |
 | --- | --- | --- | --- |
-| `mg400-web-panel.service` | `web` | [网页面板](control-panel.md)，端口 `8766` | 无 |
-| `mg400-stage-panel.service` | `stage` | [位移台面板](stage-panel.md)，端口 `8767` | `dialout` |
-| `mg400-camera-preview.service` | `camera` | 摄像头预览网页，端口 `1985` | 无 |
+| `mg400-web-panel.service` | `web` | [机器人服务](development.md#机器人服务接口)，端口 `8766` | 无 |
+| `mg400-stage-panel.service` | `stage` | [位移台服务](stage-panel.md)，端口 `8767` | `dialout` |
+| `mg400-camera-preview.service` | `camera` | 摄像头视频流，端口 `1985` | 无 |
 | `mg400-camera-capture.service` | `camera` | go2rtc 采集，只监听 `127.0.0.1:1984` | `video` |
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
-| `mg400-thermal.service` | `thermal` | 可选[热像仪页面](thermal.md)，端口 `8768` | 无 |
-| `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
-| `mg400-microscope.service` | `microscope` | 可选的[显微镜网页](microscope.md)，回环端口 `8770` | `dialout video` |
+| `mg400-thermal.service` | `thermal` | 可选的[热像仪服务](thermal.md)，端口 `8768` | 无 |
+| `mg400-furnace.service` | `furnace` | 可选的[炉温与气体服务](furnace.md)，端口 `8769` | `dialout` |
+| `mg400-microscope.service` | `microscope` | 可选的[显微镜服务](microscope.md)，回环端口 `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | 可选的[视觉服务](vision.md)，回环端口 `8771` | 无 |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | 可选的[单端口代理](olares.md#可选的单端口代理)，端口 `8080` | 无 |
-| `mg400-gripper-collector.path` | 无 | 面板请求时启动夹爪采集 | 无 |
+| `mg400-gripper-collector.path` | 无 | 机器人服务请求时启动夹爪采集 | 无 |
 
 服务手动启动，不开机自启。
 主机重启后，只有夹爪采集的请求监听自动恢复。
@@ -121,7 +121,7 @@
 
 安装器不启动、不停止，也不重启服务。
 更新代码前必须停止服务。运行中的服务可能读取新旧混合的文件。
-更新后，启动服务，再重新加载已打开的面板页面。
+更新后，启动服务，再重新加载已打开的实验室控制台。
 不要在 `/opt/mg400` 修改文件。修改的文件可能让 `git switch` 中止更新。
 
 ## Toupcam 库
@@ -200,7 +200,8 @@
 此组含 Flask、waitress，以及自有演示服务所需的 `stage`、`thermal` 和 `furnace` 组。
 把 `orch` 加入 `MG400_OPTIONAL_SERVICES`，运行安装器，配置[配方服务](orchestrator.md#http-服务)，再运行 `mg400ctl start orch`。
 选中 `orch` 时，安装器准备私密的 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
-同一服务还提供[实验室总览](dashboard.md)，包含状态卡片、运行控制、摄像头链接，以及独立的运动、加热和气体停止操作。
+同一服务还提供[实验室控制台](dashboard.md#实验室控制台)。它是唯一的操作网页，含 Overview、Motion、Cameras 和 Furnace + microscope 工作区，以及独立的运动、加热和气体停止操作。
+控制台没有配方运行控制。启动、终止和恢复运行使用[配方服务接口](orchestrator.md#http-服务)。
 
 可选服务 `gateway` 使用 `gateway` 依赖组。把 `gateway` 加入 `MG400_OPTIONAL_SERVICES`，再配置[智能体网关](agent-gateway.md)。
 选中 `gateway` 时，安装器也会准备私密的 `runs` 目录，使首次配方运行前即可记录审计。安装器不会启动网关。
@@ -306,18 +307,18 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `MG400_OPTIONAL_SERVICES` | 空 | 服务清单中的可选服务名称，用逗号分隔 |
 | `MG400_ROBOT_HOST` | `config/robot.toml` 中的地址 | 机械臂地址 |
 | `MG400_CONTROLLER_LOCK_DIR` | 必填，示例为 `/var/lib/mg400/locks` | [面板连接锁](#面板连接锁) 的目录，必须为绝对路径 |
-| `MG400_PANEL_BIND` | `127.0.0.1` | 网页面板的监听地址 |
-| `MG400_PANEL_PORT` | `8766` | 网页面板的端口 |
-| `MG400_PANEL_BASE_PATH` | `/` | 网页面板和 API 的原生前缀 |
-| `MG400_PANEL_TOKEN` | 安装器生成 | 网页面板的访问密钥 |
+| `MG400_PANEL_BIND` | `127.0.0.1` | 机器人服务的监听地址 |
+| `MG400_PANEL_PORT` | `8766` | 机器人服务的端口 |
+| `MG400_PANEL_BASE_PATH` | `/` | 机器人服务 API 的原生前缀 |
+| `MG400_PANEL_TOKEN` | 安装器生成 | 机器人服务的访问密钥 |
 | `MG400_CAMERA_BIND` | `127.0.0.1` | 摄像头预览的监听地址 |
 | `MG400_CAMERA_DEVICES` | 空 | 1 到 4 个不同的摄像头设备，用逗号分隔。为空时关闭摄像头 |
 | `MG400_CAMERA_MODES` | 空 | 每台设备对应 1 个允许的 `WIDTHxHEIGHT@FPS` 模式，顺序与设备相同 |
 | `MG400_CAMERA_CAPTURE_SIZES` | 空 | 旧版 `WIDTHxHEIGHT` 列表，帧率为 30 fps。不得与 `MG400_CAMERA_MODES` 同时设置 |
-| `MG400_STAGE_BIND` | `127.0.0.1` | 位移台面板的监听地址 |
-| `MG400_STAGE_PORT` | `8767` | 位移台面板的端口 |
+| `MG400_STAGE_BIND` | `127.0.0.1` | 位移台服务的监听地址 |
+| `MG400_STAGE_PORT` | `8767` | 位移台服务的端口 |
 | `MG400_STAGE_BASE_PATH` | `/` | 位移台原生前缀，契约位于其下的 `contract/` |
-| `MG400_STAGE_TOKEN` | 安装器生成 | 位移台面板的访问密钥 |
+| `MG400_STAGE_TOKEN` | 安装器生成 | 位移台服务的访问密钥 |
 | `MG400_STAGE_SERIAL` | 空 | Arduino 的串口路径，见 [位移台配置项](stage-panel.md#配置项) |
 | `MG400_THERMAL_BIND` | `127.0.0.1` | 热像仪监听地址 |
 | `MG400_THERMAL_PORT` | `8768` | 热像仪端口 |
@@ -336,14 +337,14 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `MG400_MFC_SERIAL` | 空 | 独立气控串口设备 |
 | `MG400_MICROSCOPE_BIND` | `127.0.0.1` | 显微镜监听地址 |
 | `MG400_MICROSCOPE_PORT` | `8770` | 显微镜端口 |
-| `MG400_MICROSCOPE_BASE_PATH` | `/` | 显微镜原生网页和 API 前缀 |
+| `MG400_MICROSCOPE_BASE_PATH` | `/` | 显微镜原生 API 前缀 |
 | `MG400_MICROSCOPE_TOKEN` | 安装器生成 | 显微镜访问令牌 |
 
 按[显微镜指南](microscope.md#契约服务)配置设备选择、调焦限位和相机视频流。
 
-面板监听回环地址以外的地址时，访问密钥必须至少有 24 个字符。
+服务监听回环地址以外的地址时，访问密钥必须至少有 24 个字符。
 摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。
-预览只显示已配置的视频流，按设备顺序命名为 `camera1` 到 `camera4`。
+摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera4`。
 两个模式列表均为空时，普通摄像头使用 `640x480@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 显式模式或尺寸列表覆盖这些默认值。数量、路径、模式无效或列表冲突时，安装器在修改主机前退出。
 只预加载宽度不超过 640 且高度不超过 480 的流。更大的流按需启动。
@@ -367,9 +368,9 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
 | `mg400ctl terminal` | 打开 [交互终端](terminal-control.md) |
 | `mg400ctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
-| `mg400ctl camera-url` | 显示含访问密钥的摄像头预览链接。启用 `proxy` 时显示代理链接 |
+| `mg400ctl camera-url` | 显示含访问密钥的摄像头视频流前缀。启用 `proxy` 时显示代理前缀 |
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
-| `mg400ctl token web` | 显示网页面板的访问密钥。`token stage` 显示位移台面板的密钥 |
+| `mg400ctl token web` | 显示机器人服务的访问密钥。`token stage` 显示位移台服务的密钥 |
 | `mg400ctl token orch` | 显示配方服务令牌，不显示下游别名 |
 
 `gpu` 以 UID `1000` 运行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
@@ -394,18 +395,18 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 重启服务不会恢复已保存的运行，也不会清除保留区域。请使用[恢复流程](orchestrator.md#http-服务)。
 
 `terminal` 和 `mode` 用 `runuser --pty` 以 UID 1000 在独立的伪终端中运行。
-它们读取配置文件，与面板共用连接锁，但不接收访问密钥。
-停止或重启网页面板时，面板最长用约 60 秒确认机械臂停止。
-夹爪采集不必手动启动。网页面板或交互终端连接机械臂时，请求启动采集。
+它们读取配置文件，与机器人服务共用连接锁，但不接收访问密钥。
+停止或重启机器人服务时，服务最长用约 60 秒确认机械臂停止。
+夹爪采集不必手动启动。机器人服务或交互终端连接机械臂时，请求启动采集。
 
 ## 面板连接锁
 
-网页面板、交互终端和模式切换在连接机械臂前取得文件锁。
-网页的只读模式也使用此锁。
+机器人服务、交互终端和模式切换在连接机械臂前取得文件锁。
+机器人服务的只读模式也使用此锁。
 另一个程序持锁时，新连接返回 `Robot controlled by another panel`。
-正常断开后，面板等待反馈线程和命令任务结束，再释放锁。
-停止状态无法确认时，面板停止常规坐标查询，保留反馈和锁。
-重新加载面板页面不能清除未确认的停止状态。
+正常断开后，机器人服务等待反馈线程和命令任务结束，再释放锁。
+停止状态无法确认时，机器人服务停止常规坐标查询，保留反馈和锁。
+重新加载实验室控制台不能清除未确认的停止状态。
 
 所有程序必须使用相同的机械臂地址和 `MG400_CONTROLLER_LOCK_DIR`。
 锁目录必须使用绝对路径，并支持操作系统文件锁。
@@ -509,7 +510,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
    ```
 
 6. 按新主机的监听地址和摄像头设备路径修改 `/etc/mg400/mg400.env`。保留属主 `root:root` 和权限 `0600`。
-   保留访问令牌后，用户不必重新输入。恢复 `/var/lib/mg400/camera/preview.key` 后，预览链接不变。
+   保留访问令牌后，用户不必重新输入。恢复 `/var/lib/mg400/camera/preview.key` 后，摄像头视频流路径不变。
    上述数据路径的属主为 `1000:1000`，文件权限为 `0640` 或 `0600`。
    目录权限保留 `0750`，但摄像头、位移台和 `calibration/cameras` 目录必须为 `0700`。保留归档中其他已有数据的属主和权限。
 7. 如果存在 `/var/lib/mg400/work/gripper_feedback.json.command-lock.json`，说明夹爪命令结果未确认。

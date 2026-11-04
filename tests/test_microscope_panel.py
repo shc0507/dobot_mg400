@@ -206,104 +206,6 @@ def test_frame_admission_caps_simultaneous_reads_without_touching_lease():
     service.close()
 
 
-def test_panel_metadata_uses_calibrated_ids_once_and_returns_independent_values(monkeypatch):
-    service, _, _ = frame_service()
-    calls = []
-    monkeypatch.setattr(
-        service,
-        "_locator",
-        lambda: calls.append(1) or SimpleNamespace(references={1: 0, 3: 0, 999: 0}),
-    )
-    metadata = service.panel_info()
-    assert metadata == dict(
-        objective_ids=[1, 3], calibration_available=True, calibration_error=None, home_switch=False
-    )
-    metadata["objective_ids"].clear()
-    assert service.panel_info()["objective_ids"] == [1, 3] and calls == [1]
-    assert service.lease.snapshot()["holder"] is None
-    service.close()
-    with pytest.raises(ServiceError, match="closed"):
-        service.panel_info()
-
-
-def test_missing_and_invalid_real_calibration_never_falls_back_to_objective_ids(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(tmp_path / "calibration"))
-    service, _, _ = frame_service()
-    service.demo = False
-    monkeypatch.setattr(
-        service, "_locator", lambda: pytest.fail("Must reject missing references before decode")
-    )
-    metadata = service.panel_info()
-    assert not metadata["calibration_available"] and metadata["objective_ids"] == []
-    assert metadata["calibration_error"]
-    assert not (tmp_path / "calibration").exists()
-    service.close()
-
-
-@pytest.mark.parametrize("bad_reference", [False, True])
-def test_real_metadata_uses_supplied_marker_references_or_reports_invalid_data(
-    monkeypatch, tmp_path, bad_reference
-):
-    from microscope.aruco_locator import REFERENCES
-
-    root = tmp_path / "calibration"
-    images = root / "side_camera_images"
-    images.mkdir(parents=True)
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(root))
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    for ident, filename in REFERENCES.items():
-        pixels = np.full((200, 200), 255, dtype=np.uint8)
-        pixels[60:140, 60:140] = cv2.aruco.generateImageMarker(dictionary, ident, 80)
-        assert cv2.imwrite(str(images / filename), pixels)
-    if bad_reference:
-        (images / REFERENCES[0]).write_bytes(b"invalid PNG reference")
-    service, _, _ = frame_service()
-    service.demo = False
-    metadata = service.panel_info()
-    assert metadata["calibration_available"] is not bad_reference
-    assert metadata["objective_ids"] == ([] if bad_reference else [0, 1, 2, 3])
-    assert bool(metadata["calibration_error"]) is bad_reference
-    service.close()
-
-
-def test_frame_and_metadata_reads_do_not_clear_fault_or_renew_existing_lease(monkeypatch):
-    service, main, _ = frame_service((1, 2.0, np.zeros((2, 2), np.uint8)))
-    service._fault = {"code": "existing", "message": "unknown prior command"}
-    service._lease.acquire("other-client")
-    expiry = service._lease.snapshot()["remaining_s"]
-    monkeypatch.setattr(service, "_locator", lambda: SimpleNamespace(references={1: {}}))
-    assert service.read_frame("microscope").frame_id == 1
-    assert service.panel_info()["objective_ids"] == [1]
-    assert service._fault == {"code": "existing", "message": "unknown prior command"}
-    assert service._lease.snapshot()["remaining_s"] <= expiry
-    assert service._lease.snapshot()["holder"] == "other-client"
-    assert len(main.calls) == 1
-    service.close()
-
-
-def test_metadata_loading_does_not_hold_stop_lock_or_publish_after_close(monkeypatch):
-    service, _, _ = frame_service()
-    entered, release = threading.Event(), threading.Event()
-
-    def locator():
-        entered.set()
-        assert release.wait(3)
-        return SimpleNamespace(references={1: 0})
-
-    monkeypatch.setattr(service, "_locator", locator)
-    loader, results = launch(service.panel_info)
-    assert entered.wait(1)
-    with pytest.raises(ServiceError, match="loading"):
-        service.panel_info()
-    assert service.stop("operator", 0) == "confirmed"
-    service.close()
-    release.set()
-    finish(loader)
-    assert isinstance(results[0], ServiceError) and service._panel_info_cache is None
-
-
 class PanelService:
     """Read-only HTTP fake; motion policy is exercised separately with the demo."""
 
@@ -319,14 +221,6 @@ class PanelService:
     def snapshot(self):
         return {"busy": False, "locked": False}
 
-    def panel_info(self):
-        return {
-            "objective_ids": [1, 3],
-            "calibration_available": True,
-            "calibration_error": None,
-            "home_switch": False,
-        }
-
     def read_frame(self, camera, **kwargs):
         self.calls.append((camera, kwargs))
         if isinstance(self.frame, BaseException):
@@ -338,29 +232,18 @@ class PanelService:
         return "confirmed"
 
 
-def test_public_shell_and_fixed_assets_contain_no_service_data_or_token():
+def test_removed_panel_routes_are_not_served():
     service = PanelService()
-    app = create_app(service, token="secret-token-for-tests-only", base_path="/scope")
-    client = app.test_client()
+    client = create_app(service, base_path="/scope").test_client()
     for path in ("/scope/", "/scope/static/app.js", "/scope/static/styles.css"):
-        response = client.get(path)
-        assert response.status_code == 200
-        assert b"secret-token-for-tests-only" not in response.data
-        assert response.headers["Cache-Control"] == "no-store"
-        assert "object-src 'none'" in response.headers["Content-Security-Policy"]
+        assert client.get(path).status_code == 404
+    assert client.get("/scope/api/panel-info").status_code == 404
     assert service.calls == []
-    assert b"/scope/static/app.js" in client.get("/scope/").data
-    assert client.get("/scope/static/../service.py").status_code == 401
-    assert client.get("/scope/api/panel-info").status_code == 401
-    assert (
-        client.get("/scope/api/camera/side/mjpeg?token=secret-token-for-tests-only").status_code
-        == 401
-    )
 
 
 @pytest.mark.parametrize(
     "path",
-    ["/", "/static/app.js", "/static/styles.css", "/api/panel-info", "/api/camera/side/frame.jpg"],
+    ["/api/state", "/api/camera/side/frame.jpg"],
 )
 @pytest.mark.parametrize(
     "headers",
@@ -378,9 +261,7 @@ def test_shell_and_data_retain_host_origin_checks_without_token(path, headers):
     assert service.calls == []
 
 
-@pytest.mark.parametrize(
-    "route", ["panel-info", "state", "events", "camera/side/frame.jpg", "camera/side/mjpeg"]
-)
+@pytest.mark.parametrize("route", ["state", "events", "camera/side/frame.jpg", "camera/side/mjpeg"])
 def test_data_routes_require_header_token_and_allow_authorized_head(route):
     service = PanelService()
     client = create_app(service, token="t" * 24).test_client()
@@ -484,23 +365,17 @@ def test_stream_disconnect_releases_slot_after_generator_started():
         response.close()
 
 
-def test_actual_demo_panel_zero_handoff_and_ordinary_controls(demo_rig):
+def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_rig):
     rig = demo_rig()
+    assert service_post(rig, "manual/set_focus_zero", {"confirm": True}).status_code == 409
     assert service_post(rig, "heartbeat").status_code == 200
-    assert service_post(rig, "manual/heartbeat").status_code == 409
-    assert service_post(rig, "release").status_code == 200
-    assert rig.service._stop_done.wait(1)
-    assert service_post(rig, "manual/heartbeat").status_code == 200
     assert service_post(rig, "manual/set_focus_zero", {"confirm": False}).status_code == 400
+    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code in (400, 403)
     zero = service_post(rig, "manual/set_focus_zero", {"confirm": True})
     assert zero.status_code == 202
-    assert service_post(rig, "manual/renew").status_code == 200
+    assert service_post(rig, "renew").status_code == 200
     state = wait_command(rig, zero.json["command_id"])
     assert state["last_command"]["result"] == "ok" and state["focus_zero_known"]
-    assert service_post(rig, "manual/release").status_code == 200
-    assert service_post(rig, "heartbeat").status_code == 200
-    assert service_post(rig, "renew").status_code == 200
-    assert rig.service.snapshot()["manual_client"] is None
     for action, args in [
         ("focus_move", {"steps": 10}),
         ("autofocus", {"mode": "local"}),
@@ -510,7 +385,6 @@ def test_actual_demo_panel_zero_handoff_and_ordinary_controls(demo_rig):
         assert response.status_code == 202, response.json
         state = wait_command(rig, response.json["command_id"])
         assert state["last_command"]["result"] == "ok", state
-    assert rig.client.get("/api/panel-info").json["objective_ids"] == [0, 1, 2, 3]
     for camera in ("microscope", "side"):
         assert rig.client.get(f"/api/camera/{camera}/frame.jpg").status_code == 200
     stop = service_post(rig, "stop", {"wait_s": 1}, actor="other-operator")
@@ -518,15 +392,16 @@ def test_actual_demo_panel_zero_handoff_and_ordinary_controls(demo_rig):
     assert not rig.service.snapshot()["focus_zero_known"]
 
 
-def test_panel_cannot_claim_manual_control_from_automation(demo_rig):
+def test_operator_zero_refuses_a_client_without_the_lease(demo_rig):
     rig = demo_rig()
     assert service_post(rig, "heartbeat", actor="automation").status_code == 200
-    for actor in ("operator", "automation"):
-        assert service_post(rig, "manual/heartbeat", actor=actor).status_code == 409
-        assert (
-            service_post(rig, "manual/set_focus_zero", {"confirm": True}, actor=actor).status_code
-            == 409
-        )
+    assert service_post(rig, "manual/heartbeat", actor="operator").status_code == 409
+    assert (
+        service_post(rig, "manual/set_focus_zero", {"confirm": True}, actor="operator").status_code
+        == 409
+    )
+    response = service_post(rig, "command", {"action": "set_focus_zero"}, actor="automation")
+    assert response.status_code in (400, 403)
     assert rig.service.snapshot()["manual_client"] is None
     assert not any(command == "FOCUS ZERO" for command in rig.port.commands)
 

@@ -317,40 +317,26 @@ def test_camera_transport_refuses_bad_response(failure):
     assert response.closed
 
 
-def test_preview_and_zero_http_routes_keep_token_json_and_lease_checks(stage_rig):
-    import re
-
+def test_preview_route_and_contract_zero_keep_token_and_lease_checks(stage_rig):
     controller, transport, _ = stage_rig
     reference(controller)
-    app = create_app(controller, token="x" * 24)
-    client = app.test_client()
-    page = client.get("/").text
-    control = re.search(r'name="control-token" content="([^"]+)"', page)[1]
-    headers = {"Authorization": "Bearer " + "x" * 24, "X-Control-Token": control}
-    assert client.get("/api/motors/insert/reference").status_code == 401
-    assert (
-        client.post(
-            "/api/motors/insert/zero",
-            json={"confirm": True},
-            headers={"Authorization": headers["Authorization"]},
-        ).status_code
-        == 403
-    )
-    assert (
-        client.post("/api/motors/insert/zero", json={"confirm": 1}, headers=headers).status_code
-        == 400
-    )
+    client = create_app(controller, token="x" * 24).test_client()
+    access = {"Authorization": "Bearer " + "x" * 24}
+    holder = {**access, "X-MG400-Client": "runner"}
+    other = {**access, "X-MG400-Client": "operator"}
+    preview = "/contract/api/motors/insert/reference"
+    assert client.get(preview).status_code == 401
+
+    def zero(confirm, headers):
+        body = {"action": "zero", "motor": "insert", "confirm": confirm}
+        return client.post("/contract/api/command", json=body, headers=headers)
+
+    assert zero(True, access).status_code == 400
     controller.lease.acquire("runner")
-    assert (
-        client.post("/api/motors/insert/zero", json={"confirm": True}, headers=headers).status_code
-        == 409
-    )
+    assert zero(1, holder).status_code == 400
+    assert zero(True, other).status_code == 409
     assert not transport.commands
-    assert (
-        client.get("/api/motors/insert/reference", headers=headers)
-        .json["image"]
-        .startswith("data:image/jpeg;base64,")
-    )
+    assert client.get(preview, headers=access).json["image"].startswith("data:image/jpeg;base64,")
 
 
 def test_initial_link_loss_invalidates_reference_and_connection(stage_rig, monkeypatch):
@@ -424,27 +410,30 @@ def test_reference_teaching_is_operator_only_not_a_contract_command(stage_rig, t
     assert not transport.commands
 
 
-def test_operator_teaching_route_retains_page_auth_and_no_automation_ownership(stage_rig, tmp_path):
-    import re
-
+def test_operator_teaching_route_needs_the_token_and_the_lease_holder(stage_rig, tmp_path):
     controller, transport, _ = stage_rig
     reference(controller, pixel=(10, 10))
     controller._config_path = config_file(tmp_path, controller._geometry)
+    before = controller._config_path.read_bytes()
     client = create_app(controller, token="x" * 24).test_client()
-    control = re.search(r'name="control-token" content="([^"]+)"', client.get("/").text)[1]
-    headers = {"Authorization": "Bearer " + "x" * 24, "X-Control-Token": control}
-    endpoint = "/api/motors/insert/teach_reference"
-    assert client.post(endpoint, json={"confirm": True}).status_code == 401
-    assert (
-        client.post(
-            endpoint, json={"confirm": True}, headers={"Authorization": headers["Authorization"]}
-        ).status_code
-        == 403
-    )
+    access = {"Authorization": "Bearer " + "x" * 24}
+    operator = {**access, "X-MG400-Client": "stage-operator"}
+    endpoint = "/contract/api/motors/insert/teach_reference"
+    confirm = {"confirm": True}
+    assert client.post(endpoint, json=confirm, headers={"X-MG400-Client": "x"}).status_code == 401
+    assert client.post(endpoint, json=confirm, headers=access).status_code == 400
+    # Nobody holds the lease: a client that does not hold it is refused.
+    assert client.post(endpoint, json=confirm, headers=operator).status_code == 409
     controller.lease.acquire("automation")
-    assert client.post(endpoint, json={"confirm": True}, headers=headers).status_code == 409
+    assert client.post(endpoint, json=confirm, headers=operator).status_code == 409
+    assert controller._config_path.read_bytes() == before
     controller.lease.release("automation")
-    assert client.post(endpoint, json={"confirm": True}, headers=headers).status_code == 200
+    controller.lease.acquire("stage-operator")
+    assert client.post(endpoint, json={"confirm": 1}, headers=operator).status_code == 400
+    assert controller._config_path.read_bytes() == before
+    response = client.post(endpoint, json=confirm, headers=operator)
+    assert response.status_code == 200
+    assert response.json["lease"]["holder"] == "stage-operator"
     assert controller._geometry.motors["insert"].reference["pixel"] == pytest.approx(
         [99.5, 99.5], abs=1
     )

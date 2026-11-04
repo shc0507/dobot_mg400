@@ -86,14 +86,14 @@ def test_fixed_defaults_come_from_the_units():
     assert orchestrator["Environment"] == [
         "MG400_ORCH_BASE_PATH=/lab/",
         *(
-            f"MG400_ORCH_{name}_URL=http://127.0.0.1:{port}/"
-            for name, port in (
-                ("ROBOT", 8766),
-                ("STAGE", 8767),
-                ("THERMAL", 8768),
-                ("FURNACE", 8769),
-                ("MICROSCOPE", 8770),
-                ("VISION", 8771),
+            f"MG400_ORCH_{name}_URL=http://127.0.0.1:{port}/{path}"
+            for name, port, path in (
+                ("ROBOT", 8766, ""),
+                ("STAGE", 8767, "contract/"),
+                ("THERMAL", 8768, ""),
+                ("FURNACE", 8769, ""),
+                ("MICROSCOPE", 8770, ""),
+                ("VISION", 8771, ""),
             )
         ),
     ]

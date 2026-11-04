@@ -23,7 +23,7 @@ SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
 # Fixed loopback addresses of the lab services. A nonempty setting overrides one.
 SERVICE_URLS = {
     "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
-    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/",
+    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
     "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
     "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
     "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",

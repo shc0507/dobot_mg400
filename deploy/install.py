@@ -272,7 +272,7 @@ def parse_settings(text):
 FIXED_SETTINGS = {
     "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
     "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
-    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/",
+    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
     "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
     "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
     "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",

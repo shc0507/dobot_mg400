@@ -168,6 +168,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 | `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | 从已有相机所有者读取的已认证 MJPEG 视图。 |
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | 单张 JPEG，没有更新的帧时返回 `204`。 |
 
+侧视读取线程只在 `select_objective` 运行期间工作。其他时间，侧视路由返回 `503`。
 预览请求接受可选的非负 `after_id` 游标。
 每张 JPEG 带 `X-Frame-Id` 和 `X-Captured-At` 响应头。主相机时间戳使用主机墙上时间，侧视相机使用单调接收时间。
 不得跨相机比较时间戳，也不得将其作为传感器曝光时间。
@@ -284,7 +285,8 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 当前视频流顺序使用 `MG400_MICROSCOPE_SIDE_STREAM=camera3`。
 执行 `H-21` 前，把此相机放回转盘上的原位置。
 服务与预览通过 go2rtc 采集该 V4L2 设备。
-服务运行期间，`USBCamera` 保持 1 个到 `http://127.0.0.1:1984/api/stream.mjpeg` 的连接，因此侧视流持续运行。
+`select_objective` 运行期间，`USBCamera` 保持 1 个到 `http://127.0.0.1:1984/api/stream.mjpeg` 的连接。
+侧视流按需启动，只在此命令运行期间或相机视图显示侧视流时运行。
 它使用最新的完整 JPEG 图像，丢弃不完整的帧，连接失败后重新连接。
 它拒绝重定向，忽略环境代理配置。
 相机必须保留在固定端口，不得复位共用 USB 集线器。
@@ -302,7 +304,8 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 显微镜服务要求侧视流的已配置模式，拒绝尺寸不同的帧。未配置相机时，要求 `3840x2160`。
 修改采集尺寸时，必须使用匹配的参考图像。`H-21` 在已配置模式下检查物镜切换。
 侧视参考图像为 `3840x2160`。把侧视流设为 `3840x2160@30`。AC410 只以 30 fps 提供 `3840x2160`。
-侧视读取线程停止后，`GET /api/state` 中的 `cameras.side` 为 `false`。
+侧视流以 `3840x2160` 运行时，共享 USB 2 链路截断 `camera2` 的图像帧。
+只有侧视读取线程正常运行时，`GET /api/state` 中的 `cameras.side` 才为 `true`。
 实验室使用前，必须通过受监督的 `H-21` 检查，验证 USB 2 带宽和显微镜操作。
 
 `USBCamera.get_frame_packet()` 返回帧 ID、单调接收时间和图像。

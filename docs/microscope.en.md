@@ -168,6 +168,7 @@ The console has no focus homing action, because the lab microscope has no home s
 | `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | Authenticated MJPEG views from the existing camera owners. |
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG, or `204` when no newer frame is available. |
 
+The side reader runs only during `select_objective`. At other times, the side routes return `503`.
 Preview requests accept an optional nonnegative `after_id` cursor.
 Each JPEG carries `X-Frame-Id` and `X-Captured-At` headers. Main-camera timestamps use host wall time, while side-camera timestamps use monotonic receive time.
 Do not compare timestamps across cameras or treat them as sensor exposure times.
@@ -284,7 +285,8 @@ The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches t
 Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
 Before `H-21`, restore this camera to its earlier position on the turret.
 For the service and preview, go2rtc owns its V4L2 capture.
-`USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open while the service runs. Thus the side stream runs continuously.
+During `select_objective`, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.
+The side stream starts on demand. It runs only during this command, or while a camera view shows the side stream.
 It uses the newest complete JPEG, drops incomplete frames, and reconnects after a connection failure.
 It rejects redirects and ignores environment proxy settings.
 Keep the cameras on their fixed ports and never reset the shared USB hub.
@@ -302,7 +304,8 @@ Other camera streams retain `640x480@30`. Large streams start on demand.
 The microscope service expects the side stream's configured mode and rejects frames with a different size. Without camera settings, it expects `3840x2160`.
 Changing capture dimensions also requires compatible reference images. `H-21` checks objective switching at the configured mode.
 The side reference images are `3840x2160`. Set the side stream to `3840x2160@30`. The AC410 gives `3840x2160` only at 30 fps.
-If the side reader stops, `cameras.side` in `GET /api/state` is `false`.
+While the side stream runs at `3840x2160`, the shared USB 2 link truncates `camera2` frames.
+`cameras.side` in `GET /api/state` is `true` only while the side reader runs without an error.
 The supervised `H-21` checks must cover USB 2 bandwidth and microscope operation before lab use.
 
 `USBCamera.get_frame_packet()` returns a frame ID, a monotonic receive time, and an image.

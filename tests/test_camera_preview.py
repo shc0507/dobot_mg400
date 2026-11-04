@@ -233,10 +233,11 @@ def test_mjpeg_parser_rejects_content_length_mismatch(preview, length):
 
 @pytest.mark.parametrize("frame", [b"not-jpeg", b"\xff\xd8no-end", b"no-start\xff\xd9"])
 @pytest.mark.parametrize("lengths", [False, True])
-def test_mjpeg_parser_rejects_missing_jpeg_markers(preview, frame, lengths):
+def test_mjpeg_parser_drops_parts_without_jpeg_markers(preview, frame, lengths):
     module, _ = preview
-    with pytest.raises(ValueError):
-        next(module.iter_mjpeg(ChunkedUpstream(multipart([frame], lengths))))
+    good = b"\xff\xd8ok\xff\xd9"
+    upstream = ChunkedUpstream(multipart([frame, good], lengths))
+    assert list(module.iter_mjpeg(upstream)) == [good]
 
 
 @pytest.mark.parametrize("lengths", [False, True])

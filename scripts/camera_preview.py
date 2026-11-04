@@ -76,17 +76,17 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True):
             frame = bytes(buffer[body_start:next_part])
             if (
                 headers.get_content_type() != "image/jpeg"
-                or not 4 <= len(frame) <= MAX_FRAME
-                or not frame.startswith(b"\xff\xd8")
-                or not frame.endswith(b"\xff\xd9")
+                or len(frame) > MAX_FRAME
                 or (
                     headers.get("Content-Length") is not None
                     and int(headers["Content-Length"]) != len(frame)
                 )
             ):
-                raise ValueError("Invalid or incomplete JPEG frame")
+                raise ValueError("Invalid MJPEG part")
             del buffer[: next_part + 2]
-            yield frame
+            # A demand-started stream can send a truncated first frame. Drop it.
+            if len(frame) >= 4 and frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
+                yield frame
 
 
 class CameraFeed:

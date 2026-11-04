@@ -1206,7 +1206,6 @@ class MicroscopeService:
                 self._motor.set_microstep(4)
                 self._status = self._motor.read_status()
                 self._camera.open()
-                self._side.open()
                 with self._lock:
                     if self._closed or self._quit.is_set():
                         raise RuntimeError("Microscope startup was cancelled")
@@ -1567,7 +1566,7 @@ class MicroscopeService:
     def _identify(self, job, locator):
         """Return the visible objective ID, or refuse before any motion."""
         try:
-            packet = self._side.get_frame_packet(timeout=2.0)
+            packet = self._side.get_frame_packet(timeout=5.0)
         except RuntimeError as error:
             cause = error.__cause__ or error
             raise _Unidentified(f"Side camera is unavailable: {cause}") from error
@@ -1588,7 +1587,19 @@ class MicroscopeService:
         return select_objective(measurement["markers"])["id"]
 
     def _select(self, job, motor):
+        # The side stream runs only during a switch. At 3840x2160 it truncates
+        # the frames of other cameras on the shared USB 2 link.
         locator = self._locator()
+        try:
+            self._side.open()
+        except RuntimeError as error:
+            raise _Unidentified(f"Side camera is unavailable: {error}") from error
+        try:
+            return self._switch(job, motor, locator)
+        finally:
+            self._side.close()
+
+    def _switch(self, job, motor, locator):
         current = self._identify(job, locator)
         target = job.args["id"]
         completed = []

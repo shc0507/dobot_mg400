@@ -348,7 +348,9 @@ MG400_MICROSCOPE_SIDE_STREAM=camera3
 
 Only streams with width at most 640 and height at most 480 are preloaded.
 Larger streams start when a video stream, microscope, or still consumer requests them.
-While the microscope service runs, it keeps 1 connection to its side stream open. Thus that stream runs continuously.
+The microscope service opens its side stream only during `select_objective`. A camera view of `camera3` also starts it.
+While `camera3` runs at `3840x2160@30`, the shared USB 2 link truncates `camera2` frames.
+A demand-started stream can send a truncated first frame. The preview relay and the microscope reader drop incomplete frames.
 After the last viewer leaves a large stream, the preview service releases its upstream reader between body reads.
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.

@@ -740,41 +740,56 @@ def stopped_reader(**_kwargs):
         raise RuntimeError("USB camera acquisition stopped") from error
 
 
+def busy_reader():
+    raise RuntimeError("Previous side-camera reader is still stopping")
+
+
 @pytest.mark.parametrize(
-    ("read", "message"),
+    ("attribute", "replacement", "message"),
     [
         (
+            "get_frame_packet",
             lambda **_: (1, 0.0, side_frame(480, 640)),
             "side frame 640x480 does not match the 200x200 references",
         ),
-        (lambda **_: (1, 0.0, side_frame(200, 200) * 0), "Objective identification failed: black"),
-        (lambda **_: None, "No fresh side-camera frame"),
-        (stopped_reader, "Side camera is unavailable: Side-camera frame size differs"),
+        (
+            "get_frame_packet",
+            lambda **_: (1, 0.0, side_frame(200, 200) * 0),
+            "Objective identification failed: black",
+        ),
+        ("get_frame_packet", lambda **_: None, "No fresh side-camera frame"),
+        ("get_frame_packet", stopped_reader, "unavailable: Side-camera frame size differs"),
+        ("open", busy_reader, "unavailable: Previous side-camera reader is still stopping"),
     ],
-    ids=["size-mismatch", "black-frame", "no-frame", "stopped-reader"],
+    ids=["size-mismatch", "black-frame", "no-frame", "stopped-reader", "busy-reader"],
 )
-def test_unidentified_objective_refuses_before_motion_without_fault(demo_rig, read, message):
+def test_unidentified_objective_refuses_before_motion_without_fault(
+    demo_rig, monkeypatch, attribute, replacement, message
+):
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
-    side_read = rig.service._side.get_frame_packet
-    rig.service._side.get_frame_packet = read
     before = len(rig.port.commands)
-    state = dispatch(rig, "select_objective", id=2)
+    with monkeypatch.context() as patch:
+        patch.setattr(rig.service._side, attribute, replacement)
+        state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "failed"
     assert message in state["last_command"]["message"]
     assert not state["locked"] and state["fault"] is None and state["focus_zero_known"]
     assert not [line for line in rig.port.commands[before:] if " MOVE " in line]
-    rig.service._side.get_frame_packet = side_read
+    assert not rig.service._side.is_open
     state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "ok" and state["objective_id"] == 2
+    assert not rig.service._side.is_open and not state["cameras"]["side"]
 
 
-def test_state_reports_a_stopped_side_reader(demo_rig):
+def test_state_reports_the_side_reader_only_while_it_runs(demo_rig):
     rig = demo_rig()
-    assert rig.service.snapshot()["cameras"] == {"microscope": True, "side": True}
-    rig.service._side.last_error = RuntimeError("Side-camera frame size differs")
     assert rig.service.snapshot()["cameras"] == {"microscope": True, "side": False}
+    rig.service._side.open()
+    assert rig.service.snapshot()["cameras"]["side"] is True
+    rig.service._side.last_error = RuntimeError("Side-camera frame size differs")
+    assert rig.service.snapshot()["cameras"]["side"] is False
 
 
 def test_real_start_with_missing_measurements_never_opens_devices(monkeypatch):

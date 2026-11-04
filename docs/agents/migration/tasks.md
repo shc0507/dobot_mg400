@@ -1479,6 +1479,7 @@ Steps:
    - The console takes a service lease only when the operator presses Take control for that device, and never takes it over from another holder.
    - It renews the lease while the browser's heartbeat reaches the console at least every second. It releases the lease when the heartbeat stops for 3 s or the page closes.
    - Stop needs no control and never waits for a lease. An unknown outcome is shown and never retried.
+   - Owned demos use a console client profile in `src/orchestrator/rehearsal.py` for events and manual commands. Keep clients bound to the owned resource lifetime and preserve operation/close fences. Console clients have no autonomous lease renewal. Keep the default runner adapters unchanged, and do not extract private service endpoints. Cover these rules in `tests/test_console.py` with in-process fakes and no new bound ports.
 4. Overview workspace:
    - Readiness before a run: 1 row per item, with Ready, To do or Blocked, a short reason and a link to the workspace that fixes it. Items: the tool offset file, the camera calibration models (vision `calibrated_cameras`), the stage zero and soft limits, the microscope focus zero, the gas map, and the over-temperature cutoff. The cutoff has no machine-readable state: a host setting `MG400_DASH_CUTOFF_CONFIRMED`, which the owner sets after H-11, and Blocked while it is unset.
    - The current run with its steps, Hold and Abort, and the agent proposals (DSH-01).

@@ -172,7 +172,14 @@ class MotorController(StageReference, StageAutomation, StageContract):
         self._fail_motion_commands(self._error)
         self._event(self._error, "error")
 
-    def connect(self, port):
+    def connect(self, port, *, client=None):
+        """Open a listed port. With a client, that client must hold the stage lease."""
+        if client is None:
+            return self._connect(port)
+        with self.lease.control(client):
+            return self._connect(port)
+
+    def _connect(self, port):
         with self._lock:
             if self._contract_stopping:
                 raise ControllerError(

@@ -1,20 +1,23 @@
-"""Small HTTP API; motor and serial behavior live outside the web framework."""
+"""Stage contract plus the Lab Console operator routes.
+
+Motor and serial behavior live outside the web framework. The operator routes
+share the contract prefix ``<base>/contract/api/``, so one client URL reaches
+both. Operator routes that change the stage need the bearer token, JSON,
+``X-MG400-Client`` and the caller's current stage lease.
+"""
 
 import re
-import secrets
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from labkit.auth import bearer_matches, host_allowed
 from labkit.errors import ServiceError
 from labkit.flask import contract_blueprint
+from labkit.lease import validate_client
 
 from .controller import MotorController
 from .protocol import ControllerError, LinkError
-
-# The page is served without the access token: it shows layout only, never ports or events.
-PAGE_STATE = ("demo", "baud_rate", "microstep_modes", "defaults", "limits")
 
 
 def normalize_base_path(value):
@@ -36,51 +39,34 @@ def normalize_base_path(value):
 def create_app(
     controller: MotorController | None = None, token: str | None = None, *, base_path="/"
 ):
-    prefix = normalize_base_path(base_path).rstrip("/")
-    app = Flask(__name__, static_url_path=prefix + "/static")
+    prefix = normalize_base_path(base_path).rstrip("/") + "/contract"
+    app = Flask(__name__, static_folder=None)
     # Host names are checked below: with an access token, any host name is accepted.
     app.config.update(MAX_CONTENT_LENGTH=4096)
     controller = controller or MotorController()
     app.extensions["motor_controller"] = controller
     app.register_blueprint(
-        contract_blueprint(
-            controller, token=token, base_path=prefix + "/contract", lease=controller.lease
-        )
+        contract_blueprint(controller, token=token, base_path=prefix, lease=controller.lease)
     )
-    control_token = secrets.token_urlsafe(32)
 
     @app.before_request
     def protect_local_control():
-        # The contract enforces its own client/JSON/access checks. Legacy requests
-        # still require the page's control token, even when they send a client ID.
+        # The contract enforces its own client/JSON/access checks.
         if request.blueprint == "labkit_contract":
             return
         if not host_allowed(request.headers, token):
-            return jsonify(error="Open the panel at 127.0.0.1 or localhost"), 403
-        if (
-            token
-            and request.path.startswith(prefix + "/api/")
-            and not bearer_matches(request.headers.get("Authorization", ""), token)
-        ):
-            return jsonify(error="Enter the panel access token"), 401
+            return jsonify(error="Use a loopback Host without forwarded headers."), 403
+        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
+            return jsonify(error="Invalid service access token."), 401
         if request.method != "GET":
-            if not secrets.compare_digest(
-                request.headers.get("X-Control-Token", "").encode("latin-1", "replace"),
-                control_token.encode(),
-            ):
-                return jsonify(error="Reload this page before sending another command."), 403
             if not request.is_json:
                 return jsonify(error="Expected a JSON request."), 415
+            validate_client(request.headers.get("X-MG400-Client"))
 
     @app.after_request
     def response_headers(response):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
-            "base-uri 'none'; form-action 'self'"
-        )
         return response
 
     @app.errorhandler(ControllerError)
@@ -105,103 +91,34 @@ def create_app(
             raise ValueError("Expected a JSON object.")
         return value
 
+    def client():
+        return request.headers["X-MG400-Client"]
+
     def state_response(state):
         # Controller operations have released their device lock before this reads the lease.
         return jsonify({**state, "lease": controller.lease.snapshot()})
-
-    @app.get(prefix + "/")
-    def index():
-        state = controller.snapshot()
-        page = {key: state[key] for key in PAGE_STATE}
-        page["motors"] = [{"id": motor["id"]} for motor in state["motors"]]
-        return render_template("index.html", token=control_token, state=page, base_path=prefix)
 
     @app.get(prefix + "/api/ports")
     def ports():
         return jsonify(ports=controller.ports())
 
-    @app.get(prefix + "/api/state")
-    def state():
-        return jsonify(controller.panel_snapshot())
-
     @app.post(prefix + "/api/connect")
     def connect():
-        port = body().get("port")
-        if not isinstance(port, str) or not port:
-            raise ValueError("Select a serial port.")
-        return state_response(controller.connect(port))
-
-    @app.post(prefix + "/api/disconnect")
-    def disconnect():
-        return state_response(controller.disconnect())
-
-    @app.post(prefix + "/api/motors/<motor>/move")
-    def move(motor):
         data = body()
-        return state_response(
-            controller.manual(
-                "move", motor, data.get("direction"), data.get("speed"), data.get("steps")
-            )
-        )
-
-    @app.post(prefix + "/api/microstep")
-    def microstep():
-        return state_response(controller.manual("set_microstep", body().get("microstep")))
-
-    @app.post(prefix + "/api/motors/<motor>/home")
-    def home(motor):
-        body()
-        return state_response(controller.manual("home", motor))
-
-    @app.post(prefix + "/api/motors/<motor>/zero")
-    def zero(motor):
-        return state_response(controller.manual("zero", motor, body().get("confirm")))
-
-    @app.post(prefix + "/api/motors/<motor>/teach_reference")
-    def teach_reference(motor):
-        return state_response(controller.manual("teach_reference", motor, body().get("confirm")))
+        port = data.get("port")
+        if set(data) != {"port"} or not isinstance(port, str) or not port:
+            raise ValueError("Select a serial port.")
+        return state_response(controller.connect(port, client=client()))
 
     @app.get(prefix + "/api/motors/<motor>/reference")
     def reference(motor):
         return jsonify(controller.preview_reference(motor))
 
-    @app.post(prefix + "/api/motors/<motor>/awake")
-    def awake(motor):
-        return state_response(controller.manual("awake", motor, body().get("seconds")))
-
-    @app.post(prefix + "/api/motors/<motor>/goto")
-    def goto(motor):
-        return state_response(controller.manual("goto", motor, body().get("name")))
-
-    @app.post(prefix + "/api/poses/<name>")
-    def pose(name):
-        body()
-        return state_response(controller.manual("pose", name))
-
-    @app.post(prefix + "/api/stop")
-    def stop():
-        return state_response(controller.stop_all())
-
-    @app.post(prefix + "/api/motors/<motor>/hold")
-    def hold(motor):
+    @app.post(prefix + "/api/motors/<motor>/teach_reference")
+    def teach_reference(motor):
         data = body()
-        return state_response(
-            controller.manual(
-                "hold",
-                motor,
-                data.get("direction"),
-                data.get("speed"),
-                data.get("hold_id"),
-                data.get("sampled_at"),
-            )
-        )
-
-    @app.post(prefix + "/api/motors/<motor>/hold/keepalive")
-    def keep_hold_alive(motor):
-        return state_response(controller.manual("keep_hold_alive", motor, body().get("hold_id")))
-
-    @app.post(prefix + "/api/motors/<motor>/hold/stop")
-    def release_hold(motor):
-        return state_response(controller.release_hold(motor, body().get("hold_id")))
+        if set(data) != {"confirm"}:
+            raise ValueError("Send confirm only.")
+        return state_response(controller.teach_reference(motor, data["confirm"], client=client()))
 
     return app

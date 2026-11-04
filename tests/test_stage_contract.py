@@ -1,6 +1,5 @@
-"""Stage contract and manual/automation boundaries, with no device or socket access."""
+"""Stage contract and operator-route boundaries, with no device or socket access."""
 
-import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,10 +22,7 @@ def contract(stage_rig):
     transport.commands.clear()
     app = create_app(controller)
     app.config["TESTING"] = True
-    web = app.test_client()
-    page = web.get("/").text
-    token = re.search(r'name="control-token" content="([^"]+)"', page)[1]
-    return controller, transport, clock, web, {"X-Control-Token": token}
+    return controller, transport, clock, app.test_client(), dict(CLIENT)
 
 
 def post(web, route, body=None, client=CLIENT):
@@ -55,15 +51,6 @@ def test_stage_contract_conformance(contract):
     assert controller.describe()["on_lease_expiry"] == "stop_all"
 
 
-def test_contract_access_does_not_bypass_legacy_page_token(contract):
-    _, _, _, web, page_headers = contract
-    assert post(web, "heartbeat").status_code == 200
-    assert web.post("/api/stop", json={}, headers=CLIENT).status_code == 403
-    assert web.post("/contract/api/stop", json={}, headers=page_headers).status_code == 400
-    assert web.post("/api/stop", json={}, headers=page_headers).status_code == 200
-    assert post(web, "stop", client={"X-MG400-Client": "other"}).status_code == 200
-
-
 def test_contract_uses_the_existing_access_token_and_origin_rules(stage_rig):
     controller, _, _ = stage_rig
     token = "stage-contract-access-token-0123456789"
@@ -83,38 +70,14 @@ def test_contract_uses_the_existing_access_token_and_origin_rules(stage_rig):
     )
 
 
-@pytest.mark.parametrize(
-    "route,data",
-    [
-        ("/motors/bottom/move", dict(direction="cw", speed=10, steps=100)),
-        (
-            "/motors/bottom/hold",
-            dict(direction="cw", speed=10, hold_id=HOLD_ID, sampled_at=100),
-        ),
-        ("/motors/bottom/hold/keepalive", dict(hold_id=HOLD_ID)),
-        ("/microstep", dict(microstep=2)),
-    ],
-)
-def test_automation_excludes_existing_motion_routes(contract, route, data):
-    controller, transport, _, web, headers = contract
-    acquire(web)
-    before = list(transport.commands)
-    response = web.post("/api" + route, json=data, headers=headers)
-    assert response.status_code == 409
-    assert response.json == {"error": "Stage is controlled by automation"}
-    assert transport.commands == before
-    assert web.get("/api/state").json["lease"]["holder"] == "automation-a"
-    assert controller.lease.holder == "automation-a"
-
-
-def test_manual_stop_and_hold_release_remain_available_during_automation(contract):
-    controller, transport, clock, web, headers = contract
+def test_any_client_can_stop_a_hold_during_automation(contract):
+    controller, transport, clock, web, _ = contract
     controller.hold("bottom", "cw", 10, HOLD_ID, clock())
     acquire(web)
-    response = web.post("/api/motors/bottom/hold/stop", json={"hold_id": HOLD_ID}, headers=headers)
+    response = post(web, "stop", client={"X-MG400-Client": "other"})
     assert response.status_code == 200
-    assert response.json["motors"][0]["mode"] == "idle"
-    assert web.post("/api/stop", json={}, headers=headers).status_code == 200
+    assert response.json["stop"] == "confirmed"
+    assert controller.snapshot()["motors"][0]["mode"] == "idle"
     assert transport.commands[-1] == "stop all"
     assert controller.lease.holder == "automation-a"
 
@@ -272,44 +235,11 @@ def test_unconfirmed_stop_keeps_a_fault_until_manual_reconnect(contract, monkeyp
     DemoTransport.command(transport, "stop all")  # Simulate the operator's physical stop.
     controller.poll()
     assert controller.snapshot()["locked"] is True
-    assert web.post("/api/disconnect", json={}, headers=headers).status_code == 200
-    assert web.post("/api/connect", json={"port": "DEMO"}, headers=headers).status_code == 200
+    controller.disconnect()
+    assert (
+        web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers).status_code == 200
+    )
     assert controller.snapshot()["locked"] is False
-
-
-def test_manual_serial_transaction_finishes_before_lease_acquisition(stage_rig, monkeypatch):
-    controller, transport, _ = stage_rig
-    entered = threading.Event()
-    continue_move = threading.Event()
-    taking_lease = threading.Event()
-    original = transport.command
-
-    def block_last_command(command):
-        if command.startswith("steps"):
-            entered.set()
-            assert continue_move.wait(2)
-        return original(command)
-
-    def acquire_lease():
-        taking_lease.set()
-        return controller.lease.acquire("automation-a")
-
-    monkeypatch.setattr(transport, "command", block_last_command)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        manual = pool.submit(controller.manual, "move", "bottom", "cw", 1, 100)
-        try:
-            assert entered.wait(1)
-            acquiring = pool.submit(acquire_lease)
-            assert taking_lease.wait(1)
-            assert not acquiring.done()
-        finally:
-            continue_move.set()
-        manual.result(timeout=2)
-        acquiring.result(timeout=2)
-    assert transport.commands == ["motor bottom", "dir cw", "speed 1", "steps 100"]
-    with pytest.raises(ControllerError, match="controlled by automation"):
-        controller.manual("move", "top", "cw", 1, 100)
-    assert len(transport.commands) == 4
 
 
 def test_expiry_never_holds_device_lock_while_waiting_and_manual_stop_is_available(
@@ -334,7 +264,9 @@ def test_expiry_never_holds_device_lock_while_waiting_and_manual_stop_is_availab
         try:
             assert expiry_started.wait(1)
             with pytest.raises(ServiceError, match="expiry is still in progress"):
-                controller.manual("move", "top", "cw", 1, 100)
+                controller.command(
+                    "move", dict(motor="top", direction="cw", speed=1, steps=100), "other"
+                )
             stopped = pool.submit(controller.stop, "manual-stop", 0)
             assert stopped.result(timeout=1) == "confirmed"
         finally:
@@ -358,9 +290,12 @@ def test_stop_can_wait_for_idle_feedback_without_blocking_another_stop(contract,
     def wait_for_feedback(seconds):
         waits.append(seconds)
         assert controller.snapshot()["fault"]["code"] == "stop_pending"
+        with pytest.raises(ServiceError, match="Only stop is allowed"):
+            controller.command(
+                "move", dict(motor="top", direction="cw", speed=1, steps=100), "automation-a"
+            )
         with pytest.raises(ControllerError, match="Stop confirmation"):
-            controller.lease.release("automation-a")
-            controller.manual("move", "top", "cw", 1, 100)
+            controller.connect("DEMO", client="automation-a")
         # Another caller can use the device lock while this stop waits for feedback.
         with ThreadPoolExecutor(max_workers=1) as pool:
             response = pool.submit(controller.stop, "other", 0).result(timeout=1)
@@ -404,14 +339,16 @@ def test_reconnect_cannot_clear_unknown_outcome_while_a_motor_reports_motion(con
 
     monkeypatch.setattr(transport, "status", lose_status_once)
     monkeypatch.setattr(transport, "command", lose_stop)
+    acquire(web)
     controller.poll()
-    response = web.post("/api/connect", json={"port": "DEMO"}, headers=headers)
+    response = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
     assert response.status_code == 200
     assert response.json["connected"] is True
     assert response.json["locked"] is True
     assert response.json["fault"]["code"] == "stop_unconfirmed"
-    with pytest.raises(ControllerError, match="not idle"):
-        controller.manual("move", "top", "cw", 1, 100)
+    assert move(web, motor="top").status_code == 409
+    with pytest.raises(ControllerError, match="Only stop is allowed"):
+        controller.move("top", "cw", 1, 100)
     assert transport.commands.count("steps 100") == 1
 
 
@@ -438,7 +375,7 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     def disconnect_during_wait(_seconds):
         controller.disconnect()
         if replace_connection:
-            response = web.post("/api/connect", json={"port": "DEMO"}, headers=headers)
+            response = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
             assert response.status_code == 409
             assert "Stop confirmation" in response.json["error"]
 
@@ -455,23 +392,22 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     assert replacement_attempts == []
     # Recovery against the same still-moving board keeps the lock after stop returns.
     monkeypatch.setattr(controller, "_factory", lambda _port: transport)
-    recovered = web.post("/api/connect", json={"port": "DEMO"}, headers=headers)
+    recovered = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
     assert recovered.status_code == 200
     assert recovered.json["locked"] is True
     assert move(web, motor="top").status_code == 409
     assert "motor top" not in transport.commands
 
 
-def test_prefixed_contract_keeps_its_access_lease_and_page_guard_boundaries(stage_rig):
+def test_prefixed_contract_keeps_its_access_lease_and_operator_guard_boundaries(stage_rig):
     controller, transport, clock = stage_rig
     home_stage(controller, clock)
     token = "prefixed-stage-access-token-0123456789"
     web = create_app(controller, token, base_path="/lab/stage/").test_client()
     base = "/lab/stage"
     proxy = {"Host": "lab.example:8080", "X-Forwarded-Host": "lab.example:8080"}
-    headers = {**proxy, "Authorization": f"Bearer {token}", **CLIENT}
-    page = web.get(base + "/", headers=proxy).text
-    control = re.search(r'name="control-token" content="([^"]+)"', page)[1]
+    access = {**proxy, "Authorization": f"Bearer {token}"}
+    headers = {**access, **CLIENT}
     assert web.get(base + "/contract/api/state", headers=proxy).status_code == 401
     assert web.get(base + "/contract/api/state", headers=headers).status_code == 200
     for origin in ("http://evil.example:8080", "http://lab.example:9999"):
@@ -486,21 +422,12 @@ def test_prefixed_contract_keeps_its_access_lease_and_page_guard_boundaries(stag
         == 200
     )
     assert web.post(base + "/contract/api/heartbeat", json={}, headers=headers).status_code == 200
-    assert web.post(base + "/api/stop", json={}, headers=headers).status_code == 403
-    assert (
-        web.post(
-            base + "/api/stop", json={}, headers={**headers, "X-Control-Token": control}
-        ).status_code
-        == 200
-    )
-    assert (
-        web.post(
-            base + "/contract/api/stop",
-            json={},
-            headers={**proxy, "Authorization": f"Bearer {token}", "X-Control-Token": control},
-        ).status_code
-        == 400
-    )
+    assert web.post(base + "/contract/api/stop", json={}, headers=access).status_code == 400
+    assert web.get(base + "/contract/api/ports", headers=proxy).status_code == 401
+    assert web.get(base + "/contract/api/ports", headers=access).status_code == 200
+    teach = base + "/contract/api/motors/insert/teach_reference"
+    other = {**access, "X-MG400-Client": "other"}
+    assert web.post(teach, json={"confirm": True}, headers=other).status_code == 409
     assert (
         web.post(
             base + "/contract/api/stop", json={}, headers={**headers, "X-MG400-Client": "other"}
@@ -508,7 +435,7 @@ def test_prefixed_contract_keeps_its_access_lease_and_page_guard_boundaries(stag
         == 200
     )
     tokenless = create_app(controller, base_path=base).test_client()
-    for path in ("/api/state", "/contract/api/state"):
+    for path in ("/contract/api/ports", "/contract/api/state"):
         assert (
             tokenless.get(
                 base + path, headers={"Host": "localhost", "X-Forwarded-Host": "localhost"}

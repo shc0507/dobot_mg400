@@ -83,25 +83,6 @@ class StageContract:
             },
         )
 
-    def panel_snapshot(self):
-        self.lease.poll()
-        lease = self.lease.snapshot()
-        return {**self.snapshot(), "lease": lease}
-
-    def manual(self, operation, *args):
-        """Exclude new manual actuation atomically with lease acquisition."""
-        if operation in ("zero", "teach_reference"):
-            return getattr(self, operation)(*args)
-        with self.lease.control("stage-panel", require_holder=False):
-            if self.lease.snapshot()["holder"] is not None:
-                raise ControllerError("Stage is controlled by automation")
-            with self._lock:
-                if self._contract_fault is not None:
-                    raise ControllerError(self._contract_fault)
-                if self._contract_stopping:
-                    raise ControllerError("Stop confirmation is in progress.")
-                return getattr(self, operation)(*args)
-
     def _contract_state(self):
         self._state_seq += 1
         return {

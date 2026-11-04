@@ -3,7 +3,6 @@
 import copy
 import math
 import os
-import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -447,39 +446,36 @@ def test_config_parent_swap_never_reads_a_replacement_symlink(tmp_path, monkeypa
     assert swapped and geometry.motors["insert"].steps_per_mm == 10
 
 
-def test_new_panel_routes_keep_auth_lease_and_json_guards(stage_rig):
+def test_reference_commands_need_the_lease_holder_and_valid_requests(stage_rig):
     controller, transport, clock = stage_rig
     web = create_app(controller).test_client()
-    token = re.search(r'name="control-token" content="([^"]+)"', web.get("/").text)[1]
-    headers = {"X-Control-Token": token}
-    routes = {
-        "/api/motors/insert/home": {},
-        "/api/motors/insert/awake": {"seconds": 1},
-        "/api/motors/insert/goto": {"name": "furnace"},
-        "/api/poses/furnace": {},
-    }
-    for route, body in routes.items():
-        assert web.post(route, json=body).status_code == 403
-        assert web.post(route, data="{}", headers=headers).status_code == 415
-        assert web.post(route, json=[], headers=headers).status_code == 400
-    controller.lease.acquire("automation")
-    for route, body in routes.items():
-        assert web.post(route, json=body, headers=headers).status_code == 409
+    holder = {"X-MG400-Client": "operator"}
+    other = {"X-MG400-Client": "automation"}
+    commands = [
+        dict(action="home", motor="insert"),
+        dict(action="awake", motor="insert", seconds=1),
+        dict(action="goto", motor="insert", name="furnace"),
+        dict(action="pose", name="furnace"),
+    ]
+
+    def send(body, headers):
+        return web.post("/contract/api/command", json=body, headers=headers)
+
+    for body in commands:
+        assert web.post("/contract/api/command", data="{}", headers=holder).status_code == 415
+        assert send(body, {}).status_code == 400
+        assert send(body, holder).status_code == 409
+    assert web.post("/contract/api/heartbeat", json={}, headers=holder).status_code == 200
+    for body in commands:
+        assert send(body, other).status_code == 409
     assert not transport.commands
-    controller.lease.release("automation")
-    assert web.post("/api/motors/insert/home", json={}, headers=headers).status_code == 200
+    assert send(commands[0], holder).status_code == 202
     clock.advance(0.5)
     controller.poll()
     clock.advance(1)
-    assert (
-        web.post("/api/motors/insert/awake", json={"seconds": 60}, headers=headers).status_code
-        == 200
-    )
-    assert (
-        web.post("/api/motors/insert/goto", json={"name": "furnace"}, headers=headers).status_code
-        == 200
-    )
-    assert web.post("/api/stop", json={}, headers=headers).status_code == 200
+    assert send(dict(action="awake", motor="insert", seconds=60), holder).status_code == 202
+    assert send(commands[2], holder).status_code == 202
+    assert web.post("/contract/api/stop", json={}, headers=other).status_code == 200
 
 
 def test_contract_home_completion_and_positive_awake_require_verified_reference(stage_rig):

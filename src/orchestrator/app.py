@@ -192,6 +192,7 @@ class DemoResources:
         self.directory = Path(directory)
         self.resources = {}
         self.stack = ExitStack()
+        self.lock = threading.Lock()
 
     def clients(self, required, identity):
         from .rehearsal import Rehearsal
@@ -202,21 +203,22 @@ class DemoResources:
             )
         result = {}
         try:
-            for name in required:
-                if name not in self.resources:
-                    self.resources[name] = self.stack.enter_context(
-                        Rehearsal(
-                            self.directory / name,
-                            (name,),
-                            identity="demo-" + uuid.uuid4().hex,
-                            **(
-                                {"robot_state_provider": self._robot_state}
-                                if name == "vision"
-                                else {}
-                            ),
+            with self.lock:
+                for name in required:
+                    if name not in self.resources:
+                        self.resources[name] = self.stack.enter_context(
+                            Rehearsal(
+                                self.directory / name,
+                                (name,),
+                                identity="demo-" + uuid.uuid4().hex,
+                                **(
+                                    {"robot_state_provider": self._robot_state}
+                                    if name == "vision"
+                                    else {}
+                                ),
+                            )
                         )
-                    )
-                result.update(self.resources[name].new_clients(identity))
+                    result.update(self.resources[name].new_clients(identity))
         except BaseException:
             for client in result.values():
                 client.close()
@@ -236,10 +238,10 @@ class DemoResources:
     def close(self):
         self.stack.close()
 
-    def existing_client(self, name, identity):
+    def existing_client(self, name, identity, *, profile="runner"):
         """Read or stop an existing owned demo without starting another service."""
         resource = self.resources.get(name)
-        return None if resource is None else resource.new_clients(identity)[name]
+        return None if resource is None else resource.new_clients(identity, profile=profile)[name]
 
 
 class Recovery:
@@ -398,8 +400,10 @@ class OrchestratorService:
         self.poll_stop = threading.Event()
         self.poller = None
         from .web.backend import Dashboard
+        from .web.console import Console
 
         self.dashboard = Dashboard(self, clock=clock)
+        self.console = Console(self, clock=clock)
         self.approvals = Approvals(self, clock=clock)
 
     def _demo_calibration_references(self):
@@ -628,7 +632,7 @@ class OrchestratorService:
             return self.resources is not None and name in self.resources.resources
         return bool(self.settings.get(f"MG400_ORCH_{name.upper()}_URL"))
 
-    def dashboard_client(self, name, identity):
+    def dashboard_client(self, name, identity, *, profile="runner"):
         """Return a fresh read/stop transport; never acquire or renew a lease."""
         from .clients import SERVICES
 
@@ -638,7 +642,9 @@ class OrchestratorService:
             return self.client_factory((name,), identity).get(name)
         if self.demo:
             return (
-                None if self.resources is None else self.resources.existing_client(name, identity)
+                None
+                if self.resources is None
+                else self.resources.existing_client(name, identity, profile=profile)
             )
         prefix = f"MG400_ORCH_{name.upper()}"
         settings = {
@@ -647,6 +653,20 @@ class OrchestratorService:
             if key in {prefix + "_URL", prefix + "_TOKEN", "MG400_ORCH_TIMEOUT_S"}
         }
         return from_settings(settings, identity=identity).get(name)
+
+    def console_client(self, name, identity):
+        """Return a fresh console transport. Only a console Take control acquires with it."""
+        return self.dashboard_client(name, identity, profile="console")
+
+    def console_start_demo(self, name):
+        """Start one owned demo service for an explicit console Take control."""
+        if not self.demo or self.resources is None or name not in DEMO_SERVICES:
+            return
+        with self.lock:
+            if self.closing:
+                raise ServiceError(409, "The service is shutting down.")
+        for client in self.resources.clients((name,), "console-demo-" + uuid.uuid4().hex).values():
+            client.close()
 
     def dashboard_summary(self):
         """Read run/storage state only from a dashboard background worker."""
@@ -989,6 +1009,7 @@ class OrchestratorService:
 
     def close(self):
         self.dashboard.begin_close()
+        self.console.close()
         with self.lock:
             self.closing = True
             self._lost("Orchestrator service is shutting down.")
@@ -1051,9 +1072,11 @@ def create_app(service, *, token=None, base_path="/"):
         contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
     )
     prefix = base_path.rstrip("/")
-    from .web import dashboard_blueprint
+    from .web import console_blueprints, dashboard_blueprint
 
     app.register_blueprint(dashboard_blueprint(service, prefix))
+    for blueprint in console_blueprints(service, prefix):
+        app.register_blueprint(blueprint)
 
     @app.before_request
     def access():
@@ -1063,6 +1086,8 @@ def create_app(service, *, token=None, base_path="/"):
             "dashboard.index",
             "dashboard.javascript",
             "dashboard.stylesheet",
+            "console.index",
+            "console.asset",
         }
         proposal = request.endpoint in {"propose", "get_proposal"}
         if proposal:

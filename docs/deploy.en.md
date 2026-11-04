@@ -17,6 +17,7 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400` | Parent directory for runtime data | `root:1000`, `0750` |
 | `/var/lib/mg400/locks` | Robot connection locks | `1000:1000`, `0700` |
 | `/var/lib/mg400/work` | Gripper feedback, gripper command files, and mode-switch backups | `1000:1000`, `0750` |
+| `/var/lib/mg400/robot` | Measured tool offset in `tool.toml` and taught stations in `stations.toml`, files `0600` or `0640` | `1000:1000`, `0750` |
 | `/var/lib/mg400/vision` | Data directory for the enabled vision service | `1000:1000`, `0750` |
 | `/var/lib/mg400/models` | Model weights installed from the asset manifest, with file permissions `0640` or `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/camera` | Camera preview token `preview.key` | `1000:1000`, `0700` |
@@ -428,8 +429,8 @@ The backup includes the following paths when they exist:
 | `/var/lib/mg400/models/` | Installed model weights |
 | `/var/lib/mg400/calibration/cameras/` | Camera-to-robot homographies for each camera path |
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus, and reference-view data |
-| `/var/lib/mg400/stations.toml` | Taught robot stations |
-| `/var/lib/mg400/tool.toml` | Gripper tool offset |
+| `/var/lib/mg400/robot/stations.toml` | Taught robot stations |
+| `/var/lib/mg400/robot/tool.toml` | Gripper tool offset |
 | `/var/lib/mg400/stage/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions |
 | `/var/lib/mg400/furnace/state.json` | Furnace sequence state |
@@ -437,6 +438,12 @@ The backup includes the following paths when they exist:
 | `/var/lib/mg400/recordings/` | Furnace recordings before archiving |
 | `/var/lib/mg400/camera/preview.key` | Camera preview key |
 | `/var/lib/mg400/work/` | Gripper feedback, command files, persistent command locks, and mode-switch backups |
+
+The installer creates `/var/lib/mg400/robot` with owner `1000:1000` and mode `0750` for tool and station data.
+If `/var/lib/mg400/tool.toml` or `/var/lib/mg400/stations.toml` exists, it prints a move instruction and leaves that file unchanged.
+Stop services and CLI processes that use the robot data before moving each old file into `/var/lib/mg400/robot` manually.
+Do not overwrite an existing destination. Retain owner `1000:1000` and file mode `0600` or `0640`.
+The installer preserves existing `MG400_ORCH_TOOL_FILE` and `MG400_ORCH_STATIONS_FILE` values. Update an old override before restarting its users.
 
 The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` for writable stage calibration.
 It keeps `/var/lib/mg400` root-owned with mode `0750`.

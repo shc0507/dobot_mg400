@@ -307,22 +307,14 @@ def test_gripper_commands_report_an_outcome(sim):
     assert robot["gripper"]["outcome"] in {"arrived", "contact", "dropped"}
 
 
-def test_stage_moves_only_after_set_zero_and_stops_without_control(sim):
+def test_stage_moves_without_a_zero_and_stops_without_control(sim):
     take(sim, "stage")
     stage = wait_for(lambda: (lambda s: s if s.get("motors") else None)(motion_state(sim)["stage"]))
     motor = stage["motors"][0]["id"]
-    move = {"motor": motor, "direction": "cw", "speed": 1000, "steps": 50}
-    status, body = command(sim, "stage", "move", move)
-    assert status == 409 and body["outcome"] == "refused"
     # Set zero needs the explicit confirm flag from the page confirmation.
     assert command(sim, "stage", "zero", {"motor": motor})[0] == 409
-    assert command(sim, "stage", "zero", {"motor": motor, "confirm": True})[0] == 202
-    wait_for(
-        lambda: next(m for m in motion_state(sim)["stage"]["motors"] if m["id"] == motor)[
-            "automation_ready"
-        ]
-    )
-    status, body = command(sim, "stage", "move", dict(move, steps=800, speed=50))
+    move = {"motor": motor, "direction": "cw", "speed": 50, "steps": 800}
+    status, body = command(sim, "stage", "move", move)
     assert status == 202, body
     wait_for(
         lambda: (

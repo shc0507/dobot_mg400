@@ -171,12 +171,7 @@ def _station(args, settings, out):
         url = settings.get("MG400_ORCH_ROBOT_URL") or SERVICE_URLS["MG400_ORCH_ROBOT_URL"]
         timeout = positive(float(settings.get("MG400_ORCH_TIMEOUT_S", "2")), "request timeout")
         # This adapter has no robot WebSocket and sends only the two GETs in teach().
-        robot = ServiceAdapter(
-            url,
-            "",
-            "teach-" + uuid.uuid4().hex,
-            timeout=timeout,
-        )
+        robot = ServiceAdapter(url, "teach-" + uuid.uuid4().hex, timeout=timeout)
         result = teach(store, args.name, robot, offset, approach_mm=args.approach, zone=args.zone)
     elif args.station_action == "rm":
         store.remove(args.name)

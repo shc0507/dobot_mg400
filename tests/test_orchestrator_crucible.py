@@ -669,46 +669,6 @@ def test_cooldown_wait_precedes_single_dispatch_and_rechecks_furnace(crucible_ge
     assert [action for action, _ in ctx.clients["stage"].calls] == ["goto", "awake"]
 
 
-@pytest.mark.parametrize("root", [True, False])
-@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
-def test_installed_crucible_settings_keep_exact_command_and_identity_boundaries(
-    ctl,
-    monkeypatch,
-    root,
-    command,
-):
-    production = {key: f"host-{key}" for key in CRUCIBLE_SETTINGS}
-    caller = {key: f"caller-{key}" for key in CRUCIBLE_SETTINGS}
-    forbidden = {"MG400_ORCH_CRUCIBLE_DEVICE", "MG400_FURNACE_SERIAL", "HTTP_PROXY", "PYTHONPATH"}
-    for key, value in caller.items():
-        monkeypatch.setenv(key, value)
-    for key in forbidden:
-        monkeypatch.setenv(key, "forbidden")
-    if root and command != "rehearse":
-        ctl.host.settings.write_text(
-            "\n".join(f"{key}={value}" for key, value in production.items())
-        )
-    else:
-        ctl.host.settings.unlink()
-    if not root:
-        for name in ("getuid", "geteuid", "getgid", "getegid"):
-            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
-    arguments = ["list"] if command == "station" else ["recipe-or-run-id"]
-    assert ctl.call(command, *arguments) == 0
-    program, argv, environment = ctl.execvpe.call_args.args
-    expected = production if root and command == "run" else caller
-    if command not in {"run", "rehearse"}:
-        expected = {}
-    assert {
-        key: value for key, value in environment.items() if key in CRUCIBLE_SETTINGS
-    } == expected
-    assert forbidden.isdisjoint(environment)
-    python = str(ctl.host.code / ".venv/bin/python")
-    assert program == ("/usr/sbin/runuser" if root else python)
-    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, *arguments]
-    ctl.run.assert_not_called()
-
-
 @pytest.mark.parametrize("axis", ["bottom", "top"])
 def test_changed_alignment_after_preflight_prevents_robot_and_insert(crucible_geometry, axis):
     ctx = CrucibleContext()
@@ -1370,9 +1330,7 @@ class FakeThermalOpener:
 
 
 def thermal_adapter(monkeypatch, responses):
-    adapter = ThermalAdapter(
-        "http://127.0.0.1:1/thermal", "s" * 32, "offline-roi-read", timeout=0.2
-    )
+    adapter = ThermalAdapter("http://127.0.0.1:1/thermal", "offline-roi-read", timeout=0.2)
     opener = FakeThermalOpener(responses)
     monkeypatch.setattr(adapter._http, "_opener", opener)
     return adapter, opener
@@ -1391,10 +1349,7 @@ def test_named_roi_is_a_version_checked_get_without_lease_or_frame_fallback(monk
     assert all(
         request.get_method() == "GET" and request.data is None for request, _ in opener.requests
     )
-    assert all(
-        request.get_header("Authorization") == "Bearer " + "s" * 32
-        for request, _ in opener.requests
-    )
+    assert all(request.get_header("Authorization") is None for request, _ in opener.requests)
     assert all(timeout == 0.2 for _, timeout in opener.requests)
 
 

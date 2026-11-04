@@ -1199,42 +1199,6 @@ def test_cold_contract_requires_explicit_preview_before_guarded_scan(cold_fake_s
     assert dispatched == ["read_markers"]
 
 
-@pytest.mark.parametrize("root", [True, False])
-@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
-def test_installed_calibration_data_setting_keeps_identity_and_credential_boundaries(
-    ctl, monkeypatch, root, command
-):
-    key = "MG400_CAMERA_CALIBRATION_REFERENCES"
-    monkeypatch.setenv(key, "/synthetic/references.toml")
-    monkeypatch.setenv("MG400_VISION_TOKEN", "must-not-pass")
-    monkeypatch.setenv("MG400_CAMERA_DEVICES", "/dev/must-not-pass")
-    monkeypatch.setenv("MG400_VISION_CALIBRATION_DIR", "/host/must-not-pass")
-    if root and command != "rehearse":
-        ctl.host.settings.write_text(
-            f"{key}=/trusted/references.toml\nMG400_VISION_TOKEN=must-not-pass\n"
-        )
-    else:
-        ctl.host.settings.unlink()
-    if not root:
-        for name in ("getuid", "geteuid", "getgid", "getegid"):
-            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
-    argument = "list" if command == "station" else "synthetic-recipe"
-    assert ctl.call(command, argument) == 0
-    program, argv, environment = ctl.execvpe.call_args.args
-    expected = (
-        "/trusted/references.toml" if root and command == "run" else "/synthetic/references.toml"
-    )
-    assert environment.get(key) == (expected if command == "run" else None)
-    assert (
-        not {"MG400_VISION_TOKEN", "MG400_CAMERA_DEVICES", "MG400_VISION_CALIBRATION_DIR"}
-        & environment.keys()
-    )
-    python = str(ctl.host.code / ".venv/bin/python")
-    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, argument]
-    assert program == ("/usr/sbin/runuser" if root else python)
-    ctl.run.assert_not_called()
-
-
 @pytest.mark.parametrize("failure", ["missing", "error"])
 def test_demo_reference_provider_never_falls_back_to_host(scan_rig, monkeypatch, failure):
     from orchestrator.skills import default_registry

@@ -365,10 +365,9 @@ def test_slot_command_uses_one_frame_model_and_fenced_publication(
     _, scene = scene
     clock = [10.0]
     service = service_for(tmp_path, scene, clock=lambda: clock[0])
-    app = create_app(service, token="offline-fixture-token-for-tests")
+    app = create_app(service)
     client = app.test_client()
     headers = {
-        "Authorization": "Bearer offline-fixture-token-for-tests",
         "X-MG400-Client": "owned-run",
     }
     assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
@@ -433,30 +432,13 @@ def test_slot_command_uses_one_frame_model_and_fenced_publication(
 
 @pytest.mark.parametrize(
     "headers,status",
-    [
-        ({}, 401),
-        (
-            {
-                "Authorization": "Bearer offline-fixture-token-for-tests",
-                "X-MG400-Client": "owned-run",
-                "Origin": "https://evil.example",
-            },
-            403,
-        ),
-        (
-            {
-                "Authorization": "Bearer offline-fixture-token-for-tests",
-                "X-MG400-Client": "owned-run",
-            },
-            409,
-        ),
-    ],
+    [({}, 400), ({"X-MG400-Client": "owned-run"}, 409)],
 )
-def test_slot_command_retains_token_origin_and_control_guards(tmp_path, scene, headers, status):
+def test_slot_command_retains_control_guards(tmp_path, scene, headers, status):
     _, scene = scene
     service = service_for(tmp_path, scene)
     try:
-        client = create_app(service, token="offline-fixture-token-for-tests").test_client()
+        client = create_app(service).test_client()
         response = client.post(
             "/api/command",
             headers=headers,

@@ -36,7 +36,7 @@ class _FlaskClient(ServiceClient):
 def flask_adapter(test_client, identity):
     client_type = type("Client", (_FlaskClient,), {"app": test_client})
     adapter_type = type("Adapter", (ServiceAdapter,), {"_client_type": client_type})
-    return adapter_type("http://demo.invalid", None, identity)
+    return adapter_type("http://demo.invalid", identity)
 
 
 def build(tmp_path, adapters):

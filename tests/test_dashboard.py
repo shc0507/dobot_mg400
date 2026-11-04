@@ -678,9 +678,7 @@ class Opener:
 
 
 def adapter(monkeypatch, replies):
-    obj = FurnaceAdapter(
-        "http://127.0.0.1:1/furnace/", "fake-credential-for-offline-tests", "review", timeout=0.25
-    )
+    obj = FurnaceAdapter("http://127.0.0.1:1/furnace/", "review", timeout=0.25)
     opener = Opener(replies)
     monkeypatch.setattr(obj._http, "_opener", opener)
     monkeypatch.setattr(obj._gas_http, "_opener", opener)
@@ -700,7 +698,7 @@ def test_exact_channel_stop_preserves_unconfirmed_result(monkeypatch, channel):
     assert stop.full_url.endswith("/furnace/api/flow/gas/stop")
     assert json.loads(stop.data) == {"channel_index": channel}
     assert stop.get_header("X-mg400-client") == "review"
-    assert stop.get_header("Authorization") == "Bearer fake-credential-for-offline-tests"
+    assert stop.get_header("Authorization") is None
     assert all(timeout == 0.25 for _, timeout in network.calls)
 
 
@@ -791,7 +789,6 @@ class GasBoundOpener:
 def gas_bounded_adapter(monkeypatch, responses, *, clock=None):
     obj = FurnaceAdapter(
         "http://127.0.0.1:1/furnace/",
-        "offline-gas-response-test-token",
         "bounded-gas",
         timeout=0.25,
     )

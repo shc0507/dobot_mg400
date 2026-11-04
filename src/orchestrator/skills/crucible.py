@@ -65,6 +65,9 @@ class _CheckedRobot:
     def __init__(self, robot, check):
         self.robot, self.check = robot, check
 
+    def describe(self):
+        return self.robot.describe()
+
     def state(self):
         return self.robot.state()
 
@@ -77,7 +80,7 @@ class _CheckedRobot:
 
 
 class _Crucible:
-    def __init__(self, ctx, slot, *, unloading, grip, release, max_c, awake_s, max_age_s):
+    def __init__(self, ctx, slot, *, unloading, grip, release, max_c, awake_s, max_age_s, speed):
         self.ctx, self.unloading = ctx, unloading
         if not isinstance(slot, str) or slot == "crucible-load":
             raise ValueError("Choose a tray station distinct from crucible-load.")
@@ -105,17 +108,18 @@ class _Crucible:
         context = SimpleNamespace(
             clients=clients, check=ctx.check, sleep=ctx.sleep, zones=ctx.zones
         )
-        self.robot = _Transfer(context)
+        self.robot = _Transfer(context, speed)
         source, target = ("crucible-load", slot) if unloading else (slot, "crucible-load")
         self.source, self.target = self.robot.route(source), self.robot.route(target)
         if self.robot.stations["crucible-load"]["zone"] != "crucible-load":
             raise ValueError("Station crucible-load must use zone crucible-load.")
+        self.plans = self.robot.plan(self.source, self.target)
         definitions = ctx.zone_definitions()
         required = {
             "crucible-load": ("robot", "stage_at_load"),
             "furnace-tube": ("stage", "robot_clear"),
         }
-        for route in (self.source, self.target):
+        for route in (self.source, self.target, [self.plans[0].start]):
             for station in route:
                 if station["zone"]:
                     if definitions.get(station["zone"], {}).get("owner") != "robot":
@@ -127,7 +131,6 @@ class _Crucible:
                 condition is not None and condition not in spec.get("conditions", ())
             ):
                 raise ValueError(f"Configure the required owner and entry conditions for {name}.")
-        self.height = self.robot.height(self.source, self.target)
         robot_state, _ = self.robot.state()
         if robot_state["gripper"]["outcome"] == "contact":
             raise RuntimeError("A crucible transfer must start without an existing grasp.")
@@ -371,8 +374,8 @@ class _Crucible:
     def transfer(self):
         with self.ctx.guard(self.robot_check):
             with _RouteZones(self.ctx.zones) as zones:
-                self.robot.pick(self.source, self.grip, self.opening, self.height, zones)
-                self.robot.place(self.target, self.release, self.height, zones)
+                self.robot.pick(self.plans[0], self.grip, self.opening, zones)
+                self.robot.place(self.plans[1], self.release, zones)
 
 
 def load(
@@ -384,6 +387,7 @@ def load(
     load_max_c: float = -1,
     awake_s: float = -1,
     max_age_s: float = -1,
+    speed: int = 1,
 ):
     operation = _Crucible(
         ctx,
@@ -394,6 +398,7 @@ def load(
         max_c=load_max_c,
         awake_s=awake_s,
         max_age_s=max_age_s,
+        speed=speed,
     )
     operation.awake()
     operation.transfer()
@@ -417,6 +422,7 @@ def unload(
     unload_max_c: float = -1,
     awake_s: float = -1,
     max_age_s: float = -1,
+    speed: int = 1,
 ):
     operation = _Crucible(
         ctx,
@@ -427,6 +433,7 @@ def unload(
         max_c=unload_max_c,
         awake_s=awake_s,
         max_age_s=max_age_s,
+        speed=speed,
     )
     with ctx.zones.take("furnace-tube"):
         operation.stage_command("goto", motor="insert", name="load")

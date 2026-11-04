@@ -36,7 +36,7 @@ from orchestrator.skills import Registry, default_registry
 from orchestrator.skills.crucible import CRUCIBLE_SETTINGS, PREFIX, load, unload
 from orchestrator.stations import AXES, StationStore, Workspace
 from orchestrator.store import RunStore
-from orchestrator.tool import Pose
+from orchestrator.tool import Pose, ToolOffset, flange_to_fingertip
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +63,12 @@ def crucible_geometry(tmp_path, monkeypatch):
                 str(workspace.bounds[field][index]),
             )
     stations = StationStore(workspace, tmp_path / "stations.toml")
+    stations.save("start", Pose(203, 4, 45, 0), approach_mm=10)
+    stations.save(
+        "demo-start",
+        flange_to_fingertip(Pose(250, 10, 40, 30), ToolOffset(3, 4, 5)),
+        approach_mm=10,
+    )
     stations.save("slot", Pose(230, 20, 30, 90), approach_mm=20, zone="tray")
     stations.save("crucible-load", Pose(260, -20, 20, -90), approach_mm=20, zone="crucible-load")
     tool = tmp_path / "tool.toml"
@@ -1928,3 +1934,56 @@ def test_guard_unwind_preserves_first_service_or_zone_failure(tmp_path, monkeypa
         assert service.events.count("stop") >= 2
         assert service.events[-2:] == ["release", "close"]
         assert "next-phase" not in service.events
+
+
+@pytest.mark.parametrize("unloading", [False, True])
+@pytest.mark.parametrize("speed", [True, 0, 1.5, 21])
+def test_crucible_speed_refusal_precedes_stage_and_robot_commands(
+    crucible_geometry, unloading, speed
+):
+    ctx = CrucibleContext(unloading=unloading)
+    with pytest.raises(ValueError, match="speed|cap"):
+        (unload if unloading else load)(ctx, "slot", speed=speed)
+    assert all(not client.calls for name, client in ctx.clients.items() if name != "thermal")
+
+
+@pytest.mark.parametrize("unloading", [False, True])
+def test_crucible_routes_use_endpoint_heights_and_selected_speed(crucible_geometry, unloading):
+    from test_orchestrator_transfer import _station_flange, tips
+
+    ctx = CrucibleContext(unloading=unloading)
+    source, target = ("crucible-load", "slot") if unloading else ("slot", "crucible-load")
+    stations = crucible_geometry.load()
+    ctx.clients["robot"].value["actual"][:4] = _station_flange(stations[source])
+    (unload if unloading else load)(ctx, "slot", speed=20)
+    first, last = stations[source], stations[target]
+
+    def pose(station, raised=False):
+        return Pose(
+            station["x_mm"],
+            station["y_mm"],
+            station["z_mm"] + (station["approach_mm"] if raised else 0),
+            station["r_deg"],
+        )
+
+    assert tips(ctx.clients["robot"]) == [
+        pose(first, True),
+        pose(first),
+        pose(first, True),
+        pose(last, True),
+        pose(last),
+        pose(last, True),
+    ]
+    assert all(
+        params["speed"] == 20
+        for action, params in ctx.clients["robot"].calls
+        if action == "execute"
+    )
+
+
+def test_initial_station_zone_preflight_precedes_any_crucible_command(crucible_geometry):
+    crucible_geometry.save("start", Pose(203, 4, 45, 0), approach_mm=10, zone="outside")
+    ctx = CrucibleContext()
+    with pytest.raises(ValueError, match="robot"):
+        load(ctx, "slot")
+    assert not ctx.clients["stage"].calls and not ctx.clients["robot"].calls

@@ -337,7 +337,7 @@ A write or file-sync failure preserves the old file. A directory-sync failure af
 ```toml
 [[steps]]
 skill = "robot.transfer"
-params = { from = "tray-pick", to = "tray-place", grip = 400, release = 900 }
+params = { from = "tray-pick", to = "tray-place", grip = 400, release = 900, speed = 1 }
 timeout_s = 60
 on_fail = "hold"
 ```
@@ -346,15 +346,21 @@ The numbers in this fragment are examples, not measured hardware settings. Set `
 
 The robot must be enabled and idle, with fresh feedback and an initialized, available gripper. Every state check verifies this run's ownership and the same robot instance. A lock, robot error, unconfirmed stop, or active keyboard control prevents transfer. The skills never initialize the gripper or recover control automatically.
 
-Before the first motion, the skill expands all `via` routes and checks their coordinates and tool conversions. Travel height is the greatest of the current fingertip Z and every routed station's Z plus its `approach_mm`. The current pose, station poses, and raised endpoints must fit the explicit fingertip workspace. Converted flange poses must remain finite. All moves use `execute` with `speed = 1`, within the host speed and acceleration caps. The controller remains at `User=0,Tool=0`.
+Before starting, position the robot at a taught station or its approach. The measured flange pose must match exactly one station after tool conversion, within 0.1 mm or 0.1 degrees per axis. An unknown or ambiguous start refuses motion. The skill checks the starting station again before each route leg.
 
-A pick rises at the current XY, follows the route at travel height, and opens to the pre-grip opening. It then descends, closes to `grip`, requires `contact`, and rises while checking for `dropped`. A place requires an existing contact, travels at height, descends, opens to `release`, requires `arrived`, and rises. An empty close that reports `arrived` cannot satisfy a pick.
+Before the first motion, the skill expands all `via` routes and checks every waypoint and tool conversion. The current pose, station poses, and endpoint approaches must fit the explicit fingertip workspace. Converted flange poses must remain finite. A station's approach height is its Z plus `approach_mm`.
+
+Each leg rises only at its starting station, to that station's approach. It follows the declared `via` order at each via station's taught pose. It then reaches the destination's approach and descends to its taught pose. Each move is a straight line. If the robot is already at the destination, it skips that station's incoming vias. A leading via that is the starting station is already visited and is also skipped.
+
+A pick opens to the pre-grip opening before descending. It closes to `grip`, requires `contact`, and rises to that station's approach while checking for `dropped`. A place requires an existing contact. It descends, opens to `release`, requires `arrived`, and rises to that station's approach. An empty close that reports `arrived` cannot satisfy a pick.
+
+`robot.pick`, `robot.place`, and `robot.transfer` accept `speed`, an integer with default 1. The permitted range is 1 through the robot service's advertised `MG400_ROBOT_MAX_SPEED_L` cap, which is at most 100. Invalid values or an invalid advertised cap refuse the step before motion. All moves use `execute`, and the robot service still enforces its speed and acceleration caps. The controller remains at `User=0,Tool=0`.
 
 Each move waits for completion and the next fresh measured pose. The measured flange coordinates must match the requested waypoint within 0.1 mm or 0.1 degrees on each axis. Missing pose samples cause reads only, within the step deadline. A mismatch, drop, unexpected outcome, or timeout holds the run and requests stops. No move or grasp is retried.
 
-The skill enters each named station zone before moving toward it. During a transfer, it retains the source zone until measured arrival toward the next station. Standalone pick and place release their final zone only after measured arrival at the raised endpoint. Failures retain durable claims for physical checks and audited recovery.
+The skill enters the starting station's zone before its initial rise. It enters each later named station zone before moving toward it. During a transfer, it retains the source zone until measured arrival toward the next station. Standalone pick and place release their final zone only after measured arrival at the raised endpoint. Failures retain durable claims for physical checks and audited recovery.
 
-The operator must verify that each taught approach height clears its working zone and that every route is unobstructed. The minimum 10 mm approach and workspace bounds do not prove physical clearance. Software waypoint checks do not validate collisions or joint reachability.
+The operator must verify that every endpoint approach is reachable, clears its working zone, and connects to an unobstructed route. At C, do not assume that the minimum 10 mm rise is reachable. Over the tray, the approach must keep flange Z below the camera 4 limit of 154 mm. Re-teach an unsuitable endpoint or route before use. The minimum approach and workspace bounds do not prove physical clearance. Software waypoint checks do not validate collisions or joint reachability.
 
 ## Crucible load and unload
 
@@ -363,7 +369,7 @@ The operator must verify that each taught approach height clears its working zon
 The tray station must differ from `crucible-load`. That station must use zone `crucible-load`.
 Do not declare the entire composite step with `zone = "crucible-load"`. Its robot phase releases that zone before Insert can move.
 
-These typed recipe parameters override explicit settings. The default parameter value `-1` means unset and requires the corresponding setting.
+The typed recipe parameters in this table override explicit settings. Their default value `-1` means unset and requires the corresponding setting.
 It is never a safety limit. Missing, nonfinite, or invalid values refuse the step before any command.
 
 | Parameter | Setting | Requirement |
@@ -377,7 +383,8 @@ It is never a safety limit. Missing, nonfinite, or invalid values refuse the ste
 
 The required pre-grip opening, measured tool offset, explicit workspace, and taught routes follow the station-transfer rules.
 Both routes and every tool conversion are checked before Insert or the robot receives a command.
-All robot moves retain `speed = 1`, measured arrival checks, and `contact`, `arrived`, and `dropped` checks.
+Both skills accept `speed` with default 1 and the same advertised service cap as station transfers.
+Robot moves use the taught route heights and retain measured arrival, `contact`, `arrived`, and `dropped` checks.
 The skill never homes, initializes, enables, unlocks, or retries a device.
 
 Every stage axis must have a fresh home reference and soft limits at its current microstep.

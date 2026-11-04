@@ -261,7 +261,7 @@ test("motion waits for the focus zero, and Set focus zero opens the panel after 
 
 test("camera tiles come from LabCameras when it exists", async () => {
   const views = [];
-  const cameras = { tile: view => { views.push(view); return new Element("figure"); } };
+  const cameras = { tile: (view, options) => { assert.equal(typeof options.api.t, "function"); views.push(view); return new Element("figure"); } };
   await load({ cameras });
   assert.deepEqual(views, ["microscope", "camera3"]);
   const { root } = await load();

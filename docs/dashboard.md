@@ -43,6 +43,21 @@
 - **Events** 合并各服务的 `api/events`，最新事件在前。可筛选警告或单个服务。
 - **Safety** 提供停止全部运动、关闭加热和关闭气体，并显示每个目标的结果。关闭加热和关闭气体需要在页面中确认。
 
+### 相机工作区
+
+- 网格显示 6 个画面：camera1 到 camera4、热像仪和显微镜（Toupcam）。每个画面显示名称和用途、LIVE、STALE 或 OFFLINE 及帧龄、模式，以及 **Snapshot** 和 **Expand**。**Focus · 1 + strip** 显示 1 个大画面和其余画面的条带。
+- 控制台服务中转全部画面。浏览器得不到摄像头密钥和服务令牌。`<img>` 流使用短时一次性票据：20 秒内有效，只能用 1 次，只对 1 个画面有效。
+- 中转最多同时打开 6 路流，每个画面最多 2 路，显微镜最多 2 路。离开工作区、隐藏浏览器标签页或关闭页面时，中转停止。
+- 叠加可分别开关：camera 4 的芯片识别框，以及热像仪的最低、最高、中心标记和色标。
+- 选中热像仪后，侧栏提供单位、色板、自动或固定色标范围和冻结画面。这些设置只改变显示。可导出 CSV、原始 + JSON 和 PNG。
+- **Draw region** 在热像画面上拖出 `crucible` 区域并显示边界。热像仪服务在 `api/describe` 中提供 `set_region` 后，**Save region** 才可用，并且需要在页面中确认。否则把边界写入 `rois.toml`。**Calibrate shutter** 同样等待服务提供 `shutter`，并需要确认。
+- 在主机上配置 camera1 到 camera4 的来源。其他画面使用已有的 `MG400_ORCH_<SERVICE>_URL` 和 `_TOKEN`：
+
+```sh
+MG400_ORCH_CAMERA_URL=http://127.0.0.1:1985
+MG400_CAMERA_KEY_FILE=/var/lib/mg400/camera/preview.key
+```
+
 ### 炉子与显微镜工作区
 
 每条设备命令都通过控制台转发。先用 **Take control** 获取炉子或显微镜的控制权。**Stop heat and gas**、**Stop all gas** 和显微镜 **Stop** 不需要控制权。

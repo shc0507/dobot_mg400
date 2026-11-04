@@ -311,7 +311,7 @@
     if (view.tiles[name]) return view.tiles[name];
     const { el, t } = view.api;
     let tile = null;
-    try { tile = view.global.LabCameras?.tile?.(name, { label }) || null; } catch { tile = null; }
+    try { tile = view.global.LabCameras?.tile?.(name, { api: view.api, large: name === "microscope" }) || null; } catch { tile = null; }
     if (!tile) {
       tile = el("div", { class: "pr-view pr-offline", role: "img", "aria-label": label + " · " + t("tile.offline") },
         el("span", { class: "pr-badge", text: "● " + t("tile.offline") }),

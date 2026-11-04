@@ -149,3 +149,43 @@ MG400_ORCH_BASE_PATH=/lab uv run python -m orchestrator serve --demo --recipes-d
 ```
 
 Open `http://127.0.0.1:8790/lab/`. In demo mode, Take control starts that device's owned demo service (robot, stage, thermal, furnace or vision) on the first use. The microscope has no owned demo here. Without `MG400_ORCH_TOKEN` the console accepts only a loopback Host.
+
+## 9. Camera tiles and the stream relay (DSH-04)
+
+### 9.1 Browser: `window.LabCameras.tile(view, options)`
+
+`static/console/cameras.js` loads on every console page. It defines `window.LabCameras` when it runs, before `DOMContentLoaded`. Call it in `mount` or later, not at script load: `motion.js` loads before `cameras.js`.
+
+```js
+const node = window.LabCameras
+  ? window.LabCameras.tile("camera2", { api, large: true, onSelect(view) {}, onExpand(view) {} })
+  : placeholderTile();  // Your own OFFLINE tile.
+root.append(node);
+```
+
+- `view` is `camera1` to `camera4`, `thermal` or `microscope`. Another value throws.
+- `options.api` is your workspace `api`. Pass it. `large` makes the image area 16:10. `onSelect` runs on a click or Enter on the image. `onExpand` replaces the default Expand action (full screen).
+- The tile is a `<figure class="lcam-tile">` with the name and role, the LIVE, STALE, OFFLINE or FROZEN badge with the frame age, the mode, and Snapshot and Expand buttons. Camera 4 shows the chip detections and the thermal tile shows the minimum, maximum and center markers and the colour bar when the overlays are on.
+- The tile streams only while it is visible: connected, not in a hidden workspace, and the browser tab is visible. It checks once a second. It stops the stream when it is hidden or removed, so the relay ends. Remove the node to drop the tile.
+- Tile styles are in `cameras.css` with the `lcam-` prefix and no `#ws-cameras` prefix, so tiles work in every workspace. Size the tile with your own container.
+
+### 9.2 Server routes
+
+All paths start with `<base>/api/console/ws/cameras/`. They need the operator token, except the two ticket routes.
+
+| Method and path | Response |
+| --- | --- |
+| `GET status` | `{"views": [{"id", "configured", "state": "live" \| "stale" \| "offline", "age_s", "streams", "error", "mode"}], "limits", "ticket_ttl_s"}` |
+| `POST ticket` `{"view", "kind": "stream" \| "snapshot"}` | `{"url", "expires_s"}`. Only for `camera1` to `camera4` and `microscope`. |
+| `GET stream/<view>?ticket=…` | The MJPEG stream (`multipart/x-mixed-replace`). `503` at the stream bound. `502` if the source fails. |
+| `GET snapshot/<view>?ticket=…` | One JPEG as an attachment. |
+| `GET thermal/frame` | The thermal frame: `sequence`, `timestamp`, `stats`, `temperatures_c` ([y][x] in °C) and `age_s`. `?full=1` adds `raw`, `ir` and `raw_unit`. |
+| `GET thermal/regions` | `{"regions": {"<name>": {"x0", "y0", "x1", "y1"}}}` in sensor pixels. |
+| `GET detections/4` | `{"available", "image_size", "detections": [{"label", "confidence", "xyxy"}]}` from the vision service. |
+
+- **Tickets.** An `<img>` cannot send the token. The page sends `POST ticket` with the token and puts the returned `url` in `img.src`. A ticket is random, used once, bound to one view and one kind, and expires after 20 s. Any use spends it. A ticket route accepts no other query parameter. The console never puts the token or the camera key in a URL.
+- **Bounds.** At most 6 relayed streams in total, 2 per view, and 2 for the microscope (its service allows 4; 2 stay for the microscope page). The orchestrator serves with 16 worker threads, so open streams leave workers for the API.
+- **Relay end.** When the viewer closes the connection, the console closes the upstream connection and frees the slot. When the upstream ends or fails, the stream ends and the tile asks for a new ticket after a back-off of 1 s to 15 s.
+- **States.** A view is `live` when its last frame is at most 2 s old, `stale` when it is older, and `offline` when no stream is open for 5 s, the source failed, or no frame came. The thermal state comes from the frame timestamp.
+- **Sources.** camera1 to camera4 come from the camera preview at `MG400_ORCH_CAMERA_URL` with the key in `MG400_CAMERA_KEY_FILE`. The thermal, vision and microscope views use the `MG400_ORCH_<SERVICE>_URL` and `_TOKEN` settings (the demo services in demo mode). Tests attach fake sources as `service.camera_sources`.
+- **Thermal commands.** The region editor sends `set_region` (`{"name": "crucible", "x0", "y0", "x1", "y1"}`) and the shutter button sends `shutter` (`{}`) through `api.relay("thermal", …)`, each after an in-page confirmation. The buttons are disabled until the thermal `api/describe` lists the command.

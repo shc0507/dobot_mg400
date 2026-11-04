@@ -47,7 +47,7 @@
 #ws-process .pr-gas-state { flex: 1 1 180px; min-width: 0; font-size: 13px; color: var(--warn); }
 #ws-process .pr-views { display: flex; flex-wrap: wrap; gap: 12px; }
 #ws-process .pr-main-view { flex: 999 1 340px; min-width: 0; }
-#ws-process .pr-side-view { flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+#ws-process .pr-side-view { flex: 1 1 230px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 #ws-process .pr-view { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
 #ws-process .pr-view-name { color: var(--muted); font-size: 13px; padding: 8px; text-align: center; }
 #ws-process .pr-badge { position: absolute; left: 10px; top: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); font-size: 12px; font-weight: 600; color: var(--soft); }

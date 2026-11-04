@@ -43,6 +43,21 @@ The workspaces send manual commands through the console. The console forwards ea
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
 - **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
 
+### Furnace + microscope workspace
+
+Every device command goes through the console relay. Use **Take control** for the furnace or the microscope first. **Stop heat and gas**, **Stop all gas** and the microscope **Stop** need no control.
+
+- The furnace shows PV, SV, the mode and the maximum temperature of the thermal `crucible` region.
+- The chart shows PV and SV for the last 60 minutes. The console process records 1 point every 5 s while a page is open. After a restart the chart starts empty.
+- **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes.
+- The sequence editor adds and removes steps and sets the target, ramp, hold and 3 gas channels of each step, and the end gas and end temperature. When a step sets gas, the end temperature is necessary. The page loads the furnace sequence on its first read.
+- Until each gas channel has a real gas name, **Send flow** is not available and the service refuses gas commands. **Stop all gas** uses the gas-off route of the Overview.
+- While `MG400_DASH_CUTOFF_CONFIRMED` is not set, a banner says: do not heat before H-11 and H-20.
+- The microscope shows the Toupcam view and the camera3 side view. It uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
+- The objective buttons, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
+- The service accepts a focus zero only from the microscope panel. **Set focus zero…** opens the microscope panel after a confirmation. Re-zero at the 50x focus before each use.
+- **Save snapshot**, **Start recording** and **Record next furnace sequence** send the microscope snapshot and recording commands.
+
 ### Run offline
 
 ```sh

@@ -20,7 +20,6 @@ import minimalmodbus
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from labkit.auth import bearer_matches, host_allowed, same_origin, valid_token_for_bind
 from labkit.describe import command, describe, parameter
 from labkit.errors import ServiceError
 from labkit.flask import contract_blueprint
@@ -432,11 +431,9 @@ def make_service(
         raise
 
 
-def create_app(service, *, token=None, base_path="/"):
-    """Serve the authenticated contract, stop and operator routes."""
-    if not valid_token_for_bind(token, "localhost"):
-        raise ValueError("A configured token needs at least 24 printable ASCII characters")
-    blueprint = contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
+def create_app(service, *, base_path="/"):
+    """Serve the contract, stop and operator routes."""
+    blueprint = contract_blueprint(service, base_path=base_path, lease=service.lease)
     prefix = base_path.rstrip("/")
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
@@ -444,10 +441,6 @@ def create_app(service, *, token=None, base_path="/"):
 
     @app.before_request
     def access():
-        if not host_allowed(request.headers, token) or not same_origin(request.headers):
-            raise ServiceError(403, "The request host or origin is not allowed")
-        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
-            raise ServiceError(401, "Invalid service access token")
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json")

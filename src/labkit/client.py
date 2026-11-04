@@ -8,7 +8,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .auth import valid_token_for_bind
 from .describe import CONTRACT_VERSION
 from .errors import ServiceError
 from .lease import validate_client
@@ -20,7 +19,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ServiceClient:
-    def __init__(self, base_url, token, client_id, *, timeout=10):
+    def __init__(self, base_url, client_id, *, timeout=10):
         parsed = urllib.parse.urlsplit(base_url)
         if (
             parsed.scheme not in {"http", "https"}
@@ -31,8 +30,6 @@ class ServiceClient:
             or parsed.fragment
         ):
             raise ValueError("Expected an HTTP URL without credentials, query, or fragment.")
-        if not isinstance(token, (str, type(None))) or not valid_token_for_bind(token, "localhost"):
-            raise ValueError("A configured token needs at least 24 printable ASCII characters.")
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
@@ -41,7 +38,6 @@ class ServiceClient:
         ):
             raise ValueError("Request timeout must be a finite positive number.")
         self.base_url = base_url.rstrip("/") + "/"
-        self.token = token
         self.client_id = validate_client(client_id)
         self.timeout = timeout
         self._opener = urllib.request.build_opener(_NoRedirect())
@@ -50,8 +46,6 @@ class ServiceClient:
 
     def _request(self, path, data=None):
         headers = {"Accept": "application/json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
         encoded = None
         if data is not None:
             encoded = json.dumps(data, allow_nan=False).encode("utf-8")

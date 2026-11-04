@@ -16,7 +16,6 @@ from furnace import controller as p
 from furnace.__main__ import main
 from furnace.app import create_app, make_service
 
-TOKEN = "furnace-test-access-token-12345"
 THREAD_START = threading.Thread.start
 
 
@@ -63,10 +62,8 @@ def service(clock):
     value.close()
 
 
-def post(client, path, body=None, *, actor="page-test", token=None, method="POST", headers=None):
+def post(client, path, body=None, *, actor="page-test", method="POST", headers=None):
     request_headers = {"X-MG400-Client": actor, **(headers or {})}
-    if token:
-        request_headers["Authorization"] = f"Bearer {token}"
     return client.open(
         path, method=method, json={} if body is None else body, headers=request_headers
     )
@@ -95,23 +92,21 @@ def test_demo_contract(service, clock, base):
         original()
 
     service.lifecycle.lease.on_expire = expiry
-    client = create_app(service, token=TOKEN, base_path=base).test_client()
+    client = create_app(service, base_path=base).test_client()
     check_contract(
         client,
         advance=clock.advance,
         expiry_count=lambda: len(expired),
         base_path=base,
-        headers={"Authorization": f"Bearer {TOKEN}"},
     )
 
 
 def test_removed_page_and_legacy_routes_are_not_served(service):
-    client = create_app(service, token=TOKEN, base_path="/heat/").test_client()
-    auth = {"Authorization": f"Bearer {TOKEN}"}
+    client = create_app(service, base_path="/heat/").test_client()
     for path in ("/heat/", "/heat/static/app.js", "/heat/api/status", "/heat/video_feed"):
-        assert_error(client.get(path, headers=auth), 404)
+        assert_error(client.get(path), 404)
     for path in ("/heat/api/furnace/apply", "/heat/api/sequence/start", "/heat/api/flow/connect"):
-        assert_error(post(client, path, token=TOKEN), 404)
+        assert_error(post(client, path), 404)
 
 
 @pytest.mark.parametrize(
@@ -123,12 +118,8 @@ def test_removed_page_and_legacy_routes_are_not_served(service):
         ("/api/stop", "POST", {}),
     ],
 )
-def test_legacy_and_contract_access_are_uniform(service, path, method, body):
-    client = create_app(service, token=TOKEN).test_client()
-    assert_error(post(client, path, body, method=method), 401)
-    assert_error(
-        post(client, path, body, method=method, token=TOKEN, headers={"Origin": "null"}), 403
-    )
+def test_legacy_and_contract_post_checks_are_uniform(service, path, method, body):
+    client = create_app(service).test_client()
     if method != "GET":
         assert_error(
             client.open(
@@ -136,28 +127,11 @@ def test_legacy_and_contract_access_are_uniform(service, path, method, body):
                 method=method,
                 data="{}",
                 content_type="text/plain",
-                headers={"Authorization": f"Bearer {TOKEN}", "X-MG400-Client": "test"},
+                headers={"X-MG400-Client": "test"},
             ),
             415,
         )
-        assert_error(
-            client.open(path, method=method, json={}, headers={"Authorization": f"Bearer {TOKEN}"}),
-            400,
-        )
-
-
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"Host": "remote.example"},
-        {"X-Forwarded-For": "127.0.0.1"},
-        {"Forwarded": "host=localhost"},
-        {"Host": "localhost,remote"},
-    ],
-)
-def test_no_token_loopback_and_forwarding_rules(service, headers):
-    client = create_app(service).test_client()
-    assert_error(client.get("/api/state", headers=headers), 403)
+        assert_error(client.open(path, method=method, json={}), 400)
 
 
 def test_acknowledge_needs_the_lease_holder_or_a_free_lease(service, monkeypatch):
@@ -276,7 +250,7 @@ def test_configuration_errors_do_not_create_a_server_or_service():
 
     with pytest.raises(SystemExit) as result:
         main(
-            ["--bind", "0.0.0.0", "--demo"],
+            ["--port", "0", "--demo"],
             environ={},
             service_factory=factory,
             server_factory=factory,

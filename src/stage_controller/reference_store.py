@@ -20,12 +20,6 @@ def _directory(path):
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
-        info = os.fstat(descriptor)
-        if info.st_uid not in (1000, os.geteuid()) or stat.S_IMODE(info.st_mode) not in (
-            0o700,
-            0o750,
-        ):
-            raise ValueError("Teaching requires an owned stage directory with mode 0700 or 0750.")
         return descriptor
     except BaseException:
         os.close(descriptor)

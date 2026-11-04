@@ -8,7 +8,7 @@ client must hold lease before a non-stop command. Stop bypasses lease failures.
 Non-stop commands require completed recovery through start() or connect().
 
 Gas map and idle gas settings are JSON objects keyed by channel 0, 1, or 2.
-MG400_FURNACE_GAS_MAP maps channels to operator-supplied labels; it has no default.
+MG400_FURNACE_GAS_MAP maps channels to labels. Unlabelled channels show Gas 1 to Gas 3.
 MG400_FURNACE_IDLE_GAS maps channels to percent (unspecified channels are off).
 The orphan grace setting is MG400_FURNACE_ORPHAN_GRACE_MIN, default 15 minutes.
 Signal handlers belong to the application: SIGTERM must call close().
@@ -316,11 +316,7 @@ class FurnaceService:
             result[channel] = label.strip()
         return result
 
-    def _require_gas_map(self, channels):
-        if not self.gas_map or any(channel not in self.gas_map for channel in channels):
-            raise ValueError("Set MG400_FURNACE_GAS_MAP for each requested gas channel")
-
-    def _gas_plan(self, value, *, complete=False, require_map=False):
+    def _gas_plan(self, value, *, complete=False):
         if not isinstance(value, dict):
             raise ValueError("Gas plan must be a channel-to-percent object")
         result = {}
@@ -329,13 +325,6 @@ class FurnaceService:
             if channel in result:
                 raise ValueError("Duplicate gas channel")
             result[channel] = self._number(percent, "Flow percentage", minimum=0, maximum=100)
-        if require_map:
-            self._require_gas_map(
-                [key for key, value in result.items() if value > 0] if complete else result
-            )
-        self._require_gas_map([key for key, value in result.items() if value > 0]) if any(
-            result.values()
-        ) else None
         if complete:
             result = {channel: result.get(channel, 0.0) for channel in range(3)}
         return result
@@ -423,7 +412,6 @@ class FurnaceService:
     def set_gas_flow(self, channel, flow_percent):
         channel = MFCFlowController._gas_channel(channel)
         percent = self._number(flow_percent, "Flow percentage", minimum=0, maximum=100)
-        self._require_gas_map([channel])
         self._transition(lambda: self._set_gas_flow(channel, percent))
         return self.flow_status()
 
@@ -432,7 +420,6 @@ class FurnaceService:
         channel = MFCFlowController._gas_channel(channel)
         if not isinstance(opened, bool):
             raise ValueError("opened must be true or false")
-        self._require_gas_map([channel])
         self._transition(lambda: self._set_gas_flow(channel, 100.0 if opened else 0.0))
         return self.flow_status()
 
@@ -574,7 +561,7 @@ class FurnaceService:
                 ),
             )
             if "gas" in step:
-                item["gas"] = self._gas_plan(step["gas"], require_map=True)
+                item["gas"] = self._gas_plan(step["gas"])
             result.append(item)
         return result
 
@@ -585,7 +572,7 @@ class FurnaceService:
         if (end_gas is None) != (end_gas_until_c is None):
             raise ValueError("Supply both end_gas and end_gas_until_c")
         if end_gas is not None:
-            end_gas = self._gas_plan(end_gas, complete=True, require_map=True)
+            end_gas = self._gas_plan(end_gas, complete=True)
             end_gas_until_c = self._number(
                 end_gas_until_c, "End gas temperature", minimum=0, maximum=self.config.max_c
             )

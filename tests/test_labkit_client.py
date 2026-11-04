@@ -34,7 +34,7 @@ def transport(monkeypatch):
 
 
 def test_all_methods_use_the_contract_paths_body_headers_and_timeout(transport):
-    client = ServiceClient("http://localhost/instrument/", "t" * 24, "test-client", timeout=4)
+    client = ServiceClient("http://localhost/instrument/", "test-client", timeout=4)
     transport.responses += [{"value": i} for i in range(7)]
     assert client.describe() == {"contract": 1}
     results = [
@@ -76,14 +76,14 @@ def test_all_methods_use_the_contract_paths_body_headers_and_timeout(transport):
     assert json.loads(requests[4].data) == json.loads(requests[5].data) == {}
     for request, timeout in transport.calls:
         assert timeout == 4
-        assert request.get_header("Authorization") == "Bearer " + "t" * 24
+        assert request.get_header("Authorization") is None
         if request.data is not None:
             assert request.get_header("Content-type") == "application/json"
             assert request.get_header("X-mg400-client") == "test-client"
 
 
 def test_first_operation_checks_version_before_dispatch(transport):
-    client = ServiceClient("http://localhost", None, "a")
+    client = ServiceClient("http://localhost", "a")
     transport.responses.append({"stop": "confirmed"})
     assert client.stop()["stop"] == "confirmed"
     assert [request.full_url for request, _ in transport.calls] == [
@@ -94,13 +94,13 @@ def test_first_operation_checks_version_before_dispatch(transport):
 
 def test_strict_renewal_has_a_separate_route_and_preserves_request_headers(transport):
     transport.responses.append({"lease": {"holder": "a", "remaining_s": 3}})
-    client = ServiceClient("http://localhost/contract", "t" * 24, "a")
+    client = ServiceClient("http://localhost/contract", "a")
     assert client.renew()["lease"]["holder"] == "a"
     request = transport.calls[-1][0]
     assert request.full_url == "http://localhost/contract/api/renew"
     assert request.get_method() == "POST" and json.loads(request.data) == {}
     assert request.get_header("X-mg400-client") == "a"
-    assert request.get_header("Authorization") == "Bearer " + "t" * 24
+    assert request.get_header("Authorization") is None
 
 
 @pytest.mark.parametrize("status", [404, 409])
@@ -111,7 +111,7 @@ def test_unsupported_or_expired_renewal_never_falls_back_to_acquisition(transpor
         )
     )
     with pytest.raises(ServiceError) as error:
-        ServiceClient("http://localhost", None, "a").renew()
+        ServiceClient("http://localhost", "a").renew()
     assert error.value.status == status
     assert [request.full_url for request, _ in transport.calls] == [
         "http://localhost/api/describe",
@@ -123,7 +123,7 @@ def test_strict_heartbeat_helper_never_acquires_and_stops_on_expiry():
     failed = threading.Event()
     calls = []
     error = ServiceError(409, "Lease expired")
-    client = ServiceClient("http://localhost", None, "a")
+    client = ServiceClient("http://localhost", "a")
 
     def renew():
         calls.append("renew")
@@ -145,13 +145,13 @@ def test_strict_heartbeat_helper_never_acquires_and_stops_on_expiry():
 @pytest.mark.parametrize("renew_only", [None, "true", 1])
 def test_heartbeat_mode_must_be_explicit_boolean(renew_only):
     with pytest.raises(ValueError, match="renew_only"):
-        ServiceClient("http://localhost", None, "a").heartbeat_thread(renew_only=renew_only)
+        ServiceClient("http://localhost", "a").heartbeat_thread(renew_only=renew_only)
 
 
 @pytest.mark.parametrize("contract", [None, 0, 2, "1", True])
 def test_different_or_invalid_contract_prevents_mutation_without_fallback(transport, contract):
     transport.responses = [{"contract": contract}]
-    client = ServiceClient("http://localhost", None, "a")
+    client = ServiceClient("http://localhost", "a")
     with pytest.raises(ServiceError, match="contract version") as error:
         client.command("move")
     assert error.value.status == 409
@@ -176,7 +176,7 @@ def test_different_or_invalid_contract_prevents_mutation_without_fallback(transp
 )
 def test_requests_are_never_retried_and_errors_are_normalized(transport, failure):
     transport.responses.append(failure)
-    client = ServiceClient("http://localhost", None, "a")
+    client = ServiceClient("http://localhost", "a")
     with pytest.raises(ServiceError) as error:
         client.command("move")
     assert len(transport.calls) == 2
@@ -194,7 +194,7 @@ def test_truncated_response_is_service_error_without_retry(transport):
 
     transport.responses.append(Truncated())
     with pytest.raises(ServiceError) as error:
-        ServiceClient("http://localhost", None, "a").command("move")
+        ServiceClient("http://localhost", "a").command("move")
     assert error.value.status == 0
     assert len(transport.calls) == 2
 
@@ -203,13 +203,13 @@ def test_truncated_response_is_service_error_without_retry(transport):
 def test_malformed_response_is_rejected(transport, payload):
     transport.responses = [io.BytesIO(payload)]
     with pytest.raises(ServiceError) as error:
-        ServiceClient("http://localhost", None, "a").describe()
+        ServiceClient("http://localhost", "a").describe()
     assert error.value.status == 502
     assert len(transport.calls) == 1
 
 
-def test_redirect_cannot_forward_token_or_rewrite_post_without_network():
-    client = ServiceClient("http://localhost", "t" * 24, "a")
+def test_redirect_cannot_rewrite_post_without_network():
+    client = ServiceClient("http://localhost", "a")
     requests = []
 
     class OfflineHTTP(urllib.request.HTTPHandler):
@@ -262,7 +262,7 @@ def test_heartbeat_helper_is_explicit_and_stops_after_first_error():
 
 def test_heartbeat_context_stops_successful_renewals_without_auto_release():
     called = threading.Event()
-    client = ServiceClient("http://localhost", None, "a")
+    client = ServiceClient("http://localhost", "a")
     client.heartbeat = called.set
     with client.heartbeat_thread(interval=10) as helper:
         assert called.wait(2)
@@ -282,10 +282,10 @@ def test_heartbeat_context_stops_successful_renewals_without_auto_release():
 )
 def test_client_rejects_ambiguous_base_urls(url):
     with pytest.raises(ValueError):
-        ServiceClient(url, None, "a")
+        ServiceClient(url, "a")
 
 
 @pytest.mark.parametrize("interval", [0, -1, True, float("nan"), "1"])
 def test_heartbeat_rejects_invalid_interval(interval):
     with pytest.raises(ValueError):
-        ServiceClient("http://localhost", None, "a").heartbeat_thread(interval=interval)
+        ServiceClient("http://localhost", "a").heartbeat_thread(interval=interval)

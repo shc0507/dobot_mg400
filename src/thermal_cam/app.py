@@ -4,33 +4,16 @@ import json
 import math
 import re
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from labkit.auth import bearer_matches, host_allowed, host_port, same_origin, valid_token_for_bind
 from labkit.errors import ServiceError
 from labkit.lease import validate_client
 
 from .roi import select_region
 from .service import CameraService
-
-CONTRACT_PATHS = {
-    f"/api/{name}"
-    for name in (
-        "describe",
-        "state",
-        "events",
-        "heartbeat",
-        "renew",
-        "release",
-        "stop",
-        "command",
-        "roi",
-    )
-}
 
 
 def normalize_base_path(value):
@@ -45,10 +28,8 @@ def normalize_base_path(value):
     return value.rstrip("/")
 
 
-def create_app(*, demo=False, auto_connect=True, service=None, token=None, base_path="/"):
+def create_app(*, demo=False, auto_connect=True, service=None, base_path="/"):
     prefix = normalize_base_path(base_path)
-    if not valid_token_for_bind(token, "127.0.0.1"):
-        raise ValueError("A configured token must contain at least 24 printable ASCII characters")
     controller = service or CameraService(demo=demo)
 
     @asynccontextmanager
@@ -69,38 +50,10 @@ def create_app(*, demo=False, auto_connect=True, service=None, token=None, base_
         openapi_url=None,
     )
     app.state.camera = controller
-    contract_paths = {prefix + path for path in CONTRACT_PATHS}
 
     @app.middleware("http")
-    async def local_requests(request: Request, call_next):
-        headers = request.headers
-        is_contract = request.url.path in contract_paths
-
-        def denied(message, status_code, **kwargs):
-            key = "error" if is_contract else "detail"
-            return JSONResponse({key: message}, status_code=status_code, **kwargs)
-
-        # Reject ambiguous headers before access checks or camera methods run.
-        if len(headers.getlist("host")) != 1 or host_port(headers.get("host", ""), 80) is None:
-            response = denied("Invalid Host header", 400)
-        elif not host_allowed(headers, token):
-            response = denied("A token is required outside loopback", 403 if is_contract else 400)
-        elif not same_origin(headers) or (
-            headers.get("origin") and urlsplit(headers["origin"]).netloc != headers.get("host")
-        ):
-            response = denied("Camera control requires the same origin", 403)
-        else:
-            if token and (
-                len(headers.getlist("authorization")) != 1
-                or not bearer_matches(headers.get("authorization", ""), token)
-            ):
-                response = denied(
-                    "A valid bearer token is required",
-                    401,
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            else:
-                response = await call_next(request)
+    async def response_headers(request: Request, call_next):
+        response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response

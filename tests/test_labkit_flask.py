@@ -11,8 +11,6 @@ from labkit.events import EventLog
 from labkit.flask import contract_blueprint
 from labkit.lease import Lease
 
-TOKEN = "t" * 24
-
 
 class DemoService:
     def __init__(self):
@@ -67,21 +65,18 @@ class DemoService:
         self.events.add("warning", "lease expired")
 
 
-def make_app(*, token=None, base_path="/", service=None):
+def make_app(*, base_path="/", service=None):
     service = service or DemoService()
     lease = Lease(3, lambda: service.now)
     app = Flask(__name__)
-    app.register_blueprint(
-        contract_blueprint(service, token=token, base_path=base_path, lease=lease)
-    )
+    app.register_blueprint(contract_blueprint(service, base_path=base_path, lease=lease))
     return app, service, lease
 
 
-@pytest.mark.parametrize("token", [None, TOKEN])
 @pytest.mark.parametrize("base_path", ["/", "/instrument/"])
-def test_demo_contract_conformance(token, base_path):
-    app, service, _ = make_app(token=token, base_path=base_path)
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+def test_demo_contract_conformance(base_path):
+    app, service, _ = make_app(base_path=base_path)
+    headers = {}
     check_contract(
         app.test_client(),
         advance=service.advance,
@@ -141,18 +136,14 @@ def test_strict_renewal_cannot_acquire_or_restore_an_expired_lease():
     assert lease.holder == "a"
 
 
-def test_strict_renewal_preserves_access_and_post_validation():
-    app, _, lease = make_app(token=TOKEN)
+def test_strict_renewal_preserves_post_validation():
+    app, _, lease = make_app()
     client = app.test_client()
-    auth = {"Authorization": f"Bearer {TOKEN}", "X-MG400-Client": "a"}
+    auth = {"X-MG400-Client": "a"}
     lease.acquire("a")
-    assert_error(client.post("/api/renew", json={}), 401)
-    assert_error(
-        client.post("/api/renew", json={}, headers={"Authorization": f"Bearer {TOKEN}"}), 400
-    )
+    assert_error(client.post("/api/renew", json={}), 400)
     assert_error(client.post("/api/renew", data="{}", headers=auth), 415)
     assert_error(client.post("/api/renew", json=[], headers=auth), 400)
-    assert_error(client.post("/api/renew", json={}, headers={**auth, "Origin": "null"}), 403)
     assert lease.holder == "a"
 
 
@@ -191,44 +182,6 @@ def test_stop_runs_during_expiry_callback_without_taking_lease_lock():
         finish.set()
         watcher.join(2)
     assert not watcher.is_alive()
-
-
-@pytest.mark.parametrize(
-    "header", ["Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"]
-)
-def test_tokenless_access_rejects_forwarding_even_empty(header):
-    client = make_app()[0].test_client()
-    assert_error(client.get("/api/state", headers={header: ""}), 403)
-
-
-@pytest.mark.parametrize(
-    "host", ["lab.invalid", "localhost.evil", "user@localhost", "127.0.0.1/path"]
-)
-def test_tokenless_access_rejects_nonloopback_or_invalid_host(host):
-    assert_error(make_app()[0].test_client().get("/api/state", headers={"Host": host}), 403)
-
-
-@pytest.mark.parametrize("token", ["x" * 23, "x" * 23 + "\n", " x" * 12, "é" * 24])
-def test_bad_token_configuration_fails(token):
-    with pytest.raises(ValueError):
-        make_app(token=token)
-
-
-def test_bearer_token_and_origin_rules_apply_to_reads_and_stops():
-    client = make_app(token=TOKEN)[0].test_client()
-    auth = {"Authorization": f"Bearer {TOKEN}", "X-MG400-Client": "a"}
-    assert client.get("/api/state", headers={**auth, "Host": "lab.invalid"}).status_code == 200
-    assert (
-        client.get("/api/state", headers={**auth, "Origin": "http://localhost"}).status_code == 200
-    )
-    for route in ("/api/describe", "/api/state", "/api/events"):
-        assert_error(client.get(route), 401)
-        assert_error(client.get(route, headers={**auth, "Origin": "https://evil.invalid"}), 403)
-        assert_error(client.get(route, headers={**auth, "Sec-Fetch-Site": "cross-site"}), 403)
-    assert_error(client.post("/api/stop", json={}, headers={**auth, "Origin": "null"}), 403)
-    reply = client.get("/api/state", headers=auth)
-    assert reply.headers["Cache-Control"] == "no-store"
-    assert reply.headers["X-Content-Type-Options"] == "nosniff"
 
 
 @pytest.mark.parametrize("data", [None, [], "text", 1])

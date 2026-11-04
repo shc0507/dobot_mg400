@@ -30,7 +30,6 @@ from mg400.websocket import (
 PANEL = runpy.run_path(str(Path(__file__).resolve().parents[1] / "apps/control_panel/server.py"))
 PanelServer = PANEL["PanelServer"]
 SocketSession = PANEL["SocketSession"]
-TOKEN = "test-token"
 CLIENT = "browser-a"
 KEY = "dGhlIHNhbXBsZSBub25jZQ=="
 # The end-to-end test replaces socket.socket with a simulated MG400. Test clients keep
@@ -40,15 +39,15 @@ OPEN_CLIENTS = []
 DROP = object()
 
 
-def hello_message(client=CLIENT, token=TOKEN, **changes):
+def hello_message(client=CLIENT, **changes):
     """Return a hello. changes replace fields; DROP removes one."""
-    message = {"type": "hello", "protocol": 1, "client": client, "token": token, **changes}
+    message = {"type": "hello", "protocol": 1, "client": client, **changes}
     return {name: value for name, value in message.items() if value is not DROP}
 
 
 @contextlib.contextmanager
-def running(state, *, token=TOKEN, base_path="/", server_class=PanelServer):
-    server = server_class(("127.0.0.1", 0), state, token=token, base_path=base_path)
+def running(state, *, base_path="/", server_class=PanelServer):
+    server = server_class(("127.0.0.1", 0), state, base_path=base_path)
     # A short poll interval keeps shutdown() fast.
     thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
@@ -206,9 +205,9 @@ class WsClient:
     def request(self, kind, body):
         return self.reply(self.send_request(kind, body))
 
-    def hello(self, client=CLIENT, token=TOKEN):
+    def hello(self, client=CLIENT):
         """Send hello and return the first message, which must be a state push."""
-        self.send_json(hello_message(client, token))
+        self.send_json(hello_message(client))
         event = self.next()
         assert event[0] == "message" and event[1]["type"] == "state", event
         return event[1]["state"]

@@ -5,8 +5,6 @@ import logging
 import os
 import signal
 
-from labkit.auth import valid_token_for_bind
-
 from .calibration import DEFAULT_DIRECTORY, calibration_settings
 from .frames import DemoSource, Go2RTCSource
 from .service import DEFAULT_WEIGHTS, FIXTURES, MAX_REQUEST_BYTES, VisionService, create_app
@@ -34,12 +32,6 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
-    token = env.get("MG400_VISION_TOKEN") or None
-    if not valid_token_for_bind(token, args.bind):
-        parser.error(
-            "Set MG400_VISION_TOKEN to at least 24 printable ASCII characters, "
-            "or leave it unset and bind to loopback"
-        )
     try:
         calibration_options = calibration_settings(
             {
@@ -62,7 +54,7 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
             calibration_directory=env.get("MG400_VISION_CALIBRATION_DIR") or DEFAULT_DIRECTORY,
             calibration_options=calibration_options,
         )
-        app = create_app(service, token=token, base_path=args.base_path)
+        app = create_app(service, base_path=args.base_path)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     if server_factory is None:

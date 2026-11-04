@@ -4,6 +4,7 @@ Lease authorization precedes the controller lock. Snapshots taken under the
 controller lock deliberately do not read the lease; HTTP adapters add it later.
 """
 
+import math
 import time
 import uuid
 
@@ -181,7 +182,8 @@ class StageContract:
                 ):
                     self._require_connection()
                     self._read_status()
-                    self._require_reference(args["motor"])
+                    if args["motor"] not in MOTOR_IDS:
+                        raise ValueError("Choose a valid motor.")
                     if action == "move":
                         # Validate before arithmetic and before any serial mutation.
                         if (
@@ -193,7 +195,12 @@ class StageContract:
                         target = self._motors[args["motor"]].position + args["steps"] * (
                             1 if args["direction"] == "cw" else -1
                         )
-                        low, high = self._axis(args["motor"]).bounds(self._microstep)
+                        # Soft limits apply when the stage file configures them and
+                        # the axis has a reference. A manual move needs no reference.
+                        if self._ready(args["motor"]):
+                            low, high = self._axis(args["motor"]).bounds(self._microstep)
+                        else:
+                            low, high = -math.inf, math.inf
                         if not low <= target <= high:
                             raise ControllerError(
                                 "Stage target is outside the configured soft limits."

@@ -16,6 +16,7 @@ import ipaddress
 import json
 import math
 import os
+import pwd
 import re
 import secrets
 import shutil
@@ -473,7 +474,25 @@ def prepare_proxy(args, host, settings, selected):
     return config, binary if args.caddy is not None else None
 
 
-def check_toupcam_directories(host):
+def microscope_groups():
+    """Resolve the numeric unit user's NSS and explicit supplementary groups."""
+    groups = {SERVICE_GID}
+    try:
+        name = pwd.getpwuid(SERVICE_UID).pw_name
+        groups.update(os.getgrouplist(name, SERVICE_GID))
+    except (KeyError, OSError) as error:
+        raise ValueError(
+            "Cannot resolve microscope service UID 1000 and its supplementary groups."
+        ) from error
+    for name in ("dialout", "video"):
+        try:
+            groups.add(grp.getgrnam(name).gr_gid)
+        except KeyError as error:
+            raise ValueError(f"Microscope requires the {name} device group.") from error
+    return groups
+
+
+def check_toupcam_directories(host, groups):
     """Require a trusted destination chain, without changing existing directories."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     with assets._directory(host.root) as anchor:
@@ -487,7 +506,7 @@ def check_toupcam_directories(host):
                 os.close(parent)
                 parent = child
                 info = os.fstat(parent)
-                execute_bit = 0o010 if info.st_gid == SERVICE_GID else 0o001
+                execute_bit = 0o010 if info.st_gid in groups else 0o001
                 if info.st_uid != 0 or info.st_mode & 0o7022 or not info.st_mode & execute_bit:
                     raise ValueError(
                         "Toupcam destination directories must be root-owned and traversable "
@@ -503,7 +522,8 @@ def prepare_toupcam(source, host, *, required=False):
     if source is None and not required:
         return None
     if required:
-        check_toupcam_directories(host)
+        groups = microscope_groups()
+        check_toupcam_directories(host, groups)
     try:
         with assets._directory(host.toupcam.parent) as directory:
             assets._regular(host.toupcam, directory)
@@ -513,7 +533,7 @@ def prepare_toupcam(source, host, *, required=False):
         with assets._local(host.toupcam if source is None else source) as stream:
             if source is None:
                 info = os.fstat(stream.fileno())
-                read_bit = 0o040 if info.st_gid == SERVICE_GID else 0o004
+                read_bit = 0o040 if info.st_gid in groups else 0o004
                 if (
                     info.st_uid != 0
                     or info.st_nlink != 1

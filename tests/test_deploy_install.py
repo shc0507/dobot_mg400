@@ -1504,6 +1504,15 @@ def inventory_udev(module, host, monkeypatch):
         "getgrgid",
         lambda gid: SimpleNamespace(gr_name="lab1000") if gid == 1000 else None,
     )
+    monkeypatch.setattr(
+        module.main.__globals__["grp"],
+        "getgrnam",
+        lambda name: SimpleNamespace(gr_gid={"dialout": 20, "video": 44}[name]),
+    )
+    monkeypatch.setattr(
+        module.main.__globals__["pwd"], "getpwuid", lambda uid: SimpleNamespace(pw_name="lab1000")
+    )
+    monkeypatch.setattr(module.main.__globals__["os"], "getgrouplist", lambda name, gid: [gid, 27])
     return host.code / "config/udev"
 
 
@@ -1954,6 +1963,33 @@ def test_microscope_requires_its_udev_template_before_mutation(host, toupcam_lib
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
 
 
+@pytest.mark.parametrize("missing", ["user", "memberships", "dialout", "video"])
+def test_microscope_requires_resolvable_service_account_and_device_groups(
+    host, inventory_udev, toupcam_library, module, monkeypatch, capsys, missing
+):
+    select_optional(host, "microscope")
+    if missing == "user":
+        monkeypatch.setattr(module.main.__globals__["pwd"], "getpwuid", Mock(side_effect=KeyError))
+    elif missing == "memberships":
+        monkeypatch.setattr(
+            module.main.__globals__["os"], "getgrouplist", Mock(side_effect=OSError)
+        )
+    else:
+
+        def group(name):
+            if name == missing:
+                raise KeyError(name)
+            return SimpleNamespace(gr_gid={"dialout": 20, "video": 44}[name])
+
+        monkeypatch.setattr(module.main.__globals__["grp"], "getgrnam", group)
+    assert host.install("--toupcam", str(toupcam_library)) == 1
+    message = (
+        "Microscope requires" if missing in {"dialout", "video"} else "Cannot resolve microscope"
+    )
+    assert message in capsys.readouterr().err
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
 def test_microscope_upgrade_preserves_library_data_measured_settings_and_tokens(
     host, inventory_udev, toupcam_library, module, monkeypatch
 ):
@@ -2039,7 +2075,9 @@ def microscope_library_owner(module, monkeypatch, path, *, owner=0, group=0, dir
     monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
 
 
-@pytest.mark.parametrize("group,rights", [(0, 0o644), (1000, 0o640)])
+@pytest.mark.parametrize(
+    "group,rights", [(0, 0o644), (1000, 0o640), (20, 0o640), (44, 0o640), (27, 0o640)]
+)
 def test_microscope_reuses_service_readable_library_without_replacement(
     host, inventory_udev, toupcam_library, module, monkeypatch, group, rights
 ):
@@ -2065,6 +2103,9 @@ def test_microscope_reuses_service_readable_library_without_replacement(
         (0, 0, 0o700),
         (0, 0, 0o4755),
         (0, 1000, 0o704),
+        (0, 20, 0o704),
+        (0, 44, 0o704),
+        (0, 27, 0o704),
     ],
 )
 def test_microscope_rejects_unsafe_existing_library_permissions(
@@ -2084,7 +2125,16 @@ def test_microscope_rejects_unsafe_existing_library_permissions(
 @pytest.mark.parametrize("source", [False, True])
 @pytest.mark.parametrize(
     "owner,group,rights",
-    [(1000, 0, 0o755), (0, 0, 0o775), (0, 0, 0o757), (0, 0, 0o700), (0, 1000, 0o701)],
+    [
+        (1000, 0, 0o755),
+        (0, 0, 0o775),
+        (0, 0, 0o757),
+        (0, 0, 0o700),
+        (0, 1000, 0o701),
+        (0, 20, 0o701),
+        (0, 44, 0o701),
+        (0, 27, 0o701),
+    ],
 )
 def test_microscope_refuses_unsafe_library_ancestors_before_mutation(
     host,

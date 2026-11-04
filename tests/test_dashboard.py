@@ -214,6 +214,34 @@ def test_state_is_cached_allowlisted_and_redacts_private_data(rig):
     assert all(item["phase"] == "stale" for item in report(rig)["services"])
 
 
+IDLE_ROBOT = {"syncing": False, "feedback_fresh": False, "robot_error": None, "alarms": None}
+
+
+@pytest.mark.parametrize(
+    "change, connected, fault",
+    [
+        (IDLE_ROBOT, False, False),
+        ({"feedback_fresh": False, "robot_error": None}, False, False),
+        ({"robot_error": True}, True, True),
+        ({**IDLE_ROBOT, "robot_error": True}, False, True),
+        ({"alarms": [{"id": 22}]}, True, True),
+        ({"robot_error": None}, True, True),
+        ({"stop_unconfirmed": True}, True, True),
+        ({**IDLE_ROBOT, "stop_unconfirmed": None}, False, True),
+        ({**IDLE_ROBOT, "syncing": None}, None, True),
+        ({**IDLE_ROBOT, "locked": True}, False, False),
+    ],
+)
+def test_an_idle_robot_is_not_connected_and_only_real_faults_count(rig, change, connected, fault):
+    rig.devices["robot"].state.update(change)
+    rig.service.dashboard.refresh()
+    wait_for(lambda: not rig.service.dashboard.reading)
+    robot = next(item for item in report(rig)["services"] if item["id"] == "robot")
+    assert robot["connected"] is connected
+    assert (robot["fault"] is not None) is fault
+    assert robot["locked"] is change.get("locked", False)
+
+
 def test_blocked_state_read_does_not_delay_independent_stop_attempts(rig):
     blocked, release = threading.Event(), threading.Event()
     rig.devices["robot"].read = lambda: (blocked.set(), release.wait(3))

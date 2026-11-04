@@ -114,7 +114,9 @@ test("status chips always carry text and turn stale without fresh state", () => 
   assert.deepEqual(serviceChip({ phase: "ready", connected: true }, false), { tone: "warn", key: "chip.stale" });
   assert.equal(serviceChip({ phase: "ready", connected: true, fault: "x" }, true).key, "chip.fault");
   assert.equal(serviceChip({ phase: "ready", connected: true, busy: true }, true).key, "chip.busy");
-  assert.equal(serviceChip({ phase: "ready", connected: false }, true).key, "chip.disconnected");
+  assert.deepEqual(serviceChip({ phase: "ready", connected: false }, true), { tone: "off", key: "chip.disconnected", demo: false });
+  assert.equal(LabConsole.strings.en["chip.disconnected"], "Not connected");
+  assert.equal(serviceChip({ phase: "ready", connected: false, locked: true }, true).tone, "bad");
   assert.equal(serviceChip({ phase: "unconfigured" }, true).tone, "off");
   assert.equal(serviceChip({ phase: "ready", connected: true, demo: true }, true).demo, true);
   const rows = chips({ services: [], cameras: [], orchestrator: { stale: false } }, true);

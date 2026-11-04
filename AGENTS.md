@@ -95,6 +95,7 @@ Run the tests of one area, for example: `uv run pytest -q tests/test_joint_contr
   - Robot: the speed cap, and no move while the controller reports an alarm.
   - Microscope: the focus limits, and full turret switches only at the clearance position.
   - Stage: soft limits, when they are configured.
+- Fix hardware problems in a local session on the lab machine: change, deploy to Olares, test on the devices, then push.
 - Files in `docs/agents/` are for agents. Write them in English only.
 
 ## Agent skills

@@ -585,6 +585,10 @@ class RobotPanelState:
                     self._start_sync()
                     if self._sample is None:
                         self._defer_command(record, "sync")
+                    if self._owner is None:
+                        # A new owner keeps feedback after its explicit disable;
+                        # it did not request the previous owner's disconnect.
+                        self._disconnect_requested = False
                     if self._owner is None and self._kb_seq_client != client_id:
                         # Each page numbers its keyboard messages from 1.
                         self._kb_seq, self._kb_seq_client = 0, client_id
@@ -817,8 +821,17 @@ class RobotPanelState:
                 if not result["ok"]:
                     raise RuntimeError(result.get("error", "Robot stop was not confirmed"))
             with self._lock:
-                if self._feedback_failed:
-                    raise RuntimeError("Robot feedback is lost; use the physical emergency stop")
+                if self._feedback_failed or not self._fresh():
+                    # JointControl may return a cached Stop verdict. It cannot
+                    # confirm the current state without live, fresh feedback.
+                    raise RuntimeError(
+                        "Robot feedback is lost or stale; use the physical emergency stop"
+                    )
+                if not disabling and (self._sample.mode not in {4, 5} or self._sample.error_status):
+                    raise RuntimeError(
+                        "Robot feedback does not show a stopped robot; "
+                        "use the physical emergency stop"
+                    )
                 if disabling:
                     self._disable_verified = True
                 self._message = (
@@ -1163,17 +1176,6 @@ class RobotPanelState:
     def _watch_once(self):
         self._release_ownership_if_idle()
         self._kb_watch()
-        if (
-            self._disconnect_requested
-            and self._syncing
-            and not self._fault
-            and not self._feedback_failed
-            and not self._fresh()
-        ):
-            # A cached stop verdict cannot confirm safety after feedback is lost.
-            # This check also runs after stop_sync releases the browser lease.
-            self._feedback_failed = True
-            self._request_stop(reason="Robot feedback is stale; use the physical emergency stop")
         if self._owner is None:
             return
         now = time.monotonic()

@@ -131,6 +131,8 @@ The terminal does not send disable automatically.
 
 After explicit disable, the service requires fresh disabled feedback, confirmed rest, and completion of pending tasks before it disconnects.
 While these tasks finish, the terminal continues to wait.
+If you press Ctrl+C during this wait, the new stop can require another explicit disable.
+When the terminal asks for it, enter `disable`, then `quit`.
 For a normal exit, enter `disable`, then `quit`.
 If feedback is lost or the stop cannot be confirmed, the terminal stays open and keeps the connection lock.
 Use the physical emergency stop when the terminal reports an unconfirmed stop.

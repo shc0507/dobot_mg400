@@ -131,7 +131,7 @@ def test_initial_feedback_failure_releases_ownership_for_another_panel(rig):
 
 
 @pytest.mark.parametrize("action", ["stop", "disable"])
-def test_safety_command_without_sync_holds_ownership_until_worker_exits(rig, action):
+def test_safety_command_without_sync_retains_ownership_after_unverified_result(rig, action):
     state, feed, controls = rig
     entered, release = threading.Event(), threading.Event()
 
@@ -151,11 +151,12 @@ def test_safety_command_without_sync_holds_ownership_until_worker_exits(rig, act
     finally:
         release.set()
     wait_for(lambda: not state.snapshot()["busy"])
+    assert state.snapshot()["locked"] and state.snapshot()["stop_unconfirmed"]
+    assert state.snapshot()["last_command"]["result"] == "failed"
+    assert "physical emergency stop" in state.snapshot()["message"]
     state.close()
-    try:
+    with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
         contender.acquire()
-    finally:
-        contender.release()
 
 
 def test_close_releases_ownership_after_confirmed_stop(rig):
@@ -534,7 +535,8 @@ def test_disabled_disconnect_keeps_feedback_and_lock_if_verification_fails(rig):
     assert len(controls) == 1
 
 
-def test_enabled_disconnect_keeps_feedback_until_explicit_disable(make_sim_rig):
+@pytest.mark.parametrize("new_owner", [False, True])
+def test_enabled_disconnect_keeps_feedback_until_explicit_disable(make_sim_rig, new_owner):
     rig = make_sim_rig()
     rig.connect()
     instance = rig.snapshot()["instance"]
@@ -553,21 +555,29 @@ def test_enabled_disconnect_keeps_feedback_until_explicit_disable(make_sim_rig):
     with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
         contender.acquire()
 
-    rig.state.command({"action": "start_sync"}, "browser-b")
-    with pytest.raises(RuntimeError, match="locked"):
-        rig.state.command({"action": "enable"}, "browser-b")
+    if new_owner:
+        rig.state.command({"action": "start_sync"}, "browser-b")
+        assert rig.snapshot()["controller_id"] == "browser-b"
+        with pytest.raises(RuntimeError, match="locked"):
+            rig.state.command({"action": "enable"}, "browser-b")
     rig.state.command({"action": "disable"}, "browser-b")
-    rig.wait(lambda s: not s["busy"] and not s["syncing"] and not s["locked"])
+    rig.wait(lambda s: not s["busy"] and not s["locked"])
     snapshot = rig.snapshot()
+    assert snapshot["syncing"] is new_owner
     assert snapshot["robot_mode"] == 4 and not snapshot["stop_unconfirmed"]
-    assert snapshot["controller_id"] is None and snapshot["instance"] == instance
+    assert snapshot["controller_id"] == ("browser-b" if new_owner else None)
+    assert snapshot["instance"] == instance
     assert snapshot["last_command"]["action"] == "disable"
     assert snapshot["last_command"]["result"] == "ok"
     assert rig.controller.sent().count("DisableRobot()") == 1
     assert "EnableRobot()" not in rig.controller.sent()
-    rig.state._reader.join(1)
-    rig.wait_passes(watchdog=1)
-    assert not rig.state._ownership.held
+    if new_owner:
+        rig.wait_reads(3)
+        assert rig.state._ownership.held and rig.state._reader.is_alive()
+    else:
+        rig.state._reader.join(1)
+        rig.wait_passes(watchdog=1)
+        assert not rig.state._ownership.held
 
 
 @pytest.mark.parametrize("failure", ["exception", "stale"])
@@ -592,6 +602,13 @@ def test_disconnect_feedback_loss_invalidates_cached_stop_without_an_owner(
     monkeypatch.setattr(rig._feed, "read_latest", lost_feedback)
     try:
         assert entered.wait(1)
+        if failure == "stale":
+            rig.wait(lambda s: not s["feedback_fresh"])
+            # A brief stale sample is not a reader failure. An explicit Stop
+            # still cannot reuse its earlier verdict during that gap.
+            assert not rig.state._feedback_failed
+            assert not rig.snapshot()["stop_unconfirmed"]
+            rig.state.command({"action": "stop"}, "browser-b")
         rig.wait(lambda s: not s["busy"] and s["stop_unconfirmed"])
         snapshot = rig.snapshot()
         assert snapshot["locked"] and snapshot["controller_id"] is None
@@ -602,6 +619,94 @@ def test_disconnect_feedback_loss_invalidates_cached_stop_without_an_owner(
     finally:
         monkeypatch.setattr(rig._feed, "read_latest", original)
         resume.set()
+
+
+def test_short_retained_feedback_gap_allows_disable_after_feedback_returns(
+    make_sim_rig, monkeypatch
+):
+    rig = make_sim_rig()
+    rig.connect()
+    rig.command("stop_sync")
+    rig.wait(lambda s: not s["busy"] and s["controller_id"] is None)
+    entered, resumed = threading.Event(), threading.Event()
+    original = rig._feed.read_latest
+
+    def brief_gap():
+        if not entered.is_set():
+            entered.set()
+            # Longer than the freshness window, shorter than the reader's 1 s timeout.
+            time.sleep(0.4)
+            resumed.set()
+        return original()
+
+    monkeypatch.setattr(rig._feed, "read_latest", brief_gap)
+    assert entered.wait(1)
+    rig.wait(lambda s: not s["feedback_fresh"])
+    rig.wait_passes(watchdog=1)
+    assert not rig.state._feedback_failed and not rig.snapshot()["stop_unconfirmed"]
+    assert rig.snapshot()["locked"] and rig.state._ownership.held
+    assert resumed.wait(1)
+    rig.wait(lambda s: s["feedback_fresh"])
+    rig.state.command({"action": "disable"}, "browser-b")
+    rig.wait(lambda s: not s["busy"] and not s["syncing"] and not s["locked"])
+    snapshot = rig.snapshot()
+    assert not snapshot["stop_unconfirmed"] and snapshot["robot_mode"] == 4
+    assert snapshot["controller_id"] is None
+    assert snapshot["last_command"]["result"] == "ok"
+    assert rig.controller.sent().count("ResetRobot()") == 1
+    assert rig.controller.sent().count("DisableRobot()") == 1
+    assert "EnableRobot()" not in rig.controller.sent()
+
+
+@pytest.mark.parametrize("mode,error", [(7, False), (9, False), (5, True)])
+def test_cached_stop_requires_fresh_idle_feedback_without_an_error(make_sim_rig, mode, error):
+    rig = make_sim_rig()
+    rig.connect()
+    rig.command("stop_sync")
+    rig.wait(lambda s: not s["busy"] and s["controller_id"] is None)
+    rig.controller.update(mode=mode, error_status=error)
+    rig.wait(
+        lambda s: s["feedback_fresh"] and s["robot_mode"] == mode and s["robot_error"] == error
+    )
+    rig.state.command({"action": "stop"}, "browser-b")
+    rig.wait(lambda s: not s["busy"] and s["stop_unconfirmed"])
+    snapshot = rig.snapshot()
+    assert snapshot["locked"] and snapshot["syncing"]
+    assert snapshot["last_command"]["result"] == "failed"
+    assert "use the physical emergency stop" in snapshot["message"]
+    assert rig.controller.sent().count("ResetRobot()") == 1
+    assert "DisableRobot()" not in rig.controller.sent()
+
+
+def test_same_owner_start_sync_does_not_cancel_its_pending_disconnect(rig):
+    state, feed, controls = rig
+    connect(state)
+    entered, release = threading.Event(), threading.Event()
+    control = controls[0]
+    original = control.stop
+
+    def stop():
+        entered.set()
+        assert release.wait(1)
+        return original()
+
+    control.stop = stop
+    try:
+        state.command({"action": "stop_sync"}, "browser-a")
+        assert entered.wait(1)
+        state.command({"action": "start_sync"}, "browser-a")
+        assert state.snapshot()["controller_id"] == "browser-a"
+        release.set()
+        wait_for(lambda: not state.snapshot()["busy"])
+        assert state.snapshot()["controller_id"] is None
+        assert state.snapshot()["syncing"] and state.snapshot()["locked"]
+        feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+        wait_for(lambda: state.snapshot()["robot_mode"] == 4)
+        state.command({"action": "disable"}, "browser-a")
+        wait_for(lambda: not state.snapshot()["busy"] and not state.snapshot()["syncing"])
+        assert not state.snapshot()["locked"]
+    finally:
+        release.set()
 
 
 def test_disabled_disconnect_still_confirms_and_closes_feedback(make_sim_rig):

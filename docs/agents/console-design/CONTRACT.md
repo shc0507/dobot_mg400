@@ -12,7 +12,7 @@ This is the contract for the workspace tasks DSH-04 (Cameras), DSH-05 (Motion) a
 
 ## 2. Devices
 
-The devices are the service names in `orchestrator.clients.SERVICES`: `robot`, `stage`, `thermal`, `vision`, `furnace`, `microscope`. The status strip also shows `cameras` (the camera preview link) and `runs` (the orchestrator).
+The devices are the service names in `orchestrator.clients.SERVICES`: `robot`, `stage`, `thermal`, `vision`, `furnace`, `microscope`. The status strip also shows `cameras` (camera1 to camera4 through the console relay) and `runs` (the orchestrator).
 
 ## 3. HTTP API
 
@@ -40,6 +40,7 @@ The DSH-01 routes stay: `GET <base>/api/dashboard/state`, `POST <base>/api/dashb
 ```json
 {
   "console": {"commit": "c6d5f14", "demo": false},
+  "camera_preview": {"state": "live"},
   "control": [{"device": "stage", "holder": "console-control-…", "mine": true, "state": "held", "message": null, "held_s": 12.5}],
   "readiness": [{"id": "gas-map", "state": "blocked", "detail": "…", "workspace": "process"}],
   "workspaces": [{"id": "overview", "title": {"en": "Overview", "zh": "总览"}}]
@@ -47,6 +48,8 @@ The DSH-01 routes stay: `GET <base>/api/dashboard/state`, `POST <base>/api/dashb
 ```
 
 - A service card has `id`, `phase` (`unconfigured`, `loading`, `ready`, `stale`, `unavailable`), `connected`, `busy`, `locked`, `fault`, `lease_holder` and `demo`. A card is `stale` 3 s after its last read.
+- `camera_preview.state` is `unconfigured` (no `MG400_ORCH_CAMERA_URL`), `live` or `stale` (a relayed view has frames), `unavailable` (the last relay attempt failed) or `idle`. It never contains a URL or the camera key.
+- An unconfigured service keeps `phase` `unconfigured` between reads. Only a configured service shows `loading` before its first read.
 - `readiness[].state` is `ready`, `todo` or `blocked`. The ids are `tool-offset`, `camera-calibration`, `stage-reference`, `focus-zero`, `gas-map` and `cutoff`.
 - An Event is `{"service", "seq", "ts_unix", "level", "message"}`. `service` is a device name or `runs`.
 

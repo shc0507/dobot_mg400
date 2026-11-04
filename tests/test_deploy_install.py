@@ -771,6 +771,27 @@ def test_vision_refuses_bad_local_weights_before_any_host_mutation(host, vision_
     opener.assert_not_called()
 
 
+def test_vision_reinstall_keeps_verified_weights_without_a_download(
+    module, host, vision_asset, monkeypatch
+):
+    source, opener = vision_asset
+    select_optional(host, "vision")
+    assert host.install() == 0
+    assert opener.call_count == 1
+    target = host.data / "models/chip-arm-yolo26s-seg-v1.pt"
+    # The test cannot chown to the service account: accept the test user as the owner.
+    monkeypatch.setattr(module.main.__globals__["assets"], "OWNER", (os.getuid(), os.getgid()))
+    assert host.install() == 0
+    assert opener.call_count == 1
+    assert "keep asset vision-weights" in host.out.getvalue()
+    assert target.read_bytes() == source.read_bytes()
+    # A changed file no longer matches the manifest: download it again.
+    target.write_bytes(b"x" * len(source.read_bytes()))
+    assert host.install() == 0
+    assert opener.call_count == 2
+    assert target.read_bytes() == source.read_bytes()
+
+
 def test_vision_failed_download_preserves_existing_weights_and_installs_no_unit(host, vision_asset):
     _, opener = vision_asset
     select_optional(host, "vision")

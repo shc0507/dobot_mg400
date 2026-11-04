@@ -14,6 +14,8 @@
 - 工作区为 **Overview**、**Motion**、**Cameras** 和 **Furnace + microscope**。未完成的工作区链接到原有页面。
 - 语言切换在 English 和中文之间切换。浏览器保存所选语言。
 - 状态条为每个服务显示 1 个标签：圆点和文字。状态超过 3 秒即显示过期。
+- 未配置的服务在每个工作区都显示 Not configured。
+- Cameras 标签显示控制台中转的 camera1 到 camera4 的状态。未设置 `MG400_ORCH_CAMERA_URL` 时显示 Not configured。有画面打开时显示 Live 或 Stale，最近一次中转失败时显示 Unavailable，否则显示 Configured。
 - 如果设置了 `MG400_ORCH_TOKEN`，在 **Console access token** 中输入它，再选 **Connect**。页面只在内存中保存此令牌。
 
 **STOP ALL MOTION** 使用与总览页相同的停止扇出：机器人、平台和显微镜。停止不需要控制权，也不等待租约。
@@ -42,6 +44,7 @@
 - **Run** 显示当前运行及其步骤。暂停和中止在总览页中操作。
 - **Events** 合并各服务的 `api/events`，最新事件在前。可筛选警告或单个服务。
 - **Safety** 提供停止全部运动、关闭加热和关闭气体，并显示每个目标的结果。关闭加热和关闭气体需要在页面中确认。
+- **Service pages** 链接原有服务页面。**Camera preview** 打开 Cameras 工作区。控制台页面和链接不包含摄像头密钥。
 
 ### 运动工作区
 

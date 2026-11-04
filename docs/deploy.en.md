@@ -251,6 +251,7 @@ Other assets require an explicit request. To download enabled services' assets:
 /usr/bin/python3 /opt/mg400/deploy/install.py --fetch-assets
 ```
 
+If the installed file matches the manifest size, SHA-256, owner, and mode, the installer keeps it and does not download it again.
 Downloads use only HTTPS, including redirects.
 The installer writes content to a temporary file in the destination directory, then checks its byte count and SHA-256.
 After successful checks and ownership and permission changes, the installer replaces the destination atomically.
@@ -366,7 +367,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
 | `mg400ctl terminal` | Open the [interactive terminal](terminal-control.en.md) |
 | `mg400ctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
-| `mg400ctl camera-url` | Show the camera preview link with its access token |
+| `mg400ctl camera-url` | Show the camera preview link with its access token. If `proxy` is enabled, show the proxy link |
 | `mg400ctl camera-check` | Check camera devices, services, and capture streams in order. See [Camera failures](olares.en.md#camera-failures) |
 | `mg400ctl token web` | Show the web panel access token. `token stage` shows the stage panel token |
 | `mg400ctl token orch` | Show the recipe service token, without its downstream aliases |

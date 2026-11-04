@@ -578,6 +578,25 @@ def test_camera_url_uses_the_key_and_default_bind(ctl):
     assert ctl.out.getvalue() == f"http://127.0.0.1:1985/{'k' * 43}/\n"
 
 
+def test_camera_url_uses_the_proxy_when_it_is_enabled(ctl):
+    key = ctl.host.data / "camera/preview.key"
+    key.parent.mkdir(parents=True)
+    key.write_text("k" * 43 + "\n")
+    ctl.host.settings.write_text(
+        SETTINGS + "MG400_OPTIONAL_SERVICES=proxy\nMG400_PROXY_BIND=100.64.0.1\n"
+    )
+    assert ctl.call("camera-url") == 0
+    assert ctl.out.getvalue() == f"http://100.64.0.1:8080/camera/{'k' * 43}/\n"
+    ctl.out.truncate(0)
+    ctl.out.seek(0)
+    ctl.host.settings.write_text(
+        SETTINGS
+        + "MG400_OPTIONAL_SERVICES=proxy\nMG400_PROXY_BIND=fd00::1\nMG400_PROXY_PORT=9443\n"
+    )
+    assert ctl.call("camera-url") == 0
+    assert ctl.out.getvalue() == f"http://[fd00::1]:9443/camera/{'k' * 43}/\n"
+
+
 def test_token_prints_only_a_set_token(ctl, capsys):
     assert ctl.call("token", "web") == 0
     assert ctl.out.getvalue() == "panel-token-0123456789abcdef\n"

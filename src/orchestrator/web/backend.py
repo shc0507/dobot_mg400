@@ -151,6 +151,13 @@ class Dashboard:
             "observed": None,
         }
 
+    def _configured(self, name):
+        try:
+            return bool(self.service.dashboard_configured(name))
+        except Exception:
+            # Unknown: show loading until the read settles the phase.
+            return True
+
     def _spawn(self, function, name):
         def work():
             try:
@@ -288,7 +295,12 @@ class Dashboard:
                 if name in self.reading:
                     continue
                 self.reading.add(name)
-                if name != "summary" and self.cards[name]["observed"] is None:
+                if (
+                    name != "summary"
+                    and self.cards[name]["observed"] is None
+                    and self._configured(name)
+                ):
+                    # An unconfigured service keeps "unconfigured" between reads.
                     self.cards[name]["phase"] = "loading"
                 try:
                     self._spawn(

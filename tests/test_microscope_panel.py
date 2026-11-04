@@ -669,6 +669,18 @@ def wait_recording(rig, status):
     pytest.fail(f"Recording did not reach {status}")
 
 
+def wait_state(rig, check, description):
+    import time
+
+    until = time.monotonic() + 3
+    while time.monotonic() < until:
+        state = rig.service.snapshot()
+        if check(state):
+            return state
+        time.sleep(0.005)
+    pytest.fail(f"The service did not reach: {description}")
+
+
 def test_recording_exact_id_start_finish_and_private_retained_outputs(recording_rig):
     rig = recording_rig
     ident = "a" * 32
@@ -1418,8 +1430,15 @@ def test_recording_cleanup_failure_keeps_stop_unconfirmed(recording_rig):
     rig.camera.stop_recording = fail
     try:
         rig.service.stop("emergency", 0)
-        state = wait_recording(rig, "failed")
-        assert state["locked"] and "shutdown is unconfirmed" in state["fault"]["message"]
+        wait_recording(rig, "failed")
+        # The recording status and the fault latch are published in separate steps.
+        state = wait_state(
+            rig,
+            lambda value: value["locked"] and value["fault"] is not None,
+            "the locked fault state",
+        )
+        assert state["recording"]["status"] == "failed"
+        assert "shutdown is unconfirmed" in state["fault"]["message"]
         assert rig.service.stop("emergency", 1) == "unconfirmed"
     finally:
         rig.camera.stop_recording = original

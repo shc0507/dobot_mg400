@@ -275,6 +275,35 @@ def test_stale_and_offline_states(rig):
     assert sum(rig.service.camera_relay.streams().values()) == 0
 
 
+def test_console_state_reports_the_preview_source_without_its_url(rig, monkeypatch):
+    def preview():
+        body = rig.client.get("/lab/api/console/state", headers=headers()).get_json()
+        assert "1985" not in json.dumps(body["camera_preview"])
+        return body["camera_preview"]["state"]
+
+    assert preview() == "idle"
+    response = open_stream(rig, "camera1")
+    next(response.response)
+    assert preview() == "live"
+    rig.clock.value += cameras_module.STALE_S + 0.5
+    assert preview() == "stale"
+    response.close()
+    rig.clock.value += cameras_module.RECENT_S
+    assert preview() == "idle"
+    rig.sources.fail.add("camera2")
+    assert open_stream(rig, "camera2").status_code == 502
+    assert preview() == "unavailable"
+    monkeypatch.setattr(rig.sources, "configured", lambda view: False)
+    assert preview() == "unconfigured"
+
+
+def test_preview_state_follows_the_console_camera_setting(rig):
+    rig.service.camera_sources = None
+    assert cameras_module.preview_state(rig.service)["state"] == "idle"
+    rig.service.settings = {**rig.service.settings, "MG400_ORCH_CAMERA_URL": ""}
+    assert cameras_module.preview_state(rig.service)["state"] == "unconfigured"
+
+
 def test_an_ended_upstream_releases_its_slot(rig):
     rig.sources.frames = 1
     response = open_stream(rig, "camera1")

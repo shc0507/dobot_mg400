@@ -14,6 +14,8 @@ The console is the single entry for the operator. The old service pages stay as 
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**. A workspace that is not built yet links to the old pages.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
+- A service that is not configured shows Not configured on every workspace.
+- The Cameras chip shows the state of camera1 to camera4 that the console relays. If `MG400_ORCH_CAMERA_URL` is not set, it shows Not configured. While a view is open, it shows Live or Stale. If the last relay attempt failed, it shows Unavailable. Otherwise it shows Configured.
 - If `MG400_ORCH_TOKEN` is set, enter it in **Console access token**, then select **Connect**. The page keeps this token only in memory.
 
 **STOP ALL MOTION** uses the same stop fan-out as the dashboard: the robot, the stage and the microscope. A stop needs no control and does not wait for a lease.
@@ -42,6 +44,7 @@ The workspaces send manual commands through the console. The console forwards ea
 - **Run** shows the current run and its steps. Hold and Abort are in the dashboard.
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
 - **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
+- **Service pages** links to the old service pages. **Camera preview** opens the Cameras workspace. Console pages and links do not contain the camera key.
 
 ### Motion workspace
 

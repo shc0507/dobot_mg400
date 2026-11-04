@@ -412,6 +412,32 @@ class _Cache:
             return self.value
 
 
+def preview_state(service):
+    """Summarize camera1 to camera4 for the status strip. Never return a URL or key.
+
+    unconfigured: no ``MG400_ORCH_CAMERA_URL``. live or stale: a relayed view has
+    frames. unavailable: the last relay attempt failed. idle: configured, no view open.
+    """
+    value = getattr(service, "camera_sources", None)
+    source = value if value is not None else HttpSources(service)
+    try:
+        configured = bool(source.configured(CAMERAS[0]))
+    except Exception:
+        configured = False
+    if not configured:
+        return {"state": "unconfigured"}
+    relay = getattr(service, "camera_relay", None)
+    views = [relay.view_state(view) for view in CAMERAS] if relay is not None else []
+    states = {view["state"] for view in views}
+    if "live" in states:
+        return {"state": "live"}
+    if "stale" in states:
+        return {"state": "stale"}
+    if any(view["error"] for view in views):
+        return {"state": "unavailable"}
+    return {"state": "idle"}
+
+
 def register(blueprint, service):
     clock = getattr(getattr(service, "console", None), "clock", time.monotonic)
     relay = Relay(clock)

@@ -30,7 +30,7 @@
       "service.furnace": "Furnace", "service.runs": "Runs",
       "chip.unconfigured": "Not configured", "chip.loading": "Loading", "chip.unavailable": "Unavailable",
       "chip.stale": "Stale", "chip.fault": "Fault", "chip.locked": "Locked", "chip.disconnected": "Disconnected",
-      "chip.busy": "Busy", "chip.ready": "Ready", "chip.demo": "demo", "chip.linked": "Page linked",
+      "chip.busy": "Busy", "chip.ready": "Ready", "chip.demo": "demo", "chip.live": "Live", "chip.configured": "Configured",
       "chip.noRun": "No run", "chip.offline": "Console offline",
       "stop.sent": "Stop all motion sent.", "stop.failed": "Stop all motion could not be sent: {error}",
       "outcome.unknown": "The outcome is unknown. Check the device before you continue.",
@@ -51,7 +51,7 @@
       "service.furnace": "炉子", "service.runs": "运行",
       "chip.unconfigured": "未配置", "chip.loading": "读取中", "chip.unavailable": "不可用",
       "chip.stale": "过期", "chip.fault": "故障", "chip.locked": "已锁定", "chip.disconnected": "未连接",
-      "chip.busy": "忙碌", "chip.ready": "就绪", "chip.demo": "演示", "chip.linked": "已链接页面",
+      "chip.busy": "忙碌", "chip.ready": "就绪", "chip.demo": "演示", "chip.live": "实时", "chip.configured": "已配置",
       "chip.noRun": "无运行", "chip.offline": "控制台离线",
       "stop.sent": "已发送停止全部运动。", "stop.failed": "无法发送停止全部运动：{error}",
       "outcome.unknown": "结果未知。继续前请检查设备。",
@@ -99,17 +99,22 @@
     return { tone: run.status === "running" ? "info" : run.status === "failed" ? "bad" : "ok", text: run.status || "" };
   }
 
-  function camerasChip(cameras, fresh) {
+  /** camera1 to camera4 through the console relay (MG400_ORCH_CAMERA_URL). */
+  function camerasChip(preview, fresh) {
     if (!fresh) return { tone: "warn", key: "chip.stale" };
-    const linked = (cameras || []).some(item => item && item.id === "camera" && item.url);
-    return linked ? { tone: "info", key: "chip.linked" } : { tone: "off", key: "chip.unconfigured" };
+    const state = preview?.state;
+    if (state === "live") return { tone: "ok", key: "chip.live" };
+    if (state === "stale") return { tone: "warn", key: "chip.stale" };
+    if (state === "unavailable") return { tone: "bad", key: "chip.unavailable" };
+    if (state === "idle") return { tone: "ok", key: "chip.configured" };
+    return { tone: "off", key: "chip.unconfigured" };
   }
 
   function chips(snapshot, fresh) {
     const cards = new Map((snapshot?.services || []).map(card => [card.id, card]));
     const rows = [];
     for (const id of ["robot", "stage"]) rows.push({ id, ...serviceChip(cards.get(id), fresh) });
-    rows.push({ id: "cameras", ...camerasChip(snapshot?.cameras, fresh) });
+    rows.push({ id: "cameras", ...camerasChip(snapshot?.camera_preview, fresh) });
     for (const id of ["thermal", "vision", "microscope", "furnace"]) rows.push({ id, ...serviceChip(cards.get(id), fresh) });
     rows.push({ id: "runs", ...runsChip(snapshot?.orchestrator, snapshot?.run, fresh) });
     return rows;

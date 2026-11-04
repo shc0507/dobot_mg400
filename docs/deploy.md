@@ -251,6 +251,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 /usr/bin/python3 /opt/mg400/deploy/install.py --fetch-assets
 ```
 
+已安装文件的大小、SHA-256、所有者和权限都与清单一致时，安装器保留该文件，不再下载。
 下载只使用 HTTPS，包括重定向。
 安装器把内容写入目标目录的临时文件，再校验字节数和 SHA-256。
 校验通过并设置所有者和权限后，安装器原子替换目标文件。
@@ -366,7 +367,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
 | `mg400ctl terminal` | 打开 [交互终端](terminal-control.md) |
 | `mg400ctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
-| `mg400ctl camera-url` | 显示含访问密钥的摄像头预览链接 |
+| `mg400ctl camera-url` | 显示含访问密钥的摄像头预览链接。启用 `proxy` 时显示代理链接 |
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 | `mg400ctl token web` | 显示网页面板的访问密钥。`token stage` 显示位移台面板的密钥 |
 | `mg400ctl token orch` | 显示配方服务令牌，不显示下游别名 |

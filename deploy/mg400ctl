@@ -945,8 +945,16 @@ def main(
         as_service_user(host, settings, command + ["--switch-to-tcp"] * args.switch_to_tcp, execvpe)
     elif args.command == "camera-url":
         key = (host.data / "camera/preview.key").read_text().strip()
-        bind = settings.get("MG400_CAMERA_BIND") or "127.0.0.1"
-        print(f"http://{bind}:{CAMERA_PORT}/{key}/", file=out)
+        enabled = enabled_services(registry, settings.get("MG400_OPTIONAL_SERVICES", ""))
+        if "proxy" in enabled:
+            # The preview listens on loopback. Off the host, only the proxy reaches it.
+            bind = settings.get("MG400_PROXY_BIND") or "127.0.0.1"
+            port = int(settings.get("MG400_PROXY_PORT") or registry["proxy"]["port"])
+            bind = f"[{bind}]" if ":" in bind else bind
+            print(f"http://{bind}:{port}/camera/{key}/", file=out)
+        else:
+            bind = settings.get("MG400_CAMERA_BIND") or "127.0.0.1"
+            print(f"http://{bind}:{CAMERA_PORT}/{key}/", file=out)
     elif args.command == "token":
         value = settings.get(registry[args.panel]["token"])
         if not value:

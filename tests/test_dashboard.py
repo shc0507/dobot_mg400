@@ -150,11 +150,7 @@ def operation(rig, identity):
 
 
 def test_exact_public_shell_and_assets_keep_api_and_origin_protection(rig):
-    for path in (
-        "/lab/",
-        "/lab/dashboard-static/dashboard.js",
-        "/lab/dashboard-static/dashboard.css",
-    ):
+    for path in ("/lab/", "/lab/chip"):
         response = rig.client.get(path)
         assert response.status_code == 200
         assert TOKEN not in response.get_data(as_text=True)
@@ -172,12 +168,18 @@ def test_exact_public_shell_and_assets_keep_api_and_origin_protection(rig):
         assert (
             rig.client.get(path, headers={"Authorization": f"Bearer {TOKEN} "}).status_code == 401
         )
-    assert rig.client.get("/dashboard-static/dashboard.js").status_code == 401
+    for path in (
+        "/lab/dashboard/",
+        "/lab/dashboard-static/dashboard.js",
+        "/lab/dashboard-static/dashboard.css",
+    ):
+        auth = {"Authorization": f"Bearer {TOKEN}"}
+        assert rig.client.get(path, headers=auth).status_code == 404
     assert rig.client.get("/lab/dashboard-static/../app.py").status_code == 401
     assert rig.client.post("/lab/").status_code == 401
 
 
-@pytest.mark.parametrize("path", ["/", "/dashboard-static/dashboard.js", "/api/services"])
+@pytest.mark.parametrize("path", ["/", "/chip", "/api/services"])
 def test_tokenless_dashboard_keeps_loopback_and_forwarding_checks(rig, path):
     client = create_app(rig.service).test_client()
     assert client.get(path, headers={"Host": "remote.invalid"}).status_code == 403

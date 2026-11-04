@@ -1,4 +1,4 @@
-"""Dashboard routes; instrument credentials stay in the service process."""
+"""Dashboard API routes and the chip passport pages; instrument credentials stay here."""
 
 from flask import Blueprint, jsonify, render_template, request, send_from_directory
 
@@ -13,20 +13,17 @@ __all__ = ["console_blueprints", "dashboard_blueprint"]
 def dashboard_blueprint(service, prefix):
     blueprint = Blueprint("dashboard", __name__, template_folder="templates", url_prefix=prefix)
 
-    # The Lab Console owns the prefix root. The DSH-01 dashboard stays as a fallback.
-    @blueprint.get("/dashboard/", defaults={"passport": False, "chip_id": ""})
-    @blueprint.get("/chip", defaults={"passport": True, "chip_id": ""})
-    @blueprint.get("/chip/<path:chip_id>", defaults={"passport": True})
-    def index(passport, chip_id):
-        # Only fixed shells share this public callback. Stored data never does.
-        return render_template("passport.html" if passport else "dashboard.html", base_path=prefix)
+    # The Lab Console owns the prefix root. The chip passport pages are records.
+    @blueprint.get("/chip", defaults={"chip_id": ""})
+    @blueprint.get("/chip/<path:chip_id>")
+    def index(chip_id):
+        # Only the fixed shell shares this public callback. Stored data never does.
+        return render_template("passport.html", base_path=prefix)
 
-    @blueprint.get("/dashboard-static/dashboard.js", defaults={"name": "dashboard.js"})
     @blueprint.get("/dashboard-static/passport.js", defaults={"name": "passport.js"})
     def javascript(name):
         return send_from_directory(blueprint.root_path + "/static", name)
 
-    @blueprint.get("/dashboard-static/dashboard.css", defaults={"name": "dashboard.css"})
     @blueprint.get("/dashboard-static/passport.css", defaults={"name": "passport.css"})
     def stylesheet(name):
         return send_from_directory(blueprint.root_path + "/static", name)

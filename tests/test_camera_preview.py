@@ -1,7 +1,6 @@
 import importlib.util
 import io
 import itertools
-import json
 import socket
 import urllib.error
 from contextlib import nullcontext
@@ -180,125 +179,6 @@ def fake_vision(monkeypatch, module, response):
     builder = Mock(return_value=SimpleNamespace(open=opener))
     monkeypatch.setattr(module.urllib.request, "build_opener", builder)
     return opener, builder
-
-
-@pytest.mark.parametrize("camera", [1, 2, 3])
-@pytest.mark.parametrize("token", [None, "vision-test-token-at-least-24-characters"])
-def test_detections_proxy_is_fixed_bounded_keyed_and_keeps_token_server_side(
-    preview, monkeypatch, camera, token
-):
-    module, upstream = preview
-    if token is None:
-        monkeypatch.delenv("MG400_VISION_TOKEN", raising=False)
-    else:
-        monkeypatch.setenv("MG400_VISION_TOKEN", token)
-    response = VisionResponse(json.dumps(vision_result(camera)).encode(), camera)
-    response.read = Mock(wraps=response.read)
-    opener, builder = fake_vision(monkeypatch, module, response)
-    assert request(module, f"camera{camera}/detections.json", key="wrong")[0] == 404
-    opener.assert_not_called()
-    status, headers, body = request(module, f"camera{camera}/detections.json")
-    assert status == 200 and json.loads(body) == {**vision_result(camera), "available": True}
-    assert headers["Content-Type"] == "application/json; charset=utf-8"
-    assert headers["Cache-Control"] == "no-store"
-    assert headers["Content-Length"] == str(len(body))
-    (request_,) = opener.call_args.args
-    assert request_.full_url == f"http://127.0.0.1:8771/api/detect?camera={camera}"
-    assert request_.get_header("Authorization") == ("Bearer " + token if token else None)
-    assert opener.call_args.kwargs == {"timeout": 2}
-    proxy, redirect = builder.call_args.args
-    assert proxy.proxies == {} and isinstance(redirect, module.NoVisionRedirect)
-    response.read.assert_called_once_with(module.MAX_DETECTIONS + 1)
-    assert response.closed
-    upstream.assert_not_called()
-    if token:
-        assert (
-            token.encode() not in body + request(module, "")[2] + request(module, "preview.js")[2]
-        )
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        b"not JSON",
-        b"\xff",
-        b"[]",
-        b"{}",
-        b'{"detections":[]}',
-        json.dumps({**vision_result(), "camera": 2}).encode(),
-        json.dumps({**vision_result(), "camera": True}).encode(),
-        json.dumps({**vision_result(), "image_size": {"width": 0, "height": 480}}).encode(),
-        json.dumps({**vision_result(), "extra": float("nan")}).encode(),
-        json.dumps({**vision_result(), "extra": "x" * (256 * 1024)}).encode(),
-    ],
-)
-def test_malformed_or_oversized_vision_results_are_unavailable(preview, monkeypatch, body):
-    module, _ = preview
-    response = VisionResponse(body)
-    fake_vision(monkeypatch, module, response)
-    status, headers, body = request(module, "camera1/detections.json")
-    assert status == 200 and json.loads(body) == {"available": False}
-    assert headers["Cache-Control"] == "no-store" and response.closed
-
-
-@pytest.mark.parametrize("kind", ["timeout", "http", "status", "redirect"])
-def test_vision_failure_never_changes_snapshot_or_stream_behavior(preview, monkeypatch, kind):
-    module, _ = preview
-    response = VisionResponse(json.dumps(vision_result()).encode())
-    opener, _ = fake_vision(monkeypatch, module, response)
-    if kind == "timeout":
-        opener.side_effect = TimeoutError("secret upstream failure")
-    elif kind == "http":
-        opener.side_effect = urllib.error.HTTPError(response.url, 503, "Unavailable", {}, response)
-    elif kind == "status":
-        response.status = 503
-    else:
-        response.url = "http://other.example/detections"
-    assert json.loads(request(module, "camera1/detections.json")[2]) == {"available": False}
-    assert request(module, "camera1.jpg")[0] == 200
-    feed = module.FEEDS["camera1"]
-    feed.start = Mock()
-    feed.wait_after = Mock(side_effect=[(1, b"\xff\xd8frame\xff\xd9"), OSError("done")])
-    status, _, body = request(module, "camera1.mjpeg")
-    assert status == 200 and b"\xff\xd8frame\xff\xd9" in body
-    if kind != "timeout":
-        assert response.closed
-
-
-def test_vision_redirect_cannot_forward_bearer_token(preview, monkeypatch):
-    from email.message import Message
-    from urllib.request import HTTPHandler, build_opener
-    from urllib.response import addinfourl
-
-    module, _ = preview
-    requested = []
-    monkeypatch.setenv("MG400_VISION_TOKEN", "private-test-token-at-least-24-characters")
-
-    class FakeHTTP(HTTPHandler):
-        def http_open(self, request_):
-            requested.append(request_)
-            assert len(requested) == 1
-            headers = Message()
-            headers["Location"] = "http://untrusted.example/"
-            response = addinfourl(io.BytesIO(b""), headers, request_.full_url, 302)
-            response.msg = "Found"
-            return response
-
-    monkeypatch.setattr(
-        module.urllib.request, "build_opener", lambda *handlers: build_opener(*handlers, FakeHTTP())
-    )
-    assert json.loads(request(module, "camera1/detections.json")[2]) == {"available": False}
-    assert len(requested) == 1
-    assert requested[0].full_url == "http://127.0.0.1:8771/api/detect?camera=1"
-
-
-def test_page_has_one_optional_overlay_per_camera(preview):
-    module, _ = preview
-    page = request(module, "")[2].decode()
-    assert page.count('type="checkbox" data-overlay') == 3
-    assert page.count('<canvas hidden aria-hidden="true">') == 3
-    for camera in (1, 2, 3):
-        assert f'data-detections="camera{camera}/detections.json"' in page
 
 
 class ChunkedUpstream:
@@ -584,26 +464,20 @@ def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkey
         ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, count + 1)),
     )
     module = load_preview()
-    page = request(module, "")[2].decode()
-    assert page.count('type="checkbox" data-overlay') == count
-    assert page.count('<canvas hidden aria-hidden="true">') == count
+    assert request(module, "")[0] == 404
     assert tuple(module.FEEDS) == tuple(f"camera{camera}" for camera in range(1, count + 1))
     assert all(feed.thread is None for feed in module.FEEDS.values())
     assert not any(feed.on_demand for feed in module.FEEDS.values())
-    assert ("摄像头 4 · 托盘" in page) is (count == 4)
     for camera in range(count + 1, 6):
         for route in (
             f"camera{camera}.jpg",
             f"camera{camera}.mjpeg",
-            f"camera{camera}/detections.json",
         ):
             assert request(module, route)[0] == 404
     upstream.assert_not_called()
 
 
-def test_fourth_camera_still_and_detection_routes_keep_key_and_fixed_destinations(
-    preview, monkeypatch
-):
+def test_fourth_camera_still_route_keeps_key_and_fixed_destination(preview, monkeypatch):
     _, upstream = preview
     monkeypatch.setenv(
         "MG400_CAMERA_DEVICES",
@@ -612,15 +486,13 @@ def test_fourth_camera_still_and_detection_routes_keep_key_and_fixed_destination
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,1280x720@30")
     module = load_preview()
     assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, True]
-    for route in ("camera4.jpg", "camera4.mjpeg", "camera4/detections.json"):
+    for route in ("camera4.jpg", "camera4.mjpeg"):
         assert request(module, route, key="wrong-key")[0] == 404
+    for route in ("", "preview.js", "camera4/detections.json"):
+        assert request(module, route)[0] == 404
     upstream.assert_not_called()
     assert request(module, "camera4.jpg")[2] == b"\xff\xd8camera-frame\xff\xd9"
     upstream.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera4", timeout=2)
-    detections = Mock(return_value={"available": False})
-    monkeypatch.setattr(module, "vision_detections", detections)
-    assert json.loads(request(module, "camera4/detections.json")[2]) == {"available": False}
-    detections.assert_called_once_with(4)
     assert all(feed.thread is None for feed in module.FEEDS.values())
 
 
@@ -638,7 +510,6 @@ def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(pre
     monkeypatch.delenv("MG400_CAMERA_CAPTURE_SIZES")
     module = load_preview()
     assert module.CAMERAS.mode(1) == (1920, 1080, 60)
-    assert "预览每路最高 30 帧/秒" in module.PAGE
 
 
 def test_on_demand_feed_releases_last_viewer_and_can_start_again(preview, monkeypatch):

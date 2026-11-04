@@ -228,7 +228,7 @@ def test_shell_is_public_and_apis_need_the_operator_token(rig):
     assert rig.client.get("/lab/console-static/shell.js").status_code == 200
     assert rig.client.get("/lab/console-static/..%2Fconsole.py").status_code in {401, 404}
     assert rig.client.get("/lab/console-static/Shell.py").status_code == 404
-    assert rig.client.get("/lab/dashboard/").status_code == 200
+    assert rig.client.get("/lab/dashboard/", headers=headers()).status_code == 404
     assert rig.client.get("/lab/api/console/state").status_code == 401
     assert rig.client.post("/lab/api/console/control/stage/take", json={}).status_code == 401
     foreign = rig.client.get(

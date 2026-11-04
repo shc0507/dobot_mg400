@@ -138,10 +138,12 @@ test("the cameras chip follows the console camera relay, not a dashboard link", 
   assert.equal(chips(snapshot, true).find(row => row.id === "cameras").key, "chip.live");
 });
 
-test("the overview links the camera preview to the Cameras workspace without a key", () => {
-  const source = readFileSync(new URL("../src/orchestrator/web/static/console/overview.js", import.meta.url), "utf8");
-  assert.match(source, /\["camera", "#cameras"\]/);
-  assert.doesNotMatch(source, /"\/camera\/"/);
+test("no console script links to a removed service page", () => {
+  for (const name of ["shell", "overview", "motion", "cameras", "process"]) {
+    const source = readFileSync(new URL(`../src/orchestrator/web/static/console/${name}.js`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /href: "\/(robot|stage|thermal|furnace|microscope|camera)\//, name);
+    assert.doesNotMatch(source, /"\/dashboard\/"/, name);
+  }
 });
 
 test("the strip renders 8 chips with a hidden dot and visible text", async () => {

@@ -84,3 +84,11 @@ test("a small tile asks for 10 fps and a large tile for the source rate", () => 
   assert.deepEqual(logic.streamTicket("camera2", false), { view: "camera2", kind: "stream", fps: 10 });
   assert.deepEqual(logic.streamTicket("microscope", true), { view: "microscope", kind: "stream", fps: 30 });
 });
+
+test("the thermal panel relays connect and shutter and links no service page", () => {
+  const source = readFileSync(path, "utf8");
+  assert.match(source, /send\("connect", \{\}\)/);
+  assert.match(source, /send\("shutter", \{\}\)/);
+  assert.equal(logic.translate("en", "connect"), "Connect camera");
+  assert.ok(!/side\.page|target: "_blank"/.test(source));
+});

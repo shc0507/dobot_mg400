@@ -18,7 +18,6 @@ import math
 import os
 import pwd
 import re
-import secrets
 import shutil
 import subprocess
 import sys
@@ -85,7 +84,7 @@ class Host:
         self.dev = root / "dev"
 
 
-SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "token", "port", "assets"}
+SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "port", "assets"}
 SERVICE_NAME = re.compile(r"[a-z][a-z0-9-]*")
 UNIT_NAME = re.compile(r"mg400-[a-z0-9-]+\.service")
 
@@ -101,7 +100,7 @@ def load_services(path):
     if set(data) != {"service"} or not isinstance(data["service"], list) or not data["service"]:
         raise ValueError("Service registry must contain nonempty [[service]] entries.")
     result = {}
-    used_units, used_assets, used_tokens, used_ports = set(), set(), set(), set()
+    used_units, used_assets, used_ports = set(), set(), set()
     for entry in data["service"]:
         if not isinstance(entry, dict) or set(entry) != SERVICE_FIELDS:
             raise ValueError("Service registry entry has missing or unknown fields.")
@@ -127,38 +126,33 @@ def load_services(path):
                 or (field == "units" and not values)
             ):
                 raise ValueError(f"Service {name}: invalid or duplicate {field}.")
-        token, port = entry["token"], entry["port"]
-        if not isinstance(token, str) or (
-            token and not re.fullmatch(r"MG400_[A-Z0-9_]+_TOKEN", token)
-        ):
-            raise ValueError(f"Service {name}: invalid token setting.")
+        port = entry["port"]
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError(f"Service {name}: port must be 0 or a valid TCP port.")
         if (
             used_units.intersection(entry["units"])
             or used_assets.intersection(entry["assets"])
-            or (token and token in used_tokens)
             or (port and port in used_ports)
         ):
-            raise ValueError(f"Service {name}: duplicate unit, asset, token, or port.")
+            raise ValueError(f"Service {name}: duplicate unit, asset, or port.")
         used_units.update(entry["units"])
         used_assets.update(entry["assets"])
-        used_tokens.add(token)
         used_ports.add(port)
         result[name] = entry
     return result
 
 
 def enabled_services(registry, value):
-    """Select all mandatory services and the explicitly named optional services."""
+    """Select all mandatory services and the explicitly named optional services.
+
+    A mandatory name in the list is accepted and has no effect.
+    """
     names = [] if not value.strip() else [part.strip() for part in value.split(",")]
     if len(names) != len(set(names)):
         raise ValueError("MG400_OPTIONAL_SERVICES contains duplicate names.")
     for name in names:
-        if name not in registry or not registry[name]["optional"]:
-            raise ValueError(
-                f"MG400_OPTIONAL_SERVICES has an unknown or non-optional name: {name!r}"
-            )
+        if name not in registry:
+            raise ValueError(f"MG400_OPTIONAL_SERVICES has an unknown name: {name!r}")
     return {
         name: entry for name, entry in registry.items() if not entry["optional"] or name in names
     }
@@ -274,59 +268,54 @@ def parse_settings(text):
     return values
 
 
-def check_settings(settings):
-    """Refuse settings that would split the robot lock between programs."""
-    if not os.path.isabs(settings.get("MG400_CONTROLLER_LOCK_DIR", "")):
-        raise ValueError("Set MG400_CONTROLLER_LOCK_DIR to an absolute path.")
-
-
-ORCHESTRATOR_TOKEN_ALIASES = {
-    f"MG400_ORCH_{service}_TOKEN": f"MG400_{source}_TOKEN"
-    for service, source in (
-        ("ROBOT", "PANEL"),
-        ("STAGE", "STAGE"),
-        ("THERMAL", "THERMAL"),
-        ("VISION", "VISION"),
-        ("FURNACE", "FURNACE"),
-        ("MICROSCOPE", "MICROSCOPE"),
-    )
+# Fixed settings for programs that mg400ctl and labctl start. Their units set the same values.
+FIXED_SETTINGS = {
+    "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
+    "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
+    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/",
+    "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
+    "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
+    "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",
+    "MG400_ORCH_VISION_URL": "http://127.0.0.1:8771/",
 }
 
 
-def merge_settings(current, example, token=lambda: secrets.token_urlsafe(32)):
-    """Return the new settings text and the changed keys. Keep every nonempty value."""
-    lines = (example if current is None else current).splitlines()
-    present, changed = set(), []
-    for number, line in enumerate(lines, 1):
-        if (pair := parse_line(line, number)) is None:
+def obsolete(key, value):
+    """Removed settings: service tokens, and empty settings that are not in the example."""
+    return (key.endswith("_TOKEN") and key != "MG400_GATEWAY_TOKEN") or not value
+
+
+def merge_settings(current, example):
+    """Return the new settings text and the changed keys.
+
+    Add missing example settings. Keep every nonempty value, except removed service
+    tokens. Remove empty settings that the example does not contain, so that the
+    fixed defaults of the services apply.
+    """
+    if current is None:
+        return example if example.endswith("\n") else example + "\n", []
+    known = {
+        pair[0] for n, line in enumerate(example.splitlines(), 1) if (pair := parse_line(line, n))
+    }
+    lines, present, changed = [], set(), []
+    for number, line in enumerate(current.splitlines(), 1):
+        pair = parse_line(line, number)
+        if pair is not None and pair[0] not in known and obsolete(*pair):
+            if pair[0] not in changed:
+                changed.append(pair[0])
             continue
-        present.add(pair[0])
-        if pair[0].endswith("_TOKEN") and pair[0] not in ORCHESTRATOR_TOKEN_ALIASES and not pair[1]:
-            lines[number - 1] = f"{pair[0]}={token()}"
-            changed.append(pair[0])
-    if current is not None:
-        for number, line in enumerate(example.splitlines(), 1):
-            pair = parse_line(line, number)
-            if pair is not None and pair[0] not in present:
-                key, value = pair
-                if key in JSON_SETTINGS and value:
-                    value = f"'{value}'"
-                if key.endswith("_TOKEN") and key not in ORCHESTRATOR_TOKEN_ALIASES and not value:
-                    value = token()
-                lines.append(f"{key}={value}")
-                present.add(key)
-                changed.append(key)
-    # Resolve aliases after all source tokens exist. Systemd uses the final line
-    # for duplicate keys, so update only that effective blank alias.
-    values, positions = {}, {}
-    for number, line in enumerate(lines, 1):
-        if (pair := parse_line(line, number)) is not None:
-            values[pair[0]], positions[pair[0]] = pair[1], number - 1
-    for alias, source in ORCHESTRATOR_TOKEN_ALIASES.items():
-        if alias in values and not values[alias] and values.get(source):
-            lines[positions[alias]] = f'{alias}="{values[source]}"'
-            if alias not in changed:
-                changed.append(alias)
+        if pair is not None:
+            present.add(pair[0])
+        lines.append(line)
+    for number, line in enumerate(example.splitlines(), 1):
+        pair = parse_line(line, number)
+        if pair is not None and pair[0] not in present:
+            key, value = pair
+            if key in JSON_SETTINGS and value:
+                value = f"'{value}'"
+            lines.append(f"{key}={value}")
+            present.add(key)
+            changed.append(key)
     return "\n".join(lines) + "\n", changed
 
 
@@ -376,10 +365,8 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
     )
 
 
-# The proxy serves only the Lab Console and the camera streams (port 1985).
-PROXY_UPSTREAMS = {
-    "ORCH": ("orch", "lab", 8772),
-}
+# The proxy serves only the Lab Console (/lab/) and the camera streams (port 1985).
+PROXY_UPSTREAMS = {"ORCH": 8772}
 
 
 def render_proxy(host, settings, selected):
@@ -405,27 +392,12 @@ def render_proxy(host, settings, selected):
     ports = {"1985", values["PROXY_PORT"]}
     if len(ports) != 2:
         raise ValueError("Proxy and upstream ports must be distinct.")
-    for prefix, (name, path, default) in PROXY_UPSTREAMS.items():
-        key = f"MG400_{prefix}_"
-        value = port(key + "PORT", default)
+    for prefix, default in PROXY_UPSTREAMS.items():
+        value = port(f"MG400_{prefix}_PORT", default)
         if value in ports:
             raise ValueError("Proxy and upstream ports must be distinct.")
         ports.add(value)
         values[prefix + "_PORT"] = value
-        if name in selected:
-            if (settings.get(key + "BIND") or "127.0.0.1") != "127.0.0.1":
-                raise ValueError(f"Set {key}BIND=127.0.0.1 before enabling proxy.")
-            if settings.get(key + "BASE_PATH") not in {f"/{path}", f"/{path}/"}:
-                raise ValueError(f"Set {key}BASE_PATH=/{path}/ before enabling proxy.")
-            token = settings.get(key + "TOKEN", "")
-            if (
-                len(token) < 24
-                or token != token.strip()
-                or any(not 32 <= ord(character) <= 126 for character in token)
-            ):
-                raise ValueError(f"{key}TOKEN needs at least 24 printable ASCII characters.")
-    if (settings.get("MG400_CAMERA_BIND") or "127.0.0.1") != "127.0.0.1":
-        raise ValueError("Set MG400_CAMERA_BIND=127.0.0.1 before enabling proxy.")
     with assets._local(host.source / "config/proxy/Caddyfile") as stream:
         template = stream.read().decode("utf-8")
     for key, value in values.items():
@@ -630,24 +602,6 @@ def write_file(path, content, mode, owner, chown):
         temporary.unlink(missing_ok=True)
 
 
-def create_key(directory, name, owner, chown):
-    """Create a new secret file. Keep any existing entry, even a symbolic link."""
-    fd = open_directory(directory)
-    try:
-        key = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
-    except FileExistsError:
-        return False
-    finally:
-        os.close(fd)
-    try:
-        os.write(key, (secrets.token_urlsafe(32) + "\n").encode())
-        os.fchmod(key, 0o600)
-        chown(key, *owner)
-    finally:
-        os.close(key)
-    return True
-
-
 def install(args, host, run, chown, out):
     def step(text):
         print(("Would " if args.dry_run else "") + text, file=out, flush=True)
@@ -691,7 +645,6 @@ def install(args, host, run, chown, out):
     current = host.settings.read_text() if host.settings.exists() else None
     merged, changed = merge_settings(current, example)
     settings = parse_settings(merged)
-    check_settings(settings)
     registry = load_services(host.registry)
     selected = enabled_services(registry, settings.get("MG400_OPTIONAL_SERVICES", ""))
     selected_units = {unit for entry in selected.values() for unit in entry["units"]}
@@ -700,8 +653,6 @@ def install(args, host, run, chown, out):
         with assets._local(host.source / "config/systemd" / name) as stream:
             unit_contents[name] = stream.read().decode("utf-8")
     rendered_rules = udev_rules(host, selected)
-    if "microscope" in selected and "70-mg400-microscope.rules" not in rendered_rules:
-        raise ValueError("Microscope requires config/udev/70-mg400-microscope.rules.in.")
     camera_config = camera_configuration(settings)
     devices = list(camera_config.devices)
     if args.go2rtc is not None and not args.go2rtc.is_file():
@@ -709,7 +660,17 @@ def install(args, host, run, chown, out):
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
     proxy_config, caddy_binary = prepare_proxy(args, host, settings, selected)
-    toupcam_binary = prepare_toupcam(args.toupcam, host, required="microscope" in selected)
+    # Without a library, the microscope service installs and runs without its camera.
+    toupcam_missing = args.toupcam is None and not os.path.lexists(host.toupcam)
+    toupcam_binary = prepare_toupcam(
+        args.toupcam, host, required="microscope" in selected and not toupcam_missing
+    )
+    if "microscope" in selected and toupcam_missing:
+        print(
+            "The Toupcam library is not installed. Pass it with --toupcam PATH.",
+            file=out,
+            flush=True,
+        )
 
     # Vision requires the released model even without the optional bulk-fetch flag.
     required_assets = {"vision-weights"} if "vision" in selected else set()
@@ -748,7 +709,7 @@ def install(args, host, run, chown, out):
         if current is None:
             step(f"create {host.settings}")
         else:
-            step(f"add to {host.settings}: {', '.join(changed)}")
+            step(f"update {host.settings}: {', '.join(changed)}")
         if not args.dry_run:
             write_file(host.settings, merged, 0o600, (0, 0), chown)
     elif not args.dry_run:
@@ -777,17 +738,13 @@ def install(args, host, run, chown, out):
             file=out,
             flush=True,
         )
-    for name, setting in (
-        ("tool.toml", "MG400_ORCH_TOOL_FILE"),
-        ("stations.toml", "MG400_ORCH_STATIONS_FILE"),
-    ):
+    for name in ("tool.toml", "stations.toml"):
         legacy = host.data / name
         if os.path.lexists(legacy):
             print(
                 f"Legacy robot data exists at {legacy}. "
                 f"Move it manually to {host.data / 'robot' / name}. "
                 "Do not overwrite an existing destination. "
-                f"Update an old {setting} override after the move. "
                 "No robot data file was moved.",
                 file=out,
                 flush=True,
@@ -805,11 +762,6 @@ def install(args, host, run, chown, out):
         directory(host.data / "runs", 0o750, service)
     if "orch" in selected:
         directory(host.data / "zones", 0o750, service)
-    key = host.data / "camera/preview.key"
-    if not os.path.lexists(key):
-        step(f"create {key}")
-        if not args.dry_run:
-            create_key(key.parent, key.name, service, chown)
     directory(host.code, 0o750, (0, SERVICE_GID))
     # The system Python keeps the environment readable for the service user.
     for venv, groups in service_environments(selected).items():

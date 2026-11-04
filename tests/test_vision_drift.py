@@ -393,8 +393,8 @@ def drift_service(tmp_path):
     service.calibrations.save = Mock(
         side_effect=AssertionError("Drift must not rewrite calibration")
     )
-    client = create_app(service, token="d" * 24).test_client()
-    headers = {"Authorization": "Bearer " + "d" * 24, "X-MG400-Client": "drift-test"}
+    client = create_app(service).test_client()
+    headers = {"X-MG400-Client": "drift-test"}
     yield SimpleNamespace(
         service=service,
         frames=frames,
@@ -537,9 +537,9 @@ def test_invalid_configured_identity_refuses_before_frame_acquisition(drift_serv
     rig.frames.read.assert_not_called()
 
 
-def test_drift_keeps_bearer_lease_and_declared_parameter_guards(drift_service):
+def test_drift_keeps_lease_and_declared_parameter_guards(drift_service):
     rig = drift_service
-    assert rig.client.post("/api/command", json=drift_command()).status_code in (400, 401)
+    assert rig.client.post("/api/command", json=drift_command()).status_code == 400
     assert (
         rig.client.post("/api/command", headers=rig.headers, json=drift_command()).status_code
         == 409

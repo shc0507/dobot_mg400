@@ -5,8 +5,6 @@ import logging
 import os
 import signal
 
-from labkit.auth import valid_token_for_bind
-
 from .app import create_app
 
 
@@ -22,12 +20,6 @@ def main(
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
-    token = env.get("MG400_MICROSCOPE_TOKEN") or None
-    if not valid_token_for_bind(token, args.bind):
-        parser.error(
-            "Set MG400_MICROSCOPE_TOKEN to at least 24 printable ASCII characters, "
-            "or bind to loopback"
-        )
     if service_factory is None or config_factory is None:
         from .service import MicroscopeConfig, MicroscopeService
 
@@ -37,7 +29,7 @@ def main(
     try:
         config = config_factory.from_env(env)
         service = service_factory(config, demo=args.demo)
-        app = create_app(service, token=token, base_path=args.base_path)
+        app = create_app(service, base_path=args.base_path)
     except (ValueError, OSError) as error:
         if service is not None:
             try:

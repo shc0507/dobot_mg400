@@ -18,7 +18,6 @@ from panel_ws import (
     CLIENT,
     DROP,
     KEY,
-    TOKEN,
     PanelServer,
     SocketSession,
     WsClient,
@@ -132,10 +131,10 @@ def exchange(server, raw):
     return status, headers, body
 
 
-def opened(server, raw=None, *, client=CLIENT, token=TOKEN):
+def opened(server, raw=None, *, client=CLIENT):
     """Open a WebSocket and complete hello."""
     connection = WsClient(server, raw)
-    connection.hello(client, token)
+    connection.hello(client)
     return connection
 
 
@@ -234,54 +233,6 @@ def test_upgrade_with_a_missing_invalid_or_duplicate_key_gets_400(losing, reques
 @pytest.mark.parametrize(
     ("host", "headers"),
     [
-        ("panel.test:8766", ["Origin: http://evil.test"]),
-        ("panel.test:8766", ["Origin: null"]),
-        ("panel.test:8766", ["Origin: http://panel.test:8766", "Origin: http://panel.test:8766"]),
-        ("panel.test:8766", ["Origin: http://panel.test:8766", "Sec-Fetch-Site: cross-site"]),
-        ("panel.test:8766", ["Origin: http://panel.test:8766/panel"]),
-        ("panel.test:8766", ["Origin: ws://panel.test:8766"]),
-        ("panel.test:8766", ["Origin: http://panel.test:8767"]),
-        ("panel.test:8766", ["Origin: http://panel.test:port"]),
-        ("panel.test", ["Origin: http://panel.test.evil.test"]),
-        ("panel.example.com:80", ["Origin: https://panel.example.com"]),
-        ("panel.example.com", ["Origin: http://panel.example.com:443"]),
-        (
-            "127.0.0.1:8766",
-            [
-                "X-Forwarded-Host: proxy.internal, panel.example.com",
-                "Origin: https://panel.example.com",
-            ],
-        ),
-        ("127.0.0.1:8766", ["Sec-Fetch-Site: cross-site"]),
-    ],
-    ids=[
-        "other-site",
-        "null",
-        "two-origins",
-        "sec-fetch-site-cross-site",
-        "origin-with-path",
-        "ws-scheme",
-        "other-port",
-        "bad-port",
-        "suffix-host",
-        "https-origin-vs-port-80",
-        "http-origin-on-port-443",
-        "second-forwarded-host",
-        "cross-site-without-origin",
-    ],
-)
-def test_cross_site_upgrade_gets_403(losing, host, headers):
-    server, state = losing
-    status, response_headers, body = exchange(server, upgrade_request(host=host, extra=headers))
-    assert status == 403
-    assert json.loads(body) == {"error": "Open the panel page from this server"}
-    assert response_headers["connection"].lower() == "close"
-    assert state.calls == []
-
-
-@pytest.mark.parametrize(
-    ("host", "headers"),
-    [
         ("panel.test:8766", ["Origin: http://panel.test:8766"]),
         ("panel.test:8766", ["Origin: http://PANEL.Test:8766", "Sec-Fetch-Site: same-origin"]),
         ("127.0.0.1:8766", ["Origin: http://127.0.0.1:8766"]),
@@ -351,39 +302,6 @@ def panel_requests(host, extra=()):
 @pytest.mark.parametrize(
     "host",
     [
-        "panel.example.com",
-        "panel.example.com:8766",
-        "192.168.1.5:8766",
-        "localhost.evil.test",
-        "evil.test:8766@127.0.0.1",
-        "",
-        None,
-    ],
-    ids=[
-        "name",
-        "name-and-port",
-        "lan-address",
-        "localhost-prefix",
-        "userinfo",
-        "empty",
-        "missing",
-    ],
-)
-def test_tokenless_service_refuses_hosts_other_than_loopback(host):
-    state = RecordingState()
-    with running(state, token=None) as server:
-        for kind, raw in panel_requests(host).items():
-            if raw is None:
-                raw = upgrade_request().replace(b"Host: 127.0.0.1\r\n", b"")
-            status, _, body = exchange(server, raw)
-            assert status == 403, kind
-            assert json.loads(body) == {"error": "Open the panel at 127.0.0.1 or localhost"}
-    assert state.calls == []
-
-
-@pytest.mark.parametrize(
-    "host",
-    [
         "127.0.0.1",
         "127.0.0.1:8766",
         "127.8.9.10:1",
@@ -393,14 +311,13 @@ def test_tokenless_service_refuses_hosts_other_than_loopback(host):
         "[::1]",
     ],
 )
-def test_tokenless_service_accepts_loopback_hosts(host):
+def test_service_accepts_any_host(host):
     state = RecordingState()
-    with running(state, token=None) as server:
+    with running(state) as server:
         requests = panel_requests(host)
         for kind in ("state", "command"):
             assert exchange(server, requests[kind])[0] == 200, kind
-        # Without a token, hello may carry any token string.
-        client = opened(server, requests["websocket"], token="anything")
+        client = opened(server, requests["websocket"])
         assert client.request("heartbeat", {})["status"] == 200
     assert state.calls == [("command", {"action": "stop"}, CLIENT), ("heartbeat", CLIENT)]
 
@@ -412,36 +329,6 @@ FORWARDING = [
     "X-Real-IP: 192.0.2.1",
     "X-Forwarded-For: ",
 ]
-
-
-@pytest.mark.parametrize(
-    "header",
-    FORWARDING,
-    ids=["forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip", "empty-value"],
-)
-def test_tokenless_service_refuses_proxied_requests_with_a_loopback_host(header):
-    state = RecordingState()
-    # A proxy on this host can rewrite Host to a loopback name. Proxies need a token.
-    with running(state, token=None) as server:
-        for kind, raw in panel_requests("127.0.0.1:8766", [header]).items():
-            status, _, body = exchange(server, raw)
-            assert status == 403, kind
-            assert json.loads(body) == {"error": "Open the panel at 127.0.0.1 or localhost"}
-    assert state.calls == []
-
-
-def test_token_service_accepts_proxied_requests(losing):
-    server, state = losing
-    proxy = [line for line in FORWARDING if not line.startswith("X-Forwarded-Host")]
-    authorized = [f"Authorization: Bearer {TOKEN}", *proxy]
-    requests = panel_requests("panel.example.com", authorized)
-    for kind in ("state", "command"):
-        assert exchange(server, requests[kind])[0] == 200, kind
-    # X-Forwarded-Host still feeds the origin check.
-    origin = ["X-Forwarded-Host: panel.example.com", "Origin: https://panel.example.com"]
-    raw = upgrade_request(host="127.0.0.1:8766", extra=[*proxy, *origin])
-    assert opened(server, raw).request("heartbeat", {})["status"] == 200
-    assert state.calls == [("command", {"action": "stop"}, CLIENT), ("heartbeat", CLIENT)]
 
 
 def test_websocket_commands_are_logged_and_keys_and_heartbeats_are_quiet(losing, capsys):
@@ -476,7 +363,7 @@ def test_websocket_commands_are_logged_and_keys_and_heartbeats_are_quiet(losing,
         *['"WS command invalid" 200 client=browser-'] * 4,
     ]
     assert "keys" not in log and "heartbeat" not in log
-    assert TOKEN not in log and "browser-0123456789abcdef" not in log
+    assert "browser-0123456789abcdef" not in log
     assert "forged" not in log
 
 
@@ -495,25 +382,10 @@ def test_service_sets_tcp_user_timeout_on_the_connection(losing):
 
 
 @pytest.mark.parametrize(
-    "token", ["wrong", "", TOKEN + "x", TOKEN[:-1], "tést-token", "\ud800test-token"]
-)
-def test_hello_with_a_wrong_or_missing_token_gets_401_and_close_4401(losing, token):
-    server, state = losing
-    client = WsClient(server)
-    # json.dumps escapes a lone surrogate, and the service's JSON parser accepts it.
-    client.send_json(hello_message(token=token))
-    error, code = client.refused()
-    assert error == {"type": "error", "status": 401, "error": "Enter the panel access token"}
-    assert code == 4401
-    assert state.calls == []
-
-
-@pytest.mark.parametrize(
     "text",
     [
         "hello",
         "[]",
-        json.dumps(hello_message(token=DROP)),
         json.dumps(hello_message(client=DROP)),
         json.dumps(hello_message(protocol=DROP)),
         json.dumps(hello_message(extra=1)),
@@ -531,14 +403,13 @@ def test_hello_with_a_wrong_or_missing_token_gets_401_and_close_4401(losing, tok
         json.dumps(hello_message(client="browser\x1b[31m")),
         json.dumps(hello_message(client="browser\x7f")),
         json.dumps(hello_message(client=7)),
-        json.dumps(hello_message(token=None)),
+        json.dumps(hello_message(token="x")),
         "[" * 2000 + "]" * 2000,
         json.dumps({"type": "command", "id": 1, "body": {"action": "stop"}}),
     ],
     ids=[
         "not-json",
         "array",
-        "no-token",
         "no-client",
         "no-protocol",
         "extra-field",
@@ -556,7 +427,7 @@ def test_hello_with_a_wrong_or_missing_token_gets_401_and_close_4401(losing, tok
         "escape-client",
         "delete-client",
         "number-client",
-        "null-token",
+        "token-field",
         "deep-nesting",
         "request-before-hello",
     ],
@@ -569,7 +440,7 @@ def test_malformed_hello_gets_400_and_close_4400(losing, text):
     assert error == {
         "type": "error",
         "status": 400,
-        "error": "Send hello with the protocol, a client ID and the access token first",
+        "error": "Send hello with the protocol and a client ID first",
     }
     assert code == 4400
     assert state.calls == []

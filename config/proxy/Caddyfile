@@ -2,7 +2,6 @@
 	admin off
 	auto_https off
 	persist_config off
-	# Camera URLs contain a secret. Do not log request URLs or headers.
 	log default {
 		exclude http.log.access http.log.error
 	}
@@ -10,7 +9,7 @@
 
 (instrument) {
 	reverse_proxy {args[0]} {
-		# Preserve the browser origin, including its port. Never inject credentials.
+		# Preserve the browser origin, including its port.
 		header_up Host {http.request.hostport}
 		header_up -Forwarded
 		header_up X-Forwarded-Host {http.request.hostport}
@@ -31,7 +30,7 @@ http://:@PROXY_PORT@ {
 	redir / /lab/ 302
 	@bare path /camera /lab
 	redir @bare {http.request.uri.path}/ 308
-	# Strip only /camera. The remaining /<secret>/ path must reach the preview.
+	# /camera/<view>.mjpeg and /camera/<view>.jpg reach the preview as /<view>.mjpeg and /<view>.jpg.
 	handle_path /camera/* {
 		import instrument 127.0.0.1:1985
 	}

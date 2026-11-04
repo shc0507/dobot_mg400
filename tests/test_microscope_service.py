@@ -86,35 +86,11 @@ def test_adapter_manual_zero_requires_explicit_confirmation_and_service_lease():
     assert not service.started
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"Host": "outside.invalid"},
-        {"X-Forwarded-For": "127.0.0.1"},
-        {"Forwarded": ""},
-        {"Origin": "https://outside.invalid"},
-        {"Origin": "null"},
-        {"Sec-Fetch-Site": "cross-site"},
-    ],
-)
-def test_manual_routes_keep_shared_host_origin_and_forwarded_checks(extra):
+def test_manual_routes_require_json_and_client_and_bound_payload():
     service = AdapterService()
-    reply = (
-        create_app(service)
-        .test_client()
-        .post("/api/manual/heartbeat", json={}, headers={"X-MG400-Client": "operator", **extra})
-    )
-    assert reply.status_code == 403 and set(reply.json) == {"error"}
-    assert service.calls == []
-
-
-def test_manual_routes_require_token_json_and_client_and_bound_payload():
-    service = AdapterService()
-    token = "t" * 24
-    client = create_app(service, token=token).test_client()
+    client = create_app(service).test_client()
     route = "/api/manual/heartbeat"
-    assert client.post(route, json={}, headers={"X-MG400-Client": "operator"}).status_code == 401
-    auth = {"Authorization": "Bearer " + token}
+    auth = {}
     assert client.post(route, json={}, headers=auth).status_code == 400
     headers = {**auth, "X-MG400-Client": "operator"}
     assert client.post(route, data="{}", headers=headers).status_code == 415
@@ -184,13 +160,11 @@ def test_cli_signals_stop_service_close_server_and_restore_handlers(monkeypatch,
 @pytest.mark.parametrize(
     "environ",
     [
-        {"MG400_MICROSCOPE_BIND": "0.0.0.0"},
-        {"MG400_MICROSCOPE_TOKEN": "short"},
         {"MG400_MICROSCOPE_PORT": "65536"},
         {"MG400_MICROSCOPE_PORT": "invalid"},
     ],
 )
-def test_cli_rejects_bad_access_settings_before_construction(environ):
+def test_cli_rejects_bad_settings_before_construction(environ):
     with pytest.raises(SystemExit) as error:
         microscope_main.main(
             [],

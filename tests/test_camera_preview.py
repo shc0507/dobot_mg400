@@ -12,8 +12,6 @@ from unittest.mock import Mock
 
 import pytest
 
-KEY = b"camera-test-key-0123456789abcdef0123456789abcdef"
-
 
 def load_preview():
     spec = importlib.util.spec_from_file_location(
@@ -26,7 +24,6 @@ def load_preview():
 
 @pytest.fixture
 def preview(monkeypatch):
-    monkeypatch.delenv("MG400_CAMERA_KEY_FILE", raising=False)
     monkeypatch.setenv(
         "MG400_CAMERA_DEVICES",
         ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in (1, 2, 3)),
@@ -37,12 +34,6 @@ def preview(monkeypatch):
         "MG400_MICROSCOPE_SIDE_STREAM",
     ):
         monkeypatch.delenv(setting, raising=False)
-    read_bytes = Path.read_bytes
-    monkeypatch.setattr(
-        Path,
-        "read_bytes",
-        lambda path: KEY if path == Path("/var/lib/mg400/camera/preview.key") else read_bytes(path),
-    )
     module = load_preview()
     upstream = Mock(
         side_effect=lambda *_args, **_kwargs: io.BytesIO(b"\xff\xd8camera-frame\xff\xd9")
@@ -51,9 +42,9 @@ def preview(monkeypatch):
     return module, upstream
 
 
-def request(module, route, key=KEY.decode(), connection=None):
+def request(module, route, connection=None):
     handler = module.Preview.__new__(module.Preview)
-    handler.path = f"/{key}/{route}"
+    handler.path = f"/{route}"
     handler.command = "GET"
     handler.request_version = "HTTP/1.1"
     handler.requestline = f"GET {handler.path} HTTP/1.1"
@@ -94,7 +85,7 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
             connection.connect()
             socket = connection.sock
             for camera, frame in enumerate(frames, start=1):
-                connection.request("GET", f"/{KEY.decode()}/camera{camera}.jpg")
+                connection.request("GET", f"/camera{camera}.jpg")
                 response = connection.getresponse()
                 assert response.status == 200
                 assert response.version == 11
@@ -133,15 +124,6 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
 def test_unknown_routes_cannot_proxy_go2rtc(preview, route):
     module, upstream = preview
     assert request(module, route)[0] == 404
-    upstream.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "route", ["", "preview.js", "camera1.jpg", "camera1.mjpeg", "camera1/detections.json"]
-)
-def test_all_resources_require_exact_key(preview, route):
-    module, upstream = preview
-    assert request(module, route, key="wrong-key")[0] == 404
     upstream.assert_not_called()
 
 
@@ -440,22 +422,6 @@ def test_mjpeg_parser_rejects_oversized_headers_even_with_complete_body_in_one_c
         next(module.iter_mjpeg(ChunkedUpstream(body, (65536,))))
 
 
-def test_key_file_comes_from_the_environment(monkeypatch, tmp_path):
-    key_file = tmp_path / "preview.key"
-    key_file.write_bytes(KEY + b"\n")
-    monkeypatch.setenv("MG400_CAMERA_KEY_FILE", str(key_file))
-    module = load_preview()
-    assert (module.KEY_FILE, module.KEY) == (key_file, KEY)
-
-
-def test_short_key_is_refused(monkeypatch, tmp_path):
-    key_file = tmp_path / "preview.key"
-    key_file.write_bytes(b"short")
-    monkeypatch.setenv("MG400_CAMERA_KEY_FILE", str(key_file))
-    with pytest.raises(ValueError, match="at least 32 bytes"):
-        load_preview()
-
-
 @pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
 def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkeypatch, count):
     _, upstream = preview
@@ -477,7 +443,7 @@ def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkey
     upstream.assert_not_called()
 
 
-def test_fourth_camera_still_route_keeps_key_and_fixed_destination(preview, monkeypatch):
+def test_fourth_camera_still_route_keeps_fixed_destination(preview, monkeypatch):
     _, upstream = preview
     monkeypatch.setenv(
         "MG400_CAMERA_DEVICES",
@@ -486,8 +452,6 @@ def test_fourth_camera_still_route_keeps_key_and_fixed_destination(preview, monk
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,1280x720@30")
     module = load_preview()
     assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, True]
-    for route in ("camera4.jpg", "camera4.mjpeg"):
-        assert request(module, route, key="wrong-key")[0] == 404
     for route in ("", "preview.js", "camera4/detections.json"):
         assert request(module, route)[0] == 404
     upstream.assert_not_called()

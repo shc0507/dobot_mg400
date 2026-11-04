@@ -10,15 +10,14 @@ import threading
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from labkit.auth import bearer_matches, host_allowed, same_origin
 from labkit.errors import ServiceError
 from labkit.flask import contract_blueprint
 from labkit.lease import validate_client
 
 
-def create_app(service, *, token=None, base_path="/"):
+def create_app(service, *, base_path="/"):
     """Expose the shared contract plus the separate, confirmed operator action."""
-    blueprint = contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
+    blueprint = contract_blueprint(service, base_path=base_path, lease=service.lease)
     prefix = base_path.rstrip("/")
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
@@ -29,12 +28,6 @@ def create_app(service, *, token=None, base_path="/"):
 
     @app.before_request
     def access():
-        if not host_allowed(request.headers, token):
-            raise ServiceError(403, "Use a loopback Host without forwarded headers.")
-        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
-            raise ServiceError(401, "Invalid service access token.")
-        if not same_origin(request.headers):
-            raise ServiceError(403, "The request origin is not allowed.")
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json.")

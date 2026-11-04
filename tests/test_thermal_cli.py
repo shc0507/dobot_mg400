@@ -16,7 +16,6 @@ def clean_settings(monkeypatch):
     for name in (
         "MG400_THERMAL_BIND",
         "MG400_THERMAL_PORT",
-        "MG400_THERMAL_TOKEN",
         "MG400_THERMAL_BASE_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -129,7 +128,6 @@ def test_reserved_socket_handoff_and_cleanup(monkeypatch, server_fails, sockets)
     assert captured["options"] == {
         "demo": True,
         "auto_connect": False,
-        "token": "",
         "base_path": "/",
     }
     assert captured["listener"].fileno() == -1
@@ -140,13 +138,6 @@ def test_reserved_socket_handoff_and_cleanup(monkeypatch, server_fails, sockets)
 @pytest.mark.parametrize(
     "settings,args",
     [
-        ({"MG400_THERMAL_BIND": "0.0.0.0"}, []),
-        ({"MG400_THERMAL_TOKEN": "too-short"}, []),
-        ({"MG400_THERMAL_TOKEN": "x" * 23}, []),
-        ({"MG400_THERMAL_TOKEN": "x" * 24 + " "}, []),
-        ({"MG400_THERMAL_TOKEN": " " + "x" * 24}, []),
-        ({"MG400_THERMAL_TOKEN": "x" * 24 + "\n"}, []),
-        ({"MG400_THERMAL_TOKEN": "x" * 24 + "é"}, []),
         ({"MG400_THERMAL_PORT": "invalid"}, []),
         ({"MG400_THERMAL_PORT": "65536"}, []),
         ({"MG400_THERMAL_BASE_PATH": "//thermal"}, []),
@@ -173,13 +164,9 @@ def test_configuration_errors_precede_socket_or_camera_access(monkeypatch, setti
 
 
 @pytest.mark.parametrize("override", [False, True])
-def test_environment_settings_cli_override_and_token_handoff(
-    monkeypatch, sockets, override, capsys
-):
-    token = "thermal-test-token-length-24"
+def test_environment_settings_and_cli_override(monkeypatch, sockets, override, capsys):
     monkeypatch.setenv("MG400_THERMAL_BIND", "0.0.0.0")
     monkeypatch.setenv("MG400_THERMAL_PORT", "9999")
-    monkeypatch.setenv("MG400_THERMAL_TOKEN", token)
     monkeypatch.setenv("MG400_THERMAL_BASE_PATH", "/thermal/")
     args = ["--bind", "::1", "--port", "8768", "--base-path", "/lab/thermal/"] if override else []
     monkeypatch.setattr(sys, "argv", ["thermal-cam", "--demo", "--no-connect", *args])
@@ -189,7 +176,6 @@ def test_environment_settings_cli_override_and_token_handoff(
         assert kwargs == {
             "demo": True,
             "auto_connect": False,
-            "token": token,
             "base_path": "/lab/thermal" if override else "/thermal",
         }
         return sentinel

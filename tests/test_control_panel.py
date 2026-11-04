@@ -20,7 +20,6 @@ from mg400.controller_ownership import ControllerOwnership
 ReadOnlyPanelState = PANEL["ReadOnlyPanelState"]
 PANEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 ROBOT_HEADERS = {
-    "Authorization": "Bearer test-token",
     "Content-Type": "application/json",
     "X-MG400-Panel": "1",
     "X-MG400-Client": "browser-a",
@@ -218,7 +217,7 @@ def server():
         "unused.invalid",
         connection_factory=Mock(side_effect=AssertionError("Unexpected connection")),
     )
-    instance = PanelServer(("127.0.0.1", 0), state, token="test-token")
+    instance = PanelServer(("127.0.0.1", 0), state)
     thread = threading.Thread(target=instance.serve_forever, daemon=True)
     thread.start()
     yield instance
@@ -238,11 +237,10 @@ def request(server, method, path, body=None, headers=None):
     return status, data
 
 
-def test_http_authentication_and_command_guard(server):
+def test_http_command_guard(server):
     assert request(server, "GET", "/")[0] == 404
-    assert request(server, "GET", "/api/state")[0] == 401
-    auth = {"Authorization": "Bearer test-token"}
-    assert request(server, "GET", "/api/state", headers=auth)[0] == 200
+    auth = {}
+    assert request(server, "GET", "/api/state")[0] == 200
     body = json.dumps({"action": "stop_sync"})
     assert request(server, "POST", "/api/command", body, auth)[0] == 403
     headers = {**auth, "Content-Type": "application/json", "X-MG400-Panel": "1"}
@@ -257,51 +255,22 @@ def test_http_authentication_and_command_guard(server):
 
 
 @pytest.mark.parametrize(
-    ("token", "valid"),
+    ("argv", "message"),
     [
-        ("a" * 30, True),
-        ("lab panel key for the mg400 arm", True),
-        ("!~" * 15, True),
-        ("é" * 30, False),
-        ("a" * 30 + " ", False),
-        (" " + "a" * 30, False),
-        ("a" * 15 + "\t" + "a" * 15, False),
-        ("a" * 30 + "\n", False),
-    ],
-    ids=["plain", "inner-spaces", "symbols", "non-ascii", "trailing", "leading", "tab", "newline"],
-)
-def test_tokens_are_those_a_browser_sends_unchanged(token, valid):
-    assert bool(PANEL["valid_token"](token)) is valid
-
-
-@pytest.mark.parametrize(
-    ("argv", "token", "message"),
-    [
-        (["--bind", "0.0.0.0"], None, None),
-        # A browser cannot send other characters, and it strips spaces at either end.
-        (["--bind", "127.0.0.1"], "a" * 30 + " ", None),
-        (["--bind", "0.0.0.0"], "é" * 30, None),
-        (["--mode", "read-only", "--gripper-feedback", "unused.json"], None, None),
-        (["--mode", "demo"], None, "invalid choice: 'demo'"),
+        (["--mode", "read-only", "--gripper-feedback", "unused.json"], None),
+        (["--mode", "demo"], "invalid choice: 'demo'"),
     ],
     ids=[
-        "remote-without-token",
-        "loopback-unsendable-token",
-        "remote-unsendable-token",
         "gripper-feedback-read-only",
         "demo",
     ],
 )
 def test_main_refuses_bad_arguments_before_constructing_a_backend(
-    monkeypatch, capsys, argv, token, message
+    monkeypatch, capsys, argv, message
 ):
     main = PANEL["main"]
     monkeypatch.delenv("MG400_PANEL_BIND", raising=False)
     monkeypatch.delenv("MG400_PANEL_PORT", raising=False)
-    if token is None:
-        monkeypatch.delenv("MG400_PANEL_TOKEN", raising=False)
-    else:
-        monkeypatch.setenv("MG400_PANEL_TOKEN", token)
     backends = {name: Mock() for name in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
     for name, backend in backends.items():
         monkeypatch.setitem(main.__globals__, name, backend)
@@ -334,7 +303,7 @@ def test_listen_address_comes_from_options_then_environment(
     monkeypatch, signal_table, environment, argv, address
 ):
     main = PANEL["main"]
-    for name in ("MG400_PANEL_BIND", "MG400_PANEL_PORT", "MG400_PANEL_TOKEN"):
+    for name in ("MG400_PANEL_BIND", "MG400_PANEL_PORT"):
         monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
@@ -364,16 +333,6 @@ def test_invalid_port_environment_is_refused_before_a_backend(monkeypatch, capsy
     assert "MG400_PANEL_PORT must be a whole number" in capsys.readouterr().err
     for backend in backends.values():
         backend.assert_not_called()
-
-
-def test_non_ascii_authorization_header_gets_401():
-    state = RecordingState()
-    # The server decodes header bytes as Latin-1, so a UTF-8 é arrives as non-ASCII text.
-    raw = http11("GET", "/api/state", b"", ["Authorization: Bearer tést-token"])
-    with running(state) as server:
-        code, headers, _ = exchange(server, raw)
-    assert code == 401
-    assert headers.get("connection", "").lower() == "close"
 
 
 def test_robot_http_starts_without_connecting_and_rejects_motion_before_ownership(server):
@@ -437,22 +396,16 @@ def test_key_updates_have_no_http_endpoint(base_path):
 @pytest.mark.parametrize(
     ("change", "status"),
     [
-        ({"Authorization": None}, 401),
-        ({"Authorization": "Bearer wrong-token"}, 401),
         ({"Content-Type": None}, 403),
         ({"Content-Type": "text/plain"}, 403),
         ({"X-MG400-Panel": None}, 403),
-        ({"Sec-Fetch-Site": "cross-site"}, 403),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "x" * 129}, 400),
     ],
     ids=[
-        "no-token",
-        "wrong-token",
         "no-content-type",
         "text-content-type",
         "no-panel-header",
-        "cross-site",
         "no-client-id",
         "long-client-id",
     ],
@@ -527,12 +480,12 @@ def test_successful_heartbeats_stay_out_of_the_request_log(capsys, base_path):
         )
         state.failure = RuntimeError("Another robot operation is in progress")
         assert request(server, "POST", heartbeat, "{}", ROBOT_HEADERS)[0] == 409
-        wrong = {**ROBOT_HEADERS, "Authorization": "Bearer wrong-token"}
-        assert request(server, "POST", heartbeat, "{}", wrong)[0] == 401
+        wrong = {**ROBOT_HEADERS, "X-MG400-Panel": "0"}
+        assert request(server, "POST", heartbeat, "{}", wrong)[0] == 403
     log = capsys.readouterr().err
     assert f'"POST {heartbeat} HTTP/1.1" 200' not in log
     assert f'"POST {heartbeat} HTTP/1.1" 409' in log
-    assert f'"POST {heartbeat} HTTP/1.1" 401' in log
+    assert f'"POST {heartbeat} HTTP/1.1" 403' in log
     # Only heartbeats are quiet. Robot commands stay in the request log.
     assert f'"POST {server.base_path}api/command HTTP/1.1" 200' in log
 
@@ -605,7 +558,7 @@ def exchange(server, raw):
 
 
 EMPTY_BODY = b"{}"
-AUTH = "Authorization: Bearer test-token"
+AUTH = "Accept: application/json"
 JSON_TYPE = "Content-Type: application/json"
 PANEL_HEADER = "X-MG400-Panel: 1"
 CLIENT = "X-MG400-Client: browser-a"
@@ -614,7 +567,6 @@ CLIENT = "X-MG400-Client: browser-a"
 @pytest.mark.parametrize(
     ("raw", "status"),
     [
-        (http11("POST", "/api/heartbeat", EMPTY_BODY, [JSON_TYPE, PANEL_HEADER, CLIENT]), 401),
         (http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, CLIENT]), 403),
         (http11("POST", "/api/other", EMPTY_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 404),
         (http11("POST", "/api/heartbeat", b"{", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 400),
@@ -624,7 +576,7 @@ CLIENT = "X-MG400-Client: browser-a"
         ),
         (http11("GET", "/missing"), 404),
     ],
-    ids=["401-unread-body", "403-unread-body", "404-unread-body", "400", "409", "404-get"],
+    ids=["403-unread-body", "404-unread-body", "400", "409", "404-get"],
 )
 def test_error_responses_close_the_connection(raw, status):
     state = RecordingState()
@@ -979,14 +931,12 @@ class ContractRecordingState(RecordingState):
 
 
 @pytest.mark.parametrize("base_path", ["/", "/mg400-panel/"])
-def test_contract_routes_follow_base_path_authentication_and_event_cursor(base_path):
+def test_contract_routes_follow_base_path_and_event_cursor(base_path):
     state = ContractRecordingState()
     state.events.add("info", "first")
     state.events.add("warning", "second")
     with running(state, base_path=base_path) as server:
-        auth = {"Authorization": "Bearer test-token"}
-        for route in ("describe", "events"):
-            assert request(server, "GET", base_path + "api/" + route)[0] == 401
+        auth = {}
         code, body = request(server, "GET", base_path + "api/describe", headers=auth)
         assert code == 200 and json.loads(body)["contract"] == 1
         code, body = request(server, "GET", base_path + "api/events?since=1", headers=auth)
@@ -1002,35 +952,11 @@ def test_contract_routes_follow_base_path_authentication_and_event_cursor(base_p
             assert request(server, "POST", "/api/stop", "{}", headers)[0] == 404
 
 
-@pytest.mark.parametrize("route", ["describe", "events"])
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"Host": "foreign.invalid"},
-        {"Forwarded": ""},
-        {"X-Forwarded-For": ""},
-        {"X-Forwarded-Host": ""},
-        {"X-Real-IP": ""},
-        {"Origin": "http://foreign.invalid"},
-        {"Sec-Fetch-Site": "cross-site"},
-    ],
-)
-def test_contract_get_routes_preserve_access_rules(route, headers):
-    state = ContractRecordingState()
-    with running(state, token=None) as server:
-        code, body = request(server, "GET", "/api/" + route, headers=headers)
-        assert code == 403 and "error" in json.loads(body)
-    assert state.calls == []
-
-
 @pytest.mark.parametrize(
     ("change", "status"),
     [
-        ({"Authorization": None}, 401),
         ({"X-MG400-Panel": None}, 403),
         ({"Content-Type": "text/plain"}, 403),
-        ({"Sec-Fetch-Site": "cross-site"}, 403),
-        ({"Origin": "http://foreign.invalid"}, 403),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "\x7f"}, 400),
         ({"X-MG400-Client": " "}, 400),
@@ -1063,14 +989,13 @@ def test_contract_events_reject_invalid_or_ambiguous_cursor(cursor):
                 server,
                 "GET",
                 "/api/events?since=" + cursor,
-                headers={"Authorization": "Bearer test-token"},
             )[0]
             == 400
         )
 
 
 def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
-    auth = {"Authorization": "Bearer test-token"}
+    auth = {}
     assert request(server, "GET", "/api/describe", headers=auth)[0] == 404
     assert request(server, "GET", "/api/events", headers=auth)[0] == 404
     assert request(server, "POST", "/api/stop", "{}", ROBOT_HEADERS)[0] == 403

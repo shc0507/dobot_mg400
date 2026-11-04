@@ -13,15 +13,12 @@ import math
 from flask import Blueprint, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from .auth import bearer_matches, host_allowed, same_origin, valid_token_for_bind
 from .errors import ServiceError
 from .lease import validate_client
 
 
-def contract_blueprint(service, *, token=None, base_path="/", lease):
+def contract_blueprint(service, *, base_path="/", lease):
     """Attach contract routes without starting threads or connecting to devices."""
-    if not isinstance(token, (str, type(None))) or not valid_token_for_bind(token, "localhost"):
-        raise ValueError("A configured token needs at least 24 printable ASCII characters.")
     if not isinstance(base_path, str) or not base_path.startswith("/"):
         raise ValueError("The service base path must start with a slash.")
     if any(part in base_path for part in ("?", "#", "//")) or ".." in base_path.split("/"):
@@ -32,12 +29,6 @@ def contract_blueprint(service, *, token=None, base_path="/", lease):
 
     @bp.before_request
     def access():
-        if not host_allowed(request.headers, token):
-            raise ServiceError(403, "Use a loopback Host without forwarded headers.")
-        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
-            raise ServiceError(401, "Invalid service access token.")
-        if not same_origin(request.headers):
-            raise ServiceError(403, "The request origin is not allowed.")
         if request.method == "POST":
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json.")

@@ -11,11 +11,10 @@ import pytest
 from contract_helpers import assert_error, check_contract
 from fastapi.testclient import TestClient
 
-from thermal_cam.app import CONTRACT_PATHS, create_app
+from thermal_cam.app import create_app
 from thermal_cam.roi import Region, load_regions
 from thermal_cam.service import CameraService, ThermalFrame
 
-TOKEN = "thermal-test-token-length-24"
 COORDS = {"x0": 2, "y0": 5, "x1": 5, "y1": 7}
 
 
@@ -94,13 +93,10 @@ def test_contract_conformance_and_metadata(tmp_path):
         assert state["frame_sequence"] == 17
 
 
-@pytest.mark.parametrize("token", [None, TOKEN])
-def test_renew_extends_only_the_existing_callers_lease(tmp_path, token):
+def test_renew_extends_only_the_existing_callers_lease(tmp_path):
     service, clock = service_with_frame(tmp_path)
     frame = service._frame
-    with client_for(service, token=token) as client:
-        if token:
-            client.headers["Authorization"] = f"Bearer {token}"
+    with client_for(service) as client:
         assert_error(post(client, "renew"), 409)
         assert service.lease.snapshot() == {"holder": None, "remaining_s": 0}
         assert post(client, "heartbeat").status_code == 200
@@ -351,42 +347,6 @@ print(json.dumps(service.events.since()))
     assert len(replay) == 2
     assert "stop is a no-op" in replay[0]["message"]
     assert "lease expired" in replay[1]["message"]
-
-
-@pytest.mark.parametrize("path", sorted(CONTRACT_PATHS))
-def test_new_routes_preserve_bearer_host_origin_and_proxy_checks(tmp_path, path):
-    service, _ = service_with_frame(tmp_path)
-    method = (
-        "POST"
-        if path.rsplit("/", 1)[-1] in {"heartbeat", "renew", "release", "command", "stop"}
-        else "GET"
-    )
-    with client_for(service, token=TOKEN) as client:
-        assert_error(client.request(method, path), 401)
-        assert_error(
-            client.request(
-                method, path, headers={"Authorization": f"Bearer {TOKEN}", "Origin": "null"}
-            ),
-            403,
-        )
-        assert_error(
-            client.request(
-                method,
-                path,
-                headers=[
-                    ("Authorization", f"Bearer {TOKEN}"),
-                    ("Authorization", f"Bearer {TOKEN}"),
-                ],
-            ),
-            401,
-        )
-    with client_for(service) as client:
-        assert_error(client.request(method, path, headers={"Host": "remote.example"}), 403)
-        assert_error(client.request(method, path, headers={"Forwarded": ""}), 403)
-        assert_error(
-            client.request(method, path, headers=[("Host", "127.0.0.1"), ("Host", "127.0.0.1")]),
-            400,
-        )
 
 
 @pytest.mark.parametrize("wait_s", [-1, 16, True, "0", None, 10**400, 1e300])

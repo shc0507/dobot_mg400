@@ -27,11 +27,11 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import assets  # noqa: E402
 from install import (  # noqa: E402
+    FIXED_SETTINGS,
     SERVICE_GID,
     SERVICE_UID,
     Host,
     camera_configuration,
-    check_settings,
     enabled_services,
     finite_json_number,
     load_services,
@@ -52,50 +52,6 @@ CALIBRATION_MAX_BYTES = 2 * 1024 * 1024 * 1024
 CALIBRATION_MAX_DEPTH = 32
 ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs", "station"}
 STATION_ACTIONS = {"save", "list", "show", "rm"}
-STATION_SETTINGS = {"MG400_ORCH_STATIONS_FILE"} | {
-    f"MG400_ORCH_{axis}_{side}_{'DEG' if axis == 'R' else 'MM'}"
-    for axis in ("X", "Y", "Z", "R")
-    for side in ("MIN", "MAX")
-}
-STATION_TEACH_SETTINGS = STATION_SETTINGS | {
-    "MG400_ORCH_TOOL_FILE",
-    "MG400_ORCH_ROBOT_URL",
-    "MG400_ORCH_ROBOT_TOKEN",
-    "MG400_ORCH_TIMEOUT_S",
-}
-TRANSFER_SETTINGS = STATION_SETTINGS | {"MG400_ORCH_TOOL_FILE", "MG400_ORCH_PRE_GRIP"}
-CALIBRATION_SETTINGS = {"MG400_CAMERA_CALIBRATION_REFERENCES"}
-DRIFT_SETTINGS = {"MG400_ORCH_DRIFT_LIMIT_PX"}
-CRUCIBLE_SETTINGS = {
-    "MG400_ORCH_CRUCIBLE_" + suffix
-    for suffix in (
-        "LOAD_MAX_C",
-        "UNLOAD_MAX_C",
-        "GRIP",
-        "RELEASE",
-        "AWAKE_S",
-        "MAX_AGE_S",
-        "ROIS_FILE",
-    )
-}
-ZONE_SETTINGS = {"MG400_ORCH_ZONES_FILE", "MG400_ORCH_ZONE_STATE_FILE"}
-REHEARSAL_ZONE_SETTINGS = {"MG400_ORCH_ZONES_FILE"}
-ORCHESTRATOR_SERVICES = ("ROBOT", "STAGE", "THERMAL", "VISION", "FURNACE", "MICROSCOPE")
-ORCHESTRATOR_DATA = {"MG400_ORCH_RUNS_DIR"}
-ORCHESTRATOR_SETTINGS = (
-    ORCHESTRATOR_DATA
-    | TRANSFER_SETTINGS
-    | CRUCIBLE_SETTINGS
-    | CALIBRATION_SETTINGS
-    | DRIFT_SETTINGS
-    | ZONE_SETTINGS
-    | {"MG400_ORCH_TIMEOUT_S"}
-    | {
-        f"MG400_ORCH_{service}_{suffix}"
-        for service in ORCHESTRATOR_SERVICES
-        for suffix in ("URL", "TOKEN")
-    }
-)
 
 
 def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, clock=time.monotonic):
@@ -125,15 +81,12 @@ def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, cl
         or any(ord(character) < 32 or ord(character) == 127 for character in base)
     ):
         raise ValueError("Invalid furnace base path")
-    token = settings.get("MG400_FURNACE_TOKEN") or ""
-    if len(token) < 24 or any(not 32 <= ord(character) <= 126 for character in token):
-        raise ValueError("Set a valid MG400_FURNACE_TOKEN before the status check")
     connection = connection_factory(bind, port, timeout=2)
     try:
         connection.request(
             "GET",
             quote(base.rstrip("/"), safe="/-._~") + "/api/state",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            headers={"Accept": "application/json"},
         )
         response = connection.getresponse()
         if response.status != 200:
@@ -207,21 +160,11 @@ def orchestrator(host, argv, execvpe):
             )
         else:
             settings = os.environ
-        allowed = ORCHESTRATOR_SETTINGS if argv[0] == "run" else ORCHESTRATOR_DATA
-        if argv[0] == "rehearse":
-            allowed = (
-                ORCHESTRATOR_DATA
-                | TRANSFER_SETTINGS
-                | CRUCIBLE_SETTINGS
-                | REHEARSAL_ZONE_SETTINGS
-                | DRIFT_SETTINGS
-            )
-        if argv[0] == "station":
-            allowed = STATION_TEACH_SETTINGS if argv[1] == "save" else STATION_SETTINGS
         environment = {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             **{key: os.environ[key] for key in PASSED if key in os.environ},
-            **{key: value for key, value in settings.items() if key in allowed and value},
+            **(FIXED_SETTINGS if argv[0] != "rehearse" else {}),
+            **{key: value for key, value in settings.items() if key.startswith("MG400_") and value},
         }
         program = str(host.code.absolute() / ".venv/bin/python")
         command = [program, "-I", "-m", "orchestrator", *argv]
@@ -728,7 +671,6 @@ def as_service_user(host, settings, command, execvpe):
 
     runuser --pty gives the command its own terminal, so it cannot type into the root shell.
     With -g, the command gets only the service group, none of the account's other groups.
-    The terminal and the mode switch need no panel token.
     """
     user = pwd.getpwuid(SERVICE_UID).pw_name
     group = grp.getgrgid(SERVICE_GID).gr_name
@@ -737,11 +679,7 @@ def as_service_user(host, settings, command, execvpe):
         raise FileNotFoundError("runuser is missing. Install util-linux.")
     environment = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        **{
-            key: value
-            for key, value in settings.items()
-            if key.startswith("MG400_") and not key.endswith("_TOKEN") and value
-        },
+        **{key: value for key, value in settings.items() if key.startswith("MG400_") and value},
         **{key: os.environ[key] for key in PASSED if key in os.environ},
     }
     os.chdir(host.code)
@@ -801,12 +739,8 @@ def main(
     commands.add_parser("terminal", help="Open the interactive robot terminal")
     mode = commands.add_parser("mode", help="Read the controller mode, or switch it to TCP")
     mode.add_argument("--switch-to-tcp", action="store_true")
-    commands.add_parser("camera-url", help="Print the camera preview link with its key")
+    commands.add_parser("camera-url", help="Print the camera stream links")
     commands.add_parser("camera-check", help="Check the camera devices, services and streams")
-    token = commands.add_parser("token", help="Print the access token of a panel")
-    token.add_argument(
-        "panel", choices=[name for name, entry in registry.items() if entry["token"]]
-    )
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         print("Run mg400ctl as root, for example: sudo mg400ctl status", file=sys.stderr)
@@ -853,11 +787,10 @@ def main(
                 if disabled:
                     raise ValueError(f"Optional services are not enabled: {', '.join(disabled)}")
             services = {name: entry["units"] for name, entry in enabled.items()}
-        if args.command == "camera-check":
+        if args.command in ("camera-check", "camera-url"):
             camera_config = camera_configuration(settings)
             devices = list(camera_config.devices)
         if args.command in ("terminal", "mode"):
-            check_settings(settings)
             pwd.getpwuid(SERVICE_UID)
             grp.getgrgid(SERVICE_GID)
     except FileNotFoundError:
@@ -898,11 +831,7 @@ def main(
         missing = set()
         if args.command == "stop" and ("all" in args.names or furnace_selected):
             missing = missing_units(run, chosen)
-        if (
-            furnace_selected
-            and not set(services["furnace"]) <= missing
-            and not args.force
-        ):
+        if furnace_selected and not set(services["furnace"]) <= missing and not args.force:
             try:
                 check_furnace_shutdown(settings, read_state=read_furnace_state)
             except (OSError, ValueError, http.client.HTTPException) as error:
@@ -929,11 +858,14 @@ def main(
         for unit in services[args.name]:
             command += ["-u", unit]
         return run(command + (["-f"] if args.follow else [])).returncode
+    # Robot programs share the panel's robot connection lock.
+    robot_settings = {"MG400_CONTROLLER_LOCK_DIR": FIXED_SETTINGS["MG400_CONTROLLER_LOCK_DIR"]}
+    robot_settings.update(settings)
     if args.command == "terminal":
         program = host.code / ".venv/bin/mg400-robot"
         feedback = host.data / "work/gripper_feedback.json"
         as_service_user(
-            host, settings, [str(program), "--gripper-feedback", str(feedback)], execvpe
+            host, robot_settings, [str(program), "--gripper-feedback", str(feedback)], execvpe
         )
     elif args.command == "mode":
         command = [
@@ -942,25 +874,23 @@ def main(
             "--backup-dir",
             str(host.data / "work/control-mode"),
         ]
-        as_service_user(host, settings, command + ["--switch-to-tcp"] * args.switch_to_tcp, execvpe)
+        as_service_user(
+            host, robot_settings, command + ["--switch-to-tcp"] * args.switch_to_tcp, execvpe
+        )
     elif args.command == "camera-url":
-        key = (host.data / "camera/preview.key").read_text().strip()
         enabled = enabled_services(registry, settings.get("MG400_OPTIONAL_SERVICES", ""))
         if "proxy" in enabled:
             # The preview listens on loopback. Off the host, only the proxy reaches it.
             bind = settings.get("MG400_PROXY_BIND") or "127.0.0.1"
             port = int(settings.get("MG400_PROXY_PORT") or registry["proxy"]["port"])
             bind = f"[{bind}]" if ":" in bind else bind
-            print(f"http://{bind}:{port}/camera/{key}/", file=out)
+            base = f"http://{bind}:{port}/camera/"
         else:
-            bind = settings.get("MG400_CAMERA_BIND") or "127.0.0.1"
-            print(f"http://{bind}:{CAMERA_PORT}/{key}/", file=out)
-    elif args.command == "token":
-        value = settings.get(registry[args.panel]["token"])
-        if not value:
-            print("No token is set. Run deploy/install.py to create one.", file=sys.stderr)
-            return 1
-        print(value, file=out)
+            base = f"http://127.0.0.1:{CAMERA_PORT}/"
+        if not devices:
+            print("Cameras are off: MG400_CAMERA_DEVICES is empty.", file=out)
+        for number in range(1, len(devices) + 1):
+            print(f"{base}camera{number}.mjpeg", file=out)
     return 0
 
 

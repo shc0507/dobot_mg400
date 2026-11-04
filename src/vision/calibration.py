@@ -71,9 +71,19 @@ def image_size(value):
     return tuple(value)
 
 
+def scan_r(value):
+    """Validate the flange R that every point of a calibration scan uses."""
+    if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 1_000_000:
+        raise ValueError("Calibration scan R must be finite degrees.")
+    return float(value)
+
+
 def validate_model(value, *, device=None):
-    """Reject malformed geometry before it can produce motion coordinates."""
-    if not isinstance(value, dict) or value.get("schema") != 1:
+    """Reject malformed geometry before it can produce motion coordinates.
+
+    Schema 2 adds the scan R. Mapping still accepts schema 1; the drift check does not.
+    """
+    if not isinstance(value, dict) or value.get("schema") not in (1, 2):
         raise ValueError("Unknown camera calibration schema.")
     camera_device(value.get("camera_device"))
     if device is not None and value["camera_device"] != camera_device(device):
@@ -105,6 +115,8 @@ def validate_model(value, *, device=None):
             raise ValueError(f"Invalid calibration {name}.")
     if not 0 < value["distance_mm"] <= 1000 or value["created_at"] <= 0:
         raise ValueError("Invalid calibration distance or time.")
+    if value["schema"] == 2:
+        scan_r(value.get("scan_r_deg"))
     settings = calibration_settings(
         {
             key: value[key]
@@ -573,6 +585,7 @@ def fit_calibration(
     tray_pixels,
     image_size,
     *,
+    scan_r_deg,
     nominal_tag_height_mm=100.0,
     nominal_distance_mm=246.0,
     distance_tolerance_mm=10.0,
@@ -581,8 +594,8 @@ def fit_calibration(
 ):
     """Fit 18 tags + tray constraints; the 6 tag holdouts never affect fitting.
 
-    Tag points are no-tool flange XYZ. Tray points use corrected tip XY with
-    raw flange Z. Tags use Z+h, tray points use Z+h-D.
+    Tag points are no-tool flange XYZ, all at flange R scan_r_deg. Tray points use
+    corrected tip XY with raw flange Z. Tags use Z+h, tray points use Z+h-D.
     The scalar mapping plane is the mean tray height; reference validation uses
     each reference's own height and reports fitted residuals, not holdout error.
     """
@@ -602,6 +615,7 @@ def fit_calibration(
     ):
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("Calibration distances and error limits must be positive")
+    scan = scan_r(scan_r_deg)
     tags = _points(tag_points, (24, 3), "tag flange points")
     pixels = _points(tag_pixels, (24, 2), "tag pixels")
     count = len(tray_points)
@@ -646,7 +660,8 @@ def fit_calibration(
     if max(held_rms, reference_rms) > rms_limit_mm:
         raise ValueError("Calibration held-out or tray fit-residual RMS exceeds the limit")
     return {
-        "schema": 1,
+        "schema": 2,
+        "scan_r_deg": scan,
         "camera_matrix": model[1].tolist(),
         "distortion": model[2].tolist(),
         "rotation": model[3].tolist(),
@@ -671,10 +686,14 @@ def fit_calibration(
     }
 
 
-def drift_margin(value=0):
-    """Validate a finite nonnegative inset, bounded to 4096 image pixels."""
-    if type(value) not in (int, float) or not 0 <= value <= 4096:
-        raise ValueError("Drift margin must be a finite number from 0 to 4096 pixels.")
+DRIFT_LIMIT_PX = 3.0
+ARM_MARKER = 4
+
+
+def drift_limit(value=DRIFT_LIMIT_PX):
+    """Validate a pixel limit; a setting may lower the 3 px default but not raise it."""
+    if type(value) not in (int, float) or not 0 < value <= DRIFT_LIMIT_PX:
+        raise ValueError("Drift limit must be greater than 0 and at most 3 pixels.")
     return float(value)
 
 
@@ -695,32 +714,41 @@ def _drift_vector(value, length, label):
     return result
 
 
-def drift_inputs(flange_mm, tool_offset_mm, margin_px=0):
+def drift_inputs(flange_mm, limit_px=DRIFT_LIMIT_PX):
     """Validate command arguments before frame acquisition or job admission."""
-    return (
-        _drift_vector(flange_mm, 4, "Robot flange pose").tolist(),
-        _drift_vector(tool_offset_mm, 3, "Tool offset").tolist(),
-        drift_margin(margin_px),
-    )
+    return _drift_vector(flange_mm, 4, "Robot flange pose").tolist(), drift_limit(limit_px)
 
 
-def drift_proof(model, flange_mm, tool_offset_mm, detections, live_size, *, device, margin_px=0):
-    """Project the model-coordinate tip and require one observed arm box.
+def drift_proof(model, flange_mm, markers, live_size, *, device, limit_px=DRIFT_LIMIT_PX):
+    """Compare the detected arm marker 4 with the center the stored model projects.
 
-    This is a coarse image-consistency proof, not independent physical clearance
-    or robot authority. The caller owns frame/model identity and robot guards.
+    The pose must lie inside the scanned grid at the scan R. This is an
+    image-consistency proof, not physical clearance or robot authority.
+    The caller owns frame/model identity and robot guards.
     """
     geometry = validate_model(model, device=camera_device(device))
     width, height = image_size(live_size)
     if (width, height) != image_size(geometry["image_size"]):
         raise ValueError("Live image size differs from the stored camera calibration.")
-    flange, tool, margin = drift_inputs(flange_mm, tool_offset_mm, margin_px)
+    flange, limit = drift_inputs(flange_mm, limit_px)
+    if geometry["schema"] != 2:
+        raise ValueError("camera moved, recalibrate: the calibration has no scan R")
+    # Held-out points test the model only inside the grid. An off-axis marker moves with R.
+    grid = np.asarray(geometry["points"]["tag_flange_mm"])
+    position = np.asarray(flange[:3])
+    if (
+        np.any(position < grid.min(axis=0))
+        or np.any(position > grid.max(axis=0))
+        or abs(math.remainder(flange[3] - geometry["scan_r_deg"], 360)) > 0.1
+    ):
+        raise ValueError("Drift check pose must be inside the calibration grid at the scan R.")
     result = {
         "passed": False,
         "reason": None,
-        "projected_tip_px": None,
-        "arm_box_px": None,
-        "margin_px": margin,
+        "detected_center_px": None,
+        "expected_center_px": None,
+        "distance_px": None,
+        "limit_px": limit,
         "camera_device": geometry["camera_device"],
         "image_size": {"width": width, "height": height},
         "model_created_at": geometry["created_at"],
@@ -730,65 +758,47 @@ def drift_proof(model, flange_mm, tool_offset_mm, detections, live_size, *, devi
         result["reason"] = reason
         return result
 
-    # Tool XY follows the measured flange R. The nominal-height gauge belongs
-    # only to model Z; physical tool dz must not replace the recovered distance.
-    angle = math.radians(flange[3] % 360)
-    c, s = math.cos(angle), math.sin(angle)
-    tip = np.array(
-        [
-            flange[0] + c * tool[0] - s * tool[1],
-            flange[1] + s * tool[0] + c * tool[1],
-            flange[2] + geometry["nominal_tag_height_mm"] - geometry["distance_mm"],
-        ],
-        np.float64,
-    )
+    # The fit uses flange XY and flange Z plus the nominal tag height as the marker center.
+    center = np.array([flange[0], flange[1], flange[2] + geometry["nominal_tag_height_mm"]])
     rotation = np.asarray(geometry["rotation"], np.float64)
     translation = np.asarray(geometry["translation"], np.float64)
-    camera_tip = cv2.Rodrigues(rotation)[0] @ tip + translation
-    if not np.isfinite(camera_tip).all() or camera_tip[2] <= 0:
-        return negative("tip_behind_camera")
-    point = cv2.projectPoints(
-        tip.reshape(1, 3),
+    depth = (cv2.Rodrigues(rotation)[0] @ center + translation)[2]
+    if not math.isfinite(depth) or depth <= 0:
+        return negative("expected_behind_camera")
+    expected = cv2.projectPoints(
+        center.reshape(1, 3),
         rotation,
         translation,
         np.asarray(geometry["camera_matrix"], np.float64),
         np.asarray(geometry["distortion"], np.float64),
     )[0].reshape(2)
-    if not np.isfinite(point).all():
-        return negative("invalid_tip_projection")
-    if np.all(np.abs(point) <= 1_000_000):
-        result["projected_tip_px"] = point.tolist()
-    if not 0 <= point[0] < width or not 0 <= point[1] < height:
-        return negative("tip_outside_image")
-    if not isinstance(detections, list) or len(detections) > 1024:
-        return negative("arm_detection_malformed")
-    arm = []
-    for detection in detections:
-        if not isinstance(detection, dict):
-            return negative("arm_detection_malformed")
-        label = detection.get("label")
-        if not isinstance(label, str) or not 1 <= len(label) <= 128:
-            return negative("arm_detection_malformed")
-        if label.lower().replace(" ", "").replace("_", "") == "roboticarm":
-            arm.append(detection)
-    if not arm:
-        return negative("arm_detection_missing")
-    if len(arm) != 1:
-        return negative("arm_detection_ambiguous")
-    try:
-        box = _drift_vector(arm[0].get("xyxy"), 4, "Robotic Arm box")
-    except ValueError:
-        return negative("arm_detection_malformed")
-    left, top, right, bottom = box
-    if not 0 <= left < right <= width or not 0 <= top < bottom <= height:
-        return negative("arm_detection_malformed")
-    result["arm_box_px"] = box.tolist()
-    if left + margin >= right - margin or top + margin >= bottom - margin:
-        return negative("margin_excludes_box")
-    if (
-        not left + margin <= point[0] <= right - margin
-        or not top + margin <= point[1] <= bottom - margin
+    if np.isfinite(expected).all() and np.all(np.abs(expected) <= 1_000_000):
+        result["expected_center_px"] = expected.tolist()
+    if result["expected_center_px"] is None or not (
+        0 <= expected[0] < width and 0 <= expected[1] < height
     ):
-        return negative("tip_outside_arm_box")
+        return negative("expected_outside_image")
+    if not isinstance(markers, list) or len(markers) > 1024:
+        return negative("marker_detection_malformed")
+    found = []
+    for marker in markers:
+        if not isinstance(marker, dict) or type(marker.get("id")) is not int:
+            return negative("marker_detection_malformed")
+        if marker["id"] == ARM_MARKER:
+            found.append(marker)
+    if not found:
+        return negative("marker_missing")
+    if len(found) > 1:
+        return negative("marker_duplicate")
+    try:
+        detected = _drift_vector(found[0].get("center_px"), 2, "Marker center")
+    except ValueError:
+        return negative("marker_detection_malformed")
+    if not (0 <= detected[0] < width and 0 <= detected[1] < height):
+        return negative("marker_detection_malformed")
+    result["detected_center_px"] = detected.tolist()
+    result["distance_px"] = math.hypot(*(detected - expected).tolist())
+    if result["distance_px"] > limit:
+        return negative("marker_beyond_limit")
     result["passed"] = True
     return result

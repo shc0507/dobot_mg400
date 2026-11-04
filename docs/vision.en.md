@@ -143,11 +143,12 @@ Calibration uses 3 leased commands:
 | Command | Parameters and result |
 | --- | --- |
 | `read_markers` | `camera`. Returns `markers` with `id` and `center_px`, plus `image_size`, `camera_device`, `frame_sha256`, and `read_at`. |
-| `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, and `image_size`. Fits and stores the model through the owned lease. |
-| `check_calibration` | `camera`, `flange_mm`, `tool_offset_mm`, and optional `margin_px`. Returns the tip/arm check from the same frame. |
+| `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, `image_size`, and `scan_r_deg`. Fits and stores the model through the owned lease. |
+| `check_calibration` | `camera`, `flange_mm`, and optional `limit_px`. Returns the marker 4 check from the same frame. |
 
 `tag_points` contains 24 uncorrected flange XYZ rows. `tag_pixels` contains their 24 pixel XY rows.
 The fitter applies the nominal tag height to these grid points.
+`scan_r_deg` is the flange R of all 24 grid points, in degrees.
 `tray_points` contains 2 to 4 rows with transformed fingertip XY and original contact flange Z.
 The skill rotates the configured tool XY offset by each recorded R, then adds it to the reference flange XY.
 It preserves flange Z for the unknown-distance fit, without applying the tool Z offset.
@@ -280,10 +281,14 @@ Passing RMS checks does not remove that limitation or establish a safe motion pa
 The service stores bounded JSON under `MG400_VISION_CALIBRATION_DIR`.
 The filename is SHA256 of the full `/dev/v4l/by-path/` device path, followed by `.json`.
 The document also stores that full path and its image size.
-It retains the camera matrix, distortion, rotation, translation, tray height, recovered distance, sample points, split indices, errors, and creation time.
+It retains the camera matrix, distortion, rotation, translation, tray height, recovered distance, scan R, sample points, split indices, errors, and creation time.
 Model points store transformed tray XY with original flange Z under `tray_tip_xy_flange_z_mm`.
 The run artifact stores the original reference flange poses, marker IDs, and configured tool offset under `reference_provenance`.
 The calibration JSON does not contain this original-reference provenance.
+
+New models use `schema` 2 and store the scan R as `scan_r_deg`.
+Coordinate mapping also accepts a `schema` 1 model without `scan_r_deg`. The drift check refuses a `schema` 1 model.
+Recalibrate the camera before you use the drift check.
 
 The directory must exist, belong to the service account, and use mode `0700` or `0750`.
 Model files must be private regular files with mode `0600` or `0640`, without symbolic or multiple hard links.
@@ -299,18 +304,26 @@ Keep the camera fixed and revalidate after physical changes.
 
 Use `vision.check_calibration(camera)` before each vision-guided move in a transfer recipe.
 This typed skill requires the robot and vision services under the run's existing ownership.
-It reads the measured robot pose and configured tool offset. It does not move or enable the robot.
+It reads the measured robot pose. It does not move or enable the robot.
 The check uses the existing workspace, gripper, feedback, and ownership requirements.
 
 The vision service must already report `connected=true` with no fault.
 For a cold live service, complete the authorized `read_markers` preview and release its lease as described above.
 The drift check does not acquire a separate preview lease or automatically restore service health.
 
-### Margin and command data
+Run the check with the robot stationary at a pose inside the calibration grid:
 
-`MG400_ORCH_DRIFT_MARGIN_PX` sets the orchestrator's required pixel inset. It defaults to `0` and accepts finite values from `0` through `4096`.
-A larger margin shrinks the acceptable area inside the arm box. It never expands that box.
-An inset that leaves no usable box fails the check.
+- Flange X and Y are between the 2 grid corners.
+- Flange Z is between the 2 scan heights.
+- R is within 0.1 degrees of the scan R. R values that differ by a multiple of 360 degrees count as equal.
+
+The service refuses other poses. Outside the grid, the held-out points do not test the model.
+An arm tag that is not exactly on the J4 axis moves when R changes.
+
+### Limit and command data
+
+`MG400_ORCH_DRIFT_LIMIT_PX` sets the pixel limit. It defaults to `3`.
+A value must be greater than `0` and at most `3`. The setting can lower the limit, but it cannot raise it.
 Live runs and owned demos preserve this supplied scalar setting. An absent setting stays absent until the skill applies its default.
 Other device, endpoint, token, and path filters remain unchanged.
 
@@ -320,49 +333,49 @@ The skill sends the leased `check_calibration` command with these fields:
 | --- | --- |
 | `camera` | Configured camera number. |
 | `flange_mm` | Measured `[X,Y,Z,R]`. XYZ uses millimetres and R uses degrees. |
-| `tool_offset_mm` | Configured `[dx,dy,dz]` in millimetres. |
-| `margin_px` | Optional finite inward inset, from `0` through `4096` pixels. The command default is `0`. |
+| `limit_px` | Optional pixel limit, greater than `0` and at most `3`. The command default is `3`. |
 
-The service reads 1 current frame, loads 1 model for that camera path, and runs 1 detector prediction on that frame.
-It uses the same model and frame for projection and arm-box evidence. It does not reuse cached boxes or rewrite the calibration.
+The service reads 1 current frame and loads 1 model for that camera path. It detects the `DICT_4X4_50` markers in that frame once.
+It uses the same model and frame for the expected and the detected center. It does not run the chip detector, reuse cached results, or rewrite the calibration.
 The skill does not load a separate host model.
 
 ### Geometry and result
 
-Tip XY uses the tool's XY offset rotated by measured R and added to flange XY.
-Projection uses model tip Z `flange_z + nominal_tag_height_mm - distance_mm`.
-The configured tool `dz` does not supply projection height.
-The projected tip must have positive camera depth and lie inside the calibrated image.
+The expected marker 4 center uses flange X and Y, and flange Z plus `nominal_tag_height_mm`. The calibration fit uses the same marker center.
+The service projects this center with the stored camera matrix, distortion, rotation, and translation.
+The projected center must have positive camera depth and lie inside the calibrated image.
 The live camera path and image size must match the stored model.
+A missing model, a changed image size, or a `schema` 1 model fails the command. The message starts with `camera moved, recalibrate:`.
 
-The detector must supply exactly 1 valid `Robotic Arm` box.
-Label comparison ignores case, spaces, and underscores.
-The box must contain finite, ordered XYXY coordinates inside the image.
-The projected tip must lie inside that box after the inward margin.
-Missing, malformed, or ambiguous arm evidence fails the check.
+The frame must contain exactly 1 marker 4. A missing marker 4 fails the check. Duplicate marker IDs in the frame fail the command.
+The check passes only when the distance from the detected center to the expected center is at most the limit.
 
 A successful command receipt contains `camera`, `calibrated=true`, and these check fields:
 
 | Field | Meaning |
 | --- | --- |
 | `passed`, `reason` | Boolean result and failure reason, or `null` when no reason applies. |
-| `projected_tip_px` | Projected `[x,y]`, or `null` when unavailable. |
-| `arm_box_px` | Detected `[x0,y0,x1,y1]`, or `null` when unavailable. |
-| `margin_px` | Applied inward margin. |
+| `detected_center_px` | Detected marker 4 center `[x,y]`, or `null` when unavailable. |
+| `expected_center_px` | Projected marker 4 center `[x,y]`, or `null` when unavailable. |
+| `distance_px` | Distance between the 2 centers in pixels, or `null` when unavailable. |
+| `limit_px` | Applied pixel limit. |
 | `camera_device`, `image_size` | Camera path and `{width,height}` for this frame and model. |
 | `model_created_at` | Creation time of the model used for this check. |
 
 A successful command receipt alone is insufficient. The skill requires a valid positive check result.
+The skill calculates the distance again from the 2 reported centers. That distance must agree with `distance_px` and be at most the limit.
 It accepts only the exact command, action, and controlling-client receipt.
-A guard checks stationary flange XYZ and R plus unchanged robot owner and instance before, during, and after inference.
+A guard checks stationary flange XYZ and R plus unchanged robot owner and instance before, during, and after the marker read.
 
 A negative or malformed check result raises `camera moved, recalibrate`. The run enters `held` before the next step.
+A failed command raises `Vision calibration failed:` with the service message. The run also enters `held`.
 An earlier Stop, lease loss, or robot-motion error keeps its original cause.
 The Runner stops and drains accepted work and retains occupied zones.
 The skill does not retry, reacquire authority, clear a zone, or recalibrate automatically.
 
-Perspective makes this a coarse check. A pass does not detect every camera movement or validate small calibration errors.
-It does not replace physical clearance, joint and workspace limits, or the applicable hardware checks.
+1 marker gives 1 image point. Some camera movements move other image points more than the marker point.
+An example is a rotation about the lens axis when the marker is near the image center.
+A pass does not detect every camera movement. It does not replace physical clearance, joint and workspace limits, or the applicable hardware checks.
 
 ## Tray geometry and cross-checks
 

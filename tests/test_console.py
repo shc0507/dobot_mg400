@@ -496,3 +496,37 @@ def test_proxy_root_redirects_to_the_console():
     caddy = (Path(__file__).parents[1] / "config/proxy/Caddyfile").read_text()
     assert "\tredir / /lab/ 302\n" in caddy
     assert caddy.index("redir / /lab/") < caddy.index("handle /lab/*")
+
+
+def test_an_unconfigured_service_stays_not_configured_across_refreshes():
+    from orchestrator.web.backend import Dashboard
+
+    reads = threading.Event()
+
+    def client(name, identity):
+        if name == "robot":
+            assert reads.wait(3)
+        return None
+
+    def summary():
+        raise RuntimeError("No summary in this test.")
+
+    service = SimpleNamespace(
+        settings={},
+        demo=False,
+        dashboard_configured=lambda name: name == "robot",
+        dashboard_client=client,
+        dashboard_summary=summary,
+    )
+    dashboard = Dashboard(service)
+    try:
+        for _ in range(5):
+            dashboard.refresh()
+            phases = {card["id"]: card["phase"] for card in dashboard.snapshot()["services"]}
+            assert phases["microscope"] == "unconfigured"
+            # A configured service shows loading until its first read settles.
+            assert phases["robot"] == "loading"
+            wait_for(lambda: dashboard.reading <= {"robot"})
+    finally:
+        reads.set()
+        wait_for(lambda: not dashboard.threads)

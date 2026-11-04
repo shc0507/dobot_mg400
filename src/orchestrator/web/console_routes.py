@@ -9,6 +9,7 @@ from labkit.lease import validate_client
 
 from ..clients import SERVICES
 from .workspaces import discover
+from .workspaces.cameras import preview_state
 
 _ASSET = re.compile(r"[a-z][a-z0-9-]{0,31}\.(js|css)")
 
@@ -69,6 +70,7 @@ def console_blueprints(service, prefix):
         )
         report.update(
             console={"commit": console().commit, "demo": service.demo},
+            camera_preview=preview_state(service),
             control=console().control(page),
             readiness=console().readiness(),
             workspaces=[{"id": item.id, "title": item.title} for item in workspaces],

@@ -222,7 +222,7 @@
 
   function pagesCard() {
     const { el, t, base } = view.api;
-    const links = [["dashboard", base + "/dashboard/"], ["robot", "/robot/"], ["stage", "/stage/"], ["camera", "/camera/"], ["thermal", "/thermal/"], ["furnace", "/furnace/"], ["microscope", "/microscope/"]];
+    const links = [["dashboard", base + "/dashboard/"], ["robot", "/robot/"], ["stage", "/stage/"], ["camera", "#cameras"], ["thermal", "/thermal/"], ["furnace", "/furnace/"], ["microscope", "/microscope/"]];
     return section("ov-pages", t("pages.title"),
       el("ul", { class: "lc-links" }, ...links.map(([id, href]) => el("li", {}, el("a", { href, class: "lc-link", text: t("pages." + id) })))));
   }

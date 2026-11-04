@@ -426,6 +426,7 @@ mg400ctl start camera
 ```
 
 Use the Cameras workspace of the Lab Console to see the views.
+If the `proxy` service is enabled, the stream prefix is `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`.
 The stream paths contain the access key. The key stays the same after a service restart.
 Closing the terminal does not stop the preview service.
 Stopping the preview service also stops the camera capture service.

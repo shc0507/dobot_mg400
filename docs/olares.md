@@ -425,6 +425,7 @@ mg400ctl start camera
 ```
 
 在实验室控制台的 Cameras 工作区查看画面。
+启用 `proxy` 服务时，视频流前缀为 `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`。
 视频流路径包含访问密钥，服务重启后保持不变。
 关闭终端不会停止预览服务。
 停止预览服务时，摄像头采集服务也停止。

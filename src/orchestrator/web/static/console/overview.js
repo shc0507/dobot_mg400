@@ -31,7 +31,7 @@
       "control.takeLabel": "Take control of {device}", "control.releaseLabel": "Release {device}",
       "result.pending": "Pending", "result.confirmed": "Confirmed", "result.unconfirmed": "Not confirmed",
       "result.failed": "Failed", "result.unavailable": "Unavailable",
-      "proposals.title": "Agent proposals", "proposals.count": "{count} waiting. Decide in the lab dashboard.",
+      "proposals.title": "Agent proposals", "proposals.count": "{count} waiting.",
       "proposals.none": "No proposal waiting.",
     },
     zh: {
@@ -58,7 +58,7 @@
       "control.takeLabel": "获取 {device} 的控制", "control.releaseLabel": "释放 {device}",
       "result.pending": "进行中", "result.confirmed": "已确认", "result.unconfirmed": "未确认",
       "result.failed": "失败", "result.unavailable": "不可用",
-      "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。请在实验室看板中决定。",
+      "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。",
       "proposals.none": "没有待处理的提议。",
     },
   };

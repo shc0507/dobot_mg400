@@ -20,6 +20,8 @@
   const W = 160, H = 120;
   const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
   const PREFIX = "/api/console/ws/cameras/";
+  // The relay sends only the newest frame. Small tiles ask for fewer frames.
+  const TILE_FPS = 10, LARGE_FPS = 30;
 
   const i18n = {
     en: {
@@ -208,6 +210,9 @@
     return { x: (boxW - w * scale) / 2, y: (boxH - h * scale) / 2, scale };
   }
 
+  /** The stream ticket request: a large tile gets the source rate, others TILE_FPS. */
+  function streamTicket(view, large) { return { view, kind: "stream", fps: large ? LARGE_FPS : TILE_FPS }; }
+
   function backoff(failures) { return Math.min(15000, 1000 * 2 ** Math.min(4, failures)); }
 
   function stamp(date = new Date()) { return date.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z"); }
@@ -369,6 +374,7 @@
     constructor(view, options) {
       this.view = view;
       this.options = options;
+      this.large = options.large === true;
       this.running = false;
       this.failures = 0;
       this.retry = null;
@@ -418,11 +424,19 @@
       this.running = true;
       const generation = ++this.generation;
       if (this.view === "thermal") { if (engine.thermalTimer === null) pollThermal(); this.paint(); return; }
-      request("ticket", { view: this.view, kind: "stream" }).then(body => {
+      request("ticket", streamTicket(this.view, this.large)).then(body => {
         if (!this.running || generation !== this.generation) return;
         this.img.src = body.url;
       }, () => this.failed());
       pollStatus();
+    }
+
+    /** Grow or shrink the tile. A running stream restarts with the new frame rate. */
+    setLarge(large) {
+      this.el.classList?.toggle("lcam-large", large);
+      if (this.large === large) return;
+      this.large = large;
+      if (this.running && MJPEG.has(this.view)) { this.stop(); this.start(); }
     }
 
     stop() {
@@ -658,7 +672,7 @@
       grid.hidden = ui.layout !== "grid";
       large.hidden = strip.hidden = ui.layout !== "focus";
       for (const [view, node] of tiles()) {
-        node.classList.toggle("lcam-large", ui.layout === "focus" && view === ui.focus);
+        node.labCameras.setLarge(ui.layout === "focus" && view === ui.focus);
         if (ui.layout === "grid") grid.append(node);
         else (view === ui.focus ? large : strip).append(node);
       }
@@ -847,6 +861,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, regionFrom, containRect, backoff, stamp },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, regionFrom, containRect, backoff, stamp, streamTicket },
   };
 });

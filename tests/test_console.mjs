@@ -123,6 +123,27 @@ test("status chips always carry text and turn stale without fresh state", () => 
   assert.deepEqual(runsChip({ stale: false }, { status: "running" }, true), { tone: "info", text: "running" });
 });
 
+test("the cameras chip follows the console camera relay, not a dashboard link", () => {
+  const { LabConsole } = load();
+  const { camerasChip, chips } = LabConsole.logic;
+  assert.deepEqual(camerasChip({ state: "live" }, true), { tone: "ok", key: "chip.live" });
+  assert.deepEqual(camerasChip({ state: "idle" }, true), { tone: "ok", key: "chip.configured" });
+  assert.deepEqual(camerasChip({ state: "stale" }, true), { tone: "warn", key: "chip.stale" });
+  assert.deepEqual(camerasChip({ state: "unavailable" }, true), { tone: "bad", key: "chip.unavailable" });
+  assert.deepEqual(camerasChip({ state: "unconfigured" }, true), { tone: "off", key: "chip.unconfigured" });
+  assert.deepEqual(camerasChip(undefined, true), { tone: "off", key: "chip.unconfigured" });
+  assert.deepEqual(camerasChip({ state: "live" }, false), { tone: "warn", key: "chip.stale" });
+  // A blank MG400_DASH_CAMERA_URL must not hide live console cameras.
+  const snapshot = { services: [], cameras: [{ id: "camera", url: null }], camera_preview: { state: "live" }, orchestrator: { stale: false } };
+  assert.equal(chips(snapshot, true).find(row => row.id === "cameras").key, "chip.live");
+});
+
+test("the overview links the camera preview to the Cameras workspace without a key", () => {
+  const source = readFileSync(new URL("../src/orchestrator/web/static/console/overview.js", import.meta.url), "utf8");
+  assert.match(source, /\["camera", "#cameras"\]/);
+  assert.doesNotMatch(source, /"\/camera\/"/);
+});
+
 test("the strip renders 8 chips with a hidden dot and visible text", async () => {
   const { LabConsole } = load({ responses: [{ status: 200, body: { services: [{ id: "robot", phase: "ready", connected: true }], cameras: [], orchestrator: { stale: false }, control: [] } }] });
   const view = page();

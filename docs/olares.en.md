@@ -431,6 +431,8 @@ mg400ctl start camera
 mg400ctl camera-url
 ```
 
+If the `proxy` service is enabled, the link goes through the proxy: `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`.
+If it is not enabled, the link is `http://<MG400_CAMERA_BIND>:1985/<key>/`. If the address is `127.0.0.1`, the link opens only on the host.
 Connect to the LarePass VPN, then open the link in a browser.
 The link contains the access key and stays the same after a service restart.
 Closing the terminal does not stop the preview service.

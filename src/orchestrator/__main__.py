@@ -8,6 +8,16 @@ import sys
 
 from labkit.auth import valid_token_for_bind
 
+SERVER_OPTIONS = {
+    # Camera relays hold one worker each (at most 6); keep 10 for the API.
+    "threads": 16,
+    "clear_untrusted_proxy_headers": False,
+    "max_request_body_size": 65537,
+    # Block a slow camera viewer soon, so its next frame is the newest one.
+    # Waitress waits for the buffer to drain; a larger response still streams.
+    "outbuf_high_watermark": 256 * 1024,
+}
+
 
 def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec_function=None):
     """Start the service after validation; terminate only after accepted work drains."""
@@ -94,10 +104,7 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
             app,
             host=args.bind,
             port=args.port,
-            # Camera relays hold one worker each (at most 6); keep 10 for the API.
-            threads=16,
-            clear_untrusted_proxy_headers=False,
-            max_request_body_size=65537,
+            **SERVER_OPTIONS,
         )
         service.start()
         serving = True

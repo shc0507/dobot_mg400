@@ -11,5 +11,7 @@ SupplementaryGroups=dialout
 WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/python scripts/gripper_feedback.py --output /var/lib/mg400/work/gripper_feedback.json --commands
 Restart=on-failure
+# The collector exits with 128 + SIGTERM (143) on a normal stop.
+SuccessExitStatus=143
 RestartSec=2s
 UMask=0077

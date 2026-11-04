@@ -79,3 +79,8 @@ test("the workspace never parses data as HTML and never stores a token", () => {
   assert.ok(!/localStorage|sessionStorage/.test(source));
   assert.ok(!/Authorization/.test(source));
 });
+
+test("a small tile asks for 10 fps and a large tile for the source rate", () => {
+  assert.deepEqual(logic.streamTicket("camera2", false), { view: "camera2", kind: "stream", fps: 10 });
+  assert.deepEqual(logic.streamTicket("microscope", true), { view: "microscope", kind: "stream", fps: 30 });
+});

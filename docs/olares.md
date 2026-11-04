@@ -430,6 +430,8 @@ mg400ctl start camera
 mg400ctl camera-url
 ```
 
+启用 `proxy` 服务时，链接经代理访问：`http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<key>/`。
+未启用时，链接为 `http://<MG400_CAMERA_BIND>:1985/<key>/`。地址为 `127.0.0.1` 时，链接只能在主机上打开。
 连接 LarePass VPN 后，在浏览器打开该链接。
 链接包含访问密钥，服务重启后保持不变。
 关闭终端不会停止预览服务。

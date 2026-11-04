@@ -892,3 +892,28 @@ def test_main_preserves_installed_terminal_dispatch(monkeypatch):
     monkeypatch.setattr(cli, "main", lambda args, **kwargs: calls.append((args, kwargs)) or 7)
     assert main(["runs"], out=out, read=read) == 7
     assert calls == [(["runs"], {"out": out, "read": read})]
+
+
+def test_serve_passes_the_server_options():
+    from orchestrator.__main__ import SERVER_OPTIONS, main
+
+    seen = {}
+
+    class Server:
+        def run(self):
+            raise KeyboardInterrupt
+
+        def close(self):
+            pass
+
+    def server(app, **kwargs):
+        seen.update(kwargs)
+        return Server()
+
+    main(
+        ["serve"],
+        environ={},
+        service_factory=lambda **kwargs: CLIService([]),
+        server_factory=server,
+    )
+    assert {key: seen[key] for key in SERVER_OPTIONS} == SERVER_OPTIONS

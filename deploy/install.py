@@ -837,6 +837,10 @@ def install(args, host, run, chown, out):
         )
     for name, asset in selected_assets.items():
         source = local_assets.get(name)
+        if source is None and assets.asset_status(asset, host.root) == "present":
+            # The installed file matches its manifest size, SHA-256, owner and mode.
+            step(f"keep asset {name} at {assets.destination(asset, host.root)} (verified)")
+            continue
         step(
             f"install asset {name} from {source or asset.url} as "
             f"{assets.destination(asset, host.root)} "

@@ -190,6 +190,13 @@ def test_web_panel_allows_the_stop_confirmation_before_systemd_kills_it():
     assert service["RestartPreventExitStatus"] == ["2"]
 
 
+def test_gripper_collector_reports_its_sigterm_exit_as_success():
+    service = unit_sections("mg400-gripper-collector.service")["Service"]
+    # scripts/gripper_feedback.py exits with 128 + SIGTERM on a normal stop.
+    assert service["SuccessExitStatus"] == ["143"]
+    assert service["Restart"] == ["on-failure"]
+
+
 def test_panel_collector_and_request_watcher_share_one_work_directory():
     panel = command("mg400-web-panel.service")
     collector = command("mg400-gripper-collector.service")

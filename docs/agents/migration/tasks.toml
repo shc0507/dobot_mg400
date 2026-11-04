@@ -1422,6 +1422,91 @@ writes = [
 ]
 
 [[task]]
+id = "DSH-03"
+title = "Lab Console shell and overview"
+phase = 5
+track = "dashboard"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["DSH-01", "OPS-02"]
+# Owner request 2026-11-04: one console for the lab; DSH-03 to DSH-06 share src/orchestrator/web/.
+writes = [
+  "src/orchestrator/web/**",
+  "src/orchestrator/app.py",
+  "src/orchestrator/clients.py",
+  "config/proxy/**",
+  "tests/test_dashboard.py",
+  "tests/test_dashboard.mjs",
+  "tests/test_console.py",
+  "tests/test_console.mjs",
+  "docs/dashboard.md",
+  "docs/dashboard.en.md",
+]
+
+[[task]]
+id = "DSH-04"
+title = "Console camera workspace"
+phase = 5
+track = "dashboard"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["DSH-03", "VIS-06", "THM-02", "MIC-04"]
+writes = [
+  "src/orchestrator/web/**",
+  "src/orchestrator/app.py",
+  "src/orchestrator/clients.py",
+  "tests/test_console.py",
+  "tests/test_console.mjs",
+  "tests/test_console_cameras.py",
+  "docs/dashboard.md",
+  "docs/dashboard.en.md",
+]
+
+[[task]]
+id = "DSH-05"
+title = "Console motion workspace"
+phase = 5
+track = "dashboard"
+owner = "agent"
+size = "L"
+review = "human"
+deps = ["DSH-04", "ROB-03", "ORC-07"]
+writes = [
+  "src/orchestrator/web/**",
+  "src/orchestrator/app.py",
+  "src/orchestrator/clients.py",
+  "src/orchestrator/skills/robot.py",
+  "src/orchestrator/skills/__init__.py",
+  "tests/test_console.py",
+  "tests/test_console.mjs",
+  "tests/test_console_motion.py",
+  "docs/dashboard.md",
+  "docs/dashboard.en.md",
+]
+
+[[task]]
+id = "DSH-06"
+title = "Console furnace and microscope workspace"
+phase = 5
+track = "dashboard"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["DSH-05", "FUR-04", "MIC-04"]
+writes = [
+  "src/orchestrator/web/**",
+  "src/orchestrator/app.py",
+  "src/orchestrator/clients.py",
+  "tests/test_console.py",
+  "tests/test_console.mjs",
+  "tests/test_console_process.py",
+  "docs/dashboard.md",
+  "docs/dashboard.en.md",
+]
+
+[[task]]
 id = "AGT-01"
 title = "MCP gateway with read-only tools"
 phase = 5

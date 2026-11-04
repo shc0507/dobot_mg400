@@ -23,9 +23,11 @@
 | `/var/lib/mg400/stage` | `stage.toml` 中可写的位移台校准和相机参考 | `1000:1000`，`0700` |
 | `/var/lib/mg400/calibration` | 仪器校准数据的父目录 | `1000:1000`，`0750` |
 | `/var/lib/mg400/calibration/cameras` | 相机到机械臂的校准 JSON 和操作者示教参考，文件为 `0600` 或 `0640` | `1000:1000`，`0700` |
+| `/var/lib/mg400/calibration/microscope` | 选中显微镜服务所用的已导入校准 | `1000:1000`，`0750` |
+| `/var/lib/mg400/recordings` | 校验归档副本前保留的本地显微镜录像 | `1000:1000`，`0750` |
 | `/var/lib/mg400/thermal` | `rois.toml` 中的命名热像区域，文件权限 `0640` 或 `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/furnace` | 炉控状态和持久锁，文件为 `0600` | `1000:1000`，`0750` |
-| `/var/lib/mg400/runs` | 编排器运行记录，文件为 `0600` | `1000:1000`，`0750` |
+| `/var/lib/mg400/runs` | 编排器记录和显微镜运行输出，文件为 `0600` 或 `0640` | `1000:1000`，`0750` |
 | `/var/lib/mg400/zones` | 区域配置和保留占用，文件为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
@@ -44,6 +46,7 @@
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
 | `mg400-thermal.service` | `thermal` | 可选[热像仪页面](thermal.md)，端口 `8768` | 无 |
 | `mg400-furnace.service` | `furnace` | 可选的[炉温与气体网页](furnace.md)，端口 `8769` | `dialout` |
+| `mg400-microscope.service` | `microscope` | 可选的[显微镜网页](microscope.md)，回环端口 `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | 可选的[视觉服务](vision.md)，回环端口 `8771` | 无 |
 | `mg400-orchestrator.service` | `orch` | 可选的[配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
@@ -135,11 +138,13 @@
 安装器不加载库，也不打开摄像头。加 `--dry-run` 可校验并列出步骤，不修改文件。
 未指定 `--toupcam` 时，已有库文件保持不变。
 
-可以先安装库，再添加显微镜服务。
-显微镜服务独占此摄像头，并负责炉控录像。添加该服务时，其单元必须设置 `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`。
-此安装选项不创建显微镜单元，也不修改炉控单元。
+选中 `microscope` 时，必须先提供此库，安装才能继续。
+传入 `--toupcam PATH`，或保留哈希匹配且属主、权限安全的已安装库。
+修改主机前，安装器拒绝不可信的目标目录。
+现有目标目录须归 root 所有，允许 UID `1000` 遍历，且不得允许服务或其他用户写入。
+显微镜服务独占此摄像头，并负责炉控录像。其单元设置 `Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400`。
 已有的 `config/udev/70-mg400-microscope.rules.in` 模板以 `0660` 权限，向服务组开放 C3CMOS05100KPA 的 USB3 `0547:1375` 和 USB2 `0547:1376` 设备。
-显微镜服务注册并选中后，安装器才渲染此模板。
+选中显微镜服务后，安装器要求并渲染此模板。
 不要安装厂商的 `99-toupcam.rules`：它以 `0666` 权限，向所有用户开放厂商 `0547` 和 `04b4` 的设备。
 
 ## 服务清单
@@ -175,6 +180,12 @@
 真机使用前，配置串口路径和操作员提供的气体映射。
 设置 `MG400_OPTIONAL_SERVICES=furnace` 后运行安装器，再明确运行 `mg400ctl start furnace`。
 安装器不会启动炉控服务。
+
+可选服务 `microscope` 在 `/opt/mg400/.venv` 中使用 `microscope` 依赖组。
+把 `microscope` 加入 `MG400_OPTIONAL_SERVICES`，保留其他选项，并配置[显微镜](microscope.md#主机托管服务)。
+安装器准备默认的私有校准、录像和运行目录，不替换已导入的数据。
+`MG400_MICROSCOPE_TOKEN` 为空时，安装器生成令牌。已有令牌保持不变。
+所有者先启动 `camera`，再启动 `microscope`。安装器不启动这两项服务。
 
 可选服务 `vision` 在独立的 `/opt/mg400/.venv-vision` 环境中使用 `vision` 和 `vision-gpu` 依赖组。
 把 `vision` 加入 `MG400_OPTIONAL_SERVICES`，保留其他选择。运行安装器。
@@ -321,6 +332,12 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `MG400_FURNACE_TOKEN` | 安装器生成 | 炉控访问密钥 |
 | `MG400_FURNACE_SERIAL` | 空 | 炉控串口设备 |
 | `MG400_MFC_SERIAL` | 空 | 独立气控串口设备 |
+| `MG400_MICROSCOPE_BIND` | `127.0.0.1` | 显微镜监听地址 |
+| `MG400_MICROSCOPE_PORT` | `8770` | 显微镜端口 |
+| `MG400_MICROSCOPE_BASE_PATH` | `/` | 显微镜原生网页和 API 前缀 |
+| `MG400_MICROSCOPE_TOKEN` | 安装器生成 | 显微镜访问令牌 |
+
+按[显微镜指南](microscope.md#契约服务)配置设备选择、调焦限位和相机视频流。
 
 面板监听回环地址以外的地址时，访问密钥必须至少有 24 个字符。
 摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。
@@ -342,7 +359,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
 | `mg400ctl status` | 显示所有服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`thermal`、`furnace`、`vision`、`orch`、`gateway`、`proxy` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`gateway`、`proxy` 或 `all` |
 | `mg400ctl stop all` | 停止服务 |
 | `mg400ctl restart web` | 重启服务 |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |

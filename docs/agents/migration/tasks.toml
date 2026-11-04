@@ -771,6 +771,27 @@ writes = [
 ]
 
 [[task]]
+id = "CAL-04"
+title = "Drift check with the arm marker"
+phase = 2
+track = "calibration"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["CAL-03"]
+# Owner decisions on #244: arm marker 4 replaces the YOLO arm box, 3 px limit.
+writes = [
+  "src/vision/calibration.py",
+  "src/vision/service.py",
+  "src/orchestrator/skills/vision.py",
+  "src/orchestrator/skills/calibrate.py",
+  "tests/test_vision_drift.py",
+  "tests/test_vision_calibration.py",
+  "docs/vision.md",
+  "docs/vision.en.md",
+]
+
+[[task]]
 id = "VIS-08"
 title = "Evaluate and retrain the detector"
 phase = 2
@@ -784,6 +805,11 @@ writes = [
   "src/vision/train.py",
   "config/assets.toml",
   "tests/test_vision_eval.py",
+  # Step 5 (owner decision on #244): drop the arm class after CAL-04 merges.
+  "src/vision/localizer.py",
+  "scripts/camera_preview.js",
+  "tests/test_vision_localizer.py",
+  "tests/test_camera_preview.mjs",
   "docs/vision.md",
   "docs/vision.en.md",
 ]
@@ -796,7 +822,7 @@ track = "milestone"
 owner = "agent+human"
 size = "M"
 review = "human"
-deps = ["ORC-03", "ORC-04", "ORC-05", "CAL-02", "CAL-03", "VIS-05", "H-17"]
+deps = ["ORC-03", "ORC-04", "ORC-05", "CAL-02", "CAL-03", "CAL-04", "VIS-05", "H-17"]
 writes = [
   "recipes/tray-transfer.toml",
   "src/orchestrator/skills/vision.py",

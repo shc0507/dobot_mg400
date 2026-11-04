@@ -779,7 +779,32 @@ Register `vision.check_calibration` in `src/orchestrator/skills/__init__.py`. Li
 
 Done when: P-CHECKS pass.
 
-Notes: perspective makes this a coarse check. It catches a moved camera, not a small error.
+Notes: perspective makes this a coarse check. It catches a moved camera, not a small error. CAL-04 replaces the arm-box test with an arm-marker check (owner decision on #244).
+
+### CAL-04 · Drift check with the arm marker
+
+Owner: agent · Size: M · Review: human · Deps: CAL-03
+
+Source: owner decisions on #244 (2026-11-04). The CAL-03 arm-box test passes camera shifts of up to about 67 mm (the median `Robotic Arm` box in the H-22 frames is 391 × 208 px), and it fails when YOLO misses the arm.
+
+Goal: `vision.check_calibration(camera)` detects small camera movement without YOLO.
+
+Steps:
+
+1. The calibration scan stores its R in the camera model. `fit_calibration` already uses the flange XY plus the nominal tag height as the marker 4 center. Raise the model schema, and refuse an older model in the drift check.
+2. Replace the arm-box test in the vision service's drift command:
+   - Read one current frame, and detect `DICT_4X4_50` marker 4 with `detect_markers`.
+   - Project the expected marker 4 center for the measured flange pose with the stored model, as in CAL-01: flange X and Y, and flange Z plus the nominal tag height.
+   - Fail when the pixel distance between the detected and the expected center is more than the limit.
+   - A missing or duplicate marker 4 fails.
+3. Pixel limit: 3 px by default and at most 3 px. The calibration fit uses a 2 px RANSAC threshold, and 3 px is 1.9 mm at the tray scale of 1.554 px/mm. The setting `MG400_ORCH_DRIFT_LIMIT_PX` replaces `MG400_ORCH_DRIFT_MARGIN_PX`, and it may only lower the limit.
+4. The check pose must be inside the calibration grid: X and Y between the grid corners, flange Z between the 2 heights, and R within 0.1° of the scan R. Refuse other poses. Outside the grid, the held-out points do not test the model, and an off-axis marker moves with R.
+5. Keep the CAL-03 guards: one frame and one model, a stationary, fresh and owned robot before, during and after the read, no retry, and "camera moved, recalibrate" on any negative or malformed proof. The proof reports the detected and the expected center, the distance, the limit, the camera device, the image size and the model time.
+6. Tests with synthetic marker images from a known camera: a shift or rotation of the camera beyond 3 px fails and a smaller one passes, a missing or duplicate marker 4, a pose outside the grid, an R mismatch, an older model, and the CAL-03 race and receipt cases.
+
+Done when: P-CHECKS pass.
+
+Docs: `vision.md` and `.en.md`, with the known limit: 1 marker gives 1 image point, so some camera movements, such as a rotation about the lens axis with the marker near the image center, move other image points more than the marker point.
 
 ### VIS-08 · Evaluate and retrain the detector
 
@@ -789,16 +814,17 @@ Goal: know how well the detector works on the final cameras, and retrain it when
 
 Steps:
 
-1. `scripts/vision_eval.py`: run the model on the labeled set from H-22 (outside Git). Report precision and recall per class at the deployed confidence, and the center errors in pixels and millimetres.
+1. `scripts/vision_eval.py`: run the model on the labeled set from H-22 (outside Git, Roboflow version 2, see #112). Report the `Chip` precision and recall at the deployed confidence, and the center errors in pixels and millimetres. Ignore class 1 (owner decision on #244). Use the 20 arm frames, which have no chip labels, to count false chip detections on the arm.
 2. The owner sets the targets on the issue.
-3. If a target fails: `src/vision/train.py` wraps ultralytics training on the GPU. The dataset and outputs stay outside Git.
+3. If a target fails: `src/vision/train.py` wraps ultralytics training on the GPU. Train a `Chip`-only model: remove class 1 and the 5 broken `Chip` polygons that #112 lists. The final camera shows the chips about 1.5 to 2 times larger at the model input than the training set, and the old training used no scale augmentation. The dataset and outputs stay outside Git.
 4. New weights get a release `vision-model-vN` (the H-14 procedure) and an `assets.toml` change in a PR.
+5. With `Chip`-only weights, and after CAL-04 has merged, nothing uses arm detections. Then `src/vision/localizer.py` accepts exactly the class `Chip`, and `scripts/camera_preview.js` drops `roboticarm`. Until then the 2-class model keeps working.
 
 Done when: the evaluation report is on the issue; the manifest points to the new weights if the model changed.
 
 ### MS-01 · Milestone: vision-guided tray transfer
 
-Owner: agent+human · Size: M · Review: human · Deps: ORC-03, ORC-04, ORC-05, CAL-02, CAL-03, VIS-05, H-17
+Owner: agent+human · Size: M · Review: human · Deps: ORC-03, ORC-04, ORC-05, CAL-02, CAL-03, CAL-04, VIS-05, H-17
 
 Goal: D7. The first end-to-end automated task.
 
@@ -806,7 +832,7 @@ Steps:
 
 1. `recipes/tray-transfer.toml` with the params `from_slot` and `to_slot`.
 2. Skills in `src/orchestrator/skills/vision.py`: `vision.find_chip(slot)` (present, center, angle) and `vision.slot_state(slot)` (a chip is present or the slot is empty, from YOLO on the tray camera). Chips carry no labels.
-3. Steps: check the calibration, find the chip in the source slot, check that the target slot is empty, transfer with R from the chip angle, then confirm the chip in the target slot and the source slot empty.
+3. Steps: check the calibration at a pose inside the CAL-01 grid with the scan R (CAL-04), find the chip in the source slot, check that the target slot is empty, transfer with R from the chip angle, then confirm the chip in the target slot and the source slot empty.
 4. Rehearsal tests for success and for each failure: no chip at the source, an occupied target, no chip at the target after the place, the chip still at the source, empty grasp, drop, moved camera. Each failure holds the run.
 5. The operator runs it on hardware with P-HW.
 

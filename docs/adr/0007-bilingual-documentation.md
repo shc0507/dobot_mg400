@@ -20,7 +20,7 @@
 - 首行链接到另一种语言。英文页面使用 `.en.md` 目标和英文锚点。
 - CI 通过 pytest 运行 `scripts/check_doc_pairs.py`。检查内容包括配对文件、去除注释后的有序围栏代码块、行内代码集合、代码外 ASCII 数字、链接目标和各级标题数量。
 - 链接比较忽略片段，并将 `.md` 与 `.en.md` 目标视为同一文档。
-- 缺失配对文件仅通过 `docs/agents/migration/doc-pairs-pending.txt` 豁免。配对文件创建前，修改中文文件。添加英文配对文件时，删除对应待办条目。
+- 缺失配对文件仅通过 `docs/agents/doc-pairs-pending.txt` 豁免。配对文件创建前，修改中文文件。添加英文配对文件时，删除对应待办条目。
 - 中文使用 `jianming-zhongwen`，英文使用 `asd-ste100`。说明保持简洁且符合当前流程。运行结果写入议题评论，不写入操作说明。
 
 ## 影响

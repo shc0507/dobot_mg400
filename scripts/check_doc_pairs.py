@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PENDING = "docs/agents/migration/doc-pairs-pending.txt"
+PENDING = "docs/agents/doc-pairs-pending.txt"
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 INLINE_CODE = re.compile(r"(?<![\\`])(`+)(?!`)(.*?)(?<!`)\1(?!`)", re.DOTALL)
 NUMBER = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)*(?:[eE][+-]?[0-9]+)?")

@@ -780,3 +780,23 @@ def test_future_departure_ambiguity_is_found_before_source_pick(geometry):
     with pytest.raises(ValueError, match="unambiguous"):
         transfer(ctx, "source", "target", 400, 900)
     assert not ctx.robot.calls
+
+
+def test_start_is_rechecked_after_zone_admission_before_any_motion(geometry):
+    ctx = Context()
+    stations = geometry.load()
+    ctx.robot.value["actual"][:4] = _station_flange(stations["source"])
+    take = ctx.take
+
+    @contextmanager
+    def delayed_admission(name):
+        with take(name):
+            if name == "source":
+                ctx.robot.value["actual"][:4] = _station_flange(stations["target"])
+            yield
+
+    ctx.take = delayed_admission
+    with pytest.raises(RuntimeError, match="during zone admission"):
+        transfer(ctx, "source", "target", 400, 900)
+    assert not ctx.robot.calls
+    assert any(event[:2] == ("unknown", "source") for event in ctx.events)

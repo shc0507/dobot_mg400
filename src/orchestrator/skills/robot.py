@@ -272,6 +272,11 @@ class _Transfer:
         if self.starting_station(state) is not route.start:
             raise RuntimeError("Robot left the planned starting station before travel.")
         zones.enter(route.start["zone"])
+        # Zone admission may wait. Its earlier measured pose cannot authorize
+        # a rise after the robot has moved away from the planned station.
+        state, _ = self.state(expected)
+        if self.starting_station(state) is not route.start:
+            raise RuntimeError("Robot left the planned starting station during zone admission.")
         approach = self.pose(route.start, approach=True)
         if not self.matches(state, approach):
             self.move(approach, expected)

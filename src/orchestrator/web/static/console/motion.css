@@ -1,1 +1,54 @@
-/* Styles for the Motion workspace. Prefix every rule with #ws-motion. */
+/* Motion workspace (DSH-05). Every rule starts with #ws-motion. Colors come from shell.css. */
+#ws-motion { display: flex; flex-direction: column; gap: 24px; }
+#ws-motion .mo-columns { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+#ws-motion .mo-col { flex: 1 1 340px; min-width: 0; gap: 18px; }
+#ws-motion .mo-col-cams { flex: 999 1 520px; display: flex; flex-direction: column; gap: 12px; }
+#ws-motion .mo-titles { display: flex; flex-direction: column; }
+#ws-motion h3 { margin: 0; font-size: 14px; font-weight: 600; }
+#ws-motion .mo-badge { padding: 4px 10px; border-radius: 6px; background: var(--tab); color: var(--info); font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+#ws-motion .mo-badge.mo-real { background: #2A2213; color: var(--warn); }
+#ws-motion .mo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+#ws-motion .mo-stack { display: flex; flex-direction: column; gap: 16px; }
+#ws-motion .mo-block { display: flex; flex-direction: column; gap: 10px; }
+#ws-motion .mo-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; }
+#ws-motion .mo-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+#ws-motion .mo-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+#ws-motion .mo-primary { border: 0; background: var(--accent); color: #0B1A2A; font-weight: 700; }
+#ws-motion .mo-danger { border-color: var(--bad); color: #FF9A9A; }
+#ws-motion .mo-pose { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+#ws-motion .mo-tile { display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: 8px; background: #1B232A; min-width: 0; }
+#ws-motion .mo-value { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#ws-motion .mo-jogrow { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+#ws-motion .mo-pad { display: grid; grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px); gap: 6px; }
+#ws-motion .mo-pad-mid { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+#ws-motion .mo-zr { display: grid; grid-template-columns: repeat(2, 56px); gap: 6px; }
+#ws-motion .mo-jog { min-height: 48px; min-width: 48px; border-radius: 8px; border: 1px solid var(--line2); background: #1B232A; color: var(--text); font-weight: 600; cursor: pointer; }
+#ws-motion .mo-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+#ws-motion .mo-chip { min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line2); background: transparent; color: var(--soft); font-size: 13px; cursor: pointer; }
+#ws-motion .mo-chip.mo-on { border-color: var(--accent); background: var(--tab); color: var(--text); font-weight: 600; }
+#ws-motion .mo-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+#ws-motion .mo-inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+#ws-motion .mo-input { min-height: 44px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; min-width: 0; width: 100%; }
+#ws-motion .mo-narrow { width: 76px; }
+#ws-motion .mo-speed { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--soft); }
+#ws-motion .mo-speed input { flex: 1 1 auto; min-height: 44px; accent-color: var(--accent); }
+#ws-motion .mo-grip-state { font-size: 13px; font-weight: 600; color: var(--soft); }
+#ws-motion .mo-stop { min-height: 44px; padding: 0 14px; font-size: 13px; }
+#ws-motion .mo-small { font-size: 13px; }
+#ws-motion .mo-check { display: inline-flex; align-items: center; min-height: 44px; }
+#ws-motion .mo-axis { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 10px; background: #1B232A; border: 1px solid #2A353F; }
+#ws-motion .mo-readout { display: flex; flex-wrap: wrap; gap: 4px 14px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+#ws-motion .mo-at { border-color: var(--ok); }
+#ws-motion .mo-cams { display: flex; flex-direction: column; gap: 12px; }
+#ws-motion .mo-cam { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+#ws-motion .mo-cam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+#ws-motion .mo-cam-off { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid var(--line); }
+#ws-motion .mo-cam-badge { position: absolute; left: 10px; top: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); font-size: 12px; font-weight: 600; }
+#ws-motion .mo-off { color: var(--muted); }
+#ws-motion .mo-swap { align-self: flex-end; font-size: 13px; }
+#ws-motion .mo-msg { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 720px) {
+  #ws-motion .mo-pose { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #ws-motion .mo-grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

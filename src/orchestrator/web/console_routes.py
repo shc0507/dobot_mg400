@@ -115,6 +115,13 @@ def console_blueprints(service, prefix):
         data = request.get_json()
         if set(data) - {"action", "params"} or "action" not in data:
             raise ValueError("Send action and optional params only.")
+        if name == "robot" and data["action"] == "execute":
+            # Robot moves must pass the fingertip workspace check (DSH-05).
+            raise ServiceError(
+                409,
+                "Send robot moves through the Motion routes: "
+                f"{prefix}/api/console/ws/motion/jog or {prefix}/api/console/ws/motion/move.",
+            )
         result = console().command(_device(name), _page(), data["action"], data.get("params", {}))
         status = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
         return jsonify(result), status

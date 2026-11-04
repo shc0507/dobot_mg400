@@ -1,8 +1,5 @@
 /* Furnace + microscope workspace (DSH-06). Every rule starts with #ws-process. Colors follow Process.dc.html. */
 #ws-process .pr-workspace { display: flex; flex-direction: column; gap: 20px; }
-#ws-process .pr-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px; border-radius: 10px; background: #2A1517; border: 1px solid #6B2A2E; }
-#ws-process .pr-banner-title { font-weight: 700; color: #FF9A9A; }
-#ws-process .pr-banner-text { flex: 1 1 420px; min-width: 0; color: #F1C9C9; }
 #ws-process .pr-layout { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
 #ws-process .pr-card { flex: 1 1 560px; min-width: 0; gap: 18px; }
 #ws-process .pr-head { display: flex; flex-direction: column; }

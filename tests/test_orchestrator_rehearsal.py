@@ -167,10 +167,9 @@ def test_fresh_clients_use_same_owned_endpoints_without_acquiring(
     endpoints = {}
     original = ServiceAdapter.__init__
 
-    def construct(self, url, token, identity, **kwargs):
+    def construct(self, url, identity, **kwargs):
         endpoints.setdefault(identity, []).append(url)
-        assert token == ""
-        return original(self, url, token, identity, **kwargs)
+        return original(self, url, identity, **kwargs)
 
     monkeypatch.setattr(ServiceAdapter, "__init__", construct)
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"):
@@ -244,10 +243,10 @@ def test_partial_fresh_factory_failure_closes_only_its_new_adapters(tmp_path, mo
     closed = []
     original_init, original_close = ServiceAdapter.__init__, RobotAdapter.close
 
-    def construct(self, url, token, identity, **kwargs):
+    def construct(self, url, identity, **kwargs):
         if identity == "broken" and url.endswith("/contract"):
             raise ValueError("Synthetic adapter failure")
-        return original_init(self, url, token, identity, **kwargs)
+        return original_init(self, url, identity, **kwargs)
 
     def close(self):
         closed.append(self.identity)
@@ -574,7 +573,7 @@ def test_tray_rehearsal_rejects_unsafe_input_before_read_or_factory(
     monkeypatch.setattr(os, "open", checked_fd)
     monkeypatch.setattr(Rehearsal, "_robot", factory)
     monkeypatch.setattr(Rehearsal, "_vision", factory)
-    with pytest.raises(ValueError, match="private permissions, safe file types"):
+    with pytest.raises(ValueError, match="safe file types"):
         with Rehearsal(tmp_path / "demos", ("robot", "vision"), identity="in-process-only"):
             pytest.fail("Unsafe tray input must refuse startup")
     assert factory_calls == readable_opens == []

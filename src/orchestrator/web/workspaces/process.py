@@ -111,15 +111,6 @@ def microscope_view(raw):
     return value
 
 
-def gas_ready(furnace):
-    """True only when every gas channel names a real gas (the shell's gas-map rule)."""
-    channels = ((furnace or {}).get("flow") or {}).get("gas_channels") or []
-    names = [item.get("gas_name") for item in channels]
-    return bool(names) and all(
-        isinstance(name, str) and name and not name.startswith("Gas ") for name in names
-    )
-
-
 class ProcessStatus:
     def __init__(self, service, *, wall=time.time, clock=time.monotonic):
         self.service, self.wall, self.clock = service, wall, clock
@@ -187,7 +178,6 @@ class ProcessStatus:
         furnace = furnace_view(raw.get("furnace"))
         now = self.wall()
         self._sample(furnace, now)
-        confirmed = self.service.settings.get("MG400_DASH_CUTOFF_CONFIRMED", "")
         with self.lock:
             history = [list(item) for item in self.history]
         return {
@@ -196,9 +186,6 @@ class ProcessStatus:
             "furnace": furnace,
             "microscope": microscope_view(raw.get("microscope")),
             "crucible": self._read_crucible(),
-            "gas_ready": gas_ready(furnace),
-            "cutoff_confirmed": isinstance(confirmed, str)
-            and confirmed.strip().lower() in {"1", "true", "yes"},
             "history": history,
         }
 

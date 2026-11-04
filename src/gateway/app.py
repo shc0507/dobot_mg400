@@ -14,14 +14,7 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from labkit.auth import (
-    bearer_matches,
-    has_forwarded_headers,
-    loopback_host,
-    loopback_name,
-    same_origin,
-    valid_token,
-)
+from labkit.auth import bearer_matches, loopback_name, valid_token
 from labkit.lease import validate_client
 
 from .backend import MAX_RESPONSE
@@ -89,19 +82,9 @@ class Access:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         headers = Headers(scope=scope)
-        if (
-            any(
-                len(headers.getlist(key)) > 1
-                for key in ("host", "authorization", "origin", "content-length")
-            )
-            or not loopback_host(headers.get("host", ""))
-            or has_forwarded_headers(headers)
-            or not same_origin(headers)
+        if len(headers.getlist("authorization")) > 1 or not bearer_matches(
+            headers.get("authorization", ""), self.token
         ):
-            return await JSONResponse({"error": "Access rule refused this request."}, 403)(
-                scope, receive, send
-            )
-        if not bearer_matches(headers.get("authorization", ""), self.token):
             return await JSONResponse(
                 {"error": "Bearer token required."}, 401, headers={"WWW-Authenticate": "Bearer"}
             )(scope, receive, send)
@@ -165,8 +148,6 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
     validate_access(token, caller)
     if not loopback_name(bind):
         raise ValueError("Gateway bind must be loopback.")
-    bound_host = f"[{bind}]" if ":" in bind else bind.lower()
-    allowed = sorted({"127.0.0.1", "localhost", "[::1]", bound_host})
     server = Server("mg400-gateway", version="1.0")
     register_guidance(server)
     tools = definitions()
@@ -216,11 +197,7 @@ def create_app(backend, *, token, caller="gateway-agent", bind="127.0.0.1"):
         stateless=True,
         json_response=True,
         max_request_body_size=65536,
-        security_settings=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=[host + ":*" for host in allowed],
-            allowed_origins=["http://" + host + ":*" for host in allowed],
-        ),
+        security_settings=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
     @asynccontextmanager

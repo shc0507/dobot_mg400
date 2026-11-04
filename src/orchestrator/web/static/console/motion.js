@@ -26,7 +26,7 @@
     return values.length === 4 && values.every(value => typeof value === "number" && Number.isFinite(value)) ? values : null;
   }
 
-  /** One bounded jog: the actual pose plus one step on one axis. */
+  /** One jog: the actual pose plus one step on one axis. */
   function jogTarget(actual, axis, sign, step) {
     if (!Array.isArray(actual) || actual.length < 4 || !STEPS.includes(step) || (sign !== 1 && sign !== -1)) return null;
     const index = AXES.indexOf(axis);
@@ -113,7 +113,7 @@
       "badge.demo": "DEMO", "badge.real": "REAL ROBOT", "badge.realStage": "REAL STAGE",
       "dev.unconfigured": "Not configured", "dev.offline": "Not running", "dev.unreachable": "Not reachable", "dev.loading": "Loading…",
       "arm.enabled": "Enabled", "arm.disabled": "Disabled", "arm.busy": "Moving", "arm.alarm": "Alarm",
-      "arm.locked": "Locked", "arm.noFeedback": "No fresh feedback", "arm.cap": "speed cap {cap}",
+      "arm.locked": "Stop not confirmed. Check the arm, then press Recover.", "arm.recover": "Recover", "arm.noFeedback": "No fresh feedback", "arm.cap": "speed cap {cap}",
       "ctl.take": "Take control", "ctl.release": "Release", "ctl.mine": "You control it", "ctl.free": "Free",
       "ctl.console": "Another console page controls it", "ctl.other": "Another client controls it",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
@@ -157,7 +157,7 @@
       "badge.demo": "演示", "badge.real": "真机", "badge.realStage": "真实位移台",
       "dev.unconfigured": "未配置", "dev.offline": "未运行", "dev.unreachable": "无法连接", "dev.loading": "加载中…",
       "arm.enabled": "已使能", "arm.disabled": "未使能", "arm.busy": "运动中", "arm.alarm": "报警",
-      "arm.locked": "已锁定", "arm.noFeedback": "没有新反馈", "arm.cap": "速度上限 {cap}",
+      "arm.locked": "停止未确认。检查机械臂，然后按“恢复”。", "arm.recover": "恢复", "arm.noFeedback": "没有新反馈", "arm.cap": "速度上限 {cap}",
       "ctl.take": "获取控制权", "ctl.release": "释放", "ctl.mine": "你持有控制权", "ctl.free": "空闲",
       "ctl.console": "另一个控制台页面持有控制权", "ctl.other": "另一个客户端持有控制权",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
@@ -217,7 +217,7 @@
       renderLog();
     }
 
-    /** One robot execute through the workspace check (jog or move). Sent once; never retried. */
+    /** One robot execute (jog or move). Sent once; never retried. */
     async function checked(path, body) {
       try {
         const result = await api.request(path, body, { accept: [409, 502], timeout: 8000 });
@@ -669,6 +669,7 @@
       refs.enable.disabled = !ready || robot.enabled === true || busy("robot");
       refs.disable.disabled = !robot;
       refs.clear.disabled = !(robot && ownsRobot);
+      refs.clear.textContent = t(robot && (robot.locked || robot.stop_unconfirmed) ? "arm.recover" : "arm.clear");
       AXES.forEach((axis, i) => { refs.pose[i].textContent = pose ? fixed(pose[i], 2) : "—"; });
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;
@@ -719,7 +720,7 @@
         row.ref.textContent = t(reference.key);
         row.ref.className = "lc-strong tone-text-" + reference.tone;
         const moving = model.inflight.has("stage:move-" + motor.id);
-        const canStep = stageReady && motor.available === true && motor.automation_ready === true && !stage.busy && !moving;
+        const canStep = stageReady && motor.available === true && !stage.busy && !moving;
         row.minus.disabled = row.plus.disabled = !canStep;
         const refBusy = model.inflight.has("stage:ref-" + motor.id);
         if (row.home) row.home.disabled = !stageReady || motor.mode !== "idle" || stage.busy || refBusy;
@@ -734,7 +735,7 @@
         const at = (motor?.at_positions || []).includes(item.name);
         item.button.className = "lc-button" + (at ? " mo-at" : "");
         item.button.setAttribute("aria-pressed", at ? "true" : "false");
-        item.button.disabled = !stageReady || !motor?.automation_ready || stage.busy || motor.mode !== "idle" || model.inflight.has("stage:move-" + item.motor);
+        item.button.disabled = !stageReady || !motor || stage.busy || motor.mode !== "idle" || model.inflight.has("stage:move-" + item.motor);
       }
       refs.stageLast.textContent = stage ? lastText(stage.last_command) : "";
       const disconnected = Boolean(stage && stage.connected !== true);

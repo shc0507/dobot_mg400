@@ -43,8 +43,6 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .lc-state.tone-ok, .tone-text-ok { color: var(--ok); } .lc-state.tone-warn, .tone-text-warn { color: var(--warn); }
 .lc-state.tone-bad, .tone-text-bad { color: var(--bad); } .tone-text-info { color: var(--info); }
 
-.lc-access { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 24px; background: var(--card); border-bottom: 1px solid var(--line); }
-.lc-access input { min-height: 44px; min-width: 240px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); }
 .lc-notice { padding: 10px 24px; border-bottom: 1px solid var(--line); }
 .lc-notice.warn { color: var(--warn); } .lc-notice.error { color: var(--bad); } .lc-notice.info { color: var(--info); }
 
@@ -87,7 +85,7 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 .lc-links a { display: inline-block; min-height: 24px; }
 
 @media (max-width: 720px) {
-  .lc-header, .lc-strip, .lc-access, .lc-notice { padding-left: 16px; padding-right: 16px; }
+  .lc-header, .lc-strip, .lc-notice { padding-left: 16px; padding-right: 16px; }
   main { padding: 16px; }
   .lc-actions { width: 100%; }
   .lc-stop { flex: 1 1 auto; }

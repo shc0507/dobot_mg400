@@ -13,7 +13,6 @@ from orchestrator.app import OrchestratorService, create_app
 from orchestrator.clients import SERVICES
 from orchestrator.web import console as console_module
 
-TOKEN = "console-operator-token-0123456789"
 PRIVATE = "private-stage-service-token-0123456789"
 
 
@@ -195,7 +194,7 @@ def rig(tmp_path):
         client_factory=factory,
         clock=clock,
     ).start(background=False)
-    app = create_app(service, token=TOKEN, base_path="/lab")
+    app = create_app(service, base_path="/lab")
     yield SimpleNamespace(
         service=service, devices=devices, app=app, client=app.test_client(), clock=clock
     )
@@ -203,7 +202,7 @@ def rig(tmp_path):
 
 
 def headers(page="console-page-a"):
-    result = {"Authorization": f"Bearer {TOKEN}"}
+    result = {}
     if page:
         result["X-MG400-Client"] = page
     return result
@@ -215,7 +214,7 @@ def post(rig, path, data=None, page="console-page-a"):
     )
 
 
-def test_shell_is_public_and_apis_need_the_operator_token(rig):
+def test_shell_and_apis_need_no_token(rig):
     page = rig.client.get("/lab/")
     assert page.status_code == 200
     text = page.get_data(as_text=True)
@@ -223,18 +222,17 @@ def test_shell_is_public_and_apis_need_the_operator_token(rig):
     for name in ("overview", "motion", "cameras", "process"):
         assert f'data-workspace="{name}"' in text
         assert rig.client.get(f"/lab/console-static/{name}.js").status_code == 200
-    assert TOKEN not in text and PRIVATE not in text
+    assert PRIVATE not in text and "lc-token" not in text
     assert "Access-Control-Allow-Origin" not in page.headers
     assert rig.client.get("/lab/console-static/shell.js").status_code == 200
-    assert rig.client.get("/lab/console-static/..%2Fconsole.py").status_code in {401, 404}
+    assert rig.client.get("/lab/console-static/..%2Fconsole.py").status_code == 404
     assert rig.client.get("/lab/console-static/Shell.py").status_code == 404
     assert rig.client.get("/lab/dashboard/", headers=headers()).status_code == 404
-    assert rig.client.get("/lab/api/console/state").status_code == 401
-    assert rig.client.post("/lab/api/console/control/stage/take", json={}).status_code == 401
+    assert rig.client.get("/lab/api/console/state").status_code == 200
     foreign = rig.client.get(
         "/lab/api/console/state", headers={**headers(), "Origin": "http://foreign.invalid"}
     )
-    assert foreign.status_code == 403
+    assert foreign.status_code == 200
 
 
 def test_state_reports_frame_data_without_secrets(rig):
@@ -248,14 +246,7 @@ def test_state_reports_frame_data_without_secrets(rig):
         "cameras",
         "process",
     ]
-    assert {row["id"] for row in body["readiness"]} == {
-        "tool-offset",
-        "camera-calibration",
-        "stage-reference",
-        "focus-zero",
-        "gas-map",
-        "cutoff",
-    }
+    assert "readiness" not in body
     assert PRIVATE not in response.get_data(as_text=True)
     assert "Access-Control-Allow-Origin" not in response.headers
 
@@ -417,29 +408,6 @@ def test_events_merge_newest_first_and_reset_after_service_restart(rig):
     console._collect()
     stage_rows = [row for row in console.event_report()["events"] if row["service"] == "stage"]
     assert [row["message"] for row in stage_rows] == ["Restarted"]
-
-
-def test_readiness_rows_follow_service_state_and_cutoff_setting(rig, tmp_path):
-    rig.devices["vision"].state["calibrated_cameras"] = ["camera4"]
-    rig.devices["stage"].state["motors"] = [{"automation_ready": True}]
-    rig.devices["microscope"].state["focus_zero_known"] = False
-    rig.devices["furnace"].state["gas_channels"] = [{"gas_name": "Gas 1"}]
-    console = rig.service.console
-    console._collect()
-    rows = {row["id"]: row["state"] for row in console.readiness()}
-    assert rows == {
-        "tool-offset": "todo",
-        "camera-calibration": "ready",
-        "stage-reference": "ready",
-        "focus-zero": "todo",
-        "gas-map": "blocked",
-        "cutoff": "blocked",
-    }
-    rig.service.settings["MG400_DASH_CUTOFF_CONFIRMED"] = "1"
-    rig.devices["furnace"].state["gas_channels"] = [{"gas_name": "Argon"}]
-    console._collect()
-    rows = {row["id"]: row["state"] for row in console.readiness()}
-    assert rows["cutoff"] == "ready" and rows["gas-map"] == "ready"
 
 
 def test_rehearsal_console_profile_adds_events_only():

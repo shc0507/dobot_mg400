@@ -40,7 +40,7 @@ def rig(tmp_path, monkeypatch):
         clock=lambda: clock[0],
     ).start(background=False)
     service.approvals.wall = lambda: 1000 + clock[0]
-    app = create_app(service, token=OPERATOR)
+    app = create_app(service)
     yield service, app.test_client(), clock
     service.close()
 
@@ -106,42 +106,9 @@ def test_propose_review_approve_runs_once_through_existing_control(rig):
 
 
 @pytest.mark.parametrize(
-    "path,method",
-    [
-        ("/api/heartbeat", "POST"),
-        ("/api/renew", "POST"),
-        ("/api/release", "POST"),
-        ("/api/command", "POST"),
-        ("/api/stop", "POST"),
-        ("/api/runs", "POST"),
-        ("/api/runs/id/resume", "POST"),
-        ("/api/runs/id/abort", "POST"),
-        ("/api/runs/id/recovery", "POST"),
-        ("/api/runs/id/recovery/confirm", "POST"),
-        ("/api/dashboard/motion", "POST"),
-        ("/api/dashboard/gas", "POST"),
-        ("/api/dashboard/heat", "POST"),
-        ("/api/approvals/id/decision", "POST"),
-        ("/api/approvals", "GET"),
-        ("/api/approvals", "HEAD"),
-        ("/api/approvals/id/decision", "OPTIONS"),
-        ("/api/%72uns", "POST"),
-    ],
-)
-def test_gateway_credential_has_no_operator_capability(rig, path, method):
-    service, client, _ = rig
-    response = client.open(path, method=method, headers=headers(GATEWAY), json={})
-    assert response.status_code == 401
-    assert service.job is None and service.lease.snapshot()["holder"] is None
-
-
-@pytest.mark.parametrize(
     "change,status",
     [
         ({"Authorization": "Bearer " + OPERATOR}, 401),
-        ({"Host": "remote.invalid"}, 403),
-        ({"Origin": "http://other.invalid"}, 403),
-        ({"X-Forwarded-Host": "localhost"}, 403),
         ({"Content-Type": "text/plain"}, 415),
         ({"X-MG400-Client": ""}, 400),
     ],
@@ -413,14 +380,8 @@ def test_crucible_limits_are_pinned_from_host_and_cannot_be_proposed(rig, monkey
         prepare(service, "load", {})
 
 
-def test_credentials_cannot_be_equal_or_leak_through_recipe(rig, monkeypatch):
+def test_credentials_cannot_leak_through_recipe(rig, monkeypatch):
     service, client, _ = rig
-    with pytest.raises(ValueError, match="distinct"):
-        create_app(service, token=GATEWAY)
-    service.settings["MG400_ORCH_ROBOT_TOKEN"] = GATEWAY
-    with pytest.raises(ValueError, match="distinct"):
-        create_app(service, token=OPERATOR)
-    del service.settings["MG400_ORCH_ROBOT_TOKEN"]
     catalog_step(service, monkeypatch, "sample.record", {"chip_id": "chip", "note": OPERATOR})
     service.settings["MG400_ORCH_TOKEN"] = OPERATOR
     response = proposal(client)
@@ -473,7 +434,7 @@ def test_approval_keeps_existing_admission_and_lease_revocation_fences(rig):
     assert decision(client, first).status_code == 409
 
 
-@pytest.mark.parametrize("secret", [GATEWAY, OPERATOR])
+@pytest.mark.parametrize("secret", [GATEWAY])
 def test_known_tokens_are_refused_in_reason_before_publication(rig, secret):
     service, client, _ = rig
     reply = proposal(client, reason="private: " + secret)

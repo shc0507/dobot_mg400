@@ -42,8 +42,8 @@ def prepare_zones(recipe, registry, settings=None):
     settings = os.environ if settings is None else settings
     path = settings.get(CONFIG_SETTING) or DEFAULT_CONFIG
     try:
-        with _parent(path) as (parent, name, owner):
-            data = _read(parent, name, owner)
+        with _parent(path) as (parent, name):
+            data = _read(parent, name)
     except FileNotFoundError:
         if settings.get(CONFIG_SETTING):
             raise
@@ -140,13 +140,13 @@ class OccupancyStore:
         self.path = Path(path)
 
     @staticmethod
-    def _load(parent, name, owner):
+    def _load(parent, name):
         try:
             fd = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
         except FileNotFoundError:
             return {"version": 1, "claims": {}, "resolutions": []}
         try:
-            _check(os.fstat(fd), owner)
+            _check(os.fstat(fd))
             reader = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY | os.O_CLOEXEC)
             with os.fdopen(reader) as source:
                 data = json.load(
@@ -193,7 +193,7 @@ class OccupancyStore:
         return data
 
     def _change(self, update=None, *, deadline=None, cancelled=None, commit_guard=None):
-        with _parent(self.path) as (parent, name, owner):
+        with _parent(self.path) as (parent, name):
             deadline = min(
                 time.monotonic() + 0.25, deadline if deadline is not None else float("inf")
             )
@@ -213,7 +213,7 @@ class OccupancyStore:
                         time.sleep(min(0.005, remaining))
                     else:
                         cancelled.wait(min(0.005, remaining))
-            data = self._load(parent, name, owner)
+            data = self._load(parent, name)
             if update is None:
                 return copy.deepcopy(data["claims"])
             result, changed = update(data)
@@ -229,7 +229,7 @@ class OccupancyStore:
             try:
                 with os.fdopen(fd, "w") as stream:
                     os.fchmod(stream.fileno(), 0o640)
-                    _check(os.fstat(stream.fileno()), owner)
+                    _check(os.fstat(stream.fileno()))
                     json.dump(data, stream, allow_nan=False, sort_keys=True)
                     stream.write("\n")
                     stream.flush()

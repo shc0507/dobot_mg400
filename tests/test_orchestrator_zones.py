@@ -289,43 +289,12 @@ def test_safe_permissions_are_accepted_and_replacement_preserves_owner(occupancy
     assert stat.S_IMODE(info.st_mode) == 0o640
 
 
-@pytest.mark.parametrize("mode", [0o644, 0o660, 0o666, 0o700])
-def test_unsafe_file_permissions_refuse_reads_and_mutations(occupancy, mode):
+def test_file_and_folder_modes_are_not_checked(occupancy):
+    occupancy.path.parent.chmod(0o755)
     write_document(occupancy, document({"zone-a": claim()}))
-    occupancy.path.chmod(mode)
-    before = occupancy.path.read_bytes()
-    for operation in (occupancy.snapshot, lambda: occupancy.acquire("zone-b", claim())):
-        with pytest.raises(ValueError, match="permissions"):
-            operation()
-    assert occupancy.path.read_bytes() == before
-    assert stat.S_IMODE(occupancy.path.stat().st_mode) == mode
-
-
-@pytest.mark.parametrize("mode", [0o755, 0o770, 0o777])
-def test_unsafe_parent_permissions_are_not_repaired_or_used(occupancy, mode):
-    occupancy.path.parent.chmod(mode)
-    with pytest.raises(ValueError, match="permissions"):
-        occupancy.acquire("zone-a", claim())
-    assert not occupancy.path.exists()
-    assert stat.S_IMODE(occupancy.path.parent.stat().st_mode) == mode
-
-
-@pytest.mark.parametrize("field", [4, 5])
-def test_owner_or_group_mismatch_refuses_existing_claims(occupancy, monkeypatch, field):
-    write_document(occupancy, document({"zone-a": claim()}))
-    original = os.fstat
-
-    def wrong_owner(fd):
-        info = original(fd)
-        if stat.S_ISREG(info.st_mode):
-            values = list(info)
-            values[field] += 1
-            return os.stat_result(values)
-        return info
-
-    monkeypatch.setattr(zones.os, "fstat", wrong_owner)
-    with pytest.raises(ValueError, match="owner"):
-        occupancy.snapshot()
+    occupancy.path.chmod(0o644)
+    assert occupancy.acquire("zone-b", claim("other", "b" * 32))
+    assert set(occupancy.snapshot()) >= {"zone-a", "zone-b"}
 
 
 @pytest.mark.parametrize("kind", ["symlink", "fifo"])

@@ -17,8 +17,6 @@
 
   const i18n = {
     en: {
-      "banner.title": "Before the first heating",
-      "banner.text": "Install the over-temperature cutoff (H-11) and validate the furnace (H-20). Gas stays refused until the gas map names real gases (H-10).",
       "furnace.title": "Furnace · AI-808",
       "furnace.caps": "Caps {max} °C · {ramp} °C/min",
       "control.mine": "you have control", "control.other": "another client has control",
@@ -41,7 +39,7 @@
       "seq.needEnd": "Enter an end-gas temperature when a step sets gas.", "seq.invalid": "Step {n}: enter a target, a ramp above 0 and a hold of 0 or more.",
       "seq.none": "Add at least 1 step.",
       "gas.title": "Gas", "gas.stopAll": "Stop all gas", "gas.flow": "Flow % for {gas}", "gas.send": "Send flow",
-      "gas.refused": "Refused: the gas map names no real gases.", "gas.actual": "actual {value}", "gas.unverified": "unverified",
+      "gas.actual": "actual {value}", "gas.unverified": "unverified",
       "confirm.ok": "Confirm", "confirm.cancel": "Cancel",
       "scope.title": "Microscope · Toupcam", "scope.zero": "zero set", "scope.noZero": "focus zero unknown",
       "scope.stop": "Stop", "scope.view": "Toupcam", "scope.side": "Side camera (camera3) on the turret",
@@ -72,8 +70,6 @@
       "none": "—",
     },
     zh: {
-      "banner.title": "首次加热前",
-      "banner.text": "先安装超温切断装置（H-11），再验证炉子（H-20）。气体映射写明真实气体（H-10）前，气体命令一律拒绝。",
       "furnace.title": "炉子 · AI-808",
       "furnace.caps": "上限 {max} °C · {ramp} °C/min",
       "control.mine": "你有控制权", "control.other": "其他客户端有控制权",
@@ -96,7 +92,7 @@
       "seq.needEnd": "步骤设置了气体时，填写结束气体温度。", "seq.invalid": "步骤 {n}：填写目标温度、大于 0 的速率和不小于 0 的保持时间。",
       "seq.none": "至少添加 1 个步骤。",
       "gas.title": "气体", "gas.stopAll": "停止全部气体", "gas.flow": "{gas} 流量 %", "gas.send": "发送流量",
-      "gas.refused": "已拒绝：气体映射未写明真实气体。", "gas.actual": "实际 {value}", "gas.unverified": "未确认",
+      "gas.actual": "实际 {value}", "gas.unverified": "未确认",
       "confirm.ok": "确认", "confirm.cancel": "取消",
       "scope.title": "显微镜 · Toupcam", "scope.zero": "零点已设", "scope.noZero": "对焦零点未知",
       "scope.stop": "停止", "scope.view": "Toupcam", "scope.side": "转盘侧面相机（camera3）",
@@ -342,10 +338,6 @@
     const n = view.nodes = {};
     const furnaceCaps = caps(view.describe.furnace);
 
-    n.banner = el("div", { class: "pr-banner", role: "note", hidden: true },
-      el("span", { class: "pr-banner-title", text: t("banner.title") }),
-      el("span", { class: "pr-banner-text", text: t("banner.text") }));
-
     // Furnace.
     n.furnaceSub = el("span", { class: "lc-muted" });
     n.furnaceNote = el("p", { class: "pr-note", hidden: true });
@@ -364,8 +356,7 @@
       el("label", { class: "pr-field" }, t("set.target"), target),
       el("label", { class: "pr-field" }, t("set.ramp"), ramp),
       n.apply);
-    const heatWarning = view.status?.cutoff_confirmed === true ? "" : " " + t("banner.text");
-    const applyConfirm = confirmBox("apply", t("set.confirm", { target: view.target, ramp: view.ramp }) + heatWarning, applySetpoint);
+    const applyConfirm = confirmBox("apply", t("set.confirm", { target: view.target, ramp: view.ramp }), applySetpoint);
 
     n.seqState = el("span", { class: "lc-muted", "data-role": "seq-state" });
     n.seqProgress = el("p", { class: "lc-muted" });
@@ -381,7 +372,7 @@
         input({ type: "number", min: "0", max: "100", step: "0.1", class: "pr-input" }, view.endGas[channel], value => { view.endGas[channel] = value; view.dirty = true; }))),
       el("label", { class: "pr-field" }, t("seq.endUntil"),
         input({ type: "number", min: "0", step: "1", class: "pr-input", "data-role": "end-until" }, view.endUntil, value => { view.endUntil = value; view.dirty = true; })));
-    const startConfirm = confirmBox("start", t("seq.confirm", { count: view.rows?.length || 0 }) + heatWarning, () => sendSequence("start_sequence"));
+    const startConfirm = confirmBox("start", t("seq.confirm", { count: view.rows?.length || 0 }), () => sendSequence("start_sequence"));
 
     n.gasRows = [0, 1, 2].map(channel => {
       const row = { name: el("span", { class: "pr-gas-name" }), state: el("span", { class: "pr-gas-state" }) };
@@ -390,7 +381,6 @@
       row.node = el("div", { class: "pr-gas" }, row.name, row.state, row.input, row.send);
       return row;
     });
-    n.gasNote = el("p", { class: "pr-warn", text: t("gas.refused") });
 
     const furnace = el("section", { class: "lc-card pr-card", "aria-labelledby": "pr-furnace-title" },
       el("div", { class: "lc-card-head" },
@@ -411,7 +401,7 @@
       el("div", { class: "pr-block" },
         el("div", { class: "lc-card-head" }, el("h3", { text: t("gas.title") }),
           button(t("gas.stopAll"), stopGas, { class: "lc-danger pr-danger", "data-role": "stop-gas" })),
-        n.gasNote, ...n.gasRows.map(row => row.node)));
+        ...n.gasRows.map(row => row.node)));
 
     // Microscope.
     n.scopeSub = el("span", { class: "lc-muted" });
@@ -464,7 +454,7 @@
       el("div", { class: "pr-row" }, n.snapshot, n.record, n.arm, n.stab),
       n.recState);
 
-    view.root.replaceChildren(el("div", { class: "pr-workspace" }, n.banner, n.stale = el("p", { class: "pr-warn", hidden: true }),
+    view.root.replaceChildren(el("div", { class: "pr-workspace" }, n.stale = el("p", { class: "pr-warn", hidden: true }),
       el("div", { class: "pr-layout" }, furnace, scope)));
     buildSequence();
     update();
@@ -525,14 +515,13 @@
 
   function update() {
     const n = view.nodes;
-    if (!n.banner || !view.api) return;
+    if (!n.stale || !view.api) return;
     const { t } = view.api;
     const status = view.status;
     const furnace = status?.furnace || null;
     const scope = status?.microscope || null;
     const busy = key => view.busy.has(key);
 
-    n.banner.hidden = status ? status.cutoff_confirmed === true : false;
     const age = status?.age_s;
     n.stale.hidden = Boolean(status) && !(typeof age === "number" && age > 3);
     setText(n.stale, status ? t("status.stale", { age: fmt(age, 0) }) : t("status.unavailable"));
@@ -580,14 +569,12 @@
       : seq.phase === "cooling" ? t("seq.cooling", { until: fmt(seq.end_gas_until_c, 0) }) : "");
     Array.from(n.sequenceBody.children || []).forEach((row, index) => { row.className = seq.running && index === seq.current_index ? "pr-current" : ""; });
 
-    const gasOk = status?.gas_ready === true;
-    n.gasNote.hidden = gasOk;
     const channels = furnace?.flow?.gas_channels || [];
     n.gasRows.forEach((row, channel) => {
       const item = channels.find(value => value.channel_index === channel) || {};
       setText(row.name, item.gas_name || `Gas ${channel + 1}`);
-      setText(row.state, gasOk ? t("gas.actual", { value: finite(item.actual_percent) === null ? t("gas.unverified") : fmt(item.actual_percent) + " %" }) : t("gas.refused"));
-      row.send.disabled = !gasOk || !fMine || !furnace?.flow?.connected || busy("flow-" + channel);
+      setText(row.state, t("gas.actual", { value: finite(item.actual_percent) === null ? t("gas.unverified") : fmt(item.actual_percent) + " %" }));
+      row.send.disabled = !fMine || !furnace?.flow?.connected || busy("flow-" + channel);
     });
 
     // Microscope.
@@ -700,7 +687,6 @@
   }
 
   function sendFlow(channel) {
-    if (view.status?.gas_ready !== true) { view.api.notify(view.api.t("gas.refused"), "error"); return undefined; }
     const percent = Number(view.flows[channel]);
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) return undefined;
     return send("furnace", "set_gas_flow", { channel_index: channel, flow_percent: percent }, "flow-" + channel);

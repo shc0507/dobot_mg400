@@ -1,6 +1,6 @@
 """Lab Console server state: browser-held control, the command relay and merged events.
 
-Service tokens stay in this process. The browser names a page identity in
+The browser names a page identity in
 ``X-MG400-Client``; each Take control creates a fresh service identity for one
 device. A browser heartbeat drives every renewal. Without a heartbeat for
 ``BEAT_TIMEOUT_S`` the console releases the lease. Commands and stops are sent
@@ -447,7 +447,7 @@ class Console:
             "outcome": stop if stop in {"confirmed", "pending", "unconfirmed"} else "unknown",
         }
 
-    # Events and readiness --------------------------------------------------
+    # Events --------------------------------------------------
 
     def refresh_events(self):
         with self.lock:
@@ -540,86 +540,6 @@ class Console:
                 reverse=True,
             )
             return {"events": copy.deepcopy(rows), "errors": dict(self.event_errors)}
-
-    def readiness(self):
-        from ..stations import DEFAULT_TOOL, load_tool
-
-        with self.lock:
-            raw = copy.deepcopy(self.raw)
-        settings = self.service.settings
-        rows = []
-
-        def row(item, state, detail, workspace):
-            rows.append({"id": item, "state": state, "detail": detail, "workspace": workspace})
-
-        try:
-            offset = load_tool(settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
-            row(
-                "tool-offset",
-                "ready",
-                f"[{offset.dx_mm:g}, {offset.dy_mm:g}, {offset.dz_mm:g}] mm",
-                "motion",
-            )
-        except Exception:
-            row("tool-offset", "todo", "No valid tool offset file.", "motion")
-
-        vision = raw.get("vision")
-        cameras = vision.get("calibrated_cameras") if isinstance(vision, dict) else None
-        if not isinstance(cameras, list):
-            row("camera-calibration", "blocked", "Vision state is unavailable.", "cameras")
-        elif cameras:
-            row("camera-calibration", "ready", ", ".join(map(str, cameras[:6])), "cameras")
-        else:
-            row("camera-calibration", "todo", "No camera is calibrated.", "cameras")
-
-        stage = raw.get("stage")
-        motors = stage.get("motors") if isinstance(stage, dict) else None
-        if not isinstance(motors, list) or not motors:
-            row("stage-reference", "blocked", "Stage state is unavailable.", "motion")
-        elif all(isinstance(m, dict) and m.get("automation_ready") is True for m in motors):
-            row("stage-reference", "ready", "Every axis has a zero and soft limits.", "motion")
-        else:
-            row("stage-reference", "todo", "Teach the zero and soft limits.", "motion")
-
-        microscope = raw.get("microscope")
-        known = microscope.get("focus_zero_known") if isinstance(microscope, dict) else None
-        if type(known) is not bool:
-            row("focus-zero", "blocked", "Microscope state is unavailable.", "process")
-        else:
-            row(
-                "focus-zero",
-                "ready" if known else "todo",
-                "Focus zero is set." if known else "Set the focus zero.",
-                "process",
-            )
-
-        furnace = raw.get("furnace")
-        channels = None
-        if isinstance(furnace, dict):
-            for holder in (furnace, furnace.get("flow"), furnace.get("status")):
-                if isinstance(holder, dict) and isinstance(holder.get("gas_channels"), list):
-                    channels = holder["gas_channels"]
-                    break
-        if channels is None:
-            row("gas-map", "blocked", "Furnace gas state is unavailable.", "process")
-        else:
-            names = [item.get("gas_name") for item in channels if isinstance(item, dict)]
-            real = names and all(
-                isinstance(name, str) and name and not name.startswith("Gas ") for name in names
-            )
-            row(
-                "gas-map",
-                "ready" if real else "blocked",
-                ", ".join(names) if real else "Gases not chosen. Gas commands are refused.",
-                "process",
-            )
-
-        confirmed = settings.get("MG400_DASH_CUTOFF_CONFIRMED", "")
-        if isinstance(confirmed, str) and confirmed.strip().lower() in {"1", "true", "yes"}:
-            row("cutoff", "ready", "Confirmed by the owner.", "process")
-        else:
-            row("cutoff", "blocked", "Not confirmed. Do not heat.", "process")
-        return rows
 
     # Lifetime --------------------------------------------------------------
 

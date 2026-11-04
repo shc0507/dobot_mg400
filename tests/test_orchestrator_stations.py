@@ -244,10 +244,8 @@ def test_writer_blocks_second_update_until_atomic_publication(store, monkeypatch
     assert set(store.load()) == {"a", "b"}
 
 
-@pytest.mark.parametrize(
-    "kind", ["file-link", "directory-link", "fifo", "public-file", "public-directory"]
-)
-def test_store_refuses_symlinks_special_files_and_public_modes(store, tmp_path, kind, monkeypatch):
+@pytest.mark.parametrize("kind", ["file-link", "directory-link", "fifo"])
+def test_store_refuses_symlinks_and_special_files(store, tmp_path, kind, monkeypatch):
     if kind == "file-link":
         other = tmp_path / "other"
         other.write_text("[stations]\n")
@@ -257,13 +255,8 @@ def test_store_refuses_symlinks_special_files_and_public_modes(store, tmp_path, 
         link = tmp_path / "link"
         link.symlink_to(tmp_path, target_is_directory=True)
         store.path = link / "stations.toml"
-    elif kind == "fifo":
-        os.mkfifo(store.path, 0o600)
-    elif kind == "public-file":
-        store.path.write_text("[stations]\n")
-        store.path.chmod(0o644)
     else:
-        tmp_path.chmod(0o777)
+        os.mkfifo(store.path, 0o600)
     original_open = stations.os.open
 
     def inspect_only(path, flags, *args, **kwargs):
@@ -370,7 +363,7 @@ def test_default_tool_and_station_commands_use_private_robot_folder_on_fake_root
     tool.write_text("offset_mm = [3, 4, 5]\n")
     tool.chmod(0o640)
 
-    # Redirect only the filesystem root. Keep the real private-parent checks,
+    # Redirect only the filesystem root. Keep the real file-type checks,
     # descriptor reads, directory locking, and atomic writes on the fake data.
     original_parent = stations._parent
     requested = []
@@ -409,8 +402,9 @@ def test_default_tool_and_station_commands_use_private_robot_folder_on_fake_root
         assert cli.main(["station", action, *name], out=io.StringIO()) == 0
     assert default_store.load() == {}
     assert set(requested) == {tool_path, station_path}
+    # Test stage: a public folder mode is allowed.
     directory.chmod(0o755)
-    assert cli.main(["station", "list"], out=io.StringIO()) == 2
+    assert cli.main(["station", "list"], out=io.StringIO()) == 0
     factory.assert_not_called()
 
 

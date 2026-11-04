@@ -4,7 +4,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from test_console import TOKEN, Clock, Device, headers, no_network, post  # noqa: F401
+from test_console import Clock, Device, headers, no_network, post  # noqa: F401
 
 from labkit.client import ServiceClient
 from labkit.errors import ServiceError
@@ -36,7 +36,7 @@ class _FlaskClient(ServiceClient):
 def flask_adapter(test_client, identity):
     client_type = type("Client", (_FlaskClient,), {"app": test_client})
     adapter_type = type("Adapter", (ServiceAdapter,), {"_client_type": client_type})
-    return adapter_type("http://demo.invalid", None, identity)
+    return adapter_type("http://demo.invalid", identity)
 
 
 def build(tmp_path, adapters):
@@ -57,7 +57,7 @@ def build(tmp_path, adapters):
         client_factory=factory,
         clock=Clock(),
     ).start(background=False)
-    app = create_app(service, token=TOKEN, base_path="/lab")
+    app = create_app(service, base_path="/lab")
     return SimpleNamespace(service=service, devices=devices, client=app.test_client())
 
 
@@ -92,11 +92,7 @@ def status(rig):
     return response.get_json()
 
 
-def test_status_needs_the_operator_token(rig):
-    assert rig.client.get("/lab/api/console/ws/process/status").status_code == 401
-
-
-def test_status_reports_page_fields_crucible_and_the_cutoff(rig):
+def test_status_reports_page_fields_and_crucible(rig):
     rig.service.console._collect()
     body = status(rig)
     assert body["furnace"]["pv"] == 24.5 and body["furnace"]["control_mode"] == "STOPPED"
@@ -105,13 +101,8 @@ def test_status_reports_page_fields_crucible_and_the_cutoff(rig):
     assert body["crucible"] == {
         key: ROI[key] for key in ("min_c", "mean_c", "max_c", "frame_age_s")
     }
-    assert body["gas_ready"] is False and body["cutoff_confirmed"] is False
+    assert "gas_ready" not in body and "cutoff_confirmed" not in body
     assert len(body["history"]) == 1 and body["history"][0][1:] == [24.5, 0.0]
-    rig.service.settings["MG400_DASH_CUTOFF_CONFIRMED"] = "yes"
-    rig.devices["furnace"].state["flow"]["gas_channels"][0]["gas_name"] = "Argon"
-    rig.service.console._collect()
-    body = status(rig)
-    assert body["cutoff_confirmed"] is True and body["gas_ready"] is True
 
 
 def test_history_keeps_60_minutes_at_the_sample_interval(rig):
@@ -190,11 +181,10 @@ def test_furnace_demo_heats_and_sends_gas_only_through_the_relay(demos):
         "command/furnace",
         {"action": "set_gas_flow", "params": {"channel_index": 0, "flow_percent": 10}},
     )
-    # The demo gas map names its gases, so the gas-map rule allows gas here.
     assert gas.status_code == 202, gas.get_json()
     demos.service.console._collect()
     body = status(demos)
-    assert body["furnace"]["sv"] == 120 and body["gas_ready"] is True
+    assert body["furnace"]["sv"] == 120
     assert body["furnace"]["flow"]["gas_channels"][0]["gas_name"] == "Demo gas 1"
     stopped = post(demos, "stop/furnace", page="console-page-b")
     assert stopped.get_json()["outcome"] == "confirmed"

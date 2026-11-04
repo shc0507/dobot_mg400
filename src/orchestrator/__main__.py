@@ -6,16 +6,11 @@ import os
 import signal
 import sys
 
-from labkit.auth import valid_token_for_bind
-
 SERVER_OPTIONS = {
-    # Camera relays hold one worker each (at most 6); keep 10 for the API.
+    # Each microscope stream holds one worker.
     "threads": 16,
     "clear_untrusted_proxy_headers": False,
     "max_request_body_size": 65537,
-    # Block a slow camera viewer soon, so its next frame is the newest one.
-    # Waitress waits for the buffer to drain; a larger response still streams.
-    "outbuf_high_watermark": 256 * 1024,
 }
 
 
@@ -28,6 +23,7 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
         demo_environment,
         demo_isolated,
     )
+    from .clients import SERVICE_URLS
 
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(prog="python -m orchestrator serve")
@@ -44,11 +40,6 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
         parser.error("bind must be a nonempty address without surrounding whitespace")
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
-    token = env.get("MG400_ORCH_TOKEN") or None
-    if not valid_token_for_bind(token, args.bind):
-        parser.error(
-            "Set MG400_ORCH_TOKEN to at least 24 printable ASCII characters, or bind to loopback"
-        )
     if args.demo and args.runs_dir is not None:
         parser.error("--demo owns a temporary run store; do not supply --runs-dir")
     if args.demo and not demo_isolated(env):
@@ -70,12 +61,16 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
     try:
         factory = OrchestratorService if service_factory is None else service_factory
         service = factory(
-            settings=dict(env),
+            settings=(
+                dict(env)
+                if args.demo
+                else {**SERVICE_URLS, **{key: value for key, value in env.items() if value}}
+            ),
             recipes_dir=args.recipes_dir,
             runs_dir=args.runs_dir,
             demo=args.demo,
         )
-        app = create_app(service, token=token, base_path=args.base_path)
+        app = create_app(service, base_path=args.base_path)
     except (ValueError, OSError) as error:
         if service is not None:
             service.close()

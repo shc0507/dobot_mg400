@@ -852,43 +852,6 @@ def test_owned_demo_filters_preserve_only_supplied_limit(monkeypatch, present):
     assert dict(os.environ) == original
 
 
-@pytest.mark.parametrize("root", [True, False])
-@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
-def test_installed_limit_filter_preserves_execution_identity_and_secret_boundaries(
-    ctl, monkeypatch, root, command
-):
-    monkeypatch.setenv(DRIFT_SETTING, "2.5")
-    monkeypatch.setenv("MG400_ORCH_DRIFT_MARGIN_PX", "0")
-    monkeypatch.setenv("MG400_VISION_TOKEN", "must-not-pass")
-    monkeypatch.setenv("MG400_CAMERA_DEVICES", "/dev/must-not-pass")
-    monkeypatch.setenv("MG400_VISION_CALIBRATION_DIR", "/host/must-not-pass")
-    if root and command != "rehearse":
-        ctl.host.settings.write_text(f"{DRIFT_SETTING}=1.5\nMG400_VISION_TOKEN=must-not-pass\n")
-    else:
-        ctl.host.settings.unlink()
-    if not root:
-        for name in ("getuid", "geteuid", "getgid", "getegid"):
-            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
-    argument = "list" if command == "station" else "synthetic-recipe"
-    assert ctl.call(command, argument) == 0
-    program, argv, environment = ctl.execvpe.call_args.args
-    expected = "1.5" if root and command == "run" else "2.5"
-    assert environment.get(DRIFT_SETTING) == (expected if command in {"run", "rehearse"} else None)
-    assert (
-        not {
-            "MG400_ORCH_DRIFT_MARGIN_PX",
-            "MG400_VISION_TOKEN",
-            "MG400_CAMERA_DEVICES",
-            "MG400_VISION_CALIBRATION_DIR",
-        }
-        & environment.keys()
-    )
-    python = str(ctl.host.code / ".venv/bin/python")
-    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, argument]
-    assert program == ("/usr/sbin/runuser" if root else python)
-    ctl.run.assert_not_called()
-
-
 def runner_proof():
     return {
         "camera": 1,

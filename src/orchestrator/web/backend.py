@@ -4,7 +4,6 @@ import copy
 import threading
 import time
 import uuid
-from urllib.parse import urlsplit
 
 from labkit.errors import ServiceError
 
@@ -100,32 +99,10 @@ class Dashboard:
                 reverse=True,
             )
         )
-        self.cameras = []
-        for name, label in CAMERAS.items():
-            value = service.settings.get(f"MG400_DASH_{name.upper()}_URL", "")
-            url = None
-            if value and not service.demo:
-                if not isinstance(value, str):
-                    raise ValueError("Camera page URLs must be strings.")
-                parsed = urlsplit(value)
-                if (
-                    len(value) > 2048
-                    or any(ord(char) < 33 or ord(char) == 127 for char in value)
-                    or parsed.scheme not in {"http", "https"}
-                    or not parsed.hostname
-                    or parsed.username is not None
-                    or parsed.password is not None
-                    or parsed.query
-                    or parsed.fragment
-                    or "\\" in value
-                    or any(secret in value for secret in self.secrets)
-                ):
-                    raise ValueError(
-                        "Camera page URLs must be public HTTP(S) URLs without credentials."
-                    )
-                _ = parsed.port
-                url = value
-            self.cameras.append({"id": name, "label": label, "url": url})
+        # The console Cameras workspace shows every view; there are no camera page links.
+        self.cameras = [
+            {"id": name, "label": label, "url": None} for name, label in CAMERAS.items()
+        ]
 
     def text(self, value, limit=240):
         if not isinstance(value, str):

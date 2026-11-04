@@ -609,7 +609,7 @@ class Rehearsal:
                     raise ValueError("A rehearsal client identity cannot be reused.")
                 self._identities.add(identity)
                 for name, (adapter, url) in self._endpoints.items():
-                    client = _DemoClient(self, adapter(url, "", identity), profile=profile)
+                    client = _DemoClient(self, adapter(url, identity), profile=profile)
                     self._stack.callback(client.close)
                     created[name] = client
             return created
@@ -662,7 +662,7 @@ class Rehearsal:
         self._stack.callback(server.stop_sockets)
         url = f"http://127.0.0.1:{server.server_port}"
         self._endpoints["robot"] = (RobotAdapter, url)
-        self.clients["robot"] = RobotAdapter(url, "", self.identity)
+        self.clients["robot"] = RobotAdapter(url, self.identity)
 
     def _serve(self, server):
         self._stack.callback(server.server_close)
@@ -694,7 +694,7 @@ class Rehearsal:
         self._serve(server)
         url = f"http://127.0.0.1:{server.server_port}/contract"
         self._endpoints["stage"] = (ServiceAdapter, url)
-        self.clients["stage"] = ServiceAdapter(url, "", self.identity)
+        self.clients["stage"] = ServiceAdapter(url, self.identity)
 
     def _thermal(self):
         # FastAPI stays on its own ASGI server, bound from an already reserved
@@ -736,7 +736,7 @@ class Rehearsal:
             time.sleep(0.01)
         url = f"http://127.0.0.1:{listener.getsockname()[1]}"
         self._endpoints["thermal"] = (ThermalAdapter, url)
-        self.clients["thermal"] = ThermalAdapter(url, "", self.identity)
+        self.clients["thermal"] = ThermalAdapter(url, self.identity)
 
     def _furnace(self):
         from werkzeug.serving import make_server
@@ -750,7 +750,7 @@ class Rehearsal:
         self._serve(server)
         url = f"http://127.0.0.1:{server.server_port}"
         self._endpoints["furnace"] = (FurnaceAdapter, url)
-        self.clients["furnace"] = FurnaceAdapter(url, "", self.identity)
+        self.clients["furnace"] = FurnaceAdapter(url, self.identity)
 
     def _vision(self):
         from werkzeug.serving import make_server
@@ -791,11 +791,11 @@ class Rehearsal:
             service.calibrations.save(DEMO_CALIBRATION_DEVICE, self.tray_scene.calibration_model())
         self._stack.callback(service.close)
         service.start()
-        server = make_server("127.0.0.1", 0, create_app(service, token=""), threaded=True)
+        server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
         self._serve(server)
         url = f"http://127.0.0.1:{server.server_port}"
         self._endpoints["vision"] = (ServiceAdapter, url)
-        self.clients["vision"] = ServiceAdapter(url, "", self.identity)
+        self.clients["vision"] = ServiceAdapter(url, self.identity)
 
     def __exit__(self, *exc):
         with self._condition:

@@ -1,4 +1,4 @@
-"""Lab Console routes. Every API route needs the operator token; tokens for services stay here."""
+"""Lab Console routes."""
 
 import re
 
@@ -72,7 +72,6 @@ def console_blueprints(service, prefix):
             console={"commit": console().commit, "demo": service.demo},
             camera_preview=preview_state(service),
             control=console().control(page),
-            readiness=console().readiness(),
             workspaces=[{"id": item.id, "title": item.title} for item in workspaces],
         )
         return jsonify(report)
@@ -117,13 +116,6 @@ def console_blueprints(service, prefix):
         data = request.get_json()
         if set(data) - {"action", "params"} or "action" not in data:
             raise ValueError("Send action and optional params only.")
-        if name == "robot" and data["action"] == "execute":
-            # Robot moves must pass the fingertip workspace check (DSH-05).
-            raise ServiceError(
-                409,
-                "Send robot moves through the Motion routes: "
-                f"{prefix}/api/console/ws/motion/jog or {prefix}/api/console/ws/motion/move.",
-            )
         result = console().command(_device(name), _page(), data["action"], data.get("params", {}))
         status = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
         return jsonify(result), status

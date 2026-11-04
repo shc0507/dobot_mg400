@@ -9,6 +9,7 @@ import os
 import runpy
 import secrets
 import threading
+import tomllib
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -557,9 +558,12 @@ class Rehearsal:
             self.directory.mkdir(mode=0o750, parents=True, exist_ok=True)
             tray_path = os.environ.get("MG400_ORCH_TRAY_FILE")
             if tray_path and {"robot", "vision"} & set(self.required):
-                from vision.tray import load_tray
+                from vision.tray import validate_tray
 
-                if load_tray(tray_path) != demo_tray_document():
+                from .skills.vision import _read_tray
+
+                tray = validate_tray(tomllib.loads(_read_tray(tray_path).decode("utf-8")))
+                if tray != demo_tray_document():
                     raise ValueError("Tray rehearsal requires its explicit synthetic tray fixture.")
                 self.tray_scene = DemoTrayScene(self._owned_robot_state)
                 self._stack.callback(self.tray_scene.close)

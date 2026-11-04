@@ -1,4 +1,4 @@
-"""Read-only calibration drift checks under revocable robot and vision authority."""
+"""Guarded drift checks, slot observations and vision-guided tray transfers."""
 
 import json
 import math

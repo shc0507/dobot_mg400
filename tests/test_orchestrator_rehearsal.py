@@ -531,3 +531,50 @@ def test_tray_rehearsal_rejects_other_geometry_before_starting_services(
     with pytest.raises(ValueError, match="explicit synthetic tray"):
         with Rehearsal(tmp_path / "demos", ("robot", "vision"), identity="in-process-only"):
             pytest.fail("Unmatched geometry must not start a rehearsal")
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink"])
+def test_tray_rehearsal_rejects_unsafe_input_before_read_or_factory(
+    tray_scene, tmp_path, monkeypatch, kind
+):
+    import io
+    import os
+
+    from orchestrator.rehearsal import write_demo_tray_configuration
+
+    settings = write_demo_tray_configuration(tmp_path / "synthetic")
+    path = Path(settings["MG400_ORCH_TRAY_FILE"])
+    original = path.with_name("original.toml")
+    path.rename(original)
+    if kind == "fifo":
+        os.mkfifo(path, 0o600)
+    else:
+        path.symlink_to(original.name)
+    monkeypatch.setenv("MG400_ORCH_TRAY_FILE", str(path))
+    factory_calls, readable_opens = [], []
+    open_file, open_fd = io.open, os.open
+
+    def checked_file(file, *args, **kwargs):
+        if not isinstance(file, int) and Path(file) == path:
+            readable_opens.append(str(file))
+            pytest.fail("Unsafe tray input reached a readable open")
+        return open_file(file, *args, **kwargs)
+
+    def checked_fd(file, flags, *args, **kwargs):
+        if str(file) in {str(path), path.name} and not flags & os.O_PATH:
+            readable_opens.append(str(file))
+            pytest.fail("Unsafe tray input reached a readable descriptor")
+        return open_fd(file, flags, *args, **kwargs)
+
+    def factory(self):
+        factory_calls.append("service")
+        pytest.fail("Unsafe tray input reached a service factory")
+
+    monkeypatch.setattr(io, "open", checked_file)
+    monkeypatch.setattr(os, "open", checked_fd)
+    monkeypatch.setattr(Rehearsal, "_robot", factory)
+    monkeypatch.setattr(Rehearsal, "_vision", factory)
+    with pytest.raises(ValueError, match="private permissions, safe file types"):
+        with Rehearsal(tmp_path / "demos", ("robot", "vision"), identity="in-process-only"):
+            pytest.fail("Unsafe tray input must refuse startup")
+    assert factory_calls == readable_opens == []

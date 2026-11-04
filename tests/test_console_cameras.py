@@ -1,7 +1,10 @@
 """Console Cameras workspace: tickets, the stream bound, relay end, states and secrets."""
 
 import json
+import re
 import socket
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -24,24 +27,42 @@ class Clock:
 
 
 class Upstream:
-    """A fake MJPEG response. It yields frames until closed or until frames run out."""
+    """A fake MJPEG response at about 200 fps. It yields frames until closed or until
+    frames run out. With stall, it then blocks like a frozen camera until closed."""
 
-    def __init__(self, frames=None, content_type="multipart/x-mixed-replace; boundary=frame"):
+    def __init__(
+        self, frames=None, content_type="multipart/x-mixed-replace; boundary=frame", stall=False
+    ):
         self.headers = {"Content-Type": content_type}
         self.frames = frames
+        self.stall = stall
         self.closed = False
         self.reads = 0
+        self.numbered = False
+        self.woken = threading.Event()
 
     def read1(self, _size):
         if self.closed:
             return b""
         self.reads += 1
         if self.frames is not None and self.reads > self.frames:
+            if self.stall:
+                self.woken.wait(5)
             return b""
-        return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + JPEG + b"\r\n"
+        time.sleep(0.005)
+        frame = b"\xff\xd8" + b"n%08d" % self.reads + b"\xff\xd9" if self.numbered else JPEG
+        # The camera preview and the microscope both send Content-Length.
+        return (
+            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+            + str(len(frame)).encode()
+            + b"\r\n\r\n"
+            + frame
+            + b"\r\n"
+        )
 
     def close(self):
         self.closed = True
+        self.woken.set()
 
 
 def thermal_payload(timestamp):
@@ -70,6 +91,9 @@ class Sources:
         self.streams = []
         self.fail = set()
         self.frames = None
+        self.stall = False
+        self.numbered = False
+        self.opened = 0
         self.thermal_reads = 0
         self.thermal_timestamp = None
         self.detect_reads = 0
@@ -83,7 +107,9 @@ class Sources:
     def open_stream(self, view):
         if view in self.fail:
             raise cameras_module.SourceError("The source did not answer.")
-        upstream = Upstream(self.frames)
+        self.opened += 1
+        upstream = Upstream(self.frames, stall=self.stall)
+        upstream.numbered = self.numbered
         self.streams.append((view, upstream))
         return upstream
 
@@ -153,9 +179,11 @@ def headers(page="console-page-a"):
     return {"Authorization": f"Bearer {TOKEN}", "X-MG400-Client": page}
 
 
-def ticket(rig, view, kind="stream"):
+def ticket(rig, view, kind="stream", **extra):
     response = rig.client.post(
-        "/lab/api/console/ws/cameras/ticket", json={"view": view, "kind": kind}, headers=headers()
+        "/lab/api/console/ws/cameras/ticket",
+        json={"view": view, "kind": kind, **extra},
+        headers=headers(),
     )
     assert response.status_code == 200, response.get_json()
     return response.get_json()["url"]
@@ -166,9 +194,24 @@ def status(rig):
     return {row["id"]: row for row in body["views"]}
 
 
-def open_stream(rig, view):
-    response = rig.client.get(ticket(rig, view), buffered=False)
+def open_stream(rig, view, **extra):
+    response = rig.client.get(ticket(rig, view, **extra), buffered=False)
     return response
+
+
+PART = re.compile(rb"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: (\d+)\r\n\r\n")
+
+
+def parts(response, count):
+    """Read count multipart parts. Return each JPEG and the time it arrived."""
+    chunks, buffer, result = response.response, b"", []
+    while len(result) < count:
+        buffer += next(chunks)
+        while (match := PART.search(buffer)) and len(buffer) >= match.end() + int(match[1]) + 2:
+            end = match.end() + int(match[1])
+            result.append((buffer[match.end() : end], time.monotonic()))
+            buffer = buffer[end + 2 :]
+    return result
 
 
 def test_routes_need_the_operator_token_or_a_ticket(rig):
@@ -256,6 +299,7 @@ def test_stream_bound_per_view_microscope_and_total(rig):
 def test_stale_and_offline_states(rig):
     rows = status(rig)
     assert rows["camera1"]["state"] == "offline" and rows["camera1"]["age_s"] is None
+    rig.sources.frames, rig.sources.stall = 1, True
     assert rows["camera3"]["configured"] is False
     assert rows["camera1"]["mode"] == "640×480 · 30 fps"
     response = open_stream(rig, "camera1")
@@ -282,6 +326,7 @@ def test_console_state_reports_the_preview_source_without_its_url(rig, monkeypat
         return body["camera_preview"]["state"]
 
     assert preview() == "idle"
+    rig.sources.frames, rig.sources.stall = 1, True
     response = open_stream(rig, "camera1")
     next(response.response)
     assert preview() == "live"
@@ -302,6 +347,59 @@ def test_preview_state_follows_the_console_camera_setting(rig):
     assert cameras_module.preview_state(rig.service)["state"] == "idle"
     rig.service.settings = {**rig.service.settings, "MG400_ORCH_CAMERA_URL": ""}
     assert cameras_module.preview_state(rig.service)["state"] == "unconfigured"
+
+
+def test_a_slow_viewer_gets_the_newest_frame_and_no_backlog(rig):
+    rig.sources.numbered = True
+    response = open_stream(rig, "camera1", fps=30)
+    ((first, _),) = parts(response, 1)
+    _, upstream = rig.sources.streams[-1]
+    # The viewer stalls while the upstream sends about 60 more frames.
+    time.sleep(0.3)
+    ((second, _),) = parts(response, 1)
+    newest = upstream.reads
+    response.close()
+    number = int(second[3:-2])
+    assert number - int(first[3:-2]) > 10
+    # The next frame is at most a few frames behind the upstream: no backlog.
+    assert newest - number <= 10
+
+
+@pytest.mark.parametrize(("fps", "least"), [(None, 0.1), (5, 0.2)])
+def test_the_frame_rate_cap_holds(rig, fps, least):
+    response = open_stream(rig, "camera1", **({} if fps is None else {"fps": fps}))
+    times = [moment for _, moment in parts(response, 5)]
+    response.close()
+    gaps = [later - earlier for earlier, later in zip(times, times[1:])]
+    # The upstream sends about 200 fps. The default cap is 10 fps.
+    assert min(gaps) >= least * 0.9
+
+
+@pytest.mark.parametrize("fps", [0, 31, "10", 2.5, None])
+def test_a_bad_frame_rate_is_refused(rig, fps):
+    response = rig.client.post(
+        "/lab/api/console/ws/cameras/ticket",
+        json={"view": "camera1", "kind": "stream", "fps": fps},
+        headers=headers(),
+    )
+    assert response.status_code == 400
+
+
+def test_two_viewers_share_one_upstream_reader(rig):
+    first = open_stream(rig, "camera1")
+    second = open_stream(rig, "camera1", fps=30)
+    assert parts(first, 2) and parts(second, 2)
+    assert rig.sources.opened == 1
+    _, upstream = rig.sources.streams[-1]
+    first.close()
+    assert not upstream.closed and parts(second, 1)
+    second.close()
+    # The reader closes the upstream when its last viewer leaves.
+    assert upstream.closed
+    again = open_stream(rig, "camera1")
+    assert parts(again, 1) and rig.sources.opened == 2
+    again.close()
+    assert sum(rig.service.camera_relay.streams().values()) == 0
 
 
 def test_an_ended_upstream_releases_its_slot(rig):

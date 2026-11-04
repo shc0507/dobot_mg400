@@ -13,7 +13,9 @@ An ``<img>`` cannot send the operator token. A page with the token asks for a
 ticket (``POST ticket``). A ticket is random, single use, bound to one view and
 one kind (stream or snapshot) and expires after ``TICKET_TTL_S``. The stream and
 snapshot routes accept a valid ticket instead of the token. The relay bounds the
-open streams and closes the upstream connection when the viewer leaves.
+open streams. Each view has one upstream reader shared by its viewers; a viewer
+gets only the newest frame, at most at its ticket's frame rate, and never a
+backlog. The reader closes the upstream connection when the last viewer leaves.
 """
 
 import json
@@ -52,6 +54,10 @@ MAX_FRAME = 8 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
 CHUNK = 64 * 1024
 UPSTREAM_TIMEOUT_S = 5.0
+# A stream ticket may cap the frame rate. Grid and strip tiles ask for TILE_FPS.
+TILE_FPS = 10
+MAX_FPS = 30
+PART_BOUNDARY = b"frame"
 DEFAULT_KEY_FILE = "/var/lib/mg400/camera/preview.key"
 _BOUNDARY = re.compile(r'boundary="?([A-Za-z0-9\'()+_,./:=?-]{1,70})"?')
 
@@ -213,17 +219,18 @@ class Relay:
         self.frame_at = {}
         self.error = {}
         self.started = 0
+        self.feeds = {view: _Feed(view, self) for view in MJPEG}
 
     # Tickets -----------------------------------------------------------------
 
-    def issue(self, view, kind):
+    def issue(self, view, kind, fps=TILE_FPS):
         now = self.clock()
         with self.lock:
             self.tickets = {k: v for k, v in self.tickets.items() if v[2] > now}
             if len(self.tickets) >= MAX_TICKETS:
                 raise ServiceError(429, "Too many open camera tickets. Wait and try again.")
             ticket = secrets.token_urlsafe(24)
-            self.tickets[ticket] = (view, kind, now + TICKET_TTL_S)
+            self.tickets[ticket] = (view, kind, now + TICKET_TTL_S, fps)
         return ticket
 
     def redeem(self, view, kind):
@@ -235,6 +242,7 @@ class Relay:
             entry = self.tickets.pop(values[0], None)
         if entry is None or entry[2] <= now or entry[:2] != (view, kind):
             raise ServiceError(401, "The camera ticket is not valid.")
+        return entry[3]
 
     # Streams -----------------------------------------------------------------
 
@@ -286,16 +294,177 @@ class Relay:
         }
 
 
-def _frames(chunks, marker, on_frame):
-    """Pass the chunks through and call on_frame once per multipart boundary."""
-    tail = b""
+def _content_length(headers):
+    for line in headers.split(b"\r\n"):
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            value = value.strip()
+            if not value.isdigit() or int(value) > MAX_FRAME:
+                raise SourceError("The source sent an invalid frame length.")
+            return int(value)
+    return None
+
+
+def _jpegs(chunks, marker):
+    """Yield each complete JPEG part of a multipart stream. Bound the buffer.
+
+    A part with Content-Length is complete after that many bytes. A part
+    without it is complete at the next boundary.
+    """
+    buffer = b""
     for chunk in chunks:
-        data = tail + chunk
-        count = data.count(marker)
-        if count:
-            on_frame()
-        tail = data[-(len(marker) - 1) :] if len(marker) > 1 else b""
-        yield chunk
+        buffer += chunk
+        while True:
+            start = buffer.find(marker)
+            if start < 0:
+                buffer = buffer[-(len(marker) - 1) :]
+                break
+            buffer = buffer[start:]
+            head_end = buffer.find(b"\r\n\r\n", len(marker))
+            if head_end < 0:
+                if len(buffer) > 8192:
+                    raise SourceError("The source sent invalid frame headers.")
+                break
+            body = head_end + 4
+            length = _content_length(buffer[len(marker) : head_end])
+            if length is not None:
+                if len(buffer) < body + length:
+                    break
+                frame, buffer = buffer[body : body + length], buffer[body + length :]
+            else:
+                end = buffer.find(b"\r\n" + marker, body)
+                if end < 0:
+                    break
+                frame, buffer = buffer[body:end], buffer[end + 2 :]
+            if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
+                yield frame
+        if len(buffer) > MAX_FRAME + 8192:
+            raise SourceError("The source frame is too large.")
+
+
+def _part(frame):
+    return (
+        b"--"
+        + PART_BOUNDARY
+        + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+        + str(len(frame)).encode("ascii")
+        + b"\r\n\r\n"
+        + frame
+        + b"\r\n"
+    )
+
+
+class _Feed:
+    """One upstream reader per view. Its viewers share only the newest frame.
+
+    A viewer never gets a backlog: when it is slow, it skips to the newest frame.
+    The reader stops and closes the upstream when the last viewer leaves.
+    """
+
+    def __init__(self, view, relay):
+        self.view, self.relay = view, relay
+        self.condition = threading.Condition()
+        self.viewers = 0
+        self.upstream = None
+        self.generation = 0
+        self.done = True
+        self.sequence = 0
+        self.frame = None
+
+    def join(self, open_upstream):
+        """Count one viewer. Open the upstream if no reader runs. Return the generation."""
+        with self.condition:
+            self.viewers += 1
+            if not self.done:
+                return self.generation
+        try:
+            upstream, marker = open_upstream()
+        except BaseException:
+            with self.condition:
+                self.viewers -= 1
+            raise
+        extra = None
+        with self.condition:
+            if not self.done:
+                # Another viewer opened the view at the same time: use its reader.
+                extra = upstream
+            else:
+                self.upstream, self.done, self.frame = upstream, False, None
+                self.generation += 1
+                generation = self.generation
+                reader = threading.Thread(
+                    target=self._read,
+                    args=(upstream, marker, generation),
+                    name="console-camera-" + self.view,
+                    daemon=True,
+                )
+            result = self.generation
+        if extra is not None:
+            _close(extra)
+            return result
+        try:
+            reader.start()
+        except BaseException:
+            self._end(generation)
+            with self.condition:
+                self.viewers -= 1
+            raise
+        return result
+
+    def leave(self):
+        with self.condition:
+            self.viewers = max(0, self.viewers - 1)
+            if self.viewers:
+                return
+            generation = self.generation
+        self._end(generation)
+
+    def _end(self, generation):
+        with self.condition:
+            if self.generation != generation or self.done:
+                return False
+            upstream, self.upstream, self.done = self.upstream, None, True
+            self.condition.notify_all()
+        _close(upstream)
+        return True
+
+    def _read(self, upstream, marker, generation):
+        try:
+            for frame in _jpegs(_iter_response(upstream), marker):
+                with self.condition:
+                    if self.generation != generation or self.done:
+                        return
+                    self.sequence += 1
+                    self.frame = frame
+                    self.condition.notify_all()
+                self.relay.saw_frame(self.view)
+        except (OSError, SourceError, ValueError):
+            if self._end(generation):
+                self.relay.failed(self.view, "The stream ended.")
+        finally:
+            self._end(generation)
+
+    def next(self, generation, last, timeout):
+        """Return (sequence, frame) newer than last, or None when the reader ended."""
+        with self.condition:
+            self.condition.wait_for(
+                lambda: (
+                    (self.frame is not None and self.sequence != last)
+                    or self.generation != generation
+                    or self.done
+                ),
+                timeout,
+            )
+            if self.generation == generation and self.frame is not None and self.sequence != last:
+                return self.sequence, self.frame
+            return None
+
+
+def _close(upstream):
+    try:
+        upstream.close()
+    except OSError:
+        pass
 
 
 def _iter_response(response):
@@ -473,12 +642,18 @@ def register(blueprint, service):
     @blueprint.post("/ticket")
     def ticket():
         data = request.get_json()
-        if set(data) != {"view", "kind"} or data["kind"] not in {"stream", "snapshot"}:
-            raise ValueError("Send view and kind (stream or snapshot).")
+        if not {"view", "kind"} <= set(data) <= {"view", "kind", "fps"} or data["kind"] not in {
+            "stream",
+            "snapshot",
+        }:
+            raise ValueError("Send view, kind (stream or snapshot) and an optional fps.")
+        fps = data.get("fps", TILE_FPS)
+        if type(fps) is not int or not 1 <= fps <= MAX_FPS:
+            raise ValueError(f"fps must be an integer from 1 to {MAX_FPS}.")
         view = _view(data["view"])
         if view not in MJPEG:
             raise ValueError("Only camera1 to camera4 and microscope use tickets.")
-        value = relay.issue(view, data["kind"])
+        value = relay.issue(view, data["kind"], fps)
         path = "stream" if data["kind"] == "stream" else "snapshot"
         return jsonify(
             url=f"{blueprint.url_prefix}/{path}/{view}?ticket={value}",
@@ -489,15 +664,21 @@ def register(blueprint, service):
         _view(view)
         if view not in MJPEG:
             raise ServiceError(404, "This view has no stream.")
-        relay.redeem(view, "stream")
+        fps = relay.redeem(view, "stream")
         slot = relay.acquire(view)
-        try:
+        feed = relay.feeds[view]
+
+        def open_upstream():
             upstream = sources().open_stream(view)
             content_type = upstream.headers.get("Content-Type", "")
             match = _BOUNDARY.search(content_type)
             if not content_type.lower().startswith("multipart/x-mixed-replace") or not match:
-                upstream.close()
+                _close(upstream)
                 raise SourceError("The source did not send an MJPEG stream.")
+            return upstream, b"--" + match.group(1).encode("ascii")
+
+        try:
+            generation = feed.join(open_upstream)
         except SourceError as error:
             slot.release()
             relay.failed(view, str(error))
@@ -505,33 +686,40 @@ def register(blueprint, service):
         except BaseException:
             slot.release()
             raise
-        marker = b"--" + match.group(1).encode("ascii")
         closed = threading.Event()
 
         def close():
             if closed.is_set():
                 return
             closed.set()
-            try:
-                upstream.close()
-            except OSError:
-                pass
+            feed.leave()
             slot.release()
 
         def body():
+            # Send only the newest frame, at most fps a second. A slow viewer skips frames.
+            interval, last, due = 1.0 / fps, None, 0.0
             try:
-                yield from _frames(_iter_response(upstream), marker, lambda: relay.saw_frame(view))
-            except (OSError, SourceError, ValueError):
-                relay.failed(view, "The stream ended.")
+                while not closed.is_set():
+                    wait = due - time.monotonic()
+                    if wait > 0:
+                        time.sleep(wait)
+                    item = feed.next(generation, last, UPSTREAM_TIMEOUT_S)
+                    if item is None:
+                        return
+                    last, frame = item
+                    due = time.monotonic() + interval
+                    yield _part(frame)
             finally:
                 close()
 
         response = Response(
-            body(), content_type=f"multipart/x-mixed-replace; boundary={match.group(1)}"
+            body(),
+            content_type="multipart/x-mixed-replace; boundary=" + PART_BOUNDARY.decode("ascii"),
         )
         # A response can close before its body runs: release the slot then too.
         response.call_on_close(close)
         response.headers["X-Accel-Buffering"] = "no"
+        response.headers["Cache-Control"] = "no-store"
         return response
 
     def snapshot(view):

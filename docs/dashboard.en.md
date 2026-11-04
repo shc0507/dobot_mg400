@@ -74,6 +74,7 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 
 - The grid shows 6 views: camera1 to camera4, the thermal camera and the microscope (Toupcam). Each view shows its name and role, LIVE, STALE or OFFLINE with the frame age, its mode, and **Snapshot** and **Expand**. **Focus · 1 + strip** shows 1 large view and a strip of the others.
 - The console service relays all views. The browser gets no camera key and no service token. An `<img>` stream uses a short-lived single-use ticket: it is valid for 20 seconds, for 1 use and for 1 view.
+- The relay sends only the newest complete frame. On a slow network it skips old frames, so the delay does not grow. Grid and strip views get at most 10 frames a second, and a large view at most 30.
 - The relay opens at most 6 streams at a time, at most 2 per view and at most 2 for the microscope. The relay stops when you leave the workspace, hide the browser tab or close the page.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.
 - When the thermal camera is selected, the side panel gives the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. You can export CSV, Raw + JSON and PNG.

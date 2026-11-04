@@ -179,7 +179,7 @@ All paths start with `<base>/api/console/ws/cameras/`. They need the operator to
 | Method and path | Response |
 | --- | --- |
 | `GET status` | `{"views": [{"id", "configured", "state": "live" \| "stale" \| "offline", "age_s", "streams", "error", "mode"}], "limits", "ticket_ttl_s"}` |
-| `POST ticket` `{"view", "kind": "stream" \| "snapshot"}` | `{"url", "expires_s"}`. Only for `camera1` to `camera4` and `microscope`. |
+| `POST ticket` `{"view", "kind": "stream" \| "snapshot", "fps"?}` | `{"url", "expires_s"}`. Only for `camera1` to `camera4` and `microscope`. `fps` is an integer from 1 to 30; the default is 10. |
 | `GET stream/<view>?ticket=…` | The MJPEG stream (`multipart/x-mixed-replace`). `503` at the stream bound. `502` if the source fails. |
 | `GET snapshot/<view>?ticket=…` | One JPEG as an attachment. |
 | `GET thermal/frame` | The thermal frame: `sequence`, `timestamp`, `stats`, `temperatures_c` ([y][x] in °C) and `age_s`. `?full=1` adds `raw`, `ir` and `raw_unit`. |
@@ -188,7 +188,9 @@ All paths start with `<base>/api/console/ws/cameras/`. They need the operator to
 
 - **Tickets.** An `<img>` cannot send the token. The page sends `POST ticket` with the token and puts the returned `url` in `img.src`. A ticket is random, used once, bound to one view and one kind, and expires after 20 s. Any use spends it. A ticket route accepts no other query parameter. The console never puts the token or the camera key in a URL.
 - **Bounds.** At most 6 relayed streams in total, 2 per view, and 2 for the microscope (its service allows 4; 2 stay for the microscope page). The orchestrator serves with 16 worker threads, so open streams leave workers for the API.
-- **Relay end.** When the viewer closes the connection, the console closes the upstream connection and frees the slot. When the upstream ends or fails, the stream ends and the tile asks for a new ticket after a back-off of 1 s to 15 s.
+- **Newest frame only.** Each view has one upstream reader, shared by all its viewers. A viewer gets the newest complete JPEG as its own multipart part (boundary `frame`, with `Content-Length`), at most `fps` parts a second. A slow viewer skips frames and never gets a backlog. The server blocks a slow viewer when its output buffer passes 256 KiB (waitress `outbuf_high_watermark`), so its next frame is the newest one.
+- **Frame rate per tile.** `LabCameras.tile` asks for `fps` 10 for a grid or strip tile, and 30 for a large tile (`large: true`, the Focus view). A tile restarts its stream when it changes size.
+- **Relay end.** When the last viewer of a view closes its connection, the console closes the upstream connection. Each viewer frees its own slot. When the upstream ends or fails, the stream ends and the tile asks for a new ticket after a back-off of 1 s to 15 s.
 - **States.** A view is `live` when its last frame is at most 2 s old, `stale` when it is older, and `offline` when no stream is open for 5 s, the source failed, or no frame came. The thermal state comes from the frame timestamp.
 - **Sources.** camera1 to camera4 come from the camera preview at `MG400_ORCH_CAMERA_URL` with the key in `MG400_CAMERA_KEY_FILE`. The thermal, vision and microscope views use the `MG400_ORCH_<SERVICE>_URL` and `_TOKEN` settings (the demo services in demo mode). Tests attach fake sources as `service.camera_sources`.
 - **Thermal commands.** The region editor sends `set_region` (`{"name": "crucible", "x0", "y0", "x1", "y1"}`) and the shutter button sends `shutter` (`{}`) through `api.relay("thermal", …)`, each after an in-page confirmation. The buttons are disabled until the thermal `api/describe` lists the command.

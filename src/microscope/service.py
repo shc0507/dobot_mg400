@@ -49,6 +49,8 @@ from .sim import MicroscopeSimulator
 class MicroscopeConfig:
     serial: str = ""
     side_stream: str = ""
+    # Width, height and frame rate of the side stream from MG400_CAMERA_MODES.
+    side_mode: tuple[int, int, int] | None = None
     focus_limits: tuple[int, int] | None = None
     switch_focus: int | None = None
     home_switch: bool | None = None
@@ -69,9 +71,19 @@ class MicroscopeConfig:
             raise ValueError("MG400_MICROSCOPE_SWITCH_FOCUS must be integer pulses")
         if switch not in ("", "0", "1"):
             raise ValueError("MG400_MICROSCOPE_HOME_SWITCH must be 0 or 1")
+        side_stream = env.get("MG400_MICROSCOPE_SIDE_STREAM", "")
+        side_mode = None
+        if side_stream:
+            from cameras.config import camera_configuration
+
+            # The side reader must expect the mode that go2rtc captures for this stream.
+            cameras = camera_configuration(env)
+            if side_stream in cameras.streams:
+                side_mode = cameras.modes[cameras.streams.index(side_stream)]
         return cls(
             serial=env.get("MG400_MICROSCOPE_SERIAL", ""),
-            side_stream=env.get("MG400_MICROSCOPE_SIDE_STREAM", ""),
+            side_stream=side_stream,
+            side_mode=side_mode,
             focus_limits=tuple(map(int, limits.split(","))) if limits else None,
             switch_focus=int(clearance) if clearance else None,
             home_switch=None if not switch else switch == "1",
@@ -1208,6 +1220,15 @@ class MicroscopeService:
                 self._frame_reads -= 1
                 self._frame_condition.notify_all()
 
+    def _side_camera(self):
+        """Create the side reader for the configured go2rtc stream and its capture mode."""
+        from cameras.uvc import USBCamera
+
+        if self.config.side_mode is None:
+            return USBCamera(self.config.side_stream)
+        width, height, fps = self.config.side_mode
+        return USBCamera(self.config.side_stream, resolution=(width, height), fps=float(fps))
+
     def start(self, *, background=True):
         with self._lifecycle:
             with self._lock:
@@ -1239,9 +1260,7 @@ class MicroscopeService:
 
                     self._camera = MicroscopeCamera()
                 if self._side is None:
-                    from cameras.uvc import USBCamera
-
-                    self._side = USBCamera(self.config.side_stream)
+                    self._side = self._side_camera()
                 self._motor.connect(self.config.serial, reset_seconds=0 if self.demo else 1.8)
                 if not self._motor.focus_completion:
                     raise RuntimeError("Microscope service requires reference-aware firmware")

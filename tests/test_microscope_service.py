@@ -249,6 +249,63 @@ def test_real_focus_configuration_has_no_invented_defaults():
         config.validate()
 
 
+CAMERA_DEVICES = ",".join(
+    f"/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.{port}:1.0-video-index0"
+    for port in ("1.2", "1.3", "1.4", "2.1")
+)
+
+
+@pytest.mark.parametrize(
+    ("modes", "expected"),
+    [
+        ("640x480@30,640x480@30,640x480@30,640x480@30", (640, 480, 30)),
+        ("640x480@30,640x480@30,3840x2160@30,640x480@30", (3840, 2160, 30)),
+        ("", (3840, 2160, 30)),
+    ],
+    ids=["tested-olares-modes", "explicit-4k-side", "default-side-mode"],
+)
+def test_side_reader_expects_the_configured_side_stream_mode(monkeypatch, modes, expected):
+    import cameras.uvc
+    from microscope.service import MicroscopeConfig, MicroscopeService
+
+    config = MicroscopeConfig.from_env(
+        {
+            "MG400_CAMERA_DEVICES": CAMERA_DEVICES,
+            "MG400_CAMERA_MODES": modes,
+            "MG400_MICROSCOPE_SIDE_STREAM": "camera3",
+        }
+    )
+    assert config.side_mode == expected
+    created = []
+
+    def capture(stream, resolution=None, fps=None, **kwargs):
+        created.append((stream, resolution, fps))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(cameras.uvc, "USBCamera", capture)
+    MicroscopeService(config)._side_camera()
+    assert created == [("camera3", expected[:2], float(expected[2]))]
+
+
+def test_side_stream_outside_the_camera_list_fails_closed():
+    from microscope.service import MicroscopeConfig
+
+    with pytest.raises(ValueError, match="configured camera stream"):
+        MicroscopeConfig.from_env(
+            {"MG400_CAMERA_DEVICES": CAMERA_DEVICES, "MG400_MICROSCOPE_SIDE_STREAM": "camera5"}
+        )
+
+
+def test_microscope_dependency_group_covers_the_furnace_import_chain():
+    import tomllib
+    from pathlib import Path
+
+    # microscope.service imports furnace.recordings, whose package imports the drivers.
+    project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    microscope = project["dependency-groups"]["microscope"]
+    assert any(item.startswith("minimalmodbus") for item in microscope)
+
+
 def test_manual_reference_configuration_requires_clearance_zero():
     from microscope.service import MicroscopeConfig
 

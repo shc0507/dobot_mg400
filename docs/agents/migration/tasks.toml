@@ -888,6 +888,13 @@ deps = ["ORC-03", "ORC-04", "ORC-05", "ORC-06", "ORC-07", "ROB-03", "CAL-02", "C
 writes = [
   "recipes/tray-transfer.toml",
   "src/orchestrator/skills/vision.py",
+  "src/orchestrator/skills/__init__.py",
+  "src/orchestrator/skills/robot.py",
+  "src/vision/service.py",
+  "src/orchestrator/rehearsal.py",
+  "tests/test_orchestrator_rehearsal.py",
+  "docs/vision.md",
+  "docs/vision.en.md",
   "tests/test_recipe_tray_transfer.py",
   "docs/orchestrator.md",
   "docs/orchestrator.en.md",

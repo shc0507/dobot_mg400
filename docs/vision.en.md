@@ -486,3 +486,31 @@ Lease expiry cancels the controlling client's command. It does not cancel an ind
 SIGINT, SIGTERM, and SIGHUP request cancellation during shutdown.
 Shutdown waits up to 15 seconds for active inference or startup and ends lease polling.
 The service controls no robot, stage, gripper, or camera device.
+
+## Detector evaluation
+
+`scripts/vision_eval.py` evaluates chip detection on a labeled dataset. It does not train a model and does not read a camera.
+Do not put datasets or weights in Git.
+The H-22 evaluation set is in Olares Files at `Home/Datasets/h22-tray-eval-v1/`. Its tray scale is 1.554 px/mm.
+
+The dataset directory contains `images/` and `labels/`. Each label file has the name of its image and contains YOLO polygons.
+Class `0` is Chip. Other classes only put the frames into groups.
+
+On Linux, run from the repository root:
+
+```bash
+uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval-v1 --weights chip-arm-yolo26s-seg-v1.pt --px-per-mm 1.554
+```
+
+The locked `torch` has no macOS wheel. On macOS, install the locked `ultralytics` version in a separate environment. Before you run the script, set `PYTHONPATH=src`.
+
+Evaluation rules:
+
+- The script sends each frame to `Localizer.predict`, as the vision service does. That function stretches the image to 640x640.
+- The script uses the default confidence threshold of `Localizer.predict`, as the service does. To evaluate a different threshold, set `--confidence`.
+- A detection box and a label box match when their IoU (intersection over union) is at least 0.5. The script matches in descending confidence. Each label matches at most 1 detection.
+- An unmatched detection is a false detection. An unmatched label is a missed label.
+- Precision is the matches divided by the detections. Recall is the matches divided by the labels.
+- The center error is the distance between the box centers of a match. `--px-per-mm` converts pixels to millimetres.
+
+The output is a Markdown report. It shows the counts per frame group, the Chip precision and recall, the center errors, and the frames with false or missed detections.

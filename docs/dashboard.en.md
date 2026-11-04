@@ -43,6 +43,21 @@ The workspaces send manual commands through the console. The console forwards ea
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
 - **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
 
+### Cameras workspace
+
+- The grid shows 6 views: camera1 to camera4, the thermal camera and the microscope (Toupcam). Each view shows its name and role, LIVE, STALE or OFFLINE with the frame age, its mode, and **Snapshot** and **Expand**. **Focus · 1 + strip** shows 1 large view and a strip of the others.
+- The console service relays all views. The browser gets no camera key and no service token. An `<img>` stream uses a short-lived single-use ticket: it is valid for 20 seconds, for 1 use and for 1 view.
+- The relay opens at most 6 streams at a time, at most 2 per view and at most 2 for the microscope. The relay stops when you leave the workspace, hide the browser tab or close the page.
+- You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.
+- When the thermal camera is selected, the side panel gives the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. You can export CSV, Raw + JSON and PNG.
+- **Draw region** drags the `crucible` region on the thermal view and shows its bounds. **Save region** is available only when the thermal service lists `set_region` in `api/describe`, and it needs a confirmation in the page. Otherwise, put the bounds in `rois.toml`. **Calibrate shutter** also waits until the service lists `shutter`, and it needs a confirmation.
+- Set the source of camera1 to camera4 on the host. The other views use the existing `MG400_ORCH_<SERVICE>_URL` and `_TOKEN`:
+
+```sh
+MG400_ORCH_CAMERA_URL=http://127.0.0.1:1985
+MG400_CAMERA_KEY_FILE=/var/lib/mg400/camera/preview.key
+```
+
 ### Run offline
 
 ```sh

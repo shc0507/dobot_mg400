@@ -44,10 +44,11 @@
       "region": "Region · crucible", "region.none": "Not defined yet. Draw it once on this view; the furnace screen and runs read it.",
       "region.bounds": "x {x0}–{x1}, y {y0}–{y1}", "region.draw": "Draw region", "region.drawing": "Drag on the thermal view.",
       "region.save": "Save region", "region.cancel": "Cancel",
+      "region.manual": "The thermal service does not offer Save. Put these bounds under [regions.crucible] in rois.toml.",
       "region.confirm": "Save x {x0}–{x1}, y {y0}–{y1} as the crucible region? The furnace screen and runs read it.",
       "shutter": "Calibrate shutter", "shutter.confirm": "Close the shutter and recalibrate the thermal camera now? The view pauses for a moment.",
       "confirm": "Confirm", "cancel": "Cancel",
-      "command.missing": "The thermal service does not offer this command.",
+      "command.missing": "The thermal service does not offer shutter calibration.",
       "command.control": "Take thermal control first.", "command.take": "Take thermal control", "command.release": "Release thermal control",
       "command.accepted": "Sent: {action}", "command.refused": "Refused: {error}", "command.unknown": "Outcome unknown: {action}. Check the camera.",
       "freeze": "Freeze view", "unfreeze": "Resume view",
@@ -78,10 +79,11 @@
       "region": "区域 · crucible", "region.none": "尚未定义。在此画面上画一次；炉子页面和运行会读取它。",
       "region.bounds": "x {x0}–{x1}，y {y0}–{y1}", "region.draw": "画区域", "region.drawing": "在热像画面上拖动。",
       "region.save": "保存区域", "region.cancel": "取消",
+      "region.manual": "热像仪服务未提供保存。把这些边界写入 rois.toml 的 [regions.crucible]。",
       "region.confirm": "把 x {x0}–{x1}，y {y0}–{y1} 保存为 crucible 区域？炉子页面和运行会读取它。",
       "shutter": "快门校准", "shutter.confirm": "现在关闭快门并重新校准热像仪？画面会短暂暂停。",
       "confirm": "确认", "cancel": "取消",
-      "command.missing": "热像仪服务未提供此命令。",
+      "command.missing": "热像仪服务未提供快门校准。",
       "command.control": "请先获取热像仪控制。", "command.take": "获取热像仪控制", "command.release": "释放热像仪控制",
       "command.accepted": "已发送：{action}", "command.refused": "被拒绝：{error}", "command.unknown": "结果未知：{action}。请检查相机。",
       "freeze": "冻结画面", "unfreeze": "恢复画面",
@@ -749,21 +751,22 @@
           }));
         } else {
           regionParts.push(h("div", { class: "lc-filters" },
-            h("button", { type: "button", class: "lc-button", text: api.t("region.save"), disabled: !proposed, onclick: () => { ui.confirm = "region"; renderSide(); } }),
+            h("button", { type: "button", class: "lc-button", text: api.t("region.save"), disabled: !proposed || !commandInfo("set_region"), onclick: () => { ui.confirm = "region"; renderSide(); } }),
             h("button", { type: "button", class: "lc-button", text: api.t("region.cancel"), onclick: () => { thermalTile.drawing = null; thermalTile.paint(); renderSide(); } })));
         }
       } else {
         regionParts.push(h("p", { class: "lc-muted", text: region ? api.t("region.bounds", region) : api.t("region.none") }));
-        regionParts.push(commandButton("set_region", api.t("region.draw"), () => {
+        regionParts.push(h("button", { type: "button", class: "lc-button", text: api.t("region.draw"), onclick: () => {
           thermalTile.drawing = { region: region ? { ...region } : null, anchor: null, onChange: renderSide };
           thermalTile.paint();
           renderSide();
-        }));
+        } }));
       }
+      if (thermalTile.drawing && thermalTile.drawing.region && !commandInfo("set_region")) regionParts.push(h("p", { class: "lc-muted", text: api.t("region.manual") }));
       parts.push(h("div", { class: "lcam-group" }, ...regionParts));
       if (ui.confirm === "shutter") parts.push(confirmBox(api.t("shutter.confirm"), () => send("shutter", {})));
       else parts.push(commandButton("shutter", api.t("shutter"), () => { ui.confirm = "shutter"; renderSide(); }));
-      if (!commandInfo("shutter") || !commandInfo("set_region")) parts.push(h("p", { class: "lc-muted", text: api.t("command.missing") }));
+      if (!commandInfo("shutter")) parts.push(h("p", { class: "lc-muted", text: api.t("command.missing") }));
       const control = controlLine();
       if (control) parts.push(control);
 

@@ -569,6 +569,27 @@ Docs: `control-panel.md` and `.en.md`, `development.md` and `.en.md`.
 
 Notes: H-17 checks the three outcomes on hardware.
 
+### ROB-03 · Disable after a stop without a restart
+
+Owner: agent · Size: M · Review: human · Deps: ROB-02
+
+Source: H-17 finding 3 (#107), owner approval on 2026-11-04. On Olares, `stop_sync` on an enabled arm stopped it and closed the feedback (`syncing: false`). It then released control and stayed locked with "Robot stop is confirmed. Disable the robot before recovery." The following `disable` could not be confirmed without feedback. It reported `stop_unconfirmed` and "use the physical emergency stop", and only `mg400ctl restart web` cleared the lock. After the restart, feedback showed the arm disabled, so the controller had received the disable. `RobotClient` runs `stop_sync` when a `with` block exits, so a recipe that ends with the arm enabled reaches this state. Log on Olares: `/var/lib/mg400/work/h17/web-stop-unconfirmed-20261104T0317.log`.
+
+Steps:
+
+1. After `stop_sync` on an enabled arm, keep the feedback connection open while control stays locked. A following `disable` can then be confirmed from feedback (mode 4). After a confirmed disable, close the feedback as `stop_sync` does now.
+2. Never disable or move the arm automatically. The operator still sends `disable`.
+3. Keep the existing safety behavior: stop confirmation, the unknown-outcome lock, the message "use the physical emergency stop" when feedback cannot confirm, the lease expiry stop, and `stop_sync` on a disabled arm.
+4. Tests with the simulator:
+   - `stop_sync` while enabled, then `disable`: confirmed and unlocked without a restart;
+   - feedback lost during the lock: `stop_unconfirmed`, as now;
+   - `stop_sync` while disabled: unchanged;
+   - a `RobotClient` `with` block that exits with the arm enabled.
+
+Done when: P-CHECKS pass.
+
+Docs: the stop and recovery section in `control-panel.md` and `.en.md`.
+
 ### ORC-01 · Orchestrator core with rehearsal
 
 Owner: agent · Size: L · Review: human · Deps: FND-05, FND-07, SIM-01
@@ -675,6 +696,44 @@ Recovery fixture scope: update only `recover_held_runner` in `tests/test_orchest
 Done when: P-CHECKS pass.
 
 Docs: `orchestrator.md` and `.en.md`, `deploy.md` and `.en.md`.
+
+### ORC-06 · Robot data folder for the tool and stations
+
+Owner: agent · Size: S · Review: human · Deps: ORC-02
+
+Source: H-17 finding 1 (#107), owner approval on 2026-11-04. `_parent()` in `src/orchestrator/stations.py` requires the folder of `tool.toml` and `stations.toml` to belong to the service account (1000:1000) with mode 0700 or 0750. The defaults put both files directly in `/var/lib/mg400`, which `deploy/install.py` creates as `root:1000` with mode 0750. So `labctl station list` fails on an installed host with "Station data requires private permissions, safe file types and its owner."
+
+Steps:
+
+1. `deploy/install.py` creates `/var/lib/mg400/robot`, owned by 1000:1000 with mode 0750.
+2. The defaults become `/var/lib/mg400/robot/tool.toml` and `/var/lib/mg400/robot/stations.toml` (`DEFAULT_TOOL`, `DEFAULT_STATIONS`, `deploy/mg400.env.example`).
+3. A file at an old default path stays where it is. The installer prints a notice, like the one for the legacy `stage.toml`, and the operator moves it. Olares already uses the new folder (H-17).
+4. Tests: the installer creates the folder with its owner and mode, the station and tool commands work with the defaults on a fake root, and the notice for an old file.
+
+Done when: P-CHECKS pass.
+
+Docs: `orchestrator.md` and `.en.md`; the data table and the backup table in `deploy.md` and `.en.md`.
+
+### ORC-07 · Route travel at the taught heights
+
+Owner: agent · Size: M · Review: human · Deps: ORC-03, ORC-04, XDV-01
+
+Source: H-17 finding 2 (#107), owner approval on 2026-11-04. The robot has no single safe travel height (H-08, #98). The stations are taught at their own flange Z: T 80, V3 165, V2 190, V1 175 and C 143.5. The arm cannot rise to Z 150 at C, and camera 4 limits the flange to Z 154 over the tray. `_Transfer.height()` in `src/orchestrator/skills/robot.py` lifts the whole route to one height, the maximum of the current Z and every station's `z_mm + approach_mm`. With this route that is flange Z 200, so a transfer or a crucible move is refused.
+
+Steps:
+
+1. `robot.pick`, `robot.place`, `robot.transfer`, and the crucible `load` and `unload`:
+   - Rise only at the start station, to that station's approach height.
+   - Pass each via station at its own taught pose.
+   - Descend only at the end station, from its approach height to the station pose.
+   - Each move is a straight line. Remove the single route height.
+2. Before the first motion, check every waypoint and its conversion against the fingertip workspace, as now. The zone and lease rules stay unchanged.
+3. Speed: these skills take a `speed` parameter, an integer from 1 to the robot service cap (`MG400_ROBOT_MAX_SPEED_L`), with default 1. The robot service still enforces its cap. H-17 measured about 12.8 mm/s at speed 20 against 2.4 mm/s at speed 1.
+4. Tests in rehearsal: the H-08 route (T, V3, V2, V1, C) with different heights in both directions, no waypoint above its station's approach height, refused targets before any motion, the speed bounds, and the crucible routes.
+
+Done when: P-CHECKS pass.
+
+Docs: `orchestrator.md` and `.en.md`. When the operator teaches a station over the tray, its approach height must stay below the camera 4 limit.
 
 ### OPS-03 · Backup and host migration for new data
 
@@ -824,7 +883,7 @@ Done when: the evaluation report is on the issue; the manifest points to the new
 
 ### MS-01 · Milestone: vision-guided tray transfer
 
-Owner: agent+human · Size: M · Review: human · Deps: ORC-03, ORC-04, ORC-05, CAL-02, CAL-03, CAL-04, VIS-05, H-17
+Owner: agent+human · Size: M · Review: human · Deps: ORC-03, ORC-04, ORC-05, ORC-06, ORC-07, ROB-03, CAL-02, CAL-03, CAL-04, VIS-05, H-17
 
 Goal: D7. The first end-to-end automated task.
 
@@ -832,7 +891,7 @@ Steps:
 
 1. `recipes/tray-transfer.toml` with the params `from_slot` and `to_slot`.
 2. Skills in `src/orchestrator/skills/vision.py`: `vision.find_chip(slot)` (present, center, angle) and `vision.slot_state(slot)` (a chip is present or the slot is empty, from YOLO on the tray camera). Chips carry no labels.
-3. Steps: check the calibration at a pose inside the CAL-01 grid with the scan R (CAL-04), find the chip in the source slot, check that the target slot is empty, transfer with R from the chip angle, then confirm the chip in the target slot and the source slot empty.
+3. Steps: check the calibration at a pose inside the CAL-01 grid with the scan R (CAL-04), find the chip in the source slot, check that the target slot is empty, transfer with R from the chip angle at the taught heights and a speed up to the service cap (ORC-07), then confirm the chip in the target slot and the source slot empty.
 4. Rehearsal tests for success and for each failure: no chip at the source, an occupied target, no chip at the target after the place, the chip still at the source, empty grasp, drop, moved camera. Each failure holds the run.
 5. The operator runs it on hardware with P-HW.
 

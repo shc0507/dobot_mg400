@@ -551,6 +551,25 @@ writes = [
 ]
 
 [[task]]
+id = "ROB-03"
+title = "Disable after a stop without a restart"
+phase = 2
+track = "robot"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["ROB-02"]
+# H-17 finding 3 (#107): keep feedback after stop_sync until a confirmed disable.
+writes = [
+  "src/mg400/web_control.py",
+  "src/mg400/client.py",
+  "tests/test_web_control.py",
+  "tests/test_robot_client.py",
+  "docs/control-panel.md",
+  "docs/control-panel.en.md",
+]
+
+[[task]]
 id = "ORC-01"
 title = "Orchestrator core with rehearsal"
 phase = 2
@@ -664,6 +683,43 @@ writes = [
   "docs/orchestrator.en.md",
   "docs/deploy.md",
   "docs/deploy.en.md",
+]
+
+[[task]]
+id = "ORC-06"
+title = "Robot data folder for the tool and stations"
+phase = 2
+track = "orchestrator"
+owner = "agent"
+size = "S"
+review = "human"
+deps = ["ORC-02"]
+# H-17 finding 1 (#107): a 1000:1000 folder that passes the private-parent check.
+writes = [
+  "src/orchestrator/stations.py",
+  "tests/test_orchestrator_stations.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
+]
+
+[[task]]
+id = "ORC-07"
+title = "Route travel at the taught heights"
+phase = 2
+track = "orchestrator"
+owner = "agent"
+size = "M"
+review = "human"
+deps = ["ORC-03", "ORC-04", "XDV-01"]
+# H-17 finding 2 (#107): no single route height; speed up to the robot service cap.
+writes = [
+  "src/orchestrator/skills/robot.py",
+  "src/orchestrator/skills/crucible.py",
+  "src/orchestrator/rehearsal.py",
+  "tests/test_orchestrator_transfer.py",
+  "tests/test_orchestrator_crucible.py",
+  "docs/orchestrator.md",
+  "docs/orchestrator.en.md",
 ]
 
 [[task]]
@@ -822,7 +878,7 @@ track = "milestone"
 owner = "agent+human"
 size = "M"
 review = "human"
-deps = ["ORC-03", "ORC-04", "ORC-05", "CAL-02", "CAL-03", "CAL-04", "VIS-05", "H-17"]
+deps = ["ORC-03", "ORC-04", "ORC-05", "ORC-06", "ORC-07", "ROB-03", "CAL-02", "CAL-03", "CAL-04", "VIS-05", "H-17"]
 writes = [
   "recipes/tray-transfer.toml",
   "src/orchestrator/skills/vision.py",

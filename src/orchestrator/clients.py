@@ -70,6 +70,10 @@ class ServiceAdapter:
     def command(self, action, **params):
         return self._http.command(action, **params)
 
+    def events(self, since=0):
+        """Read the contract event replay once; the robot panel serves the same route."""
+        return self._http.events(since)
+
     def stop(self):
         return self._http.stop(wait_s=min(1, self.timeout / 2))
 

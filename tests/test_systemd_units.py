@@ -68,6 +68,7 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-furnace.service",
         "mg400-thermal.service",
         "mg400-vision.service",
+        "mg400-microscope.service",
         "mg400-orchestrator.service",
         "mg400-gateway.service",
     ],
@@ -85,6 +86,7 @@ def test_services_with_settings_read_the_shared_environment_file(name):
         (
             "mg400-web-panel.service",
             [
+                "MG400_MICROSCOPE_TOKEN",
                 "MG400_STAGE_TOKEN",
                 "MG400_FURNACE_TOKEN",
                 "MG400_THERMAL_TOKEN",
@@ -96,6 +98,7 @@ def test_services_with_settings_read_the_shared_environment_file(name):
         (
             "mg400-stage-panel.service",
             [
+                "MG400_MICROSCOPE_TOKEN",
                 "MG400_PANEL_TOKEN",
                 "MG400_FURNACE_TOKEN",
                 "MG400_THERMAL_TOKEN",
@@ -107,6 +110,7 @@ def test_services_with_settings_read_the_shared_environment_file(name):
         (
             "mg400-camera-preview.service",
             [
+                "MG400_MICROSCOPE_TOKEN",
                 "MG400_PANEL_TOKEN",
                 "MG400_STAGE_TOKEN",
                 "MG400_FURNACE_TOKEN",
@@ -146,6 +150,28 @@ def test_camera_preview_retains_vision_token_for_the_loopback_proxy():
     unset = {value for line in service.get("UnsetEnvironment", []) for value in line.split()}
     assert "MG400_VISION_TOKEN" not in unset
     assert {"MG400_PANEL_TOKEN", "MG400_STAGE_TOKEN"} <= unset
+
+
+def test_every_shared_environment_unit_keeps_only_its_required_service_tokens():
+    permitted = {
+        "mg400-web-panel.service": {"MG400_PANEL_TOKEN"},
+        "mg400-stage-panel.service": {"MG400_STAGE_TOKEN"},
+        "mg400-camera-preview.service": {"MG400_VISION_TOKEN"},
+        "mg400-furnace.service": {"MG400_FURNACE_TOKEN"},
+        "mg400-thermal.service": {"MG400_THERMAL_TOKEN"},
+        "mg400-vision.service": {"MG400_VISION_TOKEN"},
+        "mg400-microscope.service": {"MG400_MICROSCOPE_TOKEN", "MG400_FURNACE_TOKEN"},
+        "mg400-orchestrator.service": {"MG400_ORCH_TOKEN", "MG400_GATEWAY_TOKEN"},
+        "mg400-gateway.service": {"MG400_GATEWAY_TOKEN"},
+        "mg400-proxy.service": set(),
+    }
+    tokens = {entry["token"] for entry in REGISTRY if entry["token"]}
+    shared = {name for name in SERVICES if "EnvironmentFile" in unit_sections(name)["Service"]}
+    assert shared == permitted.keys()
+    for name, allowed in permitted.items():
+        service = unit_sections(name)["Service"]
+        excluded = {token for value in service["UnsetEnvironment"] for token in value.split()}
+        assert tokens - excluded == allowed
 
 
 def test_stage_service_takes_every_setting_from_the_environment():
@@ -190,6 +216,7 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-furnace.service": ["dialout"],
         "mg400-thermal.service": [],
         "mg400-vision.service": [],
+        "mg400-microscope.service": ["dialout video"],
         "mg400-orchestrator.service": [],
         "mg400-proxy.service": [],
         "mg400-gateway.service": [],
@@ -220,6 +247,42 @@ def test_vision_uses_the_isolated_environment_and_keeps_only_its_token():
         "port": 8771,
         "assets": ["vision-weights"],
     }
+
+
+def test_microscope_uses_verified_sdk_path_and_keeps_only_its_two_credentials():
+    service = unit_sections("mg400-microscope.service")["Service"]
+    assert command("mg400-microscope.service") == [
+        "/opt/mg400/.venv/bin/python",
+        "-m",
+        "microscope",
+    ]
+    assert service["Environment"] == ["LD_LIBRARY_PATH=/usr/local/lib/mg400"]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    assert service["TimeoutStopSec"] == ["infinity"]
+    excluded = set(service["UnsetEnvironment"][0].split())
+    assert excluded == {
+        f"MG400_{name}_TOKEN" for name in ("PANEL", "STAGE", "THERMAL", "VISION", "GATEWAY")
+    } | set(ORCHESTRATOR_TOKENS)
+    assert not {"MG400_MICROSCOPE_TOKEN", "MG400_FURNACE_TOKEN"} & excluded
+    assert next(item for item in REGISTRY if item["name"] == "microscope") == {
+        "name": "microscope",
+        "units": ["mg400-microscope.service"],
+        "optional": True,
+        "venv": ".venv",
+        "groups": ["microscope"],
+        "token": "MG400_MICROSCOPE_TOKEN",
+        "port": 8770,
+        "assets": [],
+    }
+
+
+def test_only_microscope_unit_sets_the_native_library_search_path():
+    for name in SERVICES:
+        definitions = unit_sections(name)["Service"].get("Environment", [])
+        library_paths = [value for value in definitions if "LD_LIBRARY_PATH" in value]
+        assert library_paths == (
+            ["LD_LIBRARY_PATH=/usr/local/lib/mg400"] if name == "mg400-microscope.service" else []
+        )
 
 
 def test_furnace_service_uses_settings_and_allows_heat_and_gas_shutdown():

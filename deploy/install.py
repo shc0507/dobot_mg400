@@ -16,6 +16,7 @@ import ipaddress
 import json
 import math
 import os
+import pwd
 import re
 import secrets
 import shutil
@@ -473,23 +474,90 @@ def prepare_proxy(args, host, settings, selected):
     return config, binary if args.caddy is not None else None
 
 
-def prepare_toupcam(source, host):
+def microscope_groups():
+    """Resolve the numeric unit user's NSS and explicit supplementary groups."""
+    groups = {SERVICE_GID}
+    try:
+        name = pwd.getpwuid(SERVICE_UID).pw_name
+        groups.update(os.getgrouplist(name, SERVICE_GID))
+    except (KeyError, OSError) as error:
+        raise ValueError(
+            "Cannot resolve microscope service UID 1000 and its supplementary groups."
+        ) from error
+    for name in ("dialout", "video"):
+        try:
+            groups.add(grp.getgrnam(name).gr_gid)
+        except (KeyError, OSError) as error:
+            raise ValueError(f"Microscope requires the {name} device group.") from error
+    return groups
+
+
+def check_toupcam_directories(host, groups):
+    """Require a trusted destination chain, without changing existing directories."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with assets._directory(host.root) as anchor:
+        parent = os.dup(anchor)
+        try:
+            for component in host.toupcam.parent.relative_to(host.root).parts:
+                try:
+                    child = os.open(component, flags, dir_fd=parent)
+                except FileNotFoundError:
+                    return  # Installation creates the missing suffix as root.
+                os.close(parent)
+                parent = child
+                info = os.fstat(parent)
+                execute_bit = 0o010 if info.st_gid in groups else 0o001
+                if info.st_uid != 0 or info.st_mode & 0o7022 or not info.st_mode & execute_bit:
+                    raise ValueError(
+                        "Toupcam destination directories must be root-owned and traversable "
+                        "by the service, "
+                        "without special mode bits or group or other write access."
+                    )
+        finally:
+            os.close(parent)
+
+
+def prepare_toupcam(source, host, *, required=False):
     """Keep verified SDK bytes without loading the library or changing the host."""
-    if source is None:
+    if source is None and not required:
         return None
+    if required:
+        groups = microscope_groups()
+        check_toupcam_directories(host, groups)
     try:
         with assets._directory(host.toupcam.parent) as directory:
             assets._regular(host.toupcam, directory)
     except FileNotFoundError:
         pass
-    with assets._local(source) as stream:
-        binary = stream.read()
+    try:
+        with assets._local(host.toupcam if source is None else source) as stream:
+            if source is None:
+                info = os.fstat(stream.fileno())
+                read_bit = 0o040 if info.st_gid in groups else 0o004
+                if (
+                    info.st_uid != 0
+                    or info.st_nlink != 1
+                    or info.st_mode & 0o7022
+                    or not info.st_mode & read_bit
+                ):
+                    raise ValueError(
+                        "The installed Toupcam library must be root-owned and service-readable, "
+                        "with one link, no special mode bits, and no group or other write access."
+                    )
+            binary = stream.read()
+    except FileNotFoundError as error:
+        if source is None:
+            raise RuntimeError(
+                "Microscope is selected. Pass the verified Toupcam library with --toupcam PATH."
+            ) from error
+        raise
     if hashlib.sha256(binary).hexdigest() != TOUPCAM_SHA256:
         raise ValueError(
             f"Toupcam {TOUPCAM_VERSION} linux/x64/libtoupcam.so: SHA-256 mismatch "
             f"(expected {TOUPCAM_SHA256})."
         )
-    return binary
+    # A previously installed verified library is not rewritten during an upgrade.
+    return binary if source is not None else None
 
 
 def find_collectors(proc_root, managed_pid):
@@ -636,6 +704,8 @@ def install(args, host, run, chown, out):
         with assets._local(host.source / "config/systemd" / name) as stream:
             unit_contents[name] = stream.read().decode("utf-8")
     rendered_rules = udev_rules(host, selected)
+    if "microscope" in selected and "70-mg400-microscope.rules" not in rendered_rules:
+        raise ValueError("Microscope requires config/udev/70-mg400-microscope.rules.in.")
     camera_config = camera_configuration(settings)
     devices = list(camera_config.devices)
     if args.go2rtc is not None and not args.go2rtc.is_file():
@@ -643,7 +713,7 @@ def install(args, host, run, chown, out):
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
     proxy_config, caddy_binary = prepare_proxy(args, host, settings, selected)
-    toupcam_binary = prepare_toupcam(args.toupcam, host)
+    toupcam_binary = prepare_toupcam(args.toupcam, host, required="microscope" in selected)
 
     # Vision requires the released model even without the optional bulk-fetch flag.
     required_assets = {"vision-weights"} if "vision" in selected else set()
@@ -732,7 +802,10 @@ def install(args, host, run, chown, out):
         directory(host.data / "vision", 0o750, service)
     if "furnace" in selected:
         directory(host.data / "furnace", 0o750, service)
-    if "orch" in selected or "gateway" in selected:
+    if "microscope" in selected:
+        directory(host.data / "calibration/microscope", 0o750, service)
+        directory(host.data / "recordings", 0o750, service)
+    if {"orch", "gateway", "microscope"} & selected.keys():
         directory(host.data / "runs", 0o750, service)
     if "orch" in selected:
         directory(host.data / "zones", 0o750, service)

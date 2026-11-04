@@ -7,6 +7,8 @@ import os
 import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -352,6 +354,64 @@ def test_cli_save_show_list_remove_with_only_fake_robot_gets(
         assert cli.main(["station", action, *name], out=io.StringIO()) == 0
     factory.assert_not_called()
     assert store.load() == {}
+
+
+def test_default_tool_and_station_commands_use_private_robot_folder_on_fake_root(
+    workspace, state, monkeypatch, tmp_path
+):
+    tool_path = Path("/var/lib/mg400/robot/tool.toml")
+    station_path = Path("/var/lib/mg400/robot/stations.toml")
+    assert stations.DEFAULT_TOOL == cli.DEFAULT_TOOL == tool_path
+    assert stations.DEFAULT_STATIONS == cli.DEFAULT_STATIONS == station_path
+    directory = tmp_path / "var/lib/mg400/robot"
+    directory.mkdir(parents=True, mode=0o750)
+    directory.chmod(0o750)
+    tool = directory / "tool.toml"
+    tool.write_text("offset_mm = [3, 4, 5]\n")
+    tool.chmod(0o640)
+
+    # Redirect only the filesystem root. Keep the real private-parent checks,
+    # descriptor reads, directory locking, and atomic writes on the fake data.
+    original_parent = stations._parent
+    requested = []
+
+    @contextmanager
+    def fake_parent(path):
+        path = Path(path)
+        assert path in {tool_path, station_path}
+        requested.append(path)
+        with original_parent(tmp_path / path.relative_to("/")) as opened:
+            yield opened
+
+    monkeypatch.setattr(stations, "_parent", fake_parent)
+    monkeypatch.delenv("MG400_ORCH_TOOL_FILE", raising=False)
+    monkeypatch.delenv("MG400_ORCH_STATIONS_FILE", raising=False)
+    for key, value in settings(workspace).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("MG400_ORCH_ROBOT_URL", "http://robot.invalid")
+    robot = Mock(spec=["describe", "state"])
+    robot.describe.return_value = {"service": "robot"}
+    robot.state.return_value = state
+    factory = Mock(return_value=robot)
+    monkeypatch.setattr(cli, "ServiceAdapter", factory)
+
+    assert load_tool() == ToolOffset(3, 4, 5)
+    default_store = StationStore(workspace)
+    assert default_store.path == station_path
+    assert default_store.load() == {}
+    output = io.StringIO()
+    assert cli.main(["station", "save", "tray", "--approach", "20"], out=output) == 0
+    assert json.loads(output.getvalue())["x_mm"] == 226
+    assert [call[0] for call in robot.mock_calls] == ["describe", "state"]
+    assert stat.S_IMODE((directory / "stations.toml").stat().st_mode) == 0o640
+    factory.reset_mock()
+    for action, name in (("list", []), ("show", ["tray"]), ("rm", ["tray"])):
+        assert cli.main(["station", action, *name], out=io.StringIO()) == 0
+    assert default_store.load() == {}
+    assert set(requested) == {tool_path, station_path}
+    directory.chmod(0o755)
+    assert cli.main(["station", "list"], out=io.StringIO()) == 2
+    factory.assert_not_called()
 
 
 def test_missing_tool_or_workspace_fails_before_constructing_robot(

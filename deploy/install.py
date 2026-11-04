@@ -699,6 +699,7 @@ def install(args, host, run, chown, out):
     directory(host.data / "work", 0o750, service)
     directory(host.data / "camera", 0o700, service)
     directory(host.data / "stage", 0o700, service)
+    directory(host.data / "robot", 0o750, service)
     directory(host.data / "calibration", 0o750, service)
     directory(host.data / "calibration/cameras", 0o700, service)
     legacy_stage = host.data / "stage.toml"
@@ -710,6 +711,21 @@ def install(args, host, run, chown, out):
             file=out,
             flush=True,
         )
+    for name, setting in (
+        ("tool.toml", "MG400_ORCH_TOOL_FILE"),
+        ("stations.toml", "MG400_ORCH_STATIONS_FILE"),
+    ):
+        legacy = host.data / name
+        if os.path.lexists(legacy):
+            print(
+                f"Legacy robot data exists at {legacy}. "
+                f"Move it manually to {host.data / 'robot' / name}. "
+                "Do not overwrite an existing destination. "
+                f"Update an old {setting} override after the move. "
+                "No robot data file was moved.",
+                file=out,
+                flush=True,
+            )
     if "thermal" in selected:
         directory(host.data / "thermal", 0o750, service)
     if "vision" in selected:

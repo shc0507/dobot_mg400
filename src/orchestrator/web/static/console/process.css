@@ -1,1 +1,63 @@
-/* Styles for the Furnace + microscope workspace. Prefix every rule with #ws-process. */
+/* Furnace + microscope workspace (DSH-06). Every rule starts with #ws-process. Colors follow Process.dc.html. */
+#ws-process .pr-workspace { display: flex; flex-direction: column; gap: 20px; }
+#ws-process .pr-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px; border-radius: 10px; background: #2A1517; border: 1px solid #6B2A2E; }
+#ws-process .pr-banner-title { font-weight: 700; color: #FF9A9A; }
+#ws-process .pr-banner-text { flex: 1 1 420px; min-width: 0; color: #F1C9C9; }
+#ws-process .pr-layout { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+#ws-process .pr-card { flex: 1 1 560px; min-width: 0; gap: 18px; }
+#ws-process .pr-head { display: flex; flex-direction: column; }
+#ws-process h3 { margin: 0; font-size: 14px; font-weight: 600; }
+#ws-process .pr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+#ws-process .pr-end { align-items: flex-end; }
+#ws-process .pr-block { display: flex; flex-direction: column; gap: 8px; }
+#ws-process .pr-note { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--bad); color: #FF9A9A; }
+#ws-process .pr-warn { margin: 0; color: var(--warn); font-size: 13px; }
+#ws-process .pr-primary { border: 0; background: var(--accent); color: #0B1A2A; font-weight: 700; }
+#ws-process .pr-strong { font-weight: 700; }
+#ws-process .pr-danger { min-height: 44px; padding: 0 16px; }
+#ws-process .pr-link { display: inline-flex; align-items: center; text-decoration: none; border: 0; background: var(--accent); color: #0B1A2A; }
+#ws-process .pr-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+#ws-process .pr-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 10px; background: #1B232A; }
+#ws-process .pr-tile-label { font-size: 12px; color: var(--muted); }
+#ws-process .pr-tile-value { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 22px; font-weight: 500; }
+#ws-process .pr-tone-pv { color: var(--warn); }
+#ws-process .pr-tone-sv { color: var(--info); }
+#ws-process .pr-figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+#ws-process .pr-chart { width: 100%; height: 160px; border-radius: 10px; background: var(--bg); }
+#ws-process .pr-grid { stroke: var(--line); stroke-width: 1; }
+#ws-process .pr-axis { fill: var(--muted); font-size: 11px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+#ws-process .pr-pv { stroke: var(--warn); stroke-width: 2.5; fill: none; }
+#ws-process .pr-sv { stroke: var(--info); stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
+#ws-process .pr-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); }
+#ws-process .pr-key-pv { color: var(--warn); }
+#ws-process .pr-key-sv { color: var(--info); }
+#ws-process .pr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+#ws-process .pr-input { width: 110px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; }
+#ws-process .pr-input::placeholder { color: var(--muted); }
+#ws-process .pr-narrow { width: 90px; }
+#ws-process .pr-cell { width: 84px; }
+#ws-process .pr-table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); }
+#ws-process .pr-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+#ws-process .pr-table th { padding: 8px 10px; background: #1B232A; color: var(--muted); text-align: left; font-weight: 600; }
+#ws-process .pr-table td { padding: 6px 10px; border-top: 1px solid var(--row); }
+#ws-process .pr-table tr.pr-current td { background: var(--tab); }
+#ws-process .pr-mono { font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); }
+#ws-process .pr-gas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; border-radius: 10px; background: #1B232A; }
+#ws-process .pr-gas-name { width: 90px; font-weight: 600; }
+#ws-process .pr-gas-state { flex: 1 1 180px; min-width: 0; font-size: 13px; color: var(--warn); }
+#ws-process .pr-views { display: flex; flex-wrap: wrap; gap: 12px; }
+#ws-process .pr-main-view { flex: 999 1 340px; min-width: 0; }
+#ws-process .pr-side-view { flex: 1 1 230px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+#ws-process .pr-view { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
+#ws-process .pr-view-name { color: var(--muted); font-size: 13px; padding: 8px; text-align: center; }
+#ws-process .pr-badge { position: absolute; left: 10px; top: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); font-size: 12px; font-weight: 600; color: var(--soft); }
+#ws-process .pr-objectives { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+#ws-process .pr-objective.pr-selected { border-color: var(--accent); background: var(--tab); box-shadow: inset 0 -2px 0 var(--accent); }
+#ws-process .pr-bar { position: relative; height: 12px; border-radius: 6px; background: #0A0E11; border: 1px solid var(--line2); overflow: hidden; }
+#ws-process .pr-bar-fill { display: block; height: 100%; background: var(--accent); }
+#ws-process .pr-bar-labels { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
+
+@media (max-width: 720px) {
+  #ws-process .pr-card { flex-basis: 100%; padding: 16px; }
+  #ws-process .pr-objectives { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -1,7 +1,209 @@
-"""Console workspace declaration: Furnace + microscope."""
+"""Console workspace: Furnace + microscope.
+
+One read-only route, ``GET status``. It returns the furnace and microscope
+fields that the page shows, the thermal ``crucible`` region reading, a
+60-minute PV and SV history and the cutoff setting. Every device command goes
+through the console relay; this module adds none.
+
+- The furnace and microscope fields come from the console's last service read.
+- The crucible reading is one ``api/roi?name=crucible`` call at most every
+  ``CRUCIBLE_S`` seconds, without a lease.
+- The history is sampled while a console page reads this route. It starts
+  empty when the console process starts.
+"""
+
+import copy
+import math
+import threading
+import time
+import uuid
+from collections import deque
+
+from flask import jsonify
 
 from . import Workspace
 
+HISTORY_S = 3600
+SAMPLE_S = 5.0
+CRUCIBLE_S = 2.0
+
+FURNACE_KEYS = (
+    "connected",
+    "locked",
+    "fault",
+    "error",
+    "pv",
+    "sv",
+    "ramp",
+    "run_state",
+    "control_mode",
+    "controller_program_step",
+    "waiting_for_program_step_2",
+    "orphan_time",
+)
+SEQUENCE_KEYS = (
+    "running",
+    "steps",
+    "current_index",
+    "phase",
+    "hold_remaining_seconds",
+    "end_gas",
+    "end_gas_until_c",
+)
+CHANNEL_KEYS = ("channel_index", "gas_name", "target_percent", "actual_percent", "available")
+MICROSCOPE_KEYS = (
+    "connected",
+    "busy",
+    "locked",
+    "fault",
+    "objective_id",
+    "focus_position_pulses",
+    "focus_zero_known",
+    "focus_limits_pulses",
+    "cameras",
+    "last_command",
+    "recording",
+    "recording_sequence",
+)
+RECORDING_KEYS = ("id", "status", "client", "run_name", "mode", "frame_count", "error")
+
+
+def _number(value):
+    return value if type(value) in {int, float} and math.isfinite(value) else None
+
+
+def _pick(source, keys):
+    return {key: copy.deepcopy(source.get(key)) for key in keys} if isinstance(source, dict) else {}
+
+
+def furnace_view(raw):
+    if not isinstance(raw, dict):
+        return None
+    value = _pick(raw, FURNACE_KEYS)
+    value["sequence"] = _pick(raw.get("sequence"), SEQUENCE_KEYS)
+    flow = raw.get("flow") if isinstance(raw.get("flow"), dict) else {}
+    channels = flow.get("gas_channels") if isinstance(flow.get("gas_channels"), list) else []
+    value["flow"] = {
+        "connected": flow.get("connected") is True,
+        "error": flow.get("error") if isinstance(flow.get("error"), str) else None,
+        "gas_channels": [_pick(item, CHANNEL_KEYS) for item in channels[:3]],
+    }
+    return value
+
+
+def microscope_view(raw):
+    if not isinstance(raw, dict):
+        return None
+    value = _pick(raw, MICROSCOPE_KEYS)
+    value["recording"] = _pick(raw.get("recording"), RECORDING_KEYS)
+    value["recording_sequence"] = _pick(raw.get("recording_sequence"), ("armed", "id", "client"))
+    return value
+
+
+def gas_ready(furnace):
+    """True only when every gas channel names a real gas (the shell's gas-map rule)."""
+    channels = ((furnace or {}).get("flow") or {}).get("gas_channels") or []
+    names = [item.get("gas_name") for item in channels]
+    return bool(names) and all(
+        isinstance(name, str) and name and not name.startswith("Gas ") for name in names
+    )
+
+
+class ProcessStatus:
+    def __init__(self, service, *, wall=time.time, clock=time.monotonic):
+        self.service, self.wall, self.clock = service, wall, clock
+        self.lock = threading.Lock()
+        self.history = deque(maxlen=int(HISTORY_S / SAMPLE_S) + 2)
+        self.crucible = None
+        self.crucible_at = None
+        self.crucible_busy = False
+
+    def _raw(self):
+        console = self.service.console
+        with console.lock:
+            raw = copy.deepcopy(console.raw)
+            read_at = console.events_at
+        age = None if read_at is None else round(max(0.0, console.clock() - read_at), 1)
+        return raw, age
+
+    def _sample(self, furnace, now):
+        pv = _number((furnace or {}).get("pv"))
+        sv = _number((furnace or {}).get("sv"))
+        with self.lock:
+            while self.history and now - self.history[0][0] > HISTORY_S:
+                self.history.popleft()
+            if pv is None and sv is None:
+                return
+            if self.history and now - self.history[-1][0] < SAMPLE_S:
+                return
+            self.history.append((now, pv, sv))
+
+    def _read_crucible(self):
+        with self.lock:
+            due = self.crucible_at is None or self.clock() - self.crucible_at >= CRUCIBLE_S
+            if self.crucible_busy or not due:
+                return copy.deepcopy(self.crucible)
+            self.crucible_busy = True
+        value = None
+        adapter = None
+        try:
+            if self.service.dashboard_configured("thermal"):
+                adapter = self.service.console_client("thermal", f"console-read-{uuid.uuid4().hex}")
+            if adapter is not None and hasattr(adapter, "roi"):
+                reading = adapter.roi("crucible")
+                if isinstance(reading, dict):
+                    value = {
+                        key: _number(reading.get(key))
+                        for key in ("min_c", "mean_c", "max_c", "frame_age_s")
+                    }
+                    if value["max_c"] is None:
+                        value = None
+        except Exception:
+            value = None
+        finally:
+            if adapter is not None:
+                try:
+                    adapter.close()
+                except Exception:
+                    pass
+            with self.lock:
+                self.crucible, self.crucible_at = value, self.clock()
+                self.crucible_busy = False
+        return copy.deepcopy(value)
+
+    def report(self):
+        raw, age = self._raw()
+        furnace = furnace_view(raw.get("furnace"))
+        now = self.wall()
+        self._sample(furnace, now)
+        confirmed = self.service.settings.get("MG400_DASH_CUTOFF_CONFIRMED", "")
+        with self.lock:
+            history = [list(item) for item in self.history]
+        return {
+            "now": now,
+            "age_s": age,
+            "furnace": furnace,
+            "microscope": microscope_view(raw.get("microscope")),
+            "crucible": self._read_crucible(),
+            "gas_ready": gas_ready(furnace),
+            "cutoff_confirmed": isinstance(confirmed, str)
+            and confirmed.strip().lower() in {"1", "true", "yes"},
+            "history": history,
+        }
+
+
+def register(blueprint, service):
+    status = ProcessStatus(service)
+
+    @blueprint.get("/status")
+    def read_status():
+        service.console.refresh_events()
+        return jsonify(status.report())
+
+
 WORKSPACE = Workspace(
-    id="process", order=40, title={"en": "Furnace + microscope", "zh": "炉子与显微镜"}
+    id="process",
+    order=40,
+    title={"en": "Furnace + microscope", "zh": "炉子与显微镜"},
+    register=register,
 )

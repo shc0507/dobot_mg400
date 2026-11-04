@@ -9,8 +9,20 @@ adds these routes under ``<base>/api/console/ws/motion``:
 - ``POST jog`` and ``POST move`` check one robot ``execute`` target against the
   fingertip workspace and then send it once through ``service.console.command``.
   A jog adds one step on one axis to a fresh read of the actual pose.
+
+The stage operator routes reach stage routes that are not in its description,
+so the relay and the runner never send them. Each change needs this page's
+stage control and is sent once:
+
+- ``GET stage/ports`` lists the serial ports; ``POST stage/connect``
+  ``{"port"}`` connects the Arduino on one listed port.
+- ``GET stage/reference/<motor>`` checks the camera reference marker of one
+  axis and returns the marked frame and the pixel offset.
+- ``POST stage/teach`` ``{"motor", "confirmed": true}`` saves the current marker
+  position as the reference of that axis.
 """
 
+import re
 import uuid
 
 from flask import jsonify, request
@@ -219,7 +231,61 @@ def _body(fields):
     return data
 
 
+def _motor(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value):
+        raise ValueError("Unknown stage axis.")
+    return value
+
+
+def _operator(service, page, path, data):
+    result = service.console.operator("stage", page, path, data)
+    result.pop("result", None)
+    status = {"accepted": 200, "refused": 409, "unknown": 502}[result["outcome"]]
+    return jsonify(result), status
+
+
 def register(blueprint, service):
+    @blueprint.get("/stage/ports")
+    def stage_ports():
+        ports = service.console.read("stage", "api/ports").get("ports")
+        rows = [
+            {"device": item["device"], "description": str(item.get("description", ""))[:120]}
+            for item in (ports if isinstance(ports, list) else [])
+            if isinstance(item, dict) and isinstance(item.get("device"), str)
+        ]
+        return jsonify(ports=rows)
+
+    @blueprint.post("/stage/connect")
+    def stage_connect():
+        page = _page()
+        data = _body({"port"})
+        if not isinstance(data["port"], str) or not data["port"]:
+            raise ValueError("Select a serial port.")
+        return _operator(service, page, "api/connect", {"port": data["port"]})
+
+    @blueprint.get("/stage/reference/<motor>")
+    def stage_reference(motor):
+        view = service.console.read("stage", f"api/motors/{_motor(motor)}/reference")
+        image = view.get("image")
+        if not isinstance(image, str) or not image.startswith("data:image/jpeg;"):
+            image = None
+        offset = view.get("offset_px")
+        distance = view.get("distance_px")
+        return jsonify(
+            image=image,
+            offset_px=offset if isinstance(offset, list) else None,
+            distance_px=distance if type(distance) in {int, float} else None,
+        )
+
+    @blueprint.post("/stage/teach")
+    def stage_teach():
+        page = _page()
+        data = _body({"motor", "confirmed"})
+        if data["confirmed"] is not True:
+            raise ValueError("Confirm the action inside the page.")
+        motor = _motor(data["motor"])
+        return _operator(service, page, f"api/motors/{motor}/teach_reference", {"confirm": True})
+
     @blueprint.get("/state")
     def state():
         page = request.headers.get("X-MG400-Client")

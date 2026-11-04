@@ -1,4 +1,4 @@
-/* Furnace + microscope workspace (DSH-06). Every device command goes through the console relay. */
+/* Furnace + microscope workspace (DSH-06). Described commands go through the console relay; focus zero and fault acknowledgement use the workspace routes. */
 (function (root, factory) {
   "use strict";
   const logic = factory();
@@ -53,16 +53,18 @@
       "focus.local": "Local autofocus", "focus.full": "Full autofocus",
       "zero.reminder": "The focus gears can slip. Re-zero at the 50x focus before each use.",
       "zero.set": "Set focus zero…",
-      "zero.confirm": "Focus the 50x objective on the sample first. The service accepts a focus zero only from the microscope panel. Open it now?",
-      "zero.open": "Open the microscope panel",
+      "zero.confirm": "Is the 50x objective focused on the sample? The current focus position becomes zero.",
+      "zero.done": "Focus zero sent.",
       "rec.snapshot": "Save snapshot", "rec.start": "Start recording", "rec.stop": "Stop recording",
       "rec.arm": "Record next furnace sequence", "rec.disarm": "Cancel sequence recording",
       "rec.state": "Recording: {status} · {frames} frames", "rec.armed": "Armed for the next furnace sequence.",
-      "sent": "{action} sent.", "refused": "Refused: {error}",
+      "sent": "{action} sent.", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
       "stop.result": "{device} stop: {outcome}", "gas.stopResult": "Gas stop sent.",
       "outcome.confirmed": "confirmed", "outcome.pending": "pending", "outcome.unconfirmed": "not confirmed", "outcome.unknown": "unknown",
       "status.stale": "Data is stale ({age} s).", "status.unavailable": "Status is unavailable.",
-      "fault": "Fault: {message}. Acknowledge it on the furnace page.",
+      "fault": "Fault: {message}. Make sure the controller shows STOP, then acknowledge.",
+      "fault.ack": "Acknowledge fault…", "fault.confirm": "Is the furnace safe and the controller at STOP? Acknowledging clears the fault.",
+      "fault.done": "Fault acknowledgement sent.",
       "scope.fault": "Fault: {message}. Only Stop is allowed.",
       "phase.idle": "Idle", "phase.ramping": "Ramping", "phase.holding": "Holding", "phase.cooling": "Cooling",
       "phase.stopped": "Stopped", "phase.fault": "Fault", "phase.applying": "Applying", "phase.complete": "Complete",
@@ -105,16 +107,18 @@
       "focus.local": "局部自动对焦", "focus.full": "全程自动对焦",
       "zero.reminder": "对焦齿轮可能打滑。每次使用前在 50x 焦点处重新设零。",
       "zero.set": "设置对焦零点…",
-      "zero.confirm": "先把 50x 物镜对焦到样品上。服务只接受来自显微镜面板的对焦零点。现在打开面板？",
-      "zero.open": "打开显微镜面板",
+      "zero.confirm": "50x 物镜已对焦到样品上吗？当前对焦位置将设为零点。",
+      "zero.done": "已发送对焦零点。",
       "rec.snapshot": "保存快照", "rec.start": "开始录制", "rec.stop": "停止录制",
       "rec.arm": "录制下一次炉子程序", "rec.disarm": "取消程序录制",
       "rec.state": "录制：{status} · {frames} 帧", "rec.armed": "已准备录制下一次炉子程序。",
-      "sent": "已发送 {action}。", "refused": "已拒绝：{error}",
+      "sent": "已发送 {action}。", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
       "stop.result": "{device}停止：{outcome}", "gas.stopResult": "已发送气体停止。",
       "outcome.confirmed": "已确认", "outcome.pending": "等待中", "outcome.unconfirmed": "未确认", "outcome.unknown": "未知",
       "status.stale": "数据已过期（{age} s）。", "status.unavailable": "状态不可用。",
-      "fault": "故障：{message}。请在炉子页面确认故障。",
+      "fault": "故障：{message}。确认控制器显示 STOP 后再确认故障。",
+      "fault.ack": "确认故障…", "fault.confirm": "炉子安全且控制器处于 STOP 吗？确认后将清除故障。",
+      "fault.done": "已发送故障确认。",
       "scope.fault": "故障：{message}。只允许停止。",
       "phase.idle": "空闲", "phase.ramping": "升温中", "phase.holding": "保持中", "phase.cooling": "冷却中",
       "phase.stopped": "已停止", "phase.fault": "故障", "phase.applying": "应用中", "phase.complete": "已完成",
@@ -392,6 +396,8 @@
         el("div", { class: "pr-row" }, ...controlButtons("furnace"),
           el("button", { type: "button", class: "lc-stop", "data-role": "stop-furnace", text: t("furnace.stop"), onclick: stopFurnace }))),
       n.furnaceNote,
+      n.ack = button(t("fault.ack"), () => ask("ack"), { class: "lc-danger pr-danger", "data-role": "acknowledge", hidden: true }),
+      confirmBox("ack", t("fault.confirm"), () => operator("acknowledge", "fault.done")),
       el("div", { class: "pr-row" }, n.connect, n.connectFlow),
       el("div", { class: "pr-tiles" }, ...tiles),
       n.chart.figure,
@@ -425,8 +431,7 @@
       button(t("focus.local"), () => send("microscope", "autofocus", { mode: "local" }), { "data-role": "af-local" }),
       button(t("focus.full"), () => send("microscope", "autofocus", { mode: "full" }), { "data-role": "af-full" }),
     ];
-    const panelLink = el("a", { class: "lc-button pr-link", href: "/microscope/", target: "_blank", rel: "noopener", "data-role": "zero-panel", text: t("zero.open"), onclick: () => { view.confirm = null; build(); } });
-    const zeroConfirm = confirmBox("zero", t("zero.confirm"), null, panelLink);
+    const zeroConfirm = confirmBox("zero", t("zero.confirm"), () => operator("focus-zero", "zero.done"));
     n.snapshot = button(t("rec.snapshot"), () => send("microscope", "snapshot", {}), { "data-role": "snapshot" });
     n.record = button(t("rec.start"), toggleRecording, { "data-role": "record" });
     n.arm = button(t("rec.arm"), toggleArm, { "data-role": "arm" });
@@ -537,6 +542,8 @@
     const fault = furnace?.locked ? furnace?.fault?.message || furnace?.error || "locked" : null;
     n.furnaceNote.hidden = !fault;
     setText(n.furnaceNote, fault ? t("fault", { message: fault }) : "");
+    n.ack.hidden = !fault;
+    n.ack.disabled = !fMine || busy("acknowledge");
     setDisabled("take-furnace", fMine || fHolder === "other" || busy("take-furnace"));
     setDisabled("release-furnace", !fMine || busy("release-furnace"));
     const ready = fMine && furnace?.connected === true && !furnace?.locked;
@@ -607,7 +614,7 @@
     setText(n.focusText, pos === null ? t("focus.unknown") : limits.length === 2 ? t("focus.position", { pos: String(pos), max: String(limits[1]) }) : String(pos));
     setText(n.focusMin, limits.length === 2 ? t("focus.min", { min: String(limits[0]) }) : t("focus.noLimits"));
     setText(n.focusMax, limits.length === 2 ? t("focus.max", { max: String(limits[1]) }) : "");
-    n.zero.disabled = false;
+    n.zero.disabled = !idle || busy("focus-zero");
     const recording = scope?.recording || {};
     const armed = scope?.recording_sequence?.armed === true;
     const active = ACTIVE_RECORDING.has(recording.status);
@@ -652,6 +659,18 @@
       const result = await view.api.relay(device, action, params);
       if (result?.outcome === "accepted") view.api.notify(view.api.t("sent", { action }), "info");
       else if (result?.outcome === "refused") view.api.notify(view.api.t("refused", { error: result.error || "" }), "error");
+      return result;
+    });
+  }
+
+  /** Send one operator action (focus zero, fault acknowledgement) once. Never retry. */
+  async function operator(path, doneKey) {
+    return act(path, async () => {
+      const result = await view.api.request(path, { confirmed: true }, { accept: [409, 502], timeout: 8000 });
+      const t = view.api.t;
+      if (result?.outcome === "accepted") view.api.notify(t(doneKey), "info");
+      else if (result?.outcome === "refused") view.api.notify(t("refused", { error: result.error || "" }), "error");
+      else view.api.notify(t("unknown"), "warn");
       return result;
     });
   }

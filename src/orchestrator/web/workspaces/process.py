@@ -1,9 +1,16 @@
 """Console workspace: Furnace + microscope.
 
-One read-only route, ``GET status``. It returns the furnace and microscope
-fields that the page shows, the thermal ``crucible`` region reading, a
-60-minute PV and SV history and the cutoff setting. Every device command goes
-through the console relay; this module adds none.
+``GET status`` returns the furnace and microscope fields that the page shows,
+the thermal ``crucible`` region reading, a 60-minute PV and SV history and the
+cutoff setting. Every described device command goes through the console relay.
+
+Two operator actions are not in the service descriptions, so the relay and the
+runner never reach them. Each needs this page's control of the device and an
+in-page confirmation, and is sent once:
+
+- ``POST focus-zero`` ``{"confirmed": true}``: microscope focus zero at the
+  current focus position.
+- ``POST acknowledge`` ``{"confirmed": true}``: acknowledge a furnace fault.
 
 - The furnace and microscope fields come from the console's last service read.
 - The crucible reading is one ``api/roi?name=crucible`` call at most every
@@ -19,7 +26,10 @@ import time
 import uuid
 from collections import deque
 
-from flask import jsonify
+from flask import jsonify, request
+
+from labkit.errors import ServiceError
+from labkit.lease import validate_client
 
 from . import Workspace
 
@@ -199,6 +209,25 @@ def register(blueprint, service):
     def read_status():
         service.console.refresh_events()
         return jsonify(status.report())
+
+    def operator(device, path, data):
+        if request.get_json() != {"confirmed": True}:
+            raise ValueError("Confirm the action inside the page.")
+        page = request.headers.get("X-MG400-Client")
+        if page is None:
+            raise ServiceError(400, "Send the page identity in X-MG400-Client.")
+        result = service.console.operator(device, validate_client(page), path, data)
+        result.pop("result", None)
+        status_code = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
+        return jsonify(result), status_code
+
+    @blueprint.post("/focus-zero")
+    def focus_zero():
+        return operator("microscope", "api/manual/set_focus_zero", {"confirm": True})
+
+    @blueprint.post("/acknowledge")
+    def acknowledge():
+        return operator("furnace", "api/furnace/acknowledge", {})
 
 
 WORKSPACE = Workspace(

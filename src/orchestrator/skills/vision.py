@@ -5,8 +5,8 @@ import math
 import os
 import re
 import tomllib
-from pathlib import Path
 
+from ..stations import _check, _parent
 from .calibrate import _vision
 from .robot import _opening, _RouteZones, _Transfer
 
@@ -160,10 +160,7 @@ class _TrayInputs:
             raise ValueError(
                 "The taught chip-R interval must be nonempty and narrower than 180 degrees."
             )
-        with Path(setting("TRAY_FILE")).open("rb") as stream:
-            raw = stream.read(16 * 1024 + 1)
-        if len(raw) > 16 * 1024:
-            raise ValueError("Tray model exceeds the command's 16 KiB bound.")
+        raw = _read_tray(setting("TRAY_FILE"))
         self.tray = tomllib.loads(raw.decode("utf-8"))
         # The service performs full geometric model validation before returning
         # any observation. Locally reject missing/ambiguous exact identifiers.
@@ -206,6 +203,30 @@ class _TrayInputs:
         if not self.minimum <= value <= self.maximum or not math.isfinite(value):
             raise RuntimeError("Chip flange R is outside its explicit interval.")
         return value
+
+
+def _read_tray(path):
+    """Pin a private regular config before any readable open; never activate devices."""
+    with _parent(path) as (parent, name, owner):
+        pinned = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        try:
+            info = os.fstat(pinned)
+            _check(info, owner)
+            if info.st_nlink != 1 or not 0 < info.st_size <= 16 * 1024:
+                raise ValueError("Tray model must be one private file of at most 16 KiB.")
+            descriptor = os.open(f"/proc/self/fd/{pinned}", os.O_RDONLY | os.O_CLOEXEC)
+            with os.fdopen(descriptor, "rb") as stream:
+                raw = stream.read(16 * 1024 + 1)
+                after = os.fstat(stream.fileno())
+            if len(raw) > 16 * 1024 or (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise ValueError("Tray model changed or exceeded its 16 KiB bound during reading.")
+            return raw
+        finally:
+            os.close(pinned)
 
 
 def _observe(ctx, robot, inputs, baseline):

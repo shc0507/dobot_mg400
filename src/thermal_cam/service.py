@@ -16,9 +16,10 @@ from typing import Callable
 
 import numpy as np
 
-from labkit.describe import describe
+from labkit.describe import command, describe
+from labkit.errors import ServiceError
 from labkit.events import EventLog
-from labkit.lease import Lease
+from labkit.lease import Lease, validate_client
 
 from .camera import P1Camera
 from .roi import DEFAULT_ROI_PATH, load_regions
@@ -170,6 +171,8 @@ class CameraService:
         self._frames = 0
         self._fps = 0.0
         self._camera_stats = {}
+        self._command_serial = 0
+        self._last_command = None
 
     def _event(self, level, message):
         self.events.add(level, message, service="thermal", source=self.source)
@@ -183,7 +186,11 @@ class CameraService:
                 zones=[],
                 lease_seconds=self.lease.seconds,
                 on_lease_expiry="continue_acquisition",
-                commands={},
+                # Acquisition commands move nothing, so any client may send them.
+                commands={
+                    "connect": command(any_client=True),
+                    "shutter": command(any_client=True),
+                },
             ),
             "regions": {name: region.bounds() for name, region in self.regions.items()},
             "max_frame_age_s": MAX_FRAME_AGE_S,
@@ -216,7 +223,7 @@ class CameraService:
                 "locked": False,
                 "fault": fault,
                 "lease": lease,
-                "last_command": None,
+                "last_command": dict(self._last_command) if self._last_command else None,
                 "frame_sequence": self._frame.sequence if self._frame else None,
             }
 
@@ -313,6 +320,45 @@ class CameraService:
         except FutureTimeout:
             future.cancel()
             raise RuntimeError("Camera command timed out; check camera status") from None
+
+    def _finish_command(self, ident, action, client, result, message=""):
+        with self._lock:
+            self._last_command = dict(
+                id=ident,
+                action=action,
+                client=client,
+                result=result,
+                message=message,
+                finished_at=time.time(),
+            )
+
+    def contract_command(self, action, args, client):
+        """Start connect or the shutter (NUC) once; return the command ID at once."""
+        validate_client(client)
+        if action not in ("connect", "shutter") or not isinstance(args, dict) or args:
+            raise ServiceError(400, "Unknown thermal command or parameters.")
+        with self._lock:
+            self._command_serial += 1
+            ident = str(self._command_serial)
+        if action == "connect":
+            self.connect()
+            self._finish_command(ident, action, client, "ok")
+            return ident
+        with self._lock:
+            if self._state != "streaming" or self._stop.is_set():
+                raise ServiceError(409, "Camera is not streaming")
+            future = Future()
+            self._commands.put(("shutter", None, future))
+
+        def done(value):
+            error = None if value.cancelled() else value.exception()
+            if value.cancelled() or error is not None:
+                self._finish_command(ident, action, client, "failed", str(error or "Cancelled"))
+            else:
+                self._finish_command(ident, action, client, "ok")
+
+        future.add_done_callback(done)
+        return ident
 
     def _run(self):
         camera = None

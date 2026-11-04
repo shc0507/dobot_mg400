@@ -1,17 +1,20 @@
 """HTTP contract tests with simulated or disconnected sources only."""
 
-import io
-import json
-import subprocess
 import time
-from pathlib import Path
 
 import numpy as np
 import pytest
+from contract_helpers import assert_error
 from fastapi.testclient import TestClient
 
 from thermal_cam.app import create_app
 from thermal_cam.service import CameraService
+
+TOKEN = "thermal-test-token-length-24"
+CLIENT = {"X-MG400-Client": "lab-console"}
+CONNECT = {"action": "connect"}
+SHUTTER = {"action": "shutter"}
+EMPTY_PARAMS = {"type": "object", "properties": {}, "additionalProperties": False}
 
 
 def wait_for_frame(client, prefix=""):
@@ -24,25 +27,36 @@ def wait_for_frame(client, prefix=""):
     raise AssertionError("No demo frame arrived")
 
 
+def wait_until(predicate):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(0.01)
+    raise AssertionError("Demo worker did not reach the expected state")
+
+
+def command(client, data, prefix="", headers=None):
+    return client.post(prefix + "/api/command", headers={**CLIENT, **(headers or {})}, json=data)
+
+
 def test_disconnected_endpoints_and_input_validation():
     service = CameraService(demo=True)
     with TestClient(
         create_app(service=service, auto_connect=False), base_url="http://127.0.0.1"
     ) as client:
-        status = client.get("/api/status")
-        assert status.status_code == 200
-        assert status.json()["state"] == "disconnected"
-        assert status.headers["cache-control"] == "no-store"
+        state = client.get("/api/state")
+        assert state.status_code == 200
+        assert state.json()["state"] == "disconnected"
+        assert state.json()["connected"] is False
+        assert state.headers["cache-control"] == "no-store"
         assert client.get("/api/frame").status_code == 503
-        assert client.get("/api/snapshot.npz").status_code == 503
-        assert client.post("/api/shutter").status_code == 409
-        assert client.post("/api/gain", json={"gain": "auto"}).status_code == 422
-        assert client.post("/api/gain", json={"gain": "low"}).status_code == 422
-        assert client.post("/api/gain", json={}).status_code == 422
-        assert client.post("/api/gain", json={"gain": "high"}).status_code == 409
+        assert_error(command(client, SHUTTER), 409)
+        assert client.get("/api/state").json()["last_command"] is None
 
 
-def test_demo_frame_snapshot_controls_and_lifespan_cleanup():
+def test_demo_frame_content_and_lifespan_cleanup():
     service = CameraService(demo=True)
     with TestClient(create_app(service=service), base_url="http://127.0.0.1") as client:
         payload = wait_for_frame(client)
@@ -56,38 +70,144 @@ def test_demo_frame_snapshot_controls_and_lifespan_cleanup():
         np.testing.assert_allclose(
             np.array(payload["raw"]) / 64 - 273.15, payload["temperatures_c"]
         )
-        response = client.get("/api/snapshot.npz")
-        assert response.status_code == 200
-        assert ".npz" in response.headers["content-disposition"]
-        with np.load(io.BytesIO(response.content), allow_pickle=False) as archive:
-            metadata = json.loads(str(archive["metadata"]))
-            assert metadata["source"] == "demo"
-            np.testing.assert_allclose(
-                archive["raw"].astype(float) / 64 - 273.15, archive["temperatures_c"]
-            )
-            assert metadata["stats"]["center"]["celsius"] == archive["temperatures_c"][60, 80]
-        assert client.post("/api/gain", json={"gain": "low"}).status_code == 422
-        assert client.post("/api/gain", json={"gain": "high"}).json()["ok"]
-        assert client.post("/api/shutter").json()["ok"]
-        assert client.post("/api/disconnect").json()["state"] == "disconnected"
-        assert client.get("/api/frame").status_code == 503
-        assert client.post("/api/connect").status_code == 200
-        assert wait_for_frame(client)["sequence"] > payload["sequence"]
     assert service.status()["state"] == "disconnected"
     assert not service._thread.is_alive()
+
+
+def test_describe_lists_connect_and_shutter_for_any_client():
+    with TestClient(
+        create_app(demo=True, auto_connect=False), base_url="http://127.0.0.1"
+    ) as client:
+        commands = client.get("/api/describe").json()["commands"]
+        assert commands == {
+            "connect": {"params": EMPTY_PARAMS, "any_client": True},
+            "shutter": {"params": EMPTY_PARAMS, "any_client": True},
+        }
+
+
+def test_connect_command_after_disconnect_restarts_frames():
+    service = CameraService(demo=True)
+    with TestClient(create_app(service=service), base_url="http://127.0.0.1") as client:
+        first = wait_for_frame(client)
+        service.disconnect()
+        assert client.get("/api/frame").status_code == 503
+        response = command(client, CONNECT)
+        assert response.status_code == 202
+        body = response.json()
+        assert set(body) == {"command_id", "state"}
+        last = body["state"]["last_command"]
+        assert last["id"] == body["command_id"]
+        assert (last["action"], last["client"], last["result"]) == (
+            "connect",
+            "lab-console",
+            "ok",
+        )
+        assert wait_for_frame(client)["sequence"] > first["sequence"]
+        assert client.get("/api/state").json()["connected"] is True
+    assert not service._thread.is_alive()
+
+
+def test_connect_command_while_streaming_keeps_acquisition():
+    service = CameraService(demo=True)
+    with TestClient(create_app(service=service), base_url="http://127.0.0.1") as client:
+        wait_for_frame(client)
+        thread = service._thread
+        assert command(client, CONNECT).status_code == 202
+        assert service._thread is thread and thread.is_alive()
+
+
+def test_shutter_command_in_demo_reports_ok():
+    service = CameraService(demo=True)
+    with TestClient(create_app(service=service), base_url="http://127.0.0.1") as client:
+        wait_for_frame(client)
+        response = command(client, SHUTTER)
+        assert response.status_code == 202
+        ident = response.json()["command_id"]
+        last = wait_until(
+            lambda: (
+                (value := client.get("/api/state").json()["last_command"])
+                and value["id"] == ident
+                and value
+            )
+        )
+        assert last["action"] == "shutter"
+        assert last["client"] == "lab-console"
+        assert last["result"] == "ok"
+        assert last["message"] == ""
+        assert isinstance(last["finished_at"], float)
+
+
+def test_shutter_command_when_disconnected_is_conflict():
+    service = CameraService(demo=True)
+    with TestClient(create_app(service=service), base_url="http://127.0.0.1") as client:
+        wait_for_frame(client)
+        service.disconnect()
+        assert_error(command(client, SHUTTER), 409)
+        assert client.get("/api/state").json()["last_command"] is None
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {},
+        {"action": "gain"},
+        {"action": "disconnect"},
+        {"action": None},
+        {"action": ["shutter"]},
+        {"action": "connect", "force": True},
+        {"action": "shutter", "gain": "high"},
+    ],
+)
+def test_command_rejects_unknown_actions_and_params(data):
+    service = CameraService(demo=True)
+    with TestClient(
+        create_app(service=service, auto_connect=False), base_url="http://127.0.0.1"
+    ) as client:
+        assert_error(command(client, data), 400)
+        state = client.get("/api/state").json()
+        assert state["state"] == "disconnected"
+        assert state["last_command"] is None
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/"),
+        ("GET", "/static/app.js"),
+        ("GET", "/static/style.css"),
+        ("GET", "/docs"),
+        ("GET", "/redoc"),
+        ("GET", "/openapi.json"),
+        ("GET", "/api/status"),
+        ("GET", "/api/snapshot.npz"),
+        ("POST", "/api/connect"),
+        ("POST", "/api/disconnect"),
+        ("POST", "/api/shutter"),
+        ("POST", "/api/gain"),
+    ],
+)
+@pytest.mark.parametrize("base_path", ["/", "/thermal"])
+def test_removed_routes_return_not_found(method, path, base_path):
+    prefix = base_path.rstrip("/")
+    service = CameraService(demo=True)
+    with TestClient(
+        create_app(service=service, auto_connect=False, token=TOKEN, base_path=base_path),
+        base_url="http://lab.example:8080",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        assert client.request(method, prefix + path, json={}).status_code == 404
+        assert service.status()["state"] == "disconnected"
 
 
 def test_rejects_foreign_hosts_and_browser_control_origins():
     with TestClient(
         create_app(demo=True, auto_connect=False), base_url="http://127.0.0.1"
     ) as client:
-        assert client.get("/api/status", headers={"host": "untrusted.example"}).status_code == 400
-        denied = client.post("/api/connect", headers={"origin": "https://untrusted.example"})
-        assert denied.status_code == 403
-        assert client.get("/api/status").json()["state"] == "disconnected"
-        assert (
-            client.post("/api/connect", headers={"origin": "http://127.0.0.1"}).status_code == 200
-        )
+        assert client.get("/api/frame", headers={"host": "untrusted.example"}).status_code == 400
+        denied = command(client, CONNECT, headers={"origin": "https://untrusted.example"})
+        assert_error(denied, 403)
+        assert client.get("/api/state").json()["state"] == "disconnected"
+        assert command(client, CONNECT, headers={"origin": "http://127.0.0.1"}).status_code == 202
 
 
 @pytest.mark.parametrize(
@@ -98,9 +218,9 @@ def test_tokenless_app_rejects_proxy_headers(header, value):
     with TestClient(
         create_app(demo=True, auto_connect=False), base_url="http://127.0.0.1"
     ) as client:
-        assert client.get("/api/status", headers={header: value}).status_code == 400
-        assert client.post("/api/connect", headers={header: value}).status_code == 400
-        assert client.get("/api/status").json()["state"] == "disconnected"
+        assert client.get("/api/frame", headers={header: value}).status_code == 400
+        assert_error(command(client, CONNECT, headers={header: value}), 403)
+        assert client.get("/api/state").json()["state"] == "disconnected"
 
 
 @pytest.mark.parametrize(
@@ -117,8 +237,10 @@ def test_app_rejects_ambiguous_or_malformed_hosts(headers):
     with TestClient(
         create_app(demo=True, auto_connect=False), base_url="http://127.0.0.1"
     ) as client:
-        assert client.post("/api/connect", headers=headers).status_code == 400
-        assert client.get("/api/status").json()["state"] == "disconnected"
+        response = client.post("/api/command", headers=[*CLIENT.items(), *headers], json=CONNECT)
+        assert_error(response, 400)
+        assert client.get("/api/frame", headers=headers).status_code == 400
+        assert client.get("/api/state").json()["state"] == "disconnected"
 
 
 @pytest.mark.parametrize(
@@ -137,34 +259,31 @@ def test_app_rejects_foreign_or_malformed_origins(headers):
     with TestClient(
         create_app(demo=True, auto_connect=False), base_url="http://127.0.0.1"
     ) as client:
-        assert client.post("/api/connect", headers=headers).status_code == 403
-        assert client.get("/api/status").json()["state"] == "disconnected"
-
-
-TOKEN = "thermal-test-token-length-24"
+        response = client.post("/api/command", headers=[*CLIENT.items(), *headers], json=CONNECT)
+        assert_error(response, 403)
+        assert client.get("/api/state").json()["state"] == "disconnected"
 
 
 @pytest.mark.parametrize(
     "method,path",
     [
-        ("GET", "/api/status"),
+        ("GET", "/"),
+        ("GET", "/static/app.js"),
         ("GET", "/api/frame"),
-        ("GET", "/api/snapshot.npz"),
-        ("POST", "/api/connect"),
-        ("POST", "/api/disconnect"),
-        ("POST", "/api/shutter"),
-        ("POST", "/api/gain"),
+        ("GET", "/api/state"),
+        ("GET", "/api/describe"),
+        ("POST", "/api/command"),
         ("GET", "/docs"),
         ("GET", "/openapi.json"),
     ],
 )
-def test_token_guards_all_camera_and_schema_routes(method, path):
+def test_token_guards_every_path(method, path):
     service = CameraService(demo=True)
     with TestClient(
         create_app(service=service, auto_connect=False, token=TOKEN),
         base_url="http://thermal.example",
     ) as client:
-        denied = client.request(method, path)
+        denied = client.request(method, path, headers=CLIENT, json=CONNECT)
         assert denied.status_code == 401
         assert denied.headers["www-authenticate"] == "Bearer"
         assert denied.headers["cache-control"] == "no-store"
@@ -185,9 +304,11 @@ def test_token_must_match_exactly_once(headers):
     with TestClient(
         create_app(demo=True, auto_connect=False, token=TOKEN), base_url="http://thermal.example"
     ) as client:
-        assert client.post("/api/connect", headers=headers).status_code == 401
+        response = client.post("/api/command", headers=[*CLIENT.items(), *headers], json=CONNECT)
+        assert_error(response, 401)
+        assert client.get("/api/frame", headers=headers).status_code == 401
         assert (
-            client.get("/api/status", headers={"authorization": f"Bearer {TOKEN}"}).json()["state"]
+            client.get("/api/state", headers={"authorization": f"Bearer {TOKEN}"}).json()["state"]
             == "disconnected"
         )
 
@@ -198,21 +319,15 @@ def test_token_allows_remote_demo_and_keeps_origin_checks():
         create_app(service=service, auto_connect=False, token=TOKEN),
         base_url="http://thermal.example",
     ) as client:
-        page = client.get("/")
-        assert page.status_code == 200
-        assert TOKEN not in page.text
-        assert 'type="password"' in page.text
-        assert client.get("/static/app.js").status_code == 200
         headers = {"authorization": f"Bearer {TOKEN}", "origin": "http://thermal.example"}
-        assert client.post("/api/connect", headers=headers).status_code == 200
+        assert command(client, CONNECT, headers=headers).status_code == 202
         client.headers.update(headers)
         assert wait_for_frame(client)["source"] == "demo"
+        assert_error(command(client, SHUTTER, headers={"origin": "http://other.example"}), 403)
         assert (
-            client.post("/api/disconnect", headers={"origin": "http://other.example"}).status_code
-            == 403
+            client.get("/api/frame", headers={"origin": "http://other.example"}).status_code == 403
         )
-        assert client.get("/api/snapshot.npz").status_code == 200
-        assert client.post("/api/disconnect").json()["state"] == "disconnected"
+        assert command(client, SHUTTER).status_code == 202
     assert not service._thread.is_alive()
 
 
@@ -223,41 +338,23 @@ def test_factory_rejects_invalid_tokens_before_service_creation(token):
 
 
 @pytest.mark.parametrize("base_path", ["/thermal", "/lab/thermal/"])
-def test_prefixed_page_schema_contract_and_demo_lifecycle(base_path):
+def test_prefixed_contract_and_demo_lifecycle(base_path):
     prefix = base_path.rstrip("/")
     service = CameraService(demo=True)
     with TestClient(
         create_app(service=service, auto_connect=False, token=TOKEN, base_path=base_path),
         base_url="http://lab.example:8080",
     ) as client:
-        page = client.get(prefix + "/")
-        assert page.status_code == 200 and TOKEN not in page.text
-        assert f'data-base-path="{prefix}"' in page.text
-        for link in ("/", "/static/style.css", "/static/app.js", "/docs"):
-            assert f'"{prefix}{link}"' in page.text
-        assert "__THERMAL_BASE_PATH__" not in page.text
-        assert client.get(prefix, follow_redirects=False).status_code == 307
-        for path in ("/static/style.css", "/static/app.js"):
-            response = client.get(prefix + path)
-            assert response.status_code == 200
-            assert response.headers["cache-control"] == "no-store"
-            assert response.headers["x-content-type-options"] == "nosniff"
-        for path in ("/api/state", "/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
-            assert client.get(prefix + path).status_code == 401
-        assert client.get("/static/app.js").status_code == 401
-        assert client.get(prefix + "-other/static/app.js").status_code == 401
+        for path in ("", "/", "/api/state", "/api/frame", "/docs", "/openapi.json"):
+            assert client.get(prefix + path, follow_redirects=False).status_code == 401
+        assert client.get("/api/state").status_code == 401
+        assert client.get(prefix + "-other/api/state").status_code == 401
 
         client.headers.update(
             {"Authorization": f"Bearer {TOKEN}", "Origin": "http://lab.example:8080"}
         )
-        for path in ("/", "/api/status", "/api/state", "/docs", "/static/app.js"):
+        for path in ("/api/state", "/api/frame", "/api/describe"):
             assert client.get(path).status_code == 404
-        schema = client.get(prefix + "/openapi.json").json()
-        assert prefix + "/api/state" in schema["paths"]
-        assert all(path.startswith(prefix + "/") for path in schema["paths"])
-        assert prefix + "/openapi.json" in client.get(prefix + "/docs").text
-        assert prefix + "/docs/oauth2-redirect" in client.get(prefix + "/docs").text
-        assert prefix + "/openapi.json" in client.get(prefix + "/redoc").text
         assert client.get(prefix + "/api/describe").json()["service"] == "thermal"
         assert client.get(prefix + "/api/state").json()["demo"] is True
         assert client.get(prefix + "/api/events").status_code == 200
@@ -272,13 +369,10 @@ def test_prefixed_page_schema_contract_and_demo_lifecycle(base_path):
         assert client.post(prefix + "/api/stop", headers=other, json={}).status_code == 200
         assert client.post(prefix + "/api/release", headers=owner, json={}).status_code == 200
 
-        assert client.post(prefix + "/api/connect").status_code == 200
+        assert command(client, CONNECT, prefix).status_code == 202
         assert wait_for_frame(client, prefix)["source"] == "demo"
         assert client.get(roi_path).status_code == 200
-        assert client.get(prefix + "/api/snapshot.npz").status_code == 200
-        assert client.post(prefix + "/api/shutter").json()["ok"]
-        assert client.post(prefix + "/api/gain", json={"gain": "high"}).json()["ok"]
-        assert client.post(prefix + "/api/disconnect").json()["state"] == "disconnected"
+        assert command(client, SHUTTER, prefix).status_code == 202
     assert service.status()["state"] == "disconnected"
     assert not service._thread.is_alive()
 
@@ -296,17 +390,21 @@ def test_prefixed_page_schema_contract_and_demo_lifecycle(base_path):
         ([("origin", "http://other.example"), ("x-forwarded-host", "other.example")], 403),
     ],
 )
-def test_prefixed_access_rejections_preserve_legacy_and_contract_errors(headers, status):
+def test_prefixed_access_rejections_preserve_frame_and_contract_errors(headers, status):
     with TestClient(
         create_app(demo=True, auto_connect=False, token=TOKEN, base_path="/thermal"),
         base_url="http://lab.example:8080",
         headers={"Authorization": f"Bearer {TOKEN}"},
     ) as client:
-        for path, key in (("/api/connect", "detail"), ("/api/heartbeat", "error")):
-            response = client.post("/thermal" + path, headers=headers, json={})
-            assert response.status_code == status
-            assert key in response.json()
-        assert client.get("/thermal/api/status").json()["state"] == "disconnected"
+        frame = client.get("/thermal/api/frame", headers=headers)
+        assert frame.status_code == status
+        assert "detail" in frame.json()
+        for path in ("/api/command", "/api/heartbeat"):
+            response = client.post(
+                "/thermal" + path, headers=[*CLIENT.items(), *headers], json=CONNECT
+            )
+            assert_error(response, status)
+        assert client.get("/thermal/api/state").json()["state"] == "disconnected"
 
 
 @pytest.mark.parametrize(
@@ -317,12 +415,12 @@ def test_prefixed_tokenless_app_rejects_forwarding_before_commands(header):
         create_app(demo=True, auto_connect=False, base_path="/thermal"),
         base_url="http://127.0.0.1",
     ) as client:
-        headers = {header: "", "X-MG400-Client": "page-owner"}
-        assert client.get("/thermal/", headers=headers).status_code == 400
-        assert client.post("/thermal/api/connect", headers=headers).status_code == 400
-        response = client.post("/thermal/api/heartbeat", headers=headers, json={})
-        assert response.status_code == 403 and "error" in response.json()
-        assert client.get("/thermal/api/status").json()["state"] == "disconnected"
+        headers = {header: "", **CLIENT}
+        frame = client.get("/thermal/api/frame", headers=headers)
+        assert frame.status_code == 400 and "detail" in frame.json()
+        assert_error(client.post("/thermal/api/command", headers=headers, json=CONNECT), 403)
+        assert_error(client.post("/thermal/api/heartbeat", headers=headers, json={}), 403)
+        assert client.get("/thermal/api/state").json()["state"] == "disconnected"
 
 
 @pytest.mark.parametrize(
@@ -354,41 +452,3 @@ def test_bad_prefix_refuses_before_controller_construction(monkeypatch, base_pat
     monkeypatch.setattr(app, "CameraService", forbidden)
     with pytest.raises(ValueError, match="base path"):
         create_app(base_path=base_path)
-
-
-def test_browser_requests_use_rendered_prefix_without_exposing_token():
-    script = r"""
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const source = fs.readFileSync("src/thermal_cam/static/app.js", "utf8");
-const start = source.indexOf("async function request(");
-const end = source.indexOf("function connectionUI(", start);
-const calls = [];
-const token = "thermal-page-test-token-00000000";
-globalThis.document = {body: {dataset: {basePath: "/lab/thermal"}}};
-const fetch = async (path, options) => {
-  calls.push({path, options});
-  return {ok: true, json: async () => ({ok: true})};
-};
-const request = new Function("fetch", "$", "Headers", "AbortSignal",
-  source.slice(start, end) + "return request;")(
-    fetch, () => ({value: token}), Headers, AbortSignal);
-(async () => {
-  await request("/api/status");
-  await request("/api/gain", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: '{"gain":"high"}'});
-  assert.deepEqual(calls.map(call => call.path),
-    ["/lab/thermal/api/status", "/lab/thermal/api/gain"]);
-  assert(calls.every(call => !call.path.includes(token)
-    && call.options.headers.get("Authorization") === `Bearer ${token}`));
-  assert.equal(calls[1].options.method, "POST");
-  assert.equal(calls[1].options.headers.get("Content-Type"), "application/json");
-  assert.deepEqual(JSON.parse(calls[1].options.body), {gain: "high"});
-  globalThis.document.body.dataset.basePath = "";
-  await request("/api/status");
-  assert.equal(calls[2].path, "/api/status");
-})().catch(error => {console.error(error); process.exitCode = 1;});
-"""
-    subprocess.run(
-        ["node", "-e", script], check=True, cwd=Path(__file__).resolve().parents[1], timeout=30
-    )

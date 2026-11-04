@@ -1,18 +1,13 @@
-"""FastAPI application factory; mounting this app does not open USB on import."""
+"""Thermal contract and frame API. Mounting this app does not open USB on import."""
 
 import json
 import math
 import re
 from contextlib import asynccontextmanager
-from html import escape
-from pathlib import Path
-from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from labkit.auth import bearer_matches, host_allowed, host_port, same_origin, valid_token_for_bind
@@ -22,7 +17,6 @@ from labkit.lease import validate_client
 from .roi import select_region
 from .service import CameraService
 
-STATIC = Path(__file__).parent / "static"
 CONTRACT_PATHS = {
     f"/api/{name}"
     for name in (
@@ -37,10 +31,6 @@ CONTRACT_PATHS = {
         "roi",
     )
 }
-
-
-class GainRequest(BaseModel):
-    gain: Literal["high"]
 
 
 def normalize_base_path(value):
@@ -74,10 +64,9 @@ def create_app(*, demo=False, auto_connect=True, service=None, token=None, base_
         title="Thermal Master P1",
         version="0.1.0",
         lifespan=lifespan,
-        docs_url=f"{prefix}/docs",
-        redoc_url=f"{prefix}/redoc",
-        openapi_url=f"{prefix}/openapi.json",
-        swagger_ui_oauth2_redirect_url=f"{prefix}/docs/oauth2-redirect",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.state.camera = controller
     contract_paths = {prefix + path for path in CONTRACT_PATHS}
@@ -101,17 +90,9 @@ def create_app(*, demo=False, auto_connect=True, service=None, token=None, base_
         ):
             response = denied("Camera control requires the same origin", 403)
         else:
-            public = request.method in {"GET", "HEAD"} and (
-                request.url.path in {prefix, prefix + "/"}
-                or request.url.path.startswith(prefix + "/static/")
-            )
-            if (
-                token
-                and not public
-                and (
-                    len(headers.getlist("authorization")) != 1
-                    or not bearer_matches(headers.get("authorization", ""), token)
-                )
+            if token and (
+                len(headers.getlist("authorization")) != 1
+                or not bearer_matches(headers.get("authorization", ""), token)
             ):
                 response = denied(
                     "A valid bearer token is required",
@@ -124,18 +105,6 @@ def create_app(*, demo=False, auto_connect=True, service=None, token=None, base_
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    @app.get(prefix + "/", include_in_schema=False)
-    def index():
-        return HTMLResponse(
-            (STATIC / "index.html")
-            .read_text()
-            .replace("__THERMAL_BASE_PATH__", escape(prefix, quote=True))
-        )
-
-    @app.get(prefix + "/api/status")
-    def status():
-        return controller.status()
-
     def latest():
         try:
             return controller.latest()
@@ -147,48 +116,12 @@ def create_app(*, demo=False, auto_connect=True, service=None, token=None, base_
         """One coherent frame; matrices are [y][x], temperatures always Celsius."""
         return JSONResponse(latest().payload())
 
-    @app.get(prefix + "/api/snapshot.npz")
-    def snapshot():
-        current = latest()
-        return Response(
-            current.npz(),
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="p1-{current.sequence}.npz"'},
-        )
-
-    @app.post(prefix + "/api/connect")
-    def connect():
-        return controller.connect()
-
-    @app.post(prefix + "/api/disconnect")
-    def disconnect():
-        try:
-            return controller.disconnect()
-        except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    def command(name, argument=None):
-        try:
-            return controller.command(name, argument)
-        except Exception as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    @app.post(prefix + "/api/shutter")
-    def shutter():
-        """Trigger the camera's non-uniformity correction shutter."""
-        return command("shutter")
-
-    @app.post(prefix + "/api/gain")
-    def gain(body: GainRequest):
-        return command("gain", body.gain)
-
     add_contract_routes(app, controller, prefix=prefix)
-    app.mount(prefix + "/static", StaticFiles(directory=STATIC), name="static")
     return app
 
 
 def add_contract_routes(app, controller, *, prefix=""):
-    """Adapt the read-only thermal contract without changing legacy controls."""
+    """Adapt the thermal contract: reads, a no-op stop, connect and the shutter."""
 
     @app.exception_handler(ServiceError)
     async def service_error(request, error):
@@ -275,8 +208,12 @@ def add_contract_routes(app, controller, *, prefix=""):
 
     @app.post(prefix + "/api/command")
     async def contract_command(request: Request):
-        await body(request)
-        raise ServiceError(400, "The thermal contract has no commands.")
+        data = await body(request)
+        action = data.pop("action", None)
+        ident = await run_in_threadpool(
+            controller.contract_command, action, data, request.headers["x-mg400-client"]
+        )
+        return JSONResponse({"command_id": ident, "state": controller.snapshot()}, status_code=202)
 
     @app.get(prefix + "/api/roi")
     def roi(request: Request):

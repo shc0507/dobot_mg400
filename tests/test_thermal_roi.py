@@ -1,4 +1,4 @@
-"""Read-only thermal contract and native-coordinate regions, without USB or sockets."""
+"""Thermal contract and native-coordinate regions, without USB or sockets."""
 
 import json
 import subprocess
@@ -71,7 +71,7 @@ def wait_until(predicate):
     raise AssertionError("Demo worker did not reach the expected state")
 
 
-def test_contract_conformance_and_read_only_metadata(tmp_path):
+def test_contract_conformance_and_metadata(tmp_path):
     service, clock = service_with_frame(tmp_path)
 
     def expiries():
@@ -82,12 +82,12 @@ def test_contract_conformance_and_read_only_metadata(tmp_path):
     with client_for(service) as client:
         check_contract(client, advance=clock.advance, expiry_count=expiries)
         description = client.get("/api/describe").json()
-        assert description["commands"] == {}
+        assert set(description["commands"]) == {"connect", "shutter"}
         assert description["on_lease_expiry"] == "continue_acquisition"
         assert description["regions"] == {"crucible": COORDS}
         assert description["max_frame_age_s"] == 3
         assert description["renew_only_heartbeat"] is True
-        assert_error(post(client, "command", data={"action": "shutter"}), 400)
+        assert_error(post(client, "command", data={"action": "gain"}), 400)
         state = client.get("/api/state").json()
         assert state["connected"] and not state["busy"] and not state["locked"]
         assert state["last_command"] is None

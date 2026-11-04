@@ -585,6 +585,8 @@ Steps:
    - feedback lost during the lock: `stop_unconfirmed`, as now;
    - `stop_sync` while disabled: unchanged;
    - a `RobotClient` `with` block that exits with the arm enabled.
+5. Update the three existing keyboard safety regressions in `tests/test_web_keyboard_safety.py` for retained feedback until confirmed disable. Preserve their stop ordering, worker-drain, lock and process-ownership checks. In `tests/test_mg400_sim.py`, explicitly disable before `stop_sync` to retain the existing sequence's disabled-stop coverage. Tests of the new behavior use in-process transports or socket pairs, with no bound ports.
+6. Align `src/mg400/terminal_control.py`, its tests and the paired terminal guides with retained feedback. After a confirmed stop with the arm still enabled, keep the terminal open and prompt for explicit disable before quit. Preserve actual unknown-outcome and physical emergency-stop guidance, force-exit behavior, and the rule against automatic disable.
 
 Done when: P-CHECKS pass.
 

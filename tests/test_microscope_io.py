@@ -103,9 +103,13 @@ def test_output_refusal_preserves_existing_file(data_roots, kind):
     assert original.read_bytes() == b"preserve"
 
 
-def jpeg():
-    image = np.zeros((32, 40, 3), np.uint8)
-    image[:, 20:] = 255
+STREAM_URL = "http://127.0.0.1:1984/api/stream.mjpeg?src=camera2"
+HUGE_SOF = b"\xff\xd8\xff\xc0\x00\x0b\x08\x13\x88\x13\x88\x01\x01\x11\x00"
+
+
+def jpeg(height=32, width=40):
+    image = np.zeros((height, width, 3), np.uint8)
+    image[:, width // 2 :] = 255
     return cv2.imencode(".jpg", image)[1].tobytes()
 
 
@@ -118,19 +122,84 @@ class Response(io.BytesIO):
         return self.url
 
 
-def test_go2rtc_reads_only_fixed_loopback_jpeg():
-    calls = []
+class Stream(Response):
+    """One go2rtc `api/stream.mjpeg` response. With `hold`, its end waits for the event."""
+
+    def __init__(self, parts, *, url=STREAM_URL, status=200, hold=None, kind=None, raw=None):
+        body = raw or b"".join(
+            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n%s\r\n"
+            % (len(part), part)
+            for part in parts
+        )
+        super().__init__(body, url, status)
+        self.headers = {"Content-Type": kind or "multipart/x-mixed-replace; boundary=frame"}
+        self.hold = hold
+
+    def readline(self, limit=-1):
+        line = super().readline(limit)
+        if not line and self.hold is not None:
+            assert self.hold.wait(5)
+        return line
+
+
+def stream_opener(*responses):
+    """Answer each connection with the next response, then block until `finished`."""
+    calls, finished = [], threading.Event()
 
     def opener(url, timeout):
         calls.append((url, timeout))
-        return Response(jpeg(), url)
+        if len(calls) > len(responses):
+            assert finished.wait(5)
+            raise OSError("test finished")
+        response = responses[len(calls) - 1]
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
+    return opener, calls, finished
+
+
+def wait_for(condition):
+    deadline = time.monotonic() + 5
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+
+def stop_reader(capture, finished):
+    capture.release()
+    finished.set()
+    if capture._thread is not None:
+        capture._thread.join(5)
+        assert not capture._thread.is_alive()
+
+
+def test_go2rtc_keeps_one_stream_and_returns_the_newest_complete_jpeg(monkeypatch):
+    monkeypatch.setattr(uvc, "RECONNECT_SECONDS", 0)
+    decoded = []
+    decode = cv2.imdecode
+    monkeypatch.setattr(
+        cv2, "imdecode", lambda data, flags: decoded.append(bytes(data)) or decode(data, flags)
+    )
+    truncated = jpeg()[:-100]
+    hold = threading.Event()
+    first = Stream([truncated, jpeg(), truncated], hold=hold)
+    second = Stream([jpeg(16, 20), jpeg(24, 48)])
+    opener, calls, finished = stream_opener(first, second)
     capture = uvc.Go2RTCCapture("camera2", opener=opener)
     assert calls == []
-    ok, frame = capture.read()
-    assert ok and frame.shape == (32, 40, 3)
-    assert calls == [("http://127.0.0.1:1984/api/frame.jpeg?src=camera2", 2.0)]
-    capture.release()
+    try:
+        ok, frame = capture.read()
+        assert ok and frame.shape == (32, 40, 3)
+        assert calls == [(STREAM_URL, 2.0)] and not first.closed
+        hold.set()
+        wait_for(lambda: len(calls) == 3)
+        ok, frame = capture.read()
+        assert ok and frame.shape == (24, 48, 3)
+        assert first.closed and second.closed
+        assert truncated not in decoded and len(decoded) == 2
+    finally:
+        stop_reader(capture, finished)
     assert capture.read() == (False, None)
 
 
@@ -154,26 +223,41 @@ def test_default_opener_disables_proxies_and_redirects(monkeypatch):
     assert observed[1].redirect_request(None, None, 302, None, None, "http://bad.invalid") is None
 
 
-@pytest.mark.parametrize("failure", ["status", "redirect", "oversized", "dimensions", "invalid"])
-def test_go2rtc_refuses_bad_frames_before_decode(failure, monkeypatch):
-    url = "http://127.0.0.1:1984/api/frame.jpeg?src=camera2"
-    data, response_url, status = jpeg(), url, 200
-    if failure == "status":
-        status = 503
-    elif failure == "redirect":
-        response_url = "http://example.invalid/frame"
-    elif failure == "oversized":
-        data = b"x" * 16_777_217
-    elif failure == "dimensions":
-        data = b"\xff\xd8\xff\xc0\x00\x0b\x08\x13\x88\x13\x88\x01\x01\x11\x00"
-    else:
-        data = b"not JPEG"
-    monkeypatch.setattr(cv2, "imdecode", lambda *_: pytest.fail("invalid data reached decoder"))
-    response = Response(data, response_url, status)
-    capture = uvc.Go2RTCCapture("camera2", opener=lambda *_args, **_kwargs: response)
-    with pytest.raises(RuntimeError):
-        capture.read()
-    assert response.closed
+@pytest.mark.parametrize(
+    "failure",
+    ["status", "redirect", "type", "length", "oversized", "dimensions", "invalid", "http"],
+)
+def test_go2rtc_drops_bad_responses_and_parts_before_decode_and_reconnects(failure, monkeypatch):
+    monkeypatch.setattr(uvc, "RECONNECT_SECONDS", 0)
+    good = jpeg(24, 48)
+    decode = cv2.imdecode
+    monkeypatch.setattr(
+        cv2,
+        "imdecode",
+        lambda data, flags: decode(data, flags) if bytes(data) == good else pytest.fail(failure),
+    )
+    body = io.BytesIO(b"unavailable")
+    bad = {
+        "status": Stream([jpeg()], status=503),
+        "redirect": Stream([jpeg()], url="http://example.invalid/stream"),
+        "type": Stream([jpeg()], kind="image/jpeg"),
+        "length": Stream([], raw=b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg()),
+        "oversized": Stream([], raw=b"--frame\r\nContent-Length: 16777217\r\n\r\n"),
+        "dimensions": Stream([HUGE_SOF + b"\xff\xd9"]),
+        "invalid": Stream([b"not JPEG"]),
+        "http": HTTPError(STREAM_URL, 503, "unavailable", {}, body),
+    }[failure]
+    held = threading.Event()
+    opener, calls, finished = stream_opener(bad, Stream([good], hold=held))
+    capture = uvc.Go2RTCCapture("camera2", opener=opener)
+    try:
+        ok, frame = capture.read()
+        assert ok and frame.shape == (24, 48, 3)
+        assert calls == [(STREAM_URL, 2.0), (STREAM_URL, 2.0)]
+        assert body.closed if failure == "http" else bad.closed
+    finally:
+        held.set()
+        stop_reader(capture, finished)
 
 
 class Frames:
@@ -302,19 +386,6 @@ def test_image_algorithms_preserve_sharpness_displacement_and_marker_policy():
     dx, dy, distance, confidence, overlap = measure_image_displacement(sharp, shifted)
     assert (dx, dy, distance) == pytest.approx((4, 0, 4), abs=0.2)
     assert confidence > 0.9 and overlap > 0.95
-
-
-def test_go2rtc_http_error_response_is_closed():
-    body = io.BytesIO(b"unavailable")
-    error = HTTPError("http://127.0.0.1:1984", 503, "unavailable", {}, body)
-
-    def unavailable(*_args, **_kwargs):
-        raise error
-
-    capture = uvc.Go2RTCCapture("camera2", opener=unavailable)
-    with pytest.raises(RuntimeError, match="not successful"):
-        capture.read()
-    assert body.closed
 
 
 def test_side_camera_refuses_reopen_until_old_reader_exits(monkeypatch):

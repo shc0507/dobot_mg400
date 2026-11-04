@@ -95,6 +95,9 @@ The control lease lasts 3 seconds and must be renewed during work.
 The command actions are `select_objective` with `id`, `autofocus` with `mode` (`full` or `local`), `focus_move` with relative `steps`, `home_focus`, and `snapshot` with an optional `path`.
 Read the command ID in `last_command` and its result before the next action.
 Every turret turn follows a completed clearance move and a fresh stationary-position check.
+Before it moves, `select_objective` identifies the current objective in 1 side-camera frame.
+If it cannot identify an objective, the command fails. `last_command.message` gives the cause, for example a side frame size that differs from the reference size.
+In this case nothing moves, the focus zero stays known, and the service latches no fault.
 Focus moves and autofocus stay within the configured limits and require a known zero.
 A full autofocus scan uses a window centered inside the measured range.
 A local scan uses a smaller window near the current position.
@@ -144,6 +147,7 @@ The microscope service has no web page. Operate the microscope in the Furnace + 
 6. Use **Save snapshot** to save a snapshot.
 
 When zero is unknown, the objective and jog buttons are unavailable.
+When a microscope command fails, the card shows the command and its cause until the next command result.
 The console sends each command 1 time and does not retry it. Read the command result before the next action.
 **Stop** does not require control.
 When the console stops renewing, lease expiry stops and disables both motors and invalidates zero.
@@ -280,7 +284,8 @@ The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches t
 Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
 Before `H-21`, restore this camera to its earlier position on the turret.
 For the service and preview, go2rtc owns its V4L2 capture.
-`USBCamera` reads JPEG frames from `http://127.0.0.1:1984/api/frame.jpeg`.
+`USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open while the service runs. Thus the side stream runs continuously.
+It uses the newest complete JPEG, drops incomplete frames, and reconnects after a connection failure.
 It rejects redirects and ignores environment proxy settings.
 Keep the cameras on their fixed ports and never reset the shared USB hub.
 
@@ -296,6 +301,8 @@ Explicit values control each stream. When both lists are empty, the selected sid
 Other camera streams retain `640x480@30`. Large streams start on demand.
 The microscope service expects the side stream's configured mode and rejects frames with a different size. Without camera settings, it expects `3840x2160`.
 Changing capture dimensions also requires compatible reference images. `H-21` checks objective switching at the configured mode.
+The side reference images are `3840x2160`. Set the side stream to `3840x2160@30`. The AC410 gives `3840x2160` only at 30 fps.
+If the side reader stops, `cameras.side` in `GET /api/state` is `false`.
 The supervised `H-21` checks must cover USB 2 bandwidth and microscope operation before lab use.
 
 `USBCamera.get_frame_packet()` returns a frame ID, a monotonic receive time, and an image.

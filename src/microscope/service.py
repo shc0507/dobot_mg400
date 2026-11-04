@@ -424,6 +424,10 @@ class _AuthorityCancel:
         return True
 
 
+class _Unidentified(RuntimeError):
+    """The side camera did not identify an objective. No motion has started."""
+
+
 @dataclass
 class _Job:
     ident: str
@@ -1064,7 +1068,11 @@ class MicroscopeService:
                 focus_limits_pulses=list(self.config.focus_limits or ()),
                 cameras={
                     "microscope": bool(self._camera and self._camera.is_open),
-                    "side": bool(self._side and self._side.is_open),
+                    "side": bool(
+                        self._side
+                        and self._side.is_open
+                        and getattr(self._side, "last_error", None) is None
+                    ),
                 },
                 last_result=copy.deepcopy(self._last_result),
                 manual_client=self._manual_holder,
@@ -1556,14 +1564,32 @@ class MicroscopeService:
         }
         return locator
 
-    def _select(self, job, motor):
-        locator = self._locator()
-        packet = self._side.get_frame_packet(timeout=2.0)
+    def _identify(self, job, locator):
+        """Return the visible objective ID, or refuse before any motion."""
+        try:
+            packet = self._side.get_frame_packet(timeout=2.0)
+        except RuntimeError as error:
+            cause = error.__cause__ or error
+            raise _Unidentified(f"Side camera is unavailable: {cause}") from error
         self._check_job(job)
         if packet is None:
-            raise RuntimeError("No fresh side-camera frame")
+            raise _Unidentified("No fresh side-camera frame")
         measurement = locator.locate(packet[2], only_target=False)
-        current = select_objective(measurement["markers"])["id"]
+        if not measurement["markers"]:
+            status = measurement["status"]
+            if status == "image_size_mismatch":
+                height, width = measurement["shape"]
+                reference_height, reference_width = measurement["reference_shape"]
+                status = (
+                    f"side frame {width}x{height} does not match "
+                    f"the {reference_width}x{reference_height} references"
+                )
+            raise _Unidentified(f"Objective identification failed: {status}")
+        return select_objective(measurement["markers"])["id"]
+
+    def _select(self, job, motor):
+        locator = self._locator()
+        current = self._identify(job, locator)
         target = job.args["id"]
         completed = []
         for _ in range(3):
@@ -1697,6 +1723,9 @@ class MicroscopeService:
         except (SideCaptureCancelled, AutofocusCancelled) as error:
             outcome, message = "stopped", str(error)
             self.stop("command-cancel", 0)
+        except _Unidentified as error:
+            # Nothing moved: keep the motor state and the focus reference.
+            outcome, message = "failed", str(error)
         except (ValueError, CommandRejected) as error:
             outcome, message = "failed", str(error)
             self.stop("command-refused", 0)

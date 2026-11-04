@@ -721,6 +721,62 @@ def test_demo_marker_correction_preserves_positive_pulse_leftward_feedback(demo_
     assert any(line.startswith("OBJ MOVE -") for line in rig.port.commands)
 
 
+def side_frame(height, width):
+    import cv2
+    import numpy as np
+
+    frame = np.full((height, width), 255, np.uint8)
+    marker = cv2.aruco.generateImageMarker(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), 0, 80
+    )
+    frame[60:140, 60:140] = marker
+    return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+
+def stopped_reader(**_kwargs):
+    try:
+        raise RuntimeError("Side-camera frame size differs from its reference size")
+    except RuntimeError as error:
+        raise RuntimeError("USB camera acquisition stopped") from error
+
+
+@pytest.mark.parametrize(
+    ("read", "message"),
+    [
+        (
+            lambda **_: (1, 0.0, side_frame(480, 640)),
+            "side frame 640x480 does not match the 200x200 references",
+        ),
+        (lambda **_: (1, 0.0, side_frame(200, 200) * 0), "Objective identification failed: black"),
+        (lambda **_: None, "No fresh side-camera frame"),
+        (stopped_reader, "Side camera is unavailable: Side-camera frame size differs"),
+    ],
+    ids=["size-mismatch", "black-frame", "no-frame", "stopped-reader"],
+)
+def test_unidentified_objective_refuses_before_motion_without_fault(demo_rig, read, message):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    side_read = rig.service._side.get_frame_packet
+    rig.service._side.get_frame_packet = read
+    before = len(rig.port.commands)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert message in state["last_command"]["message"]
+    assert not state["locked"] and state["fault"] is None and state["focus_zero_known"]
+    assert not [line for line in rig.port.commands[before:] if " MOVE " in line]
+    rig.service._side.get_frame_packet = side_read
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok" and state["objective_id"] == 2
+
+
+def test_state_reports_a_stopped_side_reader(demo_rig):
+    rig = demo_rig()
+    assert rig.service.snapshot()["cameras"] == {"microscope": True, "side": True}
+    rig.service._side.last_error = RuntimeError("Side-camera frame size differs")
+    assert rig.service.snapshot()["cameras"] == {"microscope": True, "side": False}
+
+
 def test_real_start_with_missing_measurements_never_opens_devices(monkeypatch):
     import serial
 

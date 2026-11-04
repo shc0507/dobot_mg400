@@ -140,7 +140,12 @@ class Locator:
         for marker in detection["markers"]:
             ref = self.references[marker["id"]]
             if detection["shape"] != ref["shape"]:
-                return dict(detection, status="image_size_mismatch", markers=[])
+                return dict(
+                    detection,
+                    status="image_size_mismatch",
+                    reference_shape=ref["shape"],
+                    markers=[],
+                )
             dx = marker["center"][0] - ref["center"][0]
             dy = marker["center"][1] - ref["center"][1]
             direction = "left" if dx < 0 else "right" if dx > 0 else "zero"

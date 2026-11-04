@@ -279,6 +279,19 @@ test("a furnace fault shows Acknowledge, which is sent once after a confirmation
   assert.equal(role(healthy.root, "acknowledge").hidden, true);
 });
 
+test("a failed microscope command shows its reason until the next command", async () => {
+  const status = statusBody();
+  status.microscope.last_command = { action: "select_objective", result: "failed", message: "Objective identification failed: black_frame" };
+  const { root } = await load({ status });
+  const note = role(root, "scope-note");
+  assert.equal(note.hidden, false);
+  assert.equal(note.textContent, "select_objective failed: Objective identification failed: black_frame");
+  assert.equal(role(root, "objective-1").disabled, false);
+  status.microscope.last_command = { action: "select_objective", result: "ok", message: "" };
+  const healthy = await load({ status });
+  assert.equal(role(healthy.root, "scope-note").hidden, true);
+});
+
 test("camera tiles come from LabCameras when it exists", async () => {
   const views = [];
   const cameras = { tile: (view, options) => { assert.equal(typeof options.api.t, "function"); views.push(view); return new Element("figure"); } };

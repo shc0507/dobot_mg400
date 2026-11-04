@@ -68,6 +68,7 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-furnace.service",
         "mg400-thermal.service",
         "mg400-vision.service",
+        "mg400-microscope.service",
         "mg400-orchestrator.service",
         "mg400-gateway.service",
     ],
@@ -190,6 +191,7 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-furnace.service": ["dialout"],
         "mg400-thermal.service": [],
         "mg400-vision.service": [],
+        "mg400-microscope.service": ["dialout video"],
         "mg400-orchestrator.service": [],
         "mg400-proxy.service": [],
         "mg400-gateway.service": [],
@@ -220,6 +222,42 @@ def test_vision_uses_the_isolated_environment_and_keeps_only_its_token():
         "port": 8771,
         "assets": ["vision-weights"],
     }
+
+
+def test_microscope_uses_verified_sdk_path_and_keeps_only_its_two_credentials():
+    service = unit_sections("mg400-microscope.service")["Service"]
+    assert command("mg400-microscope.service") == [
+        "/opt/mg400/.venv/bin/python",
+        "-m",
+        "microscope",
+    ]
+    assert service["Environment"] == ["LD_LIBRARY_PATH=/usr/local/lib/mg400"]
+    assert service["RestartPreventExitStatus"] == ["2"]
+    assert service["TimeoutStopSec"] == ["infinity"]
+    excluded = set(service["UnsetEnvironment"][0].split())
+    assert excluded == {
+        f"MG400_{name}_TOKEN" for name in ("PANEL", "STAGE", "THERMAL", "VISION", "GATEWAY")
+    } | set(ORCHESTRATOR_TOKENS)
+    assert not {"MG400_MICROSCOPE_TOKEN", "MG400_FURNACE_TOKEN"} & excluded
+    assert next(item for item in REGISTRY if item["name"] == "microscope") == {
+        "name": "microscope",
+        "units": ["mg400-microscope.service"],
+        "optional": True,
+        "venv": ".venv",
+        "groups": ["microscope"],
+        "token": "MG400_MICROSCOPE_TOKEN",
+        "port": 8770,
+        "assets": [],
+    }
+
+
+def test_only_microscope_unit_sets_the_native_library_search_path():
+    for name in SERVICES:
+        definitions = unit_sections(name)["Service"].get("Environment", [])
+        library_paths = [value for value in definitions if "LD_LIBRARY_PATH" in value]
+        assert library_paths == (
+            ["LD_LIBRARY_PATH=/usr/local/lib/mg400"] if name == "mg400-microscope.service" else []
+        )
 
 
 def test_furnace_service_uses_settings_and_allows_heat_and_gas_shutdown():

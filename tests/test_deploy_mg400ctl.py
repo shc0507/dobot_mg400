@@ -1397,6 +1397,29 @@ def test_thermal_token_and_logs_use_registered_names_without_device_access(ctl):
     ]
 
 
+def test_microscope_requires_selection_to_start_but_always_permits_stop(ctl):
+    assert ctl.call("start", "microscope") == 1
+    ctl.run.assert_not_called()
+    ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=microscope\n")
+    assert ctl.call("start", "microscope") == 0
+    assert systemctl(ctl) == [["systemctl", "start", "mg400-microscope.service"]]
+    ctl.run.reset_mock()
+    ctl.host.settings.write_text(SETTINGS)
+    assert ctl.call("stop", "microscope") == 0
+    assert systemctl(ctl) == [["systemctl", "stop", "mg400-microscope.service"]]
+
+
+def test_microscope_registered_token_and_logs_do_not_contact_devices(ctl):
+    ctl.host.settings.write_text(SETTINGS + "MG400_MICROSCOPE_TOKEN=synthetic-microscope-token\n")
+    assert ctl.call("token", "microscope") == 0
+    assert ctl.out.getvalue() == "synthetic-microscope-token\n"
+    ctl.run.assert_not_called()
+    assert ctl.call("logs", "microscope") == 0
+    assert systemctl(ctl) == [
+        ["journalctl", "--no-pager", "-n", "50", "-u", "mg400-microscope.service"]
+    ]
+
+
 @pytest.fixture
 def calibration_ctl(ctl, monkeypatch):
     globals_ = ctl.module.import_microscope_calibration.__globals__

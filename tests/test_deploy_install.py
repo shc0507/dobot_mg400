@@ -235,6 +235,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
             "mg400-furnace.service",
             "mg400-thermal.service",
             "mg400-vision.service",
+            "mg400-microscope.service",
             "mg400-orchestrator.service",
             "mg400-gateway.service",
             "mg400-proxy.service",
@@ -1860,3 +1861,192 @@ def test_installed_stage_directory_supports_atomic_reference_teaching(host, monk
     assert load_geometry(path) == updated
     assert mode(path) == 0o600
     assert updated.motors["insert"].reference["pixel"] == [99.5, 99.5]
+
+
+def test_microscope_selection_prepares_sdk_udev_private_data_and_runtime(
+    host, inventory_udev, toupcam_library, module
+):
+    select_optional(host, "microscope")
+    assert host.install("--toupcam", str(toupcam_library)) == 0
+    for relative in ("calibration/microscope", "recordings", "runs"):
+        directory = host.data / relative
+        assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
+        assert not list(directory.iterdir())
+    unit = host.units / "mg400-microscope.service"
+    assert unit.read_bytes() == (ROOT / "config/systemd" / unit.name).read_bytes()
+    assert mode(unit) == 0o644 and host.owner(unit) == (0, 0)
+    rule = host.root / "etc/udev/rules.d/70-mg400-microscope.rules"
+    assert rule.read_text() == (inventory_udev / (rule.name + ".in")).read_text().replace(
+        "@SERVICE_GROUP@", "lab1000"
+    )
+    assert mode(rule) == 0o644 and host.owner(rule) == (0, 0)
+    library = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    assert library.read_bytes() == toupcam_library.read_bytes()
+    assert mode(library) == 0o755 and host.owner(library) == (0, 0)
+    settings = module.parse_settings(host.settings.read_text())
+    assert settings["MG400_MICROSCOPE_BIND"] == "127.0.0.1"
+    assert settings["MG400_MICROSCOPE_PORT"] == "8770"
+    assert settings["MG400_MICROSCOPE_BASE_PATH"] == "/"
+    assert len(settings["MG400_MICROSCOPE_TOKEN"]) >= 24
+    assert settings["MG400_ORCH_MICROSCOPE_TOKEN"] == settings["MG400_MICROSCOPE_TOKEN"]
+    for key in ("SWITCH_FOCUS", "HOME_SWITCH", "FOCUS_LIMITS", "SERIAL", "SIDE_STREAM"):
+        assert settings["MG400_MICROSCOPE_" + key] == ""
+    assert settings["MG400_MICROSCOPE_NUDGE_STEPS"] == "0"
+    assert settings["MG400_TOUPCAM_SERIAL"] == settings["MG400_TOUPCAM_INDEX"] == ""
+    sync = next(
+        command for command in names(host.commands) if command[:2] == ["/usr/bin/uv", "sync"]
+    )
+    assert sync[sync.index("microscope") - 1] == "--group"
+    assert not any(
+        command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
+        or "mg400-microscope.service" in command
+        for command in names(host.commands)
+    )
+
+
+def test_disabled_microscope_adds_no_library_rule_unit_data_or_group(host, inventory_udev):
+    assert host.install() == 0
+    assert not (host.units / "mg400-microscope.service").exists()
+    assert not (host.root / "etc/udev/rules.d/70-mg400-microscope.rules").exists()
+    assert not (host.root / "usr/local/lib/mg400/libtoupcam.so").exists()
+    assert not (host.data / "calibration/microscope").exists()
+    assert not (host.data / "recordings").exists()
+    assert not (host.data / "runs").exists()
+    assert not any("microscope" in command for command in names(host.commands))
+
+
+def test_microscope_dry_run_lists_without_writes_or_service_start(
+    host, inventory_udev, toupcam_library
+):
+    select_optional(host, "microscope")
+    assert host.install("--dry-run", "--toupcam", str(toupcam_library)) == 0
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    assert not (host.root / "usr").exists() and not (host.root / "etc/udev").exists()
+    for item in ("mg400-microscope.service", "70-mg400-microscope.rules", "libtoupcam.so"):
+        assert item in host.out.getvalue()
+    assert all(command[0] in {"/usr/bin/python3", "systemctl"} for command in names(host.commands))
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_microscope_requires_verified_library_before_mutation(
+    host, inventory_udev, toupcam_library, capsys, dry_run
+):
+    select_optional(host, "microscope")
+    args = ["--dry-run"] if dry_run else []
+    assert host.install(*args) == 1
+    assert "--toupcam" in capsys.readouterr().err
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"wrong installed SDK")
+    target.chmod(0o755)
+    assert host.install(*args) == 1
+    assert "SHA-256 mismatch" in capsys.readouterr().err
+    assert target.read_bytes() == b"wrong installed SDK"
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+def test_microscope_requires_its_udev_template_before_mutation(host, toupcam_library, capsys):
+    select_optional(host, "microscope")
+    assert host.install("--toupcam", str(toupcam_library)) == 1
+    assert "70-mg400-microscope.rules.in" in capsys.readouterr().err
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+def test_microscope_upgrade_preserves_library_data_measured_settings_and_tokens(
+    host, inventory_udev, toupcam_library, module
+):
+    select_optional(host, "microscope")
+    assert host.install("--toupcam", str(toupcam_library)) == 0
+    library = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    original_inode = library.stat().st_ino
+    original_tokens = {
+        key: value
+        for key, value in module.parse_settings(host.settings.read_text()).items()
+        if key.endswith("_TOKEN")
+    }
+    values = dict(SWITCH_FOCUS="0", HOME_SWITCH="0", FOCUS_LIMITS="0,10000", NUDGE_STEPS="20")
+    lines = host.settings.read_text().splitlines()
+    for index, line in enumerate(lines):
+        for key, value in values.items():
+            if line.startswith(f"MG400_MICROSCOPE_{key}="):
+                lines[index] = f"MG400_MICROSCOPE_{key}={value}"
+    host.settings.write_text("\n".join(lines) + "\n")
+    originals = []
+    for relative in (
+        "calibration/microscope/reference.png",
+        "recordings/run.json",
+        "runs/state.json",
+    ):
+        path = host.data / relative
+        path.write_bytes(b"existing host data")
+        path.chmod(0o640)
+        originals.append(path)
+    assert host.install() == 0
+    assert library.stat().st_ino == original_inode
+    assert all(
+        path.read_bytes() == b"existing host data" and mode(path) == 0o640 for path in originals
+    )
+    settings = module.parse_settings(host.settings.read_text())
+    assert {key: settings[key] for key in original_tokens} == original_tokens
+    assert {key: settings[f"MG400_MICROSCOPE_{key}"] for key in values} == values
+
+
+@pytest.mark.parametrize("kind", ["symlink", "parent_symlink", "directory", "fifo", "hardlink"])
+def test_microscope_rejects_unsafe_installed_library_before_mutation(
+    host, inventory_udev, toupcam_library, kind
+):
+    select_optional(host, "microscope")
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.parent.mkdir(parents=True)
+    if kind == "parent_symlink":
+        outside = host.root / "outside"
+        outside.mkdir()
+        (outside / target.name).write_bytes(toupcam_library.read_bytes())
+        target.parent.symlink_to(outside, target_is_directory=True)
+    else:
+        target.parent.mkdir()
+        if kind == "symlink":
+            target.symlink_to(toupcam_library)
+        elif kind == "directory":
+            target.mkdir()
+        elif kind == "fifo":
+            os.mkfifo(target)
+        else:
+            os.link(toupcam_library, target)
+    assert host.install() == 1
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
+
+
+@pytest.mark.parametrize(
+    "owner,group,rights",
+    [
+        (1000, 0, 0o755),
+        (0, 0, 0o775),
+        (0, 0, 0o757),
+        (0, 0, 0o700),
+        (0, 0, 0o4755),
+        (0, 1000, 0o704),
+    ],
+)
+def test_microscope_rejects_unsafe_existing_library_permissions(
+    host, inventory_udev, toupcam_library, module, monkeypatch, owner, group, rights
+):
+    select_optional(host, "microscope")
+    target = host.root / "usr/local/lib/mg400/libtoupcam.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(toupcam_library.read_bytes())
+    target.chmod(rights)
+    inode, original_fstat = target.stat().st_ino, os.fstat
+
+    def fstat(fd):
+        info = original_fstat(fd)
+        if info.st_ino != inode:
+            return info
+        values = list(info)
+        values[4], values[5] = owner, group
+        return os.stat_result(values)
+
+    monkeypatch.setattr(module.main.__globals__["os"], "fstat", fstat)
+    assert host.install() == 1
+    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()

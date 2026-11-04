@@ -1434,6 +1434,7 @@ deps = ["DSH-01", "OPS-02"]
 writes = [
   "src/orchestrator/web/**",
   "src/orchestrator/app.py",
+  "src/orchestrator/rehearsal.py",
   "src/orchestrator/clients.py",
   "config/proxy/**",
   "tests/test_dashboard.py",

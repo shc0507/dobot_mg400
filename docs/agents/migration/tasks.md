@@ -895,11 +895,15 @@ Steps:
 2. Skills in `src/orchestrator/skills/vision.py`: `vision.find_chip(slot)` (present, center, angle) and `vision.slot_state(slot)` (a chip is present or the slot is empty, from YOLO on the tray camera). Chips carry no labels.
 3. Steps: check the calibration at a pose inside the CAL-01 grid with the scan R (CAL-04), find the chip in the source slot, check that the target slot is empty, transfer with R from the chip angle at the taught heights and a speed up to the service cap (ORC-07), then confirm the chip in the target slot and the source slot empty.
 4. Rehearsal tests for success and for each failure: no chip at the source, an occupied target, no chip at the target after the place, the chip still at the source, empty grasp, drop, moved camera. Each failure holds the run.
-5. The operator runs it on hardware with P-HW.
+5. Register the vision skills and a typed tray-transfer skill in `src/orchestrator/skills/__init__.py`. The transfer skill keeps fresh observation results within its guarded step. Extend `src/orchestrator/skills/robot.py` only to apply measured endpoint copies through the ORC-07 route, zone and grasp checks. Do not modify stored stations or add result binding to the recipe or runner.
+6. In `src/vision/service.py`, obtain slot evidence from one current frame and one camera-bound calibration model per observation. Use the existing tray and calibration helpers. Preserve access, lease, Stop and result-publication guards. Missing or invalid evidence must not report an empty slot. The skill sends a validated tray-model document, not a host file path, within the existing 16 KiB request bound.
+7. Require explicit taught targets for the exact slot IDs, the measured chip-axis-to-flange-R convention, and grasp settings. Missing inputs refuse before motion. Do not use raw image angles or groove midpoints as robot targets, or invent physical defaults. Use the existing `TRANSFER_SETTINGS` propagation for these inputs without admitting service endpoints, tokens or device settings into demos.
+8. Extend the owned synthetic vision data in `src/orchestrator/rehearsal.py` and the all-recipes fixture in `tests/test_orchestrator_rehearsal.py` for tray occupancy and the required temporary configuration. Keep new targeted coverage in `tests/test_recipe_tray_transfer.py`, with no live-device fallback or new bound ports.
+9. The operator runs it on hardware with P-HW.
 
 Done when: three supervised transfers in a row succeed, with YOLO confirming the chip in the target slot and the source slot empty (the owner may change the count); the results are on the issue.
 
-Docs: `orchestrator.md` and `.en.md`: running it.
+Docs: `orchestrator.md` and `.en.md`: running it. `vision.md` and `.en.md`: the guarded slot-evidence interface and required calibration and tray configuration.
 
 ## Phase 3: hot side
 

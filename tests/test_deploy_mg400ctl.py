@@ -14,10 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = """# Test host
 MG400_ROBOT_HOST=robot.test
-MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks
-MG400_PANEL_TOKEN=panel-token-0123456789abcdef
-MG400_CAMERA_BIND=
-MG400_STAGE_TOKEN=
+MG400_CAMERA_DEVICES=
 """
 
 
@@ -105,6 +102,8 @@ def systemd_units(ctl, missing=(), running=()):
             ["restart", "all", "web"],
             [
                 "mg400-web-panel.service",
+                "mg400-furnace.service",
+                "mg400-microscope.service",
                 "mg400-stage-panel.service",
                 "mg400-camera-preview.service",
                 "mg400-camera-capture.service",
@@ -127,37 +126,23 @@ def test_unknown_service_name_is_refused(ctl, capsys):
     ctl.run.assert_not_called()
 
 
-@pytest.mark.parametrize("command", ["run", "rehearse", "runs"])
+@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
 def test_recipe_dispatch_precedes_admin_registry_and_drops_root(ctl, monkeypatch, command):
-    settings = (
-        SETTINGS
-        + """
-MG400_ORCH_RUNS_DIR=/var/lib/mg400/custom-runs
-MG400_ORCH_ROBOT_URL=http://robot.invalid
-MG400_ORCH_ROBOT_TOKEN=orchestrator-token-0123456789
-MG400_ORCH_TIMEOUT_S=2
-MG400_ORCH_UNRECOGNIZED_TOKEN=never-forward
-MG400_PANEL_TOKEN=never-forward-panel
-"""
-    )
+    settings = SETTINGS + "MG400_ORCH_RUNS_DIR=/var/lib/mg400/custom-runs\nMG400_EMPTY=\n"
     ctl.host.settings.write_text(settings)
     monkeypatch.setitem(
         ctl.module.main.__globals__,
         "load_services",
         Mock(side_effect=AssertionError("admin parser")),
     )
-    for key in (
-        "PYTHONPATH",
-        "LD_PRELOAD",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "MG400_ORCH_STAGE_TOKEN",
-    ):
-        monkeypatch.setenv(key, "ambient-secret")
+    for key in ("PYTHONPATH", "LD_PRELOAD", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(key, "ambient")
+    monkeypatch.setenv("MG400_ORCH_ZONES_FILE", "/tmp/demo-zones.toml")
     if command == "rehearse":
+        # Rehearsal never reads the host settings.
         ctl.host.settings.unlink()
-    assert ctl.call(command, "recipe-or-run-id", "--runs-dir", "/tmp/run-records") == 0
+    arguments = ["list"] if command == "station" else ["recipe-or-run-id", "--runs-dir", "/tmp/r"]
+    assert ctl.call(command, *arguments) == 0
     program, argv, environment = ctl.execvpe.call_args.args
     assert program == "/usr/sbin/runuser"
     assert argv == [
@@ -173,52 +158,40 @@ MG400_PANEL_TOKEN=never-forward-panel
         "-m",
         "orchestrator",
         command,
-        "recipe-or-run-id",
-        "--runs-dir",
-        "/tmp/run-records",
+        *arguments,
     ]
-    settings = {key: value for key, value in environment.items() if key.startswith("MG400_")}
-    expected = (
-        {} if command == "rehearse" else {"MG400_ORCH_RUNS_DIR": "/var/lib/mg400/custom-runs"}
-    )
-    if command == "run":
-        expected |= {
-            "MG400_ORCH_ROBOT_URL": "http://robot.invalid",
-            "MG400_ORCH_ROBOT_TOKEN": "orchestrator-token-0123456789",
-            "MG400_ORCH_TIMEOUT_S": "2",
+    forwarded = {key: value for key, value in environment.items() if key.startswith("MG400_")}
+    if command == "rehearse":
+        assert forwarded == {"MG400_ORCH_ZONES_FILE": "/tmp/demo-zones.toml"}
+    else:
+        file_settings = {
+            key: value
+            for key, value in ctl.module.parse_settings(settings).items()
+            if key.startswith("MG400_") and value
         }
-    assert settings == expected
-    assert not set(environment) & {
-        "PYTHONPATH",
-        "LD_PRELOAD",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-    }
+        assert forwarded == {**ctl.module.FIXED_SETTINGS, **file_settings}
+    assert not set(environment) & {"PYTHONPATH", "LD_PRELOAD", "HTTP_PROXY", "HTTPS_PROXY"}
     ctl.getpwuid.assert_called_with(1000)
     ctl.run.assert_not_called()
     ctl.chdir.assert_not_called()  # Preserve the caller's relative recipe paths.
 
 
 @pytest.mark.parametrize("command", ["run", "rehearse", "runs"])
-def test_nonroot_recipe_uses_only_allowed_explicit_environment(ctl, monkeypatch, command):
+def test_nonroot_recipe_forwards_every_caller_setting(ctl, monkeypatch, command):
     for method in ("getuid", "geteuid", "getgid", "getegid"):
         monkeypatch.setattr(ctl.module.os, method, lambda: 1000)
     ctl.host.settings.unlink()
     monkeypatch.setenv("MG400_ORCH_RUNS_DIR", "/tmp/own-runs")
     monkeypatch.setenv("MG400_ORCH_ROBOT_URL", "http://robot.invalid")
-    monkeypatch.setenv("MG400_ORCH_ROBOT_TOKEN", "explicit-token")
-    monkeypatch.setenv("MG400_ORCH_UNKNOWN", "unknown")
-    monkeypatch.setenv("MG400_PANEL_TOKEN", "panel")
     monkeypatch.setenv("HTTP_PROXY", "proxy")
     assert ctl.call(command) == 0
     program, argv, environment = ctl.execvpe.call_args.args
     assert program == str(ctl.host.code / ".venv/bin/python")
     assert argv == [program, "-I", "-m", "orchestrator", command]
     assert environment["MG400_ORCH_RUNS_DIR"] == "/tmp/own-runs"
-    assert ("MG400_ORCH_ROBOT_TOKEN" in environment) is (command == "run")
-    assert ("MG400_ORCH_ROBOT_URL" in environment) is (command == "run")
-    assert not set(environment) & {"MG400_ORCH_UNKNOWN", "MG400_PANEL_TOKEN", "HTTP_PROXY"}
+    assert environment["MG400_ORCH_ROBOT_URL"] == "http://robot.invalid"
+    assert ("MG400_ORCH_STAGE_URL" in environment) is (command != "rehearse")
+    assert "HTTP_PROXY" not in environment
     ctl.getpwuid.assert_not_called()
 
 
@@ -245,173 +218,6 @@ def test_root_recipe_dispatch_refuses_missing_runuser(ctl, monkeypatch):
     ctl.execvpe.assert_not_called()
 
 
-@pytest.mark.parametrize("root", [True, False])
-@pytest.mark.parametrize("command", ["run", "rehearse", "runs"])
-def test_transfer_data_is_forwarded_without_rehearsal_device_credentials(
-    ctl, monkeypatch, root, command
-):
-    geometry = {key: "explicit-data" for key in ctl.module.TRANSFER_SETTINGS}
-    settings = {
-        **geometry,
-        "MG400_ORCH_ROBOT_URL": "http://production.invalid",
-        "MG400_ORCH_ROBOT_TOKEN": "production-token",
-        "MG400_GRIPPER_FEEDBACK": "/production/collector.json",
-        "MG400_ORCH_UNKNOWN": "forbidden",
-        "HTTP_PROXY": "http://proxy.invalid",
-        "PYTHONPATH": "/untrusted/python",
-    }
-    if root and command != "rehearse":
-        ctl.host.settings.write_text("\n".join(f"{key}={value}" for key, value in settings.items()))
-    else:
-        ctl.host.settings.unlink()
-        for key, value in settings.items():
-            monkeypatch.setenv(key, value)
-    if not root:
-        for name in ("getuid", "geteuid", "getgid", "getegid"):
-            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
-    assert ctl.call(command, "recipe-or-run-id") == 0
-    program, argv, environment = ctl.execvpe.call_args.args
-    assert {key: environment[key] for key in geometry if key in environment} == (
-        {} if command == "runs" else geometry
-    )
-    assert ("MG400_ORCH_ROBOT_URL" in environment) is (command == "run")
-    assert ("MG400_ORCH_ROBOT_TOKEN" in environment) is (command == "run")
-    assert not set(environment) & {
-        "MG400_GRIPPER_FEEDBACK",
-        "MG400_ORCH_UNKNOWN",
-        "HTTP_PROXY",
-        "PYTHONPATH",
-    }
-    python = str(ctl.host.code / ".venv/bin/python")
-    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, "recipe-or-run-id"]
-    assert program == ("/usr/sbin/runuser" if root else python)
-    if root:
-        assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
-    ctl.run.assert_not_called()
-
-
-@pytest.mark.parametrize("root", [True, False])
-@pytest.mark.parametrize("command", ["run", "rehearse", "runs", "station"])
-def test_zone_settings_keep_rehearsal_occupancy_and_credentials_isolated(
-    ctl, monkeypatch, root, command
-):
-    production = {
-        "MG400_ORCH_ZONES_FILE": "/var/lib/mg400/zones/config.toml",
-        "MG400_ORCH_ZONE_STATE_FILE": "/var/lib/mg400/zones/occupancy.json",
-        "MG400_ORCH_ROBOT_URL": "http://production.invalid",
-        "MG400_ORCH_ROBOT_TOKEN": "production-token",
-    }
-    caller = {
-        "MG400_ORCH_ZONES_FILE": "/tmp/explicit-demo-zones.toml",
-        "MG400_ORCH_ZONE_STATE_FILE": "/tmp/never-share-occupancy.json",
-        "MG400_ORCH_ROBOT_URL": "http://ambient.invalid",
-        "MG400_ORCH_ROBOT_TOKEN": "ambient-token",
-        "MG400_STAGE_SERIAL": "/production/device",
-        "MG400_ORCH_ZONE_UNKNOWN": "not-allowed",
-        "HTTP_PROXY": "http://proxy.invalid",
-        "PYTHONPATH": "/untrusted/python",
-        "LD_PRELOAD": "/untrusted/library",
-    }
-    for key, value in caller.items():
-        monkeypatch.setenv(key, value)
-    if root and command != "rehearse":
-        ctl.host.settings.write_text(
-            "\n".join(f"{key}={value}" for key, value in production.items())
-        )
-    else:
-        # Root rehearsal and nonroot commands must never read the host file.
-        ctl.host.settings.unlink()
-    if not root:
-        for name in ("getuid", "geteuid", "getgid", "getegid"):
-            monkeypatch.setattr(ctl.module.os, name, lambda: 1000)
-    arguments = ["list"] if command == "station" else ["recipe-or-run-id"]
-    assert ctl.call(command, *arguments) == 0
-    program, argv, environment = ctl.execvpe.call_args.args
-    source = production if root and command != "rehearse" else caller
-    expected = (
-        {key: source[key] for key in ("MG400_ORCH_ZONES_FILE", "MG400_ORCH_ZONE_STATE_FILE")}
-        if command == "run"
-        else {"MG400_ORCH_ZONES_FILE": caller["MG400_ORCH_ZONES_FILE"]}
-        if command == "rehearse"
-        else {}
-    )
-    assert {key: value for key, value in environment.items() if "_ZONE" in key} == expected
-    for key in ("MG400_ORCH_ROBOT_URL", "MG400_ORCH_ROBOT_TOKEN"):
-        assert environment.get(key) == (source[key] if command == "run" else None)
-    assert not set(environment) & {"MG400_STAGE_SERIAL", "HTTP_PROXY", "PYTHONPATH", "LD_PRELOAD"}
-    python = str(ctl.host.code / ".venv/bin/python")
-    assert program == ("/usr/sbin/runuser" if root else python)
-    assert argv[-6:] == [python, "-I", "-m", "orchestrator", command, *arguments]
-    if root:
-        assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
-    ctl.run.assert_not_called()
-
-
-@pytest.mark.parametrize("root", [True, False])
-@pytest.mark.parametrize("action", ["save", "list", "show", "rm"])
-def test_station_dispatch_only_forwards_necessary_paths_bounds_and_read_credentials(
-    ctl, monkeypatch, root, action
-):
-    station_settings = {key: "12" for key in ctl.module.STATION_SETTINGS}
-    station_settings["MG400_ORCH_STATIONS_FILE"] = "/var/lib/mg400/stations.toml"
-    extras = {
-        "MG400_ORCH_TOOL_FILE": "/var/lib/mg400/tool.toml",
-        "MG400_ORCH_ROBOT_URL": "http://robot.invalid",
-        "MG400_ORCH_ROBOT_TOKEN": "robot-read-token-0123456789",
-        "MG400_ORCH_TIMEOUT_S": "2",
-        "MG400_ORCH_STAGE_TOKEN": "not-needed",
-        "MG400_ORCH_STAGE_URL": "http://stage.invalid",
-        "MG400_PANEL_TOKEN": "not-needed",
-        "MG400_ORCH_RUNS_DIR": "/var/lib/mg400/runs",
-        "MG400_ORCH_ZONES_FILE": "/var/lib/mg400/zones/config.toml",
-        "MG400_ORCH_ZONE_STATE_FILE": "/var/lib/mg400/zones/occupancy.json",
-        "HTTP_PROXY": "not-needed",
-        "PYTHONPATH": "not-needed",
-    }
-    values = {**station_settings, **extras}
-    if root:
-        ctl.host.settings.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
-    else:
-        for method in ("getuid", "geteuid", "getgid", "getegid"):
-            monkeypatch.setattr(ctl.module.os, method, lambda: 1000)
-        ctl.host.settings.unlink()
-        for key, value in values.items():
-            monkeypatch.setenv(key, value)
-    assert ctl.call("station", action, *([] if action == "list" else ["tray"])) == 0
-    program, argv, environment = ctl.execvpe.call_args.args
-    expected = dict(station_settings)
-    if action == "save":
-        expected |= {
-            key: extras[key]
-            for key in (
-                "MG400_ORCH_TOOL_FILE",
-                "MG400_ORCH_ROBOT_URL",
-                "MG400_ORCH_ROBOT_TOKEN",
-                "MG400_ORCH_TIMEOUT_S",
-            )
-        }
-    assert {
-        key: value for key, value in environment.items() if key.startswith("MG400_")
-    } == expected
-    assert "HTTP_PROXY" not in environment and "PYTHONPATH" not in environment
-    command = [
-        str(ctl.host.code / ".venv/bin/python"),
-        "-I",
-        "-m",
-        "orchestrator",
-        "station",
-        action,
-        *([] if action == "list" else ["tray"]),
-    ]
-    assert (
-        argv
-        == (["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"] if root else [])
-        + command
-    )
-    assert program == ("/usr/sbin/runuser" if root else command[0])
-    ctl.run.assert_not_called()
-
-
 @pytest.mark.parametrize("action", ["", "save-extra", "remove", "list-extra", "--unknown"])
 def test_station_dispatch_requires_exact_subcommand(ctl, action):
     assert ctl.call("station", *([action] if action else [])) == 2
@@ -436,9 +242,9 @@ def test_status_lists_every_service_and_the_request_watcher(ctl):
     assert ctl.call("status") == 0
     command = systemctl(ctl)[0]
     assert command[:3] == ["systemctl", "show", "--property=Id,ActiveState,SubState"]
-    assert len(command) == 3 + 6
+    assert len(command) == 3 + 8
     lines = ctl.out.getvalue().splitlines()
-    assert len(lines) == 6
+    assert len(lines) == 8
     assert lines[0].split() == ["web", "mg400-web-panel.service", "active", "(running)"]
     assert lines[-1].split() == ["collector", "mg400-gripper-collector.path", "active", "(waiting)"]
     assert lines[1].split()[-1] == "unknown"
@@ -484,11 +290,11 @@ def test_terminal_runs_as_the_service_user_on_its_own_terminal(ctl, monkeypatch)
         "--gripper-feedback",
         str(ctl.host.data / "work/gripper_feedback.json"),
     ]
-    # No token and nothing else from the root environment reaches the service user.
+    # Nothing from the root environment except the terminal settings reaches the service user.
     assert environment == {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "MG400_ROBOT_HOST": "robot.test",
         "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
+        "MG400_ROBOT_HOST": "robot.test",
         "TERM": "xterm-256color",
     }
     ctl.run.assert_not_called()
@@ -570,38 +376,35 @@ def test_gpu_requires_root_and_accepts_no_extra_query_or_write_arguments(ctl, mo
     ctl.run.assert_not_called()
 
 
-def test_camera_url_uses_the_key_and_default_bind(ctl):
-    key = ctl.host.data / "camera/preview.key"
-    key.parent.mkdir(parents=True)
-    key.write_text("k" * 43 + "\n")
+def test_camera_url_lists_each_camera_on_the_default_bind(ctl):
+    ctl.host.settings.write_text(SETTINGS + "MG400_CAMERA_DEVICES=" + ",".join(CAMERAS[:2]) + "\n")
     assert ctl.call("camera-url") == 0
-    assert ctl.out.getvalue() == f"http://127.0.0.1:1985/{'k' * 43}/\n"
+    assert ctl.out.getvalue() == (
+        "http://127.0.0.1:1985/camera1.mjpeg\nhttp://127.0.0.1:1985/camera2.mjpeg\n"
+    )
 
 
 def test_camera_url_uses_the_proxy_when_it_is_enabled(ctl):
-    key = ctl.host.data / "camera/preview.key"
-    key.parent.mkdir(parents=True)
-    key.write_text("k" * 43 + "\n")
+    devices = "MG400_CAMERA_DEVICES=" + CAMERAS[0] + "\n"
     ctl.host.settings.write_text(
-        SETTINGS + "MG400_OPTIONAL_SERVICES=proxy\nMG400_PROXY_BIND=100.64.0.1\n"
+        SETTINGS + devices + "MG400_OPTIONAL_SERVICES=proxy\nMG400_PROXY_BIND=100.64.0.1\n"
     )
     assert ctl.call("camera-url") == 0
-    assert ctl.out.getvalue() == f"http://100.64.0.1:8080/camera/{'k' * 43}/\n"
+    assert ctl.out.getvalue() == "http://100.64.0.1:8080/camera/camera1.mjpeg\n"
     ctl.out.truncate(0)
     ctl.out.seek(0)
     ctl.host.settings.write_text(
         SETTINGS
+        + devices
         + "MG400_OPTIONAL_SERVICES=proxy\nMG400_PROXY_BIND=fd00::1\nMG400_PROXY_PORT=9443\n"
     )
     assert ctl.call("camera-url") == 0
-    assert ctl.out.getvalue() == f"http://[fd00::1]:9443/camera/{'k' * 43}/\n"
+    assert ctl.out.getvalue() == "http://[fd00::1]:9443/camera/camera1.mjpeg\n"
 
 
-def test_token_prints_only_a_set_token(ctl, capsys):
-    assert ctl.call("token", "web") == 0
-    assert ctl.out.getvalue() == "panel-token-0123456789abcdef\n"
-    assert ctl.call("token", "stage") == 1
-    assert "No token is set" in capsys.readouterr().err
+def test_camera_url_without_cameras(ctl):
+    assert ctl.call("camera-url") == 0
+    assert ctl.out.getvalue() == "Cameras are off: MG400_CAMERA_DEVICES is empty.\n"
 
 
 def test_non_root_and_missing_settings_are_refused(ctl, monkeypatch, capsys):
@@ -619,10 +422,9 @@ def test_non_root_and_missing_settings_are_refused(ctl, monkeypatch, capsys):
 @pytest.mark.parametrize(
     ("settings", "message"),
     [
-        ("MG400_CONTROLLER_LOCK_DIR=\n", "MG400_CONTROLLER_LOCK_DIR to an absolute path"),
         ("MG400_ROBOT_HOST robot.test\n", "is not KEY=VALUE"),
     ],
-    ids=["empty-lock-directory", "unreadable-line"],
+    ids=["unreadable-line"],
 )
 @pytest.mark.parametrize("command", ["terminal", "mode"])
 def test_unsafe_settings_never_start_a_robot_program(ctl, capsys, settings, message, command):
@@ -802,7 +604,7 @@ def optional_ctl(ctl, tmp_path):
         (ROOT / "deploy/services.toml").read_text()
         + '\n[[service]]\nname = "optional"\nunits = ["mg400-optional.service"]\n'
         'optional = true\nvenv = ".venv-vision"\ngroups = ["vision"]\n'
-        'token = "MG400_OPTIONAL_TOKEN"\nport = 8799\nassets = []\n'
+        "port = 8799\nassets = []\n"
     )
     ctl.host.registry = registry
     return ctl
@@ -826,6 +628,8 @@ def test_start_all_selects_only_enabled_services(optional_ctl):
             "systemctl",
             "start",
             "mg400-web-panel.service",
+            "mg400-furnace.service",
+            "mg400-microscope.service",
             "mg400-stage-panel.service",
             "mg400-camera-preview.service",
             "mg400-gripper-collector.service",
@@ -856,19 +660,12 @@ def test_status_shows_only_enabled_services(optional_ctl):
     assert "mg400-optional.service" in optional_ctl.out.getvalue()
 
 
-@pytest.mark.parametrize("selection", ["unknown", "optional,optional", "optional,", "web"])
+@pytest.mark.parametrize("selection", ["unknown", "optional,optional", "optional,"])
 def test_invalid_optional_selection_refuses_start_before_commands(optional_ctl, selection):
     optional_ctl.host.settings.write_text(SETTINGS + f"MG400_OPTIONAL_SERVICES={selection}\n")
     assert optional_ctl.call("start", "all") == 1
     optional_ctl.run.assert_not_called()
     optional_ctl.execvpe.assert_not_called()
-
-
-def test_optional_token_comes_from_registry_setting(optional_ctl):
-    optional_ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_TOKEN=test-token-value\n")
-    assert optional_ctl.call("token", "optional") == 0
-    assert optional_ctl.out.getvalue() == "test-token-value\n"
-    optional_ctl.run.assert_not_called()
 
 
 def test_invalid_registry_fails_before_commands(optional_ctl, capsys):
@@ -1196,13 +993,14 @@ def test_furnace_shutdown_refuses_unknown_state_even_after_optional_disable(ctl,
     assert ctl.call("stop", "furnace", "--force") == 0
 
 
-def test_furnace_shutdown_refuses_unavailable_status_and_skips_disabled_restart_all(ctl):
+def test_furnace_shutdown_refuses_unavailable_status(ctl):
     ctl.state.side_effect = OSError("offline")
     assert ctl.call("stop", "furnace") == 1
+    assert ctl.call("restart", "all") == 1
     assert mutations(ctl) == []
-    assert ctl.call("restart", "all") == 0
-    assert "mg400-furnace.service" not in mutations(ctl)[0]
-    assert ctl.state.call_count == 1
+    assert ctl.state.call_count == 2
+    assert ctl.call("restart", "all", "--force") == 0
+    assert "mg400-furnace.service" in mutations(ctl)[0]
 
 
 def registered_units(ctl, optional):
@@ -1216,13 +1014,14 @@ def registered_units(ctl, optional):
 
 
 def test_stop_all_skips_uninstalled_units_and_their_furnace_check(ctl):
-    systemd_units(ctl, missing=registered_units(ctl, True))
+    furnace = {"mg400-furnace.service"}
+    systemd_units(ctl, missing=registered_units(ctl, True) | furnace)
     ctl.state.side_effect = OSError("offline")
     assert ctl.call("stop", "all") == 0
     ctl.state.assert_not_called()
     (stop,) = mutations(ctl)
     assert stop[:2] == ["systemctl", "stop"]
-    assert set(stop[2:]) == registered_units(ctl, False)
+    assert set(stop[2:]) == registered_units(ctl, False) - furnace
     assert "Skipping mg400-furnace.service: it is not installed" in ctl.out.getvalue()
 
 
@@ -1301,19 +1100,15 @@ class FurnaceHTTP:
         ("localhost", "localhost"),
     ],
 )
-def test_furnace_guard_uses_configured_bind_and_header_token_without_proxy(
-    ctl, bind, host, monkeypatch
-):
+def test_furnace_guard_uses_configured_bind_without_proxy(ctl, bind, host, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid")
     response = FurnaceHTTP()
     factory = Mock(return_value=response)
-    token = "test-furnace-token-0123456789"
     value = ctl.module.furnace_state(
         {
             "MG400_FURNACE_BIND": bind,
             "MG400_FURNACE_PORT": "9000",
             "MG400_FURNACE_BASE_PATH": "/heat/",
-            "MG400_FURNACE_TOKEN": token,
         },
         connection_factory=factory,
     )
@@ -1321,8 +1116,7 @@ def test_furnace_guard_uses_configured_bind_and_header_token_without_proxy(
     factory.assert_called_once_with(host, 9000, timeout=2)
     args, options = response.requests[0]
     assert args == ("GET", "/heat/api/state")
-    assert options["headers"]["Authorization"] == f"Bearer {token}"
-    assert token not in args[1] and response.closed
+    assert "Authorization" not in options["headers"] and response.closed
 
 
 @pytest.mark.parametrize(
@@ -1336,14 +1130,13 @@ def test_furnace_guard_uses_configured_bind_and_header_token_without_proxy(
         {"MG400_FURNACE_BASE_PATH": "//evil"},
         {"MG400_FURNACE_BASE_PATH": "/a?x=1"},
         {"MG400_FURNACE_BASE_PATH": "/../"},
-        {"MG400_FURNACE_TOKEN": "short"},
     ],
 )
 def test_furnace_guard_invalid_destination_never_constructs_connection(ctl, settings):
     factory = Mock(side_effect=AssertionError("network"))
     with pytest.raises(ValueError):
         ctl.module.furnace_state(
-            {"MG400_FURNACE_TOKEN": "test-furnace-token-0123456789", **settings},
+            settings,
             connection_factory=factory,
         )
     factory.assert_not_called()
@@ -1363,9 +1156,7 @@ def test_furnace_guard_invalid_destination_never_constructs_connection(ctl, sett
 def test_furnace_guard_rejects_redirects_and_malformed_status(ctl, response):
     factory = Mock(return_value=response)
     with pytest.raises(ValueError):
-        ctl.module.furnace_state(
-            {"MG400_FURNACE_TOKEN": "test-furnace-token-0123456789"}, connection_factory=factory
-        )
+        ctl.module.furnace_state({}, connection_factory=factory)
     factory.assert_called_once()
     assert response.closed
 
@@ -1376,7 +1167,7 @@ def test_furnace_guard_closes_dripping_body_at_monotonic_deadline(ctl):
     times = iter([10, 10, 11, 12])
     with pytest.raises(ValueError, match="deadline"):
         ctl.module.furnace_state(
-            {"MG400_FURNACE_TOKEN": "test-furnace-token-0123456789"},
+            {},
             connection_factory=Mock(return_value=response),
             clock=lambda: next(times),
         )
@@ -1407,21 +1198,21 @@ def test_thermal_is_optional_and_starts_only_when_selected(ctl):
     assert systemctl(ctl) == [["systemctl", "stop", "mg400-thermal.service"]]
 
 
-def test_thermal_token_and_logs_use_registered_names_without_device_access(ctl):
-    ctl.host.settings.write_text(SETTINGS + "MG400_THERMAL_TOKEN=thermal-token-0123456789\n")
-    assert ctl.call("token", "thermal") == 0
-    assert ctl.out.getvalue() == "thermal-token-0123456789\n"
-    ctl.run.assert_not_called()
+def test_thermal_logs_use_registered_names_without_device_access(ctl):
     assert ctl.call("logs", "thermal") == 0
     assert systemctl(ctl) == [
         ["journalctl", "--no-pager", "-n", "50", "-u", "mg400-thermal.service"]
     ]
 
 
-def test_microscope_requires_selection_to_start_but_always_permits_stop(ctl):
-    assert ctl.call("start", "microscope") == 1
-    ctl.run.assert_not_called()
-    ctl.host.settings.write_text(SETTINGS + "MG400_OPTIONAL_SERVICES=microscope\n")
+@pytest.mark.parametrize("selection", ["", "microscope,furnace"])
+def test_microscope_and_furnace_start_without_selection(ctl, selection):
+    ctl.host.settings.write_text(SETTINGS + f"MG400_OPTIONAL_SERVICES={selection}\n")
+    assert ctl.call("start", "microscope", "furnace") == 0
+    assert systemctl(ctl) == [
+        ["systemctl", "start", "mg400-microscope.service", "mg400-furnace.service"]
+    ]
+    ctl.run.reset_mock()
     assert ctl.call("start", "microscope") == 0
     assert systemctl(ctl) == [["systemctl", "start", "mg400-microscope.service"]]
     ctl.run.reset_mock()
@@ -1430,11 +1221,7 @@ def test_microscope_requires_selection_to_start_but_always_permits_stop(ctl):
     assert systemctl(ctl) == [["systemctl", "stop", "mg400-microscope.service"]]
 
 
-def test_microscope_registered_token_and_logs_do_not_contact_devices(ctl):
-    ctl.host.settings.write_text(SETTINGS + "MG400_MICROSCOPE_TOKEN=synthetic-microscope-token\n")
-    assert ctl.call("token", "microscope") == 0
-    assert ctl.out.getvalue() == "synthetic-microscope-token\n"
-    ctl.run.assert_not_called()
+def test_microscope_logs_do_not_contact_devices(ctl):
     assert ctl.call("logs", "microscope") == 0
     assert systemctl(ctl) == [
         ["journalctl", "--no-pager", "-n", "50", "-u", "mg400-microscope.service"]

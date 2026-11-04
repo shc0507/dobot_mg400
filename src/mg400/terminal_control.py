@@ -148,31 +148,26 @@ class TerminalSession:
             and result.get("client") == self.client_id
         ):
             return None
+        disabled = snapshot.get("robot_mode") == 4 and snapshot.get("enabled") is False
+        enabled = snapshot.get("robot_mode") == 5 and snapshot.get("enabled") is True
         if (
-            snapshot.get("robot_mode") == 5
-            and snapshot.get("enabled") is True
-            and result.get("action") == "stop_sync"
+            (disabled or enabled)
+            and result.get("action") in {"stop", "stop_sync"}
             and result.get("result") == "stopped"
         ):
+            if disabled and self._quit_disable_requested and snapshot.get("busy") is True:
+                # The explicit disable is still pending. Its final receipt is required
+                # when tick() observes that the safety worker has finished.
+                return "waiting"
+            # A new Stop can supersede an earlier disable while old work drains.
+            # Its receipt confirms rest, not completion of the disconnect.
             return "disable"
         if (
-            snapshot.get("robot_mode") == 4
-            and snapshot.get("enabled") is False
+            disabled
             and result.get("action") in {"stop_sync", "disable"}
             and result.get("result") == "ok"
         ):
             return "draining"
-        if (
-            self._quit_disable_requested
-            and snapshot.get("busy") is True
-            and snapshot.get("robot_mode") == 4
-            and snapshot.get("enabled") is False
-            and result.get("action") == "stop_sync"
-            and result.get("result") == "stopped"
-        ):
-            # The explicit disable is still pending. Its final receipt is required
-            # when tick() observes that the safety worker has finished.
-            return "waiting"
         return None
 
     def submit(self, line):

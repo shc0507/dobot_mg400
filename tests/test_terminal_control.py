@@ -1,4 +1,5 @@
 import curses
+import threading
 from collections import deque
 from unittest.mock import Mock
 
@@ -275,6 +276,7 @@ def test_confirmed_enabled_quit_prompts_disable_without_sending_it():
     assert state.commands[-1][0] == {"action": "disable"}
 
 
+@pytest.mark.parametrize("stop_action", ["stop", "stop_sync"])
 @pytest.mark.parametrize(
     "change",
     [
@@ -284,19 +286,24 @@ def test_confirmed_enabled_quit_prompts_disable_without_sending_it():
         {"robot_error": None},
         {"stop_unconfirmed": True},
         {"locked": False},
+        {"robot_mode": 6},
         {"robot_mode": 7},
+        {"robot_mode": 9},
+        {"robot_mode": 4, "enabled": True},
+        {"robot_mode": 5, "enabled": False},
         {"enabled": None},
         {"controller_id": "someone-else"},
         {"last_command": None},
     ],
 )
-def test_quit_never_calls_missing_or_unsafe_feedback_a_confirmed_stop(change):
+def test_quit_never_calls_missing_or_unsafe_feedback_a_confirmed_stop(change, stop_action):
     state = State()
     state.values.update(syncing=True, busy=True)
     session = TerminalSession(state)
     session.messages.clear()
     session.submit("quit")
     confirmed_quit_snapshot(state, session)
+    state.values["last_command"]["action"] = stop_action
     state.values.update(change)
     session.tick()
     assert not session.finished and not session.quitting
@@ -305,17 +312,19 @@ def test_quit_never_calls_missing_or_unsafe_feedback_a_confirmed_stop(change):
     assert state.commands == [({"action": "stop_sync"}, session.client_id)]
 
 
+@pytest.mark.parametrize("stop_action", ["stop", "stop_sync"])
 @pytest.mark.parametrize(
     "change",
     [{"id": "old-stop"}, {"client": "other"}, {"action": "execute"}, {"result": "failed"}],
 )
-def test_quit_needs_a_new_matching_safety_receipt(change):
+def test_quit_needs_a_new_matching_safety_receipt(change, stop_action):
     state = State()
     state.values.update(syncing=True, busy=True, last_command={"id": "old-stop"})
     session = TerminalSession(state)
     session.messages.clear()
     session.submit("quit")
     confirmed_quit_snapshot(state, session)
+    state.values["last_command"]["action"] = stop_action
     state.values["last_command"].update(change)
     session.tick()
     assert not session.finished and not session.quitting
@@ -428,9 +437,84 @@ def test_terminal_stop_interrupts_waiting_robot_move():
         state.close()
 
 
+@pytest.mark.parametrize("interrupt_at", ["pending-stop", "retained-prompt"])
+def test_ctrl_c_stop_receipt_preserves_quit_and_explicit_disable(interrupt_at):
+    feed = Feed()
+    release_stop = threading.Event()
+    controls = []
+
+    class GatedStopControl(PanelControl):
+        def stop(self):
+            result = super().stop()
+            if not release_stop.wait(2):
+                raise RuntimeError("Test did not release the pending stop")
+            return result
+
+    def control_factory(*args, **kwargs):
+        control = GatedStopControl(*args, **kwargs)
+        controls.append(control)
+        return control
+
+    state = RobotPanelState("robot.test", connection_factory=feed, control_factory=control_factory)
+    state.command = Mock(wraps=state.command)
+    session = TerminalSession(state)
+    control = controls[0]
+    try:
+        session.submit("connect")
+        wait_for(lambda: session.tick()["feedback_fresh"])
+        session.messages.clear()
+        session.submit("quit")
+        baseline = session._quit_baseline
+        assert control.stop_entered.wait(1)
+        assert session.quitting and state.snapshot()["busy"]
+        if interrupt_at == "pending-stop":
+            # run_terminal dispatches Ctrl+C as this explicit Stop command.
+            session.submit("stop")
+        release_stop.set()
+        wait_for(lambda: not session.tick()["busy"])
+        assert not session.quitting and not session.finished
+        assert "Enter disable, then quit" in " ".join(session.messages)
+        if interrupt_at == "retained-prompt":
+            session.submit("stop")
+            wait_for(lambda: not session.tick()["busy"])
+
+        snapshot = state.snapshot()
+        assert snapshot["controller_id"] is None
+        assert snapshot["last_command"]["action"] == "stop"
+        assert snapshot["last_command"]["result"] == "stopped"
+        assert snapshot["last_command"]["client"] == session.client_id
+        session.submit("quit")
+        session.tick()
+        assert not session.quitting and not session.finished
+        assert session._quit_baseline == baseline
+        assert [call.args[0]["action"] for call in state.command.call_args_list] == [
+            "start_sync",
+            "stop_sync",
+            "stop",
+        ]
+        assert control.calls.count("stop") == (1 if interrupt_at == "pending-stop" else 2)
+        assert "disable" not in control.calls
+        assert "physical emergency stop" not in " ".join(session.messages)
+        assert "quit --force" not in " ".join(session.messages)
+        assert "Start sync" not in " ".join(session.messages)
+
+        feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+        wait_for(lambda: session.tick()["robot_mode"] == 4)
+        session.submit("disable")
+        wait_for(lambda: not session.tick()["syncing"] and not session.tick()["busy"])
+        session.submit("quit")
+        assert session.finished and session.exit_code == 0
+        assert control.calls.count("disable") == 1
+    finally:
+        release_stop.set()
+        state.close()
+
+
+@pytest.mark.parametrize("interrupt_after_disable", [False, True])
 @pytest.mark.parametrize("disconnect_command", ["quit", "disconnect"])
 def test_quit_after_explicit_disable_waits_for_the_original_disconnect_and_old_worker(
     disconnect_command,
+    interrupt_after_disable,
 ):
     feed = Feed()
     controls = []
@@ -480,6 +564,37 @@ def test_quit_after_explicit_disable_waits_for_the_original_disconnect_and_old_w
         assert state.snapshot()["controller_id"] is None
         assert "Start sync" not in " ".join(session.messages)
         assert "physical emergency stop" not in " ".join(session.messages)
+
+        if interrupt_after_disable:
+            # Ctrl+C starts a new Stop and supersedes the completed disable's receipt.
+            session.messages.clear()
+            session.submit("stop")
+            wait_for(lambda: not session.tick()["busy"])
+            snapshot = state.snapshot()
+            assert snapshot["last_command"]["action"] == "stop"
+            assert snapshot["last_command"]["result"] == "stopped"
+            assert snapshot["robot_mode"] == 4 and snapshot["enabled"] is False
+            assert snapshot["controller_id"] is None
+            assert not session.quitting and not session.finished
+            assert "Enter disable, then quit" in " ".join(session.messages)
+            assert "physical emergency stop" not in " ".join(session.messages)
+            assert "quit --force" not in " ".join(session.messages)
+            session.submit("quit")
+            session.tick()
+            assert not session.quitting and not session.finished
+            assert session._quit_baseline == baseline
+            assert control.calls.count("stop") == 2
+            assert control.calls.count("disable") == 1
+            assert "Start sync" not in " ".join(session.messages)
+            # Only the operator's second disable restores disconnect completion.
+            session.submit("disable")
+            wait_for(lambda: not session.tick()["busy"])
+            assert state.snapshot()["last_command"]["action"] == "disable"
+            assert state.snapshot()["last_command"]["result"] == "ok"
+            assert control.calls.count("disable") == 2
+            assert not session.finished and state.snapshot()["syncing"]
+            session.submit("quit")
+            assert session.quitting and session._quit_baseline == baseline
 
         control.release_pose.set()
         wait_for(lambda: session.tick() and session.finished)

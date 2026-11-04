@@ -240,7 +240,13 @@ If the robot is enabled, `Disconnect` (`stop_sync`) stops it and releases browse
 The service does not disable the robot automatically.
 Click `Disable robot` to confirm disabled mode 4 and rest before feedback disconnects and control unlocks.
 Feedback stays connected until previous operations finish.
-If feedback is lost or stale, the stop becomes unconfirmed and the lock stays. Use the physical emergency stop on site.
+Stale feedback cannot confirm a stop. If the service reports an unconfirmed stop, use the physical emergency stop on site.
+If the service recorded no unconfirmed stop during a brief feedback gap, fresh feedback lets it confirm a new explicit `Disable robot` request.
+If the feedback reader fails, the stop stays unconfirmed and the connection lock stays held.
+
+When a page takes control with `Connect & take control` while feedback remains connected, it cancels the previous owner's pending disconnect.
+After that page confirms `Disable robot`, feedback stays connected for its control session.
+Click `Disconnect` when finished.
 
 When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control.
 After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.

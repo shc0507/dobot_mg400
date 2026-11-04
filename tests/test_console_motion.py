@@ -11,7 +11,6 @@ from orchestrator.app import DemoResources, OrchestratorService, create_app
 from orchestrator.web import console as console_module
 from orchestrator.web.workspaces import discover
 
-TOKEN = "console-operator-token-0123456789"
 PRIVATE = "private-robot-service-token-0123456789"
 
 
@@ -34,7 +33,7 @@ class Clock:
 
 
 def headers(page):
-    result = {"Authorization": f"Bearer {TOKEN}"}
+    result = {}
     if page:
         result["X-MG400-Client"] = page
     return result
@@ -109,7 +108,7 @@ def fake(tmp_path):
         client_factory=factory,
         clock=Clock(),
     ).start(background=False)
-    app = create_app(service, token=TOKEN, base_path="/lab")
+    app = create_app(service, base_path="/lab")
     yield SimpleNamespace(service=service, client=app.test_client(), holders=holders)
     service.close()
 
@@ -119,11 +118,6 @@ def test_motion_workspace_registers_its_routes():
     assert "motion" in ids
     item = next(item for item in discover() if item.id == "motion")
     assert item.register is not None and item.title == {"en": "Motion", "zh": "运动"}
-
-
-def test_state_route_needs_the_operator_token(fake):
-    response = fake.client.get("/lab/api/console/ws/motion/state")
-    assert response.status_code == 401
 
 
 def test_state_route_keeps_only_page_fields_and_hides_identities(fake):
@@ -179,7 +173,7 @@ def sim(tmp_path, monkeypatch):
     ).start(background=False)
     # Only the robot and the stage run in this rig.
     service.dashboard_configured = lambda name: name in {"robot", "stage"}
-    app = create_app(service, token=TOKEN, base_path="/lab")
+    app = create_app(service, base_path="/lab")
     rig = SimpleNamespace(service=service, client=app.test_client(), clock=clock)
     yield rig
     service.close()
@@ -288,39 +282,17 @@ def test_jog_step_moves_the_arm_once_from_the_actual_pose(sim):
     assert ws(sim, "jog", jog, page="console-page-b")[0] == 409
 
 
-def test_jog_outside_the_workspace_is_refused_and_never_moves_the_arm(sim, tmp_path):
+def test_jog_and_move_need_no_bounds_or_tool_file(sim):
     take(sim, "robot")
     x, y, z, r = enable_robot(sim)["actual"][:4]
-    tool = tmp_path / "tool.toml"
-    tool.write_text("offset_mm = [0, 0, 0]\n")
-    tool.chmod(0o600)
-    bounds = {"X": (x - 50, x + 1), "Y": (y - 50, y + 50), "Z": (z - 50, z + 50)}
-    sim.service.settings.update(
-        {
-            f"MG400_ORCH_{axis}_{side}_MM": str(value)
-            for axis, pair in bounds.items()
-            for side, value in zip(("MIN", "MAX"), pair)
-        },
-        MG400_ORCH_R_MIN_DEG="-180",
-        MG400_ORCH_R_MAX_DEG="180",
-        MG400_ORCH_TOOL_FILE=str(tool),
-    )
     cap = speed_cap(sim)
+    assert not any(key.startswith("MG400_ORCH_X_") for key in sim.service.settings)
     status, body = ws(sim, "jog", {"axis": "x", "direction": 1, "step": 2, "speed": cap})
-    assert status == 409 and "outside the workspace" in body["error"]
-    status, body = ws(
-        sim, "move", {"targets": {"x": x, "y": y, "z": z + 500, "r": r}, "speed": cap}
-    )
-    assert status == 409 and "outside the workspace" in body["error"]
-    assert settled(sim)["actual"][:3] == pytest.approx([x, y, z], abs=0.05)
-    # A jog back into the workspace is sent.
-    status, body = ws(sim, "jog", {"axis": "x", "direction": -1, "step": 2, "speed": cap})
     assert status == 202, body
-    assert settled(sim)["actual"][0] == pytest.approx(x - 2, abs=0.05)
-    # Without bounds outside demo mode, console motion is refused.
-    sim.service.settings.pop("MG400_ORCH_X_MAX_MM")
-    status, body = ws(sim, "jog", {"axis": "x", "direction": -1, "step": 2, "speed": cap})
-    assert status == 409 and "workspace bounds" in body["error"]
+    assert settled(sim)["actual"][0] == pytest.approx(x + 2, abs=0.05)
+    status, body = ws(sim, "move", {"targets": {"x": x, "y": y, "z": z + 5, "r": r}, "speed": cap})
+    assert status == 202, body
+    assert settled(sim)["actual"][2] == pytest.approx(z + 5, abs=0.05)
 
 
 def test_gripper_commands_report_an_outcome(sim):
@@ -378,14 +350,14 @@ def test_robot_stop_works_without_control(sim):
     assert response.get_json()["outcome"] in {"confirmed", "pending"}
 
 
-def test_generic_relay_refuses_robot_execute_and_the_move_route_sends_it(sim):
+def test_generic_relay_and_the_move_route_both_send_robot_execute(sim):
     take(sim, "robot")
     x, y, z, r = enable_robot(sim)["actual"][:4]
-    targets = {"x": x - 2, "y": y, "z": z, "r": r}
-    params = {"targets": targets, "speed": speed_cap(sim)}
+    params = {"targets": {"x": x - 2, "y": y, "z": z, "r": r}, "speed": speed_cap(sim)}
     status, body = command(sim, "robot", "execute", params)
-    assert status == 409 and "/lab/api/console/ws/motion/move" in body["error"]
-    assert settled(sim)["actual"][0] == pytest.approx(x, abs=0.05)
+    assert status == 202, body
+    assert settled(sim)["actual"][0] == pytest.approx(x - 2, abs=0.05)
+    params = {"targets": {"x": x - 4, "y": y, "z": z, "r": r}, "speed": speed_cap(sim)}
     status, body = ws(sim, "move", params)
     assert status == 202 and body["outcome"] == "accepted", body
-    assert settled(sim)["actual"][0] == pytest.approx(x - 2, abs=0.05)
+    assert settled(sim)["actual"][0] == pytest.approx(x - 4, abs=0.05)

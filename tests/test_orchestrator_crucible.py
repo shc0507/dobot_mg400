@@ -748,10 +748,10 @@ def test_demo_environments_retain_only_explicit_crucible_data(monkeypatch):
     with cli._demo_environment():
         assert forbidden.isdisjoint(os.environ)
         assert {key: os.environ[key] for key in explicit} == explicit
-    clean = demo_environment({**os.environ, "MG400_ORCH_TOKEN": "frontend-token"})
+    clean = demo_environment({**os.environ, "MG400_ORCH_PORT": "8772"})
     assert forbidden.isdisjoint(clean)
     assert {key: clean[key] for key in explicit} == explicit
-    assert clean["MG400_ORCH_TOKEN"] == "frontend-token"
+    assert clean["MG400_ORCH_PORT"] == "8772"
 
 
 def _crucible_files(tmp_path, monkeypatch):

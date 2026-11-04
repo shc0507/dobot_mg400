@@ -1,6 +1,6 @@
 /* Lab Console shell: the frame, the relay client, control heartbeats and i18n.
  * Workspaces call LabConsole.register({id, i18n, mount(root, api), show(), hide()}).
- * The browser never receives a service token. See docs/agents/console-design/CONTRACT.md. */
+ * See docs/agents/console-design/CONTRACT.md. */
 (function (root, factory) {
   const api = factory(root);
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -20,9 +20,6 @@
       "stop.all": "STOP ALL MOTION",
       "lang.switch": "中文",
       "lang.switchLabel": "Switch language to Chinese",
-      "access.label": "Console access token",
-      "access.connect": "Connect",
-      "access.needed": "Enter the console access token.",
       "controls.none": "You control: none",
       "controls.some": "You control: {devices}",
       "service.robot": "Robot", "service.stage": "Stage", "service.cameras": "Cameras",
@@ -41,9 +38,6 @@
       "stop.all": "停止全部运动",
       "lang.switch": "English",
       "lang.switchLabel": "切换到英文",
-      "access.label": "控制台访问令牌",
-      "access.connect": "连接",
-      "access.needed": "请输入控制台访问令牌。",
       "controls.none": "本页控制：无",
       "controls.some": "本页控制：{devices}",
       "service.robot": "机械臂", "service.stage": "位移台", "service.cameras": "相机",
@@ -99,7 +93,7 @@
     return { tone: run.status === "running" ? "info" : run.status === "failed" ? "bad" : "ok", text: run.status || "" };
   }
 
-  /** camera1 to camera4 through the console relay (MG400_ORCH_CAMERA_URL). */
+  /** camera1 to camera4: configured when a camera device is set. */
   function camerasChip(preview, fresh) {
     if (!fresh) return { tone: "warn", key: "chip.stale" };
     const state = preview?.state;
@@ -128,12 +122,6 @@
     });
   }
 
-  function readinessSummary(rows) {
-    const counts = { ready: 0, todo: 0, blocked: 0 };
-    for (const row of rows || []) if (row.state in counts) counts[row.state]++;
-    return counts;
-  }
-
   function latestOperation(operations, action) {
     const rows = (operations || []).filter(item => item.action === action);
     return rows.length ? rows[rows.length - 1] : null;
@@ -143,7 +131,7 @@
 
   const workspaces = new Map();
   const shell = {
-    base: "", token: "", page: "", lang: "en", snapshot: null, stateAt: -Infinity,
+    base: "", page: "", lang: "en", snapshot: null, stateAt: -Infinity,
     stateListeners: new Set(), languageListeners: new Set(), mounted: new Set(),
     active: "", beatTimer: null, pollTimer: null, beatBusy: false, polling: false,
     knownControl: new Map(), doc: null,
@@ -153,10 +141,7 @@
   function fresh() { return shell.snapshot !== null && now() - shell.stateAt < STALE_MS; }
   function t(key, vars) { return translate(strings, shell.lang, key, vars); }
 
-  function clean(text) {
-    const value = String(text ?? "");
-    return shell.token ? value.split(shell.token).join("[redacted]") : value;
-  }
+  function clean(text) { return String(text ?? ""); }
 
   class RequestError extends Error {
     constructor(message, status = 0, body = null) { super(message); this.status = status; this.body = body; }
@@ -165,7 +150,6 @@
   async function request(path, data, options = {}) {
     if (!path.startsWith("/api/")) throw new RequestError("Invalid console path.");
     const headers = { Accept: "application/json" };
-    if (shell.token) headers.Authorization = "Bearer " + shell.token;
     if (shell.page) headers["X-MG400-Client"] = shell.page;
     const init = { headers, redirect: "error", credentials: "omit", cache: "no-store", keepalive: options.keepalive === true };
     if (data !== undefined) {
@@ -185,7 +169,6 @@
       catch { throw new RequestError("The console did not answer.", 0); }
       let body = null;
       try { body = await response.json(); } catch { body = null; }
-      if (response.status === 401) showAccess(true);
       if (!body || typeof body !== "object" || Array.isArray(body)) throw new RequestError("The console returned an unreadable response.", response.status);
       if (!response.ok && !(options.accept || []).includes(response.status)) {
         throw new RequestError(clean(typeof body.error === "string" ? body.error : "The console refused the request."), response.status, body);
@@ -219,12 +202,6 @@
     box.textContent = clean(text);
     box.className = "lc-notice " + level;
     box.hidden = !text;
-  }
-
-  function showAccess(show) {
-    const box = $("lc-access");
-    if (box) box.hidden = !show;
-    if (show) notify(t("access.needed"), "warn");
   }
 
   function deviceName(id) { return t("service." + id); }
@@ -298,12 +275,10 @@
       const body = await request("/api/console/state");
       shell.snapshot = body;
       shell.stateAt = now();
-      showAccess(false);
-      if ($("lc-notice")?.textContent === t("access.needed")) notify("");
       applyControl(body.control || []);
       for (const listener of shell.stateListeners) { try { listener(body); } catch (error) { console.error(error); } }
-    } catch (error) {
-      if (error.status !== 401) { /* The strip shows stale after 3 s. */ }
+    } catch {
+      /* The strip shows stale after 3 s. */
     } finally {
       shell.polling = false;
       renderStrip();
@@ -437,11 +412,6 @@
     shell.lang = pickLanguage(stored, root.navigator?.language);
     $("lc-lang").addEventListener("click", () => setLanguage(shell.lang === "en" ? "zh" : "en"));
     $("lc-stop-all").addEventListener("click", () => { stopAll().catch(() => {}); });
-    $("lc-connect").addEventListener("click", () => {
-      shell.token = $("lc-token").value.trim();
-      $("lc-token").value = "";
-      poll();
-    });
     root.addEventListener("hashchange", () => show(String(root.location.hash || "").slice(1)));
     root.addEventListener("pagehide", () => {
       if (myControls().length) request("/api/console/release-page", {}, { keepalive: true }).catch(() => {});
@@ -460,7 +430,7 @@
 
   return {
     register, start, strings, shell,
-    logic: { translate, pickLanguage, serviceChip, runsChip, camerasChip, chips, filterEvents, readinessSummary, latestOperation },
+    logic: { translate, pickLanguage, serviceChip, runsChip, camerasChip, chips, filterEvents, latestOperation },
     STALE_MS, BEAT_MS, SERVICES,
     _internal: { request, relay, take, release, beat, poll, setLanguage, myControls },
   };

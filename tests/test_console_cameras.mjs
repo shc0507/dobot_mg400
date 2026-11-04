@@ -80,9 +80,12 @@ test("the workspace never parses data as HTML and never stores a token", () => {
   assert.ok(!/Authorization/.test(source));
 });
 
-test("a small tile asks for 10 fps and a large tile for the source rate", () => {
-  assert.deepEqual(logic.streamTicket("camera2", false), { view: "camera2", kind: "stream", fps: 10 });
-  assert.deepEqual(logic.streamTicket("microscope", true), { view: "microscope", kind: "stream", fps: 30 });
+test("cameras load from the proxy and the microscope from the console relay", () => {
+  assert.equal(logic.streamUrl("camera2", false, "/lab"), "/camera/camera2.mjpeg");
+  assert.equal(logic.snapshotUrl("camera4", "/lab"), "/camera/camera4.jpg");
+  assert.equal(logic.streamUrl("microscope", false, "/lab"), "/lab/api/console/ws/cameras/stream/microscope?fps=10");
+  assert.equal(logic.streamUrl("microscope", true, "/lab"), "/lab/api/console/ws/cameras/stream/microscope?fps=30");
+  assert.equal(logic.snapshotUrl("microscope", "/lab"), "/lab/api/console/ws/cameras/snapshot/microscope");
 });
 
 test("the thermal panel relays connect and shutter and links no service page", () => {

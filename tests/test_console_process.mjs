@@ -54,7 +54,7 @@ const SCOPE_DESCRIBE = { device: "microscope", commands: { select_objective: { p
 
 function statusBody(overrides = {}) {
   return {
-    now: 10_000, age_s: 0.5, cutoff_confirmed: false, gas_ready: false, crucible: { max_c: 31.5 },
+    now: 10_000, age_s: 0.5, crucible: { max_c: 31.5 },
     history: [[10_000 - 1800, 24, 0], [10_000, 25, 0]],
     furnace: {
       connected: true, locked: false, pv: 25, sv: 0, control_mode: "STOPPED",
@@ -169,15 +169,14 @@ test("every English string has a Chinese string", () => {
   assert.deepEqual(Object.keys(i18n.zh).sort(), Object.keys(i18n.en).sort());
 });
 
-test("apply and run needs a confirmation and warns before the cutoff", async () => {
+test("apply and run needs a confirmation", async () => {
   const { root, calls } = await load();
-  assert.equal(walk(root).find(node => node.className === "pr-banner").hidden, false);
+  assert.equal(walk(root).some(node => node.className === "pr-banner"), false);
   role(root, "target").type("250");
   role(root, "apply").click();
   assert.equal(calls.filter(call => call[0] === "relay").length, 0);
   const box = walk(root).find(node => node.getAttribute("role") === "alertdialog");
   assert.match(box.textContent, /250 °C/);
-  assert.match(box.textContent, /H-11/);
   role(root, "confirm-apply").click();
   await flush();
   assert.deepEqual(calls.filter(call => call[0] === "relay"), [["relay", "furnace", "apply_setpoint", { temperature_c: 250, ramp_rate_c_per_min: 10 }]]);
@@ -206,13 +205,9 @@ test("the sequence loads from the furnace and starts after a confirmation", asyn
   assert.equal(sent[3].steps[0].temperature_c, 300);
 });
 
-test("gas is refused until the gas map names real gases", async () => {
-  const refused = await load();
-  assert.equal(role(refused.root, "send-flow-0").disabled, true);
-  const ready = statusBody({ gas_ready: true });
-  ready.furnace.flow.gas_channels = [0, 1, 2].map(i => ({ channel_index: i, gas_name: ["Argon", "N2", "H2"][i] }));
-  const allowed = await load({ status: ready });
-  assert.equal(role(allowed.root, "send-flow-0").disabled, false);
+test("gas flow needs no gas map names", async () => {
+  const { root } = await load();
+  assert.equal(role(root, "send-flow-0").disabled, false);
 });
 
 test("stops need no control and are sent once", async () => {

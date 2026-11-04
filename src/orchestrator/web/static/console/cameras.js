@@ -1,6 +1,6 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
- * The console relays every view. The browser gets no camera key and no service token:
- * an <img> stream uses a short-lived single-use ticket. See docs/agents/console-design/CONTRACT.md. */
+ * camera1 to camera4 load from the proxy at /camera/<view>.mjpeg and /camera/<view>.jpg.
+ * The console relays the microscope stream and the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -210,8 +210,18 @@
     return { x: (boxW - w * scale) / 2, y: (boxH - h * scale) / 2, scale };
   }
 
-  /** The stream ticket request: a large tile gets the source rate, others TILE_FPS. */
-  function streamTicket(view, large) { return { view, kind: "stream", fps: large ? LARGE_FPS : TILE_FPS }; }
+  const CAMERAS = new Set(["camera1", "camera2", "camera3", "camera4"]);
+
+  /** The stream URL: a large microscope tile gets the source rate, others TILE_FPS. */
+  function streamUrl(view, large, basePath = "") {
+    if (CAMERAS.has(view)) return `/camera/${view}.mjpeg`;
+    return `${basePath}${PREFIX}stream/${view}?fps=${large ? LARGE_FPS : TILE_FPS}`;
+  }
+
+  /** The JPEG snapshot URL of one MJPEG view. */
+  function snapshotUrl(view, basePath = "") {
+    return CAMERAS.has(view) ? `/camera/${view}.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
+  }
 
   function backoff(failures) { return Math.min(15000, 1000 * 2 ** Math.min(4, failures)); }
 
@@ -319,7 +329,13 @@
     if (view === "thermal") {
       return { ...(engine.status.get("thermal") || {}), ...thermalRow(engine.thermal, engine.thermalAt, nowMs(), engine.thermalFailed) };
     }
-    return engine.status.get(view) || null;
+    const row = engine.status.get(view) || null;
+    // The browser loads camera1 to camera4 itself: a loaded tile is live.
+    if (row && CAMERAS.has(view)) {
+      const live = [...engine.tiles].some(tile => tile.view === view && tile.live);
+      return { ...row, state: live ? "live" : "offline", age_s: live ? 0 : null };
+    }
+    return row;
   }
 
   function viewBadge(view) {
@@ -361,8 +377,7 @@
       await new Promise(resolve => canvas.toBlob(blob => { if (blob) download(`thermal-${stamp()}.png`, blob); resolve(); }, "image/png"));
       return;
     }
-    const body = await request("ticket", { view, kind: "snapshot" });
-    const link = h("a", { href: body.url, download: `${view}-${stamp()}.jpg` });
+    const link = h("a", { href: snapshotUrl(view, base()), download: `${view}-${stamp()}.jpg` });
     doc().body.append(link);
     link.click();
     link.remove();
@@ -399,8 +414,8 @@
         this.bindDrawing();
       } else {
         this.img = h("img", { class: "lcam-media", alt: "", decoding: "async" });
-        this.img.addEventListener("error", () => this.failed());
-        this.img.addEventListener("load", () => { if (this.running && this.img.src !== BLANK) { this.failures = 0; this.paint(); } });
+        this.img.addEventListener("error", () => { this.live = false; this.failed(); });
+        this.img.addEventListener("load", () => { if (this.running && this.img.src !== BLANK) { this.failures = 0; this.live = true; this.paint(); } });
         this.media = this.img;
       }
       this.empty = h("div", { class: "lcam-empty" });
@@ -422,12 +437,9 @@
 
     start() {
       this.running = true;
-      const generation = ++this.generation;
+      this.generation++;
       if (this.view === "thermal") { if (engine.thermalTimer === null) pollThermal(); this.paint(); return; }
-      request("ticket", streamTicket(this.view, this.large)).then(body => {
-        if (!this.running || generation !== this.generation) return;
-        this.img.src = body.url;
-      }, () => this.failed());
+      this.img.src = streamUrl(this.view, this.large, base());
       pollStatus();
     }
 
@@ -441,6 +453,7 @@
 
     stop() {
       this.running = false;
+      this.live = false;
       this.generation++;
       if (this.retry) { clearTimeout(this.retry); this.retry = null; }
       // Replacing the source closes the stream, so the console ends its relay.
@@ -806,8 +819,8 @@
       const node = ui.tiles.get(view).labCameras;
       const parts = [
         row(api.t("side.mode"), status.mode || api.t("mode.unknown")),
-        row(api.t("side.streams"), String(status.streams ?? 0)),
       ];
+      if (view === "microscope") parts.push(row(api.t("side.streams"), String(status.streams ?? 0)));
       if (status.error) parts.push(row(api.t("side.error"), status.error));
       if (view === "camera4") {
         const d = engine.detections;
@@ -860,6 +873,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, regionFrom, containRect, backoff, stamp, streamTicket },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl },
   };
 });

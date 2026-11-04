@@ -5,15 +5,12 @@
   const validBase = base === "" || (base.startsWith("/") && !/[\\?#\u0000-\u0020]/.test(base) && !base.includes("//") && !base.endsWith("/") && !base.split("/").some(part => part === "." || part === ".."));
   const fields = { steps: "Steps and transfers", samples: "Measurements and thermal readings", artifacts: "Images and other artifacts", events: "Events and transfer records" };
   const controllers = new Set(), blobs = new Set(), runs = new Map();
-  let token = "", chip = "", generation = 0, nextRun = null, loadingRuns = false;
+  let chip = "", generation = 0, nextRun = null, loadingRuns = false;
   // Textareas normalize CR and CRLF. Keep the exact URL/clipboard identity
   // separately until a user edit supplies a new identity.
   let exactInput = null;
 
-  const text = value => {
-    const valueText = String(value ?? "");
-    return token ? valueText.split(token).join("[redacted]") : valueText;
-  };
+  const text = value => String(value ?? "");
   function node(tag, value, className = "") {
     const result = document.createElement(tag);
     if (value !== undefined) result.textContent = text(value);
@@ -56,7 +53,6 @@
     controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 10000);
     const headers = { Accept: binary ? "image/png,image/jpeg,image/gif,image/webp,application/octet-stream" : "application/json" };
-    if (token) headers.Authorization = "Bearer " + token;
     try {
       const response = await fetch(base + path, { method: "GET", headers, signal: controller.signal, redirect: "error", credentials: "omit", cache: "no-store" });
       if (!response.ok) {
@@ -300,7 +296,6 @@
 
   function search(updateLocation = true) {
     reset();
-    token = $("passport-token").value.trim();
     chip = exactInput === null ? $("chip-id").value : exactInput;
     if (!chip.trim()) { status("Enter the exact QR text or chip ID.", true); return; }
     if (!validBase) { status("Invalid passport path. No requests were sent.", true); return; }
@@ -308,12 +303,6 @@
     if (updateLocation) history.replaceState(null, "", base + "/chip?" + new URLSearchParams({ id: chip }).toString());
     nextRun = 0;
     loadRuns(generation);
-  }
-  function forget() {
-    reset();
-    token = "";
-    $("passport-token").value = "";
-    status("Token cleared. Displayed records and artifact previews were removed.");
   }
   $("passport-form").addEventListener("submit", event => { event.preventDefault(); search(); });
   $("chip-id").addEventListener("input", () => { exactInput = $("chip-id").value; });
@@ -337,9 +326,8 @@
     const cursor = (original.slice(0, start) + pasted).replace(/\r\n?/g, "\n").length;
     field.setSelectionRange(cursor, cursor);
   });
-  $("forget-passport").addEventListener("click", forget);
   $("more-runs").addEventListener("click", () => loadRuns(generation));
-  window.addEventListener("pagehide", forget);
+  window.addEventListener("pagehide", reset);
   try {
     const url = new URL(location.href);
     const path = base + "/chip/";

@@ -15,7 +15,6 @@ from orchestrator.app import OrchestratorService, create_app
 from orchestrator.recipe import Recipe, Step
 from orchestrator.store import MAX_ARTIFACT_BYTES, RunStore
 
-TOKEN = "offline-passport-frontend-token"
 PRIVATE = "offline-private-instrument-token"
 CHIP = " QR / # ? 芯片 "
 
@@ -63,7 +62,7 @@ def passport(tmp_path):
         runs_dir=tmp_path / "runs",
         client_factory=no_instruments,
     ).start(background=False)
-    app = create_app(service, token=TOKEN, base_path="/lab.v1")
+    app = create_app(service, base_path="/lab.v1")
     fixture = SimpleNamespace(
         service=service, store=service.store, app=app, client=app.test_client()
     )
@@ -75,7 +74,6 @@ def history(passport, chip=CHIP, **args):
     return passport.client.get(
         "/lab.v1/api/chip",
         query_string={"id": chip, **args},
-        headers={"Authorization": f"Bearer {TOKEN}"},
     )
 
 
@@ -83,7 +81,6 @@ def artifact(passport, identity, chip=CHIP):
     return passport.client.get(
         "/lab.v1/api/chip/artifact/" + identity,
         query_string={"id": chip},
-        headers={"Authorization": f"Bearer {TOKEN}"},
     )
 
 
@@ -104,38 +101,15 @@ def test_public_shell_and_fixed_assets_never_read_stored_chip_data(passport, mon
             assert PRIVATE not in response.get_data(as_text=True)
             assert response.headers["Cache-Control"] == "no-store"
             assert response.headers["X-Content-Type-Options"] == "nosniff"
-        assert (
-            passport.client.get(
-                "/lab.v1" + path, headers={"Origin": "https://foreign.invalid"}
-            ).status_code
-            == 403
-        )
-    assert passport.client.get("/lab.v1/dashboard-static/../passport.py").status_code == 401
+    assert passport.client.get("/lab.v1/dashboard-static/../passport.py").status_code == 404
 
 
 @pytest.mark.parametrize("method", ["get", "head"])
-@pytest.mark.parametrize(
-    "path", ["/api/chip?id=known", "/api/chip/artifact/" + "a" * 32 + "?id=known"]
-)
-def test_every_history_and_artifact_read_requires_access_token(passport, method, path):
+@pytest.mark.parametrize("path", ["/api/chip?id=known", "/chip"])
+def test_history_reads_need_no_token(passport, method, path):
     call = getattr(passport.client, method)
-    assert call("/lab.v1" + path).status_code == 401
-    assert call("/lab.v1" + path + "&token=" + TOKEN).status_code == 401
-    assert call("/lab.v1" + path, headers={"Authorization": f"Bearer {TOKEN} "}).status_code == 401
-    assert (
-        call(
-            "/lab.v1" + path,
-            headers={"Authorization": f"Bearer {TOKEN}", "Origin": "https://foreign.invalid"},
-        ).status_code
-        == 403
-    )
-
-
-def test_tokenless_passport_retains_host_and_forwarded_checks(passport):
-    client = create_app(passport.service).test_client()
-    for path in ("/chip", "/api/chip?id=known"):
-        assert client.get(path, headers={"Host": "foreign.invalid"}).status_code == 403
-        assert client.get(path, headers={"X-Forwarded-For": "127.0.0.1"}).status_code == 403
+    headers = {"Host": "foreign.invalid", "Origin": "https://foreign.invalid"}
+    assert call("/lab.v1" + path, headers=headers).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -312,9 +286,7 @@ def test_invalid_history_queries_are_rejected_before_store_reads(passport, monke
         raise AssertionError("Invalid query reached storage")
 
     monkeypatch.setattr(passport.store, "chip_history", forbidden)
-    response = passport.client.get(
-        "/lab.v1/api/chip", query_string=query, headers={"Authorization": f"Bearer {TOKEN}"}
-    )
+    response = passport.client.get("/lab.v1/api/chip", query_string=query)
     assert response.status_code == 400
 
 
@@ -735,9 +707,9 @@ function browser(href = 'http://localhost:8772/lab/chip') {
   return {
     requests, locations, revoked, blobURLs, nodes,
     get: id => nodes.get(id),
-    async search(chip = 'chip-A', token = 'front token only') { nodes.get('chip-id').value = chip;
-        nodes.get('chip-id').emit('input'); nodes.get('passport-token').value = token;
-        nodes.get('passport-form').emit('submit'); await drain(); },
+    async search(chip = 'chip-A') { nodes.get('chip-id').value = chip;
+        nodes.get('chip-id').emit('input'); nodes.get('passport-form').emit('submit');
+        await drain(); },
     async respond(index, data, status = 200) { requests[index].resolve({ ok:
         status >= 200 && status < 300, status, json: async () => data, blob: async () => data });
         await drain(); },
@@ -771,17 +743,16 @@ const cases = {
     await page.search(chip);
     const request = page.requests[0], url = new URL(request.url, 'http://localhost');
     assert.equal(url.searchParams.get('id'), chip);
-    assert.equal(request.options.method, 'GET'); assert.equal(request.options.headers.Authorization,
-        'Bearer front token only');
+    assert.equal(request.options.method, 'GET');
+    assert.equal(request.options.headers.Authorization, undefined);
     assert.equal(request.options.redirect, 'error'); assert.equal(request.options.credentials,
         'omit'); assert.equal(request.options.cache, 'no-store');
     assert.equal(new URL(page.locations[0], 'http://localhost').searchParams.get('id'), chip);
-    assert.ok(!request.url.includes('front')); assert.ok(!page.locations[0].includes('front'));
     await page.respond(0, pageData('runs', [], null, chip));
     assert.match(page.get('passport-status').textContent,
         /No recorded runs match this exact chip ID/);
     assert.equal(page.get('selected-chip').textContent, chip);
-    assert.match(html, /type="password" autocomplete="off"/); assert.doesNotMatch(script,
+    assert.doesNotMatch(html, /type="password"/); assert.doesNotMatch(script,
         /innerHTML|insertAdjacentHTML|document\.write/);
   },
   async initial_id_decoded_once() {
@@ -792,13 +763,12 @@ const cases = {
     assert.equal(new URL(path.requests[0].url, 'http://localhost').searchParams.get('id'),
         '%2FKeepCase');
   },
-  async raw_url_id_survives_textarea_and_token_changes() {
+  async raw_url_id_survives_textarea_changes() {
     const page = browser('http://localhost/lab/chip?id=Chip%0D%0AA');
     assert.equal(page.get('chip-id').value, 'Chip\nA');
     assert.equal(new URL(page.requests[0].url, 'http://localhost').searchParams.get('id'),
         'Chip\r\nA');
-    await page.respond(0, { error: 'Token required' }, 401);
-    page.get('passport-token').value = 'another access token';
+    await page.respond(0, { error: 'Unavailable' }, 503);
     page.get('passport-form').emit('submit'); await drain();
     assert.equal(new URL(page.requests[1].url, 'http://localhost').searchParams.get('id'),
         'Chip\r\nA');
@@ -895,15 +865,14 @@ const cases = {
     const request = page.requests[5];
     assert.equal(new URL(request.url, 'http://localhost').pathname,
         '/lab/api/chip/artifact/' + artifactId);
-    assert.equal(request.options.headers.Authorization, 'Bearer front token only');
+    assert.equal(request.options.headers.Authorization, undefined);
     await page.respond(5, new Blob(['fake image bytes'], { type: 'image/png' }));
     const image = walk(page.get('passport-runs')).find(element => element.tagName === 'IMG');
     assert.equal(image.src, 'blob:passport-1'); assert.doesNotMatch(image.src, /api|token/);
     const link = walk(page.get('passport-runs')).find(element => element.tagName === 'A');
     assert.equal(link.download, 'image.png'); assert.equal(link.href, image.src);
-    await page.click('forget-passport');
+    await page.hide();
     assert.deepEqual(page.revoked, ['blob:passport-1']);
-        assert.equal(page.get('passport-token').value, '');
     assert.equal(page.get('passport-runs').children.length, 0);
   },
   async non_raster_never_embedded() {
@@ -919,8 +888,7 @@ const cases = {
     assert.equal(page.blobURLs[0].blob.type, 'application/octet-stream');
   },
   async changed_search_ignores_retired_reply() {
-    const page = browser(); await page.search('old-chip'); await page.search('new-chip',
-        'new token');
+    const page = browser(); await page.search('old-chip'); await page.search('new-chip');
     await page.respond(0, pageData('runs', [run()], null, 'old-chip'));
     assert.equal(page.get('passport-runs').children.length, 0);
     await page.respond(1, pageData('runs', [], null, 'new-chip'));
@@ -929,15 +897,14 @@ const cases = {
     await page.hide(); assert.equal(page.get('selected-chip').textContent, '');
     assert.equal(page.requests.length, 2);
   },
-  async invalid_pages_and_secret_errors() {
+  async invalid_pages_and_errors() {
     const page = browser(); await page.search();
     await page.respond(0, pageData('runs', [run()], 0));
     assert.match(page.get('passport-status').textContent, /invalid continuation/);
     assert.equal(page.get('passport-runs').children.length, 0);
     await page.click('more-runs');
-    await page.respond(1, { error: 'Refused front token only' }, 401);
-    assert.doesNotMatch(page.get('passport-status').textContent, /front token only/);
-    assert.match(page.get('passport-status').textContent, /\[redacted\]/);
+    await page.respond(1, { error: 'Refused by the service' }, 503);
+    assert.match(page.get('passport-status').textContent, /Refused by the service/);
     assert.ok(page.requests.every(item => item.options.method === 'GET'));
   },
   async rejected_artifact_retains_no_blob() {
@@ -947,7 +914,7 @@ const cases = {
     await page.click(page.find('Read artifact'));
     const pending = deferred();
     page.requests[5].resolve({ ok: true, blob: () => pending.promise }); await drain();
-    await page.click('forget-passport'); pending.resolve(new Blob(['bytes'], { type:
+    await page.hide(); pending.resolve(new Blob(['bytes'], { type:
         'image/png' })); await drain();
     assert.equal(page.blobURLs.length, 0); assert.equal(page.get('passport-runs').children.length,
         0);
@@ -966,7 +933,7 @@ else { for (const [name, check] of Object.entries(cases)) { await check();
     [
         "exact_search_and_secret",
         "initial_id_decoded_once",
-        "raw_url_id_survives_textarea_and_token_changes",
+        "raw_url_id_survives_textarea_changes",
         "exact_clipboard_and_selection",
         "independent_pagination",
         "explicit_pv_only",
@@ -974,7 +941,7 @@ else { for (const [name, check] of Object.entries(cases)) { await check();
         "protected_artifact_and_revocation",
         "non_raster_never_embedded",
         "changed_search_ignores_retired_reply",
-        "invalid_pages_and_secret_errors",
+        "invalid_pages_and_errors",
         "rejected_artifact_retains_no_blob",
     ],
 )

@@ -1,4 +1,4 @@
-"""Console Cameras workspace: tickets, the stream bound, relay end, states and secrets."""
+"""Console Cameras workspace: proxy camera URLs, the microscope relay, states and secrets."""
 
 import json
 import re
@@ -12,9 +12,7 @@ import pytest
 from orchestrator.app import OrchestratorService, create_app
 from orchestrator.web.workspaces import cameras as cameras_module
 
-TOKEN = "console-operator-token-0123456789"
 PRIVATE = "private-microscope-token-0123456789"
-CAMERA_KEY = "camera-preview-key-0123456789abcdef0123"
 JPEG = b"\xff\xd8fake-jpeg\xff\xd9"
 
 
@@ -157,8 +155,6 @@ def rig(tmp_path):
         settings={
             "MG400_ORCH_MICROSCOPE_TOKEN": PRIVATE,
             "MG400_ORCH_MICROSCOPE_URL": "http://private.invalid:8770",
-            "MG400_ORCH_CAMERA_URL": "http://127.0.0.1:1985",
-            "MG400_CAMERA_KEY_FILE": str(tmp_path / "missing.key"),
             "MG400_CONSOLE_COMMIT": "abc1234",
         },
         recipes_dir=recipes,
@@ -168,35 +164,28 @@ def rig(tmp_path):
     ).start(background=False)
     sources = Sources()
     service.camera_sources = sources
-    app = create_app(service, token=TOKEN, base_path="/lab")
+    app = create_app(service, base_path="/lab")
     yield SimpleNamespace(
         service=service, app=app, client=app.test_client(), clock=clock, sources=sources
     )
     service.close()
 
 
+BASE = "/lab/api/console/ws/cameras/"
+
+
 def headers(page="console-page-a"):
-    return {"Authorization": f"Bearer {TOKEN}", "X-MG400-Client": page}
-
-
-def ticket(rig, view, kind="stream", **extra):
-    response = rig.client.post(
-        "/lab/api/console/ws/cameras/ticket",
-        json={"view": view, "kind": kind, **extra},
-        headers=headers(),
-    )
-    assert response.status_code == 200, response.get_json()
-    return response.get_json()["url"]
+    return {"X-MG400-Client": page}
 
 
 def status(rig):
-    body = rig.client.get("/lab/api/console/ws/cameras/status", headers=headers()).get_json()
+    body = rig.client.get(BASE + "status", headers=headers()).get_json()
     return {row["id"]: row for row in body["views"]}
 
 
-def open_stream(rig, view, **extra):
-    response = rig.client.get(ticket(rig, view, **extra), buffered=False)
-    return response
+def open_stream(rig, fps=None):
+    query = "" if fps is None else f"?fps={fps}"
+    return rig.client.get(BASE + "stream/microscope" + query, buffered=False)
 
 
 PART = re.compile(rb"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: (\d+)\r\n\r\n")
@@ -214,81 +203,50 @@ def parts(response, count):
     return result
 
 
-def test_routes_need_the_operator_token_or_a_ticket(rig):
-    base = "/lab/api/console/ws/cameras/"
-    assert rig.client.get(base + "status").status_code == 401
-    assert (
-        rig.client.post(base + "ticket", json={"view": "camera1", "kind": "stream"}).status_code
-        == 401
-    )
-    assert rig.client.get(base + "thermal/frame").status_code == 401
-    assert rig.client.get(base + "stream/camera1").status_code == 401
-    assert rig.client.get(base + "stream/camera1?ticket=forged").status_code == 401
-    assert rig.client.get(base + "snapshot/camera1?ticket=forged").status_code == 401
-    bad = rig.client.post(
-        base + "ticket", json={"view": "thermal", "kind": "stream"}, headers=headers()
-    )
-    assert bad.status_code == 400
-    unknown = rig.client.post(
-        base + "ticket", json={"view": "camera9", "kind": "stream"}, headers=headers()
-    )
-    assert unknown.status_code == 404
+def test_routes_need_no_token_and_cameras_load_from_the_proxy(rig):
+    assert rig.client.get(BASE + "status").status_code == 200
+    # camera1 to camera4 are not relayed: the browser loads them from the proxy.
+    assert rig.client.get(BASE + "stream/camera1").status_code == 404
+    assert rig.client.get(BASE + "snapshot/camera1").status_code == 404
+    assert rig.client.get(BASE + "stream/camera9").status_code == 404
+    assert rig.client.post(BASE + "ticket", json={}, headers=headers()).status_code in {404, 405}
+    rows = status(rig)
+    assert rows["camera1"]["url"] == "/camera/camera1.mjpeg"
+    assert rows["camera1"]["mode"] == "640×480 · 30 fps"
+    assert rows["camera3"]["configured"] is False
+    assert "url" not in rows["microscope"]
 
 
-def test_ticket_is_single_use_bound_to_its_view_and_expires(rig):
-    url = ticket(rig, "camera1")
-    assert "/lab/api/console/ws/cameras/stream/camera1?ticket=" in url
-    other = url.replace("stream/camera1", "stream/camera2")
-    assert rig.client.get(other).status_code == 401
-    # Any use spends the ticket, also a refused one.
-    assert rig.client.get(url).status_code == 401
-    first = open_stream(rig, "camera1")
-    assert first.status_code == 200
-    first.close()
-    snap = ticket(rig, "camera1", "snapshot")
-    assert rig.client.get(snap.replace("snapshot/", "stream/")).status_code == 401
-    late = ticket(rig, "camera1", "snapshot")
-    rig.clock.value += cameras_module.TICKET_TTL_S + 1
-    assert rig.client.get(late).status_code == 401
-    fresh = rig.client.get(ticket(rig, "camera1", "snapshot"))
-    assert fresh.status_code == 200 and fresh.data == JPEG
-    assert fresh.headers["Content-Type"] == "image/jpeg"
-    assert "attachment" in fresh.headers["Content-Disposition"]
+def test_microscope_snapshot_is_a_jpeg_attachment(rig):
+    response = rig.client.get(BASE + "snapshot/microscope")
+    assert response.status_code == 200 and response.data == JPEG
+    assert response.headers["Content-Type"] == "image/jpeg"
+    assert "attachment" in response.headers["Content-Disposition"]
 
 
 def test_stream_passes_frames_and_ends_the_relay_when_the_viewer_leaves(rig):
-    response = open_stream(rig, "camera2")
+    response = open_stream(rig)
     assert response.status_code == 200
     assert response.headers["Content-Type"].startswith("multipart/x-mixed-replace")
     chunks = response.response
     data = next(chunks) + next(chunks)
     assert data.count(b"--frame") == 2 and JPEG in data
     view, upstream = rig.sources.streams[-1]
-    assert view == "camera2" and not upstream.closed
-    row = status(rig)["camera2"]
+    assert view == "microscope" and not upstream.closed
+    row = status(rig)["microscope"]
     assert row["state"] == "live" and row["streams"] == 1 and row["age_s"] == 0.0
     response.close()
     assert upstream.closed
-    assert status(rig)["camera2"]["streams"] == 0
+    assert status(rig)["microscope"]["streams"] == 0
 
 
-def test_stream_bound_per_view_microscope_and_total(rig):
-    open_ = []
-    for _ in range(cameras_module.MAX_STREAMS_PER_VIEW):
-        open_.append(open_stream(rig, "camera1"))
+def test_microscope_stream_bound(rig):
+    open_ = [open_stream(rig) for _ in range(cameras_module.MAX_MICROSCOPE_STREAMS)]
     assert all(item.status_code == 200 for item in open_)
-    assert open_stream(rig, "camera1").status_code == 503
-    for _ in range(cameras_module.MAX_MICROSCOPE_STREAMS):
-        open_.append(open_stream(rig, "microscope"))
-    assert open_stream(rig, "microscope").status_code == 503
-    open_.append(open_stream(rig, "camera2"))
-    open_.append(open_stream(rig, "camera2"))
-    assert sum(cameras_module.Relay.streams(rig.service.camera_relay).values()) == 6
-    refused = open_stream(rig, "camera4")
-    assert refused.status_code == 503
-    assert "limit" in refused.get_json()["error"]
+    refused = open_stream(rig)
+    assert refused.status_code == 503 and "limit" in refused.get_json()["error"]
     open_[0].close()
-    again = open_stream(rig, "camera4")
+    again = open_stream(rig)
     assert again.status_code == 200
     for item in [*open_, again]:
         item.close()
@@ -298,60 +256,47 @@ def test_stream_bound_per_view_microscope_and_total(rig):
 
 def test_stale_and_offline_states(rig):
     rows = status(rig)
-    assert rows["camera1"]["state"] == "offline" and rows["camera1"]["age_s"] is None
+    assert rows["microscope"]["state"] == "offline" and rows["microscope"]["age_s"] is None
     rig.sources.frames, rig.sources.stall = 1, True
-    assert rows["camera3"]["configured"] is False
-    assert rows["camera1"]["mode"] == "640×480 · 30 fps"
-    response = open_stream(rig, "camera1")
+    response = open_stream(rig)
     next(response.response)
-    assert status(rig)["camera1"]["state"] == "live"
+    assert status(rig)["microscope"]["state"] == "live"
     rig.clock.value += cameras_module.STALE_S + 0.5
-    row = status(rig)["camera1"]
+    row = status(rig)["microscope"]
     assert row["state"] == "stale" and row["age_s"] == 2.5
     response.close()
     rig.clock.value += cameras_module.RECENT_S
-    assert status(rig)["camera1"]["state"] == "offline"
-    rig.sources.fail.add("camera4")
-    failed = open_stream(rig, "camera4")
-    assert failed.status_code == 502
-    row = status(rig)["camera4"]
+    assert status(rig)["microscope"]["state"] == "offline"
+    rig.sources.fail.add("microscope")
+    assert open_stream(rig).status_code == 502
+    row = status(rig)["microscope"]
     assert row["state"] == "offline" and row["error"] == "The source did not answer."
     assert sum(rig.service.camera_relay.streams().values()) == 0
 
 
-def test_console_state_reports_the_preview_source_without_its_url(rig, monkeypatch):
+def test_console_state_reports_whether_cameras_are_configured(rig, monkeypatch):
     def preview():
         body = rig.client.get("/lab/api/console/state", headers=headers()).get_json()
-        assert "1985" not in json.dumps(body["camera_preview"])
         return body["camera_preview"]["state"]
 
     assert preview() == "idle"
-    rig.sources.frames, rig.sources.stall = 1, True
-    response = open_stream(rig, "camera1")
-    next(response.response)
-    assert preview() == "live"
-    rig.clock.value += cameras_module.STALE_S + 0.5
-    assert preview() == "stale"
-    response.close()
-    rig.clock.value += cameras_module.RECENT_S
-    assert preview() == "idle"
-    rig.sources.fail.add("camera2")
-    assert open_stream(rig, "camera2").status_code == 502
-    assert preview() == "unavailable"
     monkeypatch.setattr(rig.sources, "configured", lambda view: False)
     assert preview() == "unconfigured"
 
 
-def test_preview_state_follows_the_console_camera_setting(rig):
+def test_cameras_are_configured_by_the_camera_devices(rig):
     rig.service.camera_sources = None
-    assert cameras_module.preview_state(rig.service)["state"] == "idle"
-    rig.service.settings = {**rig.service.settings, "MG400_ORCH_CAMERA_URL": ""}
     assert cameras_module.preview_state(rig.service)["state"] == "unconfigured"
+    devices = "/dev/v4l/by-path/cam-a,/dev/v4l/by-path/cam-b"
+    rig.service.settings = {**rig.service.settings, "MG400_CAMERA_DEVICES": devices}
+    assert cameras_module.preview_state(rig.service)["state"] == "idle"
+    sources = cameras_module.HttpSources(rig.service)
+    assert sources.configured("camera2") is True and sources.configured("camera3") is False
 
 
 def test_a_slow_viewer_gets_the_newest_frame_and_no_backlog(rig):
     rig.sources.numbered = True
-    response = open_stream(rig, "camera1", fps=30)
+    response = open_stream(rig, fps=30)
     ((first, _),) = parts(response, 1)
     _, upstream = rig.sources.streams[-1]
     # The viewer stalls while the upstream sends about 60 more frames.
@@ -367,7 +312,7 @@ def test_a_slow_viewer_gets_the_newest_frame_and_no_backlog(rig):
 
 @pytest.mark.parametrize(("fps", "least"), [(None, 0.1), (5, 0.2)])
 def test_the_frame_rate_cap_holds(rig, fps, least):
-    response = open_stream(rig, "camera1", **({} if fps is None else {"fps": fps}))
+    response = open_stream(rig, fps)
     times = [moment for _, moment in parts(response, 5)]
     response.close()
     gaps = [later - earlier for earlier, later in zip(times, times[1:])]
@@ -375,19 +320,15 @@ def test_the_frame_rate_cap_holds(rig, fps, least):
     assert min(gaps) >= least * 0.9
 
 
-@pytest.mark.parametrize("fps", [0, 31, "10", 2.5, None])
+@pytest.mark.parametrize("fps", ["0", "31", "2.5", "x", ""])
 def test_a_bad_frame_rate_is_refused(rig, fps):
-    response = rig.client.post(
-        "/lab/api/console/ws/cameras/ticket",
-        json={"view": "camera1", "kind": "stream", "fps": fps},
-        headers=headers(),
-    )
-    assert response.status_code == 400
+    assert open_stream(rig, fps).status_code == 400
+    assert sum(rig.service.camera_relay.streams().values()) == 0
 
 
 def test_two_viewers_share_one_upstream_reader(rig):
-    first = open_stream(rig, "camera1")
-    second = open_stream(rig, "camera1", fps=30)
+    first = open_stream(rig)
+    second = open_stream(rig, fps=30)
     assert parts(first, 2) and parts(second, 2)
     assert rig.sources.opened == 1
     _, upstream = rig.sources.streams[-1]
@@ -396,7 +337,7 @@ def test_two_viewers_share_one_upstream_reader(rig):
     second.close()
     # The reader closes the upstream when its last viewer leaves.
     assert upstream.closed
-    again = open_stream(rig, "camera1")
+    again = open_stream(rig)
     assert parts(again, 1) and rig.sources.opened == 2
     again.close()
     assert sum(rig.service.camera_relay.streams().values()) == 0
@@ -404,23 +345,23 @@ def test_two_viewers_share_one_upstream_reader(rig):
 
 def test_an_ended_upstream_releases_its_slot(rig):
     rig.sources.frames = 1
-    response = open_stream(rig, "camera1")
+    response = open_stream(rig)
     assert b"".join(response.response).count(b"--frame") == 1
     response.close()
-    assert rig.service.camera_relay.streams()["camera1"] == 0
+    assert rig.service.camera_relay.streams()["microscope"] == 0
 
 
 def test_non_mjpeg_upstream_is_refused(rig, monkeypatch):
     monkeypatch.setattr(rig.sources, "open_stream", lambda view: Upstream(content_type="text/html"))
-    assert open_stream(rig, "camera1").status_code == 502
-    assert rig.service.camera_relay.streams()["camera1"] == 0
+    assert open_stream(rig).status_code == 502
+    assert rig.service.camera_relay.streams()["microscope"] == 0
 
 
 def test_thermal_frame_is_cached_trimmed_and_reports_its_age(rig):
     from datetime import datetime, timezone
 
     rig.sources.thermal_timestamp = datetime.now(timezone.utc).isoformat()
-    path = "/lab/api/console/ws/cameras/thermal/frame"
+    path = BASE + "thermal/frame"
     body = json.loads(rig.client.get(path, headers=headers()).data)
     assert len(body["temperatures_c"]) == 120 and "raw" not in body and "ir" not in body
     assert body["stats"]["max"]["celsius"] == 22.77 and body["age_s"] < 5
@@ -433,12 +374,12 @@ def test_thermal_frame_is_cached_trimmed_and_reports_its_age(rig):
     rig.clock.value += 1
     assert rig.client.get(path, headers=headers()).status_code == 502
     assert status(rig)["thermal"]["state"] == "offline"
-    regions = rig.client.get("/lab/api/console/ws/cameras/thermal/regions", headers=headers())
+    regions = rig.client.get(BASE + "thermal/regions", headers=headers())
     assert regions.get_json() == {"regions": {"crucible": {"x0": 10, "y0": 20, "x1": 40, "y1": 60}}}
 
 
 def test_detections_only_for_camera_4_and_only_display_fields(rig):
-    path = "/lab/api/console/ws/cameras/detections/"
+    path = BASE + "detections/"
     assert rig.client.get(path + "2", headers=headers()).status_code == 404
     body = rig.client.get(path + "4", headers=headers()).get_json()
     assert body["available"] is True
@@ -449,65 +390,41 @@ def test_detections_only_for_camera_4_and_only_display_fields(rig):
     assert rig.sources.detect_reads == 1
 
 
-def test_no_secret_in_any_camera_response(rig, tmp_path):
-    key = tmp_path / "preview.key"
-    key.write_text(CAMERA_KEY)
-    rig.service.settings["MG400_CAMERA_KEY_FILE"] = str(key)
+def test_no_secret_in_any_camera_response(rig):
     texts = [
         rig.client.get("/lab/").get_data(as_text=True),
         rig.client.get("/lab/console-static/cameras.js").get_data(as_text=True),
         rig.client.get("/lab/console-static/cameras.css").get_data(as_text=True),
-        json.dumps(
-            rig.client.get("/lab/api/console/ws/cameras/status", headers=headers()).get_json()
-        ),
-        ticket(rig, "camera1"),
-        ticket(rig, "microscope", "snapshot"),
-        json.dumps(
-            rig.client.get("/lab/api/console/ws/cameras/detections/4", headers=headers()).get_json()
-        ),
+        json.dumps(rig.client.get(BASE + "status", headers=headers()).get_json()),
+        json.dumps(rig.client.get(BASE + "detections/4", headers=headers()).get_json()),
         json.dumps(rig.client.get("/lab/api/console/state", headers=headers()).get_json()),
     ]
-    stream = open_stream(rig, "camera1")
+    stream = open_stream(rig)
     texts.append(next(stream.response).decode("latin-1"))
     texts.append(str(dict(stream.headers)))
     stream.close()
     for text in texts:
-        assert TOKEN not in text and PRIVATE not in text and CAMERA_KEY not in text
+        assert PRIVATE not in text and "private.invalid" not in text
 
 
-def test_http_sources_build_keyed_preview_and_token_urls(tmp_path, monkeypatch):
-    key = tmp_path / "preview.key"
-    key.write_text(CAMERA_KEY + "\n")
+def test_http_sources_open_the_microscope_service_without_a_token(monkeypatch):
     calls = []
 
-    def fake_open(url, token=None, timeout=None):
-        calls.append((url, token))
+    def fake_open(url, timeout=None):
+        calls.append(url)
         return Upstream()
 
     monkeypatch.setattr(cameras_module, "_open", fake_open)
 
     class Http:
         base_url = "http://127.0.0.1:8770/"
-        token = PRIVATE
 
     service = SimpleNamespace(
-        settings={
-            "MG400_ORCH_CAMERA_URL": "http://127.0.0.1:1985/",
-            "MG400_CAMERA_KEY_FILE": str(key),
-        },
+        settings={},
         dashboard_client=lambda name, identity: SimpleNamespace(_http=Http()),
         dashboard_configured=lambda name: True,
     )
     sources = cameras_module.HttpSources(service)
-    sources.open_stream("camera2")
     sources.open_stream("microscope")
-    assert calls == [
-        (f"http://127.0.0.1:1985/{CAMERA_KEY}/camera2.mjpeg", None),
-        ("http://127.0.0.1:8770/api/camera/microscope/mjpeg", PRIVATE),
-    ]
-    key.write_text("short")
-    with pytest.raises(cameras_module.SourceError) as error:
-        sources.open_stream("camera1")
-    assert "short" not in str(error.value)
-    service.settings["MG400_ORCH_CAMERA_URL"] = ""
+    assert calls == ["http://127.0.0.1:8770/api/camera/microscope/mjpeg"]
     assert sources.configured("camera1") is False

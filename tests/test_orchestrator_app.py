@@ -24,8 +24,6 @@ from orchestrator.app import (
 from orchestrator.clients import Clients
 from orchestrator.skills import default_registry
 
-TOKEN = "orchestrator-offline-test-token"
-
 
 class Clock:
     def __init__(self):
@@ -154,10 +152,8 @@ def wait_for(predicate, timeout=4):
         time.sleep(0.005)
 
 
-def post(client, path, data=None, *, actor="operator", token=None):
+def post(client, path, data=None, *, actor="operator"):
     headers = {"X-MG400-Client": actor}
-    if token:
-        headers["Authorization"] = "Bearer " + token
     return client.post(path, json={} if data is None else data, headers=headers)
 
 
@@ -189,13 +185,12 @@ def test_shared_contract(rig, clock, base):
     expired = []
     callback = rig.lease.on_expire
     rig.lease.on_expire = lambda: (expired.append(True), callback())
-    client = create_app(rig, token=TOKEN, base_path=base).test_client()
+    client = create_app(rig, base_path=base).test_client()
     check_contract(
         client,
         advance=clock.advance,
         expiry_count=lambda: len(expired),
         base_path=base,
-        headers={"Authorization": "Bearer " + TOKEN},
     )
 
 
@@ -218,37 +213,16 @@ def test_shared_contract(rig, clock, base):
         ("/api/stop", "POST"),
     ],
 )
-def test_all_routes_use_uniform_access(rig, path, method):
-    client = create_app(rig, token=TOKEN).test_client()
-    assert_error(client.open(path, method=method, json={}), 401)
-    response = client.open(
-        path,
-        method=method,
-        json={},
-        headers={"Authorization": "Bearer " + TOKEN, "Origin": "null", "X-MG400-Client": "test"},
-    )
-    assert_error(response, 403)
+def test_all_routes_use_uniform_request_rules(rig, path, method):
+    client = create_app(rig).test_client()
+    response = client.open(path, method=method, json={}, headers={"Host": "remote.invalid"})
+    assert response.status_code != 403
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     if method == "POST":
-        headers = {"Authorization": "Bearer " + TOKEN, "X-MG400-Client": "test"}
+        headers = {"X-MG400-Client": "test"}
         assert_error(client.post(path, data="{}", content_type="text/plain", headers=headers), 415)
-        assert_error(client.post(path, json={}, headers={"Authorization": "Bearer " + TOKEN}), 400)
-
-
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"Host": "remote.invalid"},
-        {"Host": "localhost,remote.invalid"},
-        {"Forwarded": "host=localhost"},
-        {"X-Forwarded-For": ""},
-        {"X-Forwarded-Host": "localhost"},
-        {"X-Real-IP": "127.0.0.1"},
-    ],
-)
-def test_no_token_host_and_forwarded_rules(rig, headers):
-    assert_error(create_app(rig).test_client().get("/api/recipes", headers=headers), 403)
+        assert_error(client.post(path, json={}), 400)
 
 
 @pytest.mark.parametrize(
@@ -825,8 +799,7 @@ def test_serve_failures_use_correct_exit_and_cleanup(phase, code):
     "args,env",
     [
         (["--port", "0"], {}),
-        (["--bind", "0.0.0.0"], {}),
-        ([], {"MG400_ORCH_TOKEN": "short"}),
+        (["--bind", " 127.0.0.1"], {}),
         (["--demo", "--runs-dir", "/host"], {}),
     ],
 )
@@ -860,7 +833,7 @@ def test_demo_serve_reexecs_clean_interpreter_before_service_construction():
         DEMO_MARKER: "1",
         "MG400_ORCH_ROBOT_URL": "http://lab.invalid",
         "HTTPS_PROXY": "http://proxy.invalid",
-        "MG400_ORCH_TOKEN": TOKEN,
+        "MG400_ORCH_PORT": "8772",
         "PYTHONPATH": "/untrusted",
         "MG400_ORCH_RUNS_DIR": "/host/runs",
     }
@@ -879,7 +852,7 @@ def test_demo_serve_reexecs_clean_interpreter_before_service_construction():
         "orchestrator",
         "serve",
     ]
-    assert demo_isolated(env) and env["MG400_ORCH_TOKEN"] == TOKEN
+    assert demo_isolated(env) and env["MG400_ORCH_PORT"] == "8772"
     assert "MG400_ORCH_ROBOT_URL" not in env and "MG400_ORCH_RUNS_DIR" not in env
 
 
@@ -910,10 +883,19 @@ def test_serve_passes_the_server_options():
         seen.update(kwargs)
         return Server()
 
+    settings = {}
+
+    def factory(**kwargs):
+        settings.update(kwargs["settings"])
+        return CLIService([])
+
     main(
         ["serve"],
-        environ={},
-        service_factory=lambda **kwargs: CLIService([]),
+        environ={"MG400_ORCH_STAGE_URL": "http://127.0.0.1:9000/", "MG400_ORCH_ROBOT_URL": ""},
+        service_factory=factory,
         server_factory=server,
     )
     assert {key: seen[key] for key in SERVER_OPTIONS} == SERVER_OPTIONS
+    # Fixed loopback service URLs apply unless a nonempty setting overrides one.
+    assert settings["MG400_ORCH_ROBOT_URL"] == "http://127.0.0.1:8766/"
+    assert settings["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:9000/"

@@ -537,7 +537,7 @@ def test_no_equivalent_angle_is_not_a_default():
         inputs.flange_r(90)
 
 
-@pytest.mark.parametrize("kind", ["symlink", "fifo", "directory", "hardlink", "public"])
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "directory", "hardlink"])
 def test_tray_reader_refuses_unsafe_file_before_readable_open(tmp_path, monkeypatch, kind):
     tmp_path.chmod(0o700)
     path = tmp_path / "tray.toml"
@@ -550,11 +550,8 @@ def test_tray_reader_refuses_unsafe_file_before_readable_open(tmp_path, monkeypa
         os.mkfifo(path, 0o600)
     elif kind == "directory":
         path.mkdir(mode=0o700)
-    elif kind == "hardlink":
-        os.link(target, path)
     else:
-        path.write_text('name = "public"\n')
-        path.chmod(0o644)
+        os.link(target, path)
     original = os.open
 
     def checked(path, flags, *args, **kwargs):

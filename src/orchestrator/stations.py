@@ -1,4 +1,4 @@
-"""Validated fingertip stations and serialized, private atomic TOML updates."""
+"""Validated fingertip stations and serialized, atomic TOML updates."""
 
 import fcntl
 import json
@@ -147,17 +147,10 @@ def measured_pose(state):
     return Pose(*actual[:4])
 
 
-def _check(info, owner, *, directory=False):
+def _check(info, *, directory=False):
     kind = stat.S_ISDIR if directory else stat.S_ISREG
-    modes = {0o700, 0o750} if directory else {0o600, 0o640}
-    if (
-        not kind(info.st_mode)
-        or (info.st_uid, info.st_gid) != owner
-        or stat.S_IMODE(info.st_mode) not in modes
-    ):
-        raise ValueError(
-            "Station data requires private permissions, safe file types and its owner."
-        )
+    if not kind(info.st_mode):
+        raise ValueError("Station data needs safe file types: a regular file in a directory.")
 
 
 @contextmanager
@@ -165,7 +158,6 @@ def _parent(path):
     path = Path(path).absolute()
     if ".." in path.parts or path.name in {"", ".", ".."}:
         raise ValueError("Configuration paths must not contain parent traversal.")
-    owner = (1000, 1000) if path.is_relative_to("/var/lib/mg400") else (os.geteuid(), os.getegid())
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for part in path.parent.parts[1:]:
@@ -174,17 +166,17 @@ def _parent(path):
             )
             os.close(fd)
             fd = child
-        _check(os.fstat(fd), owner, directory=True)
-        yield fd, path.name, owner
+        _check(os.fstat(fd), directory=True)
+        yield fd, path.name
     finally:
         os.close(fd)
 
 
-def _read(parent, name, owner):
+def _read(parent, name):
     # Pin and inspect the inode before opening it for reading: never activate a device.
     fd = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
     try:
-        _check(os.fstat(fd), owner)
+        _check(os.fstat(fd))
         reader = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY | os.O_CLOEXEC)
         with os.fdopen(reader, "rb") as source:
             return tomllib.load(source)
@@ -193,17 +185,17 @@ def _read(parent, name, owner):
 
 
 def load_tool(path=DEFAULT_TOOL):
-    with _parent(path) as (parent, name, owner):
-        return ToolOffset.from_config(_read(parent, name, owner))
+    with _parent(path) as (parent, name):
+        return ToolOffset.from_config(_read(parent, name))
 
 
 class StationStore:
     def __init__(self, workspace, path=DEFAULT_STATIONS):
         self.workspace, self.path = workspace, Path(path)
 
-    def _load(self, parent, name, owner):
+    def _load(self, parent, name):
         try:
-            data = _read(parent, name, owner)
+            data = _read(parent, name)
         except FileNotFoundError:
             return {}
         if not isinstance(data, dict) or set(data) != {"stations"}:
@@ -211,16 +203,16 @@ class StationStore:
         return validate(data["stations"], self.workspace)
 
     def load(self):
-        with _parent(self.path) as (parent, name, owner):
+        with _parent(self.path) as (parent, name):
             fcntl.flock(parent, fcntl.LOCK_SH)
-            return self._load(parent, name, owner)
+            return self._load(parent, name)
 
     def _update(self, change):
-        with _parent(self.path) as (parent, name, owner):
+        with _parent(self.path) as (parent, name):
             # A directory lock is stable across atomic file replacement and
             # serializes every read-modify-write without a removable lock file.
             fcntl.flock(parent, fcntl.LOCK_EX)
-            stations = self._load(parent, name, owner)
+            stations = self._load(parent, name)
             change(stations)
             stations = validate(stations, self.workspace)
             lines = ["[stations]"]
@@ -238,7 +230,7 @@ class StationStore:
             try:
                 with os.fdopen(fd, "w") as output:
                     os.fchmod(output.fileno(), 0o640)
-                    _check(os.fstat(output.fileno()), owner)
+                    _check(os.fstat(output.fileno()))
                     output.write("\n".join(lines) + "\n")
                     output.flush()
                     os.fsync(output.fileno())

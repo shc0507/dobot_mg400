@@ -206,14 +206,14 @@ class _TrayInputs:
 
 
 def _read_tray(path):
-    """Pin a private regular config before any readable open; never activate devices."""
-    with _parent(path) as (parent, name, owner):
+    """Pin a regular config before any readable open; never activate devices."""
+    with _parent(path) as (parent, name):
         pinned = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
         try:
             info = os.fstat(pinned)
-            _check(info, owner)
+            _check(info)
             if info.st_nlink != 1 or not 0 < info.st_size <= 16 * 1024:
-                raise ValueError("Tray model must be one private file of at most 16 KiB.")
+                raise ValueError("Tray model must be one file of at most 16 KiB.")
             descriptor = os.open(f"/proc/self/fd/{pinned}", os.O_RDONLY | os.O_CLOEXEC)
             with os.fdopen(descriptor, "rb") as stream:
                 raw = stream.read(16 * 1024 + 1)

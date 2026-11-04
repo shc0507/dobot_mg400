@@ -19,7 +19,6 @@ from orchestrator.clients import FurnaceAdapter, from_settings
 from orchestrator.rehearsal import Rehearsal
 from orchestrator.web.backend import SERVICES, gas_confirmed
 
-TOKEN = "dashboard-frontend-token-00000000"
 PRIVATE = "dashboard-private-instrument-token-0000000"
 
 
@@ -128,7 +127,7 @@ def rig(tmp_path):
         demo=True,
         client_factory=factory,
     ).start(background=False)
-    app = create_app(service, token=TOKEN, base_path="/lab")
+    app = create_app(service, base_path="/lab")
     yield SimpleNamespace(service=service, devices=devices, app=app, client=app.test_client())
     service.close()
 
@@ -137,7 +136,7 @@ def post(rig, action, data=None, actor="outsider"):
     return rig.client.post(
         "/lab/api/dashboard/" + action,
         json={} if data is None else data,
-        headers={"Authorization": f"Bearer {TOKEN}", "X-MG400-Client": actor},
+        headers={"X-MG400-Client": actor},
     )
 
 
@@ -149,50 +148,30 @@ def operation(rig, identity):
     return next(item for item in report(rig)["operations"] if item["id"] == identity)
 
 
-def test_exact_public_shell_and_assets_keep_api_and_origin_protection(rig):
+def test_exact_public_shell_and_assets_need_no_token(rig):
     for path in ("/lab/", "/lab/chip"):
-        response = rig.client.get(path)
+        response = rig.client.get(path, headers={"Origin": "http://foreign.invalid"})
         assert response.status_code == 200
-        assert TOKEN not in response.get_data(as_text=True)
         assert PRIVATE not in response.get_data(as_text=True)
         assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["X-Content-Type-Options"] == "nosniff"
-        assert rig.client.get(path, headers={"Origin": "http://foreign.invalid"}).status_code == 403
-    for path in (
-        "/lab/api/services",
-        "/lab/api/dashboard/state",
-        "/lab/api/state",
-        "/lab/api/runs",
-    ):
-        assert rig.client.get(path).status_code == 401
-        assert (
-            rig.client.get(path, headers={"Authorization": f"Bearer {TOKEN} "}).status_code == 401
-        )
+    for path in ("/lab/api/services", "/lab/api/dashboard/state", "/lab/api/runs"):
+        assert rig.client.get(path, headers={"Host": "remote.invalid"}).status_code == 200
     for path in (
         "/lab/dashboard/",
         "/lab/dashboard-static/dashboard.js",
         "/lab/dashboard-static/dashboard.css",
+        "/lab/dashboard-static/../app.py",
     ):
-        auth = {"Authorization": f"Bearer {TOKEN}"}
-        assert rig.client.get(path, headers=auth).status_code == 404
-    assert rig.client.get("/lab/dashboard-static/../app.py").status_code == 401
-    assert rig.client.post("/lab/").status_code == 401
-
-
-@pytest.mark.parametrize("path", ["/", "/chip", "/api/services"])
-def test_tokenless_dashboard_keeps_loopback_and_forwarding_checks(rig, path):
-    client = create_app(rig.service).test_client()
-    assert client.get(path, headers={"Host": "remote.invalid"}).status_code == 403
-    assert client.get(path, headers={"Forwarded": ""}).status_code == 403
+        assert rig.client.get(path).status_code == 404
+    assert rig.client.post("/lab/").status_code in {405, 415}
 
 
 @pytest.mark.parametrize("action", ["motion", "heat", "gas", "hold"])
 def test_safety_routes_require_json_identity_and_exact_confirmation(rig, action):
     url = "/lab/api/dashboard/" + action
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    assert rig.client.post(url, json={}).status_code == 401
-    assert rig.client.post(url, json={}, headers=auth).status_code == 400
-    headers = {**auth, "X-MG400-Client": "operator", "Content-Type": "application/json"}
+    assert rig.client.post(url, json={}).status_code == 400
+    headers = {"X-MG400-Client": "operator", "Content-Type": "application/json"}
     for body in ("[]", '{"confirmed":true,"confirmed":false}', '{"confirmed":NaN}'):
         assert rig.client.post(url, data=body, headers=headers).status_code == 400
     assert (
@@ -671,23 +650,7 @@ def test_one_unstarted_stop_worker_does_not_suppress_other_targets(rig, monkeypa
     assert rig.devices["stage"].stop_count == rig.devices["microscope"].stop_count == 2
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "javascript:alert(1)",
-        "https://user:pass@example.com/",
-        "https://example.com/?token=hidden",
-        "https://example.com/#token",
-        "https://example.com/\\evil",
-        "https://example.com/\npath",
-    ],
-)
-def test_unsafe_public_camera_links_are_configuration_errors(tmp_path, url):
-    with pytest.raises(ValueError):
-        OrchestratorService(settings={"MG400_DASH_CAMERA_URL": url}, recipes_dir=tmp_path)
-
-
-def test_public_camera_links_are_separate_from_private_endpoints(tmp_path):
+def test_camera_links_are_absent_and_private_endpoints_stay_hidden(tmp_path):
     service = OrchestratorService(
         settings={
             "MG400_DASH_CAMERA_URL": "https://lab.example/camera/",
@@ -696,7 +659,7 @@ def test_public_camera_links_are_separate_from_private_endpoints(tmp_path):
         },
         recipes_dir=tmp_path,
     )
-    assert service.dashboard.snapshot()["cameras"][0]["url"] == "https://lab.example/camera/"
+    assert all(item["url"] is None for item in service.dashboard.snapshot()["cameras"])
     assert PRIVATE not in json.dumps(service.dashboard.snapshot())
     service.close()
 

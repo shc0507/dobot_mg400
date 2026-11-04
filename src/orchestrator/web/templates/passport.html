@@ -18,11 +18,9 @@
       <form id="passport-form" class="passport-search">
         <label for="chip-id">QR text / chip ID</label>
         <textarea id="chip-id" rows="2" spellcheck="false" placeholder="Paste the exact QR text."></textarea>
-        <label for="passport-token">Access token</label>
-        <input id="passport-token" type="password" autocomplete="off" spellcheck="false" placeholder="Token for this dashboard">
-        <div class="actions"><button type="submit">Search records</button><button id="forget-passport" type="button" class="secondary">Forget token</button></div>
+        <div class="actions"><button type="submit">Search records</button></div>
       </form>
-      <p class="muted search-note">Search matches the complete QR text. The token stays in this page's memory.</p>
+      <p class="muted search-note">Search matches the complete QR text.</p>
       <p id="passport-status" class="notice" role="status" aria-live="polite">Enter a chip ID to read its recorded history.</p>
     </section>
     <section aria-labelledby="passport-heading">

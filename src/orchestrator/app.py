@@ -19,14 +19,7 @@ from flask import Flask, jsonify, request
 from flask.json.provider import DefaultJSONProvider
 from werkzeug.exceptions import HTTPException
 
-from labkit.auth import (
-    bearer_matches,
-    has_forwarded_headers,
-    host_allowed,
-    loopback_host,
-    same_origin,
-    valid_token,
-)
+from labkit.auth import bearer_matches, valid_token
 from labkit.describe import command, describe
 from labkit.errors import ServiceError
 from labkit.events import EventLog
@@ -58,7 +51,6 @@ DEMO_ENV = (
         "TZ",
         "MG400_ORCH_BIND",
         "MG400_ORCH_PORT",
-        "MG400_ORCH_TOKEN",
         "MG400_ORCH_BASE_PATH",
         "MG400_ORCH_RECIPES_DIR",
         CONFIG_SETTING,
@@ -650,7 +642,7 @@ class OrchestratorService:
         settings = {
             key: value
             for key, value in self.settings.items()
-            if key in {prefix + "_URL", prefix + "_TOKEN", "MG400_ORCH_TIMEOUT_S"}
+            if key in {prefix + "_URL", "MG400_ORCH_TIMEOUT_S"}
         }
         return from_settings(settings, identity=identity).get(name)
 
@@ -1045,7 +1037,7 @@ class OrchestratorService:
             self.temporary = None
 
 
-def create_app(service, *, token=None, base_path="/"):
+def create_app(service, *, base_path="/"):
     settings = getattr(service, "settings", {})
     proposal_token = settings.get("MG400_GATEWAY_TOKEN", "")
     requester = settings.get("MG400_GATEWAY_CALLER", "gateway-agent")
@@ -1055,22 +1047,12 @@ def create_app(service, *, token=None, base_path="/"):
             not isinstance(proposal_token, str)
             or len(proposal_token) < 24
             or not valid_token(proposal_token)
-            or not token
-            or proposal_token == token
-            or any(
-                value == proposal_token
-                for key, value in settings.items()
-                if key.endswith("_TOKEN") and key != "MG400_GATEWAY_TOKEN"
-            )
         ):
-            raise ValueError("Proposal access requires distinct gateway and operator credentials.")
-        service.approvals.private_tokens = (token,)
+            raise ValueError("The gateway token needs at least 24 printable ASCII characters.")
     app = Flask(__name__)
     app.json = StrictJSON(app)
     app.config["MAX_CONTENT_LENGTH"] = 65536
-    app.register_blueprint(
-        contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
-    )
+    app.register_blueprint(contract_blueprint(service, base_path=base_path, lease=service.lease))
     prefix = base_path.rstrip("/")
     from .web import console_blueprints, dashboard_blueprint
 
@@ -1080,38 +1062,11 @@ def create_app(service, *, token=None, base_path="/"):
 
     @app.before_request
     def access():
-        if not host_allowed(request.headers, token):
-            raise ServiceError(403, "Use a loopback Host without forwarded headers.")
-        public = request.method in {"GET", "HEAD"} and request.endpoint in {
-            "dashboard.index",
-            "dashboard.javascript",
-            "dashboard.stylesheet",
-            "console.index",
-            "console.asset",
-        }
-        # A console camera stream or snapshot checks its own single-use ticket.
-        public = public or (
-            request.method in {"GET", "HEAD"}
-            and getattr(app.view_functions.get(request.endpoint), "console_ticket", False) is True
-        )
-        proposal = request.endpoint in {"propose", "get_proposal"}
-        if proposal:
+        if request.endpoint in {"propose", "get_proposal"}:
             if not proposal_token:
                 raise ServiceError(409, "Proposal access is not configured.")
-            if not loopback_host(request.headers.get("Host", "")) or has_forwarded_headers(
-                request.headers
-            ):
-                raise ServiceError(403, "Proposal access requires direct loopback access.")
             if not bearer_matches(request.headers.get("Authorization", ""), proposal_token):
                 raise ServiceError(401, "Invalid proposal credential.")
-        elif (
-            token
-            and not public
-            and not bearer_matches(request.headers.get("Authorization", ""), token)
-        ):
-            raise ServiceError(401, "Invalid service access token.")
-        if not same_origin(request.headers):
-            raise ServiceError(403, "The request origin is not allowed.")
         if request.method == "POST":
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json.")

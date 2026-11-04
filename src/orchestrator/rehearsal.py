@@ -791,7 +791,7 @@ class Rehearsal:
             service.calibrations.save(DEMO_CALIBRATION_DEVICE, self.tray_scene.calibration_model())
         self._stack.callback(service.close)
         service.start()
-        server = make_server("127.0.0.1", 0, create_app(service, token=""), threaded=True)
+        server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
         self._serve(server)
         url = f"http://127.0.0.1:{server.server_port}"
         self._endpoints["vision"] = (ServiceAdapter, url)

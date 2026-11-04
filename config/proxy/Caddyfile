@@ -27,6 +27,8 @@
 
 http://:@PROXY_PORT@ {
 	bind @PROXY_BIND@
+	# The Lab Console is the single entry. The old pages stay at their paths.
+	redir / /lab/ 302
 	@bare path /robot /stage /camera /thermal /furnace /microscope /lab
 	redir @bare {http.request.uri.path}/ 308
 	handle /robot/* {

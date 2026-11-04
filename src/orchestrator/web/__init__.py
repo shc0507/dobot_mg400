@@ -4,13 +4,17 @@ from flask import Blueprint, jsonify, render_template, request, send_from_direct
 
 from labkit.lease import validate_client
 
+from .console_routes import console_blueprints
 from .passport import register_passport
+
+__all__ = ["console_blueprints", "dashboard_blueprint"]
 
 
 def dashboard_blueprint(service, prefix):
     blueprint = Blueprint("dashboard", __name__, template_folder="templates", url_prefix=prefix)
 
-    @blueprint.get("/", defaults={"passport": False, "chip_id": ""})
+    # The Lab Console owns the prefix root. The DSH-01 dashboard stays as a fallback.
+    @blueprint.get("/dashboard/", defaults={"passport": False, "chip_id": ""})
     @blueprint.get("/chip", defaults={"passport": True, "chip_id": ""})
     @blueprint.get("/chip/<path:chip_id>", defaults={"passport": True})
     def index(passport, chip_id):

@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lab Console · Furnace and microscope</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0F1418}
+a{color:#7DBBFF}a:hover{color:#B3D7FF}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #0F1418; color: #E6EDF2; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+
+  <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding: 12px 24px; background: #11181D; border-bottom: 1px solid #26313A">
+    <div style="display: flex; align-items: center; gap: 12px">
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true" fill="none" stroke="#E6EDF2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="23" r="4"></circle><path d="M10.5 20 L17 11 L24 14"></path><circle cx="17" cy="11" r="2.2"></circle><path d="M24 14 L26 18 M24 14 L27 12"></path></svg>
+      <div style="display: flex; flex-direction: column">
+        <span style="font-size: 16px; font-weight: 700; letter-spacing: 0.2px">WuLab Console</span>
+        <span style="font-size: 12px; color: #9FB0BD">Olares · after MIC-06 and H-20</span>
+      </div>
+    </div>
+    <nav aria-label="Workspaces" style="display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 auto">
+      <a href="Main.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 8px; color: #B8C6D1; text-decoration: none; font-weight: 500">Overview</a>
+      <a href="Motion.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 8px; color: #B8C6D1; text-decoration: none; font-weight: 500">Motion</a>
+      <a href="Cameras.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 8px; color: #B8C6D1; text-decoration: none; font-weight: 500">Cameras</a>
+      <a href="Process.dc.html" aria-current="page" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 8px; background: #1F2A33; color: #E6EDF2; text-decoration: none; font-weight: 600; box-shadow: inset 0 -2px 0 {{accent}}">Furnace + microscope</a>
+    </nav>
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+      <span style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #2E3B46; border-radius: 999px; font-size: 13px; color: #B8C6D1"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #3CCB7F"></span>You control: Furnace, Microscope</span>
+      <button type="button" aria-label="Switch language to Chinese" style="min-height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-weight: 600">中文</button>
+      <button type="button" style="display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 20px; border-radius: 10px; border: 0; background: #C9252B; color: #FFFFFF; font: inherit; font-size: 15px; font-weight: 700; letter-spacing: 0.4px"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="3" y="3" width="12" height="12" rx="2" fill="#FFFFFF"></rect></svg>STOP ALL MOTION</button>
+    </div>
+  </header>
+
+  <div role="status" aria-label="Service status" style="display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 24px; background: #0F1418; border-bottom: 1px solid #1F2830">
+    <sc-for list="{{services}}" as="s" hint-placeholder-count="8">
+      <span style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #26313A; border-radius: 999px; background: #161D23; font-size: 13px">
+        <span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: {{s.dot}}"></span>
+        <span style="font-weight: 600">{{s.name}}</span>
+        <span style="color: #9FB0BD">{{s.detail}}</span>
+      </span>
+    </sc-for>
+  </div>
+
+  <main style="max-width: 1440px; margin: 0 auto; padding: 24px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px">
+
+    <div role="note" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px; border-radius: 10px; background: #2A1517; border: 1px solid #6B2A2E">
+      <span style="font-weight: 700; color: #FF9A9A">Before the first heating</span>
+      <span style="flex: 1 1 420px; min-width: 0; color: #F1C9C9">Install the over-temperature cutoff (H-11) and validate the furnace (H-20). Gas stays refused until the gas map names real gases (H-10).</span>
+    </div>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+
+      <section aria-labelledby="furnace-title" style="flex: 1 1 560px; min-width: 0; background: #161D23; border: 1px solid #26313A; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 18px">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px">
+          <div style="display: flex; flex-direction: column">
+            <h2 id="furnace-title" style="margin: 0; font-size: 17px; font-weight: 600">Furnace · AI-808</h2>
+            <span style="font-size: 13px; color: #9FB0BD">Caps 1000 °C · 100 °C/min · you have control</span>
+          </div>
+          <button type="button" style="min-height: 48px; padding: 0 18px; border-radius: 10px; border: 0; background: #C9252B; color: #FFFFFF; font: inherit; font-weight: 700">Stop heat and gas</button>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px">
+          <sc-for list="{{furnace}}" as="f" hint-placeholder-count="4">
+            <div style="display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 10px; background: #1B232A">
+              <span style="font-size: 12px; color: #9FB0BD">{{f.label}}</span>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; color: {{f.tone}}">{{f.value}}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <figure style="margin: 0; display: flex; flex-direction: column; gap: 6px">
+          <svg viewBox="0 0 560 160" role="img" aria-label="Temperature over the last 60 minutes: PV steady near 24 degrees, setpoint 0" style="width: 100%; height: 160px; border-radius: 10px; background: #0F1418">
+            <g stroke="#26313A" stroke-width="1"><line x1="40" y1="20" x2="550" y2="20"></line><line x1="40" y1="70" x2="550" y2="70"></line><line x1="40" y1="120" x2="550" y2="120"></line></g>
+            <g fill="#9FB0BD" font-size="11" font-family="IBM Plex Mono, monospace"><text x="6" y="24">600</text><text x="6" y="74">300</text><text x="14" y="124">0</text><text x="40" y="148">−60 min</text><text x="510" y="148">now</text></g>
+            <polyline points="40,116 120,116 200,115 280,116 360,116 440,115 550,116" fill="none" stroke="#F2B84B" stroke-width="2.5"></polyline>
+            <polyline points="40,120 550,120" fill="none" stroke="#7DBBFF" stroke-width="2" stroke-dasharray="6 5"></polyline>
+          </svg>
+          <figcaption style="display: flex; gap: 16px; font-size: 12px; color: #9FB0BD"><span><span style="color: #F2B84B">━</span> PV</span><span><span style="color: #7DBBFF">╍</span> SV</span></figcaption>
+        </figure>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end">
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9FB0BD">Target °C<input value="200" style="width: 110px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid #2E3B46; background: #0F1418; color: #E6EDF2; font-family: 'IBM Plex Mono', monospace; font-size: 14px"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9FB0BD">Ramp °C/min<input value="10" style="width: 110px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid #2E3B46; background: #0F1418; color: #E6EDF2; font-family: 'IBM Plex Mono', monospace; font-size: 14px"></label>
+          <button type="button" style="min-height: 44px; padding: 0 18px; border-radius: 8px; border: 0; background: {{accent}}; color: #0B1A2A; font: inherit; font-weight: 700">Apply and run…</button>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px">
+            <h3 style="margin: 0; font-size: 14px; font-weight: 600">Sequence</h3>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px">
+              <button type="button" style="min-height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-size: 13px">+ Add step</button>
+              <button type="button" style="min-height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-size: 13px; font-weight: 600">Start sequence…</button>
+            </div>
+          </div>
+          <div style="overflow-x: auto; border-radius: 10px; border: 1px solid #26313A">
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px; min-width: 420px">
+              <thead><tr style="background: #1B232A; color: #9FB0BD; text-align: left"><th style="padding: 8px 12px; font-weight: 600">Step</th><th style="padding: 8px 12px; font-weight: 600">Target</th><th style="padding: 8px 12px; font-weight: 600">Ramp</th><th style="padding: 8px 12px; font-weight: 600">Hold</th><th style="padding: 8px 12px; font-weight: 600">Gas</th></tr></thead>
+              <tbody>
+                <sc-for list="{{sequence}}" as="q" hint-placeholder-count="3">
+                  <tr style="border-top: 1px solid #222C35; font-family: 'IBM Plex Mono', monospace"><td style="padding: 8px 12px">{{q.n}}</td><td style="padding: 8px 12px">{{q.target}}</td><td style="padding: 8px 12px">{{q.ramp}}</td><td style="padding: 8px 12px">{{q.hold}}</td><td style="padding: 8px 12px; color: #9FB0BD">{{q.gas}}</td></tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px">
+            <h3 style="margin: 0; font-size: 14px; font-weight: 600">Gas</h3>
+            <button type="button" style="min-height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #FF7A7A; background: transparent; color: #FF9A9A; font: inherit; font-size: 13px; font-weight: 600">Stop all gas</button>
+          </div>
+          <sc-for list="{{gases}}" as="g" hint-placeholder-count="3">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; border-radius: 10px; background: #1B232A">
+              <span style="width: 90px; font-weight: 600">{{g.name}}</span>
+              <span style="flex: 1 1 180px; min-width: 0; font-size: 13px; color: #F2B84B">{{g.state}}</span>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #9FB0BD">{{g.flow}}</span>
+              <button type="button" disabled style="min-height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #7C8C99; font: inherit; font-size: 12px">Send flow</button>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+
+      <section aria-labelledby="scope-title" style="flex: 1 1 560px; min-width: 0; background: #161D23; border: 1px solid #26313A; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 16px">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px">
+          <div style="display: flex; flex-direction: column">
+            <h2 id="scope-title" style="margin: 0; font-size: 17px; font-weight: 600">Microscope · Toupcam</h2>
+            <span style="font-size: 13px; color: #9FB0BD">You have control · zero set at the 50x focus</span>
+          </div>
+          <button type="button" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #FF7A7A; background: transparent; color: #FF9A9A; font: inherit; font-weight: 600">Stop</button>
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 12px">
+          <div style="flex: 999 1 340px; min-width: 0; position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid #26313A">
+            <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #5E6E7A; font-size: 14px">Chip under the window · 50x</div>
+            <span style="position: absolute; left: 10px; top: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(10,14,17,0.85); font-size: 12px; font-weight: 600"><span style="color: #3CCB7F">● LIVE</span> Toupcam · 2592×1944</span>
+            <span style="position: absolute; left: 10px; bottom: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(10,14,17,0.85); font-size: 12px; font-family: 'IBM Plex Mono', monospace">focus 1 200 · sharpness 0.84</span>
+          </div>
+          <div style="flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; gap: 8px">
+            <div style="position: relative; aspect-ratio: 4 / 3; border-radius: 10px; overflow: hidden; background: #0A0E11; border: 1px solid #26313A">
+              <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 8px; text-align: center; color: #5E6E7A; font-size: 12px">Turret side view · ArUco tags</div>
+            </div>
+            <span style="font-size: 12px; color: #9FB0BD">Side camera (camera3) on the turret</span>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <h3 style="margin: 0; font-size: 14px; font-weight: 600">Objective</h3>
+          <div role="radiogroup" aria-label="Objective" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px">
+            <sc-for list="{{objectives}}" as="o" hint-placeholder-count="4">
+              <button type="button" role="radio" aria-checked="{{o.checked}}" style="min-height: 48px; border-radius: 10px; border: 1px solid {{o.border}}; background: {{o.bg}}; color: #E6EDF2; font: inherit; font-weight: 600">{{o.label}}</button>
+            </sc-for>
+          </div>
+          <span style="font-size: 12px; color: #9FB0BD">Switching raises focus to clearance first, then turns the turret with the side camera.</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px">
+            <h3 style="margin: 0; font-size: 14px; font-weight: 600">Focus</h3>
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px">1 200 / 10 000 pulses</span>
+          </div>
+          <div aria-hidden="true" style="position: relative; height: 10px; border-radius: 5px; background: #26313A">
+            <div style="position: absolute; left: 0; top: 0; width: 12%; height: 10px; border-radius: 5px; background: {{accent}}"></div>
+            <span style="position: absolute; left: calc(12% - 7px); top: -4px; width: 14px; height: 18px; border-radius: 4px; background: #E6EDF2"></span>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 12px; color: #9FB0BD"><span>0 · window side · 50x focus</span><span>10 000 · away</span></div>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end">
+            <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9FB0BD">Jog pulses<input value="100" style="width: 96px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid #2E3B46; background: #0F1418; color: #E6EDF2; font-family: 'IBM Plex Mono', monospace"></label>
+            <button type="button" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-weight: 600">− Jog</button>
+            <button type="button" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-weight: 600">+ Jog</button>
+            <button type="button" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 0; background: {{accent}}; color: #0B1A2A; font: inherit; font-weight: 700">Local autofocus</button>
+            <button type="button" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-weight: 600">Full autofocus</button>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: #1B232A">
+            <span style="flex: 1 1 260px; min-width: 0; font-size: 13px; color: #B8C6D1">The focus gears can slip. Re-zero at the 50x focus before each use.</span>
+            <button type="button" style="min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid #F2B84B; background: transparent; color: #F2B84B; font: inherit; font-size: 13px; font-weight: 600">Set focus zero…</button>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 8px">
+          <button type="button" style="min-height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-weight: 600">Save snapshot</button>
+          <button type="button" style="min-height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-weight: 600">Start recording</button>
+          <button type="button" style="min-height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid #2E3B46; background: transparent; color: #E6EDF2; font: inherit; font-weight: 600">Record next furnace sequence</button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#4DA3FF","options":["#4DA3FF","#3CCB7F","#F2B84B","#B79CFF"]},"$preview":{"width":1440,"height":1120}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const ok = '#3CCB7F', off = '#7C8C99';
+    const accent = this.props.accent ?? '#4DA3FF';
+    return {
+      accent,
+      services: [
+        { name: 'Robot', detail: 'Connected · disabled', dot: ok },
+        { name: 'Stage', detail: 'Connected · ready', dot: ok },
+        { name: 'Cameras', detail: '4 of 4 live', dot: ok },
+        { name: 'Thermal', detail: 'Live · 25 fps', dot: ok },
+        { name: 'Vision', detail: 'CUDA · 62 ms', dot: ok },
+        { name: 'Microscope', detail: 'Connected · 50x', dot: ok },
+        { name: 'Furnace', detail: 'Connected · STOP', dot: ok },
+        { name: 'Runs', detail: 'None running', dot: off }
+      ],
+      furnace: [
+        { label: 'PV', value: '24 °C', tone: '#F2B84B' },
+        { label: 'SV', value: '0 °C', tone: '#7DBBFF' },
+        { label: 'Mode', value: 'STOP', tone: '#E6EDF2' },
+        { label: 'Crucible (thermal)', value: '—', tone: '#9FB0BD' }
+      ],
+      sequence: [
+        { n: '1', target: '200 °C', ramp: '10 °C/min', hold: '30 min', gas: 'inert' },
+        { n: '2', target: '600 °C', ramp: '5 °C/min', hold: '60 min', gas: 'inert' },
+        { n: 'End', target: '—', ramp: '—', hold: '—', gas: 'inert until PV < 100 °C' }
+      ],
+      gases: [
+        { name: 'Channel 0', state: 'Gas A · not mapped · refused', flow: '0 sccm' },
+        { name: 'Channel 1', state: 'Gas B · not mapped · refused', flow: '0 sccm' },
+        { name: 'Channel 2', state: 'Gas C · not mapped · refused', flow: '0 sccm' }
+      ],
+      objectives: ['10x', '20x', '50x', '[4th]'].map((label) => ({
+        label,
+        checked: label === '50x' ? 'true' : 'false',
+        border: label === '50x' ? accent : '#2E3B46',
+        bg: label === '50x' ? '#1F2A33' : 'transparent'
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -40,12 +40,12 @@
 #ws-motion .mo-readout { display: flex; flex-wrap: wrap; gap: 4px 14px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
 #ws-motion .mo-at { border-color: var(--ok); }
 #ws-motion .mo-cams { display: flex; flex-direction: column; gap: 12px; }
-#ws-motion .mo-cam { position: relative; min-width: 0; }
+#ws-motion .mo-cam { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 #ws-motion .mo-cam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 #ws-motion .mo-cam-off { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid var(--line); }
 #ws-motion .mo-cam-badge { position: absolute; left: 10px; top: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); font-size: 12px; font-weight: 600; }
 #ws-motion .mo-off { color: var(--muted); }
-#ws-motion .mo-swap { position: absolute; right: 10px; bottom: 10px; background: rgba(10, 14, 17, 0.85); font-size: 13px; }
+#ws-motion .mo-swap { align-self: flex-end; font-size: 13px; }
 #ws-motion .mo-msg { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {

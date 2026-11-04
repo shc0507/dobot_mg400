@@ -418,7 +418,7 @@
       const factory = root.LabCameras && typeof root.LabCameras.tile === "function" ? root.LabCameras.tile : null;
       let node = null;
       if (factory) {
-        try { node = factory(view, { size: large ? "large" : "small" }); } catch { node = null; }
+        try { node = factory(view, large ? { api, large } : { api, large, onSelect: () => swap(view) }); } catch { node = null; }
       }
       if (!node) {
         node = el("div", { class: "mo-cam-off", role: "img", "aria-label": t("cam." + view) + " · " + t("cam.offline") },

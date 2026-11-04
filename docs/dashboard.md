@@ -53,7 +53,7 @@
 - 位姿格显示当前 X、Y、Z 和 R。机械臂运动时显示 `—`。
 - 点动键盘按 0.5、2 或 10 mm 的 1 个步长移动 ±X、±Y、Z 上下或 R ±（R 的单位是度）。每次按下都根据新读取的当前位姿发送 1 条 `execute` 移动。键盘点动仍在机械臂面板中。
 - **Move to a pose**：**Use actual** 复制当前位姿，**Execute** 移动到输入的位姿。速度为 1 到机械臂服务描述的 `execute` 速度上限。
-- 发送点动或位姿前，控制台用 `MG400_ORCH_X_MIN_MM` 到 `MG400_ORCH_R_MAX_DEG` 和 `MG400_ORCH_TOOL_FILE` 中的工具偏移检查指尖目标。缺少边界或工具文件时，控制台拒绝移动。没有边界的演示模式使用合成范围。
+- 发送点动或位姿前，控制台用 `MG400_ORCH_X_MIN_MM` 到 `MG400_ORCH_R_MAX_DEG` 和 `MG400_ORCH_TOOL_FILE` 中的工具偏移检查指尖目标。缺少边界或工具文件时，控制台拒绝移动。没有边界的演示模式使用合成范围。通用 `command/robot` 路由以 409 拒绝 `execute`；请使用 `ws/motion/jog` 和 `ws/motion/move` 路由。
 - **Gripper**：**Open**（1000）、**Close**（0）和 **Initialize…**。初始化会张开夹爪，需要确认。夹爪结果显示在标题旁。
 
 位移台：
@@ -66,6 +66,21 @@
 - 长按移动仍在位移台面板中。契约 `hold` 需要新状态的服务时钟时间，并且每 200 ms 续期 1 次。
 
 相机：camera2 为大视图，camera4 和 camera3 为小视图。**Swap view** 把小视图放到大视图中。没有相机工作区时，视图显示 OFFLINE。
+
+### 相机工作区
+
+- 网格显示 6 个画面：camera1 到 camera4、热像仪和显微镜（Toupcam）。每个画面显示名称和用途、LIVE、STALE 或 OFFLINE 及帧龄、模式，以及 **Snapshot** 和 **Expand**。**Focus · 1 + strip** 显示 1 个大画面和其余画面的条带。
+- 控制台服务中转全部画面。浏览器得不到摄像头密钥和服务令牌。`<img>` 流使用短时一次性票据：20 秒内有效，只能用 1 次，只对 1 个画面有效。
+- 中转最多同时打开 6 路流，每个画面最多 2 路，显微镜最多 2 路。离开工作区、隐藏浏览器标签页或关闭页面时，中转停止。
+- 叠加可分别开关：camera 4 的芯片识别框，以及热像仪的最低、最高、中心标记和色标。
+- 选中热像仪后，侧栏提供单位、色板、自动或固定色标范围和冻结画面。这些设置只改变显示。可导出 CSV、原始 + JSON 和 PNG。
+- **Draw region** 在热像画面上拖出 `crucible` 区域并显示边界。热像仪服务在 `api/describe` 中提供 `set_region` 后，**Save region** 才可用，并且需要在页面中确认。否则把边界写入 `rois.toml`。**Calibrate shutter** 同样等待服务提供 `shutter`，并需要确认。
+- 在主机上配置 camera1 到 camera4 的来源。其他画面使用已有的 `MG400_ORCH_<SERVICE>_URL` 和 `_TOKEN`：
+
+```sh
+MG400_ORCH_CAMERA_URL=http://127.0.0.1:1985
+MG400_CAMERA_KEY_FILE=/var/lib/mg400/camera/preview.key
+```
 
 ### 离线运行
 

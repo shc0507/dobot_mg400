@@ -376,3 +376,16 @@ def test_robot_stop_works_without_control(sim):
     response = post(sim, "stop/robot", page="console-page-b")
     assert response.status_code == 200
     assert response.get_json()["outcome"] in {"confirmed", "pending"}
+
+
+def test_generic_relay_refuses_robot_execute_and_the_move_route_sends_it(sim):
+    take(sim, "robot")
+    x, y, z, r = enable_robot(sim)["actual"][:4]
+    targets = {"x": x - 2, "y": y, "z": z, "r": r}
+    params = {"targets": targets, "speed": speed_cap(sim)}
+    status, body = command(sim, "robot", "execute", params)
+    assert status == 409 and "/lab/api/console/ws/motion/move" in body["error"]
+    assert settled(sim)["actual"][0] == pytest.approx(x, abs=0.05)
+    status, body = ws(sim, "move", params)
+    assert status == 202 and body["outcome"] == "accepted", body
+    assert settled(sim)["actual"][0] == pytest.approx(x - 2, abs=0.05)

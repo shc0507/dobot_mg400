@@ -167,6 +167,31 @@ def test_explicit_weights_and_cache_settings_override_other_environment(fake_det
     assert os.environ["YOLO_CONFIG_DIR"] == "/configured/vision-cache"
 
 
+@pytest.mark.parametrize("inherited", [None, "0", "false"])
+def test_ultralytics_is_offline_before_it_is_imported(monkeypatch, tmp_path, inherited):
+    # Ultralytics computes ONLINE at import; usage events and error reports need it.
+    seen = []
+
+    def load(weights, **options):
+        return SimpleNamespace()
+
+    class Module(SimpleNamespace):
+        def __getattribute__(self, name):
+            if name == "YOLO":
+                seen.append(os.environ.get("YOLO_OFFLINE"))
+            return super().__getattribute__(name)
+
+    monkeypatch.setitem(sys.modules, "ultralytics", Module(YOLO=load))
+    if inherited is None:
+        monkeypatch.delenv("YOLO_OFFLINE", raising=False)
+    else:
+        monkeypatch.setenv("YOLO_OFFLINE", inherited)
+    weights = tmp_path / "weights.pt"
+    weights.write_bytes(b"mock weights, never parsed")
+    Localizer(weights)
+    assert seen == ["1"]
+
+
 def test_environment_weights_and_default_cache(fake_detector, monkeypatch):
     weights, calls, _ = fake_detector
     monkeypatch.setenv("MG400_VISION_WEIGHTS", str(weights))

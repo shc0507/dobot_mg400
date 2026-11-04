@@ -391,11 +391,13 @@ mg400ctl start collector
 旧版 `MG400_CAMERA_CAPTURE_SIZES` 列表使用 `WIDTHxHEIGHT`，帧率为 30 fps。
 不得同时设置两个列表。均为空时，普通流使用 `640x480@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 显式列表覆盖这些默认值，包括侧视流。
-以下 4 台摄像头的配置按上表接口顺序排列，将托盘设为 `1280x720@30`：
+以下 4 台摄像头的配置按上表接口顺序排列，所有摄像头均使用 `640x480@30`。
+这是 Olares 上已验证的设置（2026-11-03）。托盘使用 `1280x720@30` 时，共享 USB 2 链路截断了 `camera2` 的图像帧。
+提高模式前，先用 `mg400ctl camera-check` 和内核日志检查带宽：
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
-MG400_CAMERA_MODES=640x480@30,640x480@30,3840x2160@30,1280x720@30
+MG400_CAMERA_MODES=640x480@30,640x480@30,640x480@30,640x480@30
 MG400_CAMERA_CAPTURE_SIZES=
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```

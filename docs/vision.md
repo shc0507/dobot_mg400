@@ -13,6 +13,7 @@ go2rtc 管理摄像头。视觉服务读取其 JPEG 接口，不打开摄像头�
 真实模式使用 `vision`、`vision-gpu` 依赖组和经过校验的本地模型权重。
 运行环境见 [视觉运行环境与 GPU 使用](adr/0006-vision-runtime.md)。
 服务不会在预测期间下载模型。
+加载 Ultralytics 前，服务设置 `YOLO_OFFLINE=1`。此后，无论其 `settings.json` 如何设置，Ultralytics 都不发送使用统计或错误报告，也不检查软件包更新。
 部署另见 [主机部署](deploy.md)。
 
 在仓库根目录启动离线演示：

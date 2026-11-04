@@ -392,11 +392,13 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 The legacy `MG400_CAMERA_CAPTURE_SIZES` list supplies `WIDTHxHEIGHT` values at 30 fps.
 Do not set both lists. With both lists empty, ordinary streams use `640x480@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream.
-The following 4-camera configuration uses the port order in the table above and sets the tray to `1280x720@30`:
+The following 4-camera configuration uses the port order in the table above and runs every camera at `640x480@30`.
+This is the tested setting on Olares (2026-11-03). With the tray at `1280x720@30`, the shared USB 2 link truncated the frames of `camera2`.
+Before you raise a mode, check the bandwidth with `mg400ctl camera-check` and the kernel log:
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
-MG400_CAMERA_MODES=640x480@30,640x480@30,3840x2160@30,1280x720@30
+MG400_CAMERA_MODES=640x480@30,640x480@30,640x480@30,640x480@30
 MG400_CAMERA_CAPTURE_SIZES=
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```

@@ -175,6 +175,9 @@ class Localizer:
         os.environ["YOLO_CONFIG_DIR"] = os.environ.get(
             "MG400_VISION_CACHE_DIR", "/var/lib/mg400/vision/yolo"
         )
+        # Ultralytics reads this once at import. Offline, it sends no usage events or
+        # error reports and runs no package update checks, whatever its settings file says.
+        os.environ["YOLO_OFFLINE"] = "1"
         from ultralytics import YOLO
 
         self.model = YOLO(str(self.weights), task="segment")

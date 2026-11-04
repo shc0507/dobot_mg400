@@ -428,6 +428,70 @@ def test_terminal_stop_interrupts_waiting_robot_move():
         state.close()
 
 
+@pytest.mark.parametrize("disconnect_command", ["quit", "disconnect"])
+def test_quit_after_explicit_disable_waits_for_the_original_disconnect_and_old_worker(
+    disconnect_command,
+):
+    feed = Feed()
+    controls = []
+
+    def control_factory(*args, **kwargs):
+        control = PanelControl(*args, **kwargs)
+        control.release_pose.clear()
+        control.release_disable.clear()
+        controls.append(control)
+        return control
+
+    state = RobotPanelState("robot.test", connection_factory=feed, control_factory=control_factory)
+    session = TerminalSession(state)
+    control = controls[0]
+    try:
+        session.submit("connect")
+        wait_for(lambda: session.tick()["feedback_fresh"])
+        assert control.pose_entered.wait(1)
+        session.messages.clear()
+        session.submit(disconnect_command)
+        wait_for(lambda: not session.tick()["busy"])
+        if disconnect_command == "disconnect":
+            session.submit("quit")
+        session.tick()
+        assert not session.quitting
+        assert "Enter disable, then quit" in " ".join(session.messages)
+        assert state.snapshot()["controller_id"] is None
+        baseline = session._quit_baseline
+
+        feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+        wait_for(lambda: session.tick()["robot_mode"] == 4)
+        session.submit("disable")
+        wait_for(lambda: "disable" in control.calls)
+        assert state.snapshot()["busy"]
+        session.submit("quit")
+        assert session.quitting and not session.finished
+        assert session._quit_baseline == baseline
+
+        control.release_disable.set()
+        wait_for(lambda: not session.tick()["busy"])
+        assert state.snapshot()["syncing"] and state.snapshot()["locked"]
+        assert session.quitting and not session.finished
+        session.submit("quit")
+        assert session.quitting and session._quit_baseline == baseline
+        assert control.calls.count("stop") == 1
+        assert control.calls.count("disable") == 1
+        assert state.snapshot()["controller_id"] is None
+        assert "Start sync" not in " ".join(session.messages)
+        assert "physical emergency stop" not in " ".join(session.messages)
+
+        control.release_pose.set()
+        wait_for(lambda: session.tick() and session.finished)
+        assert not state.snapshot()["syncing"]
+        assert not state.snapshot()["locked"]
+        assert session.exit_code == 0
+    finally:
+        control.release_disable.set()
+        control.release_pose.set()
+        state.close()
+
+
 @pytest.mark.parametrize("stream", ["stdin", "stdout"])
 def test_non_tty_fails_before_loading_config_or_creating_state(monkeypatch, capsys, stream):
     monkeypatch.setattr(terminal_control.sys.stdin, "isatty", lambda: True)

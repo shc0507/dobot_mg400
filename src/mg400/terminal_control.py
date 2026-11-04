@@ -96,6 +96,8 @@ class TerminalSession:
         self.last_message = None
         self.quitting = False
         self._quit_baseline = None
+        self._quit_requested = False
+        self._quit_disable_requested = False
         self.finished = False
         self.exit_code = 0
         self.messages.extend(HELP)
@@ -160,6 +162,17 @@ class TerminalSession:
             and result.get("result") == "ok"
         ):
             return "draining"
+        if (
+            self._quit_disable_requested
+            and snapshot.get("busy") is True
+            and snapshot.get("robot_mode") == 4
+            and snapshot.get("enabled") is False
+            and result.get("action") == "stop_sync"
+            and result.get("result") == "stopped"
+        ):
+            # The explicit disable is still pending. Its final receipt is required
+            # when tick() observes that the safety worker has finished.
+            return "waiting"
         return None
 
     def submit(self, line):
@@ -184,9 +197,12 @@ class TerminalSession:
                         "After a physical stop, quit --force exits without confirming robot rest."
                     )
                 elif snapshot["syncing"] or snapshot["busy"]:
-                    baseline = (snapshot.get("last_command") or {}).get("id")
-                    self.state.command({"action": "stop_sync"}, self.client_id)
-                    self._quit_baseline = baseline
+                    if not (self._quit_requested and self._quit_feedback(snapshot)):
+                        baseline = (snapshot.get("last_command") or {}).get("id")
+                        self.state.command({"action": "stop_sync"}, self.client_id)
+                        self._quit_baseline = baseline
+                        self._quit_requested = True
+                        self._quit_disable_requested = False
                     self.quitting = True
                     self.messages.append("Waiting for confirmed arm stop and pending operations.")
                 else:
@@ -194,7 +210,18 @@ class TerminalSession:
             else:
                 if self.quitting and command["action"] not in {"stop", "disable"}:
                     raise RuntimeError("The session is closing. Wait for stop confirmation.")
+                if command["action"] == "stop_sync":
+                    baseline = (self.state.snapshot().get("last_command") or {}).get("id")
                 self.state.command(command, self.client_id)
+                if command["action"] == "stop_sync":
+                    self._quit_baseline = baseline
+                    self._quit_requested = True
+                    self._quit_disable_requested = False
+                elif command["action"] == "disable" and self._quit_requested:
+                    self._quit_disable_requested = True
+                elif command["action"] == "start_sync":
+                    self._quit_requested = False
+                    self._quit_disable_requested = False
         except (ValueError, OverflowError, RuntimeError, OSError) as error:
             self.messages.append(f"Error: {error}")
 

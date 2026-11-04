@@ -1,4 +1,6 @@
-"""Furnace contract and operator page. Import opens no device or file.
+"""Furnace contract, stop routes and the operator fault acknowledgement.
+
+Import opens no device or file.
 
 The adapter uses only public lifecycle and Lease methods. Manual requests and
 contract acquisition share the same lease lock. Contract acquisition/renewal
@@ -15,7 +17,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import minimalmodbus
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from labkit.auth import bearer_matches, host_allowed, same_origin, valid_token_for_bind
@@ -325,13 +327,23 @@ class FurnaceWebService:
             return result
 
     def manual_command(self, action, args, client):
-        with self._manual_control(client):
-            if action == "acknowledge":
-                if args:
-                    raise ValueError("Acknowledgement takes no parameters")
+        """Acknowledge a fault for the lease holder, or claim manual control when free.
+
+        The Lab Console acknowledges on its own lease. The runner never calls this.
+        """
+        if action != "acknowledge":
+            raise ValueError("Unknown operator action")
+        if args:
+            raise ValueError("Acknowledgement takes no parameters")
+        lease = self.lifecycle.lease
+        with lease.control(client, require_holder=False):
+            if lease.snapshot()["holder"] == client:
+                lease.renew(client)
                 self.lifecycle.acknowledge(client=client)
                 return None
-            return self._execute(action, args, client)
+        with self._manual_control(client):
+            self.lifecycle.acknowledge(client=client)
+            return None
 
     def stop(self, client, wait_s=0):
         validate_client(client)
@@ -421,12 +433,12 @@ def make_service(
 
 
 def create_app(service, *, token=None, base_path="/"):
-    """Serve an inert public shell and authenticated contract/legacy APIs."""
+    """Serve the authenticated contract, stop and operator routes."""
     if not valid_token_for_bind(token, "localhost"):
         raise ValueError("A configured token needs at least 24 printable ASCII characters")
     blueprint = contract_blueprint(service, token=token, base_path=base_path, lease=service.lease)
     prefix = base_path.rstrip("/")
-    app = Flask(__name__, static_url_path=prefix + "/static")
+    app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
     app.register_blueprint(blueprint)
 
@@ -434,9 +446,8 @@ def create_app(service, *, token=None, base_path="/"):
     def access():
         if not host_allowed(request.headers, token) or not same_origin(request.headers):
             raise ServiceError(403, "The request host or origin is not allowed")
-        if request.endpoint not in ("page", "static"):
-            if token and not bearer_matches(request.headers.get("Authorization", ""), token):
-                raise ServiceError(401, "Invalid service access token")
+        if token and not bearer_matches(request.headers.get("Authorization", ""), token):
+            raise ServiceError(401, "Invalid service access token")
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json")
@@ -467,21 +478,6 @@ def create_app(service, *, token=None, base_path="/"):
             raise ValueError("Expected a JSON object")
         return value
 
-    @app.get(prefix + "/")
-    def page():
-        return render_template(
-            "index.html",
-            base_path=prefix,
-            demo=service.demo,
-            max_c=service.lifecycle.config.max_c,
-            max_ramp=service.lifecycle.config.max_ramp,
-        )
-
-    @app.get(prefix + "/api/status")
-    def status():
-        service.lease.poll()
-        return jsonify(furnace=service.status())
-
     @app.post(prefix + "/api/manual/<operation>")
     def manual_lease(operation):
         if body():
@@ -497,44 +493,10 @@ def create_app(service, *, token=None, base_path="/"):
             raise ValueError("Unknown manual lease operation")
         return jsonify(lease=value)
 
-    routes = {
-        "/api/furnace/connect": "connect",
-        "/api/furnace/apply": "apply_setpoint",
-        "/api/furnace/acknowledge": "acknowledge",
-        "/api/flow/connect": "connect_flow",
-        "/api/flow/gas/set": "set_gas_flow",
-        "/api/flow/gas/valve": "set_gas_valve",
-        "/api/flow/gas/inspect": "inspect_gas_flow",
-        "/api/sequence": "set_sequence",
-        "/api/sequence/start": "start_sequence",
-    }
-
-    def manual_route(action):
-        def dispatch():
-            args = body()
-            client = request.headers["X-MG400-Client"]
-            if action == "set_gas_valve" and args.get("open") is False:
-                if set(args) != {"channel_index", "open"}:
-                    raise ValueError("Expected channel_index and open")
-                result = service.lifecycle.stop_gas_flow(args["channel_index"])
-                return jsonify(ok=not result["locked"], status=result)
-            service.manual_command(action, args, client)
-            result = (
-                service.lifecycle.flow_status()
-                if action in ("connect_flow", "set_gas_flow", "set_gas_valve", "inspect_gas_flow")
-                else service.status()
-            )
-            return jsonify(ok=True, status=result)
-
-        return dispatch
-
-    for index, (route, action) in enumerate(routes.items()):
-        app.add_url_rule(
-            prefix + route,
-            f"manual_{index}",
-            manual_route(action),
-            methods=["PUT" if route == "/api/sequence" else "POST"],
-        )
+    @app.post(prefix + "/api/furnace/acknowledge")
+    def acknowledge():
+        service.manual_command("acknowledge", body(), request.headers["X-MG400-Client"])
+        return jsonify(ok=True, status=service.status())
 
     @app.post(prefix + "/api/furnace/stop")
     @app.post(prefix + "/api/sequence/stop")

@@ -186,6 +186,7 @@ Keep the console open and hold control during capture and finalization.
 
 The console offers **Start recording** and **Stop recording**. **Record next furnace sequence** arms sequence recording, and **Cancel sequence recording** cancels it.
 **Turn stabilization on** and **Turn stabilization off** change camera stabilization.
+The card sends **Run name**, **Mode**, **Interval s** and **Output fps** as `run_name`, `mode`, `capture_interval_seconds` and `output_fps`. In **Live** mode it sends no interval.
 An optional run name contains at most 80 printable characters. It does not select a file path.
 The `time_lapse` defaults are a 30-second capture interval and 1 output frame per second.
 The `live` default is 30 output frames per second, with no capture interval.

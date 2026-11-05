@@ -76,7 +76,7 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 ### Cameras workspace
 
 - The grid shows 6 views: camera1 to camera4, the thermal camera and the microscope (Toupcam). Each view shows its name and role, LIVE, STALE or OFFLINE with the frame age, its mode, and **Snapshot** and **Expand**. **Focus · 1 + strip** shows 1 large view and a strip of the others.
-- camera1 to camera4 load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate and stays near the newest frame. H.264 needs much less bandwidth than MJPEG, so the VPN link keeps room for control traffic.
+- camera1 to camera4 load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate and stays near the newest frame. Each H.264 view uses at most 2 Mbit/s, so the VPN link keeps room for control traffic.
 - If the browser or the host cannot play H.264, the view loads MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Grid and strip views get at most 5 frames a second, and a large view at most 10.
 - **Snapshot** downloads 1 frame from `/camera/<view>.jpg`.
 - The console relays the thermal frame and the microscope stream. The microscope relay sends only the newest complete frame. Grid and strip views get at most 10 frames a second, and a large view at most 30. It opens at most 2 microscope streams.

@@ -1615,7 +1615,7 @@ def test_camera_configuration_renders_exact_device_count(module, count):
     for number, device in enumerate(devices, 1):
         assert f"camera{number}: v4l2:device?video={device}" in rendered
         assert f"camera{number}: video\n" in rendered
-        assert f"  camera{number}_h264: ffmpeg:camera{number}#video=h264\n" in rendered
+        assert f"  camera{number}_h264: ffmpeg:camera{number}#video=h264#bitrate=2M\n" in rendered
     assert f"camera{count + 1}:" not in rendered
     assert f"camera{count + 1}_h264:" not in rendered
     # ffmpeg reads and returns the H.264 previews through RTSP on loopback only.
@@ -1704,8 +1704,8 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
     assert configured.preloaded == ("camera1", "camera2")
     rendered = module.render_go2rtc(devices, modes=configured.modes)
     assert "camera3: video\n" not in rendered and "camera4: video\n" not in rendered
-    assert "camera1_h264: ffmpeg:camera1#video=h264\n" in rendered
-    assert "camera2_h264: ffmpeg:camera2#video=h264\n" in rendered
+    assert "camera1_h264: ffmpeg:camera1#video=h264#bitrate=2M\n" in rendered
+    assert "camera2_h264: ffmpeg:camera2#video=h264#bitrate=2M\n" in rendered
     assert "camera3_h264" not in rendered and "camera4_h264" not in rendered
     assert "video_size=3840x2160&framerate=30" in rendered
     assert (

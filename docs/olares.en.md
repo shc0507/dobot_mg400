@@ -356,7 +356,7 @@ After the last viewer leaves a large stream, the preview service releases its up
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
-Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate. This route accepts no query.
+Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate and at most 2 Mbit/s. This route accepts no query.
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
 Single-frame requests use the same go2rtc stream, at its configured resolution; they do not switch mode or open another device capture.

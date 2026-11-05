@@ -26,7 +26,7 @@
   // A USB view at the camera rate needs about 16 Mbit/s. The VPN link carries about 22 Mbit/s,
   // so the USB previews ask for less and leave room for keys, holds and stops.
   const USB_TILE_FPS = 5, USB_LARGE_FPS = 10;
-  // H.264 at the camera rate needs a few Mbit/s, so camera1 to camera4 play it at full rate.
+  // The host caps each H.264 preview at 2 Mbit/s, so camera1 to camera4 play it at the camera rate.
   const H264 = 'video/mp4; codecs="avc1.640029"';
   // Play near the newest frame: jump when more than JUMP_S behind, speed up above CATCH_UP_S.
   const JUMP_S = 1, CATCH_UP_S = 0.3, KEEP_S = 10, MAX_QUEUE = 4 * 1024 * 1024;

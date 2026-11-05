@@ -361,8 +361,10 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
         for number, (device, mode) in enumerate(zip(configured.devices, configured.modes), 1)
     )
     # go2rtc starts each ffmpeg encoder for its first viewer and stops it after the last.
+    # Sensor noise can raise a 640x480 stream to about 9 Mbit/s. The cap keeps 3 previews
+    # near 6 Mbit/s on the VPN link.
     streams += "".join(
-        f"  {name}_h264: ffmpeg:{name}#video=h264\n" for name in configured.preloaded
+        f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate=2M\n" for name in configured.preloaded
     )
     preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"

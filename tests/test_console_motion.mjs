@@ -158,12 +158,12 @@ test("gripper positions and alarm rows are parsed strictly", () => {
 });
 
 test("the arm card shows joints, alarms and the service message; Stop arm needs no control", async () => {
-  const robot = { ...ROBOT, joints: [1.5, -20, 3, 44.25], message: "Robot stop is confirmed. Disable the robot before recovery.",
+  const robot = { ...ROBOT, joints: [1.5, -20, 3, 44.26], message: "Robot stop is confirmed. Disable the robot before recovery.",
     gripper_message: "Control is locked. Check the gripper.",
     alarms: [{ id: 22, source: "controller", description: "Joint 2 limit", solution: "Jog J2 back." }] };
   const page = await mounted({ owns: [], robot: { ...robot, holder: null } });
   const texts = page.root.all().map(node => node.ownText);
-  assert.ok(texts.includes("44.25°") && texts.includes("-20.00°"));
+  assert.ok(texts.includes("44.3") && texts.includes("-20.0"));
   assert.ok(texts.includes("Alarm 22: Joint 2 limit Jog J2 back."));
   assert.ok(texts.includes("Robot stop is confirmed. Disable the robot before recovery."));
   assert.ok(texts.includes("Control is locked. Check the gripper."));

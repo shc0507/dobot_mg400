@@ -42,7 +42,7 @@
       "gas.actual": "actual {value}", "gas.unverified": "unverified",
       "gas.close": "Close", "gas.closeLabel": "Close {gas}", "gas.closeResult": "{gas} close: {outcome}",
       "valve.open": "valve open", "valve.closed": "valve closed", "valve.unknown": "valve unknown", "valve.unverified": "{state} (not confirmed)",
-      "tile.ramp": "Ramp",
+      "tile.ramp": "Ramp °C/min",
       "confirm.ok": "Confirm", "confirm.cancel": "Cancel",
       "scope.title": "Microscope · Toupcam", "scope.zero": "zero set", "scope.noZero": "focus zero unknown",
       "scope.stop": "Stop", "scope.view": "Toupcam", "scope.side": "Side camera (camera3) on the turret",
@@ -102,7 +102,7 @@
       "gas.actual": "实际 {value}", "gas.unverified": "未确认",
       "gas.close": "关闭", "gas.closeLabel": "关闭 {gas}", "gas.closeResult": "{gas} 关闭：{outcome}",
       "valve.open": "阀门开", "valve.closed": "阀门关", "valve.unknown": "阀门未知", "valve.unverified": "{state}（未确认）",
-      "tile.ramp": "速率",
+      "tile.ramp": "速率 °C/min",
       "confirm.ok": "确认", "confirm.cancel": "取消",
       "scope.title": "显微镜 · Toupcam", "scope.zero": "零点已设", "scope.noZero": "对焦零点未知",
       "scope.stop": "停止", "scope.view": "Toupcam", "scope.side": "转盘侧面相机（camera3）",
@@ -477,13 +477,13 @@
     ];
     const zeroConfirm = confirmBox("zero", t("zero.confirm"), () => operator("focus-zero", "zero.done"));
     n.snapshot = button(t("rec.snapshot"), saveSnapshot, { "data-role": "snapshot" });
-    n.snapPath = input({ type: "text", maxlength: "4096", class: "pr-input", autocomplete: "off", "data-role": "snapshot-path" }, view.snapPath, value => { view.snapPath = value; });
+    n.snapPath = input({ type: "text", maxlength: "4096", class: "pr-input pr-wide", autocomplete: "off", "data-role": "snapshot-path" }, view.snapPath, value => { view.snapPath = value; });
     n.record = button(t("rec.start"), toggleRecording, { "data-role": "record" });
     n.arm = button(t("rec.arm"), toggleArm, { "data-role": "arm" });
     n.stab = button(t("rec.stabOn"), () => send("microscope", "set_stabilization", { enabled: view.status?.microscope?.stabilization !== true }, "stab"), { "data-role": "stabilization" });
     n.recState = el("p", { class: "lc-muted", "data-role": "rec-state" });
     n.recError = el("p", { class: "pr-warn", "data-role": "rec-error", hidden: true });
-    n.recName = input({ type: "text", maxlength: "80", class: "pr-input", autocomplete: "off", "data-role": "rec-name" }, view.rec.name, value => { view.rec.name = value; });
+    n.recName = input({ type: "text", maxlength: "80", class: "pr-input pr-wide", autocomplete: "off", "data-role": "rec-name" }, view.rec.name, value => { view.rec.name = value; });
     n.recMode = el("select", { class: "pr-input", "data-role": "rec-mode", onchange: event => {
       view.rec.mode = event.target.value === "live" ? "live" : "time_lapse";
       view.rec.fps = view.rec.mode === "live" ? "30" : "1";
@@ -615,7 +615,7 @@
     setText(n.tiles.pv, degrees(furnace?.pv));
     setText(n.tiles.sv, degrees(furnace?.sv));
     setText(n.tiles.mode, furnace ? t(modeKey(furnace)) : t("none"));
-    setText(n.tiles.ramp, finite(furnace?.ramp) === null ? t("none") : fmt(furnace.ramp) + " °C/min");
+    setText(n.tiles.ramp, finite(furnace?.ramp) === null ? t("none") : fmt(furnace.ramp));
     const crucible = status?.crucible;
     setText(n.tiles.crucible, degrees(crucible?.max_c));
     n.tiles.pv.className = "pr-tile-value pr-tone-pv";

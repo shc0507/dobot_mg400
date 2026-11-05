@@ -228,7 +228,7 @@ test("Close shuts 1 gas channel without control; the gas rows show the valve sta
   status.furnace.flow.gas_valves = [{ channel_index: 0, open: true, verified: true }, { channel_index: 1, open: false, verified: false }];
   const { root, calls, notices } = await load({ owns: [], status });
   const text = walk(root).map(node => node.ownText);
-  assert.ok(text.includes("5.0 °C/min"));
+  assert.ok(text.includes("Ramp °C/min") && text.includes("5.0"));
   assert.ok(text.some(value => value.endsWith("· valve open")));
   assert.ok(text.some(value => value.endsWith("· valve closed (not confirmed)")));
   assert.ok(text.some(value => value.endsWith("· valve unknown")));

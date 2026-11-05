@@ -196,7 +196,6 @@
     return lines.join("\n") + "\n";
   }
 
-  /** Normalize a dragged rectangle in sensor pixels to region bounds, or null if it is too small. */
   /** The temperature of 1 sensor pixel {x, y}, or null outside the frame. */
   function probeReading(frame, probe) {
     if (!probe || !Number.isInteger(probe.x) || !Number.isInteger(probe.y)) return null;
@@ -205,6 +204,7 @@
     return typeof value === "number" && Number.isFinite(value) ? { x: probe.x, y: probe.y, celsius: value } : null;
   }
 
+  /** Normalize a dragged rectangle in sensor pixels to region bounds, or null if it is too small. */
   function regionFrom(a, b) {
     const clamp = (v, max) => Math.max(0, Math.min(max, Math.round(v)));
     const x0 = clamp(Math.min(a.x, b.x), W), x1 = clamp(Math.max(a.x, b.x), W);

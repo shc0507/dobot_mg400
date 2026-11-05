@@ -396,7 +396,7 @@
       });
       refs.armStop = el("button", { type: "button", class: "lc-danger mo-stop", text: t("arm.stop"), onclick: () => stopDevice("robot") });
       refs.alarms = el("div", { class: "mo-stack", role: "alert", hidden: true });
-      refs.armMessage = el("p", { class: "lc-muted mo-msg", role: "status", hidden: true });
+      refs.armMessage = el("p", { class: "lc-muted", role: "status", hidden: true });
       refs.joints = [0, 1, 2, 3].map(() => el("span", { class: "mo-value" }));
       const jointTiles = el("div", { class: "mo-pose" },
         ...refs.joints.map((node, i) => el("div", { class: "mo-tile" }, el("span", { class: "lc-muted", text: "J" + (i + 1) }), node)));
@@ -475,7 +475,7 @@
       });
       refs.gripInput.value = model.grip ?? "";
       refs.gripMove = el("button", { type: "button", class: "lc-button", text: t("grip.move"), onclick: moveGrip });
-      refs.gripMessage = el("p", { class: "lc-muted mo-msg" });
+      refs.gripMessage = el("p", { class: "lc-muted" });
       const gripBox = el("div", { class: "mo-block" },
         el("div", { class: "mo-head" }, el("h3", { text: t("grip.title") }), refs.gripState),
         el("div", { class: "mo-grid3" }, refs.gripOpen, refs.gripClose, refs.gripInit),
@@ -887,7 +887,7 @@
       const gripMessage = robot?.gripper_message ? String(robot.gripper_message) : "";
       if (refs.gripMessage.textContent !== gripMessage) refs.gripMessage.textContent = gripMessage;
       const joints = Array.isArray(robot?.joints) ? robot.joints : [];
-      refs.joints.forEach((node, i) => { node.textContent = typeof joints[i] === "number" ? fixed(joints[i], 2) + "°" : "—"; });
+      refs.joints.forEach((node, i) => { node.textContent = typeof joints[i] === "number" ? fixed(joints[i], 1) : "—"; });
       AXES.forEach((axis, i) => { refs.pose[i].textContent = pose ? fixed(pose[i], 2) : "—"; });
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;

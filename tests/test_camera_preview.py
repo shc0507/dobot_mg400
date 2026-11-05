@@ -486,17 +486,32 @@ def test_fourth_camera_still_route_keeps_fixed_destination(preview, monkeypatch)
 def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(preview, monkeypatch):
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera2")
     module = load_preview()
-    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False]
+    assert module.CAMERAS.mode(2) == (3840, 2160, 30)
+    assert list(module.FEEDS) == ["camera1", "camera3"]
     monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,1280x720,320x240")
     module = load_preview()
     assert module.CAMERAS.mode(2) == (1280, 720, 30)
-    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False]
+    assert list(module.FEEDS) == ["camera1", "camera3"]
+    monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,640x480,1280x720")
+    module = load_preview()
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, False, True]
     monkeypatch.setenv("MG400_CAMERA_MODES", "1920x1080@60,640x480@30,640x480@30")
     with pytest.raises(ValueError):
         load_preview()
     monkeypatch.delenv("MG400_CAMERA_CAPTURE_SIZES")
     module = load_preview()
     assert module.CAMERAS.mode(1) == (1920, 1080, 60)
+
+
+def test_side_stream_above_640x480_is_not_relayed(preview, monkeypatch):
+    _, upstream = preview
+    monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x480@30,3840x2160@30")
+    module = load_preview()
+    for route in ("camera3.jpg", "camera3.mjpeg"):
+        assert request(module, route)[0] == 404
+    upstream.assert_not_called()
+    assert request(module, "camera2.jpg")[0] == 200
 
 
 def test_on_demand_feed_releases_last_viewer_and_can_start_again(preview, monkeypatch):

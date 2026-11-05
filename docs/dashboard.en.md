@@ -25,6 +25,7 @@ The console is the only operator web page.
 - The service refuses the request when another client holds the lease. The console never takes a lease from another holder.
 - The page sends a heartbeat every 500 ms. Each heartbeat renews the lease 1 time.
 - The console releases the lease when no heartbeat arrives for 3 seconds, or when the page closes. If a renewal fails, the control ends and the console does not request it again.
+- Before the console releases the robot, it disables the arm. This applies to **Release**, **Release all**, a page close and a missing heartbeat. The disable also stops motion. The robot service then stays unlocked.
 - **Release all** releases only the console's own leases.
 
 ### Command relay

@@ -20,6 +20,8 @@ from ..clients import SERVICES
 
 BEAT_TIMEOUT_S = 3.0
 WATCH_INTERVAL_S = 0.2
+# A robot disable waits up to 5 s for the disabled mode and up to 5 s for rest.
+ROBOT_DISABLE_S = 12.0
 EVENT_LIMIT = 500
 EVENT_REFRESH_S = 1.0
 # Lease operations have their own routes. The relay never forwards them.
@@ -162,7 +164,15 @@ class Console:
         error = None
         if release:
             try:
-                item.adapter.release()
+                if item.device == "robot":
+                    # stop_sync on an enabled arm stops it but leaves the robot service
+                    # locked until a disable. Disable first: it also stops motion at once.
+                    try:
+                        item.adapter.run("disable", timeout=ROBOT_DISABLE_S)
+                    finally:
+                        item.adapter.release()
+                else:
+                    item.adapter.release()
             except Exception as exc:
                 error = exc
         self._close(item.adapter)

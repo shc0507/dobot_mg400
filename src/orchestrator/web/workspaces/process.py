@@ -227,14 +227,15 @@ def register(blueprint, service):
 
     @blueprint.post("/gas-stop")
     def gas_stop():
+        # The app accepts only a JSON object in a POST body.
         data = request.get_json()
-        channel = data.get("channel_index") if isinstance(data, dict) else None
-        if set(data or {}) != {"channel_index"} or type(channel) is not int or not 0 <= channel <= 2:
+        channel = data.get("channel_index")
+        if set(data) != {"channel_index"} or type(channel) is not int or not 0 <= channel <= 2:
             raise ValueError("Send channel_index 0, 1 or 2 only.")
         validate_client(request.headers.get("X-MG400-Client"))
         adapter = service.console_client("furnace", f"console-stop-{uuid.uuid4().hex}")
         if adapter is None:
-            raise ServiceError(409, "The service is not configured or its owned demo is not running.")
+            raise ServiceError(409, "The furnace is not configured or its demo is not running.")
         try:
             confirmed = gas_confirmed(adapter.gas_stop(channel), channel)
             outcome = "confirmed" if confirmed else "unconfirmed"

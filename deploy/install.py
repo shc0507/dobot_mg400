@@ -379,6 +379,8 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
 
 # The proxy serves only the Lab Console (/lab/) and the camera streams (port 1985).
 PROXY_UPSTREAMS = {"ORCH": 8772}
+# Fixed: the console control socket of the orchestrator (SOCKET_PORT in orchestrator/__main__.py).
+ORCH_SOCKET_PORT = 8774
 
 
 def render_proxy(host, settings, selected):
@@ -410,6 +412,9 @@ def render_proxy(host, settings, selected):
             raise ValueError("Proxy and upstream ports must be distinct.")
         ports.add(value)
         values[prefix + "_PORT"] = value
+    if str(ORCH_SOCKET_PORT) in ports:
+        raise ValueError("Proxy and upstream ports must be distinct.")
+    values["ORCH_SOCKET_PORT"] = str(ORCH_SOCKET_PORT)
     with assets._local(host.source / "config/proxy/Caddyfile") as stream:
         template = stream.read().decode("utf-8")
     for key, value in values.items():

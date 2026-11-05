@@ -57,3 +57,5 @@
 #ws-motion .mo-key { min-width: 32px; padding: 4px 0; text-align: center; border-radius: 6px; border: 1px solid var(--line2); color: var(--soft); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
 #ws-motion .mo-key.mo-on { border-color: var(--accent); background: var(--tab); color: var(--text); }
 #ws-motion .mo-kb-off { margin: 0; font-size: 13px; color: var(--warn); overflow-wrap: anywhere; }
+#ws-motion .mo-hold { touch-action: none; user-select: none; -webkit-user-select: none; }
+#ws-motion .mo-hold.mo-on { border-color: var(--accent); background: var(--tab); color: var(--text); }

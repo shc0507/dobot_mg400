@@ -48,7 +48,7 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-furnace.service` | `furnace` | [Furnace and gas service](furnace.en.md), port `8769` | `dialout` |
 | `mg400-microscope.service` | `microscope` | [Microscope service](microscope.en.md), loopback port `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | Optional [vision service](vision.en.md), loopback port `8771` | None |
-| `mg400-orchestrator.service` | `orch` | [Recipe service](orchestrator.en.md#http-service), port `8772` | None |
+| `mg400-orchestrator.service` | `orch` | [Recipe service](orchestrator.en.md#http-service), port `8772`, console control socket port `8774` | None |
 | `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
 | `mg400-proxy.service` | `proxy` | [Single-port proxy](olares.en.md#single-port-proxy), port `8080` | None |
 | `mg400-gripper-collector.path` | None | Start gripper collection when the robot service requests it | None |

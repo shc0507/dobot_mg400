@@ -30,7 +30,7 @@ The `orch` service runs `python -m orchestrator serve` with Flask and waitress.
 Install it through the [service registry](deploy.en.md#service-registry). It uses no device groups and starts no recipe automatically.
 The existing `run`, `rehearse`, `runs`, and `station` commands remain available.
 
-The service listens on `127.0.0.1:8772`. The installed unit sets the base path `/lab/`, which the proxy serves.
+The service listens on `127.0.0.1:8772`. The installed unit sets the base path `/lab/`, which the proxy serves. The console control socket listens on `127.0.0.1:8774`, and the proxy forwards `/lab/api/console/socket` to it. If that port is in use, the service logs a warning and starts without the socket, and pages use HTTP.
 It reads the recipe catalog from `/opt/mg400/recipes`.
 The flags `--bind`, `--port`, `--base-path`, `--recipes-dir`, and `--runs-dir` override these defaults.
 

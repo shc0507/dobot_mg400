@@ -34,6 +34,11 @@ http://:@PROXY_PORT@ {
 	handle_path /camera/* {
 		import instrument 127.0.0.1:1985
 	}
+	# One WebSocket per console page carries holds, keys and stops outside the browser's
+	# 6-connection limit. Waitress cannot serve it, so it has its own port.
+	handle /lab/api/console/socket {
+		import instrument 127.0.0.1:@ORCH_SOCKET_PORT@
+	}
 	handle /lab/* {
 		import instrument 127.0.0.1:@ORCH_PORT@
 	}

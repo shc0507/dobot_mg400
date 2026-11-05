@@ -108,6 +108,11 @@ class Device:
                     if device.holder != identity:
                         raise RuntimeError("Service lease was lost.")
 
+            def run(self, action, *, timeout, **params):
+                device.calls.append(("run", identity, action))
+                device._maybe_fail("run")
+                return {}
+
             def release(self):
                 device.calls.append(("release", identity))
                 with device.lock:
@@ -351,6 +356,47 @@ def test_heartbeat_renews_and_missing_heartbeat_releases_after_3_s(rig, monkeypa
     wait_for(lambda: stage.holder is None)
     assert ("release", holder) in stage.calls
     assert rig.service.console.control() == []
+
+
+def lease_calls(device, holder):
+    return [
+        call[:3] if call[0] == "run" else call[0]
+        for call in device.calls
+        if call[1] == holder and call[0] in {"run", "release"}
+    ]
+
+
+def test_robot_release_disables_the_arm_before_it_ends_control(rig):
+    robot = rig.devices["robot"]
+    holder = post(rig, "control/robot/take").get_json()["control"]["holder"]
+    released = post(rig, "control/robot/release")
+    assert released.get_json()["result"] == "released"
+    assert lease_calls(robot, holder) == [("run", holder, "disable"), "release"]
+    # Other devices release without a disable.
+    stage = rig.devices["stage"]
+    other = post(rig, "control/stage/take").get_json()["control"]["holder"]
+    post(rig, "control/stage/release")
+    assert lease_calls(stage, other) == ["release"]
+
+
+def test_missing_heartbeat_disables_the_robot_before_it_ends_control(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    robot = rig.devices["robot"]
+    holder = post(rig, "control/robot/take").get_json()["control"]["holder"]
+    rig.clock.value += 3.1
+    wait_for(lambda: robot.holder is None)
+    assert lease_calls(robot, holder) == [("run", holder, "disable"), "release"]
+    assert rig.service.console.control() == []
+
+
+def test_robot_release_ends_control_when_the_disable_fails(rig):
+    robot = rig.devices["robot"]
+    holder = post(rig, "control/robot/take").get_json()["control"]["holder"]
+    robot.fail["run"] = RuntimeError("Reply timed out; command delivery may be unknown.")
+    released = post(rig, "control/robot/release")
+    assert released.get_json()["result"] == "unconfirmed"
+    assert lease_calls(robot, holder) == [("run", holder, "disable"), "release"]
+    assert robot.holder is None and rig.service.console.control() == []
 
 
 def test_lost_lease_is_never_reacquired_or_released_for_the_new_holder(rig):

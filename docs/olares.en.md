@@ -25,6 +25,7 @@ The Olares network interface connected directly to the robot uses `192.168.1.10/
 | Vision | `8771` |
 | Lab Console and recipe service | `8772` |
 | MCP gateway | `8773` |
+| Lab Console control socket | `8774` |
 | Camera streams | `1985` |
 
 Add optional services such as `thermal` and `vision` to `MG400_OPTIONAL_SERVICES` before installation.
@@ -55,6 +56,7 @@ The proxy has only these routes:
 
 | VPN path | Loopback upstream |
 | --- | --- |
+| `/lab/api/console/socket` | `127.0.0.1:8774`, the console control socket (WebSocket) |
 | `/lab/` | `127.0.0.1:8772`, with the fixed base path `/lab/` |
 | `/camera/<view>.mp4`, `/camera/<view>.mjpeg`, `/camera/<view>.jpg` | `127.0.0.1:1985`, after removing only `/camera` |
 

@@ -24,6 +24,19 @@ def private_orchestrator_zones(request):
     return directory
 
 
+@pytest.fixture(autouse=True)
+def private_thermal_regions(request):
+    """Never let thermal tests read an installed host's region file."""
+    if not request.path.name.startswith("test_thermal_"):
+        return
+    from thermal_cam.service import CameraService
+
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    directory = request.getfixturevalue("tmp_path_factory").mktemp("thermal-regions")
+    # An absent file defines no named regions, as on a host without one.
+    monkeypatch.setitem(CameraService.__init__.__kwdefaults__, "roi_path", directory / "rois.toml")
+
+
 @pytest.fixture
 def isolated_controller_locks(monkeypatch, tmp_path):
     """Keep controller lock files in the test's own directory."""

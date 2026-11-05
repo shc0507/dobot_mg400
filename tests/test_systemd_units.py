@@ -234,7 +234,11 @@ def test_camera_capture_reads_the_generated_configuration():
         "/usr/local/lib/mg400/go2rtc",
         "-config",
         "/etc/mg400/go2rtc.yaml",
+        "-config",
+        "/var/lib/mg400/camera/still.yaml",
     ]
+    service = unit_sections("mg400-camera-capture.service")["Service"]
+    assert service["ExecStartPre"] == ["/bin/rm -f /var/lib/mg400/camera/still.yaml"]
     preview = unit_sections("mg400-camera-preview.service")["Unit"]
     assert preview["Requires"] == ["mg400-camera-capture.service"]
 

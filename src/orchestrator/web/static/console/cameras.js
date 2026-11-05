@@ -1,7 +1,7 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
  * camera1 to camera4 and the microscope play H.264 from the proxy at /camera/<view>.mp4.
  * camera1 to camera4 fall back to MJPEG at /camera/<view>.mjpeg and take snapshots at
- * /camera/<view>.jpg. The console relays the microscope MJPEG fallback and full-size PNG snapshot, and
+ * /camera/<view>.full.jpg. The console relays the microscope MJPEG fallback and full-size PNG snapshot, and
  * the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
@@ -273,9 +273,9 @@
     return typeof fps === "number" && Number.isFinite(fps) ? `${mode} · ${fps.toFixed(1)} fps` : mode;
   }
 
-  /** The snapshot URL: a JPEG for camera1 to camera4, a full-size PNG for the microscope. */
+  /** The snapshot URL: a full-resolution JPEG for camera1 to camera4, a full-size PNG for the microscope. */
   function snapshotUrl(view, basePath = "") {
-    return CAMERAS.has(view) ? `/camera/${view}.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
+    return CAMERAS.has(view) ? `/camera/${view}.full.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
   }
 
   function backoff(failures) { return Math.min(15000, 1000 * 2 ** Math.min(4, failures)); }

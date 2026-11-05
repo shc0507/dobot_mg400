@@ -692,3 +692,106 @@ def test_h264_previews_exist_only_for_preloaded_streams_and_the_microscope(previ
     }
     assert request(module, "camera4.mp4")[0] == 404
     upstream.assert_not_called()
+
+
+def jpeg(width, height):
+    sof = b"\xff\xc0\x00\x11\x08" + height.to_bytes(2, "big") + width.to_bytes(2, "big")
+    return b"\xff\xd8" + sof + b"\x03" + bytes(9) + b"\xff\xd9"
+
+
+class MJPEG(io.BytesIO):
+    headers = {"Content-Type": "multipart/x-mixed-replace; boundary=frame"}
+
+    def __init__(self, frames):
+        super().__init__(
+            b"".join(
+                b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n" for frame in frames
+            )
+            + b"--frame--"
+        )
+
+
+@pytest.fixture
+def still(preview, monkeypatch, tmp_path):
+    module, _ = preview
+    monkeypatch.setattr(module, "STILL_CONFIG", tmp_path / "still.yaml")
+    monkeypatch.setattr(module, "STILL_SETTLE_S", 0)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    calls, overlays = [], []
+
+    def urlopen(target, timeout=None):
+        url = getattr(target, "full_url", target)
+        calls.append(url)
+        if url.endswith("/api/restart"):
+            path = module.STILL_CONFIG
+            overlays.append(path.read_text() if path.exists() else None)
+        if "/api/stream.mjpeg" in url:
+            return MJPEG([jpeg(640, 480), b"\xff\xd8broken\xff\xd9", jpeg(4000, 3000)])
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    return module, calls, overlays
+
+
+@pytest.mark.parametrize("camera", [1, 2, 3])
+def test_full_still_streams_one_camera_alone_and_restores_the_previews(still, camera):
+    module, calls, overlays = still
+    status, headers, body = request(module, f"camera{camera}.full.jpg")
+    assert status == 200
+    assert headers["Content-Type"] == "image/jpeg"
+    assert body == jpeg(4000, 3000)
+    assert calls == [
+        "http://127.0.0.1:1984/api/restart",
+        "http://127.0.0.1:1984/api",
+        f"http://127.0.0.1:1984/api/stream.mjpeg?src=camera{camera}",
+        "http://127.0.0.1:1984/api/restart",
+        "http://127.0.0.1:1984/api",
+    ]
+    overlay, restored = overlays
+    assert restored is None and not module.STILL_CONFIG.exists()
+    lines = overlay.splitlines()
+    assert lines[0] == "streams:"
+    for other in (1, 2, 3):
+        source = (
+            f"v4l2:device?video=/dev/v4l/by-path/fake-camera-{other}&input_format=mjpeg"
+            "&video_size=4000x3000&framerate=15"
+            if other == camera
+            else ""
+        )
+        assert f'  camera{other}: "{source}"' in lines
+        assert f'  camera{other}_h264: ""' in lines
+    assert len(lines) == 7
+
+
+def test_full_still_failure_still_restores_the_previews(still, monkeypatch):
+    module, calls, overlays = still
+    monkeypatch.setattr(module, "iter_mjpeg", Mock(side_effect=ValueError("truncated")))
+    assert request(module, "camera2.full.jpg")[0] == 502
+    assert overlays[-1] is None and not module.STILL_CONFIG.exists()
+    assert calls[-2:] == ["http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
+    assert not module.STILL_LOCK.locked()
+
+
+def test_full_still_waits_for_the_full_mode(still, monkeypatch):
+    module, _, overlays = still
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda target, timeout=None: (
+            MJPEG([jpeg(640, 480)]) if "stream.mjpeg" in str(target) else io.BytesIO(b"{}")
+        ),
+    )
+    assert request(module, "camera1.full.jpg")[0] == 502
+    assert not module.STILL_CONFIG.exists()
+
+
+def test_full_still_of_the_side_stream_waits_for_an_idle_microscope(preview, monkeypatch):
+    monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x480@30,640x360@30")
+    module = load_preview()
+    state = Mock(return_value=io.BytesIO(b'{"busy": true}'))
+    monkeypatch.setattr(module.urllib.request, "urlopen", state)
+    assert request(module, "camera3.full.jpg")[0] == 409
+    state.assert_called_once_with("http://127.0.0.1:8770/api/state", timeout=2)
+    assert request(module, "camera4.full.jpg")[0] == 404
+    assert request(module, "camera1.full.jpg?fps=5")[0] == 404

@@ -7,11 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_imports_do_not_open_devices_start_threads_or_write_files():
+def test_imports_do_not_open_devices_start_threads_or_write_files(tmp_path):
     script = r"""
 import builtins
 import pathlib
 import socket
+import sys
 import threading
 import usb.core
 
@@ -43,7 +44,14 @@ import thermal_cam.app
 import thermal_cam.camera
 import thermal_cam.service
 
+# Never read an installed host's region file. An absent file defines no regions.
+thermal_cam.service.CameraService.__init__.__kwdefaults__["roi_path"] = sys.argv[1]
 application = thermal_cam.app.create_app(auto_connect=False)
 assert application.state.camera.status()["state"] == "disconnected"
 """
-    subprocess.run([sys.executable, "-B", "-c", script], check=True, cwd=ROOT, timeout=30)
+    subprocess.run(
+        [sys.executable, "-B", "-c", script, str(tmp_path / "absent")],
+        check=True,
+        cwd=ROOT,
+        timeout=30,
+    )

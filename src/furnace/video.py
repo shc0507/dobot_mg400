@@ -30,6 +30,10 @@ from .recordings import (
 DEFAULT_RECORDINGS_ROOT = LOCAL_RECORDINGS_DIRECTORY
 
 
+class VideoToolsMissing(RuntimeError):
+    """ffmpeg or ffprobe is not on the PATH, so no summary can be compiled."""
+
+
 def _normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
 
@@ -256,8 +260,14 @@ def combine_run_to_target(
         if not names:
             raise FileNotFoundError("No video segments were found in the selected run")
         segments = [opened.enter_context(_private_file_fd(run_fd, name)) for name in names]
-        if shutil.which(ffprobe_path) is None or shutil.which(ffmpeg_path) is None:
-            raise RuntimeError("FFmpeg and ffprobe are required to compile a recording summary")
+        missing = [
+            name
+            for name, tool in (("ffmpeg", ffmpeg_path), ("ffprobe", ffprobe_path))
+            if shutil.which(tool) is None
+        ]
+        if missing:
+            verb = "is" if len(missing) == 1 else "are"
+            raise VideoToolsMissing(f"{' and '.join(missing)} {verb} not installed")
         total_seconds = 0
         for descriptor in segments:
             _check_cancel(check_cancel)

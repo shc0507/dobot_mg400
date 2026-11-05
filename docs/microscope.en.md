@@ -214,6 +214,8 @@ It creates private output files and refuses existing or unsafe destinations.
 Finalized recordings retain video segments, `video.timestamps.csv`, and a summary targeting 3 minutes. Shorter clips are not lengthened.
 Cancelled or failed recordings retain their local partial files without a promised summary.
 Finalization requires recorded frames and valid media. It requires FFmpeg and ffprobe on the host.
+If `ffmpeg` or `ffprobe` is missing, the recording fails, and its error names the missing program.
+The service log records the cause of each failed recording. Use `mg400ctl logs microscope` to read it.
 Finalization keeps the recordings in `/var/lib/mg400/recordings`.
 
 Stop, release, lease expiry, and shutdown revoke recording authority immediately. The service sends the motor stop commands without waiting for the encoder.

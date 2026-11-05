@@ -222,6 +222,7 @@ def test_shell_and_apis_need_no_token(rig):
     for name in ("overview", "motion", "cameras", "process"):
         assert f'data-workspace="{name}"' in text
         assert rig.client.get(f"/lab/console-static/{name}.js").status_code == 200
+    assert 'href="/lab/chip"' in text and rig.client.get("/lab/chip").status_code == 200
     assert PRIVATE not in text and "lc-token" not in text
     assert "Access-Control-Allow-Origin" not in page.headers
     assert rig.client.get("/lab/console-static/shell.js").status_code == 200

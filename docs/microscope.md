@@ -194,6 +194,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 控制台提供 **Start recording** 和 **Stop recording**。**Record next furnace sequence** 预备序列录制，**Cancel sequence recording** 取消预备。
 **Turn stabilization on** 和 **Turn stabilization off** 切换相机防抖。
+卡片把 **Run name**、**Mode**、**Interval s** 和 **Output fps** 作为 `run_name`、`mode`、`capture_interval_seconds` 和 `output_fps` 发送。**Live** 模式不发送间隔。
 可选运行名称最多包含 80 个可打印字符，不能用来选择文件路径。
 `time_lapse` 默认每隔 30 秒采集一帧，输出帧率为每秒 1 帧。
 `live` 默认输出帧率为每秒 30 帧，没有采集间隔。

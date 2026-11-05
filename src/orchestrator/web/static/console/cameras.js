@@ -58,6 +58,7 @@
       "export.none": "No thermal frame to export.",
       "snapshot.failed": "Snapshot failed: {error}",
       "colorbar": "Colour bar",
+      "probe": "Pixel {x}, {y}: {value}", "probe.pinned": "Pinned pixel {x}, {y}: {value}",
     },
     zh: {
       "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4",
@@ -93,6 +94,7 @@
       "export.none": "没有可导出的热像帧。",
       "snapshot.failed": "快照失败：{error}",
       "colorbar": "色标",
+      "probe": "像素 {x}, {y}：{value}", "probe.pinned": "固定像素 {x}, {y}：{value}",
     },
   };
 
@@ -194,6 +196,14 @@
     return lines.join("\n") + "\n";
   }
 
+  /** The temperature of 1 sensor pixel {x, y}, or null outside the frame. */
+  function probeReading(frame, probe) {
+    if (!probe || !Number.isInteger(probe.x) || !Number.isInteger(probe.y)) return null;
+    if (probe.x < 0 || probe.x >= W || probe.y < 0 || probe.y >= H) return null;
+    const value = frame?.temperatures_c?.[probe.y]?.[probe.x];
+    return typeof value === "number" && Number.isFinite(value) ? { x: probe.x, y: probe.y, celsius: value } : null;
+  }
+
   /** Normalize a dragged rectangle in sensor pixels to region bounds, or null if it is too small. */
   function regionFrom(a, b) {
     const clamp = (v, max) => Math.max(0, Math.min(max, Math.round(v)));
@@ -232,7 +242,7 @@
   const engine = {
     api: null, tiles: new Set(), status: new Map(), statusAt: -Infinity, statusBusy: false,
     thermal: null, thermalAt: -Infinity, thermalFailed: false, thermalBusy: false, thermalTimer: null,
-    detections: null, detectBusy: false, detectTimer: null, timer: null, regions: {},
+    detections: null, detectBusy: false, detectTimer: null, timer: null, regions: {}, probe: null,
     settings: { unit: "C", palette: "ironbow", scale: "auto", low: 20, high: 40, frozen: false, markers: true, detections: true },
     listeners: new Set(),
   };
@@ -507,7 +517,10 @@
         this.note.textContent = engine.settings.detections && d?.available ? t("side.detectionsCount", { count: d.detections.length }) : "";
       } else if (view === "thermal") {
         const stats = engine.thermal?.stats;
-        this.note.textContent = stats ? t("reading.mean") + " " + formatTemp(stats.mean_celsius, engine.settings.unit) : "";
+        const reading = probeReading(engine.thermal, engine.probe);
+        this.note.textContent = reading
+          ? t(engine.probe.pinned ? "probe.pinned" : "probe", { x: reading.x, y: reading.y, value: formatTemp(reading.celsius, engine.settings.unit) })
+          : stats ? t("reading.mean") + " " + formatTemp(stats.mean_celsius, engine.settings.unit) : "";
       }
     }
 
@@ -560,6 +573,12 @@
         ctx.strokeRect(region.x0 * 4, region.y0 * 4, (region.x1 - region.x0) * 4, (region.y1 - region.y0) * 4);
         ctx.setLineDash([]);
       }
+      const reading = probeReading(frame, engine.probe);
+      if (reading) {
+        const x = reading.x * 4 + 2, y = reading.y * 4 + 2;
+        ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 2;
+        ctx.strokeRect(x - 6, y - 6, 12, 12);
+      }
       if (!s.markers || !frame.stats) return;
       const marks = [["max", "#FF7A7A"], ["min", "#7DBBFF"], ["center", "#E6EDF2"]];
       ctx.font = "600 14px system-ui, sans-serif";
@@ -611,6 +630,23 @@
         this.drawing.anchor = null;
         this.paintThermal();
         this.drawing.onChange?.(this.drawing.region);
+      });
+      // Pixel probe: the pointer reads 1 sensor pixel. A click pins it; the next click unpins it.
+      const pixel = event => { const p = point(event); return { x: Math.floor(p.x), y: Math.floor(p.y) }; };
+      this.canvas.addEventListener("pointermove", event => {
+        if (this.drawing || engine.probe?.pinned) return;
+        engine.probe = pixel(event);
+        this.paint();
+      });
+      this.canvas.addEventListener("pointerleave", () => {
+        if (this.drawing || engine.probe?.pinned || !engine.probe) return;
+        engine.probe = null;
+        this.paint();
+      });
+      this.canvas.addEventListener("click", event => {
+        if (this.drawing) return;
+        engine.probe = engine.probe?.pinned ? null : { ...pixel(event), pinned: true };
+        this.paint();
       });
     }
   }
@@ -873,6 +909,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl },
   };
 });

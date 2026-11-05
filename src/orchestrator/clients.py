@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from labkit.client import ServiceClient
+from labkit.client import _HTTPS, ServiceClient
 from labkit.errors import ServiceError
 from mg400.client import RobotClient, RobotClientError
 
@@ -46,7 +46,7 @@ class ServiceAdapter:
         # Instrument endpoints are direct. In particular, generated rehearsal
         # URLs must never travel through an ambient HTTP_PROXY.
         self._http._opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), _NoRedirect()
+            urllib.request.ProxyHandler({}), _NoRedirect(), _HTTPS
         )
 
     def describe(self):

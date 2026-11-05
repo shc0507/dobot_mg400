@@ -265,12 +265,12 @@ test("Check reference shows the marked frame and Teach reference needs a confirm
 });
 
 /** A window and a document with listeners, and interval callbacks the test runs by hand. */
-async function keyboardPage() {
+async function keyboardPage(options = {}) {
   const win = new Map(), docListeners = new Map(), intervals = [];
   const saved = { add: globalThis.addEventListener, document: globalThis.document, set: globalThis.setInterval, clear: globalThis.clearInterval };
   globalThis.addEventListener = (event, callback) => win.set(event, callback);
   globalThis.document = { visibilityState: "visible", hasFocus: () => true, addEventListener: (event, callback) => docListeners.set(event, callback) };
-  const page = await mounted();
+  const page = await mounted(options);
   globalThis.setInterval = callback => intervals.push(callback);
   globalThis.clearInterval = id => { if (id) intervals[id - 1] = null; };
   page.ws.show();
@@ -332,5 +332,30 @@ test("keyboard jog disarms when the tab is hidden and when the Motion tab is lef
     page.ws.show();
     page.key("keydown", "KeyW");
     assert.equal(page.keyCalls().some(call => call[1] === "keys"), false);
+  } finally { page.restore(); }
+});
+
+test("the switch shows why the robot service turned the keyboard off", async () => {
+  const robot = { ...ROBOT, keyboard_enabled: true, keyboard_disarm_reason: null };
+  const page = await keyboardPage({ robot });
+  try {
+    const off = page.ws._test.refs().kbOff;
+    page.find("Keyboard").click();
+    await page.settle();
+    assert.equal(page.ws._test.kb.on, true);
+    assert.equal(off.hidden, true);
+    // The service turns keys off on its own: the page follows and says why.
+    Object.assign(robot, { keyboard_enabled: false, keyboard_disarm_reason: "key updates stopped." });
+    await page.ws._test.refresh();
+    assert.equal(page.ws._test.kb.on, false);
+    assert.equal(page.find("Keyboard").getAttribute("aria-checked"), "false");
+    assert.equal(off.hidden, false);
+    assert.equal(off.textContent, "Off: key updates stopped.");
+    // A new arming clears the reason.
+    Object.assign(robot, { keyboard_enabled: true, keyboard_disarm_reason: null });
+    page.find("Keyboard").click();
+    await page.settle();
+    assert.equal(off.hidden, true);
+    assert.equal(off.textContent, "");
   } finally { page.restore(); }
 });

@@ -22,6 +22,7 @@
       {% for item in workspaces %}
       <a href="#{{ item.id }}" data-workspace="{{ item.id }}" data-title-en="{{ item.title.en }}" data-title-zh="{{ item.title.zh }}">{{ item.title.en }}</a>
       {% endfor %}
+      <a href="{{ base_path }}/chip" data-title-en="Chip passport" data-title-zh="芯片履历">Chip passport</a>
     </nav>
     <div class="lc-actions">
       <span class="lc-pill" id="lc-controls"><span class="lc-dot" aria-hidden="true"></span><span id="lc-controls-text">You control: none</span></span>

@@ -243,6 +243,8 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 完成收尾的录像保留视频分段、`video.timestamps.csv` 和目标时长为 3 分钟的摘要视频。较短片段不会延长。
 取消或失败的录像保留已有本地文件，不保证生成摘要视频。
 收尾要求已有采集帧和有效媒体，主机必须装有 FFmpeg 和 ffprobe。
+缺少 `ffmpeg` 或 `ffprobe` 时，录像失败，错误信息写明缺少的程序。
+服务日志记录每次录像失败的原因，用 `mg400ctl logs microscope` 查看。
 收尾后，录像保存在 `/var/lib/mg400/recordings`。
 
 Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。电机停止指令不等待编码器。

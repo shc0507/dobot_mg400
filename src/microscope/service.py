@@ -7,6 +7,7 @@ have been validated. Demo transports use the MIC-01 simulator and generated imag
 import copy
 import http.client
 import json
+import logging
 import math
 import os
 import queue
@@ -30,6 +31,7 @@ from furnace.recordings import (
     finalize_run_recording,
     normalize_recording_settings,
 )
+from furnace.video import VideoToolsMissing
 from labkit.client import ServiceClient
 from labkit.describe import command, describe, parameter
 from labkit.errors import ServiceError
@@ -50,6 +52,8 @@ from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
 from .sim import MicroscopeSimulator
+
+LOGGER = logging.getLogger(__name__)
 
 # Turret nudges in full steps, and their speed in MICRO 4 pulses/s.
 # These are the turret keys and speed of `python -m microscope.calibrate setup`.
@@ -986,12 +990,15 @@ class MicroscopeService:
                 )
         except BaseException as error:
             cancelled = recording.cancel.is_set() or isinstance(error, SideCaptureCancelled)
+            if cancelled:
+                failure = "Recording stopped; local files are retained"
+                LOGGER.info("Recording %s stopped: %r", recording.ident, error)
+            else:
+                cause = f": {error}" if isinstance(error, VideoToolsMissing) else ""
+                failure = f"Recording failed{cause}; local files are retained"
+                LOGGER.error("Recording %s failed: %r", recording.ident, error, exc_info=error)
             with self._lock:
-                recording.failure = (
-                    "Recording stopped; local files are retained"
-                    if cancelled
-                    else "Recording failed; local files are retained"
-                )
+                recording.failure = failure
                 recording.data.update(
                     status="stopped" if cancelled else "failed",
                     error=recording.failure,

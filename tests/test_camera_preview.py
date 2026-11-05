@@ -114,6 +114,11 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
         "camera1.mjpeg?fps=5.5",
         "camera1.mjpeg?fps=5&src=admin",
         "camera1.jpg?fps=5",
+        "camera4.mp4",
+        "camera1.mp4?src=admin",
+        "camera1.mp4?fps=5",
+        "camera1.mp4/extra",
+        "camera1_h264.mp4",
         "camera1.mjpeg/extra",
         "camera0/detections.json",
         "camera4/detections.json",
@@ -177,6 +182,14 @@ class ChunkedUpstream:
 
     def read1(self, size):
         return self.body.read(min(size, next(self.chunks)))
+
+
+class VideoUpstream(io.BytesIO):
+    """A go2rtc fragmented MP4 response."""
+
+    def __init__(self, body, content_type='video/mp4; codecs="avc1.640029"'):
+        super().__init__(body)
+        self.headers = {"Content-Type": content_type}
 
 
 def multipart(frames, lengths=True):
@@ -461,6 +474,7 @@ def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkey
         for route in (
             f"camera{camera}.jpg",
             f"camera{camera}.mjpeg",
+            f"camera{camera}.mp4",
         ):
             assert request(module, route)[0] == 404
     upstream.assert_not_called()
@@ -508,7 +522,7 @@ def test_side_stream_above_640x480_is_not_relayed(preview, monkeypatch):
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x480@30,3840x2160@30")
     module = load_preview()
-    for route in ("camera3.jpg", "camera3.mjpeg"):
+    for route in ("camera3.jpg", "camera3.mjpeg", "camera3.mp4"):
         assert request(module, route)[0] == 404
     upstream.assert_not_called()
     assert request(module, "camera2.jpg")[0] == 200
@@ -582,4 +596,63 @@ def test_high_mode_reader_hands_off_to_new_viewer_without_duplicate_reader(previ
     feed.release()
     feed.run()
     assert feed.thread is None
+    upstream.assert_not_called()
+
+
+@pytest.mark.parametrize("camera", [1, 2, 3])
+def test_mp4_route_relays_the_fixed_h264_stream_unchanged(preview, camera):
+    module, upstream = preview
+    body = b"ftyp-moov-moof-mdat" * 5000
+    upstream.side_effect = lambda *_args, **_kwargs: VideoUpstream(body)
+    connection = Mock()
+    status, headers, received = request(module, f"camera{camera}.mp4", connection=connection)
+    assert status == 200
+    assert received == body
+    assert headers["Content-Type"] == 'video/mp4; codecs="avc1.640029"'
+    assert headers["Connection"].lower() == "close"
+    assert "Content-Length" not in headers
+    assert headers["Cache-Control"] == "no-store"
+    upstream.assert_called_once_with(
+        f"http://127.0.0.1:1984/api/stream.mp4?src=camera{camera}_h264", timeout=5
+    )
+    connection.settimeout.assert_called_with(5)
+    connection.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "text/plain; charset=utf-8",
+        "video/mp4",
+        'video/mp4; codecs="avc1.640029"\r\nX-Bad: 1',
+        'video/mp4; codecs="avc1.640029" ',
+    ],
+)
+def test_mp4_route_refuses_an_upstream_without_an_mse_type(preview, content_type):
+    module, upstream = preview
+    upstream.side_effect = lambda *_args, **_kwargs: VideoUpstream(b"upstream-video", content_type)
+    status, headers, body = request(module, "camera1.mp4")
+    assert status == 502
+    assert b"upstream-video" not in body
+    assert headers["Cache-Control"] == "no-store"
+
+
+def test_mp4_route_returns_502_when_go2rtc_cannot_encode(preview):
+    module, upstream = preview
+    upstream.side_effect = urllib.error.HTTPError(
+        "http://127.0.0.1:1984/api/stream.mp4", 500, "exec: ffmpeg not found", {}, None
+    )
+    assert request(module, "camera1.mp4")[0] == 502
+
+
+def test_h264_previews_exist_only_for_preloaded_streams(preview, monkeypatch):
+    _, upstream = preview
+    monkeypatch.setenv(
+        "MG400_CAMERA_DEVICES",
+        ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)),
+    )
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,640x480@30,1280x720@30")
+    module = load_preview()
+    assert module.VIDEOS == {f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 3)}
+    assert request(module, "camera4.mp4")[0] == 404
     upstream.assert_not_called()

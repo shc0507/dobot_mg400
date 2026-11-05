@@ -1615,7 +1615,13 @@ def test_camera_configuration_renders_exact_device_count(module, count):
     for number, device in enumerate(devices, 1):
         assert f"camera{number}: v4l2:device?video={device}" in rendered
         assert f"camera{number}: video\n" in rendered
+        assert f"  camera{number}_h264: ffmpeg:camera{number}#video=h264\n" in rendered
     assert f"camera{count + 1}:" not in rendered
+    assert f"camera{count + 1}_h264:" not in rendered
+    # ffmpeg reads and returns the H.264 previews through RTSP on loopback only.
+    assert "rtsp:\n  listen: 127.0.0.1:8554\n" in rendered
+    assert 'webrtc:\n  listen: ""\n' in rendered
+    assert "preload:\n" + "".join(f"  camera{n}: video\n" for n in range(1, count + 1)) in rendered
 
 
 @pytest.mark.parametrize(
@@ -1698,6 +1704,9 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
     assert configured.preloaded == ("camera1", "camera2")
     rendered = module.render_go2rtc(devices, modes=configured.modes)
     assert "camera3: video\n" not in rendered and "camera4: video\n" not in rendered
+    assert "camera1_h264: ffmpeg:camera1#video=h264\n" in rendered
+    assert "camera2_h264: ffmpeg:camera2#video=h264\n" in rendered
+    assert "camera3_h264" not in rendered and "camera4_h264" not in rendered
     assert "video_size=3840x2160&framerate=30" in rendered
     assert (
         f"camera4: v4l2:device?video={devices[3]}&input_format=mjpeg&video_size=1280x720"
@@ -2192,3 +2201,19 @@ def test_missing_ffmpeg_gives_a_notice_and_does_not_refuse(host, removed, notice
     report = host.out.getvalue().splitlines()
     expected = f"{notice} Microscope recordings cannot finish. Install the ffmpeg package."
     assert report.count(expected) == 1
+
+
+def test_cameras_without_ffmpeg_give_a_preview_notice(host, tmp_path):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(f"MG400_CAMERA_DEVICES={','.join(DEVICES)}\n")
+    binary = tmp_path / "go2rtc"
+    binary.write_bytes(b"offline executable")
+    notice = (
+        "ffmpeg is not installed. Camera previews send MJPEG, not H.264. "
+        "Install the ffmpeg package."
+    )
+    assert host.install("--dry-run", "--go2rtc", str(binary)) == 0
+    assert notice not in host.out.getvalue()
+    (host.tools / "ffmpeg").unlink()
+    assert host.install("--dry-run", "--go2rtc", str(binary)) == 0
+    assert host.out.getvalue().splitlines().count(notice) == 1

@@ -42,7 +42,7 @@
 | `mg400-web-panel.service` | `web` | [机器人服务](development.md#机器人服务接口)，端口 `8766` | 无 |
 | `mg400-stage-panel.service` | `stage` | [位移台服务](stage-panel.md)，端口 `8767` | `dialout` |
 | `mg400-camera-preview.service` | `camera` | 摄像头视频流，端口 `1985` | 无 |
-| `mg400-camera-capture.service` | `camera` | go2rtc 采集，只监听 `127.0.0.1:1984` | `video` |
+| `mg400-camera-capture.service` | `camera` | go2rtc 采集和 H.264 编码，只监听 `127.0.0.1:1984` 和 `127.0.0.1:8554` | `video` |
 | `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
 | `mg400-thermal.service` | `thermal` | 可选的[热像仪服务](thermal.md)，端口 `8768` | 无 |
 | `mg400-furnace.service` | `furnace` | [炉温与气体服务](furnace.md)，端口 `8769` | `dialout` |
@@ -65,7 +65,7 @@
 - 主机有一个网口直连机械臂，地址为 `192.168.1.10/24`。
 - 该网口能连接机械臂的 TCP `29999`、`30003` 和 `30004`。
 - 使用摄像头时，从 [go2rtc 发布页](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14) 下载 1.9.14 版的 Linux 程序。
-- 使用显微镜录像时，主机已安装 `ffmpeg` 和 `ffprobe`。在 Debian 或 Ubuntu 上，`ffmpeg` 软件包提供这两个程序：`apt-get install ffmpeg`。
+- 使用显微镜录像或摄像头 H.264 预览时，主机已安装 `ffmpeg` 和 `ffprobe`。在 Debian 或 Ubuntu 上，`ffmpeg` 软件包提供这两个程序：`apt-get install ffmpeg`。
 
 ## 安装与更新
 
@@ -107,7 +107,7 @@
    同时检查服务清单、服务选择、所选单元和 udev 模板。
    如指定 `--toupcam`，检查源文件、目标路径和固定的 SHA-256。
    如指定资源或启用 `vision`，还检查资源清单、目标路径和本地文件。
-   启用 `microscope` 时，在 systemd 服务的默认 `PATH` 中查找 `ffmpeg` 和 `ffprobe`。缺少时，只给出提示，继续安装。
+   启用 `microscope` 时，在 systemd 服务的默认 `PATH` 中查找 `ffmpeg` 和 `ffprobe`。配置了摄像头时，查找 `ffmpeg`。缺少时，只给出提示，继续安装。
    检查不通过时，安装器不修改主机。
 2. 创建配置文件，或补全缺少的配置项。非空值保持不变。
    删除旧的服务 `*_TOKEN` 项（`MG400_GATEWAY_TOKEN` 除外），以及示例中没有的空项。

@@ -98,6 +98,23 @@ test("cameras load from the proxy and the microscope from the console relay", ()
   assert.equal(logic.snapshotUrl("microscope", "/lab"), "/lab/api/console/ws/cameras/snapshot/microscope");
 });
 
+test("USB cameras play H.264 from the proxy; other views have no H.264 stream", () => {
+  assert.equal(logic.videoUrl("camera1"), "/camera/camera1.mp4");
+  assert.equal(logic.videoUrl("camera4"), "/camera/camera4.mp4");
+  assert.equal(logic.videoUrl("microscope"), null);
+  assert.equal(logic.videoUrl("thermal"), null);
+});
+
+test("the H.264 player stays near the newest frame", () => {
+  // Near the end: play at normal speed.
+  assert.deepEqual(logic.chase(9.9, 0, 10), { seek: null, rate: 1 });
+  // A little behind: catch up slowly.
+  assert.deepEqual(logic.chase(9.5, 0, 10), { seek: null, rate: 1.1 });
+  // Far behind, or before the newest buffered range: jump close to the end.
+  assert.deepEqual(logic.chase(8, 0, 10), { seek: 9.9, rate: 1 });
+  assert.deepEqual(logic.chase(0, 4, 4.05), { seek: 4, rate: 1 });
+});
+
 test("the thermal panel relays connect and shutter and links no service page", () => {
   const source = readFileSync(path, "utf8");
   assert.match(source, /send\("connect", \{\}\)/);

@@ -30,7 +30,7 @@ http://:@PROXY_PORT@ {
 	redir / /lab/ 302
 	@bare path /camera /lab
 	redir @bare {http.request.uri.path}/ 308
-	# /camera/<view>.mjpeg and /camera/<view>.jpg reach the preview as /<view>.mjpeg and /<view>.jpg.
+	# /camera/<view>.mp4, .mjpeg and .jpg reach the preview as /<view>.mp4, .mjpeg and .jpg.
 	handle_path /camera/* {
 		import instrument 127.0.0.1:1985
 	}

@@ -18,6 +18,11 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# All clients share one TLS handler. Each new handler loads the CA certificates (about
+# 15 ms of CPU), and the console makes new clients for each state read.
+_HTTPS = urllib.request.HTTPSHandler()
+
+
 class ServiceClient:
     def __init__(self, base_url, client_id, *, timeout=10):
         parsed = urllib.parse.urlsplit(base_url)
@@ -40,7 +45,7 @@ class ServiceClient:
         self.base_url = base_url.rstrip("/") + "/"
         self.client_id = validate_client(client_id)
         self.timeout = timeout
-        self._opener = urllib.request.build_opener(_NoRedirect())
+        self._opener = urllib.request.build_opener(_NoRedirect(), _HTTPS)
         self._version_checked = False
         self._version_lock = threading.Lock()
 

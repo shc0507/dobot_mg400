@@ -1,6 +1,7 @@
 """Lease adapters use strict renewal and isolate cleanup failures."""
 
 import copy
+import ssl
 import threading
 import time
 from unittest.mock import Mock
@@ -135,6 +136,14 @@ def test_adapter_construction_makes_no_requests_and_disables_ambient_proxies(mon
     assert not any(getattr(handler, "proxies", {}) for handler in handlers)
     redirect = next(handler for handler in handlers if hasattr(handler, "redirect_request"))
     assert redirect.redirect_request(None, None, 302, "", {}, "http://other.invalid") is None
+
+
+def test_adapter_construction_makes_no_tls_context(monkeypatch):
+    # The console makes new adapters for each state read. A new TLS context loads the CA
+    # certificates (about 15 ms of CPU), so all adapters share one TLS handler.
+    monkeypatch.setattr(ssl, "_create_default_https_context", Mock(side_effect=AssertionError))
+    RobotAdapter("http://127.0.0.1:1", "orch-tls-robot")
+    ServiceAdapter("http://127.0.0.1:1", "orch-tls-stage")
 
 
 def reconciliation_pool(monkeypatch, name, state):

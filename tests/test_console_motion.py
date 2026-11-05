@@ -1,5 +1,6 @@
 """Motion workspace: the state route and the relay paths with the robot and stage simulators."""
 
+import gc
 import json
 import time
 import uuid
@@ -162,7 +163,12 @@ def test_unreachable_device_is_reported_without_an_error(fake, monkeypatch):
 
 
 @pytest.fixture
-def sim(tmp_path, monkeypatch):
+def sim(tmp_path, monkeypatch, request):
+    # The robot service stops the arm when its feedback is older than 0.25 s. A full
+    # garbage collection of the whole pytest heap can stop all threads for longer.
+    # Collections do not scan frozen objects, so they stay short while the rig runs.
+    gc.freeze()
+    request.addfinalizer(gc.unfreeze)
     monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
     resources = DemoResources(tmp_path / "demos")
     started = set()

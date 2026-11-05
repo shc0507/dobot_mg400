@@ -12,6 +12,10 @@ in-page confirmation, and is sent once:
   current focus position.
 - ``POST acknowledge`` ``{"confirmed": true}``: acknowledge a furnace fault.
 
+``POST gas-stop`` ``{"channel_index": 0|1|2}`` closes 1 furnace gas channel
+through the furnace gas-stop route. Like a stop, it needs no control, it is sent
+once with a fresh identity and the reply is confirmed, unconfirmed or unknown.
+
 - The furnace and microscope fields come from the console's last service read.
 - The crucible reading is one ``api/roi?name=crucible`` call at most every
   ``CRUCIBLE_S`` seconds, without a lease.
@@ -31,6 +35,7 @@ from flask import jsonify, request
 from labkit.errors import ServiceError
 from labkit.lease import validate_client
 
+from ..backend import gas_confirmed
 from . import Workspace
 
 HISTORY_S = 3600
@@ -61,6 +66,7 @@ SEQUENCE_KEYS = (
     "end_gas_until_c",
 )
 CHANNEL_KEYS = ("channel_index", "gas_name", "target_percent", "actual_percent", "available")
+VALVE_KEYS = ("channel_index", "open", "verified")
 MICROSCOPE_KEYS = (
     "connected",
     "busy",
@@ -96,10 +102,12 @@ def furnace_view(raw):
     value["sequence"] = _pick(raw.get("sequence"), SEQUENCE_KEYS)
     flow = raw.get("flow") if isinstance(raw.get("flow"), dict) else {}
     channels = flow.get("gas_channels") if isinstance(flow.get("gas_channels"), list) else []
+    valves = flow.get("gas_valves") if isinstance(flow.get("gas_valves"), list) else []
     value["flow"] = {
         "connected": flow.get("connected") is True,
         "error": flow.get("error") if isinstance(flow.get("error"), str) else None,
         "gas_channels": [_pick(item, CHANNEL_KEYS) for item in channels[:3]],
+        "gas_valves": [_pick(item, VALVE_KEYS) for item in valves[:3]],
     }
     return value
 
@@ -218,6 +226,29 @@ def register(blueprint, service):
     @blueprint.post("/acknowledge")
     def acknowledge():
         return operator("furnace", "api/furnace/acknowledge", {})
+
+    @blueprint.post("/gas-stop")
+    def gas_stop():
+        # The app accepts only a JSON object in a POST body.
+        data = request.get_json()
+        channel = data.get("channel_index")
+        if set(data) != {"channel_index"} or type(channel) is not int or not 0 <= channel <= 2:
+            raise ValueError("Send channel_index 0, 1 or 2 only.")
+        validate_client(request.headers.get("X-MG400-Client"))
+        adapter = service.console_client("furnace", f"console-stop-{uuid.uuid4().hex}")
+        if adapter is None:
+            raise ServiceError(409, "The furnace is not configured or its demo is not running.")
+        try:
+            confirmed = gas_confirmed(adapter.gas_stop(channel), channel)
+            outcome = "confirmed" if confirmed else "unconfirmed"
+        except Exception:
+            outcome = "unknown"
+        finally:
+            try:
+                adapter.close()
+            except Exception:
+                pass
+        return jsonify(channel_index=channel, outcome=outcome)
 
 
 WORKSPACE = Workspace(

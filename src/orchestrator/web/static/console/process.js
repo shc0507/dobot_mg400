@@ -40,6 +40,9 @@
       "seq.none": "Add at least 1 step.",
       "gas.title": "Gas", "gas.stopAll": "Stop all gas", "gas.flow": "Flow % for {gas}", "gas.send": "Send flow",
       "gas.actual": "actual {value}", "gas.unverified": "unverified",
+      "gas.close": "Close", "gas.closeLabel": "Close {gas}", "gas.closeResult": "{gas} close: {outcome}",
+      "valve.open": "valve open", "valve.closed": "valve closed", "valve.unknown": "valve unknown", "valve.unverified": "{state} (not confirmed)",
+      "tile.ramp": "Ramp °C/min",
       "confirm.ok": "Confirm", "confirm.cancel": "Cancel",
       "scope.title": "Microscope · Toupcam", "scope.zero": "zero set", "scope.noZero": "focus zero unknown",
       "scope.stop": "Stop", "scope.view": "Toupcam", "scope.side": "Side camera (camera3) on the turret",
@@ -59,6 +62,10 @@
       "rec.arm": "Record next furnace sequence", "rec.disarm": "Cancel sequence recording",
       "rec.stabOn": "Turn stabilization on", "rec.stabOff": "Turn stabilization off",
       "rec.state": "Recording: {status} · {frames} frames", "rec.armed": "Armed for the next furnace sequence.",
+      "rec.path": "Snapshot path", "rec.pathInvalid": "Use a relative snapshot path without empty, . or .. parts.",
+      "rec.name": "Run name", "rec.mode": "Mode", "rec.timeLapse": "Time lapse", "rec.live": "Live",
+      "rec.interval": "Interval s", "rec.fps": "Output fps", "rec.error": "Recording error: {error}",
+      "rec.invalid": "Enter a run name of at most 80 characters, an interval from 0.1 to 3600 s and an output rate from 0.1 to 120 fps.",
       "sent": "{action} sent.", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
       "stop.result": "{device} stop: {outcome}", "gas.stopResult": "Gas stop sent.",
       "outcome.confirmed": "confirmed", "outcome.pending": "pending", "outcome.unconfirmed": "not confirmed", "outcome.unknown": "unknown",
@@ -96,6 +103,9 @@
       "seq.none": "至少添加 1 个步骤。",
       "gas.title": "气体", "gas.stopAll": "停止全部气体", "gas.flow": "{gas} 流量 %", "gas.send": "发送流量",
       "gas.actual": "实际 {value}", "gas.unverified": "未确认",
+      "gas.close": "关闭", "gas.closeLabel": "关闭 {gas}", "gas.closeResult": "{gas} 关闭：{outcome}",
+      "valve.open": "阀门开", "valve.closed": "阀门关", "valve.unknown": "阀门未知", "valve.unverified": "{state}（未确认）",
+      "tile.ramp": "速率 °C/min",
       "confirm.ok": "确认", "confirm.cancel": "取消",
       "scope.title": "显微镜 · Toupcam", "scope.zero": "零点已设", "scope.noZero": "对焦零点未知",
       "scope.stop": "停止", "scope.view": "Toupcam", "scope.side": "转盘侧面相机（camera3）",
@@ -115,6 +125,10 @@
       "rec.arm": "录制下一次炉子程序", "rec.disarm": "取消程序录制",
       "rec.stabOn": "开启防抖", "rec.stabOff": "关闭防抖",
       "rec.state": "录制：{status} · {frames} 帧", "rec.armed": "已准备录制下一次炉子程序。",
+      "rec.path": "快照路径", "rec.pathInvalid": "快照路径必须是相对路径，不能有空段、. 或 ..。",
+      "rec.name": "运行名称", "rec.mode": "模式", "rec.timeLapse": "延时", "rec.live": "实时",
+      "rec.interval": "间隔 s", "rec.fps": "输出帧率", "rec.error": "录制错误：{error}",
+      "rec.invalid": "运行名称最多 80 个字符，间隔为 0.1 到 3600 s，输出帧率为 0.1 到 120 fps。",
       "sent": "已发送 {action}。", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
       "stop.result": "{device}停止：{outcome}", "gas.stopResult": "已发送气体停止。",
       "outcome.confirmed": "已确认", "outcome.pending": "等待中", "outcome.unconfirmed": "未确认", "outcome.unknown": "未知",
@@ -230,6 +244,42 @@
 
   function signed(value) { return value > 0 ? "+" + value : value < 0 ? "−" + Math.abs(value) : "0"; }
 
+  /** The snapshot params: {} for the service default, {path} for a relative path, or null. */
+  function snapshotParams(text) {
+    const value = String(text ?? "").trim();
+    if (!value) return {};
+    if (value.length > 4096 || value.startsWith("/") || value.includes("\\") || /[\x00-\x1f\x7f]/.test(value)
+      || value.split("/").some(part => !part || part === "." || part === "..")) return null;
+    return { path: value };
+  }
+
+  /** The start_recording options from the page fields; throw {key} on invalid input. */
+  function recordingParams(fields) {
+    const params = { mode: fields?.mode === "live" ? "live" : "time_lapse" };
+    const name = String(fields?.name ?? "").trim();
+    if (name.length > 80 || /[\x00-\x1f\x7f]/.test(name)) throw { key: "rec.invalid" };
+    if (name) params.run_name = name;
+    const number = (text, max) => {
+      const value = String(text ?? "").trim();
+      const result = Number(value);
+      return /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) && result >= 0.1 && result <= max ? result : null;
+    };
+    params.output_fps = number(fields?.fps, 120);
+    if (params.output_fps === null) throw { key: "rec.invalid" };
+    if (params.mode === "time_lapse") {
+      params.capture_interval_seconds = number(fields?.interval, 3600);
+      if (params.capture_interval_seconds === null) throw { key: "rec.invalid" };
+    }
+    return params;
+  }
+
+  /** The valve state text key and its vars for 1 gas channel. */
+  function valveState(valve) {
+    if (valve?.open !== true && valve?.open !== false) return { key: "valve.unknown" };
+    const key = valve.open ? "valve.open" : "valve.closed";
+    return valve.verified === true ? { key } : { key: "valve.unverified", state: key };
+  }
+
   function caps(description) {
     const props = description?.commands?.apply_setpoint?.params?.properties || {};
     return { max: finite(props.temperature_c?.maximum), ramp: finite(props.ramp_rate_c_per_min?.maximum) };
@@ -250,7 +300,8 @@
 
   const view = { api: null, root: null, global: null, timer: null, status: null, describe: {}, describeAt: {}, rows: null, dirty: false,
     endGas: { 0: "0", 1: "0", 2: "0" }, endUntil: "", target: "200", ramp: "10", jog: "100", flows: { 0: "0", 1: "0", 2: "0" },
-    confirm: null, busy: new Set(), tiles: {}, nodes: {} };
+    confirm: null, busy: new Set(), tiles: {}, nodes: {},
+    snapPath: "", rec: { name: "", mode: "time_lapse", interval: "30", fps: "1" } };
 
   function show() {
     if (!view.api || view.timer) return;
@@ -356,7 +407,7 @@
     n.furnaceSub = el("span", { class: "lc-muted" });
     n.furnaceNote = el("p", { class: "pr-note", hidden: true });
     n.tiles = {};
-    const tiles = ["pv", "sv", "mode", "crucible"].map(key => {
+    const tiles = ["pv", "sv", "ramp", "mode", "crucible"].map(key => {
       n.tiles[key] = el("span", { class: "pr-tile-value" });
       return el("div", { class: "pr-tile" }, el("span", { class: "pr-tile-label", text: t("tile." + key) }), n.tiles[key]);
     });
@@ -392,7 +443,8 @@
       const row = { name: el("span", { class: "pr-gas-name" }), state: el("span", { class: "pr-gas-state" }) };
       row.send = button(t("gas.send"), () => sendFlow(channel), { "data-role": "send-flow-" + channel });
       row.input = input({ type: "number", min: "0", max: "100", step: "0.1", class: "pr-input pr-narrow", "aria-label": t("gas.flow", { gas: gasNames()[channel] }) }, view.flows[channel], value => { view.flows[channel] = value; });
-      row.node = el("div", { class: "pr-gas" }, row.name, row.state, row.input, row.send);
+      row.close = button(t("gas.close"), () => closeGas(channel), { class: "lc-danger pr-danger", "data-role": "close-gas-" + channel, "aria-label": t("gas.closeLabel", { gas: gasNames()[channel] }) });
+      row.node = el("div", { class: "pr-gas" }, row.name, row.state, row.input, row.send, row.close);
       return row;
     });
 
@@ -446,11 +498,22 @@
       button(t("focus.full"), () => send("microscope", "autofocus", { mode: "full" }), { "data-role": "af-full" }),
     ];
     const zeroConfirm = confirmBox("zero", t("zero.confirm"), () => operator("focus-zero", "zero.done"));
-    n.snapshot = button(t("rec.snapshot"), () => send("microscope", "snapshot", {}), { "data-role": "snapshot" });
+    n.snapshot = button(t("rec.snapshot"), saveSnapshot, { "data-role": "snapshot" });
+    n.snapPath = input({ type: "text", maxlength: "4096", class: "pr-input pr-wide", autocomplete: "off", "data-role": "snapshot-path" }, view.snapPath, value => { view.snapPath = value; });
     n.record = button(t("rec.start"), toggleRecording, { "data-role": "record" });
     n.arm = button(t("rec.arm"), toggleArm, { "data-role": "arm" });
     n.stab = button(t("rec.stabOn"), () => send("microscope", "set_stabilization", { enabled: view.status?.microscope?.stabilization !== true }, "stab"), { "data-role": "stabilization" });
     n.recState = el("p", { class: "lc-muted", "data-role": "rec-state" });
+    n.recError = el("p", { class: "pr-warn", "data-role": "rec-error", hidden: true });
+    n.recName = input({ type: "text", maxlength: "80", class: "pr-input pr-wide", autocomplete: "off", "data-role": "rec-name" }, view.rec.name, value => { view.rec.name = value; });
+    n.recMode = el("select", { class: "pr-input", "data-role": "rec-mode", onchange: event => {
+      view.rec.mode = event.target.value === "live" ? "live" : "time_lapse";
+      view.rec.fps = view.rec.mode === "live" ? "30" : "1";
+      build();
+    } }, ...[["time_lapse", "rec.timeLapse"], ["live", "rec.live"]].map(([value, key]) => el("option", { value, text: t(key), selected: view.rec.mode === value ? "selected" : null })));
+    n.recMode.value = view.rec.mode;
+    n.recInterval = input({ type: "number", min: "0.1", max: "3600", step: "0.1", class: "pr-input pr-narrow", "data-role": "rec-interval" }, view.rec.interval, value => { view.rec.interval = value; });
+    n.recFps = input({ type: "number", min: "0.1", max: "120", step: "0.1", class: "pr-input pr-narrow", "data-role": "rec-fps" }, view.rec.fps, value => { view.rec.fps = value; });
 
     const scope = el("section", { class: "lc-card pr-card", "aria-labelledby": "pr-scope-title" },
       el("div", { class: "lc-card-head" },
@@ -474,8 +537,14 @@
         el("p", { class: "pr-warn", text: t("zero.reminder") }),
         n.zero = button(t("zero.set"), () => ask("zero"), { class: "lc-danger pr-danger", "data-role": "zero" }),
         zeroConfirm),
-      el("div", { class: "pr-row" }, n.snapshot, n.record, n.arm, n.stab),
-      n.recState);
+      el("div", { class: "pr-row pr-end" }, el("label", { class: "pr-field" }, t("rec.path"), n.snapPath), n.snapshot),
+      el("div", { class: "pr-row pr-end" },
+        el("label", { class: "pr-field" }, t("rec.name"), n.recName),
+        el("label", { class: "pr-field" }, t("rec.mode"), n.recMode),
+        el("label", { class: "pr-field" }, t("rec.interval"), n.recInterval),
+        el("label", { class: "pr-field" }, t("rec.fps"), n.recFps)),
+      el("div", { class: "pr-row" }, n.record, n.arm, n.stab),
+      n.recState, n.recError);
 
     view.root.replaceChildren(el("div", { class: "pr-workspace" }, n.stale = el("p", { class: "pr-warn", hidden: true }),
       el("div", { class: "pr-layout" }, furnace, scope)));
@@ -569,6 +638,7 @@
     setText(n.tiles.pv, degrees(furnace?.pv));
     setText(n.tiles.sv, degrees(furnace?.sv));
     setText(n.tiles.mode, furnace ? t(modeKey(furnace)) : t("none"));
+    setText(n.tiles.ramp, finite(furnace?.ramp) === null ? t("none") : fmt(furnace.ramp));
     const crucible = status?.crucible;
     setText(n.tiles.crucible, degrees(crucible?.max_c));
     n.tiles.pv.className = "pr-tile-value pr-tone-pv";
@@ -596,8 +666,11 @@
     n.gasRows.forEach((row, channel) => {
       const item = channels.find(value => value.channel_index === channel) || {};
       setText(row.name, item.gas_name || `Gas ${channel + 1}`);
-      setText(row.state, t("gas.actual", { value: finite(item.actual_percent) === null ? t("gas.unverified") : fmt(item.actual_percent) + " %" }));
+      const valve = valveState((furnace?.flow?.gas_valves || []).find(value => value.channel_index === channel));
+      setText(row.state, t("gas.actual", { value: finite(item.actual_percent) === null ? t("gas.unverified") : fmt(item.actual_percent) + " %" })
+        + " · " + t(valve.key, { state: valve.state ? t(valve.state) : "" }));
       row.send.disabled = !fMine || !furnace?.flow?.connected || busy("flow-" + channel);
+      row.close.disabled = busy("close-gas-" + channel);
     });
 
     // Microscope.
@@ -649,6 +722,10 @@
     n.stab.disabled = !idle || typeof scope?.stabilization !== "boolean" || busy("stab");
     setText(n.recState, armed ? t("rec.armed") : recording.status && recording.status !== "idle"
       ? t("rec.state", { status: recording.status, frames: String(recording.frame_count ?? 0) }) : "");
+    for (const node of [n.recName, n.recMode, n.recFps]) node.disabled = active || armed;
+    n.recInterval.disabled = active || armed || view.rec.mode === "live";
+    n.recError.hidden = !recording.error;
+    setText(n.recError, recording.error ? t("rec.error", { error: String(recording.error) }) : "");
   }
 
   function setDisabled(role, value) {
@@ -730,16 +807,43 @@
     return send("microscope", "focus_move", { steps: direction * steps }, "jog");
   }
 
+  function saveSnapshot() {
+    const params = snapshotParams(view.snapPath);
+    if (!params) { view.api.notify(view.api.t("rec.pathInvalid"), "error"); return undefined; }
+    return send("microscope", "snapshot", params);
+  }
+
+  /** The recording fields, or null after a notice. */
+  function recordingFields() {
+    try { return recordingParams(view.rec); }
+    catch (error) { view.api.notify(view.api.t(error.key || "rec.invalid"), "error"); return null; }
+  }
+
   function toggleRecording() {
     const recording = view.status?.microscope?.recording || {};
     if (ACTIVE_RECORDING.has(recording.status) && recording.id) return send("microscope", "stop_recording", { recording_id: recording.id }, "record");
-    return send("microscope", "start_recording", { recording_id: recordingId(view.global.crypto) }, "record");
+    const fields = recordingFields();
+    if (!fields) return undefined;
+    return send("microscope", "start_recording", { recording_id: recordingId(view.global.crypto), ...fields }, "record");
   }
 
   function toggleArm() {
     const armed = view.status?.microscope?.recording_sequence;
     if (armed?.armed && armed.id) return send("microscope", "record_with_sequence", { recording_id: armed.id, enabled: false }, "arm");
-    return send("microscope", "record_with_sequence", { recording_id: recordingId(view.global.crypto), enabled: true }, "arm");
+    const fields = recordingFields();
+    if (!fields) return undefined;
+    return send("microscope", "record_with_sequence", { recording_id: recordingId(view.global.crypto), enabled: true, ...fields }, "arm");
+  }
+
+  /** Close 1 gas channel through the workspace gas-stop route. No control; sent once, never retried. */
+  function closeGas(channel) {
+    return act("close-gas-" + channel, async () => {
+      const result = await view.api.request("gas-stop", { channel_index: channel }, { accept: [409, 502], timeout: 8000 });
+      const outcome = ["confirmed", "unconfirmed"].includes(result?.outcome) ? result.outcome : "unknown";
+      const t = view.api.t;
+      view.api.notify(t("gas.closeResult", { gas: gasNames()[channel], outcome: t("outcome." + outcome) }), outcome === "confirmed" ? "info" : "warn");
+      return result;
+    });
   }
 
   async function stopDevice(device) {
@@ -765,7 +869,7 @@
 
   return {
     install, i18n, view,
-    logic: { chartModel, sequenceParams, editorRows, focusFraction, modeKey, recordingId, objectiveIds, nudgeSteps, signed, caps, fmt },
+    logic: { chartModel, sequenceParams, editorRows, focusFraction, modeKey, recordingId, objectiveIds, nudgeSteps, signed, caps, fmt, snapshotParams, recordingParams, valveState },
     _internal: { mount, build, update, poll, show, hide, findRole },
   };
 });

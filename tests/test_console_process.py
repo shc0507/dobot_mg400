@@ -39,6 +39,15 @@ def flask_adapter(test_client, identity):
     return adapter_type("http://demo.invalid", identity)
 
 
+def furnace_adapter(test_client, identity):
+    """The furnace demo adapter with the lease-free gas stop of FurnaceAdapter."""
+    adapter = flask_adapter(test_client, identity)
+    adapter.gas_stop = lambda channel: adapter.request(
+        "api/flow/gas/stop", {"channel_index": channel}
+    )
+    return adapter
+
+
 def build(tmp_path, adapters):
     recipes = tmp_path / "recipes"
     recipes.mkdir()
@@ -153,7 +162,7 @@ def demos(tmp_path, monkeypatch):
     rig = build(
         tmp_path,
         {
-            "furnace": lambda identity: flask_adapter(furnace_client, identity),
+            "furnace": lambda identity: furnace_adapter(furnace_client, identity),
             "microscope": lambda identity: flask_adapter(microscope_client, identity),
         },
     )
@@ -195,6 +204,25 @@ def test_furnace_demo_heats_and_sends_gas_only_through_the_relay(demos):
     stopped = post(demos, "stop/furnace", page="console-page-b")
     assert stopped.get_json()["outcome"] == "confirmed"
     assert demos.furnace.status()["control_mode"] == "STOPPED"
+
+
+def test_gas_stop_closes_1_channel_without_control_and_reports_the_valves(demos):
+    assert post(demos, "control/furnace/take").status_code == 200
+    params = {"channel_index": 1, "flow_percent": 10}
+    gas = post(demos, "command/furnace", {"action": "set_gas_flow", "params": params})
+    assert gas.status_code == 202, gas.get_json()
+    demos.service.console._collect()
+    valves = status(demos)["furnace"]["flow"]["gas_valves"]
+    assert {"channel_index": 1, "open": True, "verified": True} in valves
+    for bad in ({"channel_index": 3}, {"channel_index": True}, {"channel_index": 1, "x": 1}, {}):
+        assert post(demos, "ws/process/gas-stop", bad).status_code == 400
+    # Another page without furnace control closes the channel.
+    response = post(demos, "ws/process/gas-stop", {"channel_index": 1}, page="console-page-b")
+    assert response.status_code == 200
+    assert response.get_json() == {"channel_index": 1, "outcome": "confirmed"}
+    demos.service.console._collect()
+    valves = status(demos)["furnace"]["flow"]["gas_valves"]
+    assert {"channel_index": 1, "open": False, "verified": True} in valves
 
 
 def test_furnace_demo_sequence_round_trip(demos):

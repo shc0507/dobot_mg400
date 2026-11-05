@@ -964,6 +964,43 @@ def test_camera_error_cannot_finalize_partial_capture(recording_rig):
     assert state["recording"]["summary"] is None and not rig.calls
 
 
+@pytest.mark.parametrize(
+    "missing_tools,message",
+    [
+        (True, "Recording failed: ffmpeg and ffprobe are not installed; local files are retained"),
+        (False, "Recording failed; local files are retained"),
+    ],
+)
+def test_finalize_failure_is_logged_and_names_missing_video_tools(
+    recording_rig, caplog, missing_tools, message
+):
+    import logging
+
+    from furnace.video import VideoToolsMissing
+
+    rig = recording_rig
+    cause = (
+        VideoToolsMissing("ffmpeg and ffprobe are not installed")
+        if missing_tools
+        else RuntimeError("ffmpeg failed: synthetic encoder error")
+    )
+
+    def finalizer(directory, **options):
+        raise cause
+
+    rig.service._recording_finalizer = finalizer
+    ident = "6" * 32
+    rig.command("start_recording", {"recording_id": ident})
+    with caplog.at_level(logging.ERROR, logger="microscope.service"):
+        rig.service.command("stop_recording", {"recording_id": ident}, "operator")
+        state = wait_recording(rig, "failed")
+    assert state["recording"]["error"] == message and state["recording"]["summary"] is None
+    logged = [record for record in caplog.records if record.name == "microscope.service"]
+    assert [record.exc_info[1] for record in logged] == [cause]
+    assert ident in logged[0].getMessage() and str(cause) in logged[0].getMessage()
+    assert (rig.root / ident / "video_0001.mp4").read_bytes() == b"fake-media"
+
+
 def test_stabilization_command_does_not_start_recording_or_change_lease(recording_rig):
     rig = recording_rig
     before = rig.service.lease.snapshot()

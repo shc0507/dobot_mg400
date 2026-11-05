@@ -65,6 +65,7 @@ After a host restart, only the gripper collection request listener resumes autom
 - A host network interface connects directly to the robot and has address `192.168.1.10/24`.
 - This interface can connect to the robot's TCP ports `29999`, `30003`, and `30004`.
 - For cameras, download the Linux program for version 1.9.14 from the [go2rtc releases page](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14).
+- For microscope recordings, `ffmpeg` and `ffprobe` are installed on the host. On Debian or Ubuntu, the `ffmpeg` package supplies both programs: `apt-get install ffmpeg`.
 
 ## Installation and updates
 
@@ -106,6 +107,7 @@ The installer works in this order:
    Also check the service registry, selection, selected units, and udev templates.
    If `--toupcam` is supplied, check its source, destination, and pinned SHA-256.
    If assets are requested or `vision` is enabled, also check the asset manifest, destination paths, and local files.
+   If `microscope` is enabled, look for `ffmpeg` and `ffprobe` in the default `PATH` of systemd services. If a program is missing, show a notice, but do not stop the installation.
    If a check fails, leave the host unchanged.
 2. Create the configuration file or add missing entries. Keep nonempty values.
    Remove old service `*_TOKEN` entries, except `MG400_GATEWAY_TOKEN`, and empty entries that the example does not contain.

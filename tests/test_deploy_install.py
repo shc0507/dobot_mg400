@@ -52,6 +52,12 @@ def host(module, monkeypatch, tmp_path, tmp_path_factory):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     globals_ = module.main.__globals__
+    # Model ffmpeg on the service PATH. A test removes a tool to see the notice.
+    tools = tmp_path_factory.mktemp("tools")
+    for name in ("ffmpeg", "ffprobe"):
+        (tools / name).write_text("#!/bin/sh\nexit 1\n")
+        (tools / name).chmod(0o755)
+    monkeypatch.setitem(globals_, "SERVICE_PATH", str(tools))
     monkeypatch.setattr(globals_["sys"], "platform", "linux")
     monkeypatch.setattr(globals_["os"], "geteuid", lambda: 0)
     # The microscope is a default service. Model its account and device groups.
@@ -92,6 +98,7 @@ def host(module, monkeypatch, tmp_path, tmp_path_factory):
         commands=commands,
         owner=lambda path: owners.get(path.stat().st_ino),
         out=out,
+        tools=tools,
         settings=tmp_path / "etc/mg400/mg400.env",
         data=tmp_path / "var/lib/mg400",
         units=tmp_path / "etc/systemd/system",
@@ -2177,3 +2184,19 @@ def test_robot_directory_link_is_refused_without_changing_its_target(host, tmp_p
     assert (host.data / "robot").is_symlink()
     assert mode(target) == 0o700
     assert marker.read_bytes() == b"preserve operator data\n"
+
+
+@pytest.mark.parametrize(
+    "removed,notice",
+    [
+        (("ffprobe",), "ffprobe is not installed."),
+        (("ffmpeg", "ffprobe"), "ffmpeg and ffprobe are not installed."),
+    ],
+)
+def test_missing_ffmpeg_gives_a_notice_and_does_not_refuse(host, removed, notice):
+    for name in removed:
+        (host.tools / name).unlink()
+    assert host.install("--dry-run") == 0
+    report = host.out.getvalue().splitlines()
+    expected = f"{notice} Microscope recordings cannot finish. Install the ffmpeg package."
+    assert report.count(expected) == 1

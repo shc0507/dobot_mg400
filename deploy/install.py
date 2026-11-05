@@ -85,6 +85,8 @@ class Host:
 
 
 SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "port", "assets"}
+# The default PATH of systemd services. The microscope finds ffmpeg and ffprobe there.
+SERVICE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 SERVICE_NAME = re.compile(r"[a-z][a-z0-9-]*")
 UNIT_NAME = re.compile(r"mg400-[a-z0-9-]+\.service")
 
@@ -676,6 +678,19 @@ def install(args, host, run, chown, out):
             file=out,
             flush=True,
         )
+    # Without ffmpeg, the microscope runs, but its recordings cannot finish.
+    if "microscope" in selected:
+        tools = [
+            name for name in ("ffmpeg", "ffprobe") if shutil.which(name, path=SERVICE_PATH) is None
+        ]
+        if tools:
+            verb = "is" if len(tools) == 1 else "are"
+            print(
+                f"{' and '.join(tools)} {verb} not installed. "
+                "Microscope recordings cannot finish. Install the ffmpeg package.",
+                file=out,
+                flush=True,
+            )
 
     # Vision requires the released model even without the optional bulk-fetch flag.
     required_assets = {"vision-weights"} if "vision" in selected else set()

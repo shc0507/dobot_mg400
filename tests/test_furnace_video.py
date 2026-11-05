@@ -291,3 +291,33 @@ def test_video_cancellation_blocks_later_work_and_retains_sources(tmp_path, monk
         assert output.read_bytes() == b"summary"
     else:
         assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "missing,message",
+    [
+        ({"ffmpeg"}, "ffmpeg is not installed"),
+        ({"ffprobe"}, "ffprobe is not installed"),
+        ({"ffmpeg", "ffprobe"}, "ffmpeg and ffprobe are not installed"),
+    ],
+)
+def test_missing_video_tools_are_named_before_any_process(tmp_path, monkeypatch, missing, message):
+    from furnace import video
+    from furnace.recordings import create_run
+
+    root = tmp_path / "local"
+    _, run = create_run("Tools", "manual_recording", recordings_root=root)
+    segment = private_video(run / "video.mp4")
+    monkeypatch.setattr(
+        video.shutil, "which", lambda name: None if name in missing else f"/fake/{name}"
+    )
+
+    def process(*args, **kwargs):
+        pytest.fail("No ffmpeg or ffprobe process may start")
+
+    monkeypatch.setattr(video.subprocess, "run", process)
+    with pytest.raises(video.VideoToolsMissing) as caught:
+        video.combine_run_to_target(run.name, 3, root)
+    assert str(caught.value) == message
+    assert segment.read_bytes() == b"segment"
+    assert not list(run.glob(".compile-*"))

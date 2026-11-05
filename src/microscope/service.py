@@ -59,9 +59,9 @@ LOGGER = logging.getLogger(__name__)
 # These are the turret keys and speed of `python -m microscope.calibrate setup`.
 NUDGE_STEPS = (-10, -1, 1, 10)
 NUDGE_SPEED = 40
-# The MJPEG preview fits in 1280x960, about half of the 2592x1944 Toupcam frame. go2rtc
-# encodes it to H.264. Single frames, recordings and the device jobs keep the full frame.
-PREVIEW_SIZE = (1280, 960)
+# The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
+# Single frames, recordings and the device jobs keep the full frame.
+PREVIEW_SIZE = (1296, 972)
 
 
 @dataclass(frozen=True)
@@ -619,21 +619,20 @@ def _jpeg(pixels):
 
 
 def _reduced(pixels):
-    """Scale a frame down to fit PREVIEW_SIZE. Smaller frames stay.
+    """Shrink a frame by a whole factor to fit PREVIEW_SIZE. Cut each side to a multiple of 8.
 
-    Each side is a multiple of 8: go2rtc sends the JPEG to ffmpeg over RTP, which
-    gives the size in units of 8 pixels.
+    A whole factor keeps the area average cheap. go2rtc sends the JPEG to ffmpeg
+    over RTP, which gives the size in units of 8 pixels.
     """
     height, width = pixels.shape[:2]
-    most_width, most_height = PREVIEW_SIZE
-    if width <= most_width and height <= most_height:
-        return pixels
-    if most_width * height <= most_height * width:
-        size = (most_width, height * most_width // width)
-    else:
-        size = (width * most_height // height, most_height)
-    size = (max(8, size[0] // 8 * 8), max(8, size[1] // 8 * 8))
-    return cv2.resize(pixels, size, interpolation=cv2.INTER_AREA)
+    factor = max(-(-width // PREVIEW_SIZE[0]), -(-height // PREVIEW_SIZE[1]))
+    if factor > 1:
+        size = (width // factor, height // factor)
+        pixels = cv2.resize(pixels, size, interpolation=cv2.INTER_AREA)
+        height, width = pixels.shape[:2]
+    keep_height, keep_width = height // 8 * 8 or height, width // 8 * 8 or width
+    top, left = (height - keep_height) // 2, (width - keep_width) // 2
+    return pixels[top : top + keep_height, left : left + keep_width]
 
 
 class MicroscopeService:

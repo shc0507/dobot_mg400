@@ -359,7 +359,7 @@ Socket operations retain their 2-second timeout; this is not a total shutdown de
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
 Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate and at most 2 Mbit/s. This route accepts no query.
-go2rtc reads the microscope preview, at most `1280x960`, from `http://127.0.0.1:8770/api/camera/microscope/mjpeg`. It serves it as H.264 at `/camera/microscope.mp4`, at most 3 Mbit/s.
+go2rtc reads the `1296x968` microscope preview from `http://127.0.0.1:8770/api/camera/microscope/mjpeg`. It serves it as H.264 at `/camera/microscope.mp4`, at most 3 Mbit/s.
 go2rtc reads the microscope preview only while an H.264 viewer is open. If the microscope service has no frame, `/camera/microscope.mp4` returns 502, and the console uses the relayed MJPEG.
 `/camera/fps.json` returns, for each MJPEG stream, the frames per second that each viewer got in the last 2 s. A stream with no viewer has `null`. The console reads these values for the camera status.
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.

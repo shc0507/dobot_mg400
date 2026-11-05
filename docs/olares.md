@@ -358,7 +358,7 @@ MG400_MICROSCOPE_SIDE_STREAM=camera3
 视频流上限为 30 fps，包括采集模式为 `1920x1080@60` 时。
 观看者可以用 `?fps=N` 请求更低的帧率，N 为 1 到 30，例如 `/camera/camera2.mjpeg?fps=5`。其他查询值返回 404。
 每个预加载的流另有 1 路 H.264 预览 `/camera/<view>.mp4`，格式为分段 MP4，帧率与摄像头相同，码率上限为 2 Mbit/s。该路由不接受查询参数。
-go2rtc 从 `http://127.0.0.1:8770/api/camera/microscope/mjpeg` 读取不超过 `1280x960` 的显微镜预览，在 `/camera/microscope.mp4` 提供码率上限为 3 Mbit/s 的 H.264 预览。
+go2rtc 从 `http://127.0.0.1:8770/api/camera/microscope/mjpeg` 读取 `1296x968` 的显微镜预览，在 `/camera/microscope.mp4` 提供码率上限为 3 Mbit/s 的 H.264 预览。
 go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有画面时，`/camera/microscope.mp4` 返回 502，控制台改用中转的 MJPEG。
 `/camera/fps.json` 返回每路 MJPEG 流在最近 2 s 内发送给每个观看者的帧率。没有观看者的流为 `null`。控制台在摄像头状态中读取这些值。
 go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最后 1 个观看者离开后停止。

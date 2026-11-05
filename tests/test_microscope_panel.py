@@ -86,7 +86,7 @@ def test_owned_preview_preserves_ids_and_each_camera_timestamp_domain(name, time
     service.close()
 
 
-def test_preview_is_about_half_the_toupcam_frame_and_its_viewers_share_1_encode(monkeypatch):
+def test_preview_is_half_the_toupcam_frame_and_its_viewers_share_1_encode(monkeypatch):
     pixels = np.zeros((1944, 2592, 3), np.uint8)
     service, main, _ = frame_service((7, 1730000000.5, pixels))
     encoded = []
@@ -98,9 +98,9 @@ def test_preview_is_about_half_the_toupcam_frame_and_its_viewers_share_1_encode(
     first = service.read_frame("microscope", after_id=6, timeout=0.25, preview=True)
     # A second viewer of the same frame gets the same JPEG without a new encode.
     assert service.read_frame("microscope", after_id=6, timeout=0.25, preview=True) is first
-    assert encoded == [(960, 1280, 3)]
+    assert encoded == [(968, 1296, 3)]
     image = cv2.imdecode(np.frombuffer(first.jpeg, np.uint8), cv2.IMREAD_COLOR)
-    assert image.shape == (960, 1280, 3) and first.frame_id == 7
+    assert image.shape == (968, 1296, 3) and first.frame_id == 7
     # The preview reads the published frame without a copy.
     assert main.calls[0] == dict(after_id=6, wait=True, timeout=0.25, copy=False)
     main.packet = (8, 1730000000.6, pixels)
@@ -119,12 +119,13 @@ def test_preview_is_about_half_the_toupcam_frame_and_its_viewers_share_1_encode(
     [
         ((360, 640, 3), (360, 640, 3)),
         ((2160, 3840, 3), (720, 1280, 3)),
-        ((3000, 4000), (960, 1280)),
-        ((2000, 1001), (960, 480)),
-        ((1100, 1300, 3), (960, 1128, 3)),
+        ((3000, 4000), (744, 1000)),
+        ((2000, 1001), (664, 328)),
+        ((1944, 2600, 3), (648, 864, 3)),
+        ((5, 6), (5, 6)),
     ],
 )
-def test_preview_fits_1280x960_with_sides_in_units_of_8(shape, reduced):
+def test_preview_shrinks_by_a_whole_factor_and_cuts_sides_to_units_of_8(shape, reduced):
     service, _, side = frame_service((3, 5.25, np.zeros(shape, np.uint8)))
     frame = service.read_frame("side", preview=True)
     image = cv2.imdecode(np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_UNCHANGED)

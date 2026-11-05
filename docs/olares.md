@@ -58,7 +58,7 @@ MG400_PROXY_PORT=8080
 | --- | --- |
 | `/lab/api/console/socket` | `127.0.0.1:8774`，控制台控制套接字（WebSocket） |
 | `/lab/` | `127.0.0.1:8772`，固定基础路径为 `/lab/` |
-| `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg`、`/camera/fps.json` | `127.0.0.1:1985`，仅移除 `/camera` |
+| `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg`、`/camera/<view>.full.jpg`、`/camera/fps.json` | `127.0.0.1:1985`，仅移除 `/camera` |
 
 `<view>` 为 `camera1` 到 `camera4`。`/camera/<view>.mp4` 的 `<view>` 还可以是 `microscope`。
 代理把根路径 `/` 重定向到实验室控制台 `/lab/`。参见[实验室控制台](dashboard.md#实验室控制台)。

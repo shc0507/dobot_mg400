@@ -58,7 +58,7 @@ The proxy has only these routes:
 | --- | --- |
 | `/lab/api/console/socket` | `127.0.0.1:8774`, the console control socket (WebSocket) |
 | `/lab/` | `127.0.0.1:8772`, with the fixed base path `/lab/` |
-| `/camera/<view>.mp4`, `/camera/<view>.mjpeg`, `/camera/<view>.jpg`, `/camera/fps.json` | `127.0.0.1:1985`, after removing only `/camera` |
+| `/camera/<view>.mp4`, `/camera/<view>.mjpeg`, `/camera/<view>.jpg`, `/camera/<view>.full.jpg`, `/camera/fps.json` | `127.0.0.1:1985`, after removing only `/camera` |
 
 `<view>` is `camera1` to `camera4`. For `/camera/<view>.mp4`, `<view>` can also be `microscope`.
 The proxy redirects the root path `/` to the Lab Console at `/lab/`. See the [Lab Console](dashboard.en.md#lab-console).

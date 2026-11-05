@@ -9,9 +9,11 @@ import urllib.request
 from email.message import Message
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Condition, Thread
+from pathlib import Path
+from threading import Condition, Lock, Thread
 
 from cameras.config import camera_configuration
+from cameras.jpeg import jpeg_size
 from cameras.rate import SendRate
 
 CAMERAS = camera_configuration(os.environ)
@@ -31,9 +33,22 @@ MAX_FRAME = 4 * 1024 * 1024
 # A viewer may cap its frame rate with ?fps=. The console asks for less than the camera
 # rate, so 3 previews leave room on the VPN link for control traffic.
 MAX_FPS = 30
+GO2RTC = "http://127.0.0.1:1984"
+# A full-resolution still needs the shared USB 2 link alone: its stream uses almost all of
+# it. go2rtc reads this overlay after its main config. The overlay turns off the other
+# cameras and the H.264 encoders and sets one camera to the largest AC410 MJPEG mode.
+# The capture unit deletes a left-over overlay before go2rtc starts.
+STILL_CONFIG = Path("/var/lib/mg400/camera/still.yaml")
+STILL_MODE = (4000, 3000, 15)
+STILL_MAX_FRAME = 16 * 1024 * 1024
+# Auto exposure settles after the mode change. Older frames are too dark or too bright.
+STILL_SETTLE_S = 1.0
+STILL_TIMEOUT_S = 10.0
+STILLS = {f"{stream}.full.jpg": stream for stream in CAMERAS.streams}
+STILL_LOCK = Lock()
 
 
-def iter_mjpeg(upstream, *, keep_reading=lambda: True):
+def iter_mjpeg(upstream, *, keep_reading=lambda: True, max_frame=MAX_FRAME):
     """Read complete JPEG parts. Bound memory even if the source omits a boundary."""
     content_type = Message()
     content_type["content-type"] = upstream.headers.get("Content-Type", "")
@@ -82,7 +97,7 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True):
                     break
                 next_part = buffer.find(b"\r\n" + marker, suffix)
             if next_part < 0:
-                if len(buffer) - body_start > MAX_FRAME + len(marker) + 4:
+                if len(buffer) - body_start > max_frame + len(marker) + 4:
                     raise ValueError("MJPEG frame is too large")
                 break
             header_lines = bytes(buffer[len(marker) + 2 : headers_end]).decode("ascii")
@@ -93,7 +108,7 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True):
             frame = bytes(buffer[body_start:next_part])
             if (
                 headers.get_content_type() != "image/jpeg"
-                or not 4 <= len(frame) <= MAX_FRAME
+                or not 4 <= len(frame) <= max_frame
                 or not frame.startswith(b"\xff\xd8")
                 or not frame.endswith(b"\xff\xd9")
                 or (
@@ -104,6 +119,76 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True):
                 raise ValueError("Invalid or incomplete JPEG frame")
             del buffer[: next_part + 2]
             yield frame
+
+
+def still_overlay(stream):
+    """Return the go2rtc overlay that streams only `stream`, at the largest MJPEG mode."""
+    width, height, fps = STILL_MODE
+    lines = []
+    for name, device in zip(CAMERAS.streams, CAMERAS.devices):
+        source = (
+            f"v4l2:device?video={device}&input_format=mjpeg"
+            f"&video_size={width}x{height}&framerate={fps}"
+            if name == stream
+            else ""
+        )
+        lines.append(f'  {name}: "{source}"\n')
+    lines += [f'  {name}_h264: ""\n' for name in CAMERAS.preloaded]
+    return "streams:\n" + "".join(lines)
+
+
+def restart_go2rtc():
+    """Re-exec go2rtc with its config files, then wait until its API answers again."""
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(GO2RTC + "/api/restart", method="POST"), timeout=2
+        ).close()
+    except (OSError, HTTPException):
+        pass  # go2rtc can exec before it sends the response.
+    time.sleep(0.5)
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            urllib.request.urlopen(GO2RTC + "/api", timeout=1).close()
+            return
+        except (OSError, HTTPException):
+            if time.monotonic() > deadline:
+                raise OSError("go2rtc did not restart") from None
+            time.sleep(0.1)
+
+
+def microscope_busy():
+    """True while a microscope job runs. An objective switch reads the side stream."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8770/api/state", timeout=2) as response:
+            return json.load(response).get("busy") is True
+    except (OSError, ValueError, HTTPException):
+        return False
+
+
+def grab_still(stream):
+    """Return 1 settled full-resolution JPEG. The other cameras pause for a few seconds."""
+    STILL_CONFIG.write_text(still_overlay(stream))
+    try:
+        restart_go2rtc()
+        start = time.monotonic()
+        with urllib.request.urlopen(
+            GO2RTC + "/api/stream.mjpeg?src=" + stream, timeout=5
+        ) as upstream:
+            for frame in iter_mjpeg(upstream, max_frame=STILL_MAX_FRAME):
+                now = time.monotonic()
+                if now - start > STILL_TIMEOUT_S:
+                    break
+                try:
+                    size = jpeg_size(frame)
+                except RuntimeError:
+                    continue
+                if now - start >= STILL_SETTLE_S and size == STILL_MODE[:2]:
+                    return frame
+        raise OSError("The camera sent no full-resolution frame")
+    finally:
+        STILL_CONFIG.unlink(missing_ok=True)
+        restart_go2rtc()
 
 
 class CameraFeed:
@@ -258,6 +343,9 @@ class Preview(BaseHTTPRequestHandler):
             rates = {source: feed.fps() for source, feed in FEEDS.items()}
             self.respond(json.dumps(rates).encode(), "application/json")
             return
+        if route in STILLS and not query:
+            self.still(STILLS[route])
+            return
         if query or route not in STREAMS:
             self.send_error(404)
             return
@@ -269,6 +357,22 @@ class Preview(BaseHTTPRequestHandler):
         except (urllib.error.URLError, OSError):
             self.send_error(502)
             return
+        self.respond(body, "image/jpeg")
+
+    def still(self, stream):
+        if SIDE == stream and microscope_busy():
+            self.send_error(409, "The microscope is using this camera")
+            return
+        if not STILL_LOCK.acquire(timeout=45):
+            self.send_error(503, "Another still is in progress")
+            return
+        try:
+            body = grab_still(stream)
+        except (OSError, ValueError, UnicodeError, HTTPException):
+            self.send_error(502)
+            return
+        finally:
+            STILL_LOCK.release()
         self.respond(body, "image/jpeg")
 
     def stream(self, feed, fps=MAX_FPS):
@@ -346,6 +450,10 @@ if __name__ == "__main__":
         host = sys.argv[1]
     else:
         host = os.environ.get("MG400_CAMERA_BIND") or "127.0.0.1"
+    if STILL_CONFIG.exists():
+        # This process stopped during a still. Return go2rtc to the previews.
+        STILL_CONFIG.unlink()
+        restart_go2rtc()
     server = ThreadingHTTPServer((host, 1985), Preview)
     print(f"Camera preview is ready at {host}:1985.", flush=True)
     server.serve_forever()

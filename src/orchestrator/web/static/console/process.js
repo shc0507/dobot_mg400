@@ -72,6 +72,7 @@
       "fault.ack": "Acknowledge fault…", "fault.confirm": "Is the furnace safe and the controller at STOP? Acknowledging clears the fault.",
       "fault.done": "Fault acknowledgement sent.",
       "scope.fault": "Fault: {message}. Only Stop is allowed.",
+      "scope.failed": "{action} failed: {message}",
       "phase.idle": "Idle", "phase.ramping": "Ramping", "phase.holding": "Holding", "phase.cooling": "Cooling",
       "phase.stopped": "Stopped", "phase.fault": "Fault", "phase.applying": "Applying", "phase.complete": "Complete",
       "none": "—",
@@ -132,6 +133,7 @@
       "fault.ack": "确认故障…", "fault.confirm": "炉子安全且控制器处于 STOP 吗？确认后将清除故障。",
       "fault.done": "已发送故障确认。",
       "scope.fault": "故障：{message}。只允许停止。",
+      "scope.failed": "{action} 失败：{message}",
       "phase.idle": "空闲", "phase.ramping": "升温中", "phase.holding": "保持中", "phase.cooling": "冷却中",
       "phase.stopped": "已停止", "phase.fault": "故障", "phase.applying": "应用中", "phase.complete": "已完成",
       "none": "—",
@@ -457,7 +459,7 @@
 
     // Microscope.
     n.scopeSub = el("span", { class: "lc-muted" });
-    n.scopeNote = el("p", { class: "pr-note", hidden: true });
+    n.scopeNote = el("p", { class: "pr-note", "data-role": "scope-note", hidden: true });
     n.objectives = objectiveIds(view.describe.microscope).map(id => {
       const node = el("button", { type: "button", class: "lc-button pr-objective", role: "radio", "aria-checked": "false", "data-role": "objective-" + id, text: t("obj.name", { id }), onclick: () => send("microscope", "select_objective", { id }) });
       node.dataset.id = String(id);
@@ -655,8 +657,10 @@
     const mMine = mHolder === "mine";
     setText(n.scopeSub, [t("control." + mHolder), scope ? t(scope.focus_zero_known ? "scope.zero" : "scope.noZero") : null].filter(Boolean).join(" · "));
     const scopeFault = scope?.locked ? scope?.fault?.message || "locked" : null;
-    n.scopeNote.hidden = !scopeFault;
-    setText(n.scopeNote, scopeFault ? t("scope.fault", { message: scopeFault }) : "");
+    const failed = !scopeFault && scope?.last_command?.result === "failed" ? scope.last_command : null;
+    n.scopeNote.hidden = !scopeFault && !failed;
+    setText(n.scopeNote, scopeFault ? t("scope.fault", { message: scopeFault })
+      : failed ? t("scope.failed", { action: failed.action || "", message: failed.message || "" }) : "");
     setDisabled("take-microscope", mMine || mHolder === "other" || busy("take-microscope"));
     setDisabled("release-microscope", !mMine || busy("release-microscope"));
     const idle = mMine && scope?.connected === true && !scope?.busy && !scope?.locked;

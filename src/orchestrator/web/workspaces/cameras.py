@@ -1,10 +1,11 @@
 """Console workspace: Cameras.
 
 The browser loads camera1 to camera4 from the proxy at ``/camera/<view>.mjpeg``
-and ``/camera/<view>.jpg``. The console process relays the other views:
+and ``/camera/<view>.jpg``, and the H.264 views at ``/camera/<view>.mp4``. The
+console process relays the other views:
 
 - thermal: the thermal frame API through the thermal service client;
-- microscope: the Toupcam MJPEG and JPEG through the microscope service client;
+- microscope: the Toupcam MJPEG fallback and JPEG through the microscope service client;
 - camera 4 chip detections: the vision ``api/detect`` result.
 
 The microscope relay bounds its open streams. One upstream reader is shared by

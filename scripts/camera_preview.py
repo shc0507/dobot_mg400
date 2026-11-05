@@ -23,9 +23,9 @@ STREAMS = {
     for stream in CAMERAS.streams
     if stream != SIDE or stream in CAMERAS.preloaded
 }
-# go2rtc encodes each camera up to 640x480 to H.264 for its first viewer, as fragmented MP4.
-# H.264 needs much less VPN bandwidth than MJPEG at the camera rate.
-VIDEOS = {f"{stream}.mp4": stream for stream in CAMERAS.preloaded}
+# go2rtc encodes each camera up to 640x480 and the microscope preview to H.264 for its first
+# viewer, as fragmented MP4. H.264 needs much less VPN bandwidth than MJPEG at the camera rate.
+VIDEOS = {f"{stream}.mp4": stream for stream in (*CAMERAS.preloaded, "microscope")}
 VIDEO_TYPE = re.compile(r'video/mp4; codecs="[A-Za-z0-9.,]{1,100}"')
 MAX_FRAME = 4 * 1024 * 1024
 # A viewer may cap its frame rate with ?fps=. The console asks for less than the camera

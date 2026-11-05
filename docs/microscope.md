@@ -189,13 +189,15 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 | 预览路由 | 结果 |
 | --- | --- |
-| `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | 从已有相机所有者读取的已认证 MJPEG 视图。 |
-| `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | 单张 JPEG，没有更新的帧时返回 `204`。 |
+| `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | 从已有相机所有者读取的 MJPEG 视图。按相机帧率发送每个新帧，图像缩小到 `1280x960` 以内。 |
+| `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | 相机原尺寸的单张 JPEG，没有更新的帧时返回 `204`。 |
 
 侧视读取线程只在 `select_objective` 运行期间工作。其他时间，侧视路由返回 `503`。
 预览请求接受可选的非负 `after_id` 游标。
 每张 JPEG 带 `X-Frame-Id` 和 `X-Captured-At` 响应头。主相机时间戳使用主机墙上时间，侧视相机使用单调接收时间。
 不得跨相机比较时间戳，也不得将其作为传感器曝光时间。
+MJPEG 视图的所有观看者共用每帧的 1 次 JPEG 编码。
+go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编码 H.264。参见[摄像头](olares.md#摄像头)。
 最多同时保留 4 个 MJPEG 响应。额外的流返回 `503`，关闭其他预览后再连接。
 该限制为控制请求保留工作线程，但不保证停止响应时间。
 预览读取不会取得或续期控制权。关闭相机所有者前，服务等待已接受的读取完成。

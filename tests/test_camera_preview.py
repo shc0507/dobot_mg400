@@ -120,6 +120,11 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
         "camera1.mp4?fps=5",
         "camera1.mp4/extra",
         "camera1_h264.mp4",
+        "microscope.mp4?src=admin",
+        "microscope_h264.mp4",
+        "microscope.mjpeg",
+        "microscope.jpg",
+        "thermal.mp4",
         "camera1.mjpeg/extra",
         "camera0/detections.json",
         "camera4/detections.json",
@@ -627,13 +632,13 @@ def test_high_mode_reader_hands_off_to_new_viewer_without_duplicate_reader(previ
     upstream.assert_not_called()
 
 
-@pytest.mark.parametrize("camera", [1, 2, 3])
-def test_mp4_route_relays_the_fixed_h264_stream_unchanged(preview, camera):
+@pytest.mark.parametrize("view", ["camera1", "camera2", "camera3", "microscope"])
+def test_mp4_route_relays_the_fixed_h264_stream_unchanged(preview, view):
     module, upstream = preview
     body = b"ftyp-moov-moof-mdat" * 5000
     upstream.side_effect = lambda *_args, **_kwargs: VideoUpstream(body)
     connection = Mock()
-    status, headers, received = request(module, f"camera{camera}.mp4", connection=connection)
+    status, headers, received = request(module, f"{view}.mp4", connection=connection)
     assert status == 200
     assert received == body
     assert headers["Content-Type"] == 'video/mp4; codecs="avc1.640029"'
@@ -641,7 +646,7 @@ def test_mp4_route_relays_the_fixed_h264_stream_unchanged(preview, camera):
     assert "Content-Length" not in headers
     assert headers["Cache-Control"] == "no-store"
     upstream.assert_called_once_with(
-        f"http://127.0.0.1:1984/api/stream.mp4?src=camera{camera}_h264", timeout=5
+        f"http://127.0.0.1:1984/api/stream.mp4?src={view}_h264", timeout=5
     )
     connection.settimeout.assert_called_with(5)
     connection.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
@@ -673,7 +678,7 @@ def test_mp4_route_returns_502_when_go2rtc_cannot_encode(preview):
     assert request(module, "camera1.mp4")[0] == 502
 
 
-def test_h264_previews_exist_only_for_preloaded_streams(preview, monkeypatch):
+def test_h264_previews_exist_only_for_preloaded_streams_and_the_microscope(preview, monkeypatch):
     _, upstream = preview
     monkeypatch.setenv(
         "MG400_CAMERA_DEVICES",
@@ -681,6 +686,9 @@ def test_h264_previews_exist_only_for_preloaded_streams(preview, monkeypatch):
     )
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,640x480@30,1280x720@30")
     module = load_preview()
-    assert module.VIDEOS == {f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 3)}
+    assert module.VIDEOS == {
+        **{f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 3)},
+        "microscope.mp4": "microscope",
+    }
     assert request(module, "camera4.mp4")[0] == 404
     upstream.assert_not_called()

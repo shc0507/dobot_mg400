@@ -98,11 +98,29 @@ test("cameras load from the proxy and the microscope from the console relay", ()
   assert.equal(logic.snapshotUrl("microscope", "/lab"), "/lab/api/console/ws/cameras/snapshot/microscope");
 });
 
-test("USB cameras play H.264 from the proxy; other views have no H.264 stream", () => {
+test("USB cameras and the microscope play H.264 from the proxy; the thermal view has none", () => {
   assert.equal(logic.videoUrl("camera1"), "/camera/camera1.mp4");
   assert.equal(logic.videoUrl("camera4"), "/camera/camera4.mp4");
-  assert.equal(logic.videoUrl("microscope"), null);
+  assert.equal(logic.videoUrl("microscope"), "/camera/microscope.mp4");
   assert.equal(logic.videoUrl("thermal"), null);
+});
+
+test("a playing H.264 microscope tile is live; the relay state applies to its MJPEG fallback", () => {
+  const relay = { id: "microscope", state: "offline", age_s: null, fps: null };
+  cameras.engine.status.set("microscope", relay);
+  const tile = { view: "microscope", live: false, stopVideo: () => {} };
+  cameras.engine.tiles.add(tile);
+  try {
+    assert.deepEqual(logic.rowFor("microscope"), { ...relay, state: "offline", age_s: null });
+    tile.live = true;
+    assert.deepEqual(logic.rowFor("microscope"), { ...relay, state: "live", age_s: 0 });
+    // An MJPEG fallback tile shows the state that the console relay reports.
+    tile.stopVideo = null;
+    assert.deepEqual(logic.rowFor("microscope"), relay);
+  } finally {
+    cameras.engine.tiles.delete(tile);
+    cameras.engine.status.delete("microscope");
+  }
 });
 
 test("the H.264 player stays near the newest frame", () => {

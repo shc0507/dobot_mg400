@@ -48,6 +48,8 @@
       "scope.stop": "Stop", "scope.view": "Toupcam", "scope.side": "Side camera (camera3) on the turret",
       "tile.offline": "OFFLINE",
       "obj.title": "Objective", "obj.name": "Objective {id}", "obj.note": "Switching raises focus to clearance first, then turns the turret with the side camera.",
+      "obj.nudge": "Turn the turret {steps} full steps", "obj.offset": "Turret {offset} / ±{limit} full steps",
+      "obj.offsetUnknown": "Turret offset unknown. Select another objective first.",
       "focus.title": "Focus", "focus.position": "{pos} / {max} pulses", "focus.unknown": "Position unknown",
       "focus.noLimits": "Limits not measured", "focus.min": "{min} · window side", "focus.max": "{max} · away",
       "focus.bar": "Focus position", "focus.jog": "Jog pulses", "focus.down": "− Jog", "focus.up": "+ Jog",
@@ -109,6 +111,8 @@
       "scope.stop": "停止", "scope.view": "Toupcam", "scope.side": "转盘侧面相机（camera3）",
       "tile.offline": "离线",
       "obj.title": "物镜", "obj.name": "物镜 {id}", "obj.note": "切换时先把焦距升到安全高度，再用侧面相机转动转盘。",
+      "obj.nudge": "转盘转动 {steps} 整步", "obj.offset": "转盘 {offset} / ±{limit} 整步",
+      "obj.offsetUnknown": "转盘偏移未知。先选择其他物镜。",
       "focus.title": "对焦", "focus.position": "{pos} / {max} 脉冲", "focus.unknown": "位置未知",
       "focus.noLimits": "限位未测量", "focus.min": "{min} · 窗口侧", "focus.max": "{max} · 远离",
       "focus.bar": "对焦位置", "focus.jog": "点动脉冲", "focus.down": "− 点动", "focus.up": "+ 点动",
@@ -231,6 +235,14 @@
     const ids = description?.commands?.select_objective?.params?.properties?.id?.enum;
     return Array.isArray(ids) && ids.every(Number.isSafeInteger) ? ids.slice(0, 8) : [0, 1, 2, 3];
   }
+
+  /** The described turret nudges in full steps, ascending. None when the service has no objective_nudge. */
+  function nudgeSteps(description) {
+    const steps = description?.commands?.objective_nudge?.params?.properties?.steps?.enum;
+    return Array.isArray(steps) && steps.every(Number.isSafeInteger) ? steps.slice(0, 8).sort((a, b) => a - b) : [];
+  }
+
+  function signed(value) { return value > 0 ? "+" + value : value < 0 ? "−" + Math.abs(value) : "0"; }
 
   /** The snapshot params: {} for the service default, {path} for a relative path, or null. */
   function snapshotParams(text) {
@@ -465,6 +477,14 @@
       node.dataset.id = String(id);
       return node;
     });
+    n.nudges = nudgeSteps(view.describe.microscope).map(steps => {
+      const node = button(signed(steps), () => send("microscope", "objective_nudge", { steps }, "nudge"),
+        { "data-role": "nudge-" + (steps > 0 ? "up-" : "down-") + Math.abs(steps), "aria-label": t("obj.nudge", { steps: signed(steps) }) });
+      node.dataset.steps = String(steps);
+      return node;
+    });
+    n.offset = el("span", { class: "pr-mono", "data-role": "nudge-offset" });
+    n.nudgeRow = el("div", { class: "pr-row", "data-role": "nudge-row", hidden: true }, ...n.nudges, n.offset);
     n.focusText = el("span", { class: "pr-mono" });
     n.focusFill = el("span", { class: "pr-bar-fill" });
     n.focusBar = el("div", { class: "pr-bar", role: "meter", "aria-label": t("focus.bar"), "aria-valuemin": "0", "aria-valuemax": "100" }, n.focusFill);
@@ -506,7 +526,8 @@
         el("div", { class: "pr-side-view" }, cameraTile("camera3", "camera3"), el("span", { class: "lc-muted", text: t("scope.side") }))),
       el("div", { class: "pr-block" }, el("h3", { id: "pr-obj-title", text: t("obj.title") }),
         el("div", { class: "pr-objectives", role: "radiogroup", "aria-labelledby": "pr-obj-title" }, ...n.objectives),
-        el("p", { class: "lc-muted", text: t("obj.note") })),
+        el("p", { class: "lc-muted", text: t("obj.note") }),
+        n.nudgeRow),
       el("div", { class: "pr-block" },
         el("div", { class: "lc-card-head" }, el("h3", { text: t("focus.title") }), n.focusText),
         n.focusBar,
@@ -671,6 +692,13 @@
       node.className = "lc-button pr-objective" + (selected ? " pr-selected" : "");
       node.disabled = !canMove;
     }
+    // Nudges stay inside ±limit full steps of the objective that select_objective aligned.
+    const limit = scope?.objective_offset_limit_steps;
+    const offset = scope?.objective_offset_steps;
+    const counted = Number.isSafeInteger(offset) && Number.isSafeInteger(scope?.objective_id);
+    n.nudgeRow.hidden = !n.nudges.length || !Number.isSafeInteger(limit) || limit <= 0;
+    for (const node of n.nudges) node.disabled = !canMove || !counted || Math.abs(offset + Number(node.dataset.steps)) > limit || busy("nudge");
+    setText(n.offset, counted ? t("obj.offset", { offset: signed(offset), limit: String(limit) }) : t("obj.offsetUnknown"));
     for (const node of n.motion) node.disabled = !canMove;
     const limits = Array.isArray(scope?.focus_limits_pulses) ? scope.focus_limits_pulses : [];
     const fraction = focusFraction(scope?.focus_position_pulses, limits);
@@ -841,7 +869,7 @@
 
   return {
     install, i18n, view,
-    logic: { chartModel, sequenceParams, editorRows, focusFraction, modeKey, recordingId, objectiveIds, caps, fmt, snapshotParams, recordingParams, valveState },
+    logic: { chartModel, sequenceParams, editorRows, focusFraction, modeKey, recordingId, objectiveIds, nudgeSteps, signed, caps, fmt, snapshotParams, recordingParams, valveState },
     _internal: { mount, build, update, poll, show, hide, findRole },
   };
 });

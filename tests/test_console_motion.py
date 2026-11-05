@@ -80,6 +80,12 @@ def fake(tmp_path):
     stage = {
         "connected": True,
         "port": "/dev/ttyUSB0",
+        "automation": {
+            "configured": True,
+            "poses": ["inspect", "load"],
+            "at_poses": {"load": {"matched": True, "axes": {"insert": True}}},
+            "active": None,
+        },
         "motors": [
             {
                 "id": "insert",
@@ -134,6 +140,8 @@ def test_state_route_keeps_only_page_fields_and_hides_identities(fake):
     assert stage["motors"] == [
         {"id": "insert", "position": 10, "position_mm": None, "reference_configured": True}
     ]
+    assert stage["poses"] == ["inspect", "load"] and stage["at_poses"] == ["load"]
+    assert "automation" not in stage
 
 
 def test_unreachable_device_is_reported_without_an_error(fake, monkeypatch):

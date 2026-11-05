@@ -195,6 +195,30 @@ test("Home sends only after the page confirmation; Move sends 1 gripper position
   assert.deepEqual(page.calls.filter(call => call[0] === "relay" && call[2] === "grip"), [["relay", "robot", "grip", { position: 400 }]]);
 });
 
+test("Refresh ports reads the serial ports again", async () => {
+  const page = await mounted({ stage: { ...STAGE, connected: false } });
+  await page.settle();
+  const reads = () => page.calls.filter(call => call[1] === "stage/ports").length;
+  assert.equal(reads(), 1);
+  page.find("Refresh ports").click();
+  await page.settle();
+  assert.equal(reads(), 2);
+});
+
+test("named poses need all axes referenced and send 1 pose command", async () => {
+  const ready = { ...STAGE.motors[0], automation_ready: true };
+  const page = await mounted({ stage: { ...STAGE, motors: [ready], poses: ["load", "inspect"], at_poses: ["load"] } });
+  assert.equal(page.find("load").getAttribute("aria-pressed"), "true");
+  page.find("inspect").click();
+  await page.settle();
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "pose", { name: "inspect" }]]);
+  const waiting = await mounted({ stage: { ...STAGE, poses: ["load"], at_poses: [] } });
+  assert.equal(waiting.find("load").disabled, true);
+  assert.ok(waiting.root.all().some(node => node.ownText === "Home or zero all 3 axes before a named pose."));
+  const none = await mounted();
+  assert.equal(none.root.all().some(node => node.ownText === "Named poses"), false);
+});
+
 test("Set zero sends only after the page confirmation", async () => {
   const page = await mounted();
   page.find("Set zero…").click();

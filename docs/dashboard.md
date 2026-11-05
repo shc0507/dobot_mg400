@@ -62,13 +62,14 @@
 位移台：
 
 - **Take control**、**Stepping** 和 **Stop stage**。**Stop stage** 不需要控制权。
-- Arduino 未连接时，从列出的串口中选择 1 个，再选 **Connect**。
+- Arduino 未连接时，从列出的串口中选择 1 个，再选 **Connect**。**Refresh ports** 重新读取串口列表。
 - 更改细分模式会清除全部 3 轴的零点和软限位，需要确认。
 - 每个轴显示以脉冲和 mm 为单位的位置及参考状态。**Step −** 和 **Step +** 按输入的步数和脉冲/秒发送 1 条 `move`。步进移动不需要参考。轴有已确认的参考时，应用软限位。
 - **Home…**（带开关的板）和 **Set zero…** 需要确认。**Set zero…** 设置零点和软限位。
 - 轴配置了相机参考时，**Check reference** 显示带标记的相机画面和以像素为单位的标记偏移。
 - **Teach reference…** 需要确认。它把当前标记位置保存为该轴在位移台配置中的相机参考。
 - **Named positions** 为轴的每个命名位置发送 `goto`。
+- **Named poses** 为所选位姿发送 1 条 `pose`。位姿按配置的顺序每次移动 1 个轴。全部 3 轴已回零或设零后才可用。
 
 相机：camera2 为大视图，camera4 和 camera3 为小视图。**Swap view** 把小视图放到大视图中。没有相机工作区时，视图显示 OFFLINE。
 

@@ -180,7 +180,8 @@
       "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
       "axis.teachConfirm": "Is {axis} at its safe zero position? The current marker position replaces the camera reference.",
       "axis.offset": "Marker offset {x}, {y} px", "axis.checkFailed": "Reference check failed: {error}",
-      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found",
+      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found", "stage.refresh": "Refresh ports",
+      "pose.title": "Named poses", "pose.needRef": "Home or zero all 3 axes before a named pose.",
       "axis.zeroConfirm": "Set the current position of {axis} as zero. Check the physical position first.",
       "named.title": "Named positions", "named.none": "No named positions are configured.",
       "named.go": "{axis} → {name}",
@@ -230,7 +231,8 @@
       "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
       "axis.teachConfirm": "{axis}在安全零点吗？当前标记位置将替换摄像头参考。",
       "axis.offset": "标记偏移 {x}, {y} px", "axis.checkFailed": "参考检查失败：{error}",
-      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口",
+      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口", "stage.refresh": "刷新串口",
+      "pose.title": "命名位姿", "pose.needRef": "使用命名位姿前，先让全部 3 轴回零或设零。",
       "axis.zeroConfirm": "把{axis}的当前位置设为零点。请先检查实际位置。",
       "named.title": "命名位置", "named.none": "未配置命名位置。",
       "named.go": "{axis} → {name}",
@@ -660,12 +662,13 @@
     function stageKey() {
       const motors = data.stage?.available ? data.stage.motors || [] : [];
       const modes = data.stage?.microstep_modes || [];
-      return JSON.stringify([motors.map(m => [m.id, m.named_positions || [], m.homing_available === true]), modes.map(m => m.value)]);
+      return JSON.stringify([motors.map(m => [m.id, m.named_positions || [], m.homing_available === true]), modes.map(m => m.value), data.stage?.poses || []]);
     }
 
     function buildStage() {
       refs.stageKey = stageKey();
       if (!refs.stageBody) return;
+      buildPoses();
       const stage = data.stage?.available ? data.stage : null;
       const motors = stage?.motors || [];
       refs.modes = (stage?.microstep_modes || []).map(mode => el("button", {
@@ -749,8 +752,10 @@
       refs.stageBody = el("div", { class: "mo-stack" });
       refs.portSelect = el("select", { class: "mo-input", "aria-label": t("stage.port"), onchange: event => { model.port = event.target.value; } });
       refs.connect = el("button", { type: "button", class: "lc-button", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }, "connect", "stage/connect").then(() => { model.ports = null; }) });
-      refs.connectRow = el("div", { class: "mo-row", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect);
+      refs.refreshPorts = el("button", { type: "button", class: "lc-button", text: t("stage.refresh"), onclick: () => { if (!model.portsLoading) loadPorts(); } });
+      refs.connectRow = el("div", { class: "mo-row", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect, refs.refreshPorts);
       refs.stageLast = el("p", { class: "lc-muted", role: "status" });
+      refs.poseBlock = el("div", { class: "mo-block", hidden: true });
       const card = el("section", { class: "lc-card mo-col", "aria-labelledby": "mo-stage-title" },
         el("div", { class: "lc-card-head" },
           el("div", { class: "mo-titles" }, el("h2", { id: "mo-stage-title", text: t("stage.title") }), refs.stageStatus),
@@ -759,9 +764,20 @@
         confirmSlot("stage"),
         refs.connectRow,
         refs.stageBody,
+        refs.poseBlock,
         refs.stageLast);
       buildStage();
       return card;
+    }
+
+    /** Named poses move several axes in the configured order with the described `pose` command. */
+    function buildPoses() {
+      if (!refs.poseBlock) return;
+      const poses = data.stage?.available && Array.isArray(data.stage.poses) ? data.stage.poses : [];
+      refs.poses = poses.map(name => ({ name, button: el("button", { type: "button", class: "lc-button", text: name, onclick: () => send("stage", "pose", { name }, "pose") }) }));
+      refs.poseNote = el("p", { class: "lc-muted" });
+      refs.poseBlock.hidden = !poses.length;
+      refs.poseBlock.replaceChildren(...(poses.length ? [el("h3", { text: t("pose.title") }), el("div", { class: "mo-grid2" }, ...refs.poses.map(item => item.button)), refs.poseNote] : []));
     }
 
     // Activity --------------------------------------------------------------
@@ -933,6 +949,15 @@
         row.teach.disabled = row.zero.disabled || motor.reference_configured !== true;
         renderReference(row, motor.id);
       }
+      const referenced = (stage?.motors || []).length > 0 && stage.motors.every(motor => motor.automation_ready === true);
+      const posesReady = stageReady && referenced && !stage.busy && stage.motors.every(motor => motor.available === true);
+      for (const item of refs.poses || []) {
+        const at = (stage?.at_poses || []).includes(item.name);
+        item.button.className = "lc-button" + (at ? " mo-at" : "");
+        item.button.setAttribute("aria-pressed", at ? "true" : "false");
+        item.button.disabled = !posesReady || model.inflight.has("stage:pose");
+      }
+      if (refs.poseNote) refs.poseNote.textContent = stage && !referenced ? t("pose.needRef") : "";
       for (const item of refs.named || []) {
         const motor = (stage?.motors || []).find(m => m.id === item.motor);
         const at = (motor?.at_positions || []).includes(item.name);
@@ -945,10 +970,12 @@
       refs.connectRow.hidden = !disconnected;
       if (disconnected && model.ports === null && !model.portsLoading) loadPorts();
       refs.connect.disabled = !ownsStage || !model.port || busy("stage");
+      refs.refreshPorts.disabled = model.portsLoading;
     }
 
     async function loadPorts() {
       model.portsLoading = true;
+      update();
       try {
         const body = await api.request("stage/ports");
         model.ports = Array.isArray(body.ports) ? body.ports : [];

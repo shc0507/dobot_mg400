@@ -62,13 +62,14 @@ Robot arm:
 Stage:
 
 - **Take control**, **Stepping** and **Stop stage**. **Stop stage** needs no control.
-- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**.
+- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. **Refresh ports** reads the port list again.
 - A change of the stepping mode clears the zero and soft limits of all 3 axes and needs a confirmation.
 - Each axis shows its position in pulses and in mm, and its reference state. **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
 - **Home…** (boards with switches) and **Set zero…** need a confirmation. **Set zero…** sets the zero and the soft limits.
 - For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels.
 - **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
 - **Named positions** sends `goto` for each named position of an axis.
+- **Named poses** sends 1 `pose` for the selected pose. The pose moves 1 axis at a time in the configured order. It is available when all 3 axes are homed or zeroed.
 
 Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a small view in the large tile. Without the Cameras workspace a tile shows OFFLINE.
 

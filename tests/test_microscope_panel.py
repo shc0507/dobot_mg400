@@ -535,6 +535,16 @@ def wait_state(rig, check, description):
     pytest.fail(f"The service did not reach: {description}")
 
 
+def wait_recording_drained(rig, status):
+    # The worker publishes a terminal status before its finally block stops the
+    # camera and releases the recording slot. "busy" stays true until then.
+    return wait_state(
+        rig,
+        lambda state: state["recording"]["status"] == status and not state["busy"],
+        f"a {status} recording with a released slot",
+    )
+
+
 def test_recording_exact_id_start_finish_and_private_retained_outputs(recording_rig):
     rig = recording_rig
     ident = "a" * 32
@@ -599,7 +609,7 @@ def test_active_recording_authority_is_irreversible(recording_rig, revoke):
             rig.service.lease.acquire("operator")
         else:
             rig.service.lease.poll()
-    state = wait_recording(rig, "stopped")
+    state = wait_recording_drained(rig, "stopped")
     assert not state["recording_sequence"]["armed"]
     assert not rig.calls and rig.camera.stop_calls >= 1
     assert state["recording"]["summary"] is None
@@ -684,7 +694,7 @@ def test_stop_does_not_wait_for_blocked_accepted_camera_start(recording_rig):
     assert rig.service._stop_done.wait(1)
     assert rig.service.snapshot()["busy"]
     rig.camera.start_gate.set()
-    state = wait_recording(rig, "stopped")
+    state = wait_recording_drained(rig, "stopped")
     assert not rig.calls and not rig.camera.is_recording
     assert state["recording"]["start_command_id"] == command_id
 

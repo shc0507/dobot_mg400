@@ -55,6 +55,15 @@ test("CSV export uses the selected unit", () => {
   assert.equal(logic.thermalCsv(frame, "F"), "# sequence=3, timestamp=t, unit=°F\n32.00,212.00\n");
 });
 
+test("the pixel probe reads 1 sensor pixel inside the frame", () => {
+  const frame = { temperatures_c: Array.from({ length: 120 }, (_, y) => Array.from({ length: 160 }, (_, x) => x + y / 100)) };
+  assert.deepEqual(logic.probeReading(frame, { x: 10, y: 5 }), { x: 10, y: 5, celsius: 10.05 });
+  assert.deepEqual(logic.probeReading(frame, { x: 159, y: 119, pinned: true }), { x: 159, y: 119, celsius: 160.19 });
+  for (const probe of [null, { x: 160, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 120 }, { x: 1.5, y: 0 }]) assert.equal(logic.probeReading(frame, probe), null);
+  assert.equal(logic.probeReading(null, { x: 1, y: 1 }), null);
+  assert.equal(logic.translate("en", "probe", { x: 10, y: 5, value: "25.0 °C" }), "Pixel 10, 5: 25.0 °C");
+});
+
 test("region drag gives bounded sensor bounds", () => {
   assert.deepEqual(logic.regionFrom({ x: 50.4, y: 70 }, { x: 10, y: 20.6 }), { x0: 10, y0: 21, x1: 50, y1: 70 });
   assert.deepEqual(logic.regionFrom({ x: -5, y: -5 }, { x: 500, y: 500 }), { x0: 0, y0: 0, x1: 160, y1: 120 });

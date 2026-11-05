@@ -10,7 +10,7 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 
 The console is the only operator web page.
 
-- The header shows the console name, the deployed commit, the workspace tabs, the language switch, the devices that this page controls, and **STOP ALL MOTION**.
+- The header shows the console name, the deployed commit, the workspace tabs and the **Chip passport** link. It also shows the language switch, the devices that this page controls, and **STOP ALL MOTION**.
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
@@ -48,19 +48,21 @@ The Motion workspace has 3 columns: the robot arm, the cameras and the stage. At
 
 Robot arm:
 
-- **Take control**, **Enable**, **Disable** and **Clear alarm**. **Disable** needs no control.
+- **Take control**, **Enable**, **Disable**, **Clear alarm**, **Home…** and **Stop arm**. **Disable** and **Stop arm** need no control.
+- **Home…** needs a confirmation. It moves J1 to J4 to 0°.
+- The card lists each controller alarm with its ID, description and solution. Below the alarms, the card shows the message of the robot service.
 - After an unconfirmed stop, the card shows a warning and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
-- The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves.
+- The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves. The joint tiles show J1 to J4 in degrees.
 - The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose.
 - **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
 - The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
-- **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. The gripper outcome shows beside the title.
+- **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. **Move** sends the entered **Position** from 0 to 1000. The gripper outcome shows beside the title, and the gripper message shows below the buttons.
 - **Keyboard**: when this page holds control and the robot is enabled, turn on the switch to start keyboard jog at the selected speed. The speed is from 1 to the `keyboard` speed cap that the robot service describes. While the switch is on and the page has focus, hold W/S (reach out and in), A/D (base J1), R/F (Z up and down), Q/E (flange J4) or Z/X (gripper open and close). The page sends the held keys through `ws/motion/keys` on each change and every 150 ms while a key is held. The arm stops 0.4 s after the last update. A window focus loss, a hidden tab, leaving the Motion tab, the switch off or a loss of control releases all keys and turns the keyboard off. When the robot service turns the keyboard off, the page shows the reason below the switch. Stop and **STOP ALL MOTION** work at all times.
 
 Stage:
 
 - **Take control**, **Stepping** and **Stop stage**. **Stop stage** needs no control.
-- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**.
+- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. **Refresh ports** reads the port list again.
 - A change of the stepping mode clears the zero and soft limits of all 3 axes and needs a confirmation.
 - Each axis shows its position in pulses and in mm, and its reference state. **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
 - **Hold −** and **Hold +** move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
@@ -71,6 +73,7 @@ Stage:
 - For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels.
 - **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
 - **Named positions** sends `goto` for each named position of an axis.
+- **Named poses** sends 1 `pose` for the selected pose. The pose moves 1 axis at a time in the configured order. It is available when all 3 axes are homed or zeroed.
 
 Control socket: the page sends arm keys, stage holds and hold releases over 1 WebSocket, `/lab/api/console/socket`. Chrome opens at most 6 HTTP connections to the console, and the camera streams use 3 of them. Requests on the socket do not wait for a free connection. When the socket is closed, the page sends these requests over HTTP. Stop and **STOP ALL MOTION** go over the socket and over HTTP.
 
@@ -84,24 +87,29 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 - The streams stop when you leave the workspace, hide the browser tab or close the page.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.
 - When the thermal camera is selected, the side panel gives the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. You can export CSV, Raw + JSON and PNG.
+- On the thermal view, the pointer reads the temperature of 1 sensor pixel. The text below the view shows the pixel and its temperature. Click to pin the pixel. Click again to unpin it.
 - When the thermal service has no camera connection, the side panel shows **Connect camera**. **Calibrate shutter** needs a confirmation. These 2 commands are `any_client` commands and need no control.
 - **Draw region** drags the `crucible` region on the thermal view and shows its bounds. **Save region** is available only when the thermal service lists `set_region` in `api/describe`, and it needs a confirmation in the page. Otherwise, put the bounds in `rois.toml`.
 - Set the camera devices on the host as described in [Cameras](olares.en.md#cameras).
 
 ### Furnace + microscope workspace
 
-Every device command goes through the console relay. Use **Take control** for the furnace or the microscope first. **Stop heat and gas**, **Stop all gas** and the microscope **Stop** need no control.
+Every device command goes through the console relay. Use **Take control** for the furnace or the microscope first. **Stop heat and gas**, **Stop all gas**, **Close** and the microscope **Stop** need no control.
 
-- The furnace shows PV, SV, the mode and the maximum temperature of the thermal `crucible` region.
+- The furnace shows PV, SV, the ramp, the mode and the maximum temperature of the thermal `crucible` region.
 - The chart shows PV and SV for the last 60 minutes. The console process records 1 point every 5 s while a page is open. After a restart the chart starts empty.
 - **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes.
 - The sequence editor adds and removes steps and sets the target, ramp, hold and 3 gas channels of each step, and the end gas and end temperature. When a step sets gas, the end temperature is necessary. The page loads the furnace sequence on its first read.
 - Without `MG400_FURNACE_GAS_MAP`, the gas channels are named Gas 1 to Gas 3. **Stop all gas** uses the gas-off route of the Overview.
+- Each gas row shows the actual flow and the valve state. A valve state that the flow controller did not confirm shows not confirmed.
+- **Close** stops 1 gas channel through `ws/process/gas-stop`. It sets the flow to 0 and closes the valve, and needs no control. The page shows the result: confirmed, not confirmed or unknown.
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
 - The microscope shows the Toupcam view and the camera3 side view. It uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
 - The objective buttons, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
 - **Set focus zero…** needs microscope control and a confirmation in the page. The console sends it 1 time. The focus gears can slip. Re-zero at the 50x focus before each use. Agents, recipes and the runner cannot set the focus zero.
-- **Save snapshot**, **Start recording** and **Record next furnace sequence** send the microscope snapshot and recording commands. **Turn stabilization on** and **Turn stabilization off** switch the stabilization.
+- **Save snapshot** saves 1 PNG. Leave **Snapshot path** empty for the service default, or enter a relative path without `.` or `..` parts.
+- **Start recording** and **Record next furnace sequence** send the recording commands with **Run name**, **Mode**, **Interval s** and **Output fps**. **Live** uses no interval. A failed recording shows its error.
+- **Turn stabilization on** and **Turn stabilization off** switch the stabilization.
 
 ### Run offline
 

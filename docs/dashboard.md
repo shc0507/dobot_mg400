@@ -10,7 +10,7 @@
 
 控制台是唯一的操作网页。
 
-- 页头显示控制台名称、部署的提交、工作区标签、语言切换、本页控制的设备和 **STOP ALL MOTION**。
+- 页头显示控制台名称、部署的提交、工作区标签和 **Chip passport** 链接。页头还显示语言切换、本页控制的设备和 **STOP ALL MOTION**。
 - 工作区为 **Overview**、**Motion**、**Cameras** 和 **Furnace + microscope**。
 - 语言切换在 English 和中文之间切换。浏览器保存所选语言。
 - 状态条为每个服务显示 1 个标签：圆点和文字。状态超过 3 秒即显示过期。
@@ -48,19 +48,21 @@
 
 机械臂：
 
-- **Take control**、**Enable**、**Disable** 和 **Clear alarm**。**Disable** 不需要控制权。
+- **Take control**、**Enable**、**Disable**、**Clear alarm**、**Home…** 和 **Stop arm**。**Disable** 和 **Stop arm** 不需要控制权。
+- **Home…** 需要确认。它把 J1 到 J4 转到 0°。
+- 卡片列出每条控制器报警的编号、说明和处理方法。报警下方显示机器人服务的消息。
 - 停止未确认时，卡片显示警告，**Clear alarm** 变为 **Recover**。检查机械臂，再选 **Recover**。不需要重启服务。
-- 位姿格显示当前 X、Y、Z 和 R。机械臂运动时显示 `—`。
+- 位姿格显示当前 X、Y、Z 和 R。机械臂运动时显示 `—`。关节格以度为单位显示 J1 到 J4。
 - 点动键盘按 0.5、2 或 10 mm 的 1 个步长移动 ±X、±Y、Z 上下或 R ±（R 的单位是度）。每次按下都根据新读取的当前位姿发送 1 条 `execute` 移动。
 - **Move to a pose**：**Use actual** 复制当前位姿，**Execute** 移动到输入的位姿。速度为 1 到机械臂服务描述的 `execute` 速度上限。
 - 控制台发送点动和位姿目标，不检查边界，也不需要工具文件。机器人服务应用速度上限，控制器报警时拒绝运动。点动和位姿使用 `ws/motion/jog` 和 `ws/motion/move` 路由。
-- **Gripper**：**Open**（1000）、**Close**（0）和 **Initialize…**。初始化会张开夹爪，需要确认。夹爪结果显示在标题旁。
+- **Gripper**：**Open**（1000）、**Close**（0）和 **Initialize…**。初始化会张开夹爪，需要确认。**Move** 发送输入的 **Position**，范围为 0 到 1000。夹爪结果显示在标题旁，夹爪消息显示在按钮下方。
 - **Keyboard**：本页持有控制权且机械臂已使能时，打开开关，按所选速度启用键盘点动。速度为 1 到机器人服务描述的 `keyboard` 速度上限。开关打开且页面有焦点时，按住 W/S（伸出和收回）、A/D（底座 J1）、R/F（Z 上和下）、Q/E（法兰 J4）或 Z/X（夹爪张开和闭合）。按键每次变化时，以及按住期间每 150 ms，页面通过 `ws/motion/keys` 发送按住的键。最后一次更新后 0.4 s 机械臂停止。窗口失去焦点、标签页隐藏、离开运动工作区、关闭开关或失去控制权时，页面松开所有键并关闭键盘。机器人服务关闭键盘时，页面在开关下方显示原因。停止和 **STOP ALL MOTION** 始终可用。
 
 位移台：
 
 - **Take control**、**Stepping** 和 **Stop stage**。**Stop stage** 不需要控制权。
-- Arduino 未连接时，从列出的串口中选择 1 个，再选 **Connect**。
+- Arduino 未连接时，从列出的串口中选择 1 个，再选 **Connect**。**Refresh ports** 重新读取串口列表。
 - 更改细分模式会清除全部 3 轴的零点和软限位，需要确认。
 - 每个轴显示以脉冲和 mm 为单位的位置及参考状态。**Step −** 和 **Step +** 按输入的步数和脉冲/秒发送 1 条 `move`。步进移动不需要参考。轴有已确认的参考时，应用软限位。
 - **Hold −** 和 **Hold +**：按住按钮时，轴按输入的脉冲/秒运动。松开按钮，轴停止。同一时间只有 1 个轴运动。轴有已确认的参考时，在软限位处停止。
@@ -71,6 +73,7 @@
 - 轴配置了相机参考时，**Check reference** 显示带标记的相机画面和以像素为单位的标记偏移。
 - **Teach reference…** 需要确认。它把当前标记位置保存为该轴在位移台配置中的相机参考。
 - **Named positions** 为轴的每个命名位置发送 `goto`。
+- **Named poses** 为所选位姿发送 1 条 `pose`。位姿按配置的顺序每次移动 1 个轴。全部 3 轴已回零或设零后才可用。
 
 控制套接字：页面通过 1 个 WebSocket（`/lab/api/console/socket`）发送机械臂按键、位移台按住运动和松开。Chrome 对控制台最多打开 6 个 HTTP 连接，相机视频流占用其中 3 个。套接字上的请求不用等待空闲连接。套接字关闭时，页面通过 HTTP 发送这些请求。停止和 **STOP ALL MOTION** 同时通过套接字和 HTTP 发送。
 
@@ -84,24 +87,29 @@
 - 离开工作区、隐藏浏览器标签页或关闭页面时，视频流停止。
 - 叠加可分别开关：camera 4 的芯片识别框，以及热像仪的最低、最高、中心标记和色标。
 - 选中热像仪后，侧栏提供单位、色板、自动或固定色标范围和冻结画面。这些设置只改变显示。可导出 CSV、原始 + JSON 和 PNG。
+- 在热像画面上，指针读取 1 个传感器像素的温度。画面下方的文字显示该像素及其温度。单击固定该像素，再次单击取消固定。
 - 热像仪服务未连接相机时，侧栏显示 **Connect camera**。**Calibrate shutter** 需要确认。这 2 条命令是 `any_client` 命令，不需要控制权。
 - **Draw region** 在热像画面上拖出 `crucible` 区域并显示边界。热像仪服务在 `api/describe` 中提供 `set_region` 后，**Save region** 才可用，并且需要在页面中确认。否则把边界写入 `rois.toml`。
 - 按[摄像头](olares.md#摄像头)在主机上配置摄像头设备。
 
 ### 炉子与显微镜工作区
 
-每条设备命令都通过控制台转发。先用 **Take control** 获取炉子或显微镜的控制权。**Stop heat and gas**、**Stop all gas** 和显微镜 **Stop** 不需要控制权。
+每条设备命令都通过控制台转发。先用 **Take control** 获取炉子或显微镜的控制权。**Stop heat and gas**、**Stop all gas**、**Close** 和显微镜 **Stop** 不需要控制权。
 
-- 炉子显示 PV、SV、模式和热像 `crucible` 区域的最高温度。
+- 炉子显示 PV、SV、速率、模式和热像 `crucible` 区域的最高温度。
 - 温度曲线显示最近 60 分钟的 PV 和 SV。控制台进程在页面打开时每 5 s 记录 1 个点，重启后从空曲线开始。
 - **Apply and run…** 和 **Start sequence…** 会加热炉子，需要在页面中确认。目标和速率不能超过服务描述的上限。
 - 程序编辑器可以添加和删除步骤，设置每步的目标、速率、保持时间和 3 路气体，以及结束气体和结束温度。步骤设置了气体时，必须填写结束温度。页面首次读取时载入炉子中的程序。
 - 未设置 `MG400_FURNACE_GAS_MAP` 时，各路气体命名为 Gas 1 到 Gas 3。**Stop all gas** 使用总览的关闭气体路由。
+- 每路气体显示实际流量和阀门状态。流量控制器未确认的阀门状态显示为未确认。
+- **Close** 通过 `ws/process/gas-stop` 停止 1 路气体。它把流量设为 0 并关闭阀门，不需要控制权。页面显示结果：已确认、未确认或未知。
 - 炉子因故障锁定时，显示 **Acknowledge fault…**。它需要炉子控制权和页面中的确认。确认前，先确认控制器显示 STOP。
 - 显微镜显示 Toupcam 画面和 camera3 侧面画面。Cameras 工作区提供 `window.LabCameras.tile` 时使用该画面，否则显示 OFFLINE。
 - 物镜按钮、点动和自动对焦只在对焦零点已知时可用。服务先把焦距升到安全高度，再切换物镜。对焦条按测量的限位显示位置。
 - **Set focus zero…** 需要显微镜控制权和页面中的确认。控制台只发送 1 次。对焦齿轮可能打滑。每次使用前，在 50x 焦点处重新设零。智能体、配方和运行器不能设置对焦零点。
-- **Save snapshot**、**Start recording** 和 **Record next furnace sequence** 发送显微镜的快照和录制命令。**Turn stabilization on** 和 **Turn stabilization off** 开关防抖。
+- **Save snapshot** 保存 1 张 PNG。**Snapshot path** 留空时使用服务默认路径，也可以输入不含 `.` 或 `..` 段的相对路径。
+- **Start recording** 和 **Record next furnace sequence** 带 **Run name**、**Mode**、**Interval s** 和 **Output fps** 发送录制命令。**Live** 不使用间隔。录制失败时显示错误。
+- **Turn stabilization on** 和 **Turn stabilization off** 开关防抖。
 
 ### 离线运行
 

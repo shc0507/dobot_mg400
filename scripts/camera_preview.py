@@ -281,8 +281,10 @@ class CameraFeed:
                     self.thread = None
                     return
             try:
+                # No read timeout: go2rtc keeps a closed consumer until the next frame, so a
+                # reconnect on each stall adds 1 consumer. Frames resume on this connection.
                 with urllib.request.urlopen(
-                    "http://127.0.0.1:1984/api/stream.mjpeg?src=" + self.source, timeout=2
+                    "http://127.0.0.1:1984/api/stream.mjpeg?src=" + self.source, timeout=None
                 ) as upstream:
                     for frame in iter_mjpeg(upstream, keep_reading=self.active):
                         self.publish(frame)

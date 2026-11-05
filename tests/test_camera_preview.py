@@ -361,7 +361,24 @@ def test_feed_start_creates_one_reader_for_fixed_local_upstream(preview, monkeyp
     with pytest.raises(EndReader):
         target()
     assert upstream.call_args.args == ("http://127.0.0.1:1984/api/stream.mjpeg?src=camera1",)
-    assert upstream.call_args.kwargs["timeout"] > 0
+    assert upstream.call_args.kwargs["timeout"] is None
+
+
+@pytest.mark.parametrize("on_demand", [False, True])
+def test_feed_reader_has_no_read_timeout_that_reconnects_during_a_stall(preview, on_demand):
+    # go2rtc keeps a closed MJPEG consumer until its next frame. A read timeout during a camera
+    # stall would reconnect and leave 1 consumer each time.
+    module, upstream = preview
+
+    class EndReader(BaseException):
+        pass
+
+    upstream.side_effect = EndReader
+    feed = module.CameraFeed("camera1", on_demand=on_demand)
+    feed.viewers = 1
+    with pytest.raises(EndReader):
+        feed.run()
+    assert upstream.call_args.kwargs == {"timeout": None}
 
 
 def test_feed_clears_old_frame_before_retrying_truncated_http_stream(preview, monkeypatch):
@@ -611,7 +628,7 @@ def test_high_mode_reader_closes_mid_frame_when_last_viewer_leaves(preview, monk
     response.__exit__.assert_called_once()
     assert feed.thread is None and feed.frame is None and feed.viewers == 0
     upstream.assert_called_once_with(
-        "http://127.0.0.1:1984/api/stream.mjpeg?src=camera4", timeout=2
+        "http://127.0.0.1:1984/api/stream.mjpeg?src=camera4", timeout=None
     )
 
 

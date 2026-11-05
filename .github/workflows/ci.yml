@@ -24,6 +24,9 @@ jobs:
         python: ["3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A pull request checks out a merge commit; its first parent is the base.
+          fetch-depth: 2
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
@@ -37,6 +40,14 @@ jobs:
       - name: Format
         run: uv run ruff format --check .
       - name: Python tests
-        run: uv run pytest -ra
+        # Pull requests run the changed areas' tests; pushes to main run the full suite.
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            mapfile -t targets < <(git diff --name-only HEAD^1 HEAD | uv run python scripts/select_tests.py)
+          else
+            targets=(tests)
+          fi
+          printf 'pytest target: %s\n' "${targets[@]}"
+          uv run pytest -ra "${targets[@]}"
       - name: JavaScript tests
         run: node --test tests/*.mjs

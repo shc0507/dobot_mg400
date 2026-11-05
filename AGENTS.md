@@ -44,7 +44,7 @@ This document provides permanent information/instructions for the convenience of
 Read only the files that the task needs. The tests are larger than the code, so a full read costs many tokens.
 
 - Find the files for a task with a search first. Then read only the files that the task changes or calls.
-- Use the table below to find the tests and the doc for an area. While you work, read and run only those tests. Run the full checks in [docs/development.md](docs/development.md#开发检查) once before you commit.
+- Use the table below to find the tests and the doc for an area. Read and run only those tests. Before you commit, run `ruff check`, `ruff format --check` and the area tests. Do not run the full suite locally.
 - Read a large test file by search, not from the top. List its tests with `rg -n "^def test_" <file>`, then read only the tests that you need.
 - Read the shared test helpers (`tests/conftest.py`, `tests/helpers.py`, `tests/sim_mg400.py`, `tests/panel_ws.py`, `tests/stage_helpers.py`) only when a test that you read uses them.
 - Do not read `uv.lock`, `firmware/`, `apps/layout-studio/` or `examples/` unless the task names them. Load a skill from `.agents/skills/` only when the task needs it.
@@ -83,6 +83,8 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Microscope algorithms, service and panel, motors, and camera input | `src/microscope/`, `src/cameras/` | `test_microscope_calibrate.py`, `test_microscope_calibration_policy.py`, `test_microscope_focus_completion.py`, `test_microscope_motors.py`, `test_microscope_io.py`, `test_microscope_service.py`, `test_microscope_panel.py` | [microscope.md](docs/microscope.md) |
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_console.mjs`.
+
+CI runs ruff and all `tests/*.mjs` on every run. On a pull request, CI runs only the pytest files that `scripts/select_tests.py` selects from the changed files. The script runs the full suite when a change touches shared code or a path that it does not map: `src/labkit/`, shared test helpers, `tests/fixtures/`, `pyproject.toml`, `uv.lock`, `.github/`, or the script itself. A push to `main` runs the full suite. When you add an area or move code, update `AREAS` in `scripts/select_tests.py` and the table above. To see the selection for a branch, run `git diff --name-only origin/main... | uv run python scripts/select_tests.py`.
 
 ## Test stage
 

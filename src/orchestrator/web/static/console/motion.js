@@ -514,7 +514,7 @@
     async function sendKeys() {
       kb.pending++;
       let result = null;
-      try { result = await api.request("keys", { seq: ++kb.seq, held: [...kb.held] }, { accept: [409, 502], timeout: 2000 }); }
+      try { result = await api.request("keys", { seq: ++kb.seq, held: [...kb.held] }, { accept: [409, 502], timeout: 2000, socket: true }); }
       catch (error) { result = { outcome: error.status === 0 ? "unknown" : "refused", error: error.message }; }
       finally { kb.pending--; }
       if (result?.outcome !== "accepted" && kb.held.size) {
@@ -606,7 +606,7 @@
       item.pending++;
       let result = null;
       const body = { id: item.id, motor: item.motor, direction: item.direction, speed: item.speed };
-      try { result = await api.request("stage/hold", body, { accept: [409, 502], timeout: 2000 }); }
+      try { result = await api.request("stage/hold", body, { accept: [409, 502], timeout: 2000, socket: true }); }
       catch (error) { result = { outcome: error.status === 0 ? "unknown" : "refused", error: error.message }; }
       finally { item.pending--; }
       if (result?.outcome !== "accepted" && sh.active === item) {
@@ -622,7 +622,7 @@
       const item = sh.active;
       if (!item) return;
       sh.active = null;
-      api.request("stage/release", { id: item.id }, { timeout: 2000 }).catch(() => {});
+      api.request("stage/release", { id: item.id }, { timeout: 2000, socket: true }).catch(() => {});
       renderHold();
     }
 

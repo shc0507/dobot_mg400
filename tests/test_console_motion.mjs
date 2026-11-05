@@ -56,13 +56,15 @@ const STAGE = {
 
 async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE, replies = {} } = {}) {
   const calls = [];
+  const sent = [];
   const tables = { en: i18n.en };
   const api = {
     t: (key, vars = {}) => String(tables.en[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ""),
     el, onLanguage() {}, onState() {}, notify: (text, level) => calls.push(["notify", text, level]),
     owns: device => owns.includes(device), deviceName: id => id[0].toUpperCase() + id.slice(1),
-    async request(path, data) {
+    async request(path, data, options = {}) {
       calls.push(["request", path, data]);
+      sent.push([path, options]);
       if (replies[path]) return replies[path](data);
       if (path === "state") return { robot, stage };
       if (path === "stage/ports") return { ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] };
@@ -85,7 +87,7 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
   for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
   ws.hide();
   const find = label => root.all().find(node => node.getAttribute("aria-label") === label || (node.tagName === "BUTTON" && node.textContent === label));
-  return { ws, root, calls, find, settle: async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); } };
+  return { ws, root, calls, sent, find, settle: async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); } };
 }
 
 test("jog targets add one bounded step to one axis", () => {
@@ -273,6 +275,25 @@ test("stage hold keys map to 1 axis and 1 direction", () => {
 });
 
 const press = { button: 0, pointerId: 1, preventDefault() {} };
+
+test("stage holds, their releases and arm keys ask for the control socket", async () => {
+  const page = await keyboardPage();
+  try {
+    page.find("Keyboard").click();
+    await page.settle();
+    page.key("keydown", "KeyW");
+    page.key("keyup", "KeyW");
+    const button = page.find("Hold to move Insert plus");
+    button.listeners.get("pointerdown")(press);
+    button.listeners.get("pointerup")({});
+    await page.settle();
+    const control = page.sent.filter(([path]) => ["keys", "stage/hold", "stage/release"].includes(path));
+    assert.deepEqual(control.map(([path]) => path), ["keys", "keys", "stage/hold", "stage/release"]);
+    assert.ok(control.every(([, options]) => options.socket === true));
+    // Other requests stay on HTTP.
+    assert.ok(page.sent.filter(([path]) => path === "state").every(([, options]) => !options.socket));
+  } finally { page.restore(); }
+});
 
 test("a Hold button refreshes the hold while pressed and releases it on pointerup", async () => {
   const stage = structuredClone(STAGE);

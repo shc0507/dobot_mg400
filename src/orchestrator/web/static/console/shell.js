@@ -11,6 +11,7 @@
   const STALE_MS = 3000;
   const BEAT_MS = 500;
   const POLL_MS = 1000;
+  const SOCKET_RETRY_MS = 2000;
   const LANG_KEY = "labconsole.lang";
   const SERVICES = ["robot", "stage", "thermal", "vision", "furnace", "microscope"];
 
@@ -149,6 +150,7 @@
 
   async function request(path, data, options = {}) {
     if (!path.startsWith("/api/")) throw new RequestError("Invalid console path.");
+    if (options.socket && link.open && data !== undefined) return viaSocket(path, data, options);
     const headers = { Accept: "application/json" };
     if (shell.page) headers["X-MG400-Client"] = shell.page;
     const init = { headers, redirect: "error", credentials: "omit", cache: "no-store", keepalive: options.keepalive === true };
@@ -175,6 +177,71 @@
       }
       return body;
     } finally { if (timer) clearTimeout(timer); }
+  }
+
+  // Control socket ------------------------------------------------------------
+  // Chrome opens at most 6 HTTP/1.1 connections to one host, and camera streams keep
+  // some of them busy. One WebSocket per page carries holds, arm keys and stops, so
+  // they never wait for a free connection. HTTP is the fallback. Stops use both.
+
+  const link = { ws: null, open: false, seq: 0, waiting: new Map(), timer: null, delay: SOCKET_RETRY_MS };
+
+  function connect() {
+    if (link.ws || !shell.page || typeof root.WebSocket !== "function") return;
+    let ws;
+    try {
+      const url = new URL(shell.base + "/api/console/socket", root.location.href);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set("client", shell.page);
+      ws = new root.WebSocket(url.href);
+    } catch { reconnect(); return; }
+    link.ws = ws;
+    ws.onopen = () => { link.open = true; link.delay = SOCKET_RETRY_MS; };
+    ws.onmessage = event => {
+      let reply = null;
+      try { reply = JSON.parse(event.data); } catch { return; }
+      link.waiting.get(reply?.seq)?.(reply);
+    };
+    ws.onclose = () => {
+      link.ws = null;
+      link.open = false;
+      for (const answer of [...link.waiting.values()]) answer(null);
+      reconnect();
+    };
+  }
+
+  function reconnect() {
+    if (link.timer) return;
+    link.timer = setTimeout(() => { link.timer = null; connect(); }, link.delay);
+    link.delay = Math.min(link.delay * 2, 30000);
+  }
+
+  /** Send one POST over the socket. Resolve or reject as request() does. */
+  function viaSocket(path, data, options = {}) {
+    return new Promise((resolve, reject) => {
+      const seq = ++link.seq;
+      const timer = setTimeout(() => answer(null), options.timeout || 6000);
+      function answer(reply) {
+        clearTimeout(timer);
+        link.waiting.delete(seq);
+        const body = reply?.body;
+        if (!reply) reject(new RequestError("The console did not answer.", 0));
+        else if (!body || typeof body !== "object" || Array.isArray(body)) reject(new RequestError("The console returned an unreadable response.", reply.status));
+        else if ((reply.status < 200 || reply.status > 299) && !(options.accept || []).includes(reply.status)) {
+          reject(new RequestError(clean(typeof body.error === "string" ? body.error : "The console refused the request."), reply.status, body));
+        } else resolve(body);
+      }
+      link.waiting.set(seq, answer);
+      try { link.ws.send(JSON.stringify({ seq, path, body: data })); }
+      catch { answer(null); }
+    });
+  }
+
+  /** Send one stop over the socket and over HTTP. Resolve with the first answer. */
+  function both(path) {
+    const sent = [request(path, {})];
+    if (link.open) sent.unshift(viaSocket(path, {}));
+    return Promise.any(sent).catch(error => { throw error.errors[error.errors.length - 1]; });
   }
 
   function $(id) { return shell.doc.getElementById(id); }
@@ -332,13 +399,13 @@
   }
 
   async function stop(device) {
-    try { return await request(`/api/console/stop/${encodeURIComponent(device)}`, {}); }
+    try { return await both(`/api/console/stop/${encodeURIComponent(device)}`); }
     catch (error) { return { device, outcome: "unknown", error: error.message }; }
   }
 
   async function stopAll() {
     try {
-      const body = await request("/api/dashboard/motion", {});
+      const body = await both("/api/dashboard/motion");
       notify(t("stop.sent"), "warn");
       poll();
       return body;
@@ -422,6 +489,7 @@
     shell.pollTimer = setInterval(() => { poll(); }, POLL_MS);
     shell.beatTimer = setInterval(() => { beat(); }, BEAT_MS);
     setInterval(renderStrip, 1000);
+    connect();
   }
 
   if (root.document && typeof module === "undefined") {
@@ -432,6 +500,6 @@
     register, start, strings, shell,
     logic: { translate, pickLanguage, serviceChip, runsChip, camerasChip, chips, filterEvents, latestOperation },
     STALE_MS, BEAT_MS, SERVICES,
-    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls },
+    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll },
   };
 });

@@ -48,7 +48,7 @@
 | `mg400-furnace.service` | `furnace` | [炉温与气体服务](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-microscope.service` | `microscope` | [显微镜服务](microscope.md)，回环端口 `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | 可选的[视觉服务](vision.md)，回环端口 `8771` | 无 |
-| `mg400-orchestrator.service` | `orch` | [配方服务](orchestrator.md#http-服务)，端口 `8772` | 无 |
+| `mg400-orchestrator.service` | `orch` | [配方服务](orchestrator.md#http-服务)，端口 `8772`，控制台控制套接字端口 `8774` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | [单端口代理](olares.md#单端口代理)，端口 `8080` | 无 |
 | `mg400-gripper-collector.path` | 无 | 机器人服务请求时启动夹爪采集 | 无 |

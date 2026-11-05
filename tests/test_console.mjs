@@ -218,6 +218,68 @@ test("page close releases this page's leases with a keepalive request", async ()
   assert.equal(calls[0].init.keepalive, true);
 });
 
+class FakeSocket {
+  constructor(url) { this.url = url; this.sent = []; FakeSocket.made.push(this); }
+  send(text) { this.sent.push(JSON.parse(text)); }
+}
+FakeSocket.made = [];
+
+function withSocket(run) {
+  return async () => {
+    const loaded = load();
+    FakeSocket.made = [];
+    globalThis.WebSocket = FakeSocket;
+    globalThis.location = { hash: "", href: "http://100.64.0.1:8080/lab/#motion" };
+    const { LabConsole } = loaded;
+    Object.assign(LabConsole.shell, { doc: page().doc, base: "/lab", page: "console-page-test" });
+    const internal = LabConsole._internal;
+    try { await run({ ...loaded, internal }); }
+    finally {
+      for (const ws of FakeSocket.made) ws.onclose?.();
+      clearTimeout(internal.link.timer);
+      delete globalThis.WebSocket;
+    }
+  };
+}
+
+test("control requests use the socket while it is open and HTTP otherwise", withSocket(async ({ calls, internal }) => {
+  internal.connect();
+  const ws = FakeSocket.made[0];
+  assert.equal(ws.url, "ws://100.64.0.1:8080/lab/api/console/socket?client=console-page-test");
+  await internal.request("/api/console/ws/motion/keys", { seq: 1, held: [] }, { socket: true });
+  assert.equal(calls.length, 1);
+  ws.onopen();
+  const refused = internal.request("/api/console/ws/motion/keys", { seq: 2, held: ["W"] }, { socket: true, accept: [409] });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(ws.sent, [{ seq: 1, path: "/api/console/ws/motion/keys", body: { seq: 2, held: ["W"] } }]);
+  ws.onmessage({ data: JSON.stringify({ seq: 1, status: 409, body: { outcome: "refused", error: "Busy." }, t: 5.5 }) });
+  assert.deepEqual(await refused, { outcome: "refused", error: "Busy." });
+  // A request without the option stays on HTTP.
+  await internal.request("/api/console/heartbeat", {});
+  assert.equal(calls.length, 2);
+  // A closing socket fails the waiting request with an unknown outcome. HTTP carries the next one.
+  const lost = internal.request("/api/console/ws/motion/stage/hold", { id: "hold-1" }, { socket: true });
+  ws.onclose();
+  await assert.rejects(lost, error => error.status === 0);
+  await internal.request("/api/console/ws/motion/stage/hold", { id: "hold-1" }, { socket: true });
+  assert.equal(calls.length, 3);
+}));
+
+test("Stop and STOP ALL go over the socket and over HTTP", withSocket(async ({ calls, internal }) => {
+  internal.connect();
+  const ws = FakeSocket.made[0];
+  ws.onopen();
+  const result = internal.stop("stage");
+  assert.deepEqual(calls.map(call => call.url), ["/lab/api/console/stop/stage"]);
+  assert.deepEqual(ws.sent.map(item => item.path), ["/api/console/stop/stage"]);
+  // The first answer counts.
+  ws.onmessage({ data: JSON.stringify({ seq: ws.sent[0].seq, status: 200, body: { device: "stage", outcome: "confirmed" }, t: 1 }) });
+  assert.equal((await result).outcome, "confirmed");
+  await internal.stopAll();
+  assert.equal(calls[1].url, "/lab/api/dashboard/motion");
+  assert.deepEqual(ws.sent[1], { seq: 2, path: "/api/dashboard/motion", body: {} });
+}));
+
 test("pages keep fonts and scripts local", () => {
   const html = readFileSync(new URL("../src/orchestrator/web/templates/console.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../src/orchestrator/web/static/console/shell.css", import.meta.url), "utf8");

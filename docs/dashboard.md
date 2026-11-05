@@ -72,6 +72,8 @@
 - **Teach reference…** 需要确认。它把当前标记位置保存为该轴在位移台配置中的相机参考。
 - **Named positions** 为轴的每个命名位置发送 `goto`。
 
+控制套接字：页面通过 1 个 WebSocket（`/lab/api/console/socket`）发送机械臂按键、位移台按住运动和松开。Chrome 对控制台最多打开 6 个 HTTP 连接，相机视频流占用其中 3 个。套接字上的请求不用等待空闲连接。套接字关闭时，页面通过 HTTP 发送这些请求。停止和 **STOP ALL MOTION** 同时通过套接字和 HTTP 发送。
+
 相机：camera2 为大视图，camera4 和 camera3 为小视图。**Swap view** 把小视图放到大视图中。没有相机工作区时，视图显示 OFFLINE。
 
 ### 相机工作区

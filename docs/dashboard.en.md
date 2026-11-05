@@ -72,6 +72,8 @@ Stage:
 - **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
 - **Named positions** sends `goto` for each named position of an axis.
 
+Control socket: the page sends arm keys, stage holds and hold releases over 1 WebSocket, `/lab/api/console/socket`. Chrome opens at most 6 HTTP connections to the console, and the camera streams use 3 of them. Requests on the socket do not wait for a free connection. When the socket is closed, the page sends these requests over HTTP. Stop and **STOP ALL MOTION** go over the socket and over HTTP.
+
 Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a small view in the large tile. Without the Cameras workspace a tile shows OFFLINE.
 
 ### Cameras workspace

@@ -350,7 +350,7 @@ class ArucoObjectiveSwitcher:
                         )
                     )
             if result["status"] == "image_size_mismatch":
-                raise RuntimeError("Side-camera resolution differs from the reference images")
+                raise RuntimeError("Side-camera aspect ratio differs from the reference images")
             return result
         raise RuntimeError("No fresh side-camera frame arrived")
 

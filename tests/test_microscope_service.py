@@ -943,6 +943,27 @@ def test_unidentified_objective_refuses_before_motion_without_fault(
     assert not rig.service._side.is_open and not state["cameras"]["side"]
 
 
+def test_select_objective_uses_side_frames_scaled_from_the_reference_size(demo_rig, monkeypatch):
+    import cv2
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    read = rig.service._side.get_frame_packet
+
+    def half_size(*args, **kwargs):
+        packet = read(*args, **kwargs)
+        if packet is None:
+            return None
+        frame_id, received_at, frame = packet
+        return frame_id, received_at, cv2.resize(frame, (100, 100), interpolation=cv2.INTER_AREA)
+
+    monkeypatch.setattr(rig.service._side, "get_frame_packet", half_size)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok", state
+    assert state["objective_id"] == 2
+
+
 def test_state_reports_the_side_reader_only_while_it_runs(demo_rig):
     rig = demo_rig()
     assert rig.service.snapshot()["cameras"] == {"microscope": True, "side": False}

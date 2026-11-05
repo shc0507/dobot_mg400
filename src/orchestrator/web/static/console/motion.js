@@ -109,6 +109,22 @@
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
   }
 
+  /** A whole gripper position from 0 to 1000, or null. */
+  function parseGrip(text) {
+    const value = String(text ?? "").trim();
+    if (!/^\d+$/.test(value)) return null;
+    const number = Number(value);
+    return number <= 1000 ? number : null;
+  }
+
+  /** The controller alarms as {id, text}: the description, the source and the solution. */
+  function alarmRows(robot) {
+    return (Array.isArray(robot?.alarms) ? robot.alarms : []).filter(item => item && typeof item === "object").map(item => {
+      const source = item.source && item.source !== "controller" ? ` (${item.source})` : "";
+      return { id: String(item.id ?? "?"), text: [String(item.description ?? "") + source, String(item.solution ?? "")].filter(Boolean).join(" ") };
+    });
+  }
+
   /** The keyboard speed cap from the robot's described schema, or null. */
   function keyboardCap(description) {
     const cap = description?.commands?.keyboard?.params?.properties?.speed?.maximum;
@@ -135,6 +151,8 @@
       "ctl.console": "Another console page controls it", "ctl.other": "Another client controls it",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
       "arm.enable": "Enable", "arm.disable": "Disable", "arm.clear": "Clear alarm",
+      "arm.stop": "Stop arm", "arm.home": "Home…", "arm.homeConfirm": "Clear the path of the arm. Home moves all 4 joints to 0°.",
+      "arm.alarmItem": "Alarm {id}",
       "jog.title": "Jog", "jog.step": "Jog step",
       "jog.move": "Move {label} by the jog step",
       "move.title": "Move to a pose", "move.speed": "Speed", "move.speedLabel": "Speed, 1 to {cap}",
@@ -144,6 +162,8 @@
       "grip.title": "Gripper", "grip.open": "Open", "grip.close": "Close", "grip.init": "Initialize…",
       "grip.initConfirm": "Initialization opens the jaws. Remove any held object first.",
       "grip.state": "{position} / 1000 · {outcome}", "grip.busy": "Moving…", "grip.none": "No outcome yet",
+      "grip.position": "Position", "grip.positionLabel": "Gripper position, 0 to 1000", "grip.move": "Move",
+      "grip.badPosition": "Enter a whole gripper position from 0 to 1000.",
       "last": "Last: {action} · {result}", "last.message": "Last: {action} · {result} · {message}",
       "confirm": "Confirm", "cancel": "Cancel",
       "stage.stop": "Stop stage", "stage.connected": "Connected", "stage.disconnected": "Arduino not connected",
@@ -160,7 +180,8 @@
       "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
       "axis.teachConfirm": "Is {axis} at its safe zero position? The current marker position replaces the camera reference.",
       "axis.offset": "Marker offset {x}, {y} px", "axis.checkFailed": "Reference check failed: {error}",
-      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found",
+      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found", "stage.refresh": "Refresh ports",
+      "pose.title": "Named poses", "pose.needRef": "Home or zero all 3 axes before a named pose.",
       "axis.zeroConfirm": "Set the current position of {axis} as zero. Check the physical position first.",
       "named.title": "Named positions", "named.none": "No named positions are configured.",
       "named.go": "{axis} → {name}",
@@ -181,6 +202,8 @@
       "ctl.console": "另一个控制台页面持有控制权", "ctl.other": "另一个客户端持有控制权",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
       "arm.enable": "使能", "arm.disable": "下使能", "arm.clear": "清除报警",
+      "arm.stop": "停止机械臂", "arm.home": "回原点…", "arm.homeConfirm": "请清空机械臂的运动路径。回原点会把 4 个关节都转到 0°。",
+      "arm.alarmItem": "报警 {id}",
       "jog.title": "点动", "jog.step": "点动步长",
       "jog.move": "按点动步长移动 {label}",
       "move.title": "移动到位姿", "move.speed": "速度", "move.speedLabel": "速度，1 到 {cap}",
@@ -190,6 +213,8 @@
       "grip.title": "夹爪", "grip.open": "张开", "grip.close": "闭合", "grip.init": "初始化…",
       "grip.initConfirm": "初始化会张开夹爪。请先取下夹持的物体。",
       "grip.state": "{position} / 1000 · {outcome}", "grip.busy": "运动中…", "grip.none": "尚无结果",
+      "grip.position": "位置", "grip.positionLabel": "夹爪位置，0 到 1000", "grip.move": "移动",
+      "grip.badPosition": "请输入 0 到 1000 的整数夹爪位置。",
       "last": "上一条：{action} · {result}", "last.message": "上一条：{action} · {result} · {message}",
       "confirm": "确认", "cancel": "取消",
       "stage.stop": "停止位移台", "stage.connected": "已连接", "stage.disconnected": "Arduino 未连接",
@@ -206,7 +231,8 @@
       "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
       "axis.teachConfirm": "{axis}在安全零点吗？当前标记位置将替换摄像头参考。",
       "axis.offset": "标记偏移 {x}, {y} px", "axis.checkFailed": "参考检查失败：{error}",
-      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口",
+      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口", "stage.refresh": "刷新串口",
+      "pose.title": "命名位姿", "pose.needRef": "使用命名位姿前，先让全部 3 轴回零或设零。",
       "axis.zeroConfirm": "把{axis}的当前位置设为零点。请先检查实际位置。",
       "named.title": "命名位置", "named.none": "未配置命名位置。",
       "named.go": "{axis} → {name}",
@@ -218,6 +244,8 @@
       "cam.camera2": "camera2 · 插入导轨", "cam.camera4": "camera4 · 托盘", "cam.camera3": "camera3 · 显微镜侧视",
     },
   };
+
+  Object.assign(logic, { parseGrip, alarmRows });
 
   function workspace() {
     let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false;
@@ -362,6 +390,16 @@
       refs.enable = el("button", { type: "button", class: "lc-button mo-primary", text: t("arm.enable"), onclick: () => send("robot", "enable", {}) });
       refs.disable = el("button", { type: "button", class: "lc-button", text: t("arm.disable"), onclick: () => send("robot", "disable", {}) });
       refs.clear = el("button", { type: "button", class: "lc-button", text: t("arm.clear"), onclick: () => send("robot", "clear_alarm", {}) });
+      refs.home = el("button", {
+        type: "button", class: "lc-button", text: t("arm.home"),
+        onclick: () => askConfirm("home", t("arm.homeConfirm"), () => send("robot", "home", {}, "move")),
+      });
+      refs.armStop = el("button", { type: "button", class: "lc-danger mo-stop", text: t("arm.stop"), onclick: () => stopDevice("robot") });
+      refs.alarms = el("div", { class: "mo-stack", role: "alert", hidden: true });
+      refs.armMessage = el("p", { class: "lc-muted", role: "status", hidden: true });
+      refs.joints = [0, 1, 2, 3].map(() => el("span", { class: "mo-value" }));
+      const jointTiles = el("div", { class: "mo-pose" },
+        ...refs.joints.map((node, i) => el("div", { class: "mo-tile" }, el("span", { class: "lc-muted", text: "J" + (i + 1) }), node)));
       refs.pose = AXES.map(axis => el("span", { class: "mo-value" }));
       const poseTiles = el("div", { class: "mo-pose", role: "group", "aria-label": t("move.useActual") },
         ...AXES.map((axis, i) => el("div", { class: "mo-tile" }, el("span", { class: "lc-muted", text: axis.toUpperCase() }), refs.pose[i])));
@@ -433,17 +471,33 @@
         el("div", { class: "mo-keys" }, ...KEY_MAP.map(([a, b, label]) => el("div", { class: "mo-keyrow" },
           keyCap(a), keyCap(b), el("span", { class: "lc-muted", text: t(label) })))));
 
+      refs.gripInput = el("input", {
+        type: "text", inputmode: "numeric", class: "mo-input mo-narrow", autocomplete: "off", "aria-label": t("grip.positionLabel"),
+        oninput: event => { model.grip = event.target.value; },
+      });
+      refs.gripInput.value = model.grip ?? "";
+      refs.gripMove = el("button", { type: "button", class: "lc-button", text: t("grip.move"), onclick: moveGrip });
+      refs.gripMessage = el("p", { class: "lc-muted" });
       const gripBox = el("div", { class: "mo-block" },
         el("div", { class: "mo-head" }, el("h3", { text: t("grip.title") }), refs.gripState),
-        el("div", { class: "mo-grid3" }, refs.gripOpen, refs.gripClose, refs.gripInit));
+        el("div", { class: "mo-grid3" }, refs.gripOpen, refs.gripClose, refs.gripInit),
+        el("div", { class: "mo-row" }, el("label", { class: "mo-inline" }, t("grip.position"), refs.gripInput), refs.gripMove),
+        refs.gripMessage);
       refs.armLast = el("p", { class: "lc-muted", role: "status" });
 
       return el("section", { class: "lc-card mo-col", "aria-labelledby": "mo-arm-title" },
-        el("div", { class: "lc-card-head" }, el("div", { class: "mo-titles" }, title, refs.armStatus), refs.armBadge),
+        el("div", { class: "lc-card-head" }, el("div", { class: "mo-titles" }, title, refs.armStatus), el("div", { class: "mo-row" }, refs.armBadge, refs.armStop)),
         controlButton("robot"),
         el("div", { class: "mo-grid2" }, refs.enable, refs.disable),
-        refs.clear,
-        poseTiles, jogBox, kbBox, moveBox, gripBox, confirmSlot("arm"), refs.armLast);
+        el("div", { class: "mo-grid2" }, refs.clear, refs.home),
+        confirmSlot("home"), refs.alarms, refs.armMessage,
+        poseTiles, jointTiles, jogBox, kbBox, moveBox, gripBox, confirmSlot("arm"), refs.armLast);
+    }
+
+    function moveGrip() {
+      const position = parseGrip(model.grip);
+      if (position === null) { api.notify(t("grip.badPosition"), "warn"); return; }
+      send("robot", "grip", { position }, "grip");
     }
 
     function jog(item) {
@@ -614,12 +668,13 @@
     function stageKey() {
       const motors = data.stage?.available ? data.stage.motors || [] : [];
       const modes = data.stage?.microstep_modes || [];
-      return JSON.stringify([motors.map(m => [m.id, m.named_positions || [], m.homing_available === true]), modes.map(m => m.value)]);
+      return JSON.stringify([motors.map(m => [m.id, m.named_positions || [], m.homing_available === true]), modes.map(m => m.value), data.stage?.poses || []]);
     }
 
     function buildStage() {
       refs.stageKey = stageKey();
       if (!refs.stageBody) return;
+      buildPoses();
       const stage = data.stage?.available ? data.stage : null;
       const motors = stage?.motors || [];
       refs.modes = (stage?.microstep_modes || []).map(mode => el("button", {
@@ -703,8 +758,10 @@
       refs.stageBody = el("div", { class: "mo-stack" });
       refs.portSelect = el("select", { class: "mo-input", "aria-label": t("stage.port"), onchange: event => { model.port = event.target.value; } });
       refs.connect = el("button", { type: "button", class: "lc-button", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }, "connect", "stage/connect").then(() => { model.ports = null; }) });
-      refs.connectRow = el("div", { class: "mo-row", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect);
+      refs.refreshPorts = el("button", { type: "button", class: "lc-button", text: t("stage.refresh"), onclick: () => { if (!model.portsLoading) loadPorts(); } });
+      refs.connectRow = el("div", { class: "mo-row", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect, refs.refreshPorts);
       refs.stageLast = el("p", { class: "lc-muted", role: "status" });
+      refs.poseBlock = el("div", { class: "mo-block", hidden: true });
       const card = el("section", { class: "lc-card mo-col", "aria-labelledby": "mo-stage-title" },
         el("div", { class: "lc-card-head" },
           el("div", { class: "mo-titles" }, el("h2", { id: "mo-stage-title", text: t("stage.title") }), refs.stageStatus),
@@ -713,9 +770,20 @@
         confirmSlot("stage"),
         refs.connectRow,
         refs.stageBody,
+        refs.poseBlock,
         refs.stageLast);
       buildStage();
       return card;
+    }
+
+    /** Named poses move several axes in the configured order with the described `pose` command. */
+    function buildPoses() {
+      if (!refs.poseBlock) return;
+      const poses = data.stage?.available && Array.isArray(data.stage.poses) ? data.stage.poses : [];
+      refs.poses = poses.map(name => ({ name, button: el("button", { type: "button", class: "lc-button", text: name, onclick: () => send("stage", "pose", { name }, "pose") }) }));
+      refs.poseNote = el("p", { class: "lc-muted" });
+      refs.poseBlock.hidden = !poses.length;
+      refs.poseBlock.replaceChildren(...(poses.length ? [el("h3", { text: t("pose.title") }), el("div", { class: "mo-grid2" }, ...refs.poses.map(item => item.button)), refs.poseNote] : []));
     }
 
     // Activity --------------------------------------------------------------
@@ -811,6 +879,21 @@
       refs.disable.disabled = !robot;
       refs.clear.disabled = !(robot && ownsRobot);
       refs.clear.textContent = t(robot && (robot.locked || robot.stop_unconfirmed) ? "arm.recover" : "arm.clear");
+      refs.home.disabled = !(ready && robot.enabled === true && !robot.busy) || model.inflight.has("robot:move");
+      // Change live regions only when the text changes, so a screen reader reads it once.
+      const alarms = alarmRows(robot).map(item => t("arm.alarmItem", { id: item.id }) + ": " + item.text);
+      if (alarms.join("\n") !== refs.alarmText) {
+        refs.alarmText = alarms.join("\n");
+        refs.alarms.replaceChildren(...alarms.map(text => el("p", { class: "tone-text-bad", text })));
+      }
+      refs.alarms.hidden = !alarms.length;
+      const message = robot?.message ? String(robot.message) : "";
+      if (refs.armMessage.textContent !== message) refs.armMessage.textContent = message;
+      refs.armMessage.hidden = !message;
+      const gripMessage = robot?.gripper_message ? String(robot.gripper_message) : "";
+      if (refs.gripMessage.textContent !== gripMessage) refs.gripMessage.textContent = gripMessage;
+      const joints = Array.isArray(robot?.joints) ? robot.joints : [];
+      refs.joints.forEach((node, i) => { node.textContent = typeof joints[i] === "number" ? fixed(joints[i], 1) : "—"; });
       AXES.forEach((axis, i) => { refs.pose[i].textContent = pose ? fixed(pose[i], 2) : "—"; });
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;
@@ -829,7 +912,7 @@
         : t("grip.state", { position: typeof position === "number" ? position : "—", outcome: grip.outcome || t("grip.none") });
       refs.gripState.className = "mo-grip-state" + (grip.outcome === "dropped" ? " tone-text-bad" : grip.outcome ? " tone-text-ok" : "");
       const gripReady = ready && robot.gripper_available && !robot.gripper_busy && !robot.busy && !busy("robot");
-      refs.gripOpen.disabled = refs.gripClose.disabled = !gripReady;
+      refs.gripOpen.disabled = refs.gripClose.disabled = refs.gripMove.disabled = !gripReady;
       refs.gripInit.disabled = !(ready && robot.gripper_can_initialize && !robot.gripper_busy && !robot.busy);
       refs.armLast.textContent = robot ? lastText(robot.last_command) : "";
       updateKeyboard(robot, ready);
@@ -872,6 +955,15 @@
         row.teach.disabled = row.zero.disabled || motor.reference_configured !== true;
         renderReference(row, motor.id);
       }
+      const referenced = (stage?.motors || []).length > 0 && stage.motors.every(motor => motor.automation_ready === true);
+      const posesReady = stageReady && referenced && !stage.busy && stage.motors.every(motor => motor.available === true);
+      for (const item of refs.poses || []) {
+        const at = (stage?.at_poses || []).includes(item.name);
+        item.button.className = "lc-button" + (at ? " mo-at" : "");
+        item.button.setAttribute("aria-pressed", at ? "true" : "false");
+        item.button.disabled = !posesReady || model.inflight.has("stage:pose");
+      }
+      if (refs.poseNote) refs.poseNote.textContent = stage && !referenced ? t("pose.needRef") : "";
       for (const item of refs.named || []) {
         const motor = (stage?.motors || []).find(m => m.id === item.motor);
         const at = (motor?.at_positions || []).includes(item.name);
@@ -884,10 +976,12 @@
       refs.connectRow.hidden = !disconnected;
       if (disconnected && model.ports === null && !model.portsLoading) loadPorts();
       refs.connect.disabled = !ownsStage || !model.port || busy("stage");
+      refs.refreshPorts.disabled = model.portsLoading;
     }
 
     async function loadPorts() {
       model.portsLoading = true;
+      update();
       try {
         const body = await api.request("stage/ports");
         model.ports = Array.isArray(body.ports) ? body.ports : [];

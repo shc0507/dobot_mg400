@@ -43,6 +43,7 @@ DEVICES = ("robot", "stage")
 
 ROBOT_FIELDS = (
     "actual",
+    "joints",
     "enabled",
     "robot_mode",
     "robot_error",
@@ -132,6 +133,13 @@ def _stage(state):
         row["reference_configured"] = isinstance(reference, dict)
         motors.append(row)
     result["motors"] = motors
+    automation = state.get("automation") if isinstance(state.get("automation"), dict) else {}
+    poses = automation.get("poses") if isinstance(automation.get("poses"), list) else []
+    result["poses"] = [name for name in poses if isinstance(name, str)][:16]
+    at = automation.get("at_poses") if isinstance(automation.get("at_poses"), dict) else {}
+    result["at_poses"] = [
+        name for name, value in at.items() if isinstance(value, dict) and value.get("matched")
+    ]
     lease = state.get("lease")
     return result, lease.get("holder") if isinstance(lease, dict) else None
 

@@ -30,6 +30,8 @@
 #ws-process .pr-key-sv { color: var(--info); }
 #ws-process .pr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 #ws-process .pr-input { width: 110px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; }
+#ws-process .pr-input.pr-wide { width: 220px; }
+#ws-process select.pr-input { width: auto; }
 #ws-process .pr-input::placeholder { color: var(--muted); }
 #ws-process .pr-narrow { width: 90px; }
 #ws-process .pr-cell { width: 84px; }

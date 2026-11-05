@@ -139,7 +139,7 @@
       "jog.move": "Move {label} by the jog step",
       "move.title": "Move to a pose", "move.speed": "Speed", "move.speedLabel": "Speed, 1 to {cap}",
       "move.useActual": "Use actual", "move.execute": "Execute ↗", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
-      "kb.title": "Keyboard", "kb.speedLabel": "Keyboard speed, 1 to {cap}",
+      "kb.title": "Keyboard", "kb.speedLabel": "Keyboard speed, 1 to {cap}", "kb.off": "Off: {reason}",
       "kb.reach": "Reach out / in", "kb.base": "Base J1 + / −", "kb.z": "Z up / down", "kb.yaw": "Flange J4 + / −", "kb.grip": "Gripper open / close",
       "grip.title": "Gripper", "grip.open": "Open", "grip.close": "Close", "grip.init": "Initialize…",
       "grip.initConfirm": "Initialization opens the jaws. Remove any held object first.",
@@ -185,7 +185,7 @@
       "jog.move": "按点动步长移动 {label}",
       "move.title": "移动到位姿", "move.speed": "速度", "move.speedLabel": "速度，1 到 {cap}",
       "move.useActual": "使用当前值", "move.execute": "执行 ↗", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
-      "kb.title": "键盘", "kb.speedLabel": "键盘速度，1 到 {cap}",
+      "kb.title": "键盘", "kb.speedLabel": "键盘速度，1 到 {cap}", "kb.off": "已关闭：{reason}",
       "kb.reach": "伸出 / 收回", "kb.base": "底座 J1 + / −", "kb.z": "Z 上 / 下", "kb.yaw": "法兰 J4 + / −", "kb.grip": "夹爪张开 / 闭合",
       "grip.title": "夹爪", "grip.open": "张开", "grip.close": "闭合", "grip.init": "初始化…",
       "grip.initConfirm": "初始化会张开夹爪。请先取下夹持的物体。",
@@ -423,10 +423,12 @@
       });
       refs.kbSpeed.value = String(clampSpeed(kb.speed, data.kbCap));
       refs.kbSpeedText = el("span", { class: "mo-value" });
+      refs.kbOff = el("p", { class: "mo-kb-off", role: "status" });
       refs.kbKeys = {};
       const keyCap = key => (refs.kbKeys[key] = el("kbd", { class: "mo-key", text: key }));
       const kbBox = el("div", { class: "mo-block" },
         el("div", { class: "mo-head" }, el("h3", { text: t("kb.title") }), refs.kbSwitch),
+        refs.kbOff,
         el("label", { class: "mo-speed" }, t("move.speed"), refs.kbSpeed, refs.kbSpeedText),
         el("div", { class: "mo-keys" }, ...KEY_MAP.map(([a, b, label]) => el("div", { class: "mo-keyrow" },
           keyCap(a), keyCap(b), el("span", { class: "lc-muted", text: t(label) })))));
@@ -539,6 +541,10 @@
       refs.kbSwitch.disabled = !kb.on && !(ready && robot.enabled === true && !robot.busy && data.kbCap && !model.inflight.has("robot:keyboard-off"));
       refs.kbSpeed.disabled = kb.on || !data.kbCap;
       refs.kbSpeedText.textContent = data.kbCap ? `${clampSpeed(kb.speed, data.kbCap)} / ${data.kbCap}` : "—";
+      // The robot service says why it turned keys off (for example, late key updates).
+      const reason = !kb.on && typeof robot?.keyboard_disarm_reason === "string" ? robot.keyboard_disarm_reason : "";
+      refs.kbOff.textContent = reason ? t("kb.off", { reason }) : "";
+      refs.kbOff.hidden = !reason;
       renderKeys();
     }
 

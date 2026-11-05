@@ -60,7 +60,7 @@ The proxy has only these routes:
 | `/lab/` | `127.0.0.1:8772`, with the fixed base path `/lab/` |
 | `/camera/<view>.mp4`, `/camera/<view>.mjpeg`, `/camera/<view>.jpg`, `/camera/fps.json` | `127.0.0.1:1985`, after removing only `/camera` |
 
-`<view>` is `camera1` to `camera4`.
+`<view>` is `camera1` to `camera4`. For `/camera/<view>.mp4`, `<view>` can also be `microscope`.
 The proxy redirects the root path `/` to the Lab Console at `/lab/`. See the [Lab Console](dashboard.en.md#lab-console).
 The camera routes forward only video streams and single frames. The Cameras workspace of the console uses them.
 The proxy does not forward the robot, stage, thermal, furnace, microscope, or vision services.
@@ -359,6 +359,8 @@ Socket operations retain their 2-second timeout; this is not a total shutdown de
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
 Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate and at most 2 Mbit/s. This route accepts no query.
+go2rtc reads the `1296x968` microscope preview from `http://127.0.0.1:8770/api/camera/microscope/mjpeg`. It serves it as H.264 at `/camera/microscope.mp4`, at most 3 Mbit/s.
+go2rtc reads the microscope preview only while an H.264 viewer is open. If the microscope service has no frame, `/camera/microscope.mp4` returns 502, and the console uses the relayed MJPEG.
 `/camera/fps.json` returns, for each MJPEG stream, the frames per second that each viewer got in the last 2 s. A stream with no viewer has `null`. The console reads these values for the camera status.
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.

@@ -1630,6 +1630,12 @@ def test_camera_configuration_renders_exact_device_count(module, count):
     assert "rtsp:\n  listen: 127.0.0.1:8554\n" in rendered
     assert 'webrtc:\n  listen: ""\n' in rendered
     assert "preload:\n" + "".join(f"  camera{n}: video\n" for n in range(1, count + 1)) in rendered
+    # go2rtc reads the microscope preview only for an H.264 viewer: it is not preloaded.
+    assert rendered.endswith(
+        "  microscope: http://127.0.0.1:8770/api/camera/microscope/mjpeg\n"
+        "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"
+    )
+    assert "microscope: video" not in rendered
 
 
 @pytest.mark.parametrize(

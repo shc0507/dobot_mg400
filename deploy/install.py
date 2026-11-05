@@ -337,7 +337,7 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
     """Return per-camera MJPEG capture settings and on-demand H.264 previews.
 
     The API and RTSP listen on loopback only. ffmpeg reads and returns the H.264
-    previews through RTSP.
+    previews through RTSP. The microscope preview comes from the microscope service.
     """
     if sizes is not None and modes is not None:
         raise ValueError("Use camera sizes or modes, not both.")
@@ -365,6 +365,12 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
     # near 6 Mbit/s on the VPN link.
     streams += "".join(
         f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate=2M\n" for name in configured.preloaded
+    )
+    # go2rtc reads the microscope MJPEG preview (1296x968) only for an H.264 viewer.
+    # With its 3 Mbit/s cap, the microscope and 3 USB previews need about 9 Mbit/s.
+    streams += (
+        "  microscope: http://127.0.0.1:8770/api/camera/microscope/mjpeg\n"
+        "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"
     )
     preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"

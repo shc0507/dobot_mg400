@@ -12,9 +12,21 @@ SERVER_OPTIONS = {
     "clear_untrusted_proxy_headers": False,
     "max_request_body_size": 65537,
 }
+# The console control socket (orchestrator.web.control_socket). Waitress cannot upgrade a
+# connection, so the socket has its own loopback port. The proxy routes
+# /lab/api/console/socket here (ORCH_SOCKET_PORT in deploy/install.py).
+SOCKET_PORT = 8774
 
 
-def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec_function=None):
+def serve(
+    argv,
+    *,
+    environ=None,
+    service_factory=None,
+    server_factory=None,
+    socket_factory=None,
+    exec_function=None,
+):
     """Start the service after validation; terminate only after accepted work drains."""
     from .app import (
         CATALOG_DEFAULT,
@@ -79,9 +91,14 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
     if server_factory is None:
         from waitress import create_server
 
+        from .web.control_socket import ControlSocket
+
         server_factory = create_server
+        # A test server brings its own socket factory, or none.
+        socket_factory = socket_factory or ControlSocket
     logging.basicConfig(level=logging.INFO)
     server = None
+    control = None
     serving = False
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     previous = {number: signal.getsignal(number) for number in signals}
@@ -101,7 +118,17 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
             port=args.port,
             **SERVER_OPTIONS,
         )
+        if socket_factory is not None:
+            try:
+                control = socket_factory(
+                    app, host=args.bind, port=SOCKET_PORT, base_path=args.base_path
+                )
+            except OSError as error:
+                # Pages then send every control request over HTTP.
+                logging.getLogger(__name__).warning("No console control socket: %s", error)
         service.start()
+        if control is not None:
+            control.start()
         serving = True
         server.run()
     except KeyboardInterrupt:
@@ -113,10 +140,14 @@ def serve(argv, *, environ=None, service_factory=None, server_factory=None, exec
             signal.signal(number, signal.SIG_IGN)
         try:
             try:
-                service.close()
+                if control is not None:
+                    control.close()
             finally:
-                if server is not None:
-                    server.close()
+                try:
+                    service.close()
+                finally:
+                    if server is not None:
+                        server.close()
         finally:
             for number, handler in previous.items():
                 signal.signal(number, handler)

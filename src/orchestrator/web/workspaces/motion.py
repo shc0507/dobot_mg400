@@ -24,6 +24,14 @@ stage control and is sent once:
   axis and returns the marked frame and the pixel offset.
 - ``POST stage/teach`` ``{"motor", "confirmed": true}`` saves the current marker
   position as the reference of that axis.
+
+Hold-to-move uses the described ``hold`` command family on this page's stage
+session. The console, not the page, sends the stage commands:
+
+- ``POST stage/hold`` ``{"id", "motor", "direction", "speed"}`` starts a hold
+  with a new id. The page sends the same body again every 150 ms. Without it
+  for 0.5 s the console releases the hold.
+- ``POST stage/release`` ``{"id"}`` ends that hold.
 """
 
 import re
@@ -216,6 +224,12 @@ def _motor(value):
     return value
 
 
+def _hold_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", value):
+        raise ValueError("The hold id must have 16 to 64 letters, digits, - or _.")
+    return value
+
+
 def _operator(service, page, path, data):
     result = service.console.operator("stage", page, path, data)
     result.pop("result", None)
@@ -264,6 +278,24 @@ def register(blueprint, service):
             raise ValueError("Confirm the action inside the page.")
         motor = _motor(data["motor"])
         return _operator(service, page, f"api/motors/{motor}/teach_reference", {"confirm": True})
+
+    @blueprint.post("/stage/hold")
+    def stage_hold():
+        page = _page()
+        data = _body({"id", "motor", "direction", "speed"})
+        direction, speed = data["direction"], data["speed"]
+        if direction not in ("cw", "ccw") or type(speed) is not int or speed < 1:
+            raise ValueError("Send a direction of cw or ccw and a whole speed of at least 1.")
+        hold_id, motor = _hold_id(data["id"]), _motor(data["motor"])
+        result = service.console.stage_hold(page, hold_id, motor, direction, speed)
+        status = {"accepted": 200, "refused": 409, "unknown": 502}[result["outcome"]]
+        return jsonify(result), status
+
+    @blueprint.post("/stage/release")
+    def stage_release():
+        page = _page()
+        data = _body({"id"})
+        return jsonify(service.console.stage_release(page, _hold_id(data["id"])))
 
     @blueprint.get("/state")
     def state():

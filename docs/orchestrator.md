@@ -30,7 +30,7 @@ uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-run
 按[服务清单](deploy.md#服务清单)安装。它不使用设备组，也不自动启动配方。
 现有的 `run`、`rehearse`、`runs` 和 `station` 命令保持可用。
 
-服务监听 `127.0.0.1:8772`。安装的单元设置基础路径 `/lab/`，由代理提供。
+服务监听 `127.0.0.1:8772`。安装的单元设置基础路径 `/lab/`，由代理提供。控制台控制套接字监听 `127.0.0.1:8774`，代理把 `/lab/api/console/socket` 转发到该端口。端口被占用时，服务记录警告并照常启动，页面改用 HTTP。
 它从 `/opt/mg400/recipes` 读取配方目录。
 `--bind`、`--port`、`--base-path`、`--recipes-dir` 和 `--runs-dir` 可覆盖这些默认值。
 

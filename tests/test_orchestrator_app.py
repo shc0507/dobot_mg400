@@ -867,6 +867,50 @@ def test_main_preserves_installed_terminal_dispatch(monkeypatch):
     assert calls == [(["runs"], {"out": out, "read": read})]
 
 
+@pytest.mark.parametrize("bind_fails", [False, True])
+def test_serve_runs_the_control_socket_beside_the_server(bind_fails):
+    from orchestrator.__main__ import SOCKET_PORT, serve
+
+    calls = []
+
+    class Server:
+        def run(self):
+            calls.append("run")
+
+        def close(self):
+            calls.append("server-close")
+
+    class Socket:
+        def __init__(self, app, **kwargs):
+            if bind_fails:
+                raise OSError("Synthetic port in use")
+            calls.append(("socket", kwargs))
+
+        def start(self):
+            calls.append("socket-start")
+
+        def close(self):
+            calls.append("socket-close")
+
+    assert (
+        serve(
+            ["--base-path", "/lab/"],
+            environ={},
+            service_factory=lambda **kwargs: CLIService(calls),
+            server_factory=lambda app, **kwargs: Server(),
+            socket_factory=Socket,
+        )
+        == 0
+    )
+    if bind_fails:
+        # Without the socket, the console still serves every request over HTTP.
+        expected = ["start", "run"]
+    else:
+        socket = ("socket", {"host": "127.0.0.1", "port": SOCKET_PORT, "base_path": "/lab/"})
+        expected = [socket, "start", "socket-start", "run", "socket-close"]
+    assert calls == expected + ["service-close", "server-close"]
+
+
 def test_serve_passes_the_server_options():
     from orchestrator.__main__ import SERVER_OPTIONS, main
 

@@ -18,6 +18,10 @@
   const KEYS = "WASDQERFZX";
   const KEY_MAP = [["W", "S", "kb.reach"], ["A", "D", "kb.base"], ["R", "F", "kb.z"], ["Q", "E", "kb.yaw"], ["Z", "X", "kb.grip"]];
   const KEYS_MS = 150;
+  // Stage hold: the console keeps 1 axis moving while this page refreshes the hold (dead-man 0.5 s).
+  // Each pair is the Hold − key (ccw) and the Hold + key (cw) of 1 axis.
+  const STAGE_KEYS = [["I", "K", "bottom"], ["J", "L", "top"], ["U", "O", "insert"]];
+  const HOLD_MS = 150;
   const POLL_MS = 1000;
   const EVENTS_MS = 2000;
   const LOG_LIMIT = 40;
@@ -131,14 +135,36 @@
     return Number.isInteger(cap) && cap >= 1 ? cap : null;
   }
 
+  /** The letter of one keyboard event from its physical key, so the layout does not matter. */
+  function keyName(event) {
+    const code = String(event?.code || "");
+    return code.startsWith("Key") ? code.slice(3) : String(event?.key || "").toUpperCase();
+  }
+
   /** The jog key of one keyboard event (W, A, …), or null. */
   function jogKey(event) {
-    const code = String(event?.code || "");
-    const key = code.startsWith("Key") ? code.slice(3) : String(event?.key || "").toUpperCase();
+    const key = keyName(event);
     return key.length === 1 && KEYS.includes(key) ? key : null;
   }
 
-  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, clampSpeed, parseCount, axisReference, axisState, activityRows, clock, fixed, STEPS, CAMERAS };
+  /** The stage hold of one keyboard event: { key, motor, direction }, or null. */
+  function holdKey(event) {
+    const key = keyName(event);
+    for (const [minus, plus, motor] of STAGE_KEYS) {
+      if (key === minus || key === plus) return { key, motor, direction: key === minus ? "ccw" : "cw" };
+    }
+    return null;
+  }
+
+  /** A new stage hold id. The page is not a secure context, so no randomUUID. */
+  function holdId() {
+    let bytes;
+    try { bytes = root.crypto.getRandomValues(new Uint8Array(12)); }
+    catch { bytes = Array.from({ length: 12 }, () => Math.floor(Math.random() * 256)); }
+    return "hold-" + Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, holdKey, holdId, clampSpeed, parseCount, axisReference, axisState, activityRows, clock, fixed, STEPS, CAMERAS };
 
   const i18n = {
     en: {
@@ -176,6 +202,9 @@
       "axis.steps": "Steps", "axis.speed": "Pulses/s",
       "axis.minus": "Step −", "axis.plus": "Step +", "axis.minusLabel": "Move {axis} minus by the steps",
       "axis.plusLabel": "Move {axis} plus by the steps", "axis.badCount": "Enter whole steps from 1 to {max} and a speed from 1 to {speed}.",
+      "axis.holdMinus": "Hold −", "axis.holdPlus": "Hold +", "axis.holdMinusLabel": "Hold to move {axis} minus",
+      "axis.holdPlusLabel": "Hold to move {axis} plus", "axis.badSpeed": "Enter a speed from 1 to {speed} pulses/s.",
+      "kb.stage": "Stage keyboard", "kb.axis": "{axis} − / +",
       "axis.home": "Home…", "axis.homeConfirm": "Clear the travel path. {axis} moves to its reference switch.",
       "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
       "axis.teachConfirm": "Is {axis} at its safe zero position? The current marker position replaces the camera reference.",
@@ -227,6 +256,9 @@
       "axis.steps": "步数", "axis.speed": "脉冲/秒",
       "axis.minus": "步进 −", "axis.plus": "步进 +", "axis.minusLabel": "{axis}按步数负向移动",
       "axis.plusLabel": "{axis}按步数正向移动", "axis.badCount": "请输入 1 到 {max} 的整数步数和 1 到 {speed} 的速度。",
+      "axis.holdMinus": "按住 −", "axis.holdPlus": "按住 +", "axis.holdMinusLabel": "按住使{axis}负向移动",
+      "axis.holdPlusLabel": "按住使{axis}正向移动", "axis.badSpeed": "请输入 1 到 {speed} 的速度（脉冲/秒）。",
+      "kb.stage": "位移台键盘", "kb.axis": "{axis} − / +",
       "axis.home": "回零…", "axis.homeConfirm": "请清空行程。{axis}将移动到参考开关。",
       "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
       "axis.teachConfirm": "{axis}在安全零点吗？当前标记位置将替换摄像头参考。",
@@ -252,6 +284,8 @@
     const data = { robot: null, stage: null, events: [], cap: null, kbCap: null, loaded: false };
     // on: this page armed the keyboard. seen: the service reported it on or arming since then.
     const kb = { on: false, seen: false, speed: null, held: new Set(), seq: 0, timer: null, pending: 0 };
+    // on: the stage keyboard switch. active: this page's stage hold, 1 axis at a time.
+    const sh = { on: false, active: null, timer: null };
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, cams: CAMERAS.slice(),
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
@@ -298,6 +332,7 @@
     }
 
     async function stopDevice(device) {
+      if (device === "stage") holdEnd();
       const result = await api.stop(device);
       note(device, result?.outcome === "confirmed" ? "info" : "warning", t("out.stop", { device: api.deviceName(device), outcome: result?.outcome || "unknown" }));
       refresh();
@@ -535,7 +570,7 @@
     async function sendKeys() {
       kb.pending++;
       let result = null;
-      try { result = await api.request("keys", { seq: ++kb.seq, held: [...kb.held] }, { accept: [409, 502], timeout: 2000 }); }
+      try { result = await api.request("keys", { seq: ++kb.seq, held: [...kb.held] }, { accept: [409, 502], timeout: 2000, socket: true }); }
       catch (error) { result = { outcome: error.status === 0 ? "unknown" : "refused", error: error.message }; }
       finally { kb.pending--; }
       if (result?.outcome !== "accepted" && kb.held.size) {
@@ -566,19 +601,25 @@
     }
 
     function onKeyDown(event) {
-      if (!kb.on || event.ctrlKey || event.metaKey || event.altKey) return;
-      const key = jogKey(event);
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const key = kb.on ? jogKey(event) : null;
+      const stage = sh.on ? holdKey(event) : null;
       const tag = String(event.target?.tagName || "").toUpperCase();
-      if (!key || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if ((!key && !stage) || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       event.preventDefault?.();
-      if (event.repeat || kb.held.has(key) || !api.owns("robot") || !focused()) return;
-      kb.held.add(key);
-      keysChanged();
+      if (event.repeat || !focused()) return;
+      if (key && !kb.held.has(key) && api.owns("robot")) {
+        kb.held.add(key);
+        keysChanged();
+      }
+      if (stage) holdStart(stage.motor, stage.direction, stage.key);
     }
 
     function onKeyUp(event) {
       const key = jogKey(event);
       if (key && kb.held.delete(key)) keysChanged();
+      const stage = holdKey(event);
+      if (stage && sh.active?.source === stage.key) holdEnd();
     }
 
     function renderKeys() {
@@ -600,6 +641,75 @@
       refs.kbOff.textContent = reason ? t("kb.off", { reason }) : "";
       refs.kbOff.hidden = !reason;
       renderKeys();
+    }
+
+    // Stage hold ------------------------------------------------------------
+
+    /** Start 1 stage hold. The console sends hold and keepalive while this page refreshes it. */
+    function holdStart(motor, direction, source) {
+      if (sh.active || !api.owns("stage") || !focused()) return;
+      const limit = data.stage?.limits?.speed || 1000;
+      const speed = parseCount(model.axis[motor]?.speed, limit);
+      if (!speed) { api.notify(t("axis.badSpeed", { speed: limit }), "warn"); return; }
+      const item = { id: holdId(), motor, direction, speed, source, pending: 0 };
+      sh.active = item;
+      sendHold(item);
+      sh.timer = setInterval(() => {
+        if (!focused()) stageOff();
+        else if (item.pending < 2) sendHold(item);
+      }, HOLD_MS);
+      renderHold();
+    }
+
+    /** Send the hold once. The first send starts it and each later send refreshes it. Never retried. */
+    async function sendHold(item) {
+      item.pending++;
+      let result = null;
+      const body = { id: item.id, motor: item.motor, direction: item.direction, speed: item.speed };
+      try { result = await api.request("stage/hold", body, { accept: [409, 502], timeout: 2000, socket: true }); }
+      catch (error) { result = { outcome: error.status === 0 ? "unknown" : "refused", error: error.message }; }
+      finally { item.pending--; }
+      if (result?.outcome !== "accepted" && sh.active === item) {
+        note("stage", "warning", t(result?.outcome === "unknown" ? "out.unknown" : "out.refused", { device: api.deviceName("stage"), action: "hold", error: result?.error || "" }));
+        holdEnd();
+      }
+    }
+
+    /** End this page's hold once. If the release is lost, the console stops the hold after 0.5 s. */
+    function holdEnd() {
+      if (sh.timer) clearInterval(sh.timer);
+      sh.timer = null;
+      const item = sh.active;
+      if (!item) return;
+      sh.active = null;
+      api.request("stage/release", { id: item.id }, { timeout: 2000, socket: true }).catch(() => {});
+      renderHold();
+    }
+
+    function buttonUp() {
+      if (sh.active?.source === "button") holdEnd();
+    }
+
+    /** End the hold and turn the stage keyboard off. */
+    function stageOff() {
+      sh.on = false;
+      holdEnd();
+      renderHold();
+    }
+
+    function renderHold() {
+      if (refs.stageKb) {
+        refs.stageKb.setAttribute("aria-checked", sh.on ? "true" : "false");
+        refs.stageKb.className = "mo-chip" + (sh.on ? " mo-on" : "");
+      }
+      for (const [key, node] of Object.entries(refs.holdKeys || {})) node.className = "mo-key" + (sh.active?.source === key ? " mo-on" : "");
+      for (const [id, row] of Object.entries(refs.axes || {})) {
+        for (const [direction, node] of [["ccw", row.holdMinus], ["cw", row.holdPlus]]) {
+          const on = sh.active?.motor === id && sh.active.direction === direction;
+          node.className = "lc-button mo-hold" + (on ? " mo-on" : "");
+          node.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+      }
     }
 
     function useActual() {
@@ -708,6 +818,20 @@
         };
         row.minus = el("button", { type: "button", class: "lc-button", text: t("axis.minus"), "aria-label": t("axis.minusLabel", { axis }), onclick: move("ccw") });
         row.plus = el("button", { type: "button", class: "lc-button", text: t("axis.plus"), "aria-label": t("axis.plusLabel", { axis }), onclick: move("cw") });
+        // The pointer capture sends pointerup to the pressed button, also outside it.
+        const holdButton = (direction, text, label) => el("button", {
+          type: "button", class: "lc-button mo-hold", text, "aria-label": label,
+          onpointerdown: event => {
+            if (event.button) return;
+            event.preventDefault?.();
+            try { (event.currentTarget || event.target)?.setPointerCapture?.(event.pointerId); } catch { /* The window pointerup ends it. */ }
+            holdStart(id, direction, "button");
+          },
+          onpointerup: buttonUp, onpointercancel: buttonUp, onlostpointercapture: buttonUp,
+          oncontextmenu: event => event.preventDefault?.(),
+        });
+        row.holdMinus = holdButton("ccw", t("axis.holdMinus"), t("axis.holdMinusLabel", { axis }));
+        row.holdPlus = holdButton("cw", t("axis.holdPlus"), t("axis.holdPlusLabel", { axis }));
         row.home = motor.homing_available ? el("button", {
           type: "button", class: "lc-button mo-small", text: t("axis.home"),
           onclick: () => askConfirm("stage", t("axis.homeConfirm", { axis }), () => send("stage", "home", { motor: id }, "ref-" + id)),
@@ -727,6 +851,7 @@
           el("div", { class: "mo-head" }, el("span", { class: "lc-strong", text: axis }), row.state),
           el("div", { class: "mo-readout" }, row.pulses, row.mm, row.ref),
           el("div", { class: "mo-grid2" }, row.minus, row.plus),
+          el("div", { class: "mo-grid2" }, row.holdMinus, row.holdPlus),
           el("div", { class: "mo-row" }, input("steps", t("axis.steps")), input("speed", t("axis.speed"))),
           el("div", { class: "mo-row" }, row.home, row.zero, row.check, row.teach),
           row.view);
@@ -743,10 +868,24 @@
           named.push(button);
         }
       }
+      refs.stageKb = el("button", {
+        type: "button", role: "switch", class: "mo-chip", text: t("kb.title"), "aria-label": t("kb.stage"),
+        onclick: () => {
+          if (sh.on) stageOff();
+          else if (api.owns("stage")) { sh.on = true; renderHold(); }
+        },
+      });
+      refs.holdKeys = {};
+      const keyCap = key => (refs.holdKeys[key] = el("kbd", { class: "mo-key", text: key }));
+      const keyRows = STAGE_KEYS.filter(([, , id]) => refs.axes[id]).map(([minus, plus, id]) => el("div", { class: "mo-keyrow" },
+        keyCap(minus), keyCap(plus), el("span", { class: "lc-muted", text: t("kb.axis", { axis: t("axis." + id) }) })));
       refs.stageBody.replaceChildren(
         refs.modes.length ? el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("stage.stepping") },
           el("span", { class: "lc-muted", text: t("stage.stepping") }), ...refs.modes) : "",
         ...blocks,
+        keyRows.length ? el("div", { class: "mo-block" },
+          el("div", { class: "mo-head" }, el("h3", { text: t("kb.title") }), refs.stageKb),
+          el("div", { class: "mo-keys" }, ...keyRows)) : "",
         stage ? el("div", { class: "mo-block" }, el("h3", { text: t("named.title") }),
           named.length ? el("div", { class: "mo-grid2" }, ...named) : el("p", { class: "lc-muted", text: t("named.none") })) : "");
     }
@@ -925,6 +1064,7 @@
       refs.stageBadge.className = "mo-badge" + (stage && !stage.demo ? " mo-real" : "");
       refs.stageBadge.hidden = !stage;
       updateControl("stage", data.stage);
+      if ((sh.on || sh.active) && !ownsStage) stageOff();
       const stageReady = Boolean(stage && ownsStage && stage.connected && !stage.locked);
       const idle = (stage?.motors || []).every(motor => motor.mode === "idle");
       for (const node of refs.modes || []) {
@@ -947,6 +1087,8 @@
         const moving = model.inflight.has("stage:move-" + motor.id);
         const canStep = stageReady && motor.available === true && !stage.busy && !moving;
         row.minus.disabled = row.plus.disabled = !canStep;
+        // Never disable a held button: a disabled button can miss its pointerup.
+        row.holdMinus.disabled = row.holdPlus.disabled = !canStep && sh.active?.motor !== motor.id;
         const refBusy = model.inflight.has("stage:ref-" + motor.id);
         if (row.home) row.home.disabled = !stageReady || motor.mode !== "idle" || stage.busy || refBusy;
         row.zero.disabled = !stageReady || motor.zero_available !== true || motor.mode !== "idle" || stage.busy || refBusy;
@@ -971,6 +1113,8 @@
         item.button.setAttribute("aria-pressed", at ? "true" : "false");
         item.button.disabled = !stageReady || !motor || stage.busy || motor.mode !== "idle" || model.inflight.has("stage:move-" + item.motor);
       }
+      if (refs.stageKb) refs.stageKb.disabled = !sh.on && !stageReady;
+      renderHold();
       refs.stageLast.textContent = stage ? lastText(stage.last_command) : "";
       const disconnected = Boolean(stage && stage.connected !== true);
       refs.connectRow.hidden = !disconnected;
@@ -1047,15 +1191,19 @@
         if (typeof root.addEventListener === "function") {
           root.addEventListener("keydown", onKeyDown);
           root.addEventListener("keyup", onKeyUp);
-          root.addEventListener("blur", () => disarm("focus"));
+          root.addEventListener("blur", () => { disarm("focus"); stageOff(); });
+          root.addEventListener("pointerup", buttonUp);
+          root.addEventListener("pointercancel", buttonUp);
         }
-        root.document?.addEventListener?.("visibilitychange", () => { if (root.document.visibilityState !== "visible") disarm("focus"); });
+        root.document?.addEventListener?.("visibilitychange", () => {
+          if (root.document.visibilityState !== "visible") { disarm("focus"); stageOff(); }
+        });
         build();
         start();
       },
       show() { shown = true; if (api) { renderCameras(); start(); } },
-      hide() { disarm("focus"); shown = false; stop(); dropTiles(); if (refs.cams) refs.cams.replaceChildren(); },
-      _test: { data, model, kb, refs: () => refs, refresh, update },
+      hide() { disarm("focus"); stageOff(); shown = false; stop(); dropTiles(); if (refs.cams) refs.cams.replaceChildren(); },
+      _test: { data, model, kb, sh, refs: () => refs, refresh, update },
     };
   }
 

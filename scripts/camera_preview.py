@@ -12,7 +12,14 @@ from threading import Condition, Thread
 from cameras.config import camera_configuration
 
 CAMERAS = camera_configuration(os.environ)
-STREAMS = {f"{stream}.jpg": stream for stream in CAMERAS.streams}
+# A side stream above 640x480 belongs to the microscope, which runs it only during an
+# objective switch. A relayed view would start it on the shared USB link and the VPN.
+SIDE = os.environ.get("MG400_MICROSCOPE_SIDE_STREAM", "").strip()
+STREAMS = {
+    f"{stream}.jpg": stream
+    for stream in CAMERAS.streams
+    if stream != SIDE or stream in CAMERAS.preloaded
+}
 MAX_FRAME = 4 * 1024 * 1024
 
 

@@ -467,6 +467,37 @@ def test_turret_turns_follow_clearance_moves_and_fresh_reference_checks(demo_rig
     assert state["focus_position_pulses"] == 0 and state["focus_zero_known"]
 
 
+def test_turret_turns_never_cross_the_gap_between_the_last_and_first_objective(demo_rig):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=3)["objective_id"] == 3
+    assert dispatch(rig, "select_objective", id=0)["objective_id"] == 0
+    turns = [item for item in rig.port.commands if item.startswith("OBJ MOVE ")]
+    assert turns == ["OBJ MOVE 740"] * 3 + ["OBJ MOVE -740"] * 3
+
+
+def test_failed_turn_reports_the_objective_as_unknown(demo_rig, monkeypatch):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=1)["objective_id"] == 1
+    factory = rig.service._switcher_factory
+
+    def failing_switcher(*args, **kwargs):
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("Objective identity could not be confirmed")
+
+        switcher = factory(*args, **kwargs)
+        switcher.run = fail
+        return switcher
+
+    monkeypatch.setattr(rig.service, "_switcher_factory", failing_switcher)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert state["objective_id"] is None
+
+
 def test_snapshot_is_exclusive_private_png_in_run_store(demo_rig, tmp_path):
     import stat
 
@@ -719,6 +750,98 @@ def test_demo_marker_correction_preserves_positive_pulse_leftward_feedback(demo_
     assert state["objective_id"] == 1
     assert abs(rig.port.sim.objective.position - 740) <= 40
     assert any(line.startswith("OBJ MOVE -") for line in rig.port.commands)
+
+
+def side_frame(height, width):
+    import cv2
+    import numpy as np
+
+    frame = np.full((height, width), 255, np.uint8)
+    marker = cv2.aruco.generateImageMarker(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), 0, 80
+    )
+    frame[60:140, 60:140] = marker
+    return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+
+def stopped_reader(**_kwargs):
+    try:
+        raise RuntimeError("Side-camera frame size differs from its reference size")
+    except RuntimeError as error:
+        raise RuntimeError("USB camera acquisition stopped") from error
+
+
+def busy_reader():
+    raise RuntimeError("Previous side-camera reader is still stopping")
+
+
+@pytest.mark.parametrize(
+    ("attribute", "replacement", "message"),
+    [
+        (
+            "get_frame_packet",
+            lambda **_: (1, 0.0, side_frame(480, 640)),
+            "side frame 640x480 does not match the 200x200 references",
+        ),
+        (
+            "get_frame_packet",
+            lambda **_: (1, 0.0, side_frame(200, 200) * 0),
+            "Objective identification failed: black",
+        ),
+        ("get_frame_packet", lambda **_: None, "No fresh side-camera frame"),
+        ("get_frame_packet", stopped_reader, "unavailable: Side-camera frame size differs"),
+        ("open", busy_reader, "unavailable: Previous side-camera reader is still stopping"),
+    ],
+    ids=["size-mismatch", "black-frame", "no-frame", "stopped-reader", "busy-reader"],
+)
+def test_unidentified_objective_refuses_before_motion_without_fault(
+    demo_rig, monkeypatch, attribute, replacement, message
+):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    before = len(rig.port.commands)
+    with monkeypatch.context() as patch:
+        patch.setattr(rig.service._side, attribute, replacement)
+        state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert message in state["last_command"]["message"]
+    assert not state["locked"] and state["fault"] is None and state["focus_zero_known"]
+    assert not [line for line in rig.port.commands[before:] if " MOVE " in line]
+    assert not rig.service._side.is_open
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok" and state["objective_id"] == 2
+    assert not rig.service._side.is_open and not state["cameras"]["side"]
+
+
+def test_select_objective_uses_side_frames_scaled_from_the_reference_size(demo_rig, monkeypatch):
+    import cv2
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    read = rig.service._side.get_frame_packet
+
+    def half_size(*args, **kwargs):
+        packet = read(*args, **kwargs)
+        if packet is None:
+            return None
+        frame_id, received_at, frame = packet
+        return frame_id, received_at, cv2.resize(frame, (100, 100), interpolation=cv2.INTER_AREA)
+
+    monkeypatch.setattr(rig.service._side, "get_frame_packet", half_size)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok", state
+    assert state["objective_id"] == 2
+
+
+def test_state_reports_the_side_reader_only_while_it_runs(demo_rig):
+    rig = demo_rig()
+    assert rig.service.snapshot()["cameras"] == {"microscope": True, "side": False}
+    rig.service._side.open()
+    assert rig.service.snapshot()["cameras"]["side"] is True
+    rig.service._side.last_error = RuntimeError("Side-camera frame size differs")
+    assert rig.service.snapshot()["cameras"]["side"] is False
 
 
 def test_real_start_with_missing_measurements_never_opens_devices(monkeypatch):

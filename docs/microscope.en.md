@@ -286,7 +286,7 @@ Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
 Before `H-21`, restore this camera to its earlier position on the turret.
 For the service and preview, go2rtc owns its V4L2 capture.
 During `select_objective`, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.
-The side stream starts on demand. It runs only during this command, or while a camera view shows the side stream.
+The side stream starts on demand and runs only during this command. The preview relay does not serve a side stream above `640x480`.
 It uses the newest complete JPEG, drops incomplete frames, and reconnects after a connection failure.
 It rejects redirects and ignores environment proxy settings.
 Keep the cameras on their fixed ports and never reset the shared USB hub.

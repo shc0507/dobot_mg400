@@ -12,7 +12,14 @@ from threading import Condition, Thread
 from cameras.config import camera_configuration
 
 CAMERAS = camera_configuration(os.environ)
-STREAMS = {f"{stream}.jpg": stream for stream in CAMERAS.streams}
+# A side stream above 640x480 belongs to the microscope, which runs it only during an
+# objective switch. A relayed view would start it on the shared USB link and the VPN.
+SIDE = os.environ.get("MG400_MICROSCOPE_SIDE_STREAM", "").strip()
+STREAMS = {
+    f"{stream}.jpg": stream
+    for stream in CAMERAS.streams
+    if stream != SIDE or stream in CAMERAS.preloaded
+}
 MAX_FRAME = 4 * 1024 * 1024
 
 
@@ -76,17 +83,17 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True):
             frame = bytes(buffer[body_start:next_part])
             if (
                 headers.get_content_type() != "image/jpeg"
-                or len(frame) > MAX_FRAME
+                or not 4 <= len(frame) <= MAX_FRAME
+                or not frame.startswith(b"\xff\xd8")
+                or not frame.endswith(b"\xff\xd9")
                 or (
                     headers.get("Content-Length") is not None
                     and int(headers["Content-Length"]) != len(frame)
                 )
             ):
-                raise ValueError("Invalid MJPEG part")
+                raise ValueError("Invalid or incomplete JPEG frame")
             del buffer[: next_part + 2]
-            # A demand-started stream can send a truncated first frame. Drop it.
-            if len(frame) >= 4 and frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
-                yield frame
+            yield frame
 
 
 class CameraFeed:

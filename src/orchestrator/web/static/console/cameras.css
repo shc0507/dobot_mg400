@@ -30,7 +30,7 @@
 .lcam-stage { position: relative; aspect-ratio: 4 / 3; background: #0A0E11; cursor: pointer; }
 .lcam-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .lcam-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; image-rendering: pixelated; }
-img.lcam-media { image-rendering: auto; }
+img.lcam-media, video.lcam-media { image-rendering: auto; }
 .lcam-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .lcam-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; background: #0A0E11; }
 .lcam-colorbar { position: absolute; top: 8px; right: 8px; bottom: 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); pointer-events: none; }

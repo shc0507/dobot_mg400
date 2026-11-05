@@ -21,6 +21,10 @@ STREAMS = {
     for stream in CAMERAS.streams
     if stream != SIDE or stream in CAMERAS.preloaded
 }
+# go2rtc encodes each camera up to 640x480 to H.264 for its first viewer, as fragmented MP4.
+# H.264 needs much less VPN bandwidth than MJPEG at the camera rate.
+VIDEOS = {f"{stream}.mp4": stream for stream in CAMERAS.preloaded}
+VIDEO_TYPE = re.compile(r'video/mp4; codecs="[A-Za-z0-9.,]{1,100}"')
 MAX_FRAME = 4 * 1024 * 1024
 # A viewer may cap its frame rate with ?fps=. The console asks for less than the camera
 # rate, so 3 previews leave room on the VPN link for control traffic.
@@ -234,6 +238,9 @@ class Preview(BaseHTTPRequestHandler):
         if route in {source + ".mjpeg" for source in FEEDS} and fps:
             self.stream(FEEDS[route.removesuffix(".mjpeg")], fps)
             return
+        if route in VIDEOS and not query:
+            self.video(VIDEOS[route])
+            return
         if query or route not in STREAMS:
             self.send_error(404)
             return
@@ -277,6 +284,33 @@ class Preview(BaseHTTPRequestHandler):
                 pass
         finally:
             feed.release()
+
+    def video(self, source):
+        """Relay the H.264 preview of 1 camera unchanged. go2rtc names the codec for MSE."""
+        try:
+            upstream = urllib.request.urlopen(
+                "http://127.0.0.1:1984/api/stream.mp4?src=" + source + "_h264", timeout=5
+            )
+        except (OSError, HTTPException):
+            self.send_error(502)
+            return
+        with upstream:
+            content_type = upstream.headers.get("Content-Type", "")
+            if not VIDEO_TYPE.fullmatch(content_type):
+                self.send_error(502)
+                return
+            self.close_connection = True
+            self.connection.settimeout(5)
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                while chunk := upstream.read1(64 * 1024):
+                    self.wfile.write(chunk)
+            except (OSError, HTTPException):
+                pass
 
     def respond(self, body, content_type):
         try:

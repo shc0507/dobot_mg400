@@ -1,5 +1,6 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
- * camera1 to camera4 load from the proxy at /camera/<view>.mjpeg and /camera/<view>.jpg.
+ * camera1 to camera4 load from the proxy: H.264 at /camera/<view>.mp4, with MJPEG at
+ * /camera/<view>.mjpeg as the fallback, and snapshots at /camera/<view>.jpg.
  * The console relays the microscope stream and the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
@@ -25,6 +26,10 @@
   // A USB view at the camera rate needs about 16 Mbit/s. The VPN link carries about 22 Mbit/s,
   // so the USB previews ask for less and leave room for keys, holds and stops.
   const USB_TILE_FPS = 5, USB_LARGE_FPS = 10;
+  // The host caps each H.264 preview at 2 Mbit/s, so camera1 to camera4 play it at the camera rate.
+  const H264 = 'video/mp4; codecs="avc1.640029"';
+  // Play near the newest frame: jump when more than JUMP_S behind, speed up above CATCH_UP_S.
+  const JUMP_S = 1, CATCH_UP_S = 0.3, KEEP_S = 10, MAX_QUEUE = 4 * 1024 * 1024;
 
   const i18n = {
     en: {
@@ -231,6 +236,15 @@
     return `${basePath}${PREFIX}stream/${view}?fps=${large ? LARGE_FPS : TILE_FPS}`;
   }
 
+  /** The H.264 preview URL of camera1 to camera4, or null for other views. */
+  function videoUrl(view) { return CAMERAS.has(view) ? `/camera/${view}.mp4` : null; }
+
+  /** The live-edge correction for a play position in the last buffered range [start, end]. */
+  function chase(time, start, end) {
+    if (time < start || end - time > JUMP_S) return { seek: Math.max(start, end - 0.1), rate: 1 };
+    return { seek: null, rate: end - time > CATCH_UP_S ? 1.1 : 1 };
+  }
+
   /** The JPEG snapshot URL of one MJPEG view. */
   function snapshotUrl(view, basePath = "") {
     return CAMERAS.has(view) ? `/camera/${view}.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
@@ -239,6 +253,102 @@
   function backoff(failures) { return Math.min(15000, 1000 * 2 ** Math.min(4, failures)); }
 
   function stamp(date = new Date()) { return date.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z"); }
+
+  // H.264 player ----------------------------------------------------------------
+
+  function mediaSource() { return root.ManagedMediaSource || root.MediaSource || null; }
+
+  /** True when this browser can play the H.264 previews through Media Source Extensions. */
+  function h264Supported() {
+    try { return typeof root.fetch === "function" && Boolean(mediaSource()?.isTypeSupported?.(H264)); }
+    catch { return false; }
+  }
+
+  function joined(chunks) {
+    if (chunks.length === 1) return chunks[0];
+    const out = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.byteLength, 0));
+    let offset = 0;
+    for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
+    return out;
+  }
+
+  /** Play 1 fragmented MP4 stream in a video element. onFail runs at most once, but not after stop. */
+  function playH264(video, url, onFail) {
+    const Source = mediaSource();
+    const source = new Source();
+    const abort = new AbortController();
+    let stopped = false, buffer = null, queue = [], queued = 0, objectUrl = null;
+
+    function stop() {
+      if (stopped) return;
+      stopped = true;
+      abort.abort();
+      video.removeEventListener("error", fail);
+      video.removeAttribute("src");
+      video.srcObject = null;
+      video.load?.();
+      if (objectUrl) root.URL.revokeObjectURL(objectUrl);
+    }
+
+    function fail() {
+      if (stopped) return;
+      stop();
+      onFail();
+    }
+
+    function feed() {
+      if (stopped || !buffer || buffer.updating) return;
+      try {
+        if (queue.length) {
+          const data = joined(queue);
+          queue = []; queued = 0;
+          buffer.appendBuffer(data);
+          return;
+        }
+        const ranges = buffer.buffered;
+        if (!ranges.length) return;
+        const end = ranges.end(ranges.length - 1);
+        if (end - ranges.start(0) > 2 * KEEP_S) { buffer.remove(ranges.start(0), end - KEEP_S); return; }
+        const step = chase(video.currentTime, ranges.start(ranges.length - 1), end);
+        if (step.seek !== null) video.currentTime = step.seek;
+        video.playbackRate = step.rate;
+      } catch { fail(); }
+    }
+
+    async function pump() {
+      try {
+        const response = await root.fetch(url, { cache: "no-store", signal: abort.signal });
+        const type = response.headers.get("Content-Type") || "";
+        if (!response.ok || !response.body || !Source.isTypeSupported(type)) throw new Error("No H.264 preview");
+        buffer = source.addSourceBuffer(type);
+        buffer.mode = "segments";
+        buffer.addEventListener("updateend", feed);
+        const reader = response.body.getReader();
+        while (!stopped) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          queue.push(value);
+          queued += value.byteLength;
+          // A page that cannot keep up restarts the stream at the newest frame.
+          if (queued > MAX_QUEUE) break;
+          feed();
+        }
+      } catch { /* The stream ended or failed. */ }
+      fail();
+    }
+
+    video.addEventListener("error", fail);
+    source.addEventListener("sourceopen", pump, { once: true });
+    if (Source === root.ManagedMediaSource) {
+      video.disableRemotePlayback = true;
+      video.srcObject = source;
+    } else {
+      objectUrl = root.URL.createObjectURL(source);
+      video.src = objectUrl;
+    }
+    video.play?.()?.catch?.(() => {});
+    return stop;
+  }
 
   // Shared engine ---------------------------------------------------------------
 
@@ -431,11 +541,19 @@
         this.img.addEventListener("load", () => { if (this.running && this.img.src !== BLANK) { this.failures = 0; this.live = true; this.paint(); } });
         this.media = this.img;
       }
+      if (videoUrl(view) && h264Supported()) {
+        this.video = h("video", { class: "lcam-media", hidden: true });
+        this.video.muted = true;
+        this.video.playsInline = true;
+        this.video.addEventListener("playing", () => {
+          if (this.running && this.stopVideo) { this.failures = 0; this.played = true; this.live = true; this.paint(); }
+        });
+      }
       this.empty = h("div", { class: "lcam-empty" });
       this.stage = h("div", { class: "lcam-stage", role: "button", tabindex: "0",
         onclick: () => this.options.onSelect?.(view),
         onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); this.options.onSelect?.(view); } } },
-      this.media, this.overlay, this.empty, this.colorbar || null);
+      this.media, this.video || null, this.overlay, this.empty, this.colorbar || null);
       this.snapButton = h("button", { type: "button", class: "lc-button lcam-small", onclick: event => { event.stopPropagation(); this.snapshot(); } });
       this.expandButton = h("button", { type: "button", class: "lc-button lcam-small", onclick: event => { event.stopPropagation(); this.expand(); } });
       this.el = h("figure", { class: "lcam-tile", "data-view": view },
@@ -452,8 +570,25 @@
       this.running = true;
       this.generation++;
       if (this.view === "thermal") { if (engine.thermalTimer === null) pollThermal(); this.paint(); return; }
-      this.img.src = streamUrl(this.view, this.large, base());
+      if (this.video && !this.mjpeg) {
+        const generation = this.generation;
+        this.played = false;
+        this.img.hidden = true;
+        this.video.hidden = false;
+        this.stopVideo = playH264(this.video, videoUrl(this.view), () => { if (generation === this.generation) this.failed(); });
+      } else {
+        if (this.video) this.video.hidden = true;
+        this.img.hidden = false;
+        this.img.src = streamUrl(this.view, this.large, base());
+      }
       pollStatus();
+    }
+
+    /** Close the H.264 stream or the MJPEG stream. */
+    halt() {
+      if (this.stopVideo) { this.stopVideo(); this.stopVideo = null; }
+      // Replacing the source closes the stream, so the console ends its relay.
+      if (this.img) this.img.src = BLANK;
     }
 
     /** Grow or shrink the tile. A running stream restarts with the new frame rate. */
@@ -461,7 +596,7 @@
       this.el.classList?.toggle("lcam-large", large);
       if (this.large === large) return;
       this.large = large;
-      if (this.running && MJPEG.has(this.view)) { this.stop(); this.start(); }
+      if (this.running && MJPEG.has(this.view) && !this.stopVideo) { this.stop(); this.start(); }
     }
 
     stop() {
@@ -469,22 +604,26 @@
       this.live = false;
       this.generation++;
       if (this.retry) { clearTimeout(this.retry); this.retry = null; }
-      // Replacing the source closes the stream, so the console ends its relay.
-      if (this.img) this.img.src = BLANK;
+      this.halt();
       this.paint();
     }
 
     failed() {
-      if (!this.running || (this.img && this.img.src === BLANK)) return;
+      if (!this.running || (!this.stopVideo && this.img && this.img.src === BLANK)) return;
       this.failures++;
-      if (this.img) this.img.src = BLANK;
+      this.live = false;
+      // H.264 that never played retries at once as MJPEG: the browser or the host cannot
+      // play it. A failed MJPEG stream retries as H.264.
+      const fallback = Boolean(this.stopVideo && !this.played);
+      if (this.video) this.mjpeg = fallback;
+      this.halt();
       if (this.retry) clearTimeout(this.retry);
       const generation = this.generation;
       // Retry the view only; a view is not a device command.
       this.retry = setTimeout(() => {
         this.retry = null;
         if (this.running && generation === this.generation) { this.running = false; this.start(); }
-      }, backoff(this.failures));
+      }, fallback ? 0 : backoff(this.failures));
     }
 
     async snapshot() {
@@ -912,6 +1051,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase },
   };
 });

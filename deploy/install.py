@@ -334,7 +334,11 @@ def camera_capture_sizes(value, devices, side_stream=""):
 
 
 def render_go2rtc(devices, sizes=None, *, modes=None):
-    """Return per-camera MJPEG capture settings, with the API on loopback only."""
+    """Return per-camera MJPEG capture settings and on-demand H.264 previews.
+
+    The API and RTSP listen on loopback only. ffmpeg reads and returns the H.264
+    previews through RTSP.
+    """
     if sizes is not None and modes is not None:
         raise ValueError("Use camera sizes or modes, not both.")
     settings = {"MG400_CAMERA_DEVICES": ",".join(devices)}
@@ -356,11 +360,17 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
         f"&input_format=mjpeg&video_size={mode[0]}x{mode[1]}&framerate={mode[2]}\n"
         for number, (device, mode) in enumerate(zip(configured.devices, configured.modes), 1)
     )
+    # go2rtc starts each ffmpeg encoder for its first viewer and stops it after the last.
+    # Sensor noise can raise a 640x480 stream to about 9 Mbit/s. The cap keeps 3 previews
+    # near 6 Mbit/s on the VPN link.
+    streams += "".join(
+        f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate=2M\n" for name in configured.preloaded
+    )
     preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"
     return (
         "api:\n  listen: 127.0.0.1:1984\n"
-        'rtsp:\n  listen: ""\n'
+        "rtsp:\n  listen: 127.0.0.1:8554\n"
         'webrtc:\n  listen: ""\n'
         f"{preload}"
         f"streams:\n{streams}"
@@ -679,18 +689,25 @@ def install(args, host, run, chown, out):
             flush=True,
         )
     # Without ffmpeg, the microscope runs, but its recordings cannot finish.
-    if "microscope" in selected:
-        tools = [
-            name for name in ("ffmpeg", "ffprobe") if shutil.which(name, path=SERVICE_PATH) is None
-        ]
-        if tools:
-            verb = "is" if len(tools) == 1 else "are"
-            print(
-                f"{' and '.join(tools)} {verb} not installed. "
-                "Microscope recordings cannot finish. Install the ffmpeg package.",
-                file=out,
-                flush=True,
-            )
+    # The camera previews then send MJPEG, which needs more VPN bandwidth than H.264.
+    tools = [
+        name for name in ("ffmpeg", "ffprobe") if shutil.which(name, path=SERVICE_PATH) is None
+    ]
+    if "microscope" in selected and tools:
+        verb = "is" if len(tools) == 1 else "are"
+        print(
+            f"{' and '.join(tools)} {verb} not installed. "
+            "Microscope recordings cannot finish. Install the ffmpeg package.",
+            file=out,
+            flush=True,
+        )
+    if devices and "ffmpeg" in tools:
+        print(
+            "ffmpeg is not installed. Camera previews send MJPEG, not H.264. "
+            "Install the ffmpeg package.",
+            file=out,
+            flush=True,
+        )
 
     # Vision requires the released model even without the optional bulk-fetch flag.
     required_assets = {"vision-weights"} if "vision" in selected else set()

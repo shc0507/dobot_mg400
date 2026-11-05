@@ -42,7 +42,7 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-web-panel.service` | `web` | [Robot service](development.en.md#robot-service-interface), port `8766` | None |
 | `mg400-stage-panel.service` | `stage` | [Stage service](stage-panel.en.md), port `8767` | `dialout` |
 | `mg400-camera-preview.service` | `camera` | Camera video streams, port `1985` | None |
-| `mg400-camera-capture.service` | `camera` | go2rtc capture, listening only on `127.0.0.1:1984` | `video` |
+| `mg400-camera-capture.service` | `camera` | go2rtc capture and H.264 encoding, listening only on `127.0.0.1:1984` and `127.0.0.1:8554` | `video` |
 | `mg400-gripper-collector.service` | `collector` | Gripper USB collection | `dialout` |
 | `mg400-thermal.service` | `thermal` | Optional [thermal camera service](thermal.en.md), port `8768` | None |
 | `mg400-furnace.service` | `furnace` | [Furnace and gas service](furnace.en.md), port `8769` | `dialout` |
@@ -65,7 +65,7 @@ After a host restart, only the gripper collection request listener resumes autom
 - A host network interface connects directly to the robot and has address `192.168.1.10/24`.
 - This interface can connect to the robot's TCP ports `29999`, `30003`, and `30004`.
 - For cameras, download the Linux program for version 1.9.14 from the [go2rtc releases page](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14).
-- For microscope recordings, `ffmpeg` and `ffprobe` are installed on the host. On Debian or Ubuntu, the `ffmpeg` package supplies both programs: `apt-get install ffmpeg`.
+- For microscope recordings or H.264 camera previews, `ffmpeg` and `ffprobe` are installed on the host. On Debian or Ubuntu, the `ffmpeg` package supplies both programs: `apt-get install ffmpeg`.
 
 ## Installation and updates
 
@@ -107,7 +107,7 @@ The installer works in this order:
    Also check the service registry, selection, selected units, and udev templates.
    If `--toupcam` is supplied, check its source, destination, and pinned SHA-256.
    If assets are requested or `vision` is enabled, also check the asset manifest, destination paths, and local files.
-   If `microscope` is enabled, look for `ffmpeg` and `ffprobe` in the default `PATH` of systemd services. If a program is missing, show a notice, but do not stop the installation.
+   If `microscope` is enabled, look for `ffmpeg` and `ffprobe` in the default `PATH` of systemd services. If cameras are configured, look for `ffmpeg`. If a program is missing, show a notice, but do not stop the installation.
    If a check fails, leave the host unchanged.
 2. Create the configuration file or add missing entries. Keep nonempty values.
    Remove old service `*_TOKEN` entries, except `MG400_GATEWAY_TOKEN`, and empty entries that the example does not contain.

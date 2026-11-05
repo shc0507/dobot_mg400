@@ -1609,10 +1609,8 @@ class MicroscopeService:
             position = self._guard_reference(job).focus.position
             motor.focus_move(self.config.switch_focus - position)
             self._guard_reference(job, clearance=True)
-            forward = (OBJECTIVE_ORDER.index(target) - OBJECTIVE_ORDER.index(current)) % len(
-                OBJECTIVE_ORDER
-            )
-            direction = 1 if forward <= 2 else -1
+            # The turret has a gap between the last and the first objective. Never cross it.
+            direction = 1 if OBJECTIVE_ORDER.index(target) > OBJECTIVE_ORDER.index(current) else -1
             settings = SwitchSettings()
             if self.demo:
                 settings = replace(
@@ -1629,6 +1627,9 @@ class MicroscopeService:
                 cancel_event=job.cancel,
                 before_move=lambda: self._guard_reference(job, clearance=True),
             )
+            with self._lock:
+                # The turret leaves the confirmed objective. A failed turn keeps it unknown.
+                self._objective_id = None
             result = switcher.run(
                 direction, f"microscope/{job.ident}-switch-{len(completed)}.csv", source_id=current
             )

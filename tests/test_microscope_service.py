@@ -467,6 +467,37 @@ def test_turret_turns_follow_clearance_moves_and_fresh_reference_checks(demo_rig
     assert state["focus_position_pulses"] == 0 and state["focus_zero_known"]
 
 
+def test_turret_turns_never_cross_the_gap_between_the_last_and_first_objective(demo_rig):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=3)["objective_id"] == 3
+    assert dispatch(rig, "select_objective", id=0)["objective_id"] == 0
+    turns = [item for item in rig.port.commands if item.startswith("OBJ MOVE ")]
+    assert turns == ["OBJ MOVE 740"] * 3 + ["OBJ MOVE -740"] * 3
+
+
+def test_failed_turn_reports_the_objective_as_unknown(demo_rig, monkeypatch):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=1)["objective_id"] == 1
+    factory = rig.service._switcher_factory
+
+    def failing_switcher(*args, **kwargs):
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("Objective identity could not be confirmed")
+
+        switcher = factory(*args, **kwargs)
+        switcher.run = fail
+        return switcher
+
+    monkeypatch.setattr(rig.service, "_switcher_factory", failing_switcher)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert state["objective_id"] is None
+
+
 def test_snapshot_is_exclusive_private_png_in_run_store(demo_rig, tmp_path):
     import stat
 

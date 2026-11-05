@@ -98,6 +98,9 @@ Every turret turn follows a completed clearance move and a fresh stationary-posi
 Before it moves, `select_objective` identifies the current objective in 1 side-camera frame.
 If it cannot identify an objective, the command fails. `last_command.message` gives the cause, for example a side frame size that differs from the reference size.
 In this case nothing moves, the focus zero stays known, and the service latches no fault.
+The turret has a gap between objective `3` and objective `0`.
+`select_objective` turns the turret through the objectives between the current and the target objective. It never turns across the gap.
+If a turret turn fails, `objective_id` is `null`.
 Focus moves and autofocus stay within the configured limits and require a known zero.
 A full autofocus scan uses a window centered inside the measured range.
 A local scan uses a smaller window near the current position.

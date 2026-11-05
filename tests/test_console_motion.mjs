@@ -144,6 +144,57 @@ test("without control the arm cannot move but Stop stage and Disable stay availa
   assert.deepEqual(page.calls.filter(call => call[0] === "stop"), [["stop", "stage"]]);
 });
 
+test("gripper positions and alarm rows are parsed strictly", () => {
+  assert.equal(logic.parseGrip("500"), 500);
+  assert.equal(logic.parseGrip("0"), 0);
+  assert.equal(logic.parseGrip("1001"), null);
+  assert.equal(logic.parseGrip("-1"), null);
+  assert.equal(logic.parseGrip("2.5"), null);
+  assert.deepEqual(logic.alarmRows({ alarms: [
+    { id: 22, source: "controller", description: "Joint 2 limit", solution: "Jog J2 back." },
+    { id: 3, source: "servo", description: "Overload", solution: "" },
+  ] }), [{ id: "22", text: "Joint 2 limit Jog J2 back." }, { id: "3", text: "Overload (servo)" }]);
+  assert.deepEqual(logic.alarmRows({}), []);
+});
+
+test("the arm card shows joints, alarms and the service message; Stop arm needs no control", async () => {
+  const robot = { ...ROBOT, joints: [1.5, -20, 3, 44.25], message: "Robot stop is confirmed. Disable the robot before recovery.",
+    gripper_message: "Control is locked. Check the gripper.",
+    alarms: [{ id: 22, source: "controller", description: "Joint 2 limit", solution: "Jog J2 back." }] };
+  const page = await mounted({ owns: [], robot: { ...robot, holder: null } });
+  const texts = page.root.all().map(node => node.ownText);
+  assert.ok(texts.includes("44.25°") && texts.includes("-20.00°"));
+  assert.ok(texts.includes("Alarm 22: Joint 2 limit Jog J2 back."));
+  assert.ok(texts.includes("Robot stop is confirmed. Disable the robot before recovery."));
+  assert.ok(texts.includes("Control is locked. Check the gripper."));
+  assert.equal(page.find("Home…").disabled, true);
+  assert.equal(page.find("Move").disabled, true);
+  page.find("Stop arm").click();
+  await page.settle();
+  assert.deepEqual(page.calls.filter(call => call[0] === "stop"), [["stop", "robot"]]);
+});
+
+test("Home sends only after the page confirmation; Move sends 1 gripper position", async () => {
+  const page = await mounted();
+  page.find("Home…").click();
+  await page.settle();
+  assert.equal(page.calls.some(call => call[0] === "relay"), false);
+  page.find("Confirm").click();
+  await page.settle();
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "robot", "home", {}]]);
+  const input = page.find("Gripper position, 0 to 1000");
+  input.value = "1200";
+  input.listeners.get("input")({ target: input });
+  page.find("Move").click();
+  await page.settle();
+  assert.ok(page.calls.some(call => call[0] === "notify" && call[1] === "Enter a whole gripper position from 0 to 1000."));
+  input.value = "400";
+  input.listeners.get("input")({ target: input });
+  page.find("Move").click();
+  await page.settle();
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay" && call[2] === "grip"), [["relay", "robot", "grip", { position: 400 }]]);
+});
+
 test("Set zero sends only after the page confirmation", async () => {
   const page = await mounted();
   page.find("Set zero…").click();

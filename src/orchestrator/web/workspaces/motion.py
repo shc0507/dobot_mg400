@@ -43,6 +43,7 @@ DEVICES = ("robot", "stage")
 
 ROBOT_FIELDS = (
     "actual",
+    "joints",
     "enabled",
     "robot_mode",
     "robot_error",

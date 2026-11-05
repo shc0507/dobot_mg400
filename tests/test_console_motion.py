@@ -342,6 +342,22 @@ def test_robot_stop_works_without_control(sim):
     assert response.get_json()["outcome"] in {"confirmed", "pending"}
 
 
+def test_home_moves_all_joints_to_zero_and_the_state_shows_the_joints(sim):
+    take(sim, "robot")
+    robot = enable_robot(sim)
+    assert len(robot["joints"]) == 4 and all(type(value) is float for value in robot["joints"])
+    assert isinstance(robot["message"], str) and robot["alarms"] == []
+    status, body = command(sim, "robot", "home")
+    assert status == 202, body
+    homed = wait_for(
+        lambda: (lambda r: r if r["last_command"]["action"] == "home" and not r["busy"] else None)(
+            motion_state(sim)["robot"]
+        )
+    )
+    assert homed["last_command"]["result"] == "ok"
+    assert homed["joints"] == pytest.approx([0.0, 0.0, 0.0, 0.0], abs=0.01)
+
+
 def test_generic_relay_and_the_move_route_both_send_robot_execute(sim):
     take(sim, "robot")
     x, y, z, r = enable_robot(sim)["actual"][:4]

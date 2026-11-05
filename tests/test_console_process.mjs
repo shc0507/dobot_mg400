@@ -222,6 +222,65 @@ test("stops need no control and are sent once", async () => {
   ]);
 });
 
+test("Close shuts 1 gas channel without control; the gas rows show the valve state and the ramp tile shows", async () => {
+  const status = statusBody();
+  status.furnace.ramp = 5;
+  status.furnace.flow.gas_valves = [{ channel_index: 0, open: true, verified: true }, { channel_index: 1, open: false, verified: false }];
+  const { root, calls, notices } = await load({ owns: [], status });
+  const text = walk(root).map(node => node.ownText);
+  assert.ok(text.includes("5.0 °C/min"));
+  assert.ok(text.some(value => value.endsWith("· valve open")));
+  assert.ok(text.some(value => value.endsWith("· valve closed (not confirmed)")));
+  assert.ok(text.some(value => value.endsWith("· valve unknown")));
+  assert.equal(role(root, "send-flow-1").disabled, true);
+  role(root, "close-gas-1").click();
+  await flush();
+  assert.deepEqual(calls.filter(call => call[1] === "gas-stop"), [["request", "gas-stop", { channel_index: 1 }]]);
+  assert.equal(calls.filter(call => call[0] === "relay").length, 0);
+  assert.ok(notices.some(([, text]) => text.startsWith("Gas 2 close:")));
+});
+
+test("snapshot path and recording fields are checked in the page and sent with the command", async () => {
+  const { root, calls, notices } = await load();
+  role(root, "snapshot-path").type("/etc/passwd");
+  role(root, "snapshot").click();
+  await flush();
+  assert.ok(notices.some(([level]) => level === "error"));
+  role(root, "snapshot-path").type("runs/chip-7/before.png");
+  role(root, "snapshot").click();
+  await flush();
+  role(root, "rec-name").type("anneal 7");
+  role(root, "rec-interval").type("12.5");
+  role(root, "rec-fps").type("4");
+  role(root, "record").click();
+  await flush();
+  role(root, "rec-fps").type("500");
+  role(root, "arm").click();
+  await flush();
+  const sent = calls.filter(call => call[0] === "relay").map(call => [call[2], call[3]]);
+  assert.deepEqual(sent, [
+    ["snapshot", { path: "runs/chip-7/before.png" }],
+    ["start_recording", { recording_id: "ab".repeat(16), mode: "time_lapse", run_name: "anneal 7", output_fps: 4, capture_interval_seconds: 12.5 }],
+  ]);
+});
+
+test("recording errors show, and the snapshot and recording helpers follow the service rules", async () => {
+  const { logic } = await load();
+  assert.deepEqual(logic.logic.snapshotParams(""), {});
+  assert.deepEqual(logic.logic.snapshotParams(" a/b.png "), { path: "a/b.png" });
+  for (const bad of ["/abs", "a//b", "../x", "a\\b", "a/./b"]) assert.equal(logic.logic.snapshotParams(bad), null);
+  assert.deepEqual(logic.logic.recordingParams({ mode: "live", interval: "", fps: "30" }), { mode: "live", output_fps: 30 });
+  assert.throws(() => logic.logic.recordingParams({ mode: "time_lapse", interval: "0", fps: "1" }));
+  assert.throws(() => logic.logic.recordingParams({ name: "x".repeat(81), mode: "live", fps: "1" }));
+  assert.deepEqual(logic.logic.valveState({ open: false, verified: true }), { key: "valve.closed" });
+  assert.deepEqual(logic.logic.valveState(null), { key: "valve.unknown" });
+  const status = statusBody();
+  status.microscope.recording = { status: "failed", error: "Camera stream ended." };
+  const { root } = await load({ status });
+  assert.equal(role(root, "rec-error").hidden, false);
+  assert.equal(role(root, "rec-error").textContent, "Recording error: Camera stream ended.");
+});
+
 test("microscope objective, jog, autofocus and recording go through the relay", async () => {
   const { root, calls } = await load();
   const objective = role(root, "objective-2");
@@ -240,7 +299,7 @@ test("microscope objective, jog, autofocus and recording go through the relay", 
     ["select_objective", { id: 1 }],
     ["focus_move", { steps: -50 }],
     ["autofocus", { mode: "local" }],
-    ["start_recording", { recording_id: "ab".repeat(16) }],
+    ["start_recording", { recording_id: "ab".repeat(16), mode: "time_lapse", output_fps: 1, capture_interval_seconds: 30 }],
   ]);
 });
 

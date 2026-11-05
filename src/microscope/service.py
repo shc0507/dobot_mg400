@@ -37,12 +37,24 @@ from labkit.events import EventLog
 from labkit.lease import Lease
 
 from .aruco_locator import Locator
-from .aruco_switch import OBJECTIVE_ORDER, ArucoObjectiveSwitcher, SwitchSettings, select_objective
+from .aruco_switch import (
+    OBJECTIVE_ORDER,
+    ArucoObjectiveSwitcher,
+    SwitchSettings,
+    full_steps_to_pulses,
+    select_objective,
+)
 from .autofocus import AutofocusCancelled, AutoFocuser
+from .calibrate import nudge_steps
 from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
 from .sim import MicroscopeSimulator
+
+# Turret nudges in full steps, and their speed in MICRO 4 pulses/s.
+# These are the turret keys and speed of `python -m microscope.calibrate setup`.
+NUDGE_STEPS = (-10, -1, 1, 10)
+NUDGE_SPEED = 40
 
 
 @dataclass(frozen=True)
@@ -54,6 +66,8 @@ class MicroscopeConfig:
     focus_limits: tuple[int, int] | None = None
     switch_focus: int | None = None
     home_switch: bool | None = None
+    # Measured turret window for nudges, in full steps from the selected objective.
+    nudge_steps: int = 0
     lease_seconds: float = 3.0
     focus_speed: int = 800
     furnace_url: str = "http://127.0.0.1:8769/"
@@ -86,6 +100,7 @@ class MicroscopeConfig:
             focus_limits=tuple(map(int, limits.split(","))) if limits else None,
             switch_focus=int(clearance) if clearance else None,
             home_switch=None if not switch else switch == "1",
+            nudge_steps=nudge_steps(env),
             furnace_url=env.get("MG400_MICROSCOPE_FURNACE_URL", "http://127.0.0.1:8769/"),
         )
 
@@ -109,6 +124,8 @@ class MicroscopeConfig:
             raise ValueError("Set measured clearance and whether a focus home switch exists")
         if not self.home_switch and self.switch_focus != 0:
             raise ValueError("Manual focus zero is at clearance; SWITCH_FOCUS must be 0")
+        if type(self.nudge_steps) is not int or not 0 <= self.nudge_steps <= 20:
+            raise ValueError("The turret nudge window must be 0..20 full steps")
         if not math.isfinite(self.lease_seconds) or self.lease_seconds <= 0:
             raise ValueError("Invalid control lease duration")
         if type(self.focus_speed) is not int or not 1 <= self.focus_speed <= 10000:
@@ -424,6 +441,10 @@ class _AuthorityCancel:
         return True
 
 
+class _Unidentified(RuntimeError):
+    """The side camera did not identify an objective. No motion has started."""
+
+
 @dataclass
 class _Job:
     ident: str
@@ -610,6 +631,7 @@ class MicroscopeService:
                 focus_limits=(-200, 200),
                 switch_focus=0,
                 home_switch=bool(config.home_switch),
+                nudge_steps=20,
             )
             if demo
             else config
@@ -654,6 +676,9 @@ class MicroscopeService:
         self._reference = None
         self._status = None
         self._objective_id = None
+        # Full steps that nudges turned the turret since select_objective aligned it.
+        # None: unknown, at start and after a failed or stopped turn.
+        self._objective_offset = None
         self._last_command = self._last_result = None
         self.expiry_count = 0
 
@@ -996,6 +1021,7 @@ class MicroscopeService:
     def describe(self):
         specifications = {
             "select_objective": {"id": parameter("integer", enum=list(OBJECTIVE_ORDER))},
+            "objective_nudge": {"steps": parameter("integer", enum=list(NUDGE_STEPS))},
             "autofocus": {"mode": parameter("string", enum=["full", "local"])},
             "focus_move": {"steps": parameter("integer", minimum=-(2**31), maximum=2**31 - 1)},
             "home_focus": {},
@@ -1059,12 +1085,18 @@ class MicroscopeService:
                 lease=lease_state,
                 last_command=copy.deepcopy(self._last_command),
                 objective_id=self._objective_id,
+                objective_offset_steps=self._objective_offset,
+                objective_offset_limit_steps=self.config.nudge_steps,
                 focus_position_pulses=status.focus.position if known and status else None,
                 focus_zero_known=known,
                 focus_limits_pulses=list(self.config.focus_limits or ()),
                 cameras={
                     "microscope": bool(self._camera and self._camera.is_open),
-                    "side": bool(self._side and self._side.is_open),
+                    "side": bool(
+                        self._side
+                        and self._side.is_open
+                        and getattr(self._side, "last_error", None) is None
+                    ),
                 },
                 last_result=copy.deepcopy(self._last_result),
                 manual_client=self._manual_holder,
@@ -1198,7 +1230,6 @@ class MicroscopeService:
                 self._motor.set_microstep(4)
                 self._status = self._motor.read_status()
                 self._camera.open()
-                self._side.open()
                 with self._lock:
                     if self._closed or self._quit.is_set():
                         raise RuntimeError("Microscope startup was cancelled")
@@ -1389,7 +1420,12 @@ class MicroscopeService:
         ):
             self._recording_arguments(action, args)
             return
-        required = {"select_objective": {"id"}, "autofocus": {"mode"}, "focus_move": {"steps"}}
+        required = {
+            "select_objective": {"id"},
+            "objective_nudge": {"steps"},
+            "autofocus": {"mode"},
+            "focus_move": {"steps"},
+        }
         allowed = required.get(action, {"path"} if action == "snapshot" else set())
         if set(args) - allowed or not required.get(action, set()) <= set(args):
             raise ValueError("Unexpected or missing microscope command parameters")
@@ -1397,6 +1433,10 @@ class MicroscopeService:
             type(args["id"]) is not int or args["id"] not in OBJECTIVE_ORDER
         ):
             raise ValueError("Unknown objective ID")
+        if action == "objective_nudge" and (
+            type(args["steps"]) is not int or args["steps"] not in NUDGE_STEPS
+        ):
+            raise ValueError("Nudge steps must be -10, -1, 1 or 10 full steps")
         if action == "autofocus" and args["mode"] not in ("full", "local"):
             raise ValueError("Autofocus mode must be full or local")
         if action == "focus_move" and (
@@ -1407,6 +1447,19 @@ class MicroscopeService:
             if not isinstance(args["path"], str) or not args["path"] or len(args["path"]) > 4096:
                 raise ValueError("Snapshot path must be a nonempty bounded string")
             run_path(args["path"])
+
+    def _check_nudge(self, steps):
+        """Refuse a nudge before motion unless it stays inside the measured window."""
+        window = self.config.nudge_steps
+        if not window:
+            raise ServiceError(409, "Turret nudges are off: MG400_MICROSCOPE_NUDGE_STEPS is 0")
+        if self._objective_id is None or self._objective_offset is None:
+            raise ServiceError(409, "Turret offset unknown: select another objective first")
+        offset = self._objective_offset + steps
+        if abs(offset) > window:
+            raise ServiceError(
+                409, f"The turret offset would be {offset:+d}, outside ±{window} full steps"
+            )
 
     def _dispatch(self, action, args, client, *, manual=False):
         self._arguments(action, args)
@@ -1434,10 +1487,12 @@ class MicroscopeService:
                 ):
                     raise ServiceError(409, "The recording ID is not active for this client")
             if (
-                action in ("focus_move", "select_objective", "autofocus")
+                action in ("focus_move", "select_objective", "objective_nudge", "autofocus")
                 and self._reference is None
             ):
                 raise ServiceError(409, "focus position unknown")
+            if action == "objective_nudge":
+                self._check_nudge(args["steps"])
             if action == "home_focus" and not self.config.home_switch:
                 raise ServiceError(409, "No configured focus home switch")
             if action == "set_focus_zero" and (not manual or self.config.home_switch):
@@ -1556,14 +1611,44 @@ class MicroscopeService:
         }
         return locator
 
-    def _select(self, job, motor):
-        locator = self._locator()
-        packet = self._side.get_frame_packet(timeout=2.0)
+    def _identify(self, job, locator):
+        """Return the visible objective ID, or refuse before any motion."""
+        try:
+            packet = self._side.get_frame_packet(timeout=5.0)
+        except RuntimeError as error:
+            cause = error.__cause__ or error
+            raise _Unidentified(f"Side camera is unavailable: {cause}") from error
         self._check_job(job)
         if packet is None:
-            raise RuntimeError("No fresh side-camera frame")
+            raise _Unidentified("No fresh side-camera frame")
         measurement = locator.locate(packet[2], only_target=False)
-        current = select_objective(measurement["markers"])["id"]
+        if not measurement["markers"]:
+            status = measurement["status"]
+            if status == "image_size_mismatch":
+                height, width = measurement["shape"]
+                reference_height, reference_width = measurement["reference_shape"]
+                status = (
+                    f"side frame {width}x{height} does not match "
+                    f"the {reference_width}x{reference_height} references"
+                )
+            raise _Unidentified(f"Objective identification failed: {status}")
+        return select_objective(measurement["markers"])["id"]
+
+    def _select(self, job, motor):
+        # The side stream runs only during a switch. At 3840x2160 it truncates
+        # the frames of other cameras on the shared USB 2 link.
+        locator = self._locator()
+        try:
+            self._side.open()
+        except RuntimeError as error:
+            raise _Unidentified(f"Side camera is unavailable: {error}") from error
+        try:
+            return self._switch(job, motor, locator)
+        finally:
+            self._side.close()
+
+    def _switch(self, job, motor, locator):
+        current = self._identify(job, locator)
         target = job.args["id"]
         completed = []
         for _ in range(3):
@@ -1572,10 +1657,8 @@ class MicroscopeService:
             position = self._guard_reference(job).focus.position
             motor.focus_move(self.config.switch_focus - position)
             self._guard_reference(job, clearance=True)
-            forward = (OBJECTIVE_ORDER.index(target) - OBJECTIVE_ORDER.index(current)) % len(
-                OBJECTIVE_ORDER
-            )
-            direction = 1 if forward <= 2 else -1
+            # The turret has a gap between the last and the first objective. Never cross it.
+            direction = 1 if OBJECTIVE_ORDER.index(target) > OBJECTIVE_ORDER.index(current) else -1
             settings = SwitchSettings()
             if self.demo:
                 settings = replace(
@@ -1592,6 +1675,9 @@ class MicroscopeService:
                 cancel_event=job.cancel,
                 before_move=lambda: self._guard_reference(job, clearance=True),
             )
+            with self._lock:
+                # The turret leaves the confirmed objective. A failed turn keeps it unknown.
+                self._objective_id = self._objective_offset = None
             result = switcher.run(
                 direction, f"microscope/{job.ident}-switch-{len(completed)}.csv", source_id=current
             )
@@ -1610,8 +1696,46 @@ class MicroscopeService:
         with self._lease.control(job.client):
             with self._lock:
                 self._check_job_locked(job)
+                if completed:
+                    # The side camera aligned the turret on this objective.
+                    self._objective_offset = 0
+                elif current != self._objective_id:
+                    # Nothing turned, but the counted offset belongs to another objective.
+                    self._objective_offset = None
                 self._objective_id = current
         return {"objective_id": current, "switches": completed}
+
+    def _nudge(self, job):
+        """Turn the turret by full steps at the current focus, with the setup tool's call."""
+        steps = job.args["steps"]
+        pulses = full_steps_to_pulses(steps)
+        status = self._guard_reference(job)
+        if status.objective.moving or status.focus.moving:
+            raise RuntimeError("Both axes must be stationary before a turret nudge")
+        target = status.objective.position + pulses
+        with self._lease.control(job.client):
+            with self._lock:
+                self._check_job_locked(job)
+                objective, offset = self._objective_id, self._objective_offset
+                # The turret leaves its counted position. A failed nudge keeps it unknown.
+                self._objective_id = self._objective_offset = None
+                self._seq += 1
+        self._motor.objective_speed(NUDGE_SPEED, cancel_event=job.cancel)
+        self._motor.objective_enable(cancel_event=job.cancel)
+        self._guard_reference(job)
+        self._motor.send_and_wait(
+            f"OBJ MOVE {pulses}", "DONE OBJ", timeout=3, cancel_event=job.cancel
+        )
+        status = self._guard_reference(job)
+        if status.objective.moving or status.objective.position != target:
+            raise RuntimeError("The turret nudge did not reach its position")
+        self._motor.objective_disable(cancel_event=job.cancel)
+        offset += steps
+        with self._lease.control(job.client):
+            with self._lock:
+                self._check_job_locked(job)
+                self._objective_id, self._objective_offset = objective, offset
+        return {"objective_id": objective, "objective_offset_steps": offset}
 
     def _autofocus(self, job, motor):
         status = self._guard_reference(job)
@@ -1682,6 +1806,8 @@ class MicroscopeService:
                 result = {"focus_position_pulses": self._guard_reference(job).focus.position}
             elif job.action == "select_objective":
                 result = self._select(job, motor)
+            elif job.action == "objective_nudge":
+                result = self._nudge(job)
             elif job.action == "autofocus":
                 result = self._autofocus(job, motor)
             elif job.action == "snapshot":
@@ -1697,6 +1823,9 @@ class MicroscopeService:
         except (SideCaptureCancelled, AutofocusCancelled) as error:
             outcome, message = "stopped", str(error)
             self.stop("command-cancel", 0)
+        except _Unidentified as error:
+            # Nothing moved: keep the motor state and the focus reference.
+            outcome, message = "failed", str(error)
         except (ValueError, CommandRejected) as error:
             outcome, message = "failed", str(error)
             self.stop("command-refused", 0)

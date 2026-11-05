@@ -50,7 +50,13 @@ const FURNACE_DESCRIBE = {
     start_sequence: { params: {} }, set_sequence: { params: {} }, set_gas_flow: { params: {} }, connect: { params: {} },
   },
 };
-const SCOPE_DESCRIBE = { device: "microscope", commands: { select_objective: { params: { properties: { id: { enum: [0, 1, 2, 3] } } } } } };
+const SCOPE_DESCRIBE = {
+  device: "microscope",
+  commands: {
+    select_objective: { params: { properties: { id: { enum: [0, 1, 2, 3] } } } },
+    objective_nudge: { params: { properties: { steps: { enum: [-10, -1, 1, 10] } } } },
+  },
+};
 
 function statusBody(overrides = {}) {
   return {
@@ -63,6 +69,7 @@ function statusBody(overrides = {}) {
     },
     microscope: {
       connected: true, busy: false, locked: false, objective_id: 2, focus_position_pulses: 1200, focus_zero_known: true,
+      objective_offset_steps: 0, objective_offset_limit_steps: 20,
       focus_limits_pulses: [0, 10000], recording: { status: "idle" }, recording_sequence: { armed: false }, stabilization: false,
     },
     ...overrides,
@@ -303,6 +310,50 @@ test("microscope objective, jog, autofocus and recording go through the relay", 
   ]);
 });
 
+test("the 4 turret nudges relay objective_nudge and stay inside the window", async () => {
+  const status = statusBody();
+  status.microscope.objective_offset_steps = 15;
+  const { root, calls } = await load({ status });
+  const buttons = ["nudge-down-10", "nudge-down-1", "nudge-up-1", "nudge-up-10"].map(name => role(root, name));
+  assert.deepEqual(buttons.map(node => node.textContent), ["−10", "−1", "+1", "+10"]);
+  assert.deepEqual(buttons.map(node => node.disabled), [false, false, false, true]);
+  assert.equal(role(root, "nudge-row").hidden, false);
+  assert.equal(role(root, "nudge-offset").textContent, "Turret +15 / ±20 full steps");
+  for (const node of buttons) {
+    node.click();
+    await flush();
+  }
+  const sent = calls.filter(call => call[0] === "relay").map(call => [call[1], call[2], call[3]]);
+  assert.deepEqual(sent, [
+    ["microscope", "objective_nudge", { steps: -10 }],
+    ["microscope", "objective_nudge", { steps: -1 }],
+    ["microscope", "objective_nudge", { steps: 1 }],
+  ]);
+});
+
+test("nudges wait for a counted turret offset and the focus zero", async () => {
+  const unknown = statusBody();
+  unknown.microscope.objective_offset_steps = null;
+  let { root } = await load({ status: unknown });
+  assert.ok(["nudge-down-10", "nudge-down-1", "nudge-up-1", "nudge-up-10"].every(name => role(root, name).disabled));
+  assert.equal(role(root, "nudge-offset").textContent, "Turret offset unknown. Select another objective first.");
+  const noZero = statusBody();
+  noZero.microscope.focus_zero_known = false;
+  ({ root } = await load({ status: noZero }));
+  assert.equal(role(root, "nudge-up-1").disabled, true);
+  ({ root } = await load({ owns: ["furnace"] }));
+  assert.equal(role(root, "nudge-up-1").disabled, true);
+});
+
+test("nudges are hidden when the service has no nudge window", async () => {
+  const off = statusBody();
+  off.microscope.objective_offset_limit_steps = 0;
+  const { root, logic } = await load({ status: off });
+  assert.equal(role(root, "nudge-row").hidden, true);
+  assert.deepEqual(logic.logic.nudgeSteps({ commands: {} }), []);
+  assert.deepEqual(logic.logic.nudgeSteps(SCOPE_DESCRIBE), [-10, -1, 1, 10]);
+});
+
 test("motion waits for the focus zero, and Set focus zero is sent once after a confirmation", async () => {
   const status = statusBody();
   status.microscope.focus_zero_known = false;
@@ -336,6 +387,19 @@ test("a furnace fault shows Acknowledge, which is sent once after a confirmation
   assert.deepEqual(calls.filter(call => call[1] === "acknowledge"), [["request", "acknowledge", { confirmed: true }]]);
   const healthy = await load();
   assert.equal(role(healthy.root, "acknowledge").hidden, true);
+});
+
+test("a failed microscope command shows its reason until the next command", async () => {
+  const status = statusBody();
+  status.microscope.last_command = { action: "select_objective", result: "failed", message: "Objective identification failed: black_frame" };
+  const { root } = await load({ status });
+  const note = role(root, "scope-note");
+  assert.equal(note.hidden, false);
+  assert.equal(note.textContent, "select_objective failed: Objective identification failed: black_frame");
+  assert.equal(role(root, "objective-1").disabled, false);
+  status.microscope.last_command = { action: "select_objective", result: "ok", message: "" };
+  const healthy = await load({ status });
+  assert.equal(role(healthy.root, "scope-note").hidden, true);
 });
 
 test("camera tiles come from LabCameras when it exists", async () => {

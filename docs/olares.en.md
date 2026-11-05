@@ -337,18 +337,23 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 
 With an empty list, ordinary streams use `640x480@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream.
-The following 4-camera configuration uses the port order in the table above and runs every camera at `640x480@30`.
-This is the tested setting on Olares (2026-11-03). With the tray at `1280x720@30`, the shared USB 2 link truncated the frames of `camera2`.
+The following 4-camera configuration uses the port order in the table above.
+The side stream `camera3` uses `640x360@30`, the aspect ratio of the `3840x2160` side reference images. The other cameras use `640x480@30`.
+With the tray at `1280x720@30`, the shared USB 2 link truncated the frames of `camera2`.
 Before you raise a mode, check the bandwidth with `mg400ctl camera-check` and the kernel log:
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
-MG400_CAMERA_MODES=640x480@30,640x480@30,640x480@30,640x480@30
+MG400_CAMERA_MODES=640x480@30,640x480@30,640x360@30,640x480@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
 Only streams with width at most 640 and height at most 480 are preloaded.
 Larger streams start when a video stream, microscope, or still consumer requests them.
+The microscope service reads its side stream only during `select_objective`.
+The preview relay does not serve a side stream above `640x480`.
+While `camera3` runs at `3840x2160@30`, the shared USB 2 link truncates `camera2` frames.
+A demand-started stream can send a truncated first frame. The microscope reader drops incomplete frames.
 After the last viewer leaves a large stream, the preview service releases its upstream reader between body reads.
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.

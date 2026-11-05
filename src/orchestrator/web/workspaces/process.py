@@ -67,6 +67,8 @@ MICROSCOPE_KEYS = (
     "locked",
     "fault",
     "objective_id",
+    "objective_offset_steps",
+    "objective_offset_limit_steps",
     "focus_position_pulses",
     "focus_zero_known",
     "focus_limits_pulses",

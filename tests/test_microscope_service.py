@@ -406,6 +406,7 @@ def test_demo_contract_conformance_and_unleased_expiry(demo_rig):
         ("focus_move", {"steps": 1}),
         ("autofocus", {"mode": "full"}),
         ("select_objective", {"id": 1}),
+        ("objective_nudge", {"steps": 1}),
     ],
 )
 def test_motion_refuses_unknown_focus_zero(demo_rig, action, args):
@@ -496,6 +497,134 @@ def test_failed_turn_reports_the_objective_as_unknown(demo_rig, monkeypatch):
     state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "failed"
     assert state["objective_id"] is None
+    assert state["objective_offset_steps"] is None
+
+
+def refused_nudge(rig, steps):
+    before = list(rig.port.commands)
+    response = service_post(rig, "command", {"action": "objective_nudge", "steps": steps})
+    assert response.status_code == 409, response.json
+    assert rig.port.commands == before
+    return response.json["error"]
+
+
+def test_nudge_config_uses_the_measured_window_setting():
+    from microscope.service import MicroscopeConfig, MicroscopeService
+
+    assert MicroscopeConfig.from_env({}).nudge_steps == 0
+    assert MicroscopeConfig.from_env({"MG400_MICROSCOPE_NUDGE_STEPS": "20"}).nudge_steps == 20
+    for value in ("21", "-1", "2.5"):
+        with pytest.raises(ValueError, match="0..20"):
+            MicroscopeConfig.from_env({"MG400_MICROSCOPE_NUDGE_STEPS": value})
+    with pytest.raises(ValueError, match="nudge window"):
+        MicroscopeConfig(
+            focus_limits=(0, 10), switch_focus=0, home_switch=False, nudge_steps=21
+        ).validate()
+    service = MicroscopeService(MicroscopeConfig(nudge_steps=0))
+    with pytest.raises(ServiceError, match="nudges are off") as refused:
+        service._check_nudge(1)
+    assert refused.value.status == 409
+    steps = MicroscopeService(demo=True).describe()["commands"]["objective_nudge"]
+    assert steps["params"]["properties"]["steps"]["enum"] == [-10, -1, 1, 10]
+
+
+def test_nudge_turns_full_steps_at_working_focus_inside_the_window(demo_rig):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    state = rig.service.snapshot()
+    assert state["objective_offset_steps"] is None and state["objective_offset_limit_steps"] == 20
+    assert "select another objective" in refused_nudge(rig, 1)
+    assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
+    assert dispatch(rig, "focus_move", steps=60)["focus_position_pulses"] == 60
+    start = len(rig.port.commands)
+    turret = rig.port.sim.objective.position
+    for steps, offset in ((10, 10), (10, 20), (-1, 19), (-10, 9), (-10, -1), (-10, -11)):
+        state = dispatch(rig, "objective_nudge", steps=steps)
+        assert state["last_command"]["result"] == "ok", state
+        assert state["objective_id"] == 1 and state["objective_offset_steps"] == offset
+        assert state["last_result"] == {"objective_id": 1, "objective_offset_steps": offset}
+    assert rig.port.sim.objective.position == turret - 44
+    assert not rig.port.sim.objective.enabled
+    assert state["focus_position_pulses"] == 60 and state["focus_zero_known"]
+    sent = rig.port.commands[start:]
+    assert not [line for line in sent if line.startswith("FOCUS MOVE")]
+    assert [line for line in sent if line.startswith("OBJ MOVE")] == [
+        "OBJ MOVE 40",
+        "OBJ MOVE 40",
+        "OBJ MOVE -4",
+        "OBJ MOVE -40",
+        "OBJ MOVE -40",
+        "OBJ MOVE -40",
+    ]
+    assert sent[:7] == [
+        "STATUS",
+        "OBJ SPEED 40",
+        "OBJ ENABLE",
+        "STATUS",
+        "OBJ MOVE 40",
+        "STATUS",
+        "OBJ DISABLE",
+    ]
+    assert "outside ±20 full steps" in refused_nudge(rig, -10)
+    assert dispatch(rig, "objective_nudge", steps=-1)["objective_offset_steps"] == -12
+    assert "-22, outside" in refused_nudge(rig, -10)
+
+
+def test_select_objective_resets_the_offset_only_after_a_turn(demo_rig):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
+    assert dispatch(rig, "objective_nudge", steps=10)["objective_offset_steps"] == 10
+    # The objective is already in place: nothing turns, so the count stays.
+    state = dispatch(rig, "select_objective", id=1)
+    assert state["last_result"]["switches"] == [] and state["objective_offset_steps"] == 10
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok", state
+    assert state["objective_id"] == 2 and state["objective_offset_steps"] == 0
+    assert dispatch(rig, "objective_nudge", steps=-10)["objective_offset_steps"] == -10
+    # The side camera finds objective 3 in place, not the counted objective 2.
+    with rig.port.lock:
+        rig.port.sim.objective.position = 3 * 740
+    state = dispatch(rig, "select_objective", id=3)
+    assert state["last_result"]["switches"] == [] and state["objective_id"] == 3
+    assert state["objective_offset_steps"] is None
+
+
+def test_failed_nudge_reports_the_turret_offset_as_unknown(demo_rig, monkeypatch):
+    from microscope.motors import CommandRejected
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
+    send_and_wait = rig.service._motor.send_and_wait
+
+    def rejected(command, *args, **kwargs):
+        if command.startswith("OBJ MOVE"):
+            raise CommandRejected(f"{command}: ERR OBJ BUSY")
+        return send_and_wait(command, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rig.service._motor, "send_and_wait", rejected)
+        state = dispatch(rig, "objective_nudge", steps=1)
+    assert state["last_command"]["result"] == "failed"
+    assert state["objective_id"] is None and state["objective_offset_steps"] is None
+    assert service_post(rig, "release").status_code == 200
+    assert rig.service._stop_done.wait(1)
+    establish_manual_reference(rig)
+    assert "select another objective" in refused_nudge(rig, 1)
+
+
+@pytest.mark.parametrize("steps", [2, 0, -20, True, "1", None])
+def test_nudge_accepts_only_the_four_step_sizes(demo_rig, steps):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    response = service_post(rig, "command", {"action": "objective_nudge", "steps": steps})
+    assert response.status_code == 400
+    assert service_post(rig, "command", {"action": "objective_nudge"}).status_code == 400
 
 
 def test_snapshot_is_exclusive_private_png_in_run_store(demo_rig, tmp_path):

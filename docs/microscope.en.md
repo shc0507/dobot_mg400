@@ -65,6 +65,7 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | Required measured `MIN,MAX` integer pulses, including zero, with nonzero travel. |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | Required measured clearance position, in pulses within the limits. Without a home switch, it must be `0`. |
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
+| `MG400_MICROSCOPE_NUDGE_STEPS` | Measured turret window for `objective_nudge`, in full steps from `0` through `20`. When it is unset or `0`, the service refuses every nudge. |
 
 Real startup requires reference-aware firmware and explicit focus settings.
 The generic environment example leaves the physical focus settings empty and sets the turret nudge window to `0`.
@@ -86,21 +87,38 @@ The control lease lasts 3 seconds and must be renewed during work.
 | Route | Use |
 | --- | --- |
 | `GET /api/describe` | Contract version, supported commands, objective IDs, and lease behavior. |
-| `GET /api/state` | Focus position and zero state, limits, objective ID, camera state, busy state, faults, and command result. |
+| `GET /api/state` | Focus position and zero state, limits, objective ID, turret offset, camera state, busy state, faults, and command result. |
 | `GET /api/events` | Service event history. |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | Acquire, renew, or release ordinary control. |
 | `POST /api/command` | Submit an action and its parameters. A `202` response returns a command ID, not a completion proof. |
 | `POST /api/stop` | Stop from any authenticated client without a controlling lease. Read its `confirmed`, `pending`, or `unconfirmed` result. |
 
-The command actions are `select_objective` with `id`, `autofocus` with `mode` (`full` or `local`), `focus_move` with relative `steps`, `home_focus`, and `snapshot` with an optional `path`.
+The command actions are `select_objective` with `id`, `objective_nudge` with `steps`, `autofocus` with `mode` (`full` or `local`), `focus_move` with relative `steps`, `home_focus`, and `snapshot` with an optional `path`.
 Read the command ID in `last_command` and its result before the next action.
-Every turret turn follows a completed clearance move and a fresh stationary-position check.
+Each `select_objective` turn follows a completed clearance move and a fresh stationary-position check.
 Before it moves, `select_objective` identifies the current objective in 1 side-camera frame.
 If it cannot identify an objective, the command fails. `last_command.message` gives the cause, for example a side frame size that differs from the reference size.
 In this case nothing moves, the focus zero stays known, and the service latches no fault.
 The turret has a gap between objective `3` and objective `0`.
 `select_objective` turns the turret through the objectives between the current and the target objective. It never turns across the gap.
 If a turret turn fails, `objective_id` is `null`.
+
+`objective_nudge` turns the turret `steps` full steps at the current focus position. It does not move to the clearance position first. The `steps` value is `-10`, `-1`, `1`, or `10`.
+A nudge uses the turret call of the supervised setup console: `MICRO 4`, turret speed `40` pulses/second, and `4` pulses for each full step.
+The service checks the end position, then disables the turret motor.
+A nudge requires a known zero.
+
+In `GET /api/state`, `objective_offset_steps` is the turret offset: the full steps of nudges after `select_objective` aligned an objective.
+`objective_offset_limit_steps` is the value of `MG400_MICROSCOPE_NUDGE_STEPS`.
+The allowed offset is inclusive, from minus the limit to plus the limit. Outside this range, the service refuses the nudge with HTTP 409 before motion.
+
+When `select_objective` turns the turret, the side camera aligns the turret on the target objective. The offset is then `0`.
+If the target objective is already in place, `select_objective` does not turn the turret, and the offset does not change.
+If the identified objective differs from the objective of the offset, the offset becomes `null`.
+
+The offset is `null` when the service starts, and after a nudge or a turret turn fails or stops.
+While the offset is `null`, the service refuses nudges. First select an objective other than the current one.
+
 Focus moves and autofocus stay within the configured limits and require a known zero.
 A full autofocus scan uses a window centered inside the measured range.
 A local scan uses a smaller window near the current position.
@@ -145,11 +163,14 @@ The microscope service has no web page. Operate the microscope in the Furnace + 
 1. On the microscope card, select **Take control**. If another client holds the lease, the console cannot get control. It does not take over automation control.
 2. Before motion, read the focus position and zero state on the card.
 3. Use the objective buttons to change the objective. The buttons use the objective IDs of `select_objective` in `GET /api/describe`.
-4. Use **Local autofocus** or **Full autofocus** to focus automatically.
-5. Enter a pulse count in **Jog pulses**, then use **− Jog** or **+ Jog** to jog within the limits.
-6. Use **Save snapshot** to save a snapshot.
+4. At working focus, use **−10**, **−1**, **+1**, or **+10** below the objective buttons to turn the turret in full steps. The text beside them shows the turret offset and its limit.
+5. Use **Local autofocus** or **Full autofocus** to focus automatically.
+6. Enter a pulse count in **Jog pulses**, then use **− Jog** or **+ Jog** to jog within the limits.
+7. Use **Save snapshot** to save a snapshot.
 
-When zero is unknown, the objective and jog buttons are unavailable.
+When zero is unknown, the objective, nudge, and jog buttons are unavailable.
+A nudge button is unavailable when the turret offset is unknown, or when the nudge would move the offset outside its limit.
+When `objective_offset_limit_steps` is `0`, the card shows no nudge buttons.
 When a microscope command fails, the card shows the command and its cause until the next command result.
 The console sends each command 1 time and does not retry it. Read the command result before the next action.
 **Stop** does not require control.
@@ -419,7 +440,7 @@ Camera dimensions default to `2592x1944`.
 
 `MG400_MICROSCOPE_NUDGE_STEPS` sets the measured turret window in full steps.
 Unset or `0` keeps the clearance behavior above. Values from `1` through `20` enable bounded moves at working focus.
-Other values refuse startup. This mode applies only to objective and light calibration.
+Other values refuse startup. In the calibration tool, this mode applies only to objective and light calibration. The service uses the same window for `objective_nudge`.
 
 Use the value measured in `H-06` at the window-side focus limit, with every objective in its working position.
 The window must preserve the physical margin in both directions for every objective.

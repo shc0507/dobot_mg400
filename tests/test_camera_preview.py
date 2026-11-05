@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import itertools
+import json
 import socket
 import urllib.error
 from contextlib import nullcontext
@@ -399,6 +400,33 @@ def test_mjpeg_route_streams_complete_parts_and_closes_connection(preview, monke
     feed.start.assert_called_once_with()
     feed.release.assert_called_once_with()
     assert [call.args[0] for call in feed.wait_after.call_args_list] == [0, 1, 4]
+    # Each frame written to the viewer counts toward the measured rate.
+    assert feed.count_sent.call_count == 2
+    upstream.assert_not_called()
+
+
+def test_fps_route_reports_the_frames_each_mjpeg_viewer_gets(preview, monkeypatch):
+    module, upstream = preview
+    now = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    feed = module.FEEDS["camera2"]
+    feed.viewers = 2
+    # 2 viewers get 10 frames a second in total over 2 s: 5 each.
+    for step in range(21):
+        now[0] = 98.0 + step * 0.1
+        feed.count_sent()
+    status, headers, body = request(module, "fps.json")
+    assert status == 200
+    assert headers["Content-Type"] == "application/json"
+    assert json.loads(body) == {"camera1": None, "camera2": 5.0, "camera3": None}
+    # Frames older than 2 s do not count, and a view without viewers has no rate.
+    now[0] = 102.5
+    assert feed.fps() is None
+    feed.viewers = 0
+    feed.count_sent()
+    feed.count_sent()
+    assert feed.fps() is None
+    assert request(module, "fps.json?x=1")[0] == 404
     upstream.assert_not_called()
 
 

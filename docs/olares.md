@@ -58,7 +58,7 @@ MG400_PROXY_PORT=8080
 | --- | --- |
 | `/lab/api/console/socket` | `127.0.0.1:8774`，控制台控制套接字（WebSocket） |
 | `/lab/` | `127.0.0.1:8772`，固定基础路径为 `/lab/` |
-| `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg` | `127.0.0.1:1985`，仅移除 `/camera` |
+| `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg`、`/camera/fps.json` | `127.0.0.1:1985`，仅移除 `/camera` |
 
 `<view>` 为 `camera1` 到 `camera4`。
 代理把根路径 `/` 重定向到实验室控制台 `/lab/`。参见[实验室控制台](dashboard.md#实验室控制台)。
@@ -358,6 +358,7 @@ MG400_MICROSCOPE_SIDE_STREAM=camera3
 视频流上限为 30 fps，包括采集模式为 `1920x1080@60` 时。
 观看者可以用 `?fps=N` 请求更低的帧率，N 为 1 到 30，例如 `/camera/camera2.mjpeg?fps=5`。其他查询值返回 404。
 每个预加载的流另有 1 路 H.264 预览 `/camera/<view>.mp4`，格式为分段 MP4，帧率与摄像头相同，码率上限为 2 Mbit/s。该路由不接受查询参数。
+`/camera/fps.json` 返回每路 MJPEG 流在最近 2 s 内发送给每个观看者的帧率。没有观看者的流为 `null`。控制台在摄像头状态中读取这些值。
 go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最后 1 个观看者离开后停止。
 ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
 单帧请求从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。

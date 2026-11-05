@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from flask import Response, jsonify, request
 
 from cameras.config import camera_configuration
+from cameras.rate import SendRate
 from labkit.errors import ServiceError
 
 from . import Workspace
@@ -40,6 +41,10 @@ STALE_S = 2.0
 RECENT_S = 5.0
 THERMAL_CACHE_S = 0.2
 DETECTION_CACHE_S = 1.0
+# The camera preview reports the MJPEG frames per second that each viewer of camera1 to
+# camera4 gets. H.264 tiles count their frames in the browser.
+PREVIEW_FPS_URL = "http://127.0.0.1:1985/fps.json"
+PREVIEW_FPS_CACHE_S = 0.5
 MAX_FRAME = 8 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
 CHUNK = 64 * 1024
@@ -119,6 +124,15 @@ class HttpSources:
         result["thermal"] = (160, 120, None)
         return result
 
+    def preview_fps(self):
+        try:
+            payload = json.loads(_read(_open(PREVIEW_FPS_URL, timeout=1.0), MAX_JSON))
+        except (SourceError, ValueError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {view: payload[view] for view in CAMERAS if _finite(payload.get(view))}
+
     def open_stream(self, view):
         http = self._client("microscope")
         if http is None:
@@ -186,6 +200,7 @@ class Relay:
         self.error = {}
         self.started = 0
         self.feeds = {view: _Feed(view, self) for view in MJPEG}
+        self.sent = {view: SendRate() for view in MJPEG}
 
     # Streams -----------------------------------------------------------------
 
@@ -206,6 +221,10 @@ class Relay:
             self.frame_at[view] = self.clock() if at is None else at
             self.error.pop(view, None)
 
+    def sent_frame(self, view, at=None):
+        with self.lock:
+            self.sent[view].add(self.clock() if at is None else at)
+
     def failed(self, view, message):
         with self.lock:
             self.error[view] = (message, self.clock())
@@ -220,6 +239,7 @@ class Relay:
             opened = self.open[view]
             seen = self.frame_at.get(view)
             error = self.error.get(view)
+            fps = self.sent[view].per_viewer(now, opened) if view in self.sent else None
         age = None if seen is None else max(0.0, now - seen)
         if error is not None and (seen is None or error[1] >= seen):
             state = "offline"
@@ -231,6 +251,7 @@ class Relay:
             "state": state,
             "age_s": None if age is None else round(age, 1),
             "streams": opened,
+            "fps": fps,
             "error": None if error is None else error[0],
         }
 
@@ -423,10 +444,11 @@ def _view(name):
 
 
 def _mode_text(mode):
+    # The tiles show the measured frame rate, not the configured one.
     if not mode:
         return None
-    width, height, fps = mode
-    return f"{width}×{height}" + (f" · {fps} fps" if fps else "")
+    width, height, _ = mode
+    return f"{width}×{height}"
 
 
 def _finite(value):
@@ -542,6 +564,7 @@ def register(blueprint, service):
     service.camera_relay = relay
     thermal_cache = _Cache(clock, THERMAL_CACHE_S)
     detection_cache = _Cache(clock, DETECTION_CACHE_S)
+    fps_cache = _Cache(clock, PREVIEW_FPS_CACHE_S)
 
     def sources():
         # Tests and demos may attach their own sources to the service.
@@ -552,12 +575,15 @@ def register(blueprint, service):
     def status():
         source = sources()
         modes = source.modes()
+        load_fps = getattr(source, "preview_fps", None)
+        preview_fps = fps_cache.get(load_fps) if load_fps else {}
         views = []
         for view in VIEWS:
             row = {"id": view, "configured": source.configured(view)}
             if view in CAMERAS:
                 # The browser loads these streams from the proxy; it shows their state.
                 row["url"] = f"/camera/{view}.mjpeg"
+                row["fps"] = preview_fps.get(view)
             else:
                 row.update(relay.view_state(view))
             row["mode"] = _mode_text(modes.get(view))
@@ -618,6 +644,7 @@ def register(blueprint, service):
                         return
                     last, frame = item
                     due = time.monotonic() + interval
+                    relay.sent_frame(view)
                     yield _part(frame)
             finally:
                 close()

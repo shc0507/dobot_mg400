@@ -357,6 +357,7 @@ A demand-started stream can send a truncated first frame. The microscope reader 
 After the last viewer leaves a large stream, the preview service releases its upstream reader between body reads.
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
+A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
 Single-frame requests use the same go2rtc stream, at its configured resolution; they do not switch mode or open another device capture.
 
 The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large streams can exceed its periodic transfer budget together.

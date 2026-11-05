@@ -191,7 +191,7 @@ def test_go2rtc_keeps_one_stream_and_returns_the_newest_complete_jpeg(monkeypatc
     try:
         ok, frame = capture.read()
         assert ok and frame.shape == (32, 40, 3)
-        assert calls == [(STREAM_URL, 2.0)] and not first.closed
+        assert calls == [(STREAM_URL, None)] and not first.closed
         hold.set()
         wait_for(lambda: len(calls) == 3)
         ok, frame = capture.read()
@@ -201,6 +201,21 @@ def test_go2rtc_keeps_one_stream_and_returns_the_newest_complete_jpeg(monkeypatc
     finally:
         stop_reader(capture, finished)
     assert capture.read() == (False, None)
+
+
+def test_go2rtc_reader_has_no_read_timeout_that_reconnects_during_a_stall(monkeypatch):
+    # go2rtc keeps a closed MJPEG consumer until its next frame. A read timeout during a camera
+    # stall would reconnect and leave 1 consumer each time.
+    monkeypatch.setattr(uvc, "RECONNECT_SECONDS", 0)
+    held = threading.Event()
+    opener, calls, finished = stream_opener(Stream([jpeg()], hold=held))
+    capture = uvc.Go2RTCCapture("camera2", opener=opener)
+    try:
+        assert capture.read()[0]
+        assert calls == [(STREAM_URL, None)]
+    finally:
+        held.set()
+        stop_reader(capture, finished)
 
 
 @pytest.mark.parametrize(
@@ -253,7 +268,7 @@ def test_go2rtc_drops_bad_responses_and_parts_before_decode_and_reconnects(failu
     try:
         ok, frame = capture.read()
         assert ok and frame.shape == (24, 48, 3)
-        assert calls == [(STREAM_URL, 2.0), (STREAM_URL, 2.0)]
+        assert calls == [(STREAM_URL, None), (STREAM_URL, None)]
         assert body.closed if failure == "http" else bad.closed
     finally:
         held.set()

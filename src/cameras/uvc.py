@@ -37,13 +37,10 @@ class Go2RTCCapture:
     failure. read() decodes only the newest complete JPEG.
     """
 
-    def __init__(self, stream, *, timeout=2.0, opener=None):
+    def __init__(self, stream, *, opener=None):
         if not isinstance(stream, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", stream):
             raise ValueError("A go2rtc stream name is required")
-        if isinstance(timeout, bool) or not math.isfinite(timeout) or not 0 < timeout <= 10:
-            raise ValueError("Frame timeout must be within 0..10 seconds")
         self.url = "http://127.0.0.1:1984/api/stream.mjpeg?src=" + quote(stream, safe="")
-        self.timeout = timeout
         self._opener = opener or build_opener(ProxyHandler({}), _NoRedirect())
         self._closed = threading.Event()
         self._condition = threading.Condition()
@@ -80,7 +77,9 @@ class Go2RTCCapture:
         open_stream = self._opener if callable(self._opener) else self._opener.open
         while not self._closed.is_set():
             try:
-                with closing(open_stream(self.url, timeout=self.timeout)) as response:
+                # No read timeout: go2rtc keeps a closed consumer until the next frame, so a
+                # reconnect on each camera stall adds 1 consumer. Frames resume on this stream.
+                with closing(open_stream(self.url, timeout=None)) as response:
                     self._read_parts(response)
             except HTTPError as error:
                 error.close()

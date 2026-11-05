@@ -27,7 +27,7 @@
     en: {
       "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4",
       "title.thermal": "Thermal", "title.microscope": "Microscope",
-      "role.camera1": "Stage", "role.camera2": "Route", "role.camera3": "Load station", "role.camera4": "Tray",
+      "role.camera1": "Stage", "role.camera2": "Insert rail", "role.camera3": "Microscope side", "role.camera4": "Tray",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "LIVE", "badge.stale": "STALE", "badge.offline": "OFFLINE", "badge.frozen": "FROZEN",
       "age": "{age} s", "mode.unknown": "Mode unknown",
@@ -62,7 +62,7 @@
     zh: {
       "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4",
       "title.thermal": "热像仪", "title.microscope": "显微镜",
-      "role.camera1": "位移台", "role.camera2": "路线", "role.camera3": "装样位", "role.camera4": "托盘",
+      "role.camera1": "位移台", "role.camera2": "插入导轨", "role.camera3": "显微镜侧视", "role.camera4": "托盘",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "实时", "badge.stale": "过期", "badge.offline": "离线", "badge.frozen": "已冻结",
       "age": "{age} 秒", "mode.unknown": "模式未知",

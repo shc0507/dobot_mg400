@@ -26,7 +26,7 @@
       "service.thermal": "Thermal", "service.vision": "Vision", "service.microscope": "Microscope",
       "service.furnace": "Furnace", "service.runs": "Runs",
       "chip.unconfigured": "Not configured", "chip.loading": "Loading", "chip.unavailable": "Unavailable",
-      "chip.stale": "Stale", "chip.fault": "Fault", "chip.locked": "Locked", "chip.disconnected": "Disconnected",
+      "chip.stale": "Stale", "chip.fault": "Fault", "chip.locked": "Locked", "chip.disconnected": "Not connected",
       "chip.busy": "Busy", "chip.ready": "Ready", "chip.demo": "demo", "chip.live": "Live", "chip.configured": "Configured",
       "chip.noRun": "No run", "chip.offline": "Console offline",
       "stop.sent": "Stop all motion sent.", "stop.failed": "Stop all motion could not be sent: {error}",
@@ -80,7 +80,7 @@
     else if (phase === "stale") chip = { tone: "warn", key: "chip.stale" };
     else if (card.fault) chip = { tone: "bad", key: "chip.fault" };
     else if (card.locked === true) chip = { tone: "bad", key: "chip.locked" };
-    else if (card.connected !== true) chip = { tone: "warn", key: "chip.disconnected" };
+    else if (card.connected !== true) chip = { tone: "off", key: "chip.disconnected" };
     else if (card.busy === true) chip = { tone: "info", key: "chip.busy" };
     else chip = { tone: "ok", key: "chip.ready" };
     chip.demo = card.demo === true;

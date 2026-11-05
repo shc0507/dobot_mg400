@@ -169,7 +169,7 @@
       "out.unknown": "{device} {action}: outcome unknown. Check the device. It is not retried.",
       "out.stop": "{device} stop: {outcome}",
       "cam.offline": "OFFLINE", "cam.swap": "Swap view", "cam.swapLabel": "Show {view} in the large view",
-      "cam.camera2": "camera2 · Route", "cam.camera4": "camera4 · Tray", "cam.camera3": "camera3 · Load station",
+      "cam.camera2": "camera2 · Insert rail", "cam.camera4": "camera4 · Tray", "cam.camera3": "camera3 · Microscope side",
     },
     zh: {
       "arm.title": "机械臂 · MG400", "stage.title": "位移台 · 3 轴", "cams.title": "运动相机",
@@ -215,7 +215,7 @@
       "out.unknown": "{device} {action}：结果未知。请检查设备。不会重试。",
       "out.stop": "{device} 停止：{outcome}",
       "cam.offline": "离线", "cam.swap": "切换视图", "cam.swapLabel": "在大视图中显示 {view}",
-      "cam.camera2": "camera2 · 路线", "cam.camera4": "camera4 · 托盘", "cam.camera3": "camera3 · 装载工位",
+      "cam.camera2": "camera2 · 插入导轨", "cam.camera4": "camera4 · 托盘", "cam.camera3": "camera3 · 显微镜侧视",
     },
   };
 

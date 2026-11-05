@@ -182,9 +182,13 @@ class Dashboard:
                 card["lease_holder"] = (
                     None if holder is None else self.text(holder, 128) or "Unknown"
                 )
+                # An arm without feedback has no error status: that is not a fault.
+                error = state.get("robot_error")
                 card["fault"] = (
                     "Robot error or stop confirmation is unknown."
-                    if state.get("robot_error") is not False
+                    if error is True
+                    or (error is not False and card["connected"] is not False)
+                    or state.get("alarms")
                     or state.get("stop_unconfirmed") is not False
                     else None
                 )

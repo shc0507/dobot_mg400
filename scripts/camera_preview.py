@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import socket
@@ -11,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Condition, Thread
 
 from cameras.config import camera_configuration
+from cameras.rate import SendRate
 
 CAMERAS = camera_configuration(os.environ)
 # A side stream above 640x480 belongs to the microscope, which runs it only during an
@@ -117,6 +119,7 @@ class CameraFeed:
         self.frame = None
         self.error = False
         self.received = 0.0
+        self.sent = SendRate()
 
     def start(self):
         with self.condition:
@@ -153,6 +156,15 @@ class CameraFeed:
             self.error = False
             self.received = time.monotonic()
             self.condition.notify_all()
+
+    def count_sent(self):
+        with self.condition:
+            self.sent.add(time.monotonic())
+
+    def fps(self):
+        """Frames per second that 1 MJPEG viewer gets, or None."""
+        with self.condition:
+            return self.sent.per_viewer(time.monotonic(), self.viewers)
 
     def disconnect(self):
         with self.condition:
@@ -241,6 +253,11 @@ class Preview(BaseHTTPRequestHandler):
         if route in VIDEOS and not query:
             self.video(VIDEOS[route])
             return
+        if route == "fps.json" and not query:
+            # The console shows these rates on the MJPEG tiles. H.264 tiles count their own.
+            rates = {source: feed.fps() for source, feed in FEEDS.items()}
+            self.respond(json.dumps(rates).encode(), "application/json")
+            return
         if query or route not in STREAMS:
             self.send_error(404)
             return
@@ -278,6 +295,7 @@ class Preview(BaseHTTPRequestHandler):
                         + frame
                         + b"\r\n"
                     )
+                    feed.count_sent()
                     time.sleep(1 / fps)
                     sequence, frame = feed.wait_after(sequence)
             except OSError:

@@ -115,6 +115,28 @@ test("the H.264 player stays near the newest frame", () => {
   assert.deepEqual(logic.chase(0, 4, 4.05), { seek: 4, rate: 1 });
 });
 
+test("tiles show the measured frame rate and drop an old rate", () => {
+  assert.equal(logic.frameRate({ frames: 10, at: 1000 }, { frames: 40, at: 2000 }), 30);
+  assert.equal(logic.frameRate({ frames: 10, at: 1000 }, { frames: 10, at: 1000 }), null);
+  assert.equal(logic.frameRate({ frames: 10, at: 1000 }, { frames: 5, at: 2000 }), null);
+  const rate = logic.meter();
+  logic.measure(rate, 3, 0);
+  logic.measure(rate, 18, 500);
+  // Less than 1 s of frames: no rate yet.
+  assert.equal(logic.current(rate, 500), null);
+  logic.measure(rate, 33, 1000);
+  assert.equal(logic.current(rate, 1000), 30);
+  // A new video source counts from 0 again.
+  logic.measure(rate, 0, 1100);
+  assert.deepEqual(rate.first, { frames: 0, at: 1100 });
+  // No new frames for 2.5 s: the rate is old.
+  assert.equal(logic.current(rate, 3600), null);
+  assert.equal(logic.modeLine("640×480", 29.84), "640×480 · 29.8 fps");
+  assert.equal(logic.modeLine("640×480", 4.9), "640×480 · 4.9 fps");
+  assert.equal(logic.modeLine("640×480", null), "640×480");
+  assert.equal(logic.modeLine("640×480", Number.NaN), "640×480");
+});
+
 test("the thermal panel relays connect and shutter and links no service page", () => {
   const source = readFileSync(path, "utf8");
   assert.match(source, /send\("connect", \{\}\)/);

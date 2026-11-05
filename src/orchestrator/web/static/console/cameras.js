@@ -30,6 +30,8 @@
   const H264 = 'video/mp4; codecs="avc1.640029"';
   // Play near the newest frame: jump when more than JUMP_S behind, speed up above CATCH_UP_S.
   const JUMP_S = 1, CATCH_UP_S = 0.3, KEEP_S = 10, MAX_QUEUE = 4 * 1024 * 1024;
+  // Tiles show the measured frame rate: a new value about once a second, none when it is old.
+  const RATE_MS = 1000, FRESH_MS = 2500;
 
   const i18n = {
     en: {
@@ -245,6 +247,31 @@
     return { seek: null, rate: end - time > CATCH_UP_S ? 1.1 : 1 };
   }
 
+  /** Frames per second between 2 samples {frames, at} (at in ms), or null. */
+  function frameRate(first, last) {
+    if (!first || !last || !(last.at > first.at) || last.frames < first.frames) return null;
+    return (last.frames - first.frames) * 1000 / (last.at - first.at);
+  }
+
+  /** A frame counter that turns its count into a rate about once a second. */
+  function meter() { return { first: null, fps: null, at: -Infinity }; }
+
+  function measure(rate, frames, at) {
+    if (!rate.first || frames < rate.first.frames) { rate.first = { frames, at }; return; }
+    if (at - rate.first.at < RATE_MS) return;
+    rate.fps = frameRate(rate.first, { frames, at });
+    rate.at = at;
+    rate.first = { frames, at };
+  }
+
+  /** The measured rate, or null when it is old. */
+  function current(rate, now) { return rate && now - rate.at <= FRESH_MS ? rate.fps : null; }
+
+  /** The tile mode with the measured rate, for example "640×480 · 29.8 fps". */
+  function modeLine(mode, fps) {
+    return typeof fps === "number" && Number.isFinite(fps) ? `${mode} · ${fps.toFixed(1)} fps` : mode;
+  }
+
   /** The JPEG snapshot URL of one MJPEG view. */
   function snapshotUrl(view, basePath = "") {
     return CAMERAS.has(view) ? `/camera/${view}.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
@@ -350,11 +377,27 @@
     return stop;
   }
 
+  /** Count the frames that a video presents into rate. Return a function that stops it. */
+  function countFrames(video, rate) {
+    if (typeof video.requestVideoFrameCallback !== "function") return () => {};
+    let handle = null;
+    const step = (_now, metadata) => {
+      measure(rate, metadata.presentedFrames, nowMs());
+      handle = video.requestVideoFrameCallback(step);
+    };
+    handle = video.requestVideoFrameCallback(step);
+    return () => {
+      if (handle !== null) video.cancelVideoFrameCallback?.(handle);
+      handle = null;
+    };
+  }
+
   // Shared engine ---------------------------------------------------------------
 
   const engine = {
     api: null, tiles: new Set(), status: new Map(), statusAt: -Infinity, statusBusy: false,
     thermal: null, thermalAt: -Infinity, thermalFailed: false, thermalBusy: false, thermalTimer: null,
+    thermalFrames: 0, thermalId: null, thermalRate: meter(),
     detections: null, detectBusy: false, detectTimer: null, timer: null, regions: {}, probe: null,
     settings: { unit: "C", palette: "ironbow", scale: "auto", low: 20, high: 40, frozen: false, markers: true, detections: true },
     listeners: new Set(),
@@ -416,8 +459,14 @@
     if (!engine.settings.frozen && !engine.thermalBusy) {
       engine.thermalBusy = true;
       try {
-        engine.thermal = await request("thermal/frame");
+        const frame = await request("thermal/frame");
+        // Count each new sensor frame once, also when a poll returns the same frame again.
+        const id = frame?.sequence ?? frame?.timestamp ?? null;
+        if (id === null || id !== engine.thermalId) engine.thermalFrames++;
+        engine.thermalId = id;
+        engine.thermal = frame;
         engine.thermalAt = nowMs();
+        measure(engine.thermalRate, engine.thermalFrames, engine.thermalAt);
         engine.thermalFailed = false;
       } catch { engine.thermalFailed = true; }
       finally { engine.thermalBusy = false; }
@@ -576,6 +625,8 @@
         this.img.hidden = true;
         this.video.hidden = false;
         this.stopVideo = playH264(this.video, videoUrl(this.view), () => { if (generation === this.generation) this.failed(); });
+        this.videoRate = meter();
+        this.stopCount = countFrames(this.video, this.videoRate);
       } else {
         if (this.video) this.video.hidden = true;
         this.img.hidden = false;
@@ -586,6 +637,7 @@
 
     /** Close the H.264 stream or the MJPEG stream. */
     halt() {
+      if (this.stopCount) { this.stopCount(); this.stopCount = null; }
       if (this.stopVideo) { this.stopVideo(); this.stopVideo = null; }
       // Replacing the source closes the stream, so the console ends its relay.
       if (this.img) this.img.src = BLANK;
@@ -649,7 +701,7 @@
       this.badge.className = "lcam-badge tone-" + state.tone;
       this.badgeText.textContent = t(state.key) + (state.age !== null && state.age !== undefined ? " · " + t("age", { age: state.age.toFixed(1) }) : "");
       const mode = view === "thermal" ? "160×120" : row?.mode;
-      this.mode.textContent = mode || t("mode.unknown");
+      this.mode.textContent = modeLine(mode || t("mode.unknown"), this.rate(row));
       const offline = state.key === "badge.offline";
       this.empty.hidden = !offline;
       this.empty.textContent = row && row.configured === false ? t("tile.notConfigured") : t("tile.noFrame");
@@ -664,6 +716,14 @@
           ? t(engine.probe.pinned ? "probe.pinned" : "probe", { x: reading.x, y: reading.y, value: formatTemp(reading.celsius, engine.settings.unit) })
           : stats ? t("reading.mean") + " " + formatTemp(stats.mean_celsius, engine.settings.unit) : "";
       }
+    }
+
+    /** The measured frame rate: H.264 and thermal count in the page, MJPEG comes from the sender. */
+    rate(row) {
+      if (!this.running) return null;
+      if (this.view === "thermal") return current(engine.thermalRate, nowMs());
+      if (this.stopVideo) return current(this.videoRate, nowMs());
+      return typeof row?.fps === "number" && Number.isFinite(row.fps) ? row.fps : null;
     }
 
     paint() {
@@ -1051,6 +1111,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase, frameRate, meter, measure, current, modeLine },
   };
 });

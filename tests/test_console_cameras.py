@@ -1,5 +1,6 @@
 """Console Cameras workspace: proxy camera URLs, the microscope relay, states and secrets."""
 
+import io
 import json
 import re
 import socket
@@ -101,6 +102,9 @@ class Sources:
 
     def modes(self):
         return {"camera1": (640, 480, 30), "thermal": (160, 120, None)}
+
+    def preview_fps(self):
+        return {"camera1": 4.9}
 
     def open_stream(self, view):
         if view in self.fail:
@@ -212,9 +216,34 @@ def test_routes_need_no_token_and_cameras_load_from_the_proxy(rig):
     assert rig.client.post(BASE + "ticket", json={}, headers=headers()).status_code in {404, 405}
     rows = status(rig)
     assert rows["camera1"]["url"] == "/camera/camera1.mjpeg"
-    assert rows["camera1"]["mode"] == "640×480 · 30 fps"
+    # The mode has no configured rate: tiles show the measured one.
+    assert rows["camera1"]["mode"] == "640×480"
+    assert rows["camera1"]["fps"] == 4.9
+    assert rows["camera2"]["fps"] is None
     assert rows["camera3"]["configured"] is False
     assert "url" not in rows["microscope"]
+
+
+def test_relay_reports_the_frames_each_microscope_viewer_gets():
+    relay = cameras_module.Relay(clock=lambda: 10.0)
+    slot = relay.acquire("microscope")
+    assert relay.view_state("microscope")["fps"] is None
+    # 11 frames over 2 s: 5 a second.
+    for step in range(11):
+        relay.sent_frame("microscope", at=8.0 + step * 0.2)
+    assert relay.view_state("microscope")["fps"] == 5.0
+    assert relay.view_state("thermal")["fps"] is None
+    slot.release()
+    assert relay.view_state("microscope")["fps"] is None
+
+
+def test_preview_fps_keeps_only_finite_camera_rates(monkeypatch):
+    payloads = iter([b'{"camera1": 9.8, "camera2": null, "camera9": 3, "thermal": 1}', b"[]", b"{"])
+    monkeypatch.setattr(cameras_module, "_open", lambda url, timeout: io.BytesIO(next(payloads)))
+    source = cameras_module.HttpSources(SimpleNamespace())
+    assert source.preview_fps() == {"camera1": 9.8}
+    assert source.preview_fps() == {}
+    assert source.preview_fps() == {}
 
 
 def test_microscope_snapshot_is_a_jpeg_attachment(rig):

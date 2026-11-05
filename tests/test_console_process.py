@@ -89,7 +89,11 @@ def rig(tmp_path):
         lease_secret="not-for-the-page",
     )
     value.devices["microscope"].state.update(
-        objective_id=1, focus_position_pulses=1200, focus_zero_known=True
+        objective_id=1,
+        objective_offset_steps=-3,
+        objective_offset_limit_steps=20,
+        focus_position_pulses=1200,
+        focus_zero_known=True,
     )
     yield value
     value.service.close()
@@ -107,6 +111,8 @@ def test_status_reports_page_fields_and_crucible(rig):
     assert body["furnace"]["pv"] == 24.5 and body["furnace"]["control_mode"] == "STOPPED"
     assert "lease" not in body["furnace"] and "lease_secret" not in body["furnace"]
     assert body["microscope"]["focus_position_pulses"] == 1200
+    assert body["microscope"]["objective_offset_steps"] == -3
+    assert body["microscope"]["objective_offset_limit_steps"] == 20
     assert body["crucible"] == {
         key: ROI[key] for key in ("min_c", "mean_c", "max_c", "frame_age_s")
     }

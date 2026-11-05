@@ -65,6 +65,7 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 | `MG400_MICROSCOPE_FOCUS_LIMITS` | 必填的实测 `MIN,MAX` 整数脉冲，包含零点，且行程不为零。 |
 | `MG400_MICROSCOPE_SWITCH_FOCUS` | 必填的实测避让位置，单位为脉冲，必须在限位内。没有归零开关时，必须为 `0`。 |
 | `MG400_MICROSCOPE_HOME_SWITCH` | 必填硬件事实：有已配置的调焦归零开关时为 `1`，没有时为 `0`。 |
+| `MG400_MICROSCOPE_NUDGE_STEPS` | `objective_nudge` 的实测转盘范围，单位为整步，取 `0` 到 `20`。未配置或为 `0` 时，服务拒绝所有微调。 |
 
 真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
 通用环境示例的物理调焦参数为空，转盘微调范围为 `0`。
@@ -86,21 +87,38 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 | 路由 | 用途 |
 | --- | --- |
 | `GET /api/describe` | 契约版本、支持的命令、物镜 ID 和租约行为。 |
-| `GET /api/state` | 调焦位置和零点状态、限位、物镜 ID、相机状态、忙碌状态、故障及命令结果。 |
+| `GET /api/state` | 调焦位置和零点状态、限位、物镜 ID、转盘偏移、相机状态、忙碌状态、故障及命令结果。 |
 | `GET /api/events` | 服务事件历史。 |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | 取得、续期或释放普通控制权。 |
 | `POST /api/command` | 提交动作和参数。`202` 响应返回命令 ID，不代表命令完成。 |
 | `POST /api/stop` | 任何已认证客户端都能停止，无须持有控制租约。读取其 `confirmed`、`pending` 或 `unconfirmed` 结果。 |
 
-命令动作包括带 `id` 的 `select_objective`、带 `mode`（`full` 或 `local`）的 `autofocus`、带相对 `steps` 的 `focus_move`、`home_focus`，以及带可选 `path` 的 `snapshot`。
+命令动作包括带 `id` 的 `select_objective`、带 `steps` 的 `objective_nudge`、带 `mode`（`full` 或 `local`）的 `autofocus`、带相对 `steps` 的 `focus_move`、`home_focus`，以及带可选 `path` 的 `snapshot`。
 执行下一动作前，读取 `last_command` 中对应命令 ID 的结果。
-每次转动物镜转盘前，服务完成避让移动，并重新检查位置静止。
+`select_objective` 每次转动转盘前，服务完成避让移动，并重新检查位置静止。
 移动前，`select_objective` 用 1 帧侧视图像识别当前物镜。
 如果无法识别物镜，命令失败。`last_command.message` 给出原因，例如侧视图像尺寸与参考图像尺寸不同。
 这时不发生任何移动，调焦零点保持已知，服务不锁存故障。
 物镜 `3` 和物镜 `0` 之间的转盘位置有空缺。
 `select_objective` 只经过当前物镜和目标物镜之间的物镜转动转盘，不跨过该空缺。
 转盘转动失败后，`objective_id` 为 `null`。
+
+`objective_nudge` 在当前调焦位置把转盘转动 `steps` 整步，不先移到避让位置。`steps` 取 `-10`、`-1`、`1` 或 `10`。
+微调使用受监督配置控制台的转盘调用：`MICRO 4`，转盘速度为 `40` 脉冲/秒，每整步 `4` 个脉冲。
+服务检查到达位置，然后禁用转盘电机。
+微调必须具有已知零点。
+
+`GET /api/state` 的 `objective_offset_steps` 是转盘偏移，即 `select_objective` 对准物镜后微调累计的整步数。
+`objective_offset_limit_steps` 是 `MG400_MICROSCOPE_NUDGE_STEPS` 的值。
+允许偏移从负的上限到正的上限，包含边界。超出范围时，服务在移动前以 HTTP 409 拒绝微调。
+
+`select_objective` 转动转盘时，侧视相机把转盘对准目标物镜。之后偏移为 `0`。
+目标物镜已在工作位置时，`select_objective` 不转动转盘，偏移不变。
+如果识别出的物镜与偏移所属的物镜不同，偏移变为 `null`。
+
+服务启动时，以及微调或转盘转动失败或停止后，偏移为 `null`。
+偏移为 `null` 时，服务拒绝微调。先选择当前物镜以外的物镜。
+
 调焦移动和自动调焦必须具有已知零点，且不得越过配置限位。
 完整自动调焦扫描使用以实测行程内部为中心的窗口。
 局部扫描使用靠近当前位置的较小窗口。
@@ -145,11 +163,14 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 1. 在显微镜卡片上选择 **Take control**。其他客户端持有租约时，控制台无法取得控制权，也不接管自动化控制。
 2. 移动前，查看卡片上的调焦位置和零点状态。
 3. 用物镜按钮切换物镜。按钮使用 `GET /api/describe` 中 `select_objective` 的物镜 ID。
-4. 用 **Local autofocus** 或 **Full autofocus** 自动调焦。
-5. 在 **Jog pulses** 中填写脉冲数，再用 **− Jog** 或 **+ Jog** 在限位内点动。
-6. 用 **Save snapshot** 保存快照。
+4. 在工作焦点处，用物镜按钮下方的 **−10**、**−1**、**+1** 或 **+10** 按整步转动转盘。按钮旁显示转盘偏移及其上限。
+5. 用 **Local autofocus** 或 **Full autofocus** 自动调焦。
+6. 在 **Jog pulses** 中填写脉冲数，再用 **− Jog** 或 **+ Jog** 在限位内点动。
+7. 用 **Save snapshot** 保存快照。
 
-零点未知时，物镜按钮和点动按钮不可用。
+零点未知时，物镜按钮、微调按钮和点动按钮不可用。
+转盘偏移未知，或微调会使偏移超出上限时，对应的微调按钮不可用。
+`objective_offset_limit_steps` 为 `0` 时，卡片不显示微调按钮。
 显微镜命令失败时，卡片显示该命令及原因，直到出现下一条命令结果。
 控制台每条命令只发送 1 次，不自动重试。下一动作前，读取命令结果。
 **Stop** 无须持有控制权。
@@ -421,7 +442,7 @@ uv run python -m microscope.experiments --help
 
 `MG400_MICROSCOPE_NUDGE_STEPS` 配置实测转盘范围，单位为整步。
 未配置或为 `0` 时，保留上述避让行为。`1` 到 `20` 允许工作焦点处的有界移动。
-其他值会拒绝启动。此模式仅适用于物镜和轻量物镜校准。
+其他值会拒绝启动。在校准工具中，此模式仅适用于物镜和轻量物镜校准。服务的 `objective_nudge` 使用同一范围。
 
 使用 `H-06` 在靠窗口的调焦限位处测得的值，测量时逐个把物镜置于工作位置。
 该范围必须保证每个物镜在两个方向都保留物理余量。

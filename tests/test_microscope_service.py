@@ -406,6 +406,7 @@ def test_demo_contract_conformance_and_unleased_expiry(demo_rig):
         ("focus_move", {"steps": 1}),
         ("autofocus", {"mode": "full"}),
         ("select_objective", {"id": 1}),
+        ("objective_nudge", {"steps": 1}),
     ],
 )
 def test_motion_refuses_unknown_focus_zero(demo_rig, action, args):
@@ -465,6 +466,165 @@ def test_turret_turns_follow_clearance_moves_and_fresh_reference_checks(demo_rig
         "OBJ MOVE 740",
     ]
     assert state["focus_position_pulses"] == 0 and state["focus_zero_known"]
+
+
+def test_turret_turns_never_cross_the_gap_between_the_last_and_first_objective(demo_rig):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=3)["objective_id"] == 3
+    assert dispatch(rig, "select_objective", id=0)["objective_id"] == 0
+    turns = [item for item in rig.port.commands if item.startswith("OBJ MOVE ")]
+    assert turns == ["OBJ MOVE 740"] * 3 + ["OBJ MOVE -740"] * 3
+
+
+def test_failed_turn_reports_the_objective_as_unknown(demo_rig, monkeypatch):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=1)["objective_id"] == 1
+    factory = rig.service._switcher_factory
+
+    def failing_switcher(*args, **kwargs):
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("Objective identity could not be confirmed")
+
+        switcher = factory(*args, **kwargs)
+        switcher.run = fail
+        return switcher
+
+    monkeypatch.setattr(rig.service, "_switcher_factory", failing_switcher)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert state["objective_id"] is None
+    assert state["objective_offset_steps"] is None
+
+
+def refused_nudge(rig, steps):
+    before = list(rig.port.commands)
+    response = service_post(rig, "command", {"action": "objective_nudge", "steps": steps})
+    assert response.status_code == 409, response.json
+    assert rig.port.commands == before
+    return response.json["error"]
+
+
+def test_nudge_config_uses_the_measured_window_setting():
+    from microscope.service import MicroscopeConfig, MicroscopeService
+
+    assert MicroscopeConfig.from_env({}).nudge_steps == 0
+    assert MicroscopeConfig.from_env({"MG400_MICROSCOPE_NUDGE_STEPS": "20"}).nudge_steps == 20
+    for value in ("21", "-1", "2.5"):
+        with pytest.raises(ValueError, match="0..20"):
+            MicroscopeConfig.from_env({"MG400_MICROSCOPE_NUDGE_STEPS": value})
+    with pytest.raises(ValueError, match="nudge window"):
+        MicroscopeConfig(
+            focus_limits=(0, 10), switch_focus=0, home_switch=False, nudge_steps=21
+        ).validate()
+    service = MicroscopeService(MicroscopeConfig(nudge_steps=0))
+    with pytest.raises(ServiceError, match="nudges are off") as refused:
+        service._check_nudge(1)
+    assert refused.value.status == 409
+    steps = MicroscopeService(demo=True).describe()["commands"]["objective_nudge"]
+    assert steps["params"]["properties"]["steps"]["enum"] == [-10, -1, 1, 10]
+
+
+def test_nudge_turns_full_steps_at_working_focus_inside_the_window(demo_rig):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    state = rig.service.snapshot()
+    assert state["objective_offset_steps"] is None and state["objective_offset_limit_steps"] == 20
+    assert "select another objective" in refused_nudge(rig, 1)
+    assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
+    assert dispatch(rig, "focus_move", steps=60)["focus_position_pulses"] == 60
+    start = len(rig.port.commands)
+    turret = rig.port.sim.objective.position
+    for steps, offset in ((10, 10), (10, 20), (-1, 19), (-10, 9), (-10, -1), (-10, -11)):
+        state = dispatch(rig, "objective_nudge", steps=steps)
+        assert state["last_command"]["result"] == "ok", state
+        assert state["objective_id"] == 1 and state["objective_offset_steps"] == offset
+        assert state["last_result"] == {"objective_id": 1, "objective_offset_steps": offset}
+    assert rig.port.sim.objective.position == turret - 44
+    assert not rig.port.sim.objective.enabled
+    assert state["focus_position_pulses"] == 60 and state["focus_zero_known"]
+    sent = rig.port.commands[start:]
+    assert not [line for line in sent if line.startswith("FOCUS MOVE")]
+    assert [line for line in sent if line.startswith("OBJ MOVE")] == [
+        "OBJ MOVE 40",
+        "OBJ MOVE 40",
+        "OBJ MOVE -4",
+        "OBJ MOVE -40",
+        "OBJ MOVE -40",
+        "OBJ MOVE -40",
+    ]
+    assert sent[:7] == [
+        "STATUS",
+        "OBJ SPEED 40",
+        "OBJ ENABLE",
+        "STATUS",
+        "OBJ MOVE 40",
+        "STATUS",
+        "OBJ DISABLE",
+    ]
+    assert "outside ±20 full steps" in refused_nudge(rig, -10)
+    assert dispatch(rig, "objective_nudge", steps=-1)["objective_offset_steps"] == -12
+    assert "-22, outside" in refused_nudge(rig, -10)
+
+
+def test_select_objective_resets_the_offset_only_after_a_turn(demo_rig):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
+    assert dispatch(rig, "objective_nudge", steps=10)["objective_offset_steps"] == 10
+    # The objective is already in place: nothing turns, so the count stays.
+    state = dispatch(rig, "select_objective", id=1)
+    assert state["last_result"]["switches"] == [] and state["objective_offset_steps"] == 10
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok", state
+    assert state["objective_id"] == 2 and state["objective_offset_steps"] == 0
+    assert dispatch(rig, "objective_nudge", steps=-10)["objective_offset_steps"] == -10
+    # The side camera finds objective 3 in place, not the counted objective 2.
+    with rig.port.lock:
+        rig.port.sim.objective.position = 3 * 740
+    state = dispatch(rig, "select_objective", id=3)
+    assert state["last_result"]["switches"] == [] and state["objective_id"] == 3
+    assert state["objective_offset_steps"] is None
+
+
+def test_failed_nudge_reports_the_turret_offset_as_unknown(demo_rig, monkeypatch):
+    from microscope.motors import CommandRejected
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
+    send_and_wait = rig.service._motor.send_and_wait
+
+    def rejected(command, *args, **kwargs):
+        if command.startswith("OBJ MOVE"):
+            raise CommandRejected(f"{command}: ERR OBJ BUSY")
+        return send_and_wait(command, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rig.service._motor, "send_and_wait", rejected)
+        state = dispatch(rig, "objective_nudge", steps=1)
+    assert state["last_command"]["result"] == "failed"
+    assert state["objective_id"] is None and state["objective_offset_steps"] is None
+    assert service_post(rig, "release").status_code == 200
+    assert rig.service._stop_done.wait(1)
+    establish_manual_reference(rig)
+    assert "select another objective" in refused_nudge(rig, 1)
+
+
+@pytest.mark.parametrize("steps", [2, 0, -20, True, "1", None])
+def test_nudge_accepts_only_the_four_step_sizes(demo_rig, steps):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    response = service_post(rig, "command", {"action": "objective_nudge", "steps": steps})
+    assert response.status_code == 400
+    assert service_post(rig, "command", {"action": "objective_nudge"}).status_code == 400
 
 
 def test_snapshot_is_exclusive_private_png_in_run_store(demo_rig, tmp_path):
@@ -719,6 +879,98 @@ def test_demo_marker_correction_preserves_positive_pulse_leftward_feedback(demo_
     assert state["objective_id"] == 1
     assert abs(rig.port.sim.objective.position - 740) <= 40
     assert any(line.startswith("OBJ MOVE -") for line in rig.port.commands)
+
+
+def side_frame(height, width):
+    import cv2
+    import numpy as np
+
+    frame = np.full((height, width), 255, np.uint8)
+    marker = cv2.aruco.generateImageMarker(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), 0, 80
+    )
+    frame[60:140, 60:140] = marker
+    return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+
+def stopped_reader(**_kwargs):
+    try:
+        raise RuntimeError("Side-camera frame size differs from its reference size")
+    except RuntimeError as error:
+        raise RuntimeError("USB camera acquisition stopped") from error
+
+
+def busy_reader():
+    raise RuntimeError("Previous side-camera reader is still stopping")
+
+
+@pytest.mark.parametrize(
+    ("attribute", "replacement", "message"),
+    [
+        (
+            "get_frame_packet",
+            lambda **_: (1, 0.0, side_frame(480, 640)),
+            "side frame 640x480 does not match the 200x200 references",
+        ),
+        (
+            "get_frame_packet",
+            lambda **_: (1, 0.0, side_frame(200, 200) * 0),
+            "Objective identification failed: black",
+        ),
+        ("get_frame_packet", lambda **_: None, "No fresh side-camera frame"),
+        ("get_frame_packet", stopped_reader, "unavailable: Side-camera frame size differs"),
+        ("open", busy_reader, "unavailable: Previous side-camera reader is still stopping"),
+    ],
+    ids=["size-mismatch", "black-frame", "no-frame", "stopped-reader", "busy-reader"],
+)
+def test_unidentified_objective_refuses_before_motion_without_fault(
+    demo_rig, monkeypatch, attribute, replacement, message
+):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    before = len(rig.port.commands)
+    with monkeypatch.context() as patch:
+        patch.setattr(rig.service._side, attribute, replacement)
+        state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert message in state["last_command"]["message"]
+    assert not state["locked"] and state["fault"] is None and state["focus_zero_known"]
+    assert not [line for line in rig.port.commands[before:] if " MOVE " in line]
+    assert not rig.service._side.is_open
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok" and state["objective_id"] == 2
+    assert not rig.service._side.is_open and not state["cameras"]["side"]
+
+
+def test_select_objective_uses_side_frames_scaled_from_the_reference_size(demo_rig, monkeypatch):
+    import cv2
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    read = rig.service._side.get_frame_packet
+
+    def half_size(*args, **kwargs):
+        packet = read(*args, **kwargs)
+        if packet is None:
+            return None
+        frame_id, received_at, frame = packet
+        return frame_id, received_at, cv2.resize(frame, (100, 100), interpolation=cv2.INTER_AREA)
+
+    monkeypatch.setattr(rig.service._side, "get_frame_packet", half_size)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok", state
+    assert state["objective_id"] == 2
+
+
+def test_state_reports_the_side_reader_only_while_it_runs(demo_rig):
+    rig = demo_rig()
+    assert rig.service.snapshot()["cameras"] == {"microscope": True, "side": False}
+    rig.service._side.open()
+    assert rig.service.snapshot()["cameras"]["side"] is True
+    rig.service._side.last_error = RuntimeError("Side-camera frame size differs")
+    assert rig.service.snapshot()["cameras"]["side"] is False
 
 
 def test_real_start_with_missing_measurements_never_opens_devices(monkeypatch):

@@ -136,13 +136,24 @@ class Locator:
             self.references[ident] = dict(matches[0], shape=d["shape"], file=name)
 
     def classify(self, detection):
+        """Offsets are in reference pixels. A frame with the reference aspect ratio is scaled."""
         result = dict(detection, markers=[])
+        height, width = detection["shape"]
         for marker in detection["markers"]:
             ref = self.references[marker["id"]]
-            if detection["shape"] != ref["shape"]:
-                return dict(detection, status="image_size_mismatch", markers=[])
-            dx = marker["center"][0] - ref["center"][0]
-            dy = marker["center"][1] - ref["center"][1]
+            ref_height, ref_width = ref["shape"]
+            if width * ref_height != height * ref_width:
+                return dict(
+                    detection,
+                    status="image_size_mismatch",
+                    reference_shape=ref["shape"],
+                    markers=[],
+                )
+            # Pixel centers map as (x + 0.5) * scale - 0.5 between the two sizes.
+            scale = ref_width / width
+            x, y = ((value + 0.5) * scale - 0.5 for value in marker["center"])
+            dx = x - ref["center"][0]
+            dy = y - ref["center"][1]
             direction = "left" if dx < 0 else "right" if dx > 0 else "zero"
             near = abs(dx) <= self.near_px
             result["markers"].append(

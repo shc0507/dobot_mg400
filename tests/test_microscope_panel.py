@@ -363,8 +363,9 @@ def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_
         assert response.status_code == 202, response.json
         state = wait_command(rig, response.json["command_id"])
         assert state["last_command"]["result"] == "ok", state
-    for camera in ("microscope", "side"):
-        assert rig.client.get(f"/api/camera/{camera}/frame.jpg").status_code == 200
+    assert rig.client.get("/api/camera/microscope/frame.jpg").status_code == 200
+    # The side reader runs only during select_objective.
+    assert rig.client.get("/api/camera/side/frame.jpg").status_code == 503
     stop = service_post(rig, "stop", {"wait_s": 1}, actor="other-operator")
     assert stop.status_code == 200 and stop.json["stop"] == "confirmed"
     assert not rig.service.snapshot()["focus_zero_known"]
@@ -1044,7 +1045,7 @@ def test_close_retains_all_owners_until_accepted_camera_command_drains(recording
                 rig.service.close()
         assert stopped.is_set() and job.cancel.is_set() and not job.done.is_set()
         assert closes == []
-        assert rig.camera.is_open and rig.service._side.is_open and rig.service._motor.connected
+        assert rig.camera.is_open and rig.service._motor.connected
         assert not rig.service._shutdown_complete
         with pytest.raises(ServiceError) as denied:
             rig.service.command("set_stabilization", {"enabled": False}, "operator")

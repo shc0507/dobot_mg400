@@ -76,7 +76,7 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 ### Cameras workspace
 
 - The grid shows 6 views: camera1 to camera4, the thermal camera and the microscope (Toupcam). Each view shows its name and role, LIVE, STALE or OFFLINE with the frame age, its mode, and **Snapshot** and **Expand**. **Focus · 1 + strip** shows 1 large view and a strip of the others.
-- camera1 to camera4 load directly from the proxy at `/camera/<view>.mjpeg` and `/camera/<view>.jpg`. The camera preview sends each viewer only the newest frame.
+- camera1 to camera4 load directly from the proxy at `/camera/<view>.mjpeg` and `/camera/<view>.jpg`. The camera preview sends each viewer only the newest frame. Grid and strip views get at most 5 frames a second, and a large view at most 10. These limits leave room on the VPN link for control traffic.
 - The console relays the thermal frame and the microscope stream. The microscope relay sends only the newest complete frame. Grid and strip views get at most 10 frames a second, and a large view at most 30. It opens at most 2 microscope streams.
 - The streams stop when you leave the workspace, hide the browser tab or close the page.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.

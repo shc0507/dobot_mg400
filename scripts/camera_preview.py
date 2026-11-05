@@ -1,4 +1,5 @@
 import os
+import re
 import socket
 import sys
 import time
@@ -14,6 +15,9 @@ from cameras.config import camera_configuration
 CAMERAS = camera_configuration(os.environ)
 STREAMS = {f"{stream}.jpg": stream for stream in CAMERAS.streams}
 MAX_FRAME = 4 * 1024 * 1024
+# A viewer may cap its frame rate with ?fps=. The console asks for less than the camera
+# rate, so 3 previews leave room on the VPN link for control traffic.
+MAX_FPS = 30
 
 
 def iter_mjpeg(upstream, *, keep_reading=lambda: True):
@@ -181,6 +185,14 @@ class CameraFeed:
                 time.sleep(0.5)
 
 
+def stream_fps(query):
+    """Return the frame rate cap of 1 stream request, or None for an unknown query."""
+    if not query:
+        return MAX_FPS
+    match = re.fullmatch(r"fps=([1-9][0-9]?)", query)
+    return int(match.group(1)) if match and int(match.group(1)) <= MAX_FPS else None
+
+
 FEEDS = {
     source: CameraFeed(source, on_demand=source not in CAMERAS.preloaded)
     for source in STREAMS.values()
@@ -205,15 +217,17 @@ class Preview(BaseHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
-        parts = self.path.split("/")
+        path, _, query = self.path.partition("?")
+        parts = path.split("/")
         if len(parts) != 2:
             self.send_error(404)
             return
         route = parts[1]
-        if route in {source + ".mjpeg" for source in FEEDS}:
-            self.stream(FEEDS[route.removesuffix(".mjpeg")])
+        fps = stream_fps(query)
+        if route in {source + ".mjpeg" for source in FEEDS} and fps:
+            self.stream(FEEDS[route.removesuffix(".mjpeg")], fps)
             return
-        if route not in STREAMS:
+        if query or route not in STREAMS:
             self.send_error(404)
             return
         try:
@@ -226,7 +240,7 @@ class Preview(BaseHTTPRequestHandler):
             return
         self.respond(body, "image/jpeg")
 
-    def stream(self, feed):
+    def stream(self, feed, fps=MAX_FPS):
         feed.start()
         try:
             try:
@@ -250,7 +264,7 @@ class Preview(BaseHTTPRequestHandler):
                         + frame
                         + b"\r\n"
                     )
-                    time.sleep(1 / 30)
+                    time.sleep(1 / fps)
                     sequence, frame = feed.wait_after(sequence)
             except OSError:
                 pass

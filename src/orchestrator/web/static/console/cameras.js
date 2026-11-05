@@ -22,6 +22,9 @@
   const PREFIX = "/api/console/ws/cameras/";
   // The relay sends only the newest frame. Small tiles ask for fewer frames.
   const TILE_FPS = 10, LARGE_FPS = 30;
+  // A USB view at the camera rate needs about 16 Mbit/s. The VPN link carries about 22 Mbit/s,
+  // so the USB previews ask for less and leave room for keys, holds and stops.
+  const USB_TILE_FPS = 5, USB_LARGE_FPS = 10;
 
   const i18n = {
     en: {
@@ -222,9 +225,9 @@
 
   const CAMERAS = new Set(["camera1", "camera2", "camera3", "camera4"]);
 
-  /** The stream URL: a large microscope tile gets the source rate, others TILE_FPS. */
+  /** The stream URL: a large microscope tile gets the source rate, others TILE_FPS. USB views get USB_LARGE_FPS or USB_TILE_FPS. */
   function streamUrl(view, large, basePath = "") {
-    if (CAMERAS.has(view)) return `/camera/${view}.mjpeg`;
+    if (CAMERAS.has(view)) return `/camera/${view}.mjpeg?fps=${large ? USB_LARGE_FPS : USB_TILE_FPS}`;
     return `${basePath}${PREFIX}stream/${view}?fps=${large ? LARGE_FPS : TILE_FPS}`;
   }
 

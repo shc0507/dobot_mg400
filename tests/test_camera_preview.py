@@ -108,6 +108,12 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
         "camera4.mjpeg",
         "camera1.jpg?src=admin",
         "camera1.mjpeg?src=admin",
+        "camera1.mjpeg?fps=0",
+        "camera1.mjpeg?fps=31",
+        "camera1.mjpeg?fps=05",
+        "camera1.mjpeg?fps=5.5",
+        "camera1.mjpeg?fps=5&src=admin",
+        "camera1.jpg?fps=5",
         "camera1.mjpeg/extra",
         "camera0/detections.json",
         "camera4/detections.json",
@@ -381,6 +387,23 @@ def test_mjpeg_route_streams_complete_parts_and_closes_connection(preview, monke
     feed.release.assert_called_once_with()
     assert [call.args[0] for call in feed.wait_after.call_args_list] == [0, 1, 4]
     upstream.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("query", "interval"), [("", 1 / 30), ("?fps=30", 1 / 30), ("?fps=10", 0.1), ("?fps=1", 1.0)]
+)
+def test_mjpeg_route_caps_the_frame_rate_with_fps(preview, monkeypatch, query, interval):
+    module, _ = preview
+    frames = [b"\xff\xd8first\xff\xd9", b"\xff\xd8second\xff\xd9"]
+    feed = Mock()
+    feed.wait_after.side_effect = [(1, frames[0]), (2, frames[1]), OSError("Disconnected")]
+    monkeypatch.setitem(module.FEEDS, "camera1", feed)
+    sleeps = []
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+    status, _, body = request(module, f"camera1.mjpeg{query}")
+    assert status == 200
+    assert body == multipart(frames).removesuffix(b"--frame--\r\n")
+    assert sleeps == [interval, interval]
 
 
 def test_mjpeg_route_returns_error_when_no_first_frame(preview, monkeypatch):

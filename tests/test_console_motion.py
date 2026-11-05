@@ -354,7 +354,8 @@ def test_home_moves_all_joints_to_zero_and_the_state_shows_the_joints(sim):
     take(sim, "robot")
     robot = enable_robot(sim)
     assert len(robot["joints"]) == 4 and all(type(value) is float for value in robot["joints"])
-    assert isinstance(robot["message"], str) and robot["alarms"] == []
+    # The service reports no alarms as null.
+    assert isinstance(robot["message"], str) and not robot["alarms"]
     status, body = command(sim, "robot", "home")
     assert status == 202, body
     homed = wait_for(

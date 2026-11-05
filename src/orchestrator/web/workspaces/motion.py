@@ -70,6 +70,7 @@ ROBOT_FIELDS = (
     "keyboard_enabled",
     "keyboard_arming",
     "keyboard_speed_percent",
+    "keyboard_disarm_reason",
     "demo",
 )
 STAGE_FIELDS = (

@@ -75,6 +75,7 @@ def fake(tmp_path):
         "controller_id": None,
         "feedback_fresh": True,
         "last_command": {"action": "execute", "result": "rejected", "client": "x", "id": "1"},
+        "keyboard_disarm_reason": "key updates stopped.",
         "token": PRIVATE,
     }
     stage = {
@@ -130,6 +131,7 @@ def test_state_route_keeps_only_page_fields_and_hides_identities(fake):
     assert robot["available"] is True and robot["actual"][:2] == [232.5, -33.1]
     assert robot["holder"] == "other"
     assert robot["last_command"] == {"action": "execute", "result": "rejected"}
+    assert robot["keyboard_disarm_reason"] == "key updates stopped."
     assert stage["holder"] is None
     assert stage["motors"] == [
         {"id": "insert", "position": 10, "position_mm": None, "reference_configured": True}

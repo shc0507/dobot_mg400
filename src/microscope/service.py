@@ -59,6 +59,9 @@ LOGGER = logging.getLogger(__name__)
 # These are the turret keys and speed of `python -m microscope.calibrate setup`.
 NUDGE_STEPS = (-10, -1, 1, 10)
 NUDGE_SPEED = 40
+# The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
+# Single frames, recordings and the device jobs keep the full frame.
+PREVIEW_SIZE = (1296, 972)
 
 
 @dataclass(frozen=True)
@@ -608,6 +611,30 @@ class PreviewFrame:
     jpeg: bytes
 
 
+def _jpeg(pixels):
+    ok, encoded = cv2.imencode(".jpg", pixels, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok or encoded.nbytes > 16_777_216:
+        raise ServiceError(503, "Microscope preview exceeds the frame limit")
+    return encoded.tobytes()
+
+
+def _reduced(pixels):
+    """Shrink a frame by a whole factor to fit PREVIEW_SIZE. Cut each side to a multiple of 8.
+
+    A whole factor keeps the area average cheap. go2rtc sends the JPEG to ffmpeg
+    over RTP, which gives the size in units of 8 pixels.
+    """
+    height, width = pixels.shape[:2]
+    factor = max(-(-width // PREVIEW_SIZE[0]), -(-height // PREVIEW_SIZE[1]))
+    if factor > 1:
+        size = (width // factor, height // factor)
+        pixels = cv2.resize(pixels, size, interpolation=cv2.INTER_AREA)
+        height, width = pixels.shape[:2]
+    keep_height, keep_width = height // 8 * 8 or height, width // 8 * 8 or width
+    top, left = (height - keep_height) // 2, (width - keep_width) // 2
+    return pixels[top : top + keep_height, left : left + keep_width]
+
+
 class MicroscopeService:
     def __init__(
         self,
@@ -648,6 +675,9 @@ class MicroscopeService:
         self._lifecycle = threading.RLock()
         self._frame_condition = threading.Condition(self._lock)
         self._frame_reads = 0
+        # The newest preview of each camera. Its viewers share 1 encode of each frame.
+        self._preview_lock = threading.Lock()
+        self._previews = {}
         self._lease = Lease(self.config.lease_seconds, clock=clock, on_expire=self.on_lease_expired)
         self.lease = _ContractLease(self)
         self._manual_holder = None
@@ -1119,11 +1149,13 @@ class MicroscopeService:
                 },
             )
 
-    def read_frame(self, camera, *, after_id=None, timeout=0.5):
+    def read_frame(self, camera, *, after_id=None, timeout=0.5, preview=False):
         """Read and encode one bounded copy from an already owned camera.
 
         Frame IDs and timestamp domains are unchanged: the main camera uses its
         capture wall time and the side camera uses its monotonic receive time.
+        A preview is the newest frame, at most PREVIEW_SIZE. Its viewers share
+        1 encode of each frame.
         """
         if not isinstance(camera, str) or camera not in ("microscope", "side"):
             raise ValueError("Unknown microscope camera")
@@ -1146,8 +1178,9 @@ class MicroscopeService:
                 raise ServiceError(503, "Microscope frame readers are busy")
             self._frame_reads += 1
         try:
+            # A preview only reads the frame: the camera publishes a new array for each frame.
             packet = owner.get_frame_packet(
-                after_id=after_id, wait=timeout > 0, timeout=timeout, copy=True
+                after_id=after_id, wait=timeout > 0, timeout=timeout, copy=not preview
             )
             with self._frame_condition:
                 if self._closed or not self._started:
@@ -1172,14 +1205,14 @@ class MicroscopeService:
                 raise ServiceError(503, "Microscope camera returned an invalid frame")
             if after_id is not None and frame_id <= after_id:
                 return None
-            ok, encoded = cv2.imencode(".jpg", pixels, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if not ok or encoded.nbytes > 16_777_216:
-                raise ServiceError(503, "Microscope preview exceeds the frame limit")
-            jpeg = encoded.tobytes()
+            if preview:
+                frame = self._preview(camera, frame_id, float(captured_at), pixels)
+            else:
+                frame = PreviewFrame(frame_id, float(captured_at), _jpeg(pixels))
             with self._frame_condition:
                 if self._closed or not self._started:
                     raise ServiceError(503, "Microscope service closed during frame read")
-                return PreviewFrame(frame_id, float(captured_at), jpeg)
+                return frame
         except ServiceError:
             raise
         except Exception as error:
@@ -1188,6 +1221,17 @@ class MicroscopeService:
             with self._frame_condition:
                 self._frame_reads -= 1
                 self._frame_condition.notify_all()
+
+    def _preview(self, camera, frame_id, captured_at, pixels):
+        """Encode 1 frame at most PREVIEW_SIZE, once for all viewers of that frame."""
+        with self._preview_lock:
+            cached = self._previews.get(camera)
+            # The ID and the time identify 1 frame, also after the side camera opens again.
+            if cached and cached.frame_id == frame_id and cached.captured_at == captured_at:
+                return cached
+            frame = PreviewFrame(frame_id, captured_at, _jpeg(_reduced(pixels)))
+            self._previews[camera] = frame
+            return frame
 
     def _side_camera(self):
         """Create the side reader for the configured go2rtc stream and its capture mode."""

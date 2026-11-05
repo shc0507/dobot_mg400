@@ -1,7 +1,8 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
- * camera1 to camera4 load from the proxy: H.264 at /camera/<view>.mp4, with MJPEG at
- * /camera/<view>.mjpeg as the fallback, and snapshots at /camera/<view>.jpg.
- * The console relays the microscope stream and the thermal frame. */
+ * camera1 to camera4 and the microscope play H.264 from the proxy at /camera/<view>.mp4.
+ * camera1 to camera4 fall back to MJPEG at /camera/<view>.mjpeg and take snapshots at
+ * /camera/<view>.jpg. The console relays the microscope MJPEG fallback and snapshot, and
+ * the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -26,7 +27,7 @@
   // A USB view at the camera rate needs about 16 Mbit/s. The VPN link carries about 22 Mbit/s,
   // so the USB previews ask for less and leave room for keys, holds and stops.
   const USB_TILE_FPS = 5, USB_LARGE_FPS = 10;
-  // The host caps each H.264 preview at 2 Mbit/s, so camera1 to camera4 play it at the camera rate.
+  // The host caps the bitrate of each H.264 preview, so the views play it at the camera rate.
   const H264 = 'video/mp4; codecs="avc1.640029"';
   // Play near the newest frame: jump when more than JUMP_S behind, speed up above CATCH_UP_S.
   const JUMP_S = 1, CATCH_UP_S = 0.3, KEEP_S = 10, MAX_QUEUE = 4 * 1024 * 1024;
@@ -238,8 +239,8 @@
     return `${basePath}${PREFIX}stream/${view}?fps=${large ? LARGE_FPS : TILE_FPS}`;
   }
 
-  /** The H.264 preview URL of camera1 to camera4, or null for other views. */
-  function videoUrl(view) { return CAMERAS.has(view) ? `/camera/${view}.mp4` : null; }
+  /** The H.264 preview URL of camera1 to camera4 and the microscope, or null for the thermal view. */
+  function videoUrl(view) { return CAMERAS.has(view) || view === "microscope" ? `/camera/${view}.mp4` : null; }
 
   /** The live-edge correction for a play position in the last buffered range [start, end]. */
   function chase(time, start, end) {
@@ -502,9 +503,10 @@
       return { ...(engine.status.get("thermal") || {}), ...thermalRow(engine.thermal, engine.thermalAt, nowMs(), engine.thermalFailed) };
     }
     const row = engine.status.get(view) || null;
-    // The browser loads camera1 to camera4 itself: a loaded tile is live.
-    if (row && CAMERAS.has(view)) {
-      const live = [...engine.tiles].some(tile => tile.view === view && tile.live);
+    // The browser loads camera1 to camera4 and the H.264 microscope itself: a loaded tile is live.
+    const own = [...engine.tiles].filter(tile => tile.view === view && (CAMERAS.has(view) || tile.stopVideo));
+    if (row && (CAMERAS.has(view) || own.length)) {
+      const live = own.some(tile => tile.live);
       return { ...row, state: live ? "live" : "offline", age_s: live ? 0 : null };
     }
     return row;
@@ -1111,6 +1113,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase, frameRate, meter, measure, current, modeLine },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase, frameRate, meter, measure, current, modeLine, rowFor },
   };
 });

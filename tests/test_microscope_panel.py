@@ -1,6 +1,7 @@
 """Offline panel routes, owned-camera lifecycle, and real demo lease transitions."""
 
 import threading
+import time
 from types import SimpleNamespace
 
 import cv2
@@ -82,6 +83,56 @@ def test_owned_preview_preserves_ids_and_each_camera_timestamp_domain(name, time
     assert service.read_frame(name, after_id=7, timeout=0) is None
     assert selected.calls[-1]["wait"] is False
     assert service._frame_reads == 0 and service.lease.snapshot()["holder"] is None
+    service.close()
+
+
+def test_preview_is_half_the_toupcam_frame_and_its_viewers_share_1_encode(monkeypatch):
+    pixels = np.zeros((1944, 2592, 3), np.uint8)
+    service, main, _ = frame_service((7, 1730000000.5, pixels))
+    encoded = []
+    imencode = cv2.imencode
+    monkeypatch.setattr(
+        "microscope.service.cv2.imencode",
+        lambda ext, image, *args: encoded.append(image.shape) or imencode(ext, image, *args),
+    )
+    first = service.read_frame("microscope", after_id=6, timeout=0.25, preview=True)
+    # A second viewer of the same frame gets the same JPEG without a new encode.
+    assert service.read_frame("microscope", after_id=6, timeout=0.25, preview=True) is first
+    assert encoded == [(968, 1296, 3)]
+    image = cv2.imdecode(np.frombuffer(first.jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert image.shape == (968, 1296, 3) and first.frame_id == 7
+    # The preview reads the published frame without a copy.
+    assert main.calls[0] == dict(after_id=6, wait=True, timeout=0.25, copy=False)
+    main.packet = (8, 1730000000.6, pixels)
+    assert service.read_frame("microscope", after_id=7, preview=True).frame_id == 8
+    assert len(encoded) == 2
+    # A single frame keeps the full size.
+    full = service.read_frame("microscope")
+    assert cv2.imdecode(np.frombuffer(full.jpeg, np.uint8), cv2.IMREAD_COLOR).shape == pixels.shape
+    assert main.calls[-1]["copy"] is True and encoded[-1] == pixels.shape
+    assert service._frame_reads == 0
+    service.close()
+
+
+@pytest.mark.parametrize(
+    "shape,reduced",
+    [
+        ((360, 640, 3), (360, 640, 3)),
+        ((2160, 3840, 3), (720, 1280, 3)),
+        ((3000, 4000), (744, 1000)),
+        ((2000, 1001), (664, 328)),
+        ((1944, 2600, 3), (648, 864, 3)),
+        ((5, 6), (5, 6)),
+    ],
+)
+def test_preview_shrinks_by_a_whole_factor_and_cuts_sides_to_units_of_8(shape, reduced):
+    service, _, side = frame_service((3, 5.25, np.zeros(shape, np.uint8)))
+    frame = service.read_frame("side", preview=True)
+    image = cv2.imdecode(np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert image.shape == reduced
+    # The side camera counts frames from 1 again after it opens: a new time is a new frame.
+    side.packet = (3, 9.5, np.zeros(shape, np.uint8))
+    assert service.read_frame("side", preview=True) is not frame
     service.close()
 
 
@@ -281,11 +332,31 @@ def test_single_frame_cursor_and_multipart_headers():
         part == b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 9\r\n"
         b"X-Frame-Id: 7\r\nX-Captured-At: 10.5\r\n\r\nfake-jpeg\r\n"
     )
+    assert service.calls[-1] == ("side", {"after_id": None, "timeout": 0.5, "preview": True})
     service.frame = ServiceError(503, "camera closed")
     assert list(response.response) == []
     response.close()
     service.frame = None
     assert client.get("/api/camera/side/frame.jpg").status_code == 204
+
+
+def test_stream_sends_each_new_preview_at_once_and_pauses_only_without_one():
+    service = PanelService()
+    frames = iter([None, None])
+    response = create_app(service).test_client().get("/api/camera/microscope/mjpeg", buffered=False)
+    parts = iter(response.response)
+    started = time.monotonic()
+    # The read waits for the next frame, so the stream adds no pause between frames.
+    for _ in range(20):
+        assert next(parts).startswith(b"--frame")
+    assert time.monotonic() - started < 1
+    assert {call[1]["preview"] for call in service.calls} == {True}
+    # Without a new frame, the stream pauses before the next read.
+    service.read_frame = lambda camera, **kwargs: next(frames, PreviewFrame(8, 11.0, b"next"))
+    started = time.monotonic()
+    assert next(parts).endswith(b"next\r\n")
+    assert time.monotonic() - started >= 0.2
+    response.close()
 
 
 def unopened_stream(app):

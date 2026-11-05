@@ -189,13 +189,15 @@ The console has no focus homing action, because the lab microscope has no home s
 
 | Preview route | Result |
 | --- | --- |
-| `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | Authenticated MJPEG views from the existing camera owners. |
-| `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG, or `204` when no newer frame is available. |
+| `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | MJPEG views from the existing camera owners. They send each new frame at the camera frame rate. The image shrinks by a whole factor to fit in `1296x972`, and each side is cut to a multiple of 8. A `2592x1944` frame becomes `1296x968`. |
+| `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG at the full camera size, or `204` when no newer frame is available. |
 
 The side reader runs only during `select_objective`. At other times, the side routes return `503`.
 Preview requests accept an optional nonnegative `after_id` cursor.
 Each JPEG carries `X-Frame-Id` and `X-Captured-At` headers. Main-camera timestamps use host wall time, while side-camera timestamps use monotonic receive time.
 Do not compare timestamps across cameras or treat them as sensor exposure times.
+All viewers of an MJPEG view share 1 JPEG encode of each frame.
+go2rtc reads `/api/camera/microscope/mjpeg` and encodes it to H.264 for the console microscope view. See [Cameras](olares.en.md#cameras).
 At most 4 MJPEG responses can remain open. Extra streams return `503`. Close another preview before reconnecting.
 This limit leaves workers available for control requests, but does not guarantee a stop response time.
 Preview reads do not acquire or renew control, and shutdown waits for accepted reads before closing camera owners.

@@ -117,7 +117,7 @@ def create_app(service, *, base_path="/"):
                     stream_slots.release()
 
         try:
-            first = service.read_frame(camera, after_id=after_id, timeout=0.5)
+            first = service.read_frame(camera, after_id=after_id, timeout=0.5, preview=True)
             if first is None:
                 raise ServiceError(503, "No microscope frame is available")
         except BaseException:
@@ -125,6 +125,7 @@ def create_app(service, *, base_path="/"):
             raise
 
         def frames():
+            # Send each new frame at the camera rate. The read waits for the next frame.
             frame = first
             try:
                 while not closed.is_set():
@@ -138,9 +139,9 @@ def create_app(service, *, base_path="/"):
                             + b"\r\n"
                         )
                         cursor = frame.frame_id
-                    if closed.wait(0.1):
+                    elif closed.wait(0.1):
                         break
-                    frame = service.read_frame(camera, after_id=cursor, timeout=0.5)
+                    frame = service.read_frame(camera, after_id=cursor, timeout=0.5, preview=True)
             except (ServiceError, RuntimeError):
                 # Headers are already sent. End this view; never retry devices.
                 return

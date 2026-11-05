@@ -388,6 +388,21 @@ def test_image_algorithms_preserve_sharpness_displacement_and_marker_policy():
     assert confidence > 0.9 and overlap > 0.95
 
 
+def test_locator_measures_scaled_frames_in_reference_pixels():
+    locator = object.__new__(Locator)
+    locator.near_px = 50
+    locator.references = {3: {"center": [1920.0, 1080.0], "shape": [2160, 3840]}}
+    result = locator.classify(
+        {"shape": [360, 640], "status": "ok", "markers": [{"id": 3, "center": [319.75, 179.75]}]}
+    )
+    marker = result["markers"][0]
+    assert (marker["dx_px"], marker["dy_px"]) == pytest.approx((1.0, 1.0))
+    assert marker["range"] == "near" and marker["center"] == [319.75, 179.75]
+    mismatch = locator.classify({"shape": [480, 640], "markers": [{"id": 3, "center": [0, 0]}]})
+    assert mismatch["status"] == "image_size_mismatch"
+    assert mismatch["reference_shape"] == [2160, 3840]
+
+
 def test_side_camera_refuses_reopen_until_old_reader_exits(monkeypatch):
     entered, release = threading.Event(), threading.Event()
 

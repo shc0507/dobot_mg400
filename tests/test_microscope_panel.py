@@ -85,6 +85,17 @@ def test_owned_preview_preserves_ids_and_each_camera_timestamp_domain(name, time
     service.close()
 
 
+def test_still_is_a_lossless_full_size_png():
+    pixels = np.random.default_rng(1).integers(0, 256, (1944, 2592, 3), dtype=np.uint8)
+    service, main, _ = frame_service((7, 1730000000.5, pixels))
+    result = service.read_frame("microscope", timeout=0.25, png=True)
+    assert result.jpeg.startswith(b"\x89PNG")
+    image = cv2.imdecode(np.frombuffer(result.jpeg, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert np.array_equal(image, pixels)
+    assert main.calls == [dict(after_id=None, wait=True, timeout=0.25, copy=True)]
+    service.close()
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -286,6 +297,19 @@ def test_single_frame_cursor_and_multipart_headers():
     response.close()
     service.frame = None
     assert client.get("/api/camera/side/frame.jpg").status_code == 204
+
+
+def test_still_route_serves_png_and_takes_no_cursor():
+    service = PanelService()
+    client = create_app(service).test_client()
+    response = client.get("/api/camera/microscope/still.png")
+    assert response.status_code == 200 and response.mimetype == "image/png"
+    assert response.headers["X-Frame-Id"] == "7"
+    assert service.calls == [("microscope", {"timeout": 0.5, "png": True})]
+    assert client.get("/api/camera/microscope/still.png?after_id=1").status_code == 400
+    assert client.get("/api/camera/other/still.png").status_code == 400
+    service.frame = None
+    assert client.get("/api/camera/microscope/still.png").status_code == 204
 
 
 def unopened_stream(app):

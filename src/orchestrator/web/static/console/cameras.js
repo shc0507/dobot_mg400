@@ -1,7 +1,7 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
  * camera1 to camera4 load from the proxy: H.264 at /camera/<view>.mp4, with MJPEG at
  * /camera/<view>.mjpeg as the fallback, and snapshots at /camera/<view>.jpg.
- * The console relays the microscope stream and the thermal frame. */
+ * The console relays the microscope stream and full-size PNG still, and the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -272,7 +272,7 @@
     return typeof fps === "number" && Number.isFinite(fps) ? `${mode} · ${fps.toFixed(1)} fps` : mode;
   }
 
-  /** The JPEG snapshot URL of one MJPEG view. */
+  /** The snapshot URL: a JPEG for camera1 to camera4, a full-size PNG for the microscope. */
   function snapshotUrl(view, basePath = "") {
     return CAMERAS.has(view) ? `/camera/${view}.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
   }
@@ -549,7 +549,7 @@
       await new Promise(resolve => canvas.toBlob(blob => { if (blob) download(`thermal-${stamp()}.png`, blob); resolve(); }, "image/png"));
       return;
     }
-    const link = h("a", { href: snapshotUrl(view, base()), download: `${view}-${stamp()}.jpg` });
+    const link = h("a", { href: snapshotUrl(view, base()), download: `${view}-${stamp()}.${CAMERAS.has(view) ? "jpg" : "png"}` });
     doc().body.append(link);
     link.click();
     link.remove();

@@ -86,7 +86,8 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 - The measured frame rate updates about every 1 s, for example `640×480 · 29.8 fps`. An H.264 view counts the frames that the browser shows. An MJPEG view shows the frames per second that the camera preview or the microscope relay sent to each viewer in the last 2 s. With several viewers of the same view, it shows their mean. The thermal view counts the new frames that it gets. Without a new measurement, the view shows no frame rate.
 - camera1 to camera4 load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate and stays near the newest frame. Each H.264 view uses at most 2 Mbit/s, so the VPN link keeps room for control traffic.
 - If the browser or the host cannot play H.264, the view loads MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Grid and strip views get at most 5 frames a second, and a large view at most 10.
-- **Snapshot** downloads 1 frame from `/camera/<view>.jpg`.
+- **Snapshot** downloads 1 frame from `/camera/<view>.jpg`. On the microscope tile, **Snapshot** downloads the Toupcam frame as a lossless PNG at full size, `2592x1944`. It needs no control.
+- camera3 gives snapshots only at its stream size. A `3840x2160` capture truncates `camera2` frames on the shared USB 2 link and interrupts the side reader.
 - The console relays the thermal frame and the microscope stream. The microscope relay sends only the newest complete frame. Grid and strip views get at most 10 frames a second, and a large view at most 30. It opens at most 2 microscope streams.
 - The streams stop when you leave the workspace, hide the browser tab or close the page.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.

@@ -191,6 +191,7 @@ The console has no focus homing action, because the lab microscope has no home s
 | --- | --- |
 | `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | Authenticated MJPEG views from the existing camera owners. |
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG, or `204` when no newer frame is available. |
+| `GET /api/camera/microscope/still.png`, `GET /api/camera/side/still.png` | The latest frame as a lossless PNG at full size, or `204` when no frame is available. It takes no query parameters. |
 
 The side reader runs only during `select_objective`. At other times, the side routes return `503`.
 Preview requests accept an optional nonnegative `after_id` cursor.

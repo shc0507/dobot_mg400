@@ -15,6 +15,7 @@ from orchestrator.web.workspaces import cameras as cameras_module
 
 PRIVATE = "private-microscope-token-0123456789"
 JPEG = b"\xff\xd8fake-jpeg\xff\xd9"
+PNG = b"\x89PNGfake-png"
 
 
 class Clock:
@@ -115,10 +116,10 @@ class Sources:
         self.streams.append((view, upstream))
         return upstream
 
-    def frame(self, view):
+    def still(self, view):
         if view in self.fail:
             raise cameras_module.SourceError("The source did not answer.")
-        return JPEG
+        return PNG
 
     def thermal_frame(self):
         self.thermal_reads += 1
@@ -246,11 +247,12 @@ def test_preview_fps_keeps_only_finite_camera_rates(monkeypatch):
     assert source.preview_fps() == {}
 
 
-def test_microscope_snapshot_is_a_jpeg_attachment(rig):
+def test_microscope_snapshot_is_a_full_size_png_attachment(rig):
     response = rig.client.get(BASE + "snapshot/microscope")
-    assert response.status_code == 200 and response.data == JPEG
-    assert response.headers["Content-Type"] == "image/jpeg"
-    assert "attachment" in response.headers["Content-Disposition"]
+    assert response.status_code == 200 and response.data == PNG
+    assert response.headers["Content-Type"] == "image/png"
+    disposition = response.headers["Content-Disposition"]
+    assert "attachment" in disposition and disposition.endswith('.png"')
 
 
 def test_stream_passes_frames_and_ends_the_relay_when_the_viewer_leaves(rig):

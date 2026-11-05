@@ -191,6 +191,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 | --- | --- |
 | `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | 从已有相机所有者读取的已认证 MJPEG 视图。 |
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | 单张 JPEG，没有更新的帧时返回 `204`。 |
+| `GET /api/camera/microscope/still.png`, `GET /api/camera/side/still.png` | 最新帧的原尺寸无损 PNG，没有帧时返回 `204`。不接受查询参数。 |
 
 侧视读取线程只在 `select_objective` 运行期间工作。其他时间，侧视路由返回 `503`。
 预览请求接受可选的非负 `after_id` 游标。

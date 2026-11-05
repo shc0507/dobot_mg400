@@ -4,7 +4,7 @@ The browser loads camera1 to camera4 from the proxy at ``/camera/<view>.mjpeg``
 and ``/camera/<view>.jpg``. The console process relays the other views:
 
 - thermal: the thermal frame API through the thermal service client;
-- microscope: the Toupcam MJPEG and JPEG through the microscope service client;
+- microscope: the Toupcam MJPEG and the full-size PNG still through the microscope service client;
 - camera 4 chip detections: the vision ``api/detect`` result.
 
 The microscope relay bounds its open streams. One upstream reader is shared by
@@ -46,6 +46,8 @@ DETECTION_CACHE_S = 1.0
 PREVIEW_FPS_URL = "http://127.0.0.1:1985/fps.json"
 PREVIEW_FPS_CACHE_S = 0.5
 MAX_FRAME = 8 * 1024 * 1024
+# A lossless full-size microscope still, 2592x1944 RGB, is about 15 MB as PNG.
+MAX_STILL = 80 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
 CHUNK = 64 * 1024
 UPSTREAM_TIMEOUT_S = 5.0
@@ -139,15 +141,15 @@ class HttpSources:
             raise SourceError("The microscope service is not configured.")
         return _open(http.base_url + "api/camera/microscope/mjpeg")
 
-    def frame(self, view):
+    def still(self, view):
         http = self._client("microscope")
         if http is None:
             raise SourceError("The microscope service is not configured.")
-        response = _open(http.base_url + "api/camera/microscope/frame.jpg")
+        response = _open(http.base_url + "api/camera/microscope/still.png")
         if response.status != 200:
             response.close()
             raise SourceError("The microscope has no frame.")
-        return _read(response, MAX_FRAME)
+        return _read(response, MAX_STILL)
 
     def _json(self, name, path):
         http = self._client(name)
@@ -662,17 +664,17 @@ def register(blueprint, service):
     def snapshot(view):
         _view(view)
         if view not in MJPEG:
-            raise ServiceError(404, "This view has no JPEG snapshot.")
+            raise ServiceError(404, "This view has no relayed snapshot.")
         try:
-            body = sources().frame(view)
+            body = sources().still(view)
         except SourceError as error:
             relay.failed(view, str(error))
             raise ServiceError(502, str(error)) from None
         relay.saw_frame(view)
-        name = f"{view}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jpg"
+        name = f"{view}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"
         return Response(
             body,
-            mimetype="image/jpeg",
+            mimetype="image/png",
             headers={"Content-Disposition": f'attachment; filename="{name}"'},
         )
 

@@ -100,6 +100,24 @@ def create_app(service, *, base_path="/"):
             },
         )
 
+    @app.get(prefix + "/api/camera/<camera>/still.png")
+    def camera_still(camera):
+        if camera_arguments(camera) is not None:
+            raise ValueError("A still takes no frame cursor")
+        if request.method == "HEAD":
+            return Response(mimetype="image/png")
+        frame = service.read_frame(camera, timeout=0.5, png=True)
+        if frame is None:
+            return Response(status=204)
+        return Response(
+            frame.jpeg,
+            mimetype="image/png",
+            headers={
+                "X-Frame-Id": str(frame.frame_id),
+                "X-Captured-At": str(frame.captured_at),
+            },
+        )
+
     @app.get(prefix + "/api/camera/<camera>/mjpeg")
     def camera_stream(camera):
         after_id = camera_arguments(camera)

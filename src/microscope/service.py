@@ -604,8 +604,14 @@ class _DemoCapture:
         self._camera.close()
 
 
+# A lossless still of the largest accepted frame (16 MP, 4 channels) fits in this bound.
+MAX_STILL = 80 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class PreviewFrame:
+    """One encoded frame. ``jpeg`` holds PNG bytes when the read asked for ``png``."""
+
     frame_id: int
     captured_at: float
     jpeg: bytes
@@ -615,6 +621,13 @@ def _jpeg(pixels):
     ok, encoded = cv2.imencode(".jpg", pixels, [cv2.IMWRITE_JPEG_QUALITY, 80])
     if not ok or encoded.nbytes > 16_777_216:
         raise ServiceError(503, "Microscope preview exceeds the frame limit")
+    return encoded.tobytes()
+
+
+def _png(pixels):
+    ok, encoded = cv2.imencode(".png", pixels, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+    if not ok or encoded.nbytes > MAX_STILL:
+        raise ServiceError(503, "Microscope still exceeds the frame limit")
     return encoded.tobytes()
 
 
@@ -1149,8 +1162,10 @@ class MicroscopeService:
                 },
             )
 
-    def read_frame(self, camera, *, after_id=None, timeout=0.5, preview=False):
+    def read_frame(self, camera, *, after_id=None, timeout=0.5, preview=False, png=False):
         """Read and encode one bounded copy from an already owned camera.
+
+        ``png=True`` encodes a lossless full-size PNG still instead of a JPEG.
 
         Frame IDs and timestamp domains are unchanged: the main camera uses its
         capture wall time and the side camera uses its monotonic receive time.
@@ -1205,7 +1220,9 @@ class MicroscopeService:
                 raise ServiceError(503, "Microscope camera returned an invalid frame")
             if after_id is not None and frame_id <= after_id:
                 return None
-            if preview:
+            if png:
+                frame = PreviewFrame(frame_id, float(captured_at), _png(pixels))
+            elif preview:
                 frame = self._preview(camera, frame_id, float(captured_at), pixels)
             else:
                 frame = PreviewFrame(frame_id, float(captured_at), _jpeg(pixels))

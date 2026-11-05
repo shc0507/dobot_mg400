@@ -191,6 +191,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 | --- | --- |
 | `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | 从已有相机所有者读取的 MJPEG 视图。按相机帧率发送每个新帧。图像按整数倍缩小到 `1296x972` 以内，再把每边裁到 8 的倍数。`2592x1944` 的画面变为 `1296x968`。 |
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | 相机原尺寸的单张 JPEG，没有更新的帧时返回 `204`。 |
+| `GET /api/camera/microscope/still.png`, `GET /api/camera/side/still.png` | 最新帧的原尺寸无损 PNG，没有帧时返回 `204`。不接受查询参数。 |
 
 侧视读取线程只在 `select_objective` 运行期间工作。其他时间，侧视路由返回 `503`。
 预览请求接受可选的非负 `after_id` 游标。

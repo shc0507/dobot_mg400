@@ -191,6 +191,7 @@ The console has no focus homing action, because the lab microscope has no home s
 | --- | --- |
 | `GET /api/camera/microscope/mjpeg`, `GET /api/camera/side/mjpeg` | MJPEG views from the existing camera owners. They send each new frame at the camera frame rate. The image shrinks by a whole factor to fit in `1296x972`, and each side is cut to a multiple of 8. A `2592x1944` frame becomes `1296x968`. |
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG at the full camera size, or `204` when no newer frame is available. |
+| `GET /api/camera/microscope/still.png`, `GET /api/camera/side/still.png` | The latest frame as a lossless PNG at full size, or `204` when no frame is available. It takes no query parameters. |
 
 The side reader runs only during `select_objective`. At other times, the side routes return `503`.
 Preview requests accept an optional nonnegative `after_id` cursor.

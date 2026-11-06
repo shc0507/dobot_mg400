@@ -460,3 +460,14 @@ test("the stabilization toggle relays set_stabilization once", async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(calls.filter(call => call[0] === "relay" && call[2] === "set_stabilization"), [["relay", "microscope", "set_stabilization", { enabled: true }]]);
 });
+
+test("the preview shows 1 view, and the switch inside it changes the view", async () => {
+  const { root } = await load();
+  const panes = walk(root).filter(node => node.className === "pr-pane");
+  assert.deepEqual(panes.map(node => [node.getAttribute("data-view"), node.hidden]), [["microscope", false], ["camera3", true]]);
+  assert.equal(role(root, "view-microscope").getAttribute("aria-pressed"), "true");
+  role(root, "view-camera3").click();
+  assert.deepEqual(panes.map(node => node.hidden), [true, false]);
+  assert.equal(role(root, "view-camera3").getAttribute("aria-pressed"), "true");
+  assert.equal(role(root, "view-microscope").getAttribute("aria-pressed"), "false");
+});

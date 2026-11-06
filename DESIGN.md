@@ -310,8 +310,8 @@ A cool, near-black slate base with one blue for selection and a fixed set of sta
 
 - **Frame:** the header band, then the status strip, then the stop result band (after a stop, until Dismiss), then the notice bar (only when there is a notice), then the workspace. In a window wider than 720px, the header, strip, stop result band and notice form one top band that stays at the top while the page scrolls. Its height is published as `--lc-top`; other sticky elements and `scroll-padding-top` add it to their offset. The workspace is centered, with a maximum width of 1440px and 24px padding (16px at 720px and below).
 - **Header:** brand and commit, workspace tabs, then the actions: the control pill, the language switch and STOP ALL MOTION. It wraps on narrow screens. At 720px and below, the actions take the full width and STOP ALL MOTION stretches.
-- **Workspace columns:** a main column (flex basis 640px) and a side column (flex basis 360px), 24px apart. Motion has 3 columns: robot arm (340px basis), cameras (520px basis, grows first) and stage (340px basis).
-- **Camera grids:** 3 columns, then 2 at 1100px and below, then 1 at 720px and below. The Focus strip has 5 columns, then 3, then 2. Furnace readout tiles fill with a minimum of 140px.
+- **Workspace columns:** a main column (flex basis 640px) and a side column (flex basis 360px), 24px apart. Motion has 3 columns: robot arm (340px basis), cameras (520px basis, grows first) and stage (340px basis). Furnace + microscope has 2: the microscope card (640px basis, grows 3) leads on the left, and the furnace card (420px basis, grows 2) is on the right.
+- **Camera grids:** 3 columns, then 2 at 1100px and below, then 1 at 720px and below. The Focus strip has 5 columns, then 3, then 2. The furnace PV, SV and Crucible tiles are 1 band of 3 columns.
 - **Rhythm:** 24px between cards and columns; 20px inside a card; 12px between blocks in a card; 8–10px inside a group; 4–6px between a label and its value. Rows have 12px of vertical padding and a Row Rule above them.
 - **Density:** the base size is 14px. Lists scroll inside their card (events stop at 420px height), so the page keeps its shape.
 
@@ -386,7 +386,7 @@ An arm alarm or an unconfirmed stop shows at the top of the arm card: a 1px Faul
 - **Rows:** 12px vertical padding with a Row Rule above each row. The name column is at least 96px.
 
 ### Readout tiles
-An Inset Slate tile with a Label above a monospace value. Pose tiles are 8px radius and 8px padding, 4 in a row (2 at 720px and below). Furnace tiles are 10px radius and 12px padding with a 22px value; PV is Caution Amber and SV is Readout Blue. The pose tiles show `—` while the arm moves.
+An Inset Slate tile with a Label above a monospace value. Pose tiles are 8px radius and 8px padding, 4 in a row (2 at 720px and below). The furnace tiles form 1 band with a 10px radius and 1px Panel Line gaps; each tile has 12px padding and a 22px value. PV is Caution Amber and SV is Readout Blue. The mode and the ramp read on 1 line under the band. The pose tiles show `—` while the arm moves.
 
 ### Inputs / Fields
 - **Style:** a Night Slate background (recessed), a Control Edge border, an 8px radius and 44px height. Numeric inputs use the monospace face at 13–14px and fixed widths (76px to 110px). Text and select fields fill their column.
@@ -403,6 +403,12 @@ A `figure` in Card Slate with a 12px radius that clips its media. Every workspac
 - **Foot:** the mode and a note in 12px, and Snapshot and Expand buttons.
 - **Selected:** a 2px Signal Blue border.
 
+### Preview with a view switch
+The Furnace + microscope card shows 1 large camera tile instead of 2. A segmented switch on Media Scrim sits at the top left of the media and selects the view (Microscope or Side camera). The pressed segment uses Selected Slate, Frost text and the current marker. The state badge sits at the top right, and the mode and the Snapshot and Expand buttons sit at the bottom, all on Media Scrim. Only the shown view streams. The stage is 16:10 and its height stays inside the window.
+
+### Closed groups
+Rarely used controls sit in a `details` group under a Row Rule: a 44px summary with a drawn chevron, the title in Frost 600 and a short state in Haze (Readout Blue while active). The page keeps the open state while it rebuilds. Stop controls never go into a closed group.
+
 ### Badges
 - **Hardware badge:** DEMO in Readout Blue on Selected Slate. REAL ROBOT and REAL STAGE in Caution Amber on Amber Shadow. Label-strong text, 6px radius.
 - **Media badge:** Media Scrim with a 6px radius, 12px text in weight 600, placed 10px from the top left of a view.
@@ -412,7 +418,7 @@ A `figure` in Card Slate with a 12px radius that clips its media. Every workspac
 - **Key caps:** 32px wide, monospace, with a Control Edge border and a 6px radius. A held key gets the pressed chip state.
 
 ### Furnace chart and focus bar
-- **Chart:** 160px tall on Night Slate with a 10px radius. Grid lines are Panel Line. Axis text is 11px monospace in Haze. PV is a 2.5px solid Caution Amber line. SV is a 2px Readout Blue line with a 6 5 dash.
+- **Chart:** a 560:160 aspect ratio on Night Slate with a 10px radius. Grid lines are Panel Line. Axis text is 11px monospace in Haze. PV is a 2.5px solid Caution Amber line. SV is a 2px Readout Blue line with a 6 5 dash.
 - **Focus bar:** 12px tall on a Media Well with a Control Edge border and a Signal Blue fill. The limit labels are in 12px Haze below it.
 
 ## Do's and Don'ts

@@ -1,26 +1,89 @@
-/* Furnace + microscope workspace (DSH-06). Every rule starts with #ws-process. Colors follow Process.dc.html. */
+/* Furnace + microscope workspace (DSH-06). Every rule starts with #ws-process. Colors come from the shell.css variables.
+   Composition: the microscope preview leads (left, wider); the furnace is one instrument column (right).
+   Rarely used controls sit in closed groups (.pr-details). */
 #ws-process .pr-workspace { display: flex; flex-direction: column; gap: 20px; }
 #ws-process .pr-layout { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
-#ws-process .pr-card { flex: 1 1 560px; min-width: 0; gap: 18px; }
-#ws-process .pr-head { display: flex; flex-direction: column; }
+#ws-process .pr-card { min-width: 0; gap: 16px; }
+#ws-process .pr-scope { flex: 3 1 640px; }
+#ws-process .pr-furnace { flex: 2 1 420px; }
+#ws-process .pr-head { display: flex; flex-direction: column; gap: 2px; }
 #ws-process h3 { margin: 0; font-size: 14px; font-weight: 600; }
-#ws-process .pr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+#ws-process .pr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 #ws-process .pr-end { align-items: flex-end; }
+#ws-process .pr-push { flex: 1 1 0; }
 #ws-process .pr-block { display: flex; flex-direction: column; gap: 8px; }
 #ws-process .pr-note { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--bad); color: #FF9A9A; }
 #ws-process .pr-warn { margin: 0; color: var(--warn); font-size: 13px; }
+#ws-process .pr-doubt { color: var(--warn); }
 #ws-process .pr-primary { border: 0; background: var(--accent); color: #0B1A2A; font-weight: 700; }
 #ws-process .pr-strong { font-weight: 700; }
 #ws-process .pr-danger { min-height: 44px; padding: 0 16px; }
-#ws-process .pr-link { display: inline-flex; align-items: center; text-decoration: none; border: 0; background: var(--accent); color: #0B1A2A; }
-#ws-process .pr-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
-#ws-process .pr-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 10px; background: #1B232A; }
+#ws-process .pr-stop-wide { width: 100%; }
+#ws-process .pr-mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+#ws-process .pr-mono-button { font-family: "IBM Plex Mono", ui-monospace, monospace; min-width: 56px; }
+
+/* Preview: 1 view at a time. The switch, the state badge and the tile buttons sit on the media. */
+#ws-process .pr-preview { position: relative; }
+#ws-process .pr-pane .lcam-tile { position: relative; border-radius: 12px; }
+#ws-process .pr-pane .lcam-stage { aspect-ratio: 16 / 10; max-height: max(300px, calc(100vh - var(--lc-top, 110px) - 360px)); width: 100%; }
+#ws-process .pr-pane .lcam-head { position: absolute; top: 12px; right: 12px; z-index: 1; padding: 4px 9px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); pointer-events: none; }
+#ws-process .pr-pane .lcam-names { display: none; }
+#ws-process .pr-pane .lcam-foot { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 1; padding: 0; pointer-events: none; }
+#ws-process .pr-pane .lcam-meta { padding: 4px 9px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); }
+#ws-process .pr-pane .lcam-meta:empty { display: none; }
+#ws-process .pr-pane .lcam-buttons { pointer-events: auto; }
+#ws-process .pr-pane .lcam-buttons .lc-button { background: rgba(10, 14, 17, 0.85); }
+#ws-process .pr-seg { position: absolute; top: 12px; left: 12px; z-index: 2; display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; border: 1px solid var(--line2); background: rgba(10, 14, 17, 0.85); }
+#ws-process .pr-seg-button { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: var(--soft); font-weight: 500; cursor: pointer; }
+#ws-process .pr-seg-button[aria-pressed="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+#ws-process .pr-view { position: relative; aspect-ratio: 16 / 10; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
+#ws-process .pr-view-name { color: var(--muted); font-size: 13px; padding: 8px; text-align: center; }
+#ws-process .pr-badge { position: absolute; right: 12px; top: 12px; padding: 4px 9px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); font-size: 12px; font-weight: 700; color: var(--muted); }
+
+/* Objective and focus: 1 labelled band under the preview. */
+#ws-process .pr-band { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 12px 20px; }
+#ws-process .pr-band-label { min-height: 44px; display: flex; align-items: center; font-size: 12px; font-weight: 500; color: var(--muted); }
+#ws-process .pr-objectives { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 6px; }
+#ws-process .pr-objective { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; }
+#ws-process .pr-objective.pr-selected { border-color: var(--accent); background: var(--tab); box-shadow: inset 0 -2px 0 var(--accent); }
+#ws-process .pr-focus { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+#ws-process .pr-focus-bar { display: flex; flex-direction: column; gap: 4px; padding-top: 14px; }
+#ws-process .pr-bar { position: relative; height: 12px; border-radius: 6px; background: #0A0E11; border: 1px solid var(--line2); overflow: hidden; }
+#ws-process .pr-bar-fill { display: block; height: 100%; background: var(--accent); }
+#ws-process .pr-bar-labels { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#ws-process .pr-focus-pos { color: var(--text); font-size: 13px; }
+#ws-process .pr-stepper { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; }
+#ws-process .pr-step-button { min-height: 42px; width: 48px; border: 0; background: transparent; color: var(--text); font-size: 17px; font-weight: 600; cursor: pointer; }
+#ws-process .pr-step-input { width: 76px; border: 0; border-left: 1px solid var(--line2); border-right: 1px solid var(--line2); background: var(--bg); color: var(--text); text-align: center; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+
+/* Closed groups for rarely used controls. */
+#ws-process .pr-more { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--row); padding-top: 12px; }
+#ws-process .pr-details { border-radius: 10px; }
+#ws-process .pr-details[open] { padding-bottom: 4px; }
+#ws-process .pr-summary { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border-radius: 8px; color: var(--soft); cursor: pointer; list-style: none; }
+#ws-process .pr-summary::-webkit-details-marker { display: none; }
+#ws-process .pr-summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); margin-right: 2px; }
+#ws-process .pr-details[open] > .pr-summary::before { transform: rotate(45deg); }
+#ws-process .pr-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#ws-process .pr-summary-title { font-weight: 600; color: var(--text); }
+#ws-process .pr-summary-state { font-size: 13px; color: var(--muted); }
+#ws-process .pr-summary-state.pr-live { color: var(--info); }
+#ws-process .pr-details-body { display: flex; flex-direction: column; gap: 12px; padding: 8px 12px 12px 31px; }
+#ws-process .pr-furnace > .pr-details { border-top: 1px solid var(--row); padding-top: 12px; border-radius: 0; }
+
+/* Furnace readings. */
+#ws-process .pr-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; border-radius: 10px; overflow: hidden; background: var(--line); }
+#ws-process .pr-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px; background: #1B232A; min-width: 0; }
 #ws-process .pr-tile-label { font-size: 12px; color: var(--muted); }
-#ws-process .pr-tile-value { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 22px; font-weight: 500; }
+#ws-process .pr-tile-value { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
 #ws-process .pr-tone-pv { color: var(--warn); }
 #ws-process .pr-tone-sv { color: var(--info); }
+#ws-process .pr-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px; margin: 0; font-size: 13px; color: var(--soft); }
+#ws-process .pr-state-mode { font-weight: 600; color: var(--text); }
+#ws-process .pr-state-item { display: inline-flex; gap: 8px; }
+#ws-process .pr-state-label { color: var(--muted); }
 #ws-process .pr-figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
-#ws-process .pr-chart { width: 100%; height: 160px; border-radius: 10px; background: var(--bg); }
+#ws-process .pr-chart { display: block; width: 100%; height: auto; aspect-ratio: 560 / 160; border-radius: 10px; background: var(--bg); }
 #ws-process .pr-grid { stroke: var(--line); stroke-width: 1; }
 #ws-process .pr-axis { fill: var(--muted); font-size: 11px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
 #ws-process .pr-pv { stroke: var(--warn); stroke-width: 2.5; fill: none; }
@@ -28,39 +91,38 @@
 #ws-process .pr-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); }
 #ws-process .pr-key-pv { color: var(--warn); }
 #ws-process .pr-key-sv { color: var(--info); }
+
+/* Fields. */
 #ws-process .pr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-#ws-process .pr-input { width: 110px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; }
+#ws-process .pr-input { width: 100px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; }
 #ws-process .pr-input.pr-wide { width: 220px; }
-#ws-process select.pr-input { width: auto; }
+#ws-process select.pr-input { width: auto; font-family: inherit; }
 #ws-process .pr-input::placeholder { color: var(--muted); }
-#ws-process .pr-narrow { width: 90px; }
-#ws-process .pr-cell { width: 84px; }
+#ws-process .pr-narrow { width: 80px; }
+#ws-process .pr-cell { width: 76px; }
+
+/* Gas: 1 row per channel; the state reads under the name. */
+#ws-process .pr-gas-block { border-top: 1px solid var(--row); padding-top: 12px; }
+#ws-process .pr-gas-list { display: flex; flex-direction: column; }
+#ws-process .pr-gas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--row); }
+#ws-process .pr-gas:first-child { border-top: 0; padding-top: 0; }
+#ws-process .pr-gas-text { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; }
+#ws-process .pr-gas-name { font-weight: 600; }
+#ws-process .pr-gas-state { font-size: 13px; color: var(--soft); }
+#ws-process .pr-gas-state.pr-doubt { color: var(--warn); }
+
+/* Sequence table. */
 #ws-process .pr-table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); }
-#ws-process .pr-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+#ws-process .pr-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 600px; }
 #ws-process .pr-table th { padding: 8px 10px; background: #1B232A; color: var(--muted); text-align: left; font-weight: 600; }
 #ws-process .pr-table td { padding: 6px 10px; border-top: 1px solid var(--row); }
 #ws-process .pr-table tr.pr-current td { background: var(--tab); }
-#ws-process .pr-mono { font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); }
-#ws-process .pr-gas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; border-radius: 10px; background: #1B232A; }
-#ws-process .pr-gas-name { width: 90px; font-weight: 600; }
-#ws-process .pr-gas-state { flex: 1 1 180px; min-width: 0; font-size: 13px; color: var(--soft); }
-#ws-process .pr-gas-state.pr-doubt { color: var(--warn); }
-#ws-process .pr-views { display: flex; flex-wrap: wrap; gap: 12px; }
-#ws-process .pr-main-view { flex: 999 1 340px; min-width: 0; }
-#ws-process .pr-side-view { flex: 1 1 230px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-#ws-process .pr-view { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
-#ws-process .pr-view-name { color: var(--muted); font-size: 13px; padding: 8px; text-align: center; }
-#ws-process .pr-badge { position: absolute; left: 10px; top: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); font-size: 12px; font-weight: 600; color: var(--soft); }
-#ws-process .pr-objectives { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-#ws-process .pr-objective.pr-selected { border-color: var(--accent); background: var(--tab); box-shadow: inset 0 -2px 0 var(--accent); }
-#ws-process .pr-bar { position: relative; height: 12px; border-radius: 6px; background: #0A0E11; border: 1px solid var(--line2); overflow: hidden; }
-#ws-process .pr-bar-fill { display: block; height: 100%; background: var(--accent); }
-#ws-process .pr-bar-labels { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
 
 @media (max-width: 720px) {
   #ws-process .pr-card { flex-basis: 100%; padding: 16px; }
-  #ws-process .pr-objectives { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #ws-process .pr-band { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  #ws-process .pr-band-label { min-height: 0; }
 }
 /* Old or missing data: the readings and the chart dim. */
-#ws-process .pr-tile-value.pr-stale { color: var(--off); }
+#ws-process .pr-tile-value.pr-stale, #ws-process .pr-state .pr-stale { color: var(--off); }
 #ws-process .pr-figure.pr-stale polyline { opacity: 0.4; }

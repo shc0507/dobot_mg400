@@ -14,6 +14,7 @@ The console is the only operator web page.
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
+- When the console does not answer for 3 seconds, the strip shows only **Console offline** and the age of the last state. Check the VPN and the `orch` service.
 - The stop result band below the status strip shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
 - In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
@@ -54,8 +55,8 @@ Robot arm:
 
 - **Take control**, **Enable**, **Disable**, **Clear alarm**, **Home…** and **Stop arm**. **Disable** and **Stop arm** need no control.
 - **Home…** needs a confirmation. It moves J1 to J4 to 0°.
-- The card lists each controller alarm with its ID, description and solution. Below the alarms, the card shows the message of the robot service.
-- After an unconfirmed stop, the card shows a warning and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
+- During an alarm, a coral note at the top of the card lists each controller alarm with its ID, description and solution. **Clear alarm** is in the note. Below the buttons, the card shows the message of the robot service.
+- After an unconfirmed stop, the note shows Stop not confirmed and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
 - The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves. The joint tiles show J1 to J4 in degrees.
 - The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose.
 - **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
@@ -105,7 +106,7 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 
 Every device command goes through the console relay. Use **Take control** for the furnace or the microscope first. **Stop heat and gas**, **Stop all gas**, **Close** and the microscope **Stop** need no control.
 
-- The furnace shows PV, SV, the ramp, the mode and the maximum temperature of the thermal `crucible` region.
+- The furnace shows PV, SV, the ramp, the mode and the maximum temperature of the thermal `crucible` region. When the data is older than 3 seconds, the page shows its age and dims the readings and the chart.
 - The chart shows PV and SV for the last 60 minutes. The console process records 1 point every 5 s while a page is open. After a restart the chart starts empty.
 - **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes.
 - The sequence editor adds and removes steps and sets the target, ramp, hold and 3 gas channels of each step, and the end gas and end temperature. When a step sets gas, the end temperature is necessary. The page loads the furnace sequence on its first read.

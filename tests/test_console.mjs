@@ -159,6 +159,19 @@ test("the strip renders 8 chips with a hidden dot and visible text", async () =>
   assert.match(chips[0].textContent, /Robot.*Ready/);
 });
 
+test("a console that does not answer shows 1 Console offline chip, not 8 stale devices", async () => {
+  const { LabConsole } = load({ responses: [{ status: 200, body: null }] });
+  assert.deepEqual(LabConsole.logic.chips(null, false, true), [{ id: "console", tone: "bad", key: "chip.offline" }]);
+  assert.equal(LabConsole.logic.chips(null, false, false).length, 8);
+  const view = page();
+  LabConsole.start(view.doc);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const strip = view.nodes.get("lc-strip");
+  assert.equal(strip.children.length, 1);
+  assert.equal(strip.textContent, "Console offlineno state yet");
+  assert.match(strip.children[0].className, /tone-bad/);
+});
+
 test("event filters select warnings or one service", () => {
   const { LabConsole } = load();
   const events = [

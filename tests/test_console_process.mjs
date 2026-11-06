@@ -203,6 +203,18 @@ test("a confirmation takes the focus, has a coral Confirm, and Esc gives the foc
   assert.equal(calls.filter(call => call[0] === "relay").length, 0);
 });
 
+test("old data dims the readings and the chart; a sent command shows its button label", async () => {
+  const fresh = await load();
+  assert.doesNotMatch(walk(fresh.root).find(node => node.className.startsWith("pr-tile-value pr-tone-pv")).className, /pr-stale/);
+  role(fresh.root, "af-local").click();
+  await flush();
+  assert.deepEqual(fresh.notices.at(-1), ["info", "Autofocus sent."]);
+  const old = await load({ status: statusBody({ age_s: 8 }) });
+  assert.equal(walk(old.root).find(node => node.className.startsWith("pr-tile-value pr-tone-pv")).className, "pr-tile-value pr-tone-pv pr-stale");
+  assert.equal(walk(old.root).find(node => node.className.startsWith("pr-figure")).className, "pr-figure pr-stale");
+  assert.match(walk(old.root).find(node => node.className === "pr-warn").textContent, /Data is stale \(8 s\)/);
+});
+
 test("a target above the described cap is refused in the page", async () => {
   const { root, calls, notices } = await load();
   role(root, "target").type("1500");

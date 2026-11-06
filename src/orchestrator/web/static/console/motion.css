@@ -9,6 +9,10 @@
 #ws-motion .mo-badge.mo-real { background: #2A2213; color: var(--warn); }
 #ws-motion .mo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 #ws-motion .mo-stack { display: flex; flex-direction: column; gap: 16px; }
+/* The alarm note: a coral outline on a faint coral tint, so an alarm wins the eye in the arm card. */
+#ws-motion .mo-alarm { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--bad); border-radius: 8px; background: rgba(255, 122, 122, 0.08); }
+#ws-motion .mo-alarm-title { font-weight: 700; color: var(--bad); }
+#ws-motion .mo-alarm-items { display: flex; flex-direction: column; gap: 4px; }
 #ws-motion .mo-block { display: flex; flex-direction: column; gap: 10px; }
 #ws-motion .mo-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; }
 #ws-motion .mo-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

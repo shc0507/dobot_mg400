@@ -971,10 +971,13 @@
       return commands[action] || null;
     }
 
+    // The command names in the notice are the button labels.
+    const LABELS = { connect: "connect", shutter: "shutter", set_region: "region.save" };
     async function send(action, params) {
       const result = await api.relay("thermal", action, params);
-      if (result.outcome === "accepted") api.notify(api.t("command.accepted", { action }), "info");
-      else if (result.outcome === "unknown") api.notify(api.t("command.unknown", { action }), "error");
+      const name = LABELS[action] ? api.t(LABELS[action]) : action;
+      if (result.outcome === "accepted") api.notify(api.t("command.accepted", { action: name }), "info");
+      else if (result.outcome === "unknown") api.notify(api.t("command.unknown", { action: name }), "error");
       else api.notify(api.t("command.refused", { error: result.error || "" }), "warn");
       if (action === "set_region") loadRegions();
       return result;

@@ -66,7 +66,13 @@
       "rec.name": "Run name", "rec.mode": "Mode", "rec.timeLapse": "Time lapse", "rec.live": "Live",
       "rec.interval": "Interval s", "rec.fps": "Output fps", "rec.error": "Recording error: {error}",
       "rec.invalid": "Enter a run name of at most 80 characters, an interval from 0.1 to 3600 s and an output rate from 0.1 to 120 fps.",
-      "sent": "{action} sent.", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
+      "sent": "{action} sent.",
+      "act.apply_setpoint": "Apply and run", "act.connect": "Connect furnace", "act.connect_flow": "Connect gas flow",
+      "act.set_gas_flow": "Send flow", "act.set_sequence": "Save sequence", "act.start_sequence": "Start sequence",
+      "act.autofocus": "Autofocus", "act.focus_move": "Focus jog", "act.objective_nudge": "Turret nudge",
+      "act.record_with_sequence": "Record next furnace sequence", "act.select_objective": "Objective",
+      "act.set_stabilization": "Stabilization", "act.snapshot": "Save snapshot", "act.start_recording": "Start recording",
+      "act.stop_recording": "Stop recording", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
       "stop.result": "{device} stop: {outcome}",
       "outcome.confirmed": "confirmed", "outcome.pending": "pending", "outcome.unconfirmed": "not confirmed", "outcome.unknown": "unknown",
       "status.stale": "Data is stale ({age} s).", "status.unavailable": "Status is unavailable.",
@@ -129,7 +135,13 @@
       "rec.name": "运行名称", "rec.mode": "模式", "rec.timeLapse": "延时", "rec.live": "实时",
       "rec.interval": "间隔 s", "rec.fps": "输出帧率", "rec.error": "录制错误：{error}",
       "rec.invalid": "运行名称最多 80 个字符，间隔为 0.1 到 3600 s，输出帧率为 0.1 到 120 fps。",
-      "sent": "已发送 {action}。", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
+      "sent": "已发送 {action}。",
+      "act.apply_setpoint": "应用并运行", "act.connect": "连接炉子", "act.connect_flow": "连接气体流量计",
+      "act.set_gas_flow": "发送流量", "act.set_sequence": "保存程序", "act.start_sequence": "启动程序",
+      "act.autofocus": "自动对焦", "act.focus_move": "对焦点动", "act.objective_nudge": "转盘微调",
+      "act.record_with_sequence": "录制下一次炉子程序", "act.select_objective": "物镜",
+      "act.set_stabilization": "防抖", "act.snapshot": "保存快照", "act.start_recording": "开始录制",
+      "act.stop_recording": "停止录制", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
       "stop.result": "{device}停止：{outcome}",
       "outcome.confirmed": "已确认", "outcome.pending": "等待中", "outcome.unconfirmed": "未确认", "outcome.unknown": "未知",
       "status.stale": "数据已过期（{age} s）。", "status.unavailable": "状态不可用。",
@@ -656,8 +668,10 @@
     setText(n.tiles.ramp, finite(furnace?.ramp) === null ? t("none") : fmt(furnace.ramp));
     const crucible = status?.crucible;
     setText(n.tiles.crucible, degrees(crucible?.max_c));
-    n.tiles.pv.className = "pr-tile-value pr-tone-pv";
-    n.tiles.sv.className = "pr-tile-value pr-tone-sv";
+    // Old or missing data dims the readings and the chart. The warning above says how old.
+    const dim = !status || (typeof age === "number" && age > 3) ? " pr-stale" : "";
+    for (const key of Object.keys(n.tiles)) n.tiles[key].className = "pr-tile-value" + (key === "pv" || key === "sv" ? " pr-tone-" + key : "") + dim;
+    n.chart.figure.className = "pr-figure" + dim;
 
     const chart = chartModel(status?.history, finite(status?.now) ?? 0);
     n.chart.pv.setAttribute("points", chart.pv);
@@ -773,7 +787,9 @@
   async function send(device, action, params, key = action) {
     return act(key, async () => {
       const result = await view.api.relay(device, action, params);
-      if (result?.outcome === "accepted") view.api.notify(view.api.t("sent", { action }), "info");
+      const key = "act." + action;
+      const name = view.api.t(key) === key ? action : view.api.t(key);
+      if (result?.outcome === "accepted") view.api.notify(view.api.t("sent", { action: name }), "info");
       else if (result?.outcome === "refused") view.api.notify(view.api.t("refused", { error: result.error || "" }), "error");
       return result;
     });

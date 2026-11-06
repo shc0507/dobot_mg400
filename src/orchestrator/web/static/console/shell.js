@@ -30,6 +30,7 @@
       "chip.stale": "Stale", "chip.fault": "Fault", "chip.locked": "Locked", "chip.disconnected": "Not connected",
       "chip.busy": "Busy", "chip.ready": "Ready", "chip.demo": "demo", "chip.live": "Live", "chip.configured": "Configured",
       "chip.noRun": "No run", "chip.offline": "Console offline",
+      "chip.lastState": "last state {age} s ago", "chip.noState": "no state yet",
       "stop.heat": "Stop heat and gas", "stop.gas": "Stop all gas", "stop.title": "{action} · {time}",
       "stop.phase.stopping": "Stopping", "stop.phase.holding": "Holding run", "stop.phase.final-stop": "Final stop",
       "stop.phase.done": "Done", "stop.sending": "Sending…", "stop.notSent": "Not sent: {error}",
@@ -54,6 +55,7 @@
       "chip.stale": "过期", "chip.fault": "故障", "chip.locked": "已锁定", "chip.disconnected": "未连接",
       "chip.busy": "忙碌", "chip.ready": "就绪", "chip.demo": "演示", "chip.live": "实时", "chip.configured": "已配置",
       "chip.noRun": "无运行", "chip.offline": "控制台离线",
+      "chip.lastState": "最后状态 {age} s 前", "chip.noState": "尚无状态",
       "stop.heat": "停止加热和气体", "stop.gas": "停止全部气体", "stop.title": "{action} · {time}",
       "stop.phase.stopping": "停止中", "stop.phase.holding": "暂停运行", "stop.phase.final-stop": "最终停止",
       "stop.phase.done": "完成", "stop.sending": "发送中…", "stop.notSent": "未发送：{error}",
@@ -117,7 +119,9 @@
     return { tone: "off", key: "chip.unconfigured" };
   }
 
-  function chips(snapshot, fresh) {
+  /** The strip chips. When the console itself does not answer, 1 chip says so instead of 8 stale devices. */
+  function chips(snapshot, fresh, offline = false) {
+    if (offline && !fresh) return [{ id: "console", tone: "bad", key: "chip.offline" }];
     const cards = new Map((snapshot?.services || []).map(card => [card.id, card]));
     const rows = [];
     for (const id of ["robot", "stage"]) rows.push({ id, ...serviceChip(cards.get(id), fresh) });
@@ -344,15 +348,21 @@
   function renderStrip() {
     const strip = $("lc-strip");
     if (!strip) return;
-    const ok = fresh();
-    const rows = chips(shell.snapshot, ok);
-    strip.replaceChildren(...rows.map(row => {
-      const detail = row.key ? t(row.key) : row.text;
-      return el("span", { class: "lc-chip tone-" + row.tone, "data-service": row.id },
-        el("span", { class: "lc-dot", "aria-hidden": "true" }),
-        el("span", { class: "lc-chip-name", text: deviceName(row.id) }),
-        el("span", { class: "lc-chip-detail", text: detail + (row.demo ? " · " + t("chip.demo") : "") }));
-    }));
+    const rows = chips(shell.snapshot, fresh(), shell.offline).map(row => {
+      if (row.id === "console") {
+        const age = shell.snapshot ? Math.round((now() - shell.stateAt) / 1000) : null;
+        return { ...row, name: t(row.key), detail: age === null ? t("chip.noState") : t("chip.lastState", { age }) };
+      }
+      return { ...row, name: deviceName(row.id), detail: (row.key ? t(row.key) : row.text) + (row.demo ? " · " + t("chip.demo") : "") };
+    });
+    // The strip is a live region. Replace it only when its text changes, so a screen reader reads a change once.
+    const sig = JSON.stringify(rows);
+    if (sig === shell.stripSig) return;
+    shell.stripSig = sig;
+    strip.replaceChildren(...rows.map(row => el("span", { class: "lc-chip tone-" + row.tone, "data-service": row.id },
+      el("span", { class: "lc-dot", "aria-hidden": "true" }),
+      el("span", { class: "lc-chip-name", text: row.name }),
+      el("span", { class: "lc-chip-detail", text: row.detail }))));
   }
 
   function clock(at) {
@@ -455,8 +465,10 @@
       renderBand();
       applyControl(body.control || []);
       for (const listener of shell.stateListeners) { try { listener(body); } catch (error) { console.error(error); } }
+      shell.offline = false;
     } catch {
-      /* The strip shows stale after 3 s. */
+      /* After 3 s without a state the strip shows Console offline. */
+      shell.offline = true;
     } finally {
       shell.polling = false;
       renderStrip();

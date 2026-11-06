@@ -60,3 +60,6 @@
   #ws-process .pr-card { flex-basis: 100%; padding: 16px; }
   #ws-process .pr-objectives { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* Old or missing data: the readings and the chart dim. */
+#ws-process .pr-tile-value.pr-stale { color: var(--off); }
+#ws-process .pr-figure.pr-stale polyline { opacity: 0.4; }

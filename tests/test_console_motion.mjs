@@ -170,6 +170,11 @@ test("the arm card shows joints, alarms and the service message; Stop arm needs 
   const texts = page.root.all().map(node => node.ownText);
   assert.ok(texts.includes("44.3") && texts.includes("-20.0"));
   assert.ok(texts.includes("Alarm 22: Joint 2 limit Jog J2 back."));
+  // The alarm shows in a note with the button that clears it.
+  const note = page.root.all().find(node => node.className === "mo-alarm");
+  assert.equal(note.hidden, false);
+  assert.equal(note.getAttribute("role"), "alert");
+  assert.match(note.textContent, /^Alarm.*Alarm 22: Joint 2 limit.*Clear alarm$/);
   assert.ok(texts.includes("Robot stop is confirmed. Disable the robot before recovery."));
   assert.ok(texts.includes("Control is locked. Check the gripper."));
   assert.equal(page.find("Home…").disabled, true);
@@ -177,6 +182,29 @@ test("the arm card shows joints, alarms and the service message; Stop arm needs 
   page.find("Stop arm").click();
   await page.settle();
   assert.deepEqual(page.calls.filter(call => call[0] === "stop"), [["stop", "robot"]]);
+});
+
+test("an unconfirmed stop shows in the alarm note with Recover; a quiet arm has no note", async () => {
+  const locked = await mounted({ robot: { ...ROBOT, locked: true, stop_unconfirmed: true } });
+  const note = locked.root.all().find(node => node.className === "mo-alarm");
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /^Stop not confirmed.*Check the arm, then press Recover\..*Recover$/);
+  assert.doesNotMatch(locked.root.all().find(node => node.ownText.startsWith("Enabled")).ownText, /Stop not confirmed|Alarm/);
+  const quiet = await mounted();
+  assert.equal(quiet.root.all().find(node => node.className === "mo-alarm").hidden, true);
+  // An error without an alarm list still shows the note.
+  const error = await mounted({ robot: { ...ROBOT, robot_error: true } });
+  assert.match(error.root.all().find(node => node.className === "mo-alarm").textContent, /The controller reports an error\./);
+});
+
+test("the activity names each command by its button label", async () => {
+  const page = await mounted();
+  page.find("Disable").click();
+  await page.settle();
+  assert.match(page.root.textContent, /Robot Disable: sent/);
+  page.find("Stop arm").click();
+  await page.settle();
+  assert.match(page.root.textContent, /Robot stop: confirmed/);
 });
 
 test("a confirmation takes the focus, and Esc closes it without sending", async () => {
@@ -458,7 +486,7 @@ test("a refused hold ends at once and needs a new press", async () => {
     await page.settle();
     assert.equal(page.ws._test.sh.active, null);
     assert.deepEqual(page.holdCalls().map(call => call[1]), ["stage/hold", "stage/hold", "stage/release"]);
-    assert.match(page.root.textContent, /Stage hold: refused · Hold has ended/);
+    assert.match(page.root.textContent, /Stage Hold: refused · Hold has ended/);
     button.listeners.get("pointerup")({});
     assert.equal(page.holdCalls().length, 3);
   } finally { page.restore(); }

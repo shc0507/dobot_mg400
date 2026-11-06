@@ -12,9 +12,6 @@
       "events.title": "Events · all services", "events.all": "All", "events.warnings": "Warnings",
       "events.service": "Service", "events.none": "No events yet.", "events.unavailable": "Events unavailable: {services}",
       "safety.title": "Safety", "safety.motionTargets": "Robot · stage · microscope",
-      "safety.heat": "Heat off…", "safety.gas": "Gas off…",
-      "safety.heatConfirm": "Turn the furnace heat off.", "safety.gasConfirm": "Close all 3 gas channels.",
-      "safety.confirm": "Confirm", "safety.cancel": "Cancel",
       "safety.note": "The physical e-stops stay the primary stop. Each software stop works without control and never waits for a lease.",
       "control.title": "Control", "control.releaseAll": "Release all", "control.free": "Free",
       "control.thisPage": "This page", "control.console": "Console (other page)", "control.unknown": "Unknown",
@@ -28,9 +25,6 @@
       "events.title": "事件 · 全部服务", "events.all": "全部", "events.warnings": "警告",
       "events.service": "服务", "events.none": "暂无事件。", "events.unavailable": "事件不可用：{services}",
       "safety.title": "安全", "safety.motionTargets": "机械臂 · 位移台 · 显微镜",
-      "safety.heat": "关闭加热…", "safety.gas": "关闭气体…",
-      "safety.heatConfirm": "关闭炉子加热。", "safety.gasConfirm": "关闭全部 3 路气体。",
-      "safety.confirm": "确认", "safety.cancel": "取消",
       "safety.note": "物理急停仍是首要停止手段。每个软件停止都不需要控制权，也不等待租约。",
       "control.title": "控制权", "control.releaseAll": "全部释放", "control.free": "空闲",
       "control.thisPage": "本页", "control.console": "控制台（其他页面）", "control.unknown": "未知",
@@ -41,7 +35,7 @@
     },
   };
 
-  const view = { api: null, root: null, filter: "all", events: { events: [], errors: {} }, confirm: null, busy: new Set(), timer: null };
+  const view = { api: null, root: null, filter: "all", events: { events: [], errors: {} }, busy: new Set(), timer: null };
 
   function section(id, title, ...children) {
     const { el } = view.api;
@@ -86,27 +80,19 @@
       list);
   }
 
-  /** The stop result band of the shell shows the outcome. A stop is never disabled. */
+  /** One press sends the stop. The stop result band of the shell shows the outcome. A stop is never disabled. */
   function safety(action) {
-    view.confirm = null;
-    render();
     view.api.safetyStop(action).catch(() => {});
   }
 
   function safetyCard() {
     const { el, t } = view.api;
-    const confirm = view.confirm ? el("div", { class: "lc-confirm" },
-      el("p", { text: t(view.confirm === "heat" ? "safety.heatConfirm" : "safety.gasConfirm") }),
-      el("div", { class: "lc-grid2" },
-        el("button", { type: "button", class: "lc-danger", onclick: () => safety(view.confirm), text: t("safety.confirm") }),
-        el("button", { type: "button", class: "lc-button", onclick: () => { view.confirm = null; render(); }, text: t("safety.cancel") }))) : null;
     return section("ov-safety", t("safety.title"),
       el("button", { type: "button", class: "lc-stop lc-stop-big", onclick: () => safety("motion") },
         el("span", { text: t("stop.all") }), el("span", { class: "lc-small", text: t("safety.motionTargets") })),
       el("div", { class: "lc-grid2" },
-        el("button", { type: "button", class: "lc-danger", onclick: () => { view.confirm = "heat"; render(); }, text: t("safety.heat") }),
-        el("button", { type: "button", class: "lc-danger", onclick: () => { view.confirm = "gas"; render(); }, text: t("safety.gas") })),
-      confirm,
+        el("button", { type: "button", class: "lc-stop", onclick: () => safety("heat"), text: t("stop.heat") }),
+        el("button", { type: "button", class: "lc-danger", onclick: () => safety("gas"), text: t("stop.gas") })),
       el("p", { class: "lc-muted", text: t("safety.note") }));
   }
 

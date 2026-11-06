@@ -102,6 +102,7 @@ async function load({ owns = ["furnace", "microscope"], status = statusBody(), c
     release: async device => { calls.push(["release", device]); },
     relay: async (device, action, params) => { calls.push(["relay", device, action, params]); return { outcome: "accepted" }; },
     stop: async device => { calls.push(["stop", device]); return { device, outcome: "confirmed" }; },
+    safetyStop: async action => { calls.push(["safety", action]); return { operation_id: "op-" + action }; },
     describe: async device => (device === "furnace" ? FURNACE_DESCRIBE : SCOPE_DESCRIBE),
     request: async (name, data) => {
       calls.push(data === undefined ? ["request", name] : ["request", name, data]);
@@ -217,7 +218,7 @@ test("gas flow needs no gas map names", async () => {
   assert.equal(role(root, "send-flow-0").disabled, false);
 });
 
-test("stops need no control and are sent once", async () => {
+test("stops need no control and are sent once; heat and gas use the Overview routes", async () => {
   const { root, calls } = await load({ owns: [] });
   assert.equal(role(root, "apply").disabled, true);
   role(root, "stop-furnace").click();
@@ -225,7 +226,7 @@ test("stops need no control and are sent once", async () => {
   role(root, "stop-gas").click();
   await flush();
   assert.deepEqual(calls.filter(call => call[0] !== "request"), [
-    ["stop", "furnace"], ["stop", "microscope"], ["console", "/api/dashboard/gas", { confirmed: true }],
+    ["safety", "heat"], ["stop", "microscope"], ["safety", "gas"],
   ]);
 });
 

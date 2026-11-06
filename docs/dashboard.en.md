@@ -42,7 +42,7 @@ The workspaces send manual commands through the console. The console forwards ea
 
 - **Run** shows the current run and its steps. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
-- **Safety** gives Stop all motion, Heat off and Gas off. Heat off and Gas off need a confirmation in the page. The stop result band shows the results.
+- **Safety** gives **STOP ALL MOTION**, **Stop heat and gas** and **Stop all gas**. Each button acts on 1 press. The stop result band shows the results.
 - **Agent proposals** shows the number of waiting proposals. See [agent proposals](#agent-proposals).
 
 ### Motion workspace
@@ -108,7 +108,7 @@ Every device command goes through the console relay. Use **Take control** for th
 - The chart shows PV and SV for the last 60 minutes. The console process records 1 point every 5 s while a page is open. After a restart the chart starts empty.
 - **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes.
 - The sequence editor adds and removes steps and sets the target, ramp, hold and 3 gas channels of each step, and the end gas and end temperature. When a step sets gas, the end temperature is necessary. The page loads the furnace sequence on its first read.
-- Without `MG400_FURNACE_GAS_MAP`, the gas channels are named Gas 1 to Gas 3. **Stop all gas** uses the gas-off route of the Overview.
+- Without `MG400_FURNACE_GAS_MAP`, the gas channels are named Gas 1 to Gas 3. **Stop heat and gas** and **Stop all gas** use the routes of the Overview **Safety** card. The stop result band shows the result.
 - Each gas row shows the actual flow and the valve state. A valve state that the flow controller did not confirm shows not confirmed.
 - **Close** stops 1 gas channel through `ws/process/gas-stop`. It sets the flow to 0 and closes the valve, and needs no control. The page shows the result: confirmed, not confirmed or unknown.
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
@@ -137,8 +137,8 @@ The header has **STOP ALL MOTION**. The **Safety** card of the Overview has all 
 | Button | Effect |
 | --- | --- |
 | **STOP ALL MOTION** | Sends independent stop requests to the robot, stage, and microscope in parallel. It also holds the active run and cancels recovery. Holding a run can stop its acquired heat, gas, and water outputs. |
-| **Heat off…** | Requires confirmation inside the page. It cancels the furnace sequence and stops heat and all furnace-controlled gas and water. It also holds the active run and cancels recovery. |
-| **Gas off…** | Requires confirmation inside the page. It independently requests gas-only stops for channels `0`, `1`, and `2`, without holding the run. An active sequence or recipe can apply gas again. Furnace fault handling can also stop other outputs. |
+| **Stop heat and gas** | Cancels the furnace sequence and stops heat and all furnace-controlled gas and water. It also holds the active run and cancels recovery. |
+| **Stop all gas** | Independently requests gas-only stops for channels `0`, `1`, and `2`, without holding the run. An active sequence or recipe can apply gas again. Furnace fault handling can also stop other outputs. |
 
 The stop result band shows the button and the time, the phase and the result of each target. The time is when this page sent the stop or first saw it. A new stop replaces the band. **Dismiss** hides it.
 

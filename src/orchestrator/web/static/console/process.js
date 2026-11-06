@@ -67,7 +67,7 @@
       "rec.interval": "Interval s", "rec.fps": "Output fps", "rec.error": "Recording error: {error}",
       "rec.invalid": "Enter a run name of at most 80 characters, an interval from 0.1 to 3600 s and an output rate from 0.1 to 120 fps.",
       "sent": "{action} sent.", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
-      "stop.result": "{device} stop: {outcome}", "gas.stopResult": "Gas stop sent.",
+      "stop.result": "{device} stop: {outcome}",
       "outcome.confirmed": "confirmed", "outcome.pending": "pending", "outcome.unconfirmed": "not confirmed", "outcome.unknown": "unknown",
       "status.stale": "Data is stale ({age} s).", "status.unavailable": "Status is unavailable.",
       "fault": "Fault: {message}. Make sure the controller shows STOP, then acknowledge.",
@@ -130,7 +130,7 @@
       "rec.interval": "间隔 s", "rec.fps": "输出帧率", "rec.error": "录制错误：{error}",
       "rec.invalid": "运行名称最多 80 个字符，间隔为 0.1 到 3600 s，输出帧率为 0.1 到 120 fps。",
       "sent": "已发送 {action}。", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
-      "stop.result": "{device}停止：{outcome}", "gas.stopResult": "已发送气体停止。",
+      "stop.result": "{device}停止：{outcome}",
       "outcome.confirmed": "已确认", "outcome.pending": "等待中", "outcome.unconfirmed": "未确认", "outcome.unknown": "未知",
       "status.stale": "数据已过期（{age} s）。", "status.unavailable": "状态不可用。",
       "fault": "故障：{message}。确认控制器显示 STOP 后再确认故障。",
@@ -855,17 +855,12 @@
     });
   }
 
-  function stopFurnace() { return stopDevice("furnace"); }
+  /** Stop heat and gas holds the run like the Overview button. The stop result band shows the outcome. */
+  function stopFurnace() { return view.api.safetyStop("heat").catch(() => {}); }
   function stopMicroscope() { return stopDevice("microscope"); }
 
-  /** The DSH-01 gas-off route: every gas channel, no control needed, sent once. */
-  function stopGas() {
-    return act("stop-gas", async () => {
-      const body = await view.api.consoleRequest("/api/dashboard/gas", { confirmed: true });
-      view.api.notify(view.api.t("gas.stopResult"), "warn");
-      return body;
-    });
-  }
+  /** The Overview gas route: every gas channel, no control needed, sent once. */
+  function stopGas() { return view.api.safetyStop("gas").catch(() => {}); }
 
   return {
     install, i18n, view,

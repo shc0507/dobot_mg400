@@ -43,6 +43,21 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .lc-state.tone-ok, .tone-text-ok { color: var(--ok); } .lc-state.tone-warn, .tone-text-warn { color: var(--warn); }
 .lc-state.tone-bad, .tone-text-bad { color: var(--bad); } .tone-text-info { color: var(--info); }
 
+/* The stop result band: the last stop from any client, its phase and each target. */
+.lc-stopband { display: flex; flex-direction: column; gap: 6px; padding: 8px 24px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 13px; }
+.lc-band-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.lc-band-title { font-weight: 700; font-variant-numeric: tabular-nums; }
+.lc-phases { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0; padding: 0; list-style: none; color: var(--off); }
+.lc-phase + .lc-phase::before { content: "→"; content: "→" / ""; margin-right: 8px; color: var(--off); }
+.lc-phase.past { color: var(--muted); }
+.lc-phase.current { color: var(--text); font-weight: 600; }
+.lc-band-dismiss { margin-left: auto; }
+.lc-band-targets { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0; padding: 0; list-style: none; }
+.lc-band-target { display: inline-flex; gap: 8px; }
+.lc-band-note { margin: 0; color: var(--warn); }
+.lc-stopband.tone-bad .lc-band-note { color: var(--bad); }
+.tone-text-off { color: var(--muted); }
+
 .lc-notice { padding: 10px 24px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .lc-notice.warn { color: var(--warn); } .lc-notice.error { color: var(--bad); } .lc-notice.info { color: var(--info); }
 
@@ -92,7 +107,7 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 }
 
 @media (max-width: 720px) {
-  .lc-header, .lc-strip, .lc-notice { padding-left: 16px; padding-right: 16px; }
+  .lc-header, .lc-strip, .lc-stopband, .lc-notice { padding-left: 16px; padding-right: 16px; }
   main { padding: 16px; }
   .lc-actions { width: 100%; }
   .lc-stop { flex: 1 1 auto; }

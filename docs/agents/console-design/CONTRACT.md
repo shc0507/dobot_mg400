@@ -85,7 +85,8 @@ The `api` object:
 | --- | --- |
 | `api.relay(device, action, params)` | Promise of `{outcome, command_id?, error?}`. Shows a notice for `unknown`. |
 | `api.stop(device)` | Promise of the stop result. Needs no control. |
-| `api.stopAll()` | The DSH-01 stop fan-out (robot, stage, microscope). |
+| `api.stopAll()` | The DSH-01 stop fan-out (robot, stage, microscope). Same as `api.safetyStop("motion")`. |
+| `api.safetyStop(action)` | Send `motion`, `heat` or `gas` once over the socket and HTTP. The shell's stop result band shows the phases and target results. Never disable the button. |
 | `api.take(device)`, `api.release(device)`, `api.releaseAll()` | Control. `take` rejects with the service message on refusal. |
 | `api.owns(device)`, `api.controls()` | Whether this page holds a device; the control list. |
 | `api.describe(device)` | Promise of the described commands. |

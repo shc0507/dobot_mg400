@@ -14,7 +14,8 @@ The console is the only operator web page.
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
-- In a window wider than 720 px, the header, the status strip and the notice stay at the top of the window when you scroll.
+- The stop result band below the status strip shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
+- In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
 - The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 
@@ -41,7 +42,7 @@ The workspaces send manual commands through the console. The console forwards ea
 
 - **Run** shows the current run and its steps. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
-- **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
+- **Safety** gives Stop all motion, Heat off and Gas off. Heat off and Gas off need a confirmation in the page. The stop result band shows the results.
 - **Agent proposals** shows the number of waiting proposals. See [agent proposals](#agent-proposals).
 
 ### Motion workspace
@@ -138,6 +139,12 @@ The header has **STOP ALL MOTION**. The **Safety** card of the Overview has all 
 | **STOP ALL MOTION** | Sends independent stop requests to the robot, stage, and microscope in parallel. It also holds the active run and cancels recovery. Holding a run can stop its acquired heat, gas, and water outputs. |
 | **Heat off…** | Requires confirmation inside the page. It cancels the furnace sequence and stops heat and all furnace-controlled gas and water. It also holds the active run and cancels recovery. |
 | **Gas off…** | Requires confirmation inside the page. It independently requests gas-only stops for channels `0`, `1`, and `2`, without holding the run. An active sequence or recipe can apply gas again. Furnace fault handling can also stop other outputs. |
+
+The stop result band shows the button and the time, the phase and the result of each target. The time is when this page sent the stop or first saw it. A new stop replaces the band. **Dismiss** hides it.
+
+- Motion and heat stops go through Stopping, Holding run, Final stop and Done. Gas stops go through Stopping and Done.
+- Before Done, a confirmed motion or heat target shows Confirmed (provisional).
+- When the request does not get to the console, the band shows Not sent and the error.
 
 Read every target result. A target can be pending, confirmed, unconfirmed, unavailable, or failed.
 For motion and heat stops, initial confirmations are provisional while the run hold and accepted work drain.

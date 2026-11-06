@@ -16,13 +16,10 @@
       "safety.heatConfirm": "Turn the furnace heat off.", "safety.gasConfirm": "Close all 3 gas channels.",
       "safety.confirm": "Confirm", "safety.cancel": "Cancel",
       "safety.note": "The physical e-stops stay the primary stop. Each software stop works without control and never waits for a lease.",
-      "safety.none": "No stop sent yet.",
       "control.title": "Control", "control.releaseAll": "Release all", "control.free": "Free",
       "control.thisPage": "This page", "control.console": "Console (other page)", "control.unknown": "Unknown",
       "control.take": "Take control", "control.release": "Release",
       "control.takeLabel": "Take control of {device}", "control.releaseLabel": "Release {device}",
-      "result.pending": "Pending", "result.confirmed": "Confirmed", "result.unconfirmed": "Not confirmed",
-      "result.failed": "Failed", "result.unavailable": "Unavailable",
       "proposals.title": "Agent proposals", "proposals.count": "{count} waiting.",
       "proposals.none": "No proposal waiting.",
     },
@@ -35,13 +32,10 @@
       "safety.heatConfirm": "关闭炉子加热。", "safety.gasConfirm": "关闭全部 3 路气体。",
       "safety.confirm": "确认", "safety.cancel": "取消",
       "safety.note": "物理急停仍是首要停止手段。每个软件停止都不需要控制权，也不等待租约。",
-      "safety.none": "尚未发送停止。",
       "control.title": "控制权", "control.releaseAll": "全部释放", "control.free": "空闲",
       "control.thisPage": "本页", "control.console": "控制台（其他页面）", "control.unknown": "未知",
       "control.take": "获取控制", "control.release": "释放",
       "control.takeLabel": "获取 {device} 的控制", "control.releaseLabel": "释放 {device}",
-      "result.pending": "进行中", "result.confirmed": "已确认", "result.unconfirmed": "未确认",
-      "result.failed": "失败", "result.unavailable": "不可用",
       "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。",
       "proposals.none": "没有待处理的提议。",
     },
@@ -92,42 +86,27 @@
       list);
   }
 
-  async function safety(action) {
-    const { consoleRequest, notify } = view.api;
-    if (view.busy.has(action)) return;
-    view.busy.add(action);
+  /** The stop result band of the shell shows the outcome. A stop is never disabled. */
+  function safety(action) {
     view.confirm = null;
     render();
-    try { await consoleRequest("/api/dashboard/" + action, action === "motion" ? {} : { confirmed: true }); }
-    catch (error) { notify(error.message, "error"); }
-    finally { view.busy.delete(action); render(); }
+    view.api.safetyStop(action).catch(() => {});
   }
 
-  function safetyCard(snapshot) {
+  function safetyCard() {
     const { el, t } = view.api;
-    const results = [];
-    for (const action of ["motion", "heat", "gas"]) {
-      const operation = logic.latestOperation(snapshot?.operations, action);
-      if (!operation) continue;
-      for (const [target, result] of Object.entries(operation.results || {})) {
-        results.push(el("div", { class: "lc-result" },
-          el("span", { text: target }),
-          el("span", { class: "lc-strong tone-text-" + ({ confirmed: "ok", pending: "info", unconfirmed: "warn" }[result.status] || "bad"), text: t("result." + result.status) })));
-      }
-    }
     const confirm = view.confirm ? el("div", { class: "lc-confirm" },
       el("p", { text: t(view.confirm === "heat" ? "safety.heatConfirm" : "safety.gasConfirm") }),
       el("div", { class: "lc-grid2" },
         el("button", { type: "button", class: "lc-danger", onclick: () => safety(view.confirm), text: t("safety.confirm") }),
         el("button", { type: "button", class: "lc-button", onclick: () => { view.confirm = null; render(); }, text: t("safety.cancel") }))) : null;
     return section("ov-safety", t("safety.title"),
-      el("button", { type: "button", class: "lc-stop lc-stop-big", disabled: view.busy.has("motion"), onclick: () => safety("motion") },
+      el("button", { type: "button", class: "lc-stop lc-stop-big", onclick: () => safety("motion") },
         el("span", { text: t("stop.all") }), el("span", { class: "lc-small", text: t("safety.motionTargets") })),
       el("div", { class: "lc-grid2" },
-        el("button", { type: "button", class: "lc-danger", disabled: view.busy.has("heat"), onclick: () => { view.confirm = "heat"; render(); }, text: t("safety.heat") }),
-        el("button", { type: "button", class: "lc-danger", disabled: view.busy.has("gas"), onclick: () => { view.confirm = "gas"; render(); }, text: t("safety.gas") })),
+        el("button", { type: "button", class: "lc-danger", onclick: () => { view.confirm = "heat"; render(); }, text: t("safety.heat") }),
+        el("button", { type: "button", class: "lc-danger", onclick: () => { view.confirm = "gas"; render(); }, text: t("safety.gas") })),
       confirm,
-      el("div", { class: "lc-results" }, ...(results.length ? results : [el("p", { class: "lc-muted", text: t("safety.none") })])),
       el("p", { class: "lc-muted", text: t("safety.note") }));
   }
 
@@ -185,7 +164,7 @@
     const scroll = view.root.querySelector?.(".lc-events")?.scrollTop || 0;
     view.root.replaceChildren(el("div", { class: "lc-layout" },
       el("div", { class: "lc-col-main" }, runCard(snapshot?.run), eventsCard()),
-      el("aside", { class: "lc-col-side" }, safetyCard(snapshot), controlCard(snapshot), proposalsCard(snapshot))));
+      el("aside", { class: "lc-col-side" }, safetyCard(), controlCard(snapshot), proposalsCard(snapshot))));
     const events = view.root.querySelector?.(".lc-events");
     if (events) events.scrollTop = scroll;
   }

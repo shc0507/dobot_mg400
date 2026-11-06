@@ -239,22 +239,56 @@ def test_predict_serializes_masks_in_original_image_coordinates(fake_detector, m
         return [prediction]
 
     model.predict = predict
-    image = Image.new("RGB", (1280, 640), (255, 0, 0))
+    image = Image.new("RGB", (1280, 960), (255, 0, 0))
     annotated, metadata = Localizer(weights).predict(image)
     assert captured["source"].shape == (640, 640, 3)
     assert captured["source"][0, 0].tolist() == [0, 0, 255]
     assert captured["rect"] is False and captured["save"] is False
     assert annotated.size == image.size
-    assert image.getpixel((200, 100)) == (255, 0, 0)
+    assert image.getpixel((200, 150)) == (255, 0, 0)
     item = json.loads(json.dumps(metadata))["detections"][0]
-    assert item["xyxy"] == [200, 100, 400, 200]
-    assert item["polygon"] == [[200, 100], [400, 100], [400, 200], [200, 200]]
-    assert sorted(item["size_px"]) == pytest.approx([100, 200])
+    assert item["xyxy"] == [200, 150, 400, 300]
+    assert item["polygon"] == [[200, 150], [400, 150], [400, 300], [200, 300]]
+    assert sorted(item["size_px"]) == pytest.approx([150, 200])
     assert metadata["counts"] == {"Chip": 1}
 
     prediction.masks = None
     _, metadata = Localizer(weights).predict(image)
     assert metadata["detections"][0]["polygon"] is None
+
+
+def test_predict_crops_wide_frames_to_centered_4x3_and_reports_full_frame_pixels(fake_detector):
+    weights, _, model = fake_detector
+    captured = {}
+    prediction = SimpleNamespace(
+        names={0: "Chip", 1: "Robotic Arm"},
+        boxes=SimpleNamespace(
+            xyxy=tensor([[0, 320, 640, 640]]), cls=tensor([0]), conf=tensor([0.9])
+        ),
+        masks=SimpleNamespace(xy=[np.array([[0, 320], [640, 320], [640, 640], [0, 640]])]),
+        speed={},
+    )
+
+    def predict(**options):
+        captured.update(options)
+        return [prediction]
+
+    model.predict = predict
+    image = Image.new("RGB", (1280, 720), (255, 0, 0))
+    image.paste((0, 255, 0), (0, 0, 160, 720))
+    image.paste((0, 0, 255), (1120, 0, 1280, 720))
+    annotated, metadata = Localizer(weights).predict(image)
+    source = captured["source"]
+    assert source.shape == (640, 640, 3)
+    assert source[:, [0, -1]].reshape(-1, 3).tolist() == [[0, 0, 255]] * 1280
+    assert annotated.size == (1280, 720)
+    assert metadata["image_size"] == {"width": 1280, "height": 720}
+    assert metadata["coordinate_system"] == "oriented_original_image_pixels"
+    assert "center crop 960x720" in metadata["preprocessing"]
+    item = json.loads(json.dumps(metadata))["detections"][0]
+    assert item["xyxy"] == [160, 360, 1120, 720]
+    assert item["center_xy"] == [640, 540]
+    assert item["polygon"] == [[160, 360], [1120, 360], [1120, 720], [160, 720]]
 
 
 def test_import_needs_no_detector_runtime_and_creates_no_files(tmp_path):

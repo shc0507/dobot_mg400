@@ -527,7 +527,7 @@ uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval
 
 评估规则：
 
-- 脚本把每帧交给 `Localizer.predict`，与视觉服务相同。该函数把图像拉伸到 640x640。
+- 脚本把每帧交给 `Localizer.predict`，与视觉服务相同。该函数先把宽于 4:3 的图像裁成居中的 4:3 区域（1280x720 裁成 960x720），再拉伸到 640x640。检测坐标仍按完整原图像素报告。
 - 脚本使用 `Localizer.predict` 的默认置信度阈值，与服务相同。如果要评估其他阈值，设置 `--confidence`。
 - 检测框与标签框的 IoU（交并比）不小于 0.5 时，二者匹配。脚本按置信度从高到低匹配。每个标签最多匹配 1 个检测。
 - 未匹配的检测计为误检。未匹配的标签计为漏检。

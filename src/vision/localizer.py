@@ -31,7 +31,7 @@ class Detection:
     size_px: tuple[float, float] | None = None
 
 
-def _mask_geometry(polygon, width, height, input_size):
+def _mask_geometry(polygon, width, height, input_size, x_offset=0):
     """Map a contour, then return OpenCV's rectangle angle and width/height."""
     points = np.array(polygon, dtype=np.float32, copy=True)
     if points.ndim != 2 or points.shape[1] != 2 or len(points) < 3:
@@ -41,6 +41,7 @@ def _mask_geometry(polygon, width, height, input_size):
     points *= [width / input_size, height / input_size]
     points[:, 0] = np.clip(points[:, 0], 0, width)
     points[:, 1] = np.clip(points[:, 1], 0, height)
+    points[:, 0] += x_offset
     _, size, angle = cv2.minAreaRect(points)
     mapped = tuple((float(x), float(y)) for x, y in points)
     return mapped, float(angle), (float(size[0]), float(size[1]))
@@ -61,9 +62,22 @@ def load_image(source: str | Path | Image.Image | np.ndarray) -> Image.Image:
 
 
 def map_detections(
-    boxes, class_ids, scores, names, width, height, input_size, confidence=0.39, *, polygons=None
+    boxes,
+    class_ids,
+    scores,
+    names,
+    width,
+    height,
+    input_size,
+    confidence=0.39,
+    *,
+    polygons=None,
+    x_offset=0,
 ) -> list[Detection]:
     """Map boxes and optional masks to the EXIF-oriented original image.
+
+    width and height give the model input region. x_offset gives the left edge
+    of that region in the original image.
 
     Polygons correspond to input boxes before confidence filtering. Rectangle
     angles and sizes use OpenCV's convention in the original-image coordinates.
@@ -80,13 +94,16 @@ def map_detections(
         values *= [width / input_size, height / input_size, width / input_size, height / input_size]
         values[[0, 2]] = np.clip(values[[0, 2]], 0, width)
         values[[1, 3]] = np.clip(values[[1, 3]], 0, height)
-        x1, y1, x2, y2 = (float(v) for v in values)
-        if x2 <= x1 or y2 <= y1:
+        if values[2] <= values[0] or values[3] <= values[1]:
             continue
+        values[[0, 2]] += x_offset
+        x1, y1, x2, y2 = (float(v) for v in values)
         cid = int(class_id)
         polygon, angle, size = (None, None, None)
         if polygons is not None:
-            polygon, angle, size = _mask_geometry(polygons[index], width, height, input_size)
+            polygon, angle, size = _mask_geometry(
+                polygons[index], width, height, input_size, x_offset
+            )
         mapped.append(
             Detection(
                 cid,
@@ -191,9 +208,14 @@ class Localizer:
         started = time.perf_counter()
         original = load_image(image)
         width, height = original.size
+        # Dataset v1 has 640 x 480 frames. A wider frame (1280 x 720) has the same
+        # vertical view, so the model sees its centered 4:3 region.
+        crop_width = min(width, round(height * 4 / 3))
+        x_offset = (width - crop_width) // 2
+        model_input = original.crop((x_offset, 0, x_offset + crop_width, height))
         # Dataset v1 uses STRETCH to 640 x 640. Resize explicitly before YOLO's
         # usual letterbox preprocessing, then restore boxes to original pixels.
-        resized = original.resize((self.input_size, self.input_size), Image.Resampling.BILINEAR)
+        resized = model_input.resize((self.input_size, self.input_size), Image.Resampling.BILINEAR)
         bgr = np.asarray(resized)[:, :, ::-1].copy()
         prediction = self.model.predict(
             source=bgr,
@@ -220,18 +242,22 @@ class Localizer:
                 boxes.cls.cpu().numpy(),
                 boxes.conf.cpu().numpy(),
                 prediction.names,
-                width,
+                crop_width,
                 height,
                 self.input_size,
                 confidence,
                 polygons=None if prediction.masks is None else prediction.masks.xy,
+                x_offset=x_offset,
             )
         )
         annotated = draw_detections(original, detections)
         metadata = {
             "weights": str(self.weights),
             "image_size": {"width": width, "height": height},
-            "preprocessing": f"EXIF orientation, RGB, stretch {self.input_size}x{self.input_size}",
+            "preprocessing": (
+                f"EXIF orientation, RGB, center crop {crop_width}x{height}, "
+                f"stretch {self.input_size}x{self.input_size}"
+            ),
             "confidence_threshold": confidence,
             "coordinate_system": "oriented_original_image_pixels",
             "counts": dict(Counter(d.label for d in detections)),

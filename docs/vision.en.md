@@ -526,7 +526,7 @@ The locked `torch` has no macOS wheel. On macOS, install the locked `ultralytics
 
 Evaluation rules:
 
-- The script sends each frame to `Localizer.predict`, as the vision service does. That function stretches the image to 640x640.
+- The script sends each frame to `Localizer.predict`, as the vision service does. That function crops an image that is wider than 4:3 to its centered 4:3 region (1280x720 becomes 960x720). Then it stretches the region to 640x640. Detection coordinates stay in full original-image pixels.
 - The script uses the default confidence threshold of `Localizer.predict`, as the service does. To evaluate a different threshold, set `--confidence`.
 - A detection box and a label box match when their IoU (intersection over union) is at least 0.5. The script matches in descending confidence. Each label matches at most 1 detection.
 - An unmatched detection is a false detection. An unmatched label is a missed label.

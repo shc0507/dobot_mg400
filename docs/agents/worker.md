@@ -15,6 +15,7 @@ You are one worker. The coordinator dispatched you with one task: an issue numbe
 - PR: `gh pr create`; body states what changed, why, tests run, and the device check if any.
 - CI: wait with one blocking call, `gh pr checks <n> --watch --interval 20` (about 7 minutes). Merge yourself when CI is green and the device check passed: `gh pr merge <n> --merge`.
 - Deploy: follow `docs/deploy.md`. Keep `web` running while the owner may use the arm. Poll readiness with an until-loop on `curl` or `systemctl`, never a fixed sleep.
+- Look at the console yourself: `npx playwright screenshot --viewport-size=1440,900 --wait-for-timeout=3000 http://100.64.0.1:8080/lab/ /tmp/<slug>.png`, then read the PNG. Camera stills are at `/camera/<view>.jpg` on the same host. Ask the owner only for pages behind the Olares login.
 - Docs: change instruction docs in place as `AGENTS.md` "Documenting" says. Chinese and English pairs change together.
 - Commit message: one line plus a brief description of what was done.
 - Permission block: when the classifier blocks a command, write `BLOCKED <name>: <command>` in the report and continue with the rest of the task. A worker in an interactive session asks the owner once, with one question that covers the whole path (merge main, push, merge).

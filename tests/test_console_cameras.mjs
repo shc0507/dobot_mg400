@@ -90,8 +90,8 @@ test("the workspace never parses data as HTML and never stores a token", () => {
 });
 
 test("cameras load from the proxy and the microscope from the console relay", () => {
-  assert.equal(logic.streamUrl("camera2", false, "/lab"), "/camera/camera2.mjpeg?fps=5");
-  assert.equal(logic.streamUrl("camera2", true, "/lab"), "/camera/camera2.mjpeg?fps=10");
+  assert.equal(logic.streamUrl("camera2", false, "/lab"), "/camera/camera2.mjpeg?fps=3");
+  assert.equal(logic.streamUrl("camera2", true, "/lab"), "/camera/camera2.mjpeg?fps=6");
   assert.equal(logic.snapshotUrl("camera4", "/lab"), "/camera/camera4.full.jpg");
   assert.equal(logic.streamUrl("microscope", false, "/lab"), "/lab/api/console/ws/cameras/stream/microscope?fps=10");
   assert.equal(logic.streamUrl("microscope", true, "/lab"), "/lab/api/console/ws/cameras/stream/microscope?fps=30");

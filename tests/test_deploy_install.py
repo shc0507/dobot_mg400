@@ -383,7 +383,7 @@ def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, 
     assert config.read_text().startswith("api:\n  listen: 127.0.0.1:1984\n")
     assert (
         f"  camera3: v4l2:device?video={DEVICES[2]}"
-        "&input_format=mjpeg&video_size=640x480&framerate=30\n"
+        "&input_format=mjpeg&video_size=1280x720&framerate=30\n"
     ) in config.read_text()
     # A later install keeps the installed binary without --go2rtc.
     assert host.install() == 0
@@ -1564,12 +1564,12 @@ def test_every_udev_permission_rule_must_identify_device_and_group(host, optiona
 
 
 def test_camera_capture_sizes_keep_defaults_and_select_microscope_stream(module):
-    assert module.camera_capture_sizes("", DEVICES) == [(640, 480)] * 3
+    assert module.camera_capture_sizes("", DEVICES) == [(1280, 720)] * 3
     sizes = module.camera_capture_sizes("", DEVICES, "camera2")
-    assert sizes == [(640, 480), (3840, 2160), (640, 480)]
+    assert sizes == [(1280, 720), (3840, 2160), (1280, 720)]
     config = module.render_go2rtc(DEVICES, sizes)
     assert f"video={DEVICES[1]}&input_format=mjpeg&video_size=3840x2160" in config
-    assert config.count("video_size=640x480") == 2
+    assert config.count("video_size=1280x720") == 2
     assert "api:\n  listen: 127.0.0.1:1984\n" in config
     assert module.camera_capture_sizes("800x600,3840x2160,1280x720", DEVICES) == [
         (800, 600),
@@ -1611,7 +1611,7 @@ def test_installer_renders_side_stream_capture_size(host, module, tmp_path):
     binary.write_bytes(b"offline executable")
     assert host.install("--go2rtc", str(binary)) == 0
     config = (host.root / "etc/mg400/go2rtc.yaml").read_text()
-    assert config == module.render_go2rtc(DEVICES, [(640, 480), (3840, 2160), (640, 480)])
+    assert config == module.render_go2rtc(DEVICES, [(1280, 720), (3840, 2160), (1280, 720)])
 
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
@@ -1623,7 +1623,7 @@ def test_camera_configuration_renders_exact_device_count(module, count):
     for number, device in enumerate(devices, 1):
         assert f"camera{number}: v4l2:device?video={device}" in rendered
         assert f"camera{number}: video\n" in rendered
-        assert f"  camera{number}_h264: ffmpeg:camera{number}#video=h264#bitrate=2M\n" in rendered
+        assert f"  camera{number}_h264: ffmpeg:camera{number}#video=h264#bitrate=4M\n" in rendered
     assert f"camera{count + 1}:" not in rendered
     assert f"camera{count + 1}_h264:" not in rendered
     # ffmpeg reads and returns the H.264 previews through RTSP on loopback only.
@@ -1662,8 +1662,9 @@ def test_only_descriptor_approved_mjpeg_modes_render_and_large_streams_stay_idle
     rendered = module.render_go2rtc(DEVICES[:1], modes=[mode])
     width, height, fps = mode
     assert f"input_format=mjpeg&video_size={width}x{height}&framerate={fps}" in rendered
-    if width <= 640 and height <= 480:
+    if width <= 1280 and height <= 720:
         assert "preload:\n  camera1: video\n" in rendered
+        assert f"#bitrate={4 if width > 640 else 2}M\n" in rendered
     else:
         assert "preload: {}\n" in rendered
 
@@ -1712,8 +1713,8 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
         "MG400_MICROSCOPE_SIDE_STREAM": "camera3",
     }
     default = module.camera_configuration(settings)
-    assert default.modes == ((640, 480, 30), (640, 480, 30), (3840, 2160, 30), (640, 480, 30))
-    settings["MG400_CAMERA_MODES"] = "640x480@30,640x480@30,3840x2160@30,1280x720@30"
+    assert default.modes == ((1280, 720, 30), (1280, 720, 30), (3840, 2160, 30), (1280, 720, 30))
+    settings["MG400_CAMERA_MODES"] = "640x480@30,640x480@30,3840x2160@30,1600x1200@30"
     configured = module.camera_configuration(settings)
     assert configured.preloaded == ("camera1", "camera2")
     rendered = module.render_go2rtc(devices, modes=configured.modes)
@@ -1723,7 +1724,7 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
     assert "camera3_h264" not in rendered and "camera4_h264" not in rendered
     assert "video_size=3840x2160&framerate=30" in rendered
     assert (
-        f"camera4: v4l2:device?video={devices[3]}&input_format=mjpeg&video_size=1280x720"
+        f"camera4: v4l2:device?video={devices[3]}&input_format=mjpeg&video_size=1600x1200"
         in rendered
     )
 

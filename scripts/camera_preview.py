@@ -17,7 +17,7 @@ from cameras.jpeg import jpeg_size
 from cameras.rate import SendRate
 
 CAMERAS = camera_configuration(os.environ)
-# A side stream above 640x480 belongs to the microscope, which runs it only during an
+# A side stream above 1280x720 belongs to the microscope, which runs it only during an
 # objective switch. A relayed view would start it on the shared USB link and the VPN.
 SIDE = os.environ.get("MG400_MICROSCOPE_SIDE_STREAM", "").strip()
 STREAMS = {
@@ -25,7 +25,7 @@ STREAMS = {
     for stream in CAMERAS.streams
     if stream != SIDE or stream in CAMERAS.preloaded
 }
-# go2rtc encodes each camera up to 640x480 and the microscope preview to H.264 for its first
+# go2rtc encodes each camera up to 1280x720 and the microscope preview to H.264 for its first
 # viewer, as fragmented MP4. H.264 needs much less VPN bandwidth than MJPEG at the camera rate.
 VIDEOS = {f"{stream}.mp4": stream for stream in (*CAMERAS.preloaded, "microscope")}
 VIDEO_TYPE = re.compile(r'video/mp4; codecs="[A-Za-z0-9.,]{1,100}"')

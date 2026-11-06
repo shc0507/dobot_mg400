@@ -316,7 +316,7 @@ Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
 Before `H-21`, restore this camera to its earlier position on the turret.
 For the service and preview, go2rtc owns its V4L2 capture.
 During `select_objective`, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.
-The side reader runs only during this command. The preview relay does not serve a side stream above `640x480`.
+The side reader runs only during this command. The preview relay does not serve a side stream above `1280x720`.
 It uses the newest complete JPEG, drops incomplete frames, and reconnects after a connection failure.
 It rejects redirects and ignores environment proxy settings.
 Keep the cameras on their fixed ports and never reset the shared USB hub.
@@ -330,7 +330,7 @@ Keep the cameras on their fixed ports and never reset the shared USB hub.
 Map the side-camera device path to its stream before enabling capture.
 Configure only one mode or size list. The installer rejects configurations with both lists.
 Explicit values control each stream. When both lists are empty, the selected side stream uses `3840x2160@30`.
-Other camera streams retain `640x480@30`. Large streams start on demand.
+Other camera streams retain `1280x720@30`. Large streams start on demand.
 The microscope service expects the side stream's configured mode and rejects frames with a different size. Without camera settings, it expects `3840x2160`.
 The side reference images are `3840x2160`. A side stream with the same aspect ratio, for example `640x360@30`, uses these references directly.
 The locator converts marker positions to reference pixels. Other aspect ratios need new reference images. `H-21` checks objective switching at the configured mode.

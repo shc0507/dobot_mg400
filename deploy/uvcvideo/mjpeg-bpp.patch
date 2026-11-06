@@ -1,0 +1,44 @@
+--- a/uvc_video.c
++++ b/uvc_video.c
+@@ -25,6 +25,10 @@
+ 
+ #include "uvcvideo.h"
+ 
++static unsigned int uvc_mjpeg_bpp;
++module_param_named(mjpeg_bpp, uvc_mjpeg_bpp, uint, 0644);
++MODULE_PARM_DESC(mjpeg_bpp, "MJPEG bandwidth estimate in 1/1000 byte per pixel (0 = use device value)");
++
+ /* ------------------------------------------------------------------------
+  * UVC Controls
+  */
+@@ -226,6 +230,30 @@
+ 	if ((ctrl->dwMaxPayloadTransferSize & 0xffff0000) == 0xffff0000)
+ 		ctrl->dwMaxPayloadTransferSize &= ~0xffff0000;
+ 
++	/*
++	 * Local patch: many MJPEG cameras request the largest isochronous
++	 * packet size for every frame size above VGA. With mjpeg_bpp set
++	 * (thousandths of a byte per pixel), estimate the bandwidth from the
++	 * frame size and rate instead, and never request more than the device.
++	 */
++	if ((format->flags & UVC_FMT_FLAG_COMPRESSED) && uvc_mjpeg_bpp &&
++	    stream->intf->num_altsetting > 1 &&
++	    stream->dev->udev->speed >= USB_SPEED_HIGH) {
++		u32 interval = (ctrl->dwFrameInterval > 100000)
++			     ? ctrl->dwFrameInterval
++			     : frame->dwFrameInterval[0];
++		u64 est = (u64)frame->wWidth * frame->wHeight * uvc_mjpeg_bpp;
++
++		est = div_u64(est * 10000000, interval);	/* milli-bytes/s */
++		est = div_u64(est, 1000 * 8000) + 12;		/* bytes/microframe */
++		if (est < ctrl->dwMaxPayloadTransferSize) {
++			uvc_dbg(stream->dev, VIDEO,
++				"mjpeg_bpp: payload %u -> %llu B\n",
++				ctrl->dwMaxPayloadTransferSize, est);
++			ctrl->dwMaxPayloadTransferSize = est;
++		}
++	}
++
+ 	if (!(format->flags & UVC_FMT_FLAG_COMPRESSED) &&
+ 	    stream->dev->quirks & UVC_QUIRK_FIX_BANDWIDTH &&
+ 	    stream->intf->num_altsetting > 1) {

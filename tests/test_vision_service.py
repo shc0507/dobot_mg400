@@ -67,7 +67,7 @@ def completed(service, command_id):
     pytest.fail("Inference did not finish")
 
 
-def jpeg(size=(640, 480)):
+def jpeg(size=(1280, 720)):
     encoded = io.BytesIO()
     Image.new("RGB", size, "white").save(encoded, format="JPEG")
     return encoded.getvalue()
@@ -92,7 +92,7 @@ def test_fixed_frame_url_timeout_short_reads_and_rgb():
     opener = Mock(return_value=stream)
     image = Go2RTCSource(opener=opener, timeout=0.75).read(2)
     opener.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera2", timeout=0.75)
-    assert image.size == (640, 480) and image.mode == "RGB"
+    assert image.size == (1280, 720) and image.mode == "RGB"
     assert stream.closed
 
 
@@ -106,7 +106,7 @@ def test_frame_byte_and_pixel_limits():
     content = jpeg()
     assert Go2RTCSource(max_bytes=len(content), opener=lambda *a, **k: io.BytesIO(content)).read(
         1
-    ).size == (640, 480)
+    ).size == (1280, 720)
     with pytest.raises(FrameError, match="byte limit"):
         Go2RTCSource(max_bytes=len(content) - 1, opener=lambda *a, **k: io.BytesIO(content)).read(1)
     oversized = bytearray(content)
@@ -195,7 +195,7 @@ def test_camera_four_still_uses_the_existing_stream_and_checks_its_mode():
     image = frame_module.still(4, settings=settings, opener=opener)
     opener.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera4", timeout=2)
     assert image.size == (1280, 720) and stream.closed
-    mismatch = io.BytesIO(jpeg())
+    mismatch = io.BytesIO(jpeg((640, 480)))
     with pytest.raises(FrameError, match="differs from configured mode"):
         Go2RTCSource(settings=settings, opener=lambda *a, **k: mismatch).still(4)
     assert mismatch.closed

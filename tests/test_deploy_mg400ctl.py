@@ -523,7 +523,7 @@ def test_camera_check_without_cameras(ctl):
 def test_camera_check_expects_only_low_resolution_preloads(cameras):
     plug(cameras, CAMERAS)
     with cameras.host.settings.open("a") as settings:
-        settings.write("MG400_CAMERA_MODES=640x480@30,1280x720@30,3840x2160@30\n")
+        settings.write("MG400_CAMERA_MODES=640x480@30,1920x1080@30,3840x2160@30\n")
     cameras.run.side_effect = answer(ACTIVE, preload='{"camera1": {}}')
     assert cameras.call("camera-check") == 0
     assert "camera2 starts on demand" in cameras.out.getvalue()
@@ -534,7 +534,7 @@ def test_camera_check_expects_only_low_resolution_preloads(cameras):
 def test_camera_check_all_large_streams_does_not_open_them(cameras):
     plug(cameras, CAMERAS)
     with cameras.host.settings.open("a") as settings:
-        settings.write("MG400_CAMERA_MODES=1280x720@30,1920x1080@60,3840x2160@30\n")
+        settings.write("MG400_CAMERA_MODES=1600x1200@30,1920x1080@60,3840x2160@30\n")
     cameras.run.side_effect = answer(ACTIVE, preload="")
     assert cameras.call("camera-check") == 0
     assert "no continuous preloads" in cameras.out.getvalue()

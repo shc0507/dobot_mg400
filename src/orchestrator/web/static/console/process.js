@@ -362,17 +362,32 @@
     return view.api.el("button", { type: "button", class: "lc-button", text, onclick, ...props });
   }
 
+  // The button that opens each confirmation. Cancel, Esc and Confirm give the focus back to it.
+  const OPENERS = { apply: "apply", start: "start-sequence", ack: "acknowledge", zero: "zero" };
+
   function confirmBox(id, text, onConfirm, extra) {
     const { el, t } = view.api;
     if (view.confirm !== id) return el("div", { hidden: true });
-    return el("div", { class: "lc-confirm", role: "alertdialog", "aria-label": text },
+    return el("div", { class: "lc-confirm", role: "alertdialog", "aria-label": text, tabindex: "-1", "data-role": "dialog-" + id,
+      onkeydown: event => { if (event.key === "Escape") { event.preventDefault?.(); closeConfirm(); } } },
       el("p", { text }),
       el("div", { class: "pr-row" },
-        extra || button(t("confirm.ok"), () => { view.confirm = null; build(); onConfirm(); }, { class: "lc-button pr-primary", "data-role": "confirm-" + id }),
-        button(t("confirm.cancel"), () => { view.confirm = null; build(); }, { "data-role": "cancel-" + id })));
+        extra || button(t("confirm.ok"), () => { closeConfirm(); onConfirm(); }, { class: "lc-danger pr-danger", "data-role": "confirm-" + id }),
+        button(t("confirm.cancel"), closeConfirm, { "data-role": "cancel-" + id })));
   }
 
-  function ask(id) { view.confirm = id; build(); }
+  function ask(id) {
+    view.confirm = id;
+    build();
+    findRole(view.root, "dialog-" + id)?.focus?.();
+  }
+
+  function closeConfirm() {
+    const opener = OPENERS[view.confirm];
+    view.confirm = null;
+    build();
+    if (opener) findRole(view.root, opener)?.focus?.();
+  }
 
   function cameraTile(name, label) {
     if (view.tiles[name]) return view.tiles[name];

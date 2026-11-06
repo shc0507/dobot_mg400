@@ -17,6 +17,7 @@ The console is the only operator web page.
 - The stop result band below the status strip shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
 - In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
+- A confirmation in the page takes the keyboard focus. Esc or **Cancel** closes it and sends nothing.
 - The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 
 **STOP ALL MOTION** sends independent stop requests to the robot, the stage and the microscope. A stop needs no control and does not wait for a lease. See [stop controls](#stop-controls).

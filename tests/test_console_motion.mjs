@@ -19,6 +19,8 @@ class Element {
   replaceChildren(...children) { this.ownText = ""; this.children = [...children]; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name] ?? null; }
+  removeAttribute(name) { delete this.attributes[name]; }
+  focus() { Element.focused = this; }
   addEventListener(event, callback) { this.listeners.set(event, callback); }
   click() { if (!this.disabled) this.listeners.get("click")?.({ target: this }); }
   all() { return [this, ...this.children.flatMap(child => (child instanceof Element ? child.all() : []))]; }
@@ -175,6 +177,18 @@ test("the arm card shows joints, alarms and the service message; Stop arm needs 
   page.find("Stop arm").click();
   await page.settle();
   assert.deepEqual(page.calls.filter(call => call[0] === "stop"), [["stop", "robot"]]);
+});
+
+test("a confirmation takes the focus, and Esc closes it without sending", async () => {
+  const page = await mounted();
+  page.find("Home…").click();
+  const dialog = Element.focused;
+  assert.equal(dialog.getAttribute("role"), "alertdialog");
+  assert.match(dialog.getAttribute("aria-label"), /Home moves all 4 joints/);
+  dialog.listeners.get("keydown")({ key: "Escape", preventDefault() {} });
+  assert.equal(dialog.hidden, true);
+  await page.settle();
+  assert.equal(page.calls.some(call => call[0] === "relay"), false);
 });
 
 test("Home sends only after the page confirmation; Move sends 1 gripper position", async () => {

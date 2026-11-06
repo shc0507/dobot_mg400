@@ -26,6 +26,7 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name] ?? null; }
   removeAttribute(name) { delete this.attributes[name]; }
+  focus() { Element.focused = this; }
   addEventListener(event, callback) { this.listeners.set(event, callback); }
   click() { if (!this.disabled) this.listeners.get("click")?.({ preventDefault() {} }); }
   type(value) { this.value = value; this.listeners.get("input")?.({ target: this }); }
@@ -188,6 +189,18 @@ test("apply and run needs a confirmation", async () => {
   role(root, "confirm-apply").click();
   await flush();
   assert.deepEqual(calls.filter(call => call[0] === "relay"), [["relay", "furnace", "apply_setpoint", { temperature_c: 250, ramp_rate_c_per_min: 10 }]]);
+});
+
+test("a confirmation takes the focus, has a coral Confirm, and Esc gives the focus back", async () => {
+  const { root, calls } = await load();
+  role(root, "apply").click();
+  const dialog = role(root, "dialog-apply");
+  assert.equal(Element.focused, dialog);
+  assert.equal(role(root, "confirm-apply").className, "lc-danger pr-danger");
+  dialog.listeners.get("keydown")({ key: "Escape", preventDefault() {} });
+  assert.equal(role(root, "dialog-apply"), undefined);
+  assert.equal(Element.focused, role(root, "apply"));
+  assert.equal(calls.filter(call => call[0] === "relay").length, 0);
 });
 
 test("a target above the described cap is refused in the page", async () => {

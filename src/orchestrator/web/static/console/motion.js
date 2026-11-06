@@ -385,26 +385,37 @@
       renderLog();
     }
 
+    // An open confirmation takes the focus. Cancel, Esc and Confirm give it back to the button that opened it.
     function askConfirm(slot, text, run) {
-      model.confirm = { slot, text, run };
+      model.confirm = { slot, text, run, opener: root.document?.activeElement || null };
       renderConfirms();
+      refs.confirms?.[slot]?.focus?.();
+    }
+
+    function closeConfirm() {
+      const opener = model.confirm?.opener;
+      model.confirm = null;
+      renderConfirms();
+      opener?.focus?.();
     }
 
     function renderConfirms() {
       for (const [slot, node] of Object.entries(refs.confirms || {})) {
         const item = model.confirm?.slot === slot ? model.confirm : null;
-        if (!item) { node.replaceChildren(); node.hidden = true; continue; }
+        if (!item) { node.replaceChildren(); node.hidden = true; node.removeAttribute("aria-label"); continue; }
         node.hidden = false;
+        node.setAttribute("aria-label", item.text);
         node.replaceChildren(
           el("p", { text: item.text }),
           el("div", { class: "mo-grid2" },
-            el("button", { type: "button", class: "lc-button mo-danger", text: t("confirm"), onclick: () => { model.confirm = null; renderConfirms(); item.run(); } }),
-            el("button", { type: "button", class: "lc-button", text: t("cancel"), onclick: () => { model.confirm = null; renderConfirms(); } })));
+            el("button", { type: "button", class: "lc-button mo-danger", text: t("confirm"), onclick: () => { closeConfirm(); item.run(); } }),
+            el("button", { type: "button", class: "lc-button", text: t("cancel"), onclick: closeConfirm })));
       }
     }
 
     function confirmSlot(name) {
-      const node = el("div", { class: "lc-confirm", role: "alertdialog", hidden: true });
+      const node = el("div", { class: "lc-confirm", role: "alertdialog", hidden: true, tabindex: "-1",
+        onkeydown: event => { if (event.key === "Escape" && model.confirm?.slot === name) { event.preventDefault?.(); closeConfirm(); } } });
       refs.confirms[name] = node;
       return node;
     }

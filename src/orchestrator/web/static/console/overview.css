@@ -1,1 +1,3 @@
 /* Overview styles live in shell.css because the frame shares them. */
+/* A slot whose rows take part in the layout of its card. */
+#ws-overview .ov-slot { display: contents; }

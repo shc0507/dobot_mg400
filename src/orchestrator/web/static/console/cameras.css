@@ -68,8 +68,12 @@ body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
 #ws-cameras .lcam-cell .lcam-badge.tone-bad .lc-dot { background: var(--cm-bad); } #ws-cameras .lcam-cell .lcam-badge.tone-off .lc-dot { background: var(--cm-count); }
 #ws-cameras .lcam-cell .lcam-readings { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; }
 #ws-cameras .lcam-cell .lcam-readings:empty { display: none; }
-#ws-cameras .lcam-cell .lcam-readings span { padding: 3px 10px; border-radius: 10px; background: var(--cm-well-scrim); color: #F2EEE9; font-size: 12px; font-variant-numeric: tabular-nums; }
+#ws-cameras .lcam-cell .lcam-readings span { display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 10px; border-radius: 10px; background: var(--cm-well-scrim); color: #F2EEE9; font-size: 12px; font-variant-numeric: tabular-nums; }
+#ws-cameras .lcam-cell .lcam-readings small { font-size: 12px; }
 #ws-cameras .lcam-cell .lcam-readings b { color: #FFFFFF; font-weight: 700; }
+/* In the large view the 4 readings use the readout size in fixed cells. */
+#ws-cameras .lcam-mode-large .lcam-big .lcam-readings span { flex-direction: column; align-items: flex-start; gap: 0; min-width: 104px; padding: 6px 12px; }
+#ws-cameras .lcam-mode-large .lcam-big .lcam-readings b { font-size: 20px; }
 #ws-cameras .lcam-cell .lcam-foot { display: contents; }
 #ws-cameras .lcam-cell .lcam-meta { position: absolute; left: 8px; bottom: 8px; z-index: 3; max-width: calc(100% - 240px); padding: 4px 10px; border-radius: 10px; background: var(--cm-well-scrim); color: #F2EEE9; font-size: 12px; }
 #ws-cameras .lcam-cell .lcam-mode { color: #F2EEE9; }
@@ -79,7 +83,8 @@ body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
 #ws-cameras .lcam-cell .lcam-buttons .lc-button { min-height: 30px; padding: 0 10px; border-radius: 10px; background: var(--cm-well-chip); font-size: 12px; }
 #ws-cameras .lcam-cell .lcam-buttons .lc-button:hover:not(:disabled) { background: #FFFFFF; }
 #ws-cameras .lcam-cell .lcam-buttons .lc-button.lcam-on, #ws-cameras .lcam-cell .lcam-buttons .lc-button.lcam-on:hover { background: var(--cm-action); color: var(--cm-on-action); }
-#ws-cameras .lcam-cell .lcam-colorbar { top: 76px; bottom: 48px; }
+#ws-cameras .lcam-cell .lcam-colorbar { top: 76px; bottom: 48px; border-radius: 10px; background: var(--cm-well-scrim); }
+#ws-cameras .lcam-mode-large .lcam-big .lcam-colorbar { top: 104px; }
 #ws-cameras .lcam-cell .lcam-cb-label { font-size: 12px; }
 #ws-cameras .lcam-cell .lcam-cb-bar { border-radius: 6px; }
 /* Rail tiles: name and state only; a click puts the view in the large place. */
@@ -89,14 +94,18 @@ body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
 /* Thermal settings card: opens on demand over the wall, never as a column. */
 #ws-cameras .lcam-card { position: absolute; z-index: 10; right: 8px; bottom: 48px; width: min(440px, calc(100vw - 48px)); max-height: calc(100vh - var(--lc-top, 113px) - 40px); overflow: auto;
   display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 16px; border-radius: 20px; background: var(--cm-card); box-shadow: var(--cm-lift); }
-#ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) .lcam-card { right: calc(100% + 12px); bottom: 0; }
+/* Beside the thermal tile, so the view stays visible while you change its display. */
+#ws-cameras .lcam-mode-wall .lcam-card, #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) .lcam-card { right: calc(100% + 12px); bottom: 0; }
+/* In the wall the card covers the next tile only, also in a narrow window. */
+#ws-cameras .lcam-mode-wall .lcam-card { width: min(440px, calc(100% + 8px)); }
 #ws-cameras .lcam-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
 #ws-cameras .lcam-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 38px; font-size: 13px; }
 #ws-cameras .lcam-label { flex: 0 0 104px; font-size: 13px; font-weight: 700; }
 #ws-cameras .lcam-card .lcam-indent { margin: -6px 0 2px 112px; }
 #ws-cameras .lcam-select, #ws-cameras .lcam-input { min-height: 34px; padding: 0 10px; border: 1px solid var(--cm-edge); border-radius: 10px; background: var(--cm-card); color: var(--cm-text); font: inherit; font-size: 13px; }
 #ws-cameras .lcam-select { min-width: 160px; }
-#ws-cameras .lcam-input { width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+#ws-cameras .lcam-input { width: 76px; text-align: right; font-variant-numeric: tabular-nums; appearance: textfield; -moz-appearance: textfield; }
+#ws-cameras .lcam-input::-webkit-inner-spin-button, #ws-cameras .lcam-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 #ws-cameras .lcam-input:disabled { color: var(--cm-count); }
 #ws-cameras .lcam-rule { height: 1px; margin: 4px 0; background: var(--cm-line); }
 #ws-cameras .lcam-card .lcam-note, #ws-cameras .lcam-drawbar .lcam-note { color: var(--cm-text-2); font-size: 13px; }

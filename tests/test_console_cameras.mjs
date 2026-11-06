@@ -242,6 +242,10 @@ test("the wall shows all 6 views without a side panel; Large view puts 1 view la
   try {
     const wall = page.rootNode.all().find(node => node.className.startsWith("lcam-wall"));
     assert.equal(wall.className, "lcam-wall lcam-mode-wall");
+    // Without a thermal frame there is no scale: the colour bar stays hidden.
+    cameras.engine.thermal = null;
+    for (const tile of cameras.engine.tiles) if (tile.view === "thermal") tile.paint();
+    assert.equal(page.cell("thermal").all().find(node => node.className === "lcam-colorbar").hidden, true);
     assert.equal(wall.children.length, 6);
     assert.equal(page.rootNode.all().some(node => /lcam-side/.test(node.className)), false);
     const camera2Tile = page.cell("camera2").children[0];
@@ -290,7 +294,8 @@ test("thermal settings open on demand in a card that takes the focus, keeps its 
     for (const tile of cameras.engine.tiles) if (tile.view === "thermal") tile.refresh();
     assert.equal(card.querySelector('[data-focus="shutter"]'), shutter);
     const readings = page.cell("thermal").all().find(node => node.className === "lcam-readings");
-    assert.match(readings.textContent, /^Max 31\.5/);
+    // The 4 readings form 1 group on the tile: label, then value.
+    assert.equal(readings.textContent, "Max31.5 °CMin18.0 °CCenter21.0 °CMean21.0 °C");
     // The shutter confirmation takes the focus. The first Esc closes it, the second closes the card.
     shutter.click();
     assert.equal(page.doc.activeElement, card.querySelector('[data-focus="confirm"]'));

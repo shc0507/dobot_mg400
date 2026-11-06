@@ -52,12 +52,12 @@
       "reading.max": "Max", "reading.min": "Min", "reading.center": "Center", "reading.mean": "Mean",
       "units": "Units", "palette": "Palette", "palette.ironbow": "Ironbow", "palette.rainbow": "Rainbow", "palette.grey": "Grey",
       "scale": "Colour scale", "scale.auto": "Auto", "scale.fixed": "Fixed", "scale.low": "Low", "scale.high": "High",
-      "region": "Crucible region", "region.none": "Not drawn yet. The furnace page and runs read it.",
+      "region": "Crucible region", "region.none": "Not drawn yet",
       "region.bounds": "x {x0}–{x1}, y {y0}–{y1}", "region.draw": "Draw region", "region.drawing": "Drag on the thermal view.",
       "region.save": "Save region", "region.cancel": "Cancel",
       "region.manual": "The thermal service does not offer Save. Put these bounds under [regions.crucible] in rois.toml.",
       "region.confirm": "Save x {x0}–{x1}, y {y0}–{y1} as the crucible region? The furnace screen and runs read it.",
-      "connect": "Connect camera", "shutter": "Calibrate shutter…", "shutter.label": "Shutter", "shutter.confirm": "Close the shutter and recalibrate the thermal camera now? The view pauses for a moment.",
+      "connect": "Connect camera", "camera.label": "Camera", "shutter": "Calibrate shutter…", "shutter.label": "Shutter", "shutter.confirm": "Close the shutter and recalibrate the thermal camera now? The view pauses for a moment.",
       "confirm": "Confirm", "cancel": "Cancel",
       "command.missing": "The thermal service does not offer shutter calibration.",
       "command.control": "Take thermal control first.", "command.take": "Take thermal control", "command.release": "Release thermal control",
@@ -86,12 +86,12 @@
       "reading.max": "最高", "reading.min": "最低", "reading.center": "中心", "reading.mean": "平均",
       "units": "单位", "palette": "色板", "palette.ironbow": "铁红", "palette.rainbow": "彩虹", "palette.grey": "灰度",
       "scale": "色标范围", "scale.auto": "自动", "scale.fixed": "固定", "scale.low": "下限", "scale.high": "上限",
-      "region": "坩埚区域", "region.none": "尚未画出。炉子页面和运行会读取它。",
+      "region": "坩埚区域", "region.none": "尚未画出",
       "region.bounds": "x {x0}–{x1}，y {y0}–{y1}", "region.draw": "画区域", "region.drawing": "在热像画面上拖动。",
       "region.save": "保存区域", "region.cancel": "取消",
       "region.manual": "热像仪服务未提供保存。把这些边界写入 rois.toml 的 [regions.crucible]。",
       "region.confirm": "把 x {x0}–{x1}，y {y0}–{y1} 保存为 crucible 区域？炉子页面和运行会读取它。",
-      "connect": "连接热像仪", "shutter": "快门校准…", "shutter.label": "快门", "shutter.confirm": "现在关闭快门并重新校准热像仪？画面会短暂暂停。",
+      "connect": "连接热像仪", "camera.label": "热像仪", "shutter": "快门校准…", "shutter.label": "快门", "shutter.confirm": "现在关闭快门并重新校准热像仪？画面会短暂暂停。",
       "confirm": "确认", "cancel": "取消",
       "command.missing": "热像仪服务未提供快门校准。",
       "command.control": "请先获取热像仪控制。", "command.take": "获取热像仪控制", "command.release": "释放热像仪控制",
@@ -712,16 +712,16 @@
       } else if (view === "thermal") {
         const stats = engine.thermal?.stats;
         const unit = engine.settings.unit;
-        const values = stats ? [["reading.max", stats.max?.celsius], ["reading.min", stats.min?.celsius], ["reading.center", stats.center?.celsius]] : [];
+        const values = stats ? [["reading.max", stats.max?.celsius], ["reading.min", stats.min?.celsius], ["reading.center", stats.center?.celsius], ["reading.mean", stats.mean_celsius]] : [];
         const text = values.map(([key, value]) => t(key) + " " + formatTemp(value, unit)).join("|");
         if (this.readings && text !== this.readingsText) {
           this.readingsText = text;
-          this.readings.replaceChildren(...values.map(([key, value]) => h("span", {}, t(key) + " ", h("b", { text: formatTemp(value, unit) }))));
+          this.readings.replaceChildren(...values.map(([key, value]) => h("span", {}, h("small", { text: t(key) }), h("b", { text: formatTemp(value, unit) }))));
         }
         const reading = probeReading(engine.thermal, engine.probe);
         this.note.textContent = reading
           ? t(engine.probe.pinned ? "probe.pinned" : "probe", { x: reading.x, y: reading.y, value: formatTemp(reading.celsius, engine.settings.unit) })
-          : stats ? t("reading.mean") + " " + formatTemp(stats.mean_celsius, engine.settings.unit) : "";
+          : this.readings ? "" : stats ? t("reading.mean") + " " + formatTemp(stats.mean_celsius, engine.settings.unit) : "";
       }
     }
 
@@ -756,7 +756,7 @@
         ctx.strokeRect(rect.x + x0, rect.y + y0, x1 - x0, y1 - y0);
         const label = `${item.label || "chip"} ${Math.round(item.confidence * 100)}%`;
         const width = ctx.measureText(label).width + 10;
-        ctx.fillStyle = "rgba(10,14,17,0.85)";
+        ctx.fillStyle = "rgba(23,19,16,0.72)";
         ctx.fillRect(rect.x + x0, Math.max(0, rect.y + y0 - 20), width, 20);
         ctx.fillStyle = "#E6EDF2";
         ctx.fillText(label, rect.x + x0 + 5, Math.max(14, rect.y + y0 - 6));
@@ -768,7 +768,9 @@
       const ctx = this.canvas.getContext?.("2d");
       const s = engine.settings;
       const [low, high] = scaleRange(frame?.stats, s);
-      this.paintColorbar(low, high);
+      // Without a frame there is no scale to show.
+      if (frame) this.paintColorbar(low, high);
+      else if (this.colorbar) this.colorbar.hidden = true;
       if (!ctx || !frame) return;
       const source = h("canvas", { width: W, height: H });
       source.getContext("2d").putImageData(new root.ImageData(thermalPixels(frame.temperatures_c, paletteTable(s.palette), low, high), W, H), 0, 0);
@@ -799,7 +801,7 @@
         ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y); ctx.moveTo(x, y - 8); ctx.lineTo(x, y + 8); ctx.stroke();
         const label = convert(point.celsius, s.unit).toFixed(1) + "°";
         const tx = Math.min(W * 4 - 52, x + 8), ty = Math.max(16, y - 8);
-        ctx.fillStyle = "rgba(10,14,17,0.85)"; ctx.fillRect(tx, ty - 14, ctx.measureText(label).width + 8, 18);
+        ctx.fillStyle = "rgba(23,19,16,0.72)"; ctx.fillRect(tx, ty - 14, ctx.measureText(label).width + 8, 18);
         ctx.fillStyle = color; ctx.fillText(label, tx + 4, ty);
       }
     }
@@ -1012,6 +1014,11 @@
       const s = engine.settings;
       const parts = [h("div", { class: "lcam-card-head" }, h("h2", { id: "lcam-card-title", text: api.t("settings.title") }),
         h("button", { type: "button", class: "lc-button lcam-small", "data-focus": "close", text: api.t("settings.close"), onclick: closeSettings }))];
+      const service = (api.state()?.services || []).find(item => item.id === "thermal");
+      if (service && service.connected !== true && commandInfo("connect")) {
+        parts.push(h("div", { class: "lcam-row" }, h("span", { class: "lcam-label", text: api.t("camera.label") }), h("span", { class: "lcam-grow" }),
+          h("button", { type: "button", class: "lc-button", "data-focus": "connect", text: api.t("connect"), onclick: () => send("connect", {}) })));
+      }
       parts.push(seg("units", [["C", "°C"], ["F", "°F"], ["K", "K"]], s.unit, unit => setSettings({ unit })));
       const palette = h("select", { id: "lcam-palette", class: "lcam-select", "data-focus": "palette", onchange: event => setSettings({ palette: event.target.value }) },
         ...["ironbow", "rainbow", "grey"].map(name => h("option", { value: name, text: api.t("palette." + name), selected: s.palette === name ? "selected" : null })));
@@ -1022,9 +1029,9 @@
         "aria-label": api.t("scale." + key) + " (" + unitLabel(s.unit) + ")", value: convert(s[key], s.unit).toFixed(1),
         onchange: event => { const value = Number(event.target.value); if (Number.isFinite(value)) setSettings({ [key]: toCelsius(value, s.unit) }); },
       });
-      const scale = seg("scale", [["auto", api.t("scale.auto")], ["fixed", api.t("scale.fixed")]], s.scale, scale => setSettings({ scale }));
-      scale.append(limit("low"), limit("high"));
-      parts.push(scale);
+      parts.push(seg("scale", [["auto", api.t("scale.auto")], ["fixed", api.t("scale.fixed")]], s.scale, scale => setSettings({ scale })));
+      parts.push(h("div", { class: "lcam-row" }, h("span", { class: "lcam-label" }), limit("low"), h("span", { class: "lcam-note", text: "–" }), limit("high"),
+        h("span", { class: "lcam-note", text: unitLabel(s.unit) })));
       parts.push(h("div", { class: "lcam-row" }, h("span", { class: "lcam-label" }),
         h("button", { type: "button", class: "lc-button" + (s.frozen ? " lcam-on" : ""), "aria-pressed": s.frozen ? "true" : "false", "data-focus": "freeze",
           text: s.frozen ? api.t("unfreeze") : api.t("freeze"), onclick: () => { setSettings({ frozen: !s.frozen }); renderCard(); } })));
@@ -1033,11 +1040,6 @@
       parts.push(h("div", { class: "lcam-row" }, h("span", { class: "lcam-label", text: api.t("region") }), h("span", { class: "lcam-grow" }),
         h("button", { type: "button", class: "lc-button", "data-focus": "region-draw", text: api.t("region.draw"), onclick: startDrawing })));
       parts.push(h("p", { class: "lcam-note lcam-indent", text: region ? api.t("region.bounds", region) : api.t("region.none") }));
-      const service = (api.state()?.services || []).find(item => item.id === "thermal");
-      if (service && service.connected !== true && commandInfo("connect")) {
-        parts.push(h("div", { class: "lcam-row" }, h("span", { class: "lcam-label" }), h("span", { class: "lcam-grow" }),
-          h("button", { type: "button", class: "lc-button", "data-focus": "connect", text: api.t("connect"), onclick: () => send("connect", {}) })));
-      }
       if (ui.confirm === "shutter") {
         parts.push(h("div", { class: "lc-confirm", role: "alertdialog", "aria-label": api.t("shutter.confirm"), tabindex: "-1", "data-focus": "confirm" },
           h("p", { text: api.t("shutter.confirm") }),

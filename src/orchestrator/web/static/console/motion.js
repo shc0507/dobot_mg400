@@ -14,9 +14,12 @@
     { id: "z-", axis: "z", sign: -1, label: "Z ↓" }, { id: "r-", axis: "r", sign: -1, label: "R −" },
   ];
   const CAMERAS = ["camera2", "camera4", "camera3"];
+  // Each station shows the view of its own device first. Any of its views can take the frame.
+  const STATION_VIEWS = { arm: ["camera2", "camera4", "camera3"], stage: ["microscope", "camera3", "camera2"] };
   // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
   const KEYS = "WASDQERFZX";
-  const KEY_MAP = [["W", "S", "kb.reach"], ["A", "D", "kb.base"], ["R", "F", "kb.z"], ["Q", "E", "kb.yaw"], ["Z", "X", "kb.grip"]];
+  // The keyboard jog keys in keyboard rows. Each key shows the motion it starts.
+  const KEY_ROWS = [["Q", "W", "E", "R"], ["A", "S", "D", "F"], ["Z", "X"]];
   // The key that moves like each jog button, shown on the button while the keyboard is on. The letters R and Z
   // are keys here, not axes: R moves Z up, and Q turns R + (J4 +).
   const JOG_KEYS = { "z+": "R", "z-": "F", "r+": "Q", "r-": "E" };
@@ -167,18 +170,21 @@
     return "hold-" + Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
   }
 
-  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, holdKey, holdId, clampSpeed, parseCount, axisReference, axisState, activityRows, clock, fixed, STEPS, CAMERAS };
+  /** The short stepping label: Full for full step, otherwise the step fraction. */
+  function stepLabel(value, full) { return value === 1 ? full : "1/" + value; }
+
+  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, holdKey, holdId, clampSpeed, parseCount, axisReference, axisState, activityRows, clock, fixed, stepLabel, STEPS, CAMERAS, STATION_VIEWS };
 
   const i18n = {
     en: {
-      "arm.title": "Robot arm · MG400", "stage.title": "Stage · 3 axes", "cams.title": "Motion cameras",
-      "badge.demo": "DEMO", "badge.real": "REAL ROBOT", "badge.realStage": "REAL STAGE",
+      "arm.title": "Robot arm", "stage.title": "Stage",
+      "badge.demo": "DEMO",
       "dev.unconfigured": "Not configured", "dev.offline": "Not running", "dev.unreachable": "Not reachable", "dev.loading": "Loading…",
       "arm.enabled": "Enabled", "arm.disabled": "Disabled", "arm.busy": "Moving", "arm.alarm": "Alarm",
       "arm.locked": "Stop not confirmed", "arm.lockedHelp": "Check the arm, then press Recover.", "arm.errorOnly": "The controller reports an error.",
       "arm.recover": "Recover", "arm.noFeedback": "No fresh feedback", "arm.cap": "speed cap {cap}",
-      "ctl.take": "Take control", "ctl.release": "Release", "ctl.mine": "You control it", "ctl.free": "Free",
-      "ctl.console": "Another console page controls it", "ctl.other": "Another client controls it",
+      "ctl.take": "Take control", "ctl.release": "Release",
+      "ctl.console": "In use by another page", "ctl.other": "In use by another client",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
       "arm.enable": "Enable", "arm.disable": "Disable", "arm.clear": "Clear alarm",
       "arm.stop": "Stop arm", "arm.home": "Home…", "arm.homeConfirm": "Clear the path of the arm. Home moves all 4 joints to 0°.",
@@ -186,24 +192,28 @@
       "jog.title": "Jog", "jog.step": "Jog step, mm, or degrees for R", "jog.units": "mm · R in °", "jog.key": "Key {key}",
       "jog.move": "Move {label} by the jog step",
       "move.title": "Move to a pose", "move.speed": "Speed", "move.speedLabel": "Speed, 1 to {cap}",
-      "move.useActual": "Use actual", "move.execute": "Execute ↗", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
-      "kb.title": "Keyboard", "kb.speedLabel": "Keyboard speed, 1 to {cap}", "kb.off": "Off: {reason}",
-      "kb.reach": "Reach out / in", "kb.base": "Base J1 + / −", "kb.z": "Z up / down", "kb.yaw": "Flange J4 + / −", "kb.grip": "Gripper open / close",
+      "move.useActual": "Use actual", "move.execute": "Execute", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
+      "kb.switch": "Keyboard jog", "kb.keys": "Keyboard jog keys", "kb.speedLabel": "Keyboard speed, 1 to {cap}", "kb.off": "Off: {reason}",
+      "key.Q": "J4 +", "key.W": "Reach out", "key.E": "J4 −", "key.R": "Z up", "key.A": "J1 +", "key.S": "Reach in",
+      "key.D": "J1 −", "key.F": "Z down", "key.Z": "Open", "key.X": "Close",
+      "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons", "fold.grip": "Gripper setup", "fold.stage": "Step moves and zero",
       "grip.title": "Gripper", "grip.open": "Open", "grip.close": "Close", "grip.init": "Initialize…",
       "grip.initConfirm": "Initialization opens the jaws. Remove any held object first.",
-      "grip.state": "{position} / 1000 · {outcome}", "grip.busy": "Moving…", "grip.none": "No outcome yet",
+      "grip.busy": "Moving…", "grip.none": "No outcome yet",
       "grip.position": "Position", "grip.positionLabel": "Gripper position, 0 to 1000", "grip.move": "Move",
       "grip.badPosition": "Enter a whole gripper position from 0 to 1000.",
       "last": "Last: {action} · {result}", "last.message": "Last: {action} · {result} · {message}",
       "confirm": "Confirm", "cancel": "Cancel",
       "stage.stop": "Stop stage", "stage.connected": "Connected", "stage.disconnected": "Arduino not connected",
-      "stage.stepping": "Stepping", "stage.steppingConfirm": "Set {mode}? This clears the zero and soft limits of all 3 axes.",
+      "stage.stepping": "Stepping", "stage.full": "Full", "stage.keys": "Keys",
+      "stage.steppingConfirm": "Set {mode}? This clears the zero and soft limits of all 3 axes.",
+      "stage.zeroNone": "Set zero needs the stage calibration file and zero support in the firmware. Hold and step work without them.",
       "axis.bottom": "Bottom", "axis.top": "Top", "axis.insert": "Insert",
       "axis.idle": "Idle", "axis.moving": "Moving", "axis.cooldown": "Cooling down",
       "axis.pulses": "{n} pulses", "axis.mm": "{mm} mm",
       "ref.homed": "Homed", "ref.zeroed": "Zero confirmed", "ref.homeRequired": "Home required",
       "ref.zeroRequired": "Zero required", "ref.unavailable": "Reference unavailable",
-      "axis.steps": "Steps", "axis.speed": "Pulses/s",
+      "axis.steps": "Steps", "axis.speed": "Pulses/s", "axis.speedUnit": "p/s", "axis.speedLabel": "{axis} speed, pulses/s", "axis.unit": "pulses",
       "axis.minus": "Step −", "axis.plus": "Step +", "axis.minusLabel": "Move {axis} minus by the steps",
       "axis.plusLabel": "Move {axis} plus by the steps", "axis.badCount": "Enter whole steps from 1 to {max} and a speed from 1 to {speed}.",
       "axis.holdMinus": "Hold −", "axis.holdPlus": "Hold +", "axis.holdMinusLabel": "Hold to move {axis} minus",
@@ -216,7 +226,7 @@
       "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found", "stage.refresh": "Refresh ports",
       "pose.title": "Named poses", "pose.needRef": "Home or zero all 3 axes before a named pose.",
       "axis.zeroConfirm": "Set the current position of {axis} as zero. Check the physical position first.",
-      "named.title": "Named positions", "named.none": "No named positions are configured.",
+      "named.title": "Named positions",
       "named.go": "{axis} → {name}",
       "log.title": "Robot and stage activity", "log.none": "No activity yet.", "log.page": "this page",
       "out.accepted": "{device} {action}: sent", "out.refused": "{device} {action}: refused · {error}",
@@ -227,18 +237,22 @@
       "act.home": "Home", "act.stage.home": "Home", "act.initialize_gripper": "Initialize gripper", "act.keyboard": "Keyboard", "act.keys": "Keyboard keys",
       "act.hold": "Hold", "act.connect": "Connect", "act.goto": "Named position", "act.move": "Step", "act.pose": "Named pose",
       "act.set_microstep": "Stepping", "act.teach_reference": "Teach reference", "act.zero": "Set zero",
-      "cam.offline": "OFFLINE", "cam.swap": "Swap view", "cam.swapLabel": "Show {view} in the large view",
-      "cam.camera2": "camera2 · Insert rail", "cam.camera4": "camera4 · Tray", "cam.camera3": "camera3 · Microscope side",
+      "act.stop": "Stop", "act.stop_sync": "Stop", "act.release_hold": "Release hold", "act.keepalive": "Hold refresh",
+      "res.ok": "ok", "res.failed": "failed", "res.refused": "refused",
+      "stage.needControl": "Take control of the stage to step, home or set zero.",
+      "cam.offline": "OFFLINE",
+      "view.arm": "Arm view", "view.stage": "Stage view", "view.camera2": "Insert rail", "view.camera4": "Tray",
+      "view.camera3": "Microscope side", "view.microscope": "Microscope",
     },
     zh: {
-      "arm.title": "机械臂 · MG400", "stage.title": "位移台 · 3 轴", "cams.title": "运动相机",
-      "badge.demo": "演示", "badge.real": "真机", "badge.realStage": "真实位移台",
+      "arm.title": "机械臂", "stage.title": "位移台",
+      "badge.demo": "演示",
       "dev.unconfigured": "未配置", "dev.offline": "未运行", "dev.unreachable": "无法连接", "dev.loading": "加载中…",
       "arm.enabled": "已使能", "arm.disabled": "未使能", "arm.busy": "运动中", "arm.alarm": "报警",
       "arm.locked": "停止未确认", "arm.lockedHelp": "检查机械臂，然后按“恢复”。", "arm.errorOnly": "控制器报告错误。",
       "arm.recover": "恢复", "arm.noFeedback": "没有新反馈", "arm.cap": "速度上限 {cap}",
-      "ctl.take": "获取控制权", "ctl.release": "释放", "ctl.mine": "你持有控制权", "ctl.free": "空闲",
-      "ctl.console": "另一个控制台页面持有控制权", "ctl.other": "另一个客户端持有控制权",
+      "ctl.take": "获取控制权", "ctl.release": "释放",
+      "ctl.console": "另一个页面正在使用", "ctl.other": "另一个客户端正在使用",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
       "arm.enable": "使能", "arm.disable": "下使能", "arm.clear": "清除报警",
       "arm.stop": "停止机械臂", "arm.home": "回原点…", "arm.homeConfirm": "请清空机械臂的运动路径。回原点会把 4 个关节都转到 0°。",
@@ -246,24 +260,28 @@
       "jog.title": "点动", "jog.step": "点动步长，mm，R 为度", "jog.units": "mm · R 为 °", "jog.key": "按键 {key}",
       "jog.move": "按点动步长移动 {label}",
       "move.title": "移动到位姿", "move.speed": "速度", "move.speedLabel": "速度，1 到 {cap}",
-      "move.useActual": "使用当前值", "move.execute": "执行 ↗", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
-      "kb.title": "键盘", "kb.speedLabel": "键盘速度，1 到 {cap}", "kb.off": "已关闭：{reason}",
-      "kb.reach": "伸出 / 收回", "kb.base": "底座 J1 + / −", "kb.z": "Z 上 / 下", "kb.yaw": "法兰 J4 + / −", "kb.grip": "夹爪张开 / 闭合",
+      "move.useActual": "使用当前值", "move.execute": "执行", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
+      "kb.switch": "键盘点动", "kb.keys": "键盘点动按键", "kb.speedLabel": "键盘速度，1 到 {cap}", "kb.off": "已关闭：{reason}",
+      "key.Q": "J4 +", "key.W": "伸出", "key.E": "J4 −", "key.R": "Z 上", "key.A": "J1 +", "key.S": "收回",
+      "key.D": "J1 −", "key.F": "Z 下", "key.Z": "张开", "key.X": "闭合",
+      "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮", "fold.grip": "夹爪设置", "fold.stage": "步进和零点",
       "grip.title": "夹爪", "grip.open": "张开", "grip.close": "闭合", "grip.init": "初始化…",
       "grip.initConfirm": "初始化会张开夹爪。请先取下夹持的物体。",
-      "grip.state": "{position} / 1000 · {outcome}", "grip.busy": "运动中…", "grip.none": "尚无结果",
+      "grip.busy": "运动中…", "grip.none": "尚无结果",
       "grip.position": "位置", "grip.positionLabel": "夹爪位置，0 到 1000", "grip.move": "移动",
       "grip.badPosition": "请输入 0 到 1000 的整数夹爪位置。",
       "last": "上一条：{action} · {result}", "last.message": "上一条：{action} · {result} · {message}",
       "confirm": "确认", "cancel": "取消",
       "stage.stop": "停止位移台", "stage.connected": "已连接", "stage.disconnected": "Arduino 未连接",
-      "stage.stepping": "细分", "stage.steppingConfirm": "设为{mode}？这会清除全部 3 轴的零点和软限位。",
+      "stage.stepping": "细分", "stage.full": "整步", "stage.keys": "按键",
+      "stage.steppingConfirm": "设为{mode}？这会清除全部 3 轴的零点和软限位。",
+      "stage.zeroNone": "设零需要位移台标定文件和固件的设零支持。没有它们时，按住移动和步进仍可使用。",
       "axis.bottom": "底部轴", "axis.top": "顶部轴", "axis.insert": "插入轴",
       "axis.idle": "空闲", "axis.moving": "运动中", "axis.cooldown": "冷却中",
       "axis.pulses": "{n} 脉冲", "axis.mm": "{mm} mm",
       "ref.homed": "已回零", "ref.zeroed": "零点已确认", "ref.homeRequired": "需要回零",
       "ref.zeroRequired": "需要设零", "ref.unavailable": "参考不可用",
-      "axis.steps": "步数", "axis.speed": "脉冲/秒",
+      "axis.steps": "步数", "axis.speed": "脉冲/秒", "axis.speedUnit": "脉冲/秒", "axis.speedLabel": "{axis}速度，脉冲/秒", "axis.unit": "脉冲",
       "axis.minus": "步进 −", "axis.plus": "步进 +", "axis.minusLabel": "{axis}按步数负向移动",
       "axis.plusLabel": "{axis}按步数正向移动", "axis.badCount": "请输入 1 到 {max} 的整数步数和 1 到 {speed} 的速度。",
       "axis.holdMinus": "按住 −", "axis.holdPlus": "按住 +", "axis.holdMinusLabel": "按住使{axis}负向移动",
@@ -276,7 +294,7 @@
       "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口", "stage.refresh": "刷新串口",
       "pose.title": "命名位姿", "pose.needRef": "使用命名位姿前，先让全部 3 轴回零或设零。",
       "axis.zeroConfirm": "把{axis}的当前位置设为零点。请先检查实际位置。",
-      "named.title": "命名位置", "named.none": "未配置命名位置。",
+      "named.title": "命名位置",
       "named.go": "{axis} → {name}",
       "log.title": "机械臂和位移台活动", "log.none": "暂无活动。", "log.page": "本页面",
       "out.accepted": "{device} {action}：已发送", "out.refused": "{device} {action}：被拒绝 · {error}",
@@ -287,8 +305,12 @@
       "act.home": "回原点", "act.stage.home": "回零", "act.initialize_gripper": "初始化夹爪", "act.keyboard": "键盘", "act.keys": "键盘按键",
       "act.hold": "按住移动", "act.connect": "连接", "act.goto": "命名位置", "act.move": "步进", "act.pose": "命名位姿",
       "act.set_microstep": "细分", "act.teach_reference": "示教参考", "act.zero": "设零",
-      "cam.offline": "离线", "cam.swap": "切换视图", "cam.swapLabel": "在大视图中显示 {view}",
-      "cam.camera2": "camera2 · 插入导轨", "cam.camera4": "camera4 · 托盘", "cam.camera3": "camera3 · 显微镜侧视",
+      "act.stop": "停止", "act.stop_sync": "停止", "act.release_hold": "松开按住", "act.keepalive": "刷新按住",
+      "res.ok": "完成", "res.failed": "失败", "res.refused": "被拒绝",
+      "stage.needControl": "获取位移台控制权后，才能步进、回零或设零。",
+      "cam.offline": "离线",
+      "view.arm": "机械臂视图", "view.stage": "位移台视图", "view.camera2": "插入导轨", "view.camera4": "托盘",
+      "view.camera3": "显微镜侧视", "view.microscope": "显微镜",
     },
   };
 
@@ -302,7 +324,7 @@
     // on: the stage keyboard switch. active: this page's stage hold, 1 axis at a time.
     const sh = { on: false, active: null, timer: null };
     const model = {
-      step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, cams: CAMERAS.slice(),
+      step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, views: { arm: STATION_VIEWS.arm[0], stage: STATION_VIEWS.stage[0] },
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
       ports: null, port: "", portsLoading: false, refView: {},
     };
@@ -429,8 +451,8 @@
         node.replaceChildren(
           el("p", { text: item.text }),
           el("div", { class: "mo-grid2" },
-            el("button", { type: "button", class: "lc-button mo-danger", text: t("confirm"), onclick: () => { closeConfirm(); item.run(); } }),
-            el("button", { type: "button", class: "lc-button", text: t("cancel"), onclick: closeConfirm })));
+            el("button", { type: "button", class: "mo-btn mo-danger", text: t("confirm"), onclick: () => { closeConfirm(); item.run(); } }),
+            el("button", { type: "button", class: "mo-btn", text: t("cancel"), onclick: closeConfirm })));
       }
     }
 
@@ -441,44 +463,81 @@
       return node;
     }
 
+    /** Take control or Release. When another client holds the device, the button says so. */
     function controlButton(device) {
-      const button = el("button", { type: "button", class: "lc-button", onclick: () => control(device) });
-      const status = el("span", { class: "lc-muted" });
-      refs["ctl-" + device] = { button, status };
-      return el("div", { class: "mo-row" }, button, status);
+      const button = el("button", { type: "button", class: "mo-btn", onclick: () => control(device) });
+      refs["ctl-" + device] = { button };
+      return button;
     }
 
-    // Arm column ------------------------------------------------------------
+    function fold(title, ...content) {
+      return el("details", { class: "mo-fold" }, el("summary", { text: title }), el("div", { class: "mo-fold-body" }, ...content));
+    }
+
+    // Arm station -----------------------------------------------------------
 
     function buildArm() {
-      const title = el("h2", { id: "mo-arm-title", text: t("arm.title") });
-      refs.armStatus = el("span", { class: "lc-muted" });
-      refs.armBadge = el("span", { class: "mo-badge" });
-      refs.enable = el("button", { type: "button", class: "lc-button mo-primary", text: t("arm.enable"), onclick: () => send("robot", "enable", {}) });
-      refs.disable = el("button", { type: "button", class: "lc-button", text: t("arm.disable"), onclick: () => send("robot", "disable", {}) });
-      refs.clear = el("button", { type: "button", class: "lc-button", text: t("arm.clear"), onclick: () => send("robot", "clear_alarm", {}) });
+      refs.armStatus = el("span", { class: "mo-state" });
+      refs.armFlags = el("p", { class: "mo-flag", hidden: true });
+      refs.armBadge = el("span", { class: "mo-badge", text: t("badge.demo"), hidden: true });
+      refs.armStop = el("button", { type: "button", class: "mo-stop", text: t("arm.stop"), onclick: () => stopDevice("robot") });
+      // One button follows the arm: Disable (no control needed) while the arm is enabled, moves or jogs; else Enable.
+      refs.enable = el("button", { type: "button", class: "mo-btn", onclick: () => send("robot", model.armOn ? "disable" : "enable", {}) });
       refs.home = el("button", {
-        type: "button", class: "lc-button", text: t("arm.home"),
+        type: "button", class: "mo-btn mo-primary", text: t("arm.home"),
         onclick: () => askConfirm("home", t("arm.homeConfirm"), () => send("robot", "home", {}, "move")),
       });
-      refs.armStop = el("button", { type: "button", class: "lc-danger mo-stop", text: t("arm.stop"), onclick: () => stopDevice("robot") });
+      refs.clear = el("button", { type: "button", class: "mo-btn", text: t("arm.clear"), onclick: () => send("robot", "clear_alarm", {}) });
       // The alarm note wins the eye: the alarm IDs, an unconfirmed stop and the button that clears them.
       refs.alarmTitle = el("p", { class: "mo-alarm-title" });
       refs.alarms = el("div", { class: "mo-alarm-items" });
       refs.alarmHelp = el("p", { hidden: true });
       refs.alarmNote = el("div", { class: "mo-alarm", role: "alert", hidden: true }, refs.alarmTitle, refs.alarms, refs.alarmHelp, el("div", { class: "mo-row" }, refs.clear));
-      refs.armMessage = el("p", { class: "lc-muted", role: "status", hidden: true });
-      refs.joints = [0, 1, 2, 3].map(() => el("span", { class: "mo-value" }));
-      const jointTiles = el("div", { class: "mo-pose" },
-        ...refs.joints.map((node, i) => el("div", { class: "mo-tile" }, el("span", { class: "lc-muted", text: "J" + (i + 1) }), node)));
-      refs.pose = AXES.map(axis => el("span", { class: "mo-value" }));
-      const poseTiles = el("div", { class: "mo-pose", role: "group", "aria-label": t("move.useActual") },
-        ...AXES.map((axis, i) => el("div", { class: "mo-tile" }, el("span", { class: "lc-muted", text: axis.toUpperCase() }), refs.pose[i])));
+      refs.armMessage = el("p", { class: "mo-message", role: "status", hidden: true });
+
+      // Keyboard jog: the main arm control.
+      refs.kbSwitch = el("button", { type: "button", role: "switch", class: "mo-switch", "aria-checked": "false", onclick: () => (kb.on ? disarm("user") : arm()) },
+        el("span", { class: "mo-knob", "aria-hidden": "true" }), el("span", { text: t("kb.switch") }));
+      refs.kbSpeed = el("input", {
+        type: "range", min: "1", max: String(data.kbCap || 1), step: "1",
+        "aria-label": t("kb.speedLabel", { cap: data.kbCap || 1 }),
+        oninput: event => { kb.speed = clampSpeed(event.target.value, data.kbCap); update(); },
+      });
+      refs.kbSpeed.value = String(clampSpeed(kb.speed, data.kbCap));
+      refs.kbSpeedText = el("span", { class: "mo-num-small" });
+      refs.kbOff = el("p", { class: "mo-kb-off", role: "status" });
+      refs.kbKeys = {};
+      const cap = key => (refs.kbKeys[key] = el("kbd", { class: "mo-cap" }, el("b", { text: key }), el("small", { text: t("key." + key) })));
+      const kbBox = el("div", { class: "mo-kb" },
+        el("div", { class: "mo-kb-head" }, refs.kbSwitch,
+          el("label", { class: "mo-speed" }, el("span", { text: t("move.speed") }), refs.kbSpeed, refs.kbSpeedText)),
+        refs.kbOff,
+        el("div", { class: "mo-keyboard", role: "group", "aria-label": t("kb.keys") },
+          ...KEY_ROWS.map((row, i) => el("div", { class: "mo-keyrow mo-keyrow-" + (i + 1) }, ...row.map(cap)))));
+
+      // Readout: pose, joints and the gripper.
+      refs.pose = AXES.map(() => el("b", { class: "mo-num" }));
+      refs.joints = [0, 1, 2, 3].map(() => el("b", { class: "mo-num-small mo-deg" }));
+      refs.gripValue = el("b", { class: "mo-num" });
+      refs.gripState = el("span", { class: "mo-grip-state" });
+      refs.gripOpen = el("button", { type: "button", class: "mo-btn", text: t("grip.open"), onclick: () => send("robot", "grip", { position: 1000 }, "grip") });
+      refs.gripClose = el("button", { type: "button", class: "mo-btn", text: t("grip.close"), onclick: () => send("robot", "grip", { position: 0 }, "grip") });
+      refs.gripMessage = el("p", { class: "mo-message" });
+      const readout = el("div", { class: "mo-readout" },
+        el("div", { class: "mo-pose", role: "group", "aria-label": t("pose.actual") },
+          ...AXES.map((axis, i) => el("div", { class: "mo-reading" }, el("span", { text: axis.toUpperCase() }), refs.pose[i]))),
+        el("div", { class: "mo-joints", role: "group", "aria-label": t("pose.joints") },
+          ...refs.joints.map((node, i) => el("div", { class: "mo-reading" }, el("span", { text: "J" + (i + 1) }), node))),
+        el("div", { class: "mo-grip" }, el("span", { class: "mo-label", text: t("grip.title") }), refs.gripValue, refs.gripState),
+        el("div", { class: "mo-grid2" }, refs.gripOpen, refs.gripClose),
+        refs.gripMessage);
+
+      // Jog buttons: rarely used, so folded.
       refs.jog = {};
       refs.jogHints = [];
       const jogButton = item => {
         const key = JOG_KEYS[item.id];
-        const hint = key ? el("kbd", { class: "mo-key mo-hint", text: key, title: t("jog.key", { key }), hidden: true }) : null;
+        const hint = key ? el("kbd", { class: "mo-kcap mo-hint", text: key, title: t("jog.key", { key }), hidden: true }) : null;
         const button = el("button", { type: "button", class: "mo-jog", "aria-label": t("jog.move", { label: item.label }), onclick: () => jog(item) },
           el("span", { text: item.label }), hint);
         if (hint) refs.jogHints.push(hint);
@@ -491,14 +550,16 @@
         el("span"), jogButton(JOG[3]), el("span"));
       const side = el("div", { class: "mo-zr" }, ...JOG.slice(4).map(jogButton));
       refs.steps = STEPS.map(step => el("button", {
-        type: "button", role: "radio", class: "mo-chip", text: String(step),
+        type: "button", role: "radio", class: "mo-seg-btn", text: String(step),
         onclick: () => { model.step = step; update(); },
       }));
-      const jogBox = el("div", { class: "mo-block" },
-        el("div", { class: "mo-head" }, el("h3", { text: t("jog.title") })),
+      const jogFold = fold(t("fold.jog"),
         el("div", { class: "mo-jogrow" }, pad, side),
-        el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("jog.step") }, ...refs.steps, el("span", { class: "lc-muted", text: t("jog.units") })));
+        el("div", { class: "mo-seg-row" },
+          el("div", { class: "mo-seg", role: "radiogroup", "aria-label": t("jog.step") }, ...refs.steps),
+          el("span", { class: "mo-muted", text: t("jog.units") })));
 
+      // Move to a pose: rarely used, so folded.
       refs.inputs = {};
       const units = { x: "X mm", y: "Y mm", z: "Z mm", r: "R °" };
       const fields = AXES.map(axis => {
@@ -513,62 +574,40 @@
         oninput: event => { model.speed = clampSpeed(event.target.value, data.cap); update(); },
       });
       refs.speed.value = String(clampSpeed(model.speed, data.cap));
-      refs.speedText = el("span", { class: "mo-value" });
-      refs.useActual = el("button", { type: "button", class: "lc-button", text: t("move.useActual"), onclick: useActual });
-      refs.execute = el("button", { type: "button", class: "lc-button mo-primary", text: t("move.execute"), onclick: executePose });
-      const moveBox = el("div", { class: "mo-block" },
-        el("h3", { text: t("move.title") }),
-        el("div", { class: "mo-pose" }, ...fields),
-        el("label", { class: "mo-speed" }, t("move.speed"), refs.speed, refs.speedText),
+      refs.speedText = el("span", { class: "mo-num-small" });
+      refs.useActual = el("button", { type: "button", class: "mo-btn", text: t("move.useActual"), onclick: useActual });
+      refs.execute = el("button", { type: "button", class: "mo-btn mo-primary", text: t("move.execute"), onclick: executePose });
+      const moveFold = fold(t("move.title"),
+        el("div", { class: "mo-fields" }, ...fields),
+        el("label", { class: "mo-speed" }, el("span", { text: t("move.speed") }), refs.speed, refs.speedText),
         el("div", { class: "mo-grid2" }, refs.useActual, refs.execute));
 
-      refs.gripState = el("span", { class: "mo-grip-state" });
-      refs.gripOpen = el("button", { type: "button", class: "lc-button", text: t("grip.open"), onclick: () => send("robot", "grip", { position: 1000 }, "grip") });
-      refs.gripClose = el("button", { type: "button", class: "lc-button", text: t("grip.close"), onclick: () => send("robot", "grip", { position: 0 }, "grip") });
+      // Gripper setup: rarely used, so folded.
       refs.gripInit = el("button", {
-        type: "button", class: "lc-button", text: t("grip.init"),
+        type: "button", class: "mo-btn", text: t("grip.init"),
         onclick: () => askConfirm("arm", t("grip.initConfirm"), () => send("robot", "initialize_gripper", {}, "grip")),
       });
-      refs.kbSwitch = el("button", { type: "button", role: "switch", class: "mo-chip", text: t("kb.title"), onclick: () => (kb.on ? disarm("user") : arm()) });
-      refs.kbSpeed = el("input", {
-        type: "range", min: "1", max: String(data.kbCap || 1), step: "1",
-        "aria-label": t("kb.speedLabel", { cap: data.kbCap || 1 }),
-        oninput: event => { kb.speed = clampSpeed(event.target.value, data.kbCap); update(); },
-      });
-      refs.kbSpeed.value = String(clampSpeed(kb.speed, data.kbCap));
-      refs.kbSpeedText = el("span", { class: "mo-value" });
-      refs.kbOff = el("p", { class: "mo-kb-off", role: "status" });
-      refs.kbKeys = {};
-      const keyCap = key => (refs.kbKeys[key] = el("kbd", { class: "mo-key", text: key }));
-      const kbBox = el("div", { class: "mo-block" },
-        el("div", { class: "mo-head" }, el("h3", { text: t("kb.title") }), refs.kbSwitch),
-        refs.kbOff,
-        el("label", { class: "mo-speed" }, t("move.speed"), refs.kbSpeed, refs.kbSpeedText),
-        el("div", { class: "mo-keys" }, ...KEY_MAP.map(([a, b, label]) => el("div", { class: "mo-keyrow" },
-          keyCap(a), keyCap(b), el("span", { class: "lc-muted", text: t(label) })))));
-
       refs.gripInput = el("input", {
         type: "text", inputmode: "numeric", class: "mo-input mo-narrow", autocomplete: "off", "aria-label": t("grip.positionLabel"),
         oninput: event => { model.grip = event.target.value; },
       });
       refs.gripInput.value = model.grip ?? "";
-      refs.gripMove = el("button", { type: "button", class: "lc-button", text: t("grip.move"), onclick: moveGrip });
-      refs.gripMessage = el("p", { class: "lc-muted" });
-      const gripBox = el("div", { class: "mo-block" },
-        el("div", { class: "mo-head" }, el("h3", { text: t("grip.title") }), refs.gripState),
-        el("div", { class: "mo-grid3" }, refs.gripOpen, refs.gripClose, refs.gripInit),
-        el("div", { class: "mo-row" }, el("label", { class: "mo-inline" }, t("grip.position"), refs.gripInput), refs.gripMove),
-        refs.gripMessage);
-      refs.armLast = el("p", { class: "lc-muted", role: "status" });
+      refs.gripMove = el("button", { type: "button", class: "mo-btn", text: t("grip.move"), onclick: moveGrip });
+      const gripFold = fold(t("fold.grip"),
+        el("div", { class: "mo-row" }, el("label", { class: "mo-inline" }, t("grip.position"), refs.gripInput), refs.gripMove, refs.gripInit),
+        confirmSlot("arm"));
+      refs.armLast = el("p", { class: "mo-muted mo-last", role: "status" });
 
-      return el("section", { class: "lc-card mo-col", "aria-labelledby": "mo-arm-title" },
-        el("div", { class: "lc-card-head" }, el("div", { class: "mo-titles" }, title, refs.armStatus), el("div", { class: "mo-row" }, refs.armBadge, refs.armStop)),
-        refs.alarmNote,
-        controlButton("robot"),
-        el("div", { class: "mo-grid2" }, refs.enable, refs.disable),
-        el("div", { class: "mo-grid2" }, refs.home),
-        confirmSlot("home"), refs.armMessage,
-        poseTiles, jointTiles, jogBox, kbBox, moveBox, gripBox, confirmSlot("arm"), refs.armLast);
+      return el("section", { class: "mo-station mo-station-arm", "aria-labelledby": "mo-arm-title" },
+        buildView("arm"),
+        el("div", { class: "mo-body" },
+          el("div", { class: "mo-head" },
+            el("h2", { id: "mo-arm-title", text: t("arm.title") }), refs.armStatus, refs.armBadge,
+            el("span", { class: "mo-actions" }, refs.enable, refs.home, controlButton("robot"), refs.armStop)),
+          refs.armFlags, refs.alarmNote, confirmSlot("home"),
+          el("div", { class: "mo-armbody" }, kbBox, readout),
+          el("div", { class: "mo-folds" }, jogFold, moveFold, gripFold),
+          refs.armMessage, refs.armLast));
     }
 
     function moveGrip() {
@@ -665,7 +704,7 @@
     }
 
     function renderKeys() {
-      for (const [key, node] of Object.entries(refs.kbKeys || {})) node.className = "mo-key" + (kb.held.has(key) ? " mo-on" : "");
+      for (const [key, node] of Object.entries(refs.kbKeys || {})) node.className = "mo-cap" + (kb.held.has(key) ? " mo-on" : "");
     }
 
     function updateKeyboard(robot, ready) {
@@ -674,7 +713,7 @@
       // The service turned keys off (Stop, a button command, an alarm): follow it.
       else if (kb.on && kb.seen && robot && !model.inflight.has("robot:keyboard")) { kb.on = kb.seen = false; releaseKeys(); }
       refs.kbSwitch.setAttribute("aria-checked", kb.on ? "true" : "false");
-      refs.kbSwitch.className = "mo-chip" + (kb.on ? " mo-on" : "");
+      refs.kbSwitch.className = "mo-switch" + (kb.on ? " mo-on" : "");
       refs.kbSwitch.disabled = !kb.on && !(ready && robot.enabled === true && !robot.busy && data.kbCap && !model.inflight.has("robot:keyboard-off"));
       refs.kbSpeed.disabled = kb.on || !data.kbCap;
       refs.kbSpeedText.textContent = data.kbCap ? `${clampSpeed(kb.speed, data.kbCap)} / ${data.kbCap}` : "—";
@@ -743,13 +782,13 @@
     function renderHold() {
       if (refs.stageKb) {
         refs.stageKb.setAttribute("aria-checked", sh.on ? "true" : "false");
-        refs.stageKb.className = "mo-chip" + (sh.on ? " mo-on" : "");
+        refs.stageKb.className = "mo-switch mo-small" + (sh.on ? " mo-on" : "");
       }
-      for (const [key, node] of Object.entries(refs.holdKeys || {})) node.className = "mo-key" + (sh.active?.source === key ? " mo-on" : "");
+      for (const [key, node] of Object.entries(refs.holdKeys || {})) node.className = "mo-kcap" + (sh.active?.source === key ? " mo-on" : "");
       for (const [id, row] of Object.entries(refs.axes || {})) {
         for (const [direction, node] of [["ccw", row.holdMinus], ["cw", row.holdPlus]]) {
           const on = sh.active?.motor === id && sh.active.direction === direction;
-          node.className = "lc-button mo-hold" + (on ? " mo-on" : "");
+          node.className = "mo-hold" + (on ? " mo-on" : "");
           node.setAttribute("aria-pressed", on ? "true" : "false");
         }
       }
@@ -767,53 +806,64 @@
       send("robot", "execute", { targets: target, speed: clampSpeed(model.speed, data.cap) }, "move", "move");
     }
 
-    // Cameras column --------------------------------------------------------
+    // Station views -------------------------------------------------------
+    // Each station frame shows 1 live view. Its tabs inside the frame pick the view.
 
-    function tile(view, large) {
+    function viewTile(view) {
       const factory = root.LabCameras && typeof root.LabCameras.tile === "function" ? root.LabCameras.tile : null;
       let node = null;
       if (factory) {
-        try { node = factory(view, large ? { api, large } : { api, large, onSelect: () => swap(view) }); } catch { node = null; }
+        try { node = factory(view, { api, large: true }); } catch { node = null; }
       }
-      if (!node) {
-        node = el("div", { class: "mo-cam-off", role: "img", "aria-label": t("cam." + view) + " · " + t("cam.offline") },
-          el("span", { class: "mo-cam-badge" }, el("span", { class: "mo-off", text: "● " + t("cam.offline") }), " " + t("cam." + view)));
-      }
-      const wrap = el("div", { class: large ? "mo-cam mo-cam-large" : "mo-cam" }, node);
-      if (!large) {
-        wrap.append(el("button", {
-          type: "button", class: "lc-button mo-swap", text: t("cam.swap"), "aria-label": t("cam.swapLabel", { view }),
-          onclick: () => swap(view),
-        }));
-      }
-      return wrap;
+      return node || el("div", { class: "mo-cam-off", role: "img", "aria-label": t("view." + view) + ", " + t("cam.offline") },
+        el("span", { class: "mo-cam-badge", text: t("cam.offline") }));
+    }
+
+    function buildView(station) {
+      const slot = el("div", { class: "mo-view-media" });
+      const tabs = el("div", { class: "mo-tabs", role: "group", "aria-label": t("view." + station) });
+      refs.viewTabs[station] = STATION_VIEWS[station].map(view => {
+        const button = el("button", { type: "button", class: "mo-tab", text: t("view." + view), "aria-pressed": "false", onclick: () => pickView(station, view) });
+        tabs.append(button);
+        return [view, button];
+      });
+      refs.views[station] = slot;
+      return el("div", { class: "mo-view mo-view-" + station }, slot, tabs);
+    }
+
+    function dropTile(station) {
+      const node = refs.tiles?.[station];
+      if (node) { try { node.labCameras?.stop?.(); } catch { /* The camera engine stops a detached tile. */ } }
+      if (refs.tiles) delete refs.tiles[station];
     }
 
     function dropTiles() {
-      for (const node of refs.tiles || []) {
-        const inner = node.firstChild || node.children?.[0];
-        for (const target of [inner, node]) {
-          if (target && typeof target.destroy === "function") { try { target.destroy(); } catch { /* ignore */ } }
-        }
+      for (const station of Object.keys(refs.tiles || {})) dropTile(station);
+    }
+
+    function renderView(station) {
+      const slot = refs.views?.[station];
+      if (!slot) return;
+      dropTile(station);
+      const node = viewTile(model.views[station]);
+      refs.tiles[station] = node;
+      slot.replaceChildren(node);
+      for (const [view, button] of refs.viewTabs[station] || []) {
+        const on = view === model.views[station];
+        button.setAttribute("aria-pressed", on ? "true" : "false");
+        button.className = "mo-tab" + (on ? " mo-on" : "");
       }
-      refs.tiles = [];
     }
 
     function renderCameras() {
-      if (!refs.cams) return;
-      dropTiles();
-      const [main, ...small] = model.cams;
-      const large = tile(main, true);
-      const others = small.map(view => tile(view, false));
-      refs.tiles = [large, ...others];
-      refs.cams.replaceChildren(large, el("div", { class: "mo-cam-grid" }, ...others));
+      renderView("arm");
+      renderView("stage");
     }
 
-    function swap(view) {
-      const index = model.cams.indexOf(view);
-      if (index <= 0) return;
-      [model.cams[0], model.cams[index]] = [model.cams[index], model.cams[0]];
-      renderCameras();
+    function pickView(station, view) {
+      if (model.views[station] === view) return;
+      model.views[station] = view;
+      renderView(station);
     }
 
     // Stage column ----------------------------------------------------------
@@ -831,26 +881,32 @@
       const stage = data.stage?.available ? data.stage : null;
       const motors = stage?.motors || [];
       refs.modes = (stage?.microstep_modes || []).map(mode => el("button", {
-        type: "button", role: "radio", class: "mo-chip", text: mode.label, "data-value": String(mode.value),
+        type: "button", role: "radio", class: "mo-seg-btn", text: stepLabel(mode.value, t("stage.full")), "aria-label": mode.label, "data-value": String(mode.value),
         onclick: () => {
           if (stage && mode.value === data.stage?.microstep) return;
           askConfirm("stage", t("stage.steppingConfirm", { mode: mode.label }), () => send("stage", "set_microstep", { microstep: mode.value }, "microstep"));
         },
       }));
       refs.axes = {};
-      const blocks = motors.map(motor => {
+      refs.holdKeys = {};
+      const keyCap = key => (refs.holdKeys[key] = el("kbd", { class: "mo-kcap", text: key }));
+      const keysFor = id => STAGE_KEYS.find(([, , motor]) => motor === id);
+      const rows = [];
+      const setup = [];
+      for (const motor of motors) {
         const id = motor.id;
         const axis = t("axis." + id);
         model.axis[id] = model.axis[id] || { steps: String(stage?.defaults?.steps || 50), speed: String(stage?.defaults?.speed || 50) };
         const row = {};
-        row.state = el("span", { class: "lc-state" });
-        row.pulses = el("span");
-        row.mm = el("span", { class: "lc-muted" });
-        row.ref = el("span", { class: "lc-strong" });
-        const input = (field, label) => {
-          const node = el("input", { type: "text", inputmode: "numeric", class: "mo-input mo-narrow", autocomplete: "off", oninput: event => { model.axis[id][field] = event.target.value; } });
+        row.state = el("span", { class: "mo-axstate" });
+        row.num = el("b", { class: "mo-num" });
+        row.unit = el("span", { class: "mo-unit" });
+        row.value = el("span", { class: "mo-axval" }, row.num, row.unit);
+        row.ref = el("span", { class: "mo-axstate" });
+        const input = (field, props) => {
+          const node = el("input", { type: "text", inputmode: "numeric", class: "mo-input mo-narrow", autocomplete: "off", ...props, oninput: event => { model.axis[id][field] = event.target.value; } });
           node.value = model.axis[id][field];
-          return el("label", { class: "mo-inline" }, label, node);
+          return node;
         };
         const move = direction => () => {
           const limits = data.stage?.limits || {};
@@ -859,11 +915,11 @@
           if (!steps || !speed) { api.notify(t("axis.badCount", { max: limits.steps || 100000, speed: limits.speed || 1000 }), "warn"); return; }
           send("stage", "move", { motor: id, direction, speed, steps }, "move-" + id);
         };
-        row.minus = el("button", { type: "button", class: "lc-button", text: t("axis.minus"), "aria-label": t("axis.minusLabel", { axis }), onclick: move("ccw") });
-        row.plus = el("button", { type: "button", class: "lc-button", text: t("axis.plus"), "aria-label": t("axis.plusLabel", { axis }), onclick: move("cw") });
+        row.minus = el("button", { type: "button", class: "mo-btn", text: t("axis.minus"), "aria-label": t("axis.minusLabel", { axis }), onclick: move("ccw") });
+        row.plus = el("button", { type: "button", class: "mo-btn", text: t("axis.plus"), "aria-label": t("axis.plusLabel", { axis }), onclick: move("cw") });
         // The pointer capture sends pointerup to the pressed button, also outside it.
         const holdButton = (direction, text, label) => el("button", {
-          type: "button", class: "lc-button mo-hold", text, "aria-label": label,
+          type: "button", class: "mo-hold", text, "aria-label": label,
           onpointerdown: event => {
             if (event.button) return;
             event.preventDefault?.();
@@ -876,35 +932,37 @@
         row.holdMinus = holdButton("ccw", t("axis.holdMinus"), t("axis.holdMinusLabel", { axis }));
         row.holdPlus = holdButton("cw", t("axis.holdPlus"), t("axis.holdPlusLabel", { axis }));
         row.home = motor.homing_available ? el("button", {
-          type: "button", class: "lc-button mo-small", text: t("axis.home"),
+          type: "button", class: "mo-btn", text: t("axis.home"),
           onclick: () => askConfirm("stage", t("axis.homeConfirm", { axis }), () => send("stage", "home", { motor: id }, "ref-" + id)),
         }) : null;
-        row.check = el("button", { type: "button", class: "lc-button mo-small", text: t("axis.check"), onclick: () => checkReference(id) });
+        row.check = el("button", { type: "button", class: "mo-btn", text: t("axis.check"), onclick: () => checkReference(id) });
         row.teach = el("button", {
-          type: "button", class: "lc-button mo-small", text: t("axis.teach"),
+          type: "button", class: "mo-btn", text: t("axis.teach"),
           onclick: () => askConfirm("stage", t("axis.teachConfirm", { axis }), () => send("stage", "teach_reference", { motor: id, confirmed: true }, "ref-" + id, "stage/teach")),
         });
         row.view = el("div", { class: "mo-ref", hidden: true });
         row.zero = el("button", {
-          type: "button", class: "lc-button mo-small", text: t("axis.zero"),
+          type: "button", class: "mo-btn", text: t("axis.zero"),
           onclick: () => askConfirm("stage", t("axis.zeroConfirm", { axis }), () => send("stage", "zero", { motor: id, confirm: true }, "ref-" + id)),
         });
         refs.axes[id] = row;
-        return el("div", { class: "mo-axis", role: "group", "aria-label": axis },
-          el("div", { class: "mo-head" }, el("span", { class: "lc-strong", text: axis }), row.state),
-          el("div", { class: "mo-readout" }, row.pulses, row.mm, row.ref),
-          el("div", { class: "mo-grid2" }, row.minus, row.plus),
-          el("div", { class: "mo-grid2" }, row.holdMinus, row.holdPlus),
-          el("div", { class: "mo-row" }, input("steps", t("axis.steps")), input("speed", t("axis.speed"))),
-          el("div", { class: "mo-row" }, row.home, row.zero, row.check, row.teach),
-          row.view);
-      });
+        const keys = keysFor(id);
+        rows.push(el("div", { class: "mo-axis", role: "group", "aria-label": axis },
+          el("span", { class: "mo-axname" }, el("b", { text: axis }), row.state),
+          row.value, row.holdMinus, row.holdPlus,
+          el("label", { class: "mo-axspeed" }, input("speed", { "aria-label": t("axis.speedLabel", { axis }) }), el("span", { text: t("axis.speedUnit") })),
+          keys ? el("span", { class: "mo-axkeys", "aria-hidden": "true" }, keyCap(keys[0]), keyCap(keys[1])) : el("span")));
+        setup.push(el("div", { class: "mo-setup", role: "group", "aria-label": axis },
+          el("span", { class: "mo-axname" }, el("b", { text: axis }), row.ref),
+          el("label", { class: "mo-inline" }, t("axis.steps"), input("steps", {})), row.minus, row.plus,
+          row.home, row.zero, row.check, row.teach, row.view));
+      }
       refs.named = [];
       const named = [];
       for (const motor of motors) {
         for (const name of motor.named_positions || []) {
           const button = el("button", {
-            type: "button", class: "lc-button", text: t("named.go", { axis: t("axis." + motor.id), name }),
+            type: "button", class: "mo-btn", text: t("named.go", { axis: t("axis." + motor.id), name }),
             onclick: () => send("stage", "goto", { motor: motor.id, name }, "move-" + motor.id),
           });
           refs.named.push({ button, motor: motor.id, name });
@@ -912,48 +970,48 @@
         }
       }
       refs.stageKb = el("button", {
-        type: "button", role: "switch", class: "mo-chip", text: t("kb.title"), "aria-label": t("kb.stage"),
+        type: "button", role: "switch", class: "mo-switch mo-small", "aria-label": t("kb.stage"), "aria-checked": "false",
         onclick: () => {
           if (sh.on) stageOff();
           else if (api.owns("stage")) { sh.on = true; renderHold(); }
         },
-      });
-      refs.holdKeys = {};
-      const keyCap = key => (refs.holdKeys[key] = el("kbd", { class: "mo-key", text: key }));
-      const keyRows = STAGE_KEYS.filter(([, , id]) => refs.axes[id]).map(([minus, plus, id]) => el("div", { class: "mo-keyrow" },
-        keyCap(minus), keyCap(plus), el("span", { class: "lc-muted", text: t("kb.axis", { axis: t("axis." + id) }) })));
-      refs.stageBody.replaceChildren(
-        refs.modes.length ? el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("stage.stepping") },
-          el("span", { class: "lc-muted", text: t("stage.stepping") }), ...refs.modes) : "",
-        ...blocks,
-        keyRows.length ? el("div", { class: "mo-block" },
-          el("div", { class: "mo-head" }, el("h3", { text: t("kb.title") }), refs.stageKb),
-          el("div", { class: "mo-keys" }, ...keyRows)) : "",
-        stage ? el("div", { class: "mo-block" }, el("h3", { text: t("named.title") }),
-          named.length ? el("div", { class: "mo-grid2" }, ...named) : el("p", { class: "lc-muted", text: t("named.none") })) : "");
+      }, el("span", { class: "mo-knob", "aria-hidden": "true" }), el("span", { text: t("stage.keys") }));
+      refs.zeroNote = el("p", { class: "mo-reason", hidden: true, text: t("stage.zeroNone") });
+      refs.setupNeed = el("p", { class: "mo-reason", hidden: true, text: t("stage.needControl") });
+      refs.stageBody.replaceChildren(...rows);
+      refs.namedBlock.hidden = !named.length;
+      refs.namedBlock.replaceChildren(...(named.length ? [el("span", { class: "mo-label", text: t("named.title") }), ...named] : []));
+      refs.stageFoot.replaceChildren(
+        refs.modes.length ? el("div", { class: "mo-seg-row" }, el("span", { class: "mo-label", id: "mo-step-label", text: t("stage.stepping") }),
+          el("div", { class: "mo-seg", role: "radiogroup", "aria-labelledby": "mo-step-label" }, ...refs.modes)) : "",
+        rows.length ? refs.stageKb : "",
+        rows.length ? refs.stageFoldEl : "");
+      refs.stageFold.replaceChildren(refs.zeroNote, refs.setupNeed, ...setup);
     }
 
     function buildStageCard() {
-      refs.stageStatus = el("span", { class: "lc-muted" });
-      refs.stageBadge = el("span", { class: "mo-badge" });
-      refs.stageStop = el("button", { type: "button", class: "lc-danger mo-stop", text: t("stage.stop"), onclick: () => stopDevice("stage") });
-      refs.stageBody = el("div", { class: "mo-stack" });
+      refs.stageStatus = el("span", { class: "mo-state" });
+      refs.stageBadge = el("span", { class: "mo-badge", text: t("badge.demo"), hidden: true });
+      refs.stageStop = el("button", { type: "button", class: "mo-stop", text: t("stage.stop"), onclick: () => stopDevice("stage") });
+      refs.stageBody = el("div", { class: "mo-axes" });
+      refs.stageFoot = el("div", { class: "mo-stagefoot" });
+      refs.stageFold = el("div", { class: "mo-fold-body" });
+      refs.stageFoldEl = el("details", { class: "mo-fold" }, el("summary", { text: t("fold.stage") }), refs.stageFold);
+      refs.namedBlock = el("div", { class: "mo-named", hidden: true });
       refs.portSelect = el("select", { class: "mo-input", "aria-label": t("stage.port"), onchange: event => { model.port = event.target.value; } });
-      refs.connect = el("button", { type: "button", class: "lc-button", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }, "connect", "stage/connect").then(() => { model.ports = null; }) });
-      refs.refreshPorts = el("button", { type: "button", class: "lc-button", text: t("stage.refresh"), onclick: () => { if (!model.portsLoading) loadPorts(); } });
-      refs.connectRow = el("div", { class: "mo-row", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect, refs.refreshPorts);
-      refs.stageLast = el("p", { class: "lc-muted", role: "status" });
-      refs.poseBlock = el("div", { class: "mo-block", hidden: true });
-      const card = el("section", { class: "lc-card mo-col", "aria-labelledby": "mo-stage-title" },
-        el("div", { class: "lc-card-head" },
-          el("div", { class: "mo-titles" }, el("h2", { id: "mo-stage-title", text: t("stage.title") }), refs.stageStatus),
-          el("div", { class: "mo-row" }, refs.stageBadge, refs.stageStop)),
-        controlButton("stage"),
-        confirmSlot("stage"),
-        refs.connectRow,
-        refs.stageBody,
-        refs.poseBlock,
-        refs.stageLast);
+      refs.connect = el("button", { type: "button", class: "mo-btn mo-primary", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }, "connect", "stage/connect").then(() => { model.ports = null; }) });
+      refs.refreshPorts = el("button", { type: "button", class: "mo-btn", text: t("stage.refresh"), onclick: () => { if (!model.portsLoading) loadPorts(); } });
+      refs.connectRow = el("div", { class: "mo-row mo-connect", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect, refs.refreshPorts);
+      refs.stageLast = el("p", { class: "mo-muted mo-last", role: "status" });
+      refs.poseBlock = el("div", { class: "mo-named", hidden: true });
+      const card = el("section", { class: "mo-station mo-station-stage", "aria-labelledby": "mo-stage-title" },
+        buildView("stage"),
+        el("div", { class: "mo-body" },
+          el("div", { class: "mo-head" },
+            el("h2", { id: "mo-stage-title", text: t("stage.title") }), refs.stageStatus, refs.stageBadge,
+            el("span", { class: "mo-actions" }, controlButton("stage"), refs.stageStop)),
+          refs.connectRow, refs.stageBody, refs.stageFoot, confirmSlot("stage"), refs.namedBlock, refs.poseBlock,
+          refs.stageLast));
       buildStage();
       return card;
     }
@@ -962,10 +1020,10 @@
     function buildPoses() {
       if (!refs.poseBlock) return;
       const poses = data.stage?.available && Array.isArray(data.stage.poses) ? data.stage.poses : [];
-      refs.poses = poses.map(name => ({ name, button: el("button", { type: "button", class: "lc-button", text: name, onclick: () => send("stage", "pose", { name }, "pose") }) }));
-      refs.poseNote = el("p", { class: "lc-muted" });
+      refs.poses = poses.map(name => ({ name, button: el("button", { type: "button", class: "mo-btn", text: name, onclick: () => send("stage", "pose", { name }, "pose") }) }));
+      refs.poseNote = el("p", { class: "mo-muted" });
       refs.poseBlock.hidden = !poses.length;
-      refs.poseBlock.replaceChildren(...(poses.length ? [el("h3", { text: t("pose.title") }), el("div", { class: "mo-grid2" }, ...refs.poses.map(item => item.button)), refs.poseNote] : []));
+      refs.poseBlock.replaceChildren(...(poses.length ? [el("span", { class: "mo-label", text: t("pose.title") }), ...refs.poses.map(item => item.button), refs.poseNote] : []));
     }
 
     // Activity --------------------------------------------------------------
@@ -976,7 +1034,7 @@
       refs.log.replaceChildren(...(rows.length ? rows.map(row => el("div", { class: "lc-event level-" + row.level },
         el("span", { class: "lc-mono", text: clock(row.ts) }),
         el("span", { class: "lc-event-src", text: api.deviceName(row.src) + (row.page ? " · " + t("log.page") : "") }),
-        el("span", { class: "mo-msg", text: row.message }))) : [el("p", { class: "lc-muted", text: t("log.none") })]));
+        el("span", { class: "mo-msg", text: row.message }))) : [el("p", { class: "mo-muted", text: t("log.none") })]));
     }
 
     // Whole workspace -------------------------------------------------------
@@ -984,15 +1042,11 @@
     function build() {
       if (!rootNode) return;
       dropTiles();
-      refs = { confirms: {}, tiles: [] };
-      refs.cams = el("div", { class: "mo-cams" });
-      refs.log = el("div", { class: "lc-events" });
+      refs = { confirms: {}, tiles: {}, views: {}, viewTabs: {} };
+      refs.log = el("div", { class: "lc-events mo-events" });
       rootNode.replaceChildren(
-        el("div", { class: "mo-columns" },
-          buildArm(),
-          el("section", { class: "mo-col mo-col-cams", "aria-label": t("cams.title") }, refs.cams),
-          buildStageCard()),
-        el("section", { class: "lc-card", "aria-labelledby": "mo-log-title" },
+        el("div", { class: "mo-stations" }, buildArm(), buildStageCard()),
+        el("section", { class: "mo-log", "aria-labelledby": "mo-log-title" },
           el("h2", { id: "mo-log-title", text: t("log.title") }), refs.log));
       renderCameras();
       renderConfirms();
@@ -1006,16 +1060,10 @@
       return null;
     }
 
-    function holderText(device, info) {
-      if (api.owns(device)) return t("ctl.mine");
-      if (info?.holder === "console") return t("ctl.console");
-      if (info?.holder === "other" || info?.holder === "mine") return t("ctl.other");
-      return t("ctl.free");
-    }
-
-    function lastText(command) {
+    function lastText(device, command) {
       if (!command?.action) return "";
-      const vars = { action: command.action, result: command.result || "…", message: command.message || "" };
+      const result = command.result ? (t("res." + command.result) === "res." + command.result ? command.result : t("res." + command.result)) : "…";
+      const vars = { action: actionName(device, command.action), result, message: command.message || "" };
       return t(command.message && command.result !== "ok" ? "last.message" : "last", vars);
     }
 
@@ -1023,11 +1071,12 @@
       const item = refs["ctl-" + device];
       if (!item) return;
       const mine = api.owns(device);
-      item.button.textContent = mine ? t("ctl.release") : t("ctl.take");
+      const other = !mine && Boolean(info?.available && info.holder && info.holder !== "mine");
+      item.button.textContent = mine ? t("ctl.release") : other ? t(info.holder === "console" ? "ctl.console" : "ctl.other") : t("ctl.take");
       item.button.setAttribute("aria-label", t(mine ? "ctl.releaseLabel" : "ctl.takeLabel", { device: api.deviceName(device) }));
+      item.button.className = "mo-btn" + (mine ? " mo-held" : "");
       // A demo device starts on its first Take control, so "offline" stays clickable.
-      item.button.disabled = !mine && (info?.reason === "unconfigured" || Boolean(info?.available && info.holder && info.holder !== "mine"));
-      item.status.textContent = info?.available ? holderText(device, info) : "";
+      item.button.disabled = !mine && (info?.reason === "unconfigured" || other);
     }
 
     function update() {
@@ -1040,23 +1089,18 @@
 
       // Arm.
       const pose = actualPose(robot);
-      const parts = [];
       const missing = deviceStatus(data.robot);
-      if (missing) parts.push(missing);
-      else {
-        parts.push(t(robot.enabled ? "arm.enabled" : "arm.disabled"));
-        if (robot.busy) parts.push(t("arm.busy"));
-        if (!robot.feedback_fresh) parts.push(t("arm.noFeedback"));
-        if (data.cap) parts.push(t("arm.cap", { cap: data.cap }));
-      }
-      refs.armStatus.textContent = parts.join(" · ");
-      refs.armBadge.textContent = robot ? t(robot.demo ? "badge.demo" : "badge.real") : "";
-      refs.armBadge.className = "mo-badge" + (robot && !robot.demo ? " mo-real" : "");
-      refs.armBadge.hidden = !robot;
+      refs.armStatus.textContent = missing || t(robot.busy ? "arm.busy" : robot.enabled ? "arm.enabled" : "arm.disabled");
+      refs.armStatus.className = "mo-state" + (missing ? "" : robot.busy ? " mo-info" : robot.enabled ? " mo-ok" : "");
+      refs.armFlags.textContent = robot && !robot.feedback_fresh ? t("arm.noFeedback") : "";
+      refs.armFlags.hidden = !refs.armFlags.textContent;
+      refs.armBadge.hidden = !(robot && robot.demo);
       updateControl("robot", data.robot);
       const ready = Boolean(robot && ownsRobot && robot.feedback_fresh && !robot.locked && !robot.stop_unconfirmed);
-      refs.enable.disabled = !ready || robot.enabled === true || busy("robot");
-      refs.disable.disabled = !robot;
+      // The robot service reports enabled only in modes 5 and 7, not while it jogs.
+      const enabled = model.armOn = Boolean(robot && (robot.enabled === true || robot.busy === true || robot.keyboard_enabled === true));
+      refs.enable.textContent = t(enabled ? "arm.disable" : "arm.enable");
+      refs.enable.disabled = enabled ? !robot : !ready || busy("robot");
       refs.clear.disabled = !(robot && ownsRobot);
       refs.clear.textContent = t(robot && (robot.locked || robot.stop_unconfirmed) ? "arm.recover" : "arm.clear");
       refs.home.disabled = !(ready && robot.enabled === true && !robot.busy) || model.inflight.has("robot:move");
@@ -1080,13 +1124,19 @@
       if (refs.gripMessage.textContent !== gripMessage) refs.gripMessage.textContent = gripMessage;
       const joints = Array.isArray(robot?.joints) ? robot.joints : [];
       refs.joints.forEach((node, i) => { node.textContent = typeof joints[i] === "number" ? fixed(joints[i], 1) : "—"; });
-      AXES.forEach((axis, i) => { refs.pose[i].textContent = pose ? fixed(pose[i], 2) : "—"; });
+      // The robot service sends no pose while the arm moves. Keep the last pose, in grey, until a new one arrives.
+      if (pose) model.lastPose = pose;
+      const shownPose = pose || (robot?.busy ? model.lastPose : null);
+      AXES.forEach((axis, i) => {
+        refs.pose[i].textContent = shownPose ? fixed(shownPose[i], 2) : "—";
+        refs.pose[i].className = "mo-num" + (pose ? "" : " mo-stale");
+      });
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;
       refs.steps.forEach((node, i) => {
         const on = STEPS[i] === model.step;
         node.setAttribute("aria-checked", on ? "true" : "false");
-        node.className = "mo-chip" + (on ? " mo-on" : "");
+        node.className = "mo-seg-btn" + (on ? " mo-on" : "");
       });
       refs.speed.disabled = !data.cap;
       refs.speedText.textContent = data.cap ? `${clampSpeed(model.speed, data.cap)} / ${data.cap}` : "—";
@@ -1094,22 +1144,21 @@
       refs.execute.disabled = !canMove || !data.cap;
       const grip = robot?.gripper || {};
       const position = Array.isArray(robot?.actual) ? robot.actual[4] : null;
-      refs.gripState.textContent = !robot ? "" : robot.gripper_busy ? t("grip.busy")
-        : t("grip.state", { position: typeof position === "number" ? position : "—", outcome: grip.outcome || t("grip.none") });
-      refs.gripState.className = "mo-grip-state" + (grip.outcome === "dropped" ? " tone-text-bad" : grip.outcome ? " tone-text-ok" : "");
+      refs.gripValue.textContent = typeof position === "number" ? String(position) : "—";
+      refs.gripState.textContent = !robot ? "" : robot.gripper_busy ? t("grip.busy") : grip.outcome || t("grip.none");
+      refs.gripState.className = "mo-grip-state" + (grip.outcome === "dropped" ? " mo-bad" : grip.outcome && !robot.gripper_busy ? " mo-ok" : "");
       const gripReady = ready && robot.gripper_available && !robot.gripper_busy && !robot.busy && !busy("robot");
       refs.gripOpen.disabled = refs.gripClose.disabled = refs.gripMove.disabled = !gripReady;
       refs.gripInit.disabled = !(ready && robot.gripper_can_initialize && !robot.gripper_busy && !robot.busy);
-      refs.armLast.textContent = robot ? lastText(robot.last_command) : "";
+      refs.armLast.textContent = robot ? lastText("robot", robot.last_command) : "";
       updateKeyboard(robot, ready);
 
       // Stage.
       const stageMissing = deviceStatus(data.stage);
       refs.stageStatus.textContent = stageMissing || (stage.connected ? t("stage.connected") : t("stage.disconnected"))
-        + (stage.fault?.message ? " · " + stage.fault.message : "");
-      refs.stageBadge.textContent = stage ? t(stage.demo ? "badge.demo" : "badge.realStage") : "";
-      refs.stageBadge.className = "mo-badge" + (stage && !stage.demo ? " mo-real" : "");
-      refs.stageBadge.hidden = !stage;
+        + (stage.fault?.message ? ": " + stage.fault.message : "");
+      refs.stageStatus.className = "mo-state" + (stageMissing ? "" : stage.fault?.message ? " mo-bad" : stage.connected ? " mo-ok" : " mo-warn");
+      refs.stageBadge.hidden = !(stage && stage.demo);
       updateControl("stage", data.stage);
       if ((sh.on || sh.active) && !ownsStage) stageOff();
       const stageReady = Boolean(stage && ownsStage && stage.connected && !stage.locked);
@@ -1117,7 +1166,7 @@
       for (const node of refs.modes || []) {
         const on = Number(node.getAttribute("data-value")) === stage?.microstep;
         node.setAttribute("aria-checked", on ? "true" : "false");
-        node.className = "mo-chip" + (on ? " mo-on" : "");
+        node.className = "mo-seg-btn" + (on ? " mo-on" : "");
         node.disabled = !stageReady || !idle || stage?.busy || busy("stage");
       }
       for (const motor of stage?.motors || []) {
@@ -1125,12 +1174,15 @@
         if (!row) continue;
         const state = axisState(motor);
         row.state.textContent = t(state.key);
-        row.state.className = "lc-state tone-text-" + state.tone;
-        row.pulses.textContent = t("axis.pulses", { n: motor.position ?? "—" });
-        row.mm.textContent = t("axis.mm", { mm: fixed(motor.position_mm, 2) });
+        row.state.className = "mo-axstate mo-tone-" + state.tone;
+        // A position in mm needs a confirmed reference. Without one the pulse count is only a count.
+        const mm = typeof motor.position_mm === "number" && Number.isFinite(motor.position_mm);
+        row.num.textContent = mm ? fixed(motor.position_mm, 2) : motor.position === null || motor.position === undefined ? "—" : String(motor.position);
+        row.unit.textContent = mm ? "mm" : t("axis.unit");
+        row.value.className = "mo-axval";
         const reference = axisReference(motor);
         row.ref.textContent = t(reference.key);
-        row.ref.className = "lc-strong tone-text-" + reference.tone;
+        row.ref.className = "mo-axstate mo-tone-" + reference.tone;
         const moving = model.inflight.has("stage:move-" + motor.id);
         const canStep = stageReady && motor.available === true && !stage.busy && !moving;
         row.minus.disabled = row.plus.disabled = !canStep;
@@ -1138,6 +1190,7 @@
         row.holdMinus.disabled = row.holdPlus.disabled = !canStep && sh.active?.motor !== motor.id;
         const refBusy = model.inflight.has("stage:ref-" + motor.id);
         if (row.home) row.home.disabled = !stageReady || motor.mode !== "idle" || stage.busy || refBusy;
+        row.zero.hidden = motor.zero_available !== true;
         row.zero.disabled = !stageReady || motor.zero_available !== true || motor.mode !== "idle" || stage.busy || refBusy;
         row.check.hidden = row.teach.hidden = motor.reference_configured !== true;
         row.check.disabled = !stage.connected || refBusy;
@@ -1148,7 +1201,7 @@
       const posesReady = stageReady && referenced && !stage.busy && stage.motors.every(motor => motor.available === true);
       for (const item of refs.poses || []) {
         const at = (stage?.at_poses || []).includes(item.name);
-        item.button.className = "lc-button" + (at ? " mo-at" : "");
+        item.button.className = "mo-btn" + (at ? " mo-at" : "");
         item.button.setAttribute("aria-pressed", at ? "true" : "false");
         item.button.disabled = !posesReady || model.inflight.has("stage:pose");
       }
@@ -1156,13 +1209,15 @@
       for (const item of refs.named || []) {
         const motor = (stage?.motors || []).find(m => m.id === item.motor);
         const at = (motor?.at_positions || []).includes(item.name);
-        item.button.className = "lc-button" + (at ? " mo-at" : "");
+        item.button.className = "mo-btn" + (at ? " mo-at" : "");
         item.button.setAttribute("aria-pressed", at ? "true" : "false");
         item.button.disabled = !stageReady || !motor || stage.busy || motor.mode !== "idle" || model.inflight.has("stage:move-" + item.motor);
       }
       if (refs.stageKb) refs.stageKb.disabled = !sh.on && !stageReady;
+      if (refs.zeroNote) refs.zeroNote.hidden = !stage?.connected || (stage.motors || []).some(motor => motor.zero_available === true || motor.homing_available === true);
+      if (refs.setupNeed) refs.setupNeed.hidden = !stage?.connected || ownsStage;
       renderHold();
-      refs.stageLast.textContent = stage ? lastText(stage.last_command) : "";
+      refs.stageLast.textContent = stage ? lastText("stage", stage.last_command) : "";
       const disconnected = Boolean(stage && stage.connected !== true);
       refs.connectRow.hidden = !disconnected;
       if (disconnected && model.ports === null && !model.portsLoading) loadPorts();
@@ -1209,7 +1264,7 @@
       const offset = Array.isArray(view.offset_px) ? view.offset_px : null;
       row.view.replaceChildren(
         view.image ? el("img", { class: "mo-ref-img", src: view.image, alt: t("axis.check") }) : "",
-        el("p", { class: "lc-muted", text: view.error ? t("axis.checkFailed", { error: view.error }) : offset ? t("axis.offset", { x: fixed(offset[0], 1), y: fixed(offset[1], 1) }) : "" }));
+        el("p", { class: "mo-muted", text: view.error ? t("axis.checkFailed", { error: view.error }) : offset ? t("axis.offset", { x: fixed(offset[0], 1), y: fixed(offset[1], 1) }) : "" }));
     }
 
     function start() {
@@ -1249,7 +1304,7 @@
         start();
       },
       show() { shown = true; if (api) { renderCameras(); start(); } },
-      hide() { disarm("focus"); stageOff(); shown = false; stop(); dropTiles(); if (refs.cams) refs.cams.replaceChildren(); },
+      hide() { disarm("focus"); stageOff(); shown = false; stop(); dropTiles(); for (const slot of Object.values(refs.views || {})) slot.replaceChildren(); },
       _test: { data, model, kb, sh, refs: () => refs, refresh, update },
     };
   }

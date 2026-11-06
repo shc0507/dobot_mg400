@@ -142,7 +142,7 @@ test("a jog goes through the checked jog route once", async () => {
 test("without control the arm cannot move but Stop stage and Disable stay available", async () => {
   const page = await mounted({ owns: [], robot: { ...ROBOT, holder: null }, stage: { ...STAGE, holder: null } });
   assert.equal(page.find("Move +X by the jog step").disabled, true);
-  assert.equal(page.find("Execute ↗").disabled, true);
+  assert.equal(page.find("Execute").disabled, true);
   assert.equal(page.find("Disable").disabled, false);
   page.find("Stop stage").click();
   await page.settle();
@@ -205,6 +205,59 @@ test("the activity names each command by its button label", async () => {
   page.find("Stop arm").click();
   await page.settle();
   assert.match(page.root.textContent, /Robot stop: confirmed/);
+});
+
+test("Disable stays offered while the arm jogs; Enable needs a disabled arm and control", async () => {
+  // The robot service reports enabled only in modes 5 and 7, not while it jogs.
+  const jogging = await mounted({ robot: { ...ROBOT, enabled: false, keyboard_enabled: true } });
+  assert.equal(jogging.find("Disable").disabled, false);
+  jogging.find("Disable").click();
+  await jogging.settle();
+  assert.deepEqual(jogging.calls.filter(call => call[0] === "relay").map(call => call[2]), ["disable"]);
+  const off = await mounted({ owns: [], robot: { ...ROBOT, enabled: false } });
+  assert.equal(off.find("Enable").disabled, true);
+  assert.equal(off.find("Disable"), undefined);
+});
+
+test("each station switches its view with the tabs inside the frame", async () => {
+  const page = await mounted();
+  const tabs = label => page.root.all().filter(node => node.className.startsWith("mo-tab") && node.textContent === label);
+  assert.equal(tabs("Insert rail").length, 2);
+  assert.equal(tabs("Microscope")[0].getAttribute("aria-pressed"), "true");
+  assert.equal(tabs("Tray")[0].getAttribute("aria-pressed"), "false");
+  tabs("Tray")[0].click();
+  assert.equal(tabs("Tray")[0].getAttribute("aria-pressed"), "true");
+  assert.equal(tabs("Insert rail")[0].getAttribute("aria-pressed"), "false");
+  assert.ok(page.root.all().some(node => node.getAttribute("aria-label") === "Tray, OFFLINE"));
+  assert.equal(page.root.all().some(node => /Swap view/.test(node.textContent)), false);
+});
+
+test("only a demo device shows a badge, and a held device names its holder on the button", async () => {
+  const demo = await mounted();
+  assert.equal(demo.root.all().filter(node => node.className === "mo-badge" && !node.hidden).length, 2);
+  const real = await mounted({ owns: [], robot: { ...ROBOT, demo: false, holder: "other" }, stage: { ...STAGE, demo: false, holder: null } });
+  assert.equal(real.root.all().filter(node => node.className === "mo-badge" && !node.hidden).length, 0);
+  assert.equal(real.root.all().some(node => /REAL/.test(node.ownText)), false);
+  const robot = real.find("Take control of Robot");
+  assert.equal(robot.textContent, "In use by another client");
+  assert.equal(robot.disabled, true);
+  assert.equal(real.find("Take control of Stage").textContent, "Take control");
+  assert.equal(real.root.all().some(node => ["Free", "You control it"].includes(node.ownText)), false);
+});
+
+test("Set zero hides with a reason when the stage cannot zero; stepping labels are short", async () => {
+  const motor = { ...STAGE.motors[0], zero_available: false, homing_available: false };
+  const page = await mounted({ stage: { ...STAGE, motors: [motor] } });
+  const zero = page.find("Set zero…");
+  assert.equal(zero.hidden, true);
+  const note = page.root.all().find(node => node.ownText.startsWith("Set zero needs the stage calibration file"));
+  assert.equal(note.hidden, false);
+  const ready = await mounted();
+  assert.equal(ready.find("Set zero…").hidden, false);
+  assert.equal(ready.root.all().find(node => node.ownText.startsWith("Set zero needs")).hidden, true);
+  assert.equal(logic.stepLabel(1, "Full"), "Full");
+  assert.equal(logic.stepLabel(4, "Full"), "1/4");
+  assert.equal(ready.find("Half step (1/2)").textContent, "1/2");
 });
 
 test("a confirmation takes the focus, and Esc closes it without sending", async () => {
@@ -338,7 +391,7 @@ test("while the keyboard is on, the Z and R jog buttons show the key that moves 
     assert.deepEqual(hints.map(hint => hint.ownText), ["R", "F", "Q", "E"]);
     assert.ok(hints.every(hint => hint.hidden));
     assert.equal(page.find("Move +X by the jog step").children.length, 1);
-    page.find("Keyboard").click();
+    page.find("Keyboard jog").click();
     await page.settle();
     assert.ok(hints.every(hint => !hint.hidden));
     // The step chips carry numbers; the unit line names both units.
@@ -351,7 +404,7 @@ test("keyboard jog arms, refreshes held keys and releases them on blur", async (
   const page = await keyboardPage();
   try {
     const before = page.intervals.length;
-    page.find("Keyboard").click();
+    page.find("Keyboard jog").click();
     await page.settle();
     page.key("keydown", "KeyW");
     page.key("keydown", "KeyW", { repeat: true });
@@ -377,13 +430,13 @@ test("keyboard jog arms, refreshes held keys and releases them on blur", async (
 test("keyboard jog disarms when the tab is hidden and when the Motion tab is left", async () => {
   const page = await keyboardPage();
   try {
-    page.find("Keyboard").click();
+    page.find("Keyboard jog").click();
     await page.settle();
     globalThis.document.visibilityState = "hidden";
     page.docListeners.get("visibilitychange")();
     await page.settle();
     globalThis.document.visibilityState = "visible";
-    page.find("Keyboard").click();
+    page.find("Keyboard jog").click();
     await page.settle();
     page.ws.hide();
     await page.settle();
@@ -402,7 +455,7 @@ test("the switch shows why the robot service turned the keyboard off", async () 
   const page = await keyboardPage({ robot });
   try {
     const off = page.ws._test.refs().kbOff;
-    page.find("Keyboard").click();
+    page.find("Keyboard jog").click();
     await page.settle();
     assert.equal(page.ws._test.kb.on, true);
     assert.equal(off.hidden, true);
@@ -410,12 +463,12 @@ test("the switch shows why the robot service turned the keyboard off", async () 
     Object.assign(robot, { keyboard_enabled: false, keyboard_disarm_reason: "key updates stopped." });
     await page.ws._test.refresh();
     assert.equal(page.ws._test.kb.on, false);
-    assert.equal(page.find("Keyboard").getAttribute("aria-checked"), "false");
+    assert.equal(page.find("Keyboard jog").getAttribute("aria-checked"), "false");
     assert.equal(off.hidden, false);
     assert.equal(off.textContent, "Off: key updates stopped.");
     // A new arming clears the reason.
     Object.assign(robot, { keyboard_enabled: true, keyboard_disarm_reason: null });
-    page.find("Keyboard").click();
+    page.find("Keyboard jog").click();
     await page.settle();
     assert.equal(off.hidden, true);
     assert.equal(off.textContent, "");
@@ -437,7 +490,7 @@ const press = { button: 0, pointerId: 1, preventDefault() {} };
 test("stage holds, their releases and arm keys ask for the control socket", async () => {
   const page = await keyboardPage();
   try {
-    page.find("Keyboard").click();
+    page.find("Keyboard jog").click();
     await page.settle();
     page.key("keydown", "KeyW");
     page.key("keyup", "KeyW");

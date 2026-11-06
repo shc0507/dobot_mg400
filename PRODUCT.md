@@ -58,7 +58,7 @@ WuLab is a lab automation stack on one host (Olares). The **WuLab Console** is t
 - Name: **WuLab Console** (`console.name`). The header shows a line-drawn robot-arm mark and the deployed commit.
 - UI copy: avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
 - English copy follows Simplified Technical English. Chinese copy follows 简明中文.
-- Safety labels stay literal and visible, for example **STOP ALL MOTION**, **Heat off…** and **Gas off…**.
+- Safety labels stay literal and visible, for example **STOP ALL MOTION**, **Stop heat and gas** and **Stop all gas**.
 
 ## Evidence on Hand
 

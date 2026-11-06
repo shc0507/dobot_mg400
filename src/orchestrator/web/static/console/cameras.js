@@ -894,20 +894,36 @@
       h("div", { class: "lc-col-main" }, toolbar, grid, large, strip),
       h("div", { class: "lc-col-side" }, side)));
 
-    function toggle(label, pressed, onclick) {
-      return h("button", { type: "button", class: "lc-filter", "aria-pressed": pressed ? "true" : "false", onclick, text: label });
+    // focus: a stable key, so a rebuild of the side panel can give the focus back.
+    function toggle(label, pressed, onclick, focus) {
+      return h("button", { type: "button", class: "lc-filter", "aria-pressed": pressed ? "true" : "false", onclick, text: label, "data-focus": focus });
     }
 
+    // The toolbar is built once per language. updateToolbar() sets the pressed states in place.
+    const bar = {};
     function renderToolbar() {
       const s = engine.settings;
+      bar.grid = toggle(api.t("layout.grid"), false, () => { ui.layout = "grid"; arrange(); });
+      bar.focus = toggle(api.t("layout.focus"), false, () => { ui.layout = "focus"; ui.focus = ui.selected; arrange(); });
+      bar.detections = toggle("", false, () => { setSettings({ detections: !s.detections }); updateToolbar(); });
+      bar.markers = toggle("", false, () => { setSettings({ markers: !s.markers }); updateToolbar(); });
       toolbar.replaceChildren(
-        h("div", { class: "lc-filters", role: "group", "aria-label": api.t("layout.label") },
-          toggle(api.t("layout.grid"), ui.layout === "grid", () => { ui.layout = "grid"; arrange(); }),
-          toggle(api.t("layout.focus"), ui.layout === "focus", () => { ui.layout = "focus"; ui.focus = ui.selected; arrange(); })),
-        h("div", { class: "lc-filters", role: "group", "aria-label": api.t("overlay.label") },
-          toggle((s.detections ? "✓ " : "") + api.t("overlay.detections"), s.detections, () => setSettings({ detections: !s.detections })),
-          toggle((s.markers ? "✓ " : "") + api.t("overlay.thermal"), s.markers, () => setSettings({ markers: !s.markers }))),
+        h("div", { class: "lc-filters", role: "group", "aria-label": api.t("layout.label") }, bar.grid, bar.focus),
+        h("div", { class: "lc-filters", role: "group", "aria-label": api.t("overlay.label") }, bar.detections, bar.markers),
         h("button", { type: "button", class: "lc-button", text: api.t("snapshot.all"), onclick: snapshotAll }));
+      updateToolbar();
+    }
+
+    function updateToolbar() {
+      const s = engine.settings;
+      const set = (node, pressed, text) => {
+        node.setAttribute("aria-pressed", pressed ? "true" : "false");
+        if (text !== undefined && node.textContent !== text) node.textContent = text;
+      };
+      set(bar.grid, ui.layout === "grid");
+      set(bar.focus, ui.layout === "focus");
+      set(bar.detections, s.detections, (s.detections ? "✓ " : "") + api.t("overlay.detections"));
+      set(bar.markers, s.markers, (s.markers ? "✓ " : "") + api.t("overlay.thermal"));
     }
 
     async function snapshotAll() {
@@ -929,19 +945,25 @@
         if (ui.layout === "grid") grid.append(node);
         else (view === ui.focus ? large : strip).append(node);
       }
-      renderToolbar();
+      if (bar.grid) updateToolbar();
+      else renderToolbar();
       markSelected();
       setTimeout(tick, 0);
     }
 
-    function row(label, value) {
-      return h("div", { class: "lc-result" }, h("span", { class: "lc-muted", text: label }), h("span", { class: "lc-strong", text: value }));
+    // The side panel is rebuilt only when its structure changes. Live values update in place:
+    // live maps each text node to the function that reads its text.
+    const live = new Map();
+    function bind(node, read) { live.set(node, read); node.textContent = read(); return node; }
+
+    function row(label, read) {
+      return h("div", { class: "lc-result" }, h("span", { class: "lc-muted", text: label }), bind(h("span", { class: "lc-strong" }), read));
     }
 
     function segmented(label, options, current, onPick) {
       return h("div", { class: "lcam-field" }, h("span", { class: "lcam-label", id: "lcam-l-" + label, text: api.t(label) }),
         h("div", { class: "lc-filters", role: "group", "aria-labelledby": "lcam-l-" + label },
-          ...options.map(([value, text]) => toggle(text, current === value, () => onPick(value)))));
+          ...options.map(([value, text]) => toggle(text, current === value, () => { onPick(value); renderSide(); }, label + "-" + value))));
     }
 
     function commandInfo(action) {
@@ -949,60 +971,75 @@
       return commands[action] || null;
     }
 
+    // The command names in the notice are the button labels.
+    const LABELS = { connect: "connect", shutter: "shutter", set_region: "region.save" };
     async function send(action, params) {
       const result = await api.relay("thermal", action, params);
-      if (result.outcome === "accepted") api.notify(api.t("command.accepted", { action }), "info");
-      else if (result.outcome === "unknown") api.notify(api.t("command.unknown", { action }), "error");
+      const name = LABELS[action] ? api.t(LABELS[action]) : action;
+      if (result.outcome === "accepted") api.notify(api.t("command.accepted", { action: name }), "info");
+      else if (result.outcome === "unknown") api.notify(api.t("command.unknown", { action: name }), "error");
       else api.notify(api.t("command.refused", { error: result.error || "" }), "warn");
       if (action === "set_region") loadRegions();
       return result;
     }
 
-    function confirmBox(text, onConfirm) {
-      return h("div", { class: "lc-confirm", role: "alertdialog", "aria-label": text },
+    // opener: the data-focus key of the button that opened the confirmation. Cancel and Esc return the focus there.
+    // after: the key that takes the focus after Confirm.
+    function confirmBox(text, onConfirm, opener, after = opener) {
+      const cancel = () => { ui.confirm = null; side.dataset.focusNext = opener; renderSide(); };
+      return h("div", { class: "lc-confirm", role: "alertdialog", "aria-label": text, tabindex: "-1", "data-focus": "confirm",
+        onkeydown: event => { if (event.key === "Escape") { event.preventDefault?.(); cancel(); } } },
         h("p", { text }),
         h("div", { class: "lc-filters" },
-          h("button", { type: "button", class: "lc-danger lcam-confirm", text: api.t("confirm"), onclick: () => { ui.confirm = null; renderSide(); onConfirm(); } }),
-          h("button", { type: "button", class: "lc-button", text: api.t("cancel"), onclick: () => { ui.confirm = null; renderSide(); } })));
+          h("button", { type: "button", class: "lc-danger lcam-confirm", text: api.t("confirm"), onclick: () => {
+            ui.confirm = null;
+            side.dataset.focusNext = after;
+            onConfirm();
+            if (side.dataset.focusNext) renderSide();
+          } }),
+          h("button", { type: "button", class: "lc-button", text: api.t("cancel"), onclick: cancel })));
     }
 
     function commandButton(action, label, onClick) {
       const info = commandInfo(action);
-      const button = h("button", { type: "button", class: "lc-button", text: label, disabled: !info, onclick: onClick });
+      const button = h("button", { type: "button", class: "lc-button", text: label, disabled: !info, onclick: onClick, "data-focus": action });
       return button;
     }
 
     function controlLine() {
       const needs = ["shutter", "set_region"].some(action => { const info = commandInfo(action); return info && !info.any_client; });
       if (!needs) return null;
-      if (api.owns("thermal")) return h("button", { type: "button", class: "lc-button", text: api.t("command.release"), onclick: () => api.release("thermal").catch(error => api.notify(error.message, "warn")).then(renderSide) });
+      if (api.owns("thermal")) return h("button", { type: "button", class: "lc-button", text: api.t("command.release"), "data-focus": "control", onclick: () => api.release("thermal").catch(error => api.notify(error.message, "warn")).then(renderSide) });
       return h("div", { class: "lcam-field" }, h("span", { class: "lc-muted", text: api.t("command.control") }),
-        h("button", { type: "button", class: "lc-button", text: api.t("command.take"), onclick: () => api.take("thermal").catch(error => api.notify(error.message, "warn")).then(renderSide) }));
+        h("button", { type: "button", class: "lc-button", text: api.t("command.take"), "data-focus": "control", onclick: () => api.take("thermal").catch(error => api.notify(error.message, "warn")).then(renderSide) }));
     }
 
     function thermalPanel() {
       const s = engine.settings;
-      const stats = engine.thermal?.stats;
       const thermalTile = ui.tiles.get("thermal").labCameras;
       const region = engine.regions.crucible;
       const parts = [];
+      const reading = {
+        max: () => engine.thermal?.stats?.max?.celsius, min: () => engine.thermal?.stats?.min?.celsius,
+        center: () => engine.thermal?.stats?.center?.celsius, mean: () => engine.thermal?.stats?.mean_celsius,
+      };
       parts.push(h("div", { class: "lc-grid2" },
-        ...[["max", stats?.max?.celsius], ["min", stats?.min?.celsius], ["center", stats?.center?.celsius], ["mean", stats?.mean_celsius]]
-          .map(([key, value]) => h("div", { class: "lcam-reading" }, h("span", { class: "lc-muted", text: api.t("reading." + key) }), h("span", { class: "lcam-value", text: formatTemp(value, s.unit) })))));
+        ...Object.entries(reading).map(([key, read]) => h("div", { class: "lcam-reading" }, h("span", { class: "lc-muted", text: api.t("reading." + key) }),
+          bind(h("span", { class: "lcam-value" }), () => formatTemp(read(), engine.settings.unit))))));
       parts.push(segmented("units", [["C", "°C"], ["F", "°F"], ["K", "K"]], s.unit, unit => setSettings({ unit })));
-      const palette = h("select", { id: "lcam-palette", class: "lcam-select", onchange: event => setSettings({ palette: event.target.value }) },
+      const palette = h("select", { id: "lcam-palette", class: "lcam-select", "data-focus": "palette", onchange: event => setSettings({ palette: event.target.value }) },
         ...["ironbow", "rainbow", "grey"].map(name => h("option", { value: name, text: api.t("palette." + name), selected: s.palette === name ? "selected" : null })));
       palette.value = s.palette;
       parts.push(h("div", { class: "lcam-field" }, h("label", { class: "lcam-label", for: "lcam-palette", text: api.t("palette") }), palette));
       parts.push(segmented("scale", [["auto", api.t("scale.auto")], ["fixed", api.t("scale.fixed")]], s.scale, scale => setSettings({ scale })));
       const limit = (key) => {
-        const input = h("input", { id: "lcam-" + key, class: "lcam-input", type: "number", step: "0.5", inputmode: "decimal", disabled: s.scale !== "fixed",
+        const input = h("input", { id: "lcam-" + key, class: "lcam-input", type: "number", step: "0.5", inputmode: "decimal", disabled: s.scale !== "fixed", "data-focus": "limit-" + key,
           value: convert(s[key], s.unit).toFixed(1),
           onchange: event => { const value = Number(event.target.value); if (Number.isFinite(value)) setSettings({ [key]: toCelsius(value, s.unit) }); } });
         return h("div", { class: "lcam-field lcam-inline" }, h("label", { class: "lcam-label", for: "lcam-" + key, text: api.t("scale." + key) + " (" + unitLabel(s.unit) + ")" }), input);
       };
       parts.push(h("div", { class: "lc-grid2" }, limit("low"), limit("high")));
-      parts.push(h("button", { type: "button", class: "lc-button", "aria-pressed": s.frozen ? "true" : "false", text: s.frozen ? api.t("unfreeze") : api.t("freeze"), onclick: () => setSettings({ frozen: !s.frozen }) }));
+      parts.push(h("button", { type: "button", class: "lc-button", "aria-pressed": s.frozen ? "true" : "false", text: s.frozen ? api.t("unfreeze") : api.t("freeze"), "data-focus": "freeze", onclick: () => { setSettings({ frozen: !s.frozen }); renderSide(); } }));
 
       // Region and shutter change calibration: both go through the relay with a confirmation.
       const regionParts = [h("h3", { class: "lcam-h3", text: api.t("region") })];
@@ -1015,15 +1052,15 @@
             send("set_region", { name: "crucible", ...proposed });
             thermalTile.paint();
             renderSide();
-          }));
+          }, "region-save", "region-draw"));
         } else {
           regionParts.push(h("div", { class: "lc-filters" },
-            h("button", { type: "button", class: "lc-button", text: api.t("region.save"), disabled: !proposed || !commandInfo("set_region"), onclick: () => { ui.confirm = "region"; renderSide(); } }),
-            h("button", { type: "button", class: "lc-button", text: api.t("region.cancel"), onclick: () => { thermalTile.drawing = null; thermalTile.paint(); renderSide(); } })));
+            h("button", { type: "button", class: "lc-button", text: api.t("region.save"), disabled: !proposed || !commandInfo("set_region"), "data-focus": "region-save", onclick: () => { ui.confirm = "region"; renderSide(); } }),
+            h("button", { type: "button", class: "lc-button", text: api.t("region.cancel"), "data-focus": "region-cancel", onclick: () => { thermalTile.drawing = null; side.dataset.focusNext = "region-draw"; thermalTile.paint(); renderSide(); } })));
         }
       } else {
         regionParts.push(h("p", { class: "lc-muted", text: region ? api.t("region.bounds", region) : api.t("region.none") }));
-        regionParts.push(h("button", { type: "button", class: "lc-button", text: api.t("region.draw"), onclick: () => {
+        regionParts.push(h("button", { type: "button", class: "lc-button", text: api.t("region.draw"), "data-focus": "region-draw", onclick: () => {
           thermalTile.drawing = { region: region ? { ...region } : null, anchor: null, onChange: renderSide };
           thermalTile.paint();
           renderSide();
@@ -1033,7 +1070,7 @@
       parts.push(h("div", { class: "lcam-group" }, ...regionParts));
       const card = (api.state()?.services || []).find(item => item.id === "thermal");
       if (card && card.connected !== true && commandInfo("connect")) parts.push(commandButton("connect", api.t("connect"), () => send("connect", {})));
-      if (ui.confirm === "shutter") parts.push(confirmBox(api.t("shutter.confirm"), () => send("shutter", {})));
+      if (ui.confirm === "shutter") parts.push(confirmBox(api.t("shutter.confirm"), () => send("shutter", {}), "shutter"));
       else parts.push(commandButton("shutter", api.t("shutter"), () => { ui.confirm = "shutter"; renderSide(); }));
       if (!commandInfo("shutter")) parts.push(h("p", { class: "lc-muted", text: api.t("command.missing") }));
       const control = controlLine();
@@ -1041,61 +1078,97 @@
 
       parts.push(h("h3", { class: "lcam-h3", text: api.t("export") }));
       parts.push(h("div", { class: "lc-filters" },
-        h("button", { type: "button", class: "lc-button", text: api.t("export.csv"), disabled: !engine.thermal, onclick: () => {
+        h("button", { type: "button", class: "lc-button", text: api.t("export.csv"), "data-focus": "export-csv", disabled: !engine.thermal, onclick: () => {
           if (engine.thermal) download(`thermal-${engine.thermal.sequence}.csv`, new root.Blob([thermalCsv(engine.thermal, s.unit)], { type: "text/csv" }));
         } }),
-        h("button", { type: "button", class: "lc-button", text: api.t("export.raw"), disabled: !engine.thermal, onclick: async () => {
+        h("button", { type: "button", class: "lc-button", text: api.t("export.raw"), "data-focus": "export-raw", disabled: !engine.thermal, onclick: async () => {
           try {
             const frame = await request("thermal/frame?full=1");
             download(`thermal-${frame.sequence}.json`, new root.Blob([JSON.stringify(frame)], { type: "application/json" }));
           } catch (error) { api.notify(api.t("snapshot.failed", { error: error.message }), "warn"); }
         } }),
-        h("button", { type: "button", class: "lc-button", text: api.t("export.png"), disabled: !engine.thermal, onclick: () => snapshot("thermal", thermalTile).catch(error => api.notify(error.message, "warn")) })));
+        h("button", { type: "button", class: "lc-button", text: api.t("export.png"), "data-focus": "export-png", disabled: !engine.thermal, onclick: () => snapshot("thermal", thermalTile).catch(error => api.notify(error.message, "warn")) })));
       return parts;
     }
 
     function viewPanel(view) {
-      const status = rowFor(view) || {};
+      const status = () => rowFor(view) || {};
       const node = ui.tiles.get(view).labCameras;
       const parts = [
-        row(api.t("side.mode"), status.mode || api.t("mode.unknown")),
+        row(api.t("side.mode"), () => status().mode || api.t("mode.unknown")),
       ];
-      if (view === "microscope") parts.push(row(api.t("side.streams"), String(status.streams ?? 0)));
-      if (status.error) parts.push(row(api.t("side.error"), status.error));
+      if (view === "microscope") parts.push(row(api.t("side.streams"), () => String(status().streams ?? 0)));
+      if (status().error) parts.push(row(api.t("side.error"), () => status().error || ""));
       if (view === "camera4") {
-        const d = engine.detections;
-        const text = !engine.settings.detections ? "—" : !d?.available ? api.t("side.detectionsOff")
-          : d.detections.length ? api.t("side.detectionsCount", { count: d.detections.length }) : api.t("side.detectionsNone");
-        parts.push(row(api.t("side.detections"), text));
+        parts.push(row(api.t("side.detections"), () => {
+          const d = engine.detections;
+          return !engine.settings.detections ? "—" : !d?.available ? api.t("side.detectionsOff")
+            : d.detections.length ? api.t("side.detectionsCount", { count: d.detections.length }) : api.t("side.detectionsNone");
+        }));
       }
       parts.push(h("div", { class: "lc-filters" },
-        h("button", { type: "button", class: "lc-button", text: api.t("tile.snapshot"), onclick: () => node.snapshot() }),
-        h("button", { type: "button", class: "lc-button", text: api.t("tile.expand"), onclick: () => node.expand() })));
+        h("button", { type: "button", class: "lc-button", text: api.t("tile.snapshot"), "data-focus": "snapshot", onclick: () => node.snapshot() }),
+        h("button", { type: "button", class: "lc-button", text: api.t("tile.expand"), "data-focus": "expand", onclick: () => node.expand() })));
       return parts;
     }
 
-    function renderSide() {
+    /** Everything that changes which controls the side panel shows. */
+    function sideKey() {
       const view = ui.selected;
-      const state = viewBadge(view);
-      side.replaceChildren(
-        h("div", { class: "lc-card-head" },
-          h("h2", { id: "lcam-side-title", text: api.t("side.title") }),
-          h("span", { class: "lcam-badge tone-" + state.tone }, h("span", { class: "lc-dot", "aria-hidden": "true" }),
-            h("span", { text: api.t(state.key) + (state.age !== null && state.age !== undefined ? " · " + api.t("age", { age: state.age.toFixed(1) }) : "") }))),
-        h("p", { class: "lc-strong", text: api.t("title." + view) + " · " + api.t("role." + view) }),
-        ...(view === "thermal" ? thermalPanel() : viewPanel(view)));
+      const drawing = ui.tiles.get("thermal").labCameras.drawing;
+      const card = (api.state()?.services || []).find(item => item.id === "thermal");
+      return JSON.stringify([view, api.lang?.(), engine.settings, ui.confirm, Boolean(drawing), drawing?.region || null,
+        Boolean(ui.describe), api.owns("thermal"), card?.connected === true, Boolean(engine.thermal), engine.regions.crucible || null,
+        Boolean((rowFor(view) || {}).error)]);
     }
 
-    let sideTimer = null;
-    engine.listeners.add(() => {
-      // Repaint the side panel at most once a second; inputs keep their focus between updates.
+    let builtKey = "";
+    function renderSide() {
+      const view = ui.selected;
       const active = doc().activeElement;
-      if (sideTimer || (active && side.contains(active) && ["INPUT", "SELECT"].includes(active.tagName))) return;
-      sideTimer = setTimeout(() => { sideTimer = null; renderSide(); }, 1000);
-    });
+      const focus = side.dataset.focusNext || (active && side.contains(active) ? active.getAttribute("data-focus") : null);
+      delete side.dataset.focusNext;
+      live.clear();
+      builtKey = sideKey();
+      side.badge = h("span", { class: "lcam-badge" }, h("span", { class: "lc-dot", "aria-hidden": "true" }), side.badgeText = h("span"));
+      side.replaceChildren(
+        h("div", { class: "lc-card-head" }, h("h2", { id: "lcam-side-title", text: api.t("side.title") }), side.badge),
+        h("p", { class: "lc-strong", text: api.t("title." + view) + " · " + api.t("role." + view) }),
+        ...(view === "thermal" ? thermalPanel() : viewPanel(view)));
+      updateSide();
+      // The focus goes back to the same control. When that control is gone, an open confirmation takes it.
+      let target = focus ? side.querySelector?.(`[data-focus="${focus}"]`) : null;
+      if (!target && ui.confirm) target = side.querySelector?.('[data-focus="confirm"]');
+      target?.focus?.();
+    }
+
+    function updateSide() {
+      const state = viewBadge(ui.selected);
+      side.badge.className = "lcam-badge tone-" + state.tone;
+      const text = api.t(state.key) + (state.age !== null && state.age !== undefined ? " · " + api.t("age", { age: state.age.toFixed(1) }) : "");
+      if (side.badgeText.textContent !== text) side.badgeText.textContent = text;
+      for (const [node, read] of live) {
+        const value = read();
+        if (node.textContent !== value) node.textContent = value;
+      }
+    }
+
+    // At most once a second: update the live values, and rebuild only when the structure changed.
+    // A rebuild waits while an input or a select of the panel has the focus.
+    let sideTimer = null;
+    function refreshSide() {
+      sideTimer = null;
+      updateToolbar();
+      const active = doc().activeElement;
+      const typing = active && side.contains(active) && ["INPUT", "SELECT"].includes(active.tagName);
+      if (!typing && sideKey() !== builtKey) renderSide();
+      else updateSide();
+    }
+    const soon = () => { if (!sideTimer) sideTimer = setTimeout(refreshSide, 1000); };
+    engine.listeners.add(soon);
     api.describe("thermal").then(value => { ui.describe = value; renderSide(); }, () => { ui.describe = null; });
-    api.onLanguage(() => { arrange(); renderSide(); for (const node of tiles().values()) node.labCameras.refresh(); });
-    api.onState(() => { if (!sideTimer) sideTimer = setTimeout(() => { sideTimer = null; renderSide(); }, 1000); });
+    api.onLanguage(() => { renderToolbar(); arrange(); renderSide(); for (const node of tiles().values()) node.labCameras.refresh(); });
+    api.onState(soon);
     arrange();
     renderSide();
   }

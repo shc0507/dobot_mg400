@@ -35,7 +35,7 @@ function page() {
   const nodes = new Map();
   const make = (tag, id) => { const node = new Element(tag, id); nodes.set(id, node); return node; };
   for (const id of ["lc-lang", "lc-stop-all"]) make("button", id);
-  for (const id of ["lc-strip", "lc-notice", "lc-controls", "lc-controls-text"]) make("div", id);
+  for (const id of ["lc-strip", "lc-stopband", "lc-notice", "lc-controls", "lc-controls-text"]) make("div", id);
   const i18n = new Element("span"); i18n.dataset.i18n = "stop.all";
   const tabs = ["overview", "motion"].map(id => {
     const link = new Element("a");
@@ -159,6 +159,19 @@ test("the strip renders 8 chips with a hidden dot and visible text", async () =>
   assert.match(chips[0].textContent, /Robot.*Ready/);
 });
 
+test("a console that does not answer shows 1 Console offline chip, not 8 stale devices", async () => {
+  const { LabConsole } = load({ responses: [{ status: 200, body: null }] });
+  assert.deepEqual(LabConsole.logic.chips(null, false, true), [{ id: "console", tone: "bad", key: "chip.offline" }]);
+  assert.equal(LabConsole.logic.chips(null, false, false).length, 8);
+  const view = page();
+  LabConsole.start(view.doc);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const strip = view.nodes.get("lc-strip");
+  assert.equal(strip.children.length, 1);
+  assert.equal(strip.textContent, "Console offlineno state yet");
+  assert.match(strip.children[0].className, /tone-bad/);
+});
+
 test("event filters select warnings or one service", () => {
   const { LabConsole } = load();
   const events = [
@@ -171,6 +184,70 @@ test("event filters select warnings or one service", () => {
   assert.equal(filterEvents(events, "warnings").length, 2);
   assert.deepEqual(filterEvents(events, "robot"), [events[0]]);
   assert.equal(latestOperation([{ action: "motion", id: 1 }, { action: "heat", id: 2 }, { action: "motion", id: 3 }], "motion").id, 3);
+});
+
+test("a stop result stays provisional until its operation is done", () => {
+  const { LabConsole } = load();
+  const { stopView } = LabConsole.logic;
+  const press = { action: "motion", at: 0 };
+  const running = stopView(press, { phase: "holding", done: false, hold: "pending", results: {
+    robot: { status: "confirmed" }, stage: { status: "pending" }, microscope: { status: "unavailable" } } });
+  assert.equal(running.phase, "holding");
+  assert.deepEqual(running.targets.map(item => item.status), ["provisional", "pending", "unavailable"]);
+  assert.equal(running.tone, "info");
+  const done = { phase: "done", done: true, hold: "settled" };
+  assert.deepEqual(stopView(press, { ...done, results: { robot: { status: "confirmed" }, stage: { status: "unconfirmed" } } })
+    .targets.map(item => item.status), ["confirmed", "unconfirmed"]);
+  assert.equal(stopView(press, { ...done, results: { robot: { status: "unconfirmed" } } }).tone, "bad");
+  assert.equal(stopView(press, { ...done, results: { robot: { status: "confirmed" }, stage: { status: "unavailable" } } }).tone, "ok");
+  assert.equal(stopView(press, { ...done, results: { stage: { status: "unavailable" } } }).tone, "off");
+  const unheld = stopView(press, { ...done, hold: "unconfirmed", results: { robot: { status: "confirmed" } } });
+  assert.equal(unheld.holdFailed, true);
+  assert.equal(unheld.tone, "bad");
+  // Gas holds no run, so its confirmations are final at once.
+  const gas = stopView({ action: "gas", at: 0 }, { phase: "stopping", done: false, results: { "gas-0": { status: "confirmed" } } });
+  assert.deepEqual(gas.phases, ["stopping", "done"]);
+  assert.equal(gas.targets[0].status, "confirmed");
+  assert.equal(stopView({ action: "heat", at: 0, sending: true }, null).phase, "");
+  assert.equal(stopView({ action: "heat", at: 0, error: "No answer." }, null).tone, "bad");
+  assert.equal(stopView(press, { phase: "stopping", results: { robot: { status: "odd" } } }).targets[0].status, "failed");
+});
+
+test("the stop band shows this page's press and any new stop, and Dismiss hides it", async () => {
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+  const heat = { id: "op-1", action: "heat", phase: "holding", hold: "pending", done: false, results: { furnace: { status: "confirmed" } } };
+  const { LabConsole, calls } = load({ responses: [
+    { status: 200, body: { control: [], services: [], operations: [{ id: "old", action: "motion", phase: "done", done: true, results: {} }] } },
+    { status: 202, body: { operation_id: "op-1" } },
+    { status: 200, body: { control: [], services: [], operations: [heat] } },
+    { status: 200, body: { control: [], services: [], operations: [{ ...heat, phase: "done", done: true },
+      { id: "op-2", action: "gas", phase: "stopping", done: false, results: { "gas-1": { status: "pending" } } }] } },
+  ] });
+  const view = page();
+  LabConsole.start(view.doc);
+  await tick();
+  const band = view.nodes.get("lc-stopband");
+  // A stop that ended before the page opened does not show.
+  assert.equal(band.hidden, true);
+  const sent = LabConsole._internal.safetyStop("heat");
+  assert.equal(band.hidden, false);
+  assert.match(band.textContent, /^Stop heat and gas · \d\d:\d\d:\d\d.*Sending…$/);
+  await sent;
+  await tick();
+  assert.equal(calls[1].url, "/lab/api/dashboard/heat");
+  assert.deepEqual(JSON.parse(calls[1].init.body), { confirmed: true });
+  const [head, targets] = band.children;
+  const current = head.children[2].children.find(item => item.className.includes("current"));
+  assert.equal(current.textContent, "Holding run");
+  assert.equal(current.getAttribute("aria-current"), "step");
+  assert.equal(targets.textContent, "FurnaceConfirmed (provisional)");
+  assert.match(band.className, /tone-info/);
+  // A new stop from another client takes the band. Gas targets have names.
+  await LabConsole._internal.poll();
+  assert.match(band.textContent, /^Stop all gas · /);
+  assert.equal(band.children[1].textContent, "Gas 2Pending");
+  head.children[3].click();
+  assert.equal(band.hidden, true);
 });
 
 test("relay sends one request with the page identity and reports an unknown outcome", async () => {

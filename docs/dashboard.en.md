@@ -14,7 +14,11 @@ The console is the only operator web page.
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
+- When the console does not answer for 3 seconds, the strip shows only **Console offline** and the age of the last state. Check the VPN and the `orch` service.
+- The stop result band below the status strip shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
+- In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
+- A confirmation in the page takes the keyboard focus. Esc or **Cancel** closes it and sends nothing.
 - The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 
 **STOP ALL MOTION** sends independent stop requests to the robot, the stage and the microscope. A stop needs no control and does not wait for a lease. See [stop controls](#stop-controls).
@@ -40,7 +44,7 @@ The workspaces send manual commands through the console. The console forwards ea
 
 - **Run** shows the current run and its steps. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
-- **Safety** gives Stop all motion, Heat off and Gas off, and shows the result for each target. Heat off and Gas off need a confirmation in the page.
+- **Safety** gives **STOP ALL MOTION**, **Stop heat and gas** and **Stop all gas**. Each button acts on 1 press. The stop result band shows the results.
 - **Agent proposals** shows the number of waiting proposals. See [agent proposals](#agent-proposals).
 
 ### Motion workspace
@@ -51,10 +55,10 @@ Robot arm:
 
 - **Take control**, **Enable**, **Disable**, **Clear alarm**, **Home…** and **Stop arm**. **Disable** and **Stop arm** need no control.
 - **Home…** needs a confirmation. It moves J1 to J4 to 0°.
-- The card lists each controller alarm with its ID, description and solution. Below the alarms, the card shows the message of the robot service.
-- After an unconfirmed stop, the card shows a warning and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
+- During an alarm, a coral note at the top of the card lists each controller alarm with its ID, description and solution. **Clear alarm** is in the note. Below the buttons, the card shows the message of the robot service.
+- After an unconfirmed stop, the note shows Stop not confirmed and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
 - The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves. The joint tiles show J1 to J4 in degrees.
-- The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose.
+- The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose. While the keyboard is on, the Z and R buttons show the key that moves the same way: R and F for Z, Q and E for R.
 - **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
 - The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
 - **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. **Move** sends the entered **Position** from 0 to 1000. The gripper outcome shows beside the title, and the gripper message shows below the buttons.
@@ -102,11 +106,11 @@ Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a s
 
 Every device command goes through the console relay. Use **Take control** for the furnace or the microscope first. **Stop heat and gas**, **Stop all gas**, **Close** and the microscope **Stop** need no control.
 
-- The furnace shows PV, SV, the ramp, the mode and the maximum temperature of the thermal `crucible` region.
+- The furnace shows PV, SV, the ramp, the mode and the maximum temperature of the thermal `crucible` region. When the data is older than 3 seconds, the page shows its age and dims the readings and the chart.
 - The chart shows PV and SV for the last 60 minutes. The console process records 1 point every 5 s while a page is open. After a restart the chart starts empty.
 - **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes.
 - The sequence editor adds and removes steps and sets the target, ramp, hold and 3 gas channels of each step, and the end gas and end temperature. When a step sets gas, the end temperature is necessary. The page loads the furnace sequence on its first read.
-- Without `MG400_FURNACE_GAS_MAP`, the gas channels are named Gas 1 to Gas 3. **Stop all gas** uses the gas-off route of the Overview.
+- Without `MG400_FURNACE_GAS_MAP`, the gas channels are named Gas 1 to Gas 3. **Stop heat and gas** and **Stop all gas** use the routes of the Overview **Safety** card. The stop result band shows the result.
 - Each gas row shows the actual flow and the valve state. A valve state that the flow controller did not confirm shows not confirmed.
 - **Close** stops 1 gas channel through `ws/process/gas-stop`. It sets the flow to 0 and closes the valve, and needs no control. The page shows the result: confirmed, not confirmed or unknown.
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
@@ -135,8 +139,14 @@ The header has **STOP ALL MOTION**. The **Safety** card of the Overview has all 
 | Button | Effect |
 | --- | --- |
 | **STOP ALL MOTION** | Sends independent stop requests to the robot, stage, and microscope in parallel. It also holds the active run and cancels recovery. Holding a run can stop its acquired heat, gas, and water outputs. |
-| **Heat off…** | Requires confirmation inside the page. It cancels the furnace sequence and stops heat and all furnace-controlled gas and water. It also holds the active run and cancels recovery. |
-| **Gas off…** | Requires confirmation inside the page. It independently requests gas-only stops for channels `0`, `1`, and `2`, without holding the run. An active sequence or recipe can apply gas again. Furnace fault handling can also stop other outputs. |
+| **Stop heat and gas** | Cancels the furnace sequence and stops heat and all furnace-controlled gas and water. It also holds the active run and cancels recovery. |
+| **Stop all gas** | Independently requests gas-only stops for channels `0`, `1`, and `2`, without holding the run. An active sequence or recipe can apply gas again. Furnace fault handling can also stop other outputs. |
+
+The stop result band shows the button and the time, the phase and the result of each target. The time is when this page sent the stop or first saw it. A new stop replaces the band. **Dismiss** hides it.
+
+- Motion and heat stops go through Stopping, Holding run, Final stop and Done. Gas stops go through Stopping and Done.
+- Before Done, a confirmed motion or heat target shows Confirmed (provisional).
+- When the request does not get to the console, the band shows Not sent and the error.
 
 Read every target result. A target can be pending, confirmed, unconfirmed, unavailable, or failed.
 For motion and heat stops, initial confirmations are provisional while the run hold and accepted work drain.
@@ -155,7 +165,8 @@ The console has no controls yet to approve agent proposals. The Overview shows o
 
 ## Chip passport
 
-Open `/chip` under the configured service prefix.
+Open `/chip` under the configured service prefix, or select **Chip passport** in the console header.
+The page uses the console colours and its language switch. It keeps the language choice of the console. **Lab Console** in the header goes back to the console.
 Search with the chip's exact QR text.
 Search preserves case, spaces, slashes, and punctuation. It does not trim or normalize the identifier.
 For a direct link, use `/chip?id=` followed by the URL-encoded identifier.

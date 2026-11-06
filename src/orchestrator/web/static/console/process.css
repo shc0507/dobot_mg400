@@ -43,7 +43,8 @@
 #ws-process .pr-mono { font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); }
 #ws-process .pr-gas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; border-radius: 10px; background: #1B232A; }
 #ws-process .pr-gas-name { width: 90px; font-weight: 600; }
-#ws-process .pr-gas-state { flex: 1 1 180px; min-width: 0; font-size: 13px; color: var(--warn); }
+#ws-process .pr-gas-state { flex: 1 1 180px; min-width: 0; font-size: 13px; color: var(--soft); }
+#ws-process .pr-gas-state.pr-doubt { color: var(--warn); }
 #ws-process .pr-views { display: flex; flex-wrap: wrap; gap: 12px; }
 #ws-process .pr-main-view { flex: 999 1 340px; min-width: 0; }
 #ws-process .pr-side-view { flex: 1 1 230px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -60,3 +61,6 @@
   #ws-process .pr-card { flex-basis: 100%; padding: 16px; }
   #ws-process .pr-objectives { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* Old or missing data: the readings and the chart dim. */
+#ws-process .pr-tile-value.pr-stale { color: var(--off); }
+#ws-process .pr-figure.pr-stale polyline { opacity: 0.4; }

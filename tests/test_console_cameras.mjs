@@ -162,3 +162,105 @@ test("the thermal panel relays connect and shutter and links no service page", (
   assert.equal(logic.translate("en", "connect"), "Connect camera");
   assert.ok(!/side\.page|target: "_blank"/.test(source));
 });
+
+// A small DOM for mounting the workspace. Nodes move between parents like real nodes.
+class FakeNode {
+  constructor(tag, doc) {
+    Object.assign(this, { tagName: tag.toUpperCase(), doc, children: [], parent: null, attributes: {}, dataset: {}, listeners: new Map(),
+      hidden: false, disabled: false, className: "", ownText: "", value: "", style: {} });
+  }
+  get classList() {
+    const node = this;
+    const list = () => node.className.split(" ").filter(Boolean);
+    return {
+      add: name => { if (!list().includes(name)) node.className = [...list(), name].join(" "); },
+      remove: name => { node.className = list().filter(item => item !== name).join(" "); },
+      toggle: (name, on) => { if (on ?? !list().includes(name)) node.classList.add(name); else node.classList.remove(name); },
+      contains: name => list().includes(name),
+    };
+  }
+  set textContent(value) { this.ownText = String(value); this.children = []; }
+  get textContent() { return this.ownText + this.children.map(child => child.textContent).join(""); }
+  append(...nodes) {
+    for (const node of nodes) {
+      if (node.parent) node.parent.children = node.parent.children.filter(item => item !== node);
+      node.parent = this;
+      this.children.push(node);
+    }
+  }
+  replaceChildren(...nodes) { for (const node of this.children) node.parent = null; this.children = []; this.ownText = ""; this.append(...nodes); }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  removeAttribute(name) { delete this.attributes[name]; }
+  addEventListener(event, callback) { this.listeners.set(event, callback); }
+  dispatch(event, data = {}) { this.listeners.get(event)?.({ preventDefault() {}, ...data }); }
+  click() { if (!this.disabled) this.dispatch("click"); }
+  contains(node) { for (let item = node; item; item = item.parent) if (item === this) return true; return false; }
+  focus() { this.doc.activeElement = this; }
+  get isConnected() { return false; }
+  getClientRects() { return []; }
+  all() { return [this, ...this.children.flatMap(child => child.all())]; }
+  querySelector(selector) {
+    const key = /^\[data-focus="([^"]+)"\]$/.exec(selector)?.[1];
+    return this.all().slice(1).find(node => key && node.getAttribute("data-focus") === key) || null;
+  }
+}
+
+test("the side panel updates in place; a confirmation takes the focus and Esc closes it", async () => {
+  const doc = { activeElement: null, visibilityState: "visible", body: { dataset: { basePath: "/lab" } }, addEventListener() {} };
+  doc.createElement = tag => new FakeNode(tag, doc);
+  doc.createTextNode = text => Object.assign(new FakeNode("#text", doc), { ownText: String(text) });
+  const timers = [];
+  const saved = { document: globalThis.document, LabConsole: globalThis.LabConsole, setTimeout: globalThis.setTimeout, setInterval: globalThis.setInterval };
+  let registered = null;
+  Object.assign(globalThis, {
+    document: doc, LabConsole: { register: item => { registered = item; } },
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, setInterval: () => 1,
+  });
+  try {
+    const sent = [];
+    const api = {
+      t: (key, vars) => logic.translate("en", key, vars), lang: () => "en",
+      describe: async () => ({ commands: { shutter: { any_client: true }, connect: { any_client: true } } }),
+      relay: async (device, action) => { sent.push([device, action]); return { outcome: "accepted" }; },
+      notify() {}, owns: () => false, take: async () => {}, release: async () => {},
+      state: () => ({ services: [{ id: "thermal", connected: true }] }),
+      onLanguage() {}, onState() {}, consoleRequest: async () => ({}),
+    };
+    cameras.install();
+    const rootNode = doc.createElement("section");
+    registered.mount(rootNode, api);
+    await new Promise(resolve => saved.setTimeout(resolve, 0));
+    const side = rootNode.all().find(node => node.className === "lc-card lcam-side");
+    const refresh = () => { for (const item of timers.splice(0)) if (item.fn.name === "refreshSide") item.fn(); };
+    cameras.engine.thermal = { sequence: 1, stats: { max: { celsius: 30 } } };
+    cameras.engine.listeners.forEach(fn => fn());
+    refresh();
+    const shutter = side.querySelector('[data-focus="shutter"]');
+    const max = () => side.all().find(node => node.className === "lcam-value");
+    assert.match(max().textContent, /^30/);
+    // A new reading changes the text, not the nodes.
+    cameras.engine.thermal = { sequence: 2, stats: { max: { celsius: 31.5 } } };
+    cameras.engine.listeners.forEach(fn => fn());
+    refresh();
+    assert.equal(side.querySelector('[data-focus="shutter"]'), shutter);
+    assert.match(max().textContent, /^31\.5/);
+    // The confirmation takes the focus. Esc closes it and gives the focus back to the button.
+    shutter.click();
+    const dialog = side.querySelector('[data-focus="confirm"]');
+    assert.equal(dialog.getAttribute("role"), "alertdialog");
+    assert.equal(doc.activeElement, dialog);
+    dialog.dispatch("keydown", { key: "Escape" });
+    assert.equal(side.querySelector('[data-focus="confirm"]'), null);
+    assert.equal(doc.activeElement.getAttribute("data-focus"), "shutter");
+    assert.deepEqual(sent, []);
+    // The overlay switches show their new state at once.
+    const detections = rootNode.all().find(node => node.tagName === "BUTTON" && /Detections|detection/i.test(node.textContent));
+    assert.equal(detections.getAttribute("aria-pressed"), "true");
+    detections.click();
+    assert.equal(detections.getAttribute("aria-pressed"), "false");
+    assert.doesNotMatch(detections.textContent, /✓/);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});

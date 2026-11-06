@@ -30,7 +30,14 @@
       "chip.stale": "Stale", "chip.fault": "Fault", "chip.locked": "Locked", "chip.disconnected": "Not connected",
       "chip.busy": "Busy", "chip.ready": "Ready", "chip.demo": "demo", "chip.live": "Live", "chip.configured": "Configured",
       "chip.noRun": "No run", "chip.offline": "Console offline",
-      "stop.sent": "Stop all motion sent.", "stop.failed": "Stop all motion could not be sent: {error}",
+      "chip.lastState": "last state {age} s ago", "chip.noState": "no state yet",
+      "stop.heat": "Stop heat and gas", "stop.gas": "Stop all gas", "stop.title": "{action} · {time}",
+      "stop.phase.stopping": "Stopping", "stop.phase.holding": "Holding run", "stop.phase.final-stop": "Final stop",
+      "stop.phase.done": "Done", "stop.sending": "Sending…", "stop.notSent": "Not sent: {error}",
+      "stop.result.pending": "Pending", "stop.result.provisional": "Confirmed (provisional)", "stop.result.confirmed": "Confirmed",
+      "stop.result.unconfirmed": "Not confirmed", "stop.result.failed": "Failed", "stop.result.unavailable": "Not available",
+      "stop.holdUnconfirmed": "The run hold is not confirmed.", "stop.dismiss": "Dismiss", "stop.dismissLabel": "Dismiss the stop result",
+      "target.gas": "Gas {n}",
       "outcome.unknown": "The outcome is unknown. Check the device before you continue.",
       "control.lost": "Control of {device} ended: {message}",
     },
@@ -48,7 +55,14 @@
       "chip.stale": "过期", "chip.fault": "故障", "chip.locked": "已锁定", "chip.disconnected": "未连接",
       "chip.busy": "忙碌", "chip.ready": "就绪", "chip.demo": "演示", "chip.live": "实时", "chip.configured": "已配置",
       "chip.noRun": "无运行", "chip.offline": "控制台离线",
-      "stop.sent": "已发送停止全部运动。", "stop.failed": "无法发送停止全部运动：{error}",
+      "chip.lastState": "最后状态 {age} s 前", "chip.noState": "尚无状态",
+      "stop.heat": "停止加热和气体", "stop.gas": "停止全部气体", "stop.title": "{action} · {time}",
+      "stop.phase.stopping": "停止中", "stop.phase.holding": "暂停运行", "stop.phase.final-stop": "最终停止",
+      "stop.phase.done": "完成", "stop.sending": "发送中…", "stop.notSent": "未发送：{error}",
+      "stop.result.pending": "等待中", "stop.result.provisional": "已确认（暂定）", "stop.result.confirmed": "已确认",
+      "stop.result.unconfirmed": "未确认", "stop.result.failed": "失败", "stop.result.unavailable": "不可用",
+      "stop.holdUnconfirmed": "运行暂停未确认。", "stop.dismiss": "关闭", "stop.dismissLabel": "关闭停止结果",
+      "target.gas": "气体 {n}",
       "outcome.unknown": "结果未知。继续前请检查设备。",
       "control.lost": "{device} 的控制已结束：{message}",
     },
@@ -105,7 +119,9 @@
     return { tone: "off", key: "chip.unconfigured" };
   }
 
-  function chips(snapshot, fresh) {
+  /** The strip chips. When the console itself does not answer, 1 chip says so instead of 8 stale devices. */
+  function chips(snapshot, fresh, offline = false) {
+    if (offline && !fresh) return [{ id: "console", tone: "bad", key: "chip.offline" }];
     const cards = new Map((snapshot?.services || []).map(card => [card.id, card]));
     const rows = [];
     for (const id of ["robot", "stage"]) rows.push({ id, ...serviceChip(cards.get(id), fresh) });
@@ -128,6 +144,31 @@
     return rows.length ? rows[rows.length - 1] : null;
   }
 
+  // The stop routes of the header and the Overview. Motion and heat also hold the run.
+  const STOP_LABELS = { motion: "stop.all", heat: "stop.heat", gas: "stop.gas" };
+  const STOP_PHASES = { motion: ["stopping", "holding", "final-stop", "done"], heat: ["stopping", "holding", "final-stop", "done"], gas: ["stopping", "done"] };
+  const RESULT_TONES = { pending: "info", provisional: "info", confirmed: "ok", unconfirmed: "warn", failed: "bad", unavailable: "off" };
+
+  /** The band model of 1 stop press and its operation. A confirmation stays provisional until the operation is done. */
+  function stopView(press, operation) {
+    const phases = STOP_PHASES[press.action] || STOP_PHASES.motion;
+    const done = operation?.done === true || operation?.phase === "done";
+    const phase = press.error || press.sending ? "" : done ? "done" : phases.includes(operation?.phase) ? operation.phase : "stopping";
+    const targets = Object.entries(operation?.results || {}).map(([target, result]) => {
+      let status = Object.prototype.hasOwnProperty.call(RESULT_TONES, result?.status) && result.status !== "provisional" ? result.status : "failed";
+      if (status === "confirmed" && !done && press.action !== "gas") status = "provisional";
+      return { target, status, tone: RESULT_TONES[status] };
+    });
+    const holdFailed = operation?.hold === "unconfirmed";
+    let tone = "info";
+    if (press.error) tone = "bad";
+    else if (done) {
+      if (holdFailed || targets.some(item => item.status === "unconfirmed" || item.status === "failed")) tone = "bad";
+      else tone = targets.some(item => item.status === "confirmed") ? "ok" : "off";
+    }
+    return { action: press.action, phases, phase, done, targets, holdFailed, tone, sending: press.sending === true, error: press.error || "" };
+  }
+
   // Browser shell -------------------------------------------------------------
 
   const workspaces = new Map();
@@ -135,8 +176,10 @@
     base: "", page: "", lang: "en", snapshot: null, stateAt: -Infinity,
     stateListeners: new Set(), languageListeners: new Set(), mounted: new Set(),
     active: "", beatTimer: null, pollTimer: null, beatBusy: false, polling: false,
-    knownControl: new Map(), doc: null,
+    knownControl: new Map(), doc: null, band: null,
   };
+  // current: the stop that the band shows. known: operation ids that this page has seen.
+  const stops = { current: null, known: new Set(), primed: false };
 
   function now() { return (root.performance && root.performance.now) ? root.performance.now() : Date.now(); }
   function fresh() { return shell.snapshot !== null && now() - shell.stateAt < STALE_MS; }
@@ -238,9 +281,9 @@
   }
 
   /** Send one stop over the socket and over HTTP. Resolve with the first answer. */
-  function both(path) {
-    const sent = [request(path, {})];
-    if (link.open) sent.unshift(viaSocket(path, {}));
+  function both(path, data = {}) {
+    const sent = [request(path, data)];
+    if (link.open) sent.unshift(viaSocket(path, data));
     return Promise.any(sent).catch(error => { throw error.errors[error.errors.length - 1]; });
   }
 
@@ -305,15 +348,90 @@
   function renderStrip() {
     const strip = $("lc-strip");
     if (!strip) return;
-    const ok = fresh();
-    const rows = chips(shell.snapshot, ok);
-    strip.replaceChildren(...rows.map(row => {
-      const detail = row.key ? t(row.key) : row.text;
-      return el("span", { class: "lc-chip tone-" + row.tone, "data-service": row.id },
-        el("span", { class: "lc-dot", "aria-hidden": "true" }),
-        el("span", { class: "lc-chip-name", text: deviceName(row.id) }),
-        el("span", { class: "lc-chip-detail", text: detail + (row.demo ? " · " + t("chip.demo") : "") }));
-    }));
+    const rows = chips(shell.snapshot, fresh(), shell.offline).map(row => {
+      if (row.id === "console") {
+        const age = shell.snapshot ? Math.round((now() - shell.stateAt) / 1000) : null;
+        return { ...row, name: t(row.key), detail: age === null ? t("chip.noState") : t("chip.lastState", { age }) };
+      }
+      return { ...row, name: deviceName(row.id), detail: (row.key ? t(row.key) : row.text) + (row.demo ? " · " + t("chip.demo") : "") };
+    });
+    // The strip is a live region. Replace it only when its text changes, so a screen reader reads a change once.
+    const sig = JSON.stringify(rows);
+    if (sig === shell.stripSig) return;
+    shell.stripSig = sig;
+    strip.replaceChildren(...rows.map(row => el("span", { class: "lc-chip tone-" + row.tone, "data-service": row.id },
+      el("span", { class: "lc-dot", "aria-hidden": "true" }),
+      el("span", { class: "lc-chip-name", text: row.name }),
+      el("span", { class: "lc-chip-detail", text: row.detail }))));
+  }
+
+  function clock(at) {
+    try { return new Date(at).toLocaleTimeString(shell.lang === "zh" ? "zh-CN" : "en-GB", { hour12: false }); }
+    catch { return ""; }
+  }
+
+  function targetName(target) {
+    const gas = /^gas-(\d+)$/.exec(String(target));
+    return gas ? t("target.gas", { n: Number(gas[1]) + 1 }) : deviceName(target);
+  }
+
+  /** Follow the stop operations in the state. A new stop from any client takes the band. */
+  function trackStops(operations) {
+    for (const item of Array.isArray(operations) ? operations : []) {
+      if (!item || typeof item.id !== "string" || stops.known.has(item.id)) continue;
+      stops.known.add(item.id);
+      if (!STOP_LABELS[item.action] || (!stops.primed && item.done)) continue;
+      // This page's own press gets its id from the reply.
+      if (stops.current?.sending && stops.current.action === item.action) continue;
+      stops.current = { action: item.action, id: item.id, at: Date.now() };
+    }
+    stops.primed = true;
+  }
+
+  function buildBand() {
+    const node = $("lc-stopband");
+    if (!node) return;
+    const band = shell.band = {
+      node, sig: "",
+      dot: el("span", { class: "lc-dot", "aria-hidden": "true" }),
+      title: el("span", { class: "lc-band-title" }),
+      phases: el("ol", { class: "lc-phases" }),
+      targets: el("ul", { class: "lc-band-targets" }),
+      note: el("p", { class: "lc-band-note", hidden: true }),
+      dismiss: el("button", { type: "button", class: "lc-button lc-band-dismiss", onclick: () => { if (stops.current) stops.current.dismissed = true; renderBand(); } }),
+    };
+    node.replaceChildren(el("div", { class: "lc-band-head" }, band.dot, band.title, band.phases, band.dismiss), band.targets, band.note);
+  }
+
+  function renderBand() {
+    const band = shell.band;
+    if (!band) return;
+    const press = stops.current;
+    band.node.hidden = !press || press.dismissed === true;
+    if (band.node.hidden) { band.sig = ""; return; }
+    const found = press.id ? (shell.snapshot?.operations || []).find(item => item?.id === press.id) : null;
+    if (found) press.last = found;
+    const model = stopView(press, found || press.last || null);
+    const sig = JSON.stringify([shell.lang, press.at, model]);
+    if (sig === band.sig) return;
+    band.sig = sig;
+    band.node.className = "lc-stopband tone-" + model.tone;
+    band.title.textContent = t("stop.title", { action: t(STOP_LABELS[model.action]), time: clock(press.at) });
+    band.phases.hidden = Boolean(model.error);
+    const index = model.phases.indexOf(model.phase);
+    band.phases.replaceChildren(...model.phases.map((phase, i) => el("li", {
+      class: "lc-phase" + (i < index ? " past" : i === index ? " current" : ""),
+      "aria-current": i === index ? "step" : null, text: t("stop.phase." + phase),
+    })));
+    band.targets.hidden = !model.targets.length;
+    band.targets.replaceChildren(...model.targets.map(item => el("li", { class: "lc-band-target" },
+      el("span", { class: "lc-chip-name", text: targetName(item.target) }),
+      el("span", { class: "tone-text-" + item.tone, text: t("stop.result." + item.status) }))));
+    const note = model.error ? t("stop.notSent", { error: model.error }) : model.sending ? t("stop.sending") : model.holdFailed ? t("stop.holdUnconfirmed") : "";
+    band.note.textContent = note;
+    band.note.hidden = !note;
+    band.dismiss.textContent = t("stop.dismiss");
+    band.dismiss.setAttribute("aria-label", t("stop.dismissLabel"));
   }
 
   function applyLanguage() {
@@ -326,6 +444,7 @@
     button.setAttribute("aria-label", t("lang.switchLabel"));
     renderControls();
     renderStrip();
+    renderBand();
     for (const listener of shell.languageListeners) { try { listener(shell.lang); } catch (error) { console.error(error); } }
   }
 
@@ -342,10 +461,14 @@
       const body = await request("/api/console/state");
       shell.snapshot = body;
       shell.stateAt = now();
+      trackStops(body.operations);
+      renderBand();
       applyControl(body.control || []);
       for (const listener of shell.stateListeners) { try { listener(body); } catch (error) { console.error(error); } }
+      shell.offline = false;
     } catch {
-      /* The strip shows stale after 3 s. */
+      /* After 3 s without a state the strip shows Console offline. */
+      shell.offline = true;
     } finally {
       shell.polling = false;
       renderStrip();
@@ -403,17 +526,30 @@
     catch (error) { return { device, outcome: "unknown", error: error.message }; }
   }
 
-  async function stopAll() {
+  /** Send 1 stop of the header or the Overview: motion, heat or gas. The band shows its result. */
+  async function safetyStop(action) {
+    if (!STOP_LABELS[action]) throw new RequestError("Unknown stop.");
+    const press = { action, id: null, at: Date.now(), sending: true, error: "" };
+    stops.current = press;
+    renderBand();
     try {
-      const body = await both("/api/dashboard/motion");
-      notify(t("stop.sent"), "warn");
-      poll();
+      const body = await both("/api/dashboard/" + action, action === "motion" ? {} : { confirmed: true });
+      if (typeof body.operation_id === "string") {
+        press.id = body.operation_id;
+        stops.known.add(press.id);
+      }
       return body;
     } catch (error) {
-      notify(t("stop.failed", { error: error.message }), "error");
+      press.error = error.message || String(error);
       throw error;
+    } finally {
+      press.sending = false;
+      renderBand();
+      poll();
     }
   }
+
+  function stopAll() { return safetyStop("motion"); }
 
   function apiFor(workspace) {
     const tables = { en: { ...strings.en, ...(workspace.i18n?.en || {}) }, zh: { ...strings.zh, ...(workspace.i18n?.zh || {}) } };
@@ -427,7 +563,7 @@
       onState(listener) { shell.stateListeners.add(listener); return () => shell.stateListeners.delete(listener); },
       controls: () => (shell.snapshot?.control || []).slice(),
       owns: device => myControls().some(item => item.device === device),
-      take, release, releaseAll, relay, stop, stopAll,
+      take, release, releaseAll, relay, stop, stopAll, safetyStop,
       describe: device => request(`/api/console/describe/${encodeURIComponent(device)}`),
       request: (path, data, options) => request(`/api/console/ws/${workspace.id}/${String(path).replace(/^\/+/, "")}`, data, options),
       consoleRequest: request,
@@ -470,6 +606,17 @@
     } catch { return ""; }
   }
 
+  // The top band wraps to more rows in a narrow window. Publish its height while it is sticky.
+  function trackTop() {
+    const top = $("lc-top");
+    if (!top || typeof root.ResizeObserver !== "function" || typeof root.getComputedStyle !== "function") return;
+    const style = shell.doc.documentElement.style;
+    new root.ResizeObserver(() => {
+      const sticky = root.getComputedStyle(top).position === "sticky";
+      style.setProperty("--lc-top", (sticky ? top.offsetHeight : 0) + "px");
+    }).observe(top);
+  }
+
   function start(doc = root.document) {
     shell.doc = doc;
     shell.base = doc.body.dataset.basePath || "";
@@ -483,6 +630,8 @@
     root.addEventListener("pagehide", () => {
       if (myControls().length) request("/api/console/release-page", {}, { keepalive: true }).catch(() => {});
     });
+    trackTop();
+    buildBand();
     applyLanguage();
     show(String(root.location?.hash || "").slice(1) || "overview");
     poll();
@@ -498,8 +647,8 @@
 
   return {
     register, start, strings, shell,
-    logic: { translate, pickLanguage, serviceChip, runsChip, camerasChip, chips, filterEvents, latestOperation },
+    logic: { translate, pickLanguage, serviceChip, runsChip, camerasChip, chips, filterEvents, latestOperation, stopView },
     STALE_MS, BEAT_MS, SERVICES,
-    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll },
+    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops },
   };
 });

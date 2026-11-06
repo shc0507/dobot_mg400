@@ -36,7 +36,7 @@ from mg400.websocket import (
 # Only control requests. Every other request stays on HTTP.
 ROUTES = re.compile(
     r"/api/(?:console/(?:ws/motion/(?:keys|stage/hold|stage/release)"
-    r"|stop/[a-z][a-z0-9-]{0,31})|dashboard/motion)"
+    r"|stop/[a-z][a-z0-9-]{0,31})|dashboard/(?:motion|heat|gas))"
 )
 MAX_SOCKETS = 32
 MAX_PENDING = 8

@@ -17,6 +17,9 @@
   // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
   const KEYS = "WASDQERFZX";
   const KEY_MAP = [["W", "S", "kb.reach"], ["A", "D", "kb.base"], ["R", "F", "kb.z"], ["Q", "E", "kb.yaw"], ["Z", "X", "kb.grip"]];
+  // The key that moves like each jog button, shown on the button while the keyboard is on. The letters R and Z
+  // are keys here, not axes: R moves Z up, and Q turns R + (J4 +).
+  const JOG_KEYS = { "z+": "R", "z-": "F", "r+": "Q", "r-": "E" };
   const KEYS_MS = 150;
   // Stage hold: the console keeps 1 axis moving while this page refreshes the hold (dead-man 0.5 s).
   // Each pair is the Hold − key (ccw) and the Hold + key (cw) of 1 axis.
@@ -172,14 +175,15 @@
       "badge.demo": "DEMO", "badge.real": "REAL ROBOT", "badge.realStage": "REAL STAGE",
       "dev.unconfigured": "Not configured", "dev.offline": "Not running", "dev.unreachable": "Not reachable", "dev.loading": "Loading…",
       "arm.enabled": "Enabled", "arm.disabled": "Disabled", "arm.busy": "Moving", "arm.alarm": "Alarm",
-      "arm.locked": "Stop not confirmed. Check the arm, then press Recover.", "arm.recover": "Recover", "arm.noFeedback": "No fresh feedback", "arm.cap": "speed cap {cap}",
+      "arm.locked": "Stop not confirmed", "arm.lockedHelp": "Check the arm, then press Recover.", "arm.errorOnly": "The controller reports an error.",
+      "arm.recover": "Recover", "arm.noFeedback": "No fresh feedback", "arm.cap": "speed cap {cap}",
       "ctl.take": "Take control", "ctl.release": "Release", "ctl.mine": "You control it", "ctl.free": "Free",
       "ctl.console": "Another console page controls it", "ctl.other": "Another client controls it",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
       "arm.enable": "Enable", "arm.disable": "Disable", "arm.clear": "Clear alarm",
       "arm.stop": "Stop arm", "arm.home": "Home…", "arm.homeConfirm": "Clear the path of the arm. Home moves all 4 joints to 0°.",
       "arm.alarmItem": "Alarm {id}",
-      "jog.title": "Jog", "jog.step": "Jog step",
+      "jog.title": "Jog", "jog.step": "Jog step, mm, or degrees for R", "jog.units": "mm · R in °", "jog.key": "Key {key}",
       "jog.move": "Move {label} by the jog step",
       "move.title": "Move to a pose", "move.speed": "Speed", "move.speedLabel": "Speed, 1 to {cap}",
       "move.useActual": "Use actual", "move.execute": "Execute ↗", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
@@ -218,6 +222,11 @@
       "out.accepted": "{device} {action}: sent", "out.refused": "{device} {action}: refused · {error}",
       "out.unknown": "{device} {action}: outcome unknown. Check the device. It is not retried.",
       "out.stop": "{device} stop: {outcome}",
+      "res.confirmed": "confirmed", "res.pending": "pending", "res.unconfirmed": "not confirmed", "res.unknown": "unknown",
+      "act.enable": "Enable", "act.disable": "Disable", "act.clear_alarm": "Clear alarm", "act.execute": "Move", "act.grip": "Gripper",
+      "act.home": "Home", "act.stage.home": "Home", "act.initialize_gripper": "Initialize gripper", "act.keyboard": "Keyboard", "act.keys": "Keyboard keys",
+      "act.hold": "Hold", "act.connect": "Connect", "act.goto": "Named position", "act.move": "Step", "act.pose": "Named pose",
+      "act.set_microstep": "Stepping", "act.teach_reference": "Teach reference", "act.zero": "Set zero",
       "cam.offline": "OFFLINE", "cam.swap": "Swap view", "cam.swapLabel": "Show {view} in the large view",
       "cam.camera2": "camera2 · Insert rail", "cam.camera4": "camera4 · Tray", "cam.camera3": "camera3 · Microscope side",
     },
@@ -226,14 +235,15 @@
       "badge.demo": "演示", "badge.real": "真机", "badge.realStage": "真实位移台",
       "dev.unconfigured": "未配置", "dev.offline": "未运行", "dev.unreachable": "无法连接", "dev.loading": "加载中…",
       "arm.enabled": "已使能", "arm.disabled": "未使能", "arm.busy": "运动中", "arm.alarm": "报警",
-      "arm.locked": "停止未确认。检查机械臂，然后按“恢复”。", "arm.recover": "恢复", "arm.noFeedback": "没有新反馈", "arm.cap": "速度上限 {cap}",
+      "arm.locked": "停止未确认", "arm.lockedHelp": "检查机械臂，然后按“恢复”。", "arm.errorOnly": "控制器报告错误。",
+      "arm.recover": "恢复", "arm.noFeedback": "没有新反馈", "arm.cap": "速度上限 {cap}",
       "ctl.take": "获取控制权", "ctl.release": "释放", "ctl.mine": "你持有控制权", "ctl.free": "空闲",
       "ctl.console": "另一个控制台页面持有控制权", "ctl.other": "另一个客户端持有控制权",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
       "arm.enable": "使能", "arm.disable": "下使能", "arm.clear": "清除报警",
       "arm.stop": "停止机械臂", "arm.home": "回原点…", "arm.homeConfirm": "请清空机械臂的运动路径。回原点会把 4 个关节都转到 0°。",
       "arm.alarmItem": "报警 {id}",
-      "jog.title": "点动", "jog.step": "点动步长",
+      "jog.title": "点动", "jog.step": "点动步长，mm，R 为度", "jog.units": "mm · R 为 °", "jog.key": "按键 {key}",
       "jog.move": "按点动步长移动 {label}",
       "move.title": "移动到位姿", "move.speed": "速度", "move.speedLabel": "速度，1 到 {cap}",
       "move.useActual": "使用当前值", "move.execute": "执行 ↗", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
@@ -272,6 +282,11 @@
       "out.accepted": "{device} {action}：已发送", "out.refused": "{device} {action}：被拒绝 · {error}",
       "out.unknown": "{device} {action}：结果未知。请检查设备。不会重试。",
       "out.stop": "{device} 停止：{outcome}",
+      "res.confirmed": "已确认", "res.pending": "等待中", "res.unconfirmed": "未确认", "res.unknown": "未知",
+      "act.enable": "使能", "act.disable": "下使能", "act.clear_alarm": "清除报警", "act.execute": "移动", "act.grip": "夹爪",
+      "act.home": "回原点", "act.stage.home": "回零", "act.initialize_gripper": "初始化夹爪", "act.keyboard": "键盘", "act.keys": "键盘按键",
+      "act.hold": "按住移动", "act.connect": "连接", "act.goto": "命名位置", "act.move": "步进", "act.pose": "命名位姿",
+      "act.set_microstep": "细分", "act.teach_reference": "示教参考", "act.zero": "设零",
       "cam.offline": "离线", "cam.swap": "切换视图", "cam.swapLabel": "在大视图中显示 {view}",
       "cam.camera2": "camera2 · 插入导轨", "cam.camera4": "camera4 · 托盘", "cam.camera3": "camera3 · 显微镜侧视",
     },
@@ -294,6 +309,11 @@
     let refs = {};
 
     const t = (key, vars) => api.t(key, vars);
+    /** The label of one command in the activity text. A device can name an action its own way. */
+    const actionName = (device, action) => {
+      for (const key of ["act." + device + "." + action, "act." + action]) { const text = t(key); if (text !== key) return text; }
+      return action;
+    };
     const el = (tag, props, ...children) => api.el(tag, props, ...children);
 
     function note(src, level, message) {
@@ -306,7 +326,7 @@
     async function checked(path, body) {
       try {
         const result = await api.request(path, body, { accept: [409, 502], timeout: 8000 });
-        if (result.outcome === "unknown") api.notify(t("out.unknown", { device: api.deviceName("robot"), action: "execute" }), "error");
+        if (result.outcome === "unknown") api.notify(t("out.unknown", { device: api.deviceName("robot"), action: actionName("robot", "execute") }), "error");
         return result.outcome ? result : { outcome: "refused", error: result.error };
       } catch (error) {
         if (error.status === 0) return { outcome: "unknown", error: error.message };
@@ -320,7 +340,7 @@
       update();
       try {
         const result = path ? await checked(path, params) : await api.relay(device, action, params);
-        const vars = { device: api.deviceName(device), action, error: result?.error || "" };
+        const vars = { device: api.deviceName(device), action: actionName(device, action), error: result?.error || "" };
         if (result?.outcome === "accepted") note(device, "info", t("out.accepted", vars));
         else if (result?.outcome === "refused") note(device, "warning", t("out.refused", vars));
         else note(device, "error", t("out.unknown", vars));
@@ -334,7 +354,8 @@
     async function stopDevice(device) {
       if (device === "stage") holdEnd();
       const result = await api.stop(device);
-      note(device, result?.outcome === "confirmed" ? "info" : "warning", t("out.stop", { device: api.deviceName(device), outcome: result?.outcome || "unknown" }));
+      const outcome = ["confirmed", "pending", "unconfirmed"].includes(result?.outcome) ? result.outcome : "unknown";
+      note(device, outcome === "confirmed" ? "info" : "warning", t("out.stop", { device: api.deviceName(device), outcome: t("res." + outcome) }));
       refresh();
     }
 
@@ -385,26 +406,37 @@
       renderLog();
     }
 
+    // An open confirmation takes the focus. Cancel, Esc and Confirm give it back to the button that opened it.
     function askConfirm(slot, text, run) {
-      model.confirm = { slot, text, run };
+      model.confirm = { slot, text, run, opener: root.document?.activeElement || null };
       renderConfirms();
+      refs.confirms?.[slot]?.focus?.();
+    }
+
+    function closeConfirm() {
+      const opener = model.confirm?.opener;
+      model.confirm = null;
+      renderConfirms();
+      opener?.focus?.();
     }
 
     function renderConfirms() {
       for (const [slot, node] of Object.entries(refs.confirms || {})) {
         const item = model.confirm?.slot === slot ? model.confirm : null;
-        if (!item) { node.replaceChildren(); node.hidden = true; continue; }
+        if (!item) { node.replaceChildren(); node.hidden = true; node.removeAttribute("aria-label"); continue; }
         node.hidden = false;
+        node.setAttribute("aria-label", item.text);
         node.replaceChildren(
           el("p", { text: item.text }),
           el("div", { class: "mo-grid2" },
-            el("button", { type: "button", class: "lc-button mo-danger", text: t("confirm"), onclick: () => { model.confirm = null; renderConfirms(); item.run(); } }),
-            el("button", { type: "button", class: "lc-button", text: t("cancel"), onclick: () => { model.confirm = null; renderConfirms(); } })));
+            el("button", { type: "button", class: "lc-button mo-danger", text: t("confirm"), onclick: () => { closeConfirm(); item.run(); } }),
+            el("button", { type: "button", class: "lc-button", text: t("cancel"), onclick: closeConfirm })));
       }
     }
 
     function confirmSlot(name) {
-      const node = el("div", { class: "lc-confirm", role: "alertdialog", hidden: true });
+      const node = el("div", { class: "lc-confirm", role: "alertdialog", hidden: true, tabindex: "-1",
+        onkeydown: event => { if (event.key === "Escape" && model.confirm?.slot === name) { event.preventDefault?.(); closeConfirm(); } } });
       refs.confirms[name] = node;
       return node;
     }
@@ -430,7 +462,11 @@
         onclick: () => askConfirm("home", t("arm.homeConfirm"), () => send("robot", "home", {}, "move")),
       });
       refs.armStop = el("button", { type: "button", class: "lc-danger mo-stop", text: t("arm.stop"), onclick: () => stopDevice("robot") });
-      refs.alarms = el("div", { class: "mo-stack", role: "alert", hidden: true });
+      // The alarm note wins the eye: the alarm IDs, an unconfirmed stop and the button that clears them.
+      refs.alarmTitle = el("p", { class: "mo-alarm-title" });
+      refs.alarms = el("div", { class: "mo-alarm-items" });
+      refs.alarmHelp = el("p", { hidden: true });
+      refs.alarmNote = el("div", { class: "mo-alarm", role: "alert", hidden: true }, refs.alarmTitle, refs.alarms, refs.alarmHelp, el("div", { class: "mo-row" }, refs.clear));
       refs.armMessage = el("p", { class: "lc-muted", role: "status", hidden: true });
       refs.joints = [0, 1, 2, 3].map(() => el("span", { class: "mo-value" }));
       const jointTiles = el("div", { class: "mo-pose" },
@@ -439,8 +475,13 @@
       const poseTiles = el("div", { class: "mo-pose", role: "group", "aria-label": t("move.useActual") },
         ...AXES.map((axis, i) => el("div", { class: "mo-tile" }, el("span", { class: "lc-muted", text: axis.toUpperCase() }), refs.pose[i])));
       refs.jog = {};
+      refs.jogHints = [];
       const jogButton = item => {
-        const button = el("button", { type: "button", class: "mo-jog", text: item.label, "aria-label": t("jog.move", { label: item.label }), onclick: () => jog(item) });
+        const key = JOG_KEYS[item.id];
+        const hint = key ? el("kbd", { class: "mo-key mo-hint", text: key, title: t("jog.key", { key }), hidden: true }) : null;
+        const button = el("button", { type: "button", class: "mo-jog", "aria-label": t("jog.move", { label: item.label }), onclick: () => jog(item) },
+          el("span", { text: item.label }), hint);
+        if (hint) refs.jogHints.push(hint);
         refs.jog[item.id] = button;
         return button;
       };
@@ -450,13 +491,13 @@
         el("span"), jogButton(JOG[3]), el("span"));
       const side = el("div", { class: "mo-zr" }, ...JOG.slice(4).map(jogButton));
       refs.steps = STEPS.map(step => el("button", {
-        type: "button", role: "radio", class: "mo-chip", text: `${step} mm`,
+        type: "button", role: "radio", class: "mo-chip", text: String(step),
         onclick: () => { model.step = step; update(); },
       }));
       const jogBox = el("div", { class: "mo-block" },
         el("div", { class: "mo-head" }, el("h3", { text: t("jog.title") })),
         el("div", { class: "mo-jogrow" }, pad, side),
-        el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("jog.step") }, ...refs.steps));
+        el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("jog.step") }, ...refs.steps, el("span", { class: "lc-muted", text: t("jog.units") })));
 
       refs.inputs = {};
       const units = { x: "X mm", y: "Y mm", z: "Z mm", r: "R °" };
@@ -522,10 +563,11 @@
 
       return el("section", { class: "lc-card mo-col", "aria-labelledby": "mo-arm-title" },
         el("div", { class: "lc-card-head" }, el("div", { class: "mo-titles" }, title, refs.armStatus), el("div", { class: "mo-row" }, refs.armBadge, refs.armStop)),
+        refs.alarmNote,
         controlButton("robot"),
         el("div", { class: "mo-grid2" }, refs.enable, refs.disable),
-        el("div", { class: "mo-grid2" }, refs.clear, refs.home),
-        confirmSlot("home"), refs.alarms, refs.armMessage,
+        el("div", { class: "mo-grid2" }, refs.home),
+        confirmSlot("home"), refs.armMessage,
         poseTiles, jointTiles, jogBox, kbBox, moveBox, gripBox, confirmSlot("arm"), refs.armLast);
     }
 
@@ -574,7 +616,7 @@
       catch (error) { result = { outcome: error.status === 0 ? "unknown" : "refused", error: error.message }; }
       finally { kb.pending--; }
       if (result?.outcome !== "accepted" && kb.held.size) {
-        note("robot", "warning", t(result?.outcome === "unknown" ? "out.unknown" : "out.refused", { device: api.deviceName("robot"), action: "keys", error: result?.error || "" }));
+        note("robot", "warning", t(result?.outcome === "unknown" ? "out.unknown" : "out.refused", { device: api.deviceName("robot"), action: actionName("robot", "keys"), error: result?.error || "" }));
         releaseKeys();
       }
     }
@@ -640,6 +682,7 @@
       const reason = !kb.on && typeof robot?.keyboard_disarm_reason === "string" ? robot.keyboard_disarm_reason : "";
       refs.kbOff.textContent = reason ? t("kb.off", { reason }) : "";
       refs.kbOff.hidden = !reason;
+      for (const hint of refs.jogHints || []) hint.hidden = !kb.on;
       renderKeys();
     }
 
@@ -670,7 +713,7 @@
       catch (error) { result = { outcome: error.status === 0 ? "unknown" : "refused", error: error.message }; }
       finally { item.pending--; }
       if (result?.outcome !== "accepted" && sh.active === item) {
-        note("stage", "warning", t(result?.outcome === "unknown" ? "out.unknown" : "out.refused", { device: api.deviceName("stage"), action: "hold", error: result?.error || "" }));
+        note("stage", "warning", t(result?.outcome === "unknown" ? "out.unknown" : "out.refused", { device: api.deviceName("stage"), action: actionName("stage", "hold"), error: result?.error || "" }));
         holdEnd();
       }
     }
@@ -1003,8 +1046,6 @@
       else {
         parts.push(t(robot.enabled ? "arm.enabled" : "arm.disabled"));
         if (robot.busy) parts.push(t("arm.busy"));
-        if (robot.robot_error || (robot.alarms || []).length) parts.push(t("arm.alarm"));
-        if (robot.locked || robot.stop_unconfirmed) parts.push(t("arm.locked"));
         if (!robot.feedback_fresh) parts.push(t("arm.noFeedback"));
         if (data.cap) parts.push(t("arm.cap", { cap: data.cap }));
       }
@@ -1020,12 +1061,18 @@
       refs.clear.textContent = t(robot && (robot.locked || robot.stop_unconfirmed) ? "arm.recover" : "arm.clear");
       refs.home.disabled = !(ready && robot.enabled === true && !robot.busy) || model.inflight.has("robot:move");
       // Change live regions only when the text changes, so a screen reader reads it once.
+      const locked = Boolean(robot && (robot.locked || robot.stop_unconfirmed));
       const alarms = alarmRows(robot).map(item => t("arm.alarmItem", { id: item.id }) + ": " + item.text);
-      if (alarms.join("\n") !== refs.alarmText) {
-        refs.alarmText = alarms.join("\n");
-        refs.alarms.replaceChildren(...alarms.map(text => el("p", { class: "tone-text-bad", text })));
+      if (robot?.robot_error && !alarms.length) alarms.push(t("arm.errorOnly"));
+      const alarmText = [locked, ...alarms].join("\n");
+      if (alarmText !== refs.alarmText) {
+        refs.alarmText = alarmText;
+        refs.alarmTitle.textContent = t(locked ? "arm.locked" : "arm.alarm");
+        refs.alarms.replaceChildren(...alarms.map(text => el("p", { text })));
+        refs.alarmHelp.textContent = locked ? t("arm.lockedHelp") : "";
       }
-      refs.alarms.hidden = !alarms.length;
+      refs.alarmHelp.hidden = !locked;
+      refs.alarmNote.hidden = !locked && !alarms.length;
       const message = robot?.message ? String(robot.message) : "";
       if (refs.armMessage.textContent !== message) refs.armMessage.textContent = message;
       refs.armMessage.hidden = !message;

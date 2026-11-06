@@ -907,6 +907,25 @@ const cases = {
     assert.match(page.get('passport-status').textContent, /Refused by the service/);
     assert.ok(page.requests.every(item => item.options.method === 'GET'));
   },
+  async language_switch() {
+    const page = browser();
+    assert.equal(page.get('pp-console').textContent, 'Lab Console');
+    await page.click('pp-lang');
+    assert.equal(page.get('pp-title').textContent, '芯片履历');
+    assert.equal(page.get('pp-lang').textContent, 'English');
+    assert.equal(page.get('passport-status').textContent, '输入芯片 ID，读取其历史记录。');
+    await page.search();
+    assert.equal(page.get('passport-status').textContent, '正在读取运行记录…');
+    await page.respond(0, pageData('runs', [run()]));
+    assert.ok(walk(page.get('passport-runs')).some(element =>
+      element.textContent === '读取此次运行'));
+    // Switching back reads the chip again in English. Storage stays unused when it is blocked.
+    await page.click('pp-lang');
+    assert.equal(page.requests.length, 2);
+    await page.respond(1, pageData('runs', [run()]));
+    assert.ok(walk(page.get('passport-runs')).some(element =>
+      element.textContent === 'Read this run'));
+  },
   async rejected_artifact_retains_no_blob() {
     const page = browser(); await open(page);
     await page.respond(3, pageData('artifacts', [{ id: artifactId, name: 'image.png', step: 0,
@@ -943,6 +962,7 @@ else { for (const [name, check] of Object.entries(cases)) { await check();
         "changed_search_ignores_retired_reply",
         "invalid_pages_and_errors",
         "rejected_artifact_retains_no_blob",
+        "language_switch",
     ],
 )
 def test_passport_browser_behaviors(case):

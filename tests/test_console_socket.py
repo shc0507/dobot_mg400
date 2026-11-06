@@ -77,6 +77,11 @@ def test_socket_stops_need_no_control(served):
     assert reply["status"] == 200 and reply["body"]["device"] == "stage"
     reply = call(connection, "/api/dashboard/motion", {}, seq=2)
     assert reply["status"] == 202 and "operation_id" in reply["body"]
+    for seq, action in ((3, "heat"), (4, "gas")):
+        reply = call(connection, f"/api/dashboard/{action}", {"confirmed": True}, seq=seq)
+        assert reply["status"] == 202 and "operation_id" in reply["body"]
+    reply = call(connection, "/api/dashboard/heat", {}, seq=5)
+    assert reply["status"] == 400
 
 
 def test_socket_sends_other_requests_back_to_http(served):

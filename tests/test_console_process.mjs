@@ -26,6 +26,7 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name] ?? null; }
   removeAttribute(name) { delete this.attributes[name]; }
+  focus() { Element.focused = this; }
   addEventListener(event, callback) { this.listeners.set(event, callback); }
   click() { if (!this.disabled) this.listeners.get("click")?.({ preventDefault() {} }); }
   type(value) { this.value = value; this.listeners.get("input")?.({ target: this }); }
@@ -102,6 +103,7 @@ async function load({ owns = ["furnace", "microscope"], status = statusBody(), c
     release: async device => { calls.push(["release", device]); },
     relay: async (device, action, params) => { calls.push(["relay", device, action, params]); return { outcome: "accepted" }; },
     stop: async device => { calls.push(["stop", device]); return { device, outcome: "confirmed" }; },
+    safetyStop: async action => { calls.push(["safety", action]); return { operation_id: "op-" + action }; },
     describe: async device => (device === "furnace" ? FURNACE_DESCRIBE : SCOPE_DESCRIBE),
     request: async (name, data) => {
       calls.push(data === undefined ? ["request", name] : ["request", name, data]);
@@ -189,6 +191,40 @@ test("apply and run needs a confirmation", async () => {
   assert.deepEqual(calls.filter(call => call[0] === "relay"), [["relay", "furnace", "apply_setpoint", { temperature_c: 250, ramp_rate_c_per_min: 10 }]]);
 });
 
+test("a confirmation takes the focus, has a coral Confirm, and Esc gives the focus back", async () => {
+  const { root, calls } = await load();
+  role(root, "apply").click();
+  const dialog = role(root, "dialog-apply");
+  assert.equal(Element.focused, dialog);
+  assert.equal(role(root, "confirm-apply").className, "lc-danger pr-danger");
+  dialog.listeners.get("keydown")({ key: "Escape", preventDefault() {} });
+  assert.equal(role(root, "dialog-apply"), undefined);
+  assert.equal(Element.focused, role(root, "apply"));
+  assert.equal(calls.filter(call => call[0] === "relay").length, 0);
+});
+
+test("gas text is amber only when the flow or the valve is not confirmed", async () => {
+  const flow = { connected: true, gas_channels: [
+    { channel_index: 0, gas_name: "Ar", actual_percent: 10 }, { channel_index: 1, gas_name: "H2" }, { channel_index: 2, gas_name: "N2", actual_percent: 0 } ],
+    gas_valves: [{ channel_index: 0, open: true, verified: true }, { channel_index: 1, open: false, verified: true }, { channel_index: 2, open: false, verified: false }] };
+  const base = statusBody();
+  const { root } = await load({ status: { ...base, furnace: { ...base.furnace, flow } } });
+  const states = walk(root).filter(node => node.className.startsWith("pr-gas-state"));
+  assert.deepEqual(states.map(node => node.className), ["pr-gas-state", "pr-gas-state pr-doubt", "pr-gas-state pr-doubt"]);
+});
+
+test("old data dims the readings and the chart; a sent command shows its button label", async () => {
+  const fresh = await load();
+  assert.doesNotMatch(walk(fresh.root).find(node => node.className.startsWith("pr-tile-value pr-tone-pv")).className, /pr-stale/);
+  role(fresh.root, "af-local").click();
+  await flush();
+  assert.deepEqual(fresh.notices.at(-1), ["info", "Autofocus sent."]);
+  const old = await load({ status: statusBody({ age_s: 8 }) });
+  assert.equal(walk(old.root).find(node => node.className.startsWith("pr-tile-value pr-tone-pv")).className, "pr-tile-value pr-tone-pv pr-stale");
+  assert.equal(walk(old.root).find(node => node.className.startsWith("pr-figure")).className, "pr-figure pr-stale");
+  assert.match(walk(old.root).find(node => node.className === "pr-warn").textContent, /Data is stale \(8 s\)/);
+});
+
 test("a target above the described cap is refused in the page", async () => {
   const { root, calls, notices } = await load();
   role(root, "target").type("1500");
@@ -217,7 +253,7 @@ test("gas flow needs no gas map names", async () => {
   assert.equal(role(root, "send-flow-0").disabled, false);
 });
 
-test("stops need no control and are sent once", async () => {
+test("stops need no control and are sent once; heat and gas use the Overview routes", async () => {
   const { root, calls } = await load({ owns: [] });
   assert.equal(role(root, "apply").disabled, true);
   role(root, "stop-furnace").click();
@@ -225,7 +261,7 @@ test("stops need no control and are sent once", async () => {
   role(root, "stop-gas").click();
   await flush();
   assert.deepEqual(calls.filter(call => call[0] !== "request"), [
-    ["stop", "furnace"], ["stop", "microscope"], ["console", "/api/dashboard/gas", { confirmed: true }],
+    ["safety", "heat"], ["stop", "microscope"], ["safety", "gas"],
   ]);
 });
 

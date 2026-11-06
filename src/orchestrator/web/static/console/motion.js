@@ -18,8 +18,8 @@
   const STATION_VIEWS = { arm: ["camera2", "camera4", "camera3"], stage: ["microscope", "camera3", "camera2"] };
   // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
   const KEYS = "WASDQERFZX";
-  // The keyboard jog keys in keyboard rows. Each key shows the motion it starts.
-  const KEY_ROWS = [["Q", "W", "E", "R"], ["A", "S", "D", "F"], ["Z", "X"]];
+  // The keyboard jog keys in pairs, each with the label of its pair. The first key of a pair moves out, +, up or opens.
+  const KEY_PAIRS = [["W", "S", "pair.reach"], ["A", "D", "pair.j1"], ["R", "F", "pair.z"], ["Q", "E", "pair.j4"], ["Z", "X", "pair.grip"]];
   // The key that moves like each jog button, shown on the button while the keyboard is on. The letters R and Z
   // are keys here, not axes: R moves Z up, and Q turns R + (J4 +).
   const JOG_KEYS = { "z+": "R", "z-": "F", "r+": "Q", "r-": "E" };
@@ -196,6 +196,7 @@
       "kb.switch": "Keyboard jog", "kb.keys": "Keyboard jog keys", "kb.speedLabel": "Keyboard speed, 1 to {cap}", "kb.off": "Off: {reason}",
       "key.Q": "J4 +", "key.W": "Reach out", "key.E": "J4 −", "key.R": "Z up", "key.A": "J1 +", "key.S": "Reach in",
       "key.D": "J1 −", "key.F": "Z down", "key.Z": "Open", "key.X": "Close",
+      "pair.reach": "Out / In", "pair.j1": "J1 + / −", "pair.z": "Z up / down", "pair.j4": "J4 + / −", "pair.grip": "Open / Close",
       "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons", "fold.grip": "Gripper setup", "fold.stage": "Step moves and zero",
       "grip.title": "Gripper", "grip.open": "Open", "grip.close": "Close", "grip.init": "Initialize…",
       "grip.initConfirm": "Initialization opens the jaws. Remove any held object first.",
@@ -264,6 +265,7 @@
       "kb.switch": "键盘点动", "kb.keys": "键盘点动按键", "kb.speedLabel": "键盘速度，1 到 {cap}", "kb.off": "已关闭：{reason}",
       "key.Q": "J4 +", "key.W": "伸出", "key.E": "J4 −", "key.R": "Z 上", "key.A": "J1 +", "key.S": "收回",
       "key.D": "J1 −", "key.F": "Z 下", "key.Z": "张开", "key.X": "闭合",
+      "pair.reach": "伸出 / 收回", "pair.j1": "J1 + / −", "pair.z": "Z 上 / 下", "pair.j4": "J4 + / −", "pair.grip": "张开 / 闭合",
       "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮", "fold.grip": "夹爪设置", "fold.stage": "步进和零点",
       "grip.title": "夹爪", "grip.open": "张开", "grip.close": "闭合", "grip.init": "初始化…",
       "grip.initConfirm": "初始化会张开夹爪。请先取下夹持的物体。",
@@ -507,13 +509,13 @@
       refs.kbSpeedText = el("span", { class: "mo-num-small" });
       refs.kbOff = el("p", { class: "mo-kb-off", role: "status" });
       refs.kbKeys = {};
-      const cap = key => (refs.kbKeys[key] = el("kbd", { class: "mo-cap" }, el("b", { text: key }), el("small", { text: t("key." + key) })));
+      const cap = key => (refs.kbKeys[key] = el("kbd", { class: "mo-cap", title: t("key." + key) }, key));
       const kbBox = el("div", { class: "mo-kb" },
         el("div", { class: "mo-kb-head" }, refs.kbSwitch,
           el("label", { class: "mo-speed" }, el("span", { text: t("move.speed") }), refs.kbSpeed, refs.kbSpeedText)),
         refs.kbOff,
         el("div", { class: "mo-keyboard", role: "group", "aria-label": t("kb.keys") },
-          ...KEY_ROWS.map((row, i) => el("div", { class: "mo-keyrow mo-keyrow-" + (i + 1) }, ...row.map(cap)))));
+          ...KEY_PAIRS.map(([a, b, label]) => el("span", { class: "mo-pair" }, cap(a), cap(b), el("span", { text: t(label) })))));
 
       // Readout: pose, joints and the gripper.
       refs.pose = AXES.map(() => el("b", { class: "mo-num" }));

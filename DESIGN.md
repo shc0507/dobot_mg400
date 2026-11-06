@@ -17,7 +17,6 @@ colors:
   action-hover: "#2149E0"
   action-soft: "#E8EEFF"
   on-action: "#FFFFFF"
-  on-action-2: "#DCE4FF"
   stop: "#B4232C"
   stop-soft: "#FDE8E8"
   stop-hover: "#F9D6D6"
@@ -72,8 +71,8 @@ typography:
     fontFeature: "tnum"
   key-letter:
     fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
-    fontSize: "20px"
-    fontWeight: 700
+    fontSize: "11px"
+    fontWeight: 600
     lineHeight: 1
 rounded:
   xs: "6px"
@@ -173,12 +172,11 @@ components:
     rounded: "{rounded.lg}"
     size: "48px"
   key-cap:
-    backgroundColor: "{colors.card}"
-    textColor: "{colors.text}"
+    backgroundColor: "{colors.fill}"
+    textColor: "{colors.text-2}"
     typography: "{typography.key-letter}"
-    rounded: "{rounded.lg}"
-    padding: "0 10px"
-    height: "50px"
+    rounded: "{rounded.xs}"
+    size: "20px"
   key-cap-on:
     backgroundColor: "{colors.action}"
     textColor: "{colors.on-action}"
@@ -262,10 +260,10 @@ The Motion and Furnace + microscope workspaces use this system now (`static/cons
 A warm, low-chroma paper palette with one saturated blue, one stop red and a small set of status tones.
 
 ### Primary
-- **Action Blue** (#2E5BFF): the fill of the primary action, the current view tab, a held key cap, a held Hold button, the selected step mode and step size, and an on switch. It also colors the speed slider, focus rings, fold titles and the busy or moving state text.
+- **Action Blue** (#2E5BFF): the fill of the primary action, the current view tab, a held key, a held Hold button, the selected step mode and step size, and an on switch. It also colors the speed slider, focus rings, fold titles and the busy or moving state text.
 - **Deep Action** (#2149E0): primary hover, and the DEMO badge text.
 - **Blue Wash** (#E8EEFF): a soft "on now" fill with Action Blue text, for a control that is on but is not the main action (Release while you hold control, the current named position). Also the DEMO badge and text selection.
-- **White on Blue** (#FFFFFF) and **Pale Blue** (#DCE4FF): text on an Action Blue fill. Pale Blue is the small action label on a held key cap.
+- **White on Blue** (#FFFFFF): text on an Action Blue fill.
 
 ### Secondary
 - **Stop Red** (#B4232C): the fill of STOP ALL MOTION and Stop heat and gas, with white text. The text of every device stop, the alarm title, and the bad tone (fault, locked, error events).
@@ -277,12 +275,12 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 - **Count Grey** (#8A7F74): the off tone dot and stale numbers.
 
 ### Neutral
-- **Warm Ground** (#F2EEE9): the page background. The resting **Fill** of buttons, jog keys, segments and key hints on a white card uses the same value.
-- **Card White** (#FFFFFF): stations, the activity card, key caps and inputs.
+- **Warm Ground** (#F2EEE9): the page background. The resting **Fill** of buttons, jog keys, segments, key caps and key hints uses the same value.
+- **Card White** (#FFFFFF): stations, the activity card and inputs.
 - **Warm Surface** (#F7F4F0): panels inside a card (the keyboard map, confirmations, reason notes).
 - **Fill Hover** (#E9E3DC): hover on neutral fills.
 - **Hairline** (#EDE6DE): row dividers and the fold divider.
-- **Edge** (#E0D8CF): input borders, the key cap base line and the outline of a selected option that you cannot change.
+- **Edge** (#E0D8CF): input borders and the outline of a selected option that you cannot change.
 - **Knob Off** (#D6CDC3): the track of an off switch.
 - **Warm Graphite** (#2A2622): primary text.
 - **Umber** (#6F625A): secondary text, units, field labels and plain state text.
@@ -310,11 +308,11 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 - **Control** (600, 14px): buttons, holds and state text. Tabs and segment options use 13px.
 - **Body** (400, 14px, 1.45 line height): running text.
 - **Body small** (400, 13px): messages, units, the speed label and reading labels.
-- **Label** (600, 12px): flags, media meta and key hints. Field labels use 400.
+- **Label** (600, 12px): flags, media meta and key hints. Field labels and the key map labels use 400.
 - **Badge** (700, 12px, 0.4px tracking): the DEMO badge.
 - **Readout** (700, 20px, tabular numerals): pose values, axis pulses and the gripper position.
 - **Readout small** (600, 14px, tabular numerals): joint angles and speed values.
-- **Key letter** (700, 20px, line height 1): the letter on a key cap, with a 12px Umber action label below it.
+- **Key letter** (600, 11px, line height 1): the letter on a key cap in the keyboard map.
 
 ### Named Rules
 **The No Web Fonts Rule.** The host can be offline. Never load a font or any other asset from the network.
@@ -325,7 +323,7 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 
 - **Frame:** the shell header, the status strip, the stop result band (after a stop, until Dismiss) and the notice bar form one top band. Above 720px, the band stays at the top while the page scrolls. Its height is published as `--lc-top`. Sticky elements and `scroll-padding-top` add it to their offset. The workspace is centered and at most 1440px wide.
 - **Stations:** Motion has 2 stations side by side in a 711 : 649 ratio, 20px apart. Each station is a subgrid with 2 rows, the view row and the body row, so both views have the same height. The arm view is 16:9. The stage view fills the row and is at least 240px tall.
-- **Station body:** a header row (title, state and badge, then the actions and the device stop on the right), then the main controls, then folds for rare tools below a Hairline. In the arm body, the keyboard map (62 parts) is beside the pose and gripper readout (38 parts, at least 190px).
+- **Station body:** a header row (title, state and badge, then the actions and the device stop on the right), then the main controls, then folds for rare tools below a Hairline. In the arm body, the keyboard panel (switch, speed and key map, 62 parts) is beside the pose and gripper readout (38 parts, at least 190px).
 - **Rows:** a stage axis is 1 grid row at least 56px tall: name and state, value, Hold −, Hold +, speed and key hints.
 - **Rhythm:** 20px between cards. 12px between blocks in a card. 8px inside a group. 4–6px between a label and its value.
 - **Responsive:** when a station is narrower than 610px, its header buttons get tighter so that the header stays on 1 row. At 1100px and below, the stations stack and the stage view becomes 16:9. At 720px and below, the arm body stacks, axis rows hide speed and key hints, and pose fields use 2 columns.
@@ -333,7 +331,7 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 ### Named Rules
 **The Weighted By Use Rule.** Frequent controls are large and near the view that they affect. Rare tools (single steps, exact poses, setup, zero) go in folds. Do not give every control the same weight.
 
-**The Bilingual Fit Rule.** Check every layout with English and 中文 strings. Rows and headers wrap. Labels are never truncated, except the small action label on a key cap.
+**The Bilingual Fit Rule.** Check every layout with English and 中文 strings. Rows and headers wrap. Labels are never truncated.
 
 ## Elevation & Depth
 
@@ -341,7 +339,6 @@ The system is soft and low. Cards lift a little from the ground with a faint war
 
 ### Shadow Vocabulary
 - **Card lift** (`box-shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05)`): stations and the activity card only.
-- **Key base** (`box-shadow: 0 1px 0 #E0D8CF`): the base line of a key cap at rest. A lit key cap has no base line.
 
 ### Named Rules
 **The One Lift Rule.** Only cards get the card lift. Inside a card, use the next fill step or a Hairline, never a second shadow.
@@ -350,10 +347,10 @@ The system is soft and low. Cards lift a little from the ground with a faint war
 
 Soft rounded rectangles without borders. The radius grows with the size of the element:
 
-- **6px:** key hints.
+- **6px:** key caps and key hints.
 - **8px:** segment options.
 - **10px:** view tabs, inputs, media chips and reference images.
-- **12px:** buttons, holds, jog keys, key caps and the segment track.
+- **12px:** buttons, holds, jog keys and the segment track.
 - **16px:** media views, the keyboard panel, the alarm note, confirmations and notes.
 - **20px:** stations and the activity card.
 - **Pill (999px):** badges, flags and the switch track.
@@ -402,7 +399,7 @@ A pill track, 40 by 22px (34 by 20px for the small switch), in Knob Off with a w
 A Media Well with 16px corners that holds the live frame. The view tabs are at the top left. The state badge (a dot, LIVE or another state word, and the frame age) is on a Well Chip at the top right, in its tone. The frame size and rate are on a Well Scrim chip at the bottom left. Snapshot and Expand are Well Chip buttons at the bottom right. A camera that is off shows its state word on a centered translucent chip.
 
 ### Keyboard map (signature)
-Key caps laid out like a keyboard in 4 columns, with the rows offset by 5% and 10%. A cap is Card White and 50px tall, with the key letter and a 12px action label, on the key base line. When you hold a key, its cap turns Action Blue with white text at once (80ms). Key hints beside an axis are 24px Fill squares and light the same way.
+A quiet legend under the Keyboard jog switch and speed slider: the switch and slider are the main control, and the map stays in the background. The keys are in pairs, in one wrapping line: W S (out and in), A D (J1), R F (Z), Q E (J4) and Z X (gripper). Each pair is 2 key caps and a 12px Umber label in weight 400, for example "J1 + / −". The first key of a pair moves out, +, up or opens. A key cap is a 20px Fill square with 6px corners and an 11px Umber letter, with no base line and no shadow. Only a held key stands out: its cap turns Action Blue with white text at once (80ms). Each pair label is 1 string, so a pair can get a new label without a layout change. Key hints beside an axis are 24px Fill squares and light the same way.
 
 ### Axis row and Hold
 Each stage axis row has the name and state, the value with its unit, Hold − and Hold + (44px, Fill), a speed field and the key hints. While you press it, a Hold is Action Blue. It stays at full strength while its axis is busy.

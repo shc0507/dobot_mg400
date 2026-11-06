@@ -1,128 +1,193 @@
-/* Furnace + microscope workspace (DSH-06). Every rule starts with #ws-process. Colors come from the shell.css variables.
-   Composition: the microscope preview leads (left, wider); the furnace is one instrument column (right).
-   Rarely used controls sit in closed groups (.pr-details). */
+/* Furnace + microscope workspace (DSH-06). Every rule starts with #ws-process (or targets the page while it shows).
+ * Look: a warm tinted ground with white cards on soft corners. One blue marks what you can press or what is on now;
+ * red is only for stops; video sits in a dark well. See DESIGN.md. The microscope preview leads (left, wider);
+ * the furnace is one instrument column (right). Rare tools fold away. */
+body:has(#ws-process:not([hidden])) { background: #F2EEE9; }
+
+#ws-process {
+  --pr-ground: #F2EEE9; --pr-card: #FFFFFF; --pr-surface: #F7F4F0; --pr-fill: #F2EEE9; --pr-fill-hover: #E9E3DC;
+  --pr-line: #EDE6DE; --pr-edge: #E0D8CF; --pr-text: #2A2622; --pr-text-2: #6F625A; --pr-count: #8A7F74;
+  --pr-action: #2E5BFF; --pr-action-hover: #2149E0; --pr-action-soft: #E8EEFF; --pr-on-action: #FFFFFF;
+  --pr-stop: #B4232C; --pr-stop-soft: #FDE8E8; --pr-stop-hover: #F9D6D6;
+  --pr-ok: #27774C; --pr-warn: #8F6200; --pr-warn-soft: #FFF3D6; --pr-info: #2E5BFF;
+  --pr-well: #171310; --pr-well-text: #CFC6BC; --pr-well-chip: rgba(255, 255, 255, 0.88); --pr-well-scrim: rgba(23, 19, 16, 0.72);
+  --pr-shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05);
+  color: var(--pr-text);
+}
+#ws-process ::selection { background: var(--pr-action-soft); color: var(--pr-text); }
+#ws-process button:focus-visible, #ws-process input:focus-visible, #ws-process select:focus-visible,
+#ws-process summary:focus-visible, #ws-process [tabindex]:focus-visible { outline: 2px solid var(--pr-action); outline-offset: 2px; }
+#ws-process p { margin: 0; }
+#ws-process h2 { margin: 0; font-size: 18px; font-weight: 700; }
+#ws-process h3 { margin: 0; font-size: 14px; font-weight: 700; }
+#ws-process .lc-muted { color: var(--pr-text-2); font-size: 13px; }
+
+/* Cards. */
 #ws-process .pr-workspace { display: flex; flex-direction: column; gap: 20px; }
-#ws-process .pr-layout { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
-#ws-process .pr-card { min-width: 0; gap: 16px; }
-#ws-process .pr-scope { flex: 3 1 640px; }
-#ws-process .pr-furnace { flex: 2 1 420px; }
+#ws-process .pr-layout { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+#ws-process .pr-card { min-width: 0; gap: 12px; padding: 12px 12px 14px; border: 0; border-radius: 20px; background: var(--pr-card); box-shadow: var(--pr-shadow); }
+#ws-process .pr-card > * { margin-left: 4px; margin-right: 4px; }
+#ws-process .pr-card > .pr-preview { margin: 0; }
+#ws-process .pr-scope { flex: 711 1 640px; }
+#ws-process .pr-furnace { flex: 649 1 420px; }
+#ws-process .lc-card-head { min-height: 44px; gap: 8px 12px; }
 #ws-process .pr-head { display: flex; flex-direction: column; gap: 2px; }
-#ws-process h3 { margin: 0; font-size: 14px; font-weight: 600; }
 #ws-process .pr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 #ws-process .pr-end { align-items: flex-end; }
 #ws-process .pr-push { flex: 1 1 0; }
 #ws-process .pr-block { display: flex; flex-direction: column; gap: 8px; }
-#ws-process .pr-note { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--bad); color: #FF9A9A; }
-#ws-process .pr-warn { margin: 0; color: var(--warn); font-size: 13px; }
-#ws-process .pr-doubt { color: var(--warn); }
-#ws-process .pr-primary { border: 0; background: var(--accent); color: #0B1A2A; font-weight: 700; }
+#ws-process .pr-doubt { color: var(--pr-warn); }
 #ws-process .pr-strong { font-weight: 700; }
-#ws-process .pr-danger { min-height: 44px; padding: 0 16px; }
-#ws-process .pr-stop-wide { width: 100%; }
-#ws-process .pr-mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
-#ws-process .pr-mono-button { font-family: "IBM Plex Mono", ui-monospace, monospace; min-width: 56px; }
+#ws-process .pr-mono { font-variant-numeric: tabular-nums; }
 
-/* Preview: 1 view at a time. The switch, the state badge and the tile buttons sit on the media. */
+/* Notes. */
+#ws-process .pr-note { padding: 12px 14px; border: 0; border-radius: 16px; background: var(--pr-stop-soft); color: var(--pr-text); }
+#ws-process .pr-warn { margin: 0; color: var(--pr-warn); font-size: 13px; }
+#ws-process .pr-workspace > .pr-warn { align-self: flex-start; padding: 2px 10px; border-radius: 999px; background: var(--pr-warn-soft); font-size: 12px; font-weight: 600; }
+
+/* Buttons: soft fills, no borders; blue only for the primary action and for what is on. */
+#ws-process .lc-button, #ws-process .lc-danger, #ws-process .lc-stop, #ws-process .pr-seg-button, #ws-process .pr-step-button {
+  font: inherit; font-size: 14px; font-weight: 600; border: 0; cursor: pointer; white-space: nowrap; transition: background-color 120ms ease-out, transform 120ms ease-out;
+}
+#ws-process .lc-button { min-height: 40px; padding: 0 14px; border-radius: 12px; background: var(--pr-fill); color: var(--pr-text); }
+#ws-process .lc-button:hover:not(:disabled) { background: var(--pr-fill-hover); }
+#ws-process .pr-primary { background: var(--pr-action); color: var(--pr-on-action); }
+#ws-process .pr-primary:hover:not(:disabled) { background: var(--pr-action-hover); }
+#ws-process .pr-primary:disabled { background: var(--pr-fill); color: var(--pr-text-2); }
+/* Device stops, Close, Acknowledge, Set focus zero and Confirm: a coral fill with red text. */
+#ws-process .lc-danger { min-height: 40px; padding: 0 16px; border-radius: 12px; background: var(--pr-stop-soft); color: var(--pr-stop); font-weight: 700; }
+#ws-process .lc-danger:hover:not(:disabled) { background: var(--pr-stop-hover); }
+/* Stop heat and gas: 1 of the 2 filled red buttons. */
+#ws-process .lc-stop { min-height: 48px; padding: 0 20px; border-radius: 12px; background: var(--pr-stop); color: #FFFFFF; font-size: 14px; font-weight: 700; letter-spacing: 0.2px; }
+#ws-process .pr-stop-wide { width: auto; align-self: stretch; }
+#ws-process button:active:not(:disabled) { transform: scale(0.97); }
+#ws-process button:disabled { opacity: 0.45; cursor: not-allowed; }
+/* A stop is never disabled; keep it at full strength in every state. */
+#ws-process [data-role^="stop-"]:disabled, #ws-process [data-role^="close-gas-"]:disabled { opacity: 1; }
+
+/* Preview: 1 view at a time in a dark well. The view tabs, the state badge and the tile buttons sit on the media. */
 #ws-process .pr-preview { position: relative; }
-#ws-process .pr-pane .lcam-tile { position: relative; border-radius: 12px; }
-#ws-process .pr-pane .lcam-stage { aspect-ratio: 16 / 10; max-height: max(300px, calc(100vh - var(--lc-top, 110px) - 360px)); width: 100%; }
-#ws-process .pr-pane .lcam-head { position: absolute; top: 12px; right: 12px; z-index: 1; padding: 4px 9px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); pointer-events: none; }
+#ws-process .pr-pane { position: relative; aspect-ratio: 16 / 10; max-height: max(300px, calc(100vh - var(--lc-top, 110px) - 360px)); width: 100%; overflow: hidden; border-radius: 16px; background: var(--pr-well); }
+#ws-process .pr-pane .lcam-tile { position: absolute; inset: 0; border: 0; border-radius: 0; background: transparent; }
+#ws-process .pr-pane .lcam-stage { position: absolute; inset: 0; aspect-ratio: auto; background: var(--pr-well); cursor: default; }
+#ws-process .pr-pane .lcam-stage:focus-visible { outline: 2px solid var(--pr-action); outline-offset: -2px; }
+#ws-process .pr-pane .lcam-empty { background: var(--pr-well); color: var(--pr-well-text); }
+#ws-process .pr-pane .lcam-head { position: absolute; top: 8px; right: 8px; z-index: 3; padding: 0; }
 #ws-process .pr-pane .lcam-names { display: none; }
-#ws-process .pr-pane .lcam-foot { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 1; padding: 0; pointer-events: none; }
-#ws-process .pr-pane .lcam-meta { padding: 4px 9px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); }
-#ws-process .pr-pane .lcam-meta:empty { display: none; }
-#ws-process .pr-pane .lcam-buttons { pointer-events: auto; }
-#ws-process .pr-pane .lcam-buttons .lc-button { background: rgba(10, 14, 17, 0.85); }
-#ws-process .pr-seg { position: absolute; top: 12px; left: 12px; z-index: 2; display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; border: 1px solid var(--line2); background: rgba(10, 14, 17, 0.85); }
-#ws-process .pr-seg-button { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: var(--soft); font-weight: 500; cursor: pointer; }
-#ws-process .pr-seg-button[aria-pressed="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
-#ws-process .pr-view { position: relative; aspect-ratio: 16 / 10; border-radius: 12px; overflow: hidden; background: #0A0E11; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
-#ws-process .pr-view-name { color: var(--muted); font-size: 13px; padding: 8px; text-align: center; }
-#ws-process .pr-badge { position: absolute; right: 12px; top: 12px; padding: 4px 9px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); font-size: 12px; font-weight: 700; color: var(--muted); }
+#ws-process .pr-pane .lcam-badge { min-height: 32px; padding: 0 10px; border-radius: 10px; background: var(--pr-well-chip); font-size: 13px; letter-spacing: 0; }
+#ws-process .pr-pane .lcam-badge.tone-ok { color: var(--pr-ok); } #ws-process .pr-pane .lcam-badge.tone-warn { color: var(--pr-warn); }
+#ws-process .pr-pane .lcam-badge.tone-bad { color: var(--pr-stop); } #ws-process .pr-pane .lcam-badge.tone-off { color: var(--pr-text-2); }
+#ws-process .pr-pane .lcam-badge.tone-ok .lc-dot { background: var(--pr-ok); } #ws-process .pr-pane .lcam-badge.tone-warn .lc-dot { background: var(--pr-warn); }
+#ws-process .pr-pane .lcam-badge.tone-bad .lc-dot { background: var(--pr-stop); } #ws-process .pr-pane .lcam-badge.tone-off .lc-dot { background: var(--pr-count); }
+#ws-process .pr-pane .lcam-foot { display: contents; }
+#ws-process .pr-pane .lcam-meta { position: absolute; left: 8px; bottom: 8px; z-index: 3; padding: 4px 10px; border-radius: 10px; background: var(--pr-well-scrim); color: var(--pr-ground); font-size: 12px; }
+#ws-process .pr-pane .lcam-meta:empty, #ws-process .pr-pane .lcam-note:empty { display: none; }
+#ws-process .pr-pane .lcam-mode { color: var(--pr-ground); }
+#ws-process .pr-pane .lcam-note { color: var(--pr-well-text); }
+#ws-process .pr-pane .lcam-buttons { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: flex; gap: 6px; }
+#ws-process .pr-pane .lcam-buttons .lc-button { min-height: 32px; padding: 0 12px; border-radius: 10px; background: var(--pr-well-chip); color: var(--pr-text); font-size: 13px; }
+#ws-process .pr-pane .lcam-buttons .lc-button:hover:not(:disabled) { background: #FFFFFF; }
+#ws-process .pr-seg { position: absolute; top: 8px; left: 8px; z-index: 4; display: flex; flex-wrap: wrap; gap: 6px; }
+#ws-process .pr-seg-button { min-height: 32px; padding: 0 12px; border-radius: 10px; background: var(--pr-well-chip); color: var(--pr-text); font-size: 13px; }
+#ws-process .pr-seg-button:hover { background: #FFFFFF; }
+#ws-process .pr-seg-button[aria-pressed="true"], #ws-process .pr-seg-button[aria-pressed="true"]:hover { background: var(--pr-action); color: var(--pr-on-action); }
+/* Without the Cameras workspace a view shows its state word on a centered chip. */
+#ws-process .pr-view { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--pr-well); }
+#ws-process .pr-view-name { padding: 4px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.12); color: var(--pr-well-text); font-size: 13px; font-weight: 600; }
+#ws-process .pr-badge { position: absolute; right: 8px; top: 8px; padding: 6px 10px; border-radius: 10px; background: var(--pr-well-chip); font-size: 13px; font-weight: 700; color: var(--pr-text-2); }
 
 /* Objective and focus: 1 labelled band under the preview. */
-#ws-process .pr-band { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 12px 20px; }
-#ws-process .pr-band-label { min-height: 44px; display: flex; align-items: center; font-size: 12px; font-weight: 500; color: var(--muted); }
-#ws-process .pr-objectives { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 6px; }
-#ws-process .pr-objective { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; }
-#ws-process .pr-objective.pr-selected { border-color: var(--accent); background: var(--tab); box-shadow: inset 0 -2px 0 var(--accent); }
-#ws-process .pr-focus { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+#ws-process .pr-band { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 12px 16px; }
+#ws-process .pr-band-label { min-height: 42px; display: flex; align-items: center; font-size: 14px; font-weight: 700; }
+#ws-process .pr-objectives { display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr)); gap: 4px; padding: 3px; border-radius: 12px; background: var(--pr-fill); }
+#ws-process .pr-objective { min-height: 36px; border-radius: 8px; background: transparent; font-variant-numeric: tabular-nums; }
+#ws-process .pr-objective:hover:not(:disabled) { background: var(--pr-card); }
+#ws-process .pr-objective.pr-selected, #ws-process .pr-objective.pr-selected:hover:not(:disabled) { background: var(--pr-action); color: var(--pr-on-action); }
+/* The current objective stays readable while you cannot change it, without the blue. */
+#ws-process .pr-objective.pr-selected:disabled { opacity: 1; background: var(--pr-card); color: var(--pr-text); box-shadow: inset 0 0 0 1px var(--pr-edge); }
+#ws-process .pr-focus { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 #ws-process .pr-focus-bar { display: flex; flex-direction: column; gap: 4px; padding-top: 14px; }
-#ws-process .pr-bar { position: relative; height: 12px; border-radius: 6px; background: #0A0E11; border: 1px solid var(--line2); overflow: hidden; }
-#ws-process .pr-bar-fill { display: block; height: 100%; background: var(--accent); }
-#ws-process .pr-bar-labels { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-#ws-process .pr-focus-pos { color: var(--text); font-size: 13px; }
-#ws-process .pr-stepper { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; }
-#ws-process .pr-step-button { min-height: 42px; width: 48px; border: 0; background: transparent; color: var(--text); font-size: 17px; font-weight: 600; cursor: pointer; }
-#ws-process .pr-step-input { width: 76px; border: 0; border-left: 1px solid var(--line2); border-right: 1px solid var(--line2); background: var(--bg); color: var(--text); text-align: center; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+#ws-process .pr-bar { position: relative; height: 8px; border-radius: 999px; background: var(--pr-fill); overflow: hidden; }
+#ws-process .pr-bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--pr-text-2); }
+#ws-process .pr-bar-labels { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--pr-text-2); font-variant-numeric: tabular-nums; }
+#ws-process .pr-focus-pos { color: var(--pr-text); font-size: 13px; font-weight: 600; }
+#ws-process .pr-stepper { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border-radius: 12px; background: var(--pr-fill); }
+#ws-process .pr-step-button { min-height: 36px; width: 44px; border-radius: 8px; background: transparent; color: var(--pr-text); font-size: 18px; }
+#ws-process .pr-step-button:hover:not(:disabled) { background: var(--pr-card); }
+#ws-process .pr-step-input { width: 72px; min-height: 36px; padding: 0 6px; border: 0; border-radius: 8px; background: var(--pr-card); color: var(--pr-text); text-align: center; font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; }
 
-/* Closed groups for rarely used controls. */
-#ws-process .pr-more { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--row); padding-top: 12px; }
-#ws-process .pr-details { border-radius: 10px; }
-#ws-process .pr-details[open] { padding-bottom: 4px; }
-#ws-process .pr-summary { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border-radius: 8px; color: var(--soft); cursor: pointer; list-style: none; }
+/* Folds: the rarely used tools. */
+#ws-process .pr-more { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 24px; padding-top: 4px; border-top: 1px solid var(--pr-line); }
+#ws-process .pr-details { min-width: 0; }
+#ws-process .pr-details[open] { flex: 1 1 100%; }
+#ws-process .pr-summary { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; color: var(--pr-action); font-size: 14px; font-weight: 600; cursor: pointer; list-style: none; }
 #ws-process .pr-summary::-webkit-details-marker { display: none; }
-#ws-process .pr-summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); margin-right: 2px; }
-#ws-process .pr-details[open] > .pr-summary::before { transform: rotate(45deg); }
-#ws-process .pr-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-#ws-process .pr-summary-title { font-weight: 600; color: var(--text); }
-#ws-process .pr-summary-state { font-size: 13px; color: var(--muted); }
-#ws-process .pr-summary-state.pr-live { color: var(--info); }
-#ws-process .pr-details-body { display: flex; flex-direction: column; gap: 12px; padding: 8px 12px 12px 31px; }
-#ws-process .pr-furnace > .pr-details { border-top: 1px solid var(--row); padding-top: 12px; border-radius: 0; }
+#ws-process .pr-summary::before { content: ""; width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 6px solid currentColor; transition: transform 150ms ease-out; }
+#ws-process .pr-details[open] > .pr-summary::before { transform: rotate(90deg); }
+#ws-process .pr-summary-title { font-weight: 600; }
+#ws-process .pr-summary-state { font-size: 13px; font-weight: 400; color: var(--pr-text-2); }
+#ws-process .pr-summary-state.pr-live { color: var(--pr-info); font-weight: 600; }
+#ws-process .pr-details-body { display: flex; flex-direction: column; gap: 12px; padding: 8px 0 4px; }
+#ws-process .pr-furnace > .pr-details { padding-top: 4px; border-top: 1px solid var(--pr-line); }
 
-/* Furnace readings. */
-#ws-process .pr-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; border-radius: 10px; overflow: hidden; background: var(--line); }
-#ws-process .pr-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px; background: #1B232A; min-width: 0; }
-#ws-process .pr-tile-label { font-size: 12px; color: var(--muted); }
-#ws-process .pr-tile-value { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
-#ws-process .pr-tone-pv { color: var(--warn); }
-#ws-process .pr-tone-sv { color: var(--info); }
-#ws-process .pr-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px; margin: 0; font-size: 13px; color: var(--soft); }
-#ws-process .pr-state-mode { font-weight: 600; color: var(--text); }
+/* Furnace readings: values in fixed cells on a flat panel. */
+#ws-process .pr-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 4px 0; border-radius: 16px; background: var(--pr-surface); }
+#ws-process .pr-tile { display: flex; flex-direction: column; gap: 2px; padding: 8px 14px; min-width: 0; }
+#ws-process .pr-tile + .pr-tile { box-shadow: inset 1px 0 0 var(--pr-edge); }
+#ws-process .pr-tile-label { font-size: 13px; color: var(--pr-text-2); }
+#ws-process .pr-tile-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--pr-text); }
+#ws-process .pr-tone-sv { color: var(--pr-text-2); }
+#ws-process .pr-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px; font-size: 13px; color: var(--pr-text-2); }
+#ws-process .pr-state-mode { font-size: 14px; font-weight: 600; color: var(--pr-text); }
 #ws-process .pr-state-item { display: inline-flex; gap: 8px; }
-#ws-process .pr-state-label { color: var(--muted); }
-#ws-process .pr-figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
-#ws-process .pr-chart { display: block; width: 100%; height: auto; aspect-ratio: 560 / 160; border-radius: 10px; background: var(--bg); }
-#ws-process .pr-grid { stroke: var(--line); stroke-width: 1; }
-#ws-process .pr-axis { fill: var(--muted); font-size: 11px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
-#ws-process .pr-pv { stroke: var(--warn); stroke-width: 2.5; fill: none; }
-#ws-process .pr-sv { stroke: var(--info); stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
-#ws-process .pr-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); }
-#ws-process .pr-key-pv { color: var(--warn); }
-#ws-process .pr-key-sv { color: var(--info); }
+#ws-process .pr-state-item .pr-mono { font-size: 14px; font-weight: 600; color: var(--pr-text); }
+#ws-process .pr-figure { display: flex; flex-direction: column; gap: 6px; }
+#ws-process .pr-chart { display: block; width: 100%; height: auto; aspect-ratio: 560 / 160; border-radius: 16px; background: var(--pr-surface); }
+#ws-process .pr-grid { stroke: var(--pr-edge); stroke-width: 1; }
+#ws-process .pr-axis { fill: var(--pr-text-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+#ws-process .pr-pv { stroke: var(--pr-text); stroke-width: 2.5; fill: none; }
+#ws-process .pr-sv { stroke: var(--pr-text-2); stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
+#ws-process .pr-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--pr-text-2); }
+#ws-process .pr-key-pv { color: var(--pr-text); font-weight: 600; }
+#ws-process .pr-key-sv { color: var(--pr-text-2); font-weight: 600; }
 
 /* Fields. */
-#ws-process .pr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-#ws-process .pr-input { width: 100px; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; }
+#ws-process .pr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--pr-text-2); }
+#ws-process .pr-input { width: 100px; min-height: 40px; padding: 0 10px; border: 1px solid var(--pr-edge); border-radius: 10px; background: var(--pr-card); color: var(--pr-text); font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; }
+#ws-process .pr-input:disabled, #ws-process .pr-step-input:disabled { opacity: 0.55; }
 #ws-process .pr-input.pr-wide { width: 220px; }
-#ws-process select.pr-input { width: auto; font-family: inherit; }
-#ws-process .pr-input::placeholder { color: var(--muted); }
+#ws-process select.pr-input { width: auto; }
+#ws-process .pr-input::placeholder { color: var(--pr-count); }
 #ws-process .pr-narrow { width: 80px; }
 #ws-process .pr-cell { width: 76px; }
 
 /* Gas: 1 row per channel; the state reads under the name. */
-#ws-process .pr-gas-block { border-top: 1px solid var(--row); padding-top: 12px; }
+#ws-process .pr-gas-block { padding-top: 8px; border-top: 1px solid var(--pr-line); }
 #ws-process .pr-gas-list { display: flex; flex-direction: column; }
-#ws-process .pr-gas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--row); }
+#ws-process .pr-gas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--pr-line); }
 #ws-process .pr-gas:first-child { border-top: 0; padding-top: 0; }
 #ws-process .pr-gas-text { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; }
-#ws-process .pr-gas-name { font-weight: 600; }
-#ws-process .pr-gas-state { font-size: 13px; color: var(--soft); }
-#ws-process .pr-gas-state.pr-doubt { color: var(--warn); }
+#ws-process .pr-gas-name { font-weight: 700; }
+#ws-process .pr-gas-state { font-size: 13px; color: var(--pr-text-2); }
+#ws-process .pr-gas-state.pr-doubt { color: var(--pr-warn); }
 
 /* Sequence table. */
-#ws-process .pr-table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); }
+#ws-process .pr-table-wrap { overflow-x: auto; border-radius: 16px; background: var(--pr-surface); }
 #ws-process .pr-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 600px; }
-#ws-process .pr-table th { padding: 8px 10px; background: #1B232A; color: var(--muted); text-align: left; font-weight: 600; }
-#ws-process .pr-table td { padding: 6px 10px; border-top: 1px solid var(--row); }
-#ws-process .pr-table tr.pr-current td { background: var(--tab); }
+#ws-process .pr-table th { padding: 8px 10px; color: var(--pr-text-2); text-align: left; font-weight: 600; }
+#ws-process .pr-table td { padding: 6px 10px; border-top: 1px solid var(--pr-line); }
+#ws-process .pr-table tr.pr-current td { background: var(--pr-action-soft); }
+
+/* Confirmations inside the page. */
+#ws-process .lc-confirm { gap: 10px; padding: 12px 14px; border: 0; border-radius: 16px; background: var(--pr-surface); box-shadow: inset 0 0 0 1px var(--pr-edge); }
 
 @media (max-width: 720px) {
-  #ws-process .pr-card { flex-basis: 100%; padding: 16px; }
   #ws-process .pr-band { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   #ws-process .pr-band-label { min-height: 0; }
 }
+@media (prefers-reduced-motion: reduce) {
+  #ws-process *, #ws-process *::before, #ws-process *::after { transition: none !important; }
+}
 /* Old or missing data: the readings and the chart dim. */
-#ws-process .pr-tile-value.pr-stale, #ws-process .pr-state .pr-stale { color: var(--off); }
+#ws-process .pr-tile-value.pr-stale, #ws-process .pr-state .pr-stale { color: var(--pr-count); }
 #ws-process .pr-figure.pr-stale polyline { opacity: 0.4; }

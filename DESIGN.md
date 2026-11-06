@@ -255,7 +255,7 @@ This is the console-wide direction, and all Lab Console pages follow it. The pag
 - Device numbers in tabular numerals in fixed cells.
 
 ### Known limitation
-Only the Motion workspace uses this system now (`static/console/motion.css`, tokens on `#ws-motion`). The shell header, the status strip, the stop result band, Overview, Cameras, Furnace + microscope and the chip passport still use the previous dark styles in `shell.css`, `cameras.css`, `process.css` and `passport.css`. Move each page to the tokens in this file when that page changes.
+The Motion and Furnace + microscope workspaces use this system now (`static/console/motion.css` and `process.css`, tokens on `#ws-motion` and `#ws-process`). The shell header, the status strip, the stop result band, Overview, Cameras and the chip passport still use the previous dark styles in `shell.css`, `cameras.css` and `passport.css`. Move each page to the tokens in this file when that page changes.
 
 ## Colors
 

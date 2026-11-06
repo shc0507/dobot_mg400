@@ -536,7 +536,7 @@ def test_fourth_camera_still_route_keeps_fixed_destination(preview, monkeypatch)
         "MG400_CAMERA_DEVICES",
         ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)),
     )
-    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,1280x720@30")
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,1600x1200@30")
     module = load_preview()
     assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, True]
     for route in ("", "preview.js", "camera4/detections.json"):
@@ -552,11 +552,11 @@ def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(pre
     module = load_preview()
     assert module.CAMERAS.mode(2) == (3840, 2160, 30)
     assert list(module.FEEDS) == ["camera1", "camera3"]
-    monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,1280x720,320x240")
+    monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,1600x1200,320x240")
     module = load_preview()
-    assert module.CAMERAS.mode(2) == (1280, 720, 30)
+    assert module.CAMERAS.mode(2) == (1600, 1200, 30)
     assert list(module.FEEDS) == ["camera1", "camera3"]
-    monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,640x480,1280x720")
+    monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,640x480,1600x1200")
     module = load_preview()
     assert [feed.on_demand for feed in module.FEEDS.values()] == [False, False, True]
     monkeypatch.setenv("MG400_CAMERA_MODES", "1920x1080@60,640x480@30,640x480@30")
@@ -567,7 +567,7 @@ def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(pre
     assert module.CAMERAS.mode(1) == (1920, 1080, 60)
 
 
-def test_side_stream_above_640x480_is_not_relayed(preview, monkeypatch):
+def test_side_stream_above_1280x720_is_not_relayed(preview, monkeypatch):
     _, upstream = preview
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x480@30,3840x2160@30")
@@ -701,7 +701,7 @@ def test_h264_previews_exist_only_for_preloaded_streams_and_the_microscope(previ
         "MG400_CAMERA_DEVICES",
         ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)),
     )
-    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,640x480@30,1280x720@30")
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,1280x720@30,1600x1200@30")
     module = load_preview()
     assert module.VIDEOS == {
         **{f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 3)},

@@ -66,7 +66,7 @@ class CameraConfig:
         return tuple(
             stream
             for stream, (width, height, _) in zip(self.streams, self.modes)
-            if width <= 640 and height <= 480
+            if width <= 1280 and height <= 720
         )
 
     def mode(self, camera):
@@ -93,7 +93,7 @@ def camera_configuration(settings):
     if not modes and not sizes:
         return CameraConfig(
             devices,
-            tuple((3840, 2160, 30) if stream == side else (640, 480, 30) for stream in streams),
+            tuple((3840, 2160, 30) if stream == side else (1280, 720, 30) for stream in streams),
         )
     parts = [part.strip() for part in (modes or sizes).split(",")]
     name = "MG400_CAMERA_MODES" if modes else "MG400_CAMERA_CAPTURE_SIZES"

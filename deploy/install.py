@@ -361,13 +361,16 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
         for number, (device, mode) in enumerate(zip(configured.devices, configured.modes), 1)
     )
     # go2rtc starts each ffmpeg encoder for its first viewer and stops it after the last.
-    # Sensor noise can raise a 640x480 stream to about 9 Mbit/s. The cap keeps 3 previews
-    # near 6 Mbit/s on the VPN link.
+    # Sensor noise can raise a 640x480 stream to about 9 Mbit/s. A 1280x720 preview gets
+    # 4 Mbit/s and a smaller one 2 Mbit/s.
     streams += "".join(
-        f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate=2M\n" for name in configured.preloaded
+        f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate={4 if width > 640 else 2}M\n"
+        for name, (width, _, _) in zip(configured.streams, configured.modes)
+        if name in configured.preloaded
     )
     # go2rtc reads the microscope MJPEG preview (1296x968) only for an H.264 viewer.
-    # With its 3 Mbit/s cap, the microscope and 3 USB previews need about 9 Mbit/s.
+    # With its 3 Mbit/s cap, the microscope and 4 previews at 1280x720 need about
+    # 19 Mbit/s of the 22 Mbit/s VPN link.
     streams += (
         "  microscope: http://127.0.0.1:8770/api/camera/microscope/mjpeg\n"
         "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"

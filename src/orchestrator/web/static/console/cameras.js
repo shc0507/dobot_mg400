@@ -24,9 +24,9 @@
   const PREFIX = "/api/console/ws/cameras/";
   // The relay sends only the newest frame. Small tiles ask for fewer frames.
   const TILE_FPS = 10, LARGE_FPS = 30;
-  // A USB view at the camera rate needs about 16 Mbit/s. The VPN link carries about 22 Mbit/s,
+  // A 1280x720 USB view at the camera rate needs about 35 Mbit/s. The VPN link carries about 22 Mbit/s,
   // so the USB previews ask for less and leave room for keys, holds and stops.
-  const USB_TILE_FPS = 5, USB_LARGE_FPS = 10;
+  const USB_TILE_FPS = 3, USB_LARGE_FPS = 6;
   // The host caps the bitrate of each H.264 preview, so the views play it at the camera rate.
   const H264 = 'video/mp4; codecs="avc1.640029"';
   // Play near the newest frame: jump when more than JUMP_S behind, speed up above CATCH_UP_S.

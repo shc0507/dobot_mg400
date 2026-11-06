@@ -315,10 +315,11 @@ Configure microscope device selection, focus limits, and camera streams as descr
 
 Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
 The camera service provides only configured streams, named `camera1` through `camera4` in device order.
-With an empty mode list, ordinary cameras use `640x480@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
+With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.
-Only streams with width at most 640 and height at most 480 are preloaded. Larger streams start on demand.
-After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then restart the cameras.
+Only streams with width at most 1280 and height at most 720 are preloaded. Larger streams start on demand.
+Before several cameras use modes above `640x480`, install the [USB bandwidth patch](olares.en.md#usb-bandwidth-patch).
+After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `mg400ctl restart camera vision microscope orch`.
 See [Cameras](olares.en.md#cameras) for approved modes and the tray-camera configuration.
 
 ## Routine commands

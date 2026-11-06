@@ -334,30 +334,31 @@ mg400ctl start collector
 640x480@30, 640x360@30, 320x240@30
 ```
 
-列表为空时，普通流使用 `640x480@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
+列表为空时，普通流使用 `1280x720@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 显式列表覆盖这些默认值，包括侧视流。
 以下 4 台摄像头的配置按上表接口顺序排列。
-侧视流 `camera3` 使用 `640x360@30`，与 `3840x2160` 侧视参考图像的宽高比相同。其他摄像头使用 `640x480@30`。
-托盘使用 `1280x720@30` 时，共享 USB 2 链路截断了 `camera2` 的图像帧。
+所有摄像头使用 `1280x720@30`。侧视流 `camera3` 的宽高比与 `3840x2160` 侧视参考图像相同。
+原版 `uvcvideo` 驱动让 AC410 在大于 `640x480` 的模式下占用最大的同步传输时隙，所以共享 USB 2 链路只能容纳 1 路这样的流。
+安装 [USB 带宽补丁](#usb-带宽补丁) 后，4 路 `1280x720@30` 可以同时以 30 fps 运行。
 提高模式前，先用 `mg400ctl camera-check` 和内核日志检查带宽：
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
-MG400_CAMERA_MODES=640x480@30,640x480@30,640x360@30,640x480@30
+MG400_CAMERA_MODES=1280x720@30,1280x720@30,1280x720@30,1280x720@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
-只预加载宽度不超过 640 且高度不超过 480 的流。
+只预加载宽度不超过 1280 且高度不超过 720 的流。
 更大的流在视频流、显微镜或单帧读取请求时启动。
 显微镜服务只在 `select_objective` 运行期间读取侧视流。
-预览转发服务不转发大于 `640x480` 的侧视流。
+预览转发服务不转发大于 `1280x720` 的侧视流。
 `camera3` 以 `3840x2160@30` 运行时，共享 USB 2 链路截断 `camera2` 的图像帧。
 按需启动的流可能发送截断的第 1 帧。显微镜读取线程丢弃不完整的帧。
 大尺寸流的最后 1 个观看者离开后，预览服务在读取响应正文的间隙释放上游读取连接。
 套接字操作仍使用 2 秒超时。这不是总关闭时限。其他读取者可使该流继续运行。
 视频流上限为 30 fps，包括采集模式为 `1920x1080@60` 时。
 观看者可以用 `?fps=N` 请求更低的帧率，N 为 1 到 30，例如 `/camera/camera2.mjpeg?fps=5`。其他查询值返回 404。
-每个预加载的流另有 1 路 H.264 预览 `/camera/<view>.mp4`，格式为分段 MP4，帧率与摄像头相同，码率上限为 2 Mbit/s。该路由不接受查询参数。
+每个预加载的流另有 1 路 H.264 预览 `/camera/<view>.mp4`，格式为分段 MP4，帧率与摄像头相同。宽度大于 640 的流码率上限为 4 Mbit/s，其他流为 2 Mbit/s。该路由不接受查询参数。
 go2rtc 从 `http://127.0.0.1:8770/api/camera/microscope/mjpeg` 读取 `1296x968` 的显微镜预览，在 `/camera/microscope.mp4` 提供码率上限为 3 Mbit/s 的 H.264 预览。
 go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有画面时，`/camera/microscope.mp4` 返回 502，控制台改用中转的 MJPEG。
 `/camera/fps.json` 返回每路 MJPEG 流在最近 2 s 内发送给每个观看者的帧率。没有观看者的流为 `null`。控制台在摄像头状态中读取这些值。
@@ -369,7 +370,7 @@ ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 
 同时使用真实设备前，必须按 H-21 在有人监督下检查带宽。
 托盘上约 30 mm 的 Micro QR 标签含 17 个模块，横向至少需要 70 像素。
 图像宽度为 1280 像素时，556 mm 的托盘视野约有 2.3 像素/mm。
-保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器并重启摄像头。
+保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器，再运行 `mg400ctl restart camera vision microscope orch`。这些服务都读取摄像头模式。
 
 启动摄像头服务：
 
@@ -386,6 +387,40 @@ mg400ctl start camera
 服务端只保留最新待处理帧，网络变慢时丢弃积压帧。
 服务端发送超时为 1.5 秒。H.264 预览的发送超时为 5 秒。
 
+### USB 带宽补丁
+
+`deploy/uvcvideo/` 包含 `uvcvideo` 驱动的补丁。补丁添加模块参数 `mjpeg_bpp`，单位为 1/1000 字节每像素，`0` 表示关闭。
+对 MJPEG 模式，驱动按宽度、高度、帧率和 `mjpeg_bpp` 估算每个微帧的传输量。估算值小于摄像头请求值时，驱动使用估算值。
+`mjpeg_bpp=200` 时，AC410 在 `1280x720@30` 下使用 alt 5（每微帧 800 字节）。原版驱动使用 alt 11（每微帧 3072 字节）。
+
+安装前，确认主机已安装 `dkms` 和当前内核的 `linux-headers`，并且 Secure Boot 已关闭。补丁模块没有签名。
+
+1. 构建并安装模块：
+
+   ```bash
+   sudo /usr/bin/python3 /opt/mg400/deploy/uvcvideo/install.py
+   ```
+
+   脚本下载当前内核系列的上游驱动源码，例如 `v6.14`，应用补丁，再通过 DKMS 构建和安装模块。
+   然后脚本写入 `/etc/modprobe.d/mg400-uvcvideo.conf`，内容为 `options uvcvideo mjpeg_bpp=200`。
+2. 重启主机，或重新加载驱动：
+
+   ```bash
+   sudo mg400ctl stop camera thermal
+   sudo rmmod uvcvideo
+   sudo modprobe uvcvideo
+   sudo mg400ctl start camera thermal
+   ```
+
+3. 确认 `cat /sys/module/uvcvideo/parameters/mjpeg_bpp` 输出 `200`。
+   在 `/sys/kernel/debug/usb/devices` 中，`1280x720@30` 的摄像头使用 `Alt= 5`。
+
+限制：
+
+- DKMS 为同一内核系列的每个新内核重建模块。启动其他内核系列时，主机使用原版驱动，并忽略 `mjpeg_bpp`。此时再次运行脚本。
+- 构建失败时，脚本删除它的 DKMS 包，原版驱动保持不变。
+- 4 路 `1920x1080@30` 接近链路上限。不要使用该配置。
+
 ### 摄像头故障
 
 画面异常时，先运行 `mg400ctl camera-check`。
@@ -400,7 +435,7 @@ mg400ctl start camera
 
 若摄像头已被识别，但视频流帧率很低，在 Olares 主机运行
 `curl -s http://127.0.0.1:1984/api/preload`。
-确认输出包含所有宽度不超过 640 且高度不超过 480 的已配置流。
+确认输出包含所有宽度不超过 1280 且高度不超过 720 的已配置流。
 若应预加载的流缺失，运行 `mg400ctl restart camera`，等待 2 秒后再次查询。
 采集服务启动时若设备缺失，预加载可能未建立。
 控制台的视频流会自动重连。已配置的 `camera<N>.jpg` 单帧接口在流按需启动时可能较慢。

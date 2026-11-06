@@ -31,7 +31,7 @@ class _NoRedirect(HTTPRedirectHandler):
 class Go2RTCCapture:
     """Newest complete JPEG from one persistent loopback MJPEG stream, with no redirects.
 
-    go2rtc starts a stream larger than 640x480 only on demand, and the first frame
+    go2rtc starts a stream larger than 1280x720 only on demand, and the first frame
     after a start can be truncated. One open `api/stream.mjpeg` connection keeps the
     stream running. A reader thread drops incomplete parts and reconnects after a
     failure. read() decodes only the newest complete JPEG.

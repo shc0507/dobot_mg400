@@ -84,8 +84,8 @@
 
 - 网格显示 6 个画面：camera1 到 camera4、热像仪和显微镜（Toupcam）。每个画面显示名称和用途、LIVE、STALE 或 OFFLINE 及帧龄、模式和实测帧率，以及 **Snapshot** 和 **Expand**。**Focus · 1 + strip** 显示 1 个大画面和其余画面的条带。
 - 实测帧率约每 1 s 更新，例如 `640×480 · 29.8 fps`。H.264 画面统计浏览器显示的帧。MJPEG 画面显示摄像头预览或显微镜中转在最近 2 s 内发送给每个观看者的帧率，同一画面有多个观看者时取平均值。热像画面统计收到的新帧。没有新的测量值时，不显示帧率。
-- camera1 到 camera4 和显微镜直接从代理加载。画面以摄像头帧率播放 `/camera/<view>.mp4` 的 H.264 视频，并保持接近最新画面。camera1 到 camera4 每路最多 2 Mbit/s，显微镜最多 3 Mbit/s，为控制命令留出 VPN 链路带宽。
-- 浏览器或主机无法播放 H.264 时，camera1 到 camera4 改为加载 `/camera/<view>.mjpeg` 的 MJPEG。摄像头预览只向每个观看者发送最新画面。网格和条带中的画面最多每秒 5 帧，大画面最多每秒 10 帧。
+- camera1 到 camera4 和显微镜直接从代理加载。画面以摄像头帧率播放 `/camera/<view>.mp4` 的 H.264 视频，并保持接近最新画面。camera1 到 camera4 中宽度大于 640 的画面每路最多 4 Mbit/s，较小的画面最多 2 Mbit/s，显微镜最多 3 Mbit/s，为控制命令留出 VPN 链路带宽。
+- 浏览器或主机无法播放 H.264 时，camera1 到 camera4 改为加载 `/camera/<view>.mjpeg` 的 MJPEG。摄像头预览只向每个观看者发送最新画面。网格和条带中的画面最多每秒 3 帧，大画面最多每秒 6 帧。
 - camera1 到 camera4 的 **Snapshot** 从 `/camera/<view>.full.jpg` 下载 `4000x3000` 的 JPEG。4 个摄像头共用 1 条 USB 2 链路，所以拍摄期间 go2rtc 只采集这 1 个摄像头。其他摄像头的预览和读取暂停约 3 秒，然后自动恢复。同一时间只拍 1 张，其他请求排队。
 - 控制台中转热像帧、显微镜的 MJPEG 备用视频流和显微镜的 **Snapshot**。显微镜无法播放 H.264 时，画面改为加载中转的 MJPEG。显微镜的 **Snapshot** 下载 Toupcam 的原尺寸无损 PNG，即 `2592x1944`，不需要控制权。
 - 显微镜作业运行时，camera3 的 **Snapshot** 返回 `409`，因为物镜切换要读取侧视流。

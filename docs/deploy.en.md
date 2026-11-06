@@ -319,7 +319,7 @@ With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG4
 An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.
 Only streams with width at most 1280 and height at most 720 are preloaded. Larger streams start on demand.
 Before several cameras use modes above `640x480`, install the [USB bandwidth patch](olares.en.md#usb-bandwidth-patch).
-After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then restart the cameras.
+After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `mg400ctl restart camera vision microscope orch`.
 See [Cameras](olares.en.md#cameras) for approved modes and the tray-camera configuration.
 
 ## Routine commands

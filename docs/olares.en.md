@@ -371,7 +371,7 @@ The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large stre
 H-21 requires supervised bandwidth checks before simultaneous hardware use.
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
-Keep each camera on its listed USB port. After changing devices or modes, run the installer again and restart the cameras.
+Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `mg400ctl restart camera vision microscope orch`. These services all read the camera modes.
 
 Start the camera services:
 

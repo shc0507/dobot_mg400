@@ -10,6 +10,7 @@ This document provides permanent information/instructions for the convenience of
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
 - 排查真机报警或碰撞时，先读 [报警与历史日志](docs/hardware.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
 - When git-committing a task, also write a brief description of what was done.
+- Coordinator and workers: a coordinator session reads [docs/agents/coordinator.md](docs/agents/coordinator.md) and keeps the board in `work/board.md`. A dispatched worker reads [docs/agents/worker.md](docs/agents/worker.md).
 
 ## Temporary screenshot cleanup
 

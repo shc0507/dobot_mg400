@@ -193,7 +193,7 @@ class FakeNode {
   getAttribute(name) { return this.attributes[name] ?? null; }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(event, callback) { this.listeners.set(event, callback); }
-  dispatch(event, data = {}) { this.listeners.get(event)?.({ preventDefault() {}, ...data }); }
+  dispatch(event, data = {}) { this.listeners.get(event)?.({ preventDefault() {}, stopPropagation() {}, target: this, ...data }); }
   click() { if (!this.disabled) this.dispatch("click"); }
   contains(node) { for (let item = node; item; item = item.parent) if (item === this) return true; return false; }
   focus() { this.doc.activeElement = this; }
@@ -206,7 +206,7 @@ class FakeNode {
   }
 }
 
-test("the side panel updates in place; a confirmation takes the focus and Esc closes it", async () => {
+async function mountWorkspace() {
   const doc = { activeElement: null, visibilityState: "visible", body: { dataset: { basePath: "/lab" } }, addEventListener() {} };
   doc.createElement = tag => new FakeNode(tag, doc);
   doc.createTextNode = text => Object.assign(new FakeNode("#text", doc), { ownText: String(text) });
@@ -217,50 +217,106 @@ test("the side panel updates in place; a confirmation takes the focus and Esc cl
     document: doc, LabConsole: { register: item => { registered = item; } },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, setInterval: () => 1,
   });
+  const sent = [];
+  const api = {
+    t: (key, vars) => logic.translate("en", key, vars), lang: () => "en",
+    describe: async () => ({ commands: { shutter: { any_client: true }, connect: { any_client: true } } }),
+    relay: async (device, action) => { sent.push([device, action]); return { outcome: "accepted" }; },
+    notify() {}, owns: () => false, take: async () => {}, release: async () => {},
+    state: () => ({ services: [{ id: "thermal", connected: true }] }),
+    onLanguage() {}, onState() {}, consoleRequest: async () => ({}),
+  };
+  cameras.install();
+  const rootNode = doc.createElement("section");
+  registered.mount(rootNode, api);
+  await new Promise(resolve => saved.setTimeout(resolve, 0));
+  const refresh = () => { for (const item of timers.splice(0)) if (item.fn.name === "refresh") item.fn(); };
+  const button = (text, within = rootNode) => within.all().find(node => node.tagName === "BUTTON" && node.textContent === text);
+  const cell = view => rootNode.all().find(node => node.className.startsWith("lcam-cell") && node.getAttribute("data-view") === view);
+  const restore = () => Object.assign(globalThis, saved);
+  return { doc, rootNode, sent, refresh, button, cell, restore };
+}
+
+test("the wall shows all 6 views without a side panel; Large view puts 1 view large beside a rail", async () => {
+  const page = await mountWorkspace();
   try {
-    const sent = [];
-    const api = {
-      t: (key, vars) => logic.translate("en", key, vars), lang: () => "en",
-      describe: async () => ({ commands: { shutter: { any_client: true }, connect: { any_client: true } } }),
-      relay: async (device, action) => { sent.push([device, action]); return { outcome: "accepted" }; },
-      notify() {}, owns: () => false, take: async () => {}, release: async () => {},
-      state: () => ({ services: [{ id: "thermal", connected: true }] }),
-      onLanguage() {}, onState() {}, consoleRequest: async () => ({}),
-    };
-    cameras.install();
-    const rootNode = doc.createElement("section");
-    registered.mount(rootNode, api);
-    await new Promise(resolve => saved.setTimeout(resolve, 0));
-    const side = rootNode.all().find(node => node.className === "lc-card lcam-side");
-    const refresh = () => { for (const item of timers.splice(0)) if (item.fn.name === "refreshSide") item.fn(); };
-    cameras.engine.thermal = { sequence: 1, stats: { max: { celsius: 30 } } };
-    cameras.engine.listeners.forEach(fn => fn());
-    refresh();
-    const shutter = side.querySelector('[data-focus="shutter"]');
-    const max = () => side.all().find(node => node.className === "lcam-value");
-    assert.match(max().textContent, /^30/);
-    // A new reading changes the text, not the nodes.
-    cameras.engine.thermal = { sequence: 2, stats: { max: { celsius: 31.5 } } };
-    cameras.engine.listeners.forEach(fn => fn());
-    refresh();
-    assert.equal(side.querySelector('[data-focus="shutter"]'), shutter);
-    assert.match(max().textContent, /^31\.5/);
-    // The confirmation takes the focus. Esc closes it and gives the focus back to the button.
-    shutter.click();
-    const dialog = side.querySelector('[data-focus="confirm"]');
-    assert.equal(dialog.getAttribute("role"), "alertdialog");
-    assert.equal(doc.activeElement, dialog);
-    dialog.dispatch("keydown", { key: "Escape" });
-    assert.equal(side.querySelector('[data-focus="confirm"]'), null);
-    assert.equal(doc.activeElement.getAttribute("data-focus"), "shutter");
-    assert.deepEqual(sent, []);
+    const wall = page.rootNode.all().find(node => node.className.startsWith("lcam-wall"));
+    assert.equal(wall.className, "lcam-wall lcam-mode-wall");
+    assert.equal(wall.children.length, 6);
+    assert.equal(page.rootNode.all().some(node => /lcam-side/.test(node.className)), false);
+    const camera2Tile = page.cell("camera2").children[0];
+    page.button("Large view").click();
+    assert.equal(wall.className, "lcam-wall lcam-mode-large");
+    assert.equal(page.cell("camera2").className, "lcam-cell lcam-big");
+    // The tiles stay in their cells; only the classes change, so no stream restarts.
+    assert.equal(page.cell("camera2").children[0], camera2Tile);
+    // A click on a rail tile puts it in the large place. Expand on a wall tile does the same.
+    page.cell("thermal").all().find(node => node.className === "lcam-stage").dispatch("click");
+    assert.equal(page.cell("thermal").className, "lcam-cell lcam-big");
+    assert.equal(page.cell("camera2").className, "lcam-cell");
+    page.button("All views").click();
+    assert.equal(wall.className, "lcam-wall lcam-mode-wall");
+    assert.ok(page.rootNode.all().every(node => !/lcam-big/.test(node.className)));
+    page.button("Expand", page.cell("camera4")).click();
+    assert.equal(wall.className, "lcam-wall lcam-mode-large");
+    assert.equal(page.cell("camera4").className, "lcam-cell lcam-big");
     // The overlay switches show their new state at once.
-    const detections = rootNode.all().find(node => node.tagName === "BUTTON" && /Detections|detection/i.test(node.textContent));
+    const detections = page.button("Chip detections");
     assert.equal(detections.getAttribute("aria-pressed"), "true");
     detections.click();
     assert.equal(detections.getAttribute("aria-pressed"), "false");
-    assert.doesNotMatch(detections.textContent, /✓/);
-  } finally {
-    Object.assign(globalThis, saved);
-  }
+  } finally { page.restore(); }
+});
+
+test("thermal settings open on demand in a card that takes the focus, keeps its nodes and closes on Esc", async () => {
+  const page = await mountWorkspace();
+  try {
+    const card = page.rootNode.all().find(node => node.className === "lcam-card");
+    const settings = page.button("Settings", page.cell("thermal"));
+    assert.equal(card.hidden, true);
+    assert.equal(settings.getAttribute("aria-expanded"), "false");
+    cameras.engine.thermal = { sequence: 1, stats: { max: { celsius: 30 }, min: { celsius: 18 }, center: { celsius: 21 }, mean_celsius: 21 } };
+    cameras.engine.listeners.forEach(fn => fn());
+    page.refresh();
+    settings.click();
+    assert.equal(card.hidden, false);
+    assert.equal(page.doc.activeElement, card);
+    assert.equal(settings.getAttribute("aria-expanded"), "true");
+    const shutter = card.querySelector('[data-focus="shutter"]');
+    // A new frame updates the readings on the tile; it does not rebuild the card.
+    cameras.engine.thermal = { sequence: 2, stats: { max: { celsius: 31.5 }, min: { celsius: 18 }, center: { celsius: 21 }, mean_celsius: 21 } };
+    cameras.engine.listeners.forEach(fn => fn());
+    page.refresh();
+    for (const tile of cameras.engine.tiles) if (tile.view === "thermal") tile.refresh();
+    assert.equal(card.querySelector('[data-focus="shutter"]'), shutter);
+    const readings = page.cell("thermal").all().find(node => node.className === "lcam-readings");
+    assert.match(readings.textContent, /^Max 31\.5/);
+    // The shutter confirmation takes the focus. The first Esc closes it, the second closes the card.
+    shutter.click();
+    assert.equal(page.doc.activeElement, card.querySelector('[data-focus="confirm"]'));
+    card.dispatch("keydown", { key: "Escape" });
+    assert.equal(card.querySelector('[data-focus="confirm"]'), null);
+    assert.equal(page.doc.activeElement.getAttribute("data-focus"), "shutter");
+    card.dispatch("keydown", { key: "Escape" });
+    assert.equal(card.hidden, true);
+    assert.equal(page.doc.activeElement, settings);
+    assert.deepEqual(page.sent, []);
+  } finally { page.restore(); }
+});
+
+test("Draw region closes the card and shows Save and Cancel on the thermal tile", async () => {
+  const page = await mountWorkspace();
+  try {
+    page.button("Settings", page.cell("thermal")).click();
+    page.button("Draw region").click();
+    const card = page.rootNode.all().find(node => node.className === "lcam-card");
+    const bar = page.rootNode.all().find(node => node.className === "lcam-drawbar");
+    assert.equal(card.hidden, true);
+    assert.equal(bar.hidden, false);
+    assert.match(bar.textContent, /Drag on the thermal view\./);
+    // The thermal service in this test offers no Save, so Save stays unavailable.
+    assert.equal(page.button("Save region", bar).disabled, true);
+    page.button("Cancel", bar).click();
+    assert.equal(bar.hidden, true);
+  } finally { page.restore(); }
 });

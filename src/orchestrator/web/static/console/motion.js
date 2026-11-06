@@ -17,6 +17,9 @@
   // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
   const KEYS = "WASDQERFZX";
   const KEY_MAP = [["W", "S", "kb.reach"], ["A", "D", "kb.base"], ["R", "F", "kb.z"], ["Q", "E", "kb.yaw"], ["Z", "X", "kb.grip"]];
+  // The key that moves like each jog button, shown on the button while the keyboard is on. The letters R and Z
+  // are keys here, not axes: R moves Z up, and Q turns R + (J4 +).
+  const JOG_KEYS = { "z+": "R", "z-": "F", "r+": "Q", "r-": "E" };
   const KEYS_MS = 150;
   // Stage hold: the console keeps 1 axis moving while this page refreshes the hold (dead-man 0.5 s).
   // Each pair is the Hold − key (ccw) and the Hold + key (cw) of 1 axis.
@@ -180,7 +183,7 @@
       "arm.enable": "Enable", "arm.disable": "Disable", "arm.clear": "Clear alarm",
       "arm.stop": "Stop arm", "arm.home": "Home…", "arm.homeConfirm": "Clear the path of the arm. Home moves all 4 joints to 0°.",
       "arm.alarmItem": "Alarm {id}",
-      "jog.title": "Jog", "jog.step": "Jog step",
+      "jog.title": "Jog", "jog.step": "Jog step, mm, or degrees for R", "jog.units": "mm · R in °", "jog.key": "Key {key}",
       "jog.move": "Move {label} by the jog step",
       "move.title": "Move to a pose", "move.speed": "Speed", "move.speedLabel": "Speed, 1 to {cap}",
       "move.useActual": "Use actual", "move.execute": "Execute ↗", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
@@ -240,7 +243,7 @@
       "arm.enable": "使能", "arm.disable": "下使能", "arm.clear": "清除报警",
       "arm.stop": "停止机械臂", "arm.home": "回原点…", "arm.homeConfirm": "请清空机械臂的运动路径。回原点会把 4 个关节都转到 0°。",
       "arm.alarmItem": "报警 {id}",
-      "jog.title": "点动", "jog.step": "点动步长",
+      "jog.title": "点动", "jog.step": "点动步长，mm，R 为度", "jog.units": "mm · R 为 °", "jog.key": "按键 {key}",
       "jog.move": "按点动步长移动 {label}",
       "move.title": "移动到位姿", "move.speed": "速度", "move.speedLabel": "速度，1 到 {cap}",
       "move.useActual": "使用当前值", "move.execute": "执行 ↗", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
@@ -472,8 +475,13 @@
       const poseTiles = el("div", { class: "mo-pose", role: "group", "aria-label": t("move.useActual") },
         ...AXES.map((axis, i) => el("div", { class: "mo-tile" }, el("span", { class: "lc-muted", text: axis.toUpperCase() }), refs.pose[i])));
       refs.jog = {};
+      refs.jogHints = [];
       const jogButton = item => {
-        const button = el("button", { type: "button", class: "mo-jog", text: item.label, "aria-label": t("jog.move", { label: item.label }), onclick: () => jog(item) });
+        const key = JOG_KEYS[item.id];
+        const hint = key ? el("kbd", { class: "mo-key mo-hint", text: key, title: t("jog.key", { key }), hidden: true }) : null;
+        const button = el("button", { type: "button", class: "mo-jog", "aria-label": t("jog.move", { label: item.label }), onclick: () => jog(item) },
+          el("span", { text: item.label }), hint);
+        if (hint) refs.jogHints.push(hint);
         refs.jog[item.id] = button;
         return button;
       };
@@ -483,13 +491,13 @@
         el("span"), jogButton(JOG[3]), el("span"));
       const side = el("div", { class: "mo-zr" }, ...JOG.slice(4).map(jogButton));
       refs.steps = STEPS.map(step => el("button", {
-        type: "button", role: "radio", class: "mo-chip", text: `${step} mm`,
+        type: "button", role: "radio", class: "mo-chip", text: String(step),
         onclick: () => { model.step = step; update(); },
       }));
       const jogBox = el("div", { class: "mo-block" },
         el("div", { class: "mo-head" }, el("h3", { text: t("jog.title") })),
         el("div", { class: "mo-jogrow" }, pad, side),
-        el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("jog.step") }, ...refs.steps));
+        el("div", { class: "mo-chips", role: "radiogroup", "aria-label": t("jog.step") }, ...refs.steps, el("span", { class: "lc-muted", text: t("jog.units") })));
 
       refs.inputs = {};
       const units = { x: "X mm", y: "Y mm", z: "Z mm", r: "R °" };
@@ -674,6 +682,7 @@
       const reason = !kb.on && typeof robot?.keyboard_disarm_reason === "string" ? robot.keyboard_disarm_reason : "";
       refs.kbOff.textContent = reason ? t("kb.off", { reason }) : "";
       refs.kbOff.hidden = !reason;
+      for (const hint of refs.jogHints || []) hint.hidden = !kb.on;
       renderKeys();
     }
 

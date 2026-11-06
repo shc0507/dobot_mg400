@@ -203,6 +203,16 @@ test("a confirmation takes the focus, has a coral Confirm, and Esc gives the foc
   assert.equal(calls.filter(call => call[0] === "relay").length, 0);
 });
 
+test("gas text is amber only when the flow or the valve is not confirmed", async () => {
+  const flow = { connected: true, gas_channels: [
+    { channel_index: 0, gas_name: "Ar", actual_percent: 10 }, { channel_index: 1, gas_name: "H2" }, { channel_index: 2, gas_name: "N2", actual_percent: 0 } ],
+    gas_valves: [{ channel_index: 0, open: true, verified: true }, { channel_index: 1, open: false, verified: true }, { channel_index: 2, open: false, verified: false }] };
+  const base = statusBody();
+  const { root } = await load({ status: { ...base, furnace: { ...base.furnace, flow } } });
+  const states = walk(root).filter(node => node.className.startsWith("pr-gas-state"));
+  assert.deepEqual(states.map(node => node.className), ["pr-gas-state", "pr-gas-state pr-doubt", "pr-gas-state pr-doubt"]);
+});
+
 test("old data dims the readings and the chart; a sent command shows its button label", async () => {
   const fresh = await load();
   assert.doesNotMatch(walk(fresh.root).find(node => node.className.startsWith("pr-tile-value pr-tone-pv")).className, /pr-stale/);

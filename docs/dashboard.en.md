@@ -58,7 +58,7 @@ Robot arm:
 - During an alarm, a coral note at the top of the card lists each controller alarm with its ID, description and solution. **Clear alarm** is in the note. Below the buttons, the card shows the message of the robot service.
 - After an unconfirmed stop, the note shows Stop not confirmed and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
 - The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves. The joint tiles show J1 to J4 in degrees.
-- The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose.
+- The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose. While the keyboard is on, the Z and R buttons show the key that moves the same way: R and F for Z, Q and E for R.
 - **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
 - The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
 - **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. **Move** sends the entered **Position** from 0 to 1000. The gripper outcome shows beside the title, and the gripper message shows below the buttons.

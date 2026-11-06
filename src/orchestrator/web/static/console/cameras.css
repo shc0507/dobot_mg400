@@ -14,7 +14,7 @@
 #ws-cameras .lcam-select, #ws-cameras .lcam-input { min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); width: 100%; }
 #ws-cameras .lcam-input:disabled { opacity: 0.55; }
 #ws-cameras .lcam-reading { display: flex; flex-direction: column; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
-#ws-cameras .lcam-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+#ws-cameras .lcam-value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #ws-cameras .lc-confirm .lc-danger { min-width: 120px; }
 #ws-cameras .lcam-selected { border: 2px solid var(--accent); }
 
@@ -34,8 +34,8 @@ img.lcam-media, video.lcam-media { image-rendering: auto; }
 .lcam-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .lcam-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; background: #0A0E11; }
 .lcam-colorbar { position: absolute; top: 8px; right: 8px; bottom: 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); pointer-events: none; }
-.lcam-cb-bar { flex: 1 1 auto; width: 10px; border-radius: 3px; }
-.lcam-cb-label { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+.lcam-cb-bar { flex: 1 1 auto; width: 10px; border-radius: 6px; }
+.lcam-cb-label { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
 .lcam-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 10px 12px; }
 .lcam-meta { display: flex; flex-direction: column; min-width: 0; font-size: 12px; }
 .lcam-mode { color: var(--soft); font-variant-numeric: tabular-nums; }

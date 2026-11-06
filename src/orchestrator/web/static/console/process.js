@@ -698,6 +698,9 @@
       const valve = valveState((furnace?.flow?.gas_valves || []).find(value => value.channel_index === channel));
       setText(row.state, t("gas.actual", { value: finite(item.actual_percent) === null ? t("gas.unverified") : fmt(item.actual_percent) + " %" })
         + " · " + t(valve.key, { state: valve.state ? t(valve.state) : "" }));
+      // Amber only when the flow or the valve is not confirmed.
+      const doubt = finite(item.actual_percent) === null || !["valve.open", "valve.closed"].includes(valve.key);
+      row.state.className = "pr-gas-state" + (doubt ? " pr-doubt" : "");
       row.send.disabled = !fMine || !furnace?.flow?.connected || busy("flow-" + channel);
       row.close.disabled = busy("close-gas-" + channel);
     });

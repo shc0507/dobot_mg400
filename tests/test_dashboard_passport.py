@@ -917,12 +917,14 @@ const cases = {
     await page.search();
     assert.equal(page.get('passport-status').textContent, '正在读取运行记录…');
     await page.respond(0, pageData('runs', [run()]));
-    assert.ok(walk(page.get('passport-runs')).some(element => element.textContent === '读取此次运行'));
+    assert.ok(walk(page.get('passport-runs')).some(element =>
+      element.textContent === '读取此次运行'));
     // Switching back reads the chip again in English. Storage stays unused when it is blocked.
     await page.click('pp-lang');
     assert.equal(page.requests.length, 2);
     await page.respond(1, pageData('runs', [run()]));
-    assert.ok(walk(page.get('passport-runs')).some(element => element.textContent === 'Read this run'));
+    assert.ok(walk(page.get('passport-runs')).some(element =>
+      element.textContent === 'Read this run'));
   },
   async rejected_artifact_retains_no_blob() {
     const page = browser(); await open(page);

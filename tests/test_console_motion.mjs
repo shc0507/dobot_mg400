@@ -331,6 +331,22 @@ async function keyboardPage(options = {}) {
   return { ...page, win, docListeners, intervals, restore, key, keyCalls, holdCalls };
 }
 
+test("while the keyboard is on, the Z and R jog buttons show the key that moves the same way", async () => {
+  const page = await keyboardPage();
+  try {
+    const hints = ["Z ↑", "Z ↓", "R +", "R −"].map(label => page.find(`Move ${label} by the jog step`).children[1]);
+    assert.deepEqual(hints.map(hint => hint.ownText), ["R", "F", "Q", "E"]);
+    assert.ok(hints.every(hint => hint.hidden));
+    assert.equal(page.find("Move +X by the jog step").children.length, 1);
+    page.find("Keyboard").click();
+    await page.settle();
+    assert.ok(hints.every(hint => !hint.hidden));
+    // The step chips carry numbers; the unit line names both units.
+    assert.ok(page.root.all().some(node => node.ownText === "mm · R in °"));
+    assert.equal(page.find("2").getAttribute("role"), "radio");
+  } finally { page.restore?.(); }
+});
+
 test("keyboard jog arms, refreshes held keys and releases them on blur", async () => {
   const page = await keyboardPage();
   try {

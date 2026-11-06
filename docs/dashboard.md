@@ -119,11 +119,13 @@
 - 每路气体显示实际流量和阀门状态。流量控制器未确认的阀门状态显示为未确认。
 - **Close** 通过 `ws/process/gas-stop` 停止 1 路气体。它把流量设为 0 并关闭阀门，不需要控制权。页面显示结果：已确认、未确认或未知。
 - 炉子因故障锁定时，显示 **Acknowledge fault…**。它需要炉子控制权和页面中的确认。确认前，先确认控制器显示 STOP。
-- 显微镜显示 Toupcam 画面和 camera3 侧面画面。Cameras 工作区提供 `window.LabCameras.tile` 时使用该画面，否则显示 OFFLINE。
+- 显微镜卡片显示 1 个大预览。预览中的 **Microscope** 和 **Side camera** 切换 Toupcam 画面和 camera3 侧面画面。只有显示的画面传输视频流。Cameras 工作区提供 `window.LabCameras.tile` 时使用该画面，否则显示 OFFLINE。
 - 物镜按钮、微调、点动和自动对焦只在对焦零点已知时可用。服务先把焦距升到安全高度，再切换物镜。对焦条按测量的限位显示位置。
-- 物镜按钮下方的 **−10**、**−1**、**+1** 和 **+10** 在当前焦距按整步转动转盘，不先把焦距升到安全高度。按钮旁显示转盘偏移及其上限。偏移未知或微调会使偏移超出上限时，按钮不可用。
+- 预览下方是物镜按钮和对焦控件：对焦条、**−** 和 **+**（中间为点动脉冲）、**Autofocus**（局部）、**Full autofocus** 和 **Set focus zero…**。
+- **Turret**、**Recording** 和 **Sequence** 默认收起。展开后使用其中的控件。
+- **Turret** 中的 **−10**、**−1**、**+1** 和 **+10** 在当前焦距按整步转动转盘，不先把焦距升到安全高度。按钮旁显示转盘偏移及其上限。偏移未知或微调会使偏移超出上限时，按钮不可用。
 - **Set focus zero…** 需要显微镜控制权和页面中的确认。控制台只发送 1 次。对焦齿轮可能打滑。每次使用前，在 50x 焦点处重新设零。智能体、配方和运行器不能设置对焦零点。
-- **Save snapshot** 保存 1 张 PNG。**Snapshot path** 留空时使用服务默认路径，也可以输入不含 `.` 或 `..` 段的相对路径。
+- **Recording** 中的 **Save snapshot** 保存 1 张 PNG。**Snapshot path** 留空时使用服务默认路径，也可以输入不含 `.` 或 `..` 段的相对路径。
 - **Start recording** 和 **Record next furnace sequence** 带 **Run name**、**Mode**、**Interval s** 和 **Output fps** 发送录制命令。**Live** 不使用间隔。录制失败时显示错误。
 - **Turn stabilization on** 和 **Turn stabilization off** 开关防抖。
 

@@ -163,10 +163,10 @@ The microscope service has no web page. Operate the microscope in the Furnace + 
 1. On the microscope card, select **Take control**. If another client holds the lease, the console cannot get control. It does not take over automation control.
 2. Before motion, read the focus position and zero state on the card.
 3. Use the objective buttons to change the objective. The buttons use the objective IDs of `select_objective` in `GET /api/describe`.
-4. At working focus, use **−10**, **−1**, **+1**, or **+10** below the objective buttons to turn the turret in full steps. The text beside them shows the turret offset and its limit.
-5. Use **Local autofocus** or **Full autofocus** to focus automatically.
-6. Enter a pulse count in **Jog pulses**, then use **− Jog** or **+ Jog** to jog within the limits.
-7. Use **Save snapshot** to save a snapshot.
+4. At working focus, open **Turret** and use **−10**, **−1**, **+1**, or **+10** to turn the turret in full steps. The text beside them shows the turret offset and its limit.
+5. Use **Autofocus** (local) or **Full autofocus** to focus automatically.
+6. Enter a pulse count between **−** and **+**, then use **−** or **+** to jog within the limits.
+7. Open **Recording** and use **Save snapshot** to save a snapshot.
 
 When zero is unknown, the objective, nudge, and jog buttons are unavailable.
 A nudge button is unavailable when the turret offset is unknown, or when the nudge would move the offset outside its limit.

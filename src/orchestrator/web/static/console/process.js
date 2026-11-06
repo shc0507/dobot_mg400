@@ -45,20 +45,20 @@
       "tile.ramp": "Ramp °C/min",
       "confirm.ok": "Confirm", "confirm.cancel": "Cancel",
       "scope.title": "Microscope · Toupcam", "scope.zero": "zero set", "scope.noZero": "focus zero unknown",
-      "scope.stop": "Stop", "scope.view": "Toupcam", "scope.side": "Side camera (camera3) on the turret",
+      "scope.stop": "Stop", "scope.view": "Toupcam", "view.scope": "Microscope", "view.side": "Side camera", "view.switch": "Preview",
       "tile.offline": "OFFLINE",
-      "obj.title": "Objective", "obj.name": "Objective {id}", "obj.note": "Switching raises focus to clearance first, then turns the turret with the side camera.",
+      "obj.title": "Objective", "obj.name": "Objective {id}", "turret.title": "Turret",
       "obj.nudge": "Turn the turret {steps} full steps", "obj.offset": "Turret {offset} / ±{limit} full steps",
       "obj.offsetUnknown": "Turret offset unknown. Select another objective first.",
       "focus.title": "Focus", "focus.position": "{pos} / {max} pulses", "focus.unknown": "Position unknown",
       "focus.noLimits": "Limits not measured", "focus.min": "{min} · window side", "focus.max": "{max} · away",
-      "focus.bar": "Focus position", "focus.jog": "Jog pulses", "focus.down": "− Jog", "focus.up": "+ Jog",
-      "focus.local": "Local autofocus", "focus.full": "Full autofocus",
+      "focus.bar": "Focus position", "focus.jog": "Jog pulses", "focus.down": "Jog focus −", "focus.up": "Jog focus +",
+      "focus.local": "Autofocus", "focus.full": "Full autofocus",
       "zero.reminder": "The focus gears can slip. Re-zero at the 50x focus before each use.",
       "zero.set": "Set focus zero…",
       "zero.confirm": "Is the 50x objective focused on the sample? The current focus position becomes zero.",
       "zero.done": "Focus zero sent.",
-      "rec.snapshot": "Save snapshot", "rec.start": "Start recording", "rec.stop": "Stop recording",
+      "rec.title": "Recording", "rec.off": "off", "rec.snapshot": "Save snapshot", "rec.start": "Start recording", "rec.stop": "Stop recording",
       "rec.arm": "Record next furnace sequence", "rec.disarm": "Cancel sequence recording",
       "rec.stabOn": "Turn stabilization on", "rec.stabOff": "Turn stabilization off",
       "rec.state": "Recording: {status} · {frames} frames", "rec.armed": "Armed for the next furnace sequence.",
@@ -114,20 +114,20 @@
       "tile.ramp": "速率 °C/min",
       "confirm.ok": "确认", "confirm.cancel": "取消",
       "scope.title": "显微镜 · Toupcam", "scope.zero": "零点已设", "scope.noZero": "对焦零点未知",
-      "scope.stop": "停止", "scope.view": "Toupcam", "scope.side": "转盘侧面相机（camera3）",
+      "scope.stop": "停止", "scope.view": "Toupcam", "view.scope": "显微镜", "view.side": "侧面相机", "view.switch": "预览",
       "tile.offline": "离线",
-      "obj.title": "物镜", "obj.name": "物镜 {id}", "obj.note": "切换时先把焦距升到安全高度，再用侧面相机转动转盘。",
+      "obj.title": "物镜", "obj.name": "物镜 {id}", "turret.title": "转盘",
       "obj.nudge": "转盘转动 {steps} 整步", "obj.offset": "转盘 {offset} / ±{limit} 整步",
       "obj.offsetUnknown": "转盘偏移未知。先选择其他物镜。",
       "focus.title": "对焦", "focus.position": "{pos} / {max} 脉冲", "focus.unknown": "位置未知",
       "focus.noLimits": "限位未测量", "focus.min": "{min} · 窗口侧", "focus.max": "{max} · 远离",
-      "focus.bar": "对焦位置", "focus.jog": "点动脉冲", "focus.down": "− 点动", "focus.up": "+ 点动",
-      "focus.local": "局部自动对焦", "focus.full": "全程自动对焦",
+      "focus.bar": "对焦位置", "focus.jog": "点动脉冲", "focus.down": "对焦点动 −", "focus.up": "对焦点动 +",
+      "focus.local": "自动对焦", "focus.full": "全程自动对焦",
       "zero.reminder": "对焦齿轮可能打滑。每次使用前在 50x 焦点处重新设零。",
       "zero.set": "设置对焦零点…",
       "zero.confirm": "50x 物镜已对焦到样品上吗？当前对焦位置将设为零点。",
       "zero.done": "已发送对焦零点。",
-      "rec.snapshot": "保存快照", "rec.start": "开始录制", "rec.stop": "停止录制",
+      "rec.title": "录制", "rec.off": "关", "rec.snapshot": "保存快照", "rec.start": "开始录制", "rec.stop": "停止录制",
       "rec.arm": "录制下一次炉子程序", "rec.disarm": "取消程序录制",
       "rec.stabOn": "开启防抖", "rec.stabOff": "关闭防抖",
       "rec.state": "录制：{status} · {frames} 帧", "rec.armed": "已准备录制下一次炉子程序。",
@@ -312,7 +312,7 @@
 
   const view = { api: null, root: null, global: null, timer: null, status: null, describe: {}, describeAt: {}, rows: null, dirty: false,
     endGas: { 0: "0", 1: "0", 2: "0" }, endUntil: "", target: "200", ramp: "10", jog: "100", flows: { 0: "0", 1: "0", 2: "0" },
-    confirm: null, busy: new Set(), tiles: {}, nodes: {},
+    confirm: null, busy: new Set(), tiles: {}, nodes: {}, open: {}, scopeView: "microscope",
     snapPath: "", rec: { name: "", mode: "time_lapse", interval: "30", fps: "1" } };
 
   function show() {
@@ -415,6 +415,25 @@
     return tile;
   }
 
+  /** A closed group for rarely used controls. It keeps its open state across rebuilds. */
+  function disclosure(id, title, state, ...body) {
+    const { el } = view.api;
+    const node = el("details", { class: "pr-details", "data-role": "group-" + id },
+      el("summary", { class: "pr-summary" }, el("span", { class: "pr-summary-title", text: title }), state),
+      el("div", { class: "pr-details-body" }, ...body));
+    node.open = view.open[id] === true;
+    node.addEventListener("toggle", () => { view.open[id] = node.open === true; });
+    return node;
+  }
+
+  /** Show 1 preview view. The hidden view stops its stream. */
+  function showView(name) {
+    view.scopeView = name === "camera3" ? "camera3" : "microscope";
+    const n = view.nodes;
+    for (const pane of n.viewPanes || []) pane.hidden = pane.getAttribute("data-view") !== view.scopeView;
+    for (const node of n.viewButtons || []) node.setAttribute("aria-pressed", node.getAttribute("data-role") === "view-" + view.scopeView ? "true" : "false");
+  }
+
   function controlButtons(device) {
     const { t, deviceName } = view.api;
     const name = deviceName(device);
@@ -434,10 +453,12 @@
     n.furnaceSub = el("span", { class: "lc-muted" });
     n.furnaceNote = el("p", { class: "pr-note", hidden: true });
     n.tiles = {};
-    const tiles = ["pv", "sv", "ramp", "mode", "crucible"].map(key => {
+    const tiles = ["pv", "sv", "crucible"].map(key => {
       n.tiles[key] = el("span", { class: "pr-tile-value" });
       return el("div", { class: "pr-tile" }, el("span", { class: "pr-tile-label", text: t("tile." + key) }), n.tiles[key]);
     });
+    n.tiles.mode = el("span", { class: "pr-tile-value" });
+    n.tiles.ramp = el("span", { class: "pr-tile-value" });
     n.chart = chartNode();
     n.connect = button(t("furnace.connect"), () => send("furnace", "connect", {}), { "data-role": "connect" });
     n.connectFlow = button(t("furnace.connectFlow"), () => send("furnace", "connect_flow", {}), { "data-role": "connect-flow" });
@@ -450,7 +471,7 @@
       n.apply);
     const applyConfirm = confirmBox("apply", t("set.confirm", { target: view.target, ramp: view.ramp }), applySetpoint);
 
-    n.seqState = el("span", { class: "lc-muted", "data-role": "seq-state" });
+    n.seqState = el("span", { class: "pr-summary-state", "data-role": "seq-state" });
     n.seqProgress = el("p", { class: "lc-muted" });
     n.add = button(t("seq.add"), () => { view.rows.push(editorRows(null)[0]); view.dirty = true; buildSequence(); update(); }, { "data-role": "add-step" });
     n.save = button(t("seq.save"), () => sendSequence("set_sequence"), { "data-role": "save-sequence" });
@@ -461,9 +482,9 @@
       n.sequenceBody));
     const endGas = el("div", { class: "pr-row pr-end" },
       ...[0, 1, 2].map(channel => el("label", { class: "pr-field" }, t("seq.endGas", { gas: gasNames()[channel] }),
-        input({ type: "number", min: "0", max: "100", step: "0.1", class: "pr-input" }, view.endGas[channel], value => { view.endGas[channel] = value; view.dirty = true; }))),
+        input({ type: "number", min: "0", max: "100", step: "0.1", class: "pr-input pr-narrow" }, view.endGas[channel], value => { view.endGas[channel] = value; view.dirty = true; }))),
       el("label", { class: "pr-field" }, t("seq.endUntil"),
-        input({ type: "number", min: "0", step: "1", class: "pr-input", "data-role": "end-until" }, view.endUntil, value => { view.endUntil = value; view.dirty = true; })));
+        input({ type: "number", min: "0", step: "1", class: "pr-input pr-narrow", "data-role": "end-until" }, view.endUntil, value => { view.endUntil = value; view.dirty = true; })));
     const startConfirm = confirmBox("start", t("seq.confirm", { count: view.rows?.length || 0 }), () => sendSequence("start_sequence"));
 
     n.gasRows = [0, 1, 2].map(channel => {
@@ -471,56 +492,60 @@
       row.send = button(t("gas.send"), () => sendFlow(channel), { "data-role": "send-flow-" + channel });
       row.input = input({ type: "number", min: "0", max: "100", step: "0.1", class: "pr-input pr-narrow", "aria-label": t("gas.flow", { gas: gasNames()[channel] }) }, view.flows[channel], value => { view.flows[channel] = value; });
       row.close = button(t("gas.close"), () => closeGas(channel), { class: "lc-danger pr-danger", "data-role": "close-gas-" + channel, "aria-label": t("gas.closeLabel", { gas: gasNames()[channel] }) });
-      row.node = el("div", { class: "pr-gas" }, row.name, row.state, row.input, row.send, row.close);
+      row.node = el("div", { class: "pr-gas" }, el("div", { class: "pr-gas-text" }, row.name, row.state), row.input, row.send, row.close);
       return row;
     });
 
-    const furnace = el("section", { class: "lc-card pr-card", "aria-labelledby": "pr-furnace-title" },
+    const furnace = el("section", { class: "lc-card pr-card pr-furnace", "aria-labelledby": "pr-furnace-title" },
       el("div", { class: "lc-card-head" },
         el("div", { class: "pr-head" }, el("h2", { id: "pr-furnace-title", text: t("furnace.title") }), n.furnaceSub),
-        el("div", { class: "pr-row" }, ...controlButtons("furnace"),
-          el("button", { type: "button", class: "lc-stop", "data-role": "stop-furnace", text: t("furnace.stop"), onclick: stopFurnace }))),
+        el("div", { class: "pr-row" }, ...controlButtons("furnace"))),
+      el("button", { type: "button", class: "lc-stop pr-stop-wide", "data-role": "stop-furnace", text: t("furnace.stop"), onclick: stopFurnace }),
       n.furnaceNote,
       n.ack = button(t("fault.ack"), () => ask("ack"), { class: "lc-danger pr-danger", "data-role": "acknowledge", hidden: true }),
       confirmBox("ack", t("fault.confirm"), () => operator("acknowledge", "fault.done")),
-      el("div", { class: "pr-row" }, n.connect, n.connectFlow),
+      n.connectRow = el("div", { class: "pr-row" }, n.connect),
       el("div", { class: "pr-tiles" }, ...tiles),
+      el("p", { class: "pr-state" },
+        n.tiles.mode,
+        el("span", { class: "pr-state-item" }, el("span", { class: "pr-state-label", text: t("tile.ramp") }), n.tiles.ramp)),
       n.chart.figure,
       setpoint, applyConfirm,
-      el("div", { class: "pr-block" },
-        el("div", { class: "lc-card-head" }, el("div", { class: "pr-head" }, el("h3", { text: t("seq.title") }), n.seqState),
-          el("div", { class: "pr-row" }, n.add, n.save, n.start)),
-        n.sequenceTable, endGas, n.seqProgress, startConfirm),
-      el("div", { class: "pr-block" },
+      el("div", { class: "pr-block pr-gas-block" },
         el("div", { class: "lc-card-head" }, el("h3", { text: t("gas.title") }),
-          button(t("gas.stopAll"), stopGas, { class: "lc-danger pr-danger", "data-role": "stop-gas" })),
-        ...n.gasRows.map(row => row.node)));
+          el("div", { class: "pr-row" }, n.connectFlow,
+            button(t("gas.stopAll"), stopGas, { class: "lc-danger pr-danger", "data-role": "stop-gas" }))),
+        el("div", { class: "pr-gas-list" }, ...n.gasRows.map(row => row.node))),
+      disclosure("sequence", t("seq.title"), n.seqState,
+        el("div", { class: "pr-row" }, n.add, n.save, n.start),
+        n.sequenceTable, endGas, n.seqProgress, startConfirm));
 
     // Microscope.
     n.scopeSub = el("span", { class: "lc-muted" });
+    n.zeroState = el("span", {});
     n.scopeNote = el("p", { class: "pr-note", "data-role": "scope-note", hidden: true });
     n.objectives = objectiveIds(view.describe.microscope).map(id => {
-      const node = el("button", { type: "button", class: "lc-button pr-objective", role: "radio", "aria-checked": "false", "data-role": "objective-" + id, text: t("obj.name", { id }), onclick: () => send("microscope", "select_objective", { id }) });
+      const node = el("button", { type: "button", class: "lc-button pr-objective", role: "radio", "aria-checked": "false", "aria-label": t("obj.name", { id }), "data-role": "objective-" + id, text: String(id), onclick: () => send("microscope", "select_objective", { id }) });
       node.dataset.id = String(id);
       return node;
     });
     n.nudges = nudgeSteps(view.describe.microscope).map(steps => {
       const node = button(signed(steps), () => send("microscope", "objective_nudge", { steps }, "nudge"),
-        { "data-role": "nudge-" + (steps > 0 ? "up-" : "down-") + Math.abs(steps), "aria-label": t("obj.nudge", { steps: signed(steps) }) });
+        { class: "lc-button pr-mono-button", "data-role": "nudge-" + (steps > 0 ? "up-" : "down-") + Math.abs(steps), "aria-label": t("obj.nudge", { steps: signed(steps) }) });
       node.dataset.steps = String(steps);
       return node;
     });
     n.offset = el("span", { class: "pr-mono", "data-role": "nudge-offset" });
     n.nudgeRow = el("div", { class: "pr-row", "data-role": "nudge-row", hidden: true }, ...n.nudges, n.offset);
-    n.focusText = el("span", { class: "pr-mono" });
+    n.focusText = el("span", { class: "pr-mono pr-focus-pos" });
     n.focusFill = el("span", { class: "pr-bar-fill" });
     n.focusBar = el("div", { class: "pr-bar", role: "meter", "aria-label": t("focus.bar"), "aria-valuemin": "0", "aria-valuemax": "100" }, n.focusFill);
     n.focusMin = el("span", {});
     n.focusMax = el("span", {});
-    const jog = input({ type: "number", min: "1", step: "1", class: "pr-input", "data-role": "jog" }, view.jog, value => { view.jog = value; });
+    const jog = input({ type: "number", min: "1", step: "1", class: "pr-step-input", "data-role": "jog", "aria-label": t("focus.jog") }, view.jog, value => { view.jog = value; });
     n.motion = [
-      button(t("focus.down"), () => jogFocus(-1), { "data-role": "jog-down" }),
-      button(t("focus.up"), () => jogFocus(1), { "data-role": "jog-up" }),
+      button("−", () => jogFocus(-1), { class: "pr-step-button", "data-role": "jog-down", "aria-label": t("focus.down") }),
+      button("+", () => jogFocus(1), { class: "pr-step-button", "data-role": "jog-up", "aria-label": t("focus.up") }),
       button(t("focus.local"), () => send("microscope", "autofocus", { mode: "local" }), { "data-role": "af-local" }),
       button(t("focus.full"), () => send("microscope", "autofocus", { mode: "full" }), { "data-role": "af-full" }),
     ];
@@ -530,6 +555,7 @@
     n.record = button(t("rec.start"), toggleRecording, { "data-role": "record" });
     n.arm = button(t("rec.arm"), toggleArm, { "data-role": "arm" });
     n.stab = button(t("rec.stabOn"), () => send("microscope", "set_stabilization", { enabled: view.status?.microscope?.stabilization !== true }, "stab"), { "data-role": "stabilization" });
+    n.recSummary = el("span", { class: "pr-summary-state" });
     n.recState = el("p", { class: "lc-muted", "data-role": "rec-state" });
     n.recError = el("p", { class: "pr-warn", "data-role": "rec-error", hidden: true });
     n.recName = input({ type: "text", maxlength: "80", class: "pr-input pr-wide", autocomplete: "off", "data-role": "rec-name" }, view.rec.name, value => { view.rec.name = value; });
@@ -542,39 +568,47 @@
     n.recInterval = input({ type: "number", min: "0.1", max: "3600", step: "0.1", class: "pr-input pr-narrow", "data-role": "rec-interval" }, view.rec.interval, value => { view.rec.interval = value; });
     n.recFps = input({ type: "number", min: "0.1", max: "120", step: "0.1", class: "pr-input pr-narrow", "data-role": "rec-fps" }, view.rec.fps, value => { view.rec.fps = value; });
 
-    const scope = el("section", { class: "lc-card pr-card", "aria-labelledby": "pr-scope-title" },
+    // One preview: the view switch sits inside the frame, and only the shown view streams.
+    const views = [["microscope", t("view.scope"), t("scope.view")], ["camera3", t("view.side"), "camera3"]];
+    n.viewButtons = views.map(([name, text]) => button(text, () => showView(name), { class: "pr-seg-button", "data-role": "view-" + name, "aria-pressed": "false" }));
+    n.viewPanes = views.map(([name, , label]) => el("div", { class: "pr-pane", "data-view": name }, cameraTile(name, label)));
+    const preview = el("div", { class: "pr-preview" }, ...n.viewPanes,
+      el("div", { class: "pr-seg", role: "group", "aria-label": t("view.switch") }, ...n.viewButtons));
+
+    n.zero = button(t("zero.set"), () => ask("zero"), { class: "lc-danger pr-danger", "data-role": "zero", title: t("zero.reminder") });
+    const scope = el("section", { class: "lc-card pr-card pr-scope", "aria-labelledby": "pr-scope-title" },
       el("div", { class: "lc-card-head" },
-        el("div", { class: "pr-head" }, el("h2", { id: "pr-scope-title", text: t("scope.title") }), n.scopeSub),
+        el("div", { class: "pr-head" }, el("h2", { id: "pr-scope-title", text: t("scope.title") }), el("span", { class: "lc-muted" }, n.scopeSub, n.zeroState)),
         el("div", { class: "pr-row" }, ...controlButtons("microscope"),
           el("button", { type: "button", class: "lc-danger pr-danger", "data-role": "stop-microscope", text: t("scope.stop"), onclick: stopMicroscope }))),
       n.scopeNote,
-      el("div", { class: "pr-views" },
-        el("div", { class: "pr-main-view" }, cameraTile("microscope", t("scope.view"))),
-        el("div", { class: "pr-side-view" }, cameraTile("camera3", "camera3"), el("span", { class: "lc-muted", text: t("scope.side") }))),
-      el("div", { class: "pr-block" }, el("h3", { id: "pr-obj-title", text: t("obj.title") }),
+      preview,
+      el("div", { class: "pr-band" },
+        el("span", { class: "pr-band-label", id: "pr-obj-title", text: t("obj.title") }),
         el("div", { class: "pr-objectives", role: "radiogroup", "aria-labelledby": "pr-obj-title" }, ...n.objectives),
-        el("p", { class: "lc-muted", text: t("obj.note") }),
-        n.nudgeRow),
-      el("div", { class: "pr-block" },
-        el("div", { class: "lc-card-head" }, el("h3", { text: t("focus.title") }), n.focusText),
-        n.focusBar,
-        el("div", { class: "pr-bar-labels" }, n.focusMin, n.focusMax),
-        el("div", { class: "pr-row pr-end" }, el("label", { class: "pr-field" }, t("focus.jog"), jog), n.motion[0], n.motion[1]),
-        el("div", { class: "pr-row" }, n.motion[2], n.motion[3]),
-        el("p", { class: "pr-warn", text: t("zero.reminder") }),
-        n.zero = button(t("zero.set"), () => ask("zero"), { class: "lc-danger pr-danger", "data-role": "zero" }),
-        zeroConfirm),
-      el("div", { class: "pr-row pr-end" }, el("label", { class: "pr-field" }, t("rec.path"), n.snapPath), n.snapshot),
-      el("div", { class: "pr-row pr-end" },
-        el("label", { class: "pr-field" }, t("rec.name"), n.recName),
-        el("label", { class: "pr-field" }, t("rec.mode"), n.recMode),
-        el("label", { class: "pr-field" }, t("rec.interval"), n.recInterval),
-        el("label", { class: "pr-field" }, t("rec.fps"), n.recFps)),
-      el("div", { class: "pr-row" }, n.record, n.arm, n.stab),
-      n.recState, n.recError);
+        el("span", { class: "pr-band-label", text: t("focus.title") }),
+        el("div", { class: "pr-focus" },
+          el("div", { class: "pr-focus-bar" }, n.focusBar, el("div", { class: "pr-bar-labels" }, n.focusMin, n.focusText, n.focusMax)),
+          el("div", { class: "pr-row" },
+            el("div", { class: "pr-stepper" }, n.motion[0], jog, n.motion[1]),
+            n.motion[2], n.motion[3],
+            el("span", { class: "pr-push" }), n.zero),
+          zeroConfirm)),
+      el("div", { class: "pr-more" },
+        n.turret = disclosure("turret", t("turret.title"), null, n.nudgeRow),
+        disclosure("recording", t("rec.title"), n.recSummary,
+          el("div", { class: "pr-row pr-end" }, el("label", { class: "pr-field" }, t("rec.path"), n.snapPath), n.snapshot),
+          el("div", { class: "pr-row pr-end" },
+            el("label", { class: "pr-field" }, t("rec.name"), n.recName),
+            el("label", { class: "pr-field" }, t("rec.mode"), n.recMode),
+            el("label", { class: "pr-field" }, t("rec.interval"), n.recInterval),
+            el("label", { class: "pr-field" }, t("rec.fps"), n.recFps)),
+          el("div", { class: "pr-row" }, n.record, n.arm, n.stab),
+          n.recState, n.recError)));
 
     view.root.replaceChildren(el("div", { class: "pr-workspace" }, n.stale = el("p", { class: "pr-warn", hidden: true }),
-      el("div", { class: "pr-layout" }, furnace, scope)));
+      el("div", { class: "pr-layout" }, scope, furnace)));
+    showView(view.scopeView);
     buildSequence();
     update();
   }
@@ -660,6 +694,7 @@
     const ready = fMine && furnace?.connected === true && !furnace?.locked;
     n.connect.hidden = !furnace || furnace.connected === true;
     n.connect.disabled = !fMine || busy("connect");
+    n.connectRow.hidden = n.connect.hidden;
     n.connectFlow.hidden = !furnace || furnace.flow?.connected === true;
     n.connectFlow.disabled = !fMine || busy("connect_flow");
     setText(n.tiles.pv, degrees(furnace?.pv));
@@ -670,7 +705,9 @@
     setText(n.tiles.crucible, degrees(crucible?.max_c));
     // Old or missing data dims the readings and the chart. The warning above says how old.
     const dim = !status || (typeof age === "number" && age > 3) ? " pr-stale" : "";
-    for (const key of Object.keys(n.tiles)) n.tiles[key].className = "pr-tile-value" + (key === "pv" || key === "sv" ? " pr-tone-" + key : "") + dim;
+    for (const key of ["pv", "sv", "crucible"]) n.tiles[key].className = "pr-tile-value" + (key === "pv" || key === "sv" ? " pr-tone-" + key : "") + dim;
+    n.tiles.mode.className = "pr-state-mode" + dim;
+    n.tiles.ramp.className = "pr-mono" + dim;
     n.chart.figure.className = "pr-figure" + dim;
 
     const chart = chartModel(status?.history, finite(status?.now) ?? 0);
@@ -708,7 +745,9 @@
     // Microscope.
     const mHolder = holder(view.api, "microscope");
     const mMine = mHolder === "mine";
-    setText(n.scopeSub, [t("control." + mHolder), scope ? t(scope.focus_zero_known ? "scope.zero" : "scope.noZero") : null].filter(Boolean).join(" · "));
+    setText(n.scopeSub, t("control." + mHolder));
+    setText(n.zeroState, scope ? " · " + t(scope.focus_zero_known ? "scope.zero" : "scope.noZero") : "");
+    n.zeroState.className = scope && !scope.focus_zero_known ? "pr-doubt" : "";
     const scopeFault = scope?.locked ? scope?.fault?.message || "locked" : null;
     const failed = !scopeFault && scope?.last_command?.result === "failed" ? scope.last_command : null;
     n.scopeNote.hidden = !scopeFault && !failed;
@@ -729,6 +768,7 @@
     const offset = scope?.objective_offset_steps;
     const counted = Number.isSafeInteger(offset) && Number.isSafeInteger(scope?.objective_id);
     n.nudgeRow.hidden = !n.nudges.length || !Number.isSafeInteger(limit) || limit <= 0;
+    n.turret.hidden = n.nudgeRow.hidden;
     for (const node of n.nudges) node.disabled = !canMove || !counted || Math.abs(offset + Number(node.dataset.steps)) > limit || busy("nudge");
     setText(n.offset, counted ? t("obj.offset", { offset: signed(offset), limit: String(limit) }) : t("obj.offsetUnknown"));
     for (const node of n.motion) node.disabled = !canMove;
@@ -754,6 +794,8 @@
     n.stab.disabled = !idle || typeof scope?.stabilization !== "boolean" || busy("stab");
     setText(n.recState, armed ? t("rec.armed") : recording.status && recording.status !== "idle"
       ? t("rec.state", { status: recording.status, frames: String(recording.frame_count ?? 0) }) : "");
+    setText(n.recSummary, armed ? t("rec.armed") : active ? t("rec.state", { status: recording.status, frames: String(recording.frame_count ?? 0) }) : t("rec.off"));
+    n.recSummary.className = "pr-summary-state" + (active || armed ? " pr-live" : "");
     for (const node of [n.recName, n.recMode, n.recFps]) node.disabled = active || armed;
     n.recInterval.disabled = active || armed || view.rec.mode === "live";
     n.recError.hidden = !recording.error;

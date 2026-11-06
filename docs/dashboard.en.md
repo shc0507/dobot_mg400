@@ -49,40 +49,45 @@ The workspaces send manual commands through the console. The console forwards ea
 
 ### Motion workspace
 
-The Motion workspace has 3 columns: the robot arm, the cameras and the stage. At phone width they stack. **Robot and stage activity** below them lists the events of both devices and the outcome of each command from this page.
+The Motion workspace has 2 stations side by side: the robot arm under its camera view, and the stage under the microscope view. Below 1100 px the stations stack. **Robot and stage activity** below them lists the events of both devices and the outcome of each command from this page.
+
+Views:
+
+- Each station shows 1 live view. The tabs inside the frame pick the view: **Insert rail** (camera2), **Tray** (camera4) or **Microscope side** (camera3) for the arm, and **Microscope**, **Microscope side** or **Insert rail** for the stage.
+- **Snapshot** and **Expand** are inside the frame. Without the Cameras workspace a view shows OFFLINE.
 
 Robot arm:
 
-- **Take control**, **Enable**, **Disable**, **Clear alarm**, **Home…** and **Stop arm**. **Disable** and **Stop arm** need no control.
+- The header row has the state, **Enable** or **Disable**, **Home…**, **Take control** and **Stop arm**. **Disable** shows while the arm is enabled, moves or jogs. **Disable** and **Stop arm** need no control.
+- When another page or client holds the arm, the control button says so and is unavailable. A demo arm shows DEMO.
 - **Home…** needs a confirmation. It moves J1 to J4 to 0°.
-- During an alarm, a coral note at the top of the card lists each controller alarm with its ID, description and solution. **Clear alarm** is in the note. Below the buttons, the card shows the message of the robot service.
+- During an alarm, a coral note at the top of the station lists each controller alarm with its ID, description and solution. **Clear alarm** is in the note. Below the folds, the station shows the message of the robot service.
 - After an unconfirmed stop, the note shows Stop not confirmed and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
-- The pose tiles show the actual X, Y, Z and R. They show `—` while the arm moves. The joint tiles show J1 to J4 in degrees.
-- The jog pad moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose. While the keyboard is on, the Z and R buttons show the key that moves the same way: R and F for Z, Q and E for R.
-- **Move to a pose**: **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
+- **Keyboard jog** is the main arm control. When this page holds control and the robot is enabled, turn on the switch to start keyboard jog at the selected speed. The speed is from 1 to the `keyboard` speed cap that the robot service describes. The key map shows each key and its motion: W/S (reach out and in), A/D (base J1), R/F (Z up and down), Q/E (flange J4) and Z/X (gripper open and close). A held key lights up.
+- While the switch is on and the page has focus, hold a key to move. The page sends the held keys through `ws/motion/keys` on each change and every 150 ms while a key is held. The arm stops 0.4 s after the last update. A window focus loss, a hidden tab, leaving the Motion tab, the switch off or a loss of control releases all keys and turns the keyboard off. When the robot service turns the keyboard off, the page shows the reason below the switch. Stop and **STOP ALL MOTION** work at all times.
+- The readout shows the actual X, Y, Z and R, and J1 to J4 in degrees. While the arm moves, the robot service sends no pose, and the readout shows the last known pose in grey. Below it are the gripper position and outcome, **Open** (1000) and **Close** (0), and the gripper message.
+- **Jog buttons** (folded) moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose. While the keyboard is on, the Z and R buttons show the key that moves the same way: R and F for Z, Q and E for R.
+- **Move to a pose** (folded): **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
 - The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
-- **Gripper**: **Open** (1000), **Close** (0) and **Initialize…**. Initialization opens the jaws and needs a confirmation. **Move** sends the entered **Position** from 0 to 1000. The gripper outcome shows beside the title, and the gripper message shows below the buttons.
-- **Keyboard**: when this page holds control and the robot is enabled, turn on the switch to start keyboard jog at the selected speed. The speed is from 1 to the `keyboard` speed cap that the robot service describes. While the switch is on and the page has focus, hold W/S (reach out and in), A/D (base J1), R/F (Z up and down), Q/E (flange J4) or Z/X (gripper open and close). The page sends the held keys through `ws/motion/keys` on each change and every 150 ms while a key is held. The arm stops 0.4 s after the last update. A window focus loss, a hidden tab, leaving the Motion tab, the switch off or a loss of control releases all keys and turns the keyboard off. When the robot service turns the keyboard off, the page shows the reason below the switch. Stop and **STOP ALL MOTION** work at all times.
+- **Gripper setup** (folded): **Initialize…** opens the jaws and needs a confirmation. **Move** sends the entered **Position** from 0 to 1000.
 
 Stage:
 
-- **Take control**, **Stepping** and **Stop stage**. **Stop stage** needs no control.
+- The header row has the state, **Take control** and **Stop stage**. **Stop stage** needs no control. When another page or client holds the stage, the control button says so. A demo stage shows DEMO.
 - If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. **Refresh ports** reads the port list again.
-- A change of the stepping mode clears the zero and soft limits of all 3 axes and needs a confirmation.
-- Each axis shows its position in pulses and in mm, and its reference state. **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
+- Each axis row shows the position, **Hold −**, **Hold +**, the hold speed in pulses/s and the keys of the axis. With a confirmed reference the position is in mm. Without one it is the pulse count.
 - **Hold −** and **Hold +** move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
 - The console sends the stage commands of a hold. It sends 1 `hold`, then 1 `keepalive` every 0.2 s while the page refreshes the hold. The page refreshes the hold through `ws/motion/stage/hold` every 150 ms. When no refresh arrives for 0.5 s, the console releases the hold. If the console stops, the firmware stops the axis 1 s after the last `keepalive`.
-- **Keyboard**: when this page holds stage control, turn on the switch. While the page has focus, hold I/K (Bottom − and +), J/L (Top − and +) or U/O (Insert − and +). Each key moves its axis like the Hold button. The page releases the hold and turns the keyboard off on a window focus loss or a hidden tab. It does the same when you leave the Motion tab, turn off the switch or lose control.
+- **Stepping** below the axes sets the stepping mode of all 3 axes: Full, 1/2, 1/4, 1/8 or 1/16. A change clears the zero and soft limits of all 3 axes and needs a confirmation.
+- **Keys**: when this page holds stage control, turn on the switch. While the page has focus, hold I/K (Bottom − and +), J/L (Top − and +) or U/O (Insert − and +). Each key moves its axis like the Hold button. The page releases the hold and turns the keyboard off on a window focus loss or a hidden tab. It does the same when you leave the Motion tab, turn off the switch or lose control.
 - After a refused or interrupted hold, release the button or the key, then press again. **Stop stage** and **STOP ALL MOTION** stop a held axis at all times.
-- **Home…** (boards with switches) and **Set zero…** need a confirmation. **Set zero…** sets the zero and the soft limits.
-- For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels.
-- **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
-- **Named positions** sends `goto` for each named position of an axis.
-- **Named poses** sends 1 `pose` for the selected pose. The pose moves 1 axis at a time in the configured order. It is available when all 3 axes are homed or zeroed.
+- **Named positions** sends `goto` for each named position of an axis. **Named poses** sends 1 `pose` for the selected pose. The pose moves 1 axis at a time in the configured order. It is available when all 3 axes are homed or zeroed. Both show only when the stage config has them.
+- **Step moves and zero** (folded) has 1 block for each axis: the reference state, **Step −** and **Step +**, **Home…**, **Set zero…**, **Check reference** and **Teach reference…**.
+- **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
+- **Set zero…** shows only when the stage service can zero the axis. It needs the [stage calibration](stage-panel.en.md#stage-calibration) file `/var/lib/mg400/stage/stage.toml` and zero support in the firmware. Without them, the fold says so, and hold and step still work. Without stage control, the fold says that control is necessary. **Home…** (boards with switches) and **Set zero…** need a confirmation. **Set zero…** sets the zero and the soft limits.
+- For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels. **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
 
-Control socket: the page sends arm keys, stage holds and hold releases over 1 WebSocket, `/lab/api/console/socket`. Chrome opens at most 6 HTTP connections to the console, and the camera streams use 3 of them. Requests on the socket do not wait for a free connection. When the socket is closed, the page sends these requests over HTTP. Stop and **STOP ALL MOTION** go over the socket and over HTTP.
-
-Cameras: camera2 is large, camera4 and camera3 are small. **Swap view** puts a small view in the large tile. Without the Cameras workspace a tile shows OFFLINE.
+Control socket: the page sends arm keys, stage holds and hold releases over 1 WebSocket, `/lab/api/console/socket`. Chrome opens at most 6 HTTP connections to the console, and the 2 camera views use 2 of them. Requests on the socket do not wait for a free connection. When the socket is closed, the page sends these requests over HTTP. Stop and **STOP ALL MOTION** go over the socket and over HTTP.
 
 ### Cameras workspace
 

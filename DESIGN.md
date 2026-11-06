@@ -1,51 +1,52 @@
 ---
 name: WuLab Console
-description: A calm, dark instrument panel for operating and monitoring the lab devices.
+description: A warm, bright bench console where one blue shows what you can press and what is on now.
 colors:
-  bg: "#0F1418"
-  header: "#11181D"
-  card: "#161D23"
-  inset: "#1B232A"
-  tab: "#1F2A33"
-  row: "#222C35"
-  line: "#26313A"
-  line2: "#2E3B46"
-  media-well: "#0A0E11"
-  scrim: "rgba(10, 14, 17, 0.85)"
-  text: "#E6EDF2"
-  soft: "#B8C6D1"
-  muted: "#9FB0BD"
-  "off": "#7C8C99"
-  accent: "#4DA3FF"
-  on-accent: "#0B1A2A"
-  info: "#7DBBFF"
-  info-hover: "#B3D7FF"
-  ok: "#3CCB7F"
-  warn: "#F2B84B"
-  warn-tint: "#2A2213"
-  bad: "#FF7A7A"
-  bad-text: "#FF9A9A"
-  stop: "#C9252B"
+  ground: "#F2EEE9"
+  card: "#FFFFFF"
+  surface: "#F7F4F0"
+  fill: "#F2EEE9"
+  fill-hover: "#E9E3DC"
+  line: "#EDE6DE"
+  edge: "#E0D8CF"
+  knob-off: "#D6CDC3"
+  text: "#2A2622"
+  text-2: "#6F625A"
+  count: "#8A7F74"
+  action: "#2E5BFF"
+  action-hover: "#2149E0"
+  action-soft: "#E8EEFF"
+  on-action: "#FFFFFF"
+  on-action-2: "#DCE4FF"
+  stop: "#B4232C"
+  stop-soft: "#FDE8E8"
+  stop-hover: "#F9D6D6"
   on-stop: "#FFFFFF"
+  ok: "#27774C"
+  warn: "#8F6200"
+  warn-soft: "#FFF3D6"
+  well: "#171310"
+  well-text: "#CFC6BC"
+  well-chip: "rgba(255, 255, 255, 0.88)"
+  well-scrim: "rgba(23, 19, 16, 0.72)"
 typography:
-  brand:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
-    fontSize: "16px"
-    fontWeight: 700
-    letterSpacing: "0.2px"
   headline:
     fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
-    fontSize: "17px"
-    fontWeight: 600
+    fontSize: "18px"
+    fontWeight: 700
   title:
     fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "14px"
-    fontWeight: 600
+    fontWeight: 700
   body:
     fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.45
+  control:
+    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontSize: "14px"
+    fontWeight: 600
   body-small:
     fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "13px"
@@ -53,34 +54,34 @@ typography:
   label:
     fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "12px"
-    fontWeight: 500
-  label-strong:
+    fontWeight: 600
+  badge:
     fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "12px"
     fontWeight: 700
-    letterSpacing: "0.3px"
-  stop-label:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
-    fontSize: "15px"
-    fontWeight: 700
     letterSpacing: "0.4px"
   readout:
-    fontFamily: "IBM Plex Mono, ui-monospace, monospace"
-    fontSize: "14px"
-    fontWeight: 500
+    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontSize: "20px"
+    fontWeight: 700
+    fontFeature: "tnum"
   readout-small:
-    fontFamily: "IBM Plex Mono, ui-monospace, monospace"
-    fontSize: "13px"
-    fontWeight: 400
-  readout-large:
-    fontFamily: "IBM Plex Mono, ui-monospace, monospace"
-    fontSize: "22px"
-    fontWeight: 500
+    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontSize: "14px"
+    fontWeight: 600
+    fontFeature: "tnum"
+  key-letter:
+    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontSize: "20px"
+    fontWeight: 700
+    lineHeight: 1
 rounded:
   xs: "6px"
   sm: "8px"
   md: "10px"
   lg: "12px"
+  xl: "16px"
+  xxl: "20px"
   pill: "999px"
 spacing:
   xxs: "4px"
@@ -93,344 +94,344 @@ spacing:
   xxl: "24px"
 components:
   button:
-    backgroundColor: "transparent"
+    backgroundColor: "{colors.fill}"
     textColor: "{colors.text}"
-    rounded: "{rounded.sm}"
+    typography: "{typography.control}"
+    rounded: "{rounded.lg}"
     padding: "0 14px"
-    height: "44px"
+    height: "40px"
+  button-hover:
+    backgroundColor: "{colors.fill-hover}"
   button-primary:
-    backgroundColor: "{colors.accent}"
-    textColor: "{colors.on-accent}"
-    rounded: "{rounded.sm}"
+    backgroundColor: "{colors.action}"
+    textColor: "{colors.on-action}"
+    typography: "{typography.control}"
+    rounded: "{rounded.lg}"
     padding: "0 14px"
-    height: "44px"
-  button-danger:
-    backgroundColor: "transparent"
-    textColor: "{colors.bad-text}"
-    rounded: "{rounded.md}"
+    height: "40px"
+  button-primary-hover:
+    backgroundColor: "{colors.action-hover}"
+  button-primary-disabled:
+    backgroundColor: "{colors.fill}"
+    textColor: "{colors.text-2}"
+  button-on:
+    backgroundColor: "{colors.action-soft}"
+    textColor: "{colors.action}"
+  button-device-stop:
+    backgroundColor: "{colors.stop-soft}"
+    textColor: "{colors.stop}"
+    rounded: "{rounded.lg}"
     padding: "0 16px"
-    height: "48px"
-  button-stop:
+    height: "40px"
+  button-device-stop-hover:
+    backgroundColor: "{colors.stop-hover}"
+  button-stop-all:
     backgroundColor: "{colors.stop}"
     textColor: "{colors.on-stop}"
-    typography: "{typography.stop-label}"
-    rounded: "{rounded.md}"
     padding: "0 20px"
     height: "48px"
-  button-stop-large:
-    backgroundColor: "{colors.stop}"
-    textColor: "{colors.on-stop}"
-    typography: "{typography.stop-label}"
+  view-tab:
+    backgroundColor: "{colors.well-chip}"
+    textColor: "{colors.text}"
+    typography: "{typography.body-small}"
     rounded: "{rounded.md}"
-    height: "64px"
-    width: "100%"
-  tab:
-    backgroundColor: "transparent"
-    textColor: "{colors.soft}"
-    rounded: "{rounded.sm}"
-    padding: "0 16px"
-    height: "44px"
-  tab-current:
-    backgroundColor: "{colors.tab}"
-    textColor: "{colors.text}"
-    rounded: "{rounded.sm}"
-    padding: "0 16px"
-    height: "44px"
-  chip-filter:
-    backgroundColor: "transparent"
-    textColor: "{colors.soft}"
-    typography: "{typography.body-small}"
-    rounded: "{rounded.pill}"
     padding: "0 12px"
-    height: "44px"
-  chip-filter-on:
-    backgroundColor: "{colors.tab}"
-    textColor: "{colors.text}"
-    typography: "{typography.body-small}"
-    rounded: "{rounded.pill}"
-    padding: "0 12px"
-    height: "44px"
-  control-pill:
-    backgroundColor: "transparent"
-    textColor: "{colors.soft}"
-    typography: "{typography.body-small}"
-    rounded: "{rounded.pill}"
-    padding: "6px 12px"
-  card:
-    backgroundColor: "{colors.card}"
-    textColor: "{colors.text}"
+    height: "32px"
+  view-tab-on:
+    backgroundColor: "{colors.action}"
+    textColor: "{colors.on-action}"
+  segment:
+    backgroundColor: "{colors.fill}"
     rounded: "{rounded.lg}"
-    padding: "20px"
-  readout-tile:
-    backgroundColor: "{colors.inset}"
+    padding: "3px"
+  segment-option:
+    backgroundColor: "transparent"
     textColor: "{colors.text}"
-    typography: "{typography.readout}"
-    rounded: "{rounded.sm}"
-    padding: "8px"
-  readout-tile-large:
-    backgroundColor: "{colors.inset}"
-    textColor: "{colors.text}"
-    typography: "{typography.readout-large}"
-    rounded: "{rounded.md}"
-    padding: "12px"
-  input:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.text}"
-    rounded: "{rounded.sm}"
-    padding: "0 12px"
-    height: "44px"
-  input-numeric:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.text}"
-    typography: "{typography.readout-small}"
+    typography: "{typography.body-small}"
     rounded: "{rounded.sm}"
     padding: "0 10px"
-    height: "44px"
-  camera-tile:
+    height: "32px"
+  segment-option-on:
+    backgroundColor: "{colors.action}"
+    textColor: "{colors.on-action}"
+  segment-option-on-disabled:
     backgroundColor: "{colors.card}"
     textColor: "{colors.text}"
-    rounded: "{rounded.lg}"
-  media-badge:
-    backgroundColor: "{colors.scrim}"
-    textColor: "{colors.soft}"
-    typography: "{typography.label-strong}"
-    rounded: "{rounded.xs}"
-    padding: "3px 8px"
-  hardware-badge:
-    backgroundColor: "{colors.tab}"
-    textColor: "{colors.info}"
-    typography: "{typography.label-strong}"
-    rounded: "{rounded.xs}"
-    padding: "4px 10px"
-  hardware-badge-real:
-    backgroundColor: "{colors.warn-tint}"
-    textColor: "{colors.warn}"
-    typography: "{typography.label-strong}"
-    rounded: "{rounded.xs}"
-    padding: "4px 10px"
-  jog-key:
-    backgroundColor: "{colors.inset}"
+  hold:
+    backgroundColor: "{colors.fill}"
     textColor: "{colors.text}"
-    rounded: "{rounded.sm}"
+    typography: "{typography.control}"
+    rounded: "{rounded.lg}"
+    padding: "0 12px"
+    height: "44px"
+  hold-on:
+    backgroundColor: "{colors.action}"
+    textColor: "{colors.on-action}"
+  jog-key:
+    backgroundColor: "{colors.fill}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.lg}"
     size: "48px"
+  key-cap:
+    backgroundColor: "{colors.card}"
+    textColor: "{colors.text}"
+    typography: "{typography.key-letter}"
+    rounded: "{rounded.lg}"
+    padding: "0 10px"
+    height: "50px"
+  key-cap-on:
+    backgroundColor: "{colors.action}"
+    textColor: "{colors.on-action}"
+  key-hint:
+    backgroundColor: "{colors.fill}"
+    textColor: "{colors.text-2}"
+    typography: "{typography.label}"
+    rounded: "{rounded.xs}"
+    size: "24px"
+  station:
+    backgroundColor: "{colors.card}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.xxl}"
+    padding: "12px 12px 14px"
+  panel:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.xl}"
+    padding: "12px"
+  media-well:
+    backgroundColor: "{colors.well}"
+    textColor: "{colors.well-text}"
+    rounded: "{rounded.xl}"
+  media-meta:
+    backgroundColor: "{colors.well-scrim}"
+    textColor: "{colors.ground}"
+    typography: "{typography.label}"
+    rounded: "{rounded.md}"
+    padding: "4px 10px"
+  input:
+    backgroundColor: "{colors.card}"
+    textColor: "{colors.text}"
+    typography: "{typography.body}"
+    rounded: "{rounded.md}"
+    padding: "0 10px"
+    height: "40px"
+  badge-demo:
+    backgroundColor: "{colors.action-soft}"
+    textColor: "{colors.action-hover}"
+    typography: "{typography.badge}"
+    rounded: "{rounded.pill}"
+    padding: "2px 8px"
+  flag-warn:
+    backgroundColor: "{colors.warn-soft}"
+    textColor: "{colors.warn}"
+    typography: "{typography.label}"
+    rounded: "{rounded.pill}"
+    padding: "2px 10px"
+  alarm-note:
+    backgroundColor: "{colors.stop-soft}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.xl}"
+    padding: "12px 14px"
 ---
 
 # Design System: WuLab Console
 
 ## Overview
 
-**Creative North Star: "The Instrument Panel"**
+**Creative North Star: "The Bright Bench"**
 
-The WuLab Console is a calm, dark panel for operating the lab devices from a laptop. The surface stays quiet, so the few colors with meaning read at a glance: the status tones, Signal Blue for "this one", and E-Stop Red for the stop. The mood is calm, dense and literal. A screen holds many devices at once. Labels are plain words, and the layout does the explaining.
+The WuLab Console is a warm, bright console for driving the lab devices from a laptop at the bench. White cards with large soft corners sit on a warm tinted ground. Text is warm graphite. Labels are plain, sentence-case words, and the layout does the explaining. Each device sits under the view that shows its effect. Controls are weighted by real use: frequent controls are large and near the view, and rare tools fold away.
 
-The panel is flat. Depth comes from small steps in the Night Slate surfaces and from 1px lines, not from shadows. Nothing moves: the system has no transitions or animations, and a state change shows immediately. The only images are live device media (camera, thermal and microscope frames), which sit in dark Media Wells.
+Color is scarce, so it carries meaning. One saturated blue, Action Blue, appears only on what you can press as the main action or on what is on right now: the current view tab, a held key, a held axis, the selected step mode, a switch that is on. Red is only for stops. Live video sits in dark Media Wells, the only dark areas on the page. Motion is short and functional: a pressed button shrinks for 120ms, and a held key lights at once.
 
-This system covers the Lab Console: `src/orchestrator/web/templates/console.html` and `src/orchestrator/web/static/console/*.css`. The variables in `shell.css` are the source of truth. The chip passport page (`templates/passport.html`) loads `shell.css` and uses the same tokens; `static/passport.css` styles only its records.
+This is the console-wide direction, and all Lab Console pages follow it. The page shows English and 中文 in the same layout and loads no web fonts.
 
 **Key Characteristics:**
-- Dark Night Slate surfaces in close steps, with 1px lines.
-- A fixed map from state to color, and each color comes with a word.
-- Filled color only for the primary action (Signal Blue) and the two stop-everything buttons (E-Stop Red).
-- Device values in monospace, with tabular numerals for live readings.
-- Controls at least 44px tall. Stop controls 48px or 64px.
-- No web fonts, no shadows, no motion.
+- A warm tinted ground, white cards on 16px and 20px corners, and a faint warm shadow.
+- Soft neutral fills for controls. No outlined buttons.
+- Action Blue only for "press this" or "on now".
+- A filled red only on the two stop-everything buttons. Device stops are coral fills with red text.
+- Dark Media Wells for every live view, with light chips on top.
+- Device numbers in tabular numerals in fixed cells.
+
+### Known limitation
+Only the Motion workspace uses this system now (`static/console/motion.css`, tokens on `#ws-motion`). The shell header, the status strip, the stop result band, Overview, Cameras, Furnace + microscope and the chip passport still use the previous dark styles in `shell.css`, `cameras.css`, `process.css` and `passport.css`. Move each page to the tokens in this file when that page changes.
 
 ## Colors
 
-A cool, near-black slate base with one blue for selection and a fixed set of status tones.
+A warm, low-chroma paper palette with one saturated blue, one stop red and a small set of status tones.
 
 ### Primary
-- **Signal Blue** (#4DA3FF): the "this one" color. The current tab underline, focus rings, a pressed filter chip, the current recipe step, the selected camera, the fill of the primary action, the focus-bar fill, the speed slider and the chip detection boxes on camera 4.
-- **Ink Navy** (#0B1A2A): text on a Signal Blue fill.
+- **Action Blue** (#2E5BFF): the fill of the primary action, the current view tab, a held key cap, a held Hold button, the selected step mode and step size, and an on switch. It also colors the speed slider, focus rings, fold titles and the busy or moving state text.
+- **Deep Action** (#2149E0): primary hover, and the DEMO badge text.
+- **Blue Wash** (#E8EEFF): a soft "on now" fill with Action Blue text, for a control that is on but is not the main action (Release while you hold control, the current named position). Also the DEMO badge and text selection.
+- **White on Blue** (#FFFFFF) and **Pale Blue** (#DCE4FF): text on an Action Blue fill. Pale Blue is the small action label on a held key cap.
 
 ### Secondary
-- **Readout Blue** (#7DBBFF): links, info notices, the busy, moving and running tone, the furnace SV line and the thermal minimum marker. It shows information. It does not show selection.
-- **Pale Signal** (#B3D7FF): link hover.
-
-### Tertiary
-- **E-Stop Red** (#C9252B): the fill of the two stop-everything buttons: STOP ALL MOTION (in the header and in the Overview Safety card) and Stop heat and gas (in the Overview Safety card and on the Furnace card). White text (#FFFFFF) on top.
+- **Stop Red** (#B4232C): the fill of STOP ALL MOTION and Stop heat and gas, with white text. The text of every device stop, the alarm title, and the bad tone (fault, locked, error events).
+- **Coral Wash** (#FDE8E8) and **Coral Hover** (#F9D6D6): the fill of device stops, the danger Confirm button and the alarm note.
 
 ### Status tones
-- **Ready Green** (#3CCB7F): ready, live, configured, homed or zeroed, idle, and "you control" in the control pill.
-- **Caution Amber** (#F2B84B): stale state, a reference that is required, warnings, the furnace PV line, gas state text when the flow or the valve is not confirmed, and the region that is being drawn. It is also the REAL ROBOT and REAL STAGE badge, on **Amber Shadow** (#2A2213).
-- **Fault Coral** (#FF7A7A): unavailable, fault, locked, error events and the thermal maximum marker. It is the border color of danger buttons, inline confirmations, device notes and the arm alarm note.
-- **Soft Coral** (#FF9A9A): text on danger outlines.
-- **Idle Grey** (#7C8C99): the off tone. Unconfigured, loading, disconnected and no run, and the control pill when this page controls nothing.
+- **Ready Green** (#27774C): ready, connected, live and idle axes, and a stop result whose phase is Done.
+- **Caution Ochre** (#8F6200) on **Ochre Wash** (#FFF3D6): stale feedback, required homing, warnings and the connection note.
+- **Count Grey** (#8A7F74): the off tone dot and stale numbers.
 
 ### Neutral
-- **Night Slate** (#0F1418): the page background. It is also the background of inputs and charts, which therefore look recessed into a card.
-- **Header Slate** (#11181D): the header band.
-- **Card Slate** (#161D23): cards and camera tiles.
-- **Inset Slate** (#1B232A): readout tiles, jog keys, stage axis panels, gas rows and table headers inside a card.
-- **Selected Slate** (#1F2A33): the background of the current tab, a pressed chip, the current table row and the DEMO badge.
-- **Row Rule** (#222C35): the top border between rows in lists, events and tables.
-- **Panel Line** (#26313A): borders of cards, tiles and views, and the header and strip dividers.
-- **Control Edge** (#2E3B46): borders of buttons, inputs, chips, pills and key caps.
-- **Media Well** (#0A0E11): the background behind camera, thermal and microscope frames, empty views and the focus bar.
-- **Media Scrim** (rgba(10, 14, 17, 0.85)): badges and labels drawn on top of media.
-- **Frost** (#E6EDF2): primary text.
-- **Mist** (#B8C6D1): secondary text: tabs, pills, chips, camera roles and modes.
-- **Haze** (#9FB0BD): labels, details, the commit hash, axis labels and placeholders.
+- **Warm Ground** (#F2EEE9): the page background. The resting **Fill** of buttons, jog keys, segments and key hints on a white card uses the same value.
+- **Card White** (#FFFFFF): stations, the activity card, key caps and inputs.
+- **Warm Surface** (#F7F4F0): panels inside a card (the keyboard map, confirmations, reason notes).
+- **Fill Hover** (#E9E3DC): hover on neutral fills.
+- **Hairline** (#EDE6DE): row dividers and the fold divider.
+- **Edge** (#E0D8CF): input borders, the key cap base line and the outline of a selected option that you cannot change.
+- **Knob Off** (#D6CDC3): the track of an off switch.
+- **Warm Graphite** (#2A2622): primary text.
+- **Umber** (#6F625A): secondary text, units, field labels and plain state text.
+- **Media Well** (#171310): the background of every live view and every empty view.
+- **Well Text** (#CFC6BC), **Well Chip** (rgba(255, 255, 255, 0.88)) and **Well Scrim** (rgba(23, 19, 16, 0.72)): text, light chips and the dark meta chip on media.
 
 ### Named Rules
-**The One Red Rule.** Only the stop-everything buttons have a filled E-Stop Red background: STOP ALL MOTION and Stop heat and gas. Device stops (Stop arm, Stop stage, the microscope Stop, Stop all gas), Acknowledge fault…, Set focus zero… and Confirm use the Fault Coral outline. A stop button is never disabled and never asks for a confirmation.
+**The Press-This-or-On-Now Rule.** Action Blue marks only what you can press as the main action or what is on right now. A held key and a held axis light in it in real time, for as long as the input lasts. A disabled primary turns neutral (Fill with Umber text). A selected option that you cannot change keeps a white fill with an Edge outline and loses the blue. A blue control that you cannot press and that is not on is a defect.
 
-**The Tone Map Rule.** A state always gets the same tone: ok green, warn amber, bad coral, info blue or off grey. A tone is never the only signal. It comes with a word: a dot and a text in the status strip, or LIVE, STALE or OFFLINE on a camera tile.
+**The One Red Rule.** Only STOP ALL MOTION and Stop heat and gas have a filled Stop Red background. They are in the shell header and in the Overview Safety card. Device stops (Stop arm, Stop stage, the microscope Stop, Stop all gas) have a Coral Wash fill with Stop Red text in weight 700. A stop is never disabled, never dims and never asks for a confirmation.
 
-**The Blue Means "This One" Rule.** Signal Blue marks selection, focus, the current item and the primary action. Never use it for status, and never use a status tone for selection.
+**The Tone Plus Word Rule.** A tone is never the only signal. It always comes with a word: Moving, Idle, Home required, LIVE, No fresh feedback. A dot alone is not a state.
+
+**The Green Means Done Rule.** A stop result turns Ready Green only when its phase is Done. Before that, it uses the info tone. Old readings dim to Count Grey and do not keep their tone.
 
 ## Typography
 
-**Body Font:** IBM Plex Sans (with system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif)
-**Label/Mono Font:** IBM Plex Mono (with ui-monospace, monospace)
+**Body Font:** the platform sans, through the stack IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif.
 
-**Character:** One plain sans for all words and one monospace for device numbers. The stack includes PingFang SC and Microsoft YaHei so that 中文 strings use a matching system face. Hierarchy comes from weight (500 to 700) more than from size. UI text stays between 12px and 22px. Only chart axis text and thermal colour-bar labels use 11px.
+**Character:** One plain sans for all text, numbers included. IBM Plex Sans shows only when it is installed on the viewing machine. Otherwise the system UI face shows, and the layout must work with it. PingFang SC and Microsoft YaHei give 中文 a matching system face. Hierarchy comes from weight (600 and 700) more than from size. UI text stays between 12px and 20px.
 
 ### Hierarchy
-- **Brand** (700, 16px, 0.2px tracking): the "WuLab Console" name in the header.
-- **Headline** (600, 17px): card titles.
-- **Title** (600, 14px): section titles inside a card (Jog, Gripper, Keyboard and the furnace and microscope blocks).
-- **Body** (400, 14px, 1.45 line height): all running text and control labels. Buttons use 600.
-- **Body small** (400, 13px): status chips, events, pills, filter chips, muted details and gas state.
-- **Label** (500, 12px): field labels, tile labels, legends and frame metadata.
-- **Label strong** (700, 12px, 0.3px tracking; the DEMO and REAL badges use 0.6px): camera state badges (LIVE, STALE, OFFLINE, FROZEN) and the hardware badge.
-- **Stop label** (700, 15px, 0.4px tracking): STOP ALL MOTION. The copy is written in capitals. CSS does not transform it.
-- **Readout** (Mono 500, 14px): the X, Y, Z and R pose values.
-- **Readout small** (Mono 400, 13px): stage readouts, key caps, numeric inputs and the commit hash (12px).
-- **Readout large** (Mono 500, 22px): furnace PV, SV and the crucible maximum.
+- **Headline** (700, 18px): station titles (Robot arm, Stage). The activity title is 17px.
+- **Title** (700, 14px): group labels (Keyboard jog, Stepping, Gripper, Named positions).
+- **Control** (600, 14px): buttons, holds and state text. Tabs and segment options use 13px.
+- **Body** (400, 14px, 1.45 line height): running text.
+- **Body small** (400, 13px): messages, units, the speed label and reading labels.
+- **Label** (600, 12px): flags, media meta and key hints. Field labels use 400.
+- **Badge** (700, 12px, 0.4px tracking): the DEMO badge.
+- **Readout** (700, 20px, tabular numerals): pose values, axis pulses and the gripper position.
+- **Readout small** (600, 14px, tabular numerals): joint angles and speed values.
+- **Key letter** (700, 20px, line height 1): the letter on a key cap, with a 12px Umber action label below it.
 
 ### Named Rules
-**The No Web Fonts Rule.** The host can be offline. Never load a font from the network. IBM Plex is used only when it is installed on the viewing machine. Otherwise the system UI face shows, and the layout must work with it.
+**The No Web Fonts Rule.** The host can be offline. Never load a font or any other asset from the network.
 
-**The Green Means Done Rule.** A stop result turns Ready Green only when its phase is Done. Before that, a confirmed target reads Confirmed (provisional) in Readout Blue. Old readings dim to Idle Grey instead of keeping their tone.
-
-**The Mono for Measurements Rule.** A number that comes from a device (pose, pulses, mm, PV, SV, frame age, the commit) uses the monospace face or `font-variant-numeric: tabular-nums`, so that a live value does not change width.
+**The Fixed Cell Rule.** A number from a device uses `font-variant-numeric: tabular-nums` in a cell with a fixed or minimum width, aligned against its label or unit. A live value never changes the layout.
 
 ## Layout
 
-- **Frame:** the header band, then the status strip, then the stop result band (after a stop, until Dismiss), then the notice bar (only when there is a notice), then the workspace. In a window wider than 720px, the header, strip, stop result band and notice form one top band that stays at the top while the page scrolls. Its height is published as `--lc-top`; other sticky elements and `scroll-padding-top` add it to their offset. The workspace is centered, with a maximum width of 1440px and 24px padding (16px at 720px and below).
-- **Header:** brand and commit, workspace tabs, then the actions: the control pill, the language switch and STOP ALL MOTION. It wraps on narrow screens. At 720px and below, the actions take the full width and STOP ALL MOTION stretches.
-- **Workspace columns:** a main column (flex basis 640px) and a side column (flex basis 360px), 24px apart. Motion has 3 columns: robot arm (340px basis), cameras (520px basis, grows first) and stage (340px basis).
-- **Camera grids:** 3 columns, then 2 at 1100px and below, then 1 at 720px and below. The Focus strip has 5 columns, then 3, then 2. Furnace readout tiles fill with a minimum of 140px.
-- **Rhythm:** 24px between cards and columns; 20px inside a card; 12px between blocks in a card; 8–10px inside a group; 4–6px between a label and its value. Rows have 12px of vertical padding and a Row Rule above them.
-- **Density:** the base size is 14px. Lists scroll inside their card (events stop at 420px height), so the page keeps its shape.
+- **Frame:** the shell header, the status strip, the stop result band (after a stop, until Dismiss) and the notice bar form one top band. Above 720px, the band stays at the top while the page scrolls. Its height is published as `--lc-top`. Sticky elements and `scroll-padding-top` add it to their offset. The workspace is centered and at most 1440px wide.
+- **Stations:** Motion has 2 stations side by side in a 711 : 649 ratio, 20px apart. Each station is a subgrid with 2 rows, the view row and the body row, so both views have the same height. The arm view is 16:9. The stage view fills the row and is at least 240px tall.
+- **Station body:** a header row (title, state and badge, then the actions and the device stop on the right), then the main controls, then folds for rare tools below a Hairline. In the arm body, the keyboard map (62 parts) is beside the pose and gripper readout (38 parts, at least 190px).
+- **Rows:** a stage axis is 1 grid row at least 56px tall: name and state, value, Hold −, Hold +, speed and key hints.
+- **Rhythm:** 20px between cards. 12px between blocks in a card. 8px inside a group. 4–6px between a label and its value.
+- **Responsive:** when a station is narrower than 610px, its header buttons get tighter so that the header stays on 1 row. At 1100px and below, the stations stack and the stage view becomes 16:9. At 720px and below, the arm body stacks, axis rows hide speed and key hints, and pose fields use 2 columns.
 
 ### Named Rules
-**The Wrap, Don't Break Rule.** Columns reflow through `flex-wrap` and flex bases, not breakpoints. Media queries (720px and 1100px) only change grid column counts and padding.
+**The Weighted By Use Rule.** Frequent controls are large and near the view that they affect. Rare tools (single steps, exact poses, setup, zero) go in folds. Do not give every control the same weight.
 
-**The 44px Floor Rule.** Every interactive control is at least 44px tall: buttons, tabs, inputs, selects, chips, filters and sliders. STOP ALL MOTION, most danger buttons and the jog keys are 48px. Stop stage and the Furnace + microscope danger buttons are 44px. The large stop in the Safety card is 64px.
+**The Bilingual Fit Rule.** Check every layout with English and 中文 strings. Rows and headers wrap. Labels are never truncated, except the small action label on a key cap.
 
 ## Elevation & Depth
 
-The system is flat. There are no drop shadows. Depth comes from tonal steps: Media Well under Night Slate (page and inputs), under Header Slate, under Card Slate, under Inset Slate and Selected Slate. Each container also has a 1px line. Two things are sticky: the top band (z-index 20, opaque backgrounds, no shadow) and the Cameras side panel (16px below the top band).
+The system is soft and low. Cards lift a little from the ground with a faint warm shadow. Everything inside a card is flat and separates by fill steps (Warm Surface, Fill) and Hairlines. Media Wells are the darkest layer and read as windows, not as raised surfaces. The top band is opaque and has no shadow.
 
 ### Shadow Vocabulary
-- **Current marker** (`box-shadow: inset 0 -2px 0 var(--accent)`): a 2px Signal Blue underline inside the current workspace tab and the selected microscope objective. It marks place, not height.
+- **Card lift** (`box-shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05)`): stations and the activity card only.
+- **Key base** (`box-shadow: 0 1px 0 #E0D8CF`): the base line of a key cap at rest. A lit key cap has no base line.
 
 ### Named Rules
-**The Flat Panel Rule.** Do not add a shadow to show height. To make an area stand out, use the next surface step or a Panel Line border.
+**The One Lift Rule.** Only cards get the card lift. Inside a card, use the next fill step or a Hairline, never a second shadow.
 
 ## Shapes
 
-Rounded rectangles with 1px borders. The radius grows with the size of the element:
+Soft rounded rectangles without borders. The radius grows with the size of the element:
 
-- **6px:** badges, key caps and small bars.
-- **8px:** buttons, tabs, inputs, readout tiles, recipe steps and inline confirmations.
-- **10px:** stop and danger buttons, stage axis panels, furnace tiles, the chart and the table frame.
-- **12px:** cards, camera tiles and media views.
-- **Pill (999px):** the control pill, filter chips, the Motion step chips and the keyboard switch.
-- **Circle:** only the 8px status dot.
+- **6px:** key hints.
+- **8px:** segment options.
+- **10px:** view tabs, inputs, media chips and reference images.
+- **12px:** buttons, holds, jog keys, key caps and the segment track.
+- **16px:** media views, the keyboard panel, the alarm note, confirmations and notes.
+- **20px:** stations and the activity card.
+- **Pill (999px):** badges, flags and the switch track.
+- **Circle:** the switch knob and status dots.
 
-Camera tiles clip their media to the 12px corner. Media uses `object-fit: contain` on a Media Well, so a frame is never cropped.
+Controls have no border; the fill does the work. Inputs keep a 1px Edge border, so an empty field still reads as a field. Views clip their media to the 16px corner.
 
 ## Components
 
 ### Buttons
-Quiet until it matters: outlined by default, filled only for the primary action and the two stop-everything buttons.
+Soft and tactile: a neutral fill by default, blue for the primary action, coral for stops.
 
-- **Shape:** gently rounded (8px). Stop and danger buttons use 10px.
-- **Default:** transparent, with a Control Edge border, Frost text in weight 600, 44px tall and 14px side padding.
-- **Primary:** a Signal Blue fill with Ink Navy text in weight 700 and no border. Each workspace defines its own copy (`mo-primary`, `pr-primary`).
-- **STOP ALL MOTION:** an E-Stop Red fill, white Stop-label text and a square stop glyph, 48px tall with 20px side padding. In the Overview Safety card it is a full-width 64px block, with a second line in 12px that lists the targets.
-- **Stop heat and gas:** the same E-Stop Red fill, in the Overview Safety card and on the Furnace card. Both send the same route on 1 press: it holds the run, then stops heat and gas.
-- **Danger:** transparent, with a Fault Coral border and Soft Coral text in weight 600, 48px tall (44px for Stop stage and in Furnace + microscope).
-- **Hover / Focus:** buttons have no hover change. Links change to Pale Signal. Focus is a 2px Signal Blue outline with a 2px offset on all buttons, links, inputs and selects.
-- **Disabled:** 0.55 opacity and the not-allowed cursor.
+- **Shape:** 12px corners, at least 40px tall, 14px side padding, Control type.
+- **Default:** Fill with Warm Graphite text. Fill Hover on hover.
+- **Primary:** Action Blue with white text. Deep Action on hover. A disabled primary turns neutral.
+- **On now:** Blue Wash with Action Blue text, for a control whose state is on.
+- **Device stop:** Coral Wash with Stop Red text in weight 700 and 16px side padding. Coral Hover on hover. Never disabled.
+- **STOP ALL MOTION and Stop heat and gas:** a Stop Red fill with white text and a square stop shape, 48px tall. In the Overview Safety card they are 64px tall and full width.
+- **Press:** `scale(0.97)`, 120ms ease-out.
+- **Focus:** a 2px Action Blue outline with a 2px offset on every button, input, select, summary and focusable element.
+- **Disabled:** 0.45 opacity and the not-allowed cursor. Stops and a held Hold stay at full strength.
 
-### Inline confirmation
-A hazardous action asks for confirmation in the page, not in a browser dialog. The block has a 1px Fault Coral border, an 8px radius and 12px padding. It contains the question, a Confirm button and an outlined Cancel button. Confirm is a Danger button in every workspace. The block takes the keyboard focus when it opens. Esc or Cancel closes it and gives the focus back to the button that opened it.
+### Segmented control
+A Fill track with 3px padding and 12px corners. Options are transparent and 32px tall. On hover an option shows Card White. The selected option is Action Blue with white text. It is used for the step mode and the jog step size.
 
-### Alarm note
-An arm alarm or an unconfirmed stop shows at the top of the arm card: a 1px Fault Coral border on an 8% Fault Coral tint, an 8px radius and 12px padding. The title is Fault Coral in weight 700 (Alarm, or Stop not confirmed). Each alarm line gives the ID, the description and the solution in Frost. The button that clears the state (Clear alarm or Recover) is inside the note.
-
-### Navigation
-- **Workspace tabs:** links 44px tall with 16px side padding and an 8px radius, in Mist text with weight 500. The current tab gets a Selected Slate background, Frost text, weight 600 and the Signal Blue current marker. The tabs wrap on narrow screens.
-
-### Status strip and control pill
-- **Status strip:** a band under the header with 1 chip for each service. A chip has no container: an 8px tone dot, the service name in weight 600 and a detail in Haze.
-- **Console offline:** when the console does not answer for 3 seconds, the strip shows 1 Fault Coral chip, Console offline, with the age of the last state, instead of 8 stale devices.
-- **Stop result band:** a band under the strip, 13px text on Night Slate. The head row has the tone dot, the button and the press time in weight 700, the phases joined by → (past in Haze, current in Frost 600, future in Idle Grey) and a Dismiss button. The second row lists each target in weight 600 with its result in tone text. A note line in Caution Amber (Fault Coral when the result is bad) says Sending…, Not sent, or that the run hold is not confirmed.
-- **Control pill:** a pill with a Control Edge border and 6px 12px padding, in Mist 13px text. Its dot is Idle Grey, and Ready Green when this page controls a device.
-
-### Chips
-- **Style:** filter chips, step chips and the keyboard switch are pills, 44px tall, with a Control Edge border and Mist 13px text.
-- **State:** a pressed chip (`aria-pressed="true"` or `mo-on`) gets a Signal Blue border, a Selected Slate background and Frost text.
+### Switch
+A pill track, 40 by 22px (34 by 20px for the small switch), in Knob Off with a white 16px knob. When on, the track turns Action Blue and the knob slides in 150ms. The label is beside the track in weight 700.
 
 ### Cards / Containers
-- **Corner Style:** 12px.
-- **Background:** Card Slate.
-- **Shadow Strategy:** none. See Elevation & Depth.
-- **Border:** 1px Panel Line.
-- **Internal Padding:** 20px (16px for Furnace + microscope cards at 720px and below), with a 12px gap between blocks.
-- **Head:** the Headline title on the left and the badge or actions on the right. It wraps.
-- **Rows:** 12px vertical padding with a Row Rule above each row. The name column is at least 96px.
-
-### Readout tiles
-An Inset Slate tile with a Label above a monospace value. Pose tiles are 8px radius and 8px padding, 4 in a row (2 at 720px and below). Furnace tiles are 10px radius and 12px padding with a 22px value; PV is Caution Amber and SV is Readout Blue. The pose tiles show `—` while the arm moves.
+- **Station:** Card White, 20px corners, 12px 12px 14px padding and the card lift.
+- **Panel:** Warm Surface, 16px corners, 12px padding, flat.
+- **Notes:** a reason note is Warm Surface with 12px corners. The connection note is Ochre Wash with 16px corners.
+- **Inline confirmation:** Warm Surface, 16px corners, an inset 1px Edge line and 12px 14px padding. It holds the question, a danger Confirm (Coral Wash) and a Cancel. It takes the focus when it opens. Esc or Cancel closes it and gives the focus back.
 
 ### Inputs / Fields
-- **Style:** a Night Slate background (recessed), a Control Edge border, an 8px radius and 44px height. Numeric inputs use the monospace face at 13–14px and fixed widths (76px to 110px). Text and select fields fill their column.
-- **Focus:** the 2px Signal Blue outline.
-- **Labels:** a 12px Haze label above the field, 4–6px away.
+- **Style:** Card White, a 1px Edge border, 10px corners, 40px tall and tabular numerals. Speed fields in an axis row have no border and use Fill.
+- **Labels:** 12px Umber text above the field, 4px away.
+- **Focus:** the Action Blue outline.
 - **Disabled:** 0.55 opacity.
 
-### Camera tile (signature)
-A `figure` in Card Slate with a 12px radius that clips its media. Every workspace uses it.
+### Navigation
+- **View tabs:** in the top left corner of the media frame. Well Chip fills with Warm Graphite 13px text, 32px tall, with 10px corners. The current tab is Action Blue with white text.
+- **Folds:** a summary in Action Blue, weight 600, with a small triangle that turns 90 degrees in 150ms.
 
-- **Head:** the view name in weight 600, then "· role" in Mist. On the right is the state badge (LIVE in Ready Green, STALE in Caution Amber, OFFLINE in Haze, failures in Fault Coral) with the frame age in tabular numerals.
-- **Stage:** a 4:3 Media Well, or 16:10 for a large tile. A click or Enter selects the view. The focus outline is inside the frame.
-- **Overlays:** chip detection boxes on camera 4 have a 2px Signal Blue line and a label on Media Scrim. Thermal markers are Fault Coral (maximum), Readout Blue (minimum) and Frost (center), with a colour bar on Media Scrim. The thermal palettes (ironbow, rainbow, grey) are data colors and are not part of the UI palette.
-- **Foot:** the mode and a note in 12px, and Snapshot and Expand buttons.
-- **Selected:** a 2px Signal Blue border.
+### Media view (signature)
+A Media Well with 16px corners that holds the live frame. The view tabs are at the top left. The state badge (a dot, LIVE or another state word, and the frame age) is on a Well Chip at the top right, in its tone. The frame size and rate are on a Well Scrim chip at the bottom left. Snapshot and Expand are Well Chip buttons at the bottom right. A camera that is off shows its state word on a centered translucent chip.
 
-### Badges
-- **Hardware badge:** DEMO in Readout Blue on Selected Slate. REAL ROBOT and REAL STAGE in Caution Amber on Amber Shadow. Label-strong text, 6px radius.
-- **Media badge:** Media Scrim with a 6px radius, 12px text in weight 600, placed 10px from the top left of a view.
+### Keyboard map (signature)
+Key caps laid out like a keyboard in 4 columns, with the rows offset by 5% and 10%. A cap is Card White and 50px tall, with the key letter and a 12px action label, on the key base line. When you hold a key, its cap turns Action Blue with white text at once (80ms). Key hints beside an axis are 24px Fill squares and light the same way.
 
-### Jog pad and key caps
-- **Jog pad:** a 3 by 3 grid of 48px Inset Slate keys with a 6px gap. Z and R keys are 56px wide.
-- **Key caps:** 32px wide, monospace, with a Control Edge border and a 6px radius. A held key gets the pressed chip state.
+### Axis row and Hold
+Each stage axis row has the name and state, the value with its unit, Hold − and Hold + (44px, Fill), a speed field and the key hints. While you press it, a Hold is Action Blue. It stays at full strength while its axis is busy.
 
-### Furnace chart and focus bar
-- **Chart:** 160px tall on Night Slate with a 10px radius. Grid lines are Panel Line. Axis text is 11px monospace in Haze. PV is a 2.5px solid Caution Amber line. SV is a 2px Readout Blue line with a 6 5 dash.
-- **Focus bar:** 12px tall on a Media Well with a Control Edge border and a Signal Blue fill. The limit labels are in 12px Haze below it.
+### Alarm note
+A Coral Wash block with 16px corners at the top of the arm station. The title is Stop Red in weight 700. Each alarm line gives the ID, the description and the solution. The button that clears the state is inside the note.
+
+### Badges and flags
+- **DEMO badge:** a pill in Blue Wash with Deep Action text and Badge type.
+- **Flag:** a pill in Ochre Wash with Caution Ochre text, below the station header, for a state that needs attention (for example No fresh feedback).
 
 ## Do's and Don'ts
 
 ### Do:
-- **Do** take every color from the `shell.css` variables (`--bg`, `--card`, `--accent`, `--ok` and the others). Put workspace CSS under `#ws-<id>` and reuse the shell classes (`lc-card`, `lc-button`, `lc-danger`, `lc-row`, `lc-muted`).
-- **Do** give every state a word next to its tone: a dot and a text, or a badge text.
-- **Do** keep STOP ALL MOTION in the header on every workspace, in E-Stop Red.
-- **Do** use the Fault Coral outline for device stops and for every hazardous or irreversible action, and ask for confirmation in the page.
-- **Do** show device numbers in monospace or tabular numerals.
-- **Do** keep every control at least 44px tall.
-- **Do** put device media on a Media Well, and put any text on media on the Media Scrim.
-- **Do** check every layout with both English and 中文 strings. Let rows and headers wrap; do not truncate labels.
+- **Do** scope each workspace under `#ws-<id>` and take every color from the tokens in this file.
+- **Do** keep STOP ALL MOTION in the header on every page. It and Stop heat and gas are the only filled red controls.
+- **Do** give device stops the Coral Wash fill with Stop Red text, and keep every stop enabled.
+- **Do** light a held key and a held axis in Action Blue for as long as the input lasts.
+- **Do** make a disabled primary, or a selected option that you cannot change, neutral.
+- **Do** put every live view on a Media Well, with Well Chips or the Well Scrim for anything on top.
+- **Do** show device numbers in tabular numerals in fixed cells.
+- **Do** give every tone a word.
+- **Do** remove transitions when `prefers-reduced-motion` is set.
 
 ### Don't:
+- **Don't** use Action Blue for decoration, for headings, or for a control that you cannot press and that is not on.
 - **Don't** fill any control with red except STOP ALL MOTION and Stop heat and gas.
-- **Don't** use Signal Blue for status, or a status tone for selection.
-- **Don't** add drop shadows. Use the next surface step or a Panel Line.
+- **Don't** add a shadow inside a card or a border to a button.
+- **Don't** add dark surfaces other than Media Wells.
 - **Don't** load web fonts or other remote assets.
 - **Don't** add secondary labels or descriptions that the layout already makes clear.
 - **Don't** show a state with color alone.

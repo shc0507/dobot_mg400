@@ -165,7 +165,8 @@ uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 -
 
 ## 芯片履历
 
-打开服务前缀下的 `/chip`。
+打开服务前缀下的 `/chip`，或在控制台页头选择 **Chip passport**。
+页面使用控制台的配色和语言切换，并沿用控制台的语言选择。页头的 **Lab Console** 返回控制台。
 用芯片的完整 QR 文本搜索。
 搜索保留大小写、空格、斜杠和标点，不会裁剪或规范化标识符。
 直接链接使用 `/chip?id=`，后接 URL 编码后的标识符。

@@ -4,33 +4,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chip passport</title>
-  <link rel="stylesheet" href="{{ base_path }}/dashboard-static/dashboard.css">
+  <link rel="stylesheet" href="{{ base_path }}/console-static/shell.css">
   <link rel="stylesheet" href="{{ base_path }}/dashboard-static/passport.css">
   <script defer src="{{ base_path }}/dashboard-static/passport.js"></script>
 </head>
 <body data-base-path="{{ base_path }}">
-  <header class="page-header">
-    <div><p class="eyebrow">Lab records</p><h1>Chip passport</h1></div>
-    <a href="{{ base_path }}/">Lab dashboard</a>
+  <header class="lc-header">
+    <div class="lc-brand">
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="23" r="4"></circle><path d="M10.5 20 L17 11 L24 14"></path><circle cx="17" cy="11" r="2.2"></circle><path d="M24 14 L26 18 M24 14 L27 12"></path></svg>
+      <h1 class="lc-name" id="pp-title">Chip passport</h1>
+    </div>
+    <nav class="lc-tabs" aria-label="Pages" id="pp-nav">
+      <a href="{{ base_path }}/" id="pp-console">Lab Console</a>
+    </nav>
+    <div class="lc-actions">
+      <button type="button" class="lc-button" id="pp-lang">中文</button>
+    </div>
   </header>
-  <main>
-    <section class="panel" aria-label="Find a chip">
+  <main class="pp-main">
+    <section class="panel" aria-label="Find a chip" id="pp-find">
       <form id="passport-form" class="passport-search">
-        <label for="chip-id">QR text / chip ID</label>
+        <label for="chip-id" id="pp-label">QR text / chip ID</label>
         <textarea id="chip-id" rows="2" spellcheck="false" placeholder="Paste the exact QR text."></textarea>
-        <div class="actions"><button type="submit">Search records</button></div>
+        <div class="actions"><button type="submit" class="pp-primary" id="pp-search">Search records</button></div>
       </form>
-      <p class="muted search-note">Search matches the complete QR text.</p>
+      <p class="muted" id="pp-note">Search matches the complete QR text.</p>
       <p id="passport-status" class="notice" role="status" aria-live="polite">Enter a chip ID to read its recorded history.</p>
     </section>
-    <section aria-labelledby="passport-heading">
-      <div class="section-heading"><h2 id="passport-heading">Recorded history</h2><span class="badge neutral">Read only</span></div>
+    <section class="pp-history" aria-labelledby="passport-heading">
+      <div class="section-heading"><h2 id="passport-heading">Recorded history</h2><span class="badge" id="pp-readonly">Read only</span></div>
       <p id="selected-chip" class="chip-text"></p>
       <p id="run-count" class="muted">No records loaded.</p>
       <div id="passport-runs" class="passport-runs"></div>
       <button id="more-runs" class="secondary more-runs" type="button" hidden>Load more runs</button>
     </section>
   </main>
-  <footer>Only saved records appear here. Missing measurements do not mean zero. Open each run to read its records.</footer>
+  <footer id="pp-footer">Only saved records appear here. Missing measurements do not mean zero. Open each run to read its records.</footer>
 </body>
 </html>

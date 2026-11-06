@@ -165,7 +165,8 @@ The console has no controls yet to approve agent proposals. The Overview shows o
 
 ## Chip passport
 
-Open `/chip` under the configured service prefix.
+Open `/chip` under the configured service prefix, or select **Chip passport** in the console header.
+The page uses the console colours and its language switch. It keeps the language choice of the console. **Lab Console** in the header goes back to the console.
 Search with the chip's exact QR text.
 Search preserves case, spaces, slashes, and punctuation. It does not trim or normalize the identifier.
 For a direct link, use `/chip?id=` followed by the URL-encoded identifier.

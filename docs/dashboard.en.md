@@ -14,6 +14,7 @@ The console is the only operator web page.
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
+- In a window wider than 720 px, the header, the status strip and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
 - The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 

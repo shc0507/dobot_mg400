@@ -6,7 +6,7 @@
 #ws-cameras .lcam-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 #ws-cameras .lcam-strip .lcam-foot .lcam-buttons { display: none; }
 #ws-cameras .lcam-strip .lcam-note { display: none; }
-#ws-cameras .lcam-side { position: sticky; top: 16px; }
+#ws-cameras .lcam-side { position: sticky; top: calc(var(--lc-top, 0px) + 16px); }
 #ws-cameras .lcam-h3 { margin: 4px 0 0; font-size: 14px; font-weight: 600; }
 #ws-cameras .lcam-group { display: flex; flex-direction: column; gap: 8px; }
 #ws-cameras .lcam-field { display: flex; flex-direction: column; gap: 6px; }

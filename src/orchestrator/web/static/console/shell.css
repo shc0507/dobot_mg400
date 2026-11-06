@@ -43,7 +43,7 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .lc-state.tone-ok, .tone-text-ok { color: var(--ok); } .lc-state.tone-warn, .tone-text-warn { color: var(--warn); }
 .lc-state.tone-bad, .tone-text-bad { color: var(--bad); } .tone-text-info { color: var(--info); }
 
-.lc-notice { padding: 10px 24px; border-bottom: 1px solid var(--line); }
+.lc-notice { padding: 10px 24px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .lc-notice.warn { color: var(--warn); } .lc-notice.error { color: var(--bad); } .lc-notice.info { color: var(--info); }
 
 main { max-width: 1440px; margin: 0 auto; padding: 24px; }
@@ -83,6 +83,13 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 .lc-confirm { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--bad); border-radius: 8px; }
 .lc-links { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
 .lc-links a { display: inline-block; min-height: 24px; }
+
+/* The top band keeps STOP ALL MOTION and the device status on screen while the page scrolls.
+ * shell.js publishes its height as --lc-top for focus scrolling and other sticky panels. */
+@media (min-width: 721px) {
+  .lc-top { position: sticky; top: 0; z-index: 20; }
+  html { scroll-padding-top: calc(var(--lc-top, 0px) + 8px); }
+}
 
 @media (max-width: 720px) {
   .lc-header, .lc-strip, .lc-notice { padding-left: 16px; padding-right: 16px; }

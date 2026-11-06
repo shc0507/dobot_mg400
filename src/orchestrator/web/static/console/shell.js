@@ -470,6 +470,17 @@
     } catch { return ""; }
   }
 
+  // The top band wraps to more rows in a narrow window. Publish its height while it is sticky.
+  function trackTop() {
+    const top = $("lc-top");
+    if (!top || typeof root.ResizeObserver !== "function" || typeof root.getComputedStyle !== "function") return;
+    const style = shell.doc.documentElement.style;
+    new root.ResizeObserver(() => {
+      const sticky = root.getComputedStyle(top).position === "sticky";
+      style.setProperty("--lc-top", (sticky ? top.offsetHeight : 0) + "px");
+    }).observe(top);
+  }
+
   function start(doc = root.document) {
     shell.doc = doc;
     shell.base = doc.body.dataset.basePath || "";
@@ -483,6 +494,7 @@
     root.addEventListener("pagehide", () => {
       if (myControls().length) request("/api/console/release-page", {}, { keepalive: true }).catch(() => {});
     });
+    trackTop();
     applyLanguage();
     show(String(root.location?.hash || "").slice(1) || "overview");
     poll();

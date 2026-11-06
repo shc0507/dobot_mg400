@@ -10,3 +10,6 @@ build/
 .env.*
 .DS_Store
 work
+
+# Impeccable design tool state (generated sidecar, critique snapshots, live mode)
+.impeccable/

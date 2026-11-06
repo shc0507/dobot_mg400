@@ -332,9 +332,9 @@ Configure only one mode or size list. The installer rejects configurations with 
 Explicit values control each stream. When both lists are empty, the selected side stream uses `3840x2160@30`.
 Other camera streams retain `1280x720@30`. Large streams start on demand.
 The microscope service expects the side stream's configured mode and rejects frames with a different size. Without camera settings, it expects `3840x2160`.
-The side reference images are `3840x2160`. A side stream with the same aspect ratio, for example `640x360@30`, uses these references directly.
+The side reference images are `3840x2160`. A side stream with the same aspect ratio, for example `1280x720@30`, uses these references directly.
 The locator converts marker positions to reference pixels. Other aspect ratios need new reference images. `H-21` checks objective switching at the configured mode.
-Set the side stream to `640x360@30`. Offsets, `near_px`, and the switch tolerance use reference pixels.
+Set the side stream to `1280x720@30`. Offsets, `near_px`, and the switch tolerance use reference pixels.
 While the side stream runs at `3840x2160`, the shared USB 2 link truncates `camera2` frames.
 `cameras.side` in `GET /api/state` is `true` only while the side reader runs without an error.
 The supervised `H-21` checks must cover USB 2 bandwidth and microscope operation before lab use.

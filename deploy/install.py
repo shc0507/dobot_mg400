@@ -369,8 +369,8 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
         if name in configured.preloaded
     )
     # go2rtc reads the microscope MJPEG preview (1296x968) only for an H.264 viewer.
-    # With its 3 Mbit/s cap, the microscope, 3 previews at 1280x720 and 1 at 640x360 need
-    # about 17 Mbit/s of the 22 Mbit/s VPN link.
+    # With its 3 Mbit/s cap, the microscope and 4 previews at 1280x720 need about
+    # 19 Mbit/s of the 22 Mbit/s VPN link.
     streams += (
         "  microscope: http://127.0.0.1:8770/api/camera/microscope/mjpeg\n"
         "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"

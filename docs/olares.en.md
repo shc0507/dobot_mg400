@@ -338,14 +338,14 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream.
 The following 4-camera configuration uses the port order in the table above.
-The side stream `camera3` uses `640x360@30`, the aspect ratio of the `3840x2160` side reference images. The other cameras use `1280x720@30`.
+All cameras use `1280x720@30`. The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
 The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`, so the shared USB 2 link holds only 1 such stream.
-With the [USB bandwidth patch](#usb-bandwidth-patch), 3 streams at `1280x720@30` and the side stream at `640x360@30` run together at 30 fps.
+With the [USB bandwidth patch](#usb-bandwidth-patch), 4 streams at `1280x720@30` run together at 30 fps.
 Before you raise a mode, check the bandwidth with `mg400ctl camera-check` and the kernel log:
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
-MG400_CAMERA_MODES=1280x720@30,1280x720@30,640x360@30,1280x720@30
+MG400_CAMERA_MODES=1280x720@30,1280x720@30,1280x720@30,1280x720@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
@@ -420,7 +420,7 @@ Limits:
 
 - DKMS builds the module again for each new kernel of the same series. When the host starts a kernel of a different series, it uses the stock driver and ignores `mjpeg_bpp`. Then run the script again.
 - If the build fails, the script removes its DKMS package. The stock driver stays.
-- 3 streams at `1920x1080@30` and the side stream are near the link limit. Do not use this configuration.
+- 4 streams at `1920x1080@30` are near the link limit. Do not use this configuration.
 
 ### Camera failures
 

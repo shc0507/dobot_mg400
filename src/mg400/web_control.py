@@ -23,13 +23,10 @@ from .suction import ACTIONS as VACUUM_ACTIONS
 from .suction import decode_state as decode_vacuum
 from .web_keyboard import (
     DISARM_REASONS,
-    GRIPPER_HOLD_SECONDS,
-    GRIPPER_KEYS,
     KEY_LEASE_SECONDS,
     KEYBOARD_JOIN_SECONDS,
-    GripperUnavailableError,
+    VACUUM_KEYS,
     held_keys,
-    run_gripper_steps,
     sequence_number,
     speed_percent,
 )
@@ -92,7 +89,6 @@ class RobotPanelState:
     ALARM_READ_SECONDS = 1.0
     KEY_LEASE_SECONDS = KEY_LEASE_SECONDS
     KEYBOARD_JOIN_SECONDS = KEYBOARD_JOIN_SECONDS
-    GRIPPER_HOLD_SECONDS = GRIPPER_HOLD_SECONDS
 
     # Log every state that explains a lock. The page shows only the latest message.
     _message = _Logged(lambda message: f"Message: {message}")
@@ -802,7 +798,8 @@ class RobotPanelState:
         self._locked = True
         self._kb_disarm(None)
         keyboard = self._kb_thread
-        if keyboard is None or self._kb_kind == "gripper" or not keyboard.is_alive():
+        # A suction or gripper hold uses the shared control, not the jog session.
+        if keyboard is None or self._kb_kind in {"gripper", "vacuum"} or not keyboard.is_alive():
             keyboard = None
             self._control.cancel(disabling=disabling)
         self._disconnect_requested |= disconnect
@@ -1451,7 +1448,7 @@ class RobotPanelState:
             self._kb_pending.discard(key)
             self._kb_active = key
             released = self._kb_released = threading.Event()
-            kind = "gripper" if key in GRIPPER_KEYS else "arm"
+            kind = "vacuum" if key in VACUUM_KEYS else "arm"
             self._kb_start(
                 kind,
                 self._kb_hold,
@@ -1462,7 +1459,9 @@ class RobotPanelState:
             return
         if kind == "arm":
             self._pose = [None] * 4
-        self._kb_message("Jogging... Release the key to stop.")
+            self._kb_message("Jogging... Release the key to stop.")
+        else:
+            self._kb_message(f"Suction: {VACUUM_KEYS[key]}...")
 
     def _kb_hold(self, session, control, key, released, generation):
         pose = outcome = error = None
@@ -1471,15 +1470,9 @@ class RobotPanelState:
             skipped = released.is_set() or generation != self._kb_generation
         if not skipped:
             try:
-                if key in GRIPPER_KEYS:
-                    outcome = run_gripper_steps(
-                        self._gripper,
-                        control.read_state,
-                        key,
-                        released,
-                        set_active=self._kb_gripper_active,
-                        hold_seconds=self.GRIPPER_HOLD_SECONDS,
-                    )
+                if key in VACUUM_KEYS:
+                    control.vacuum(VACUUM_KEYS[key])
+                    outcome = VACUUM_KEYS[key]
                 else:
                     pose = session.run(key, released)
             except Exception as caught:
@@ -1491,26 +1484,17 @@ class RobotPanelState:
                 self._kb_close(session)
             if pose is not None and not self._busy:
                 self._pose = list(pose)
-            if isinstance(error, GripperUnavailableError):
-                # After keys turn off, keep the message that says why.
-                if self._kb_on:
-                    self._kb_message(f"Gripper unavailable: {error} Arm keys remain ready.")
-            elif error is not None:
+            if error is not None:
                 if self._kb_on:
                     self._kb_disarm(None)
                 self._kb_message(f"ERROR: {session.fault or error}")
             elif current:
-                if not skipped and key not in GRIPPER_KEYS and session.limit_reason:
+                if not skipped and key not in VACUUM_KEYS and session.limit_reason:
                     self._kb_message(
                         f"{session.limit_reason} Release the key and choose another direction."
                     )
-                elif outcome == "contact":
-                    self._kb_message(
-                        "The gripper reports object contact before the target. "
-                        "Release the key before pressing again."
-                    )
-                elif outcome == "expired":
-                    self._kb_message("Hold limit reached. Release the key before pressing again.")
+                elif outcome is not None:
+                    self._kb_message(f"Suction: {outcome} done. Hold a key for the next move.")
                 else:
                     self._kb_message("Stopped. Hold a key for the next move.")
             self._kb_check_control(session.fault or error)
@@ -1519,12 +1503,6 @@ class RobotPanelState:
             self._recover_disabled()
             self._kb_reconcile()
             self._wake.set()
-
-    def _kb_gripper_active(self, active):
-        with self._lock:
-            self._gripper_active = active
-            if not active:
-                self._update_gripper_snapshot()
 
     def _kb_watch(self):
         """Turn keys off when feedback, control state, or key updates no longer permit them."""

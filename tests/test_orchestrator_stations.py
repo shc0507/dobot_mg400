@@ -295,7 +295,7 @@ def test_tool_file_requires_private_explicit_measured_configuration(tmp_path):
         ("stop_unconfirmed", True),
         ("mode", "stage"),
         ("actual", [None, None, None, None, 0]),
-        ("actual", [1, 2, 3, 4]),
+        ("actual", [1, 2, 3]),
         ("actual", [1, 2, float("nan"), 4, None]),
         ("actual", [True, 2, 3, 4, None]),
     ],

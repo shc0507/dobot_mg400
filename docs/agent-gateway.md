@@ -40,7 +40,7 @@
 | 工具 | 参数与结果 |
 | --- | --- |
 | `list_services` | 无参数。读取已配置服务 ID 的描述，并报告不可用的服务。 |
-| `get_state` | `service`，读取所选服务状态。 |
+| `get_state` | `service`，读取所选服务状态。机器人状态含吸盘实测状态 `vacuum`。 |
 | `list_recipes` | 无参数。读取配方 ID、名称和参数定义。 |
 | `describe_recipe` | `id`，读取 TOML 配方，不验证运动，也不运行配方。 |
 | `list_runs` | 可选的 `limit` 和 `offset`，按时间从新到旧读取运行记录。 |

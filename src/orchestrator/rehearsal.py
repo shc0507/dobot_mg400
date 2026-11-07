@@ -135,8 +135,6 @@ class _DemoCalibrationFrames:
 DEMO_TRAY_INITIAL_FLANGE = (210.0, 10.0, 180.0, 0.0)
 DEMO_TRAY_CENTERS = {"source": (220.0, 20.0), "target": (260.0, 20.0)}
 DEMO_TRAY_HEIGHT = -46.0
-DEMO_TRAY_GRIP = 400
-DEMO_TRAY_RELEASE = 900
 
 
 def demo_tray_document():
@@ -208,15 +206,12 @@ def write_demo_tray_configuration(directory):
     settings = {
         "MG400_ORCH_TRAY_FILE": write("tray.toml", text + "\n"),
         "MG400_ORCH_TRAY_CAMERA": "1",
-        "MG400_ORCH_TRAY_GRIP": str(DEMO_TRAY_GRIP),
-        "MG400_ORCH_TRAY_RELEASE": str(DEMO_TRAY_RELEASE),
         "MG400_ORCH_CHIP_AXIS": "long",
         "MG400_ORCH_CHIP_R_OFFSET_DEG": "0",
         "MG400_ORCH_CHIP_R_MIN_DEG": "-20",
         "MG400_ORCH_CHIP_R_MAX_DEG": "20",
         "MG400_ORCH_STATIONS_FILE": str(stations.path),
         "MG400_ORCH_TOOL_FILE": write("tool.toml", "offset_mm = [0, 0, 146]\n"),
-        "MG400_ORCH_PRE_GRIP": "900",
         "MG400_ORCH_ZONES_FILE": write(
             "zones.toml", '[zones.tray]\nowner = "robot"\nconditions = []\n'
         ),
@@ -231,8 +226,8 @@ def write_demo_tray_configuration(directory):
 class DemoTrayScene(_DemoCalibrationFrames):
     """Owned RGB tray/arm/chip pixels and matching synthetic model, with no I/O.
 
-    Gripper completions update this scene only at explicitly taught synthetic
-    targets. The localizer measures colored chip contours in the supplied frame,
+    Vacuum completions update this scene only at explicitly taught synthetic
+    slots. The localizer measures colored chip contours in the supplied frame,
     so an old frame cannot silently obtain a later occupancy result.
     """
 
@@ -366,26 +361,14 @@ class DemoTrayScene(_DemoCalibrationFrames):
                 return name
         return None
 
-    def collector_answer(self, request):
-        if request.get("operation") == "initialize":
-            return {"init": 1, "state": 1, "position": 1000}
-        target = request["position"]
-        robot = self._robot_state_provider()
-        slot = self._slot(robot.snapshot()) if robot is not None else None
-        with self._lock:
-            if target == DEMO_TRAY_GRIP and slot in self._occupied:
-                return {"init": 1, "state": 2, "position": 600}
-        return {"init": 1, "state": 1, "position": target}
-
-    def gripper_completed(self, target, state):
+    def vacuum_completed(self, operation, state):
         slot = self._slot(state)
-        outcome = state.get("gripper", {}).get("outcome")
         with self._lock:
-            if target == DEMO_TRAY_GRIP and outcome == "contact" and slot in self._occupied:
+            if operation == "suck" and slot in self._occupied and not self._carrying:
                 self._carrying = True
                 if self.failure != "source-remains":
                     self._occupied.remove(slot)
-            elif target == DEMO_TRAY_RELEASE and outcome == "arrived" and self._carrying:
+            elif operation in {"release", "off"} and self._carrying:
                 if slot is not None and self.failure != "no-target":
                     self._occupied.add(slot)
                 self._carrying = False
@@ -522,10 +505,12 @@ class _DemoRobot(RobotPanelState):
         super().__init__(host, gripper=gripper)
         self._ownership = ControllerOwnership(host, directory=lock_directory)
 
-    def _move_gripper(self, target):
-        super()._move_gripper(target)
-        if self._tray_scene is not None:
-            self._tray_scene.gripper_completed(target, self.snapshot())
+    def _operate(self, action, targets, speed=None):
+        super()._operate(action, targets, speed)
+        if action == "vacuum" and self._tray_scene is not None:
+            # The snapshot hides the pose during a job. Read the measured flange pose.
+            pose = self._control.read_pose()
+            self._tray_scene.vacuum_completed(targets, {"actual": list(pose)})
 
     def describe(self):
         return {**super().describe(), "demo": True}
@@ -637,7 +622,6 @@ class Rehearsal:
             simulator.collector.set(init=1, state=1, position=1000)
             if self.tray_scene is not None:
                 simulator.controller.pose = DEMO_TRAY_INITIAL_FLANGE
-                simulator.collector.answer = self.tray_scene.collector_answer
             try:
                 simulator.start()
             except OSError as exc:

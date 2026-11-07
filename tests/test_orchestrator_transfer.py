@@ -61,7 +61,6 @@ def geometry(tmp_path, monkeypatch):
     tool.chmod(0o640)
     monkeypatch.setenv("MG400_ORCH_STATIONS_FILE", str(store.path))
     monkeypatch.setenv("MG400_ORCH_TOOL_FILE", str(tool))
-    monkeypatch.setenv("MG400_ORCH_PRE_GRIP", "900")
     return store
 
 
@@ -77,17 +76,17 @@ class Robot:
             "busy": False,
             "locked": False,
             "stop_unconfirmed": False,
-            "gripper_available": True,
-            "gripper_busy": False,
             "keyboard_enabled": False,
             "controller_id": "owned-run",
             "instance": "robot-instance",
             "actual": [200, 0, 50, 0, 1000],
-            "gripper": {"outcome": None, "outcome_at": None},
+            "vacuum": {"suck": False, "blow": False, "held": None},
         }
         self.calls = []
         self.after = None
         self.empty = False
+        # With a vacuum switch, `held` reports the part. Without one it stays None.
+        self.switch = False
         self.missing_reads = 0
         self.reads = 0
 
@@ -119,14 +118,10 @@ class Robot:
         self.calls.append((action, params))
         if action == "execute":
             self.value["actual"][:4] = [params["targets"][key] for key in "xyzr"]
-        elif action == "grip":
-            position = params["position"]
-            contact = position == 400 and not self.empty
-            self.value["actual"][4] = 600 if contact else position
-            self.value["gripper"] = {
-                "outcome": "contact" if contact else "arrived",
-                "outcome_at": len(self.calls),
-            }
+        elif action == "vacuum":
+            suck = params["operation"] == "suck"
+            held = (suck and not self.empty) if self.switch else None
+            self.value["vacuum"] = {"suck": suck, "blow": False, "held": held}
         else:
             pytest.fail(f"Unexpected mutation: {action}")
         if self.after:
@@ -179,7 +174,7 @@ def tips(robot):
 
 def test_complete_transfer_uses_taught_heights_vias_offsets_and_explicit_capped_speed(geometry):
     ctx = Context()
-    transfer(ctx, "source", "target", 400, 900)
+    transfer(ctx, "source", "target")
     assert tips(ctx.robot) == [
         Pose(203, 4, 55, 0),
         Pose(210, 10, 40, 0),
@@ -190,11 +185,11 @@ def test_complete_transfer_uses_taught_heights_vias_offsets_and_explicit_capped_
         Pose(260, -20, 20, -90),
         Pose(260, -20, 40, -90),
     ]
-    assert [params["position"] for action, params in ctx.robot.calls if action == "grip"] == [
-        900,
-        400,
-        900,
+    assert [params["operation"] for action, params in ctx.robot.calls if action == "vacuum"] == [
+        "suck",
+        "release",
     ]
+    assert [action for action, _ in ctx.robot.calls].index("vacuum") == 4
     assert all(params["speed"] == 1 for action, params in ctx.robot.calls if action == "execute")
     assert [(event[0], event[1]) for event in ctx.events] == [
         ("enter", "aisle"),
@@ -213,13 +208,12 @@ def test_complete_transfer_uses_taught_heights_vias_offsets_and_explicit_capped_
 def test_standalone_zone_exit_requires_measured_approach_arrival(geometry, operation):
     ctx = Context()
     if operation == "pick":
-        pick(ctx, "source", 400)
-        assert ctx.robot.value["gripper"]["outcome"] == "contact"
+        pick(ctx, "source")
+        assert ctx.robot.value["vacuum"]["suck"] is True
     else:
-        ctx.robot.value["gripper"] = {"outcome": "contact", "outcome_at": 1}
-        ctx.robot.value["actual"][4] = 600
-        place(ctx, "source", 900)
-        assert ctx.robot.value["gripper"]["outcome"] == "arrived"
+        ctx.robot.value["vacuum"]["suck"] = True
+        place(ctx, "source")
+        assert ctx.robot.value["vacuum"]["suck"] is False
     assert ctx.events[-1][0:2] == ("leave", "source")
     assert ctx.events[-1][3] == Pose(230, 20, 50, 90)
 
@@ -235,8 +229,11 @@ def test_standalone_zone_exit_requires_measured_approach_arrival(geometry, opera
         ("syncing", False),
         ("robot_error", True),
         ("robot_mode", 7),
-        ("gripper_available", False),
-        ("gripper_busy", True),
+        ("vacuum", None),
+        ("vacuum", {"suck": True, "blow": False, "held": None}),
+        ("vacuum", {"suck": False, "blow": True, "held": None}),
+        ("vacuum", {"suck": None, "blow": False, "held": None}),
+        ("vacuum", {"suck": False, "blow": False, "held": True}),
         ("keyboard_enabled", True),
         ("controller_id", ""),
         ("controller_id", True),
@@ -248,7 +245,7 @@ def test_unhealthy_or_uninitialized_state_refuses_before_motion(geometry, field,
     ctx = Context()
     ctx.robot.value[field] = value
     with pytest.raises(RuntimeError):
-        pick(ctx, "source", 400)
+        pick(ctx, "source")
     assert ctx.robot.calls == []
 
 
@@ -257,7 +254,7 @@ def test_identity_change_after_motion_refuses_further_commands(geometry, field):
     ctx = Context()
     ctx.robot.after = lambda action: ctx.robot.value.update({field: "replacement"})
     with pytest.raises(RuntimeError):
-        pick(ctx, "source", 400)
+        pick(ctx, "source")
     assert len(ctx.robot.calls) == 1
 
 
@@ -265,7 +262,7 @@ def test_first_snapshot_must_belong_to_this_run_before_any_motion(geometry):
     ctx = Context()
     ctx.robot.value["controller_id"] = "another-controller"
     with pytest.raises(RuntimeError):
-        transfer(ctx, "source", "target", 400, 900)
+        transfer(ctx, "source", "target")
     assert ctx.robot.calls == []
 
 
@@ -297,104 +294,87 @@ def test_late_destination_conversion_overflow_is_found_before_source_pick(geomet
     Path(os.environ["MG400_ORCH_TOOL_FILE"]).write_text("offset_mm = [-1e308, 0, 0]\n")
     ctx = Context()
     with pytest.raises(ValueError, match="finite"):
-        transfer(ctx, "source", "target", 400, 900)
-    assert ctx.robot.calls == []
-
-
-@pytest.mark.parametrize("opening", [None, "", "-1", "true", "900.0", "1001", "400"])
-def test_pregrip_requires_explicit_larger_integer_without_dispatch(geometry, monkeypatch, opening):
-    if opening is None:
-        monkeypatch.delenv("MG400_ORCH_PRE_GRIP")
-    else:
-        monkeypatch.setenv("MG400_ORCH_PRE_GRIP", opening)
-    ctx = Context()
-    with pytest.raises(ValueError):
-        pick(ctx, "source", 400)
-    assert ctx.robot.calls == []
-
-
-@pytest.mark.parametrize(
-    "grip,release", [(True, 900), (400.0, 900), (-1, 900), (400, 400), (400, 1001)]
-)
-def test_invalid_transfer_positions_fail_before_any_motion(geometry, grip, release):
-    ctx = Context()
-    with pytest.raises(ValueError):
-        transfer(ctx, "source", "target", grip, release)
+        transfer(ctx, "source", "target")
     assert ctx.robot.calls == []
 
 
 def test_unknown_destination_and_invalid_tool_fail_before_pick(geometry, monkeypatch, tmp_path):
     ctx = Context()
     with pytest.raises(ValueError, match="Unknown station"):
-        transfer(ctx, "source", "missing", 400, 900)
+        transfer(ctx, "source", "missing")
     monkeypatch.setenv("MG400_ORCH_TOOL_FILE", str(tmp_path / "missing-tool.toml"))
     with pytest.raises(FileNotFoundError):
-        transfer(ctx, "source", "target", 400, 900)
+        transfer(ctx, "source", "target")
     assert ctx.robot.calls == []
 
 
 def test_pose_refresh_is_read_only_and_deadline_bounded(geometry):
     ctx = Context()
     ctx.robot.after = lambda action: setattr(ctx.robot, "missing_reads", 2)
-    transfer(ctx, "source", "target", 400, 900)
-    assert len(ctx.robot.calls) == 11
+    transfer(ctx, "source", "target")
+    assert len(ctx.robot.calls) == 10
     ctx = Context()
     ctx.robot.missing_reads = 1000
     ctx.cancel_after = 12
     with pytest.raises(TimeoutError):
-        pick(ctx, "source", 400)
+        pick(ctx, "source")
     assert ctx.robot.calls == []
 
 
 @pytest.mark.parametrize("failure", ["empty", "dropped", "wrong-arrival"])
 def test_grasp_failure_or_unconfirmed_departure_preserves_exceptional_zone_exit(geometry, failure):
     ctx = Context()
+    ctx.robot.switch = True
     ctx.robot.empty = failure == "empty"
 
     def after(action):
-        if action == "execute" and ctx.robot.value["gripper"]["outcome"] == "contact":
+        if action == "execute" and ctx.robot.value["vacuum"]["suck"]:
             if failure == "dropped":
-                ctx.robot.value["gripper"].update(outcome="dropped")
+                ctx.robot.value["vacuum"]["held"] = False
             elif failure == "wrong-arrival":
                 ctx.robot.value["actual"][2] -= 1
 
     ctx.robot.after = after
     with pytest.raises(RuntimeError):
-        transfer(ctx, "source", "target", 400, 900)
-    assert [params["position"] for action, params in ctx.robot.calls if action == "grip"] == [
-        900,
-        400,
-    ]
+        transfer(ctx, "source", "target")
+    expected = ["suck", "release"] if failure == "empty" else ["suck"]
+    assert [params["operation"] for action, params in ctx.robot.calls if action == "vacuum"] == (
+        expected
+    )
     assert ctx.events[-1][0:2] == ("unknown", "source")
     assert not any(event[0:2] == ("enter", "target") for event in ctx.events)
 
 
-def test_release_must_exceed_actual_contact_width_before_departure(geometry):
+def test_switch_confirms_hold_and_release(geometry):
     ctx = Context()
-    with pytest.raises(ValueError, match="measured grasp"):
-        transfer(ctx, "source", "target", 400, 500)
-    assert ctx.events[-1][0:2] == ("unknown", "source")
-    assert not any(event[1] == "target" for event in ctx.events)
+    ctx.robot.switch = True
+    transfer(ctx, "source", "target")
+    assert ctx.robot.value["vacuum"] == {"suck": False, "blow": False, "held": False}
+
+
+def test_pick_refuses_active_suction_and_place_requires_it(geometry):
+    ctx = Context()
+    ctx.robot.value["vacuum"]["suck"] = True
+    with pytest.raises(RuntimeError, match="Suction must be off"):
+        pick(ctx, "source")
+    ctx = Context()
+    with pytest.raises(RuntimeError, match="Suction is off"):
+        place(ctx, "target")
+    assert ctx.robot.calls == []
 
 
 def test_public_transfer_aliases_keep_complete_typed_validation():
     registry = default_registry()
-    params = {"from": "source", "to": "target", "grip": 400, "release": 900}
+    params = {"from": "source", "to": "target"}
     skill = registry["robot.transfer"]
     canonical = skill.validate(params)
-    assert canonical == {
-        "from_station": "source",
-        "to_station": "target",
-        "grip": 400,
-        "release": 900,
-        "speed": 1,
-    }
+    assert canonical == {"from_station": "source", "to_station": "target", "speed": 1}
     assert skill.validate(canonical) == canonical
     for invalid in (
         {**params, "extra": 1},
         {**params, "from_station": "source"},
-        {**params, "grip": True},
-        {**params, "release": 900.0},
+        {**params, "grip": 400},
+        {**params, "release": 900},
         {**params, "from": 1},
         {key: value for key, value in params.items() if key != "to"},
     ):
@@ -410,9 +390,8 @@ def test_public_transfer_aliases_keep_complete_typed_validation():
             )
 
 
-@pytest.mark.parametrize("outcome", ["contact", "empty", "dropped"])
-def test_public_cli_transfer_rehearses_with_owned_collector_and_no_production_settings(
-    geometry, tmp_path, monkeypatch, outcome
+def test_public_cli_transfer_rehearses_with_simulated_vacuum_and_no_production_settings(
+    geometry, tmp_path, monkeypatch
 ):
     zone_config = tmp_path / "zones.toml"
     zone_config.write_text(
@@ -452,38 +431,6 @@ def test_public_cli_transfer_rehearses_with_owned_collector_and_no_production_se
             } == explicit
             super().__enter__()
             demos.append(self)
-            collector = self.simulator.collector
-            assert collector.feedback_path.is_relative_to(self.directory)
-
-            def answer(request):
-                assert request.get("operation", "position") == "position"
-                contact = request["position"] == 400 and outcome != "empty"
-                return {
-                    "init": 1,
-                    "state": 2 if contact else 1,
-                    "position": 600 if contact else request["position"],
-                }
-
-            if outcome != "empty":
-                collector.answer = answer
-
-            execute = self.simulator.controller.execute
-
-            def drop_on_rise(port, text):
-                result = execute(port, text)
-                if (
-                    text.startswith("MovL(")
-                    and 400 in collector.targets("answered")
-                    and outcome == "dropped"
-                ):
-                    collector.set(state=3)
-                    deadline = time.monotonic() + 1
-                    while json.loads(collector.feedback_path.read_text())["state"] != 3:
-                        assert time.monotonic() < deadline
-                        time.sleep(0.005)
-                return result
-
-            monkeypatch.setattr(self.simulator.controller, "execute", drop_on_rise)
             return self
 
     monkeypatch.setattr(cli, "Rehearsal", Demo)
@@ -497,7 +444,7 @@ params = {}
 timeout_s = 5
 [[steps]]
 skill = "robot.transfer"
-params = { from = "source", to = "target", grip = 400, release = 900 }
+params = { from = "source", to = "target" }
 timeout_s = 15
 [[steps]]
 skill = "sample.record"
@@ -513,16 +460,20 @@ timeout_s = 1
     report = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")][
         -1
     ]
-    assert result == (0 if outcome == "contact" else 1), output.getvalue()
-    assert report["status"] == ("completed" if outcome == "contact" else "aborted")
+    assert result == 0, output.getvalue()
+    assert report["status"] == "completed"
     assert report["unconfirmed_services"] == [], report
     with RunStore(tmp_path / "runs", readonly=True) as store:
         row = store.get(report["run_id"])
-        assert row["steps"][-1]["status"] == ("completed" if outcome == "contact" else "pending")
+        assert row["steps"][-1]["status"] == "completed"
     demo = demos[0]
-    assert demo.simulator.collector.targets("published") == (
-        [900, 400, 900] if outcome == "contact" else [900, 400]
-    )
+    assert [text for text in demo.simulator.controller.sent() if text.startswith("DO")] == [
+        "DOExecute(1,0)",
+        "DOExecute(2,1)",
+        "DOExecute(2,0)",
+        "DOExecute(1,1)",
+        "DOExecute(1,0)",
+    ]
     assert not demo.simulator.collector._thread.is_alive()
     assert demo.simulator.controller.closed.is_set()
     assert not demo.directory.exists()
@@ -616,7 +567,6 @@ def h08_route_geometry(tmp_path, monkeypatch):
     tool.chmod(0o640)
     monkeypatch.setenv("MG400_ORCH_STATIONS_FILE", str(store.path))
     monkeypatch.setenv("MG400_ORCH_TOOL_FILE", str(tool))
-    monkeypatch.setenv("MG400_ORCH_PRE_GRIP", "900")
     return store, flanges
 
 
@@ -640,7 +590,7 @@ def test_h08_both_directions_keep_each_taught_height(
         return (pose.x_mm, pose.y_mm, pose.z_mm + (10 if approach else 0), pose.r_deg)
 
     ctx.robot.value["actual"][:4] = point(source, at_approach)
-    transfer(ctx, source, target, 400, 900, speed=20)
+    transfer(ctx, source, target, speed=20)
     expected = [] if at_approach else [point(source, True)]
     expected += [point(source), point(source, True)]
     expected += [point(name) for name in vias]
@@ -656,7 +606,7 @@ def test_h08_both_directions_keep_each_taught_height(
         assert len(matches) == 1
         assert z <= matches[0].z_mm + 10
     # Source's incoming vias must not run before grasp when already at source.
-    first_grip = next(index for index, call in enumerate(ctx.robot.calls) if call[0] == "grip")
+    first_grip = next(index for index, call in enumerate(ctx.robot.calls) if call[0] == "vacuum")
     assert all(
         (params["targets"]["x"], params["targets"]["y"]) == point(source)[:2]
         for action, params in ctx.robot.calls[:first_grip]
@@ -669,7 +619,7 @@ def test_incoming_source_vias_are_kept_when_start_is_another_station(geometry):
     ctx = Context()
     _route_cap(ctx)
     ctx.robot.value["actual"][:4] = _station_flange(stations["target"])
-    pick(ctx, "source", 400)
+    pick(ctx, "source")
     expected = [
         tuple(_station_flange(stations["target"], raised=True)),
         tuple(_station_flange(stations["via"])),
@@ -687,7 +637,7 @@ def test_unknown_start_refuses_before_any_robot_command(geometry, axis):
     ctx.robot.value["actual"][:4] = _station_flange(geometry.load()["source"])
     ctx.robot.value["actual"][axis] += 0.101
     with pytest.raises((ValueError, RuntimeError), match="(?i)start|station|position"):
-        transfer(ctx, "source", "target", 400, 900)
+        transfer(ctx, "source", "target")
     assert ctx.robot.calls == []
 
 
@@ -699,7 +649,7 @@ def test_distinct_station_pose_or_approach_is_an_ambiguous_start(geometry, alias
     _route_cap(ctx)
     ctx.robot.value["actual"][:4] = _station_flange(geometry.load()["source"])
     with pytest.raises((ValueError, RuntimeError), match="(?i)start|station|position"):
-        transfer(ctx, "source", "target", 400, 900)
+        transfer(ctx, "source", "target")
     assert ctx.robot.calls == []
 
 
@@ -712,8 +662,8 @@ def test_start_matching_uses_flange_tolerance_with_rotated_tool(geometry):
     # Every flange error is below 0.1, but rotated tool tip X exceeds 0.1.
     measured_tip = ctx.tip()
     assert measured_tip.x_mm - geometry.load()["source"]["x_mm"] > 0.1
-    pick(ctx, "source", 400)
-    assert ctx.robot.value["gripper"]["outcome"] == "contact"
+    pick(ctx, "source")
+    assert ctx.robot.value["vacuum"]["suck"] is True
 
 
 def test_start_matching_does_not_normalize_a_full_r_turn(geometry):
@@ -722,7 +672,7 @@ def test_start_matching_does_not_normalize_a_full_r_turn(geometry):
     ctx.robot.value["actual"][:4] = _station_flange(geometry.load()["source"])
     ctx.robot.value["actual"][3] += 360
     with pytest.raises((ValueError, RuntimeError), match="(?i)start|station|position"):
-        pick(ctx, "source", 400)
+        pick(ctx, "source")
     assert ctx.robot.calls == []
 
 
@@ -738,7 +688,7 @@ def test_initial_rise_already_holds_start_zone_and_failure_is_unknown(geometry):
 
     ctx.robot.after = fail_first_execute
     with pytest.raises(RuntimeError, match="uncertain initial rise"):
-        transfer(ctx, "source", "target", 400, 900)
+        transfer(ctx, "source", "target")
     assert [call[0] for call in ctx.robot.calls] == ["execute"]
     assert ctx.events[0][:2] == ("enter", "source")
     assert any(event[:2] == ("unknown", "source") for event in ctx.events)
@@ -749,9 +699,9 @@ def test_initial_rise_already_holds_start_zone_and_failure_is_unknown(geometry):
 def test_transfer_speed_is_validated_before_any_command(geometry, speed, action):
     ctx = Context()
     functions = {
-        "pick": lambda: pick(ctx, "source", 400, speed=speed),
-        "place": lambda: place(ctx, "target", 900, speed=speed),
-        "transfer": lambda: transfer(ctx, "source", "target", 400, 900, speed=speed),
+        "pick": lambda: pick(ctx, "source", speed=speed),
+        "place": lambda: place(ctx, "target", speed=speed),
+        "transfer": lambda: transfer(ctx, "source", "target", speed=speed),
     }
     with pytest.raises(ValueError, match="speed|cap"):
         functions[action]()
@@ -763,7 +713,7 @@ def test_invalid_robot_speed_description_is_not_a_fallback(geometry, cap):
     ctx = Context()
     _route_cap(ctx, cap)
     with pytest.raises(ValueError, match="cap"):
-        pick(ctx, "source", 400)
+        pick(ctx, "source")
     assert not ctx.robot.calls
 
 
@@ -776,7 +726,7 @@ def test_changed_start_after_preflight_refuses_before_rise(geometry):
     ctx.robot.value["actual"][:4] = _station_flange(geometry.load()["target"])
     with _RouteZones(ctx.zones) as zones:
         with pytest.raises(RuntimeError, match="planned starting station"):
-            operation.pick(route, 400, 900, zones)
+            operation.pick(route, zones)
     assert not ctx.robot.calls and not ctx.events
 
 
@@ -784,7 +734,7 @@ def test_future_departure_ambiguity_is_found_before_source_pick(geometry):
     geometry.save("alias", Pose(230, 20, 50, 90), approach_mm=20)
     ctx = Context()
     with pytest.raises(ValueError, match="unambiguous"):
-        transfer(ctx, "source", "target", 400, 900)
+        transfer(ctx, "source", "target")
     assert not ctx.robot.calls
 
 
@@ -803,7 +753,7 @@ def test_start_is_rechecked_after_zone_admission_before_any_motion(geometry):
 
     ctx.take = delayed_admission
     with pytest.raises(RuntimeError, match="during zone admission"):
-        transfer(ctx, "source", "target", 400, 900)
+        transfer(ctx, "source", "target")
     assert not ctx.robot.calls
     assert any(event[:2] == ("unknown", "source") for event in ctx.events)
 

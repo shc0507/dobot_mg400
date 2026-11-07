@@ -252,9 +252,9 @@ class RobotAdapter(ServiceAdapter):
                         "stop_unconfirmed",
                         "keyboard_enabled",
                         "keyboard_arming",
-                        "gripper_busy",
                     )
                 )
+                and state.get("gripper_busy", False) is False
                 and "keyboard_active_key" in state
                 and state["keyboard_active_key"] is None
                 and state.get("fault") is None

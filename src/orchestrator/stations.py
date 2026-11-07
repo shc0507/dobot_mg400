@@ -142,8 +142,8 @@ def measured_pose(state):
             "Teaching requires fresh, idle, unlocked robot state held by a controller."
         )
     actual = state.get("actual")
-    if not isinstance(actual, list) or len(actual) != 5:
-        raise ValueError("Robot actual must contain 4 measured coordinates and the gripper field.")
+    if not isinstance(actual, list) or len(actual) not in (4, 5):
+        raise ValueError("Robot actual must start with 4 measured coordinates.")
     return Pose(*actual[:4])
 
 

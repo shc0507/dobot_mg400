@@ -297,7 +297,7 @@ Keep the camera fixed and revalidate after physical changes.
 Use `vision.check_calibration(camera)` before each vision-guided move in a transfer recipe.
 This typed skill requires the robot and vision services under the run's existing ownership.
 It reads the measured robot pose. It does not move or enable the robot.
-The check uses the existing workspace, gripper, feedback, and ownership requirements.
+The check uses the existing workspace, suction cup, feedback, and ownership requirements.
 
 The vision service must already report `connected=true` with no fault.
 For a cold live service, complete the authorized `read_markers` preview and release its lease as described above.
@@ -384,7 +384,7 @@ It uses these fields:
 | `camera` | Calibrated camera number, from 1 to 4. |
 | `tray` | Validated tray-model document, not a host file path. |
 | `targets` | Requested slot IDs mapped to their exact taught robot XY pairs. |
-| `axis` | `long` or `short`, according to the explicit grasp convention. |
+| `axis` | `long` or `short`, according to the explicit suction convention. |
 
 The complete JSON command must fit within 16 KiB. A valid tray file does not guarantee that its command fits.
 Each observation uses 1 current frame and the camera-bound calibration model.
@@ -401,7 +401,7 @@ The angle describes the selected chip axis in robot XY. It is not a raw image an
 Stop, lease loss, invalid metadata, or revoked publication prevents the service from publishing a successful result.
 
 The `vision.find_chip(slot)` and `vision.slot_state(slot)` skills require fresh owned stationary robot state and a calibration drift check.
-The composite `vision.tray_transfer` also requires a measured grasp convention and exact taught slot targets.
+The composite `vision.tray_transfer` also requires a measured suction convention and exact taught slot targets.
 It keeps observation results within the guarded step and checks camera, image dimensions, and calibration identity across the observations.
 See [vision-guided tray transfer](orchestrator.en.md#vision-guided-tray-transfer) for configuration and the supervised workflow.
 
@@ -505,7 +505,7 @@ Lease expiry cancels the controlling client's command. It does not cancel an ind
 
 SIGINT, SIGTERM, and SIGHUP request cancellation during shutdown.
 Shutdown waits up to 15 seconds for active inference or startup and ends lease polling.
-The service controls no robot, stage, gripper, or camera device.
+The service controls no robot, stage, suction cup, or camera device.
 
 ## Detector evaluation
 

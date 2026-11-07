@@ -461,21 +461,18 @@ def test_synthetic_tray_pixels_match_model_markers_and_chip_geometry(tray_scene)
         ("source-remains", {"source": True, "target": False}, {"source": True, "target": True}),
     ],
 )
-def test_synthetic_tray_occupancy_changes_only_on_completed_grips(
+def test_synthetic_tray_occupancy_changes_only_on_completed_suction(
     tray_scene, failure, initial, final
 ):
     scene, robot = tray_scene(failure)
     assert scene.occupancy == initial
     old_image = scene.read(1)
-    robot.value.update(actual=[220, 20, 100, 0, 600], gripper={"outcome": None})
-    scene.gripper_completed(400, robot.snapshot())
+    # Suction away from a slot changes nothing.
+    scene.vacuum_completed("suck", {"actual": [210, 10, 180, 0]})
+    scene.vacuum_completed("release", {"actual": [210, 10, 180, 0]})
     assert scene.occupancy == initial
-    answer = scene.collector_answer({"position": 400})
-    assert answer["state"] == (2 if initial["source"] else 1)
-    robot.value["gripper"]["outcome"] = "contact" if initial["source"] else "arrived"
-    scene.gripper_completed(400, robot.snapshot())
-    robot.value.update(actual=[260, 20, 100, 0, 900], gripper={"outcome": "arrived"})
-    scene.gripper_completed(900, robot.snapshot())
+    scene.vacuum_completed("suck", {"actual": [220, 20, 100, 0]})
+    scene.vacuum_completed("release", {"actual": [260, 20, 100, 0]})
     assert scene.occupancy == final
     # Inference reads only the supplied image, not the scene's changed occupancy.
     assert len(scene.localizer().predict(old_image)[1]["detections"]) == sum(initial.values())
@@ -502,10 +499,8 @@ def test_synthetic_separate_vision_pool_reads_only_its_owned_robot_scene(tray_sc
     first, robot = tray_scene()
     second, _ = tray_scene()
     robot._tray_scene = first
-    robot.value.update(actual=[220, 20, 100, 0, 600], gripper={"outcome": "contact"})
-    first.gripper_completed(400, robot.snapshot())
-    robot.value.update(actual=[260, 20, 100, 0, 900], gripper={"outcome": "arrived"})
-    first.gripper_completed(900, robot.snapshot())
+    first.vacuum_completed("suck", {"actual": [220, 20, 100, 0]})
+    first.vacuum_completed("release", {"actual": [260, 20, 100, 0]})
     robot.value["actual"] = [210, 10, 180, 0, 900]
     from vision.calibration import robot_xy
 

@@ -3,6 +3,7 @@
 import math
 import os
 import sys
+import time
 from dataclasses import dataclass
 
 from ..stations import (
@@ -18,11 +19,8 @@ from ..tool import Pose, fingertip_to_flange, finite, flange_to_fingertip
 TRANSFER_SETTINGS = BOUND_SETTINGS | {
     "MG400_ORCH_STATIONS_FILE",
     "MG400_ORCH_TOOL_FILE",
-    "MG400_ORCH_PRE_GRIP",
     "MG400_ORCH_TRAY_FILE",
     "MG400_ORCH_TRAY_CAMERA",
-    "MG400_ORCH_TRAY_GRIP",
-    "MG400_ORCH_TRAY_RELEASE",
     "MG400_ORCH_CHIP_AXIS",
     "MG400_ORCH_CHIP_R_OFFSET_DEG",
     "MG400_ORCH_CHIP_R_MIN_DEG",
@@ -30,10 +28,8 @@ TRANSFER_SETTINGS = BOUND_SETTINGS | {
 }
 
 
-def _position(value, label):
-    if type(value) is not int or not 0 <= value <= 1000:
-        raise ValueError(f"{label} must be an integer from 0 to 1000.")
-    return value
+# Deadline for the vacuum switch (`vacuum.held`) after suck or release.
+HELD_SECONDS = 1.0
 
 
 class _RouteZones:
@@ -140,8 +136,6 @@ class _Transfer:
                 or state.get("busy") is not False
                 or state.get("locked") is not False
                 or state.get("stop_unconfirmed") is not False
-                or state.get("gripper_available") is not True
-                or state.get("gripper_busy") is not False
                 or state.get("keyboard_enabled", False) is not False
                 or not isinstance(owner, str)
                 or not owner.strip()
@@ -149,30 +143,15 @@ class _Transfer:
                 or not state["instance"].strip()
                 or self.robot.owned(state) is not True
             ):
-                raise RuntimeError(
-                    "Transfer requires owned, fresh, enabled, idle robot state "
-                    "and an initialized gripper."
-                )
+                raise RuntimeError("Transfer requires owned, fresh, enabled, idle robot state.")
             if self.owner is None:
                 self.owner, self.instance = owner, state.get("instance")
             elif owner != self.owner or state.get("instance") != self.instance:
                 raise RuntimeError("Robot ownership or instance changed during transfer.")
-            actual, grasp = state.get("actual"), state.get("gripper")
-            if not isinstance(actual, list) or len(actual) != 5 or not isinstance(grasp, dict):
-                raise RuntimeError("Transfer requires measured robot and gripper fields.")
-            opening = finite(actual[4], "measured gripper opening")
-            if not 0 <= opening <= 1000:
-                raise RuntimeError("Measured gripper opening is outside its range.")
-            outcome = grasp.get("outcome")
-            if outcome == "dropped":
-                raise RuntimeError("The gripper reports a dropped object.")
-            if outcome not in {None, "arrived", "contact"}:
-                raise RuntimeError("The gripper reports an unknown outcome.")
-            if expected is not None:
-                if outcome != expected:
-                    raise RuntimeError(f"Expected gripper outcome {expected}, received {outcome}.")
-                if finite(grasp.get("outcome_at"), "gripper outcome timestamp") < 0:
-                    raise RuntimeError("Invalid gripper outcome timestamp.")
+            actual = state.get("actual")
+            if not isinstance(actual, list) or len(actual) not in (4, 5):
+                raise RuntimeError("Transfer requires the measured robot pose.")
+            self._check_vacuum(state.get("vacuum"), expected)
             if all(value is None for value in actual[:4]):
                 # The service clears its pose for each job, then reads a new
                 # measured pose after completion. Poll reads only, under the
@@ -182,6 +161,25 @@ class _Transfer:
             pose = self._inside(flange_to_fingertip(Pose(*actual[:4]), self.offset))
             self.ctx.check()
             return state, pose
+
+    @staticmethod
+    def _check_vacuum(vacuum, expected):
+        """expected: None (any), "held" (suction on) or "free" (suction off)."""
+        if not isinstance(vacuum, dict):
+            raise RuntimeError("Transfer requires the measured vacuum state.")
+        suck, blow, held = vacuum.get("suck"), vacuum.get("blow"), vacuum.get("held")
+        if type(suck) is not bool or type(blow) is not bool or held not in (None, True, False):
+            raise RuntimeError("Transfer requires the measured vacuum outputs.")
+        if blow:
+            raise RuntimeError("The vacuum source is still blowing. Send vacuum off.")
+        # held is None until a vacuum switch is installed; then only suck is checked.
+        if expected == "held":
+            if not suck:
+                raise RuntimeError("Suction is off while the cup carries a part.")
+            if held is False:
+                raise RuntimeError("The vacuum switch reports a dropped part.")
+        elif expected == "free" and (suck or held is True):
+            raise RuntimeError("Suction must be off before a pick.")
 
     def route(self, name):
         if not isinstance(name, str) or name not in self.stations:
@@ -257,10 +255,31 @@ class _Transfer:
             raise RuntimeError("Measured robot pose did not reach the requested waypoint.")
         return state, measured
 
-    def grip(self, target, expected, previous=None):
-        self.state(previous)
-        self.robot.run("grip", position=target)
-        return self.state(expected)
+    def _wait_held(self, wanted):
+        """Wait for the vacuum switch, if one is installed. Return False on timeout."""
+        deadline = time.monotonic() + HELD_SECONDS
+        while True:
+            state, _ = self.state()
+            if state["vacuum"]["held"] in (None, wanted):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            self.ctx.sleep(0.02)
+
+    def suck(self):
+        self.state("free")
+        self.robot.run("vacuum", operation="suck")
+        if not self._wait_held(True):
+            self.robot.run("vacuum", operation="release")
+            raise RuntimeError("The vacuum switch did not report a held part.")
+        return self.state("held")
+
+    def release(self):
+        self.state("held")
+        self.robot.run("vacuum", operation="release")
+        if not self._wait_held(False):
+            raise RuntimeError("The vacuum switch still reports a part after release.")
+        return self.state("free")
 
     def matches(self, state, pose):
         target = fingertip_to_flange(self._inside(pose), self.offset)
@@ -361,63 +380,41 @@ class _Transfer:
             self.move(self.pose(route.destination, approach=True), expected)
             zones.arrived(route.destination["zone"])
 
-    def pick(self, route, grip, opening, zones):
-        state, _ = self.state()
-        if state["gripper"]["outcome"] == "contact":
-            raise RuntimeError("Pick refuses an existing grasp.")
-        self.travel(route, zones)
-        self.grip(opening, "arrived")
-        self.move(self.pose(route.destination), "arrived")
-        self.grip(grip, "contact", "arrived")
-        self.move(self.pose(route.destination, approach=True), "contact")
+    def pick(self, route, zones):
+        self.state("free")
+        self.travel(route, zones, "free")
+        self.move(self.pose(route.destination), "free")
+        self.suck()
+        self.move(self.pose(route.destination, approach=True), "held")
 
-    def place(self, route, release, zones):
-        state, _ = self.state("contact")
-        if release <= state["actual"][4]:
-            raise ValueError("Release must open beyond the measured grasp position.")
-        self.travel(route, zones, "contact")
-        self.move(self.pose(route.destination), "contact")
-        self.grip(release, "arrived", "contact")
-        self.move(self.pose(route.destination, approach=True), "arrived")
+    def place(self, route, zones):
+        self.state("held")
+        self.travel(route, zones, "held")
+        self.move(self.pose(route.destination), "held")
+        self.release()
+        self.move(self.pose(route.destination, approach=True), "free")
 
 
-def _opening(grip):
-    raw = os.environ.get("MG400_ORCH_PRE_GRIP", "")
-    if not raw.isascii() or not raw.isdecimal():
-        raise ValueError("Set MG400_ORCH_PRE_GRIP to an explicit integer opening.")
-    opening = _position(int(raw), "pre-grip opening")
-    if opening <= grip:
-        raise ValueError("Pre-grip opening must be greater than the closing target.")
-    return opening
-
-
-def pick(ctx, station: str, grip: int, *, speed: int = 1):
-    grip = _position(grip, "grip")
-    opening = _opening(grip)
+def pick(ctx, station: str, *, speed: int = 1):
     operation = _Transfer(ctx, speed)
     route = operation.route(station)
     (planned,) = operation.plan(route)
     with _RouteZones(ctx.zones) as zones:
-        operation.pick(planned, grip, opening, zones)
+        operation.pick(planned, zones)
 
 
-def place(ctx, station: str, release: int, *, speed: int = 1):
-    release = _position(release, "release")
+def place(ctx, station: str, *, speed: int = 1):
     operation = _Transfer(ctx, speed)
     route = operation.route(station)
     (planned,) = operation.plan(route)
     with _RouteZones(ctx.zones) as zones:
-        operation.place(planned, release, zones)
+        operation.place(planned, zones)
 
 
-def transfer(ctx, from_station: str, to_station: str, grip: int, release: int, *, speed: int = 1):
-    grip, release = _position(grip, "grip"), _position(release, "release")
-    if release <= grip:
-        raise ValueError("Release must be greater than the closing target.")
-    opening = _opening(grip)
+def transfer(ctx, from_station: str, to_station: str, *, speed: int = 1):
     operation = _Transfer(ctx, speed)
     source, destination = operation.route(from_station), operation.route(to_station)
     source, destination = operation.plan(source, destination)
     with _RouteZones(ctx.zones) as zones:
-        operation.pick(source, grip, opening, zones)
-        operation.place(destination, release, zones)
+        operation.pick(source, zones)
+        operation.place(destination, zones)

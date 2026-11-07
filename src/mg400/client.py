@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from labkit.lease import validate_client
 
+from .suction import ACTIONS as VACUUM_OPERATIONS
 from .websocket import PONG, TEXT, MessageReader, ProtocolError, accept_key, encode_frame
 
 
@@ -523,6 +524,21 @@ class RobotClient:
             if complete(reply["state"]):
                 return copy.deepcopy(reply["state"])
             return self.wait(complete, max(0.000001, deadline - time.monotonic()))
+
+    def vacuum(self, operation, timeout=30):
+        """Run suck, release or off on the suction cup once; return the completed state.
+
+        The state's `vacuum` field holds the measured outputs (`suck`, `blow`) and `held`.
+        """
+        if operation not in VACUUM_OPERATIONS:
+            raise ValueError("Vacuum operation must be suck, release or off.")
+        return self.run("vacuum", timeout=timeout, operation=operation)
+
+    @property
+    def vacuum_state(self):
+        """Return the measured vacuum state, or None before connection."""
+        state = self.state
+        return None if state is None else state.get("vacuum")
 
     def close(self):
         """Stop client workers. Do not renew or release the service's control lease."""

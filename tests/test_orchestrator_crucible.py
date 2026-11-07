@@ -76,12 +76,9 @@ def crucible_geometry(tmp_path, monkeypatch):
     tool.chmod(0o640)
     monkeypatch.setenv("MG400_ORCH_STATIONS_FILE", str(stations.path))
     monkeypatch.setenv("MG400_ORCH_TOOL_FILE", str(tool))
-    monkeypatch.setenv("MG400_ORCH_PRE_GRIP", "900")
     for suffix, value in {
         "LOAD_MAX_C": 50,
         "UNLOAD_MAX_C": 40,
-        "GRIP": 400,
-        "RELEASE": 900,
         "AWAKE_S": 60,
         "MAX_AGE_S": 2,
     }.items():
@@ -278,7 +275,7 @@ def test_load_departs_robot_zone_before_insert_and_retains_tube(crucible_geometr
         assert "crucible-load" not in ctx.held
         if action == "goto":
             assert "furnace-tube" in ctx.held
-            assert ctx.clients["robot"].value["gripper"]["outcome"] == "arrived"
+            assert ctx.clients["robot"].value["vacuum"]["suck"] is False
 
     stage.after = check
     load(ctx, "slot")
@@ -316,7 +313,7 @@ def test_unload_measures_load_departure_then_waits_for_named_roi(crucible_geomet
     assert not ctx.retained
 
 
-@pytest.mark.parametrize("suffix", ["GRIP", "RELEASE", "LOAD_MAX_C", "AWAKE_S", "MAX_AGE_S"])
+@pytest.mark.parametrize("suffix", ["LOAD_MAX_C", "AWAKE_S", "MAX_AGE_S"])
 def test_missing_settings_never_dispatch(crucible_geometry, monkeypatch, suffix):
     monkeypatch.delenv(PREFIX + suffix)
     ctx = CrucibleContext()
@@ -328,8 +325,6 @@ def test_missing_settings_never_dispatch(crucible_geometry, monkeypatch, suffix)
 @pytest.mark.parametrize(
     "params",
     [
-        {"grip": True},
-        {"release": 399},
         {"load_max_c": float("nan")},
         {"load_max_c": float("inf")},
         {"awake_s": 60.001},
@@ -552,6 +547,7 @@ def test_ownership_loss_during_roi_refuses_pick(crucible_geometry, service):
 def test_failed_robot_transfer_never_inserts(crucible_geometry, failure):
     ctx = CrucibleContext()
     robot = ctx.clients["robot"]
+    robot.switch = True
     if failure == "empty":
         robot.empty = True
     else:
@@ -559,7 +555,7 @@ def test_failed_robot_transfer_never_inserts(crucible_geometry, failure):
         def fail(action):
             if action == "execute":
                 if failure == "dropped":
-                    robot.value["gripper"]["outcome"] = "dropped"
+                    robot.value["vacuum"]["held"] = False
                 else:
                     robot.value["actual"][0] += 1
 
@@ -1080,16 +1076,6 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
             assert all(client.describe()["demo"] for client in self.clients.values()), diagnostics()
             if scenario != "unhomed":
                 _home_owned_demo(self.clients["stage"])
-
-            def answer(request):
-                contact = request["position"] == 400
-                return {
-                    "init": 1,
-                    "state": 2 if contact else 1,
-                    "position": 600 if contact else request["position"],
-                }
-
-            self.simulator.collector.answer = answer
             return self
 
     monkeypatch.setattr(cli, "Rehearsal", Demo)
@@ -1137,12 +1123,12 @@ timeout_s = """
             diagnostics(),
         )
         assert reports[-1]["status"] == "completed" and reports[-1]["zones"] == {}, diagnostics()
-        assert demos[0].simulator.collector.targets("answered").count(400) == 2, diagnostics()
+        assert demos[0].simulator.controller.sent().count("DOExecute(2,1)") == 2, diagnostics()
     else:
         assert code == 1 and reports[-1]["status"] == "aborted", (output.getvalue(), diagnostics())
         assert any(report["status"] == "held" for report in reports), diagnostics()
-        targets = demos[0].simulator.collector.targets("answered")
-        assert targets.count(400) == (1 if scenario == "hot" else 0), diagnostics()
+        sucks = demos[0].simulator.controller.sent().count("DOExecute(2,1)")
+        assert sucks == (1 if scenario == "hot" else 0), diagnostics()
         if scenario == "hot":
             held = next(item for item in reports if item["status"] == "held")
             assert any(

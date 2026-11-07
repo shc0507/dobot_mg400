@@ -55,6 +55,8 @@ class TrayRobot(Robot):
         self.value.update(demo=True, actual=[*DEMO_TRAY_INITIAL_FLANGE, 1000])
         self.failure = failure
         self.empty = failure == "empty-grasp"
+        # The grip-signal failures need a vacuum switch: `held` reports them.
+        self.switch = failure in {"empty-grasp", "drop"}
         self.scene = None
         self.acquired = False
         self.stops = 0
@@ -82,12 +84,12 @@ class TrayRobot(Robot):
     def run(self, action, *, timeout=5, **params):
         with self.lock:
             assert self.acquired
-            previous = self.value["gripper"]["outcome"]
+            carrying = self.value["vacuum"]["held"] is True
             super().run(action, **params)
-            if action == "grip":
-                self.scene.gripper_completed(params["position"], self.state())
-            if action == "execute" and previous == "contact" and self.failure == "drop":
-                self.value["gripper"] = {"outcome": "dropped", "outcome_at": len(self.calls)}
+            if action == "vacuum" and not self.empty:
+                self.scene.vacuum_completed(params["operation"], self.state())
+            if action == "execute" and carrying and self.failure == "drop":
+                self.value["vacuum"]["held"] = False
             return {"ok": True}
 
     def stop(self):
@@ -204,12 +206,11 @@ def test_complete_recipe_uses_current_pixels_and_taught_motion(tmp_path, monkeyp
         "observe_slots",
         "observe_slots",
     ]
-    assert [params["position"] for name, params in result["calls"] if name == "grip"] == [
-        900,
-        400,
-        900,
+    assert [params["operation"] for name, params in result["calls"] if name == "vacuum"] == [
+        "suck",
+        "release",
     ]
-    assert {name for name, _ in result["calls"]} == {"execute", "grip"}
+    assert {name for name, _ in result["calls"]} == {"execute", "vacuum"}
     assert all(params["speed"] == 1 for name, params in result["calls"] if name == "execute")
 
 
@@ -232,7 +233,8 @@ def test_each_required_failure_holds_without_retry(tmp_path, monkeypatch, failur
     assert result["row"]["steps"][0]["error"]
     if failure in {"no-source", "occupied-target", "moved-camera"}:
         assert not result["calls"]
-    assert sum(name == "grip" and args["position"] == 400 for name, args in result["calls"]) <= 1
+    sucks = [args for name, args in result["calls"] if args.get("operation") == "suck"]
+    assert len(sucks) <= 1
 
 
 @pytest.mark.parametrize(
@@ -240,13 +242,10 @@ def test_each_required_failure_holds_without_retry(tmp_path, monkeypatch, failur
     [
         "TRAY_FILE",
         "TRAY_CAMERA",
-        "TRAY_GRIP",
-        "TRAY_RELEASE",
         "CHIP_AXIS",
         "CHIP_R_OFFSET_DEG",
         "CHIP_R_MIN_DEG",
         "CHIP_R_MAX_DEG",
-        "PRE_GRIP",
     ],
 )
 def test_missing_physical_input_holds_before_motion(tmp_path, monkeypatch, key):
@@ -468,7 +467,7 @@ def test_measured_copy_preserves_taught_geometry_and_post_pick_identity(geometry
     assert observed[-1]["via"] == original["source"]["via"]
     assert operation.stations == original and geometry.path.read_bytes() == disk
     with _RouteZones(ctx.zones) as zones:
-        operation.pick(source, 400, 900, zones)
+        operation.pick(source, zones)
         expected = fingertip_to_flange(Pose(231, 21, 50, 91), operation.offset)
         assert ctx.robot.value["actual"][:4] == pytest.approx(
             [expected.x_mm, expected.y_mm, expected.z_mm, expected.r_deg]
@@ -477,7 +476,7 @@ def test_measured_copy_preserves_taught_geometry_and_post_pick_identity(geometry
         taught = fingertip_to_flange(Pose(230, 20, 50, 90), operation.offset)
         ctx.robot.value["actual"][:4] = [taught.x_mm, taught.y_mm, taught.z_mm, taught.r_deg]
         with pytest.raises(RuntimeError):
-            operation.place(target, 900, zones)
+            operation.place(target, zones)
         assert len(ctx.robot.calls) == before
 
 

@@ -45,7 +45,7 @@ class Controller:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._sample = Feedback(START, 5, 0, False, 100.0)
+        self._sample = Feedback(START, 5, 0, False, 100.0, 0, 0, 0.0)
         self._log = []
         self._jog = None
         self.pose = POSE

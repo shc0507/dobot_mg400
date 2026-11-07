@@ -903,11 +903,9 @@ def drift_runner(tmp_path, monkeypatch, result):
     robot.value.update(
         enabled=True,
         robot_mode=5,
-        gripper_available=True,
-        gripper_busy=False,
         keyboard_enabled=False,
         actual=[200, 0, 50, 0, 1000],
-        gripper={"outcome": None},
+        vacuum={"suck": False, "blow": False, "held": None},
     )
 
     def occupy(ctx):

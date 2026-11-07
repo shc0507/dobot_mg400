@@ -284,6 +284,8 @@ with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
 - `command(action, **fields)` sends 1 request and returns the protocol reply. Check `status`. Acceptance does not mean completion.
 - `wait(predicate, timeout)` returns a state that satisfies the predicate. A timeout raises `TimeoutError`.
 - `run(action, timeout=30, **fields)` waits for `busy == False` and a new `last_command` for its action and client.
+- `vacuum(operation, timeout=30)` sends 1 `vacuum` command through `run()`. `operation` is `suck`, `release` or `off`. Other values raise `ValueError`. See [Vacuum suction cup](#vacuum-suction-cup).
+- `vacuum_state` returns the `vacuum` field of the latest state, or `None` before connection.
 - `RobotClientError` reports a refusal or uncertain outcome. It retains `status` and `close_code` when available.
 
 `run()` accepts `ok`. For `stop`, `disable`, and `stop_sync`, it also accepts `stopped` when the stop remains confirmed.

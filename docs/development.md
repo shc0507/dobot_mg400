@@ -282,6 +282,8 @@ with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
 - `command(action, **fields)` 发送 1 次请求并返回协议回复。检查 `status`。接受请求不表示操作完成。
 - `wait(predicate, timeout)` 返回满足条件的状态。超时抛出 `TimeoutError`。
 - `run(action, timeout=30, **fields)` 等待 `busy == False`，并检查属于本次动作和客户端的新 `last_command`。
+- `vacuum(operation, timeout=30)` 用 `run()` 发送 1 次 `vacuum` 命令。`operation` 取 `suck`、`release` 或 `off`，其他值抛出 `ValueError`。见[真空吸盘](#真空吸盘)。
+- `vacuum_state` 返回最新状态的 `vacuum` 字段。连接前为 `None`。
 - `RobotClientError` 表示请求被拒绝或结果未知。如果服务提供错误码，异常保留 `status` 和 `close_code`。
 
 `run()` 接受 `ok`。对于 `stop`、`disable` 和 `stop_sync`，停止仍获确认时，也接受 `stopped`。

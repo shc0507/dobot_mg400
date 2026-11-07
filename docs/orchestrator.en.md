@@ -75,9 +75,9 @@ uv run python -m orchestrator serve --demo --recipes-dir ./recipes
 ```
 
 Demo startup removes downstream endpoints and credentials, device paths, and proxies from the process environment before threads start.
-It owns temporary run records, occupancy, device simulations, gripper feedback, and controller locks.
+It owns temporary run records, occupancy, device simulations, and controller locks.
 Ambient record and occupancy paths are ignored. `--runs-dir` is refused with `--demo`.
-The recipe catalog remains read-only. Explicit station, tool, workspace, pre-grip, and zone-configuration settings remain available as read-only inputs.
+The recipe catalog remains read-only. Explicit station, tool, workspace, and zone-configuration settings remain available as read-only inputs.
 Demo initialization does not establish physical clearance. Temporary data is removed when the service closes.
 
 ## Recipes
@@ -108,9 +108,9 @@ A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter wit
 | `robot.enable` | None | Robot |
 | `robot.move` | `x_mm`, `y_mm`, `z_mm`, `r_deg` | Robot |
 | `robot.stop` | None | Robot |
-| `robot.pick` | `station`, `grip` | Robot |
-| `robot.place` | `station`, `release` | Robot |
-| `robot.transfer` | `from`, `to`, `grip`, `release` | Robot |
+| `robot.pick` | `station` | Robot |
+| `robot.place` | `station` | Robot |
+| `robot.transfer` | `from`, `to` | Robot |
 | `vision.find_chip` | `slot` | Robot, vision |
 | `vision.slot_state` | `slot` | Robot, vision |
 | `vision.tray_transfer` | `from_slot`, `to_slot`, optional `speed` | Robot, vision |
@@ -322,14 +322,14 @@ A write or file-sync failure preserves the old file. A directory-sync failure af
 ```toml
 [[steps]]
 skill = "robot.transfer"
-params = { from = "tray-pick", to = "tray-place", grip = 400, release = 900, speed = 1 }
+params = { from = "tray-pick", to = "tray-place", speed = 1 }
 timeout_s = 60
 on_fail = "hold"
 ```
 
-The numbers in this fragment are examples, not measured hardware settings. A pick needs a measured pre-grip opening. It has no default. `grip`, `release`, and the pre-grip opening are integers from 0 to 1000. The pre-grip opening must exceed `grip`. For a transfer, `release` must also exceed `grip`. Before travel to the destination, it must exceed the measured contact width.
+The numbers in this fragment are examples, not measured hardware settings.
 
-The robot must be enabled and idle, with fresh feedback and an initialized, available gripper. Every state check verifies this run's ownership and the same robot instance. A lock, robot error, unconfirmed stop, or active keyboard control prevents transfer. The skills never initialize the gripper or recover control automatically.
+The robot must be enabled and idle, with fresh feedback and the measured suction-cup outputs. Every state check verifies this run's ownership and the same robot instance. A lock, robot error, unconfirmed stop, or active keyboard control prevents transfer. The skills never recover control automatically.
 
 Before starting, position the robot at a taught station or its approach. The measured flange pose must match exactly one station after tool conversion, within 0.1 mm or 0.1 degrees per axis. An unknown or ambiguous start refuses motion. The skill checks the starting station again before each route leg.
 
@@ -337,7 +337,9 @@ Before the first motion, the skill expands all `via` routes and checks every way
 
 Each leg rises only at its starting station, to that station's approach. It follows the declared `via` order at each via station's taught pose. It then reaches the destination's approach and descends to its taught pose. Each move is a straight line. If the robot is already at the destination, it skips that station's incoming vias. A leading via that is the starting station is already visited and is also skipped.
 
-A pick opens to the pre-grip opening before descending. It closes to `grip`, requires `contact`, and rises to that station's approach while checking for `dropped`. A place requires an existing contact. It descends, opens to `release`, requires `arrived`, and rises to that station's approach. An empty close that reports `arrived` cannot satisfy a pick.
+A pick descends, then sends `vacuum suck`. Suction must be off before a pick. With suction on, it rises to that station's approach. A place requires suction on. It descends, sends `vacuum release` (a short blow, then off), and rises to that station's approach. Before and after each move, the state check verifies the measured suck and blow outputs: suck must be on while the cup carries a part and off otherwise, and blow must be off.
+
+When a vacuum switch is installed and `GRIP_DI` is set, `vacuum.held` in the robot state reports whether the cup holds a part. If `held` does not become true within 1 second after suck, the skill sends `vacuum release` and fails. If `held` becomes `false` while the cup carries a part, the part dropped and the run holds. If `held` does not become `false` within 1 second after a place, the skill fails. While `GRIP_DI` is not set, `held` is `null` and the skill cannot confirm that the cup holds a part.
 
 `robot.pick`, `robot.place`, and `robot.transfer` accept `speed`, an integer with default 1. The permitted range is 1 through the robot service's advertised `MG400_ROBOT_MAX_SPEED_L` cap, which is at most 100. Invalid values or an invalid advertised cap refuse the step before motion. All moves use `execute`, and the robot service still enforces its speed and acceleration caps. The controller remains at `User=0,Tool=0`.
 
@@ -353,9 +355,9 @@ The operator must verify that every endpoint approach is reachable, clears its w
 Its guarded `vision.tray_transfer` step checks calibration, observes both slots, transfers the chip, and checks both slots again.
 It requires a chip at the source and an empty target before motion.
 After placement, it requires a chip at the target and an empty source.
-Missing or ambiguous evidence, an empty grasp, a drop, or failed calibration holds the run.
+Missing or ambiguous evidence, a part that is not held, a drop, or failed calibration holds the run.
 
-The step needs measured inputs with no hardware defaults: a tray-model TOML file of at most 16 KiB, the calibrated tray camera from 1 to 4, grip and release targets from 0 to 1000, the chip axis `long` or `short`, and a flange R offset and window narrower than 180 degrees.
+The step needs measured inputs with no hardware defaults: a tray-model TOML file of at most 16 KiB, the calibrated tray camera from 1 to 4, the chip axis `long` or `short`, and a flange R offset and window narrower than 180 degrees.
 Symbolic links, nonregular files, multiple hard links, and concurrent changes of the tray file refuse the step.
 The station-transfer inputs also remain required.
 Teach an actual pick or place target for each exact slot ID.
@@ -368,7 +370,7 @@ The result must also satisfy the ordinary workspace and robot limits. A raw imag
 
 Before entry, the robot must satisfy the [calibration drift check](vision.en.md#calibration-drift-check) at the stored scan R inside its calibrated grid.
 It must also match an unambiguous taught station or its approach, with a verified route to the source.
-The skill does not position the robot for the drift check or initialize its gripper.
+The skill does not position the robot for the drift check.
 
 The source endpoint uses observed XY and the permitted R, with the taught depth, approach, zone, and vias.
 The destination remains the exact taught slot target. Stored stations do not change.
@@ -376,7 +378,7 @@ The skill checks every waypoint and conversion before motion. Speed defaults to 
 Observation results stay inside the guarded step, with stable camera, image dimensions, and calibration identity.
 See [guarded slot evidence](vision.en.md#guarded-slot-evidence) for the observation contract.
 
-For hardware use, an operator must validate the settings, clearance, reach, and grasp convention before the supervised procedure.
+For hardware use, an operator must validate the settings, clearance, reach, and suction convention before the supervised procedure.
 After an enabled robot receives `stop_sync` or its client context exits, feedback and the motion lock remain until explicit disable.
 Prepare subsequent runs through that explicit operator workflow. The recipe does not recover or retry automatically.
 Hardware acceptance requires 3 consecutive supervised transfers with vision confirmation and results recorded on the task issue.
@@ -388,7 +390,7 @@ uv run pytest -q tests/test_recipe_tray_transfer.py
 ```
 
 These cases use explicit synthetic inputs and an in-process ready robot.
-Ordinary owned rehearsal starts disabled. The production tray recipe does not enable the robot or initialize its gripper.
+Ordinary owned rehearsal starts disabled. The production tray recipe does not enable the robot.
 After the operator completes measured configuration and hardware readiness, run the recipe through the configured services:
 
 ```sh
@@ -411,12 +413,10 @@ It is never a safety limit. Missing, nonfinite, or invalid values refuse the ste
 | --- | --- |
 | `load_max_c` | Nonnegative maximum furnace PV for load |
 | `unload_max_c` | Nonnegative maximum crucible-region temperature for unload |
-| `grip` | Integer from 0 to 1000 |
-| `release` | Integer from 0 to 1000, greater than `grip` and the measured contact width |
 | `awake_s` | Greater than 0 and at most 60 seconds |
 | `max_age_s` | Positive maximum measured-data age |
 
-The required pre-grip opening, measured tool offset, and taught routes follow the station-transfer rules.
+The measured tool offset and taught routes follow the station-transfer rules.
 Both routes and every tool conversion are checked before Insert or the robot receives a command.
 Both skills accept `speed` with default 1 and the same advertised service cap as station transfers.
 Robot moves use the taught route heights and retain measured arrival, `contact`, `arrived`, and `dropped` checks.
@@ -464,9 +464,9 @@ Rehearsal creates and owns demo services on numeric loopback addresses. It check
 
 Transfer rehearsal retains the explicit station inputs and the zone configuration path. The documented configuration path defaults still apply. Files must contain valid geometry and named zone definitions. Rehearsal does not invent an offset, workspace, or zone configuration. It resolves condition services before creating demos. Its occupancy file belongs to the temporary rehearsal directory.
 
-Its gripper feedback belongs to its temporary SIM-01 collector. Only that demo starts initialized. It sends no initialization command and never selects a production collector path.
+The suction-cup outputs come from the temporary SIM-01 simulator. The simulator answers `DOExecute` and reports the DO bits in its feedback. Rehearsal never uses a production collector path.
 
-The default simulated gripper reaches its target and reports `arrived`. A pick therefore holds with an empty grasp. Offline tests supply explicit contact and drop scenarios to exercise the complete transfer and failure paths. Rehearsal does not establish physical clearance or prove a real grasp.
+The simulator has no vacuum switch, so `held` is `null`. The tray rehearsal scene removes the chip when suction starts at a taught slot and puts it down when the cup releases at a taught slot. Offline tests use a fake robot with `held` to check the not-held and drop paths. Rehearsal does not establish physical clearance or prove a real suction pick.
 
 Crucible rehearsal preserves the explicit safety inputs above. It can read named-region data for its owned thermal demo.
 Without that data, it defines no thermal regions. It never selects a real camera, production furnace, or device path.

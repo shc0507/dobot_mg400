@@ -40,7 +40,7 @@ The gateway token cannot approve a proposal or call an orchestrator control endp
 | Tool | Arguments and result |
 | --- | --- |
 | `list_services` | No arguments. Read discovery for configured service IDs and report unavailable services. |
-| `get_state` | `service`; read the selected service's state. |
+| `get_state` | `service`; read the selected service's state. The robot state includes the measured suction-cup state `vacuum`. |
 | `list_recipes` | No arguments. Read catalog IDs, names, and parameter definitions. |
 | `describe_recipe` | `id`; read one TOML recipe without validating motion or running it. |
 | `list_runs` | Optional `limit` and `offset`; read newest runs first. |

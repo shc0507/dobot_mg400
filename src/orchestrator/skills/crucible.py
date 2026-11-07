@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from types import SimpleNamespace
 
-from .robot import _opening, _position, _RouteZones, _Transfer
+from .robot import _RouteZones, _Transfer
 
 PREFIX = "MG400_ORCH_CRUCIBLE_"
 CRUCIBLE_SETTINGS = {
@@ -14,8 +14,6 @@ CRUCIBLE_SETTINGS = {
     for suffix in (
         "LOAD_MAX_C",
         "UNLOAD_MAX_C",
-        "GRIP",
-        "RELEASE",
         "AWAKE_S",
         "MAX_AGE_S",
         "ROIS_FILE",
@@ -33,18 +31,16 @@ def _number(value, label):
     return float(value)
 
 
-def _setting(value, suffix, *, integer=False):
+def _setting(value, suffix):
     if type(value) in (int, float) and value == -1:
         key = PREFIX + suffix
         raw = os.environ.get(key, "")
         try:
-            if not raw.strip() or (integer and not (raw.isascii() and raw.isdecimal())):
+            if not raw.strip():
                 raise ValueError
-            value = int(raw) if integer else float(raw)
+            value = float(raw)
         except (ValueError, OverflowError):
             raise ValueError(f"Set an explicit finite value for {key}.") from None
-    if integer:
-        return _position(value, suffix)
     return _number(value, suffix)
 
 
@@ -80,15 +76,10 @@ class _CheckedRobot:
 
 
 class _Crucible:
-    def __init__(self, ctx, slot, *, unloading, grip, release, max_c, awake_s, max_age_s, speed):
+    def __init__(self, ctx, slot, *, unloading, max_c, awake_s, max_age_s, speed):
         self.ctx, self.unloading = ctx, unloading
         if not isinstance(slot, str) or slot == "crucible-load":
             raise ValueError("Choose a tray station distinct from crucible-load.")
-        self.grip = _setting(grip, "GRIP", integer=True)
-        self.release = _setting(release, "RELEASE", integer=True)
-        if self.release <= self.grip:
-            raise ValueError("Crucible release must exceed grip.")
-        self.opening = _opening(self.grip)
         self.max_c = _setting(max_c, "UNLOAD_MAX_C" if unloading else "LOAD_MAX_C")
         self.awake_s = _setting(awake_s, "AWAKE_S")
         self.max_age_s = _setting(max_age_s, "MAX_AGE_S")
@@ -131,9 +122,7 @@ class _Crucible:
                 condition is not None and condition not in spec.get("conditions", ())
             ):
                 raise ValueError(f"Configure the required owner and entry conditions for {name}.")
-        robot_state, _ = self.robot.state()
-        if robot_state["gripper"]["outcome"] == "contact":
-            raise RuntimeError("A crucible transfer must start without an existing grasp.")
+        self.robot.state("free")
         self.furnace_state()
         state, insert = self.stage_state()
         proof = state["automation"].get("at_poses", {}).get("furnace", {})
@@ -374,16 +363,14 @@ class _Crucible:
     def transfer(self):
         with self.ctx.guard(self.robot_check):
             with _RouteZones(self.ctx.zones) as zones:
-                self.robot.pick(self.plans[0], self.grip, self.opening, zones)
-                self.robot.place(self.plans[1], self.release, zones)
+                self.robot.pick(self.plans[0], zones)
+                self.robot.place(self.plans[1], zones)
 
 
 def load(
     ctx,
     from_slot: str,
     *,
-    grip: int = -1,
-    release: int = -1,
     load_max_c: float = -1,
     awake_s: float = -1,
     max_age_s: float = -1,
@@ -393,8 +380,6 @@ def load(
         ctx,
         from_slot,
         unloading=False,
-        grip=grip,
-        release=release,
         max_c=load_max_c,
         awake_s=awake_s,
         max_age_s=max_age_s,
@@ -417,8 +402,6 @@ def unload(
     ctx,
     to_slot: str,
     *,
-    grip: int = -1,
-    release: int = -1,
     unload_max_c: float = -1,
     awake_s: float = -1,
     max_age_s: float = -1,
@@ -428,8 +411,6 @@ def unload(
         ctx,
         to_slot,
         unloading=True,
-        grip=grip,
-        release=release,
         max_c=unload_max_c,
         awake_s=awake_s,
         max_age_s=max_age_s,

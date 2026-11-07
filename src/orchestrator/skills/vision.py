@@ -8,7 +8,7 @@ import tomllib
 
 from ..stations import _check, _parent
 from .calibrate import _vision
-from .robot import _opening, _RouteZones, _Transfer
+from .robot import _RouteZones, _Transfer
 
 DRIFT_SETTING = "MG400_ORCH_DRIFT_LIMIT_PX"
 DRIFT_SETTINGS = {DRIFT_SETTING}
@@ -146,11 +146,6 @@ class _TrayInputs:
             return value
 
         self.camera = integer("TRAY_CAMERA", 1, 4)
-        self.grip = integer("TRAY_GRIP", 0, 1000)
-        self.release = integer("TRAY_RELEASE", 0, 1000)
-        self.opening = _opening(self.grip)
-        if self.release <= self.grip:
-            raise ValueError("Tray release must exceed the grasp target.")
         self.axis = setting("CHIP_AXIS")
         if self.axis not in {"long", "short"}:
             raise ValueError("CHIP_AXIS must explicitly select long or short.")
@@ -335,8 +330,8 @@ def tray_transfer(ctx, from_slot: str, to_slot: str, *, speed: int = 1):
     )
     source_route, target_route = robot.plan(route, robot.route(to_slot))
     with _RouteZones(ctx.zones) as zones:
-        robot.pick(source_route, inputs.grip, inputs.opening, zones)
-        robot.place(target_route, inputs.release, zones)
+        robot.pick(source_route, zones)
+        robot.place(target_route, zones)
     after = _observe(ctx, robot, inputs, before)
     if after["slots"][to_slot]["state"] != "present":
         raise RuntimeError("The target chip was not confirmed after placement.")

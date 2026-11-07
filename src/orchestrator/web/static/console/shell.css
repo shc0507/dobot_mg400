@@ -1,4 +1,8 @@
-/* Lab Console frame. Colors follow docs/agents/console-design. No web fonts: the host can be offline. */
+/* Lab Console frame. Colors follow DESIGN.md. Every asset is served by the console itself: the host can be offline. */
+/* WuLab Sans SC: IBM Plex Sans SC cut to the Chinese strings in the code (scripts/console_font.py). Latin text keeps the system face. */
+@font-face { font-family: "WuLab Sans SC"; src: url("wulab-sans-sc-400.woff2") format("woff2"); font-weight: 100 500; font-display: swap; unicode-range: U+3000-303F, U+3400-9FFF, U+FF00-FFEF; }
+@font-face { font-family: "WuLab Sans SC"; src: url("wulab-sans-sc-600.woff2") format("woff2"); font-weight: 600; font-display: swap; unicode-range: U+3000-303F, U+3400-9FFF, U+FF00-FFEF; }
+@font-face { font-family: "WuLab Sans SC"; src: url("wulab-sans-sc-700.woff2") format("woff2"); font-weight: 700 900; font-display: swap; unicode-range: U+3000-303F, U+3400-9FFF, U+FF00-FFEF; }
 :root {
   --bg: #0F1418; --header: #11181D; --card: #161D23; --line: #26313A; --line2: #2E3B46; --row: #222C35;
   --text: #E6EDF2; --muted: #9FB0BD; --soft: #B8C6D1; --tab: #1F2A33;
@@ -6,7 +10,7 @@
   --stop: #C9252B;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.45; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: "IBM Plex Sans", "WuLab Sans SC", system-ui, -apple-system, "Segoe UI", "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.45; }
 a { color: var(--info); }
 a:hover { color: #B3D7FF; }
 button, select, input { font: inherit; }
@@ -98,6 +102,88 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 .lc-confirm { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--bad); border-radius: 8px; }
 .lc-links { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
 .lc-links a { display: inline-block; min-height: 24px; }
+
+/* The top band on the console page, in the bright look of DESIGN.md. The passport header keeps the rules above.
+ * Header grid: brand, page tabs and actions in row 1, the status strip in row 2, and STOP ALL MOTION as one tall block beside both. */
+#lc-top {
+  --h-card: #FFFFFF; --h-surface: #F7F4F0; --h-fill: #F2EEE9; --h-fill-hover: #E9E3DC; --h-line: #EDE6DE;
+  --h-text: #2A2622; --h-text-2: #6F625A; --h-count: #8A7F74;
+  --h-action: #2E5BFF; --h-action-hover: #2149E0; --h-action-soft: #E8EEFF;
+  --h-stop: #B4232C; --h-stop-press: #9A1C24; --h-stop-soft: #FDE8E8;
+  --h-ok: #27774C; --h-warn: #8F6200; --h-warn-soft: #FFF3D6;
+  background: var(--h-card); color: var(--h-text); border-bottom: 1px solid var(--h-line);
+}
+#lc-top ::selection { background: var(--h-action-soft); color: var(--h-text); }
+#lc-top :is(a, button):focus-visible { outline: 2px solid var(--h-action); outline-offset: 2px; }
+#lc-top .lc-header {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "brand nav actions stop" "strip strip strip stop";
+  align-items: center; gap: 8px 20px; padding: 12px 24px; background: transparent; border: 0;
+}
+#lc-top .lc-brand { grid-area: brand; gap: 10px; }
+#lc-top .lc-name { font-size: 16px; font-weight: 700; letter-spacing: 0; white-space: nowrap; }
+#lc-top .lc-commit { font-family: inherit; font-size: 12px; color: var(--h-count); font-variant-numeric: tabular-nums; }
+#lc-top .lc-tabs { grid-area: nav; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+#lc-top .lc-track { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 12px; background: var(--h-fill); }
+#lc-top .lc-track a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border-radius: 8px; color: var(--h-text); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+#lc-top .lc-track a:hover { background: var(--h-card); }
+#lc-top .lc-track a[aria-current="page"] { background: var(--h-action); color: #FFFFFF; }
+#lc-top .lc-passport { display: inline-flex; align-items: center; min-height: 36px; padding: 0 4px; color: var(--h-text-2); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+#lc-top .lc-passport:hover { color: var(--h-text); }
+#lc-top .lc-actions { grid-area: actions; justify-self: end; flex-wrap: nowrap; gap: 8px; }
+#lc-top .lc-pill { min-height: 40px; padding: 0 12px; border: 0; border-radius: 12px; color: var(--h-text-2); font-size: 14px; font-weight: 600; white-space: nowrap; }
+#lc-top .lc-pill .lc-dot { background: var(--h-count); }
+#lc-top .lc-pill.active { background: var(--h-action-soft); color: var(--h-action); }
+#lc-top .lc-pill.active .lc-dot { background: var(--h-action); }
+#lc-top .lc-button { min-height: 40px; padding: 0 14px; border: 0; border-radius: 12px; background: var(--h-fill); color: var(--h-text); font-size: 14px; font-weight: 600; transition: transform 120ms ease-out; }
+#lc-top .lc-button:hover { background: var(--h-fill-hover); }
+#lc-top .lc-stop {
+  grid-area: stop; align-self: stretch; min-width: 256px; min-height: 84px; padding: 0 28px; border-radius: 12px;
+  background: var(--h-stop); font-size: 16px; letter-spacing: 0.4px; white-space: nowrap; transition: transform 120ms ease-out;
+}
+#lc-top .lc-stop:hover { background: var(--h-stop-press); }
+#lc-top :is(.lc-stop, .lc-button):active { transform: scale(0.97); }
+#lc-top .lc-stop:focus-visible { outline-color: var(--h-stop); outline-offset: 3px; }
+
+/* The strip: a tone dot and a word for each device. A state that needs attention also gets a wash. */
+#lc-top .lc-strip { grid-area: strip; gap: 4px 14px; padding: 0; background: transparent; border: 0; }
+#lc-top .lc-chip { min-height: 22px; gap: 6px; font-size: 13px; white-space: nowrap; }
+#lc-top .lc-chip-name { color: var(--h-text); font-weight: 600; }
+#lc-top .lc-chip-detail { color: var(--h-text-2); }
+#lc-top .lc-chip:is(.tone-warn, .tone-bad) { padding: 0 10px; border-radius: 999px; background: var(--h-warn-soft); }
+#lc-top .lc-chip.tone-bad { background: var(--h-stop-soft); }
+#lc-top .lc-chip:is(.tone-warn, .tone-bad) .lc-chip-detail { font-weight: 600; }
+#lc-top .tone-ok .lc-dot { background: var(--h-ok); } #lc-top .tone-warn .lc-dot { background: var(--h-warn); }
+#lc-top .tone-bad .lc-dot { background: var(--h-stop); } #lc-top .tone-info .lc-dot { background: var(--h-action); }
+#lc-top .tone-off .lc-dot { background: var(--h-count); }
+#lc-top .tone-ok .lc-chip-detail, #lc-top .tone-text-ok { color: var(--h-ok); }
+#lc-top .tone-warn .lc-chip-detail, #lc-top .tone-text-warn { color: var(--h-warn); }
+#lc-top .tone-bad .lc-chip-detail, #lc-top .tone-text-bad { color: var(--h-stop); }
+#lc-top .tone-info .lc-chip-detail, #lc-top .tone-text-info { color: var(--h-action); }
+#lc-top .tone-text-off { color: var(--h-text-2); }
+
+/* The stop result band and the notice bar sit under the header on a warm surface. */
+#lc-top :is(.lc-stopband, .lc-notice) { border-top: 1px solid var(--h-line); border-bottom: 0; background: var(--h-surface); }
+#lc-top .lc-stopband.tone-bad { background: var(--h-stop-soft); }
+#lc-top .lc-phases, #lc-top .lc-phase + .lc-phase::before { color: var(--h-count); }
+#lc-top .lc-phase.past { color: var(--h-text-2); }
+#lc-top .lc-phase.current { color: var(--h-text); }
+#lc-top .lc-band-note { color: var(--h-warn); }
+#lc-top .lc-stopband.tone-bad .lc-band-note { color: var(--h-stop); }
+#lc-top .lc-notice.warn { color: var(--h-warn); } #lc-top .lc-notice.error { color: var(--h-stop); } #lc-top .lc-notice.info { color: var(--h-action); }
+
+/* A narrower laptop window: the tabs move to their own row, and STOP ALL MOTION spans all 3 rows. */
+@media (max-width: 1240px) {
+  #lc-top .lc-header { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "brand actions stop" "nav nav stop" "strip strip stop"; }
+}
+@media (max-width: 720px) {
+  #lc-top .lc-header { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "brand actions" "stop stop" "nav nav" "strip strip"; padding: 12px 16px; }
+  #lc-top .lc-stop { min-width: 0; min-height: 48px; }
+  #lc-top .lc-actions { width: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #lc-top :is(.lc-stop, .lc-button) { transition: none; }
+  #lc-top :is(.lc-stop, .lc-button):active { transform: none; }
+}
 
 /* The top band keeps STOP ALL MOTION and the device status on screen while the page scrolls.
  * shell.js publishes its height as --lc-top for focus scrolling and other sticky panels. */

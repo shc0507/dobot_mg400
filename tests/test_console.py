@@ -1,9 +1,11 @@
 """Lab Console relay, lease rules, stop, events and readiness with in-process fakes."""
 
 import copy
+import re
 import socket
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -219,6 +221,26 @@ def post(rig, path, data=None, page="console-page-a"):
     )
 
 
+def test_console_font_covers_every_chinese_string():
+    """The console serves its own Chinese face. A new Chinese string needs a new font subset."""
+    web = Path(console_module.__file__).parent
+    covered = set((web / "static/console/wulab-sans-sc.txt").read_text(encoding="utf-8"))
+    used: set[str] = set()
+    for path in web.rglob("*"):
+        if path.suffix in {".py", ".js", ".html"}:
+            used |= set(
+                re.findall(
+                    r"[\u3000-\u303f\u3400-\u9fff\uff00-\uffef]", path.read_text(encoding="utf-8")
+                )
+            )
+    missing = "".join(sorted(used - covered))
+    assert not missing, f"Run scripts/console_font.py (see its docstring). Missing: {missing}"
+    css = (web / "static/console/shell.css").read_text(encoding="utf-8")
+    for weight in (400, 600, 700):
+        assert (web / f"static/console/wulab-sans-sc-{weight}.woff2").stat().st_size < 120_000
+        assert f'url("wulab-sans-sc-{weight}.woff2")' in css
+
+
 def test_shell_and_apis_need_no_token(rig):
     page = rig.client.get("/lab/")
     assert page.status_code == 200
@@ -231,6 +253,8 @@ def test_shell_and_apis_need_no_token(rig):
     assert PRIVATE not in text and "lc-token" not in text
     assert "Access-Control-Allow-Origin" not in page.headers
     assert rig.client.get("/lab/console-static/shell.js").status_code == 200
+    font = rig.client.get("/lab/console-static/wulab-sans-sc-600.woff2")
+    assert font.status_code == 200 and font.mimetype == "font/woff2"
     assert rig.client.get("/lab/console-static/..%2Fconsole.py").status_code == 404
     assert rig.client.get("/lab/console-static/Shell.py").status_code == 404
     assert rig.client.get("/lab/dashboard/", headers=headers()).status_code == 404

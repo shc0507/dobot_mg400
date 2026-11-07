@@ -13,25 +13,27 @@
   <div class="lc-top" id="lc-top">
     <header class="lc-header">
       <div class="lc-brand">
-        <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="23" r="4"></circle><path d="M10.5 20 L17 11 L24 14"></path><circle cx="17" cy="11" r="2.2"></circle><path d="M24 14 L26 18 M24 14 L27 12"></path></svg>
+        <svg width="28" height="28" viewBox="0 0 30 30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="23" r="4"></circle><path d="M10.5 20 L17 11 L24 14"></path><circle cx="17" cy="11" r="2.2"></circle><path d="M24 14 L26 18 M24 14 L27 12"></path></svg>
         <div class="lc-brand-text">
           <span class="lc-name" data-i18n="console.name">WuLab Console</span>
           <span class="lc-commit" id="lc-commit">{{ commit }}</span>
         </div>
       </div>
       <nav class="lc-tabs" aria-label="Workspaces" id="lc-tabs">
-        {% for item in workspaces %}
-        <a href="#{{ item.id }}" data-workspace="{{ item.id }}" data-title-en="{{ item.title.en }}" data-title-zh="{{ item.title.zh }}">{{ item.title.en }}</a>
-        {% endfor %}
-        <a href="{{ base_path }}/chip" data-title-en="Chip passport" data-title-zh="芯片履历">Chip passport</a>
+        <div class="lc-track">
+          {% for item in workspaces %}
+          <a href="#{{ item.id }}" data-workspace="{{ item.id }}" data-title-en="{{ item.title.en }}" data-title-zh="{{ item.title.zh }}">{{ item.title.en }}</a>
+          {% endfor %}
+        </div>
+        <a class="lc-passport" href="{{ base_path }}/chip" data-title-en="Chip passport" data-title-zh="芯片履历">Chip passport</a>
       </nav>
       <div class="lc-actions">
         <span class="lc-pill" id="lc-controls"><span class="lc-dot" aria-hidden="true"></span><span id="lc-controls-text">You control: none</span></span>
         <button type="button" class="lc-button" id="lc-lang">中文</button>
-        <button type="button" class="lc-stop" id="lc-stop-all"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="3" y="3" width="12" height="12" rx="2" fill="currentColor"></rect></svg><span data-i18n="stop.all">STOP ALL MOTION</span></button>
       </div>
+      <button type="button" class="lc-stop" id="lc-stop-all"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="3" y="3" width="12" height="12" rx="2" fill="currentColor"></rect></svg><span data-i18n="stop.all">STOP ALL MOTION</span></button>
+      <div class="lc-strip" role="status" aria-label="Service status" id="lc-strip"></div>
     </header>
-    <div class="lc-strip" role="status" aria-label="Service status" id="lc-strip"></div>
     <div class="lc-stopband" id="lc-stopband" role="status" aria-label="Stop result" hidden></div>
     <div class="lc-notice" id="lc-notice" role="alert" hidden></div>
   </div>

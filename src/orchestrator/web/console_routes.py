@@ -11,7 +11,7 @@ from ..clients import SERVICES
 from .workspaces import discover
 from .workspaces.cameras import preview_state
 
-_ASSET = re.compile(r"[a-z][a-z0-9-]{0,31}\.(js|css)")
+_ASSET = re.compile(r"[a-z][a-z0-9-]{0,31}\.(js|css|woff2)")
 
 
 def _page():

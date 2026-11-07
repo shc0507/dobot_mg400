@@ -10,14 +10,15 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 
 The console is the only operator web page.
 
-- The header shows the console name, the deployed commit, the workspace tabs and the **Chip passport** link. It also shows the language switch, the devices that this page controls, and **STOP ALL MOTION**.
+- Row 1 of the header shows the console name, the deployed commit, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
-- The status strip shows 1 chip for each service: a dot and a text. A status older than 3 seconds shows as stale.
+- The status strip shows 1 chip for each service: a dot and a text. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
 - When the console does not answer for 3 seconds, the strip shows only **Console offline** and the age of the last state. Check the VPN and the `orch` service.
-- The stop result band below the status strip shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
+- The stop result band below the header shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
 - In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
+- Chinese text uses a font that the console serves itself, so it also shows offline.
 - A confirmation in the page takes the keyboard focus. Esc or **Cancel** closes it and sends nothing.
 - The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 

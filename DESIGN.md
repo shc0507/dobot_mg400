@@ -20,6 +20,7 @@ colors:
   stop: "#B4232C"
   stop-soft: "#FDE8E8"
   stop-hover: "#F9D6D6"
+  stop-press: "#9A1C24"
   on-stop: "#FFFFFF"
   ok: "#27774C"
   warn: "#8F6200"
@@ -30,47 +31,51 @@ colors:
   well-scrim: "rgba(23, 19, 16, 0.72)"
 typography:
   headline:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "18px"
     fontWeight: 700
   title:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "14px"
     fontWeight: 700
   body:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.45
   control:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "14px"
     fontWeight: 600
   body-small:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "13px"
     fontWeight: 400
   label:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "12px"
     fontWeight: 600
   badge:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "12px"
     fontWeight: 700
     letterSpacing: "0.4px"
   readout:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "20px"
     fontWeight: 700
     fontFeature: "tnum"
   readout-small:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "14px"
     fontWeight: 600
     fontFeature: "tnum"
+  brand:
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontSize: "16px"
+    fontWeight: 700
   key-letter:
-    fontFamily: "IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
+    fontFamily: "IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif"
     fontSize: "11px"
     fontWeight: 600
     lineHeight: 1
@@ -129,6 +134,40 @@ components:
     textColor: "{colors.on-stop}"
     padding: "0 20px"
     height: "48px"
+  button-stop-all-header:
+    backgroundColor: "{colors.stop}"
+    textColor: "{colors.on-stop}"
+    typography: "{typography.brand}"
+    rounded: "{rounded.lg}"
+    padding: "0 28px"
+    height: "84px"
+    width: "256px"
+  button-stop-all-hover:
+    backgroundColor: "{colors.stop-press}"
+  page-tabs:
+    backgroundColor: "{colors.fill}"
+    rounded: "{rounded.lg}"
+    padding: "3px"
+  page-tab:
+    backgroundColor: "transparent"
+    textColor: "{colors.text}"
+    typography: "{typography.control}"
+    rounded: "{rounded.sm}"
+    padding: "0 14px"
+    height: "36px"
+  page-tab-on:
+    backgroundColor: "{colors.action}"
+    textColor: "{colors.on-action}"
+  control-indicator:
+    backgroundColor: "transparent"
+    textColor: "{colors.text-2}"
+    typography: "{typography.control}"
+    rounded: "{rounded.lg}"
+    padding: "0 12px"
+    height: "40px"
+  control-indicator-on:
+    backgroundColor: "{colors.action-soft}"
+    textColor: "{colors.action}"
   view-tab:
     backgroundColor: "{colors.well-chip}"
     textColor: "{colors.text}"
@@ -242,7 +281,7 @@ The WuLab Console is a warm, bright console for driving the lab devices from a l
 
 Color is scarce, so it carries meaning. One saturated blue, Action Blue, appears only on what you can press as the main action or on what is on right now: the current view tab, a held key, a held axis, the selected step mode, a switch that is on. Red is only for stops. Live video sits in dark Media Wells, the only dark areas on the page. Motion is short and functional: a pressed button shrinks for 120ms, and a held key lights at once.
 
-This is the console-wide direction, and all Lab Console pages follow it. The page shows English and 中文 in the same layout and loads no web fonts.
+This is the console-wide direction, and all Lab Console pages follow it. The page shows English and 中文 in the same layout. It loads no remote assets: 中文 uses WuLab Sans SC, which the console serves itself.
 
 **Key Characteristics:**
 - A warm tinted ground, white cards on 16px and 20px corners, and a faint warm shadow.
@@ -253,7 +292,7 @@ This is the console-wide direction, and all Lab Console pages follow it. The pag
 - Device numbers in tabular numerals in fixed cells.
 
 ### Known limitation
-The Motion, Cameras and Furnace + microscope workspaces use this system now (`static/console/motion.css`, `cameras.css` and `process.css`, tokens on `#ws-motion`, `#ws-cameras` and `#ws-process`). The shell header, the status strip, the stop result band, Overview and the chip passport still use the previous dark styles in `shell.css` and `passport.css`. The shared camera tile rules in `cameras.css` (outside `#ws-cameras`) still carry the previous colours; each workspace restyles the tile inside its own scope. Move each page to the tokens in this file when that page changes.
+The top band and the Motion, Cameras and Furnace + microscope workspaces use this system now (`static/console/shell.css` with tokens on `#lc-top`, and `motion.css`, `cameras.css` and `process.css` with tokens on `#ws-motion`, `#ws-cameras` and `#ws-process`). Overview and the chip passport (including its header) still use the previous dark styles in `shell.css` and `passport.css`. The shared camera tile rules in `cameras.css` (outside `#ws-cameras`) still carry the previous colours; each workspace restyles the tile inside its own scope. Move each page to the tokens in this file when that page changes.
 
 ## Colors
 
@@ -267,7 +306,8 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 
 ### Secondary
 - **Stop Red** (#B4232C): the fill of STOP ALL MOTION and Stop heat and gas, with white text. The text of every device stop, the alarm title, and the bad tone (fault, locked, error events).
-- **Coral Wash** (#FDE8E8) and **Coral Hover** (#F9D6D6): the fill of device stops, the danger Confirm button and the alarm note.
+- **Coral Wash** (#FDE8E8) and **Coral Hover** (#F9D6D6): the fill of device stops, the danger Confirm button, the alarm note, and a bad state in the status strip.
+- **Stop Press** (#9A1C24): hover on the header STOP ALL MOTION.
 
 ### Status tones
 - **Ready Green** (#27774C): ready, connected, live and idle axes, and a stop result whose phase is Done.
@@ -298,11 +338,14 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 
 ## Typography
 
-**Body Font:** the platform sans, through the stack IBM Plex Sans, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif.
+**Body Font:** the stack IBM Plex Sans, WuLab Sans SC, system-ui, -apple-system, Segoe UI, Noto Sans, PingFang SC, Microsoft YaHei, sans-serif.
 
-**Character:** One plain sans for all text, numbers included. IBM Plex Sans shows only when it is installed on the viewing machine. Otherwise the system UI face shows, and the layout must work with it. PingFang SC and Microsoft YaHei give 中文 a matching system face. Hierarchy comes from weight (600 and 700) more than from size. UI text stays between 12px and 20px.
+**Chinese Font:** WuLab Sans SC is IBM Plex Sans SC (SIL Open Font License), cut to the Chinese characters in the console sources and renamed as the license requires. The console serves it in 3 weights (400, 600 and 700, about 55 KiB each, `static/console/wulab-sans-sc-*.woff2`). Its `unicode-range` covers only CJK characters, CJK punctuation and full-width forms, so Latin text and numbers keep the platform face.
+
+**Character:** One plain sans for all text, numbers included. IBM Plex Sans shows only when it is installed on the viewing machine. Otherwise the system UI face shows for Latin text, and the layout must work with it. 中文 always uses WuLab Sans SC, the Chinese member of the Plex family. A Chinese character outside the subset falls back to PingFang SC, Microsoft YaHei or another system face. Hierarchy comes from weight (600 and 700) more than from size. UI text stays between 12px and 20px.
 
 ### Hierarchy
+- **Brand** (700, 16px): the console name, and the STOP ALL MOTION label in the header.
 - **Headline** (700, 18px): station titles (Robot arm, Stage). The activity title is 17px.
 - **Title** (700, 14px): group labels (Keyboard jog, Stepping, Gripper, Named positions).
 - **Control** (600, 14px): buttons, holds and state text. Tabs and segment options use 13px.
@@ -315,13 +358,14 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 - **Key letter** (600, 11px, line height 1): the letter on a key cap in the keyboard map.
 
 ### Named Rules
-**The No Web Fonts Rule.** The host can be offline. Never load a font or any other asset from the network.
+**The No Remote Assets Rule.** The host can be offline. Never load a font or any other asset from another host. When you add Chinese strings, run `uv run scripts/console_font.py <package dir>` to cut the font again (see the script). `tests/test_console.py` fails when a Chinese character in the console sources is not in the subset.
 
 **The Fixed Cell Rule.** A number from a device uses `font-variant-numeric: tabular-nums` in a cell with a fixed or minimum width, aligned against its label or unit. A live value never changes the layout.
 
 ## Layout
 
-- **Frame:** the shell header, the status strip, the stop result band (after a stop, until Dismiss) and the notice bar form one top band. Above 720px, the band stays at the top while the page scrolls. Its height is published as `--lc-top`. Sticky elements and `scroll-padding-top` add it to their offset. The workspace is centered and at most 1440px wide.
+- **Frame:** the shell header (with the status strip in it), the stop result band (after a stop, until Dismiss) and the notice bar form one top band.
+- **Header:** a grid on Card White with a Hairline below. Row 1 has the brand (mark, name and commit), the page tabs, then the control indicator and the language switch on the right. Row 2 is the status strip. STOP ALL MOTION is a tall block at the right edge that spans both rows. At 1240px and below, the page tabs move to their own row and the block spans 3 rows. At 720px and below, the block is full width and 48px tall, directly under the brand. Above 720px, the band stays at the top while the page scrolls. Its height is published as `--lc-top`. Sticky elements and `scroll-padding-top` add it to their offset. The workspace is centered and at most 1440px wide.
 - **Stations:** Motion has 2 stations side by side in a 711 : 649 ratio, 20px apart. Each station is a subgrid with 2 rows, the view row and the body row, so both views have the same height. The arm view is 16:9. The stage view fills the row and is at least 240px tall.
 - **Station body:** a header row (title, state and badge, then the actions and the device stop on the right), then the main controls, then folds for rare tools below a Hairline. In the arm body, the keyboard panel (switch, speed and key map, 62 parts) is beside the pose and gripper readout (38 parts, at least 190px).
 - **Rows:** a stage axis is 1 grid row at least 56px tall: name and state, value, Hold −, Hold +, speed and key hints.
@@ -335,7 +379,7 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 
 ## Elevation & Depth
 
-The system is soft and low. Cards lift a little from the ground with a faint warm shadow. Everything inside a card is flat and separates by fill steps (Warm Surface, Fill) and Hairlines. Media Wells are the darkest layer and read as windows, not as raised surfaces. The top band is opaque and has no shadow.
+The system is soft and low. Cards lift a little from the ground with a faint warm shadow. Everything inside a card is flat and separates by fill steps (Warm Surface, Fill) and Hairlines. Media Wells are the darkest layer and read as windows, not as raised surfaces. The top band is opaque Card White with a Hairline below and has no shadow. The stop result band and the notice bar use Warm Surface.
 
 ### Shadow Vocabulary
 - **Card lift** (`box-shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05)`): stations and the activity card only.
@@ -368,7 +412,7 @@ Soft and tactile: a neutral fill by default, blue for the primary action, coral 
 - **Primary:** Action Blue with white text. Deep Action on hover. A disabled primary turns neutral.
 - **On now:** Blue Wash with Action Blue text, for a control whose state is on.
 - **Device stop:** Coral Wash with Stop Red text in weight 700 and 16px side padding. Coral Hover on hover. Never disabled.
-- **STOP ALL MOTION and Stop heat and gas:** a Stop Red fill with white text and a square stop shape, 48px tall. In the Overview Safety card they are 64px tall and full width.
+- **STOP ALL MOTION and Stop heat and gas:** a Stop Red fill with white text and a square stop shape, 48px tall. In the header, STOP ALL MOTION is the heaviest control: a block at least 256px wide and 84px tall with a 16px label, so the layout does not move when the language changes. In the Overview Safety card they are 64px tall and full width.
 - **Press:** `scale(0.97)`, 120ms ease-out.
 - **Focus:** a 2px Action Blue outline with a 2px offset on every button, input, select, summary and focusable element.
 - **Disabled:** 0.45 opacity and the not-allowed cursor. Stops and a held Hold stay at full strength.
@@ -393,6 +437,9 @@ A pill track, 40 by 22px (34 by 20px for the small switch), in Knob Off with a w
 
 ### Navigation
 - **View tabs:** in the top left corner of the media frame. Well Chip fills with Warm Graphite 13px text, 32px tall, with 10px corners. The current tab is Action Blue with white text.
+- **Page tabs:** a segmented track in the header: Fill, 3px padding, 12px corners. A tab is 36px tall, 14px weight 600, with 8px corners and Card White on hover. The current page is Action Blue with white text. Chip passport opens another page, so it is a plain Umber link after the track.
+- **Status strip:** 1 item for each device: a tone dot, the name in weight 600 and the state word in its tone (Umber when off). A warn or bad state also gets a pill wash (Ochre Wash or Coral Wash) and a weight 600 word, so it stands out in a row of Ready.
+- **Control indicator:** "You control: none" in Umber with a Count Grey dot. When this page controls a device, it turns Blue Wash with Action Blue text (on now).
 - **Folds:** a summary in Action Blue, weight 600, with a small triangle that turns 90 degrees in 150ms.
 
 ### Media view (signature)
@@ -429,6 +476,6 @@ A Coral Wash block with 16px corners at the top of the arm station. The title is
 - **Don't** fill any control with red except STOP ALL MOTION and Stop heat and gas.
 - **Don't** add a shadow inside a card or a border to a button.
 - **Don't** add dark surfaces other than Media Wells.
-- **Don't** load web fonts or other remote assets.
+- **Don't** load fonts or other assets from another host.
 - **Don't** add secondary labels or descriptions that the layout already makes clear.
 - **Don't** show a state with color alone.

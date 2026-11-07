@@ -58,6 +58,7 @@ AREAS = [
     ("config/robot.toml", ROBOT),
     ("examples/*", ["test_joint_example.py"]),
     ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py"]),
+    ("scripts/console_font.py", ["test_console.py"]),
     ("src/orchestrator/*", ORCHESTRATOR),
     ("recipes/*", ORCHESTRATOR),
     ("deploy/mg400ctl", ORCHESTRATOR),

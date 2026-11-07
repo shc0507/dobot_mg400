@@ -530,7 +530,7 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 
 - 机械臂必须空闲，控制器模式为 4 或 5。命令不使能、也不移动机械臂。
 - 服务每条命令只发送一次，然后等待 30004 反馈中的 DO 实测位改变，时限 1 秒。
-- 吹气期间停止时，DO1 可能保持高电平。恢复后发送 `off`。
+- 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，停止结果包含 `blow_error`，停止本身不因此失败。
 - 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。未设置 `GRIP_DI` 时，`held` 为 `null`。
 - 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。

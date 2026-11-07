@@ -19,8 +19,8 @@ from .controller_alarms import parse_alarm_ids
 from .controller_protocol import ControllerCommandError, parse_controller_response
 from .feedback import Feedback
 from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
+from .suction import PRESSURE_DO, bit, command_text
 from .suction import STEPS as VACUUM_STEPS
-from .suction import bit, command_text
 
 
 class TargetRejectedError(ValueError):
@@ -83,6 +83,8 @@ class JointControl:
         self._stop_uncertain = False
         self._rejection = None
         self._child_stop_error = None
+        # True from the blow-on send until the blow-off arrival. A stop then clears DO1.
+        self._blowing = False
         self._preparing = False
         self._preparation_pending = None
         self._preparation_baseline = None
@@ -877,10 +879,14 @@ class JointControl:
                     self._hold_outputs(step[1], {mode})
                     continue
                 index, status = step
+                if index == PRESSURE_DO and status:
+                    self._blowing = True
                 self._guarded_command(
                     command_text(index, status), modes={mode}, send_modes={mode}, expected=joints
                 )
                 self._wait_output(index, status, {mode})
+                if index == PRESSURE_DO and not status:
+                    self._blowing = False
             return self._fresh({mode})[0]
         finally:
             self.finish_operation()
@@ -889,9 +895,31 @@ class JointControl:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if self.stopped:
-                raise RuntimeError("Control stopped during the blow pulse. Pressure can stay on.")
+                raise RuntimeError("Control stopped during the blow pulse.")
             self._fresh(modes)
             time.sleep(0.01)
+
+    def _end_blow(self):
+        """On a stop, send DOExecute(1,0) once if a blow pulse may be on. Never touch DO2.
+
+        This sends one immediate dashboard command and waits for nothing else.
+        Return None, or the error text; a failure does not fail the stop.
+        """
+        try:
+            sample, _ = self.feedback_snapshot()
+            measured = sample.digital_outputs is not None and bit(
+                sample.digital_outputs, PRESSURE_DO
+            )
+        except Exception:
+            measured = False
+        if not (self._blowing or measured):
+            return None
+        try:
+            self._command(command_text(PRESSURE_DO, 0), stopping=True)
+        except Exception as error:
+            return f"Blow output DO{PRESSURE_DO} was not cleared: {error}"
+        self._blowing = False
+        return None
 
     def _wait_output(self, index, status, modes, timeout=1.0):
         acknowledged_at = time.monotonic()
@@ -1044,7 +1072,10 @@ class JointControl:
             try:
                 # A new disable invalidates any earlier verification of rest.
                 self._stop_result = None
-                self._command("DisableRobot()", stopping=True)
+                try:
+                    self._command("DisableRobot()", stopping=True)
+                finally:
+                    self._end_blow()
                 acknowledged_at = time.monotonic()
                 if self._stop_uncertain:
                     raise RuntimeError(
@@ -1116,6 +1147,8 @@ class JointControl:
                 return self._stop_result
             if self._parent is not None and self._parent.stopped:
                 normal_jog = False
+            # The jog path never runs a vacuum action; only ResetRobot() clears the blow.
+            blow_error = None
             try:
                 if normal_jog:
                     try:
@@ -1127,7 +1160,10 @@ class JointControl:
                         raise
                     jog_stop_ack = time.monotonic()
                 else:
-                    self._command("ResetRobot()", stopping=True)
+                    try:
+                        self._command("ResetRobot()", stopping=True)
+                    finally:
+                        blow_error = self._end_blow()
                     jog_stop_ack = None
                 if self._stop_uncertain:
                     raise RuntimeError(
@@ -1166,6 +1202,8 @@ class JointControl:
                     "physical_stop_requested": True,
                     "error": str(error),
                 }
+            if blow_error is not None:
+                self._stop_result["blow_error"] = blow_error
             if self._parent is not None and not self._stop_result["ok"]:
                 # A child stop must not populate the reusable parent's stop cache.
                 self._parent._child_stop_error = self._stop_result["error"]

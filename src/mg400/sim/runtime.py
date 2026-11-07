@@ -33,11 +33,14 @@ def feedback_frame(sample):
     """Encode the fields consumed by the production feedback decoder."""
     frame = bytearray(FRAME_SIZE)
     struct.pack_into("<H", frame, 0, FRAME_SIZE)
+    struct.pack_into("<Q", frame, 8, sample.digital_inputs or 0)
+    struct.pack_into("<Q", frame, 16, sample.digital_outputs or 0)
     struct.pack_into("<Q", frame, 24, sample.mode)
     struct.pack_into("<Q", frame, 32, sample.timestamp)
     struct.pack_into("<Q", frame, 48, 0x0123456789ABCDEF)
     struct.pack_into("<d", frame, 64, sample.speed_scaling_raw or 0.0)
     struct.pack_into("<4d", frame, 432, *sample.joints_deg)
+    struct.pack_into("<d", frame, 1168, sample.load_kg or 0.0)
     frame[1029] = int(sample.error_status)
     return bytes(frame)
 

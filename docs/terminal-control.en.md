@@ -64,6 +64,7 @@ Enter `help` for command descriptions. Enter `status` for the current state.
 | `home` | Move J1–J4 to 0° |
 | `grip N` | Set the gripper opening in the range 0–1000 |
 | `grip-init` | Initialize the gripper. This opens the fingers |
+| `vacuum suck`, `vacuum release`, `vacuum off` | Suck, blow briefly to release the part, or turn the suction cup off. The robot must be idle |
 | `stop` | Request a controlled robot stop |
 | `status` | Show the current state |
 | `help` | Show command descriptions |

@@ -81,6 +81,24 @@ mg400ctl mode
 不能假定返回数据与场景使用同一坐标系。
 官方 `MovL` 可选参数是字符串形式，例如 `"User=0"`，不是任意 Python 关键字参数。
 
+## 真空吸盘
+
+Dobot 迷你真空源（DT-AC-MAP1-001）驱动吸盘。MG400 基座 I/O 控制真空源：
+
+| 真空源引脚 | MG400 基座 I/O |
+| --- | --- |
+| Pressure（吹气） | DO1 |
+| Vacuum（吸气） | DO2 |
+| 24V | 24V |
+| GND | GND |
+
+- 真空源的 Manual/Auto 开关必须置于 Auto。
+- 不要同时将 DO1 和 DO2 置高。真空源未规定该状态。
+- 控制器固件 1.6.0.0 及以上接受 `DOExecute(index,status)`。该命令立即执行，不进入运动队列。
+- 30004 反馈帧中，`DigitalInputs`（字节 8–15）和 `DigitalOutputs`（字节 16–23）给出基座 DI 和 DO 的实测电平，第 0 位为 DI1 或 DO1。`Load`（字节 1168–1175）给出控制器负载，单位 kg。
+- 停止和下使能不改变 DO。吸住的部件不会因停止而掉落。
+- 真空源不能报告是否吸住部件。安装真空开关后，将其接到基座 DI，并在 `src/mg400/suction.py` 中设置 `GRIP_DI`。
+
 ## 完成判定与失败处理
 
 TCP 响应 `ErrorID,{values},Command(...);` 中的成功码只表示命令成功接收。

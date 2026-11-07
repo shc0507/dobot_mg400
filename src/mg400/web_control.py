@@ -19,6 +19,8 @@ from .feedback import FeedbackConnection
 from .joint_control import JointControl, PreparationRejectedError, TargetRejectedError
 from .joint_limits import validate_measured_joints
 from .keyboard_jog import KeyboardJogSession
+from .suction import ACTIONS as VACUUM_ACTIONS
+from .suction import decode_state as decode_vacuum
 from .web_keyboard import (
     DISARM_REASONS,
     GRIPPER_HOLD_SECONDS,
@@ -268,6 +270,11 @@ class RobotPanelState:
                     "outcome": None if self._gripper_active else self._grip.get("outcome"),
                     "outcome_at": None if self._gripper_active else self._grip.get("outcome_at"),
                 },
+                "vacuum": decode_vacuum(
+                    sample.digital_outputs if sample else None,
+                    sample.digital_inputs if sample else None,
+                ),
+                "payload_kg": sample.load_kg if sample else None,
                 "controller_id": self._owner,
                 "keyboard_enabled": self._kb_on,
                 "keyboard_arming": self._kb_arming,
@@ -310,6 +317,14 @@ class RobotPanelState:
                     "speed": parameter("integer", minimum=1, maximum=self._max_speed_l, default=1),
                 },
                 required=["targets"],
+                additionalProperties=False,
+            )
+        )
+        commands["vacuum"] = describe_command(
+            parameter(
+                "object",
+                properties={"operation": parameter("string", enum=list(VACUUM_ACTIONS))},
+                required=["operation"],
                 additionalProperties=False,
             )
         )
@@ -538,6 +553,7 @@ class RobotPanelState:
             "stop",
             "grip",
             "initialize_gripper",
+            "vacuum",
             "keyboard",
             "clear_alarm",
         }:
@@ -555,6 +571,8 @@ class RobotPanelState:
                     )
         elif action == "grip":
             fields.add("position")
+        elif action == "vacuum":
+            fields.add("operation")
         elif action == "keyboard":
             if type(payload.get("enabled")) is not bool:
                 raise ValueError("Keyboard enabled must be true or false")
@@ -564,6 +582,10 @@ class RobotPanelState:
         targets = self._targets(payload["targets"]) if action == "execute" else None
         if action == "grip":
             targets = (None, self._gripper_target(payload["position"]))
+        if action == "vacuum":
+            if payload["operation"] not in VACUUM_ACTIONS:
+                raise ValueError("Vacuum operation must be suck, release or off")
+            targets = payload["operation"]
         if action == "keyboard":
             seq = sequence_number(payload["seq"])
             if payload["enabled"]:
@@ -632,9 +654,16 @@ class RobotPanelState:
                             )
                         if action == "grip" and self._sample.mode not in {4, 5}:
                             raise RuntimeError("The robot must be idle before a gripper command")
-                        if targets and targets[1] is not None and not self._grip.get("available"):
+                        if action == "vacuum" and self._sample.mode not in {4, 5}:
+                            raise RuntimeError("The robot must be idle before a vacuum command")
+                        if (
+                            action in {"execute", "grip"}
+                            and targets
+                            and targets[1] is not None
+                            and not self._grip.get("available")
+                        ):
                             raise RuntimeError("Gripper control is unavailable")
-                        if self._grip.get("locked"):
+                        if action != "vacuum" and self._grip.get("locked"):
                             raise RuntimeError("Gripper control is locked")
                         # A button command replaces keyboard control.
                         self._kb_disarm(None)
@@ -1025,6 +1054,8 @@ class RobotPanelState:
                 self._move_gripper(grip)
         elif action == "grip":
             self._move_gripper(targets[1])
+        elif action == "vacuum":
+            self._control.vacuum(targets)
         else:
             self._move_gripper(None)
 

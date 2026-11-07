@@ -19,6 +19,8 @@ from .controller_alarms import parse_alarm_ids
 from .controller_protocol import ControllerCommandError, parse_controller_response
 from .feedback import Feedback
 from .joint_limits import validate_joint_segment, validate_joints, validate_measured_joints
+from .suction import STEPS as VACUUM_STEPS
+from .suction import bit, command_text
 
 
 class TargetRejectedError(ValueError):
@@ -857,6 +859,55 @@ class JointControl:
             raise
         finally:
             self.finish_operation()
+
+    def vacuum(self, action) -> Feedback:
+        """Run one suction action (suck, release or off) with the arm at rest.
+
+        Send each DOExecute() once on the dashboard, then wait for its measured DO bit.
+        A failure does not stop the arm: this sends no motion command.
+        """
+        if action not in VACUUM_STEPS:
+            raise ValueError("Vacuum action must be suck, release or off")
+        self.read_state()
+        self._begin()
+        try:
+            mode, joints = self._preflight({4, 5})
+            for step in VACUUM_STEPS[action]:
+                if step[0] == "wait":
+                    self._hold_outputs(step[1], {mode})
+                    continue
+                index, status = step
+                self._guarded_command(
+                    command_text(index, status), modes={mode}, send_modes={mode}, expected=joints
+                )
+                self._wait_output(index, status, {mode})
+            return self._fresh({mode})[0]
+        finally:
+            self.finish_operation()
+
+    def _hold_outputs(self, seconds, modes):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self.stopped:
+                raise RuntimeError("Control stopped during the blow pulse. Pressure can stay on.")
+            self._fresh(modes)
+            time.sleep(0.01)
+
+    def _wait_output(self, index, status, modes, timeout=1.0):
+        acknowledged_at = time.monotonic()
+        deadline = acknowledged_at + timeout
+        while time.monotonic() < deadline:
+            if self.stopped:
+                raise RuntimeError("Control has been stopped; reopen the panel")
+            sample, received = self._fresh(modes)
+            if (
+                received > acknowledged_at
+                and sample.digital_outputs is not None
+                and bit(sample.digital_outputs, index) == bool(status)
+            ):
+                return
+            time.sleep(0.01)
+        raise TimeoutError(f"Measured DO{index} did not change to {status}")
 
     def move(self, target) -> Feedback:
         """Move J1-J4 to absolute angles in degrees within the validated joint limits."""

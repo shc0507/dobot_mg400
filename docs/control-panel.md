@@ -97,7 +97,7 @@ python3 apps/control_panel/server.py --mode robot \
 
 ## 控制吸盘
 
-[实验室控制台](dashboard.md)的运动页有 **Suck**、**Release** 和 **Off**。键盘点动时，Z 吸取，X 释放。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
+[实验室控制台](dashboard.md)的运动页有 **Suck**、**Drop**（`release`）和 **Off**。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
 
 ```python
 client.run("vacuum", operation="suck")
@@ -105,7 +105,7 @@ client.run("vacuum", operation="suck")
 
 `operation` 取 `suck`、`release` 或 `off`。机械臂必须空闲。
 状态对象的 `vacuum` 给出 DO 实测电平，见 [真空吸盘](development.md#真空吸盘)。
-停止和下使能不改变吸盘输出。释放过程中停止时，吹气输出保持打开：恢复后选择 **Off**。
+停止和下使能不改变吸盘输出。**Drop** 过程中停止时，吹气输出保持打开：恢复后选择 **Off**。
 
 ## 停止与恢复
 

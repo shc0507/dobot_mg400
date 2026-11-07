@@ -286,7 +286,7 @@ test("Suck, Release and Off send 1 vacuum command each and show the measured sta
   assert.equal(page.find("Suction: Suck").className, "mo-btn mo-held");
   // Without a grip switch, the page shows no held state.
   assert.equal(page.root.all().find(node => node.className.startsWith("mo-vac-held")).hidden, true);
-  for (const label of ["Suck", "Release", "Off"]) {
+  for (const label of ["Suck", "Drop", "Off"]) {
     page.find("Suction: " + label).click();
     await page.settle();
   }

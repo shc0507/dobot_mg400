@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from mg400 import suction
@@ -113,3 +115,60 @@ def test_describe_lists_the_vacuum_command(make_sim_rig):
     rig = make_sim_rig()
     schema = rig.state.describe()["commands"]["vacuum"]
     assert "suck" in str(schema) and "release" in str(schema)
+
+
+@pytest.fixture
+def long_blow(monkeypatch):
+    """Make the release pulse last 5 s, so a stop arrives while DO1 is on."""
+    import mg400.joint_control as joint_control
+
+    steps = dict(joint_control.VACUUM_STEPS)
+    steps["release"] = tuple(
+        ("wait", 5.0) if step[0] == "wait" else step for step in steps["release"]
+    )
+    monkeypatch.setattr(joint_control, "VACUUM_STEPS", steps)
+
+
+@pytest.mark.parametrize("action", ["stop", "disable"])
+def test_stop_during_the_blow_pulse_clears_only_the_blow_output(make_sim_rig, long_blow, action):
+    rig = make_sim_rig()
+    rig.connect()
+    vacuum(rig, "release")
+    rig.wait(lambda s: s["vacuum"]["blow"] is True)
+    mark = rig.controller.mark()
+    started = time.monotonic()
+    rig.command(action)
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == action)
+    # The stop does not wait for the 5 s pulse to end.
+    assert time.monotonic() - started < 3
+    assert rig.snapshot()["last_command"]["result"] in {"ok", "stopped"}
+    assert rig.snapshot()["vacuum"] == {"suck": False, "blow": False, "held": None}
+    sent = rig.controller.sent(mark)
+    assert [text for text in sent if text.startswith("DO")] == ["DOExecute(1,0)"]
+    first = "ResetRobot()" if action == "stop" else "DisableRobot()"
+    assert sent.index(first) < sent.index("DOExecute(1,0)")
+
+
+def test_stop_clears_a_measured_blow_and_keeps_suction(make_sim_rig):
+    rig = make_sim_rig()
+    rig.connect()
+    rig.controller.update(digital_outputs=0b11)
+    rig.wait(lambda s: s["vacuum"]["blow"] is True)
+    mark = rig.controller.mark()
+    rig.command("stop")
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "stop")
+    assert [t for t in rig.controller.sent(mark) if t.startswith("DO")] == ["DOExecute(1,0)"]
+    rig.wait(lambda s: s["vacuum"]["blow"] is False)
+    assert rig.snapshot()["vacuum"]["suck"] is True
+
+
+def test_stop_while_sucking_sends_no_output_command(make_sim_rig):
+    rig = make_sim_rig()
+    rig.connect()
+    vacuum(rig, "suck")
+    rig.wait(lambda s: not s["busy"] and s["vacuum"]["suck"])
+    mark = rig.controller.mark()
+    rig.command("disable")
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "disable")
+    assert not any(t.startswith("DO") for t in rig.controller.sent(mark))
+    assert rig.snapshot()["vacuum"]["suck"] is True

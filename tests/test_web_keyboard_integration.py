@@ -510,6 +510,6 @@ def test_stop_during_the_release_blow_stops_the_robot_and_turns_keys_off(rig):
     assert snapshot["locked"] and not snapshot["stop_unconfirmed"]
     assert not snapshot["keyboard_enabled"]
     assert rig.controller.motion() == ["ResetRobot()"]
-    # The stop does not finish the release: the measured state shows the blow output on.
-    assert outputs(rig, mark) == ["DOExecute(2,0)", "DOExecute(1,1)"]
-    assert snapshot["vacuum"] == {"suck": False, "blow": True, "held": None}
+    # The stop ends the blow pulse and sends no DO2 command.
+    assert outputs(rig, mark) == ["DOExecute(2,0)", "DOExecute(1,1)", "DOExecute(1,0)"]
+    rig.wait(lambda s: s["vacuum"] == {"suck": False, "blow": False, "held": None})

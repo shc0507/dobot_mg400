@@ -105,7 +105,7 @@ client.run("vacuum", operation="suck")
 
 `operation` is `suck`, `release` or `off`. The robot must be idle.
 The `vacuum` field of the state object gives the measured DO levels. See [Vacuum suction cup](development.en.md#vacuum-suction-cup).
-Stop and disable do not change the suction outputs. A stop during **Drop** leaves the blow output on: after recovery, select **Off**.
+Stop and disable do not change the suck output. A stop during **Drop** ends the blow.
 
 ## Stop and recover
 

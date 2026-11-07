@@ -534,7 +534,7 @@ The `operation` of the `vacuum` command is one of these values:
 
 - The robot must be idle, in controller mode 4 or 5. The command does not enable or move the robot.
 - The service sends each command once. Then it waits up to 1 second for the measured DO bit in the 30004 feedback to change.
-- If a stop occurs during the blow, DO1 can stay high. Send `off` after recovery.
+- After the motion stop command, stop and disable send `DOExecute(1,0)` once if a blow is in progress or feedback shows DO1 high. They do not wait for the blow to end and send no DO2 command. If that command fails, the stop result contains `blow_error`; the stop itself does not fail because of it.
 - The `vacuum` field of the state object contains `suck`, `blow` and `held`. `suck` and `blow` are the measured levels of DO2 and DO1, or `null` without feedback. `held` is `null` while `GRIP_DI` is not set.
 - The `payload_kg` field of the state object is the payload that the controller reports, in kg.
 - The constants are in `src/mg400/suction.py`: `PRESSURE_DO`, `VACUUM_DO`, `BLOW_SECONDS` and `GRIP_DI`.

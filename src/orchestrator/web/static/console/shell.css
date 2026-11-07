@@ -104,7 +104,8 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 .lc-links a { display: inline-block; min-height: 24px; }
 
 /* The top band on the console page, in the bright look of DESIGN.md. The passport header keeps the rules above.
- * Header grid: brand, page tabs and actions in row 1, the status strip in row 2, and STOP ALL MOTION as one tall block beside both. */
+ * Header grid: brand, page tabs and actions in row 1, the status strip in row 2, and STOP ALL MOTION as one tall block beside both.
+ * Row 1 wraps: when the window is too narrow, the actions and then the tabs move to a new line. */
 #lc-top {
   --h-card: #FFFFFF; --h-surface: #F7F4F0; --h-fill: #F2EEE9; --h-fill-hover: #E9E3DC; --h-line: #EDE6DE;
   --h-text: #2A2622; --h-text-2: #6F625A; --h-count: #8A7F74;
@@ -116,10 +117,11 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 #lc-top ::selection { background: var(--h-action-soft); color: var(--h-text); }
 #lc-top :is(a, button):focus-visible { outline: 2px solid var(--h-action); outline-offset: 2px; }
 #lc-top .lc-header {
-  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "brand nav actions stop" "strip strip strip stop";
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "row1 stop" "strip stop";
   align-items: center; gap: 8px 20px; padding: 12px 24px; background: transparent; border: 0;
 }
-#lc-top .lc-brand { grid-area: brand; gap: 10px; }
+#lc-top .lc-row1 { grid-area: row1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; min-width: 0; }
+#lc-top .lc-brand { grid-area: brand; flex: none; gap: 10px; }
 #lc-top .lc-name { font-size: 16px; font-weight: 700; letter-spacing: 0; white-space: nowrap; }
 #lc-top .lc-commit { font-family: inherit; font-size: 12px; color: var(--h-count); font-variant-numeric: tabular-nums; }
 #lc-top .lc-tabs { grid-area: nav; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
@@ -129,12 +131,12 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 #lc-top .lc-track a[aria-current="page"] { background: var(--h-action); color: #FFFFFF; }
 #lc-top .lc-passport { display: inline-flex; align-items: center; min-height: 36px; padding: 0 4px; color: var(--h-text-2); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 #lc-top .lc-passport:hover { color: var(--h-text); }
-#lc-top .lc-actions { grid-area: actions; justify-self: end; flex-wrap: nowrap; gap: 8px; }
+#lc-top .lc-actions { grid-area: actions; flex: none; justify-content: flex-end; flex-wrap: nowrap; gap: 8px; margin-left: auto; }
 #lc-top .lc-pill { min-height: 40px; padding: 0 12px; border: 0; border-radius: 12px; color: var(--h-text-2); font-size: 14px; font-weight: 600; white-space: nowrap; }
 #lc-top .lc-pill .lc-dot { background: var(--h-count); }
 #lc-top .lc-pill.active { background: var(--h-action-soft); color: var(--h-action); }
 #lc-top .lc-pill.active .lc-dot { background: var(--h-action); }
-#lc-top .lc-button { min-height: 40px; padding: 0 14px; border: 0; border-radius: 12px; background: var(--h-fill); color: var(--h-text); font-size: 14px; font-weight: 600; transition: transform 120ms ease-out; }
+#lc-top .lc-button { min-height: 40px; padding: 0 14px; white-space: nowrap; border: 0; border-radius: 12px; background: var(--h-fill); color: var(--h-text); font-size: 14px; font-weight: 600; transition: transform 120ms ease-out; }
 #lc-top .lc-button:hover { background: var(--h-fill-hover); }
 #lc-top .lc-stop {
   grid-area: stop; align-self: stretch; min-width: 256px; min-height: 84px; padding: 0 28px; border-radius: 12px;
@@ -171,11 +173,8 @@ main { max-width: 1440px; margin: 0 auto; padding: 24px; }
 #lc-top .lc-stopband.tone-bad .lc-band-note { color: var(--h-stop); }
 #lc-top .lc-notice.warn { color: var(--h-warn); } #lc-top .lc-notice.error { color: var(--h-stop); } #lc-top .lc-notice.info { color: var(--h-action); }
 
-/* A narrower laptop window: the tabs move to their own row, and STOP ALL MOTION spans all 3 rows. */
-@media (max-width: 1240px) {
-  #lc-top .lc-header { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "brand actions stop" "nav nav stop" "strip strip stop"; }
-}
 @media (max-width: 720px) {
+  #lc-top .lc-row1 { display: contents; }
   #lc-top .lc-header { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "brand actions" "stop stop" "nav nav" "strip strip"; padding: 12px 16px; }
   #lc-top .lc-stop { min-width: 0; min-height: 48px; }
   #lc-top .lc-actions { width: auto; }

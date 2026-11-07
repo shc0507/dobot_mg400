@@ -95,6 +95,18 @@ A gripper command timeout does not retract a target already sent or guarantee th
 Restarting the collector process does not clear the command lock.
 Check the gripper state first. Repair the fault before handling the lock. See [USB gripper protocol](development.en.md#usb-gripper-protocol) for its format.
 
+## Control the suction cup
+
+The Motion page has no suction buttons yet. Use the `vacuum` command to control the suction cup, for example with the [Python client](development.en.md#python-client):
+
+```python
+client.run("vacuum", operation="suck")
+```
+
+`operation` is `suck`, `release` or `off`. The robot must be idle.
+The `vacuum` field of the state object gives the measured DO levels. See [Vacuum suction cup](development.en.md#vacuum-suction-cup).
+Stop and disable do not change the suction outputs.
+
 ## Stop and recover
 
 `STOP ALL MOTION` at the top of the console sends a stop to all devices. It does not need control.

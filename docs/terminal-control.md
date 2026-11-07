@@ -64,6 +64,7 @@ uv run mg400-robot --robot-host 192.168.1.6
 | `home` | 将 J1–J4 移动到 0° |
 | `grip N` | 设置夹爪开口，范围为 0–1000 |
 | `grip-init` | 初始化夹爪，会张开夹指 |
+| `vacuum suck`、`vacuum release`、`vacuum off` | 吸气、短暂吹气放开部件或关闭吸盘。机械臂必须空闲 |
 | `stop` | 请求机械臂受控停止 |
 | `status` | 显示当前状态 |
 | `help` | 显示命令说明 |

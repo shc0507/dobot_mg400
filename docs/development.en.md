@@ -191,6 +191,7 @@ The command body is `{"action": "<命令>", ...}`, where the placeholder means t
 | `execute` | `targets`: `x`, `y`, `z`, `r`, and optional `grip`, plus optional `speed` | Move linearly to the flange coordinates, then execute the gripper target after arrival |
 | `grip` | `position`: an integer from 0–1000 | Set the gripper opening |
 | `initialize_gripper` | None | Initialize the gripper. This opens the fingers |
+| `vacuum` | `operation`: `suck`, `release` or `off` | Control the vacuum suction cup. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
 | `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
 
@@ -518,6 +519,25 @@ Joint feedback before and after the measurement must also match the current join
 If these conditions are not met, the control instance reads the coordinates again.
 
 Four-axis protocol reference: [Official Dobot SDK](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python/blob/main/dobot_api.py).
+
+### Vacuum suction cup
+
+The `operation` of the `vacuum` command is one of these values:
+
+| `operation` | Controller commands |
+| --- | --- |
+| `suck` | `DOExecute(1,0)`, `DOExecute(2,1)` |
+| `release` | `DOExecute(2,0)`, `DOExecute(1,1)`, blow for 0.3 seconds, `DOExecute(1,0)` |
+| `off` | `DOExecute(2,0)`, `DOExecute(1,0)` |
+
+- The robot must be idle, in controller mode 4 or 5. The command does not enable or move the robot.
+- The service sends each command once. Then it waits up to 1 second for the measured DO bit in the 30004 feedback to change.
+- If a stop occurs during the blow, DO1 can stay high. Send `off` after recovery.
+- The `vacuum` field of the state object contains `suck`, `blow` and `held`. `suck` and `blow` are the measured levels of DO2 and DO1, or `null` without feedback. `held` is `null` while `GRIP_DI` is not set.
+- The `payload_kg` field of the state object is the payload that the controller reports, in kg.
+- The constants are in `src/mg400/suction.py`: `PRESSURE_DO`, `VACUUM_DO`, `BLOW_SECONDS` and `GRIP_DI`.
+- The offline simulator answers `DOExecute` and reports the DO bits in its feedback frames.
+- For the wiring and the feedback fields, see [Vacuum suction cup](hardware.en.md#vacuum-suction-cup).
 
 ### USB gripper protocol
 

@@ -95,6 +95,18 @@ python3 apps/control_panel/server.py --mode robot \
 重启采集进程不会清除命令锁。
 先核实夹爪状态，修复故障后再处理锁，格式见 [USB 夹爪协议](development.md#usb-夹爪协议)。
 
+## 控制吸盘
+
+运动页还没有吸盘按钮。用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
+
+```python
+client.run("vacuum", operation="suck")
+```
+
+`operation` 取 `suck`、`release` 或 `off`。机械臂必须空闲。
+状态对象的 `vacuum` 给出 DO 实测电平，见 [真空吸盘](development.md#真空吸盘)。
+停止和下使能不改变吸盘输出。
+
 ## 停止与恢复
 
 控制台顶部的 `STOP ALL MOTION` 向所有设备发送停止，不需要控制权。

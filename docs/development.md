@@ -189,6 +189,7 @@ POST 请求必须满足以下条件：
 | `execute` | `targets`：`x`、`y`、`z`、`r`，可选 `grip`，另有可选 `speed` | 直线移动到法兰坐标，到位后执行夹爪目标 |
 | `grip` | `position`：0–1000 的整数 | 设置夹爪开口 |
 | `initialize_gripper` | 无 | 初始化夹爪，会张开夹指 |
+| `vacuum` | `operation`：`suck`、`release` 或 `off` | 控制真空吸盘，见 [真空吸盘](#真空吸盘) |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
 
@@ -514,6 +515,25 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 不满足条件时，重新读取坐标。
 
 四轴协议参考：[Dobot 官方 SDK](https://github.com/Dobot-Arm/TCP-IP-4Axis-Python/blob/main/dobot_api.py)。
+
+### 真空吸盘
+
+`vacuum` 命令的 `operation` 取以下值之一：
+
+| `operation` | 控制器命令 |
+| --- | --- |
+| `suck` | `DOExecute(1,0)`，`DOExecute(2,1)` |
+| `release` | `DOExecute(2,0)`，`DOExecute(1,1)`，吹气 0.3 秒，`DOExecute(1,0)` |
+| `off` | `DOExecute(2,0)`，`DOExecute(1,0)` |
+
+- 机械臂必须空闲，控制器模式为 4 或 5。命令不使能、也不移动机械臂。
+- 服务每条命令只发送一次，然后等待 30004 反馈中的 DO 实测位改变，时限 1 秒。
+- 吹气期间停止时，DO1 可能保持高电平。恢复后发送 `off`。
+- 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。未设置 `GRIP_DI` 时，`held` 为 `null`。
+- 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。
+- 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。
+- 离线模拟器响应 `DOExecute`，并在反馈帧中报告 DO 位。
+- 接线和反馈字段见 [真空吸盘](hardware.md#真空吸盘)。
 
 ### USB 夹爪协议
 

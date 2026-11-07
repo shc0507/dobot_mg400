@@ -6,6 +6,8 @@ from .web_gripper import GripperNotSentError
 
 KEYS = frozenset("WASDQERFZX")
 GRIPPER_KEYS = frozenset("ZX")
+# Z and X run 1 suction action per press: the action ends by itself, not on key release.
+VACUUM_KEYS = {"Z": "suck", "X": "release"}
 KEY_LEASE_SECONDS = 0.4
 KEYBOARD_JOIN_SECONDS = 12.0
 GRIPPER_STEP = 25

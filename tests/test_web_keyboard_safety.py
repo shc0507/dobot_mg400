@@ -110,6 +110,9 @@ class Control:
         self.polls = 0
         self.on_cancel = None
         self.on_stop = None
+        self.vacuum_entered = threading.Event()
+        self.vacuum_gate = threading.Event()
+        self.vacuum_gate.set()
 
     def log(self, event):
         self._log.add(f"{self.name}.{event}")
@@ -151,8 +154,19 @@ class Control:
     def read_state(self):
         return self.feedback()[0]
 
+    def vacuum(self, action):
+        self.log(f"vacuum:{action}")
+        self.vacuum_entered.set()
+        try:
+            gate(self.vacuum_gate)
+            if self.stopped:
+                raise RuntimeError("Control has been stopped")
+        finally:
+            self.log("vacuum.exit")
+
     def open_gates(self):
         self.stop_gate.set()
+        self.vacuum_gate.set()
         self.hold_polls.clear()
         self.poll_release.set()
 
@@ -381,11 +395,12 @@ class Rig:
         wait_for(session.run_entered.is_set)
         return self.state._kb_thread
 
-    def press_gripper(self, key):
-        """Press Z or X. Return the hold worker while its first step waits for arrival."""
-        self.gripper.move_gate.clear()
+    def press_vacuum(self, key):
+        """Press Z or X. Return the hold worker while its suction action waits."""
+        control = self.controls[-1]
+        control.vacuum_gate.clear()
         self.keys(key)
-        assert self.gripper.move_entered.wait(1)
+        assert control.vacuum_entered.wait(1)
         return self.state._kb_thread
 
     def open_gates(self):
@@ -700,41 +715,38 @@ def test_preparation_fault_becomes_verified_stop_and_lock_that_disable_recovers(
     wait_for(lambda: not state.snapshot()["locked"])
 
 
-# Gripper steps are not deferred.
+# Suction keys are not deferred.
 
 
-@pytest.mark.parametrize(("key", "target"), [("Z", 525), ("X", 475)])
-def test_stop_during_gripper_hold_cancels_parent_at_once(rig, key, target):
+@pytest.mark.parametrize(("key", "action"), [("Z", "suck"), ("X", "release")])
+def test_stop_during_a_suction_key_cancels_parent_at_once(rig, key, action):
     state = rig.state
     rig.connect()
     rig.arm_ready()
-    worker = rig.press_gripper(key)
+    worker = rig.press_vacuum(key)
     control = rig.controls[0]
-    assert state.snapshot()["gripper_busy"]
 
     state.command({"action": "stop"}, OTHER)
 
-    # The arm is idle, so the stop does not wait for the gripper step.
+    # The arm is idle, so the stop does not wait for the suction action.
     assert control.stopped
     assert control.stop_entered.wait(1)
     assert worker.is_alive()
-    rig.gripper.move_gate.set()
+    control.vacuum_gate.set()
     wait_for(lambda: not state.snapshot()["busy"])
     rig.log.assert_order(
-        f"gripper.move:{target}", "control1.cancel", "control1.stop", "gripper.move.exit"
+        f"control1.vacuum:{action}", "control1.cancel", "control1.stop", "control1.vacuum.exit"
     )
-    assert rig.gripper.commands == [target]
     snapshot = state.snapshot()
     assert snapshot["locked"]
     assert not snapshot["keyboard_enabled"]
-    assert not snapshot["gripper_busy"]
 
 
 def test_recovery_after_verified_disable_waits_for_keyboard_worker(rig):
     state = rig.state
     rig.connect()
     rig.arm_ready()
-    worker = rig.press_gripper("X")
+    worker = rig.press_vacuum("X")
     control = rig.controls[0]
 
     state.command({"action": "disable"}, OTHER)
@@ -743,11 +755,11 @@ def test_recovery_after_verified_disable_waits_for_keyboard_worker(rig):
     wait_for(lambda: "control1.stationary" in rig.log)
     stays(lambda: len(rig.controls) == 1 and state.snapshot()["locked"])
     assert worker.is_alive()
-    rig.gripper.move_gate.set()
+    control.vacuum_gate.set()
     wait_for(lambda: len(rig.controls) == 2)
     wait_for(lambda: not state.snapshot()["locked"])
     rig.log.assert_order(
-        "control1.cancel:disable", "control1.disable", "control1.stationary", "gripper.move.exit"
+        "control1.cancel:disable", "control1.disable", "control1.stationary", "control1.vacuum.exit"
     )
     assert not state.snapshot()["busy"]
 
@@ -895,15 +907,15 @@ def test_watchdog_tolerates_mode_11_only_while_arm_hold_runs(rig):
     assert not snapshot["keyboard_enabled"]
 
 
-@pytest.mark.parametrize("phase", ["keys-off", "keys-idle", "gripper-step", "preparation"])
+@pytest.mark.parametrize("phase", ["keys-off", "keys-idle", "suction-key", "preparation"])
 def test_watchdog_stops_for_mode_11_outside_arm_hold(rig, phase):
     state = rig.state
     rig.connect()
     if phase == "keys-idle":
         rig.arm_ready()
-    elif phase == "gripper-step":
+    elif phase == "suction-key":
         rig.arm_ready()
-        rig.press_gripper("Z")
+        rig.press_vacuum("Z")
     elif phase == "preparation":
         rig.session_setup = lambda session: session.prepare_gate.clear()
         rig.arm()
@@ -954,11 +966,11 @@ def test_close_during_arm_hold_joins_hold_before_gripper_close_and_ownership_rel
         contender.release()
 
 
-def test_close_during_gripper_hold_stops_at_once_and_closes_gripper_after_step(rig):
+def test_close_during_a_suction_key_stops_at_once_and_closes_gripper_after_it(rig):
     state = rig.state
     rig.connect()
     rig.arm_ready()
-    worker = rig.press_gripper("Z")
+    worker = rig.press_vacuum("Z")
     control = rig.controls[0]
     contender = ControllerOwnership("robot.test")
     closer = threading.Thread(target=state.close, daemon=True)
@@ -970,19 +982,19 @@ def test_close_during_gripper_hold_stops_at_once_and_closes_gripper_after_step(r
         assert closer.is_alive()
         assert not acquired(contender)
 
-        rig.gripper.move_gate.set()
+        control.vacuum_gate.set()
         closer.join(5)
         assert not closer.is_alive()
         rig.log.assert_order(
-            "gripper.move:525",
+            "control1.vacuum:suck",
             "control1.cancel",
             "control1.stop",
-            "gripper.move.exit",
+            "control1.vacuum.exit",
             "gripper.close",
         )
         assert acquired(contender)
     finally:
-        rig.gripper.move_gate.set()
+        control.vacuum_gate.set()
         closer.join(5)
         contender.release()
 

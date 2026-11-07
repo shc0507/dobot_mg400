@@ -311,16 +311,18 @@ def test_jog_and_move_need_no_bounds_or_tool_file(sim):
     assert settled(sim)["actual"][2] == pytest.approx(z + 5, abs=0.05)
 
 
-def test_gripper_commands_report_an_outcome(sim):
+def test_suction_commands_show_the_measured_outputs(sim):
     take(sim, "robot")
     enable_robot(sim)
-    assert command(sim, "robot", "grip", {"position": 0})[0] == 202
-    robot = wait_for(
-        lambda: (lambda s: s if not s["gripper_busy"] and s["gripper"]["outcome"] else None)(
-            motion_state(sim)["robot"]
+    for operation, suck in (("suck", True), ("off", False)):
+        assert command(sim, "robot", "vacuum", {"operation": operation})[0] == 202
+        robot = wait_for(
+            lambda suck=suck: (
+                lambda s: s if not s["busy"] and s["vacuum"]["suck"] is suck else None
+            )(motion_state(sim)["robot"])
         )
-    )
-    assert robot["gripper"]["outcome"] in {"arrived", "contact", "dropped"}
+        assert robot["vacuum"] == {"suck": suck, "blow": False, "held": None}
+        assert "gripper" not in robot
 
 
 def test_stage_moves_without_a_zero_and_stops_without_control(sim):

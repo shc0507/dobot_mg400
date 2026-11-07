@@ -34,6 +34,7 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-badge { padding: 2px 8px; border-radius: 999px; background: var(--mo-action-soft); color: var(--mo-action-hover); font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
 #ws-motion .mo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 #ws-motion .mo-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+#ws-motion .mo-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 #ws-motion .mo-label { font-size: 14px; font-weight: 700; }
 #ws-motion .mo-muted { font-size: 13px; color: var(--mo-text-2); }
 #ws-motion .mo-message { font-size: 13px; color: var(--mo-text-2); overflow-wrap: anywhere; }
@@ -121,9 +122,10 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-joints .mo-reading { flex-direction: column; align-items: flex-start; gap: 0; }
 #ws-motion .mo-pose .mo-reading { border-bottom: 1px solid var(--mo-line); }
 #ws-motion .mo-deg::after { content: "°"; }
-#ws-motion .mo-grip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
-#ws-motion .mo-grip-state { font-size: 13px; color: var(--mo-text-2); }
-#ws-motion .mo-grip-state.mo-ok { color: var(--mo-ok); } #ws-motion .mo-grip-state.mo-bad { color: var(--mo-bad); }
+#ws-motion .mo-vac { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
+#ws-motion .mo-vac-state, #ws-motion .mo-vac-held { font-size: 13px; font-weight: 600; color: var(--mo-text-2); }
+#ws-motion .mo-vac-state.mo-info { color: var(--mo-action); } #ws-motion .mo-vac-state.mo-warn { color: var(--mo-warn); }
+#ws-motion .mo-vac-held.mo-ok { color: var(--mo-ok); }
 
 /* The alarm note wins the eye: a coral tint, the alarm IDs and the button that clears them. */
 #ws-motion .mo-alarm { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 16px; background: var(--mo-stop-soft); color: var(--mo-text); }

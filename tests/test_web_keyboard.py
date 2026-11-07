@@ -486,7 +486,6 @@ def test_construction_is_inert_and_keyboard_fields_have_defaults(rig):
 def test_keyboard_timing_constants_are_class_attributes():
     assert RobotPanelState.KEY_LEASE_SECONDS == 0.4
     assert RobotPanelState.KEYBOARD_JOIN_SECONDS == 12.0
-    assert RobotPanelState.GRIPPER_HOLD_SECONDS == 5.0
 
 
 def test_snapshot_version_increases_with_each_snapshot_and_response(rig):
@@ -1686,46 +1685,3 @@ def test_failed_hold_turns_keys_off_drops_pending_keys_and_needs_a_new_arming(ri
     assert second.holds == []
     rig.browser.keys("S")
     assert rig.hold(1, second).key == "S"
-
-
-def test_gripper_key_without_a_gripper_keeps_arm_keys_ready(rig):
-    rig.connect()
-    session = rig.arm()
-    rig.browser.keys("Z")
-    wait_for(lambda: rig.snapshot()["message"].startswith("Gripper unavailable"))
-    rig.idle()
-    snapshot = rig.snapshot()
-    assert snapshot["message"] == (
-        "Gripper unavailable: Gripper control is unavailable. Arm keys remain ready."
-    )
-    assert snapshot["keyboard_enabled"] is True
-    assert session.holds == []
-    rig.browser.keys()
-    rig.browser.keys("W")
-    assert rig.hold(1).key == "W"
-
-
-def test_gripper_step_keeps_the_arm_pose_visible(make_rig):
-    gripper = Gripper(position=500)
-    rig = make_rig(gripper=gripper)
-    rig.connect()
-    wait_for(lambda: rig.snapshot()["actual"][:4] == list(POSE))
-    session = rig.arm()
-    gripper.release_move.clear()
-    rig.browser.keys("Z")
-    assert gripper.move_entered.wait(1)
-    snapshot = rig.snapshot()
-    assert snapshot["busy"] is True
-    assert snapshot["keyboard_active_key"] == "Z"
-    assert snapshot["actual"][:4] == list(POSE)
-    assert snapshot["actual"][4] is None
-    rig.browser.keys()
-    gripper.release_move.set()
-    rig.idle()
-    snapshot = rig.snapshot()
-    # Z opens by one step.
-    assert gripper.commands == [525]
-    assert snapshot["keyboard_enabled"] is True
-    assert snapshot["message"] == STOPPED
-    assert snapshot["actual"][4] == 525
-    assert session.holds == []

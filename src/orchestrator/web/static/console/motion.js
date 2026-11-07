@@ -19,7 +19,7 @@
   // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
   const KEYS = "WASDQERFZX";
   // The keyboard jog keys in pairs, each with the label of its pair. The first key of a pair moves out, +, up or opens.
-  const KEY_PAIRS = [["W", "S", "pair.reach"], ["A", "D", "pair.j1"], ["R", "F", "pair.z"], ["Q", "E", "pair.j4"], ["Z", "X", "pair.grip"]];
+  const KEY_PAIRS = [["W", "S", "pair.reach"], ["A", "D", "pair.j1"], ["R", "F", "pair.z"], ["Q", "E", "pair.j4"], ["Z", "X", "pair.suction"]];
   // The key that moves like each jog button, shown on the button while the keyboard is on. The letters R and Z
   // are keys here, not axes: R moves Z up, and Q turns R + (J4 +).
   const JOG_KEYS = { "z+": "R", "z-": "F", "r+": "Q", "r-": "E" };
@@ -119,12 +119,11 @@
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
   }
 
-  /** A whole gripper position from 0 to 1000, or null. */
-  function parseGrip(text) {
-    const value = String(text ?? "").trim();
-    if (!/^\d+$/.test(value)) return null;
-    const number = Number(value);
-    return number <= 1000 ? number : null;
+  /** The measured suction state: "suck", "blow", "off" or null, and held (true, false or null without a grip switch). */
+  function vacuumView(vacuum) {
+    const known = vacuum && typeof vacuum.suck === "boolean" && typeof vacuum.blow === "boolean";
+    const state = !known ? null : vacuum.suck ? "suck" : vacuum.blow ? "blow" : "off";
+    return { state, held: typeof vacuum?.held === "boolean" ? vacuum.held : null };
   }
 
   /** The controller alarms as {id, text}: the description, the source and the solution. */
@@ -195,14 +194,12 @@
       "move.useActual": "Use actual", "move.execute": "Execute", "move.invalid": "Enter 4 numbers for X, Y, Z and R.",
       "kb.switch": "Keyboard jog", "kb.keys": "Keyboard jog keys", "kb.speedLabel": "Keyboard speed, 1 to {cap}", "kb.off": "Off: {reason}",
       "key.Q": "J4 +", "key.W": "Reach out", "key.E": "J4 −", "key.R": "Z up", "key.A": "J1 +", "key.S": "Reach in",
-      "key.D": "J1 −", "key.F": "Z down", "key.Z": "Open", "key.X": "Close",
-      "pair.reach": "Out / In", "pair.j1": "J1 + / −", "pair.z": "Z up / down", "pair.j4": "J4 + / −", "pair.grip": "Open / Close",
-      "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons", "fold.grip": "Gripper setup", "fold.stage": "Step moves and zero",
-      "grip.title": "Gripper", "grip.open": "Open", "grip.close": "Close", "grip.init": "Initialize…",
-      "grip.initConfirm": "Initialization opens the jaws. Remove any held object first.",
-      "grip.busy": "Moving…", "grip.none": "No outcome yet",
-      "grip.position": "Position", "grip.positionLabel": "Gripper position, 0 to 1000", "grip.move": "Move",
-      "grip.badPosition": "Enter a whole gripper position from 0 to 1000.",
+      "key.D": "J1 −", "key.F": "Z down", "key.Z": "Suck", "key.X": "Release",
+      "pair.reach": "Out / In", "pair.j1": "J1 + / −", "pair.z": "Z up / down", "pair.j4": "J4 + / −", "pair.suction": "Suck / Release",
+      "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons", "fold.stage": "Step moves and zero",
+      "vac.title": "Suction", "vac.suck": "Suck", "vac.release": "Release", "vac.off": "Off",
+      "vac.state.suck": "Sucking", "vac.state.blow": "Blowing", "vac.state.off": "Off",
+      "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}",
       "last": "Last: {action} · {result}", "last.message": "Last: {action} · {result} · {message}",
       "confirm": "Confirm", "cancel": "Cancel",
       "stage.stop": "Stop stage", "stage.connected": "Connected", "stage.disconnected": "Arduino not connected",
@@ -234,7 +231,7 @@
       "out.unknown": "{device} {action}: outcome unknown. Check the device. It is not retried.",
       "out.stop": "{device} stop: {outcome}",
       "res.confirmed": "confirmed", "res.pending": "pending", "res.unconfirmed": "not confirmed", "res.unknown": "unknown",
-      "act.enable": "Enable", "act.disable": "Disable", "act.clear_alarm": "Clear alarm", "act.execute": "Move", "act.grip": "Gripper",
+      "act.enable": "Enable", "act.disable": "Disable", "act.clear_alarm": "Clear alarm", "act.execute": "Move", "act.grip": "Gripper", "act.vacuum": "Suction",
       "act.home": "Home", "act.stage.home": "Home", "act.initialize_gripper": "Initialize gripper", "act.keyboard": "Keyboard", "act.keys": "Keyboard keys",
       "act.hold": "Hold", "act.connect": "Connect", "act.goto": "Named position", "act.move": "Step", "act.pose": "Named pose",
       "act.set_microstep": "Stepping", "act.teach_reference": "Teach reference", "act.zero": "Set zero",
@@ -264,14 +261,12 @@
       "move.useActual": "使用当前值", "move.execute": "执行", "move.invalid": "请为 X、Y、Z 和 R 输入 4 个数字。",
       "kb.switch": "键盘点动", "kb.keys": "键盘点动按键", "kb.speedLabel": "键盘速度，1 到 {cap}", "kb.off": "已关闭：{reason}",
       "key.Q": "J4 +", "key.W": "伸出", "key.E": "J4 −", "key.R": "Z 上", "key.A": "J1 +", "key.S": "收回",
-      "key.D": "J1 −", "key.F": "Z 下", "key.Z": "张开", "key.X": "闭合",
-      "pair.reach": "伸出 / 收回", "pair.j1": "J1 + / −", "pair.z": "Z 上 / 下", "pair.j4": "J4 + / −", "pair.grip": "张开 / 闭合",
-      "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮", "fold.grip": "夹爪设置", "fold.stage": "步进和零点",
-      "grip.title": "夹爪", "grip.open": "张开", "grip.close": "闭合", "grip.init": "初始化…",
-      "grip.initConfirm": "初始化会张开夹爪。请先取下夹持的物体。",
-      "grip.busy": "运动中…", "grip.none": "尚无结果",
-      "grip.position": "位置", "grip.positionLabel": "夹爪位置，0 到 1000", "grip.move": "移动",
-      "grip.badPosition": "请输入 0 到 1000 的整数夹爪位置。",
+      "key.D": "J1 −", "key.F": "Z 下", "key.Z": "吸取", "key.X": "释放",
+      "pair.reach": "伸出 / 收回", "pair.j1": "J1 + / −", "pair.z": "Z 上 / 下", "pair.j4": "J4 + / −", "pair.suction": "吸取 / 释放",
+      "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮", "fold.stage": "步进和零点",
+      "vac.title": "吸盘", "vac.suck": "吸取", "vac.release": "释放", "vac.off": "关闭",
+      "vac.state.suck": "吸取中", "vac.state.blow": "吹气中", "vac.state.off": "已关闭",
+      "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}",
       "last": "上一条：{action} · {result}", "last.message": "上一条：{action} · {result} · {message}",
       "confirm": "确认", "cancel": "取消",
       "stage.stop": "停止位移台", "stage.connected": "已连接", "stage.disconnected": "Arduino 未连接",
@@ -303,7 +298,7 @@
       "out.unknown": "{device} {action}：结果未知。请检查设备。不会重试。",
       "out.stop": "{device} 停止：{outcome}",
       "res.confirmed": "已确认", "res.pending": "等待中", "res.unconfirmed": "未确认", "res.unknown": "未知",
-      "act.enable": "使能", "act.disable": "下使能", "act.clear_alarm": "清除报警", "act.execute": "移动", "act.grip": "夹爪",
+      "act.enable": "使能", "act.disable": "下使能", "act.clear_alarm": "清除报警", "act.execute": "移动", "act.grip": "夹爪", "act.vacuum": "吸盘",
       "act.home": "回原点", "act.stage.home": "回零", "act.initialize_gripper": "初始化夹爪", "act.keyboard": "键盘", "act.keys": "键盘按键",
       "act.hold": "按住移动", "act.connect": "连接", "act.goto": "命名位置", "act.move": "步进", "act.pose": "命名位姿",
       "act.set_microstep": "细分", "act.teach_reference": "示教参考", "act.zero": "设零",
@@ -316,7 +311,7 @@
     },
   };
 
-  Object.assign(logic, { parseGrip, alarmRows });
+  Object.assign(logic, { vacuumView, alarmRows });
 
   function workspace() {
     let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false;
@@ -517,22 +512,22 @@
         el("div", { class: "mo-keyboard", role: "group", "aria-label": t("kb.keys") },
           ...KEY_PAIRS.map(([a, b, label]) => el("span", { class: "mo-pair" }, cap(a), cap(b), el("span", { text: t(label) })))));
 
-      // Readout: pose, joints and the gripper.
+      // Readout: pose, joints and suction.
       refs.pose = AXES.map(() => el("b", { class: "mo-num" }));
       refs.joints = [0, 1, 2, 3].map(() => el("b", { class: "mo-num-small mo-deg" }));
-      refs.gripValue = el("b", { class: "mo-num" });
-      refs.gripState = el("span", { class: "mo-grip-state" });
-      refs.gripOpen = el("button", { type: "button", class: "mo-btn", text: t("grip.open"), onclick: () => send("robot", "grip", { position: 1000 }, "grip") });
-      refs.gripClose = el("button", { type: "button", class: "mo-btn", text: t("grip.close"), onclick: () => send("robot", "grip", { position: 0 }, "grip") });
-      refs.gripMessage = el("p", { class: "mo-message" });
+      refs.vacState = el("span", { class: "mo-vac-state" });
+      // The grip switch is not installed yet. Held shows when the robot service reports it.
+      refs.vacHeld = el("span", { class: "mo-vac-held", hidden: true });
+      refs.vac = Object.fromEntries(["suck", "release", "off"].map(operation => [operation,
+        el("button", { type: "button", class: "mo-btn", text: t("vac." + operation), "aria-label": t("vac.label", { action: t("vac." + operation) }),
+          onclick: () => send("robot", "vacuum", { operation }, "vacuum") })]));
       const readout = el("div", { class: "mo-readout" },
         el("div", { class: "mo-pose", role: "group", "aria-label": t("pose.actual") },
           ...AXES.map((axis, i) => el("div", { class: "mo-reading" }, el("span", { text: axis.toUpperCase() }), refs.pose[i]))),
         el("div", { class: "mo-joints", role: "group", "aria-label": t("pose.joints") },
           ...refs.joints.map((node, i) => el("div", { class: "mo-reading" }, el("span", { text: "J" + (i + 1) }), node))),
-        el("div", { class: "mo-grip" }, el("span", { class: "mo-label", text: t("grip.title") }), refs.gripValue, refs.gripState),
-        el("div", { class: "mo-grid2" }, refs.gripOpen, refs.gripClose),
-        refs.gripMessage);
+        el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld),
+        el("div", { class: "mo-grid3" }, refs.vac.suck, refs.vac.release, refs.vac.off));
 
       // Jog buttons: rarely used, so folded.
       refs.jog = {};
@@ -584,20 +579,6 @@
         el("label", { class: "mo-speed" }, el("span", { text: t("move.speed") }), refs.speed, refs.speedText),
         el("div", { class: "mo-grid2" }, refs.useActual, refs.execute));
 
-      // Gripper setup: rarely used, so folded.
-      refs.gripInit = el("button", {
-        type: "button", class: "mo-btn", text: t("grip.init"),
-        onclick: () => askConfirm("arm", t("grip.initConfirm"), () => send("robot", "initialize_gripper", {}, "grip")),
-      });
-      refs.gripInput = el("input", {
-        type: "text", inputmode: "numeric", class: "mo-input mo-narrow", autocomplete: "off", "aria-label": t("grip.positionLabel"),
-        oninput: event => { model.grip = event.target.value; },
-      });
-      refs.gripInput.value = model.grip ?? "";
-      refs.gripMove = el("button", { type: "button", class: "mo-btn", text: t("grip.move"), onclick: moveGrip });
-      const gripFold = fold(t("fold.grip"),
-        el("div", { class: "mo-row" }, el("label", { class: "mo-inline" }, t("grip.position"), refs.gripInput), refs.gripMove, refs.gripInit),
-        confirmSlot("arm"));
       refs.armLast = el("p", { class: "mo-muted mo-last", role: "status" });
 
       return el("section", { class: "mo-station mo-station-arm", "aria-labelledby": "mo-arm-title" },
@@ -608,14 +589,8 @@
             el("span", { class: "mo-actions" }, refs.enable, refs.home, controlButton("robot"), refs.armStop)),
           refs.armFlags, refs.alarmNote, confirmSlot("home"),
           el("div", { class: "mo-armbody" }, kbBox, readout),
-          el("div", { class: "mo-folds" }, jogFold, moveFold, gripFold),
+          el("div", { class: "mo-folds" }, jogFold, moveFold),
           refs.armMessage, refs.armLast));
-    }
-
-    function moveGrip() {
-      const position = parseGrip(model.grip);
-      if (position === null) { api.notify(t("grip.badPosition"), "warn"); return; }
-      send("robot", "grip", { position }, "grip");
     }
 
     function jog(item) {
@@ -1122,8 +1097,6 @@
       const message = robot?.message ? String(robot.message) : "";
       if (refs.armMessage.textContent !== message) refs.armMessage.textContent = message;
       refs.armMessage.hidden = !message;
-      const gripMessage = robot?.gripper_message ? String(robot.gripper_message) : "";
-      if (refs.gripMessage.textContent !== gripMessage) refs.gripMessage.textContent = gripMessage;
       const joints = Array.isArray(robot?.joints) ? robot.joints : [];
       refs.joints.forEach((node, i) => { node.textContent = typeof joints[i] === "number" ? fixed(joints[i], 1) : "—"; });
       // The robot service sends no pose while the arm moves. Keep the last pose, in grey, until a new one arrives.
@@ -1144,14 +1117,18 @@
       refs.speedText.textContent = data.cap ? `${clampSpeed(model.speed, data.cap)} / ${data.cap}` : "—";
       refs.useActual.disabled = !pose;
       refs.execute.disabled = !canMove || !data.cap;
-      const grip = robot?.gripper || {};
-      const position = Array.isArray(robot?.actual) ? robot.actual[4] : null;
-      refs.gripValue.textContent = typeof position === "number" ? String(position) : "—";
-      refs.gripState.textContent = !robot ? "" : robot.gripper_busy ? t("grip.busy") : grip.outcome || t("grip.none");
-      refs.gripState.className = "mo-grip-state" + (grip.outcome === "dropped" ? " mo-bad" : grip.outcome && !robot.gripper_busy ? " mo-ok" : "");
-      const gripReady = ready && robot.gripper_available && !robot.gripper_busy && !robot.busy && !busy("robot");
-      refs.gripOpen.disabled = refs.gripClose.disabled = refs.gripMove.disabled = !gripReady;
-      refs.gripInit.disabled = !(ready && robot.gripper_can_initialize && !robot.gripper_busy && !robot.busy);
+      // Suction: the measured outputs, never the last button pressed.
+      const vac = vacuumView(robot?.vacuum);
+      refs.vacState.textContent = vac.state ? t("vac.state." + vac.state) : "—";
+      refs.vacState.className = "mo-vac-state" + (vac.state === "suck" ? " mo-info" : vac.state === "blow" ? " mo-warn" : "");
+      refs.vacHeld.hidden = vac.held === null;
+      refs.vacHeld.textContent = vac.held === null ? "" : t(vac.held ? "vac.held" : "vac.notHeld");
+      refs.vacHeld.className = "mo-vac-held" + (vac.held ? " mo-ok" : "");
+      const vacReady = ready && vac.state !== null && !robot.busy && !busy("robot");
+      for (const [operation, node] of Object.entries(refs.vac)) {
+        node.disabled = !vacReady;
+        node.className = "mo-btn" + (operation === "suck" && vac.state === "suck" ? " mo-held" : "");
+      }
       refs.armLast.textContent = robot ? lastText("robot", robot.last_command) : "";
       updateKeyboard(robot, ready);
 

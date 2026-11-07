@@ -44,9 +44,8 @@ function el(tag, props, ...children) {
 }
 
 const ROBOT = {
-  available: true, holder: "mine", actual: [250, 10, 40, 30, 1000], enabled: true, busy: false, locked: false,
-  stop_unconfirmed: false, feedback_fresh: true, gripper_available: true, gripper_can_initialize: true,
-  gripper_busy: false, gripper: { outcome: "arrived" }, demo: true, last_command: null,
+  available: true, holder: "mine", actual: [250, 10, 40, 30, null], enabled: true, busy: false, locked: false,
+  stop_unconfirmed: false, feedback_fresh: true, vacuum: { suck: false, blow: false, held: null }, demo: true, last_command: null,
 };
 const STAGE = {
   available: true, holder: "mine", connected: true, demo: true, busy: false, locked: false, microstep: 1,
@@ -149,12 +148,12 @@ test("without control the arm cannot move but Stop stage and Disable stay availa
   assert.deepEqual(page.calls.filter(call => call[0] === "stop"), [["stop", "stage"]]);
 });
 
-test("gripper positions and alarm rows are parsed strictly", () => {
-  assert.equal(logic.parseGrip("500"), 500);
-  assert.equal(logic.parseGrip("0"), 0);
-  assert.equal(logic.parseGrip("1001"), null);
-  assert.equal(logic.parseGrip("-1"), null);
-  assert.equal(logic.parseGrip("2.5"), null);
+test("the suction state comes from the measured outputs; alarm rows are parsed strictly", () => {
+  assert.deepEqual(logic.vacuumView({ suck: true, blow: false, held: null }), { state: "suck", held: null });
+  assert.deepEqual(logic.vacuumView({ suck: false, blow: true, held: true }), { state: "blow", held: true });
+  assert.deepEqual(logic.vacuumView({ suck: false, blow: false, held: false }), { state: "off", held: false });
+  assert.deepEqual(logic.vacuumView({ suck: null, blow: null, held: null }), { state: null, held: null });
+  assert.deepEqual(logic.vacuumView(undefined), { state: null, held: null });
   assert.deepEqual(logic.alarmRows({ alarms: [
     { id: 22, source: "controller", description: "Joint 2 limit", solution: "Jog J2 back." },
     { id: 3, source: "servo", description: "Overload", solution: "" },
@@ -164,7 +163,6 @@ test("gripper positions and alarm rows are parsed strictly", () => {
 
 test("the arm card shows joints, alarms and the service message; Stop arm needs no control", async () => {
   const robot = { ...ROBOT, joints: [1.5, -20, 3, 44.26], message: "Robot stop is confirmed. Disable the robot before recovery.",
-    gripper_message: "Control is locked. Check the gripper.",
     alarms: [{ id: 22, source: "controller", description: "Joint 2 limit", solution: "Jog J2 back." }] };
   const page = await mounted({ owns: [], robot: { ...robot, holder: null } });
   const texts = page.root.all().map(node => node.ownText);
@@ -176,9 +174,8 @@ test("the arm card shows joints, alarms and the service message; Stop arm needs 
   assert.equal(note.getAttribute("role"), "alert");
   assert.match(note.textContent, /^Alarm.*Alarm 22: Joint 2 limit.*Clear alarm$/);
   assert.ok(texts.includes("Robot stop is confirmed. Disable the robot before recovery."));
-  assert.ok(texts.includes("Control is locked. Check the gripper."));
   assert.equal(page.find("Home…").disabled, true);
-  assert.equal(page.find("Move").disabled, true);
+  assert.equal(page.find("Suction: Suck").disabled, true);
   page.find("Stop arm").click();
   await page.settle();
   assert.deepEqual(page.calls.filter(call => call[0] === "stop"), [["stop", "robot"]]);
@@ -272,7 +269,7 @@ test("a confirmation takes the focus, and Esc closes it without sending", async 
   assert.equal(page.calls.some(call => call[0] === "relay"), false);
 });
 
-test("Home sends only after the page confirmation; Move sends 1 gripper position", async () => {
+test("Home sends only after the page confirmation", async () => {
   const page = await mounted();
   page.find("Home…").click();
   await page.settle();
@@ -280,17 +277,34 @@ test("Home sends only after the page confirmation; Move sends 1 gripper position
   page.find("Confirm").click();
   await page.settle();
   assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "robot", "home", {}]]);
-  const input = page.find("Gripper position, 0 to 1000");
-  input.value = "1200";
-  input.listeners.get("input")({ target: input });
-  page.find("Move").click();
-  await page.settle();
-  assert.ok(page.calls.some(call => call[0] === "notify" && call[1] === "Enter a whole gripper position from 0 to 1000."));
-  input.value = "400";
-  input.listeners.get("input")({ target: input });
-  page.find("Move").click();
-  await page.settle();
-  assert.deepEqual(page.calls.filter(call => call[0] === "relay" && call[2] === "grip"), [["relay", "robot", "grip", { position: 400 }]]);
+});
+
+test("Suck, Release and Off send 1 vacuum command each and show the measured state", async () => {
+  const page = await mounted({ robot: { ...ROBOT, vacuum: { suck: true, blow: false, held: null } } });
+  const texts = page.root.all().map(node => node.ownText);
+  assert.ok(texts.includes("Sucking"));
+  assert.equal(page.find("Suction: Suck").className, "mo-btn mo-held");
+  // Without a grip switch, the page shows no held state.
+  assert.equal(page.root.all().find(node => node.className.startsWith("mo-vac-held")).hidden, true);
+  for (const label of ["Suck", "Release", "Off"]) {
+    page.find("Suction: " + label).click();
+    await page.settle();
+  }
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [
+    ["relay", "robot", "vacuum", { operation: "suck" }],
+    ["relay", "robot", "vacuum", { operation: "release" }],
+    ["relay", "robot", "vacuum", { operation: "off" }],
+  ]);
+});
+
+test("the suction buttons wait for a measured state and show held when the service reports it", async () => {
+  const unknown = await mounted({ robot: { ...ROBOT, vacuum: { suck: null, blow: null, held: null } } });
+  assert.equal(unknown.find("Suction: Suck").disabled, true);
+  assert.equal(unknown.find("Suction: Off").disabled, true);
+  const held = await mounted({ robot: { ...ROBOT, vacuum: { suck: true, blow: false, held: true } } });
+  const node = held.root.all().find(item => item.className.startsWith("mo-vac-held"));
+  assert.equal(node.hidden, false);
+  assert.equal(node.textContent, "Held");
 });
 
 test("Refresh ports reads the serial ports again", async () => {

@@ -94,6 +94,7 @@ AREAS = [
     ("src/vision/*", ["test_vision_*.py", "test_orchestrator_rehearsal.py"]),
     ("config/trays/*", ["test_vision_tray.py"]),
     ("scripts/vision_eval.py", ["test_vision_eval.py"]),
+    ("scripts/console_shots.py", ["test_console_shots.py"]),
     ("deploy/*", DEPLOY),
     ("config/*", DEPLOY),
     # Documents and agent files: the doc-pair checker in ALWAYS covers them.

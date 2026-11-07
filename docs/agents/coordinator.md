@@ -16,6 +16,7 @@ One task per worker. The prompt is: `Read docs/agents/worker.md. Task: <#N or sl
 - Software-only task (console, docs, tests, simulator, a service without a device check): several in parallel, each in its own worktree.
 - Mechanical batch (the same edit across many files): the Workflow tool with a result schema, not a session.
 - Start every worker fresh. A fork copies this whole context into the worker.
+- Effort by phase: a design worker starts at `high`; implementation and mechanical workers at `medium`. Use `xhigh` or `max` only to choose between design options or for deep research. When a design worker moves on to build an approved option, drop it to `medium` (`/effort medium` in its pane).
 - Work that needs the Mac (a page in the owner's Chrome, Claude Desktop): never dispatch it. The worker asks for it on its `Bench` line, and the owner opens a Mac session.
 
 ### Herdr workers
@@ -24,7 +25,7 @@ The coordinator runs inside Herdr (`HERDR_ENV=1`). A worker is a Herdr agent in 
 
 ```bash
 pane=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['pane']['pane_id'])")
-herdr agent start <name> --kind claude --pane "$pane" -- --effort medium -n "<name>"
+herdr agent start <name> --kind claude --pane "$pane" -- --effort <high|medium> -n "<name>"
 herdr agent prompt <name> "Read docs/agents/worker.md. Task: <#N or slug>: <title or the owner's words>."
 ```
 
@@ -48,6 +49,12 @@ herdr agent read <name> --source recent-unwrapped --lines 80
 ## Decisions you make
 
 Answer these yourself, never forward them: merge or not, CI state, deploy order, merge main versus rebase, task order. Forward to the owner only bench actions and permission blocks; the owner approves a blocked command in the worker's own session.
+
+## Owner questions
+
+- Batch them. Collect the pending bench questions from all workers and send them to the owner in 1 message, 1 numbered line per worker. Do not forward questions one at a time.
+- Send each worker's images with SendUserFile, 1 call per image, after the message. The owner reads images in the Claude Code app, not over SSH, so a path alone is not enough.
+- Send each answer back to its worker with `herdr agent prompt <name> "Owner's answer: ..."`.
 
 ## Idea chat
 

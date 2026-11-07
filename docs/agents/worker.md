@@ -13,9 +13,14 @@ You are one worker. The coordinator dispatched you with one task: an issue numbe
 - Tests: run the area's tests locally. CI runs the full suite on push.
 - Before push: merge `origin/main` into the branch. Force-push is blocked, so merge instead of rebasing.
 - PR: `gh pr create`; body states what changed, why, tests run, and the device check if any.
-- CI: wait with one blocking call, `gh pr checks <n> --watch --interval 20` (about 7 minutes). Merge yourself when CI is green and the device check passed: `gh pr merge <n> --merge`.
+- CI: right after push, start `gh pr checks <n> --watch --interval 20` in the background (`run_in_background`) and do the docs, screenshots and cleanup while it runs. Merge yourself when CI is green and the device check passed: `gh pr merge <n> --merge`.
 - Deploy: follow `docs/deploy.md`. Keep `web` running while the owner may use the arm. Poll readiness with an until-loop on `curl` or `systemctl`, never a fixed sleep.
-- Look at the console yourself: `npx playwright screenshot --viewport-size=1440,900 --wait-for-timeout=3000 http://100.64.0.1:8080/lab/ /tmp/<slug>.png`, then read the PNG. Camera stills are at `/camera/<view>.jpg` on the same host. Ask the owner only for pages behind the Olares login.
+- Look at the console yourself with `scripts/console_shots.py` (one call for pages, EN and 中文, 2 viewports; it sends only GET requests). Read only the PNGs you need.
+  - Live: `uv run python scripts/console_shots.py shoot --pages motion --out <dir>`.
+  - Your branch: add `--demo`; the script starts and stops a local demo server.
+  - Before/after (before on top): `compare http://100.64.0.1:8080/lab/ --demo --out <dir>`, or `compare <before-dir> <after-dir> --out <dir>`.
+  - A state (held key, open dialog): `--state NAME=FILE.js`, a script that changes the page after load. `--clip <selector>` captures 1 element.
+  - Camera stills are at `/camera/<view>.jpg` on the same host. Ask the owner only for pages behind the Olares login.
 - Docs: change instruction docs in place as `AGENTS.md` "Documenting" says. Chinese and English pairs change together.
 - Commit message: one line plus a brief description of what was done.
 - Permission block: when the classifier blocks a command, write `BLOCKED <name>: <command>` in the report and continue with the rest of the task. A worker in an interactive session asks the owner once, with one question that covers the whole path (merge main, push, merge).

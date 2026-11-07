@@ -1,22 +1,135 @@
 /* Styles for the Cameras workspace and the shared camera tile. Workspace rules start with #ws-cameras;
  * tile rules use .lcam-tile so the Motion and Furnace + microscope workspaces can show tiles too. */
-#ws-cameras .lcam-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
-#ws-cameras .lcam-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-#ws-cameras .lcam-focus { display: flex; flex-direction: column; }
-#ws-cameras .lcam-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-#ws-cameras .lcam-strip .lcam-foot .lcam-buttons { display: none; }
-#ws-cameras .lcam-strip .lcam-note { display: none; }
-#ws-cameras .lcam-side { position: sticky; top: calc(var(--lc-top, 0px) + 16px); }
-#ws-cameras .lcam-h3 { margin: 4px 0 0; font-size: 14px; font-weight: 600; }
-#ws-cameras .lcam-group { display: flex; flex-direction: column; gap: 8px; }
-#ws-cameras .lcam-field { display: flex; flex-direction: column; gap: 6px; }
-#ws-cameras .lcam-label { font-size: 13px; color: var(--muted); }
-#ws-cameras .lcam-select, #ws-cameras .lcam-input { min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); width: 100%; }
-#ws-cameras .lcam-input:disabled { opacity: 0.55; }
-#ws-cameras .lcam-reading { display: flex; flex-direction: column; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
-#ws-cameras .lcam-value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
-#ws-cameras .lc-confirm .lc-danger { min-width: 120px; }
-#ws-cameras .lcam-selected { border: 2px solid var(--accent); }
+body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
+
+#ws-cameras {
+  --cm-ground: #F2EEE9; --cm-card: #FFFFFF; --cm-surface: #F7F4F0; --cm-fill: #F2EEE9; --cm-fill-hover: #E9E3DC;
+  --cm-line: #EDE6DE; --cm-edge: #E0D8CF; --cm-text: #2A2622; --cm-text-2: #6F625A; --cm-count: #8A7F74;
+  --cm-action: #2E5BFF; --cm-action-hover: #2149E0; --cm-action-soft: #E8EEFF; --cm-on-action: #FFFFFF;
+  --cm-stop: #B4232C; --cm-stop-soft: #FDE8E8; --cm-ok: #27774C; --cm-warn: #8F6200; --cm-bad: #B4232C;
+  --cm-well: #171310; --cm-well-text: #CFC6BC; --cm-well-chip: rgba(255, 255, 255, 0.9); --cm-well-scrim: rgba(23, 19, 16, 0.72);
+  --cm-shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05);
+  --cm-lift: 0 8px 28px rgba(60, 40, 20, 0.18), 0 2px 6px rgba(60, 40, 20, 0.08);
+  color: var(--cm-text);
+}
+#ws-cameras ::selection { background: var(--cm-action-soft); color: var(--cm-text); }
+#ws-cameras button:focus-visible, #ws-cameras input:focus-visible, #ws-cameras select:focus-visible,
+#ws-cameras [tabindex]:focus-visible { outline: 2px solid var(--cm-action); outline-offset: 2px; }
+#ws-cameras p { margin: 0; }
+#ws-cameras h2 { margin: 0; font-size: 18px; font-weight: 700; }
+#ws-cameras button { font: inherit; }
+#ws-cameras .lc-button { min-height: 36px; padding: 0 14px; border: 0; border-radius: 12px; background: var(--cm-fill); color: var(--cm-text); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background-color 120ms ease-out, transform 120ms ease-out; }
+#ws-cameras .lc-button:hover:not(:disabled) { background: var(--cm-fill-hover); }
+#ws-cameras .lc-button.lcam-on, #ws-cameras .lc-button.lcam-on:hover:not(:disabled) { background: var(--cm-action-soft); color: var(--cm-action-hover); }
+#ws-cameras button:active:not(:disabled) { transform: scale(0.97); }
+#ws-cameras button:disabled { opacity: 0.45; cursor: not-allowed; }
+#ws-cameras .lc-danger { min-height: 36px; padding: 0 14px; border: 0; border-radius: 12px; background: var(--cm-stop-soft); color: var(--cm-stop); font-size: 13px; font-weight: 700; cursor: pointer; }
+#ws-cameras .lcam-grow { flex: 1 1 auto; }
+
+/* Toolbar: the layout switch, the overlays and Snapshot all. */
+#ws-cameras .lcam-ws { display: flex; flex-direction: column; gap: 12px; }
+#ws-cameras .lcam-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-height: 40px; }
+#ws-cameras .lcam-seg { display: inline-flex; gap: 4px; padding: 3px; border-radius: 12px; background: var(--cm-fill-hover); }
+#ws-cameras .lcam-seg-btn { min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: var(--cm-text); font-size: 13px; font-weight: 600; cursor: pointer; }
+#ws-cameras .lcam-seg-btn:hover:not(:disabled) { background: var(--cm-card); }
+#ws-cameras .lcam-seg-btn.lcam-on, #ws-cameras .lcam-seg-btn.lcam-on:hover { background: var(--cm-action); color: var(--cm-on-action); }
+#ws-cameras .lcam-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+#ws-cameras .lcam-chip { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--cm-card); color: var(--cm-text-2); box-shadow: var(--cm-shadow); font-size: 13px; font-weight: 600; cursor: pointer; }
+#ws-cameras .lcam-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: 0.5; }
+#ws-cameras .lcam-chip.lcam-on { background: var(--cm-action-soft); color: var(--cm-action-hover); }
+#ws-cameras .lcam-chip.lcam-on::before { opacity: 1; }
+#ws-cameras .lcam-snapall { background: var(--cm-card); box-shadow: var(--cm-shadow); }
+
+/* The wall: 6 views in 3 columns and 2 rows, sized to the window. */
+#ws-cameras .lcam-wall { display: grid; gap: 14px; height: calc(100vh - var(--lc-top, 113px) - 104px); min-height: 480px; }
+#ws-cameras .lcam-mode-wall { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+/* The large view: 1 view large on the left and a rail of the other 5 on the right. */
+#ws-cameras .lcam-mode-large { grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: repeat(5, minmax(0, 1fr)); gap: 10px 14px; }
+#ws-cameras .lcam-mode-large .lcam-big { grid-column: 1; grid-row: 1 / -1; }
+#ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) { grid-column: 2; }
+#ws-cameras .lcam-cell { position: relative; min-width: 0; min-height: 0; }
+
+/* A tile is a dark well; its name, state, mode and tools sit inside the frame. */
+#ws-cameras .lcam-cell .lcam-tile { position: absolute; inset: 0; border: 0; border-radius: 16px; background: var(--cm-well); box-shadow: var(--cm-shadow); }
+#ws-cameras .lcam-cell .lcam-stage { position: absolute; inset: 0; aspect-ratio: auto; background: var(--cm-well); cursor: default; }
+#ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) .lcam-stage { cursor: pointer; }
+#ws-cameras .lcam-cell .lcam-stage:focus-visible { outline: 2px solid var(--cm-action); outline-offset: -2px; }
+#ws-cameras .lcam-cell canvas.lcam-media { cursor: crosshair; }
+#ws-cameras .lcam-cell .lcam-empty { background: var(--cm-well); color: var(--cm-well-text); }
+#ws-cameras .lcam-cell .lcam-head { position: absolute; top: 8px; left: 8px; right: 8px; z-index: 3; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding: 0; pointer-events: none; }
+#ws-cameras .lcam-cell .lcam-names { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border-radius: 10px; background: var(--cm-well-chip); color: var(--cm-text); font-size: 13px; }
+#ws-cameras .lcam-cell .lcam-title { font-weight: 700; }
+#ws-cameras .lcam-cell .lcam-role { color: var(--cm-text-2); }
+#ws-cameras .lcam-cell .lcam-role::before { content: none; }
+#ws-cameras .lcam-cell .lcam-badge { margin-left: auto; min-height: 28px; padding: 0 10px; border-radius: 10px; background: var(--cm-well-chip); font-size: 12px; letter-spacing: 0; }
+#ws-cameras .lcam-cell .lcam-badge.tone-ok { color: var(--cm-ok); } #ws-cameras .lcam-cell .lcam-badge.tone-warn { color: var(--cm-warn); }
+#ws-cameras .lcam-cell .lcam-badge.tone-bad { color: var(--cm-bad); } #ws-cameras .lcam-cell .lcam-badge.tone-off { color: var(--cm-text-2); }
+#ws-cameras .lcam-cell .lcam-badge.tone-ok .lc-dot { background: var(--cm-ok); } #ws-cameras .lcam-cell .lcam-badge.tone-warn .lc-dot { background: var(--cm-warn); }
+#ws-cameras .lcam-cell .lcam-badge.tone-bad .lc-dot { background: var(--cm-bad); } #ws-cameras .lcam-cell .lcam-badge.tone-off .lc-dot { background: var(--cm-count); }
+#ws-cameras .lcam-cell .lcam-readings { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+#ws-cameras .lcam-cell .lcam-readings:empty { display: none; }
+#ws-cameras .lcam-cell .lcam-readings span { display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 10px; border-radius: 10px; background: var(--cm-well-scrim); color: #F2EEE9; font-size: 12px; font-variant-numeric: tabular-nums; }
+#ws-cameras .lcam-cell .lcam-readings small { font-size: 12px; }
+#ws-cameras .lcam-cell .lcam-readings b { color: #FFFFFF; font-weight: 700; }
+/* In the large view the 4 readings use the readout size in fixed cells. */
+#ws-cameras .lcam-mode-large .lcam-big .lcam-readings span { flex-direction: column; align-items: flex-start; gap: 0; min-width: 104px; padding: 6px 12px; }
+#ws-cameras .lcam-mode-large .lcam-big .lcam-readings b { font-size: 20px; }
+#ws-cameras .lcam-cell .lcam-foot { display: contents; }
+#ws-cameras .lcam-cell .lcam-meta { position: absolute; left: 8px; bottom: 8px; z-index: 3; max-width: calc(100% - 240px); padding: 4px 10px; border-radius: 10px; background: var(--cm-well-scrim); color: #F2EEE9; font-size: 12px; }
+#ws-cameras .lcam-cell .lcam-mode { color: #F2EEE9; }
+#ws-cameras .lcam-cell .lcam-note { color: var(--cm-well-text); }
+#ws-cameras .lcam-cell .lcam-note:empty { display: none; }
+#ws-cameras .lcam-cell .lcam-buttons { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: flex; gap: 6px; }
+#ws-cameras .lcam-cell .lcam-buttons .lc-button { min-height: 30px; padding: 0 10px; border-radius: 10px; background: var(--cm-well-chip); font-size: 12px; }
+#ws-cameras .lcam-cell .lcam-buttons .lc-button:hover:not(:disabled) { background: #FFFFFF; }
+#ws-cameras .lcam-cell .lcam-buttons .lc-button.lcam-on, #ws-cameras .lcam-cell .lcam-buttons .lc-button.lcam-on:hover { background: var(--cm-action); color: var(--cm-on-action); }
+#ws-cameras .lcam-cell .lcam-colorbar { top: 76px; bottom: 48px; border-radius: 10px; background: var(--cm-well-scrim); }
+#ws-cameras .lcam-mode-large .lcam-big .lcam-colorbar { top: 104px; }
+#ws-cameras .lcam-cell .lcam-cb-label { font-size: 12px; }
+#ws-cameras .lcam-cell .lcam-cb-bar { border-radius: 6px; }
+/* Rail tiles: name and state only; a click puts the view in the large place. */
+#ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) :is(.lcam-buttons, .lcam-meta, .lcam-readings, .lcam-colorbar) { display: none; }
+#ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) :is(.lcam-names, .lcam-badge) { min-height: 24px; padding: 0 8px; font-size: 12px; }
+
+/* Thermal settings card: opens on demand over the wall, never as a column. */
+#ws-cameras .lcam-card { position: absolute; z-index: 10; right: 8px; bottom: 48px; width: min(440px, calc(100vw - 48px)); max-height: calc(100vh - var(--lc-top, 113px) - 40px); overflow: auto;
+  display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 16px; border-radius: 20px; background: var(--cm-card); box-shadow: var(--cm-lift); }
+/* Beside the thermal tile, so the view stays visible while you change its display. */
+#ws-cameras .lcam-mode-wall .lcam-card, #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) .lcam-card { right: calc(100% + 12px); bottom: 0; }
+/* In the wall the card covers the next tile only, also in a narrow window. */
+#ws-cameras .lcam-mode-wall .lcam-card { width: min(440px, calc(100% + 8px)); }
+#ws-cameras .lcam-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+#ws-cameras .lcam-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 38px; font-size: 13px; }
+#ws-cameras .lcam-label { flex: 0 0 104px; font-size: 13px; font-weight: 700; }
+#ws-cameras .lcam-card .lcam-indent { margin: -6px 0 2px 112px; }
+#ws-cameras .lcam-select, #ws-cameras .lcam-input { min-height: 34px; padding: 0 10px; border: 1px solid var(--cm-edge); border-radius: 10px; background: var(--cm-card); color: var(--cm-text); font: inherit; font-size: 13px; }
+#ws-cameras .lcam-select { min-width: 160px; }
+#ws-cameras .lcam-input { width: 76px; text-align: right; font-variant-numeric: tabular-nums; appearance: textfield; -moz-appearance: textfield; }
+#ws-cameras .lcam-input::-webkit-inner-spin-button, #ws-cameras .lcam-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+#ws-cameras .lcam-input:disabled { color: var(--cm-count); }
+#ws-cameras .lcam-rule { height: 1px; margin: 4px 0; background: var(--cm-line); }
+#ws-cameras .lcam-card .lcam-note, #ws-cameras .lcam-drawbar .lcam-note { color: var(--cm-text-2); font-size: 13px; }
+#ws-cameras .lcam-card .lc-confirm { gap: 8px; padding: 10px 12px; border: 0; border-radius: 16px; background: var(--cm-surface); box-shadow: inset 0 0 0 1px var(--cm-edge); }
+/* Region drawing: the bar on the thermal tile holds Save and Cancel while the view stays visible. */
+#ws-cameras .lcam-drawbar { position: absolute; left: 8px; right: 8px; bottom: 48px; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 16px; background: var(--cm-card); box-shadow: var(--cm-lift); }
+
+@media (max-width: 1100px) {
+  #ws-cameras .lcam-wall { height: auto; min-height: 0; }
+  #ws-cameras .lcam-mode-wall { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; }
+  #ws-cameras .lcam-mode-wall .lcam-cell { aspect-ratio: 4 / 3; }
+  #ws-cameras .lcam-mode-large { grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: auto auto; }
+  #ws-cameras .lcam-mode-large .lcam-big { grid-column: 1 / -1; grid-row: 1; aspect-ratio: 16 / 10; }
+  #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) { grid-column: auto; grid-row: 2; aspect-ratio: 4 / 3; }
+  #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) .lcam-card { right: 0; bottom: calc(100% + 8px); }
+}
+@media (max-width: 720px) {
+  #ws-cameras .lcam-mode-wall { grid-template-columns: minmax(0, 1fr); }
+  #ws-cameras .lcam-mode-large { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) { grid-row: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #ws-cameras *, #ws-cameras *::before, #ws-cameras *::after { transition: none !important; }
+}
 
 .lcam-tile { margin: 0; display: flex; flex-direction: column; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .lcam-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; padding: 10px 12px; }
@@ -43,13 +156,3 @@ img.lcam-media, video.lcam-media { image-rendering: auto; }
 .lcam-buttons { display: flex; gap: 8px; }
 .lcam-small { padding: 0 12px; font-size: 13px; }
 .lcam-large .lcam-stage { aspect-ratio: 16 / 10; }
-
-@media (max-width: 1100px) {
-  #ws-cameras .lcam-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #ws-cameras .lcam-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 720px) {
-  #ws-cameras .lcam-grid { grid-template-columns: minmax(0, 1fr); }
-  #ws-cameras .lcam-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #ws-cameras .lcam-side { position: static; }
-}

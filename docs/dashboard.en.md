@@ -91,20 +91,21 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 
 ### Cameras workspace
 
-- The grid shows 6 views: camera1 to camera4, the thermal camera and the microscope (Toupcam). Each view shows its name and role, LIVE, STALE or OFFLINE with the frame age, its mode with the measured frame rate, and **Snapshot** and **Expand**. **Focus · 1 + strip** shows 1 large view and a strip of the others.
+- **All views** shows 6 views as a wall that fits the window: camera1 to camera4, the thermal camera and the microscope (Toupcam). Inside its frame, each view shows its name and role, LIVE, STALE or OFFLINE with the frame age, its mode with the measured frame rate, and **Snapshot** and **Expand**.
+- **Large view** shows 1 view large and a rail of the other 5. **Expand** or a click on a rail view puts that view in the large place. **All views** goes back to the wall.
 - The measured frame rate updates about every 1 s, for example `640×480 · 29.8 fps`. An H.264 view counts the frames that the browser shows. An MJPEG view shows the frames per second that the camera preview or the microscope relay sent to each viewer in the last 2 s. With several viewers of the same view, it shows their mean. The thermal view counts the new frames that it gets. Without a new measurement, the view shows no frame rate.
 - camera1 to camera4 and the microscope load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate and stays near the newest frame. A view of camera1 to camera4 wider than 640 uses at most 4 Mbit/s, a smaller one at most 2 Mbit/s, and the microscope view at most 3 Mbit/s. This keeps room on the VPN link for control traffic.
-- If the browser or the host cannot play H.264, camera1 to camera4 load MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Grid and strip views get at most 3 frames a second, and a large view at most 6.
+- If the browser or the host cannot play H.264, camera1 to camera4 load MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Wall and rail views get at most 3 frames a second, and the large view at most 6.
 - **Snapshot** on camera1 to camera4 downloads a `4000x3000` JPEG from `/camera/<view>.full.jpg`. The 4 cameras share 1 USB 2 link, so go2rtc captures only that camera during the still. The previews and readers of the other cameras stop for approximately 3 seconds and then recover automatically. Only 1 still runs at a time. Other requests wait.
 - The console relays the thermal frame, the microscope MJPEG fallback stream and the microscope **Snapshot**. If the microscope view cannot play H.264, it loads the relayed MJPEG. The microscope **Snapshot** downloads the Toupcam frame as a lossless PNG at full size, `2592x1944`. It needs no control.
 - While a microscope job runs, **Snapshot** on camera3 returns `409`, because an objective switch reads the side stream.
-- The microscope relay sends only the newest complete frame. Grid and strip views get at most 10 frames a second, and a large view at most 30. It opens at most 2 microscope streams.
+- The microscope relay sends only the newest complete frame. Wall and rail views get at most 10 frames a second, and the large view at most 30. It opens at most 2 microscope streams.
 - The streams stop when you leave the workspace, hide the browser tab or close the page.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.
-- When the thermal camera is selected, the side panel gives the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. You can export CSV, Raw + JSON and PNG.
-- On the thermal view, the pointer reads the temperature of 1 sensor pixel. The text below the view shows the pixel and its temperature. Click to pin the pixel. Click again to unpin it.
-- When the thermal service has no camera connection, the side panel shows **Connect camera**. **Calibrate shutter** needs a confirmation. These 2 commands are `any_client` commands and need no control.
-- **Draw region** drags the `crucible` region on the thermal view and shows its bounds. **Save region** is available only when the thermal service lists `set_region` in `api/describe`, and it needs a confirmation in the page. Otherwise, put the bounds in `rois.toml`.
+- The thermal view shows its maximum, minimum, center and mean temperatures. **Settings** on the thermal view opens the thermal settings beside it: the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. The settings also have the crucible region, the shutter calibration and the export of CSV, Raw + JSON and PNG. Esc, **Close** or a press outside the settings closes them.
+- On the thermal view, the pointer reads the temperature of 1 sensor pixel. The text at the bottom of the view shows the pixel and its temperature. Click to pin the pixel. Click again to unpin it.
+- When the thermal service has no camera connection, the thermal settings show **Connect camera**. **Calibrate shutter…** needs a confirmation. These 2 commands are `any_client` commands and need no control.
+- **Draw region** closes the settings. Drag the `crucible` region on the thermal view. A bar on the view shows the bounds, **Save region** and **Cancel**. **Save region** is available only when the thermal service lists `set_region` in `api/describe`, and it needs a confirmation in the page. Otherwise, put the bounds in `rois.toml`.
 - Set the camera devices on the host as described in [Cameras](olares.en.md#cameras).
 
 ### Furnace + microscope workspace

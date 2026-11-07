@@ -26,6 +26,7 @@ ROBOT = [
     "test_control_mode.py",
     "test_mg400_sim.py",
     "test_gripper_*.py",
+    "test_suction.py",
     "test_console*.py",
     "test_orchestrator_clients.py",
     "test_orchestrator_rehearsal.py",

@@ -24,6 +24,7 @@ MUTATIONS = (
     "EnableRobot(",
     "ResetRobot(",
     "DisableRobot(",
+    "DOExecute(",
 )
 
 MOTION = ("MoveJog(", "MovL(", "JointMovJ(", "EnableRobot(", "ResetRobot(", "DisableRobot(")
@@ -211,6 +212,12 @@ class Controller:
         if text == "DisableRobot()":
             self._sample = replace(sample, mode=4)
             self._jog = None
+            return ""
+        if text.startswith("DOExecute("):
+            index, status = (int(value) for value in text[len("DOExecute(") : -1].split(","))
+            assert 1 <= index <= 16 and status in (0, 1), text
+            outputs = (sample.digital_outputs or 0) & ~(1 << (index - 1)) | status << (index - 1)
+            self._sample = replace(sample, digital_outputs=outputs)
             return ""
         if text == "EnableRobot()":
             self._sample = replace(sample, mode=5)

@@ -55,8 +55,20 @@ def test_decodes_controller_state_and_preserves_raw_timestamp():
         timestamp=12345,
         error_status=True,
         speed_scaling_raw=0.0,
+        digital_inputs=0,
+        digital_outputs=0,
+        load_kg=0.0,
     )
     assert decode_feedback(frame(timestamp=0)).timestamp == 0
+
+
+def test_decodes_base_io_bits_and_payload():
+    data = bytearray(frame())
+    struct.pack_into("<Q", data, 8, 0b1)
+    struct.pack_into("<Q", data, 16, 0b10)
+    struct.pack_into("<d", data, 1168, 0.25)
+    sample = decode_feedback(bytes(data))
+    assert (sample.digital_inputs, sample.digital_outputs, sample.load_kg) == (1, 2, 0.25)
 
 
 @pytest.mark.parametrize("value", [1.0, 68.0, 0.125])

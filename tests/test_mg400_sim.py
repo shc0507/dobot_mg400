@@ -41,7 +41,7 @@ def loopback_host():
 
 
 def test_feedback_wire_format_preserves_controller_fields():
-    sample = Feedback((1.25, -2.5, 3.75, 4.0), 4, 1234, True, 37.0)
+    sample = Feedback((1.25, -2.5, 3.75, 4.0), 4, 1234, True, 37.0, 0b1, 0b10, 0.2)
     assert decode_feedback(feedback_frame(sample)) == sample
 
 

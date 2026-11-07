@@ -1228,6 +1228,7 @@ def test_contract_description_preserves_legacy_commands_and_parameters(rig):
         "execute",
         "grip",
         "initialize_gripper",
+        "vacuum",
         "keyboard",
         "clear_alarm",
     }

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from .config import finite_number
 from .robot_config import load_robot_host
+from .suction import ACTIONS as VACUUM_ACTIONS
 from .web_control import RobotPanelState
 from .web_gripper import WebGripper
 
@@ -21,6 +22,7 @@ HELP = (
     "home           Move J1-J4 to zero degrees.",
     "grip 0..1000   Move only the gripper (0 closed, 1000 open).",
     "grip-init      Initialize the gripper. The jaws open. Do not hold an object.",
+    "vacuum suck | release | off   Suction cup: suck, blow briefly to release, or all off.",
     "Ctrl+C: stop arm | Ctrl+D: quit | Up/Down: history | Left/Right: edit",
     "Stop is controlled stopping, not a physical emergency stop. It does not stop the gripper.",
 )
@@ -55,11 +57,25 @@ def parse_command(line):
         if not position.is_integer() or not 0 <= position <= 1000:
             raise ValueError("Use grip with an integer from 0 to 1000")
         return {"action": "grip", "position": int(position)}
+    if name == "vacuum" and len(values) == 1:
+        if values[0] not in VACUUM_ACTIONS:
+            raise ValueError("Use vacuum suck, vacuum release or vacuum off")
+        return {"action": "vacuum", "operation": values[0]}
     if name in {"help", "status", "quit"} and not values:
         return name
     if words == ["quit", "--force"]:
         return "force_quit"
     raise ValueError("Unknown command or invalid arguments. Enter help for command syntax.")
+
+
+def vacuum_text(vacuum):
+    """Show the measured DO levels; -- when feedback is absent."""
+    vacuum = vacuum or {}
+
+    def level(value):
+        return "--" if value is None else "on" if value else "off"
+
+    return "  ".join(f"{name}={level(vacuum.get(name))}" for name in ("suck", "blow", "held"))
 
 
 def status_lines(state):
@@ -82,6 +98,7 @@ def status_lines(state):
         "Joints (deg): " + values(("J1", "J2", "J3", "J4"), state["joints"]),
         "Flange (mm/deg): " + values(("X", "Y", "Z", "R"), state["actual"][:4]),
         "Gripper (0..1000): " + values(("position",), state["actual"][4:]),
+        "Vacuum: " + vacuum_text(state.get("vacuum") if fresh else None),
         state["gripper_message"],
     ]
 

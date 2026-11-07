@@ -22,6 +22,10 @@ class Feedback:
     timestamp: int
     error_status: bool
     speed_scaling_raw: float | None = None
+    # Base I/O bit fields: bit 0 = DI1 or DO1. Load is the controller payload in kg.
+    digital_inputs: int | None = None
+    digital_outputs: int | None = None
+    load_kg: float | None = None
 
 
 def decode_feedback(data: bytes) -> Feedback:
@@ -44,6 +48,9 @@ def decode_feedback(data: bytes) -> Feedback:
         timestamp=struct.unpack_from("<Q", data, 32)[0],
         error_status=bool(data[1029]),
         speed_scaling_raw=struct.unpack_from("<d", data, 64)[0],
+        digital_inputs=struct.unpack_from("<Q", data, 8)[0],
+        digital_outputs=struct.unpack_from("<Q", data, 16)[0],
+        load_kg=struct.unpack_from("<d", data, 1168)[0],
     )
 
 

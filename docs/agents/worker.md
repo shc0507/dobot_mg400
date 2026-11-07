@@ -16,7 +16,7 @@ You are one worker. The coordinator dispatched you with one task: an issue numbe
 - CI: right after push, start `gh pr checks <n> --watch --interval 20` in the background (`run_in_background`) and do the docs, screenshots and cleanup while it runs. Merge yourself when CI is green and the device check passed: `gh pr merge <n> --merge`.
 - Deploy: follow `docs/deploy.md`. Keep `web` running while the owner may use the arm. Poll readiness with an until-loop on `curl` or `systemctl`, never a fixed sleep.
 - Look at the console yourself with `scripts/console_shots.py` (one call for pages, EN and 中文, 2 viewports; it sends only GET requests). Read only the PNGs you need.
-  - Live: `uv run python scripts/console_shots.py shoot --pages motion --out <dir>`.
+  - Live: `uv run python scripts/console_shots.py shoot --url http://100.64.0.1:8080/lab/ --pages motion --out <dir>`. `LAB_CONSOLE_URL` can replace `--url`.
   - Your branch: add `--demo`; the script starts and stops a local demo server.
   - Before/after (before on top): `compare http://100.64.0.1:8080/lab/ --demo --out <dir>`, or `compare <before-dir> <after-dir> --out <dir>`.
   - A state (held key, open dialog): `--state NAME=FILE.js`, a script that changes the page after load. `--clip <selector>` captures 1 element.

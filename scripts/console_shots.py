@@ -2,8 +2,9 @@
 
 Examples (run from the repository root):
 
-    # All 4 pages, EN and 中文, 1440x900 and 1280x800, from the live console.
-    uv run python scripts/console_shots.py shoot --out /tmp/shots
+    # All 4 pages, EN and 中文, 1440x900 and 1280x800, from the console at
+    # --url, or at $LAB_CONSOLE_URL when --url is not given.
+    uv run python scripts/console_shots.py shoot --url "$LAB_CONSOLE_URL" --out /tmp/shots
 
     # Motion only, from a local demo server that the script starts and stops.
     uv run python scripts/console_shots.py shoot --demo --pages motion --out /tmp/shots
@@ -13,7 +14,7 @@ Examples (run from the repository root):
         --out /tmp/shots
 
     # Before/after composites (before on top) from 2 URLs or 2 directories of shots.
-    uv run python scripts/console_shots.py compare http://100.64.0.1:8080/lab/ --demo --out /tmp/cmp
+    uv run python scripts/console_shots.py compare "$LAB_CONSOLE_URL" --demo --out /tmp/cmp
     uv run python scripts/console_shots.py compare /tmp/before /tmp/after --out /tmp/cmp
 
 File names are ``<page>-<lang>-<width>x<height>[-<state>].png``. Composites are
@@ -37,7 +38,6 @@ import time
 import urllib.request
 from pathlib import Path
 
-DEFAULT_URL = "http://100.64.0.1:8080/lab/"
 PAGES = {"overview": "overview", "motion": "motion", "cameras": "cameras", "process": "process"}
 LANGS = ("en", "zh")
 VIEWPORTS = ("1440x900", "1280x800")
@@ -281,7 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     shoot = sub.add_parser("shoot", parents=[common], help="Capture pages")
-    shoot.add_argument("--url", default=DEFAULT_URL)
+    shoot.add_argument("--url", default=os.environ.get("LAB_CONSOLE_URL"), help="Console URL")
     shoot.add_argument(
         "--demo", action="store_true", help="Start a local demo server instead of --url"
     )
@@ -299,6 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.command == "shoot":
+        if not args.demo and not args.url:
+            sys.exit("Give --url, set LAB_CONSOLE_URL, or use --demo.")
         sys.exit(shoot_into(args, None if args.demo else args.url, args.out))
     if (args.after is None) != args.demo:
         sys.exit("Give AFTER or --demo, not both.")

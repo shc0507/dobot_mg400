@@ -9,10 +9,11 @@ shots = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(shots)
 
 
-def test_defaults_cover_every_page_language_and_viewport(tmp_path):
+def test_defaults_cover_every_page_language_and_viewport(tmp_path, monkeypatch):
+    monkeypatch.setenv("LAB_CONSOLE_URL", "http://console.test/lab/")
     args = shots.build_parser().parse_args(["shoot", "--out", str(tmp_path)])
     plan = shots.plan_shots(args.pages, args.langs, args.viewports, args.state, tmp_path)
-    assert args.url == "http://100.64.0.1:8080/lab/"
+    assert args.url == "http://console.test/lab/"
     assert len(plan) == 4 * 2 * 2
     names = {Path(item["out"]).name for item in plan}
     assert {

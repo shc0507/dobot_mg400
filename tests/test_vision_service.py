@@ -739,11 +739,15 @@ def test_only_a_failed_inference_is_an_event(make_service):
     service = make_service(localizer_factory=lambda: model)
     client = create_app(service).test_client()
     assert client.get("/api/detect?camera=1").status_code == 200
-    assert not [item for item in service.events.since(0)["events"] if "inference" in item["message"]]
+
+    def inference_events():
+        events = service.events.since(0)["events"]
+        return [(e["level"], e["message"]) for e in events if "inference" in e["message"]]
+
+    assert inference_events() == []
     model.predict = Mock(side_effect=RuntimeError("model broke"))
     assert_error(client.get("/api/detect?camera=1"), 503)
-    rows = [item for item in service.events.since(0)["events"] if "inference" in item["message"]]
-    assert [(item["level"], item["message"]) for item in rows] == [("error", "vision inference failed")]
+    assert inference_events() == [("error", "vision inference failed")]
 
 
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), "x" * (256 * 1024)])

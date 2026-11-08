@@ -7,7 +7,7 @@ import signal
 from waitress import create_server
 
 from .app import create_app, normalize_base_path
-from .controller import GRIPPER_CONVERTER, MotorController, is_gripper_converter
+from .controller import MotorController
 
 
 def listen_urls(server):
@@ -41,7 +41,7 @@ def main(argv=None):
     parser.add_argument(
         "--serial",
         help="Offer only this Arduino device, for example /dev/serial/by-id/... "
-        "(default: MG400_STAGE_SERIAL, or every serial port except the gripper converter)",
+        "(default: MG400_STAGE_SERIAL, or every serial port)",
     )
     parser.add_argument(
         "--config",
@@ -66,14 +66,9 @@ def main(argv=None):
         if not 1 <= port <= 65535:
             parser.error("MG400_STAGE_PORT must be a whole number between 1 and 65535")
     if args.serial is not None:
-        serial, source = args.serial or None, "--serial"
+        serial = args.serial or None
     else:
-        serial, source = os.environ.get("MG400_STAGE_SERIAL") or None, "MG400_STAGE_SERIAL"
-    if serial and not args.demo and is_gripper_converter(serial):
-        parser.error(
-            f"{source} points to the gripper USB converter ({GRIPPER_CONVERTER[2]}). "
-            "Set it to the Arduino serial device"
-        )
+        serial = os.environ.get("MG400_STAGE_SERIAL") or None
     logging.basicConfig(level=logging.INFO)
     # Do not open the port here: opening it resets the Arduino.
     config = (

@@ -34,7 +34,6 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-badge { padding: 2px 8px; border-radius: 999px; background: var(--mo-action-soft); color: var(--mo-action-hover); font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
 #ws-motion .mo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 #ws-motion .mo-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-#ws-motion .mo-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 #ws-motion .mo-label { font-size: 14px; font-weight: 700; }
 #ws-motion .mo-muted { font-size: 13px; color: var(--mo-text-2); }
 #ws-motion .mo-message { font-size: 13px; color: var(--mo-text-2); overflow-wrap: anywhere; }

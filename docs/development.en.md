@@ -16,7 +16,7 @@ Find the section for your change:
 | Find entry points and modules | [Code structure](#code-structure) |
 | Write a robot service client | [Robot service interface](#robot-service-interface) |
 | Write a stage service client | [Stage service API](#stage-service-api) |
-| Change joint limits, motion parameters, or the gripper protocol | [Physical robot control reference](#physical-robot-control-reference) |
+| Change joint limits, motion parameters, or the suction outputs | [Physical robot control reference](#physical-robot-control-reference) |
 
 ## Development checks
 
@@ -52,20 +52,19 @@ To keep other packages that you installed manually, also add `--inexact`.
 
 ## Offline robot simulator
 
-`mg400.sim` simulates the controller and gripper on a loopback address.
+`mg400.sim` simulates the controller on a loopback address.
 It accepts only numeric loopback addresses. The default is `127.0.0.2`.
 The controller ports are `29999`, `30003`, and `30004`. The feedback interval is `8 ms`.
-At startup, the robot is disabled and the gripper is initialized.
+At startup, the robot is disabled.
 
 Run these commands in the project root:
 
 ```bash
 sim_dir=$(mktemp -d)
-uv run python -m mg400.sim --host 127.0.0.2 --gripper-feedback "$sim_dir/gripper.json" &
+uv run python -m mg400.sim --host 127.0.0.2 &
 sim_pid=$!
 MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/server.py \
-  --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2 \
-  --gripper-feedback "$sim_dir/gripper.json"
+  --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2
 kill "$sim_pid"
 wait "$sim_pid"
 ```
@@ -75,14 +74,12 @@ In another terminal, use the [Python client](#python-client) to connect to `http
 1. Run `start_sync`. Wait for feedback to update.
 2. Run `enable`. Wait for the robot to become enabled.
 3. Send the target coordinates with `execute`.
-4. Send a gripper target with `grip`. Make sure that the feedback position updates.
-5. Run `stop_sync`. Wait for stop confirmation, then run `disable`.
+4. Run `stop_sync`. Wait for stop confirmation, then run `disable`.
 
 Press `Ctrl+C` in the terminal to stop the robot service.
 The next two commands terminate this simulator process.
-Use a new directory for each startup. The simulator refuses to overwrite existing feedback files, command files, or command locks.
 
-The simulator reaches joint and Cartesian targets immediately. It does not calculate real kinematics, paths, collisions, or gripping force.
+The simulator reaches joint and Cartesian targets immediately. It does not calculate real kinematics, paths, or collisions.
 Inverse kinematics returns the current joint values. `J1` jogging changes joint feedback. Other jogging changes only the motion mode.
 These limitations apply only to the simulator. Production control code and stop confirmation rules remain unchanged.
 Offline rehearsal cannot replace hardware acceptance.
@@ -97,10 +94,10 @@ Offline rehearsal cannot replace hardware acceptance.
 | `config/systemd/` | systemd definitions for all services, with configuration from `/etc/mg400/mg400.env` |
 | `deploy/` | The `install.py` installer, the `mg400ctl` command for routine operations, and configuration examples |
 | `src/mg400/` | Backend, control protocol, and feedback processing |
-| `src/mg400/sim/` | Loopback controller and file-based gripper simulator, with a shared test model |
+| `src/mg400/sim/` | Loopback controller simulator, with a shared test model |
 | `src/stage_controller/` | Stage service: Flask interface and serial protocol |
 | `firmware/three-motor-demo/` | Stage Arduino firmware and wiring instructions in English |
-| `scripts/` | Camera preview, control mode switching, and USB collection |
+| `scripts/` | Camera preview, control mode switching, and the interactive terminal entry point |
 | `examples/` | Single-file tutorials and notebooks |
 | `tests/` | Python and JavaScript offline tests |
 | `docs/` | Operating, deployment, and development guides. `docs/agents/` contains agent procedures |
@@ -112,16 +109,16 @@ Open the [layout editor](../apps/layout-studio/index.html) in a browser to edit 
 It reuses the connection lock, feedback checks, and action execution from `web_control.py`. It does not start an HTTP service.
 
 `apps/control_panel/server.py` is the robot service. It provides the HTTP interface and WebSocket interface, without a web page.
-The Motion workspace of the Lab Console controls the robot and gripper through this service.
+The Motion workspace of the Lab Console controls the robot and suction cup through this service.
 `websocket.py` uses the standard library for WebSocket frame encoding and decoding, and for connection writer threads.
 See [Robot service interface](#robot-service-interface) for interface details.
 
 `web_control.py` dispatches WebSocket key jogging. Robot press-and-hold control reuses `keyboard_jog.py`.
-`web_keyboard.py` validates key input and executes small gripper steps.
+`web_keyboard.py` validates key input. It maps Z to suck and X to release.
 
 The robot service controls the robot through the TCP protocol.
 `controller_protocol.py` parses command replies. `feedback.py` reads joint feedback.
-`joint_control.py` executes motion with limits. `gripper_feedback.py` processes gripper feedback.
+`joint_control.py` executes motion with limits and the suction outputs.
 For TCP protocol references and completion criteria, see [Physical robot control interface](hardware.en.md).
 There is currently no ROS 2 backend or visual perception.
 
@@ -188,9 +185,7 @@ The command body is `{"action": "<命令>", ...}`, where the placeholder means t
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
 | `home` | None | Move J1–J4 to 0° |
-| `execute` | `targets`: `x`, `y`, `z`, `r`, and optional `grip`, plus optional `speed` | Move linearly to the flange coordinates, then execute the gripper target after arrival |
-| `grip` | `position`: an integer from 0–1000 | Set the gripper opening |
-| `initialize_gripper` | None | Initialize the gripper. This opens the fingers |
+| `execute` | `targets`: `x`, `y`, `z`, `r`, plus optional `speed` | Move linearly to the flange coordinates |
 | `vacuum` | `operation`: `suck`, `release` or `off` | Control the vacuum suction cup. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
 | `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
@@ -236,11 +231,10 @@ A successful response is 200 with `{"stop": "confirmed", "state": {...}}`.
 
 | `stop` | Meaning |
 | --- | --- |
-| `confirmed` | Robot stop is confirmed, and the gripper has no active command or lock |
-| `pending` | The wait ended while a stop worker or gripper command was still active |
-| `unconfirmed` | Robot stop is unconfirmed, or the gripper is locked |
+| `confirmed` | Robot stop is confirmed |
+| `pending` | The wait ended while a stop worker was still active |
+| `unconfirmed` | Robot stop is unconfirmed |
 
-Stopping the robot does not interrupt an active gripper command.
 A later successful stop cannot clear an earlier unconfirmed stop.
 The response preserves the lock state. It does not retry motion automatically.
 
@@ -249,7 +243,6 @@ After a command completes or is rejected, it contains `id`, `action`, `client`, 
 `finished_at` is a Unix timestamp in seconds.
 `result` is `ok`, `failed`, `rejected`, or `stopped`.
 An asynchronous command updates its result after its worker completes.
-Stop results also wait for active gripper commands to finish. A gripper lock produces `failed`.
 A rejection from another client does not hide the final result of an active command.
 An older canceled worker cannot overwrite a newer completed stop.
 
@@ -258,7 +251,7 @@ Each event contains `seq`, `ts_unix`, `level`, `message`, and `fields`.
 `since` defaults to 0 and must be a nonnegative integer.
 The response contains only events with sequences greater than `since`. Use `next` for the next query.
 The service retains the latest 1000 events. Sequence numbering restarts with the service.
-Events correspond to existing state messages, locks, alarms, keyboard close reasons, and gripper lock messages. They add no journal lines.
+Events correspond to existing state messages, locks, alarms, and keyboard close reasons. They add no journal lines.
 
 ### Python client
 
@@ -438,7 +431,7 @@ The Lab Console also uses these 4 routes, with the same prefix as the contract:
 
 | Interface | Body | Purpose |
 | --- | --- | --- |
-| `GET /contract/api/ports` | None | List available serial ports, excluding the gripper converter. When `MG400_STAGE_SERIAL` is set, list only that device |
+| `GET /contract/api/ports` | None | List available serial ports. When `MG400_STAGE_SERIAL` is set, list only that device |
 | `POST /contract/api/connect` | `{"port": "..."}` | Connect to a serial port listed by `api/ports`. Demo mode accepts only `DEMO`. The caller must hold the stage lease |
 | `GET /contract/api/motors/<motor>/reference` | None | Read the camera image and the marker's pixel offset |
 | `POST /contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | Save the current marker position as the reference of that axis. The caller must hold the stage lease |
@@ -465,7 +458,7 @@ On rejection, the operator routes return the body `{"error": "..."}`, with these
 
 ## Physical robot control reference
 
-Use this section when you change physical robot motion or gripper interfaces.
+Use this section when you change physical robot motion or suction interfaces.
 For deployment configuration, see [Host deployment](deploy.en.md).
 
 ### Controller joint limits
@@ -540,59 +533,3 @@ The `operation` of the `vacuum` command is one of these values:
 - The constants are in `src/mg400/suction.py`: `PRESSURE_DO`, `VACUUM_DO`, `BLOW_SECONDS` and `GRIP_DI`.
 - The offline simulator answers `DOExecute` and reports the DO bits in its feedback frames.
 - For the wiring and the feedback fields, see [Vacuum suction cup](hardware.en.md#vacuum-suction-cup).
-
-### USB gripper protocol
-
-Gripper position commands do not themselves enable or move the robot.
-Initialization reuses the USB–RS485 collection connection. It does not open another serial port.
-The connection uses slave 1, 115200, and 8N1. Initialization writes `0x0100=1` once.
-The program waits for `0x0200=1`, an in-position state, and a valid measured position.
-
-Position commands are written to the `.command.json` file beside the feedback file.
-The collector executes only requests that match the current session and are no more than 0.75 seconds old. Each request executes once.
-Position commands require the collector to report `control.protocol=2` or `3`.
-Initialization requires `control.protocol=3`. The request uses `operation=initialize` and contains no position target.
-Feedback for completed initialization has `operation=initialize`, `target=null`, and `ack=true`.
-
-The command file's `deadline_monotonic` specifies a deadline on the monotonic clock.
-The monotonic clock measures elapsed time and does not change with system date adjustments.
-The robot service and collector must run on the same host and share the same monotonic clock domain.
-Position commands do not support transfer between hosts or time namespaces with clock offsets.
-File preparation, collector receipt, register operations, and in-position confirmation share one command deadline.
-The time limit is 5 seconds for position commands and 15 seconds for initialization.
-The robot service starts timing before it prepares the command file. The collector must not restart the timer.
-
-The collector checks the deadline before each serial request, including mode and target writes.
-If a request has already been sent, the collector still receives and validates the complete reply with the original 1-second reply timeout.
-If the deadline has then expired, the collector stops this command, retains the command lock, and sends no further command requests.
-A timeout does not withdraw a target already sent or guarantee that gripper motion stops.
-
-Before transmission, the command is recorded in `.command-lock.json` beside the feedback file.
-The collector deletes this record after successful write acknowledgment and target register readback before the deadline.
-If the record still exists at restart, the collector stays locked and only reads feedback.
-
-An actual position of 1000 means fully open. At 0, each finger has moved inward by 5 mm.
-Duplicate packets, old sequence numbers, and packets from ended sessions are ignored. They do not clear fresh samples or extend their validity.
-Repeated reads of the same file do not extend measurement validity.
-
-A value of `3` in the gripper status register `0x0201` means that the object fell from the gripper.
-
-Robot state includes `gripper.outcome` and `gripper.outcome_at` beside the existing gripper fields.
-`outcome` is `null`, `arrived`, `contact`, or `dropped`.
-`outcome_at` is the Unix timestamp, in seconds, when the adapter observed that outcome. It is `null` when no outcome is available.
-
-A new gripper operation clears both fields before publication. The robot state also hides the previous outcome while that operation is active.
-Initialization does not produce a grasp outcome.
-
-`arrived` retains the measured target-arrival result. `contact` retains the confirmed contact result.
-After `contact`, a fresh initialized sample with state `3` changes the observed outcome to `dropped`.
-The sample must have a newer sequence in the same collector session as the contact result.
-A collector restart, stale sample, or repeated sample cannot create that transition.
-
-The existing collector poll observes drops between operations and after a motion job.
-Each new drop produces 1 warning event with `outcome` and `outcome_at` fields. Repeated polls do not change its timestamp or repeat the event.
-
-The outcome and timestamp remain historical metadata when feedback becomes unavailable. They do not prove a current grasp.
-`WebGripper.last_outcome` retains the last command's `arrived` or `contact` result, even after the observed outcome becomes `dropped`.
-This keeps keyboard stepping stopped after contact. Drop observation sends no command and does not clear a lock.
-For status definitions, see [PGEA User Manual, Table 2.9](https://www.manualslib.com/manual/4358849/Dh-Robotics-Technology-Pgea-Series.html?page=17).

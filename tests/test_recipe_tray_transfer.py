@@ -52,7 +52,7 @@ class TrayRobot(Robot):
 
     def __init__(self, failure=None):
         super().__init__()
-        self.value.update(demo=True, actual=[*DEMO_TRAY_INITIAL_FLANGE, 1000])
+        self.value.update(demo=True, actual=list(DEMO_TRAY_INITIAL_FLANGE))
         self.failure = failure
         self.empty = failure == "empty-grasp"
         # The grip-signal failures need a vacuum switch: `held` reports them.

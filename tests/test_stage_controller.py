@@ -3,11 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from stage_helpers import Clock, RecordingTransport, serial_port
 
-from stage_controller.controller import (
-    GRIPPER_CONVERTER,
-    MotorController,
-    is_gripper_converter,
-)
+from stage_controller.controller import MotorController
 from stage_controller.protocol import CommandRejected, ControllerError, LinkError
 
 
@@ -162,32 +158,6 @@ def test_requires_connection_and_a_current_port():
         controller.connect("COM999")
 
 
-def test_port_list_never_offers_the_gripper_converter(stage_ports, tmp_path):
-    tty = tmp_path / "ttyUSB0"
-    tty.touch()
-    link = tmp_path / "usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0"
-    link.symlink_to(tty)
-    stage_ports.extend(
-        [
-            serial_port(str(tty), *GRIPPER_CONVERTER, description="FT232R USB UART"),
-            # A link entry is the same device, even without its USB identity.
-            serial_port(str(link), description="FT232R USB UART"),
-            serial_port("/dev/ttyUSB1", 0x0403, 0x6001, "A10KXYZ1", "Another FTDI adapter"),
-            serial_port("/dev/ttyACM0", 0x2341, 0x0043, "ARDUINO1", "Arduino Uno"),
-        ]
-    )
-    opened = []
-    controller = MotorController(transport_factory=opened.append)
-    assert controller.ports() == [
-        {"device": "/dev/ttyACM0", "description": "Arduino Uno"},
-        {"device": "/dev/ttyUSB1", "description": "Another FTDI adapter"},
-    ]
-    for port in (str(tty), str(link)):
-        with pytest.raises(ValueError, match="no longer available"):
-            controller.connect(port)
-    assert opened == []
-
-
 @pytest.mark.parametrize("port", ["/dev/ttyACM1", "/dev/sda", "../ttyACM0", "", None, 0, []])
 def test_connect_opens_only_a_listed_port(stage_ports, port):
     stage_ports.append(serial_port("/dev/ttyACM0", description="Arduino Uno"))
@@ -257,30 +227,6 @@ def test_absent_configured_serial_offers_no_port(stage_usb, stage_ports, tmp_pat
     assert controller.ports() == []
     with pytest.raises(ValueError, match="no longer available"):
         controller.connect(stage_usb["arduino"])
-
-
-def test_configured_serial_never_offers_the_gripper_converter(stage_usb, tmp_path):
-    alias = tmp_path / "stage-arduino"
-    alias.symlink_to(tmp_path / "ttyUSB0")
-    for serial in (stage_usb["gripper"], str(alias), str(tmp_path / "ttyUSB0")):
-        opened = []
-        controller = MotorController(serial=serial, transport_factory=opened.append)
-        assert controller.ports() == []
-        with pytest.raises(ValueError, match="no longer available"):
-            controller.connect(serial)
-        assert opened == []
-
-
-def test_gripper_converter_is_found_by_usb_identity_or_by_id_name(stage_usb, tmp_path):
-    alias = tmp_path / "stage-arduino"
-    alias.symlink_to(tmp_path / "ttyUSB0")
-    assert is_gripper_converter(stage_usb["gripper"])
-    assert is_gripper_converter(str(alias))
-    assert is_gripper_converter(str(tmp_path / "ttyUSB0"))
-    # The by-id name identifies the converter also while it is unplugged.
-    assert is_gripper_converter("/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0")
-    assert not is_gripper_converter(stage_usb["arduino"])
-    assert not is_gripper_converter(str(tmp_path / "ttyACM1"))
 
 
 def test_demo_ignores_the_configured_serial(stage_usb):

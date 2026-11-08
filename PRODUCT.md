@@ -14,7 +14,7 @@ web
 
 ## Product Purpose
 
-WuLab is a lab automation stack on one host (Olares). The **WuLab Console** is the only operator web page. It controls and shows the Dobot MG400 arm and gripper, the 3-axis stage, camera1 to camera4, the thermal camera, the furnace and gas, and the microscope (Toupcam).
+WuLab is a lab automation stack on one host (Olares). The **WuLab Console** is the only operator web page. It controls and shows the Dobot MG400 arm and suction cup, the 3-axis stage, camera1 to camera4, the thermal camera, the furnace and gas, and the microscope (Toupcam).
 
 - **Current stage:** a test bench. The owner brings each device up and tests it freely.
 - **Next stage:** automated experiments. The robot moves a chip from a tray into the crucible, the stage carries the crucible into the furnace, the furnace heats it under gas, and the microscope images the chip through the furnace window. Each run records its steps, chip identities, samples and artifacts.

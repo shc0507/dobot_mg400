@@ -368,8 +368,7 @@ def tray_scene(tmp_path, monkeypatch):
                 "demo": True,
                 "feedback_fresh": True,
                 "busy": False,
-                "actual": [*DEMO_TRAY_INITIAL_FLANGE, 1000],
-                "gripper": {"outcome": None},
+                "actual": list(DEMO_TRAY_INITIAL_FLANGE),
             }
 
         def snapshot(self):

@@ -329,37 +329,14 @@ def test_serial_setting_limits_the_port_list(monkeypatch, capsys, stage_usb):
     ]
 
 
-def test_without_serial_setting_every_port_but_the_gripper_is_listed(
-    monkeypatch, stage_usb, tmp_path
-):
+def test_without_serial_setting_every_port_is_listed(monkeypatch, stage_usb, tmp_path):
     client = run_main(monkeypatch, [])["app"].test_client()
     devices = [port["device"] for port in client.get("/contract/api/ports").json["ports"]]
     assert devices == [str(tmp_path / "ttyACM0"), str(tmp_path / "ttyACM1")]
 
 
-@pytest.mark.parametrize("option", [False, True])
-def test_serial_setting_must_not_be_the_gripper_converter(
-    monkeypatch, capsys, stage_usb, tmp_path, option
-):
-    alias = tmp_path / "stage-arduino"
-    alias.symlink_to(tmp_path / "ttyUSB0")
-    unplugged = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0"
-    name = "--serial" if option else "MG400_STAGE_SERIAL"
-    for serial in (stage_usb["gripper"], str(alias), unplugged):
-        if option:
-            argv = ["--serial", serial]
-        else:
-            monkeypatch.setenv("MG400_STAGE_SERIAL", serial)
-            argv = []
-        with pytest.raises(SystemExit) as exit_info:
-            run_main(monkeypatch, argv)
-        assert exit_info.value.code == 2
-        message = f"{name} points to the gripper USB converter (BG02Q5TN)"
-        assert message in capsys.readouterr().err
-
-
 def test_demo_ignores_the_serial_setting(monkeypatch, stage_usb):
-    monkeypatch.setenv("MG400_STAGE_SERIAL", stage_usb["gripper"])
+    monkeypatch.setenv("MG400_STAGE_SERIAL", stage_usb["other"])
     client = run_main(monkeypatch, ["--demo"])["app"].test_client()
     assert client.get("/contract/api/ports").json["ports"][0]["device"] == "DEMO"
 

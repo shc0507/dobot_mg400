@@ -40,7 +40,7 @@ def state():
         "busy": False,
         "locked": False,
         "stop_unconfirmed": False,
-        "actual": [230, 20, 50, 90, None],
+        "actual": [230, 20, 50, 90],
     }
 
 
@@ -294,10 +294,11 @@ def test_tool_file_requires_private_explicit_measured_configuration(tmp_path):
         ("locked", True),
         ("stop_unconfirmed", True),
         ("mode", "stage"),
-        ("actual", [None, None, None, None, 0]),
+        ("actual", [None, None, None, None]),
+        ("actual", [1, 2, 3, 4, None]),
         ("actual", [1, 2, 3]),
-        ("actual", [1, 2, float("nan"), 4, None]),
-        ("actual", [True, 2, 3, 4, None]),
+        ("actual", [1, 2, float("nan"), 4]),
+        ("actual", [True, 2, 3, 4]),
     ],
 )
 def test_teaching_rejects_missing_ownership_stale_busy_unknown_or_invalid_pose(state, key, value):

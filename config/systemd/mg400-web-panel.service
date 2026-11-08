@@ -10,7 +10,7 @@ Group=1000
 Environment=MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks
 EnvironmentFile=/etc/mg400/mg400.env
 WorkingDirectory=/opt/mg400
-ExecStart=/opt/mg400/.venv/bin/python apps/control_panel/server.py --gripper-feedback /var/lib/mg400/work/gripper_feedback.json
+ExecStart=/opt/mg400/.venv/bin/python apps/control_panel/server.py
 Restart=on-failure
 RestartSec=3
 # A startup refusal (exit status 2) is a configuration error: do not restart.

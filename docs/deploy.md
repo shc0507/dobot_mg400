@@ -16,7 +16,7 @@
 | `/etc/mg400/go2rtc.yaml` | 摄像头采集配置，由安装器生成 | `root:1000`，`0640` |
 | `/var/lib/mg400` | 运行数据的上级目录 | `root:1000`，`0750` |
 | `/var/lib/mg400/locks` | 机械臂连接锁 | `1000:1000`，`0700` |
-| `/var/lib/mg400/work` | 夹爪反馈、夹爪命令文件和模式切换备份 | `1000:1000`，`0750` |
+| `/var/lib/mg400/work` | 模式切换备份 | `1000:1000`，`0750` |
 | `/var/lib/mg400/robot` | `tool.toml` 中的实测工具偏移与 `stations.toml` 中的示教工位，文件为 `0600` 或 `0640` | `1000:1000`，`0750` |
 | `/var/lib/mg400/vision` | 启用视觉服务时创建的数据目录 | `1000:1000`，`0750` |
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
@@ -43,7 +43,6 @@
 | `mg400-stage-panel.service` | `stage` | [位移台服务](stage-panel.md)，端口 `8767` | `dialout` |
 | `mg400-camera-preview.service` | `camera` | 摄像头视频流，端口 `1985` | 无 |
 | `mg400-camera-capture.service` | `camera` | go2rtc 采集和 H.264 编码，只监听 `127.0.0.1:1984` 和 `127.0.0.1:8554` | `video` |
-| `mg400-gripper-collector.service` | `collector` | 夹爪 USB 采集 | `dialout` |
 | `mg400-thermal.service` | `thermal` | 可选的[热像仪服务](thermal.md)，端口 `8768` | 无 |
 | `mg400-furnace.service` | `furnace` | [炉温与气体服务](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-microscope.service` | `microscope` | [显微镜服务](microscope.md)，回环端口 `8770` | `dialout video` |
@@ -51,10 +50,8 @@
 | `mg400-orchestrator.service` | `orch` | [配方服务](orchestrator.md#http-服务)，端口 `8772`，控制台控制套接字端口 `8774` | 无 |
 | `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | [单端口代理](olares.md#单端口代理)，端口 `8080` | 无 |
-| `mg400-gripper-collector.path` | 无 | 机器人服务请求时启动夹爪采集 | 无 |
 
 服务手动启动，不开机自启。
-主机重启后，只有夹爪采集的请求监听自动恢复。
 
 ## 前提条件
 
@@ -103,7 +100,7 @@
 
 安装器按以下顺序工作：
 
-1. 检查 Python 版本、uv、配置文件和独立运行的夹爪采集进程。
+1. 检查 Python 版本、uv 和配置文件。
    同时检查服务清单、服务选择、所选单元和 udev 模板。
    如指定 `--toupcam`，检查源文件、目标路径和固定的 SHA-256。
    如指定资源或启用 `vision`，还检查资源清单、目标路径和本地文件。
@@ -118,7 +115,7 @@
 6. 配置了摄像头时，安装 go2rtc 并生成 `go2rtc.yaml`。未配置时，删除旧的 `go2rtc.yaml`。
    如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
-8. 安装所选服务定义，重新加载 systemd，启用夹爪采集的请求监听。
+8. 安装所选服务定义，重新加载 systemd。
 9. 链接 `mg400ctl` 和 `labctl`。
 
 安装器不启动、不停止，也不重启服务。
@@ -166,7 +163,7 @@
 | `port` | 主 TCP 端口，0 表示无 TCP 端口 |
 | `assets` | 此服务拥有的资源清单名称 |
 
-`web`、`stage`、`camera`、`collector`、`furnace` 和 `microscope` 始终为必需服务。
+`web`、`stage`、`camera`、`furnace` 和 `microscope` 始终为必需服务。
 `MG400_OPTIONAL_SERVICES` 接受清单中的服务名称，用逗号分隔。
 默认值为空。未知、重复或空项会使安装器拒绝安装。必需服务名称不起作用。
 可选服务 `thermal` 使用 `/opt/mg400/.venv` 中的 `thermal` 依赖组。
@@ -333,7 +330,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
 | `mg400ctl status` | 显示所有服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`collector`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`gateway`、`proxy` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`gateway`、`proxy` 或 `all` |
 | `mg400ctl stop all` | 停止服务 |
 | `mg400ctl restart web` | 重启服务 |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
@@ -366,7 +363,6 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 `terminal` 和 `mode` 用 `runuser --pty` 以 UID 1000 在独立的伪终端中运行。
 它们读取配置文件，与机器人服务共用连接锁。
 停止或重启机器人服务时，服务最长用约 60 秒确认机械臂停止。
-夹爪采集不必手动启动。机器人服务或交互终端连接机械臂时，请求启动采集。
 
 ## 面板连接锁
 
@@ -391,10 +387,9 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 
 `mg400ctl backup FILE.tar` 归档 `/etc/mg400/mg400.env` 和 `/var/lib/mg400`，保留数字属主和文件权限。
 它只排除存放进程连接锁的 `/var/lib/mg400/locks`。
-`/var/lib/mg400/work` 下的持久夹爪命令锁仍会备份，包括 `gripper_feedback.json.command-lock.json`。
 它也保留 `/var/lib/mg400/furnace` 下的炉控状态和 `.state.json.lock`。
 
-备份前，按下方迁移步骤停止服务、夹爪请求监听器和其他数据写入程序。
+备份前，按下方迁移步骤停止服务和其他数据写入程序。
 备份命令不会代为停止它们。
 输入缺失、符号链接、特殊文件、目录循环或读取时检测到变化，都会导致备份失败。
 修复原因后再试。不要为通过备份而删除安全锁。
@@ -418,13 +413,13 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 | `/var/lib/mg400/calibration/cameras/` | 按相机路径保存的相机到机械臂单应矩阵 |
 | `/var/lib/mg400/calibration/microscope/` | 物镜转盘、自动对焦和参考视图数据 |
 | `/var/lib/mg400/robot/stations.toml` | 示教机械臂工位 |
-| `/var/lib/mg400/robot/tool.toml` | 夹爪工具偏移 |
+| `/var/lib/mg400/robot/tool.toml` | 吸盘工具偏移 |
 | `/var/lib/mg400/stage/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
 | `/var/lib/mg400/thermal/rois.toml` | 命名热像区域 |
 | `/var/lib/mg400/furnace/state.json` | 炉程序状态 |
 | `/var/lib/mg400/runs/` | 运行文件和 SQLite 索引 |
 | `/var/lib/mg400/recordings/` | 归档前的炉视频 |
-| `/var/lib/mg400/work/` | 夹爪反馈、命令文件、持久命令锁和模式切换备份 |
+| `/var/lib/mg400/work/` | 模式切换备份 |
 
 安装器创建 `/var/lib/mg400/robot`，属主为 `1000:1000`，模式为 `0750`，用于工具和工位数据。
 若 `/var/lib/mg400/tool.toml` 或 `/var/lib/mg400/stations.toml` 存在，安装器只打印移动提示，不修改该文件。
@@ -440,11 +435,10 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 
 在新主机上手动恢复：
 
-1. 先让旧主机上的实验安全结束。停止服务和夹爪采集请求监听器：
+1. 先让旧主机上的实验安全结束。停止服务：
 
    ```sh
    mg400ctl stop all
-   systemctl disable --now mg400-gripper-collector.path
    ```
 
    继续前，停止其他写入主机数据的进程。
@@ -456,11 +450,10 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 
 3. 安全地把归档传到新主机的 `/root/mg400-host.tar`。保留属主 `root:root` 和权限 `0600`。
 4. 按[前提条件](#前提条件)准备新主机，再按[安装与更新](#安装与更新)安装。
-   恢复期间保持硬件断开。恢复数据前，停止新安装的服务和请求监听器：
+   恢复期间保持硬件断开。恢复数据前，停止新安装的服务：
 
    ```sh
    mg400ctl stop all
-   systemctl disable --now mg400-gripper-collector.path
    ```
 
 5. 只恢复本命令生成的可信归档。先检查归档成员：
@@ -480,10 +473,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 6. 按新主机的摄像头设备路径修改 `/etc/mg400/mg400.env`。保留属主 `root:root` 和权限 `0600`。
    上述数据路径的属主为 `1000:1000`，文件权限为 `0640` 或 `0600`。
    目录权限保留 `0750`，但摄像头、位移台和 `calibration/cameras` 目录必须为 `0700`。保留归档中其他已有数据的属主和权限。
-7. 如果存在 `/var/lib/mg400/work/gripper_feedback.json.command-lock.json`，说明夹爪命令结果未确认。
-   检查夹爪状态，并保留此文件，属主为 `1000:1000`，权限为 `0600`。
-   采集服务读到恢复的文件后保持锁定。不要删除它来恢复命令执行。
-   启动服务前，按仪器实际状态核对待执行命令和已保存的运行／炉状态。恢复操作不得重放命令。
+7. 启动服务前，按仪器实际状态核对待执行命令和已保存的运行／炉状态。恢复操作不得重放命令。
 8. 修改摄像头设备后，再次运行安装器。
    运动前，核对恢复的工位、工具偏移、位移台配置和校准映射是否符合硬件。
 9. 连接机械臂网络接口和 USB 设备，再按正常操作流程启动所选服务。

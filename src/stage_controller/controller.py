@@ -39,29 +39,6 @@ from .protocol import (
 )
 from .reference import StageReference
 
-# The PGEA gripper's FTDI RS-485 converter on the same host (see scripts/gripper_feedback.py).
-# Never list or open it: Arduino commands on that bus could move the gripper.
-GRIPPER_CONVERTER = (0x0403, 0x6001, "BG02Q5TN")
-
-
-def _gripper_devices(ports):
-    # A /dev/serial/by-id link and its /dev/ttyUSBn name are one device.
-    return {
-        os.path.realpath(port.device)
-        for port in ports
-        if (port.vid, port.pid, port.serial_number) == GRIPPER_CONVERTER
-    }
-
-
-def is_gripper_converter(path):
-    """Check whether a device path is the gripper converter.
-
-    A /dev/serial/by-id name contains the serial number, also while the converter is unplugged.
-    """
-    if GRIPPER_CONVERTER[2] in os.path.basename(path):
-        return True
-    return os.path.realpath(path) in _gripper_devices(list_ports.comports())
-
 
 class MotorController(StageReference, StageAutomation, StageContract):
     def __init__(
@@ -104,8 +81,6 @@ class MotorController(StageReference, StageAutomation, StageContract):
         if self.demo:
             return [{"device": "DEMO", "description": "Simulated Arduino · no hardware"}]
         ports = sorted(list_ports.comports())
-        gripper = _gripper_devices(ports)
-        ports = [port for port in ports if os.path.realpath(port.device) not in gripper]
         if self.serial is None:
             return [{"device": port.device, "description": port.description} for port in ports]
         # Resolve the link at each refresh: after a reconnect it can name another ttyACMn device.

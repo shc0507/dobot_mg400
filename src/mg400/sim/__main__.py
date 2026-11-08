@@ -10,13 +10,12 @@ from .runtime import Simulator
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.2", help="Numeric loopback address")
-    parser.add_argument("--gripper-feedback", help="New feedback file for the simulated gripper")
     args = parser.parse_args(argv)
     stop = threading.Event()
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     previous = {}
     try:
-        simulator = Simulator(args.host, gripper_feedback=args.gripper_feedback)
+        simulator = Simulator(args.host)
         with simulator:
             for signum in signals:
                 previous[signum] = signal.signal(signum, lambda signum, frame: stop.set())

@@ -197,7 +197,7 @@
       "key.D": "J1 −", "key.F": "Z down", "key.Z": "Suck", "key.X": "Drop",
       "pair.reach": "Out / In", "pair.j1": "J1 + / −", "pair.z": "Z up / down", "pair.j4": "J4 + / −", "pair.suction": "Suck / Drop",
       "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons", "fold.stage": "Step moves and zero",
-      "vac.title": "Suction", "vac.suck": "Suck", "vac.release": "Drop", "vac.off": "Off",
+      "vac.title": "Suction", "vac.suck": "Suck", "vac.release": "Drop",
       "vac.state.suck": "Sucking", "vac.state.blow": "Blowing", "vac.state.off": "Off",
       "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}",
       "last": "Last: {action} · {result}", "last.message": "Last: {action} · {result} · {message}",
@@ -231,8 +231,8 @@
       "out.unknown": "{device} {action}: outcome unknown. Check the device. It is not retried.",
       "out.stop": "{device} stop: {outcome}",
       "res.confirmed": "confirmed", "res.pending": "pending", "res.unconfirmed": "not confirmed", "res.unknown": "unknown",
-      "act.enable": "Enable", "act.disable": "Disable", "act.clear_alarm": "Clear alarm", "act.execute": "Move", "act.grip": "Gripper", "act.vacuum": "Suction",
-      "act.home": "Home", "act.stage.home": "Home", "act.initialize_gripper": "Initialize gripper", "act.keyboard": "Keyboard", "act.keys": "Keyboard keys",
+      "act.enable": "Enable", "act.disable": "Disable", "act.clear_alarm": "Clear alarm", "act.execute": "Move", "act.vacuum": "Suction",
+      "act.home": "Home", "act.stage.home": "Home", "act.keyboard": "Keyboard", "act.keys": "Keyboard keys",
       "act.hold": "Hold", "act.connect": "Connect", "act.goto": "Named position", "act.move": "Step", "act.pose": "Named pose",
       "act.set_microstep": "Stepping", "act.teach_reference": "Teach reference", "act.zero": "Set zero",
       "act.stop": "Stop", "act.stop_sync": "Stop", "act.release_hold": "Release hold", "act.keepalive": "Hold refresh",
@@ -264,7 +264,7 @@
       "key.D": "J1 −", "key.F": "Z 下", "key.Z": "吸取", "key.X": "放下",
       "pair.reach": "伸出 / 收回", "pair.j1": "J1 + / −", "pair.z": "Z 上 / 下", "pair.j4": "J4 + / −", "pair.suction": "吸取 / 放下",
       "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮", "fold.stage": "步进和零点",
-      "vac.title": "吸盘", "vac.suck": "吸取", "vac.release": "放下", "vac.off": "关闭",
+      "vac.title": "吸盘", "vac.suck": "吸取", "vac.release": "放下",
       "vac.state.suck": "吸取中", "vac.state.blow": "吹气中", "vac.state.off": "已关闭",
       "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}",
       "last": "上一条：{action} · {result}", "last.message": "上一条：{action} · {result} · {message}",
@@ -298,8 +298,8 @@
       "out.unknown": "{device} {action}：结果未知。请检查设备。不会重试。",
       "out.stop": "{device} 停止：{outcome}",
       "res.confirmed": "已确认", "res.pending": "等待中", "res.unconfirmed": "未确认", "res.unknown": "未知",
-      "act.enable": "使能", "act.disable": "下使能", "act.clear_alarm": "清除报警", "act.execute": "移动", "act.grip": "夹爪", "act.vacuum": "吸盘",
-      "act.home": "回原点", "act.stage.home": "回零", "act.initialize_gripper": "初始化夹爪", "act.keyboard": "键盘", "act.keys": "键盘按键",
+      "act.enable": "使能", "act.disable": "下使能", "act.clear_alarm": "清除报警", "act.execute": "移动", "act.vacuum": "吸盘",
+      "act.home": "回原点", "act.stage.home": "回零", "act.keyboard": "键盘", "act.keys": "键盘按键",
       "act.hold": "按住移动", "act.connect": "连接", "act.goto": "命名位置", "act.move": "步进", "act.pose": "命名位姿",
       "act.set_microstep": "细分", "act.teach_reference": "示教参考", "act.zero": "设零",
       "act.stop": "停止", "act.stop_sync": "停止", "act.release_hold": "松开按住", "act.keepalive": "刷新按住",
@@ -518,7 +518,7 @@
       refs.vacState = el("span", { class: "mo-vac-state" });
       // The grip switch is not installed yet. Held shows when the robot service reports it.
       refs.vacHeld = el("span", { class: "mo-vac-held", hidden: true });
-      refs.vac = Object.fromEntries(["suck", "release", "off"].map(operation => [operation,
+      refs.vac = Object.fromEntries(["suck", "release"].map(operation => [operation,
         el("button", { type: "button", class: "mo-btn", text: t("vac." + operation), "aria-label": t("vac.label", { action: t("vac." + operation) }),
           onclick: () => send("robot", "vacuum", { operation }, "vacuum") })]));
       const readout = el("div", { class: "mo-readout" },
@@ -527,7 +527,7 @@
         el("div", { class: "mo-joints", role: "group", "aria-label": t("pose.joints") },
           ...refs.joints.map((node, i) => el("div", { class: "mo-reading" }, el("span", { text: "J" + (i + 1) }), node))),
         el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld),
-        el("div", { class: "mo-grid3" }, refs.vac.suck, refs.vac.release, refs.vac.off));
+        el("div", { class: "mo-grid2" }, refs.vac.suck, refs.vac.release));
 
       // Jog buttons: rarely used, so folded.
       refs.jog = {};

@@ -235,8 +235,7 @@ def pty_port(monkeypatch):
     os.close(controller_end)
 
 
-def test_a_port_locked_like_the_gripper_collector_cannot_be_opened(pty_port):
-    # scripts/gripper_feedback.py holds the same exclusive flock on its port.
+def test_a_port_locked_by_another_program_cannot_be_opened(pty_port):
     descriptor = os.open(pty_port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)

@@ -483,10 +483,8 @@ class RobotClient:
                 )
 
             accepted = reply["state"]
-            if (
-                accepted.get("busy")
-                or (action == "start_sync" and not accepted.get("feedback_fresh"))
-                or (action in {"stop", "disable", "stop_sync"} and accepted.get("gripper_busy"))
+            if accepted.get("busy") or (
+                action == "start_sync" and not accepted.get("feedback_fresh")
             ):
                 # The accepted snapshot still describes a previous completion.
                 baseline = (accepted.get("last_command") or {}).get("id")
@@ -509,8 +507,6 @@ class RobotClient:
                     ):
                         raise RobotClientError("The service is locked; completion is not safe.")
                     if action == "start_sync" and not state.get("feedback_fresh"):
-                        return False
-                    if action in {"stop", "disable", "stop_sync"} and state.get("gripper_busy"):
                         return False
                     return state.get("busy") is False
                 if (

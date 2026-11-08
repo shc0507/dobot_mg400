@@ -4,7 +4,7 @@
 
 [Return to the project home page](../README.en.md)
 
-The interactive terminal directly controls the MG400 and PGEA gripper.
+The interactive terminal directly controls the MG400 and the vacuum suction cup.
 The interface continuously shows feedback. Enter commands at the bottom.
 It does not depend on an HTTP service.
 The terminal cannot detect key release and does not support keyboard jogging.
@@ -43,7 +43,6 @@ uv run mg400-robot --robot-host 192.168.1.6
 ```
 
 Starting the program does not connect, enable, or move the robot.
-It does not initialize the gripper either.
 Enter `connect`, then wait until the interface shows measured state.
 Check that the motion area contains no people or obstacles. Then enter `enable`.
 
@@ -62,8 +61,6 @@ Enter `help` for command descriptions. Enter `status` for the current state.
 | `disable` | Disable the robot |
 | `move X Y Z R` | Move to absolute coordinates |
 | `home` | Move J1–J4 to 0° |
-| `grip N` | Set the gripper opening in the range 0–1000 |
-| `grip-init` | Initialize the gripper. This opens the fingers |
 | `vacuum suck`, `vacuum release`, `vacuum off` | Suck, blow briefly to release the part, or turn the suction cup off. The robot must be idle |
 | `stop` | Request a controlled robot stop |
 | `status` | Show the current state |
@@ -78,43 +75,15 @@ Linear motion uses `SpeedL=1,AccL=1`.
 `home` uses `SpeedJ=5,AccJ=5`.
 `home` moves the robot. It is not a coordinate calibration command.
 
-## Control the gripper
+## Control the suction cup
 
-The gripper uses the existing USB collection service.
-[Host deployment](deploy.en.md) installs this service.
-The collection program must run with `--commands`.
-The terminal and collection program must run on the same host.
-Both must share a monotonic clock (a clock that measures time intervals).
-Gripper commands do not support transmission between hosts.
+`status` and the interface show 2 feedback lines:
 
-Use `--gripper-feedback` to specify the feedback file.
-This example uses the deployed host's path:
+- `Flange (mm/deg)`: the flange pose X, Y, Z and R.
+- `Vacuum`: the measured levels of `suck`, `blow` and `held`. Without feedback, the line shows `--`.
 
-```sh
-python3 scripts/mg400_robot.py \
-  --gripper-feedback /var/lib/mg400/work/gripper_feedback.json
-```
-
-The terminal process must be able to read this path.
-When `connect` connects to the robot, the terminal requests that the collection service start.
-The terminal does not automatically initialize the gripper.
-Without a gripper feedback file, you can still control the robot alone.
-
-Before sending gripper commands, you must connect to the robot with `connect`.
-The robot must be idle, and the controller mode must be 4 or 5.
-These 2 modes mean disabled idle and enabled idle, respectively.
-
-Do not enter `grip-init` while the gripper holds an object.
-Initialization opens the fingers to find the travel endpoints.
-Follow this sequence:
-
-1. Check that the gripper holds no object.
-2. If the gripper is not initialized, enter `grip-init`.
-3. Enter `grip N`. Replace N with the target opening.
-
-0 means closed. 1000 means fully open.
-`grip` moves only the gripper, not the robot.
-`stop` and disabling the robot do not retract gripper commands already sent.
+`stop` and disable end the blow pulse on DO1. They keep suction on DO2.
+See [Vacuum suction cup](development.en.md#vacuum-suction-cup) for the outputs.
 
 ## Stop and exit
 
@@ -155,5 +124,5 @@ On a host installed through [Host deployment](deploy.en.md), run as root:
 mg400ctl terminal
 ```
 
-The terminal runs as UID 1000. It reads `/etc/mg400/mg400.env` and uses the deployed host's gripper feedback file.
+The terminal runs as UID 1000. It reads `/etc/mg400/mg400.env`.
 It shows `DISCONNECTED` after startup. It connects to the robot only when you enter `connect`.

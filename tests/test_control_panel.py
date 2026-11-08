@@ -38,7 +38,7 @@ def test_read_only_mode_is_inert_until_sync_and_has_no_hardware_commands():
 
     panel = ReadOnlyPanelState("test-host", connection_factory=forbidden)
     try:
-        assert panel.snapshot()["actual"] == [None] * 5
+        assert panel.snapshot()["actual"] == [None] * 4
         assert calls == []
         for action in (
             "enable",
@@ -46,13 +46,12 @@ def test_read_only_mode_is_inert_until_sync_and_has_no_hardware_commands():
             "home",
             "execute",
             "stop",
-            "initialize_gripper",
             "clear_alarm",
             "keyboard",
         ):
             command = {"action": action}
             if action == "execute":
-                command["targets"] = {"x": 250, "y": 0, "z": 100, "r": 0, "grip": 500}
+                command["targets"] = {"x": 250, "y": 0, "z": 100, "r": 0}
             if action == "keyboard":
                 command.update(enabled=True, speed=5, seq=2)
             with pytest.raises(PermissionError):
@@ -205,7 +204,7 @@ def test_passive_feedback_stops_without_accepting_a_late_sample():
         release.set()
         panel._reader.join(timeout=1)
         assert panel.snapshot()["joints"] == [1, 2, 3, 4]
-        assert panel.snapshot()["actual"] == [None] * 5
+        assert panel.snapshot()["actual"] == [None] * 4
     finally:
         release.set()
         panel.close()
@@ -257,11 +256,11 @@ def test_http_command_guard(server):
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
-        (["--mode", "read-only", "--gripper-feedback", "unused.json"], None),
+        (["--gripper-feedback", "unused.json"], "unrecognized arguments"),
         (["--mode", "demo"], "invalid choice: 'demo'"),
     ],
     ids=[
-        "gripper-feedback-read-only",
+        "gripper-feedback",
         "demo",
     ],
 )
@@ -343,7 +342,7 @@ def test_robot_http_starts_without_connecting_and_rejects_motion_before_ownershi
         status, body = request(server, "GET", "/api/state", headers=headers)
         data = json.loads(body)
         assert status == 200 and data["mode"] == "robot"
-        assert not data["syncing"] and data["actual"] == [None] * 5
+        assert not data["syncing"] and data["actual"] == [None] * 4
         assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == 200
         assert request(server, "POST", "/api/command", '{"action":"enable"}', headers)[0] == 403
         assert robot.snapshot()["controller_id"] is None
@@ -697,9 +696,7 @@ def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal
     backends = PANEL["main"].__globals__
     assert code == 0
     backends["load_robot_host"].assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
-    backends["RobotPanelState"].assert_called_once_with(
-        "robot.test", gripper=None, max_speed_l=1, max_acc_l=1
-    )
+    backends["RobotPanelState"].assert_called_once_with("robot.test", max_speed_l=1, max_acc_l=1)
     state.command.assert_not_called()
     state.close.assert_called_once_with()
     assert len(before_close) == 1
@@ -1008,10 +1005,7 @@ def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
 def test_invalid_robot_caps_fail_before_backend_construction(monkeypatch, capsys, name, value):
     main = PANEL["main"]
     monkeypatch.setenv(name, value)
-    backends = {
-        key: Mock()
-        for key in ("RobotPanelState", "ReadOnlyPanelState", "WebGripper", "PanelServer")
-    }
+    backends = {key: Mock() for key in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
     for key, backend in backends.items():
         monkeypatch.setitem(main.__globals__, key, backend)
     with pytest.raises(SystemExit) as error:
@@ -1034,7 +1028,7 @@ def test_robot_caps_are_loaded_from_host_environment(
     code, _ = run_panel(monkeypatch, closing_state())
     assert code == 0
     PANEL["main"].__globals__["RobotPanelState"].assert_called_once_with(
-        "robot.test", gripper=None, max_speed_l=expected[0], max_acc_l=expected[1]
+        "robot.test", max_speed_l=expected[0], max_acc_l=expected[1]
     )
 
 

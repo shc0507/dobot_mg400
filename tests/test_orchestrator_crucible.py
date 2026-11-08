@@ -1032,7 +1032,6 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
         "MG400_ORCH_THERMAL_TOKEN",
         "MG400_ORCH_ZONE_STATE_FILE",
         "MG400_FURNACE_SERIAL",
-        "MG400_GRIPPER_FEEDBACK",
         "HTTP_PROXY",
         "ALL_PROXY",
         "PYTHONPATH",

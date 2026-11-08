@@ -279,28 +279,28 @@ test("Home sends only after the page confirmation", async () => {
   assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "robot", "home", {}]]);
 });
 
-test("Suck, Release and Off send 1 vacuum command each and show the measured state", async () => {
+test("Suck and Drop send 1 vacuum command each and show the measured state; no Off button", async () => {
   const page = await mounted({ robot: { ...ROBOT, vacuum: { suck: true, blow: false, held: null } } });
   const texts = page.root.all().map(node => node.ownText);
   assert.ok(texts.includes("Sucking"));
   assert.equal(page.find("Suction: Suck").className, "mo-btn mo-held");
   // Without a grip switch, the page shows no held state.
   assert.equal(page.root.all().find(node => node.className.startsWith("mo-vac-held")).hidden, true);
-  for (const label of ["Suck", "Drop", "Off"]) {
+  assert.equal(page.find("Suction: Off"), undefined);
+  for (const label of ["Suck", "Drop"]) {
     page.find("Suction: " + label).click();
     await page.settle();
   }
   assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [
     ["relay", "robot", "vacuum", { operation: "suck" }],
     ["relay", "robot", "vacuum", { operation: "release" }],
-    ["relay", "robot", "vacuum", { operation: "off" }],
   ]);
 });
 
 test("the suction buttons wait for a measured state and show held when the service reports it", async () => {
   const unknown = await mounted({ robot: { ...ROBOT, vacuum: { suck: null, blow: null, held: null } } });
   assert.equal(unknown.find("Suction: Suck").disabled, true);
-  assert.equal(unknown.find("Suction: Off").disabled, true);
+  assert.equal(unknown.find("Suction: Drop").disabled, true);
   const held = await mounted({ robot: { ...ROBOT, vacuum: { suck: true, blow: false, held: true } } });
   const node = held.root.all().find(item => item.className.startsWith("mo-vac-held"));
   assert.equal(node.hidden, false);

@@ -149,7 +149,7 @@ class _Transfer:
             elif owner != self.owner or state.get("instance") != self.instance:
                 raise RuntimeError("Robot ownership or instance changed during transfer.")
             actual = state.get("actual")
-            if not isinstance(actual, list) or len(actual) not in (4, 5):
+            if not isinstance(actual, list) or len(actual) != 4:
                 raise RuntimeError("Transfer requires the measured robot pose.")
             self._check_vacuum(state.get("vacuum"), expected)
             if all(value is None for value in actual[:4]):
@@ -325,7 +325,7 @@ class _Transfer:
         self._planned = True
         self.check_speed()
         # Check complete routes, including conversions that a later leg needs,
-        # before any arm, gripper or crucible stage command is admitted.
+        # before any arm, suction or crucible stage command is admitted.
         for route in routes:
             for station in route:
                 self.ctx.check()

@@ -1,7 +1,7 @@
 """Keyboard control through RobotPanelState with the real keyboard stack.
 
-The real KeyboardJogSession, JointControl and WebGripper control the simulated MG400
-and USB collector of sim_mg400. No test opens a network connection.
+The real KeyboardJogSession and JointControl control the simulated MG400
+of sim_mg400. No test opens a network connection.
 """
 
 import threading
@@ -19,10 +19,6 @@ NEXT = "Stopped. Hold a key for the next move."
 STOPPED = "Robot stop is confirmed. Disable the robot before recovery."
 DISABLED = "Robot disable and rest are confirmed."
 FOCUS = "Keyboard off: window lost focus."
-CONTACT = (
-    "The gripper reports object contact before the target. Release the key before pressing again."
-)
-HOLD_LIMIT = "Hold limit reached. Release the key before pressing again."
 
 pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
@@ -78,7 +74,7 @@ def test_released_continuous_hold_sends_one_jog_and_a_verified_jog_stop(rig):
     snapshot = rig.snapshot()
     assert snapshot["robot_mode"] == 11 and snapshot["keyboard_active_key"] == "A"
     assert snapshot["busy"] and not snapshot["locked"]
-    assert snapshot["actual"][:4] == [None] * 4
+    assert snapshot["actual"] == [None] * 4
     rig.controller.slow_jog_stop = True
     rig.keys()
     wait_for(lambda: rig.controller.acked("MoveJog()"), describe=rig.describe)
@@ -436,7 +432,7 @@ def test_revocation_before_a_jog_is_sent_sends_nothing(rig, monkeypatch, point, 
 
 def test_continuous_hold_does_not_leave_the_pre_hold_pose_visible(rig):
     rig.connect()
-    rig.wait(lambda snapshot: snapshot["actual"][:4] == list(POSE))
+    rig.wait(lambda snapshot: snapshot["actual"] == list(POSE))
     rig.arm_ready()
     rig.hold("A")
     # Block the pose query after the hold, so only the hold decides what the panel shows.
@@ -445,7 +441,7 @@ def test_continuous_hold_does_not_leave_the_pre_hold_pose_visible(rig):
     rig.wait_idle(NEXT)
     try:
         assert gate.entered.wait(2)
-        assert rig.snapshot()["actual"][:4] == [None] * 4
+        assert rig.snapshot()["actual"] == [None] * 4
     finally:
         gate.open()
 

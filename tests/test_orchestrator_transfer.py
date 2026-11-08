@@ -79,7 +79,7 @@ class Robot:
             "keyboard_enabled": False,
             "controller_id": "owned-run",
             "instance": "robot-instance",
-            "actual": [200, 0, 50, 0, 1000],
+            "actual": [200, 0, 50, 0],
             "vacuum": {"suck": False, "blow": False, "held": None},
         }
         self.calls = []
@@ -406,7 +406,6 @@ def test_public_cli_transfer_rehearses_with_simulated_vacuum_and_no_production_s
         "MG400_ORCH_ROBOT_URL",
         "MG400_ORCH_ROBOT_TOKEN",
         "MG400_ROBOT_HOST",
-        "MG400_GRIPPER_FEEDBACK",
         "MG400_ORCH_ZONE_STATE_FILE",
         "HTTP_PROXY",
         "https_proxy",
@@ -474,7 +473,6 @@ timeout_s = 1
         "DOExecute(1,1)",
         "DOExecute(1,0)",
     ]
-    assert not demo.simulator.collector._thread.is_alive()
     assert demo.simulator.controller.closed.is_set()
     assert not demo.directory.exists()
     assert os.environ["MG400_ORCH_ROBOT_URL"] == "production-must-not-be-used"

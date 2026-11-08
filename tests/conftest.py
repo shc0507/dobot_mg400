@@ -88,13 +88,11 @@ def stage_ports(monkeypatch):
 
 @pytest.fixture
 def stage_usb(stage_ports, tmp_path):
-    """List two Arduino boards and the gripper converter as device files in tmp_path.
+    """List two Arduino boards as device files in tmp_path.
 
-    Return their /dev/serial/by-id style links by name: "arduino", "other" and "gripper".
+    Return their /dev/serial/by-id style links by name: "arduino" and "other".
     """
     from stage_helpers import serial_port
-
-    from stage_controller.controller import GRIPPER_CONVERTER
 
     by_id = tmp_path / "by-id"
     by_id.mkdir()
@@ -102,7 +100,6 @@ def stage_usb(stage_ports, tmp_path):
     for name, device, identity, description, link in (
         ("arduino", "ttyACM0", (0x2341, 0x0043, "ARDUINO1"), "Arduino Uno", "Arduino_Uno"),
         ("other", "ttyACM1", (0x2341, 0x0042, "ARDUINO2"), "Arduino Mega", "Arduino_Mega"),
-        ("gripper", "ttyUSB0", GRIPPER_CONVERTER, "FT232R USB UART", "FTDI_FT232R_USB_UART"),
     ):
         (tmp_path / device).touch()
         links[name] = by_id / f"usb-{link}_{identity[2]}-if00"

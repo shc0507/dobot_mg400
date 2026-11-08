@@ -262,19 +262,15 @@ def test_disconnect_retains_ownership_until_active_pose_query_exits(rig):
 def test_sync_reads_feedback_and_pose_without_moving(rig):
     state, feed, controls = rig
     connect(state)
-    wait_for(lambda: state.snapshot()["actual"][:4] == [250, 0, 30, 0])
+    wait_for(lambda: state.snapshot()["actual"] == [250, 0, 30, 0])
     assert state.snapshot()["joints"] == [1, 2, 3, 4]
     assert state.snapshot()["controller_id"] == "browser-a"
     assert controls[0].calls == []
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [{"action": "enable"}, {"action": "grip", "position": 500}],
-    ids=["enable", "grip"],
-)
-def test_browser_identity_and_owner_are_required(rig, payload):
+def test_browser_identity_and_owner_are_required(rig):
     state, feed, controls = rig
+    payload = {"action": "enable"}
     with pytest.raises(ValueError, match="client ID"):
         state.command({"action": "enable"})
     with pytest.raises(PermissionError, match="Start sync"):
@@ -303,8 +299,6 @@ def test_robot_targets_have_no_demo_bounds_and_home_uses_joint_zero(rig):
     [
         {"x": True},
         {"z": float("nan")},
-        {"grip": 0.1},
-        {"grip": 1001},
     ],
 )
 def test_invalid_targets_never_reach_control(rig, change):
@@ -337,7 +331,7 @@ def test_blocked_motion_does_not_block_snapshot_or_other_browser_stop(rig):
     assert control.move_entered.wait(1)
     started = time.monotonic()
     assert state.snapshot()["busy"]
-    assert state.snapshot()["actual"][:4] == [None] * 4
+    assert state.snapshot()["actual"] == [None] * 4
     state.command({"action": "stop"}, "browser-b")
     assert time.monotonic() - started < 0.2
     assert control.stopped
@@ -800,18 +794,6 @@ def test_confirmed_stop_suspends_pose_queries_until_disable_recovers(rig):
     assert controls[-1].pose_entered.wait(1)
 
 
-@pytest.mark.parametrize("command", ["execute", "grip"])
-def test_gripper_target_requires_adapter(rig, command):
-    state, feed, controls = rig
-    connect(state)
-    with pytest.raises(RuntimeError, match="Gripper control is unavailable"):
-        if command == "execute":
-            execute(state, grip=500)
-        else:
-            state.command({"action": "grip", "position": 500}, "browser-a")
-    assert controls[0].calls == []
-
-
 def test_failed_reconnect_does_not_claim_browser_lease(rig):
     state, feed, controls = rig
     feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
@@ -850,182 +832,6 @@ def test_repeated_stop_requests_share_one_worker(rig):
         assert len(state._safety_threads) == 1
     finally:
         release.set()
-
-
-class Gripper:
-    def __init__(self):
-        self.position = 1000
-        self.commands = []
-        self.collector_requests = 0
-        self.preparing = threading.Event()
-        self.publish = threading.Event()
-        self.publish.set()
-
-    def snapshot(self):
-        return {
-            "position": self.position,
-            "available": True,
-            "can_initialize": True,
-            "busy": False,
-            "locked": False,
-            "message": "Ready",
-        }
-
-    def poll(self):
-        pass
-
-    def request_collector(self):
-        self.collector_requests += 1
-
-    def move(self, target):
-        self.preparing.set()
-        assert self.publish.wait(2)
-        with self.publication_guard():
-            self.commands.append(target)
-            self.position = target
-
-    def initialize(self):
-        with self.publication_guard():
-            self.commands.append("initialize")
-
-    def close(self):
-        self.publish.set()
-
-
-def add_gripper(state):
-    gripper = Gripper()
-    with state._lock:
-        state._gripper = gripper
-        state._grip = gripper.snapshot()
-        gripper.publication_guard = state._gripper_publication_guard
-    return gripper
-
-
-def test_connect_requests_collector_without_gripper_commands(rig):
-    state, feed, controls = rig
-    gripper = add_gripper(state)
-    connect(state)
-    assert gripper.collector_requests == 1
-    assert gripper.commands == []
-    assert controls[0].calls == []
-
-
-def test_execute_always_sends_explicit_gripper_target(rig):
-    state, feed, controls = rig
-    gripper = add_gripper(state)
-    connect(state)
-    execute(state, grip=1000)
-    wait_for(lambda: not state.snapshot()["busy"])
-    assert gripper.commands == [1000]
-    execute(state, grip=500)
-    wait_for(lambda: not state.snapshot()["busy"])
-    assert gripper.commands == [1000, 500]
-    assert state.snapshot()["actual"][4] == 500
-
-
-def test_initialize_gripper_accepts_disabled_idle_robot(rig):
-    state, feed, controls = rig
-    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
-    gripper = add_gripper(state)
-    connect(state)
-    state.command({"action": "initialize_gripper"}, "browser-a")
-    wait_for(lambda: not state.snapshot()["busy"])
-    assert gripper.commands == ["initialize"]
-    assert controls[0].calls == []
-
-
-@pytest.mark.parametrize("mode", [4, 5])
-@pytest.mark.parametrize("position", [0, 1000])
-def test_grip_moves_only_gripper_on_idle_robot(rig, mode, position):
-    state, feed, controls = rig
-    feed.sample = Feedback((1, 2, 3, 4), mode, 0, False)
-    gripper = add_gripper(state)
-    connect(state)
-    state.command({"action": "grip", "position": position}, "browser-a")
-    wait_for(lambda: not state.snapshot()["busy"])
-    assert gripper.commands == [position]
-    assert controls[0].calls == []
-    assert state.snapshot()["actual"][4] == position
-
-
-@pytest.mark.parametrize(
-    "position", [-1, 1001, 0.5, float("nan"), float("inf"), True, "500", None, 10**400]
-)
-def test_invalid_grip_position_never_connects_or_sends(rig, position):
-    state, feed, controls = rig
-    gripper = add_gripper(state)
-    with pytest.raises(ValueError):
-        state.command({"action": "grip", "position": position}, "browser-a")
-    assert feed.connections == 0
-    assert gripper.commands == []
-    assert controls[0].calls == []
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"action": "grip"},
-        {"action": "grip", "targets": {"grip": 500}},
-        {"action": "grip", "position": 500, "extra": True},
-    ],
-)
-def test_grip_requires_only_position_field(rig, payload):
-    state, feed, controls = rig
-    with pytest.raises(ValueError, match="Unexpected command fields"):
-        state.command(payload, "browser-a")
-    assert feed.connections == 0
-    assert controls[0].calls == []
-
-
-def test_grip_rejects_moving_robot_before_queue(rig):
-    state, feed, controls = rig
-    feed.sample = Feedback((1, 2, 3, 4), 7, 0, False)
-    gripper = add_gripper(state)
-    connect(state)
-    with pytest.raises(RuntimeError, match="must be idle"):
-        state.command({"action": "grip", "position": 500}, "browser-a")
-    assert gripper.commands == []
-    assert controls[0].calls == []
-    assert not state.snapshot()["busy"]
-
-
-@pytest.mark.parametrize("action", ["stop", "disable"])
-def test_stop_or_disable_prevents_queued_grip(rig, action):
-    state, feed, controls = rig
-    control = controls[0]
-    control.release_pose.clear()
-    gripper = add_gripper(state)
-    connect(state)
-    assert control.pose_entered.wait(1)
-    state.command({"action": "grip", "position": 500}, "browser-a")
-    state.command({"action": action}, "browser-b")
-    control.release_pose.set()
-    wait_for(lambda: not state.snapshot()["busy"])
-    assert gripper.commands == []
-    assert not gripper.preparing.is_set()
-
-
-@pytest.mark.parametrize("action", ["stop", "disable", "lease_expiry"])
-@pytest.mark.parametrize("command", ["execute", "grip"])
-def test_stop_or_expired_lease_prevents_gripper_publication(rig, action, command):
-    state, feed, controls = rig
-    gripper = add_gripper(state)
-    gripper.publish.clear()
-    connect(state)
-    if command == "execute":
-        execute(state, grip=500)
-    else:
-        state.command({"action": "grip", "position": 500}, "browser-a")
-    assert gripper.preparing.wait(1)
-    if action == "lease_expiry":
-        with state._lock:
-            state._heartbeat -= 4
-        state.heartbeat("browser-a")
-    else:
-        state.command({"action": action}, "browser-b")
-    gripper.publish.set()
-    wait_for(lambda: not state.snapshot()["busy"])
-    assert gripper.commands == []
 
 
 def alarm_rig(rig):
@@ -1226,18 +1032,15 @@ def test_contract_description_preserves_legacy_commands_and_parameters(rig):
         "stop",
         "home",
         "execute",
-        "grip",
-        "initialize_gripper",
         "vacuum",
         "keyboard",
         "clear_alarm",
     }
     assert {name for name, spec in commands.items() if spec["any_client"]} == {"stop", "disable"}
     assert commands["keyboard"]["ui_only"] is True
-    assert commands["grip"]["params"]["properties"]["position"]["maximum"] == 1000
     target = commands["execute"]["params"]["properties"]["targets"]
     assert target["required"] == ["x", "y", "z", "r"]
-    assert set(target["properties"]) == {"x", "y", "z", "r", "grip"}
+    assert set(target["properties"]) == {"x", "y", "z", "r"}
     assert state.snapshot()["last_command"] is None
 
 
@@ -1251,12 +1054,11 @@ def test_contract_events_preserve_existing_journal_lines_once(rig, caplog):
         state._locked = True
         state._fault = True
         state._kb_reason = "fixture close reason"
-        state._grip = {"locked": True, "message": "fixture gripper lock"}
         state._alarms = [{"id": 72, "description": "fixture alarm"}]
     replay = state.events.since(0)
     assert [entry["message"] for entry in replay["events"]] == panel_log(caplog)
-    assert replay["next"] == 6
-    assert [entry["seq"] for entry in state.events.since(3)["events"]] == [4, 5, 6]
+    assert replay["next"] == 5
+    assert [entry["seq"] for entry in state.events.since(2)["events"]] == [3, 4, 5]
     assert panel_log(caplog).count("Message: fixture state message") == 1
     assert all(entry["fields"] == {} for entry in replay["events"])
 
@@ -1364,16 +1166,6 @@ def test_contract_stop_preserves_unconfirmed_verdict_after_later_success(rig):
     assert result["state"]["stop_unconfirmed"] and result["state"]["locked"]
 
 
-@pytest.mark.parametrize("grip", [{"busy": True}, {"locked": True}])
-def test_contract_stop_does_not_confirm_while_gripper_is_active_or_unknown(rig, grip):
-    state, _, _ = rig
-    connect(state)
-    with state._lock:
-        state._grip = grip
-    result = state.stop("browser-b", wait_s=0.02)
-    assert result["stop"] == ("unconfirmed" if grip.get("locked") else "pending")
-
-
 @pytest.mark.parametrize(
     "value", [-1, 15.01, 10**1000, float("nan"), float("inf"), True, "1", None]
 )
@@ -1383,31 +1175,6 @@ def test_contract_stop_rejects_invalid_wait_before_any_stop(rig, value):
         state.stop("browser-a", value)
     assert controls[0].calls == []
     assert state.snapshot()["last_command"] is None
-
-
-def test_last_stop_result_waits_for_gripper_completion(rig):
-    state, _, _ = rig
-    connect(state)
-    previous = state.snapshot()["last_command"]
-    with state._lock:
-        state._grip = {"busy": True}
-    assert state.stop("browser-b", wait_s=0.02)["stop"] == "pending"
-    wait_for(lambda: not state._safety_workers)
-    assert state.snapshot()["last_command"] == previous
-    with state._lock:
-        state._grip = {"busy": False}
-    wait_for(lambda: state.snapshot()["last_command"]["action"] == "stop")
-    assert state.snapshot()["last_command"]["result"] == "stopped"
-
-
-def test_last_stop_result_fails_if_gripper_remains_locked(rig):
-    state, _, _ = rig
-    connect(state)
-    with state._lock:
-        state._grip = {"locked": True}
-    assert state.stop("browser-b", wait_s=0.02)["stop"] == "unconfirmed"
-    wait_for(lambda: state.snapshot()["last_command"]["action"] == "stop")
-    assert state.snapshot()["last_command"]["result"] == "failed"
 
 
 @pytest.fixture
@@ -1525,83 +1292,6 @@ def test_invalid_caps_fail_before_controller_or_thread_creation(monkeypatch, par
         RobotPanelState("robot.test", control_factory=factory, **{parameter: value})
     factory.assert_not_called()
     start.assert_not_called()
-
-
-def test_grasp_metadata_is_null_without_a_configured_gripper(rig):
-    state, _, _ = rig
-    assert state.snapshot()["gripper"] == {"outcome": None, "outcome_at": None}
-
-
-def test_simulated_collector_contact_drop_and_new_arrival_publish_once(make_sim_rig, caplog):
-    from sim_mg400 import arrive
-
-    rig = make_sim_rig(gripper=True)
-    state, collector = rig.state, rig.collector
-    rig.connect()
-    rig.wait(lambda s: s["gripper_available"])
-    collector.answer = lambda request: {"init": 1, "state": 2, "position": 510}
-    caplog.set_level(logging.WARNING, logger="mg400.web_control")
-    state.command({"action": "grip", "position": 450}, "browser-a")
-    rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "contact")
-    contact_at = rig.snapshot()["gripper"]["outcome_at"]
-    assert isinstance(contact_at, float)
-    assert collector.targets("published") == [450]
-    mutations = rig.controller.mutations()
-    collector.set(state=3)
-    rig.wait(lambda s: s["gripper"]["outcome"] == "dropped")
-    dropped = rig.snapshot()["gripper"]
-    assert dropped["outcome_at"] >= contact_at
-    assert not rig.snapshot()["locked"]
-    assert rig.controller.mutations() == mutations
-    assert collector.targets("published") == [450]
-    rig.wait_passes(worker=5)
-    assert rig.snapshot()["gripper"] == dropped
-    events = [
-        event
-        for event in state.events.since(0)["events"]
-        if event["fields"].get("outcome") == "dropped"
-    ]
-    assert len(events) == 1
-    assert events[0]["fields"] == dropped
-    assert [record.message for record in caplog.records].count(
-        "The gripper reports that the object dropped."
-    ) == 1
-    # A new explicit command can replace historical dropped metadata with its own result.
-    collector.answer = arrive
-    state.command({"action": "grip", "position": 700}, "browser-a")
-    rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "arrived")
-    assert collector.targets("published") == [450, 700]
-    assert rig.snapshot()["gripper"]["outcome_at"] >= dropped["outcome_at"]
-    assert (
-        len(
-            [
-                event
-                for event in state.events.since(0)["events"]
-                if event["fields"].get("outcome") == "dropped"
-            ]
-        )
-        == 1
-    )
-
-
-def test_new_simulated_gripper_command_hides_previous_outcome_while_active(make_sim_rig):
-    from sim_mg400 import arrive
-
-    rig = make_sim_rig(gripper=True)
-    rig.connect()
-    rig.wait(lambda s: s["gripper_available"])
-    rig.state.command({"action": "grip", "position": 600}, "browser-a")
-    rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "arrived")
-    rig.collector.answer = lambda request: None
-    try:
-        rig.state.command({"action": "grip", "position": 700}, "browser-a")
-        rig.wait(lambda s: s["gripper_busy"])
-        assert rig.snapshot()["gripper"] == {"outcome": None, "outcome_at": None}
-        rig.collector.answer = arrive
-        rig.wait(lambda s: not s["busy"] and s["gripper"]["outcome"] == "arrived")
-        assert rig.collector.targets("published") == [600, 700]
-    finally:
-        rig.collector.answer = arrive
 
 
 TCP_HINT = "The controller is probably not in TCP/IP mode."

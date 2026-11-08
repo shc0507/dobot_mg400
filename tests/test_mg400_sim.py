@@ -1,11 +1,9 @@
 """Exercise the runnable simulator through production network and file clients."""
 
-import json
 import os
 import socket
 import subprocess
 import sys
-import time
 from contextlib import closing
 
 import pytest
@@ -16,7 +14,6 @@ from mg400.feedback import Feedback, FeedbackConnection, decode_feedback
 from mg400.sim import Simulator
 from mg400.sim.runtime import PORTS, feedback_frame
 from mg400.web_control import RobotPanelState
-from mg400.web_gripper import WebGripper
 
 
 @pytest.fixture
@@ -46,16 +43,13 @@ def test_feedback_wire_format_preserves_controller_fields():
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.1", "::", "localhost", "robot.test"])
-def test_refuse_non_numeric_or_non_loopback_before_side_effects(host, tmp_path):
-    path = tmp_path / "new" / "gripper.json"
+def test_refuse_non_numeric_or_non_loopback_addresses(host):
     with pytest.raises(ValueError, match="numeric loopback"):
-        Simulator(host, gripper_feedback=path)
-    assert list(tmp_path.iterdir()) == []
+        Simulator(host)
 
 
-def test_construction_does_not_open_transports_or_files(loopback_host, tmp_path):
-    simulator = Simulator(loopback_host, gripper_feedback=tmp_path / "gripper.json")
-    assert list(tmp_path.iterdir()) == []
+def test_construction_does_not_open_transports(loopback_host):
+    simulator = Simulator(loopback_host)
     with closing(socket.socket()) as listener:
         listener.bind((loopback_host, 29999))
     simulator.close()
@@ -97,100 +91,10 @@ def test_live_feedback_and_fragmented_coalesced_commands(loopback_host):
             available.bind((loopback_host, port))
 
 
-def test_collector_ignores_stale_malformed_and_locked_requests(loopback_host, tmp_path):
-    path = tmp_path / "gripper.json"
-    with Simulator(loopback_host, gripper_feedback=path) as simulator:
-        collector = simulator.collector
-        initial = json.loads(path.read_text())
-        request = {
-            "id": "old",
-            "session": "old-session",
-            "position": 900,
-            "deadline_monotonic": time.monotonic() + 10,
-        }
-        collector.command_path.write_text(json.dumps(request))
-        wait_for(lambda: json.loads(path.read_text())["seq"] > initial["seq"] + 3)
-        assert collector.answered_count() == 0
-        collector.command_path.write_text("{")
-        seq = json.loads(path.read_text())["seq"]
-        wait_for(lambda: json.loads(path.read_text())["seq"] > seq + 3)
-        assert collector.answered_count() == 0
-        request.update(session=initial["session"], deadline_monotonic=time.monotonic() - 1)
-        collector.command_path.write_text(json.dumps(request))
-        seq = json.loads(path.read_text())["seq"]
-        wait_for(lambda: json.loads(path.read_text())["seq"] > seq + 3)
-        assert collector.answered_count() == 0
-        collector.lock("unknown command outcome")
-        request["deadline_monotonic"] = time.monotonic() + 10
-        collector.command_path.write_text(json.dumps(request))
-        seq = json.loads(path.read_text())["seq"]
-        wait_for(lambda: json.loads(path.read_text())["seq"] > seq + 3)
-        assert collector.answered_count() == 0
-        assert json.loads(path.read_text())["control"]["locked"]
-
-
-def test_existing_gripper_files_are_never_overwritten(loopback_host, tmp_path):
-    path = tmp_path / "gripper.json"
-    path.write_text("preserve")
-    with pytest.raises(ValueError, match="new simulator feedback path"):
-        Simulator(loopback_host, gripper_feedback=path).start()
-    assert path.read_text() == "preserve"
-
-
-@pytest.mark.parametrize("kind", ["file", "symlink", "dangling-symlink"])
-def test_persistent_command_lock_is_preserved_and_refuses_start(loopback_host, tmp_path, kind):
-    path = tmp_path / "gripper.json"
-    lock = path.with_name(path.name + ".command-lock.json")
-    target = tmp_path / "lock-target"
-    contents = '{"reason": "unknown command outcome"}'
-    if kind == "file":
-        lock.write_text(contents)
-    else:
-        if kind == "symlink":
-            target.write_text(contents)
-        lock.symlink_to(target)
-    with pytest.raises(ValueError, match="command-lock.json.*already exists"):
-        Simulator(loopback_host, gripper_feedback=path).start()
-    assert not path.exists()
-    if kind == "file":
-        assert lock.read_text() == contents
-    else:
-        assert lock.is_symlink() and lock.readlink() == target
-        if kind == "symlink":
-            assert target.read_text() == contents
-        else:
-            assert not target.exists()
-
-
-def test_collector_latches_a_persistent_lock_created_after_start(loopback_host, tmp_path):
-    path = tmp_path / "gripper.json"
-    with Simulator(loopback_host, gripper_feedback=path) as simulator:
-        collector = simulator.collector
-        initial = json.loads(path.read_text())
-        contents = '{"reason": "unknown command outcome"}'
-        collector.command_lock_path.write_text(contents)
-        wait_for(lambda: json.loads(path.read_text())["control"]["locked"])
-        collector.command_path.write_text(
-            json.dumps(
-                {
-                    "id": "new",
-                    "session": initial["session"],
-                    "position": 900,
-                    "deadline_monotonic": time.monotonic() + 10,
-                }
-            )
-        )
-        seq = json.loads(path.read_text())["seq"]
-        wait_for(lambda: json.loads(path.read_text())["seq"] > seq + 3)
-        assert collector.answered_count() == 0
-        assert collector.command_lock_path.read_text() == contents
-
-
 @pytest.mark.usefixtures("isolated_controller_locks", "closed_clients")
-def test_real_panel_sequence_over_loopback(loopback_host, tmp_path):
-    path = tmp_path / "gripper.json"
-    with Simulator(loopback_host, gripper_feedback=path) as simulator:
-        state = RobotPanelState(loopback_host, gripper=WebGripper(path))
+def test_real_panel_sequence_over_loopback(loopback_host):
+    with Simulator(loopback_host) as simulator:
+        state = RobotPanelState(loopback_host)
         try:
             with running(state) as server:
                 page = WsClient(server)
@@ -215,9 +119,7 @@ def test_real_panel_sequence_over_loopback(loopback_host, tmp_path):
                 settled(lambda s: s["robot_mode"] == 5)
                 target = {"x": 260, "y": 12, "z": 42, "r": 31}
                 command("execute", targets=target)
-                settled(lambda s: s["actual"][:4] == list(target.values()))
-                command("grip", position=725)
-                settled(lambda s: s["actual"][4] == 725)
+                settled(lambda s: s["actual"] == list(target.values()))
                 command("disable")
                 settled(lambda s: s["robot_mode"] == 4 and not s["locked"])
                 command("stop_sync")
@@ -230,14 +132,12 @@ def test_real_panel_sequence_over_loopback(loopback_host, tmp_path):
             state.close()
 
 
-def test_cli_refuses_external_address_without_creating_data(tmp_path):
-    path = tmp_path / "gripper.json"
+def test_cli_refuses_external_address():
     result = subprocess.run(
-        [sys.executable, "-m", "mg400.sim", "--host", "192.0.2.1", "--gripper-feedback", str(path)],
+        [sys.executable, "-m", "mg400.sim", "--host", "192.0.2.1"],
         capture_output=True,
         text=True,
         timeout=5,
     )
     assert result.returncode == 2
     assert "numeric loopback" in result.stderr
-    assert list(tmp_path.iterdir()) == []

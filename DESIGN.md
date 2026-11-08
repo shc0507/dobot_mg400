@@ -347,13 +347,13 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 ### Hierarchy
 - **Brand** (700, 16px): the console name, and the STOP ALL MOTION label in the header.
 - **Headline** (700, 18px): station titles (Robot arm, Stage). The activity title is 17px.
-- **Title** (700, 14px): group labels (Keyboard jog, Stepping, Gripper, Named positions).
+- **Title** (700, 14px): group labels (Keyboard jog, Stepping, Suction, Named positions).
 - **Control** (600, 14px): buttons, holds and state text. Tabs and segment options use 13px.
 - **Body** (400, 14px, 1.45 line height): running text.
 - **Body small** (400, 13px): messages, units, the speed label and reading labels.
 - **Label** (600, 12px): flags, media meta and key hints. Field labels and the key map labels use 400.
 - **Badge** (700, 12px, 0.4px tracking): the DEMO badge.
-- **Readout** (700, 20px, tabular numerals): pose values, axis pulses and the gripper position.
+- **Readout** (700, 20px, tabular numerals): pose values and axis pulses.
 - **Readout small** (600, 14px, tabular numerals): joint angles and speed values.
 - **Key letter** (600, 11px, line height 1): the letter on a key cap in the keyboard map.
 
@@ -367,7 +367,7 @@ A warm, low-chroma paper palette with one saturated blue, one stop red and a sma
 - **Frame:** the shell header (with the status strip in it), the stop result band (after a stop, until Dismiss) and the notice bar form one top band.
 - **Header:** a grid on Card White with a Hairline below. Row 1 has the brand (mark, name and commit), the page tabs, then the control indicator and the language switch on the right. Row 2 is the status strip. STOP ALL MOTION is a tall block at the right edge that spans both rows. Row 1 wraps: when the window is too narrow, the actions and then the page tabs move to a new line, and the block grows with the rows. At 720px and below, the block is full width and 48px tall, directly under the brand. Above 720px, the band stays at the top while the page scrolls. Its height is published as `--lc-top`. Sticky elements and `scroll-padding-top` add it to their offset. The workspace is centered and at most 1440px wide.
 - **Stations:** Motion has 2 stations side by side in a 711 : 649 ratio, 20px apart. Each station is a subgrid with 2 rows, the view row and the body row, so both views have the same height. The arm view is 16:9. The stage view fills the row and is at least 240px tall.
-- **Station body:** a header row (title, state and badge, then the actions and the device stop on the right), then the main controls, then folds for rare tools below a Hairline. In the arm body, the keyboard panel (switch, speed and key map, 62 parts) is beside the pose and gripper readout (38 parts, at least 190px).
+- **Station body:** a header row (title, state and badge, then the actions and the device stop on the right), then the main controls, then folds for rare tools below a Hairline. In the arm body, the keyboard panel (switch, speed and key map, 62 parts) is beside the pose and suction readout (38 parts, at least 190px).
 - **Rows:** a stage axis is 1 grid row at least 56px tall: name and state, value, Hold −, Hold +, speed and key hints.
 - **Rhythm:** 20px between cards. 12px between blocks in a card. 8px inside a group. 4–6px between a label and its value.
 - **Responsive:** when a station is narrower than 610px, its header buttons get tighter so that the header stays on 1 row. At 1100px and below, the stations stack and the stage view becomes 16:9. At 720px and below, the arm body stacks, axis rows hide speed and key hints, and pose fields use 2 columns.
@@ -446,7 +446,7 @@ A pill track, 40 by 22px (34 by 20px for the small switch), in Knob Off with a w
 A Media Well with 16px corners that holds the live frame. The view tabs are at the top left. The state badge (a dot, LIVE or another state word, and the frame age) is on a Well Chip at the top right, in its tone. The frame size and rate are on a Well Scrim chip at the bottom left. Snapshot and Expand are Well Chip buttons at the bottom right. A camera that is off shows its state word on a centered translucent chip.
 
 ### Keyboard map (signature)
-A quiet legend under the Keyboard jog switch and speed slider: the switch and slider are the main control, and the map stays in the background. The keys are in pairs, in one wrapping line: W S (out and in), A D (J1), R F (Z), Q E (J4) and Z X (gripper). Each pair is 2 key caps and a 12px Umber label in weight 400, for example "J1 + / −". The first key of a pair moves out, +, up or opens. A key cap is a 20px Fill square with 6px corners and an 11px Umber letter, with no base line and no shadow. Only a held key stands out: its cap turns Action Blue with white text at once (80ms). Each pair label is 1 string, so a pair can get a new label without a layout change. Key hints beside an axis are 24px Fill squares and light the same way.
+A quiet legend under the Keyboard jog switch and speed slider: the switch and slider are the main control, and the map stays in the background. The keys are in pairs, in one wrapping line: W S (out and in), A D (J1), R F (Z), Q E (J4) and Z X (suction). Each pair is 2 key caps and a 12px Umber label in weight 400, for example "J1 + / −". The first key of a pair moves out, +, up or sucks. A key cap is a 20px Fill square with 6px corners and an 11px Umber letter, with no base line and no shadow. Only a held key stands out: its cap turns Action Blue with white text at once (80ms). Each pair label is 1 string, so a pair can get a new label without a layout change. Key hints beside an axis are 24px Fill squares and light the same way.
 
 ### Axis row and Hold
 Each stage axis row has the name and state, the value with its unit, Hold − and Hold + (44px, Fill), a speed field and the key hints. While you press it, a Hold is Action Blue. It stays at full strength while its axis is busy.

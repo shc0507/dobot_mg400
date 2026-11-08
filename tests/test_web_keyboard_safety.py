@@ -4,7 +4,6 @@ The fakes record one global call log, so each test can check the order of the
 session release, the hold exit, the parent cancel, and the stop or disable.
 """
 
-import contextlib
 import threading
 import time
 
@@ -16,7 +15,6 @@ from mg400.controller_ownership import ControllerOwnership
 from mg400.feedback import Feedback
 from mg400.joint_control import PreparationRejectedError
 from mg400.web_control import RobotPanelState
-from mg400.web_gripper import GripperNotSentError
 
 OWNER = "browser-a"
 OTHER = "browser-b"
@@ -278,77 +276,16 @@ class Session:
             event.set()
 
 
-class Gripper:
-    """Gripper adapter with the keyboard step API."""
-
-    def __init__(self, log):
-        self._log = log
-        self.position = 500
-        self.failed = False
-        self.last_outcome = None
-        self.commands = []
-        self.publication_guard = contextlib.nullcontext
-        self.move_entered = threading.Event()
-        self.move_gate = threading.Event()
-        self.move_gate.set()
-        self._closed = threading.Event()
-
-    @property
-    def closed(self):
-        return self._closed.is_set()
-
-    def request_collector(self):
-        pass
-
-    def snapshot(self):
-        return {
-            "position": self.position,
-            "available": True,
-            "can_initialize": False,
-            "busy": False,
-            "locked": False,
-            "message": "The gripper is ready.",
-        }
-
-    def poll(self):
-        pass
-
-    def measure(self):
-        return self.position, None
-
-    def move(self, target):
-        self.last_outcome = None
-        try:
-            with self.publication_guard():
-                self.commands.append(target)
-                self._log.add(f"gripper.move:{target}")
-        except Exception as error:
-            raise GripperNotSentError(f"No command sent. {error}") from error
-        self.move_entered.set()
-        try:
-            gate(self.move_gate)
-            self.position = target
-            self.last_outcome = "arrived"
-        finally:
-            self._log.add("gripper.move.exit")
-
-    def close(self):
-        self._log.add("gripper.close")
-        self._closed.set()
-
-
 class Rig:
     def __init__(self):
         self.log = Log()
         self.feed = Feed()
         self.controls = []
         self.sessions = []
-        self.gripper = Gripper(self.log)
         self.session_setup = None
         self._seq = 0
         self.state = RobotPanelState(
             "robot.test",
-            gripper=self.gripper,
             connection_factory=self.feed,
             control_factory=self._new_control,
             session_factory=self._new_session,
@@ -408,7 +345,6 @@ class Rig:
             session.open_gates()
         for control in self.controls:
             control.open_gates()
-        self.gripper.move_gate.set()
         self.feed.read.set()
 
 
@@ -443,7 +379,7 @@ def test_stop_during_arm_hold_releases_at_once_and_cancels_after_hold_exits(rig)
     snapshot = state.snapshot()
     assert snapshot["keyboard_active_key"] == "W"
     assert snapshot["busy"]
-    assert snapshot["actual"][:4] == [None] * 4
+    assert snapshot["actual"] == [None] * 4
 
     snapshot = state.command({"action": "stop"}, OTHER)
 
@@ -646,7 +582,7 @@ def test_stop_before_hold_worker_reaches_session_sends_nothing_from_it(rig, key)
     assert not worker.is_alive()
     wait_for(lambda: "control1.stop" in rig.log)
     assert "session1.run:W" not in rig.log
-    assert rig.gripper.commands == []
+    assert "control1.vacuum:suck" not in rig.log
     rig.log.assert_order("control1.cancel", "control1.stop")
     assert "ERROR" not in state.snapshot()["message"]
 
@@ -933,7 +869,7 @@ def test_watchdog_stops_for_mode_11_outside_arm_hold(rig, phase):
 # Panel close.
 
 
-def test_close_during_arm_hold_joins_hold_before_gripper_close_and_ownership_release(rig):
+def test_close_during_arm_hold_joins_hold_before_ownership_release(rig):
     state = rig.state
     rig.connect()
     session = rig.arm_ready()
@@ -944,7 +880,7 @@ def test_close_during_arm_hold_joins_hold_before_gripper_close_and_ownership_rel
     closer.start()
     try:
         wait_for(lambda: "session1.release" in rig.log)
-        stays(lambda: "control1.cancel" not in rig.log and "gripper.close" not in rig.log)
+        stays(lambda: "control1.cancel" not in rig.log)
         assert worker.is_alive()
         assert closer.is_alive()
         assert not acquired(contender)
@@ -957,7 +893,6 @@ def test_close_during_arm_hold_joins_hold_before_gripper_close_and_ownership_rel
             "session1.run.exit",
             "control1.cancel",
             "control1.stop",
-            "gripper.close",
         )
         assert acquired(contender)
     finally:
@@ -966,7 +901,7 @@ def test_close_during_arm_hold_joins_hold_before_gripper_close_and_ownership_rel
         contender.release()
 
 
-def test_close_during_a_suction_key_stops_at_once_and_closes_gripper_after_it(rig):
+def test_close_during_a_suction_key_stops_at_once_and_releases_ownership_after_it(rig):
     state = rig.state
     rig.connect()
     rig.arm_ready()
@@ -978,8 +913,7 @@ def test_close_during_a_suction_key_stops_at_once_and_closes_gripper_after_it(ri
     try:
         assert control.stop_entered.wait(1)
         assert worker.is_alive()
-        stays(lambda: "gripper.close" not in rig.log)
-        assert closer.is_alive()
+        stays(closer.is_alive)
         assert not acquired(contender)
 
         control.vacuum_gate.set()
@@ -990,7 +924,6 @@ def test_close_during_a_suction_key_stops_at_once_and_closes_gripper_after_it(ri
             "control1.cancel",
             "control1.stop",
             "control1.vacuum.exit",
-            "gripper.close",
         )
         assert acquired(contender)
     finally:
@@ -1021,9 +954,6 @@ def test_close_repeats_stop_while_disconnected_keyboard_worker_runs(rig):
         session.finish_gate.set()
         closer.join(5)
     assert not closer.is_alive()
-    entries = rig.log.entries
-    last_stop = max(index for index, entry in enumerate(entries) if entry == "control1.stop")
-    assert last_stop < entries.index("gripper.close")
 
 
 def test_close_is_bounded_when_hold_never_exits_and_keeps_ownership(rig):
@@ -1040,9 +970,7 @@ def test_close_is_bounded_when_hold_never_exits_and_keeps_ownership(rig):
         # Both keyboard joins time out; the default join would take 12 s.
         assert time.monotonic() - started < 3
         assert worker.is_alive()
-        rig.log.assert_order(
-            "session1.release", "control1.cancel", "control1.stop", "gripper.close"
-        )
+        rig.log.assert_order("session1.release", "control1.cancel", "control1.stop")
         # The keyboard worker can still act, so the panel keeps controller ownership.
         assert not acquired(contender)
     finally:
@@ -1096,8 +1024,6 @@ def test_failed_session_release_still_stops_after_hold_exits(rig, trigger):
     if trigger == "lease":
         assert state.snapshot()["keyboard_disarm_reason"] == "browser control lease expired."
         stays(state._watchdog.is_alive)
-    elif trigger == "close":
-        rig.log.assert_order(verify, "gripper.close")
 
 
 def test_failed_session_release_on_key_up_turns_keys_off_without_raising(rig):

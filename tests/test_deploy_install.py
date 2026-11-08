@@ -38,7 +38,6 @@ def host(module, monkeypatch, tmp_path, tmp_path_factory):
     shutil.copy(ROOT / "deploy/services.toml", code / "deploy")
     shutil.copytree(ROOT / "config/systemd", code / "config/systemd")
     shutil.copytree(ROOT / "config/proxy", code / "config/proxy")
-    (tmp_path / "proc").mkdir()
     commands = []
 
     def run(command, **options):
@@ -275,7 +274,6 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     uv = [options for command, options in host.commands if command[0] == "/usr/bin/uv"]
     assert names(host.commands) == [
         ["/usr/bin/python3", "-c", "import sys; print(sys.version_info >= (3, 12))"],
-        ["systemctl", "show", "--property=MainPID", "mg400-gripper-collector.service"],
         [
             "/usr/bin/uv",
             "sync",
@@ -295,7 +293,6 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
             "/usr/bin/python3",
         ],
         ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", "--now", "mg400-gripper-collector.path"],
         ["git", "-C", str(host.code), "rev-parse", "--short", "HEAD"],
     ]
     assert uv[0]["cwd"] == host.code and uv[0]["env"]["UV_LINK_MODE"] == "copy"
@@ -409,33 +406,6 @@ def test_camera_errors_stop_before_any_change(host, capsys, devices, argv, messa
     assert not host.data.exists() and not host.units.exists()
 
 
-def process(proc_root, pid, arguments):
-    directory = proc_root / str(pid)
-    directory.mkdir(parents=True)
-    (directory / "cmdline").write_bytes(b"\0".join(item.encode() for item in arguments) + b"\0")
-
-
-def test_process_scan_finds_every_collector_except_the_service(module, tmp_path):
-    proc = tmp_path / "proc"
-    process(proc, 101, ["/usr/bin/python3", "/opt/mg400/scripts/gripper_feedback.py"])
-    process(proc, 102, ["/usr/bin/python3", "/opt/mg400/scripts/gripper_feedback.py"])
-    process(proc, 103, ["python3", "-u", "scripts/gripper_feedback.py", "--commands"])
-    process(proc, 104, ["python3.12", "/old/checkout/scripts/gripper_feedback.py"])
-    process(proc, 105, ["grep", "gripper_feedback.py"])
-    process(proc, 106, ["python3", "-c", "print()", "gripper_feedback.py"])
-    process(proc, 107, ["python3", "other.py", "gripper_feedback.py"])
-    process(proc, 108, [])
-    (proc / "self").mkdir()
-    assert module.find_collectors(proc, 102) == [101, 103, 104]
-
-
-def test_independent_collector_blocks_installation_before_any_writes(host, capsys):
-    process(host.root / "proc", 123, ["python3", "scripts/gripper_feedback.py", "--commands"])
-    assert host.install() == 1
-    assert "123" in capsys.readouterr().err
-    assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
-
-
 @pytest.mark.parametrize(("platform", "uid"), [("darwin", 0), ("linux", 1000)])
 def test_installer_requires_linux_root_before_any_command(module, host, monkeypatch, platform, uid):
     globals_ = module.main.__globals__
@@ -482,14 +452,10 @@ def test_old_python_or_missing_uv_stops_before_any_change(module, host, monkeypa
 
 def test_dry_run_changes_nothing_and_runs_only_checks(host):
     assert host.install("--dry-run") == 0
-    assert sorted(path.relative_to(host.root).parts[0] for path in host.root.iterdir()) == [
-        "opt",
-        "proc",
-    ]
-    assert [command[0] for command in names(host.commands)] == ["/usr/bin/python3", "systemctl"]
+    assert sorted(path.relative_to(host.root).parts[0] for path in host.root.iterdir()) == ["opt"]
+    assert [command[0] for command in names(host.commands)] == ["/usr/bin/python3"]
     report = host.out.getvalue()
     assert "Would run: /usr/bin/uv sync" in report
-    assert "Would run: systemctl enable --now mg400-gripper-collector.path" in report
     assert f"Would ensure {host.data / 'robot'} (0750, 1000:1000)" in report
 
 
@@ -644,7 +610,7 @@ def test_asset_dry_run_lists_verification_without_writes_or_downloads(
 def test_bad_asset_argument_stops_before_any_host_change(host, local_asset, specification):
     assert host.install("--asset", specification) == 1
     assert not host.settings.exists() and not host.data.exists()
-    assert len(host.commands) == 2
+    assert len(host.commands) == 1
 
 
 def test_duplicate_asset_stops_before_any_host_change(host, local_asset):
@@ -657,7 +623,7 @@ def test_bad_local_asset_stops_before_any_host_change(host, local_asset):
     local_asset.write_bytes(b"corrupt")
     assert host.install("--asset", f"model={local_asset}") == 1
     assert not host.settings.exists() and not host.data.exists()
-    assert len(host.commands) == 2
+    assert len(host.commands) == 1
 
 
 def test_asset_destination_link_is_refused_before_host_changes(host, local_asset, tmp_path):
@@ -669,7 +635,7 @@ def test_asset_destination_link_is_refused_before_host_changes(host, local_asset
     assert host.install("--asset", f"model={local_asset}") == 1
     assert not host.settings.exists()
     assert target.is_symlink() and sentinel.read_bytes() == b"keep"
-    assert len(host.commands) == 2
+    assert len(host.commands) == 1
 
 
 def add_optional_service(
@@ -769,7 +735,7 @@ def test_vision_dry_run_is_conditional_and_never_syncs_downloads_or_writes(
     ):
         assert (expected in report) is enabled
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
-    assert len(host.commands) == 2  # Injected Python-version and collector read-only checks.
+    assert len(host.commands) == 1  # Injected Python-version read-only check.
     opener.assert_not_called()
 
 
@@ -850,7 +816,7 @@ def test_vision_asset_preflight_refuses_invalid_manifest_or_target_before_change
         target.symlink_to(host.root / "never-follow-this")
     assert host.install() == 1
     assert not host.settings.exists() and not host.units.exists()
-    assert len(host.commands) == 2
+    assert len(host.commands) == 1
     opener.assert_not_called()
 
 
@@ -898,7 +864,7 @@ def test_bad_optional_selection_refuses_before_host_changes(host, selection):
     select_optional(host, selection)
     assert host.install() == 1
     assert not host.settings.exists() and not host.data.exists() and not host.units.exists()
-    assert len(host.commands) == 2
+    assert len(host.commands) == 1
 
 
 def test_mandatory_groups_are_explicit_and_ignore_external_venv(host, monkeypatch):
@@ -1136,15 +1102,12 @@ def test_default_dry_run_lists_every_step(host):
         "Would install <host>/etc/systemd/system/mg400-camera-capture.service",
         "Would install <host>/etc/systemd/system/mg400-camera-preview.service",
         "Would install <host>/etc/systemd/system/mg400-furnace.service",
-        "Would install <host>/etc/systemd/system/mg400-gripper-collector.path",
-        "Would install <host>/etc/systemd/system/mg400-gripper-collector.service",
         "Would install <host>/etc/systemd/system/mg400-microscope.service",
         "Would install <host>/etc/systemd/system/mg400-orchestrator.service",
         "Would install <host>/etc/systemd/system/mg400-proxy.service",
         "Would install <host>/etc/systemd/system/mg400-stage-panel.service",
         "Would install <host>/etc/systemd/system/mg400-web-panel.service",
         "Would run: systemctl daemon-reload",
-        "Would run: systemctl enable --now mg400-gripper-collector.path",
         "Would link <host>/usr/local/bin/mg400ctl to <host>/opt/mg400/deploy/mg400ctl",
         "Would link <host>/usr/local/bin/labctl to <host>/opt/mg400/deploy/mg400ctl",
     ]
@@ -1519,7 +1482,7 @@ def inventory_udev(module, host, monkeypatch):
 
 def test_inventory_udev_install_selects_only_registered_enabled_services(host, inventory_udev):
     assert host.install() == 0
-    expected = {"camera", "collector", "stage", "furnace", "microscope"}
+    expected = {"camera", "stage", "furnace", "microscope"}
     rules = host.root / "etc/udev/rules.d"
     assert {p.name for p in rules.iterdir()} == {f"70-mg400-{name}.rules" for name in expected}
     for name in expected:
@@ -1539,7 +1502,7 @@ def test_inventory_udev_dry_run_writes_nothing_and_executes_no_udev(host, invent
     assert not (host.root / "etc/udev").exists()
     assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]
     output = host.out.getvalue()
-    for name in ("camera", "collector", "stage", "furnace", "microscope"):
+    for name in ("camera", "stage", "furnace", "microscope"):
         assert f"70-mg400-{name}.rules" in output
     assert "70-mg400-thermal.rules" not in output
     assert "Would run: udevadm control --reload-rules" in output

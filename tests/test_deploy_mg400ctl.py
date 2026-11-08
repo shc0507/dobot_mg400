@@ -97,7 +97,6 @@ def systemd_units(ctl, missing=(), running=()):
         (["start", "web", "stage"], ["mg400-web-panel.service", "mg400-stage-panel.service"]),
         (["start", "camera"], ["mg400-camera-preview.service"]),
         (["stop", "camera"], ["mg400-camera-preview.service", "mg400-camera-capture.service"]),
-        (["start", "collector"], ["mg400-gripper-collector.service"]),
         (
             ["restart", "all", "web"],
             [
@@ -108,12 +107,11 @@ def systemd_units(ctl, missing=(), running=()):
                 "mg400-stage-panel.service",
                 "mg400-camera-preview.service",
                 "mg400-camera-capture.service",
-                "mg400-gripper-collector.service",
                 "mg400-proxy.service",
             ],
         ),
     ],
-    ids=["start-two", "start-camera", "stop-camera", "collector", "restart-all"],
+    ids=["start-two", "start-camera", "stop-camera", "restart-all"],
 )
 def test_service_actions_map_short_names_to_units(ctl, argv, expected):
     assert ctl.call(*argv) == 0
@@ -235,20 +233,20 @@ def test_station_dispatch_preserves_real_and_effective_identity_gate(ctl, monkey
     ctl.execvpe.assert_not_called()
 
 
-def test_status_lists_every_service_and_the_request_watcher(ctl):
+def test_status_lists_every_service(ctl):
     blocks = [
         "Id=mg400-web-panel.service\nActiveState=active\nSubState=running",
-        "Id=mg400-gripper-collector.path\nActiveState=active\nSubState=waiting",
+        "Id=mg400-proxy.service\nActiveState=active\nSubState=running",
     ]
     ctl.run.return_value = SimpleNamespace(returncode=0, stdout="\n\n".join(blocks) + "\n")
     assert ctl.call("status") == 0
     command = systemctl(ctl)[0]
     assert command[:3] == ["systemctl", "show", "--property=Id,ActiveState,SubState"]
-    assert len(command) == 3 + 10
+    assert len(command) == 3 + 8
     lines = ctl.out.getvalue().splitlines()
-    assert len(lines) == 10
+    assert len(lines) == 8
     assert lines[0].split() == ["web", "mg400-web-panel.service", "active", "(running)"]
-    assert lines[-1].split() == ["collector", "mg400-gripper-collector.path", "active", "(waiting)"]
+    assert lines[-1].split() == ["proxy", "mg400-proxy.service", "active", "(running)"]
     assert lines[1].split()[-1] == "unknown"
 
 
@@ -289,8 +287,6 @@ def test_terminal_runs_as_the_service_user_on_its_own_terminal(ctl, monkeypatch)
         "mg400group",
         "--",
         str(ctl.host.code / ".venv/bin/mg400-robot"),
-        "--gripper-feedback",
-        str(ctl.host.data / "work/gripper_feedback.json"),
     ]
     # Nothing from the root environment except the terminal settings reaches the service user.
     assert environment == {
@@ -635,7 +631,6 @@ def test_start_all_selects_only_enabled_services(optional_ctl):
             "mg400-orchestrator.service",
             "mg400-stage-panel.service",
             "mg400-camera-preview.service",
-            "mg400-gripper-collector.service",
             "mg400-proxy.service",
             "mg400-optional.service",
         ]
@@ -720,7 +715,7 @@ def test_backup_preserves_host_data_owners_modes_and_persistent_command_locks(ba
         "recordings/run.mp4": b"fake video fixture",
         "models/model.pt": b"fake model fixture",
         "camera/preview.key": b"private-preview-key",
-        "work/gripper_feedback.json.command-lock.json": b'{"outcome":"unknown"}',
+        "work/request.json": b'{"outcome":"unknown"}',
         "work/locks/persistent.json": b"do not omit nested lock directories",
         "locks/process.lock": b"exclude only this process-lock tree",
     }

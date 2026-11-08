@@ -2,7 +2,7 @@
 
 # Olares 配置与维护
 
-[项目首页](../README.md) · [网络](#网络) · [获取代码](#获取代码) · [迁移](#从旧布局迁移) · [USB 夹爪](#usb-夹爪转换器) · [摄像头](#摄像头)
+[项目首页](../README.md) · [网络](#网络) · [获取代码](#获取代码) · [迁移](#从旧布局迁移) · [摄像头](#摄像头)
 
 本页只说明 Olares 特有的设置和故障排查。
 安装、更新、配置和日常命令见 [主机部署](deploy.md)。
@@ -147,9 +147,8 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 | 旧位置 | 内容 | 新位置 |
 | --- | --- | --- |
 | `/opt/mg400-web-control` | 网页面板代码 | `/opt/mg400`，`/etc/mg400/mg400.env` |
-| `$DOCS/mg400-isaac` | 夹爪采集代码 | `/opt/mg400` |
 | `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `mg400ctl terminal`、`mg400ctl mode` |
-| `$DOCS/mg400-data` | 连接锁、夹爪反馈、模式切换备份 | `/var/lib/mg400` |
+| `$DOCS/mg400-data` | 连接锁、模式切换备份 | `/var/lib/mg400` |
 | `/opt/mg400-camera-preview` | go2rtc、采集配置和预览程序 | `/usr/local/lib/mg400`、`/etc/mg400` |
 
 迁移只做一次。迁移前，关闭所有面板页面和交互终端，下使能机械臂。
@@ -159,7 +158,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 
    ```sh
    DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
-   systemctl stop mg400-web-panel mg400-stage-panel mg400-camera-preview mg400-gripper-collector.path mg400-gripper-collector
+   systemctl stop mg400-web-panel mg400-stage-panel mg400-camera-preview
    mkdir -p /root/mg400-old-units
    cp -a /etc/systemd/system/mg400-* /root/mg400-old-units/
    mv "$DOCS/mg400-tools/start-terminal.sh" "$DOCS/mg400-tools/start-terminal.sh.disabled"
@@ -184,19 +183,6 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
-   检查夹爪命令锁。该文件存在时，有夹爪命令结果未确认：
-
-   ```sh
-   ls -l "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json"
-   ```
-
-   文件存在时，先核实夹爪状态，再按新的反馈文件名复制该锁。
-   新采集服务读到该锁后保持锁定，与旧服务一致：
-
-   ```sh
-   install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
-   ```
-
 6. 按 [单端口代理](#单端口代理) 设置代理地址。
 7. 删除旧服务的附加配置和开机自启链接，再启动服务。
    第 1 步已备份这些文件：
@@ -215,7 +201,6 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 8. 启用[实验室控制台](dashboard.md#实验室控制台)后，核对以下各项：
    - Cameras 工作区显示所有已配置的画面。
    - Motion 工作区显示机械臂状态。
-   - 在 Motion 工作区取得机械臂控制权后，`mg400ctl status` 显示夹爪采集为 `active`。
    - Motion 工作区的位移台卡片能连接 Arduino。
 
 旧目录保留到核对完成。
@@ -227,7 +212,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 所有实验室 USB 设备通过 1 个自供电集线器连接到 1 个主机端口。
 控制器为 `0000:80:14.0`，USB 2 端口为 `12`，USB 3 端口为 `3`。
 Toupcam 摄像头保持连接在集线器的 USB 3 侧。不得复位共用集线器。
-复位会同时断开电机、炉子、气体、夹爪和摄像头的连接。
+复位会同时断开电机、炉子、气体和摄像头的连接。
 
 每台摄像头保持连接在表中的集线器端口。
 4 台 AC410 的序列号均为 `HU12321178`，因此稳定名称使用端口路径。
@@ -241,7 +226,6 @@ Toupcam 摄像头保持连接在集线器的 USB 3 侧。不得复位共用集�
 | 转盘与调焦 Arduino Uno R3 | `2341:0043` | `/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_035353433353512070D1-if00` | `12.2.2` | `microscope` |
 | 炉子 FT231X | `0403:6015` | `/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_DU0DT9G8-if00-port0` | `12.3.2` | `furnace`（`MG400_FURNACE_SERIAL`） |
 | 气体控制器 FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace`（`MG400_MFC_SERIAL`） |
-| 夹爪转换器 FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0` | `12.3.3` | `collector` |
 | Thermal Master P1 | `3474:45c2` | libusb，序列号 `P1016021DG040100208` | `12.1.1` | `thermal` |
 | AC410 位移台俯视摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
 | AC410 插入导轨摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera` |
@@ -249,7 +233,7 @@ Toupcam 摄像头保持连接在集线器的 USB 3 侧。不得复位共用集�
 | AC410 托盘摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0` | `12.2.1` | `camera` |
 | ToupTek USB 3 摄像头 | `0547:1375`（USB 3），`0547:1376`（USB 2） | Toupcam SDK，无序列号 | `3.2.4` | `microscope`，与炉子录像共享 |
 
-控制器必须使用完整串口路径。气体控制器与夹爪转换器的 VID:PID 相同，但序列号不同。
+控制器必须使用完整串口路径。
 热像仪和 Toupcam 使用 `/dev/bus/usb` 下的 USB 设备节点，没有串口或视频设备节点。
 总线和设备编号可能变化。让 libusb 或 SDK 查找摄像头。
 
@@ -268,58 +252,11 @@ USB trigger 不会复位集线器或启动服务。
 TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 `dialout` 和 `video` 组访问设备。
 安装前，用安装程序的 dry run 检查所选文件和命令。
 
-默认服务选择 `stage`、`collector`、`camera`、`furnace` 和 `microscope` 模板。
+默认服务选择 `stage`、`camera`、`furnace` 和 `microscope` 模板。
 `furnace` 模板含 2 条串口控制器规则。
 启用 `thermal` 后会选择 P1 模板。
 显微镜独占 Toupcam，也提供炉子录像。炉子规则不另行授予该摄像头的访问权限。
 模板不选择服务配置中的设备路径。保持这些路径与表格一致。
-
-## USB 夹爪转换器
-
-转换器的 USB 身份为 `0403:6001`，序列号为 `BG02Q5TN`。
-主机稳定路径为 `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0`。
-`ttyUSB` 编号可能变化，采集程序按完整 USB 身份选择设备。
-不要用扩展坞上的其他串口替代。
-位移台的 Arduino 也接在 Olares USB 上，在 `/dev/serial/by-id/` 中是另一项。
-夹爪采集不使用 Arduino，位移台服务不列出夹爪转换器。
-
-采集程序每 50 ms 读取三个状态寄存器，并原子替换反馈文件 `/var/lib/mg400/work/gripper_feedback.json`。
-采集服务启动时只读状态，收到机器人服务的请求后才执行初始化或位置命令。
-关闭控制台后，采集继续运行。
-串口被占用、设备缺失或读取失败时，采集程序退出。
-服务在异常退出后等待 2 秒再启动，不限制重试次数。
-USB 恢复连接后，采集自动恢复，不必重新打开控制台。
-每次启动使用新会话，不重放旧命令，也不清除命令锁定。
-若断线发生在命令执行期间，控制可能锁定，须先核实夹爪状态。
-机器人服务与采集程序必须位于同一主机，并共享同一单调时钟域。
-命令文件和锁的格式见 [USB 夹爪协议](development.md#usb-夹爪协议)。
-查看日志：`mg400ctl logs collector`。
-
-### 恢复 USB 连接
-
-如果日志报告找不到 `BG02Q5TN`，先在主机检查 USB：
-
-```sh
-ls -l /dev/serial/by-id/
-dmesg --ctime | grep -E 'BG02Q5TN|ftdi_sio|ttyUSB|device descriptor|accepting address'
-```
-
-`device descriptor read` 或 `device not accepting address` 表示 USB 枚举失败。
-先按日志中的端口路径核对原转换器，恢复该 USB 连接。
-更换集线器连接线不会改变转换器序列号，不要据此改选其他串口。
-若内核提供该端口的 `disable` 文件，可以单独重新枚举该端口。
-先停止采集监听和采集服务。
-将 `disable` 写为 `1`，再写回 `0`，随后恢复监听。
-不要重置共同上游集线器，否则其他设备也会断开。
-确认 `BG02Q5TN` 重新出现后，再启动采集并检查反馈文件是否持续更新。
-
-若服务或监听处于 `failed` 状态，修复 USB 连接后执行：
-
-```sh
-systemctl reset-failed mg400-gripper-collector.service mg400-gripper-collector.path
-systemctl restart mg400-gripper-collector.path
-mg400ctl start collector
-```
 
 ## 摄像头
 
@@ -446,4 +383,4 @@ mg400ctl start camera
 
 所有实验室设备共用外接集线器。不得通过复位共用上游集线器恢复摄像头。
 检查故障摄像头的端口和日志。改变设备连接前，遵守有人监督的硬件操作流程。
-USB 重新连接不代表允许发送机械臂、位移台、夹爪、炉子或气体指令。
+USB 重新连接不代表允许发送机械臂、位移台、炉子或气体指令。

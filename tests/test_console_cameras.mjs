@@ -153,6 +153,10 @@ test("tiles show the measured frame rate and drop an old rate", () => {
   assert.equal(logic.modeLine("640×480", 4.9), "640×480 · 4.9 fps");
   assert.equal(logic.modeLine("640×480", null), "640×480");
   assert.equal(logic.modeLine("640×480", Number.NaN), "640×480");
+  // An unknown mode drops out; extra parts join the same line.
+  assert.equal(logic.modeLine(null, 3.84), "3.8 fps");
+  assert.equal(logic.modeLine(null, null), "");
+  assert.equal(logic.modeLine("1280×720", 30, "0 found"), "1280×720 · 30.0 fps · 0 found");
 });
 
 test("the thermal panel relays connect and shutter and links no service page", () => {
@@ -294,8 +298,8 @@ test("thermal settings open on demand in a card that takes the focus, keeps its 
     for (const tile of cameras.engine.tiles) if (tile.view === "thermal") tile.refresh();
     assert.equal(card.querySelector('[data-focus="shutter"]'), shutter);
     const readings = page.cell("thermal").all().find(node => node.className === "lcam-readings");
-    // The 4 readings form 1 group on the tile: label, then value.
-    assert.equal(readings.textContent, "Max31.5 °CMin18.0 °CCenter21.0 °CMean21.0 °C");
+    // Max and Mean form 1 group on the tile: label, then value. Min and the center show on the color bar and markers.
+    assert.equal(readings.textContent, "Max31.5 °CMean21.0 °C");
     // The shutter confirmation takes the focus. The first Esc closes it, the second closes the card.
     shutter.click();
     assert.equal(page.doc.activeElement, card.querySelector('[data-focus="confirm"]'));
@@ -324,4 +328,57 @@ test("Draw region closes the card and shows Save and Cancel on the thermal tile"
     page.button("Cancel", bar).click();
     assert.equal(bar.hidden, true);
   } finally { page.restore(); }
+});
+
+test("tiles show the role, a dot while live, and 1 mode line without unknown parts", async () => {
+  const page = await mountWorkspace();
+  try {
+    const tileOf = view => [...cameras.engine.tiles].find(tile => tile.view === view && page.cell(view).contains(tile.el));
+    const camera4 = tileOf("camera4");
+    cameras.engine.status.set("camera4", { id: "camera4", state: "live", mode: "1280×720", fps: 30 });
+    cameras.engine.statusAt = performance.now();
+    cameras.engine.settings.detections = true;
+    cameras.engine.detections = { available: true, detections: [] };
+    camera4.running = true;
+    camera4.live = true;
+    camera4.refresh();
+    // The role is the title; the camera ID is in the tooltip.
+    assert.equal(camera4.title.textContent, "Tray");
+    assert.equal(camera4.title.getAttribute("title"), "camera4 · Tray");
+    // Live: a dot only, with the word in the tooltip.
+    assert.match(camera4.badge.className, /lcam-badge-dot/);
+    assert.equal(camera4.badgeText.textContent, "");
+    assert.equal(camera4.badge.getAttribute("title"), "LIVE · 0.0 s");
+    assert.equal(camera4.mode.textContent, "1280×720 · 30.0 fps · 0 found");
+    assert.equal(camera4.note.textContent, "");
+    camera4.live = false;
+    camera4.refresh();
+    assert.doesNotMatch(camera4.badge.className, /lcam-badge-dot/);
+    assert.equal(camera4.badgeText.textContent, "OFFLINE");
+    // The microscope has no configured mode: without a decoded frame the line is empty and hidden.
+    const microscope = tileOf("microscope");
+    cameras.engine.status.set("microscope", { id: "microscope", state: "offline" });
+    microscope.refresh();
+    assert.equal(microscope.title.textContent, "Microscope");
+    assert.equal(microscope.mode.textContent, "");
+    assert.equal(microscope.meta.hidden, true);
+    microscope.running = true;
+    microscope.live = true;
+    microscope.stopVideo = () => {};
+    microscope.video = { videoWidth: 2048, videoHeight: 1536 };
+    microscope.refresh();
+    assert.equal(microscope.mode.textContent, "2048×1536");
+    assert.equal(microscope.meta.hidden, false);
+    microscope.stopVideo = null;
+    // The thermal tile shows no fixed resolution.
+    const thermal = tileOf("thermal");
+    thermal.running = false;
+    thermal.refresh();
+    assert.equal(thermal.title.textContent, "Thermal");
+    assert.doesNotMatch(thermal.mode.textContent, /160/);
+  } finally {
+    cameras.engine.status.clear();
+    cameras.engine.detections = null;
+    page.restore();
+  }
 });

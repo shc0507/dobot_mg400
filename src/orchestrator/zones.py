@@ -129,6 +129,31 @@ def _invalid_constant(value):
     raise ValueError(f"Nonfinite value in durable zone occupancy: {value}")
 
 
+# Bound for one zone-storage lock wait when the caller gives no earlier deadline.
+# Writers hold the lock only to read, write and fsync the small occupancy file.
+LOCK_WAIT_SECONDS = 2.0
+# Threads of one process queue on this lock before they take the directory flock.
+# flock serializes processes; it does not queue threads fairly.
+_THREAD_LOCKS = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock(path):
+    key = str(Path(path).absolute().parent)
+    with _THREAD_LOCKS_GUARD:
+        return _THREAD_LOCKS.setdefault(key, threading.Lock())
+
+
+def _wait_slice(deadline, cancelled):
+    """Return the next wait slice in seconds; raise when cancelled or past the deadline."""
+    if cancelled is not None and cancelled.is_set():
+        raise RuntimeError("Zone storage wait was cancelled.")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Zone storage is busy.")
+    return min(0.02, remaining)
+
+
 class OccupancyStore:
     """Atomic storage. Mutation methods compare the recorded claim generation.
 
@@ -193,10 +218,20 @@ class OccupancyStore:
         return data
 
     def _change(self, update=None, *, deadline=None, cancelled=None, commit_guard=None):
+        deadline = min(
+            time.monotonic() + LOCK_WAIT_SECONDS,
+            deadline if deadline is not None else float("inf"),
+        )
+        lock = _thread_lock(self.path)
+        while not lock.acquire(timeout=_wait_slice(deadline, cancelled)):
+            pass
+        try:
+            return self._change_locked(update, deadline, cancelled, commit_guard)
+        finally:
+            lock.release()
+
+    def _change_locked(self, update, deadline, cancelled, commit_guard):
         with _parent(self.path) as (parent, name):
-            deadline = min(
-                time.monotonic() + 0.25, deadline if deadline is not None else float("inf")
-            )
             while True:
                 if cancelled is not None and cancelled.is_set():
                     raise RuntimeError("Zone storage wait was cancelled.")
@@ -206,13 +241,11 @@ class OccupancyStore:
                     )
                     break
                 except BlockingIOError:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError("Zone storage is busy.")
+                    wait = min(0.005, _wait_slice(deadline, cancelled))
                     if cancelled is None:
-                        time.sleep(min(0.005, remaining))
+                        time.sleep(wait)
                     else:
-                        cancelled.wait(min(0.005, remaining))
+                        cancelled.wait(wait)
             data = self._load(parent, name)
             if update is None:
                 return copy.deepcopy(data["claims"])

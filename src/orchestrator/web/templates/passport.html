@@ -8,7 +8,8 @@
   <link rel="stylesheet" href="{{ base_path }}/dashboard-static/passport.css">
   <script defer src="{{ base_path }}/dashboard-static/passport.js"></script>
 </head>
-<body data-base-path="{{ base_path }}">
+<body class="pp" data-base-path="{{ base_path }}">
+  <div class="pp-top">
   <header class="lc-header">
     <div class="lc-brand">
       <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="23" r="4"></circle><path d="M10.5 20 L17 11 L24 14"></path><circle cx="17" cy="11" r="2.2"></circle><path d="M24 14 L26 18 M24 14 L27 12"></path></svg>
@@ -21,6 +22,7 @@
       <button type="button" class="lc-button" id="pp-lang">中文</button>
     </div>
   </header>
+  </div>
   <main class="pp-main">
     <section class="panel" aria-label="Find a chip" id="pp-find">
       <form id="passport-form" class="passport-search">

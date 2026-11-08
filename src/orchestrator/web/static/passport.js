@@ -224,11 +224,11 @@
       const svg = svgNode("svg", { viewBox: "0 0 720 230", class: "pv-plot", role: "img", "aria-label": t("pv.label") });
       const x = value => dx ? 65 + ((value - minTime) / dx) * 625 : 377;
       const y = value => dy ? 180 - ((value - minValue) / dy) * 150 : 105;
-      svg.append(svgNode("path", { d: "M65 25V185H695", fill: "none", stroke: "#2E3B46" }));
+      svg.append(svgNode("path", { d: "M65 25V185H695", fill: "none", stroke: "#E0D8CF" }));
       svg.append(svgNode("text", { x: 8, y: 25 }, `${maxValue} °C`), svgNode("text", { x: 8, y: 185 }, `${minValue} °C`));
       svg.append(svgNode("text", { x: 65, y: 213 }, date(minTime)), svgNode("text", { x: 695, y: 228, "text-anchor": "end" }, date(maxTime)));
-      // The same colours as the legend in passport.css: amber like the console PV, and soft slate.
-      for (const [field, color] of [["pv_c", "#F2B84B"], ["furnace.pv_c", "#B8C6D1"]]) {
+      // The same colours as the legend in passport.css: Warm Graphite and Count Grey (DESIGN.md).
+      for (const [field, color] of [["pv_c", "#2A2622"], ["furnace.pv_c", "#8A7F74"]]) {
         const series = points.filter(point => point.field === field);
         if (series.length > 1) svg.append(svgNode("polyline", { points: series.map(point => `${x(point.time)},${y(point.value)}`).join(" "), fill: "none", stroke: color, "stroke-width": 2 }));
         for (const point of series) svg.append(svgNode("circle", { cx: x(point.time), cy: y(point.value), r: 3, fill: color }));
@@ -329,11 +329,15 @@
     } finally { section.loading = false; section.button.disabled = false; }
   }
 
+  // The tone of a run status in passport.css. The status word always shows beside it.
+  const TONES = { completed: "tone-ok", running: "tone-info", held: "tone-warn", failed: "tone-bad", aborted: "tone-bad" };
+  const statusTone = status => TONES[status] || "tone-off";
+
   function runCard(row, savedGeneration) {
     if (!/^[0-9a-f]{32}$/.test(row.id)) throw new Error(t("error.runId"));
     const card = node("article", undefined, "panel passport-run");
     const heading = node("div", undefined, "section-heading");
-    heading.append(node("h3", row.name || row.id), node("span", row.status || t("unknown"), "badge"));
+    heading.append(node("h3", row.name || row.id), node("span", row.status || t("unknown"), "badge " + statusTone(row.status)));
     card.append(heading, node("p", row.detail || ""));
     const meta = node("div", undefined, "run-meta");
     meta.append(node("span", t("run.id", { id: row.id })), node("span", t("run.created", { date: date(row.created_at) })), node("span", t("run.updated", { date: date(row.updated_at) })));

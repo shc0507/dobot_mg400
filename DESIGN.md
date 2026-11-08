@@ -292,7 +292,7 @@ This is the console-wide direction, and all Lab Console pages follow it. The pag
 - Device numbers in tabular numerals in fixed cells.
 
 ### Known limitation
-The top band and the Motion, Cameras and Furnace + microscope workspaces use this system now (`static/console/shell.css` with tokens on `#lc-top`, and `motion.css`, `cameras.css` and `process.css` with tokens on `#ws-motion`, `#ws-cameras` and `#ws-process`). Overview and the chip passport (including its header) still use the previous dark styles in `shell.css` and `passport.css`. The shared camera tile rules in `cameras.css` (outside `#ws-cameras`) still carry the previous colours; each workspace restyles the tile inside its own scope. Move each page to the tokens in this file when that page changes.
+The top band and the Motion, Cameras and Furnace + microscope workspaces use this system now (`static/console/shell.css` with tokens on `#lc-top`, and `motion.css`, `cameras.css` and `process.css` with tokens on `#ws-motion`, `#ws-cameras` and `#ws-process`). The chip passport uses it too, with tokens on `body.pp` in `passport.css`. Overview still uses the previous dark styles in `shell.css`. The shared camera tile rules in `cameras.css` (outside `#ws-cameras`) still carry the previous colours; each workspace restyles the tile inside its own scope. Move each page to the tokens in this file when that page changes.
 
 ## Colors
 
@@ -445,6 +445,9 @@ A pill track, 40 by 22px (34 by 20px for the small switch), in Knob Off with a w
 ### Media view (signature)
 A Media Well with 16px corners that holds the live frame. The view tabs are at the top left. The state badge (a dot, LIVE or another state word, and the frame age) is on a Well Chip at the top right, in its tone. The frame size and rate are on a Well Scrim chip at the bottom left. Snapshot and Expand are Well Chip buttons at the bottom right. A camera that is off shows its state word on a centered translucent chip.
 
+### Chip passport
+A separate read-only page. Its header has the brand, a plain Umber link back to the Lab Console and the language switch, and no stop. The search is 1 row in a card: the label, the QR text field and Search records (primary). Each run is a card with a status pill (dot and word: completed Ready Green, running Action Blue, held Ochre Wash, failed and aborted Coral Wash). An opened run shows the recorded furnace PV on a Warm Surface panel (Warm Graphite line), then the 4 record kinds as rows on Hairlines in 2 columns, with the step and time at the right of each row. At 720px and below, the record kinds use 1 column.
+
 ### Keyboard map (signature)
 A quiet legend under the Keyboard jog switch and speed slider: the switch and slider are the main control, and the map stays in the background. The keys are in pairs, in one wrapping line: W S (out and in), A D (J1), R F (Z), Q E (J4) and Z X (suction). Each pair is 2 key caps and a 12px Umber label in weight 400, for example "J1 + / −". The first key of a pair moves out, +, up or sucks. A key cap is a 20px Fill square with 6px corners and an 11px Umber letter, with no base line and no shadow. Only a held key stands out: its cap turns Action Blue with white text at once (80ms). Each pair label is 1 string, so a pair can get a new label without a layout change. Key hints beside an axis are 24px Fill squares and light the same way.
 
@@ -462,7 +465,7 @@ A Coral Wash block with 16px corners at the top of the arm station. The title is
 
 ### Do:
 - **Do** scope each workspace under `#ws-<id>` and take every color from the tokens in this file.
-- **Do** keep STOP ALL MOTION in the header on every page. It and Stop heat and gas are the only filled red controls.
+- **Do** keep STOP ALL MOTION in the header on every console page. The chip passport only reads records and has no stop. STOP ALL MOTION and Stop heat and gas are the only filled red controls.
 - **Do** give device stops the Coral Wash fill with Stop Red text, and keep every stop enabled.
 - **Do** light a held key and a held axis in Action Blue for as long as the input lasts.
 - **Do** make a disabled primary, or a selected option that you cannot change, neutral.

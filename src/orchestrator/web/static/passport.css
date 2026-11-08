@@ -1,58 +1,117 @@
-/* Chip passport. The frame, the header and the colours come from console-static/shell.css (Night Slate). */
-.lc-header h1.lc-name { margin: 0; }
-.pp-main { max-width: 1080px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+/* Chip passport in look C (DESIGN.md). shell.css gives the fonts and the base rules; the tokens and the header are here.
+ * Layout: the search on 1 line, then 1 card per run. An opened run shows the PV panel and the 4 record kinds as rows in 2 columns. */
+body.pp {
+  --ground: #F2EEE9; --card: #FFFFFF; --surface: #F7F4F0; --fill: #F2EEE9; --fill-hover: #E9E3DC;
+  --line: #EDE6DE; --edge: #E0D8CF; --text: #2A2622; --text-2: #6F625A; --count: #8A7F74;
+  --action: #2E5BFF; --action-hover: #2149E0; --action-soft: #E8EEFF;
+  --stop: #B4232C; --stop-press: #9A1C24; --stop-soft: #FDE8E8;
+  --ok: #27774C; --warn: #8F6200; --warn-soft: #FFF3D6;
+  --lift: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05);
+  background: var(--ground); color: var(--text);
+}
+.pp ::selection { background: var(--action-soft); color: var(--text); }
+.pp :is(a, button, textarea, summary):focus-visible { outline: 2px solid var(--action); outline-offset: 2px; }
+.pp a { color: var(--action); }
+
+/* Header: brand, the link back to the console and the language switch. The passport only reads records, so it has no stop. */
+.pp-top { background: var(--card); border-bottom: 1px solid var(--line); }
+.pp .lc-header { gap: 8px 20px; padding: 12px 24px; background: transparent; border: 0; }
+.pp .lc-brand { gap: 10px; }
+.pp .lc-header h1.lc-name { margin: 0; font-size: 16px; font-weight: 700; white-space: nowrap; }
+.pp .lc-tabs { flex: 1 1 auto; }
+.pp .lc-tabs a { min-height: 36px; padding: 0 4px; color: var(--text-2); font-size: 14px; font-weight: 600; white-space: nowrap; }
+.pp .lc-tabs a:hover { color: var(--text); }
+.pp .lc-actions { flex-wrap: nowrap; gap: 8px; }
+.pp .lc-button { min-height: 40px; padding: 0 14px; border: 0; border-radius: 12px; background: var(--fill); color: var(--text); font-size: 14px; font-weight: 600; white-space: nowrap; }
+.pp .lc-button:hover { background: var(--fill-hover); }
+.pp :is(.lc-button, .pp-primary, button.secondary) { transition: transform 120ms ease-out; }
+.pp :is(.lc-button, .pp-primary, button.secondary):active { transform: scale(0.97); }
+@media (min-width: 721px) {
+  .pp-top { position: sticky; top: 0; z-index: 20; }
+}
+
+/* Page */
+.pp-main { max-width: 1080px; margin: 0 auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
 .pp-main p, .pp-main h2, .pp-main h3, .pp-main h4, .pp-main h5 { margin: 0; }
-.pp-main h2 { font-size: 17px; font-weight: 600; }
-.pp-history { display: flex; flex-direction: column; gap: 12px; }
-.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.muted { color: var(--muted); font-size: 13px; }
-.notice { color: var(--info); }
-.notice.error, .record-error { color: var(--bad); }
+.pp-main h2 { font-size: 18px; font-weight: 700; }
+.panel { background: var(--card); border-radius: 20px; padding: 16px; box-shadow: var(--lift); display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pp-history { display: flex; flex-direction: column; gap: 8px; }
+.muted, .notice { color: var(--text-2); font-size: 13px; }
+.notice.error, .record-error { color: var(--stop); }
 .section-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; }
-.badge { display: inline-flex; align-items: center; padding: 4px 10px; border: 1px solid var(--line2); border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--soft); }
-.pp-primary, button.secondary { min-height: 44px; padding: 0 16px; border-radius: 8px; font-weight: 600; cursor: pointer; align-self: flex-start; }
-.pp-primary { border: 0; background: var(--accent); color: #0B1A2A; font-weight: 700; }
-button.secondary { border: 1px solid var(--line2); background: transparent; color: var(--text); }
-textarea { width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font: 14px/1.45 "IBM Plex Mono", ui-monospace, monospace; resize: vertical; }
-textarea::placeholder { color: var(--muted); }
-textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.passport-search { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: start; gap: 12px 16px; }
-.passport-search label { padding-top: 10px; color: var(--soft); }
-.passport-search .actions { grid-column: 2; }
-.chip-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: "IBM Plex Mono", ui-monospace, monospace; }
-.passport-runs { display: flex; flex-direction: column; gap: 16px; }
-.passport-run h3 { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; color: var(--text-2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+
+/* Run status: a dot and the word, in the tone of the status. */
+.passport-run .badge { background: var(--fill); }
+.passport-run .badge::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--count); }
+.passport-run .badge.tone-ok { color: var(--ok); } .passport-run .badge.tone-ok::before { background: var(--ok); }
+.passport-run .badge.tone-info { color: var(--action); } .passport-run .badge.tone-info::before { background: var(--action); }
+.passport-run .badge.tone-warn { background: var(--warn-soft); color: var(--warn); } .passport-run .badge.tone-warn::before { background: var(--warn); }
+.passport-run .badge.tone-bad { background: var(--stop-soft); color: var(--stop); } .passport-run .badge.tone-bad::before { background: var(--stop); }
+
+/* Buttons and the field */
+.pp-primary, button.secondary { min-height: 40px; padding: 0 14px; border: 0; border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer; align-self: flex-start; }
+.pp-primary { background: var(--action); color: #FFFFFF; }
+.pp-primary:hover { background: var(--action-hover); }
+button.secondary { background: var(--fill); color: var(--text); }
+button.secondary:hover { background: var(--fill-hover); }
+textarea { width: 100%; min-height: 40px; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--edge); background: var(--card); color: var(--text); font: 14px/1.45 "IBM Plex Mono", ui-monospace, monospace; resize: vertical; }
+textarea::placeholder { color: var(--count); }
+.passport-search { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 8px 12px; }
+.passport-search label { padding-top: 9px; font-weight: 700; white-space: nowrap; }
+.passport-search .actions { display: flex; }
+
+/* Runs */
+.chip-text { white-space: pre-wrap; overflow-wrap: anywhere; font: 600 14px/1.45 "IBM Plex Mono", ui-monospace, monospace; }
+.passport-runs { display: flex; flex-direction: column; gap: 20px; margin-top: 4px; }
+.passport-run h3 { font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
 .passport-run p { overflow-wrap: anywhere; }
-.run-meta { display: flex; flex-wrap: wrap; gap: 4px 20px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-.record-sections { display: flex; flex-direction: column; gap: 16px; }
-.record-section { min-width: 0; border-top: 1px solid var(--row); padding-top: 16px; display: flex; flex-direction: column; gap: 8px; }
-.record-section h4 { font-size: 15px; font-weight: 600; }
-.record-list { display: flex; flex-direction: column; gap: 8px; }
-.record-item { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.record-item h5 { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.run-meta { display: flex; flex-wrap: wrap; gap: 4px 20px; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* Records: 2 columns of rows on Hairlines. The step and time of a row sit at its right. */
+.record-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
+.record-section { min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.record-section h4, .pv-panel h4 { font-size: 14px; font-weight: 700; }
+.record-section > button.secondary { margin-top: 4px; }
+.record-list { display: flex; flex-direction: column; }
+.record-item { min-width: 0; padding: 8px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 0 12px; }
+.record-item > * { grid-column: 1 / -1; }
+.record-item > h5 { grid-column: 1; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.record-item > h5 + p.muted { grid-column: 2; text-align: right; }
 .record-item p { font-size: 13px; }
-pre.record-json { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; font: 12px/1.5 "IBM Plex Mono", ui-monospace, monospace; color: var(--soft); }
-.record-item details { margin-top: 4px; }
-summary { cursor: pointer; color: var(--info); font-size: 13px; font-weight: 600; }
-.record-image { display: block; max-width: 100%; max-height: 480px; object-fit: contain; margin-top: 12px; border-radius: 8px; }
+.record-item p.muted { font-variant-numeric: tabular-nums; }
+.record-item > button.secondary { justify-self: start; margin: 4px 0; }
+pre.record-json { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--surface); font: 12px/1.5 "IBM Plex Mono", ui-monospace, monospace; color: var(--text); }
+summary { cursor: pointer; color: var(--action); font-size: 13px; font-weight: 600; }
+.record-image { display: block; max-width: 100%; max-height: 480px; object-fit: contain; margin-top: 8px; border-radius: 10px; background: #171310; }
 .artifact-result { display: flex; flex-direction: column; gap: 8px; }
-.pv-panel { padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); display: flex; flex-direction: column; gap: 8px; }
-.pv-panel h4 { font-size: 15px; font-weight: 600; }
+
+/* Furnace PV: a Warm Surface panel across both columns. Series colors are set in passport.js. */
+.pv-panel { grid-column: 1 / -1; padding: 12px; border-radius: 16px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
 .pv-plot { width: 100%; height: auto; display: block; }
-.pv-plot text { font: 12px "IBM Plex Sans", system-ui, sans-serif; fill: var(--muted); }
+.pv-plot text { font: 12px "IBM Plex Sans", system-ui, sans-serif; fill: var(--text-2); }
 .pv-data { overflow-x: auto; }
 .pv-data table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
-.pv-data th, .pv-data td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--row); white-space: nowrap; }
-.pv-data th { color: var(--muted); font-weight: 600; }
+.pv-data th, .pv-data td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.pv-data th { color: var(--text-2); font-weight: 600; }
 .pv-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
-.pv-legend span:first-child { color: #F2B84B; }
-.pv-legend span:last-child { color: #B8C6D1; }
-footer { max-width: 1080px; margin: 0 auto; padding: 0 24px 32px; color: var(--muted); font-size: 13px; }
+.pv-legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
+.pv-legend span::before { content: ""; width: 14px; height: 2px; background: var(--text); }
+.pv-legend span:last-child::before { background: var(--count); }
+
+footer { max-width: 1080px; margin: 0 auto; padding: 0 24px 32px; color: var(--text-2); font-size: 13px; }
+
 @media (max-width: 720px) {
+  .pp .lc-header { padding: 12px 16px; }
+  .pp .lc-actions { width: auto; }
   .pp-main { padding: 16px; }
   .passport-search { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .passport-search label { padding-top: 0; }
-  .passport-search .actions { grid-column: 1; }
-  .pv-panel { padding: 12px; }
+  .record-sections { grid-template-columns: minmax(0, 1fr); }
+  .record-item > h5 + p.muted { grid-column: 1 / -1; text-align: left; }
   footer { padding: 0 16px 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pp :is(.lc-button, .pp-primary, button.secondary) { transition: none; }
+  .pp :is(.lc-button, .pp-primary, button.secondary):active { transform: none; }
 }

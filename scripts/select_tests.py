@@ -95,6 +95,8 @@ AREAS = [
     ("config/trays/*", ["test_vision_tray.py"]),
     ("scripts/vision_eval.py", ["test_vision_eval.py"]),
     ("scripts/console_shots.py", ["test_console_shots.py"]),
+    ("scripts/agent_signal.py", ["test_agent_signal.py"]),
+    (".claude/settings.json", ["test_agent_signal.py"]),
     ("deploy/*", DEPLOY),
     ("config/*", DEPLOY),
     # Documents and agent files: the doc-pair checker in ALWAYS covers them.

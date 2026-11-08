@@ -20,16 +20,17 @@ You are one worker. The coordinator dispatched you with one task: an issue numbe
   - Your branch: add `--demo`; the script starts and stops a local demo server.
   - Before/after (before on top): `compare http://100.64.0.1:8080/lab/ --demo --out <dir>`, or `compare <before-dir> <after-dir> --out <dir>`.
   - A state (held key, open dialog): `--state NAME=FILE.js`, a script that changes the page after load. `--clip <selector>` captures 1 element.
-  - Camera stills are at `/camera/<view>.jpg` on the same host. Ask the owner only for pages behind the Olares login.
+  - Camera stills are at `/camera/<view>.jpg` on the same host. For a page behind the Olares login, put a request under `Bench`.
 - Docs: change instruction docs in place as `AGENTS.md` "Documenting" says. Chinese and English pairs change together.
 - Commit message: one line plus a brief description of what was done.
-- Permission block: when the classifier blocks a command, write `BLOCKED <name>: <command>` in the report and continue with the rest of the task. A worker in an interactive session asks the owner once, with one question that covers the whole path (merge main, push, merge).
-- Routine question (merge, CI, deploy order, what next): decide by these rules. If a rule is missing, end your turn with the question as your last line; the coordinator reads your pane. Never ask the owner.
-- Bench question (watch motion, focus zero, cables, a safety call, or a look at a page in the owner's browser): batch everything into one question. Ask the owner once in your own pane, and put the question under `Bench` in the report.
+- Permission block: when the classifier blocks a command, write `BLOCKED <name>: <command>` in the report and continue with the rest of the task. A permission dialog goes to the coordinator through the hook, and the coordinator answers it.
+- Routine question (merge, CI, deploy order, what next): decide by these rules. If a rule is missing, end your turn with the question as your last line, when no background work runs. The Stop hook sends it to the coordinator.
+- Bench question (watch motion, focus zero, cables, a safety call, or a look at a page in the owner's browser): batch everything into one question. If you can finish without the answer, put it under `Bench` in the report. If not, end your turn with `Bench: <question>` as the last line. The coordinator asks the owner and sends you the answer.
+- Never ask the owner, and do not use AskUserQuestion. The owner talks only to the coordinator.
 
 ## Report
 
-End your final message with this block. The coordinator reads it from your pane. Nothing else after it: no diffs, no logs.
+End your final message with this block. A Stop hook copies it to the coordinator. The block means that the task is done. Write it only when the task is complete, after CI, merge and deploy if the task has them. While CI or other background work runs, end your turn without it. Nothing else after it: no diffs, no logs. `Images:` lists the images for the owner, and the coordinator sends them.
 
 ```
 Task: <#N or slug> <title>
@@ -39,6 +40,7 @@ Tests: <command> -> pass | fail (<count>)
 CI: green | red | not run
 Deployed: no | yes (<services restarted>)
 Bench: none | <one question>
+Images: none | <path> [<path> ...]
 BLOCKED: none | <name>: <command>
 Notes: <at most 2 lines: a limitation or a follow-up>
 ```

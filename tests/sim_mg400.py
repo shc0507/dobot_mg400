@@ -1,8 +1,7 @@
-"""Simulate an MG400 controller and a USB gripper collector for panel tests.
+"""Simulate an MG400 controller for panel tests.
 
 The real KeyboardJogSession and JointControl talk to the simulated MG400 through
-socket fakes. The real WebGripper talks to the simulated collector through
-temporary files. rig_factory builds RobotPanelState rigs on them.
+socket fakes. rig_factory builds RobotPanelState rigs on them.
 """
 
 import collections
@@ -15,10 +14,8 @@ from functools import partial
 import helpers
 
 from mg400.joint_control import JointControl, _StationaryTimeoutError
-from mg400.sim.model import Collector, arrive
 from mg400.sim.model import Controller as ControllerModel
 from mg400.web_control import RobotPanelState
-from mg400.web_gripper import WebGripper
 
 HOST = "robot.test"
 CLIENT = "browser-a"
@@ -217,17 +214,10 @@ class Feed:
         return self.controller.advance()
 
 
-def held_until(event):
-    """Answer gripper requests only after the test sets the event."""
-    return lambda request: arrive(request) if event.is_set() else None
-
-
 class Rig:
-    def __init__(self, controller, state, passes, feed, collector=None, gripper=None):
+    def __init__(self, controller, state, passes, feed):
         self.controller = controller
         self.state = state
-        self.collector = collector
-        self.gripper = gripper
         self._passes = passes
         self._feed = feed
         self._sequence = itertools.count(1)
@@ -321,20 +311,12 @@ def rig_factory(monkeypatch, tmp_path):
     monkeypatch.setattr(RobotPanelState, "_kb_reconcile", counted_reconcile)
     controller = Controller()
     controller.install(monkeypatch)
-    rigs, collectors = [], []
+    rigs = []
 
-    def make(*, gripper=False):
-        collector = adapter = None
-        if gripper:
-            directory = tmp_path / "collector"
-            directory.mkdir()
-            collector = Collector(directory)
-            collectors.append(collector)
-            collector.start()
-            adapter = WebGripper(collector.feedback_path)
+    def make():
         feed = Feed(controller)
-        state = RobotPanelState(HOST, gripper=adapter, connection_factory=feed)
-        rig = Rig(controller, state, passes, feed, collector, adapter)
+        state = RobotPanelState(HOST, connection_factory=feed)
+        rig = Rig(controller, state, passes, feed)
         rigs.append(rig)
         return rig
 
@@ -346,12 +328,6 @@ def rig_factory(monkeypatch, tmp_path):
         controller.slow_jog_stop = False
         if controller.sample.mode == 11:
             controller.update(mode=5)
-        for collector in collectors:
-            collector.answer = arrive
-        try:
-            for rig in rigs:
-                rig.state.close()
-        finally:
-            for collector in collectors:
-                collector.close()
+        for rig in rigs:
+            rig.state.close()
     assert controller.unexpected == []

@@ -39,7 +39,6 @@ from install import (  # noqa: E402
     unique_json_object,
 )
 
-WATCHER = "mg400-gripper-collector.path"
 CAMERA_PORT = 1985
 PRELOAD = "http://127.0.0.1:1984/api/preload"
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
@@ -600,7 +599,6 @@ def missing_units(run, chosen):
 
 def status(run, out, services):
     rows = [(name, unit) for name, chosen in services.items() for unit in chosen]
-    rows.append(("collector", WATCHER))
     states = unit_states(run, [unit for _, unit in rows])
     for name, unit in rows:
         print(f"{name:<10} {unit:<34} {states.get(unit, 'unknown')}", file=out)
@@ -863,10 +861,7 @@ def main(
     robot_settings.update(settings)
     if args.command == "terminal":
         program = host.code / ".venv/bin/mg400-robot"
-        feedback = host.data / "work/gripper_feedback.json"
-        as_service_user(
-            host, robot_settings, [str(program), "--gripper-feedback", str(feedback)], execvpe
-        )
+        as_service_user(host, robot_settings, [str(program)], execvpe)
     elif args.command == "mode":
         command = [
             str(host.code / ".venv/bin/python"),

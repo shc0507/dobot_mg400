@@ -904,7 +904,7 @@ def drift_runner(tmp_path, monkeypatch, result):
         enabled=True,
         robot_mode=5,
         keyboard_enabled=False,
-        actual=[200, 0, 50, 0, 1000],
+        actual=[200, 0, 50, 0],
         vacuum={"suck": False, "blow": False, "held": None},
     )
 

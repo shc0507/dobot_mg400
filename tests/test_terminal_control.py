@@ -27,9 +27,8 @@ class State:
             "locked": False,
             "stop_unconfirmed": False,
             "joints": None,
-            "actual": [None] * 5,
+            "actual": [None] * 4,
             "message": "Disconnected",
-            "gripper_message": "Gripper is not configured.",
         }
 
     def snapshot(self):
@@ -98,9 +97,6 @@ def no_hardware(monkeypatch, isolated_controller_locks):
         ("disable", {"action": "disable"}),
         ("enable", {"action": "enable"}),
         ("home", {"action": "home"}),
-        ("grip-init", {"action": "initialize_gripper"}),
-        ("grip 0", {"action": "grip", "position": 0}),
-        ("grip 1000", {"action": "grip", "position": 1000}),
         ("vacuum suck", {"action": "vacuum", "operation": "suck"}),
         ("vacuum release", {"action": "vacuum", "operation": "release"}),
         ("vacuum off", {"action": "vacuum", "operation": "off"}),
@@ -135,15 +131,8 @@ def test_parse_command(line, command):
         "move yes 2 3 4",
         "move '1 2 3 4'",
         "move '1 2 3 4",
-        "grip",
-        "grip 1 2",
-        "grip -1",
-        "grip 1001",
-        "grip 0.5",
-        "grip nan",
-        "grip inf",
-        "grip 1e10000",
-        "grip true",
+        "grip 500",
+        "grip-init",
         "vacuum",
         "vacuum on",
         "vacuum suck off",
@@ -180,12 +169,12 @@ def test_session_startup_and_status_do_not_connect_or_send_commands():
 
 def test_stale_status_hides_measurements_and_robot_mode():
     state = State()
-    state.values.update(joints=[1, 2, 3, 4], actual=[250, 0, 30, 90, 1000], robot_mode=5)
+    state.values.update(joints=[1, 2, 3, 4], actual=[250, 0, 30, 90], robot_mode=5)
     lines = status_lines(state.snapshot())
     assert "Mode=--" in lines[1]
     assert lines[2] == "Joints (deg): J1=--  J2=--  J3=--  J4=--"
     assert lines[3] == "Flange (mm/deg): X=--  Y=--  Z=--  R=--"
-    assert lines[4] == "Gripper (0..1000): position=--"
+    assert lines[4] == "Vacuum: suck=--  blow=--  held=--"
 
 
 def test_stop_dispatch_remains_available_while_quitting():
@@ -643,7 +632,7 @@ def tty_state(monkeypatch):
     state = State()
     monkeypatch.setattr(terminal_control.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(terminal_control.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(terminal_control, "RobotPanelState", lambda host, gripper: state)
+    monkeypatch.setattr(terminal_control, "RobotPanelState", lambda host: state)
     return state
 
 

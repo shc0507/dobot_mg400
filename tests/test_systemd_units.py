@@ -6,15 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from mg400.web_gripper import COLLECTOR_REQUEST
-
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "config/systemd"
 HOST_VALUES = ("100.64.", "/olares", "/opt/mg400-", "/root/")
 with (ROOT / "deploy/services.toml").open("rb") as stream:
     REGISTRY = tomllib.load(stream)["service"]
 SERVICES = tuple(unit for entry in REGISTRY for unit in entry["units"])
-FEEDBACK = "/var/lib/mg400/work/gripper_feedback.json"
 
 
 def unit_sections(name):
@@ -34,7 +31,7 @@ def command(name):
 
 def test_the_directory_holds_exactly_the_known_units():
     names = {path.name for path in UNITS.iterdir()}
-    assert names == {*SERVICES, "mg400-gripper-collector.path"}
+    assert names == set(SERVICES)
 
 
 @pytest.mark.parametrize("name", SERVICES)
@@ -115,33 +112,12 @@ def test_web_panel_allows_the_stop_confirmation_before_systemd_kills_it():
     assert service["RestartPreventExitStatus"] == ["2"]
 
 
-def test_gripper_collector_reports_its_sigterm_exit_as_success():
-    service = unit_sections("mg400-gripper-collector.service")["Service"]
-    # scripts/gripper_feedback.py exits with 128 + SIGTERM on a normal stop.
-    assert service["SuccessExitStatus"] == ["143"]
-    assert service["Restart"] == ["on-failure"]
-
-
-def test_panel_collector_and_request_watcher_share_one_work_directory():
-    panel = command("mg400-web-panel.service")
-    collector = command("mg400-gripper-collector.service")
-    assert panel[panel.index("--gripper-feedback") + 1] == FEEDBACK
-    assert collector[collector.index("--output") + 1] == FEEDBACK
-    assert "--commands" in collector
-    path = unit_sections("mg400-gripper-collector.path")
-    # WebGripper writes the request file next to the feedback file.
-    assert path["Path"]["PathChanged"] == [str(Path(FEEDBACK).with_name(COLLECTOR_REQUEST))]
-    assert path["Path"]["Unit"] == ["mg400-gripper-collector.service"]
-    assert path["Install"]["WantedBy"] == ["multi-user.target"]
-
-
 def test_hardware_services_get_only_their_device_groups():
     groups = {
         name: unit_sections(name)["Service"].get("SupplementaryGroups", []) for name in SERVICES
     }
     assert groups == {
         "mg400-web-panel.service": [],
-        "mg400-gripper-collector.service": ["dialout"],
         "mg400-camera-capture.service": ["video"],
         "mg400-camera-preview.service": [],
         "mg400-stage-panel.service": ["dialout"],

@@ -36,8 +36,6 @@ SOURCE = Path(__file__).resolve().parents[1]
 TOUPCAM_VERSION = "59.30594.20260120"
 TOUPCAM_SHA256 = "5ba51b66bb9e2901e769fa1d5d5ae88c359269ea7fb20358335462c531a3e997"
 SERVICE_UID = SERVICE_GID = 1000
-COLLECTOR = "mg400-gripper-collector.service"
-REQUEST_WATCHER = "mg400-gripper-collector.path"
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 JSON_SETTINGS = {"MG400_FURNACE_GAS_MAP", "MG400_FURNACE_IDLE_GAS"}
 
@@ -80,7 +78,6 @@ class Host:
         self.command = root / "usr/local/bin/mg400ctl"
         self.lab_command = root / "usr/local/bin/labctl"
         self.udev = root / "etc/udev/rules.d"
-        self.proc = root / "proc"
         self.dev = root / "dev"
 
 
@@ -554,35 +551,6 @@ def prepare_toupcam(source, host, *, required=False):
     return binary if source is not None else None
 
 
-def find_collectors(proc_root, managed_pid):
-    """Return PIDs of Python processes that run any gripper_feedback.py, except the service.
-
-    Only one collector can own the gripper serial port.
-    """
-    found = []
-    for process in Path(proc_root).iterdir():
-        if not process.name.isdecimal() or int(process.name) == managed_pid:
-            continue
-        try:
-            arguments = [
-                os.fsdecode(value)
-                for value in process.joinpath("cmdline").read_bytes().split(b"\0")
-                if value
-            ]
-        except (FileNotFoundError, ProcessLookupError, PermissionError):
-            continue
-        if not arguments or not Path(arguments[0]).name.startswith("python"):
-            continue
-        for argument in arguments[1:]:
-            if argument in ("-c", "-m"):
-                break
-            if not argument.startswith("-"):
-                if Path(argument).name == "gripper_feedback.py":
-                    found.append(int(process.name))
-                break
-    return sorted(found)
-
-
 def open_directory(path):
     """Open a directory without following a symbolic link in its last part."""
     try:
@@ -654,19 +622,6 @@ def install(args, host, run, chown, out):
     uv = args.uv or shutil.which("uv")
     if not uv:
         raise RuntimeError("Install uv first, or pass its path with --uv.")
-    shown = run(
-        ["systemctl", "show", "--property=MainPID", COLLECTOR],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    match = re.search(r"MainPID=(\d+)", shown.stdout)
-    others = find_collectors(host.proc, int(match[1]) if match else 0)
-    if others:
-        raise RuntimeError(
-            "A gripper collector runs outside the service. "
-            f"Check these PIDs before you stop them: {', '.join(map(str, others))}"
-        )
     example = (host.source / "deploy/mg400.env.example").read_text()
     current = host.settings.read_text() if host.settings.exists() else None
     merged, changed = merge_settings(current, example)
@@ -675,7 +630,7 @@ def install(args, host, run, chown, out):
     selected = enabled_services(registry, settings.get("MG400_OPTIONAL_SERVICES", ""))
     selected_units = {unit for entry in selected.values() for unit in entry["units"]}
     unit_contents = {}
-    for name in sorted(selected_units | {REQUEST_WATCHER}):
+    for name in sorted(selected_units):
         with assets._local(host.source / "config/systemd" / name) as stream:
             unit_contents[name] = stream.read().decode("utf-8")
     rendered_rules = udev_rules(host, selected)
@@ -888,7 +843,6 @@ def install(args, host, run, chown, out):
         if not args.dry_run:
             write_file(host.units / name, content, 0o644, (0, 0), chown)
     system(["systemctl", "daemon-reload"])
-    system(["systemctl", "enable", "--now", REQUEST_WATCHER])
     for command in (host.command, host.lab_command):
         step(f"link {command} to {host.code / 'deploy/mg400ctl'}")
         if not args.dry_run:

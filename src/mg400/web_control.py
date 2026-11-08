@@ -6,7 +6,6 @@ import math
 import secrets
 import threading
 import time
-from contextlib import contextmanager
 
 from labkit.describe import command as describe_command
 from labkit.describe import describe, parameter
@@ -108,19 +107,11 @@ class RobotPanelState:
     )
     _alarms = _Logged(_describe_alarms, level=logging.WARNING)
     _kb_reason = _Logged(lambda reason: None if reason is None else f"Keyboard off: {reason}")
-    _grip = _Logged(
-        lambda grip: (
-            f"Gripper locked: {grip.get('message')}" if grip.get("locked") else "Gripper unlocked."
-        ),
-        key=lambda grip: bool(grip.get("locked")),
-        level=logging.WARNING,
-    )
 
     def __init__(
         self,
         host,
         *,
-        gripper=None,
         max_speed_l=1,
         max_acc_l=1,
         connection_factory=FeedbackConnection,
@@ -133,7 +124,6 @@ class RobotPanelState:
         self._max_speed_l = max_speed_l
         self._max_acc_l = max_acc_l
         self.robot_host = host
-        self._gripper = gripper
         self._connection_factory = connection_factory
         self._control_factory = control_factory
         self._session_factory = session_factory
@@ -169,7 +159,6 @@ class RobotPanelState:
         self._safety_actions = set()
         self._disconnect_requested = False
         self._safety_threads = []
-        self._gripper_active = False
         self._closing = False
         self._alarms = None
         self._alarms_read = 0.0
@@ -194,9 +183,6 @@ class RobotPanelState:
         self._kb_active = None
         self._kb_released = None
         self._kb_renewed = 0.0
-        self._grip = self._gripper.snapshot() if self._gripper else {}
-        if self._gripper is not None:
-            self._gripper.publication_guard = self._gripper_publication_guard
         self._control = self._new_control()
         self._worker = threading.Thread(target=self._work, name="MG400-web-worker", daemon=True)
         self._watchdog = threading.Thread(
@@ -238,10 +224,7 @@ class RobotPanelState:
                 "instance": self._instance,
                 "version": self._version,
                 "robot_host": self.robot_host,
-                "actual": [
-                    *([None] * 4 if moving else self._pose),
-                    None if self._gripper_active else self._grip.get("position"),
-                ],
+                "actual": [None] * 4 if moving else list(self._pose),
                 "joints": list(sample.joints_deg) if sample else None,
                 "enabled": sample.mode in {5, 7} if sample else None,
                 "syncing": self._syncing,
@@ -255,17 +238,9 @@ class RobotPanelState:
                 or bool(self._safety_workers)
                 or self._clearing
                 or self._kb_thread is not None,
-                "locked": self._locked or bool(self._grip.get("locked")),
+                "locked": self._locked,
                 "stop_unconfirmed": self._fault,
                 "recoverable": self._recoverable(),
-                "gripper_available": bool(self._grip.get("available")),
-                "gripper_can_initialize": bool(self._grip.get("can_initialize")),
-                "gripper_busy": self._gripper_active or bool(self._grip.get("busy")),
-                "gripper_message": self._grip.get("message", "Gripper is not configured."),
-                "gripper": {
-                    "outcome": None if self._gripper_active else self._grip.get("outcome"),
-                    "outcome_at": None if self._gripper_active else self._grip.get("outcome_at"),
-                },
                 "vacuum": decode_vacuum(
                     sample.digital_outputs if sample else None,
                     sample.digital_inputs if sample else None,
@@ -291,17 +266,12 @@ class RobotPanelState:
                 "disable",
                 "stop",
                 "home",
-                "initialize_gripper",
                 "clear_alarm",
             )
         }
-        grip = parameter("integer", minimum=0, maximum=1000)
         targets = parameter(
             "object",
-            properties={
-                **{axis: parameter("number") for axis in ("x", "y", "z", "r")},
-                "grip": grip,
-            },
+            properties={axis: parameter("number") for axis in ("x", "y", "z", "r")},
             required=["x", "y", "z", "r"],
             additionalProperties=False,
         )
@@ -321,14 +291,6 @@ class RobotPanelState:
                 "object",
                 properties={"operation": parameter("string", enum=list(VACUUM_ACTIONS))},
                 required=["operation"],
-                additionalProperties=False,
-            )
-        )
-        commands["grip"] = describe_command(
-            parameter(
-                "object",
-                properties={"position": grip},
-                required=["position"],
                 additionalProperties=False,
             )
         )
@@ -379,17 +341,16 @@ class RobotPanelState:
         with self._stop_changed:
             while True:
                 self._finish_stop_results()
-                if self._fault or self._grip.get("locked"):
+                if self._fault:
                     outcome = "unconfirmed"
                     break
-                if not (self._safety_workers or self._gripper_active or self._grip.get("busy")):
+                if not self._safety_workers:
                     outcome = "confirmed"
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     outcome = "pending"
                     break
-                # Gripper publication may finish outside the arm stop worker.
                 self._stop_changed.wait(min(remaining, 0.05))
             return {"stop": outcome, "state": self.snapshot()}
 
@@ -419,14 +380,14 @@ class RobotPanelState:
             self._finish_command(record, result, message)
 
     def _finish_stop_results(self):
-        unknown = self._fault or bool(self._grip.get("locked"))
-        if not unknown and (self._safety_workers or self._gripper_active or self._grip.get("busy")):
+        unknown = self._fault
+        if not unknown and self._safety_workers:
             return
         records, self._pending_stop_results = self._pending_stop_results, []
         for record, result, message in sorted(records, key=lambda entry: entry[0]["number"]):
             if unknown:
                 result = "failed"
-                message = "Robot stop or gripper state remains unconfirmed."
+                message = "Robot stop remains unconfirmed."
             self._finish_command(record, result, message)
 
     @staticmethod
@@ -490,22 +451,6 @@ class RobotPanelState:
                 raise PreparationRejectedError("Keyboard preparation cancelled.")
             self._guard_send()
 
-    @contextmanager
-    def _gripper_publication_guard(self):
-        with self._lock:
-            self._guard_send()
-            if self._sample.mode not in {4, 5}:
-                raise RuntimeError("The robot must be idle before a gripper command")
-            if (
-                self._kb_kind == "gripper"
-                and threading.current_thread() is self._kb_thread
-                and self._kb_released is not None
-                and self._kb_released.is_set()
-            ):
-                # The key was released after this step began. Publish nothing.
-                raise RuntimeError("The keyboard hold ended before the gripper step was sent.")
-            yield
-
     def command(self, payload, client_id=None):
         self._client(client_id)
         with self._lock:
@@ -547,8 +492,6 @@ class RobotPanelState:
             "home",
             "execute",
             "stop",
-            "grip",
-            "initialize_gripper",
             "vacuum",
             "keyboard",
             "clear_alarm",
@@ -565,8 +508,6 @@ class RobotPanelState:
                     raise ValueError(
                         f"Execute speed must be an integer between 1 and {self._max_speed_l}"
                     )
-        elif action == "grip":
-            fields.add("position")
         elif action == "vacuum":
             fields.add("operation")
         elif action == "keyboard":
@@ -576,8 +517,6 @@ class RobotPanelState:
         if set(payload) != fields:
             raise ValueError("Unexpected command fields")
         targets = self._targets(payload["targets"]) if action == "execute" else None
-        if action == "grip":
-            targets = (None, self._gripper_target(payload["position"]))
         if action == "vacuum":
             if payload["operation"] not in VACUUM_ACTIONS:
                 raise ValueError("Vacuum operation must be suck, release or off")
@@ -642,25 +581,8 @@ class RobotPanelState:
                         if action in {"home", "execute"}:
                             if self._sample.mode != 5:
                                 raise RuntimeError("Enable the robot before movement")
-                        if action == "initialize_gripper" and not self._grip.get("can_initialize"):
-                            raise RuntimeError("Gripper initialization is unavailable")
-                        if action == "initialize_gripper" and self._sample.mode not in {4, 5}:
-                            raise RuntimeError(
-                                "The robot must be idle before gripper initialization"
-                            )
-                        if action == "grip" and self._sample.mode not in {4, 5}:
-                            raise RuntimeError("The robot must be idle before a gripper command")
                         if action == "vacuum" and self._sample.mode not in {4, 5}:
                             raise RuntimeError("The robot must be idle before a vacuum command")
-                        if (
-                            action in {"execute", "grip"}
-                            and targets
-                            and targets[1] is not None
-                            and not self._grip.get("available")
-                        ):
-                            raise RuntimeError("Gripper control is unavailable")
-                        if action != "vacuum" and self._grip.get("locked"):
-                            raise RuntimeError("Gripper control is locked")
                         # A button command replaces keyboard control.
                         self._kb_disarm(None)
                         self._busy = True
@@ -697,24 +619,12 @@ class RobotPanelState:
     def _targets(values):
         if not isinstance(values, dict) or not {"x", "y", "z", "r"} <= set(values):
             raise ValueError("Targets must contain x, y, z, and r")
-        if set(values) - {"x", "y", "z", "r", "grip"}:
+        if set(values) - {"x", "y", "z", "r"}:
             raise ValueError("Unknown target field")
         try:
-            pose = tuple(finite_number(values[axis]) for axis in ("x", "y", "z", "r"))
-            grip = finite_number(values["grip"]) if "grip" in values else None
+            return tuple(finite_number(values[axis]) for axis in ("x", "y", "z", "r"))
         except OverflowError as error:
             raise ValueError("Targets must contain finite numbers") from error
-        return pose, RobotPanelState._gripper_target(grip) if grip is not None else None
-
-    @staticmethod
-    def _gripper_target(value):
-        try:
-            grip = finite_number(value)
-        except OverflowError as error:
-            raise ValueError("Gripper target must be an integer from 0 to 1000") from error
-        if not grip.is_integer() or not 0 <= grip <= 1000:
-            raise ValueError("Gripper target must be an integer from 0 to 1000")
-        return int(grip)
 
     def _start_sync(self):
         if self._syncing:
@@ -737,8 +647,6 @@ class RobotPanelState:
             self._reader = None
             self._release_ownership_if_idle()
             raise
-        if self._gripper is not None:
-            self._gripper.request_collector()
 
     def _release_ownership_if_idle(self):
         """Keep ownership until feedback and all controller work have ended."""
@@ -798,8 +706,8 @@ class RobotPanelState:
         self._locked = True
         self._kb_disarm(None)
         keyboard = self._kb_thread
-        # A suction or gripper hold uses the shared control, not the jog session.
-        if keyboard is None or self._kb_kind in {"gripper", "vacuum"} or not keyboard.is_alive():
+        # A suction key action uses the shared control, not the jog session.
+        if keyboard is None or self._kb_kind == "vacuum" or not keyboard.is_alive():
             keyboard = None
             self._control.cancel(disabling=disabling)
         self._disconnect_requested |= disconnect
@@ -807,8 +715,6 @@ class RobotPanelState:
             return
         self._disable_verified = False
         self._message = reason or ("Disabling the robot." if disabling else "Stopping the robot.")
-        if self._gripper_active:
-            self._message += " The gripper continues until its current command completes."
         self._safety_workers += 1
         self._safety_actions.add(disabling)
         thread = threading.Thread(
@@ -869,8 +775,6 @@ class RobotPanelState:
                         "Control stays locked: an earlier stop or disable is unconfirmed. "
                         + self._recovery_hint()
                     )
-                if self._gripper_active:
-                    self._message += " The gripper command is still active."
         except Exception as error:
             with self._lock:
                 self._record_fault()
@@ -1040,50 +944,14 @@ class RobotPanelState:
         elif action == "home":
             self._control.move((0.0, 0.0, 0.0, 0.0))
         elif action == "execute":
-            pose, grip = targets
             if speed is None:
-                self._control.move_linear(pose)
+                self._control.move_linear(targets)
             else:
                 self._control.move_linear(
-                    pose, speed=speed, acceleration=min(speed, self._max_acc_l)
+                    targets, speed=speed, acceleration=min(speed, self._max_acc_l)
                 )
-            if grip is not None:
-                self._move_gripper(grip)
-        elif action == "grip":
-            self._move_gripper(targets[1])
         elif action == "vacuum":
             self._control.vacuum(targets)
-        else:
-            self._move_gripper(None)
-
-    def _update_gripper_snapshot(self):
-        """Publish cached gripper state and log each observed drop once, under the panel lock."""
-        previous = self._grip
-        self._grip = self._gripper.snapshot()
-        if self._grip.get("outcome") == "dropped" and (
-            previous.get("outcome") != "dropped"
-            or previous.get("outcome_at") != self._grip.get("outcome_at")
-        ):
-            self.events.add(
-                "warning",
-                "The gripper reports that the object dropped.",
-                outcome="dropped",
-                outcome_at=self._grip.get("outcome_at"),
-            )
-
-    def _move_gripper(self, target):
-        with self._lock:
-            self._guard_send()
-            self._gripper_active = True
-        try:
-            if target is None:
-                self._gripper.initialize()
-            else:
-                self._gripper.move(target)
-        finally:
-            with self._lock:
-                self._gripper_active = False
-                self._update_gripper_snapshot()
 
     def _work(self):
         while not self._closing:
@@ -1127,10 +995,6 @@ class RobotPanelState:
                             self._pose = list(pose)
                 elif read_alarms:
                     self._read_alarms(control)
-                if self._gripper is not None and self._syncing:
-                    self._gripper.poll()
-                    with self._lock:
-                        self._update_gripper_snapshot()
             except (TargetRejectedError, PreparationRejectedError) as error:
                 result, message = "rejected", str(error)
                 with self._lock:
@@ -1217,17 +1081,10 @@ class RobotPanelState:
                 )
             return
         self._guard_send()
-        if (
-            self._busy
-            or self._safety_workers
-            or self._kb_thread is not None
-            or self._gripper_active
-        ):
+        if self._busy or self._safety_workers or self._kb_thread is not None:
             raise RuntimeError("Another robot operation is in progress")
         if self._sample.mode != 5:
             raise RuntimeError("Enable the robot before keyboard control")
-        if self._grip.get("locked"):
-            raise RuntimeError("Gripper control is locked")
         try:
             validate_measured_joints(self._sample.joints_deg)
         except ValueError as error:
@@ -1422,8 +1279,6 @@ class RobotPanelState:
             or self._locked
             or self._fault
             or self._control.stopped
-            or self._gripper_active
-            or self._grip.get("locked")
             or not self._fresh()
             or self._sample.error_status
             or self._sample.mode != 5
@@ -1516,8 +1371,6 @@ class RobotPanelState:
             reason = "robot feedback is stale, unavailable, or reports a fault."
         elif self._locked or self._fault or self._control.stopped:
             reason = "robot control is stopped."
-        elif self._grip.get("locked"):
-            reason = "gripper control is locked."
         else:
             try:
                 validate_measured_joints(sample.joints_deg)
@@ -1556,7 +1409,5 @@ class RobotPanelState:
         self._watchdog.join(timeout=1)
         if self._reader is not None:
             self._reader.join(timeout=2)
-        if self._gripper is not None:
-            self._gripper.close()
         with self._lock:
             self._release_ownership_if_idle()

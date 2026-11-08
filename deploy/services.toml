@@ -84,15 +84,6 @@ port = 1985
 assets = []
 
 [[service]]
-name = "collector"
-units = ["mg400-gripper-collector.service"]
-optional = false
-venv = ".venv"
-groups = ["stage"]
-port = 0
-assets = []
-
-[[service]]
 name = "proxy"
 units = ["mg400-proxy.service"]
 optional = false

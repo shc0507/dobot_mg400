@@ -1,9 +1,7 @@
-"""Loopback TCP transports for the shared controller and file gripper models."""
+"""Loopback TCP transports for the shared controller model."""
 
-import fcntl
 import ipaddress
 import math
-import os
 import socket
 import socketserver
 import struct
@@ -12,7 +10,7 @@ import time
 
 from mg400.feedback import FRAME_SIZE
 
-from .model import Collector, Controller
+from .model import Controller
 
 FEEDBACK_PERIOD = 0.008
 PORTS = (29999, 30003, 30004)
@@ -111,13 +109,13 @@ class _Handler(socketserver.BaseRequestHandler):
 
 
 class Simulator:
-    """Own three loopback listeners and an optional simulated gripper collector.
+    """Own three loopback listeners.
 
     Construction opens no sockets or files. Use start()/close() or a context manager.
     The shared controller models instantaneous targets, not motion physics or collisions.
     """
 
-    def __init__(self, host="127.0.0.2", *, gripper_feedback=None, feedback_period=FEEDBACK_PERIOD):
+    def __init__(self, host="127.0.0.2", *, feedback_period=FEEDBACK_PERIOD):
         self.address = loopback_address(host)
         if not math.isfinite(feedback_period) or feedback_period <= 0:
             raise ValueError("Feedback period must be positive and finite")
@@ -125,13 +123,9 @@ class Simulator:
         self.controller = Controller()
         self.controller.update(mode=4)
         self.controller.jog_rate = 0.01
-        self.collector = (
-            Collector(feedback_path=gripper_feedback) if gripper_feedback is not None else None
-        )
         self.stopped = threading.Event()
         self._servers = []
         self._threads = []
-        self._collector_lock = None
         self._started = False
 
     def start(self):
@@ -139,22 +133,6 @@ class Simulator:
             raise RuntimeError("A simulator instance can start only once")
         self._started = True
         try:
-            if self.collector is not None:
-                path = self.collector.feedback_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                lock = path.with_name(path.name + ".sim.lock")
-                self._collector_lock = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-                fcntl.flock(self._collector_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                for existing in (
-                    path,
-                    self.collector.command_path,
-                    self.collector.command_lock_path,
-                    self.collector._scratch,
-                ):
-                    if existing.exists() or existing.is_symlink():
-                        raise ValueError(
-                            f"Use a new simulator feedback path: {existing} already exists"
-                        )
             # Bind every endpoint before starting any worker. A conflict leaves no partial service.
             for port in PORTS:
                 self._servers.append(_Server(self, port))
@@ -170,8 +148,6 @@ class Simulator:
             ticker = threading.Thread(target=self._tick, name="mg400-sim-clock", daemon=True)
             ticker.start()
             self._threads.append(ticker)
-            if self.collector is not None:
-                self.collector.start()
             return self
         except BaseException:
             self.close()
@@ -186,8 +162,6 @@ class Simulator:
     def close(self):
         self.stopped.set()
         self.controller.closed.set()
-        if self.collector is not None:
-            self.collector.close()
         for index, server in enumerate(self._servers):
             if index < len(self._threads):
                 server.shutdown()
@@ -196,9 +170,6 @@ class Simulator:
             thread.join(timeout=2)
         self._servers.clear()
         self._threads.clear()
-        if self._collector_lock is not None:
-            os.close(self._collector_lock)
-            self._collector_lock = None
 
     def __enter__(self):
         return self.start()

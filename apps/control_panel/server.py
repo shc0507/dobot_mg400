@@ -26,7 +26,6 @@ from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
 from mg400.web_control import RobotPanelState  # noqa: E402
-from mg400.web_gripper import WebGripper  # noqa: E402
 from mg400.websocket import (  # noqa: E402
     Connection,
     ConnectionClosed,
@@ -121,7 +120,7 @@ class ReadOnlyPanelState:
                 "robot_host": self.robot_host,
                 "enabled": None,
                 "syncing": self.syncing,
-                "actual": [None] * 5,
+                "actual": [None] * 4,
                 "joints": list(self.joints) if self.joints is not None else None,
                 "robot_mode": self.robot_mode,
                 "robot_error": self.robot_error,
@@ -141,7 +140,6 @@ class ReadOnlyPanelState:
             "home",
             "execute",
             "stop",
-            "initialize_gripper",
             "keyboard",
             "clear_alarm",
         }:
@@ -188,9 +186,7 @@ class ReadOnlyPanelState:
                         self.robot_mode = sample.mode
                         self.robot_error = sample.error_status
                         self.received = time.monotonic()
-                        self.message = (
-                            "Live joint feedback. Pose and gripper feedback are unavailable."
-                        )
+                        self.message = "Live joint feedback. Pose feedback is unavailable."
         except (OSError, ValueError) as error:
             with self._lock:
                 if not self._stop.is_set():
@@ -770,11 +766,6 @@ def main(argv=None):
     parser.add_argument(
         "--robot-host", help="Robot address. Default: MG400_ROBOT_HOST, then config/robot.toml"
     )
-    parser.add_argument(
-        "--gripper-feedback",
-        type=Path,
-        help="Feedback file from a --commands USB collector on this server's host",
-    )
     args = parser.parse_args(argv)
     # An empty environment value counts as unset.
     bind = args.bind if args.bind is not None else os.environ.get("MG400_PANEL_BIND") or "127.0.0.1"
@@ -793,19 +784,9 @@ def main(argv=None):
             parser.error(f"{name} must be a whole number between 1 and 100")
         caps[parameter] = cap
     host = args.robot_host
-    if args.gripper_feedback and args.mode != "robot":
-        parser.error("--gripper-feedback requires --mode robot")
     if not host:
         host = load_robot_host(ROOT / "config/robot.toml")
-    state = (
-        RobotPanelState(
-            host,
-            gripper=WebGripper(args.gripper_feedback) if args.gripper_feedback else None,
-            **caps,
-        )
-        if args.mode == "robot"
-        else ReadOnlyPanelState(host)
-    )
+    state = RobotPanelState(host, **caps) if args.mode == "robot" else ReadOnlyPanelState(host)
     server = PanelServer((bind, port), state, args.base_path)
     print(
         f"MG400 panel: http://{bind}:{server.server_port}{args.base_path} ({args.mode})",

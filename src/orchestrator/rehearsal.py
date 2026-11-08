@@ -17,7 +17,6 @@ from labkit.lease import validate_client
 from mg400.controller_ownership import ControllerOwnership
 from mg400.sim import Simulator
 from mg400.web_control import RobotPanelState
-from mg400.web_gripper import WebGripper
 
 from .clients import FurnaceAdapter, RobotAdapter, ServiceAdapter, ThermalAdapter
 
@@ -498,11 +497,9 @@ class _DemoClient:
 
 
 class _DemoRobot(RobotPanelState):
-    def __init__(self, host, lock_directory, gripper_feedback, *, tray_scene=None):
+    def __init__(self, host, lock_directory, *, tray_scene=None):
         self._tray_scene = tray_scene
-        gripper = WebGripper(gripper_feedback)
-        gripper.poll()
-        super().__init__(host, gripper=gripper)
+        super().__init__(host)
         self._ownership = ControllerOwnership(host, directory=lock_directory)
 
     def _operate(self, action, targets, speed=None):
@@ -615,11 +612,7 @@ class Rehearsal:
             host = f"127.203.{secrets.randbelow(254) + 1}.{secrets.randbelow(254) + 1}"
             if not ipaddress.ip_address(host).is_loopback:
                 raise ValueError("Rehearsal addresses must be loopback.")
-            feedback = self.directory / "gripper" / "feedback.json"
-            simulator = Simulator(host, gripper_feedback=feedback)
-            # Set only the owned simulation's initial state. Never send an
-            # initialization command or use a host collector path.
-            simulator.collector.set(init=1, state=1, position=1000)
+            simulator = Simulator(host)
             if self.tray_scene is not None:
                 simulator.controller.pose = DEMO_TRAY_INITIAL_FLANGE
             try:
@@ -638,7 +631,7 @@ class Rehearsal:
             raise RuntimeError("Robot rehearsal requires the repository checkout's control panel.")
         panel_server = runpy.run_path(str(panel_path))["PanelServer"]
         state = self.robot_state = _DemoRobot(
-            host, self.directory / "controller-locks", feedback, tray_scene=self.tray_scene
+            host, self.directory / "controller-locks", tray_scene=self.tray_scene
         )
         self._stack.callback(state.close)
         server = panel_server(("127.0.0.1", 0), state)

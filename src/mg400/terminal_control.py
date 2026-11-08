@@ -14,17 +14,14 @@ from .config import finite_number
 from .robot_config import load_robot_host
 from .suction import ACTIONS as VACUUM_ACTIONS
 from .web_control import RobotPanelState
-from .web_gripper import WebGripper
 
 HELP = (
     "connect | disconnect | enable | disable | stop | status | help | quit",
     "move X Y Z R   Absolute flange pose: XYZ in mm, R in degrees; User=0, Tool=0.",
     "home           Move J1-J4 to zero degrees.",
-    "grip 0..1000   Move only the gripper (0 closed, 1000 open).",
-    "grip-init      Initialize the gripper. The jaws open. Do not hold an object.",
     "vacuum suck | release | off   Suction cup: suck, blow briefly to release, or all off.",
     "Ctrl+C: stop arm | Ctrl+D: quit | Up/Down: history | Left/Right: edit",
-    "Stop is controlled stopping, not a physical emergency stop. It does not stop the gripper.",
+    "Stop is controlled stopping, not a physical emergency stop. It keeps suction on.",
 )
 
 
@@ -41,7 +38,6 @@ def parse_command(line):
         "disable": "disable",
         "stop": "stop",
         "home": "home",
-        "grip-init": "initialize_gripper",
     }
     if name in actions and not values:
         return {"action": actions[name]}
@@ -52,11 +48,6 @@ def parse_command(line):
                 zip(("x", "y", "z", "r"), (finite_number(float(v)) for v in values), strict=True)
             ),
         }
-    if name == "grip" and len(values) == 1:
-        position = finite_number(float(values[0]))
-        if not position.is_integer() or not 0 <= position <= 1000:
-            raise ValueError("Use grip with an integer from 0 to 1000")
-        return {"action": "grip", "position": int(position)}
     if name == "vacuum" and len(values) == 1:
         if values[0] not in VACUUM_ACTIONS:
             raise ValueError("Use vacuum suck, vacuum release or vacuum off")
@@ -96,10 +87,8 @@ def status_lines(state):
         f"MG400  {state['robot_host']}  {connection}",
         f"Mode={mode}  Error={error}  Busy={state['busy']}  Locked={state['locked']}",
         "Joints (deg): " + values(("J1", "J2", "J3", "J4"), state["joints"]),
-        "Flange (mm/deg): " + values(("X", "Y", "Z", "R"), state["actual"][:4]),
-        "Gripper (0..1000): " + values(("position",), state["actual"][4:]),
+        "Flange (mm/deg): " + values(("X", "Y", "Z", "R"), state["actual"]),
         "Vacuum: " + vacuum_text(state.get("vacuum") if fresh else None),
-        state["gripper_message"],
     ]
 
 
@@ -330,11 +319,6 @@ def main(argv=None):
     parser.add_argument(
         "--robot-host", help="Robot address; default: MG400_ROBOT_HOST, then config/robot.toml"
     )
-    parser.add_argument(
-        "--gripper-feedback",
-        type=Path,
-        help="Feedback file from a local USB collector with --commands",
-    )
     args = parser.parse_args(argv)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print(
@@ -355,9 +339,7 @@ def main(argv=None):
         )
         if not host.strip() or any(char.isspace() for char in host):
             raise ValueError("The robot address must contain no whitespace")
-        state = RobotPanelState(
-            host, gripper=WebGripper(args.gripper_feedback) if args.gripper_feedback else None
-        )
+        state = RobotPanelState(host)
         session = TerminalSession(state)
         for signum in (signal.SIGTERM, signal.SIGHUP):
             previous_handlers[signum] = signal.signal(signum, interrupted)
@@ -379,7 +361,6 @@ def main(argv=None):
                 state.close()
                 snapshot = state.snapshot()
                 print(snapshot["message"], file=sys.stderr)
-                print(snapshot["gripper_message"], file=sys.stderr)
                 if snapshot["stop_unconfirmed"] or snapshot["busy"]:
                     exit_code = exit_code or 1
                     print(

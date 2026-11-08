@@ -299,7 +299,6 @@ def disabled_robot(robot_reconciliation, monkeypatch):
         keyboard_enabled=False,
         keyboard_arming=False,
         keyboard_active_key=None,
-        gripper_busy=False,
         last_command={
             "id": "manual-disable",
             "action": "disable",
@@ -349,7 +348,6 @@ def test_recovery_only_confirmation_uses_fresh_explicit_manual_disable(disabled_
         ("keyboard_arming", True),
         ("keyboard_active_key", _ABSENT),
         ("keyboard_active_key", "ArrowUp"),
-        ("gripper_busy", True),
         ("fault", "unknown outcome"),
         ("last_command", _ABSENT),
         ("last_command", []),

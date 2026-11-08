@@ -1592,6 +1592,15 @@ def test_camera_configuration_renders_exact_device_count(module, count):
     # ffmpeg reads and returns the H.264 previews through RTSP on loopback only.
     assert "rtsp:\n  listen: 127.0.0.1:8554\n" in rendered
     assert 'webrtc:\n  listen: ""\n' in rendered
+    # A view shows its first frame at once: no input rate probe, a keyframe each second,
+    # and each source frame sent once.
+    rtsp, h264 = (
+        next(line for line in rendered.splitlines() if line.startswith(f"  {key}: "))
+        for key in ("rtsp", "h264")
+    )
+    assert "-fpsprobesize 0 -i {input}" in rtsp
+    assert "-c:v libx264" in h264 and "-fps_mode passthrough" in h264
+    assert "-x264-params fps=30" in h264 and "-force_key_frames expr:gte(t,n_forced)" in h264
     assert "preload:\n" + "".join(f"  camera{n}: video\n" for n in range(1, count + 1)) in rendered
     # go2rtc reads the microscope preview only for an H.264 viewer: it is not preloaded.
     assert rendered.endswith(

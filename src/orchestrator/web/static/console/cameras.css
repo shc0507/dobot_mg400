@@ -59,8 +59,6 @@ body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
 #ws-cameras .lcam-cell .lcam-head { position: absolute; top: 8px; left: 8px; right: 8px; z-index: 3; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding: 0; pointer-events: none; }
 #ws-cameras .lcam-cell .lcam-names { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border-radius: 10px; background: var(--cm-well-chip); color: var(--cm-text); font-size: 13px; }
 #ws-cameras .lcam-cell .lcam-title { font-weight: 700; }
-#ws-cameras .lcam-cell .lcam-role { color: var(--cm-text-2); }
-#ws-cameras .lcam-cell .lcam-role::before { content: none; }
 #ws-cameras .lcam-cell .lcam-badge { margin-left: auto; min-height: 28px; padding: 0 10px; border-radius: 10px; background: var(--cm-well-chip); font-size: 12px; letter-spacing: 0; }
 #ws-cameras .lcam-cell .lcam-badge.tone-ok { color: var(--cm-ok); } #ws-cameras .lcam-cell .lcam-badge.tone-warn { color: var(--cm-warn); }
 #ws-cameras .lcam-cell .lcam-badge.tone-bad { color: var(--cm-bad); } #ws-cameras .lcam-cell .lcam-badge.tone-off { color: var(--cm-text-2); }
@@ -135,11 +133,13 @@ body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
 .lcam-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; padding: 10px 12px; }
 .lcam-names { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; min-width: 0; }
 .lcam-title { font-weight: 600; }
-.lcam-role { color: var(--soft); }
-.lcam-role::before { content: "· "; color: var(--muted); }
 .lcam-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
 .lcam-badge.tone-ok { color: var(--ok); } .lcam-badge.tone-warn { color: var(--warn); }
 .lcam-badge.tone-off { color: var(--muted); } .lcam-badge.tone-bad { color: var(--bad); }
+/* A live view shows only a small dot on every page; the ring keeps it visible on any image. */
+:is(#ws-cameras, #ws-motion, #ws-process) .lcam-tile .lcam-badge.lcam-badge-dot { min-height: 0; padding: 0; background: none; align-self: center; }
+:is(#ws-cameras, #ws-motion, #ws-process) .lcam-tile .lcam-badge-dot .lc-dot { width: 10px; height: 10px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
+.lcam-badge-dot .lcam-badge-text { display: none; }
 .lcam-stage { position: relative; aspect-ratio: 4 / 3; background: #0A0E11; cursor: pointer; }
 .lcam-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .lcam-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; image-rendering: pixelated; }

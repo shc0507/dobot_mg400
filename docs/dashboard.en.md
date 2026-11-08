@@ -10,10 +10,10 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 
 The console is the only operator web page.
 
-- Row 1 of the header shows the console name, the deployed commit, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
+- Row 1 of the header shows the console name, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Hover over the console name to see the deployed commit. The controlled devices show only while this page holds 1 or more devices. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
 - The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
-- The status strip shows 1 chip for each service: a dot and a text. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
+- The status strip shows 1 chip for each service: a dot and a text. The **Runs** chip shows only while a run exists. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
 - When the console does not answer for 3 seconds, the strip shows only **Console offline** and the age of the last state. Check the VPN and the `orch` service.
 - The stop result band below the header shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
 - In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
@@ -43,10 +43,10 @@ The workspaces send manual commands through the console. The console forwards ea
 
 ### Overview workspace
 
-- **Run** shows the current run and its steps. See [run control and recovery](#run-control-and-recovery).
-- **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service.
-- **Safety** gives **STOP ALL MOTION**, **Stop heat and gas** and **Stop all gas**. Each button acts on 1 press. The stop result band shows the results.
-- **Agent proposals** shows the number of waiting proposals. See [agent proposals](#agent-proposals).
+- **Run** shows the current run and its steps. The card shows only while a run exists. See [run control and recovery](#run-control-and-recovery).
+- **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service. Only a warning or an error shows its level. A successful vision inference is not an event.
+- **Safety** gives **Stop heat and gas** and **Stop all gas**. **STOP ALL MOTION** is in the header. Each button acts on 1 press. The stop result band shows the results.
+- **Agent proposals** shows the number of waiting proposals. The card shows only while 1 or more proposals wait. See [agent proposals](#agent-proposals).
 
 ### Motion workspace
 
@@ -59,14 +59,14 @@ Views:
 
 Robot arm:
 
-- The header row has the state, **Enable** or **Disable**, **Home…**, **Take control** and **Stop arm**. **Disable** shows while the arm is enabled, moves or jogs. **Disable** and **Stop arm** need no control.
+- The header row has the state, **Enable** or **Disable**, **Home…**, **Take control** and **Stop arm**. **Disable** shows while the arm is enabled, moves or jogs. **Disable** and **Stop arm** need no control. When the robot service has no fresh feedback, the state is Not connected.
 - When another page or client holds the arm, the control button says so and is unavailable. A demo arm shows DEMO.
 - **Home…** needs a confirmation. It moves J1 to J4 to 0°.
 - During an alarm, a coral note at the top of the station lists each controller alarm with its ID, description and solution. **Clear alarm** is in the note. Below the folds, the station shows the message of the robot service.
 - After an unconfirmed stop, the note shows Stop not confirmed and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
 - **Keyboard jog** is the main arm control. When this page holds control and the robot is enabled, turn on the switch to start keyboard jog at the selected speed. The speed is from 1 to the `keyboard` speed cap that the robot service describes. The key map shows each key and its motion: W/S (reach out and in), A/D (base J1), R/F (Z up and down), Q/E (flange J4) and Z/X (suction: suck and drop). A held key lights up. Z and X run 1 suction action per press, also while the key stays held.
 - While the switch is on and the page has focus, hold a key to move. The page sends the held keys through `ws/motion/keys` on each change and every 150 ms while a key is held. The arm stops 0.4 s after the last update. A window focus loss, a hidden tab, leaving the Motion tab, the switch off or a loss of control releases all keys and turns the keyboard off. When the robot service turns the keyboard off, the page shows the reason below the switch. Stop and **STOP ALL MOTION** work at all times.
-- The readout shows the actual X, Y, Z and R, and J1 to J4 in degrees. While the arm moves, the robot service sends no pose, and the readout shows the last known pose in grey. Below it is **Suction**: the measured state (Sucking, Blowing or Off) and **Suck** and **Drop**. **Drop** turns suction off and blows a short pulse. The buttons need control and an idle arm. When the robot service reports `held`, the block also shows Held or Not held.
+- The readout shows the actual X, Y, Z and R, and J1 to J4 in degrees. While the arm moves, the robot service sends no pose, and the readout shows the last known pose in grey. Without fresh feedback, the readout also shows the last values in grey. Below it is **Suction**: the measured state (Sucking, Blowing or Off) and **Suck** and **Drop**. **Drop** turns suction off and blows a short pulse. The buttons need control and an idle arm. When the robot service reports `held`, the block also shows Held or Not held.
 - **Jog buttons** (folded) moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose. While the keyboard is on, the Z and R buttons show the key that moves the same way: R and F for Z, Q and E for R.
 - **Move to a pose** (folded): **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
 - The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
@@ -74,8 +74,8 @@ Robot arm:
 Stage:
 
 - The header row has the state, **Take control** and **Stop stage**. **Stop stage** needs no control. When another page or client holds the stage, the control button says so. A demo stage shows DEMO.
-- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. **Refresh ports** reads the port list again.
-- Each axis row shows the position, **Hold −**, **Hold +**, the hold speed in pulses/s and the keys of the axis. With a confirmed reference the position is in mm. Without one it is the pulse count.
+- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. Each port shows its description and device name. The full device path is in the tooltip. **Refresh ports** reads the port list again.
+- Each axis row shows the position, **Hold −**, **Hold +**, the hold speed in pulses/s and the keys of the axis. With a confirmed reference the position is in mm. Without one it is the pulse count. While the Arduino is not connected, the position shows —. An axis shows its state only when it is not idle.
 - **Hold −** and **Hold +** move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
 - The console sends the stage commands of a hold. It sends 1 `hold`, then 1 `keepalive` every 0.2 s while the page refreshes the hold. The page refreshes the hold through `ws/motion/stage/hold` every 150 ms. When no refresh arrives for 0.5 s, the console releases the hold. If the console stops, the firmware stops the axis 1 s after the last `keepalive`.
 - **Stepping** below the axes sets the stepping mode of all 3 axes: Full, 1/2, 1/4, 1/8 or 1/16. A change clears the zero and soft limits of all 3 axes and needs a confirmation.
@@ -112,9 +112,9 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 
 Every device command goes through the console relay. Use **Take control** for the furnace or the microscope first. **Stop heat and gas**, **Stop all gas**, **Close** and the microscope **Stop** need no control.
 
-- The furnace shows PV, SV, the ramp, the mode and the maximum temperature of the thermal `crucible` region. When the data is older than 3 seconds, the page shows its age and dims the readings and the chart.
+- The furnace shows PV, SV, the mode and the maximum temperature of the thermal `crucible` region. When the data is older than 3 seconds, the page shows its age and dims the readings and the chart.
 - The chart shows PV and SV for the last 60 minutes. The console process records 1 point every 5 s while a page is open. After a restart the chart starts empty.
-- **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes.
+- **Apply and run…** and **Start sequence…** heat the furnace and need a confirmation in the page. The target and the ramp cannot exceed the caps that the service describes. The labels of the target and ramp fields show the caps. The controller ramp shows next to the mode only while the furnace runs, ramps or holds.
 - The sequence editor adds and removes steps and sets the target, ramp, hold and 3 gas channels of each step, and the end gas and end temperature. When a step sets gas, the end temperature is necessary. The page loads the furnace sequence on its first read.
 - Without `MG400_FURNACE_GAS_MAP`, the gas channels are named Gas 1 to Gas 3. **Stop heat and gas** and **Stop all gas** use the routes of the Overview **Safety** card. The stop result band shows the result.
 - Each gas row shows the actual flow and the valve state. A valve state that the flow controller did not confirm shows not confirmed.
@@ -142,7 +142,7 @@ Open `http://127.0.0.1:8790/lab/`. In demo mode, the first **Take control** star
 
 Keep the physical emergency stop reachable. A web request or a displayed confirmation is not a physical safety interlock.
 These stop controls do not require **Take control** or a control lease.
-The header has **STOP ALL MOTION**. The **Safety** card of the Overview has all 3 buttons:
+The header has **STOP ALL MOTION**. The **Safety** card of the Overview has **Stop heat and gas** and **Stop all gas**:
 
 | Button | Effect |
 | --- | --- |

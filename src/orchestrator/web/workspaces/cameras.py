@@ -548,20 +548,6 @@ class _Cache:
             return self.value
 
 
-def preview_state(service):
-    """Summarize camera1 to camera4 for the status strip.
-
-    unconfigured: no camera device is set. idle: the browser loads the streams itself.
-    """
-    value = getattr(service, "camera_sources", None)
-    source = value if value is not None else HttpSources(service)
-    try:
-        configured = bool(source.configured(CAMERAS[0]))
-    except Exception:
-        configured = False
-    return {"state": "idle" if configured else "unconfigured"}
-
-
 def register(blueprint, service):
     clock = getattr(getattr(service, "console", None), "clock", time.monotonic)
     relay = Relay(clock)

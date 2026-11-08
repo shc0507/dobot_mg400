@@ -228,4 +228,4 @@ sudo mg400ctl logs web -n 200
 ```
 
 控制锁定时，在日志中找第一条 `Stop or disable unconfirmed.`。
-其后的 `Message:` 行写明停止或下使能失败的原因。
+其后的机器人消息行写明停止或下使能失败的原因。

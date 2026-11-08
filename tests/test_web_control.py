@@ -999,9 +999,7 @@ def test_an_unconfirmed_stop_logs_its_reason_and_the_lock(rig, caplog):
     assert "Robot mode 5, error=False" in log
     assert "Control locked." in log
     assert "Stop or disable unconfirmed." in log
-    assert any(
-        line.startswith("Message: Warning: robot stop or disable is unconfirmed:") for line in log
-    )
+    assert any(line.startswith("Warning: robot stop or disable is unconfirmed:") for line in log)
     assert log.index("Control locked.") < log.index("Stop or disable unconfirmed.")
 
 
@@ -1059,7 +1057,7 @@ def test_contract_events_preserve_existing_journal_lines_once(rig, caplog):
     assert [entry["message"] for entry in replay["events"]] == panel_log(caplog)
     assert replay["next"] == 5
     assert [entry["seq"] for entry in state.events.since(2)["events"]] == [3, 4, 5]
-    assert panel_log(caplog).count("Message: fixture state message") == 1
+    assert panel_log(caplog).count("fixture state message") == 1
     assert all(entry["fields"] == {} for entry in replay["events"])
 
 
@@ -1332,3 +1330,24 @@ def test_rejected_commands_while_enabled_still_require_the_physical_stop(make_si
     assert "use the physical emergency stop" in snapshot["message"]
     assert "TCP/IP" not in snapshot["message"]
     assert snapshot["locked"] and snapshot["stop_unconfirmed"]
+
+
+def test_a_lock_is_a_warning_and_an_unlock_and_messages_are_info():
+    class Holder:
+        locked = RobotPanelState._locked
+        message = RobotPanelState._message
+
+        def __init__(self):
+            self.events = Mock()
+
+    holder = Holder()
+    holder.locked = False
+    holder.message = ""
+    holder.locked = True
+    holder.locked = False
+    holder.message = "Robot disable and rest are confirmed."
+    assert [call.args for call in holder.events.add.call_args_list] == [
+        ("warning", "Control locked."),
+        ("info", "Control unlocked."),
+        ("info", "Robot disable and rest are confirmed."),
+    ]

@@ -265,6 +265,23 @@ test("stops need no control and are sent once; heat and gas use the Overview rou
   ]);
 });
 
+test("the cards name only another holder, the caps sit at the fields, and the ramp shows only while heating", async () => {
+  const status = statusBody();
+  status.furnace.ramp = 5;
+  const { root } = await load({ owns: [], status });
+  const text = walk(root).map(node => node.ownText);
+  for (const gone of ["no control", "you have control", "focus zero unknown", "zero set", "━ PV", "╍ SV"]) {
+    assert.equal(text.some(value => value.includes(gone)), false, gone);
+  }
+  assert.equal(text.some(value => value.startsWith("Caps")), false);
+  assert.ok(text.includes("Target °C ≤ 1000") && text.includes("Ramp °C/min ≤ 100"));
+  const rampItem = walk(root).find(node => node.className === "pr-state-item");
+  assert.equal(rampItem.hidden, true);
+  status.furnace.control_mode = "RUN";
+  const running = await load({ owns: [], status });
+  assert.equal(walk(running.root).find(node => node.className === "pr-state-item").hidden, false);
+});
+
 test("Close shuts 1 gas channel without control; the gas rows show the valve state and the ramp tile shows", async () => {
   const status = statusBody();
   status.furnace.ramp = 5;

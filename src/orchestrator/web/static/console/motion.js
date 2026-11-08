@@ -93,6 +93,13 @@
     return { key: switches ? "ref.homeRequired" : "ref.zeroRequired", tone: "warn" };
   }
 
+  /** A short port label: the description and the device name, without the /dev/serial/by-id/ path. */
+  function portLabel(item) {
+    const name = String(item?.device || "").split("/").pop();
+    const short = name.length > 24 ? "" : name;
+    return [item?.description, short].filter(Boolean).join(" · ") || String(item?.device || "");
+  }
+
   function axisState(motor) {
     if (motor?.mode && motor.mode !== "idle") return { key: "axis.moving", tone: "info" };
     if (typeof motor?.cooldown === "number" && motor.cooldown > 0) return { key: "axis.cooldown", tone: "info" };
@@ -172,7 +179,7 @@
   /** The short stepping label: Full for full step, otherwise the step fraction. */
   function stepLabel(value, full) { return value === 1 ? full : "1/" + value; }
 
-  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, holdKey, holdId, clampSpeed, parseCount, axisReference, axisState, activityRows, clock, fixed, stepLabel, STEPS, CAMERAS, STATION_VIEWS };
+  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, holdKey, holdId, clampSpeed, parseCount, axisReference, axisState, portLabel, activityRows, clock, fixed, stepLabel, STEPS, CAMERAS, STATION_VIEWS };
 
   const i18n = {
     en: {
@@ -181,7 +188,7 @@
       "dev.unconfigured": "Not configured", "dev.offline": "Not running", "dev.unreachable": "Not reachable", "dev.loading": "Loading…",
       "arm.enabled": "Enabled", "arm.disabled": "Disabled", "arm.busy": "Moving", "arm.alarm": "Alarm",
       "arm.locked": "Stop not confirmed", "arm.lockedHelp": "Check the arm, then press Recover.", "arm.errorOnly": "The controller reports an error.",
-      "arm.recover": "Recover", "arm.noFeedback": "No fresh feedback", "arm.cap": "speed cap {cap}",
+      "arm.recover": "Recover", "arm.noFeedback": "Not connected", "arm.cap": "speed cap {cap}",
       "ctl.take": "Take control", "ctl.release": "Release",
       "ctl.console": "In use by another page", "ctl.other": "In use by another client",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
@@ -248,7 +255,7 @@
       "dev.unconfigured": "未配置", "dev.offline": "未运行", "dev.unreachable": "无法连接", "dev.loading": "加载中…",
       "arm.enabled": "已使能", "arm.disabled": "未使能", "arm.busy": "运动中", "arm.alarm": "报警",
       "arm.locked": "停止未确认", "arm.lockedHelp": "检查机械臂，然后按“恢复”。", "arm.errorOnly": "控制器报告错误。",
-      "arm.recover": "恢复", "arm.noFeedback": "没有新反馈", "arm.cap": "速度上限 {cap}",
+      "arm.recover": "恢复", "arm.noFeedback": "未连接", "arm.cap": "速度上限 {cap}",
       "ctl.take": "获取控制权", "ctl.release": "释放",
       "ctl.console": "另一个页面正在使用", "ctl.other": "另一个客户端正在使用",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
@@ -475,7 +482,6 @@
 
     function buildArm() {
       refs.armStatus = el("span", { class: "mo-state" });
-      refs.armFlags = el("p", { class: "mo-flag", hidden: true });
       refs.armBadge = el("span", { class: "mo-badge", text: t("badge.demo"), hidden: true });
       refs.armStop = el("button", { type: "button", class: "mo-stop", text: t("arm.stop"), onclick: () => stopDevice("robot") });
       // One button follows the arm: Disable (no control needed) while the arm is enabled, moves or jogs; else Enable.
@@ -587,7 +593,7 @@
           el("div", { class: "mo-head" },
             el("h2", { id: "mo-arm-title", text: t("arm.title") }), refs.armStatus, refs.armBadge,
             el("span", { class: "mo-actions" }, refs.enable, refs.home, controlButton("robot"), refs.armStop)),
-          refs.armFlags, refs.alarmNote, confirmSlot("home"),
+          refs.alarmNote, confirmSlot("home"),
           el("div", { class: "mo-armbody" }, kbBox, readout),
           el("div", { class: "mo-folds" }, jogFold, moveFold),
           refs.armMessage, refs.armLast));
@@ -1067,10 +1073,10 @@
       // Arm.
       const pose = actualPose(robot);
       const missing = deviceStatus(data.robot);
-      refs.armStatus.textContent = missing || t(robot.busy ? "arm.busy" : robot.enabled ? "arm.enabled" : "arm.disabled");
-      refs.armStatus.className = "mo-state" + (missing ? "" : robot.busy ? " mo-info" : robot.enabled ? " mo-ok" : "");
-      refs.armFlags.textContent = robot && !robot.feedback_fresh ? t("arm.noFeedback") : "";
-      refs.armFlags.hidden = !refs.armFlags.textContent;
+      // Without fresh feedback the arm is not connected; its enabled flag is then old.
+      const fresh = Boolean(robot?.feedback_fresh);
+      refs.armStatus.textContent = missing || t(robot.busy ? "arm.busy" : !fresh ? "arm.noFeedback" : robot.enabled ? "arm.enabled" : "arm.disabled");
+      refs.armStatus.className = "mo-state" + (missing ? "" : robot.busy ? " mo-info" : !fresh ? " mo-warn" : robot.enabled ? " mo-ok" : "");
       refs.armBadge.hidden = !(robot && robot.demo);
       updateControl("robot", data.robot);
       const ready = Boolean(robot && ownsRobot && robot.feedback_fresh && !robot.locked && !robot.stop_unconfirmed);
@@ -1098,13 +1104,17 @@
       if (refs.armMessage.textContent !== message) refs.armMessage.textContent = message;
       refs.armMessage.hidden = !message;
       const joints = Array.isArray(robot?.joints) ? robot.joints : [];
-      refs.joints.forEach((node, i) => { node.textContent = typeof joints[i] === "number" ? fixed(joints[i], 1) : "—"; });
+      refs.joints.forEach((node, i) => {
+        node.textContent = typeof joints[i] === "number" ? fixed(joints[i], 1) : "—";
+        node.className = "mo-num-small mo-deg" + (fresh ? "" : " mo-stale");
+      });
       // The robot service sends no pose while the arm moves. Keep the last pose, in grey, until a new one arrives.
       if (pose) model.lastPose = pose;
       const shownPose = pose || (robot?.busy ? model.lastPose : null);
       AXES.forEach((axis, i) => {
         refs.pose[i].textContent = shownPose ? fixed(shownPose[i], 2) : "—";
-        refs.pose[i].className = "mo-num" + (pose ? "" : " mo-stale");
+        // Old feedback stays visible in grey, so it never reads as the current pose.
+        refs.pose[i].className = "mo-num" + (pose && fresh ? "" : " mo-stale");
       });
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;
@@ -1129,7 +1139,8 @@
         node.disabled = !vacReady;
         node.className = "mo-btn" + (operation === "suck" && vac.state === "suck" ? " mo-held" : "");
       }
-      refs.armLast.textContent = robot ? lastText("robot", robot.last_command) : "";
+      // The message line above already says what an ok command did.
+      refs.armLast.textContent = robot && robot.last_command?.result !== "ok" ? lastText("robot", robot.last_command) : "";
       updateKeyboard(robot, ready);
 
       // Stage.
@@ -1151,13 +1162,15 @@
       for (const motor of stage?.motors || []) {
         const row = refs.axes?.[motor.id];
         if (!row) continue;
+        // An idle axis shows no state; a disconnected stage shows no position.
         const state = axisState(motor);
-        row.state.textContent = t(state.key);
+        row.state.textContent = state.key === "axis.idle" ? "" : t(state.key);
         row.state.className = "mo-axstate mo-tone-" + state.tone;
         // A position in mm needs a confirmed reference. Without one the pulse count is only a count.
         const mm = typeof motor.position_mm === "number" && Number.isFinite(motor.position_mm);
-        row.num.textContent = mm ? fixed(motor.position_mm, 2) : motor.position === null || motor.position === undefined ? "—" : String(motor.position);
-        row.unit.textContent = mm ? "mm" : t("axis.unit");
+        const known = stage.connected === true && (mm || (motor.position !== null && motor.position !== undefined));
+        row.num.textContent = !known ? "—" : mm ? fixed(motor.position_mm, 2) : String(motor.position);
+        row.unit.textContent = !known ? "" : mm ? "mm" : t("axis.unit");
         row.value.className = "mo-axval";
         const reference = axisReference(motor);
         row.ref.textContent = t(reference.key);
@@ -1214,7 +1227,8 @@
       finally { model.portsLoading = false; }
       if (!model.ports.some(item => item.device === model.port)) model.port = model.ports[0]?.device || "";
       refs.portSelect.replaceChildren(...(model.ports.length
-        ? model.ports.map(item => el("option", { value: item.device, text: item.description ? `${item.device} · ${item.description}` : item.device }))
+        // The full by-id path is long; it goes in the tooltip.
+        ? model.ports.map(item => el("option", { value: item.device, title: item.device, text: portLabel(item) }))
         : [el("option", { value: "", text: t("stage.noPorts") })]));
       refs.portSelect.value = model.port;
       update();

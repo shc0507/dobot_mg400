@@ -30,17 +30,16 @@
         <textarea id="chip-id" rows="2" spellcheck="false" placeholder="Paste the exact QR text."></textarea>
         <div class="actions"><button type="submit" class="pp-primary" id="pp-search">Search records</button></div>
       </form>
-      <p class="muted" id="pp-note">Search matches the complete QR text.</p>
-      <p id="passport-status" class="notice" role="status" aria-live="polite">Enter a chip ID to read its recorded history.</p>
+      <p id="passport-status" class="notice" role="status" aria-live="polite"></p>
     </section>
-    <section class="pp-history" aria-labelledby="passport-heading">
-      <div class="section-heading"><h2 id="passport-heading">Recorded history</h2><span class="badge" id="pp-readonly">Read only</span></div>
+    <section class="pp-history" id="pp-history" aria-labelledby="passport-heading" hidden>
+      <div class="section-heading"><h2 id="passport-heading">Recorded history</h2></div>
       <p id="selected-chip" class="chip-text"></p>
       <p id="run-count" class="muted">No records loaded.</p>
       <div id="passport-runs" class="passport-runs"></div>
       <button id="more-runs" class="secondary more-runs" type="button" hidden>Load more runs</button>
     </section>
   </main>
-  <footer id="pp-footer">Only saved records appear here. Missing measurements do not mean zero. Open each run to read its records.</footer>
+  <footer id="pp-footer" hidden>Only saved records appear here. Missing measurements do not mean zero. Open each run to read its records.</footer>
 </body>
 </html>

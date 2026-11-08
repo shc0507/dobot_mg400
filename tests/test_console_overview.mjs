@@ -71,12 +71,12 @@ function mount(snapshot) {
 test("the Overview updates in place, so a state update keeps every button", async () => {
   const snapshot = { value: { services: [{ id: "robot", phase: "ready" }], control: [], approvals: [] } };
   const page = mount(snapshot);
-  const stop = page.root.button("STOP ALL MOTION");
+  const stop = page.root.button("Stop heat and gas");
   const take = page.root.all().find(node => node.getAttribute("aria-label") === "Take control of Robot");
   assert.equal(take.disabled, false);
   snapshot.value = { services: [{ id: "robot", phase: "ready" }], control: [{ device: "robot", mine: true, state: "held" }], approvals: [{ decision: "pending" }] };
   page.refresh();
-  assert.equal(page.root.button("STOP ALL MOTION"), stop);
+  assert.equal(page.root.button("Stop heat and gas"), stop);
   assert.equal(take.textContent, "Release");
   assert.equal(take.getAttribute("aria-label"), "Release Robot");
   assert.match(page.root.textContent, /1 waiting\./);
@@ -88,15 +88,35 @@ test("the Overview updates in place, so a state update keeps every button", asyn
   assert.match(page.root.textContent, /Robotwarning.*Hot/);
 });
 
+test("empty cards, free holders and info levels are hidden", async () => {
+  const snapshot = { value: { services: [{ id: "robot", phase: "ready" }], control: [], approvals: [] } };
+  const page = mount(snapshot);
+  const card = id => page.root.all().find(node => node.tagName === "SECTION" && node.getAttribute("aria-labelledby") === id);
+  assert.equal(card("ov-run").hidden, true);
+  assert.equal(card("ov-proposals").hidden, true);
+  const robotRow = page.root.all().find(node => node.className === "lc-row" && node.textContent.startsWith("Robot"));
+  assert.equal(robotRow.children[1].hidden, true);
+  assert.doesNotMatch(page.root.textContent, /Free/);
+  snapshot.value = { ...snapshot.value, run: { id: "r1", status: "running", steps: [] }, approvals: [{ decision: "pending" }] };
+  page.refresh();
+  assert.equal(card("ov-run").hidden, false);
+  assert.equal(card("ov-proposals").hidden, false);
+  await new Promise(resolve => setImmediate(resolve));
+  const levels = page.root.all().filter(node => node.className === "lc-event-level");
+  assert.deepEqual(levels.map(node => node.textContent), ["warning"]);
+});
+
 test("each Safety button acts on 1 press and is never disabled", () => {
   const page = mount({ value: { services: [], control: [] } });
-  for (const text of ["STOP ALL MOTION", "Stop heat and gas", "Stop all gas"]) {
+  // STOP ALL MOTION is in the header on every page, not in the card.
+  assert.equal(page.root.all().some(node => node.tagName === "BUTTON" && node.textContent.includes("STOP ALL MOTION")), false);
+  for (const text of ["Stop heat and gas", "Stop all gas"]) {
     const button = page.root.button(text);
     button.click();
     button.click();
     assert.equal(button.disabled, false);
   }
-  assert.deepEqual(page.calls, [["stop", "motion"], ["stop", "motion"], ["stop", "heat"], ["stop", "heat"], ["stop", "gas"], ["stop", "gas"]]);
+  assert.deepEqual(page.calls, [["stop", "heat"], ["stop", "heat"], ["stop", "gas"], ["stop", "gas"]]);
 });
 
 test("the event filters update in place", () => {

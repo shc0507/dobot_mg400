@@ -9,28 +9,26 @@
 
   const i18n = {
     en: {
-      "run.title": "Run", "run.none": "No run is active.", "run.status": "Status: {status}",
+      "run.title": "Run", "run.status": "Status: {status}",
       "events.title": "Events · all services", "events.all": "All", "events.warnings": "Warnings",
       "events.service": "Service", "events.none": "No events yet.", "events.unavailable": "Events unavailable: {services}",
-      "safety.title": "Safety", "safety.motionTargets": "Robot · stage · microscope",
-      "control.title": "Control", "control.releaseAll": "Release all", "control.free": "Free",
+      "safety.title": "Safety",
+      "control.title": "Control", "control.releaseAll": "Release all",
       "control.thisPage": "This page", "control.console": "Console (other page)", "control.unknown": "Unknown",
       "control.take": "Take control", "control.release": "Release",
       "control.takeLabel": "Take control of {device}", "control.releaseLabel": "Release {device}",
       "proposals.title": "Agent proposals", "proposals.count": "{count} waiting.",
-      "proposals.none": "No proposal waiting.",
     },
     zh: {
-      "run.title": "运行", "run.none": "当前没有运行。", "run.status": "状态：{status}",
+      "run.title": "运行", "run.status": "状态：{status}",
       "events.title": "事件 · 全部服务", "events.all": "全部", "events.warnings": "警告",
       "events.service": "服务", "events.none": "暂无事件。", "events.unavailable": "事件不可用：{services}",
-      "safety.title": "安全", "safety.motionTargets": "机械臂 · 位移台 · 显微镜",
-      "control.title": "控制权", "control.releaseAll": "全部释放", "control.free": "空闲",
+      "safety.title": "安全",
+      "control.title": "控制权", "control.releaseAll": "全部释放",
       "control.thisPage": "本页", "control.console": "控制台（其他页面）", "control.unknown": "未知",
       "control.take": "获取控制", "control.release": "释放",
       "control.takeLabel": "获取 {device} 的控制", "control.releaseLabel": "释放 {device}",
       "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。",
-      "proposals.none": "没有待处理的提议。",
     },
   };
 
@@ -46,7 +44,7 @@
 
   function runRows(run) {
     const { el, t } = view.api;
-    if (!run) return [el("p", { class: "lc-muted", text: t("run.none") })];
+    if (!run) return [];
     return [
       el("p", { class: "lc-strong", text: `${run.name || run.id} · ${t("run.status", { status: run.status })}` }),
       run.detail ? el("p", { class: "lc-muted", text: run.detail }) : null,
@@ -57,13 +55,21 @@
     ];
   }
 
+  /** 24-hour time, as on the Motion page. */
+  function clock(seconds) {
+    if (!seconds) return "--:--:--";
+    try { return new Date(seconds * 1000).toLocaleTimeString("en-GB", { hour12: false }); }
+    catch { return "--:--:--"; }
+  }
+
+  /** One event row. Only a warning or an error shows its level. */
   function eventRow(item) {
     const { el, deviceName } = view.api;
+    const marked = item.level && item.level !== "info" && item.level !== "debug";
     return el("div", { class: "lc-event level-" + item.level },
-      el("span", { class: "lc-mono", text: item.ts_unix ? new Date(item.ts_unix * 1000).toLocaleTimeString() : "--:--:--" }),
+      el("span", { class: "lc-mono", text: clock(item.ts_unix) }),
       el("span", { class: "lc-event-src", text: deviceName(item.service) }),
-      el("span", { class: "lc-event-level", text: item.level }),
-      el("span", { text: item.message }));
+      el("span", { class: "lc-event-text" }, marked ? el("span", { class: "lc-event-level", text: item.level }) : null, item.message));
   }
 
   /** One press sends the stop. The stop result band of the shell shows the outcome. A stop is never disabled. */
@@ -102,9 +108,8 @@
         el("div", { class: "lc-filters" }, el("div", { class: "ov-seg" }, ...n.filters.map(([, node]) => node)), n.select)),
       n.eventsError, n.events);
 
+    // STOP ALL MOTION is in the header on every page.
     const safetyCard = section("ov-safety", t("safety.title"),
-      el("button", { type: "button", class: "lc-stop lc-stop-big", onclick: () => safety("motion") },
-        el("span", { text: t("stop.all") }), el("span", { class: "lc-small", text: t("safety.motionTargets") })),
       el("div", { class: "ov-stops" },
         el("button", { type: "button", class: "lc-stop", onclick: () => safety("heat"), text: t("stop.heat") }),
         el("button", { type: "button", class: "lc-danger", onclick: () => safety("gas"), text: t("stop.gas") })));
@@ -120,10 +125,13 @@
       el("div", { class: "lc-card-head" }, el("h2", { id: "ov-control", text: t("control.title") }), n.releaseAll),
       el("div", { class: "lc-rows" }, ...n.rows.map(row => row.node)));
 
+    // The run and the proposals cards show only when they have content.
     n.proposals = el("p", { class: "lc-muted" });
+    n.runCard = section("ov-run", t("run.title"), n.run);
+    n.proposalsCard = section("ov-proposals", t("proposals.title"), n.proposals);
     view.root.replaceChildren(el("div", { class: "lc-layout" },
-      el("div", { class: "lc-col-main" }, controlCard, section("ov-run", t("run.title"), n.run), events),
-      el("aside", { class: "lc-col-side" }, safetyCard, section("ov-proposals", t("proposals.title"), n.proposals))));
+      el("div", { class: "lc-col-main" }, controlCard, n.runCard, events),
+      el("aside", { class: "lc-col-side" }, safetyCard, n.proposalsCard)));
     update();
   }
 
@@ -138,8 +146,9 @@
     const runKey = JSON.stringify(run);
     if (runKey !== n.keys.run) {
       n.keys.run = runKey;
-      n.run.replaceChildren(...runRows(run));
+      n.run.replaceChildren(...runRows(run).filter(Boolean));
     }
+    n.runCard.hidden = !run;
 
     for (const [id, node] of n.filters) node.setAttribute("aria-pressed", String(view.filter === id));
     const service = [...DEVICES, "runs"].includes(view.filter) ? view.filter : "";
@@ -163,10 +172,12 @@
       const session = sessions.get(row.device);
       // In demo mode Take control starts the owned demo, so offer it for those devices.
       const configured = (card && card.phase !== "unconfigured") || (snapshot?.console?.demo === true && row.device !== "microscope");
-      let holder = configured ? card?.lease_holder || t("control.free") : t("chip.unconfigured");
+      // A free device shows no holder line.
+      let holder = configured ? card?.lease_holder || "" : t("chip.unconfigured");
       if (session) holder = session.mine ? t("control.thisPage") : t("control.console");
       row.mine = Boolean(session?.mine && session.state === "held");
       setText(row.holder, holder);
+      row.holder.hidden = !holder;
       row.holder.className = "lc-muted lc-row-main" + (session?.mine ? " ov-mine" : "");
       row.button.className = "lc-button lc-small-button" + (row.mine ? " ov-on" : "");
       row.button.hidden = !configured;
@@ -177,7 +188,8 @@
     n.releaseAll.disabled = !(snapshot?.control || []).some(item => item.state === "held");
 
     const waiting = (snapshot?.approvals || []).filter(item => item.decision === "pending").length;
-    setText(n.proposals, waiting ? t("proposals.count", { count: waiting }) : t("proposals.none"));
+    setText(n.proposals, waiting ? t("proposals.count", { count: waiting }) : "");
+    n.proposalsCard.hidden = !waiting;
   }
 
   async function loadEvents() {

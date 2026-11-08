@@ -21,15 +21,14 @@
       "stop.all": "STOP ALL MOTION",
       "lang.switch": "中文",
       "lang.switchLabel": "Switch language to Chinese",
-      "controls.none": "You control: none",
       "controls.some": "You control: {devices}",
       "service.robot": "Robot", "service.stage": "Stage", "service.cameras": "Cameras",
       "service.thermal": "Thermal", "service.vision": "Vision", "service.microscope": "Microscope",
       "service.furnace": "Furnace", "service.runs": "Runs",
       "chip.unconfigured": "Not configured", "chip.loading": "Loading", "chip.unavailable": "Unavailable",
       "chip.stale": "Stale", "chip.fault": "Fault", "chip.locked": "Locked", "chip.disconnected": "Not connected",
-      "chip.busy": "Busy", "chip.ready": "Ready", "chip.demo": "demo", "chip.live": "Live", "chip.configured": "Configured",
-      "chip.noRun": "No run", "chip.offline": "Console offline",
+      "chip.busy": "Busy", "chip.ready": "Ready", "chip.demo": "demo",
+      "chip.offline": "Console offline",
       "chip.lastState": "last state {age} s ago", "chip.noState": "no state yet",
       "stop.heat": "Stop heat and gas", "stop.gas": "Stop all gas", "stop.title": "{action} · {time}",
       "stop.phase.stopping": "Stopping", "stop.phase.holding": "Holding run", "stop.phase.final-stop": "Final stop",
@@ -46,15 +45,14 @@
       "stop.all": "停止全部运动",
       "lang.switch": "English",
       "lang.switchLabel": "切换到英文",
-      "controls.none": "本页控制：无",
       "controls.some": "本页控制：{devices}",
       "service.robot": "机械臂", "service.stage": "位移台", "service.cameras": "相机",
       "service.thermal": "热像仪", "service.vision": "视觉", "service.microscope": "显微镜",
       "service.furnace": "炉子", "service.runs": "运行",
       "chip.unconfigured": "未配置", "chip.loading": "读取中", "chip.unavailable": "不可用",
       "chip.stale": "过期", "chip.fault": "故障", "chip.locked": "已锁定", "chip.disconnected": "未连接",
-      "chip.busy": "忙碌", "chip.ready": "就绪", "chip.demo": "演示", "chip.live": "实时", "chip.configured": "已配置",
-      "chip.noRun": "无运行", "chip.offline": "控制台离线",
+      "chip.busy": "忙碌", "chip.ready": "就绪", "chip.demo": "演示",
+      "chip.offline": "控制台离线",
       "chip.lastState": "最后状态 {age} s 前", "chip.noState": "尚无状态",
       "stop.heat": "停止加热和气体", "stop.gas": "停止全部气体", "stop.title": "{action} · {time}",
       "stop.phase.stopping": "停止中", "stop.phase.holding": "暂停运行", "stop.phase.final-stop": "最终停止",
@@ -102,21 +100,11 @@
     return chip;
   }
 
+  /** The runs chip, or null when no run exists. */
   function runsChip(orchestrator, run, fresh) {
     if (!fresh || !orchestrator || orchestrator.stale) return { tone: "warn", key: "chip.stale" };
-    if (!run) return { tone: "off", key: "chip.noRun" };
+    if (!run) return null;
     return { tone: run.status === "running" ? "info" : run.status === "failed" ? "bad" : "ok", text: run.status || "" };
-  }
-
-  /** camera1 to camera4: configured when a camera device is set. */
-  function camerasChip(preview, fresh) {
-    if (!fresh) return { tone: "warn", key: "chip.stale" };
-    const state = preview?.state;
-    if (state === "live") return { tone: "ok", key: "chip.live" };
-    if (state === "stale") return { tone: "warn", key: "chip.stale" };
-    if (state === "unavailable") return { tone: "bad", key: "chip.unavailable" };
-    if (state === "idle") return { tone: "ok", key: "chip.configured" };
-    return { tone: "off", key: "chip.unconfigured" };
   }
 
   /** The strip chips. When the console itself does not answer, 1 chip says so instead of 8 stale devices. */
@@ -125,9 +113,9 @@
     const cards = new Map((snapshot?.services || []).map(card => [card.id, card]));
     const rows = [];
     for (const id of ["robot", "stage"]) rows.push({ id, ...serviceChip(cards.get(id), fresh) });
-    rows.push({ id: "cameras", ...camerasChip(snapshot?.camera_preview, fresh) });
     for (const id of ["thermal", "vision", "microscope", "furnace"]) rows.push({ id, ...serviceChip(cards.get(id), fresh) });
-    rows.push({ id: "runs", ...runsChip(snapshot?.orchestrator, snapshot?.run, fresh) });
+    const runs = runsChip(snapshot?.orchestrator, snapshot?.run, fresh);
+    if (runs) rows.push({ id: "runs", ...runs });
     return rows;
   }
 
@@ -340,9 +328,10 @@
   function renderControls() {
     const mine = myControls().map(item => deviceName(item.device));
     const text = $("lc-controls-text");
-    if (text) text.textContent = mine.length ? t("controls.some", { devices: mine.join(", ") }) : t("controls.none");
+    if (text) text.textContent = mine.length ? t("controls.some", { devices: mine.join(", ") }) : "";
+    // The pill shows only while this page holds a device.
     const pill = $("lc-controls");
-    if (pill) pill.className = "lc-pill" + (mine.length ? " active" : "");
+    if (pill) { pill.className = "lc-pill" + (mine.length ? " active" : ""); pill.hidden = !mine.length; }
   }
 
   function renderStrip() {
@@ -647,7 +636,7 @@
 
   return {
     register, start, strings, shell,
-    logic: { translate, pickLanguage, serviceChip, runsChip, camerasChip, chips, filterEvents, latestOperation, stopView },
+    logic: { translate, pickLanguage, serviceChip, runsChip, chips, filterEvents, latestOperation, stopView },
     STALE_MS, BEAT_MS, SERVICES,
     _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops },
   };

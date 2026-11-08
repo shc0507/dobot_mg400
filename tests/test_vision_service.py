@@ -734,6 +734,22 @@ def test_failed_inference_dispatch_finishes_reservation_and_allows_retry(make_se
     assert client.get("/api/detect?camera=1").status_code == 200
 
 
+def test_only_a_failed_inference_is_an_event(make_service):
+    model = DemoLocalizer()
+    service = make_service(localizer_factory=lambda: model)
+    client = create_app(service).test_client()
+    assert client.get("/api/detect?camera=1").status_code == 200
+
+    def inference_events():
+        events = service.events.since(0)["events"]
+        return [(e["level"], e["message"]) for e in events if "inference" in e["message"]]
+
+    assert inference_events() == []
+    model.predict = Mock(side_effect=RuntimeError("model broke"))
+    assert_error(client.get("/api/detect?camera=1"), 503)
+    assert inference_events() == [("error", "vision inference failed")]
+
+
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), "x" * (256 * 1024)])
 def test_invalid_or_oversized_metadata_is_not_published(make_service, invalid):
     model = DemoLocalizer()

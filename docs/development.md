@@ -15,7 +15,7 @@
 | 查找入口与模块 | [代码结构](#代码结构) |
 | 编写机器人服务的客户端 | [机器人服务接口](#机器人服务接口) |
 | 编写位移台服务的客户端 | [位移台服务接口](#位移台服务接口) |
-| 修改关节范围、运动参数或夹爪协议 | [真机控制参考](#真机控制参考) |
+| 修改关节范围、运动参数或吸盘输出 | [真机控制参考](#真机控制参考) |
 
 ## 开发检查
 
@@ -50,20 +50,19 @@ uv run ruff format --check .
 
 ## 离线机器人模拟器
 
-`mg400.sim` 在回环地址模拟控制器和夹爪。
+`mg400.sim` 在回环地址模拟控制器。
 它只接受数字回环地址，默认使用 `127.0.0.2`。
 控制器端口为 `29999`、`30003` 和 `30004`，反馈周期为 `8 ms`。
-启动后，机械臂处于下使能状态，夹爪已初始化。
+启动后，机械臂处于下使能状态。
 
 在项目根目录运行：
 
 ```bash
 sim_dir=$(mktemp -d)
-uv run python -m mg400.sim --host 127.0.0.2 --gripper-feedback "$sim_dir/gripper.json" &
+uv run python -m mg400.sim --host 127.0.0.2 &
 sim_pid=$!
 MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/server.py \
-  --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2 \
-  --gripper-feedback "$sim_dir/gripper.json"
+  --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2
 kill "$sim_pid"
 wait "$sim_pid"
 ```
@@ -73,14 +72,12 @@ wait "$sim_pid"
 1. 运行 `start_sync`，等待反馈更新。
 2. 运行 `enable`，等待使能完成。
 3. 用 `execute` 发送目标坐标。
-4. 用 `grip` 发送夹爪目标，确认反馈位置更新。
-5. 运行 `stop_sync`，等待停止确认，再运行 `disable`。
+4. 运行 `stop_sync`，等待停止确认，再运行 `disable`。
 
 在终端按 `Ctrl+C` 结束机器人服务。
 随后两条命令结束本次模拟器进程。
-每次启动使用新目录。模拟器拒绝覆盖已有的反馈文件、命令文件或命令锁。
 
-模拟器立即到达关节和笛卡尔目标，不计算真实运动学、路径、碰撞或夹持力。
+模拟器立即到达关节和笛卡尔目标，不计算真实运动学、路径或碰撞。
 逆解返回当前关节值。`J1` 点动改变关节反馈，其余点动只改变运动模式。
 这些限制只适用于模拟器，生产控制代码和停止确认规则保持不变。
 离线演练不能替代硬件验收。
@@ -95,10 +92,10 @@ wait "$sim_pid"
 | `config/systemd/` | 所有服务的 systemd 定义，配置从 `/etc/mg400/mg400.env` 读取 |
 | `deploy/` | 安装器 `install.py`、日常命令 `mg400ctl` 和配置示例 |
 | `src/mg400/` | 后端、控制协议和反馈处理 |
-| `src/mg400/sim/` | 回环控制器和文件夹爪模拟器，共用测试模型 |
+| `src/mg400/sim/` | 回环控制器模拟器，共用测试模型 |
 | `src/stage_controller/` | 位移台服务：Flask 接口和串口协议 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
-| `scripts/` | 摄像头预览、控制模式切换和 USB 采集 |
+| `scripts/` | 摄像头预览、控制模式切换和交互终端入口 |
 | `examples/` | 单文件教学和 notebook |
 | `tests/` | Python 和 JavaScript 离线测试 |
 | `docs/` | 操作、部署和开发指南，`docs/agents/` 保存代理操作规程 |
@@ -110,16 +107,16 @@ wait "$sim_pid"
 它复用 `web_control.py` 的连接锁、反馈检查和动作执行，不启动 HTTP 服务。
 
 `apps/control_panel/server.py` 是机器人服务，提供 HTTP 接口和 WebSocket 接口，不提供网页。
-实验室控制台的 Motion 工作区通过该服务控制机械臂和夹爪。
+实验室控制台的 Motion 工作区通过该服务控制机械臂和吸盘。
 `websocket.py` 用标准库实现 WebSocket 帧编解码和连接写线程。
 接口说明见 [机器人服务接口](#机器人服务接口)。
 
 WebSocket 按键点动由 `web_control.py` 调度，机械臂长按复用 `keyboard_jog.py`。
-`web_keyboard.py` 校验按键输入并执行夹爪小步。
+`web_keyboard.py` 校验按键输入，并把 Z 和 X 映射为吸取和放下。
 
 机器人服务通过 TCP 协议控制机械臂。
 `controller_protocol.py` 解析命令应答，`feedback.py` 读取关节反馈。
-`joint_control.py` 执行受限运动，`gripper_feedback.py` 处理夹爪反馈。
+`joint_control.py` 执行受限运动和吸盘输出。
 TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 当前没有 ROS 2 后端或视觉感知。
 
@@ -186,9 +183,7 @@ POST 请求必须满足以下条件：
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
 | `home` | 无 | J1–J4 移动到 0° |
-| `execute` | `targets`：`x`、`y`、`z`、`r`，可选 `grip`，另有可选 `speed` | 直线移动到法兰坐标，到位后执行夹爪目标 |
-| `grip` | `position`：0–1000 的整数 | 设置夹爪开口 |
-| `initialize_gripper` | 无 | 初始化夹爪，会张开夹指 |
+| `execute` | `targets`：`x`、`y`、`z`、`r`，另有可选 `speed` | 直线移动到法兰坐标 |
 | `vacuum` | `operation`：`suck`、`release` 或 `off` | 控制真空吸盘，见 [真空吸盘](#真空吸盘) |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
@@ -234,11 +229,10 @@ POST 请求必须满足以下条件：
 
 | `stop` | 含义 |
 | --- | --- |
-| `confirmed` | 机械臂停止已确认，夹爪无活动命令或锁定 |
-| `pending` | 等待期限已到，停止工作线程或夹爪命令仍在执行 |
-| `unconfirmed` | 机械臂停止未确认，或夹爪已锁定 |
+| `confirmed` | 机械臂停止已确认 |
+| `pending` | 等待期限已到，停止工作线程仍在执行 |
+| `unconfirmed` | 机械臂停止未确认 |
 
-停止机械臂不会中断正在执行的夹爪命令。
 先前的停止未确认时，后续停止成功也不能清除此状态。
 响应保留锁定状态，不自动重试运动。
 
@@ -247,7 +241,6 @@ POST 请求必须满足以下条件：
 `finished_at` 是 Unix 秒数。
 `result` 为 `ok`、`failed`、`rejected` 或 `stopped`。
 异步命令在工作线程完成后更新结果。
-停止结果也等待活动夹爪命令结束，夹爪锁定时记为 `failed`。
 其他客户端的拒绝请求不会隐藏正在执行的命令的最终结果。
 已取消的旧工作线程不能覆盖较新的已完成停止。
 
@@ -256,7 +249,7 @@ POST 请求必须满足以下条件：
 `since` 默认为 0，必须是非负整数。
 响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
 服务保留最近 1000 个事件，重启后序号重新开始。
-事件对应既有的状态消息、锁定、报警、键盘关闭原因和夹爪锁定日志，不增加日志行。
+事件对应既有的状态消息、锁定、报警、和键盘关闭原因，不增加日志行。
 
 ### Python 客户端
 
@@ -434,7 +427,7 @@ labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
 
 | 接口 | 正文 | 用途 |
 | --- | --- | --- |
-| `GET /contract/api/ports` | 无 | 列出可连接的串口，不含夹爪转换器。设置 `MG400_STAGE_SERIAL` 时只列出该设备 |
+| `GET /contract/api/ports` | 无 | 列出可连接的串口。设置 `MG400_STAGE_SERIAL` 时只列出该设备 |
 | `POST /contract/api/connect` | `{"port": "..."}` | 连接 `api/ports` 列出的串口，演示模式只接受 `DEMO`。调用者必须持有位移台租约 |
 | `GET /contract/api/motors/<motor>/reference` | 无 | 读取相机图像和标记的像素偏移 |
 | `POST /contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | 把当前标记位置保存为该轴的参考。调用者必须持有位移台租约 |
@@ -461,7 +454,7 @@ POST 必须带 `Content-Type: application/json` 和 `X-MG400-Client`，正文必
 
 ## 真机控制参考
 
-本节供修改真机运动和夹爪接口时查阅。
+本节供修改真机运动和吸盘接口时查阅。
 部署配置见 [主机部署](deploy.md)。
 
 ### 控制器关节范围
@@ -536,59 +529,3 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。
 - 离线模拟器响应 `DOExecute`，并在反馈帧中报告 DO 位。
 - 接线和反馈字段见 [真空吸盘](hardware.md#真空吸盘)。
-
-### USB 夹爪协议
-
-夹爪位置命令本身不会使能或移动机械臂。
-初始化复用 USB–RS485 采集连接，不另开串口。
-从站 1、115200、8N1，写一次 `0x0100=1`。
-程序等待 `0x0200=1`、状态到位和有效实测位置。
-
-位置命令写入反馈文件旁的 `.command.json` 文件。
-采集进程只执行匹配当前会话且不超过 0.75 秒的请求，每个请求只执行一次。
-位置命令要求采集进程报告 `control.protocol=2` 或 `3`。
-初始化要求 `control.protocol=3`，请求使用 `operation=initialize` 且不含位置目标。
-初始化完成的反馈为 `operation=initialize`、`target=null` 和 `ack=true`。
-
-命令文件的 `deadline_monotonic` 表示单调时钟上的截止时间。
-单调时钟用于计时，不随系统日期调整。
-机器人服务与采集进程必须位于同一主机，并共享同一单调时钟域。
-位置命令不支持跨主机传递，也不支持带时钟偏移的时间命名空间。
-文件准备、采集接收、寄存器操作和到位确认共用命令时限。
-位置命令为 5 秒，初始化为 15 秒。
-机器人服务在准备命令文件前开始计时，采集进程不得重新计时。
-
-采集进程在每次串口请求前检查截止时间，包括模式写入和目标写入。
-若请求已发送，采集进程仍按原有 1 秒应答时限接收并校验完整应答。
-若此时已超时，采集进程停止本次命令，保留命令锁定，不再发送后续命令请求。
-超时不会撤回已发送的目标，也不保证夹爪停止运动。
-
-发送前，命令记录在反馈文件旁的 `.command-lock.json` 文件中。
-写应答和目标寄存器回读在截止时间前成功后，采集进程删除该记录。
-重启时若记录仍存在，采集进程保持锁定，只读取反馈。
-
-真实位置 1000 对应全开，0 对应每侧夹指内收 5 mm。
-重复包、旧序号和已结束会话的包会被忽略，不清除新鲜样本，也不延长其有效期。
-同一文件重复读取不会延长测量值的有效期。
-
-夹爪状态寄存器 `0x0201` 的 `3` 表示物体掉落。
-
-机器人状态保留原有夹爪字段，并增加 `gripper.outcome` 和 `gripper.outcome_at`。
-`outcome` 为 `null`、`arrived`、`contact` 或 `dropped`。
-`outcome_at` 是适配器观察到该结果时的 Unix 时间戳，单位为秒。无结果时为 `null`。
-
-新的夹爪操作在发布前清空两个字段。操作进行期间，机器人状态也隐藏旧结果。
-初始化不产生抓取结果。
-
-`arrived` 保留测量到位结果，`contact` 保留已确认的接触结果。
-在 `contact` 之后，已初始化的新鲜样本报告状态 `3` 时，观察结果变为 `dropped`。
-样本必须来自接触结果所在的采集会话，且序号更大。
-采集进程重启、过期样本或重复样本都不能触发该转换。
-
-原有采集轮询在操作间隙和运动任务结束后观察掉落。
-每次新掉落产生 1 条警告事件，包含 `outcome` 和 `outcome_at` 字段。重复轮询不改变时间戳，也不重复记录事件。
-
-反馈不可用时，结果和时间戳仍作为历史信息保留，不证明当前仍持有物体。
-即使观察结果变为 `dropped`，`WebGripper.last_outcome` 仍保留上次命令的 `arrived` 或 `contact` 结果。
-这让键盘步进在接触后继续保持停止。掉落观察不发送命令，也不清除锁定。
-状态定义见 [PGEA 用户手册表 2.9](https://www.manualslib.com/manual/4358849/Dh-Robotics-Technology-Pgea-Series.html?page=17)。

@@ -4,7 +4,7 @@
 
 [Return to the project home page](../README.en.md)
 
-The robot service (`apps/control_panel/server.py`) controls the MG400 and PGEA gripper.
+The robot service (`apps/control_panel/server.py`) controls the MG400 and the vacuum suction cup.
 It uses the Python 3.12+ standard library and provides an HTTP interface and a WebSocket connection.
 Operators control the robot in the Motion workspace of the [Lab Console](dashboard.en.md).
 The recipe runner, command-line tools, and the Python client use the same interface.
@@ -54,50 +54,9 @@ The `home` command moves J1–J4 to 0° with `SpeedJ=5,AccJ=5`.
 The speed caps do not change `home` or the global `SpeedFactor`.
 An operator must validate speeds above 1 on hardware before unattended transfers use them.
 
-## Control the gripper
-
-The gripper uses a USB collector on the same host.
-The collector must use `--commands` and must share the robot service's monotonic clock.
-[Host deployment](deploy.en.md) installs the collector service. The robot service reads its feedback file through `--gripper-feedback`.
-For a local start, specify the feedback file as follows:
-
-```sh
-python3 apps/control_panel/server.py --mode robot \
-  --gripper-feedback /var/lib/mg400/work/gripper_feedback.json
-```
-
-The service process must be able to read the path supplied through `--gripper-feedback`.
-When a client takes control, the service requests that the collector service start.
-The collector starts in a read-only state. The service does not initialize the gripper automatically.
-If the request fails, the gripper status shows the reason.
-The robot can still operate independently when gripper feedback is unavailable.
-
-Do not initialize the gripper while it holds an object.
-Initialization opens the fingers to find the travel endpoint.
-Use the gripper area of the robot card:
-
-1. If the gripper is not initialized, click `Initialize…`, then confirm.
-2. Click `Open` to open fully (1000), or click `Close` to close (0).
-
-When an `execute` command has a gripper target, the service executes it only after confirming that the robot reached its target.
-A stop or a disable does not retract gripper commands already sent.
-
-The gripper status shows `arrived`, `contact`, or `dropped` when an outcome is available.
-`arrived` means the measured position reached the command target. It does not prove that an object is held.
-`contact` means the gripper reported object contact before reaching the target.
-`dropped` means later fresh feedback from the same collector session reported that the object fell.
-The service records 1 warning event for each observed drop. It sends no recovery command.
-
-These outcomes describe the last observation. Stale feedback does not erase them.
-Check current feedback and lock status before another action.
-
-A gripper command timeout does not retract a target already sent or guarantee that the gripper stops moving.
-Restarting the collector process does not clear the command lock.
-Check the gripper state first. Repair the fault before handling the lock. See [USB gripper protocol](development.en.md#usb-gripper-protocol) for its format.
-
 ## Control the suction cup
 
-The Motion page of the [Lab Console](dashboard.en.md) has **Suck**, **Drop** (`release`) and **Off**. In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example the [Python client](development.en.md#python-client):
+The Motion page of the [Lab Console](dashboard.en.md) has **Suck** and **Drop** (`release`). In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example the [Python client](development.en.md#python-client):
 
 ```python
 client.run("vacuum", operation="suck")
@@ -105,7 +64,7 @@ client.run("vacuum", operation="suck")
 
 `operation` is `suck`, `release` or `off`. The robot must be idle.
 The `vacuum` field of the state object gives the measured DO levels. See [Vacuum suction cup](development.en.md#vacuum-suction-cup).
-Stop and disable do not change the suck output. A stop during **Drop** ends the blow.
+Stop and disable end the blow. They keep the suck output.
 
 ## Stop and recover
 
@@ -211,7 +170,7 @@ python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
 
 Only the `start_sync` command connects to TCP `30004`. `stop_sync` stops reading.
 This mode provides only measured joints, controller mode, and alarm flags.
-It provides no coordinate or gripper feedback and accepts no motion commands.
+It provides no coordinate feedback and accepts no motion commands.
 
 ## Service configuration
 
@@ -257,7 +216,6 @@ The service writes these events to standard error:
 - Unconfirmed stop or disable results, and clearance of those states
 - Controller alarm numbers and alarm clearance
 - Changes to mode and alarm flags in robot feedback
-- Gripper locking and unlocking
 
 The service also records the result of each command.
 It does not log heartbeats or state pushes.

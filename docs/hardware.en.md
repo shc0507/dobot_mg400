@@ -9,7 +9,7 @@ Existing hardware functions connect directly through TCP. They do not provide a 
 For routine operation, use the relevant guide:
 
 - [Robot service](control-panel.en.md): the hardware control service that the Motion workspace of the Lab Console uses.
-- [Interactive terminal](terminal-control.en.md): terminal commands for the robot and gripper.
+- [Interactive terminal](terminal-control.en.md): terminal commands for the robot and suction cup.
 
 The robot service and interactive terminal share the robot address configuration.
 See `MG400_ROBOT_HOST` in [Configuration file](deploy.en.md#configuration-file).
@@ -76,7 +76,6 @@ This procedure depends on interfaces used by the official client. After a firmwa
 | Linear motion | `motion.MovL(x, y, z, r, *params)` |
 | Wait for the queue to complete | `motion.Sync()`. Also check fresh pose data and controller state |
 | Controlled-stop mapping reference | `dashboard.ResetRobot()`. The manual describes this as stopping and clearing the planning queue |
-| Electric gripper | Depends on the gripper's specific I/O or communication protocol |
 
 The protocol supports `GetPose(User=0,Tool=0)`, but the Python wrapper method `GetPose()` above accepts no arguments.
 You must explicitly configure or validate the current User, Tool, and TCP.
@@ -114,11 +113,6 @@ Stop the session and check the physical state again. Do not automatically repeat
 `SpeedFactor` is a percentage relative to the controller setting. It is not an absolute speed in mm/s.
 A software stop command is not equivalent to an independent hardware emergency stop.
 A real system must implement speed limits, travel limits, emergency stops, and fault monitoring at the device or controller level.
-
-After opening the electric gripper, you must confirm completion. Treat unconfirmed completion as failure.
-After closing the gripper, read the feedback that indicates an object is gripped.
-Completion of closing alone does not prove that the gripper holds an object.
-Without grip detection, you must add external detection or explicitly keep the state unverified.
 
 ## Alarms and historical logs
 
@@ -208,7 +202,7 @@ Alarm code reference: [Dobot 4-axis alarm table](https://raw.githubusercontent.c
 
 Validate in this order:
 
-1. Check firmware, robot IP, gripper model, power supply, and I/O or Modbus communication parameters. Use read-only tests for pose and alarms.
+1. Check firmware, robot IP, power supply, and the I/O wiring of the vacuum source. Use read-only tests for pose and alarms.
 2. Set the tool TCP and payload. Use the teach pendant to record the actual start, pick, and place points and path.
 3. Validate individual actions gradually at low speed in a controlled workspace. Then validate a fixed pick-and-place sequence.
 4. Before connecting an agent, add path reachability checks, collision checks, and device protection independent of the model.
@@ -231,10 +225,8 @@ If you change the namespace, change the interface names accordingly.
 | Operation | HarvestX interface / integration requirement |
 | --- | --- |
 | Linear motion | `/mg400/mov_l`, type `mg400_msgs/action/MovL`. Wait for the final action state and check `result` |
-| Read the pose | Get fresh pose data from `/mg400/joint_states`, TF, connection state, and alarm state. Check the relationship between the flange and gripper TCP |
+| Read the pose | Get fresh pose data from `/mg400/joint_states`, TF, connection state, and alarm state. Check the relationship between the flange and tool TCP |
 | Controlled stop | Evaluate the `/mg400/reset_robot` service and check stop feedback. Sending action cancel alone is insufficient |
-| Electric gripper output | `/mg400/tool_do_execute`. Use only when tool digital I/O actually controls the gripper |
-| Electric gripper input | `/mg400/tool_di`. Interpret input signals according to the gripper manual. A successful read does not mean a successful grip |
 
 Integration requirements and limitations:
 
@@ -251,10 +243,6 @@ Integration requirements and limitations:
    The position threshold is 5 mm per axis. The angle threshold is 0.0174 rad. Grasping tasks must use their own acceptance accuracy.
    The same source has a fixed execution deadline of 10 seconds.
    Do not assume that a client deadline automatically reaches the server.
-4. Gripper adaptation: the repository has tool I/O services but no grip confirmation for arbitrary electric grippers.
-   If the gripper uses Modbus or another communication protocol, you must implement that protocol. You cannot directly reuse digital output.
-   Sources: [ToolDOExecute](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_plugin/src/dashboard_api/tool_do_execute.cpp),
-   [ToolDI](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_plugin/src/dashboard_api/tool_di.cpp).
 
 Before implementing a ROS 2 adapter, decide the deployment environment.
 This project requires Python 3.12+.

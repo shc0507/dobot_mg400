@@ -128,7 +128,6 @@ Arduino 未连接时，卡片显示 `Arduino not connected`、`Serial port` 列�
 串口列表显示运行服务的主机的串口。
 部署在 Olares 时，列表来自 Olares 宿主机，不是浏览器所在的电脑。
 插入 Arduino 后，重新加载控制台页面以更新列表。
-列表不显示夹爪的 USB 转换器（序列号 `BG02Q5TN`）。
 设置 `MG400_STAGE_SERIAL` 时，列表只显示该设备，见 [配置项](#配置项)。
 未设置时，列表可能含有其他串口。
 在宿主机运行 `ls -l /dev/serial/by-id/`，按设备名找到 Arduino。
@@ -331,8 +330,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 设置 `MG400_STAGE_SERIAL` 时，串口列表只显示该设备，`connect` 也只接受该设备。
 建议使用 `/dev/serial/by-id/` 下的路径，重新插拔后路径不变。
 该设备不存在时，列表为空。
-路径指向夹爪转换器时，服务拒绝启动。
-未设置时，列表显示除夹爪转换器外的所有串口。
+未设置时，列表显示所有串口。
 演示模式忽略此项。
 
 ### 位移台校准
@@ -382,7 +380,6 @@ ls -lL /dev/serial/by-id/
 ```
 
 每一项是一个 USB 串口设备，名称通常含厂商、型号和序列号，插拔后不变。
-名称含 `BG02Q5TN` 的一项是夹爪转换器，不是 Arduino。
 `-L` 显示链接所指设备的权限和属组，不显示设备名。
 确认 Arduino 一项的属组为 `dialout`。
 将 `MG400_STAGE_SERIAL` 设为 `/dev/serial/by-id/` 加 Arduino 的名称。
@@ -424,4 +421,3 @@ mg400ctl stop stage
 | `Stage target is outside the configured soft limits.` | 减少步数，或改变方向。 |
 | 卡片显示 `Not running` 或 `Not reachable` | 在宿主机运行 `mg400ctl status`，确认 `stage` 已启动。 |
 | 服务日志显示 `Failed to load environment files` | 按 [主机部署](deploy.md#安装与更新) 运行安装器，创建 `/etc/mg400/mg400.env`，再启动服务。 |
-| 服务日志显示 `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | 按 [配置文件](#配置文件) 查找 Arduino 的路径，改写 `MG400_STAGE_SERIAL`，再启动服务。 |

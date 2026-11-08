@@ -264,7 +264,7 @@ For a live held run, use the runner's recovery prompt instead.
 
 On failure or timeout, the runner revokes the failed step and requests a stop from every acquired service. With `on_fail = "hold"`, it retains the leases and waits for a person. It never retries the failed step.
 
-At the prompt, enter `abort` to terminate the run. To continue after manual completion, enter `manually-completed` and supply a nonempty resolution note. The old worker, helper calls, and in-flight service operations must finish. The runner then requires fresh stop confirmation or verified robot rest after an explicit manual `disable`. Robot rest requires the latest command to confirm successful disable, current disabled and idle feedback, and no keyboard or gripper activity. Without this proof, and during ordinary stop, hold, abort, or cleanup, the runner sends Stop.
+At the prompt, enter `abort` to terminate the run. To continue after manual completion, enter `manually-completed` and supply a nonempty resolution note. The old worker, helper calls, and in-flight service operations must finish. The runner then requires fresh stop confirmation or verified robot rest after an explicit manual `disable`. Robot rest requires the latest command to confirm successful disable, current disabled and idle feedback, and no keyboard activity. Without this proof, and during ordinary stop, hold, abort, or cleanup, the runner sends Stop.
 
 Every service must be healthy, retain ownership, and report `busy = false` and `locked = false`. Generic services also require `fault = null`, and any reported instance ID must match. The robot requires fresh syncing feedback, `robot_error = false`, `stop_unconfirmed = false`, and a valid unchanged instance ID. The runner never disables the robot automatically. Lease loss or audit persistence failure prevents resumption. The runner records manual completion and continues with the next step, while a refused resolution keeps the run held.
 
@@ -280,7 +280,7 @@ The database is `runs.db` inside the record directory. Run files use a separate 
 
 ## Teaching stations and tool offsets
 
-A station stores a measured fingertip pose, its approach clearance, and an optional route through other stations. Keep the controller at `User=0,Tool=0`. The tool offset applies in software only.
+A station stores a measured fingertip pose (the suction cup tool point), its approach clearance, and an optional route through other stations. Keep the controller at `User=0,Tool=0`. The tool offset applies in software only.
 
 The operator must supply the measured offset from H-08 in `/var/lib/mg400/robot/tool.toml`. Its only field is `offset_mm = [dx, dy, dz]`. Replace these names with the measured finite numbers in millimetres. The offset has no default. Missing or invalid measurements prevent teaching.
 
@@ -464,7 +464,7 @@ Rehearsal creates and owns demo services on numeric loopback addresses. It check
 
 Transfer rehearsal retains the explicit station inputs and the zone configuration path. The documented configuration path defaults still apply. Files must contain valid geometry and named zone definitions. Rehearsal does not invent an offset, workspace, or zone configuration. It resolves condition services before creating demos. Its occupancy file belongs to the temporary rehearsal directory.
 
-The suction-cup outputs come from the temporary SIM-01 simulator. The simulator answers `DOExecute` and reports the DO bits in its feedback. Rehearsal never uses a production collector path.
+The suction-cup outputs come from the temporary SIM-01 simulator. The simulator answers `DOExecute` and reports the DO bits in its feedback.
 
 The simulator has no vacuum switch, so `held` is `null`. The tray rehearsal scene removes the chip when suction starts at a taught slot and puts it down when the cup releases at a taught slot. Offline tests use a fake robot with `held` to check the not-held and drop paths. Rehearsal does not establish physical clearance or prove a real suction pick.
 

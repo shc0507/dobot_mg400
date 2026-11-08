@@ -128,7 +128,6 @@ Use this sequence:
 The serial-port list shows ports on the host that runs the service.
 For an Olares deployment, the list comes from the Olares host, not the computer with the browser.
 After you connect the Arduino, reload the console page to update the list.
-The list excludes the gripper's USB converter, which has serial number `BG02Q5TN`.
 When `MG400_STAGE_SERIAL` is set, the list shows only that device. See [Configuration](#configuration).
 Otherwise, the list may contain other serial ports.
 Run `ls -l /dev/serial/by-id/` on the host. Find the Arduino by its device name.
@@ -331,8 +330,7 @@ An empty environment variable has the same effect as an unset variable.
 When `MG400_STAGE_SERIAL` is set, the serial-port list shows only that device, and `connect` accepts only that device.
 Use a path under `/dev/serial/by-id/` where possible. This path stays the same after disconnecting and reconnecting the device.
 If the device is absent, the list is empty.
-If the path points to the gripper converter, the service refuses to start.
-Without this setting, the list shows all serial ports except the gripper converter.
+Without this setting, the list shows all serial ports.
 Demo mode ignores this setting.
 
 ### Stage calibration
@@ -382,7 +380,6 @@ ls -lL /dev/serial/by-id/
 ```
 
 Each entry is a USB serial device. Its name usually contains the manufacturer, model, and serial number, and stays the same after reconnection.
-The entry containing `BG02Q5TN` is the gripper converter, not the Arduino.
 `-L` shows the target device's permissions and group, not its device name.
 Confirm that the Arduino device's group is `dialout`.
 Set `MG400_STAGE_SERIAL` to `/dev/serial/by-id/` followed by the Arduino's name.
@@ -424,4 +421,3 @@ The following errors appear on the stage card or in console notices. Errors that
 | `Stage target is outside the configured soft limits.` | Decrease the steps, or change the direction. |
 | The card shows `Not running` or `Not reachable` | Run `mg400ctl status` on the host. Confirm that `stage` is running. |
 | The service journal shows `Failed to load environment files` | Run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies to create `/etc/mg400/mg400.env`. Start the service again. |
-| The service journal shows `MG400_STAGE_SERIAL points to the gripper USB converter (BG02Q5TN)` | Find the Arduino path as [Configuration file](#configuration-file) specifies. Update `MG400_STAGE_SERIAL`, then start the service. |

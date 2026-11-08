@@ -2,7 +2,7 @@
 
 # Olares configuration and maintenance
 
-[Project home](../README.en.md) · [Network](#network) · [Get the code](#get-the-code) · [Migration](#migrate-from-the-old-layout) · [USB gripper adapter](#usb-gripper-adapter) · [Cameras](#cameras)
+[Project home](../README.en.md) · [Network](#network) · [Get the code](#get-the-code) · [Migration](#migrate-from-the-old-layout) · [Cameras](#cameras)
 
 This page covers settings and troubleshooting specific to Olares.
 See [Host deployment](deploy.en.md) for installation, updates, configuration, and daily commands.
@@ -147,9 +147,8 @@ Below, `$DOCS` means `/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqntt
 | Old location | Contents | New location |
 | --- | --- | --- |
 | `/opt/mg400-web-control` | Web panel code | `/opt/mg400`, `/etc/mg400/mg400.env` |
-| `$DOCS/mg400-isaac` | Gripper collector code | `/opt/mg400` |
 | `$DOCS/mg400-terminal`, `$DOCS/mg400-tools` | Interactive terminal code, startup scripts, and mode switch tools | `mg400ctl terminal`, `mg400ctl mode` |
-| `$DOCS/mg400-data` | Connection locks, gripper feedback, and mode switch backups | `/var/lib/mg400` |
+| `$DOCS/mg400-data` | Connection locks and mode switch backups | `/var/lib/mg400` |
 | `/opt/mg400-camera-preview` | go2rtc, capture configuration, and preview program | `/usr/local/lib/mg400`, `/etc/mg400` |
 
 Do this migration only once. Before migration, close all panel pages and interactive terminals, then disable the robot.
@@ -159,7 +158,7 @@ Do this migration only once. Before migration, close all panel pages and interac
 
    ```sh
    DOCS=/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqnttncsxoh/isaaclab/documents
-   systemctl stop mg400-web-panel mg400-stage-panel mg400-camera-preview mg400-gripper-collector.path mg400-gripper-collector
+   systemctl stop mg400-web-panel mg400-stage-panel mg400-camera-preview
    mkdir -p /root/mg400-old-units
    cp -a /etc/systemd/system/mg400-* /root/mg400-old-units/
    mv "$DOCS/mg400-tools/start-terminal.sh" "$DOCS/mg400-tools/start-terminal.sh.disabled"
@@ -184,19 +183,6 @@ Do this migration only once. Before migration, close all panel pages and interac
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
-   Check for the gripper command lock. If this file exists, a gripper command has an unconfirmed outcome:
-
-   ```sh
-   ls -l "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json"
-   ```
-
-   If the file exists, first check the gripper state. Then copy the lock under the name for the new feedback file.
-   The new collector service keeps control locked when it reads this lock, as the old service does:
-
-   ```sh
-   install -o 1000 -g 1000 -m 0600 "$DOCS/mg400-data/work/gripper_olares_feedback.json.command-lock.json" /var/lib/mg400/work/gripper_feedback.json.command-lock.json
-   ```
-
 6. Set the proxy address as described in [Single-port proxy](#single-port-proxy).
 7. Remove the old service override files and boot autostart links, then start the services.
    Step 1 copied these files as a backup:
@@ -215,7 +201,6 @@ Do this migration only once. Before migration, close all panel pages and interac
 8. Enable the [Lab Console](dashboard.en.md#lab-console), then check the following:
    - The Cameras workspace shows all configured camera views.
    - The Motion workspace shows the robot state.
-   - After you take control of the robot in the Motion workspace, `mg400ctl status` shows the gripper collector as `active`.
    - The stage card in the Motion workspace can connect to the Arduino.
 
 Keep the old directories until you complete these checks.
@@ -228,7 +213,7 @@ Rename `start-terminal.sh.disabled` to its original name to restore the old term
 Every lab USB device connects through 1 self-powered hub on 1 host port.
 The controller is `0000:80:14.0`, with USB 2 port `12` and USB 3 port `3`.
 Keep the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
-A reset disconnects the motor, furnace, gas, gripper, and camera connections together.
+A reset disconnects the motor, furnace, gas, and camera connections together.
 
 Keep each camera on its listed hub port.
 The 4 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
@@ -242,7 +227,6 @@ The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in th
 | Turret and focus Arduino Uno R3 | `2341:0043` | `/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_035353433353512070D1-if00` | `12.2.2` | `microscope` |
 | Furnace FT231X | `0403:6015` | `/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_DU0DT9G8-if00-port0` | `12.3.2` | `furnace` (`MG400_FURNACE_SERIAL`) |
 | Gas controller FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace` (`MG400_MFC_SERIAL`) |
-| Gripper converter FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0` | `12.3.3` | `collector` |
 | Thermal Master P1 | `3474:45c2` | libusb, serial `P1016021DG040100208` | `12.1.1` | `thermal` |
 | AC410 stage camera, from above | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
 | AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera` |
@@ -250,7 +234,7 @@ The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in th
 | AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0` | `12.2.1` | `camera` |
 | ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
-Use the full serial paths for controllers. The gas controller and gripper converter share a VID:PID, but have different serial numbers.
+Use the full serial paths for controllers.
 The thermal and Toupcam cameras use USB device nodes under `/dev/bus/usb`, without serial-port or video-device nodes.
 The bus and device numbers can change. Let libusb or the SDK find the camera.
 
@@ -269,58 +253,11 @@ The USB trigger does not reset a hub or start a service.
 TTY and video permissions apply on their next udev event. Existing service access through `dialout` and `video` remains available.
 Use the installer dry run to inspect the selected files and commands before installation.
 
-The default services select the `stage`, `collector`, `camera`, `furnace`, and `microscope` templates.
+The default services select the `stage`, `camera`, `furnace`, and `microscope` templates.
 The `furnace` template has 2 serial-controller rules.
 Enabling `thermal` selects the P1 template.
 The microscope owns the Toupcam camera, including furnace recordings. The furnace rules do not grant separate access to it.
 Templates do not select device paths in service settings. Keep those paths consistent with the table.
-
-## USB gripper adapter
-
-The adapter's USB identity is `0403:6001`, and its serial number is `BG02Q5TN`.
-Its stable host path is `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG02Q5TN-if00-port0`.
-The `ttyUSB` number can change. The collector selects the device by its full USB identity.
-Do not substitute another serial port on the dock.
-The stage Arduino also connects to Olares USB. It is a separate entry in `/dev/serial/by-id/`.
-The gripper collector does not use the Arduino. The stage service does not list the gripper adapter.
-
-The collector reads 3 status registers every 50 ms and atomically replaces the feedback file `/var/lib/mg400/work/gripper_feedback.json`.
-At startup, the collector service only reads status. It runs initialization or position commands only after a request from the robot service.
-The collector keeps running after you close the console.
-The collector exits if the serial port is busy, the device is missing, or a read fails.
-After an abnormal exit, the service waits 2 seconds before restarting. Retries have no limit.
-Collection resumes automatically when the USB connection returns. You do not need to open the console again.
-Each start uses a new session. It does not replay old commands or clear the command lock.
-Control can remain locked if the connection fails during a command. You must first check the gripper state.
-The robot service and collector must run on the same host and share the same monotonic clock domain.
-See [USB gripper protocol](development.en.md#usb-gripper-protocol) for the command file and lock formats.
-Read the logs with `mg400ctl logs collector`.
-
-### Restore the USB connection
-
-If the logs report that `BG02Q5TN` is missing, first check USB on the host:
-
-```sh
-ls -l /dev/serial/by-id/
-dmesg --ctime | grep -E 'BG02Q5TN|ftdi_sio|ttyUSB|device descriptor|accepting address'
-```
-
-`device descriptor read` or `device not accepting address` indicates a USB enumeration failure.
-First use the port path in the logs to identify the original adapter, then restore that USB connection.
-Replacing the hub cable does not change the adapter serial number. Do not select another serial port because of a cable change.
-If the kernel exposes a `disable` file for that port, you can enumerate that port again on its own.
-First stop the collector watcher and collector service.
-Write `1` to `disable`, then write `0` and restore the watcher.
-Do not reset the shared upstream hub. This would disconnect other devices.
-After you check that `BG02Q5TN` appears again, start the collector and check that the feedback file updates continuously.
-
-If the service or watcher is in the `failed` state, restore the USB connection and then run:
-
-```sh
-systemctl reset-failed mg400-gripper-collector.service mg400-gripper-collector.path
-systemctl restart mg400-gripper-collector.path
-mg400ctl start collector
-```
 
 ## Cameras
 
@@ -448,4 +385,4 @@ If these problems occur, restore the `640 × 480` configuration, then check the 
 
 Every lab device shares the external hub. Never reset the shared upstream hub to recover a camera.
 Check the affected camera's port and logs. Follow the supervised hardware procedure before changing a device connection.
-A restored USB connection does not authorize robot, stage, gripper, furnace, or gas commands.
+A restored USB connection does not authorize robot, stage, furnace, or gas commands.

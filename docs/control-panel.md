@@ -4,7 +4,7 @@
 
 [返回项目首页](../README.md)
 
-机器人服务（`apps/control_panel/server.py`）控制 MG400 和 PGEA 夹爪。
+机器人服务（`apps/control_panel/server.py`）控制 MG400 和真空吸盘。
 它使用 Python 3.12+ 标准库，提供 HTTP 接口和 WebSocket 连接。
 操作员在 [Lab Console](dashboard.md) 的 Motion 工作区操作机械臂。
 配方运行器、命令行工具和 Python 客户端调用同一接口。
@@ -54,50 +54,9 @@
 速度上限不改变 `home` 或全局 `SpeedFactor`。
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 
-## 控制夹爪
-
-夹爪使用同主机的 USB 采集程序。
-采集程序必须带 `--commands`，且必须与机器人服务共享单调时钟。
-[主机部署](deploy.md) 安装采集服务，机器人服务用 `--gripper-feedback` 读取采集文件。
-在本地启动时，按下例指定采集文件：
-
-```sh
-python3 apps/control_panel/server.py --mode robot \
-  --gripper-feedback /var/lib/mg400/work/gripper_feedback.json
-```
-
-`--gripper-feedback` 必须是服务进程可读的路径。
-客户端取得控制权时，服务请求启动采集服务。
-采集服务以只读状态启动，服务不会自动初始化夹爪。
-请求失败时，夹爪状态显示原因。
-没有夹爪反馈时，机械臂仍可单独控制。
-
-夹持物体时不要初始化。
-初始化会张开夹指寻找行程端点。
-在机械臂卡片的夹爪区域操作：
-
-1. 未初始化时，点击 `Initialize…`，再确认。
-2. 点击 `Open` 全开（1000），或点击 `Close` 闭合（0）。
-
-`execute` 命令带夹爪目标时，机械臂到位确认后，服务才执行夹爪目标。
-停止和下使能不会撤回已发送的夹爪命令。
-
-结果可用时，夹爪状态显示 `arrived`、`contact` 或 `dropped`。
-`arrived` 表示测量位置到达命令目标，不证明夹爪持有物体。
-`contact` 表示夹爪到达目标前报告接触到物体。
-`dropped` 表示同一采集会话的后续新鲜反馈报告物体掉落。
-每次观察到掉落，服务记录 1 条警告事件，不发送恢复命令。
-
-这些结果描述上次观察。反馈过期不会清除结果。
-再次操作前，检查当前反馈和锁定状态。
-
-夹爪命令超时不会撤回已发送的目标，也不保证夹爪停止运动。
-重启采集进程不会清除命令锁。
-先核实夹爪状态，修复故障后再处理锁，格式见 [USB 夹爪协议](development.md#usb-夹爪协议)。
-
 ## 控制吸盘
 
-[实验室控制台](dashboard.md)的运动页有 **Suck**、**Drop**（`release`）和 **Off**。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
+[实验室控制台](dashboard.md)的运动页有 **Suck** 和 **Drop**（`release`）。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
 
 ```python
 client.run("vacuum", operation="suck")
@@ -105,7 +64,7 @@ client.run("vacuum", operation="suck")
 
 `operation` 取 `suck`、`release` 或 `off`。机械臂必须空闲。
 状态对象的 `vacuum` 给出 DO 实测电平，见 [真空吸盘](development.md#真空吸盘)。
-停止和下使能不改变吸气输出。**Drop** 过程中停止时，停止结束吹气。
+停止和下使能结束吹气，保持吸气输出。
 
 ## 停止与恢复
 
@@ -211,7 +170,7 @@ python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
 
 `start_sync` 命令才连接 TCP `30004`，`stop_sync` 停止读取。
 此模式只提供实测关节、控制器模式和报警标志。
-它不提供坐标或夹爪反馈，也不接受运动命令。
+它不提供坐标反馈，也不接受运动命令。
 
 ## 服务配置
 
@@ -257,7 +216,6 @@ python3 apps/control_panel/server.py
 - 停止或下使能未确认，以及未确认状态清除
 - 控制器报警编号和报警清除
 - 机械臂反馈中模式和报警标志的变化
-- 夹爪锁定和解锁
 
 服务还记录每条命令的结果。
 心跳和状态推送不写入日志。

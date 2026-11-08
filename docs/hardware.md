@@ -9,7 +9,7 @@
 日常操作请使用对应指南：
 
 - [机器人服务](control-panel.md)：Lab Console 运动工作区使用的真机控制服务。
-- [交互终端](terminal-control.md)：终端命令控制机械臂和夹爪。
+- [交互终端](terminal-control.md)：终端命令控制机械臂和吸盘。
 
 机器人服务和交互终端共用机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
 
@@ -74,7 +74,6 @@ mg400ctl mode
 | 直线运动 | `motion.MovL(x, y, z, r, *params)` |
 | 等待队列完成 | `motion.Sync()`。还需核对新鲜位姿与控制器状态 |
 | 受控停止映射参考 | `dashboard.ResetRobot()`，手册描述为停止并清空规划队列 |
-| 电动夹爪 | 取决于具体夹爪的 I/O 或通讯协议 |
 
 协议支持 `GetPose(User=0,Tool=0)`，但上述 Python 包装方法 `GetPose()` 不接收参数。
 必须明确配置/验证当前 User、Tool 和 TCP。
@@ -112,11 +111,6 @@ TCP 响应 `ErrorID,{values},Command(...);` 中的成功码只表示命令成功
 `SpeedFactor` 是相对控制器设置的百分比，不是绝对 mm/s。
 软件停止命令不等价于独立硬件急停。
 真实系统的限速、限位、急停与故障监测须在设备/控制器层实现。
-
-电动夹爪开爪后必须确认完成，未确认则按失败处理。
-闭爪后，读取夹持到物体的反馈。
-单纯“闭爪完成”不能证明已抓住物体。
-无夹持检测时，需增加外部检测或明确保留未验证状态。
 
 ## 报警与历史日志
 
@@ -205,7 +199,7 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 
 按以下顺序验证：
 
-1. 核对固件、机器人 IP、夹爪型号、供电和 I/O 或 Modbus 通讯参数。只读测试位姿与报警。
+1. 核对固件、机器人 IP、供电和真空源 I/O 接线。只读测试位姿与报警。
 2. 设定工具 TCP 和负载。用示教器记录真实起点、抓取点、放置点与路径。
 3. 在受控工作区低速逐步验证单次动作，再验证固定抓放。
 4. 接入 agent 前，补充路径可达性、碰撞检查和独立于模型的设备保护。
@@ -228,10 +222,8 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 | 操作 | HarvestX 对应接口 / 接入要求 |
 | --- | --- |
 | 直线运动 | `/mg400/mov_l`，类型 `mg400_msgs/action/MovL`。等待最终 action 状态并检查 `result` |
-| 读取位姿 | 结合 `/mg400/joint_states`、TF、连接和报警状态取得新鲜位姿，核对法兰与夹爪 TCP 的关系 |
+| 读取位姿 | 结合 `/mg400/joint_states`、TF、连接和报警状态取得新鲜位姿，核对法兰与工具 TCP 的关系 |
 | 受控停止 | 评估 `/mg400/reset_robot` service 并核实停止反馈。不能只发送 action cancel |
-| 电动夹爪输出 | `/mg400/tool_do_execute`，仅在夹爪确实通过工具端数字 I/O 控制时使用 |
-| 电动夹爪输入 | `/mg400/tool_di`，按夹爪手册解释输入信号。读取成功不等于夹持成功 |
 
 接入要求与限制如下：
 
@@ -246,10 +238,6 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 3. 到位精度须复核：此版本 `MovL` 根据位姿误差和 ENABLE 状态判断完成，
    位置阈值为每轴 5 mm、角度阈值为 0.0174 rad。抓取任务需采用自己的验收精度。
    同一源码中有固定 10 秒执行期限，不能假定客户端期限会自动传到服务端。
-4. 夹爪适配：仓库有工具端 I/O 服务，但未提供适用于任意电动夹爪的抓取确认。
-   若夹爪使用 Modbus 或其他通讯，需实现相应协议。不能直接套用数字输出。
-   依据：[ToolDOExecute](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_plugin/src/dashboard_api/tool_do_execute.cpp)、
-   [ToolDI](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_plugin/src/dashboard_api/tool_di.cpp)。
 
 实现 ROS 2 适配器前，先确定部署环境。
 本项目要求 Python 3.12+。

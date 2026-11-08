@@ -1,0 +1,49 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/scripts/agent_signal.py\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

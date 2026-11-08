@@ -1,6 +1,6 @@
 # Coordinator brief
 
-You run the board, dispatch workers, decide routine questions, and give the owner one summary per round. You and every worker run on Olares inside Herdr; the owner attaches from the Mac with `herdr --remote olares@100.64.0.1`. Your context stays small: you read each worker's 9-line report from `docs/agents/worker.md` out of its pane, never diffs or logs.
+You run the board, dispatch workers, decide routine questions, and give the owner one summary per round. You and every worker run on Olares inside Herdr; the owner attaches from the Mac with `herdr --remote olares@100.64.0.1`. Your context stays small: you read each worker's report block from its `report` event, never diffs, logs or panes.
 
 ## Start
 
@@ -25,9 +25,14 @@ The coordinator runs inside Herdr (`HERDR_ENV=1`). A worker is a Herdr agent in 
 
 ```bash
 pane=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['pane']['pane_id'])")
-herdr agent start <name> --kind claude --pane "$pane" -- --effort <high|medium> -n "<name>"
-herdr agent prompt <name> "Read docs/agents/worker.md. Task: <#N or slug>: <title or the owner's words>."
+herdr agent start <name> --kind claude --pane "$pane" -- --effort <high|medium> -n "<name>" --settings '{"inputNeededNotifEnabled":false}'
+herdr agent prompt <name> "Read docs/agents/worker.md. Task: <#N or slug>: <title or the owner's words>." --wait --until working --timeout 20000
 ```
+
+`--settings` keeps the phone push for waiting dialogs off in workers, because the owner talks only to you. The prompt returns when the worker starts to work:
+
+- `agent_blocked`: the worker shows a dialog. Handle it as a `blocked` event.
+- `agent_prompt_stalled` or `timeout`: run `herdr agent get <name>` and read 20 lines of the pane. Find the cause before you send the prompt again.
 
 Claim an existing session instead of starting one: find its pane with `herdr agent list`, name it when it is `idle`, then prompt it as above.
 
@@ -35,26 +40,38 @@ Claim an existing session instead of starting one: find its pane with `herdr age
 herdr agent rename w1:p1 <name>
 ```
 
-The session keeps its own context, so the prompt still starts with `Read docs/agents/worker.md.` A Claude session outside Herdr is reachable by SendMessage under its ListAgents name.
+The session keeps its own context, so the prompt still starts with `Read docs/agents/worker.md.` A Claude session outside Herdr is reachable by SendMessage under its ListAgents name. A session that started before `.claude/settings.json` had the hooks can send no events, so prefer a fresh worker.
 
-Wait for the report in the background, so the coordinator stays free:
+Wait for events in the background, so that you stay free. The hooks in `.claude/settings.json` write the events. One waiter covers all workers in progress:
 
 ```bash
-herdr agent wait <name> --timeout 3600000        # run_in_background
-herdr agent read <name> --source recent-unwrapped --lines 80
+python3 scripts/agent_signal.py wait <name> [<name> ...] --timeout-min 60   # run_in_background
 ```
 
-`blocked` means the worker shows a permission or question dialog: read the pane, then tell the owner. Close only panes you created: `herdr pane close <pane>`. A Claude worker also reaches you by SendMessage; a Codex worker only through the pane.
+The waiter exits at the first new events and prints them. A `report` event contains the report block. A `blocked` or `exit` event contains the last screen lines. Do not read a pane to get a report. After you act on the events, start the next waiter with the workers that are still in progress. If you dispatch while a waiter runs, start a second waiter for the new names only.
+
+| Event | Meaning | Action |
+| --- | --- | --- |
+| `report` | The final message has the report block. | Update the board. |
+| `idle` | The turn ended with no report and no background work. | Read the last lines. Answer a routine question with `herdr agent prompt`. Send a `Bench:` line to the owner. |
+| `blocked` | A permission or question dialog waits. | Read the dialog in the screen lines. Ask the owner, then answer the dialog (see Owner questions). |
+| `error` | The turn ended on an API error. | On a usage limit, start no new worker. |
+| `exit` | The pane has no agent. | Read the screen lines, then decide. |
+| `tick` | No event in 60 min. | Run `herdr agent list` once. Start the next waiter. |
+
+A turn that ends while CI or other background work runs makes no event. Close only panes you created: `herdr pane close <pane>`.
 
 ## Decisions you make
 
-Answer these yourself, never forward them: merge or not, CI state, deploy order, merge main versus rebase, task order. Forward to the owner only bench actions and permission blocks; the owner approves a blocked command in the worker's own session.
+Answer these yourself, never forward them: merge or not, CI state, deploy order, merge main versus rebase, task order. Forward to the owner only bench actions and permission blocks. The owner answers you, never the worker.
 
 ## Owner questions
 
-- Batch them. Collect the pending bench questions from all workers and send them to the owner in 1 message, 1 numbered line per worker. Do not forward questions one at a time.
-- Send each worker's images with SendUserFile, 1 call per image, after the message. The owner reads images in the Claude Code app, not over SSH, so a path alone is not enough.
-- Send each answer back to its worker with `herdr agent prompt <name> "Owner's answer: ..."`.
+- Ask in your own session. Batch the questions: collect the pending bench questions and dialogs from all workers, and send them to the owner in 1 message, 1 numbered line per worker. Then send 1 PushNotification. Do not forward questions one at a time. Do not use AskUserQuestion for them, because it stops you until the owner answers.
+- Send each worker's images with SendUserFile, 1 call for each path on its `Images:` line, after the message. The owner reads images in the Claude Code app, not over SSH, so a path alone is not enough.
+- Send each answer back to its worker:
+  - A question: `herdr agent prompt <name> "Owner's answer: ..."`.
+  - A dialog: read it first with `herdr agent read <name> --source visible`. `herdr agent send-keys <name> enter` accepts the selected option (1. Yes). To refuse, send `esc`, then `herdr agent prompt <name> "Owner's answer: ..."`.
 
 ## Idea chat
 

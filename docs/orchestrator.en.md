@@ -162,7 +162,7 @@ The store refuses unsafe parents and symbolic links in all path components. It a
 The installer does not prepare this directory. Agents must not execute the host preparation command.
 All hardware runs controlling the same equipment must use the same configuration and occupancy paths.
 
-Storage contention waits at most 0.25 seconds, within the remaining step deadline.
+Storage contention waits at most 2 seconds, within the remaining step deadline. Threads of one process queue for the storage, and a stop or revocation cancels the wait. Device stop commands are sent before any zone-storage write.
 Write, file-sync, and replacement failures before publication preserve the old claims.
 A directory-sync failure after replacement reports a failure, but the new state may already be visible.
 A released claim can appear only after verified departure or reconciled physical-clearance recovery. Do not assume rollback after an error.

@@ -26,7 +26,14 @@ from orchestrator.recipe import validate
 from orchestrator.runner import Runner, StepClient, _Authority
 from orchestrator.skills import Registry
 from orchestrator.store import RunStore
-from orchestrator.zones import OccupancyStore, ZonePlan, Zones, prepare_zones, stage_at_load
+from orchestrator.zones import (
+    LOCK_WAIT_SECONDS,
+    OccupancyStore,
+    ZonePlan,
+    Zones,
+    prepare_zones,
+    stage_at_load,
+)
 
 
 @pytest.mark.parametrize("settings", [{}, None])
@@ -426,16 +433,110 @@ def test_default_lock_wait_is_bounded_without_a_caller_deadline(occupancy):
             capture_output=True,
             text=True,
             env=child_environment(),
-            timeout=3,
+            timeout=6,
         )
         assert result.returncode == 0, result.stderr
         outcome = json.loads(result.stdout)
         assert outcome["error"] == "TimeoutError"
         assert "busy" in outcome["message"]
-        assert 0.15 <= outcome["elapsed"] < 1
+        assert LOCK_WAIT_SECONDS - 0.1 <= outcome["elapsed"] < LOCK_WAIT_SECONDS + 1.5
     finally:
         os.close(descriptor)
     assert not occupancy.path.exists()
+
+
+def test_writer_waits_for_a_slow_cross_process_holder_instead_of_failing(occupancy):
+    # Another process holds the storage lock for longer than the old 0.25 s bound.
+    ready = os.pipe()
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "os.write(int(sys.argv[2]), b'x')\n"
+            "time.sleep(0.6)\n",
+            str(occupancy.path.parent),
+            str(ready[1]),
+        ],
+        pass_fds=(ready[1],),
+        env=child_environment(),
+    )
+    try:
+        os.close(ready[1])
+        assert os.read(ready[0], 1) == b"x"
+        started = time.monotonic()
+        assert occupancy.acquire("zone-a", claim())
+        assert 0.3 <= time.monotonic() - started < LOCK_WAIT_SECONDS
+    finally:
+        os.close(ready[0])
+        holder.wait(5)
+    assert occupancy.snapshot() == {"zone-a": claim()}
+
+
+def test_concurrent_writers_and_readers_in_one_process_all_complete(occupancy, monkeypatch):
+    # Slow fsync makes each write hold the lock for about 60 ms. Eight writers
+    # and two readers queue for longer than the old 0.25 s bound; none may fail.
+    real_fsync = os.fsync
+
+    def slow_fsync(fd):
+        time.sleep(0.03)
+        real_fsync(fd)
+
+    monkeypatch.setattr(zones.os, "fsync", slow_fsync)
+    errors, done = [], threading.Event()
+
+    def writer(index):
+        name = f"zone-{index}"
+        try:
+            for _ in range(2):
+                assert occupancy.acquire(name, claim(generation=f"{index:x}" * 32))
+                occupancy.release("run-a", {name: f"{index:x}" * 32})
+        except Exception as error:
+            errors.append(error)
+
+    def reader():
+        while not done.is_set():
+            try:
+                occupancy.snapshot()
+            except Exception as error:
+                errors.append(error)
+                return
+
+    readers = [threading.Thread(target=reader) for _ in range(2)]
+    writers = [threading.Thread(target=writer, args=(index,)) for index in range(1, 9)]
+    started = time.monotonic()
+    for thread in readers + writers:
+        thread.start()
+    for thread in writers:
+        thread.join(30)
+    done.set()
+    for thread in readers:
+        thread.join(5)
+    assert not errors, errors
+    assert time.monotonic() - started > 0.25
+    assert occupancy.snapshot() == {}
+
+
+def test_thread_queue_wait_obeys_cancellation(occupancy):
+    from orchestrator.zones import _thread_lock
+
+    lock = _thread_lock(occupancy.path)
+    cancelled = threading.Event()
+    assert lock.acquire()
+    try:
+        threading.Timer(0.05, cancelled.set).start()
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            occupancy.acquire("zone-a", claim(), cancelled=cancelled)
+        assert time.monotonic() - started < 0.5
+        with pytest.raises(TimeoutError, match="busy"):
+            occupancy.snapshot(deadline=time.monotonic() + 0.05)
+    finally:
+        lock.release()
+    assert occupancy.acquire("zone-a", claim())
 
 
 class RecoverMemoryStore:

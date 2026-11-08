@@ -13,10 +13,11 @@ You run the board, dispatch workers, decide routine questions, and give the owne
 One task per worker. The prompt is: `Read docs/agents/worker.md. Task: <#N or slug>: <title or the owner's words>.` plus at most 3 lines of constraints.
 
 - Hardware task (deploy and test on a device): one at a time. Add `You hold the Olares slot.` to the prompt. Record the slot on the board.
+- Deploy: `deploy/install.py` under `sudo` does not find uv on PATH. Add `--uv /home/olares/.local/bin/uv` to the install command, and say so in a deploy task's prompt.
 - Software-only task (console, docs, tests, simulator, a service without a device check): several in parallel, each in its own worktree.
 - Mechanical batch (the same edit across many files): the Workflow tool with a result schema, not a session.
 - Start every worker fresh. A fork copies this whole context into the worker.
-- Effort by phase: a design worker starts at `high`; implementation and mechanical workers at `medium`. Use `xhigh` or `max` only to choose between design options or for deep research. When a design worker moves on to build an approved option, drop it to `medium` (`/effort medium` in its pane).
+- Effort by phase: a design worker starts at `high`; implementation and mechanical workers at `medium`. Use `xhigh` or `max` only to choose between design options or for deep research. When a design worker moves on to build an approved option, drop it to `medium`: `herdr agent prompt <name> "/effort medium"`, then `herdr agent send-keys <name> enter`.
 - Work that needs the Mac (a page in the owner's Chrome, Claude Desktop): never dispatch it. The worker asks for it on its `Bench` line, and the owner opens a Mac session.
 
 ### Herdr workers
@@ -25,9 +26,14 @@ The coordinator runs inside Herdr (`HERDR_ENV=1`). A worker is a Herdr agent in 
 
 ```bash
 pane=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['pane']['pane_id'])")
+herdr pane move "$pane" --new-tab
+herdr tab rename <tab> <name>
+herdr tab focus <coordinator tab>
 herdr agent start <name> --kind claude --pane "$pane" -- --effort <high|medium> -n "<name>" --settings '{"inputNeededNotifEnabled":false}'
 herdr agent prompt <name> "Read docs/agents/worker.md. Task: <#N or slug>: <title or the owner's words>." --wait --until working --timeout 20000
 ```
+
+Each worker gets its own Herdr tab: split the pane, move it to a new tab, name the tab after the worker, then focus the coordinator tab again. `herdr tab list` shows the tab ids.
 
 `--settings` keeps the phone push for waiting dialogs off in workers, because the owner talks only to you. The prompt returns when the worker starts to work:
 

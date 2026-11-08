@@ -108,7 +108,7 @@ The `api` object:
 | `src/orchestrator/web/workspaces/<id>.py`, `static/console/<id>.js`, `<id>.css` | The workspace task. `motion`: DSH-05, `cameras`: DSH-04, `process`: DSH-06. |
 | `tests/test_console_<id>.py`, `tests/test_console_<id>.mjs` | The workspace task. |
 
-Replace the placeholder files for your workspace. Prefix every CSS rule with `#ws-<id>`. Use the shell classes (`lc-card`, `lc-button`, `lc-danger`, `lc-row`, `lc-muted`, `lc-layout`, `lc-col-main`, `lc-col-side`) and colors from `shell.css`. Follow the boards in this folder.
+Replace the placeholder files for your workspace. Prefix every CSS rule with `#ws-<id>`. Use the shell classes (`lc-card`, `lc-button`, `lc-danger`, `lc-row`, `lc-muted`, `lc-layout`, `lc-col-main`, `lc-col-side`) and the tokens in `DESIGN.md` at the repository root. Match the shipped pages; this folder has no design boards.
 
 ## 6. Server routes for a workspace
 

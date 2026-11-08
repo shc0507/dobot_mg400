@@ -62,7 +62,7 @@ WuLab is a lab automation stack on one host (Olares). The **WuLab Console** is t
 
 ## Evidence on Hand
 
-- Console design boards: `docs/agents/console-design/Main.dc.html`, `Motion.dc.html`, `Cameras.dc.html`, `Process.dc.html`.
+- Console design: `DESIGN.md` and the shipped pages in `src/orchestrator/web/static/console/`.
 - Operator docs: `docs/dashboard.en.md` (console and passport), `docs/orchestrator.en.md` (recipes and runs).
 - Recipes: `recipes/tray-transfer.toml`, `recipes/example-rehearsal.toml`.
 - Real experiment results, images or chip records for display are not in the repository. Do not invent them.

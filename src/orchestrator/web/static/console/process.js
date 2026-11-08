@@ -19,15 +19,15 @@
     en: {
       "furnace.title": "Furnace · AI-808",
       "furnace.caps": "Caps {max} °C · {ramp} °C/min",
-      "control.mine": "you have control", "control.other": "another client has control",
-      "control.free": "no control", "control.take": "Take control", "control.release": "Release",
+      "control.other": "another client has control",
+      "control.take": "Take control", "control.release": "Release",
       "control.takeLabel": "Take control of the {device}", "control.releaseLabel": "Release the {device}",
       "furnace.stop": "Stop heat and gas", "furnace.connect": "Connect furnace", "furnace.connectFlow": "Connect gas flow",
       "tile.pv": "PV", "tile.sv": "SV", "tile.mode": "Mode", "tile.crucible": "Crucible (thermal)",
       "mode.HOLD": "Hold", "mode.RUN": "Run", "mode.STOPPED": "Stopped", "mode.DISCONNECTED": "Disconnected", "mode.UNKNOWN": "Unknown", "mode.RAMP": "Ramping",
       "chart.label": "Temperature over the last 60 minutes: PV {pv}, SV {sv}", "chart.start": "−60 min", "chart.now": "now",
       "chart.empty": "No samples yet. The chart fills while this console is open.",
-      "set.target": "Target °C", "set.ramp": "Ramp °C/min", "set.apply": "Apply and run…",
+      "set.target": "Target °C", "set.ramp": "Ramp °C/min", "set.cap": "{label} ≤ {cap}", "set.apply": "Apply and run…",
       "set.confirm": "Heat the furnace to {target} °C at {ramp} °C/min?",
       "seq.title": "Sequence", "seq.add": "+ Add step", "seq.save": "Save sequence", "seq.start": "Start sequence…",
       "seq.step": "Step", "seq.target": "Target °C", "seq.ramp": "Ramp °C/min", "seq.hold": "Hold min",
@@ -44,7 +44,7 @@
       "valve.open": "valve open", "valve.closed": "valve closed", "valve.unknown": "valve unknown", "valve.unverified": "{state} (not confirmed)",
       "tile.ramp": "Ramp °C/min",
       "confirm.ok": "Confirm", "confirm.cancel": "Cancel",
-      "scope.title": "Microscope · Toupcam", "scope.zero": "zero set", "scope.noZero": "focus zero unknown",
+      "scope.title": "Microscope · Toupcam",
       "scope.stop": "Stop", "scope.view": "Toupcam", "view.scope": "Microscope", "view.side": "Side camera", "view.switch": "Preview",
       "tile.offline": "OFFLINE",
       "obj.title": "Objective", "obj.name": "Objective {id}", "turret.title": "Turret",
@@ -88,15 +88,15 @@
     zh: {
       "furnace.title": "炉子 · AI-808",
       "furnace.caps": "上限 {max} °C · {ramp} °C/min",
-      "control.mine": "你有控制权", "control.other": "其他客户端有控制权",
-      "control.free": "无控制权", "control.take": "获取控制权", "control.release": "释放",
+      "control.other": "其他客户端有控制权",
+      "control.take": "获取控制权", "control.release": "释放",
       "control.takeLabel": "获取{device}控制权", "control.releaseLabel": "释放{device}",
       "furnace.stop": "停止加热和气体", "furnace.connect": "连接炉子", "furnace.connectFlow": "连接气体流量计",
       "tile.pv": "PV", "tile.sv": "SV", "tile.mode": "模式", "tile.crucible": "坩埚（热像）",
       "mode.HOLD": "保持", "mode.RUN": "运行", "mode.STOPPED": "已停止", "mode.DISCONNECTED": "未连接", "mode.UNKNOWN": "未知", "mode.RAMP": "升温中",
       "chart.label": "最近 60 分钟温度：PV {pv}，SV {sv}", "chart.start": "−60 分钟", "chart.now": "现在",
       "chart.empty": "暂无数据。控制台打开时记录曲线。",
-      "set.target": "目标 °C", "set.ramp": "速率 °C/min", "set.apply": "应用并运行…",
+      "set.target": "目标 °C", "set.ramp": "速率 °C/min", "set.cap": "{label} ≤ {cap}", "set.apply": "应用并运行…",
       "set.confirm": "以 {ramp} °C/min 把炉子加热到 {target} °C？",
       "seq.title": "程序", "seq.add": "+ 添加步骤", "seq.save": "保存程序", "seq.start": "启动程序…",
       "seq.step": "步骤", "seq.target": "目标 °C", "seq.ramp": "速率 °C/min", "seq.hold": "保持 min",
@@ -113,7 +113,7 @@
       "valve.open": "阀门开", "valve.closed": "阀门关", "valve.unknown": "阀门未知", "valve.unverified": "{state}（未确认）",
       "tile.ramp": "速率 °C/min",
       "confirm.ok": "确认", "confirm.cancel": "取消",
-      "scope.title": "显微镜 · Toupcam", "scope.zero": "零点已设", "scope.noZero": "对焦零点未知",
+      "scope.title": "显微镜 · Toupcam",
       "scope.stop": "停止", "scope.view": "Toupcam", "view.scope": "显微镜", "view.side": "侧面相机", "view.switch": "预览",
       "tile.offline": "离线",
       "obj.title": "物镜", "obj.name": "物镜 {id}", "turret.title": "转盘",
@@ -434,6 +434,10 @@
     for (const node of n.viewButtons || []) node.setAttribute("aria-pressed", node.getAttribute("data-role") === "view-" + view.scopeView ? "true" : "false");
   }
 
+  function capped(label, cap) {
+    return cap === null || cap === undefined ? label : view.api.t("set.cap", { label, cap: fmt(cap, 0) });
+  }
+
   function controlButtons(device) {
     const { t, deviceName } = view.api;
     const name = deviceName(device);
@@ -466,8 +470,9 @@
     const target = input({ type: "number", min: "0", step: "1", max: furnaceCaps.max ?? undefined, class: "pr-input", "data-role": "target" }, view.target, value => { view.target = value; });
     const ramp = input({ type: "number", min: "0.1", step: "0.1", max: furnaceCaps.ramp ?? undefined, class: "pr-input", "data-role": "ramp" }, view.ramp, value => { view.ramp = value; });
     const setpoint = el("div", { class: "pr-row pr-end" },
-      el("label", { class: "pr-field" }, t("set.target"), target),
-      el("label", { class: "pr-field" }, t("set.ramp"), ramp),
+      // The caps show at the fields that they limit.
+      el("label", { class: "pr-field" }, capped(t("set.target"), furnaceCaps.max), target),
+      el("label", { class: "pr-field" }, capped(t("set.ramp"), furnaceCaps.ramp), ramp),
       n.apply);
     const applyConfirm = confirmBox("apply", t("set.confirm", { target: view.target, ramp: view.ramp }), applySetpoint);
 
@@ -508,7 +513,7 @@
       el("div", { class: "pr-tiles" }, ...tiles),
       el("p", { class: "pr-state" },
         n.tiles.mode,
-        el("span", { class: "pr-state-item" }, el("span", { class: "pr-state-label", text: t("tile.ramp") }), n.tiles.ramp)),
+        n.rampItem = el("span", { class: "pr-state-item" }, el("span", { class: "pr-state-label", text: t("tile.ramp") }), n.tiles.ramp)),
       n.chart.figure,
       setpoint, applyConfirm,
       el("div", { class: "pr-block pr-gas-block" },
@@ -522,7 +527,6 @@
 
     // Microscope.
     n.scopeSub = el("span", { class: "lc-muted" });
-    n.zeroState = el("span", {});
     n.scopeNote = el("p", { class: "pr-note", "data-role": "scope-note", hidden: true });
     n.objectives = objectiveIds(view.describe.microscope).map(id => {
       const node = el("button", { type: "button", class: "lc-button pr-objective", role: "radio", "aria-checked": "false", "aria-label": t("obj.name", { id }), "data-role": "objective-" + id, text: String(id), onclick: () => send("microscope", "select_objective", { id }) });
@@ -578,7 +582,7 @@
     n.zero = button(t("zero.set"), () => ask("zero"), { class: "lc-danger pr-danger", "data-role": "zero", title: t("zero.reminder") });
     const scope = el("section", { class: "lc-card pr-card pr-scope", "aria-labelledby": "pr-scope-title" },
       el("div", { class: "lc-card-head" },
-        el("div", { class: "pr-head" }, el("h2", { id: "pr-scope-title", text: t("scope.title") }), el("span", { class: "lc-muted" }, n.scopeSub, n.zeroState)),
+        el("div", { class: "pr-head" }, el("h2", { id: "pr-scope-title", text: t("scope.title") }), n.scopeSub),
         el("div", { class: "pr-row" }, ...controlButtons("microscope"),
           el("button", { type: "button", class: "lc-danger pr-danger", "data-role": "stop-microscope", text: t("scope.stop"), onclick: stopMicroscope }))),
       n.scopeNote,
@@ -640,7 +644,7 @@
     root.append(start, end, pv, sv);
     const empty = el("span", { class: "lc-muted", text: t("chart.empty") });
     const figure = el("figure", { class: "pr-figure" }, root,
-      el("figcaption", { class: "pr-legend" }, el("span", { class: "pr-key-pv", text: "━ PV" }), el("span", { class: "pr-key-sv", text: "╍ SV" }), empty));
+      el("figcaption", { class: "pr-legend" }, empty));
     return { figure, root, grid, pv, sv, empty };
   }
 
@@ -683,7 +687,8 @@
     const furnaceCaps = caps(view.describe.furnace);
     const fHolder = holder(view.api, "furnace");
     const fMine = fHolder === "mine";
-    setText(n.furnaceSub, [furnaceCaps.max !== null ? t("furnace.caps", { max: fmt(furnaceCaps.max, 0), ramp: fmt(furnaceCaps.ramp, 0) }) : null, t("control." + fHolder)].filter(Boolean).join(" · "));
+    // The buttons show this page's control; only another holder needs a line.
+    setText(n.furnaceSub, fHolder === "other" ? t("control.other") : "");
     const fault = furnace?.locked ? furnace?.fault?.message || furnace?.error || "locked" : null;
     n.furnaceNote.hidden = !fault;
     setText(n.furnaceNote, fault ? t("fault", { message: fault }) : "");
@@ -701,6 +706,8 @@
     setText(n.tiles.sv, degrees(furnace?.sv));
     setText(n.tiles.mode, furnace ? t(modeKey(furnace)) : t("none"));
     setText(n.tiles.ramp, finite(furnace?.ramp) === null ? t("none") : fmt(furnace.ramp));
+    // The controller ramp matters only while the furnace heats.
+    n.rampItem.hidden = !["mode.RUN", "mode.RAMP", "mode.HOLD"].includes(modeKey(furnace));
     const crucible = status?.crucible;
     setText(n.tiles.crucible, degrees(crucible?.max_c));
     // Old or missing data dims the readings and the chart. The warning above says how old.
@@ -745,9 +752,8 @@
     // Microscope.
     const mHolder = holder(view.api, "microscope");
     const mMine = mHolder === "mine";
-    setText(n.scopeSub, t("control." + mHolder));
-    setText(n.zeroState, scope ? " · " + t(scope.focus_zero_known ? "scope.zero" : "scope.noZero") : "");
-    n.zeroState.className = scope && !scope.focus_zero_known ? "pr-doubt" : "";
+    // The Focus row shows the zero state; the buttons show this page's control.
+    setText(n.scopeSub, mHolder === "other" ? t("control.other") : "");
     const scopeFault = scope?.locked ? scope?.fault?.message || "locked" : null;
     const failed = !scopeFault && scope?.last_command?.result === "failed" ? scope.last_command : null;
     n.scopeNote.hidden = !scopeFault && !failed;

@@ -10,8 +10,8 @@
     en: {
       "page.title": "Chip passport", "page.console": "Lab Console", "lang.switch": "中文", "lang.label": "Switch language to Chinese",
       "page.nav": "Pages", "find.label": "Find a chip", "find.field": "QR text / chip ID", "find.placeholder": "Paste the exact QR text.",
-      "find.submit": "Search records", "find.note": "Search matches the complete QR text.",
-      "status.start": "Enter a chip ID to read its recorded history.", "history.title": "Recorded history", "history.readonly": "Read only",
+      "find.submit": "Search records",
+      "history.title": "Recorded history",
       "footer": "Only saved records appear here. Missing measurements do not mean zero. Open each run to read its records.",
       "field.steps": "Steps and transfers", "field.samples": "Measurements and thermal readings",
       "field.artifacts": "Images and other artifacts", "field.events": "Events and transfer records",
@@ -52,8 +52,8 @@
     zh: {
       "page.title": "芯片履历", "page.console": "实验室控制台", "lang.switch": "English", "lang.label": "切换到英文",
       "page.nav": "页面", "find.label": "查找芯片", "find.field": "二维码文本 / 芯片 ID", "find.placeholder": "粘贴完整的二维码文本。",
-      "find.submit": "查找记录", "find.note": "查找需匹配完整的二维码文本。",
-      "status.start": "输入芯片 ID，读取其历史记录。", "history.title": "历史记录", "history.readonly": "只读",
+      "find.submit": "查找记录",
+      "history.title": "历史记录",
       "footer": "这里只显示已保存的记录。缺少测量值不表示为零。打开每次运行以读取其记录。",
       "field.steps": "步骤和转移", "field.samples": "测量和热像读数",
       "field.artifacts": "图像和其他文件", "field.events": "事件和转移记录",
@@ -141,6 +141,7 @@
     $("passport-runs").replaceChildren();
     $("selected-chip").textContent = "";
     $("run-count").textContent = t("none");
+    $("pp-footer").hidden = true;
     $("more-runs").hidden = true;
     $("more-runs").disabled = false;
   }
@@ -384,6 +385,7 @@
       nextRun = result.next_offset;
       $("run-count").textContent = t("runs.count", { n: runs.size, more: t(nextRun === null ? "runs.end" : "runs.more") });
       $("more-runs").hidden = nextRun === null;
+      $("pp-footer").hidden = !runs.size;
       $("more-runs").textContent = t("runs.load");
       status(t(runs.size ? "runs.loaded" : "runs.none"));
     } catch (error) {
@@ -402,6 +404,8 @@
     chip = exactInput === null ? $("chip-id").value : exactInput;
     if (!chip.trim()) { status(t("search.empty"), true); return; }
     if (!validBase) { status(t("search.path"), true); return; }
+    // The history section shows from the first search on.
+    $("pp-history").hidden = false;
     $("selected-chip").textContent = text(chip);
     if (updateLocation) history.replaceState(null, "", base + "/chip?" + new URLSearchParams({ id: chip }).toString());
     nextRun = 0;
@@ -437,8 +441,7 @@
     if (document.documentElement) document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     document.title = t("page.title");
     for (const [id, key] of [["pp-title", "page.title"], ["pp-console", "page.console"], ["pp-lang", "lang.switch"], ["pp-label", "find.field"],
-      ["pp-search", "find.submit"], ["pp-note", "find.note"], ["passport-heading", "history.title"], ["pp-readonly", "history.readonly"],
-      ["pp-footer", "footer"]]) $(id).textContent = t(key);
+      ["pp-search", "find.submit"], ["passport-heading", "history.title"], ["pp-footer", "footer"]]) $(id).textContent = t(key);
     $("pp-lang").setAttribute("aria-label", t("lang.label"));
     $("pp-nav").setAttribute("aria-label", t("page.nav"));
     $("pp-find").setAttribute("aria-label", t("find.label"));
@@ -449,10 +452,8 @@
     try { localStorage.setItem(LANG_KEY, lang); } catch { /* Storage may be blocked. */ }
     applyLanguage();
     if (chip) search(false);
-    else if (!$("passport-status").className.includes("error")) status(t("status.start"));
   });
   applyLanguage();
-  status(t("status.start"));
   try {
     const url = new URL(location.href);
     const path = base + "/chip/";

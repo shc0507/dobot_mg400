@@ -348,6 +348,31 @@ test("a stage step needs no zero or reference", async () => {
   assert.deepEqual(second.calls.filter(call => call[0] === "relay"), [["relay", "stage", "move", { motor: "insert", direction: "cw", speed: 50, steps: 50 }]]);
 });
 
+test("an arm without fresh feedback reads Not connected and greys its last pose", async () => {
+  const page = await mounted({ robot: { ...ROBOT, enabled: false, feedback_fresh: false, joints: [1, 2, 3, 4],
+    message: "Robot disable and rest are confirmed.", last_command: { action: "stop_sync", result: "ok", message: "Robot disable and rest are confirmed." } } });
+  const texts = page.root.all().map(node => node.ownText);
+  assert.ok(texts.includes("Not connected"));
+  assert.equal(texts.includes("Disabled"), false);
+  const pose = page.root.all().filter(node => node.className === "mo-num mo-stale" || node.className.startsWith("mo-num-small mo-deg"));
+  assert.equal(pose.length, 8);
+  assert.ok(pose.every(node => node.className.includes("mo-stale")));
+  // An ok command shows only the service message, not a second Last line.
+  assert.equal(texts.filter(text => text.includes("Robot disable and rest are confirmed.")).length, 1);
+  assert.equal(texts.some(text => text.startsWith("Last:")), false);
+});
+
+test("an idle axis shows no state, a disconnected stage no position, and ports get short labels", async () => {
+  const connected = await mounted();
+  assert.equal(connected.root.all().some(node => node.ownText === "Idle"), false);
+  const page = await mounted({ stage: { ...STAGE, connected: false } });
+  await page.settle();
+  assert.ok(page.root.all().some(node => node.ownText === "—"));
+  assert.equal(logic.portLabel({ device: "/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_1453-if00", description: "ttyACM0" }), "ttyACM0");
+  assert.equal(logic.portLabel({ device: "/dev/ttyACM0", description: "Arduino" }), "Arduino · ttyACM0");
+  assert.equal(logic.portLabel({ device: "/dev/ttyUSB0" }), "ttyUSB0");
+});
+
 test("a disconnected stage lists ports and connects on this page's control", async () => {
   const page = await mounted({ stage: { ...STAGE, connected: false } });
   await page.settle();

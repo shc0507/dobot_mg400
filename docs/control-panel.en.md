@@ -228,4 +228,4 @@ sudo mg400ctl logs web -n 200
 ```
 
 When control is locked, find the first `Stop or disable unconfirmed.` in the logs.
-The following `Message:` line gives the reason the stop or disable failed.
+The next robot message line gives the reason the stop or disable failed.

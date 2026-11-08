@@ -13,11 +13,10 @@
   <div class="lc-top" id="lc-top">
     <header class="lc-header">
       <div class="lc-row1">
-      <div class="lc-brand">
+      <div class="lc-brand" title="{{ commit }}">
         <svg width="28" height="28" viewBox="0 0 30 30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="23" r="4"></circle><path d="M10.5 20 L17 11 L24 14"></path><circle cx="17" cy="11" r="2.2"></circle><path d="M24 14 L26 18 M24 14 L27 12"></path></svg>
         <div class="lc-brand-text">
           <span class="lc-name" data-i18n="console.name">WuLab Console</span>
-          <span class="lc-commit" id="lc-commit">{{ commit }}</span>
         </div>
       </div>
       <nav class="lc-tabs" aria-label="Workspaces" id="lc-tabs">
@@ -29,7 +28,7 @@
         <a class="lc-passport" href="{{ base_path }}/chip" data-title-en="Chip passport" data-title-zh="芯片履历">Chip passport</a>
       </nav>
       <div class="lc-actions">
-        <span class="lc-pill" id="lc-controls"><span class="lc-dot" aria-hidden="true"></span><span id="lc-controls-text">You control: none</span></span>
+        <span class="lc-pill" id="lc-controls" hidden><span class="lc-dot" aria-hidden="true"></span><span id="lc-controls-text"></span></span>
         <button type="button" class="lc-button" id="lc-lang">中文</button>
       </div>
       </div>

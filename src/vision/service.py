@@ -902,13 +902,15 @@ class VisionService:
             )
             self._active = None
             self._seq += 1
-            self.events.add(
-                "info" if outcome != "failed" else "error",
-                "vision inference finished",
-                action=job["action"],
-                camera=job["camera"],
-                result=outcome,
-            )
+            # A detection preview polls every second, so only a failure is an event.
+            if outcome == "failed":
+                self.events.add(
+                    "error",
+                    "vision inference failed",
+                    action=job["action"],
+                    camera=job["camera"],
+                    result=outcome,
+                )
             job["done"].set()
 
     def stop(self, client, wait_s=0):

@@ -148,8 +148,6 @@ body:has(#ws-process:not([hidden])) { background: #F2EEE9; }
 #ws-process .pr-pv { stroke: var(--pr-text); stroke-width: 2.5; fill: none; }
 #ws-process .pr-sv { stroke: var(--pr-text-2); stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
 #ws-process .pr-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--pr-text-2); }
-#ws-process .pr-key-pv { color: var(--pr-text); font-weight: 600; }
-#ws-process .pr-key-sv { color: var(--pr-text-2); font-weight: 600; }
 
 /* Fields. */
 #ws-process .pr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--pr-text-2); }

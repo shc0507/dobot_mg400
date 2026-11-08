@@ -48,7 +48,8 @@ class _Logged:
     """An attribute that logs describe(value) when key(value) changes.
 
     The first assignment sets the initial value and logs nothing. A None description
-    logs nothing. Configure a non-blocking handler: assignments happen under the lock.
+    logs nothing. level is a logging level or a function of the value that returns
+    one. Configure a non-blocking handler: assignments happen under the lock.
     """
 
     def __init__(self, describe, key=None, level=logging.INFO):
@@ -67,7 +68,8 @@ class _Logged:
         if previous is not _UNSET and self._key(previous) != self._key(value):
             text = self._describe(value)
             if text is not None:
-                state.events.add(logging.getLevelName(self._level).lower(), text)
+                level = self._level(value) if callable(self._level) else self._level
+                state.events.add(logging.getLevelName(level).lower(), text)
 
 
 def _describe_alarms(alarms):
@@ -90,10 +92,10 @@ class RobotPanelState:
     KEYBOARD_JOIN_SECONDS = KEYBOARD_JOIN_SECONDS
 
     # Log every state that explains a lock. The page shows only the latest message.
-    _message = _Logged(lambda message: f"Message: {message}")
+    _message = _Logged(lambda message: message)
     _locked = _Logged(
         lambda locked: "Control locked." if locked else "Control unlocked.",
-        level=logging.WARNING,
+        level=lambda locked: logging.WARNING if locked else logging.INFO,
     )
     _fault = _Logged(
         lambda fault: "Stop or disable unconfirmed." if fault else "Unconfirmed stop cleared.",

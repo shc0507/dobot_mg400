@@ -913,10 +913,16 @@ const cases = {
     await page.click('pp-lang');
     assert.equal(page.get('pp-title').textContent, '芯片履历');
     assert.equal(page.get('pp-lang').textContent, 'English');
-    assert.equal(page.get('passport-status').textContent, '输入芯片 ID，读取其历史记录。');
+    assert.equal(page.get('passport-status').textContent, '');
+    // Before a search the page shows only the field: no hints, no empty history, no footer.
+    assert.ok(!page.nodes.has('pp-note') && !page.nodes.has('pp-readonly'));
+    assert.equal(page.get('pp-history').hidden, true);
+    assert.equal(page.get('pp-footer').hidden, true);
     await page.search();
+    assert.equal(page.get('pp-history').hidden, false);
     assert.equal(page.get('passport-status').textContent, '正在读取运行记录…');
     await page.respond(0, pageData('runs', [run()]));
+    assert.equal(page.get('pp-footer').hidden, false);
     assert.ok(walk(page.get('passport-runs')).some(element =>
       element.textContent === '读取此次运行'));
     // Switching back reads the chip again in English. Storage stays unused when it is blocked.

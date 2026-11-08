@@ -120,24 +120,19 @@ test("status chips always carry text and turn stale without fresh state", () => 
   assert.equal(serviceChip({ phase: "unconfigured" }, true).tone, "off");
   assert.equal(serviceChip({ phase: "ready", connected: true, demo: true }, true).demo, true);
   const rows = chips({ services: [], cameras: [], orchestrator: { stale: false } }, true);
-  assert.deepEqual(rows.map(row => row.id), ["robot", "stage", "cameras", "thermal", "vision", "microscope", "furnace", "runs"]);
+  assert.deepEqual(rows.map(row => row.id), ["robot", "stage", "thermal", "vision", "microscope", "furnace"]);
   assert.ok(rows.every(row => row.key || row.text !== undefined));
   assert.deepEqual(runsChip({ stale: false }, { status: "running" }, true), { tone: "info", text: "running" });
 });
 
-test("the cameras chip follows the console camera relay, not a dashboard link", () => {
+test("the strip has no cameras chip and shows runs only while a run exists", () => {
   const { LabConsole } = load();
-  const { camerasChip, chips } = LabConsole.logic;
-  assert.deepEqual(camerasChip({ state: "live" }, true), { tone: "ok", key: "chip.live" });
-  assert.deepEqual(camerasChip({ state: "idle" }, true), { tone: "ok", key: "chip.configured" });
-  assert.deepEqual(camerasChip({ state: "stale" }, true), { tone: "warn", key: "chip.stale" });
-  assert.deepEqual(camerasChip({ state: "unavailable" }, true), { tone: "bad", key: "chip.unavailable" });
-  assert.deepEqual(camerasChip({ state: "unconfigured" }, true), { tone: "off", key: "chip.unconfigured" });
-  assert.deepEqual(camerasChip(undefined, true), { tone: "off", key: "chip.unconfigured" });
-  assert.deepEqual(camerasChip({ state: "live" }, false), { tone: "warn", key: "chip.stale" });
-  // A blank MG400_DASH_CAMERA_URL must not hide live console cameras.
-  const snapshot = { services: [], cameras: [{ id: "camera", url: null }], camera_preview: { state: "live" }, orchestrator: { stale: false } };
-  assert.equal(chips(snapshot, true).find(row => row.id === "cameras").key, "chip.live");
+  const { chips, runsChip } = LabConsole.logic;
+  assert.equal(runsChip({ stale: false }, null, true), null);
+  assert.deepEqual(runsChip({ stale: true }, null, true), { tone: "warn", key: "chip.stale" });
+  const ids = snapshot => chips(snapshot, true).map(row => row.id);
+  assert.deepEqual(ids({ services: [], orchestrator: { stale: false } }), ["robot", "stage", "thermal", "vision", "microscope", "furnace"]);
+  assert.equal(ids({ services: [], orchestrator: { stale: false }, run: { status: "running" } }).at(-1), "runs");
 });
 
 test("no console script links to a removed service page", () => {
@@ -148,21 +143,21 @@ test("no console script links to a removed service page", () => {
   }
 });
 
-test("the strip renders 8 chips with a hidden dot and visible text", async () => {
+test("the strip renders 6 chips with a hidden dot and visible text", async () => {
   const { LabConsole } = load({ responses: [{ status: 200, body: { services: [{ id: "robot", phase: "ready", connected: true }], cameras: [], orchestrator: { stale: false }, control: [] } }] });
   const view = page();
   LabConsole.start(view.doc);
   await new Promise(resolve => setTimeout(resolve, 0));
   const chips = view.nodes.get("lc-strip").children;
-  assert.equal(chips.length, 8);
+  assert.equal(chips.length, 6);
   assert.equal(chips[0].children[0].attributes["aria-hidden"], "true");
   assert.match(chips[0].textContent, /Robot.*Ready/);
 });
 
-test("a console that does not answer shows 1 Console offline chip, not 8 stale devices", async () => {
+test("a console that does not answer shows 1 Console offline chip, not 7 stale chips", async () => {
   const { LabConsole } = load({ responses: [{ status: 200, body: null }] });
   assert.deepEqual(LabConsole.logic.chips(null, false, true), [{ id: "console", tone: "bad", key: "chip.offline" }]);
-  assert.equal(LabConsole.logic.chips(null, false, false).length, 8);
+  assert.equal(LabConsole.logic.chips(null, false, false).length, 7);
   const view = page();
   LabConsole.start(view.doc);
   await new Promise(resolve => setTimeout(resolve, 0));

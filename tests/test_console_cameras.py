@@ -305,22 +305,11 @@ def test_stale_and_offline_states(rig):
     assert sum(rig.service.camera_relay.streams().values()) == 0
 
 
-def test_console_state_reports_whether_cameras_are_configured(rig, monkeypatch):
-    def preview():
-        body = rig.client.get("/lab/api/console/state", headers=headers()).get_json()
-        return body["camera_preview"]["state"]
-
-    assert preview() == "idle"
-    monkeypatch.setattr(rig.sources, "configured", lambda view: False)
-    assert preview() == "unconfigured"
-
-
 def test_cameras_are_configured_by_the_camera_devices(rig):
     rig.service.camera_sources = None
-    assert cameras_module.preview_state(rig.service)["state"] == "unconfigured"
+    assert cameras_module.HttpSources(rig.service).configured("camera1") is False
     devices = "/dev/v4l/by-path/cam-a,/dev/v4l/by-path/cam-b"
     rig.service.settings = {**rig.service.settings, "MG400_CAMERA_DEVICES": devices}
-    assert cameras_module.preview_state(rig.service)["state"] == "idle"
     sources = cameras_module.HttpSources(rig.service)
     assert sources.configured("camera2") is True and sources.configured("camera3") is False
 

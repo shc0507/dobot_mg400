@@ -41,7 +41,7 @@
       "role.camera1": "Stage", "role.camera2": "Insert rail", "role.camera3": "Microscope side", "role.camera4": "Tray",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "LIVE", "badge.stale": "STALE", "badge.offline": "OFFLINE", "badge.frozen": "FROZEN",
-      "age": "{age} s", "mode.unknown": "Mode unknown",
+      "age": "{age} s",
       "tile.snapshot": "Snapshot", "tile.expand": "Expand", "tile.select": "Select {name}",
       "tile.noFrame": "No frame", "tile.notConfigured": "Not configured",
       "layout.label": "Layout", "layout.wall": "All views", "layout.large": "Large view",
@@ -49,7 +49,7 @@
       "snapshot.all": "Snapshot all",
       "side.detectionsCount": "{count} found",
       "settings": "Settings", "settings.title": "Thermal settings", "settings.close": "Close",
-      "reading.max": "Max", "reading.min": "Min", "reading.center": "Center", "reading.mean": "Mean",
+      "reading.max": "Max", "reading.mean": "Mean",
       "units": "Units", "palette": "Palette", "palette.ironbow": "Ironbow", "palette.rainbow": "Rainbow", "palette.grey": "Grey",
       "scale": "Colour scale", "scale.auto": "Auto", "scale.fixed": "Fixed", "scale.low": "Low", "scale.high": "High",
       "region": "Crucible region", "region.none": "Not drawn yet",
@@ -75,7 +75,7 @@
       "role.camera1": "位移台", "role.camera2": "插入导轨", "role.camera3": "显微镜侧视", "role.camera4": "托盘",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "实时", "badge.stale": "过期", "badge.offline": "离线", "badge.frozen": "已冻结",
-      "age": "{age} 秒", "mode.unknown": "模式未知",
+      "age": "{age} 秒",
       "tile.snapshot": "快照", "tile.expand": "放大", "tile.select": "选择 {name}",
       "tile.noFrame": "无画面", "tile.notConfigured": "未配置",
       "layout.label": "布局", "layout.wall": "全部画面", "layout.large": "大画面",
@@ -83,7 +83,7 @@
       "snapshot.all": "全部快照",
       "side.detectionsCount": "找到 {count} 个",
       "settings": "设置", "settings.title": "热像设置", "settings.close": "关闭",
-      "reading.max": "最高", "reading.min": "最低", "reading.center": "中心", "reading.mean": "平均",
+      "reading.max": "最高", "reading.mean": "平均",
       "units": "单位", "palette": "色板", "palette.ironbow": "铁红", "palette.rainbow": "彩虹", "palette.grey": "灰度",
       "scale": "色标范围", "scale.auto": "自动", "scale.fixed": "固定", "scale.low": "下限", "scale.high": "上限",
       "region": "坩埚区域", "region.none": "尚未画出",
@@ -264,9 +264,10 @@
   /** The measured rate, or null when it is old. */
   function current(rate, now) { return rate && now - rate.at <= FRESH_MS ? rate.fps : null; }
 
-  /** The tile mode with the measured rate, for example "640×480 · 29.8 fps". */
-  function modeLine(mode, fps) {
-    return typeof fps === "number" && Number.isFinite(fps) ? `${mode} · ${fps.toFixed(1)} fps` : mode;
+  /** The tile mode with the measured rate, for example "640×480 · 29.8 fps". Unknown parts drop out. */
+  function modeLine(mode, fps, ...extra) {
+    const rate = typeof fps === "number" && Number.isFinite(fps) ? `${fps.toFixed(1)} fps` : "";
+    return [mode, rate, ...extra].filter(Boolean).join(" · ");
   }
 
   /** The snapshot URL: a full-resolution JPEG for camera1 to camera4, a full-size PNG for the microscope. */
@@ -571,7 +572,6 @@
     build() {
       const view = this.view;
       this.title = h("span", { class: "lcam-title" });
-      this.role = h("span", { class: "lcam-role" });
       this.badgeText = h("span", { class: "lcam-badge-text" });
       this.badge = h("span", { class: "lcam-badge tone-off", role: "status" }, h("span", { class: "lc-dot", "aria-hidden": "true" }), this.badgeText);
       this.mode = h("span", { class: "lcam-mode" });
@@ -605,11 +605,12 @@
       this.expandButton = h("button", { type: "button", class: "lc-button lcam-small", onclick: event => { event.stopPropagation(); this.expand(); } });
       // The thermal tile shows its live readings. A workspace may add buttons before Snapshot.
       this.readings = view === "thermal" ? h("div", { class: "lcam-readings" }) : null;
+      this.meta = h("div", { class: "lcam-meta" }, this.mode, this.note);
       this.el = h("figure", { class: "lcam-tile", "data-view": view },
-        h("div", { class: "lcam-head" }, h("div", { class: "lcam-names" }, this.title, this.role), this.badge, this.readings),
+        h("div", { class: "lcam-head" }, h("div", { class: "lcam-names" }, this.title), this.badge, this.readings),
         this.stage,
         h("figcaption", { class: "lcam-foot" },
-          h("div", { class: "lcam-meta" }, this.mode, this.note),
+          this.meta,
           h("div", { class: "lcam-buttons" }, ...(this.options.buttons || []), this.snapButton, this.expandButton)));
       this.el.labCameras = this;
       this.refresh();
@@ -690,29 +691,36 @@
 
     refresh() {
       const view = this.view;
-      this.title.textContent = t("title." + view);
-      this.role.textContent = t("role." + view);
+      // The tile shows the role; the camera ID or the model is in the tooltip.
+      const name = t("title." + view) + " · " + t("role." + view);
+      this.title.textContent = t((CAMERAS.has(view) ? "role." : "title.") + view);
+      this.title.setAttribute("title", name);
       this.snapButton.textContent = t("tile.snapshot");
       this.expandButton.textContent = t("tile.expand");
-      this.stage.setAttribute("aria-label", t("tile.select", { name: t("title." + view) + " · " + t("role." + view) }));
-      if (this.img) this.img.alt = t("title." + view) + " · " + t("role." + view);
+      this.stage.setAttribute("aria-label", t("tile.select", { name }));
+      if (this.img) this.img.alt = name;
       const row = rowFor(view);
       const state = viewBadge(view);
-      this.badge.className = "lcam-badge tone-" + state.tone;
-      this.badgeText.textContent = t(state.key) + (state.age !== null && state.age !== undefined ? " · " + t("age", { age: state.age.toFixed(1) }) : "");
-      const mode = view === "thermal" ? "160×120" : row?.mode;
-      this.mode.textContent = modeLine(mode || t("mode.unknown"), this.rate(row));
+      // A live view shows a dot only; STALE, OFFLINE and FROZEN show their word.
+      const live = state.key === "badge.live";
+      const label = t(state.key) + (state.age !== null && state.age !== undefined ? " · " + t("age", { age: state.age.toFixed(1) }) : "");
+      this.badge.className = "lcam-badge tone-" + state.tone + (live ? " lcam-badge-dot" : "");
+      this.badge.setAttribute("title", label);
+      this.badge.setAttribute("aria-label", label);
+      this.badgeText.textContent = live ? "" : label;
       const offline = state.key === "badge.offline";
+      const d = engine.detections;
+      const found = view === "camera4" && engine.settings.detections && d?.available ? t("side.detectionsCount", { count: d.detections.length }) : "";
+      const mode = view === "thermal" ? null : row?.mode || (offline ? null : this.decodedMode());
+      this.mode.textContent = modeLine(mode, this.rate(row), found);
       this.empty.hidden = !offline;
       this.empty.textContent = row && row.configured === false ? t("tile.notConfigured") : t("tile.noFrame");
       this.snapButton.disabled = offline;
-      if (view === "camera4") {
-        const d = engine.detections;
-        this.note.textContent = engine.settings.detections && d?.available ? t("side.detectionsCount", { count: d.detections.length }) : "";
-      } else if (view === "thermal") {
+      if (view === "thermal") {
         const stats = engine.thermal?.stats;
         const unit = engine.settings.unit;
-        const values = stats ? [["reading.max", stats.max?.celsius], ["reading.min", stats.min?.celsius], ["reading.center", stats.center?.celsius], ["reading.mean", stats.mean_celsius]] : [];
+        // Min and the center show on the color bar and the image markers.
+        const values = stats ? [["reading.max", stats.max?.celsius], ["reading.mean", stats.mean_celsius]] : [];
         const text = values.map(([key, value]) => t(key) + " " + formatTemp(value, unit)).join("|");
         if (this.readings && text !== this.readingsText) {
           this.readingsText = text;
@@ -723,6 +731,15 @@
           ? t(engine.probe.pinned ? "probe.pinned" : "probe", { x: reading.x, y: reading.y, value: formatTemp(reading.celsius, engine.settings.unit) })
           : this.readings ? "" : stats ? t("reading.mean") + " " + formatTemp(stats.mean_celsius, engine.settings.unit) : "";
       }
+      this.meta.hidden = !this.mode.textContent && !this.note.textContent;
+    }
+
+    /** The decoded size of a playing view, for example "1920×1080", or null. */
+    decodedMode() {
+      if (!this.running || !this.live) return null;
+      const v = this.stopVideo ? this.video : this.img;
+      const w = this.stopVideo ? v?.videoWidth : v?.naturalWidth, hgt = this.stopVideo ? v?.videoHeight : v?.naturalHeight;
+      return w > 1 && hgt > 1 ? `${w}×${hgt}` : null;
     }
 
     /** The measured frame rate: H.264 and thermal count in the page, MJPEG comes from the sender. */

@@ -330,6 +330,23 @@ def camera_capture_sizes(value, devices, side_stream=""):
     return [mode[:2] for mode in configured.modes]
 
 
+# go2rtc 1.9.14 ffmpeg templates for the H.264 previews, changed so that a view shows its
+# first frame without delay:
+# - -fpsprobesize 0: ffmpeg does not wait for 20 frames to guess the input rate. At the
+#   3 fps of a long microscope exposure that wait was about 7 s.
+# - -fps_mode passthrough: each source frame goes out once, with its own timestamp. A
+#   guessed rate does not add or drop frames. x264 budgets its bitrate at 30 fps.
+# - A keyframe each second: a viewer that joins a running encoder waits at most 1 s.
+FFMPEG_TEMPLATES = (
+    "ffmpeg:\n"
+    '  rtsp: "-fflags nobuffer -flags low_delay -timeout 5000000 -user_agent go2rtc/ffmpeg'
+    ' -rtsp_flags prefer_tcp -fpsprobesize 0 -i {input}"\n'
+    '  h264: "-c:v libx264 -g 50 -profile:v high -level:v 4.1 -preset:v superfast'
+    " -tune:v zerolatency -pix_fmt:v yuv420p -fps_mode passthrough -x264-params fps=30"
+    ' -force_key_frames expr:gte(t,n_forced)"\n'
+)
+
+
 def render_go2rtc(devices, sizes=None, *, modes=None):
     """Return per-camera MJPEG capture settings and on-demand H.264 previews.
 
@@ -378,6 +395,7 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
         "api:\n  listen: 127.0.0.1:1984\n"
         "rtsp:\n  listen: 127.0.0.1:8554\n"
         'webrtc:\n  listen: ""\n'
+        f"{FFMPEG_TEMPLATES}"
         f"{preload}"
         f"streams:\n{streams}"
     )

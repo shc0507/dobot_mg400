@@ -18,7 +18,7 @@ The console is the only operator web page.
 - The stop result band below the header shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
 - In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
-- Chinese text uses a font that the console serves itself, so it also shows offline.
+- Chinese text uses a font that the console serves itself, so it also shows offline. After you add Chinese console text, run `uv run scripts/console_font.py <package dir>` to cut the font again.
 - A confirmation in the page takes the keyboard focus. Esc or **Cancel** closes it and sends nothing.
 - The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 
@@ -45,10 +45,10 @@ The workspaces send manual commands through the console. The console forwards ea
 
 ### Overview workspace
 
+- **Control** is the first card. It has 1 row for each device with **Take control** or **Release**, and **Release all**. See [Control](#control).
 - **Run** shows the current run and its steps. The card shows only while a run exists. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service. Only a warning or an error shows its level. A successful vision inference is not an event.
 - **Safety** gives **Stop heat and gas** and **Stop all gas**. **STOP ALL MOTION** is in the header. Each button acts on 1 press. The stop result band shows the results.
-- **Agent proposals** shows the number of waiting proposals. The card shows only while 1 or more proposals wait. See [agent proposals](#agent-proposals).
 
 ### Motion workspace
 
@@ -124,6 +124,7 @@ Every device command goes through the console relay. Use **Take control** for th
 - **Close** stops 1 gas channel through `ws/process/gas-stop`. It sets the flow to 0 and closes the valve, and needs no control. The page shows the result: confirmed, not confirmed or unknown.
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
 - The microscope card shows 1 large preview. The **Microscope** and **Side camera** switch in the preview selects the Toupcam view or the camera3 side view. Only the shown view streams. The preview uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
+- Each objective button shows the objective name that the service describes, for example 10x. Without a name, it shows the objective ID.
 - The objective buttons, nudges, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
 - The objective buttons and the focus controls are below the preview: the focus bar, **−** and **+** with the jog pulses between them, **Autofocus** (local), **Full autofocus** and **Set focus zero**.
 - **Turret**, **Recording** and **Sequence** are closed groups. Open a group to use its controls.
@@ -170,10 +171,6 @@ If a result is unknown, check the device and follow its recovery procedure befor
 
 The console has no controls yet to hold, abort, or recover a run. Use the run routes of the [recipe service](orchestrator.en.md#http-service).
 
-## Agent proposals
-
-The console has no controls yet to approve agent proposals. The Overview shows only the number of waiting proposals. See the [gateway policy](agent-gateway.en.md#approval-policy) for supported steps and limits.
-
 ## Chip passport
 
 Open `/chip` under the configured service prefix, or select **Chip passport** in the console header.
@@ -203,5 +200,5 @@ Artifact requests use an opaque record ID and the exact chip identifier. They do
 Only checked private regular files can be read. Symlinks, hard links, unsafe permissions, and changed paths or files cause refusal.
 The read limit is 16 MiB per artifact. A refused read does not delete or rewrite the saved record.
 The page previews PNG, JPEG, GIF, and WebP files identified by their bytes.
-It fetches these files with authorization and uses temporary browser blob URLs for previews.
+It fetches these files without credentials and uses temporary browser blob URLs for previews.
 Other file types are available only as downloads. The browser never receives the stored filesystem path.

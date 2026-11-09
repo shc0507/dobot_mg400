@@ -17,7 +17,7 @@ Install the locked dependencies from the repository root:
 uv sync --locked
 ```
 
-The default `microscope` group contains NumPy, opencv-python-headless, pyserial, Flask, and waitress.
+The default `microscope` group contains NumPy, opencv-python-headless, pyserial, Flask, waitress, and minimalmodbus.
 Package imports do not open cameras or serial ports.
 The Toupcam adapter is `toupcam_camera.MicroscopeCamera`.
 Real Toupcam capture requires the matching Linux vendor library and device permissions.
@@ -33,6 +33,7 @@ It does not start devices or create calibration values.
 The unit runs as `1000:1000` with `dialout` and `video` access.
 It sets `LD_LIBRARY_PATH=/usr/local/lib/mg400` and listens on `127.0.0.1:8770`.
 It reads furnace metadata from `http://127.0.0.1:8769/`.
+`MG400_MICROSCOPE_BIND`, `MG400_MICROSCOPE_PORT`, `MG400_MICROSCOPE_BASE_PATH` (default `/`) and `MG400_MICROSCOPE_FURNACE_URL` change these defaults.
 
 Stop conflicting camera and motor programs before use.
 Start the configured side-camera service with `mg400ctl start camera`, then start `mg400ctl start microscope`.
@@ -67,6 +68,8 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
 | `MG400_MICROSCOPE_NUDGE_STEPS` | Measured turret window for `objective_nudge`, in full steps from `0` through `20`. When it is unset or `0`, the service refuses every nudge. |
 
+Objective IDs: `0` = 5x, `1` = 10x, `2` = 20x, `3` = 50x.
+
 Real startup requires reference-aware firmware and explicit focus settings.
 The generic environment example leaves the physical focus settings empty and sets the turret nudge window to `0`.
 For the current microscope, use these settings from `H-06`:
@@ -91,7 +94,7 @@ The control lease lasts 3 seconds and must be renewed during work.
 | `GET /api/events` | Service event history. |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | Acquire, renew, or release ordinary control. |
 | `POST /api/command` | Submit an action and its parameters. A `202` response returns a command ID, not a completion proof. |
-| `POST /api/stop` | Stop from any authenticated client without a controlling lease. Read its `confirmed`, `pending`, or `unconfirmed` result. |
+| `POST /api/stop` | Stop from any client with an `X-MG400-Client` header, without a controlling lease. Read its `confirmed`, `pending`, or `unconfirmed` result. |
 
 The command actions are `select_objective` with `id`, `objective_nudge` with `steps`, `autofocus` with `mode` (`full` or `local`), `focus_move` with relative `steps`, `home_focus`, and `snapshot` with an optional `path`.
 Read the command ID in `last_command` and its result before the next action.
@@ -151,6 +154,7 @@ The next client must acquire control before that deadline. Release does not gran
 If the check fails or the deadline expires, the service stops and disables both motors and invalidates zero.
 
 Explicit stop, lease expiry, firmware reset, and focus-reference changes invalidate the service's zero.
+A refused or failed command also stops both motors and invalidates zero, for example a focus move past the limits. Only a command that cannot identify the objective keeps zero.
 Unknown command or stop outcomes latch a fault and lock ordinary commands.
 Stop remains available, but successful stop does not clear that fault.
 After resolving the cause, reconnect through a controlled service restart and establish zero again.
@@ -183,7 +187,7 @@ Set focus zero:
 3. Select **Set focus zero**.
 
 The console sends the zero command 1 time with its own lease. It shows no confirmation dialog.
-The card shows a reminder: the focus gears can slip, so re-zero at the 50x focus before each use.
+The tooltip of **Set focus zero** gives a reminder: the focus gears can slip, so re-zero at the 50x focus before each use.
 The console has no focus homing action, because the lab microscope has no home switch.
 
 | Preview route | Result |
@@ -211,9 +215,9 @@ Keep the console open and hold control during capture and finalization.
 | Action | Parameters and result |
 | --- | --- |
 | `start_recording` | Supply a new `recording_id` containing exactly 32 lowercase hexadecimal characters. Optional fields are `run_name`, `mode`, `capture_interval_seconds`, and `output_fps`. |
-| `stop_recording` | Supply the active `recording_id` owned by the same client. Completion includes capture shutdown, summary compilation, and any configured archive copy. |
+| `stop_recording` | Supply the active `recording_id` owned by the same client. Completion includes capture shutdown, summary compilation, and the archive copy when `MG400_FURNACE_ARCHIVE_DIR` is set. |
 | `record_with_sequence` | Use `enabled: true`, a new `recording_id`, and optional recording fields to arm once. Use `enabled: false` with that ID to cancel. |
-| `set_stabilization` | Supply the boolean `enabled` to change camera stabilization. |
+| `set_stabilization` | Supply the boolean `enabled` to change camera stabilization. Stabilization is on when the service starts. |
 
 The console offers **Start recording** and **Stop recording**. **Record next furnace sequence** arms sequence recording, and **Cancel sequence recording** cancels it.
 **Turn stabilization on** and **Turn stabilization off** change camera stabilization.
@@ -222,6 +226,7 @@ An optional run name contains at most 80 printable characters. It does not selec
 The `time_lapse` defaults are a 30-second capture interval and 1 output frame per second.
 The `live` default is 30 output frames per second, with no capture interval.
 Explicit `capture_interval_seconds` values range from 0.1 to 3600. Explicit `output_fps` values range from 0.1 to 120.
+`live` refuses `capture_interval_seconds`. A `live` recording stops when free disk space falls below 2 GB. A recording fails after 128 segments.
 
 Read `recording`, `recording_sequence`, and `last_result` with the matching `last_command` receipt.
 Check the recording ID, command ID, action, client, and expected result before claiming success.
@@ -248,6 +253,8 @@ Finalization requires recorded frames and valid media. It requires FFmpeg and ff
 If `ffmpeg` or `ffprobe` is missing, the recording fails, and its error names the missing program.
 The service log records the cause of each failed recording. Use `mg400ctl logs microscope` to read it.
 Finalization keeps the recordings in `/var/lib/mg400/recordings`.
+Each recording is the directory `/var/lib/mg400/recordings/<recording_id>/`. It holds `run.json`, the 60-minute segments `video_0001.mp4`, `video_0002.mp4` and so on, `video.timestamps.csv`, and `<recording_id>_shortened_3_min.mp4`.
+When `MG400_FURNACE_ARCHIVE_DIR` is set, finalization copies the directory to `<archive>/<recording_id>/` and never replaces an existing copy.
 
 Stop, release, lease expiry, and shutdown revoke recording authority immediately. The service sends the motor stop commands without waiting for the encoder.
 The optional `wait_s` observes motor and recording cleanup within one budget of `0..15` seconds.
@@ -287,8 +294,8 @@ The caller must handle cancellation, close camera connections, and stop or disab
 
 | Directory | Contents |
 | --- | --- |
-| `/var/lib/mg400/calibration/microscope` | Calibration CSV files, reference images, and side-camera calibration captures. |
-| `/var/lib/mg400/runs` | Autofocus curves, objective-switch logs, and image analysis outputs. |
+| `/var/lib/mg400/calibration/microscope` (`MG400_MICROSCOPE_CALIBRATION_DIR`) | Calibration CSV files, reference images, and side-camera calibration captures. |
+| `/var/lib/mg400/runs` (`MG400_ORCH_RUNS_DIR`) | Autofocus curves, objective-switch logs, and image analysis outputs. |
 
 Use `microscope.paths.calibration_path()` for calibration paths and `microscope.paths.run_path()` for run paths.
 Relative paths resolve under the corresponding root.
@@ -296,7 +303,7 @@ Absolute output paths must remain inside that root.
 The roots must be absolute and must not contain parent traversal.
 Resolving a path creates no files.
 
-Keep `objective_views/`, `current_objective.txt`, `objective_reference.png`, and `side_camera_images/` under the calibration root.
+Keep `objective_views/`, `objective_reference.png`, and `side_camera_images/` under the calibration root.
 The locator reads the filenames in `microscope.aruco_locator.REFERENCES` from `side_camera_images/`.
 It requires matching image dimensions and the expected marker IDs.
 Recalibrate after changing the camera position or markers.
@@ -312,7 +319,6 @@ Do not substitute repository paths or shared public directories for the configur
 
 The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches the objective turret.
 Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
-Before `H-21`, restore this camera to its earlier position on the turret.
 For the service and preview, go2rtc owns its V4L2 capture.
 During `select_objective`, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.
 The side reader runs only during this command. The preview relay does not serve a side stream above `1280x720`.
@@ -325,6 +331,7 @@ Keep the cameras on their fixed ports and never reset the shared USB hub.
 | `MG400_CAMERA_DEVICES` | Stable device paths in the order used by the camera preview installer. |
 | `MG400_MICROSCOPE_SIDE_STREAM` | The configured go2rtc stream for the side camera. There is no default stream. |
 | `MG400_CAMERA_MODES` | Optional comma-separated `WIDTHxHEIGHT@FPS` values, with 1 value for each configured device. |
+| `MG400_CAMERA_CAPTURE_SIZES` | Optional older `WIDTHxHEIGHT` list at 30 fps. Do not set it with `MG400_CAMERA_MODES`. |
 
 Map the side-camera device path to its stream before enabling capture.
 Configure only one mode or size list. The installer rejects configurations with both lists.
@@ -552,7 +559,7 @@ It copies directory contents, refuses symbolic links and unsafe selected files, 
 It refuses existing destinations instead of overwriting them.
 Destination directories use owner `1000:1000` and mode `0750`. Files use owner `1000:1000` and mode `0640`.
 Completed copies remain if a later copy fails. Inspect them before another attempt.
-The importer opens no devices. The operator must perform the Olares import and report its result on the migration issue.
+The importer opens no devices. Run the import on Olares.
 
 ## Other command-line entrypoints
 
@@ -567,6 +574,7 @@ Running autofocus without `--help` connects the serial controller and opens the 
 Its required `--half-range` is the allowed travel on each side of the start position, in pulses.
 An operator must determine this value from the real hardware limits.
 `--port` overrides the serial setting, and `--output` selects a file under the run root.
+`--camera-index` selects the Toupcam camera, default `0`. This command ignores `MG400_TOUPCAM_SERIAL` and `MG400_TOUPCAM_INDEX`.
 
 The locator processes a saved `--image` or a `--folder` of PNG images without motor access.
 It requires the calibration reference images.

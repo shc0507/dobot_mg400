@@ -45,13 +45,12 @@
 | `mg400-web-panel.service` | `web` | [机器人服务](development.md#机器人服务接口)，端口 `8766` | 无 |
 | `mg400-stage-panel.service` | `stage` | [位移台服务](stage-panel.md)，端口 `8767` | `dialout` |
 | `mg400-camera-preview.service` | `camera` | 摄像头视频流，端口 `1985` | 无 |
-| `mg400-camera-capture.service` | `camera` | go2rtc 采集和 H.264 编码，只监听 `127.0.0.1:1984` 和 `127.0.0.1:8554` | `video` |
+| `mg400-camera-capture.service` | `camera` | go2rtc 采集和 H.264/H.265 预览编码，只监听 `127.0.0.1:1984` 和 `127.0.0.1:8554` | `video` |
 | `mg400-thermal.service` | `thermal` | 可选的[热像仪服务](thermal.md)，端口 `8768` | 无 |
 | `mg400-furnace.service` | `furnace` | [炉温与气体服务](furnace.md)，端口 `8769` | `dialout` |
 | `mg400-microscope.service` | `microscope` | [显微镜服务](microscope.md)，回环端口 `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | 可选的[视觉服务](vision.md)，回环端口 `8771` | 无 |
 | `mg400-orchestrator.service` | `orch` | [配方服务](orchestrator.md#http-服务)，端口 `8772`，控制台控制套接字端口 `8774` | 无 |
-| `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | [单端口代理](olares.md#单端口代理)，端口 `8080` | 无 |
 
 服务手动启动，不开机自启。
@@ -60,12 +59,14 @@
 
 - 主机运行 Linux 和 systemd。
 - `/usr/bin/python3` 为 Python 3.12 或更高版本。
-- 主机已安装 Git、`runuser`（util-linux）和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+- 主机已安装 Git、`runuser`（util-linux）、`curl` 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
 - 主机能访问 PyPI。`uv sync` 从 PyPI 下载依赖。
 - 主机有一个网口直连机械臂，地址为 `192.168.1.10/24`。
 - 该网口能连接机械臂的 TCP `29999`、`30003` 和 `30004`。
 - 使用摄像头时，从 [go2rtc 发布页](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14) 下载 1.9.14 版的 Linux 程序。
 - 使用显微镜录像或摄像头 H.264 预览时，主机已安装 `ffmpeg` 和 `ffprobe`。在 Debian 或 Ubuntu 上，`ffmpeg` 软件包提供这两个程序：`apt-get install ffmpeg`。
+  ffmpeg 必须为 5.1 或更高版本，因为预览编码使用 `-fps_mode passthrough`。
+  使用 NVENC 时，ffmpeg 必须支持 `h264_nvenc` 和 `hevc_nvenc`，主机须安装 NVIDIA 驱动。
 
 ## 安装与更新
 
@@ -94,9 +95,10 @@
    ```
 
    首次安装时必须用 `--caddy` 指定 Caddy 2 程序，因为 `proxy` 是必需服务。之后安装器复用已安装的程序。
-   使用摄像头时，首次安装加 `--go2rtc <go2rtc 程序路径>`。
+   使用摄像头时，首次安装加 `--go2rtc PATH`，指定 go2rtc 程序。
    使用 Toupcam 时，加 `--toupcam PATH`，指定下文说明的已校验库文件。
    加 `--dry-run` 时，安装器只列出步骤，不修改主机。
+   uv 不在 `PATH` 中时，加 `--uv PATH`。`--python PATH` 选择服务使用的 Python，默认为 `/usr/bin/python3`。
 
 3. 首次安装后，按 [配置文件](#配置文件) 修改配置。
 4. 启动或重启服务，见 [日常命令](#日常命令)。
@@ -107,11 +109,12 @@
    同时检查服务清单、服务选择、所选单元和 udev 模板。
    如指定 `--toupcam`，检查源文件、目标路径和固定的 SHA-256。
    如指定资源或启用 `vision`，还检查资源清单、目标路径和本地文件。
-   检查代理配置和 Caddy 程序。
+   检查代理配置和 Caddy 程序。没有已安装的 Caddy 且未指定 `--caddy` 时，拒绝安装。
+   配置了摄像头、没有已安装的 go2rtc 且未指定 `--go2rtc` 时，拒绝安装。
    在 systemd 服务的默认 `PATH` 中查找显微镜使用的 `ffmpeg` 和 `ffprobe`。配置了摄像头时，查找 `ffmpeg`。缺少时，只给出提示，继续安装。
    检查不通过时，安装器不修改主机。
 2. 创建配置文件，或补全缺少的配置项。非空值保持不变。
-   删除旧的服务 `*_TOKEN` 项（`MG400_GATEWAY_TOKEN` 除外），以及示例中没有的空项。
+   删除旧的服务 `*_TOKEN` 项，以及示例中没有的空项。
 3. 创建 `/var/lib/mg400` 下的目录。安装器拒绝其中的符号链接。
 4. 按服务清单运行 `uv sync`，只安装已启用服务的依赖组。
    `/opt/mg400/.venv` 含所有必需服务的依赖组。
@@ -170,7 +173,7 @@
 | `assets` | 此服务拥有的资源清单名称 |
 
 `web`、`stage`、`camera`、`furnace`、`microscope`、`orch` 和 `proxy` 始终为必需服务。
-可选服务为 `vision`、`thermal` 和 `gateway`。
+可选服务为 `vision` 和 `thermal`。
 `MG400_OPTIONAL_SERVICES` 接受清单中的服务名称，用逗号分隔。
 默认值为空。未知、重复或空项会使安装器拒绝安装。必需服务名称不起作用。
 可选服务 `thermal` 使用 `/opt/mg400/.venv` 中的 `thermal` 依赖组。
@@ -204,10 +207,6 @@
 安装器准备 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
 同一服务还提供[实验室控制台](dashboard.md#实验室控制台)。它是唯一的操作网页，含 Overview、Motion、Cameras 和 Furnace + microscope 工作区，以及独立的运动、加热和气体停止操作。
 控制台没有配方运行控制。启动、终止和恢复运行使用[配方服务接口](orchestrator.md#http-服务)。
-
-可选服务 `gateway` 使用 `gateway` 依赖组。这部分工作已推迟，见[智能体网关](agent-gateway.md)。
-选中 `gateway` 时，安装器也会准备 `runs` 目录，用于审计记录。安装器不会启动网关。
-每个 MCP 请求都必须携带 `MG400_GATEWAY_TOKEN`。安装器不生成它，须在配置文件中手动设置。
 
 服务 `proxy` 不增加 Python 依赖组。首次安装时通过 `--caddy PATH` 提供 Caddy 2，并配置[单端口入口](olares.md#单端口代理)。
 安装器在改文件前检查代理配置，不会启动代理。
@@ -320,7 +319,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。
 摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera4`。
 模式列表为空时，普通摄像头使用 `1280x720@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
-显式模式列表覆盖这些默认值。数量、路径或模式无效时，安装器在修改主机前退出。
+显式模式列表覆盖这些默认值。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`mg400ctl` 和预览服务拒绝运行。数量、路径或模式无效时，安装器在修改主机前退出。
 只预加载宽度不超过 1280 且高度不超过 720 的流。更大的流按需启动。
 多台摄像头使用大于 `640x480` 的模式时，先安装 [USB 带宽补丁](olares.md#usb-带宽补丁)。
 修改设备或模式后，重新运行安装器，生成新的 `go2rtc.yaml`，再运行 `mg400ctl restart camera vision microscope orch`。未启用 `vision` 时，从命令中去掉 `vision`：`restart` 拒绝未启用的可选服务。
@@ -338,7 +337,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
 | `mg400ctl status` | 显示已启用服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`gateway`、`proxy` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`proxy` 或 `all` |
 | `mg400ctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
 | `mg400ctl restart web` | 重启服务。重启炉控时可加 `--force` |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |

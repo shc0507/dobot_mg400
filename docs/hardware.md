@@ -42,11 +42,11 @@
 mg400ctl mode
 ```
 
-`mg400ctl` 以 UID 1000 运行脚本，与机器人服务共用 [面板连接锁](deploy.md#面板连接锁)。
+`mg400ctl` 以 UID 1000 运行脚本。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
 脚本使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
 直接运行脚本时，锁目录取自 `MG400_CONTROLLER_LOCK_DIR`，未设置时为 `/tmp/mg400-controller-locks`。
 锁目录的属主可以不是 root，例如 `/var/lib/mg400/locks`。
-此时以 root 运行，脚本拒绝取得连接锁，不连接控制器。
+此时以 root 运行 `--switch-to-tcp`，脚本拒绝取得连接锁，不连接控制器。
 以 root 运行且未设置该变量时，脚本可能取得另一把锁，不能与机器人服务互斥。所以用 `mg400ctl mode` 运行脚本。
 直接运行时，`--host` 指定控制器地址，`--timeout` 设置请求超时（默认 5 秒，最长 30 秒），`--backup-dir` 设置备份目录（默认 `work/control-mode`）。
 
@@ -54,7 +54,9 @@ mg400ctl mode
 关闭其他控制客户端，释放[面板连接锁](deploy.md#面板连接锁)。
 然后运行 `mg400ctl mode --switch-to-tcp`。
 脚本读取 `MG400_ROBOT_HOST`，未设置时读取 `config/robot.toml`。
-切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止及无报警状态。
+切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止、无报警，且 `isCollision` 和 `isSafeSuspend` 为 0。
+若保存的模式已是 `tcp` 且 `RobotMode()` 返回 `4`，脚本不写入，并报告 `changed: false`。
+若 `RobotMode()` 返回 `-1`，脚本再次写入配置。
 脚本先备份配置，再写入 `project` 共享内的 `/settings/function/remoteControl.json`。
 随后向 `22000` 端口的 `/settings/function/remoteControl` POST 同一配置。
 目标字段为 `{"mode":"tcp","name":""}`，其他字段保持原值。
@@ -207,7 +209,7 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 1. 核对固件、机器人 IP、供电和真空源 I/O 接线。只读测试位姿与报警。
 2. 设定工具 TCP 和负载。用示教器记录真实起点、抓取点、放置点与路径。
 3. 在受控工作区低速逐步验证单次动作，再验证固定抓放。
-4. 通过 [代理网关](agent-gateway.md) 接入 agent 前，补充路径可达性、碰撞检查和独立于模型的设备保护。
+4. 让智能体控制机械臂前，补充路径可达性、碰撞检查和独立于模型的设备保护。
 
 ## 可选 ROS 2 路线
 

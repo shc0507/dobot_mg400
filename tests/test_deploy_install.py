@@ -260,7 +260,6 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         not in {
             "mg400-thermal.service",
             "mg400-vision.service",
-            "mg400-gateway.service",
         }
     }
     for unit in host.units.iterdir():
@@ -359,11 +358,16 @@ def test_merge_removes_service_tokens_and_empty_removed_settings(module):
     example = "A=\n"
     current = (
         "A=\nMG400_PANEL_TOKEN=old\nMG400_ORCH_ROBOT_TOKEN=\nMG400_ORCH_ROBOT_URL=\n"
-        "MG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=keep\n"
+        "MG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=old\n"
     )
     text, changed = module.merge_settings(current, example)
-    assert text == "A=\nMG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=keep\n"
-    assert changed == ["MG400_PANEL_TOKEN", "MG400_ORCH_ROBOT_TOKEN", "MG400_ORCH_ROBOT_URL"]
+    assert text == "A=\nMG400_STAGE_BASE_PATH=/stage/\n"
+    assert changed == [
+        "MG400_PANEL_TOKEN",
+        "MG400_ORCH_ROBOT_TOKEN",
+        "MG400_ORCH_ROBOT_URL",
+        "MG400_GATEWAY_TOKEN",
+    ]
 
 
 def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, tmp_path):
@@ -1193,23 +1197,6 @@ def test_enabled_orchestrator_installs_private_data_and_group_without_starting_i
     )
     sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
     assert sync[sync.index("orchestrator") - 1] == "--group"
-    assert not any(
-        command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
-        for command, _ in host.commands
-    )
-
-
-def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricating_runs(
-    module, host
-):
-    select_optional(host, "gateway")
-    assert host.install() == 0
-    directory = host.data / "runs"
-    assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
-    assert list(directory.iterdir()) == []
-    assert (host.units / "mg400-gateway.service").exists()
-    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
-    assert sync[sync.index("gateway") - 1] == "--group"
     assert not any(
         command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
         for command, _ in host.commands

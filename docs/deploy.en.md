@@ -45,13 +45,12 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-web-panel.service` | `web` | [Robot service](development.en.md#robot-service-interface), port `8766` | None |
 | `mg400-stage-panel.service` | `stage` | [Stage service](stage-panel.en.md), port `8767` | `dialout` |
 | `mg400-camera-preview.service` | `camera` | Camera video streams, port `1985` | None |
-| `mg400-camera-capture.service` | `camera` | go2rtc capture and H.264 encoding, listening only on `127.0.0.1:1984` and `127.0.0.1:8554` | `video` |
+| `mg400-camera-capture.service` | `camera` | go2rtc capture and H.264/H.265 preview encoding, listening only on `127.0.0.1:1984` and `127.0.0.1:8554` | `video` |
 | `mg400-thermal.service` | `thermal` | Optional [thermal camera service](thermal.en.md), port `8768` | None |
 | `mg400-furnace.service` | `furnace` | [Furnace and gas service](furnace.en.md), port `8769` | `dialout` |
 | `mg400-microscope.service` | `microscope` | [Microscope service](microscope.en.md), loopback port `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | Optional [vision service](vision.en.md), loopback port `8771` | None |
 | `mg400-orchestrator.service` | `orch` | [Recipe service](orchestrator.en.md#http-service), port `8772`, console control socket port `8774` | None |
-| `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
 | `mg400-proxy.service` | `proxy` | [Single-port proxy](olares.en.md#single-port-proxy), port `8080` | None |
 
 Start services manually. They do not start automatically at boot.
@@ -60,12 +59,14 @@ Start services manually. They do not start automatically at boot.
 
 - The host runs Linux and systemd.
 - `/usr/bin/python3` is Python 3.12 or later.
-- Git, `runuser` (util-linux), and [uv](https://docs.astral.sh/uv/getting-started/installation/) are installed on the host.
+- Git, `runuser` (util-linux), `curl`, and [uv](https://docs.astral.sh/uv/getting-started/installation/) are installed on the host.
 - The host can access PyPI. `uv sync` downloads dependencies from PyPI.
 - A host network interface connects directly to the robot and has address `192.168.1.10/24`.
 - This interface can connect to the robot's TCP ports `29999`, `30003`, and `30004`.
 - For cameras, download the Linux program for version 1.9.14 from the [go2rtc releases page](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14).
 - For microscope recordings or H.264 camera previews, `ffmpeg` and `ffprobe` are installed on the host. On Debian or Ubuntu, the `ffmpeg` package supplies both programs: `apt-get install ffmpeg`.
+  ffmpeg must be version 5.1 or later, because the preview encoders use `-fps_mode passthrough`.
+  For NVENC, ffmpeg must support `h264_nvenc` and `hevc_nvenc`, and the host must have the NVIDIA driver.
 
 ## Installation and updates
 
@@ -94,9 +95,10 @@ Before an update, stop the services with `mg400ctl stop all`.
    ```
 
    On the first installation, you must give the Caddy 2 program with `--caddy`, because `proxy` is a mandatory service. Later runs reuse the installed program.
-   For cameras, add `--go2rtc <go2rtc 程序路径>` with the go2rtc program path on the first installation.
+   For cameras, add `--go2rtc PATH` with the go2rtc program on the first installation.
    For Toupcam, add `--toupcam PATH` with the verified library described below.
    With `--dry-run`, the installer only lists its steps and does not change the host.
+   If uv is not on `PATH`, add `--uv PATH`. `--python PATH` selects the Python for the services. The default is `/usr/bin/python3`.
 
 3. After the first installation, edit the configuration as described in [Configuration file](#configuration-file).
 4. Start or restart services. See [Routine commands](#routine-commands).
@@ -107,11 +109,12 @@ The installer works in this order:
    Also check the service registry, selection, selected units, and udev templates.
    If `--toupcam` is supplied, check its source, destination, and pinned SHA-256.
    If assets are requested or `vision` is enabled, also check the asset manifest, destination paths, and local files.
-   Check the proxy settings and the Caddy program.
+   Check the proxy settings and the Caddy program. If no Caddy is installed and `--caddy` is not supplied, refuse installation.
+   If cameras are configured, no go2rtc is installed, and `--go2rtc` is not supplied, refuse installation.
    Look for `ffmpeg` and `ffprobe` for the microscope in the default `PATH` of systemd services. If cameras are configured, look for `ffmpeg`. If a program is missing, show a notice, but do not stop the installation.
    If a check fails, leave the host unchanged.
 2. Create the configuration file or add missing entries. Keep nonempty values.
-   Remove old service `*_TOKEN` entries, except `MG400_GATEWAY_TOKEN`, and empty entries that the example does not contain.
+   Remove old service `*_TOKEN` entries and empty entries that the example does not contain.
 3. Create the directories under `/var/lib/mg400`. Refuse symbolic links there.
 4. Run `uv sync` from the service registry, with dependency groups only for enabled services.
    `/opt/mg400/.venv` gets the dependency groups of all mandatory services.
@@ -170,7 +173,7 @@ Add each new service entry together with its unit files.
 | `assets` | Asset manifest names owned by this service |
 
 `web`, `stage`, `camera`, `furnace`, `microscope`, `orch`, and `proxy` are always mandatory.
-The optional services are `vision`, `thermal`, and `gateway`.
+The optional services are `vision` and `thermal`.
 `MG400_OPTIONAL_SERVICES` accepts service names from the registry, separated by commas.
 The default is empty. Unknown names, duplicates, or empty items cause the installer to refuse installation. Mandatory service names have no effect.
 The optional `thermal` service uses the `thermal` dependency group in `/opt/mg400/.venv`.
@@ -204,10 +207,6 @@ This group includes Flask, waitress, and the `stage`, `thermal`, and `furnace` g
 The installer prepares the `runs` and `zones` directories. It does not invent zone configuration or start the service.
 The same service serves the [Lab Console](dashboard.en.md#lab-console). It is the only operator web page. It has the Overview, Motion, Cameras, and Furnace + microscope workspaces, and separate motion, heat, and gas stop controls.
 The console has no recipe run controls. Use the [recipe service interface](orchestrator.en.md#http-service) to start, abort, and recover runs.
-
-The optional `gateway` service uses the `gateway` dependency group. Its work is postponed. See the [agent gateway](agent-gateway.en.md).
-Selecting `gateway` also prepares the `runs` directory for audit records. The installer does not start the gateway.
-Every MCP request requires `MG400_GATEWAY_TOKEN`. The installer does not generate it. Set it by hand in the configuration file.
 
 The `proxy` service adds no Python dependency group. On the first installation, supply Caddy 2 through `--caddy PATH` and configure the [single-port entry](olares.en.md#single-port-proxy).
 The installer checks the proxy before changing files and never starts the proxy.
@@ -320,7 +319,7 @@ Configure microscope device selection, focus limits, and camera streams as descr
 Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
 The camera service provides only configured streams, named `camera1` through `camera4` in device order.
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
-An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.
+An explicit mode list overrides these defaults. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `mg400ctl`, and the preview service refuse to run. Invalid counts, paths, or modes stop installation before host changes.
 Only streams with width at most 1280 and height at most 720 are preloaded. Larger streams start on demand.
 Before several cameras use modes above `640x480`, install the [USB bandwidth patch](olares.en.md#usb-bandwidth-patch).
 After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `mg400ctl restart camera vision microscope orch`. If `vision` is not enabled, remove `vision` from the command: `restart` refuses optional services that are not enabled.
@@ -338,7 +337,7 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `mg400ctl assets` | Check external asset content, ownership, and permissions |
 | `mg400ctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
 | `mg400ctl status` | Show the status of the enabled services |
-| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `gateway`, `proxy`, or `all` |
+| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `proxy`, or `all` |
 | `mg400ctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
 | `mg400ctl restart web` | Restart services. Add `--force` to restart the furnace service |
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |

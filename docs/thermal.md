@@ -12,6 +12,7 @@ Lab Console 的 Cameras 工作区显示热像画面。Furnace + microscope 工�
 可选单元 `mg400-thermal.service` 以 `1000:1000` 运行 `thermal-cam`，使用 `UMask=0077`，不添加设备附加组。
 它读取 `/etc/mg400/mg400.env`，并在启动时打开 P1 摄像头。
 CLI 配置无效时以状态码 `2` 退出，不自动重启。
+`rois.toml` 无效时，服务以状态码 `1` 退出。systemd 每 `3` s 重启一次服务，直到文件改正。
 安装程序不启动此服务，单元也不随主机开机启动。
 
 把 `thermal` 加入 `MG400_OPTIONAL_SERVICES`，保留其他已选服务。
@@ -95,15 +96,16 @@ uv run thermal-cam --demo --bind 127.0.0.1 --port 8768
 uv run thermal-cam --help
 ```
 
-使用 `--no-connect` 时，服务器等待 `connect` 命令。在控制台中，用热像画面上的 **Connect** 发送该命令。
+使用 `--no-connect` 时，服务器等待 `connect` 命令。在控制台中，用热像画面上的 **Connect camera** 发送该命令。
 也可以通过 `python -m thermal_cam` 启动。
 只运行 1 个服务器进程和 1 个工作进程。
 采集相机数据时，不要启用开发模式的自动重载。
 
 ### 配置与访问
 
-服务监听 `127.0.0.1:8768`，基础路径为 `/`。`--bind`、`--port` 和 `--base-path` 覆盖这些固定默认值。
+服务监听 `127.0.0.1:8768`，基础路径为 `/`。`MG400_THERMAL_BIND`、`MG400_THERMAL_PORT` 和 `MG400_THERMAL_BASE_PATH` 设置这些默认值。`--bind`、`--port` 和 `--base-path` 覆盖它们。
 配置无效时，程序以状态码 2 退出，不打开监听端口或相机。
+区域文件在监听端口打开后读取。文件无效时，进程以状态码 1 退出。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 ## 控制台热像画面
@@ -113,13 +115,13 @@ uv run thermal-cam --help
 | 控件或显示 | 行为 |
 | --- | --- |
 | 实时画面 | 颜色及最低、最高、中心标记使用同一温度帧。画面不旋转。 |
-| 读数 | 最高、最低、中心和平均值使用完整的原生温度矩阵。 |
+| 读数 | 最高值和平均值使用完整的原生温度矩阵。最低值和中心值显示在色条和图像标记上。 |
 | 调色板与色标 | 修改颜色或自动／固定范围，不改变测量温度。 |
 | 单位 | 显示摄氏、华氏或开尔文。CSV 使用所选单位。API 温度始终使用摄氏度。 |
 | Freeze view | 保留显示帧供检查和导出，采集继续。 |
 | 导出 | 把当前帧保存为 CSV、原始 JSON 或 PNG。 |
 | Draw region | 在画面上拖出坩埚区域并显示边界。把边界写入 `rois.toml`，见下文。 |
-| Connect | 发送 `connect` 命令，启动采集。 |
+| Connect camera | 发送 `connect` 命令，启动采集。只在相机未连接时显示此按钮。 |
 | Calibrate shutter | 确认后发送 `shutter` 命令，请求传感器非均匀性校正（NUC）。 |
 
 Connect 和快门校正不要求热像仪控制权。
@@ -244,7 +246,7 @@ curl --fail http://127.0.0.1:8768/api/frame
 | 方法 | 路径 | 结果 |
 | --- | --- | --- |
 | `GET` | `/api/describe` | 契约版本、演示标志、区域定义和最大帧龄。`commands` 列出 `connect` 和 `shutter`，两者都标记 `any_client: true`。 |
-| `GET` | `/api/state` | 契约字段，以及相机状态、`frame_sequence` 和 `frame_age_s`。 |
+| `GET` | `/api/state` | 契约字段，以及相机状态（`state`、`source`、`error`、`device`、`frames`、`fps` 和 `camera_stats`）、`frame_sequence` 和 `frame_age_s`。`fps` 是平滑后的实测采集帧率。温度按帧给出，不做平滑。 |
 | `GET` | `/api/events?since=0` | 指定序号之后的活动，以及 `next` 游标。同一事件也写入服务日志。 |
 | `POST` | `/api/heartbeat` | 获取或续期仅作信息记录的租约。 |
 | `POST` | `/api/renew` | 仅续期调用者当前持有的租约。租约缺失、过期或由其他客户端持有时，返回 HTTP 409。 |
@@ -299,13 +301,13 @@ y1 = 80
 
 这里 x 是传感器列，y 是传感器行。
 矩形为 `temperatures_c[y0:y1, x0:x1]`：包含下界，不包含上界。
-旋转后的显示画面不改变这些坐标。
+显示画面使用传感器原生方向。
 例如，`x0=159, y0=119, x1=160, y1=120` 选择传感器的最后 1 个像素。
 
 服务构造时读取此文件 1 次，此时尚未启动相机。
 编辑文件后，重启服务。
 文件不存在时，具名区域映射为空，仍可按坐标查询。
-文件无效时，服务拒绝启动。服务不会改用示例区域。
+文件无效时，服务无法启动：命令行以状态码 1 退出，托管单元会反复重启。服务不会改用示例区域。
 嵌入式应用可以用 `CameraService(roi_path=...)` 选择其他路径。
 
 ### 区域读数

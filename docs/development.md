@@ -30,7 +30,7 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-`uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator`、`gateway`、`microscope` 和 `gateway-clients`。
+`uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator` 和 `microscope`。
 `vision-gpu` 和 `notebook` 不在默认组中。
 `stage` 组含位移台服务使用的 Flask、waitress、pySerial、NumPy 和 OpenCV。
 机器人服务和交互终端只用标准库，不依赖 `stage` 组。
@@ -105,7 +105,6 @@ rm -r "$sim_dir"
 | `src/furnace/` | [炉温与气体服务](furnace.md) |
 | `src/microscope/`、`src/toupcam_camera/` | [显微镜服务](microscope.md)和 Toupcam 摄像头 |
 | `src/orchestrator/` | [配方服务](orchestrator.md)和 `labctl`。`web/` 是[实验室控制台](dashboard.md) |
-| `src/gateway/` | [MCP 网关](agent-gateway.md) |
 | `recipes/` | TOML 配方 |
 | `config/trays/`、`config/proxy/`、`config/udev/` | 托盘几何、代理模板和 USB 访问规则模板 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
@@ -194,7 +193,7 @@ POST 请求必须满足以下条件：
 | 命令 | 其他字段 | 行为 |
 | --- | --- | --- |
 | `start_sync` | 无 | 连接机械臂并取得控制权 |
-| `stop_sync` | 无 | 停止机械臂并释放控制权，保留反馈直到下使能和停稳获确认 |
+| `stop_sync` | 无 | 停止机械臂并释放控制权，保留反馈直到下使能和停稳获确认。机械臂已下使能且空闲时，确认模式 4 即可 |
 | `enable` | 无 | 使能机械臂 |
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
@@ -259,13 +258,13 @@ POST 请求必须满足以下条件：
 每个命令的 `params` 用 JSON Schema 描述参数，不含 `action`。
 `stop` 和 `disable` 的 `any_client` 为 `true`。
 `keyboard` 的 `ui_only` 为 `true`，只供交互界面使用。
-`start_sync` 取得控制权，原心跳接口只续期。
+`start_sync` 取得控制权。`api/heartbeat` 只续期持有者的租约，不取得控制权。
 
 `api/stop` 的正文为 `{"wait_s": 0}`。
 `wait_s` 可省略，默认为 0，范围为 0–15 秒，必须是有限数值。
-接口沿用停止工作线程，等待时释放状态锁。
+接口在停止工作线程中执行停止，等待时释放状态锁。
 任何客户端都能停止，无须持有控制租约。
-重复请求不改变既有的停止去重规则。
+同类停止正在执行时，重复请求不启动新的停止。
 成功响应为 200 和 `{"stop": "confirmed", "state": {...}}`。
 
 | `stop` | 含义 |
@@ -290,8 +289,8 @@ POST 请求必须满足以下条件：
 `since` 默认为 0，必须是非负整数。
 响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
 服务保留最近 1000 个事件，重启后序号重新开始。
-事件记录既有的状态消息、锁定和解锁、停止未确认及其清除。
-事件还记录反馈模式和报警标志的变化、报警和键盘关闭原因，不增加日志行。
+事件记录状态消息、锁定和解锁、停止未确认及其清除。
+事件还记录反馈模式和报警标志的变化、报警和键盘关闭原因。每个事件的 `message` 即对应的服务日志行。
 
 ### Python 客户端
 
@@ -324,6 +323,8 @@ with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
 
 `run()` 接受 `ok`。对于 `stop`、`disable` 和 `stop_sync`，停止仍获确认时，也接受 `stopped`。
 服务锁定时，`run("start_sync")` 仍可成功，新持有者因此可以发送 `clear_alarm` 恢复。服务继续拒绝运动。
+`start_sync` 还等待 `feedback_fresh` 为真。
+其他动作完成时，若 `stop_unconfirmed` 为真，`run()` 抛出 `RobotClientError`。若 `locked` 为真，`run()` 也抛出该异常，`stop`、`disable` 和 `stop_sync` 除外。
 请求被拒绝、操作失败、停止取代运动或服务重启，都不能算作运动成功。
 每个客户端 ID 只能有 1 个运行中的程序。`run()` 期间，同一客户端的普通命令串行执行。
 其他线程仍可调用 `command("stop")`、`command("disable")`、`run("stop")` 或 `run("disable")`。
@@ -344,7 +345,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 客户端不会自动下使能。停止获确认后，发送 `disable` 即可完成断开，无须重启服务。
 可选参数 `keep_control=True` 跳过 `stop_sync`。退出后仍会停止心跳。
 直接调用 `close()` 也会停止线程，不续期或释放控制权。
-服务随后按原有租约超时规则停止机械臂并锁定控制。
+服务随后按租约超时规则停止机械臂并锁定控制。
 可选参数 `timeout=5` 配置连接和回复超时，单位为秒。
 
 ### WebSocket 接口
@@ -412,7 +413,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 ## 位移台服务接口
 
 位移台服务的 HTTP 接口使用 JSON，全部位于 `{prefix}contract/api/`。
-`{prefix}` 是位移台基础路径，固定为 `/`。
+`{prefix}` 是 `--base-path` 的值，未设置时取 `MG400_STAGE_BASE_PATH`，默认为 `/`。
 服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
 
 ### 位移台自动化契约
@@ -446,6 +447,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 每次长按必须使用新的 `hold_id`。
 `sampled_at` 取自 `api/state` 的同名字段，必须在服务时钟的最近 2 秒内。
 `release_hold` 可以重复发送。它先于同一 `hold_id` 的 `hold` 到达时，服务拒绝之后到达的 `hold`。
+契约还提供 `home`（`motor`）、`zero`（`motor`、`confirm: true`）、`awake`（`motor`、`seconds` 0–60）、`goto`（`motor`、`name`）和 `pose`（`name`），见 [位移台接口](stage-panel.md#接口)。
 服务拒绝缺少或多余的参数。
 
 控制租约默认有效 3 秒，长按仍须在 1 秒内单独续期。
@@ -455,7 +457,7 @@ labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
 可选的 `heartbeat_thread(renew_only=True)` 辅助线程使用严格续期，首次出错后停止。
 续期请求在租约过期或释放后到达时，返回 409，不会重新取得控制权。
 旧服务没有 `api/renew` 时，返回 404。客户端不会改为取得租约。
-原有 `heartbeat()` 和默认 `heartbeat_thread()` 保留取得或续期租约的行为。
+`heartbeat()` 和默认 `heartbeat_thread()` 取得或续期租约。
 续期失败后，先停止运动并核对服务状态，再明确取得控制权。
 租约过期时，服务请求停止所有电机。
 释放租约不停止运动。先等待完成或请求停止，再交还控制权。
@@ -585,7 +587,7 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 
 - 机械臂必须空闲，控制器模式为 4 或 5。命令不使能、也不移动机械臂。
 - 服务每条命令只发送一次，然后等待 30004 反馈中的 DO 实测位改变，时限 1 秒。
-- 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，停止结果包含 `blow_error`，停止本身不因此失败。
+- 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，`JointControl.stop()` 的结果包含 `blow_error`，停止本身不因此失败。机器人服务不报告 `blow_error`，下使能不记录该错误。
 - 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。未设置 `GRIP_DI` 时，`held` 为 `null`。
 - 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。

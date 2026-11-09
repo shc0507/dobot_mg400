@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted: 2026-11-09. Partly supersedes [0008](0008-agent-approvals.en.md) for shell agents on Olares.
+Accepted: 2026-11-09. Supersedes [0008](0008-agent-approvals.en.md).
 
 ## Context
 
@@ -15,7 +15,7 @@ The lab is a test stage. The owner needs agents to run and test every device. AD
 - Shell agents on Olares may operate devices with the `labctl` device groups. See the [agent CLI](../agent-cli.en.md).
 - The Lab Console holds the agent leases. An agent session is a console page `agent-<session>`, with a 10 minute idle timeout.
 - The services keep the AGENTS.md test-stage protections. The CLI adds no checks, settings or tokens.
-- The MCP gateway stays read-only. Its proposals keep the ADR 0008 approval policy.
+- There is no MCP gateway and no proposal flow.
 
 ## Consequences
 

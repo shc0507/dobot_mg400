@@ -42,7 +42,7 @@ A ticket is unblocked when every blocker is closed.
 A map is a GitHub issue with child issues as decision tickets.
 
 - Map: use the `wayfinder:map` label and the Notes / Decisions-so-far / Fog sections.
-- Child ticket: link it to the map. Use the applicable label: `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or `wayfinder:task`.
+- Child ticket: link it to the map. Use the `wayfinder:task` label.
 - Ready tickets: list the map's open children. Exclude assigned tickets and tickets with open blockers. Select the first remaining ticket in map order.
 - Native blocker check: `gh api repos/{owner}/{repo}/issues/<number> --jq .issue_dependencies_summary.blocked_by` returns the open blocker count. For fallback references, read each blocker's state.
 - Claim: run `gh issue edit <number> --add-assignee @me` as the session's first write.

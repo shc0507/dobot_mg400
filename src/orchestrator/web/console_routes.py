@@ -64,9 +64,6 @@ def console_blueprints(service, prefix):
         service.dashboard.refresh()
         console().refresh_events()
         report = service.dashboard.snapshot()
-        report["approvals"] = (
-            service.approvals.list() if service.settings.get("MG400_GATEWAY_TOKEN") else []
-        )
         report.update(
             console={"commit": console().commit, "demo": service.demo},
             control=console().control(page),

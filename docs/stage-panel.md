@@ -5,7 +5,7 @@
 [返回项目首页](../README.md)
 
 位移台服务控制三电机位移台，命令名为 `stage-panel`，systemd 服务名为 `mg400-stage-panel.service`。
-服务没有网页。操作员在 Lab Console 运动工作区（Motion）的位移台卡片 `Stage · 3 axes` 上操作。
+服务没有网页。操作员在 Lab Console 运动工作区（Motion）的位移台卡片 `Stage` 上操作。
 位移台的三个步进电机接在一块 Arduino 上，各由一块 A4988 驱动器驱动。
 服务通过 USB 串口向 Arduino 发送命令，波特率为 115200。
 服务使用 Flask、waitress 和 pySerial。
@@ -105,7 +105,7 @@ uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 -
 点击 `Take control` 取得位移台的控制租约。
 没有控制权时，连接、细分、步进移动、回零、设零、参考示教和命名位置不可用。
 `Stop stage` 和 `STOP ALL MOTION` 不需要控制权。
-其他客户端持有租约时，卡片显示 `Another client controls it`。
+其他客户端持有租约时，控制按钮显示 `In use by another client`；另一个控制台页面持有时显示 `In use by another page`。
 租约默认有效 3 秒，客户端必须续期。
 租约过期时，服务请求停止所有电机。
 释放租约只交还控制权，不会停止运动。
@@ -127,7 +127,7 @@ Arduino 未连接时，卡片显示 `Arduino not connected`、`Serial port` 列�
 
 串口列表显示运行服务的主机的串口。
 部署在 Olares 时，列表来自 Olares 宿主机，不是浏览器所在的电脑。
-插入 Arduino 后，重新加载控制台页面以更新列表。
+插入 Arduino 后，点击 `Refresh ports` 更新列表。
 设置 `MG400_STAGE_SERIAL` 时，列表只显示该设备，见 [配置项](#配置项)。
 未设置时，列表可能含有其他串口。
 在宿主机运行 `ls -l /dev/serial/by-id/`，按设备名找到 Arduino。
@@ -155,7 +155,7 @@ Arduino 返回三个电机的状态后，控制才解锁。
 
 ### 参考状态与回零
 
-硬件日常使用前，完成 H-07 和 H-18 的监督参考与校准检查。
+硬件日常使用前，在监督下于实机测量 `steps_per_mm`、行程边界和相机参考。
 软限位限制相对于已确认参考的行程。
 服务从 `/var/lib/mg400/stage/stage.toml` 读取实测校准，见[位移台校准](#位移台校准)。
 
@@ -170,7 +170,7 @@ Arduino 返回三个电机的状态后，控制才解锁。
 | `Homed` | 服务已确认回零和软限位。 |
 
 步进移动和长按运动不需要参考。只有已确认参考的轴才应用软限位。
-命名位置和毫米目标需要绝对位置，因此要求 `Zero confirmed` 或 `Homed`。
+命名位置（`goto`）和命名位姿（`pose`）需要绝对位置，因此要求 `Zero confirmed` 或 `Homed`。
 缺少已确认的参考时，服务拒绝这些移动，返回 `position unknown, home first`。
 复位、重新连接和切换细分后，必须重新确认参考和软限位。
 
@@ -203,7 +203,7 @@ Arduino 返回三个电机的状态后，控制才解锁。
 reference = {stream = "camera3", marker = 12, pixel = [99.5, 99.5], tolerance_px = 2}
 ```
 
-这些值仅说明格式。在 H-07 中测量实际像素位置和容差。
+这些值仅说明格式。在实机上测量实际像素位置和容差。
 `stream` 是 go2rtc 流名称，仅含字母、数字、下划线或连字符，不是 URL。
 `marker` 从 `DICT_4X4_1000` 中选择 1 个 ArUco 标记，ID 为 0 到 999。
 `pixel` 是图像中的标记中心，先 x 后 y。
@@ -256,6 +256,12 @@ reference = {stream = "camera3", marker = 12, pixel = [99.5, 99.5], tolerance_px
 其他电机不受此冷却影响。
 输入只属于当前页面，刷新后恢复默认值。
 
+### 长按运动
+
+按住 `Hold −` 或 `Hold +`，轴按其 `Pulses/s` 值移动。同一时间只有 1 个轴移动。
+`Keys` 开关启用键盘：I/K 移动 Bottom，J/L 移动 Top，U/O 移动 Insert（前一个键为负向）。
+松开按钮或按键、页面失去焦点或被隐藏、页面失去控制权时，电机停止。
+
 ### 停止
 
 `Stop stage` 停止所有电机的脉冲输出，移动和冷却期间都可用。
@@ -285,7 +291,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 | `POST contract/api/renew` | `{}` | 续期调用者持有的租约 |
 | `POST contract/api/release` | `{}` | 释放租约，不停止运动 |
 | `POST contract/api/command` | `action` 和参数 | 发送契约命令 |
-| `POST contract/api/stop` | `{"wait_s": 0}` | 停止所有电机，不需要租约 |
+| `POST contract/api/stop` | `{"wait_s": 0}` | 停止所有电机，不需要租约。`wait_s` 可选，0–15 秒。回复的 `stop` 为 `confirmed`、`pending` 或 `unconfirmed` |
 | `GET contract/api/ports` | 无 | 列出可连接的串口 |
 | `POST contract/api/connect` | `{"port": "..."}` | 连接列出的串口，要求租约 |
 | `GET contract/api/motors/<motor>/reference` | 无 | 读取相机图像和标记偏移 |
@@ -317,13 +323,16 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 ### 配置项
 
 服务监听 `127.0.0.1:8767`，基础路径为 `/`，契约位于其下的 `contract/`。
-参数 `--bind`、`--port` 和 `--base-path` 覆盖这些固定默认值。
+下表的环境变量和参数 `--bind`、`--port`、`--base-path` 可改变这些默认值。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 | 环境变量 | 参数 | 默认值 | 用途 |
 | --- | --- | --- | --- |
 | `MG400_STAGE_SERIAL` | `--serial` | 无 | Arduino 的串口路径 |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | 位移台实测校准和命名目标 |
+| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | 监听地址 |
+| `MG400_STAGE_PORT` | `--port` | `8767` | 监听端口，1–65535 |
+| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | 基础路径 |
 
 值为空的环境变量等同于未设置。
 
@@ -335,9 +344,9 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 
 ### 位移台校准
 
-使用 H-07 的测量值和行程限位。不要根据脉冲计数推测校准，也不要把演示几何值用于硬件。
+使用实测值和行程限位。不要根据脉冲计数推测校准，也不要把演示几何值用于硬件。
 文件包含 `motors` 表和可选的 `poses` 表，没有生产默认值。
-使用普通文件。读取器拒绝文件路径中的符号链接。
+使用不超过 1 MiB 的普通文件。参考示教拒绝路径中任何位置的符号链接，也拒绝有多个硬链接的文件。
 安装器创建 `/var/lib/mg400/stage`，所有者为 `1000:1000`，权限为 `0700`，供服务写入示教参考。
 父目录 `/var/lib/mg400` 仍由 root 拥有，权限为 `0750`。
 若 `/var/lib/mg400/stage.toml` 存在，安装器只打印移动提示，不移动或覆盖文件。
@@ -357,12 +366,13 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 `order` 按移动顺序列出 `bottom`、`top` 和 `insert`，各出现 1 次。
 `positions` 给出各轴限位范围内的毫米位置。
 `furnace` 位姿表示坩埚卸载开始时的插入位置。
-控制台不显示位姿按钮。位姿通过契约命令 `pose` 使用。
+卡片的 `Named poses` 区域为每个位姿显示 1 个按钮。这些按钮要求 3 个轴都有参考。
+位置和位姿名称须匹配 `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`。读取器拒绝未知键。每个边界和位置在全部 5 种细分模式下都必须能用有符号 32 位脉冲数表示。
 
 主机按 `steps_per_mm * current_microstep / microstep` 计算每毫米的脉冲数。
 边界向内取整，目标取最近的脉冲。取整后再次检查目标是否位于脉冲边界内。
 回零或手动设零后，主机发送软限位并等待确认，再启用移动。
-文件缺失或无效时，参考和移动控件不可用，`Stop stage` 仍可用。
+文件缺失或无效时，回零、设零、参考示教、命名位置和位姿不可用。步进和长按移动仍可用，但没有软限位。
 
 未显式指定配置时，演示模式使用独立的合成几何值，供离线练习。
 显式指定的 `--config` 或 `MG400_STAGE_CONFIG` 也适用于演示模式。
@@ -411,13 +421,13 @@ mg400ctl stop stage
 
 | 现象 | 处理 |
 | --- | --- |
-| 串口列表显示 `No serial port found`，或找不到 Arduino | 在宿主机运行 `ls -l /dev/serial/by-id/`。没有 Arduino 时，检查 USB 数据线和 Arduino 供电，再重新加载控制台页面。设置了 `MG400_STAGE_SERIAL` 时，确认它与 Arduino 的路径相同。 |
-| `That port is no longer available. Refresh the port list.` | 重新加载控制台页面，再选择串口。 |
-| `Cannot open <串口>: ...`，其中含 `Permission denied` | 服务用户不能读写该串口。确认设备属组为 `dialout`。本地运行时，把用户加入 `dialout` 组并重新登录。 |
-| `<串口> is in use by another program.` | 另一个程序占用该串口。关闭该程序，例如 Arduino IDE 的串口监视器或另一个 `stage-panel` 进程。 |
+| 串口列表显示 `No serial port found`，或找不到 Arduino | 在宿主机运行 `ls -l /dev/serial/by-id/`。没有 Arduino 时，检查 USB 数据线和 Arduino 供电，再点击 `Refresh ports`。设置了 `MG400_STAGE_SERIAL` 时，确认它与 Arduino 的路径相同。 |
+| `That port is no longer available. Refresh the port list.` | 点击 `Refresh ports`，再选择串口。 |
+| `Cannot open <port>: ...`，其中含 `Permission denied` | 服务用户不能读写该串口。确认设备属组为 `dialout`。本地运行时，把用户加入 `dialout` 组并重新登录。 |
+| `<port> is in use by another program.` | 另一个程序占用该串口。关闭该程序，例如 Arduino IDE 的串口监视器或另一个 `stage-panel` 进程。 |
 | `Arduino did not reply in time. Check the port and uploaded sketch.` | 确认所选串口是 Arduino，并已上传 `firmware/three-motor-demo`。出错后服务断开连接，修复后再点击 `Connect`。 |
-| `Another client controls it` | 另一个客户端持有租约。等它释放控制权，再点击 `Take control`。 |
-| `position unknown, home first` | 命名位置或毫米目标需要已确认的参考。按 [设零与相机参考](#设零与相机参考) 设零，或回零。 |
+| `In use by another client` | 另一个客户端持有租约。等它释放控制权，再点击 `Take control`。 |
+| `position unknown, home first` | 命名位置或位姿需要已确认的参考。按 [设零与相机参考](#设零与相机参考) 设零，或回零。 |
 | `Stage target is outside the configured soft limits.` | 减少步数，或改变方向。 |
 | 卡片显示 `Not running` 或 `Not reachable` | 在宿主机运行 `mg400ctl status`，确认 `stage` 已启动。 |
 | 服务日志显示 `Failed to load environment files` | 按 [主机部署](deploy.md#安装与更新) 运行安装器，创建 `/etc/mg400/mg400.env`，再启动服务。 |

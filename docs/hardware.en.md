@@ -43,11 +43,11 @@ On a host installed through [Host deployment](deploy.en.md), read the mode as ro
 mg400ctl mode
 ```
 
-`mg400ctl` runs the script as UID 1000 and shares the robot service's [connection lock](deploy.en.md#panel-connection-lock).
+`mg400ctl` runs the script as UID 1000. A mode read takes no connection lock. `--switch-to-tcp` acquires the [connection lock](deploy.en.md#panel-connection-lock) that the robot service also uses.
 The script uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
 For a direct run, the lock directory comes from `MG400_CONTROLLER_LOCK_DIR`. If it is unset, the directory is `/tmp/mg400-controller-locks`.
 The lock directory can belong to a user other than root, such as `/var/lib/mg400/locks`.
-In that case, the script refuses to acquire the connection lock as root and does not connect to the controller.
+In that case, `--switch-to-tcp` as root refuses to acquire the connection lock and does not connect to the controller.
 When the script runs as root without this variable, it can acquire a different lock that cannot exclude the robot service. Thus, run the script through `mg400ctl mode`.
 For a direct run, `--host` sets the controller address, `--timeout` sets the request timeout (default 5 seconds, maximum 30 seconds), and `--backup-dir` sets the backup directory (default `work/control-mode`).
 
@@ -56,7 +56,9 @@ Close other control clients and release the [panel connection lock](deploy.en.md
 Then run `mg400ctl mode --switch-to-tcp`.
 The script reads `MG400_ROBOT_HOST`. If it is unset, the script reads `config/robot.toml`.
 Switching accepts only an original mode of `tp` or `tcp`.
-It checks that the robot is disabled, programs are stopped, and no alarms are active.
+It checks that the robot is disabled, programs are stopped, no alarms are active, and `isCollision` and `isSafeSuspend` are 0.
+If the saved mode is already `tcp` and `RobotMode()` returns `4`, the script writes nothing and reports `changed: false`.
+If `RobotMode()` returns `-1`, the script writes the configuration again.
 The script first backs up the configuration, then writes `/settings/function/remoteControl.json` in the `project` share.
 It then sends the same configuration by POST to `/settings/function/remoteControl` on port `22000`.
 The target fields are `{"mode":"tcp","name":""}`. Other fields keep their original values.
@@ -210,7 +212,7 @@ Validate in this order:
 1. Check firmware, robot IP, power supply, and the I/O wiring of the vacuum source. Use read-only tests for pose and alarms.
 2. Set the tool TCP and payload. Use the teach pendant to record the actual start, pick, and place points and path.
 3. Validate individual actions gradually at low speed in a controlled workspace. Then validate a fixed pick-and-place sequence.
-4. Before connecting an agent through the [agent gateway](agent-gateway.en.md), add path reachability checks, collision checks, and device protection independent of the model.
+4. Before an agent controls the arm, add path reachability checks, collision checks, and device protection independent of the model.
 
 ## Optional ROS 2 integration
 

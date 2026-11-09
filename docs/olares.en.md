@@ -24,16 +24,12 @@ The Olares network interface connected directly to the robot uses `192.168.1.10/
 | Microscope | `8770` |
 | Vision | `8771` |
 | Lab Console and recipe service | `8772` |
-| MCP gateway | `8773` |
 | Lab Console control socket | `8774` |
 | Camera streams | `1985` |
 
 Add optional services such as `thermal` and `vision` to `MG400_OPTIONAL_SERVICES` before installation.
 See [Host deployment](deploy.en.md#service-registry) for the service list and the vision runtime.
 The owner installs and starts vision, then runs `mg400ctl gpu` to read GPU memory as UID `1000`.
-
-The optional [MCP gateway](agent-gateway.en.md) stays on loopback and has no proxy route.
-Remote MCP clients require a tunnel to loopback and the `MG400_GATEWAY_TOKEN` bearer credential.
 
 ## Single-port proxy
 
@@ -61,7 +57,7 @@ The proxy has only these routes:
 | `/camera/<view>.mp4`, `/camera/<view>.mjpeg`, `/camera/<view>.jpg`, `/camera/<view>.full.jpg`, `/camera/fps.json` | `127.0.0.1:1985`, after removing only `/camera` |
 
 `<view>` is `camera1` to `camera4`. For `/camera/<view>.mp4`, `<view>` can also be `microscope`.
-The proxy redirects the root path `/` to the Lab Console at `/lab/`. See the [Lab Console](dashboard.en.md#lab-console).
+The proxy redirects the root path `/` to the Lab Console at `/lab/` with `302`. It redirects `/camera` and `/lab` to the same path with a trailing slash with `308`. Other paths return `404`. See the [Lab Console](dashboard.en.md#lab-console).
 The camera routes forward only video streams and single frames. The Cameras workspace of the console uses them.
 The proxy does not forward the robot, stage, thermal, furnace, microscope, or vision services.
 The console, the command-line tools, and the recipe runner call them directly on `127.0.0.1`.
@@ -82,7 +78,7 @@ After an update, the installer can reuse the installed binary without `--caddy`.
 The proxy preserves the browser `Host`, including its port, and sets `X-Forwarded-Host` from that value.
 It replaces incoming forwarded address headers and removes `Forwarded` and `X-Real-IP`.
 Caddy forwards WebSocket `Upgrade` and `Connection` through its native reverse proxy, using HTTP/1.1 upstream.
-Upstream response-header and read timeouts are `60` s.
+The upstream connect timeout is `2` s. Upstream response-header and read timeouts are `60` s.
 The proxy adds no request retry. It disables its admin API, configuration persistence, and request logs.
 This HTTP entry uses the VPN connection. It does not enable public HTTPS.
 
@@ -171,19 +167,19 @@ Do this migration only once. Before migration, close all panel pages and interac
    grep -o '/dev/v4l/by-path/[^&]*' /opt/mg400-camera-preview/go2rtc.yaml | paste -sd, | sed 's/^/MG400_CAMERA_DEVICES=/' >> /etc/mg400/mg400.env
    ```
 
-4. Run the installer and reuse the existing go2rtc:
+4. Set the proxy address as described in [Single-port proxy](#single-port-proxy). The installer writes this address into the `Caddyfile` only during installation.
+5. Run the installer. Reuse the existing go2rtc and give the Caddy 2 program:
 
    ```sh
-   /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc
+   /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc --caddy /path/to/caddy
    ```
 
-5. Copy the mode switch backups:
+6. Copy the mode switch backups:
 
    ```sh
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
-6. Set the proxy address as described in [Single-port proxy](#single-port-proxy).
 7. Remove the old service override files and boot autostart links, then start the services.
    Step 1 copied these files as a backup:
 
@@ -273,7 +269,7 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 ```
 
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
-An explicit list overrides these defaults, including the side stream.
+An explicit list overrides these defaults, including the side stream. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `mg400ctl`, and the preview service refuse to run.
 The following 4-camera configuration uses the port order in the table above.
 All cameras use `1280x720@30`. The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
 The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`, so the shared USB 2 link holds only 1 such stream.
@@ -292,8 +288,8 @@ The microscope service reads its side stream only during `select_objective`.
 The preview relay does not serve a side stream above `1280x720`.
 While `camera3` runs at `3840x2160@30`, the shared USB 2 link truncates `camera2` frames.
 A demand-started stream can send a truncated first frame. The microscope reader drops incomplete frames.
-After the last viewer leaves a large stream, the preview service releases its upstream reader between body reads.
-Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
+After the last viewer leaves a large stream, the preview service closes its upstream reader when the next upstream data chunk arrives.
+This reader has no read timeout. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
 Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate. A stream wider than 640 gets at most 4 Mbit/s, or 3 Mbit/s with NVENC. Other streams get 2 Mbit/s. This route accepts only the query `codec=h265`.
@@ -301,11 +297,10 @@ go2rtc reads the `1296x968` microscope preview from `http://127.0.0.1:8770/api/c
 go2rtc reads the microscope preview only while an H.264 viewer is open. If the microscope service has no frame, `/camera/microscope.mp4` returns 502, and the console uses the relayed MJPEG.
 `/camera/fps.json` returns, for each MJPEG stream, the frames per second that each viewer got in the last 2 s. A stream with no viewer has `null`. The console reads these values for the camera status.
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.
-ffmpeg does not probe the input frame rate. It sends each source frame once and 1 keyframe each 1 s. Thus a new view shows its first frame in about 1 s, also for the microscope at a low frame rate. `-fps_mode` needs ffmpeg 5.1 or later.
+ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). It sends each source frame once and 1 keyframe each 1 s. Thus a new view shows its first frame in about 1 s, also for the microscope at a low frame rate. `-fps_mode` needs ffmpeg 5.1 or later.
 The installer runs ffmpeg to test `h264_nvenc`. If the test passes, the H.264 previews use the NVIDIA GPU encoder. If not, they use `libx264`. After you change the GPU or its driver, run the installer again.
 With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream wider than 640 and the microscope get at most 2.5 Mbit/s. Other streams get 2 Mbit/s. A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264.
 The H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). go2rtc 1.9.14 does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
-ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). Without an estimate, ffmpeg assumes 90000 fps, and `hevc_nvenc` sends only about 0.1 Mbit/s.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
 Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture.
 The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
@@ -323,7 +318,7 @@ mg400ctl start camera
 ```
 
 Use the Cameras workspace of the Lab Console to see the views.
-If the `proxy` service is enabled, the stream links are `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`. `mg400ctl camera-url` prints them.
+The stream links use the proxy address: `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`. `mg400ctl camera-url` prints them.
 Closing the terminal does not stop the preview service.
 Stopping the preview service also stops the camera capture service.
 If startup fails, run `mg400ctl logs camera`.

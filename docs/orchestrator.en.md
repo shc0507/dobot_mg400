@@ -416,7 +416,6 @@ See [guarded slot evidence](vision.en.md#guarded-slot-evidence) for the observat
 For hardware use, an operator must validate the settings, clearance, reach, and suction convention before the supervised procedure.
 After an enabled robot receives `stop_sync` or its client context exits, feedback and the motion lock remain until explicit disable.
 Prepare subsequent runs through that explicit operator workflow. The recipe does not recover or retry automatically.
-Hardware acceptance requires 3 consecutive supervised transfers with vision confirmation and results recorded on the task issue.
 
 Run the offline acceptance cases without opening device or network ports:
 

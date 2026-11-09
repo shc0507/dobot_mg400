@@ -37,8 +37,6 @@ ORCHESTRATOR = [
     "test_deploy_mg400ctl.py",
     "test_console*.py",
     "test_dashboard*.py",
-    "test_gateway*.py",
-    "test_approvals.py",
 ]
 MICROSCOPE = ["test_microscope_*.py"]
 DEPLOY = ["test_deploy_*.py", "test_systemd_units.py", "test_udev_rules.py", "test_console.py"]
@@ -63,7 +61,6 @@ AREAS = [
     ("src/orchestrator/*", ORCHESTRATOR),
     ("recipes/*", ORCHESTRATOR),
     ("deploy/mg400ctl", ORCHESTRATOR),
-    ("src/gateway/*", ["test_gateway*.py", "test_approvals.py"]),
     ("src/microscope/*", MICROSCOPE),
     ("firmware/microscope-axes/*", MICROSCOPE),
     ("src/toupcam_camera/*", ["test_toupcam_camera.py", *MICROSCOPE]),

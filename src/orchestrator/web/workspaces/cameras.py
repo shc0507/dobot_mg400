@@ -15,10 +15,12 @@ frame rate, and never a backlog. The reader closes the upstream connection when
 the last viewer leaves.
 """
 
+import base64
 import json
 import math
 import re
 import secrets
+import struct
 import threading
 import time
 import urllib.error
@@ -41,7 +43,8 @@ MJPEG = ("microscope",)
 MAX_MICROSCOPE_STREAMS = 2
 STALE_S = 2.0
 RECENT_S = 5.0
-THERMAL_CACHE_S = 0.2
+# The tile polls every 40 ms. Viewers within 40 ms share 1 upstream read.
+THERMAL_CACHE_S = 0.04
 DETECTION_CACHE_S = 1.0
 # The camera preview reports the MJPEG frames per second that each viewer of camera1 to
 # camera4 gets. H.264 tiles count their frames in the browser.
@@ -460,7 +463,7 @@ def _finite(value):
 
 
 def _thermal(payload, full):
-    """Keep the display fields; raw and IR only for the raw export."""
+    """Keep the display fields and compact temperatures. Celsius, raw and IR only for export."""
     temperatures = payload.get("temperatures_c")
     if (
         not isinstance(temperatures, list)
@@ -472,11 +475,19 @@ def _thermal(payload, full):
         key: payload.get(key)
         for key in ("sequence", "timestamp", "source", "width", "height", "stats")
     }
-    result["temperatures_c"] = temperatures
     if full:
+        result["temperatures_c"] = temperatures
         result["raw"] = payload.get("raw")
         result["ir"] = payload.get("ir")
         result["raw_unit"] = payload.get("raw_unit")
+        return result
+    # The display gets the sensor units, 1/64 kelvin, as little-endian uint16 rows in base64.
+    # Celsius = value / 64 - 273.15. This is the sensor resolution and 1/7 of the JSON size.
+    try:
+        values = [min(65535, max(0, round((t + 273.15) * 64))) for row in temperatures for t in row]
+    except TypeError:
+        raise SourceError("The thermal frame has an unexpected shape.") from None
+    result["temperatures_u16"] = base64.b64encode(struct.pack("<19200H", *values)).decode("ascii")
     return result
 
 

@@ -16,7 +16,7 @@
   const VIEWS = ["camera1", "camera2", "camera3", "camera4", "thermal", "microscope"];
   const MJPEG = new Set(["camera1", "camera2", "camera3", "camera4", "microscope"]);
   const STATUS_MS = 1000;
-  const THERMAL_MS = 250;
+  const THERMAL_MS = 40;
   const DETECT_MS = 1000;
   const STALE_S = 2;
   const W = 160, H = 120;
@@ -195,6 +195,14 @@
       }
     }
     return out;
+  }
+
+  /** Celsius rows from the compact frame: base64 little-endian uint16 in 1/64 kelvin. */
+  function thermalTemperatures(encoded) {
+    const bytes = Uint8Array.from(root.atob(encoded), char => char.charCodeAt(0));
+    if (bytes.length !== W * H * 2) throw new Error("The thermal frame has an unexpected size.");
+    const view = new DataView(bytes.buffer);
+    return Array.from({ length: H }, (_, y) => Array.from({ length: W }, (_, x) => view.getUint16((y * W + x) * 2, true) / 64 - 273.15));
   }
 
   function thermalCsv(frame, unit) {
@@ -458,6 +466,7 @@
       engine.thermalBusy = true;
       try {
         const frame = await request("thermal/frame");
+        if (typeof frame?.temperatures_u16 === "string") frame.temperatures_c = thermalTemperatures(frame.temperatures_u16);
         // Count each new sensor frame once, also when a poll returns the same frame again.
         const id = frame?.sequence ?? frame?.timestamp ?? null;
         if (id === null || id !== engine.thermalId) engine.thermalFrames++;
@@ -1178,6 +1187,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase, frameRate, meter, measure, current, modeLine, rowFor },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalTemperatures, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase, frameRate, meter, measure, current, modeLine, rowFor },
   };
 });

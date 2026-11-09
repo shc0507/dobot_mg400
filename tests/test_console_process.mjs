@@ -407,7 +407,7 @@ test("nudges are hidden when the service has no nudge window", async () => {
   assert.deepEqual(logic.logic.nudgeSteps(SCOPE_DESCRIBE), [-10, -1, 1, 10]);
 });
 
-test("motion waits for the focus zero, and Set focus zero is sent once after a confirmation", async () => {
+test("motion waits for the focus zero, and Set focus zero goes through the relay once without a dialog", async () => {
   const status = statusBody();
   status.microscope.focus_zero_known = false;
   status.microscope.focus_position_pulses = null;
@@ -416,11 +416,9 @@ test("motion waits for the focus zero, and Set focus zero is sent once after a c
   assert.equal(role(root, "jog-up").disabled, true);
   assert.equal(role(root, "zero").disabled, false);
   role(root, "zero").click();
-  assert.equal(calls.filter(call => call[1] === "focus-zero").length, 0);
-  role(root, "confirm-zero").click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(calls.filter(call => call[1] === "focus-zero"), [["request", "focus-zero", { confirmed: true }]]);
-  assert.equal(calls.filter(call => call[0] === "relay").length, 0);
+  assert.deepEqual(calls.filter(call => call[2] === "set_focus_zero"), [["relay", "microscope", "set_focus_zero", {}]]);
+  assert.equal(calls.filter(call => call[1] === "focus-zero").length, 0);
 });
 
 test("Set focus zero needs microscope control", async () => {

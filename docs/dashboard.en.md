@@ -123,10 +123,10 @@ Every device command goes through the console relay. Use **Take control** for th
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
 - The microscope card shows 1 large preview. The **Microscope** and **Side camera** switch in the preview selects the Toupcam view or the camera3 side view. Only the shown view streams. The preview uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
 - The objective buttons, nudges, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
-- The objective buttons and the focus controls are below the preview: the focus bar, **−** and **+** with the jog pulses between them, **Autofocus** (local), **Full autofocus** and **Set focus zero…**.
+- The objective buttons and the focus controls are below the preview: the focus bar, **−** and **+** with the jog pulses between them, **Autofocus** (local), **Full autofocus** and **Set focus zero**.
 - **Turret**, **Recording** and **Sequence** are closed groups. Open a group to use its controls.
 - The **−10**, **−1**, **+1** and **+10** buttons in **Turret** turn the turret in full steps at the current focus. They do not raise the focus to clearance first. The text beside them shows the turret offset and its limit. A button is unavailable when the offset is unknown, or when the nudge would move the offset outside the limit.
-- **Set focus zero…** needs microscope control and a confirmation in the page. The console sends it 1 time. The focus gears can slip. Re-zero at the 50x focus before each use. Agents, recipes and the runner cannot set the focus zero.
+- **Set focus zero** needs microscope control and no confirmation. The console sends it 1 time. The focus gears can slip. Re-zero at the 50x focus before each use.
 - **Save snapshot** in **Recording** saves 1 PNG. Leave **Snapshot path** empty for the service default, or enter a relative path without `.` or `..` parts.
 - **Start recording** and **Record next furnace sequence** send the recording commands with **Run name**, **Mode**, **Interval s** and **Output fps**. **Live** uses no interval. A failed recording shows its error.
 - **Turn stabilization on** and **Turn stabilization off** switch the stabilization.

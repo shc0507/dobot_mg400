@@ -687,6 +687,31 @@ def test_mp4_route_refuses_an_upstream_without_an_mse_type(preview, content_type
     assert headers["Cache-Control"] == "no-store"
 
 
+def test_mp4_route_relays_h265_when_the_viewer_asks(preview):
+    module, upstream = preview
+    hevc = 'video/mp4; codecs="hvc1.1.6.L153.B0"'
+    upstream.side_effect = lambda *_args, **_kwargs: VideoUpstream(b"hevc-video", hevc)
+    status, headers, received = request(module, "camera1.mp4?codec=h265")
+    assert (status, received, headers["Content-Type"]) == (200, b"hevc-video", hevc)
+    upstream.assert_called_once_with(
+        "http://127.0.0.1:1984/api/stream.mp4?src=camera1_h265", timeout=5
+    )
+
+
+def test_mp4_route_falls_back_to_h264_without_an_h265_preview(preview):
+    module, upstream = preview
+    missing = urllib.error.HTTPError("http://127.0.0.1:1984/api/stream.mp4", 404, "", {}, None)
+    upstream.side_effect = [missing, VideoUpstream(b"avc-video")]
+    status, headers, received = request(module, "microscope.mp4?codec=h265")
+    assert (status, received) == (200, b"avc-video")
+    assert headers["Content-Type"] == 'video/mp4; codecs="avc1.640029"'
+    assert [call.args[0] for call in upstream.call_args_list] == [
+        "http://127.0.0.1:1984/api/stream.mp4?src=microscope_h265",
+        "http://127.0.0.1:1984/api/stream.mp4?src=microscope_h264",
+    ]
+    assert request(module, "camera1.mp4?codec=av1")[0] == 404
+
+
 def test_mp4_route_returns_502_when_go2rtc_cannot_encode(preview):
     module, upstream = preview
     upstream.side_effect = urllib.error.HTTPError(
@@ -777,7 +802,8 @@ def test_full_still_streams_one_camera_alone_and_restores_the_previews(still, ca
         )
         assert f'  camera{other}: "{source}"' in lines
         assert f'  camera{other}_h264: ""' in lines
-    assert len(lines) == 7
+        assert f'  camera{other}_h265: ""' in lines
+    assert len(lines) == 10
 
 
 def test_full_still_failure_still_restores_the_previews(still, monkeypatch):

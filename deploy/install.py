@@ -330,17 +330,18 @@ def camera_capture_sizes(value, devices, side_stream=""):
     return [mode[:2] for mode in configured.modes]
 
 
-# go2rtc 1.9.14 ffmpeg templates for the H.264 previews, changed so that a view shows its
-# first frame without delay:
-# - -fpsprobesize 0: ffmpeg does not wait for 20 frames to guess the input rate. At the
-#   3 fps of a long microscope exposure that wait was about 7 s.
+# go2rtc 1.9.14 ffmpeg templates for the previews, changed so that a view shows its first
+# frame without delay:
+# - -fpsprobesize 2: ffmpeg guesses the input rate from 2 frames, not 20. At the 3 fps of
+#   a long microscope exposure 20 frames took about 7 s. With 0 frames ffmpeg guesses
+#   90000 fps, and hevc_nvenc then gives each frame almost no bits.
 # - -fps_mode passthrough: each source frame goes out once, with its own timestamp. A
 #   guessed rate does not add or drop frames. x264 budgets its bitrate at 30 fps.
 # - A keyframe each second: a viewer that joins a running encoder waits at most 1 s.
 #   NVENC makes each forced keyframe an IDR frame, so a viewer can start on it.
 FFMPEG_RTSP = (
     '  rtsp: "-fflags nobuffer -flags low_delay -timeout 5000000 -user_agent go2rtc/ffmpeg'
-    ' -rtsp_flags prefer_tcp -fpsprobesize 0 -i {input}"\n'
+    ' -rtsp_flags prefer_tcp -fpsprobesize 2 -i {input}"\n'
 )
 H264_X264 = (
     '  h264: "-c:v libx264 -g 50 -profile:v high -level:v 4.1 -preset:v superfast'
@@ -352,6 +353,17 @@ H264_NVENC = (
     '  h264: "-c:v h264_nvenc -g 50 -bf 0 -profile:v high -level:v 4.1 -preset:v p4'
     " -tune:v ll -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough"
     ' -force_key_frames expr:gte(t,n_forced)"\n'
+)
+
+
+# With NVENC, a browser that plays HEVC gets H.265: the same quality at 2.5 Mbit/s as H.264
+# at 3 Mbit/s. go2rtc 1.9.14 does not unpack RTP aggregation packets (go2rtc issue 2633),
+# so a small frame that ffmpeg sends together with its SEI reaches the browser as 1
+# unknown NAL unit and the decoder stops. Without SEI, ffmpeg sends each frame alone.
+H265_NVENC = (
+    '  h265: "-c:v hevc_nvenc -g 50 -bf 0 -profile:v main -preset:v p4 -tune:v ll'
+    " -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough"
+    ' -force_key_frames expr:gte(t,n_forced) -bsf:v filter_units=remove_types=39|40"\n'
 )
 
 
@@ -374,7 +386,8 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
     """Return per-camera MJPEG capture settings and on-demand H.264 previews.
 
     With nvenc, the previews use the GPU encoder. It needs 3 Mbit/s for the quality
-    that libx264 gives at 4 Mbit/s at 1280x720.
+    that libx264 gives at 4 Mbit/s at 1280x720. Each H.264 preview then also has an
+    H.265 preview, <name>_h265, at 2.5 Mbit/s.
 
     The API and RTSP listen on loopback only. ffmpeg reads and returns the H.264
     previews through RTSP. The microscope preview comes from the microscope service.
@@ -409,6 +422,12 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
         for name, (width, _, _) in zip(configured.streams, configured.modes)
         if name in configured.preloaded
     )
+    if nvenc:
+        streams += "".join(
+            f"  {name}_h265: ffmpeg:{name}#video=h265#bitrate={'2500k' if width > 640 else '2M'}\n"
+            for name, (width, _, _) in zip(configured.streams, configured.modes)
+            if name in configured.preloaded
+        )
     # go2rtc reads the microscope MJPEG preview (1296x968) only for an H.264 viewer.
     # With its 3 Mbit/s cap, the microscope and 4 previews at 1280x720 need about
     # 19 Mbit/s of the 22 Mbit/s VPN link.
@@ -416,13 +435,15 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
         "  microscope: http://127.0.0.1:8770/api/camera/microscope/mjpeg\n"
         "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"
     )
+    if nvenc:
+        streams += "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n"
     preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"
     return (
         "api:\n  listen: 127.0.0.1:1984\n"
         "rtsp:\n  listen: 127.0.0.1:8554\n"
         'webrtc:\n  listen: ""\n'
-        f"ffmpeg:\n{FFMPEG_RTSP}{H264_NVENC if nvenc else H264_X264}"
+        f"ffmpeg:\n{FFMPEG_RTSP}{H264_NVENC + H265_NVENC if nvenc else H264_X264}"
         f"{preload}"
         f"streams:\n{streams}"
     )
@@ -720,7 +741,11 @@ def install(args, host, run, chown, out):
     # The H.264 previews use the NVIDIA encoder when ffmpeg can open it, else libx264.
     nvenc = bool(devices) and "ffmpeg" not in tools and nvenc_available(run)
     if devices and "ffmpeg" not in tools:
-        step(f"camera previews encode H.264 with {'h264_nvenc' if nvenc else 'libx264'}")
+        step(
+            "camera previews encode H.265 and H.264 with NVENC"
+            if nvenc
+            else "camera previews encode H.264 with libx264"
+        )
 
     # Vision requires the released model even without the optional bulk-fetch flag.
     required_assets = {"vision-weights"} if "vision" in selected else set()

@@ -133,7 +133,7 @@ def still_overlay(stream):
             else ""
         )
         lines.append(f'  {name}: "{source}"\n')
-    lines += [f'  {name}_h264: ""\n' for name in CAMERAS.preloaded]
+    lines += [f'  {name}_{codec}: ""\n' for name in CAMERAS.preloaded for codec in ("h264", "h265")]
     return "streams:\n" + "".join(lines)
 
 
@@ -337,8 +337,8 @@ class Preview(BaseHTTPRequestHandler):
         if route in {source + ".mjpeg" for source in FEEDS} and fps:
             self.stream(FEEDS[route.removesuffix(".mjpeg")], fps)
             return
-        if route in VIDEOS and not query:
-            self.video(VIDEOS[route])
+        if route in VIDEOS and query in ("", "codec=h265"):
+            self.video(VIDEOS[route], hevc=bool(query))
             return
         if route == "fps.json" and not query:
             # The console shows these rates on the MJPEG tiles. H.264 tiles count their own.
@@ -409,13 +409,21 @@ class Preview(BaseHTTPRequestHandler):
         finally:
             feed.release()
 
-    def video(self, source):
-        """Relay the H.264 preview of 1 camera unchanged. go2rtc names the codec for MSE."""
-        try:
-            upstream = urllib.request.urlopen(
-                "http://127.0.0.1:1984/api/stream.mp4?src=" + source + "_h264", timeout=5
-            )
-        except (OSError, HTTPException):
+    def video(self, source, hevc=False):
+        """Relay the H.265 or H.264 preview of 1 camera unchanged. go2rtc names the codec for MSE.
+
+        A host without NVENC has no H.265 preview. The viewer then gets H.264.
+        """
+        upstream = None
+        for codec in ("h265", "h264") if hevc else ("h264",):
+            try:
+                upstream = urllib.request.urlopen(
+                    f"http://127.0.0.1:1984/api/stream.mp4?src={source}_{codec}", timeout=5
+                )
+                break
+            except (OSError, HTTPException):
+                continue
+        if upstream is None:
             self.send_error(502)
             return
         with upstream:

@@ -116,6 +116,9 @@ test("USB cameras and the microscope play H.264 from the proxy; the thermal view
   assert.equal(logic.videoUrl("camera4"), "/camera/camera4.mp4");
   assert.equal(logic.videoUrl("microscope"), "/camera/microscope.mp4");
   assert.equal(logic.videoUrl("thermal"), null);
+  assert.equal(logic.videoUrl("camera2", true), "/camera/camera2.mp4?codec=h265");
+  assert.equal(logic.videoUrl("microscope", true), "/camera/microscope.mp4?codec=h265");
+  assert.equal(logic.videoUrl("thermal", true), null);
 });
 
 test("a playing H.264 microscope tile is live; the relay state applies to its MJPEG fallback", () => {

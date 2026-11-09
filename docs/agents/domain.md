@@ -8,13 +8,13 @@ Use a single-context layout: `GLOSSARY.md` at the repository root and architectu
 2. Read the ADRs relevant to the area of work.
 
 If these files are absent, proceed silently. Do not suggest creating them in advance.
-The `domain-modeling` skill creates them when the team resolves terms or decisions.
+Create them when the team resolves terms or decisions.
 
 ## Vocabulary
 
 Use glossary terms in issue titles, proposals, hypotheses, and test names. Do not use synonyms that the glossary excludes.
 If a concept has no glossary entry, check whether the term matches existing project language.
-Record a real gap for `domain-modeling` to resolve.
+Record a real gap to resolve.
 
 ## Decision conflicts
 

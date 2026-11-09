@@ -5,7 +5,7 @@
 [Return to the project home page](../README.en.md)
 
 The stage service controls the three-motor stage. Its command is `stage-panel`, and its systemd service is `mg400-stage-panel.service`.
-The service has no web page. The operator uses the `Stage · 3 axes` card in the Motion workspace of the Lab Console.
+The service has no web page. The operator uses the `Stage` card in the Motion workspace of the Lab Console.
 The stage's three stepper motors connect to one Arduino. Each motor uses an A4988 driver.
 The service sends commands to the Arduino through a USB serial port at 115200 baud.
 The service uses Flask, waitress, and pySerial.
@@ -105,7 +105,7 @@ Demo mode does not open a serial port. Its simulated motion times exclude accele
 Click `Take control` to get the stage control lease.
 Without control, connection, stepping, step moves, homing, zero, reference teaching, and named positions are unavailable.
 `Stop stage` and `STOP ALL MOTION` do not need control.
-While another client holds the lease, the card shows `Another client controls it`.
+While another client holds the lease, the control button shows `In use by another client`, or `In use by another page` when another console page holds it.
 The lease lasts 3 seconds by default. The client must renew it.
 On expiry, the service requests that all motors stop.
 Releasing the lease only returns control ownership. It does not stop motion.
@@ -127,7 +127,7 @@ Use this sequence:
 
 The serial-port list shows ports on the host that runs the service.
 For an Olares deployment, the list comes from the Olares host, not the computer with the browser.
-After you connect the Arduino, reload the console page to update the list.
+After you connect the Arduino, click `Refresh ports` to update the list.
 When `MG400_STAGE_SERIAL` is set, the list shows only that device. See [Configuration](#configuration).
 Otherwise, the list may contain other serial ports.
 Run `ls -l /dev/serial/by-id/` on the host. Find the Arduino by its device name.
@@ -155,7 +155,7 @@ After that, confirm each axis reference again.
 
 ### Reference state and homing
 
-Before routine hardware use, complete the supervised reference and calibration checks in H-07 and H-18.
+Before routine hardware use, measure `steps_per_mm`, the travel bounds and the camera reference on the hardware, under supervision.
 Soft limits restrict travel from the confirmed reference.
 The service reads measured calibration from `/var/lib/mg400/stage/stage.toml`. See [Stage calibration](#stage-calibration).
 
@@ -170,7 +170,7 @@ Each axis shows its reference state:
 | `Homed` | The service confirmed homing and soft limits. |
 
 Step moves and press-and-hold motion need no reference. Soft limits apply only to an axis with a confirmed reference.
-Named positions and millimetre targets require `Zero confirmed` or `Homed`, because they need an absolute position.
+Named positions (`goto`) and named poses (`pose`) require `Zero confirmed` or `Homed`, because they need an absolute position.
 Without a confirmed reference, the service refuses them with `position unknown, home first`.
 Reset, reconnection, and a microstep change require fresh reference and soft-limit confirmation.
 
@@ -203,7 +203,7 @@ Each axis can have this optional entry in its calibration table:
 reference = {stream = "camera3", marker = 12, pixel = [99.5, 99.5], tolerance_px = 2}
 ```
 
-These values illustrate the format. Measure the real pixel and tolerance during H-07.
+These values illustrate the format. Measure the real pixel and tolerance on the hardware.
 `stream` is a go2rtc stream name with letters, digits, underscores, or hyphens. It is not a URL.
 `marker` selects 1 ArUco marker from `DICT_4X4_1000`, with an ID from 0 to 999.
 `pixel` is the marker centre in image coordinates, with x first and y second.
@@ -256,6 +256,12 @@ The service also enforces the cooldown. Multiple pages or rapid repeated clicks 
 This cooldown does not affect other motors.
 The inputs belong only to the current page. Refreshing the page restores their defaults.
 
+### Press-and-hold
+
+Hold `Hold −` or `Hold +` to move an axis at its `Pulses/s` value. Only 1 axis moves at a time.
+The `Keys` switch maps the keyboard: I/K move Bottom, J/L move Top, U/O move Insert (the first key is minus).
+The motor stops when you release the button or key, when the page loses focus or is hidden, and when the page loses control.
+
 ### Stop
 
 `Stop stage` stops pulse output to all motors. It is available during motion and cooldown.
@@ -285,7 +291,7 @@ POST requests must have a JSON body and `X-MG400-Client`.
 | `POST contract/api/renew` | `{}` | Renew the lease that the caller holds |
 | `POST contract/api/release` | `{}` | Release the lease without stopping motion |
 | `POST contract/api/command` | `action` and its parameters | Send a contract command |
-| `POST contract/api/stop` | `{"wait_s": 0}` | Stop all motors. No lease is necessary |
+| `POST contract/api/stop` | `{"wait_s": 0}` | Stop all motors. No lease is necessary. `wait_s` is optional, 0–15 s. The reply `stop` is `confirmed`, `pending` or `unconfirmed` |
 | `GET contract/api/ports` | None | List the serial ports that the service can connect |
 | `POST contract/api/connect` | `{"port": "..."}` | Connect a listed serial port. Requires the lease |
 | `GET contract/api/motors/<motor>/reference` | None | Read the camera image and marker offset |
@@ -317,13 +323,16 @@ Reference teaching updates the stage calibration file. The service sends output 
 ### Configuration
 
 The service listens on `127.0.0.1:8767` with the base path `/`. The contract is at `contract/` below it.
-The arguments `--bind`, `--port`, and `--base-path` override these fixed defaults.
+The environment variables below and the arguments `--bind`, `--port`, and `--base-path` change these defaults.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 | Environment variable | Argument | Default | Purpose |
 | --- | --- | --- | --- |
 | `MG400_STAGE_SERIAL` | `--serial` | None | Arduino serial-port path |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | Measured stage calibration and named targets |
+| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | Listen address |
+| `MG400_STAGE_PORT` | `--port` | `8767` | Listen port, 1–65535 |
+| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | Base path |
 
 An empty environment variable has the same effect as an unset variable.
 
@@ -335,9 +344,9 @@ Demo mode ignores this setting.
 
 ### Stage calibration
 
-Use the measurements and travel limits from H-07. Do not infer calibration from the pulse count or copy demo geometry to hardware.
+Use measured values and travel limits. Do not infer calibration from the pulse count or copy demo geometry to hardware.
 The file contains a `motors` table and an optional `poses` table. It has no production defaults.
-Use a regular file. The reader refuses symbolic links in the file path.
+Use a regular file of at most 1 MiB. Reference teaching refuses a symbolic link anywhere in the path and a file with more than 1 hard link.
 The installer creates `/var/lib/mg400/stage` with owner `1000:1000` and mode `0700` so the service can teach references.
 The parent `/var/lib/mg400` remains root-owned with mode `0750`.
 If `/var/lib/mg400/stage.toml` exists, installation prints a move instruction without moving or overwriting the file.
@@ -357,12 +366,13 @@ Each `poses.<name>` table contains `order` and `positions`.
 `order` lists `bottom`, `top`, and `insert` exactly 1 time, in the required movement order.
 `positions` maps each axis to a position in millimetres within its bounds.
 The `furnace` pose identifies the inserted position from which crucible unloading starts.
-The console shows no pose buttons. Use poses through the contract command `pose`.
+The `Named poses` block on the card shows 1 button for each pose. The buttons need a reference on all 3 axes.
+Position and pose names match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. The reader refuses unknown keys. Every bound and position must fit in a signed 32-bit pulse count in all 5 microstep modes.
 
 The host computes pulses per millimetre as `steps_per_mm * current_microstep / microstep`.
 It rounds boundaries inward and targets to the nearest pulse. It checks the rounded target against the pulse boundaries again.
 After homing or manual zero, the host sends the soft limits and waits for confirmation before it enables motion.
-An absent or invalid file disables the reference and motion controls. `Stop stage` remains available.
+An absent or invalid file disables homing, set zero, reference teaching, named positions and poses. Step and hold moves still work, without soft limits.
 
 Without an explicit configuration override, demo mode uses separate synthetic geometry for offline practice.
 An explicit `--config` or `MG400_STAGE_CONFIG` also applies in demo mode.
@@ -411,13 +421,13 @@ The following errors appear on the stage card or in console notices. Errors that
 
 | Symptom | Action |
 | --- | --- |
-| The serial-port list shows `No serial port found`, or the Arduino is missing | Run `ls -l /dev/serial/by-id/` on the host. If the Arduino is absent, inspect its USB data cable and power, then reload the console page. If `MG400_STAGE_SERIAL` is set, confirm that it matches the Arduino path. |
-| `That port is no longer available. Refresh the port list.` | Reload the console page. Select the serial port again. |
-| `Cannot open <串口>: ...`, containing `Permission denied` | The service user cannot read or write the serial port. Confirm that the device group is `dialout`. For local operation, add the user to `dialout` and log in again. |
-| `<串口> is in use by another program.` | Another program has the serial port open. Close that program, for example, the Arduino IDE serial monitor or another `stage-panel` process. |
+| The serial-port list shows `No serial port found`, or the Arduino is missing | Run `ls -l /dev/serial/by-id/` on the host. If the Arduino is absent, inspect its USB data cable and power, then click `Refresh ports`. If `MG400_STAGE_SERIAL` is set, confirm that it matches the Arduino path. |
+| `That port is no longer available. Refresh the port list.` | Click `Refresh ports`. Select the serial port again. |
+| `Cannot open <port>: ...`, containing `Permission denied` | The service user cannot read or write the serial port. Confirm that the device group is `dialout`. For local operation, add the user to `dialout` and log in again. |
+| `<port> is in use by another program.` | Another program has the serial port open. Close that program, for example, the Arduino IDE serial monitor or another `stage-panel` process. |
 | `Arduino did not reply in time. Check the port and uploaded sketch.` | Confirm that the selected port is the Arduino and that `firmware/three-motor-demo` is uploaded. The service disconnects after this error. After fixing the problem, click `Connect` again. |
-| `Another client controls it` | Another client holds the lease. Wait until it releases control, then click `Take control`. |
-| `position unknown, home first` | A named position or millimetre target needs a confirmed reference. Set zero as [Manual zero and camera reference](#manual-zero-and-camera-reference) specifies, or home the axis. |
+| `In use by another client` | Another client holds the lease. Wait until it releases control, then click `Take control`. |
+| `position unknown, home first` | A named position or pose needs a confirmed reference. Set zero as [Manual zero and camera reference](#manual-zero-and-camera-reference) specifies, or home the axis. |
 | `Stage target is outside the configured soft limits.` | Decrease the steps, or change the direction. |
 | The card shows `Not running` or `Not reachable` | Run `mg400ctl status` on the host. Confirm that `stage` is running. |
 | The service journal shows `Failed to load environment files` | Run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies to create `/etc/mg400/mg400.env`. Start the service again. |

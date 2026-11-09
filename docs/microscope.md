@@ -17,7 +17,7 @@ Lab Console 的 Furnace + microscope 工作区通过服务提供日常控制。�
 uv sync --locked
 ```
 
-默认的 `microscope` 依赖组包含 NumPy、opencv-python-headless、pyserial、Flask 和 waitress。
+默认的 `microscope` 依赖组包含 NumPy、opencv-python-headless、pyserial、Flask、waitress 和 minimalmodbus。
 导入包不会打开相机或串口。
 Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 真实 Toupcam 采集必须具备匹配的 Linux 厂商库和设备权限。
@@ -33,6 +33,7 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 单元以 `1000:1000` 运行，具有 `dialout` 和 `video` 访问权限。
 它设置 `LD_LIBRARY_PATH=/usr/local/lib/mg400`，监听 `127.0.0.1:8770`。
 它从 `http://127.0.0.1:8769/` 读取炉控元数据。
+`MG400_MICROSCOPE_BIND`、`MG400_MICROSCOPE_PORT`、`MG400_MICROSCOPE_BASE_PATH`（默认 `/`）和 `MG400_MICROSCOPE_FURNACE_URL` 可改变这些默认值。
 
 使用前，停止冲突的相机和电机程序。
 先用 `mg400ctl start camera` 启动已配置的侧视相机服务，再运行 `mg400ctl start microscope`。
@@ -67,6 +68,8 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 | `MG400_MICROSCOPE_HOME_SWITCH` | 必填硬件事实：有已配置的调焦归零开关时为 `1`，没有时为 `0`。 |
 | `MG400_MICROSCOPE_NUDGE_STEPS` | `objective_nudge` 的实测转盘范围，单位为整步，取 `0` 到 `20`。未配置或为 `0` 时，服务拒绝所有微调。 |
 
+物镜 ID：`0` = 5x，`1` = 10x，`2` = 20x，`3` = 50x。
+
 真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
 通用环境示例的物理调焦参数为空，转盘微调范围为 `0`。
 当前显微镜使用以下 `H-06` 配置：
@@ -91,7 +94,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 | `GET /api/events` | 服务事件历史。 |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | 取得、续期或释放普通控制权。 |
 | `POST /api/command` | 提交动作和参数。`202` 响应返回命令 ID，不代表命令完成。 |
-| `POST /api/stop` | 任何已认证客户端都能停止，无须持有控制租约。读取其 `confirmed`、`pending` 或 `unconfirmed` 结果。 |
+| `POST /api/stop` | 任何带 `X-MG400-Client` 请求头的客户端都能停止，无须持有控制租约。读取其 `confirmed`、`pending` 或 `unconfirmed` 结果。 |
 
 命令动作包括带 `id` 的 `select_objective`、带 `steps` 的 `objective_nudge`、带 `mode`（`full` 或 `local`）的 `autofocus`、带相对 `steps` 的 `focus_move`、`home_focus`，以及带可选 `path` 的 `snapshot`。
 执行下一动作前，读取 `last_command` 中对应命令 ID 的结果。
@@ -151,6 +154,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 检查失败或超时后，服务停止并禁用两轴，零点随之失效。
 
 显式停止、租约到期、固件复位或调焦参考状态变化都会使服务零点失效。
+命令被拒绝或失败时，服务也停止两个电机并使零点失效，例如调焦移动越过限位。只有无法识别物镜的命令保留零点。
 命令或停止结果不确定时，服务锁存故障，锁定普通命令。
 停止仍可用，但成功停止不会清除该故障。
 排除原因后，通过受控的服务重启重新连接，并重新建立零点。
@@ -183,7 +187,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 3. 选择 **Set focus zero**。
 
 控制台用自己的租约发送 1 次零点命令，不显示确认框。
-卡片显示提醒：对焦齿轮可能打滑，每次使用前在 50x 焦点处重新设零。
+**Set focus zero** 按钮的提示文字给出提醒：对焦齿轮可能打滑，每次使用前在 50x 焦点处重新设零。
 控制台没有调焦归零操作，因为实验室显微镜没有归零开关。
 
 | 预览路由 | 结果 |
@@ -211,9 +215,9 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 | 动作 | 参数与结果 |
 | --- | --- |
 | `start_recording` | 提供新的 `recording_id`，恰好包含 32 个小写十六进制字符。可选字段为 `run_name`、`mode`、`capture_interval_seconds` 和 `output_fps`。 |
-| `stop_recording` | 提供同一客户端正在录制的 `recording_id`。完成条件包括采集关闭、摘要视频编译和已配置的归档复制。 |
+| `stop_recording` | 提供同一客户端正在录制的 `recording_id`。完成条件包括采集关闭、摘要视频编译，以及设置 `MG400_FURNACE_ARCHIVE_DIR` 时的归档复制。 |
 | `record_with_sequence` | 用 `enabled: true`、新的 `recording_id` 和可选录像字段预备单次录制。用 `enabled: false` 和该 ID 取消。 |
-| `set_stabilization` | 用布尔值 `enabled` 改变相机防抖状态。 |
+| `set_stabilization` | 用布尔值 `enabled` 改变相机防抖状态。服务启动时防抖为开启。 |
 
 控制台提供 **Start recording** 和 **Stop recording**。**Record next furnace sequence** 预备序列录制，**Cancel sequence recording** 取消预备。
 **Turn stabilization on** 和 **Turn stabilization off** 切换相机防抖。
@@ -222,6 +226,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 `time_lapse` 默认每隔 30 秒采集一帧，输出帧率为每秒 1 帧。
 `live` 默认输出帧率为每秒 30 帧，没有采集间隔。
 显式 `capture_interval_seconds` 范围为 0.1 至 3600，显式 `output_fps` 范围为 0.1 至 120。
+`live` 拒绝 `capture_interval_seconds`。可用磁盘空间低于 2 GB 时，`live` 录像停止。录像超过 128 个分段时失败。
 
 读取 `recording`、`recording_sequence`、`last_result` 和匹配的 `last_command` 回执。
 报告成功前，检查录像 ID、命令 ID、动作、客户端和预期结果。
@@ -248,6 +253,8 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 缺少 `ffmpeg` 或 `ffprobe` 时，录像失败，错误信息写明缺少的程序。
 服务日志记录每次录像失败的原因，用 `mg400ctl logs microscope` 查看。
 收尾后，录像保存在 `/var/lib/mg400/recordings`。
+每个录像是目录 `/var/lib/mg400/recordings/<recording_id>/`，含 `run.json`、60 分钟分段 `video_0001.mp4`、`video_0002.mp4` 等、`video.timestamps.csv` 和 `<recording_id>_shortened_3_min.mp4`。
+设置 `MG400_FURNACE_ARCHIVE_DIR` 时，收尾把该目录复制到 `<archive>/<recording_id>/`，不替换已有副本。
 
 Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。电机停止指令不等待编码器。
 可选参数 `wait_s` 在同一个 `0..15` 秒限时内观察电机和录像的清理结果。
@@ -287,8 +294,8 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 | 目录 | 内容 |
 | --- | --- |
-| `/var/lib/mg400/calibration/microscope` | 校准 CSV、参考图像和侧视相机校准采集。 |
-| `/var/lib/mg400/runs` | 自动调焦曲线、物镜切换日志和图像分析输出。 |
+| `/var/lib/mg400/calibration/microscope`（`MG400_MICROSCOPE_CALIBRATION_DIR`） | 校准 CSV、参考图像和侧视相机校准采集。 |
+| `/var/lib/mg400/runs`（`MG400_ORCH_RUNS_DIR`） | 自动调焦曲线、物镜切换日志和图像分析输出。 |
 
 校准路径使用 `microscope.paths.calibration_path()`，运行路径使用 `microscope.paths.run_path()`。
 相对路径按对应根目录解析。
@@ -296,7 +303,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 根目录必须为绝对路径，不得包含父目录跳转。
 解析路径不会创建文件。
 
-把 `objective_views/`、`current_objective.txt`、`objective_reference.png` 和 `side_camera_images/` 放在校准根目录内。
+把 `objective_views/`、`objective_reference.png` 和 `side_camera_images/` 放在校准根目录内。
 定位器从 `side_camera_images/` 读取 `microscope.aruco_locator.REFERENCES` 列出的文件。
 图像尺寸和预期标记 ID 必须匹配。
 改变相机位置或标记后，重新校准。
@@ -312,7 +319,6 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 显微镜侧视相机为固定集线器端口 `12.1.4` 上的 AC410，拍摄物镜转盘。
 当前视频流顺序使用 `MG400_MICROSCOPE_SIDE_STREAM=camera3`。
-执行 `H-21` 前，把此相机放回转盘上的原位置。
 服务与预览通过 go2rtc 采集该 V4L2 设备。
 `select_objective` 运行期间，`USBCamera` 保持 1 个到 `http://127.0.0.1:1984/api/stream.mjpeg` 的连接。
 侧视读取线程只在此命令运行期间工作。预览转发服务不转发大于 `1280x720` 的侧视流。
@@ -325,6 +331,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 | `MG400_CAMERA_DEVICES` | 按相机预览安装程序顺序排列的稳定设备路径。 |
 | `MG400_MICROSCOPE_SIDE_STREAM` | 侧视相机对应的已配置 go2rtc 流。默认不选择任何流。 |
 | `MG400_CAMERA_MODES` | 可选的逗号分隔 `WIDTHxHEIGHT@FPS` 列表，每个已配置设备对应 1 个值。 |
+| `MG400_CAMERA_CAPTURE_SIZES` | 可选的旧式 `WIDTHxHEIGHT` 列表，帧率为 30 fps。不要与 `MG400_CAMERA_MODES` 同时设置。 |
 
 启用采集前，确认侧视相机设备路径对应的流。
 模式列表和尺寸列表只能配置其一，同时配置时安装程序拒绝执行。
@@ -552,7 +559,7 @@ sudo mg400ctl calibration import microscope DIR
 目标已存在时拒绝复制，不会覆盖。
 目标目录归 `1000:1000` 所有，权限为 `0750`。文件归 `1000:1000` 所有，权限为 `0640`。
 后续复制失败时，已完成的副本保留。再次尝试前，先检查这些副本。
-导入器不打开设备。操作员必须在 Olares 导入，并在迁移议题中报告结果。
+导入器不打开设备。在 Olares 上运行导入。
 
 ## 其他命令行入口
 
@@ -567,6 +574,7 @@ uv run python -m microscope.aruco_locator --help
 必填的 `--half-range` 表示起点两侧各自允许的行程，单位为脉冲。
 操作员必须根据真实硬件限位确定此值。
 `--port` 覆盖串口配置，`--output` 选择运行根目录内的文件。
+`--camera-index` 选择 Toupcam 相机，默认为 `0`。此命令不读取 `MG400_TOUPCAM_SERIAL` 和 `MG400_TOUPCAM_INDEX`。
 
 定位器处理已保存的 `--image` 或 `--folder` 内的 PNG 图像，不访问电机。
 它必须具备校准参考图像。

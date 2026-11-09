@@ -5,8 +5,8 @@ This is the contract for the workspace tasks DSH-04 (Cameras), DSH-05 (Motion) a
 ## 1. Entry and access
 
 - The orchestrator service serves the console at `<base>/`. On Olares, `<base>` is `/lab`, and the proxy redirects `/` to `/lab/`.
-- The DSH-01 dashboard moved to `<base>/dashboard/`. The passport pages stay at `<base>/chip/…`.
-- The page, `<base>/console-static/<name>.js|css`, the dashboard shells and every API route are public. The console checks no token, Host or Origin. The VPN is the access boundary.
+- The passport pages stay at `<base>/chip/…`.
+- The page, `<base>/console-static/<name>.js|css`, the passport pages and every API route are public. The console checks no token or Host. The control socket refuses a WebSocket whose `Origin` differs from `Host`. The VPN is the access boundary.
 - The console sends no CORS headers.
 - Every POST needs `Content-Type: application/json`, a JSON object body and `X-MG400-Client: <page id>`. The shell makes a random page id per page load (`console-page-<hex>`). Console control is bound to this page id.
 
@@ -35,7 +35,7 @@ The DSH-01 routes stay: `GET <base>/api/dashboard/state`, `POST <base>/api/dashb
 
 ### 3.1 State
 
-`GET state` returns the DSH-01 dashboard snapshot (`services`, `cameras`, `orchestrator`, `run`, `operations`, `approvals`) and these keys:
+`GET state` returns the DSH-01 dashboard snapshot (`services`, `cameras`, `orchestrator`, `run`, `operations`) and these keys:
 
 ```json
 {
@@ -171,7 +171,7 @@ root.append(node);
 
 ### 9.2 Server routes
 
-camera1 to camera4 load directly from the proxy at `/camera/<view>.mjpeg` and `/camera/<view>.jpg`. The camera preview sends each viewer only the newest frame.
+camera1 to camera4 and the microscope play `/camera/<view>.mp4` from the proxy. camera1 to camera4 fall back to `/camera/<view>.mjpeg?fps=3` (`fps=6` when large) and take snapshots from `/camera/<view>.full.jpg`. The camera preview sends each viewer only the newest frame.
 
 The console routes start with `<base>/api/console/ws/cameras/`.
 
@@ -179,7 +179,7 @@ The console routes start with `<base>/api/console/ws/cameras/`.
 | --- | --- |
 | `GET status` | `{"views": [{"id", "configured", "url"?, "state"?, "age_s"?, "streams"?, "error"?, "mode"}], "limits"}`. camera1 to camera4 carry `url`; relayed views carry the relay state. |
 | `GET stream/microscope?fps=…` | The microscope MJPEG stream (`multipart/x-mixed-replace`). `fps` is an integer from 1 to 30; the default is 10. `503` at the stream bound. `502` if the source fails. |
-| `GET snapshot/microscope` | One JPEG as an attachment. |
+| `GET snapshot/microscope` | One PNG as an attachment. |
 | `GET thermal/frame` | The thermal frame: `sequence`, `timestamp`, `stats`, `temperatures_c` ([y][x] in °C) and `age_s`. `?full=1` adds `raw`, `ir` and `raw_unit`. |
 | `GET thermal/regions` | `{"regions": {"<name>": {"x0", "y0", "x1", "y1"}}}` in sensor pixels. |
 | `GET detections/4` | `{"available", "image_size", "detections": [{"label", "confidence", "xyxy"}]}` from the vision service. |

@@ -9,8 +9,6 @@ select your board and port, then upload.
 
 The target is Arduino Uno R3 with FQBN `arduino:avr:uno` and core `arduino:avr`.
 Only an operator uploads firmware during supervised hardware validation.
-Before upload, install the STG-02 host update, which accepts the appended status fields below.
-Older hosts that require `spr` at the end of each motor line cannot parse this firmware.
 
 ## Offline build and checks
 
@@ -25,13 +23,12 @@ python firmware/three-motor-demo/tests/run.py --library /path/to/AccelStepper
 
 The native checks require Python and `g++`. They link the installed AccelStepper source with fake GPIO, clock, and serial interfaces.
 They also reject conflicting pins and check that a disabled minimum input refuses homing.
-Use a workspace-local Arduino CLI configuration for its data, downloads, and user directories.
 
 ## Lab Console control
 
 The stage service (`stage_controller`) drives this sketch. Operators use the stage
 card in the Motion workspace of the Lab Console: Connect, Stepping, Step − / Step +,
-Home, Set zero, Check reference, named positions and Stop stage. See the
+Hold − / Hold +, Home, Set zero, Check reference, named positions and Stop stage. See the
 [stage guide](../../docs/stage-panel.en.md). Close Serial Monitor before you connect.
 
 If the host has more than one serial device, set `MG400_STAGE_SERIAL` to the
@@ -91,10 +88,10 @@ D0/D1 are reserved for serial communication. Compilation rejects overlapping ass
 D0/D1, and out-of-range numbers on boards that define `NUM_DIGITAL_PINS`. Check
 your board's pinout for any additional pin restrictions.
 
-Stop all motors and disconnect the web app before uploading the revised sketch.
-Reconnect after upload: the **Bottom**, **Top**, and **Insert** controls and serial
-commands now use the new pairs. The assignments remain in the firmware across
-restarts. The Python app needs no pin configuration or restart. Uploading resets
+Upload the revised sketch as the [stage guide](../../docs/stage-panel.en.md#before-use) specifies.
+After upload, the **Bottom**, **Top**, and **Insert** controls and serial
+commands use the new pairs. The assignments remain in the firmware across
+restarts. The stage service needs no pin configuration. Uploading resets
 commanded positions to zero.
 
 STEP and DIR must be **separate signals**, not electrically shorted together or
@@ -188,7 +185,7 @@ The defaults limit the complete operation to 10000 pulses or 120000 ms. The firs
 `HomeBackoffSteps` is 200. Homing also fails on conflicting limits, a blocked backoff, an unreleased minimum, or position overflow.
 
 Acceptance replies immediately with `OK: bottom home` for the bottom motor. Check `status` for completion.
-Failures produce `ERROR: home failed: <reason>` on a complete serial line, including failures after the acknowledgement.
+An immediate refusal produces `ERROR: home failed: <reason>`. A failure after the acknowledgement, including `cancelled`, produces `ERROR: home failed: <motor> <reason>`. Each is a complete serial line.
 `stop` and `stop all` cancel homing. A failed or cancelled home leaves `homed=0` and does not retry.
 Other motors and serial handling continue during homing.
 

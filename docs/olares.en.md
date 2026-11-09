@@ -24,16 +24,12 @@ The Olares network interface connected directly to the robot uses `192.168.1.10/
 | Microscope | `8770` |
 | Vision | `8771` |
 | Lab Console and recipe service | `8772` |
-| MCP gateway | `8773` |
 | Lab Console control socket | `8774` |
 | Camera streams | `1985` |
 
 Add optional services such as `thermal` and `vision` to `MG400_OPTIONAL_SERVICES` before installation.
 See [Host deployment](deploy.en.md#service-registry) for the service list and the vision runtime.
 The owner installs and starts vision, then runs `mg400ctl gpu` to read GPU memory as UID `1000`.
-
-The optional [MCP gateway](agent-gateway.en.md) stays on loopback and has no proxy route.
-Remote MCP clients require a tunnel to loopback and the `MG400_GATEWAY_TOKEN` bearer credential.
 
 ## Single-port proxy
 

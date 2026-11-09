@@ -20,7 +20,7 @@
 | `src/labkit` | 共用访问检查、租约、事件、服务契约和 HTTP 客户端 |
 | `src/vision`, `src/thermal_cam`, `src/furnace` | 定位、QR 读取、热成像和炉子及气体控制 |
 | `src/toupcam_camera`, `src/cameras`, `src/microscope` | 共用 Toupcam 支持、UVC 摄像头和显微镜控制 |
-| `src/orchestrator`, `src/gateway` | 配方、运行记录、实验室控制台和智能体访问 |
+| `src/orchestrator` | 配方、运行记录和实验室控制台 |
 | `apps/control_panel`, `apps/layout-studio`, `recipes`, `config`, `deploy` | 机器人服务、离线布局编辑器、TOML 配方、配置和安装 |
 | `firmware/three-motor-demo`, `firmware/microscope-axes` | 位移台和显微镜固件 |
 | `docs`, `docs/adr`, `docs/agents`, `tests` | 人员指南、决定、智能体流程和离线测试 |
@@ -29,7 +29,7 @@
 - 机械臂核心、机械臂面板及 `labkit.auth`、`labkit.lease`、`labkit.events`、`labkit.client` 只用标准库。
 - 从固定的源提交迁入已批准文件及其测试。保留行为，使用软件包导入，并将主机路径与设备访问迁至 Linux。
 - 按规定用无界面接口替代桌面 GUI 功能。Windows 二进制文件、模型权重、虚拟环境和硬件脚本不得进入测试。
-- 导入模块时不得打开设备、启动线程或写文件。每个服务均提供 `--demo`。
+- 导入模块时不得打开设备、启动线程或写文件。除机器人服务（使用模拟器）和摄像头预览外，每个服务均提供 `--demo`。
 - 在 `Source:` 提交尾注中记录源仓库、提交和路径。用 `Co-authored-by:` 尾注署名源作者。每个迁移 PR 列出未迁入文件及原因。
 
 首个里程碑是视觉引导的芯片托盘槽位间转移。YOLO 定位芯片并确认转移结果。运行记录将芯片 ID 与槽位关联。

@@ -114,7 +114,7 @@ The active step uses its numerical index. Inserting or removing an earlier row c
 If a shorter table removes the active index, the service selects the new final step.
 Editing fields alone does not change outputs. Save or start the sequence to send those edits.
 The console shows the active step and the remaining hold time.
-Changing the active target, ramp, or gas plan reapplies that step and resets its hold timer.
+Changing the active target or ramp reapplies that step and resets its hold timer. Changing only its gas plan applies the new gas at once and keeps the hold timer.
 Changing only its hold duration or later steps preserves the current output settings.
 Accepted edits are persisted, including future gas plans.
 
@@ -161,6 +161,7 @@ An interrupted command or uncertain outcome requires inspection and acknowledgem
 When the furnace is locked, the card shows **Acknowledge fault…**. It requires furnace control and a confirmation in the page.
 Select and confirm it only after you check the device and make sure that the controller shows STOP.
 `POST /api/furnace/acknowledge` takes `{}` and accepts only the current lease holder, with a contract or a manual lease. When no client holds control, it first acquires manual control for the caller. The runner never calls this route.
+The service refuses acknowledgement with HTTP 409 until startup recovery completes. It also refuses with HTTP 409 unless the furnace is connected and reads STOP.
 A storage failure locks runtime control and still attempts independent output stops.
 If all persistent writes and invalidation fail, the service cannot guarantee a durable fault record.
 

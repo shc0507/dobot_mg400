@@ -90,7 +90,7 @@ client.run("vacuum", operation="suck")
 机械臂仍使能时，`stop_sync` 停止机械臂并释放控制权，但保留反馈连接和控制锁。
 此时客户端再次发送 `start_sync`，会取消待完成的断开请求。然后发送 `disable`，再发送 `stop_sync`。
 机械臂已下使能时，`stop_sync` 确认下使能，然后断开。
-`RobotClient` 的 `with` 块结束时，若客户端持有控制权，会发送 `stop_sync`。
+`RobotClient` 的 `with` 块结束时，若客户端持有控制权，会发送 `stop_sync`。客户端以 `keep_control=True` 创建时，不发送。
 停止获确认后，显式发送 `disable` 即可完成断开，无须重启服务。
 
 同一时刻只有一个客户端持有控制权。
@@ -108,7 +108,8 @@ client.run("vacuum", operation="suck")
 已确认停止后，可下使能并重新使能。
 未知命令结果不会因重新取得控制权而解除锁定。
 若断开时无法确认停止，服务停止常规坐标查询。
-此时保留反馈、连接锁和警告，其他客户端不能接管。核实机械臂状态，再点击 `Recover`。
+此时保留反馈、连接锁和警告，其他程序不能连接机械臂。
+3 秒租约过期后，其他客户端可以取得控制权，但点击 `Recover` 前不能移动机械臂。核实机械臂状态，再点击 `Recover`。
 不要删除锁文件来解除占用。
 文件删除后，2 个进程可能各自持锁。
 
@@ -122,10 +123,12 @@ client.run("vacuum", operation="suck")
 按以下顺序恢复：
 
 1. 按报警的处理方法排除原因。
-2. 在机械臂卡片上点击 `Clear alarm`。
+2. 在机械臂卡片上点击 `Recover`。
 3. 等待服务提示报警已清除，并确认下使能和静止。
 
-`Clear alarm`（`clear_alarm`）只发送 `ClearError()`，不发送 `Continue()`。
+服务锁定时，按钮显示 `Recover`，否则显示 `Clear alarm`。报警会锁定服务，所以报警期间按钮显示 `Recover`。
+两种按钮都发送 `clear_alarm`。
+`clear_alarm` 只发送 `ClearError()`，不发送 `Continue()`。
 报警前暂停的运动不会恢复。
 报警清除后，服务在新的控制实例上下使能，并确认机械臂静止。
 两项都确认后，控制解锁。
@@ -136,7 +139,7 @@ client.run("vacuum", operation="suck")
 点动退回后，按 [从服务器切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) 核对控制器模式。
 
 碰撞检测触发时，报警列表显示 `-2`（Collision detected）。
-报警在控制台外清除时（例如用机械臂上的 Collision Resume 键），核实机械臂状态，再点击 `Clear alarm`。
+报警在控制台外清除时（例如用机械臂上的 Collision Resume 键），核实机械臂状态，再点击按钮（`Recover` 或 `Clear alarm`）。
 服务在新的控制实例上下使能并确认静止，确认后解锁控制。
 
 无报警时发生的停止未确认显示警告，按钮显示 `Recover`。
@@ -208,6 +211,7 @@ MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 apps/control_panel/server
 服务默认监听 `127.0.0.1:8766`。
 `MG400_PANEL_BIND` 和 `MG400_PANEL_PORT` 覆盖默认值，`--bind` 和 `--port` 再覆盖环境变量。
 空值使用默认值。端口不是 1–65535 的整数时，服务拒绝启动。
+Lab Console 和配方服务通过 `MG400_ORCH_ROBOT_URL`（默认 `http://127.0.0.1:8766/`）连接本服务。修改地址或端口时，同时修改该设置，见 [配方编排器](orchestrator.md#服务配置)。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 路径前缀用 `--base-path` 设置，例如 `--base-path /mg400-panel/`，所有接口都使用此前缀。

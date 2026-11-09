@@ -12,6 +12,7 @@ The Cameras workspace of the Lab Console shows the thermal view. The Furnace + m
 The optional `mg400-thermal.service` runs `thermal-cam` as `1000:1000`, with `UMask=0077` and no supplementary device group.
 It reads `/etc/mg400/mg400.env` and opens the P1 camera at startup.
 Invalid CLI settings exit with status `2`, which does not trigger an automatic restart.
+An invalid `rois.toml` exits with status `1`. Then systemd restarts the service every `3` s until you correct the file.
 The installer does not start this service, and the unit has no boot-time activation.
 
 Add `thermal` to `MG400_OPTIONAL_SERVICES`, preserving other selected services.
@@ -95,15 +96,16 @@ uv run thermal-cam --demo --bind 127.0.0.1 --port 8768
 uv run thermal-cam --help
 ```
 
-With `--no-connect`, the server waits for the `connect` command. In the console, use **Connect** on the thermal view to send it.
+With `--no-connect`, the server waits for the `connect` command. In the console, use **Connect camera** on the thermal view to send it.
 Use `python -m thermal_cam` as an alternative entrypoint.
 Run 1 server process and 1 worker.
 Do not use automatic development reload while acquiring camera data.
 
 ### Settings and access
 
-The service listens on `127.0.0.1:8768` with the base path `/`. `--bind`, `--port`, and `--base-path` override these fixed defaults.
+The service listens on `127.0.0.1:8768` with the base path `/`. `MG400_THERMAL_BIND`, `MG400_THERMAL_PORT`, and `MG400_THERMAL_BASE_PATH` set these defaults. `--bind`, `--port`, and `--base-path` override them.
 Invalid settings exit with status 2 before opening a listener or camera.
+An invalid region file is read after the listener opens. Then the process exits with status 1.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 ## Console thermal view
@@ -113,13 +115,13 @@ In the Cameras workspace of the Lab Console, select the thermal view.
 | Control or display | Behavior |
 | --- | --- |
 | Live view | Colors and min/max/center markers use the same temperature frame. The view does not rotate. |
-| Readings | Maximum, minimum, center, and mean use the full native temperature matrix. |
+| Readings | Max and Mean use the full native temperature matrix. Min and center show on the color bar and the image markers. |
 | Palette and scale | Change colors or automatic/fixed limits without changing measured temperatures. |
 | Units | Display Celsius, Fahrenheit, or Kelvin. CSV uses the selected unit. API temperatures remain Celsius. |
 | Freeze view | Keep the displayed frame for inspection and export. Acquisition continues. |
 | Exports | Save the current frame as CSV, raw JSON, or PNG. |
 | Draw region | Drag a crucible region on the view and show its bounds. Put the bounds in `rois.toml`, as described below. |
-| Connect | Send the `connect` command to start acquisition. |
+| Connect camera | Send the `connect` command to start acquisition. The button shows only while the camera is not connected. |
 | Calibrate shutter | After confirmation, send the `shutter` command to request sensor nonuniformity correction (NUC). |
 
 Connect and shutter correction do not require thermal control.
@@ -244,7 +246,7 @@ It adds these routes beside `/api/frame`:
 | Method | Path | Result |
 | --- | --- | --- |
 | `GET` | `/api/describe` | Contract version, demo flag, region definitions, and the maximum frame age. `commands` lists `connect` and `shutter`, both with `any_client: true`. |
-| `GET` | `/api/state` | Contract fields plus camera status, `frame_sequence`, and `frame_age_s`. |
+| `GET` | `/api/state` | Contract fields plus camera status (`state`, `source`, `error`, `device`, `frames`, `fps`, and `camera_stats`), `frame_sequence`, and `frame_age_s`. `fps` is a smoothed measured acquisition rate. Temperatures are per frame and not smoothed. |
 | `GET` | `/api/events?since=0` | Activity after the given sequence, with a `next` cursor. The same events enter the service journal. |
 | `POST` | `/api/heartbeat` | Acquire or renew the informational lease. |
 | `POST` | `/api/renew` | Renew only the caller's existing lease. Return HTTP 409 if it is absent, expired, or held by another client. |
@@ -299,13 +301,13 @@ It does not clip bounds or rotate coordinates.
 
 Here, x is the sensor column and y is the sensor row.
 The rectangle is `temperatures_c[y0:y1, x0:x1]`: lower bounds are included and upper bounds are excluded.
-The rotated display does not change these coordinates.
+The display shows the native sensor orientation.
 For example, `x0=159, y0=119, x1=160, y1=120` selects the last sensor pixel.
 
 The service reads this file once during construction, before camera startup.
 Restart the service after editing it.
 A missing file leaves the named-region map empty. Explicit coordinate queries still work.
-An invalid file prevents startup. The service never substitutes example regions.
+An invalid file prevents startup: the CLI exits with status 1, and the managed unit keeps restarting. The service never substitutes example regions.
 An embedded application can select another path with `CameraService(roi_path=...)`.
 
 ### Region readings

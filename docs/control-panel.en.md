@@ -90,7 +90,7 @@ For clients that connect directly to the service, such as `RobotClient` and the 
 If the robot is enabled, `stop_sync` stops it and releases control, but keeps feedback connected and control locked.
 The client can send `start_sync` again to cancel the pending disconnect. Then it sends `disable`, then `stop_sync`.
 If the robot is already disabled, `stop_sync` confirms disable, then disconnects.
-When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control.
+When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control. A client created with `keep_control=True` does not send it.
 After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.
 
 Only one client holds control at a time.
@@ -108,7 +108,8 @@ The robot may continue to the endpoint of the trajectory already sent.
 After a confirmed stop, you can disable and re-enable the robot.
 Taking control again does not unlock an unknown command result.
 If stopping cannot be confirmed during disconnection, the service stops normal coordinate queries.
-It retains feedback, the connection lock, and the warning. Another client cannot take control. Check the robot, then click `Recover`.
+It retains feedback, the connection lock, and the warning. Another program cannot connect to the robot.
+After the 3-second lease expires, another client can take control, but it cannot move the robot before you click `Recover`. Check the robot, then click `Recover`.
 Do not delete the lock file to release ownership.
 After deletion, 2 processes can each hold their own lock.
 
@@ -122,10 +123,12 @@ The descriptions come from Dobot's alarm tables.
 Use this recovery sequence:
 
 1. Remove the cause according to the alarm's corrective action.
-2. Click `Clear alarm` on the robot card.
+2. Click `Recover` on the robot card.
 3. Wait for the service to report that the alarm is cleared and confirm that the robot is disabled and stationary.
 
-`Clear alarm` (`clear_alarm`) sends only `ClearError()`. It does not send `Continue()`.
+While the service is locked, the button reads `Recover`. Otherwise, it reads `Clear alarm`. An alarm locks the service, so the button reads `Recover` during an alarm.
+Both buttons send `clear_alarm`.
+`clear_alarm` sends only `ClearError()`. It does not send `Continue()`.
 Motion paused before the alarm does not resume.
 After the alarm clears, the service disables the robot through a new control instance and confirms that it is stationary.
 Control unlocks only after both are confirmed.
@@ -136,7 +139,7 @@ Use DobotStudio Pro or the teach pendant to jog it back.
 After jogging back, check the controller mode as described in [Switch to TCP/IP mode from the server](hardware.en.md#switch-to-tcpip-mode-from-the-server).
 
 When collision detection triggers, the alarm list shows `-2` (Collision detected).
-If the alarm clears outside the console, for example with the robot's Collision Resume button, check the robot state, then click `Clear alarm`.
+If the alarm clears outside the console, for example with the robot's Collision Resume button, check the robot state, then click the button (`Recover` or `Clear alarm`).
 The service disables the robot through a new control instance and confirms that it is stationary, then unlocks control.
 
 An unconfirmed stop without an alarm shows a warning, and the button reads `Recover`.
@@ -208,6 +211,7 @@ The service's `TimeoutStopSec` is 90 seconds, which is longer than this interval
 By default, the service listens on `127.0.0.1:8766`.
 `MG400_PANEL_BIND` and `MG400_PANEL_PORT` override the default. `--bind` and `--port` override the environment variables.
 Empty values use the default. If the port is not an integer from 1–65535, the service does not start.
+The Lab Console and the recipe service connect to this service through `MG400_ORCH_ROBOT_URL` (default `http://127.0.0.1:8766/`). If you change the address or port, also change this setting. See [Recipe orchestrator](orchestrator.en.md#service-settings).
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 Set the path prefix with `--base-path`, for example `--base-path /mg400-panel/`. All interface routes use this prefix.

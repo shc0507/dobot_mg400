@@ -1,9 +1,11 @@
 """Console Cameras workspace: proxy camera URLs, the microscope relay, states and secrets."""
 
+import base64
 import io
 import json
 import re
 import socket
+import struct
 import threading
 import time
 from types import SimpleNamespace
@@ -383,12 +385,16 @@ def test_thermal_frame_is_cached_trimmed_and_reports_its_age(rig):
     rig.sources.thermal_timestamp = datetime.now(timezone.utc).isoformat()
     path = BASE + "thermal/frame"
     body = json.loads(rig.client.get(path, headers=headers()).data)
-    assert len(body["temperatures_c"]) == 120 and "raw" not in body and "ir" not in body
+    assert not {"temperatures_c", "raw", "ir"} & set(body)
+    values = struct.unpack("<19200H", base64.b64decode(body["temperatures_u16"]))
+    assert values[0] == round((20.0 + 273.15) * 64)
+    assert values[-1] / 64 - 273.15 == pytest.approx(22.78, abs=1 / 128)
+    assert len(rig.client.get(path, headers=headers()).data) < 60_000
     assert body["stats"]["max"]["celsius"] == 22.77 and body["age_s"] < 5
-    rig.client.get(path, headers=headers())
     assert rig.sources.thermal_reads == 1
     full = json.loads(rig.client.get(path + "?full=1", headers=headers()).data)
-    assert len(full["raw"]) == 120 and full["raw_unit"] == "1/64 kelvin"
+    assert len(full["raw"]) == len(full["temperatures_c"]) == 120
+    assert full["raw_unit"] == "1/64 kelvin"
     assert status(rig)["thermal"]["state"] == "live"
     rig.sources.fail.add("thermal")
     rig.clock.value += 1

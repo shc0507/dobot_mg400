@@ -50,6 +50,19 @@ test("thermal pixels map the scale to the palette", () => {
   assert.deepEqual([...pixels.slice(159 * 4, 160 * 4)], [255, 255, 255, 255]);
 });
 
+test("the compact thermal frame decodes to Celsius rows", () => {
+  const bytes = Buffer.alloc(160 * 120 * 2);
+  bytes.writeUInt16LE(Math.round((25 + 273.15) * 64), 0);
+  bytes.writeUInt16LE(Math.round((-10 + 273.15) * 64), (119 * 160 + 159) * 2);
+  const rows = logic.thermalTemperatures(bytes.toString("base64"));
+  assert.equal(rows.length, 120);
+  assert.equal(rows[0].length, 160);
+  assert.ok(Math.abs(rows[0][0] - 25) < 1 / 128);
+  assert.ok(Math.abs(rows[119][159] + 10) < 1 / 128);
+  assert.equal(rows[0][1], -273.15);
+  assert.throws(() => logic.thermalTemperatures("AAAA"));
+});
+
 test("CSV export uses the selected unit", () => {
   const frame = { sequence: 3, timestamp: "t", temperatures_c: [[0, 100]] };
   assert.equal(logic.thermalCsv(frame, "F"), "# sequence=3, timestamp=t, unit=°F\n32.00,212.00\n");

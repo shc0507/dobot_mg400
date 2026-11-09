@@ -34,7 +34,7 @@ This document provides permanent information/instructions for the convenience of
 - This rule covers `README.md`, `docs/*.md`, `docs/adr/*.md`, and `firmware/*/README.md`. Agent docs stay English only.
 - `AGENTS.md`, `docs/agents/**`, `.agents/**`, `GLOSSARY.md` (one bilingual table), and `tests/fixtures/**` are exempt.
 - `scripts/check_doc_pairs.py` checks code blocks, inline code, numbers, link targets, and heading counts through pytest. Write numbers as digits in both languages.
-- The checker permits missing pairs listed in `docs/agents/doc-pairs-pending.txt`. Until a pair exists, edit the Chinese file. Remove its entry when you add the pair.
+- The checker permits missing pairs listed in `docs/agents/doc-pairs-pending.txt`. The file exists only while a pair is missing. Until a pair exists, edit the Chinese file. Remove its entry when you add the pair.
 
 ## UX design
 
@@ -52,17 +52,17 @@ Read only the files that the task needs. The tests are larger than the code, so 
 
 | Area | Code | Tests | Doc |
 | --- | --- | --- | --- |
-| Arm motion, limits, protocol | `src/mg400/joint_control.py`, `joint_limits.py`, `controller_protocol.py`, `feedback.py`, `controller_alarms.py`, `config.py` | `test_joint_control.py`, `test_joint_limits.py`, `test_controller_protocol.py`, `test_feedback.py`, `test_controller_alarms.py` | [hardware.md](docs/hardware.md), [development.md](docs/development.md#真机控制参考) |
+| Arm motion, limits, protocol | `src/mg400/joint_control.py`, `joint_limits.py`, `controller_protocol.py`, `feedback.py`, `controller_alarms.py`, `config.py`, `config/robot.toml` | `test_joint_control.py`, `test_joint_limits.py`, `test_controller_protocol.py`, `test_feedback.py`, `test_controller_alarms.py` | [hardware.md](docs/hardware.md), [development.md](docs/development.md#真机控制参考) |
 | Keyboard jog | `src/mg400/keyboard_jog.py`, `web_keyboard.py` | `test_keyboard_jog.py`, `test_keyboard_movejog.py`, `test_web_keyboard*.py` | [dashboard.md](docs/dashboard.md), [development.md](docs/development.md#运动命令与坐标缓存) |
 | Web panel service | `apps/control_panel/`, `src/mg400/web_control.py`, `websocket.py`, `controller_ownership.py`, `robot_config.py` | `test_control_panel*.py`, `test_web_control.py`, `test_websocket.py`, `test_robot_service_e2e.py`, `test_controller_ownership.py`, `test_robot_config.py` | [control-panel.md](docs/control-panel.md), [development.md](docs/development.md#机器人服务接口) |
 | Robot service Python client | `src/mg400/client.py` | `test_robot_client.py` | [development.md](docs/development.md#python-客户端) |
 | Vacuum suction | `src/mg400/suction.py`, `joint_control.py` (`vacuum`), `web_control.py` | `test_suction.py` | [development.md](docs/development.md#真空吸盘) |
 | Terminal | `src/mg400/terminal_control.py`, `scripts/mg400_robot.py` | `test_terminal_control.py` | [terminal-control.md](docs/terminal-control.md) |
 | Mode switch | `src/mg400/control_mode.py`, `scripts/mg400_control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
-| Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
+| Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py`, `errors.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
 | Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py` | `test_deploy_install.py`, `test_camera_preview.py`, `test_console_cameras.py` | [olares.md](docs/olares.md#摄像头) |
-| Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py`, `test_console.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
+| Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/`, `config/assets.toml` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py`, `test_console.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
 | QR reader | `src/vision/qr.py`, `qr_micro.py` | `test_vision_qr*.py` | Module docstrings |
 | Simulator | `src/mg400/sim/` | `test_mg400_sim.py`, `sim_mg400.py`, `test_web_keyboard_integration.py`, `test_robot_service_e2e.py` | [development.md](docs/development.md#离线机器人模拟器) |
 | Vision localizer | `src/vision/localizer.py` | `test_vision_localizer.py` | Module docstrings |
@@ -88,7 +88,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_console.mjs`.
 
-CI runs ruff and all `tests/*.mjs` on every run. On a pull request, CI runs only the pytest files that `scripts/select_tests.py` selects from the changed files. The script runs the full suite when a change touches shared code or a path that it does not map: `src/labkit/`, shared test helpers, `tests/fixtures/`, `pyproject.toml`, `uv.lock`, `.github/`, or the script itself. A push to `main` runs the full suite. When you add an area or move code, update `AREAS` in `scripts/select_tests.py` and the table above. To see the selection for a branch, run `git diff --name-only origin/main... | uv run python scripts/select_tests.py`.
+CI runs ruff and all `tests/*.mjs` on every run. On a pull request, CI runs only the pytest files that `scripts/select_tests.py` selects from the changed files. The script runs the full suite when a change touches shared code or a path that it does not map: `src/labkit/`, shared test helpers, `tests/fixtures/`, `pyproject.toml`, `uv.lock`, `.github/`, `apps/layout-studio/`, the `firmware/three-motor-demo/` source, or the script itself. A push to `main` runs the full suite. When you add an area or move code, update `AREAS` in `scripts/select_tests.py` and the table above. To see the selection for a branch, run `git diff --name-only origin/main... | uv run python scripts/select_tests.py`.
 
 ## Test stage
 

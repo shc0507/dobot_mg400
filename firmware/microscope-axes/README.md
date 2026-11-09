@@ -21,6 +21,7 @@
 物镜和轻量物镜校准可以在实测 `MG400_MICROSCOPE_NUDGE_STEPS` 范围内，在工作焦点处转动。
 此例外必须具备已知调焦零点、实测限位、静止的调焦轴，以及[显微镜指南](../../docs/microscope.md)中的监督确认。
 未配置或为 `0` 时，保留避让规则。允许的正范围为 `1` 到 `20` 整步。
+服务的 `objective_nudge` 也可在此范围内于工作焦点处转动转盘。
 实验和完整物镜切换仍必须避让。
 
 人工监督测量 `H-06` 时，先停止显微镜服务，再使用 `python -m microscope.calibrate setup`。
@@ -75,6 +76,8 @@ OBJ: enabled=0 moving=0 speed=400 remaining=0 pos=0
 FOCUS: enabled=0 moving=0 speed=800 remaining=0 pos=0
 FOCUS_REF: zeroed=0 limited=0 min=0 max=0 homing=0
 ```
+
+上电或复位后，控制板先输出 `DUAL_A4988_READY`，再输出 `STATUS` 各行。主机在复位延时后丢弃这些行。
 
 ## 调焦参考位置与限位
 

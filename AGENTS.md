@@ -70,10 +70,10 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Repository checks: CI test selection, doc pairs, file limits | `scripts/select_tests.py`, `scripts/check_doc_pairs.py` | `test_select_tests.py`, `test_doc_pairs.py`, `test_repo_files.py` | This section, [ADR 0007](docs/adr/0007-bilingual-documentation.en.md), [ADR 0004](docs/adr/0004-large-files-and-assets.en.md) |
 | Agent coordination signals | `scripts/agent_signal.py`, `.claude/settings.json` | `test_agent_signal.py` | [coordinator.md](docs/agents/coordinator.md) |
 | Detector evaluation | `scripts/vision_eval.py` | `test_vision_eval.py` | [vision.md](docs/vision.md#检测模型评估) |
-| Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md) |
-| Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py` | [vision.md](docs/vision.md) |
-| Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md) |
-| Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/` | `test_vision_tray.py` | [vision.md](docs/vision.md) |
+| Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md#路由与命令) |
+| Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py`, `test_orchestrator_rehearsal.py` | [vision.md](docs/vision.md#相机到机器人校准) |
+| Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md#校准漂移检查) |
+| Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/`, `src/vision/service.py` (`observe_slots`), `src/orchestrator/skills/vision.py` | `test_vision_tray.py`, `test_recipe_tray_transfer.py` | [vision.md](docs/vision.md#托盘几何与交叉检查) |
 | Thermal camera | `src/thermal_cam/` | `test_thermal_*.py` | [thermal.md](docs/thermal.md) |
 | Toupcam capture and recording | `src/toupcam_camera/camera.py`, `capture.py` | `test_toupcam_camera.py` | Module docstrings; keep vendor `toupcam.py` unchanged |
 | Furnace and gas drivers | `src/furnace/controller.py`, `config.py` | `test_furnace_controller.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |

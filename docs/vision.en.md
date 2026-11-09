@@ -27,6 +27,8 @@ Demo mode reads `tests/fixtures/vision/scene.ppm` and `tests/fixtures/vision/det
 All 4 demo camera numbers use the same image and detections.
 The demo uses the real QR reader and a fake localizer. It does not import torch or access cameras.
 Demo results do not validate the live model or camera geometry.
+Demo cameras have no stable port path. `calibrate_camera`, `check_calibration`, and `observe_slots` return 400, and `read_markers` returns `camera_device=null`.
+The demo service reports `connected=true` from startup.
 
 Startup loads the model and performs 1 warm-up prediction on a synthetic image.
 It does not request a camera frame for warm-up.
@@ -41,16 +43,19 @@ Command-line options override environment settings. Empty environment values use
 
 | Setting | Option | Default and meaning |
 | --- | --- | --- |
-| None | `--bind` | `127.0.0.1` |
-| None | `--port` | `8771` |
-| None | `--base-path` | `/`. Prefix for all routes |
+| `MG400_VISION_BIND` | `--bind` | `127.0.0.1` |
+| `MG400_VISION_PORT` | `--port` | `8771`. Range `1` to `65535` |
+| `MG400_VISION_BASE_PATH` | `--base-path` | `/`. Prefix for all routes |
 | `MG400_VISION_WEIGHTS` | `--weights` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` |
 | `MG400_VISION_DEVICE` | `--device` | `cuda` when available, otherwise `cpu`. Explicit `cuda:N` selects a device |
-| None | `--gpu-fraction` | `0.15`. Finite value greater than 0 and at most 1 |
+| `MG400_VISION_GPU_FRACTION` | `--gpu-fraction` | `0.15`. Finite value greater than 0 and at most 1 |
 | `MG400_VISION_FRAME_TIMEOUT` | `--frame-timeout` | `2` seconds for each HTTP socket operation and the body-read deadline. Finite and greater than 0 |
 | None | `--demo` | Use offline fixtures without the detector runtime |
+| `MG400_VISION_CALIBRATION_DIR` | None | `/var/lib/mg400/calibration/cameras`. Camera-model directory |
+| `MG400_VISION_TAG_HEIGHT_MM` | None | `100`. Nominal arm-tag height above the flange, in mm. Must be greater than 0 and at most 1000 |
+| `MG400_VISION_CALIBRATION_RMS_MM` | None | `1`. Calibration acceptance limit, in mm RMS. Must be greater than 0 and at most 1 |
+| `MG400_VISION_CACHE_DIR` | None | `/var/lib/mg400/vision/yolo`. Used as the Ultralytics `YOLO_CONFIG_DIR` |
 
-Calibration uses fixed defaults: the camera-model directory `/var/lib/mg400/calibration/cameras/`, a nominal arm-tag height of `100` mm above the flange, and an acceptance limit of `1` mm RMS.
 The nominal tag-to-tip distance is the nominal tag height plus `tool_dz_mm`.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 Configuration and startup failures exit with status 2.
@@ -81,7 +86,7 @@ The decoder checks JPEG data, applies EXIF orientation, and produces RGB pixels.
 The resulting dimensions must equal the configured capture mode. A mismatch fails without resizing.
 `vision.frames.still(camera)` and service reads request 1 frame from this same go2rtc stream.
 They do not change capture mode or start a separate device capture.
-Source failures return 503 and set a fault. Requests do not retry automatically.
+Source failures return 503. Requests do not retry automatically.
 
 Results report `coordinate_system` as `oriented_original_image_pixels`.
 Detection fields such as `xyxy`, `center_xy`, `polygon`, and `size_px` refer to that image.
@@ -89,7 +94,7 @@ Detection fields such as `xyxy`, `center_xy`, `polygon`, and `size_px` refer to 
 QR results contain `corners_px`, `center_px`, and `bounds_px` in full-frame coordinates.
 An unreadable label has `decoded=false`. Its text is not a verified identity.
 
-For a valid camera model, detections include `robot_mm` with `x` and `y` at the detection center.
+For a valid camera model, detections and QR labels include `robot_mm` with `x` and `y` at their center.
 The service undistorts the pixel and intersects its ray with the stored horizontal tray plane.
 `calibrated_cameras` identifies cameras with valid loaded models. Missing calibration produces `calibrated=false` and no `robot_mm`.
 A camera-port or image-size change invalidates the calibration. The service does not reuse another port's file or resize a model.
@@ -111,12 +116,14 @@ An overlapping request returns 409. The service does not queue extra operations.
 | `GET api/describe` | Contract version and command parameter descriptions |
 | `GET api/events?since=0` | Service events, also written to the journal |
 
-Read routes need no lease. They retain all access checks.
+Read routes need no lease and no request headers.
 Supply `camera` exactly once and no other query parameter on the 3 inference routes.
 Responses use `Cache-Control: no-store`.
+Each request body must fit within 16 KiB.
 
 Commands require `Content-Type: application/json`, `X-MG400-Client`, and a control lease acquired through `POST api/heartbeat`.
-The lease lasts 3 seconds. Renew it while a command runs.
+The lease lasts 3 seconds. While a command runs, the client must renew it through `POST api/renew`.
+Release the lease through `POST api/release`. A release by the holder cancels its running command.
 Send commands to `POST api/command`:
 
 ```json
@@ -135,19 +142,19 @@ Calibration uses 3 leased commands:
 
 | Command | Parameters and result |
 | --- | --- |
-| `read_markers` | `camera`. Returns `markers` with `id` and `center_px`, plus `image_size`, `camera_device`, `frame_sha256`, and `read_at`. |
-| `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, `image_size`, `scan_r_deg`, and `tool_dz_mm`. Fits and stores the model through the owned lease. |
+| `read_markers` | `camera`. Returns `markers` with `id`, `center_px`, and `corners_px`, plus `camera`, `calibrated=false`, `coordinate_system`, `image_size`, `camera_device`, `frame_sha256`, and `read_at`. `camera_device` is `null` when the camera has no stable port path. |
+| `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, `image_size`, `scan_r_deg`, and `tool_dz_mm`. Fits and stores the model through the owned lease. Returns `camera`, `calibrated=true`, and the stored model as `calibration`. |
 | `check_calibration` | `camera`, `flange_mm`, and optional `limit_px`. Returns the marker 4 check from the same frame. |
 
 `tag_points` contains 24 uncorrected flange XYZ rows. `tag_pixels` contains their 24 pixel XY rows.
 The fitter applies the nominal tag height to these grid points.
 `scan_r_deg` is the flange R of all 24 grid points, in degrees.
-`tool_dz_mm` is the measured tool Z offset from the tool file, in millimeters.
+`tool_dz_mm` is the measured tool Z offset from the tool file, in millimeters. The nominal tag height plus `tool_dz_mm` must be greater than 0 and at most 1000 mm.
 `tray_points` contains 2 to 4 rows with transformed fingertip XY and original contact flange Z.
 The skill rotates the configured tool XY offset by each recorded R, then adds it to the reference flange XY.
 It preserves flange Z for the unknown-distance fit, without applying the tool Z offset.
 `tray_pixels` contains the matching pixel XY rows.
-`image_size` is `[width, height]`. The request body must fit within 16 KiB.
+`image_size` is `[width, height]`.
 Use the guarded calibration skill below to collect these arrays. Do not convert historical contact data into robot move commands.
 
 A command returns 202 and `command_id` before completion.
@@ -158,6 +165,8 @@ Invalid or oversized metadata fails with 503 and is not published.
 Failed or stopped commands have `output=null`.
 `last_result` retains a small summary of the latest successful inference, including its completion time.
 A live service reports `connected=false` until its first successful frame operation.
+Each failed operation sets `fault`. The next successful operation clears it. Only a failure with 503 sets `connected` to `false`.
+While `fault` is set, the calibration skill and the drift check refuse to run. First complete 1 successful read, for example `GET api/detect`.
 
 ## Camera-to-robot calibration
 
@@ -171,7 +180,7 @@ Software checks and rehearsal do not validate physical clearance or camera geome
 The arm tag uses `DICT_4X4_50` ID `4` on the J4 axis.
 Tray references use distinct IDs from `0`, `1`, `2`, and `7` in the same dictionary.
 Configure 2 to 4 measured tray references in a private TOML file.
-The orchestrator reads `/var/lib/mg400/calibration/cameras/references.toml`.
+The orchestrator reads `/var/lib/mg400/calibration/cameras/references.toml`. When `MG400_CAMERA_CALIBRATION_REFERENCES` is set, it reads that path instead.
 The file must be trusted, without links, and at most 4 KiB.
 
 This is a template, not measured coordinates. Replace `X`, `Y`, `Z`, and `R` with operator-recorded flange values:
@@ -213,9 +222,10 @@ vision.calibrate(camera: int, corner_a: str, corner_b: str,
 `camera` selects a configured camera. `corner_a` and `corner_b` name the taught stations.
 The routine samples a 3-row by 4-column grid at both heights, for 24 tag points.
 At each point, a stationarity guard remains active while the service reads 5 sequential ArUco frames.
+The guard requires flange XYZ within 0.1 mm and R within 0.1 degrees of the expected pose.
 The routine uses the median marker center. Missing or ambiguous required markers abort the scan.
 
-Each sample must have a different RGB SHA256 from the other samples at that point.
+Each sample must have a different RGB SHA256 from the other samples at that point. The first frame of a point must also differ from the last frame of the previous point.
 This rejects identical image content. It does not prove sensor freshness.
 go2rtc supplies neither a capture timestamp nor a sensor frame ID. `read_at` is the service read time.
 Camera path and image size must remain unchanged throughout acquisition.
@@ -230,7 +240,7 @@ Zone occupancy remains until a later explicit departure or supervised recovery e
 
 ### Offline calibration rehearsal
 
-The public rehearsal CLI and demo registry use owned synthetic robot and vision services from the same rehearsal pool.
+The public rehearsal CLI `labctl rehearse` (see [orchestrator](orchestrator.en.md)) and demo registry use owned synthetic robot and vision services from the same rehearsal pool.
 The synthetic camera follows that robot and renders ArUco images for camera `1` at `1920x1080`.
 They generate their own synthetic reference data and do not read the host reference file or camera-model files.
 Rehearsal opens no camera device or native capture.
@@ -285,7 +295,8 @@ New models use `schema` 2 and store the scan R as `scan_r_deg`.
 Coordinate mapping also accepts a `schema` 1 model without `scan_r_deg`. The drift check refuses a `schema` 1 model.
 Recalibrate the camera before you use the drift check.
 
-The directory must exist, belong to the service account, and use mode `0700` or `0750`.
+The installer creates the directory with owner `1000:1000` and mode `0700`. See [Host deployment](deploy.en.md).
+The directory must belong to the service account and use mode `0700` or `0750`.
 Model files must be private regular files with mode `0600` or `0640`, without symbolic or multiple hard links.
 New model files use `0600` and an atomic replacement after the final authority check. Each document is at most 64 KiB.
 Stop, lease release, or lease expiry rejects later publication.
@@ -317,7 +328,7 @@ An arm tag that is not exactly on the J4 axis moves when R changes.
 
 ### Limit and command data
 
-The pixel limit is `3`.
+The default pixel limit is `3`. Set `MG400_ORCH_DRIFT_LIMIT_PX` to lower the limit that the skill uses. The value must be greater than `0` and at most `3`. The skill sends it as `limit_px`.
 
 The skill sends the leased `check_calibration` command with these fields:
 
@@ -354,10 +365,12 @@ A successful command receipt contains `camera`, `calibrated=true`, and these che
 | `camera_device`, `image_size` | Camera path and `{width,height}` for this frame and model. |
 | `model_created_at` | Creation time of the model used for this check. |
 
+`reason` is one of `expected_behind_camera`, `expected_outside_image`, `marker_missing`, `marker_beyond_limit`, or `marker_detection_malformed`.
+
 A successful command receipt alone is insufficient. The skill requires a valid positive check result.
 The skill calculates the distance again from the 2 reported centers. That distance must agree with `distance_px` and be at most the limit.
 It accepts only the exact command, action, and controlling-client receipt.
-A guard checks stationary flange XYZ and R plus unchanged robot owner and instance before, during, and after the marker read.
+A guard checks stationary flange XYZ and R (change at most 0.1 mm and 0.1 degrees) plus unchanged robot owner and instance before, during, and after the marker read.
 
 A negative or malformed check result raises `camera moved, recalibrate`. The run enters `held` before the next step.
 A failed command raises `Vision calibration failed:` with the service message. The run also enters `held`.
@@ -384,7 +397,7 @@ It uses these fields:
 
 | Field | Requirement |
 | --- | --- |
-| `camera` | Calibrated camera number, from 1 to 4. |
+| `camera` | Configured camera number. The camera must have a stable port path and an installed calibration model. |
 | `tray` | Validated tray-model document, not a host file path. |
 | `targets` | Requested slot IDs mapped to their exact taught robot XY pairs. A `null` value means that the slot has no taught station. Then only the chip is checked. |
 | `axis` | `long` or `short`, according to the explicit suction convention. |
@@ -448,6 +461,7 @@ Keep turret tags and spare prints out of the tray image when they repeat a corne
 The arm marker ID `4` is not a tray corner.
 
 The function maps measured centers through the camera model and fits a similarity transform to the configured tray geometry.
+Localization fails when any corner residual exceeds `tolerance_mm`.
 It returns the transform, measured marker residuals, and `slots` in `robot_xy_mm` coordinates.
 Each slot contains `centerline_xy_mm` and `reference_xy_mm`, plus its transformed `width_mm`.
 The output supplies XY geometry only. It does not establish a physical Z or a safe robot path.
@@ -495,7 +509,7 @@ Do not treat incomplete evidence as permission for motion. Normal robot limits, 
 
 ## Stop and shutdown
 
-Any authenticated client can call `POST api/stop` without holding the lease.
+Any client can call `POST api/stop` without holding the lease.
 Include `X-MG400-Client` and a JSON body, such as `{"wait_s":0}`.
 `wait_s` accepts values from 0 to 15 seconds.
 The response is `confirmed` after work finishes or `pending` while it still runs.
@@ -505,7 +519,7 @@ Stop requests cancel the active operation and discard its late results.
 During startup, stop cancels model publication and reports `pending` until loading or warm-up finishes.
 QR processing checks cancellation between stages.
 An active model prediction cannot be forcibly interrupted. It must return before stop becomes confirmed.
-Lease expiry cancels the controlling client's command. It does not cancel an independent read request.
+Lease expiry or a release by the holder cancels the controlling client's command. It does not cancel an independent read request.
 
 SIGINT, SIGTERM, and SIGHUP request cancellation during shutdown.
 Shutdown waits up to 15 seconds for active inference or startup and ends lease polling.
@@ -523,7 +537,7 @@ Class `0` is Chip. Other classes only put the frames into groups.
 On Linux, run from the repository root:
 
 ```bash
-uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval-v1 --weights chip-arm-yolo26s-seg-v1.pt --px-per-mm 1.554
+uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval-v1 --weights chip-arm-yolo26s-seg-v1.pt --px-per-mm 1.554 --device cuda
 ```
 
 The locked `torch` has no macOS wheel. On macOS, install the locked `ultralytics` version in a separate environment. Before you run the script, set `PYTHONPATH=src`.
@@ -531,7 +545,9 @@ The locked `torch` has no macOS wheel. On macOS, install the locked `ultralytics
 Evaluation rules:
 
 - The script sends each frame to `Localizer.predict`, as the vision service does. That function crops an image that is wider than 4:3 to its centered 4:3 region (1280x720 becomes 960x720). Then it stretches the region to 640x640. Detection coordinates stay in full original-image pixels.
-- The script uses the default confidence threshold of `Localizer.predict`, as the service does. To evaluate a different threshold, set `--confidence`.
+- The script reads only `.jpg`, `.jpeg`, and `.png` files in `images/`.
+- `--weights` defaults to `MG400_VISION_WEIGHTS`. `--device` defaults to `cpu`. To use the GPU, set `--device cuda`.
+- The script uses the default confidence threshold of `Localizer.predict`, `0.39`, as the service does. To evaluate a different threshold, set `--confidence`.
 - A detection box and a label box match when their IoU (intersection over union) is at least 0.5. The script matches in descending confidence. Each label matches at most 1 detection.
 - An unmatched detection is a false detection. An unmatched label is a missed label.
 - Precision is the matches divided by the detections. Recall is the matches divided by the labels.

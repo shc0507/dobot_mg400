@@ -29,7 +29,7 @@ Closing the process stops simulated outputs and removes its temporary state.
 
 ## Configuration
 
-The host service reads `/etc/mg400/mg400.env`. The installer installs it by default.
+The host service reads `/etc/mg400/mg400.env`. The installer always installs the furnace service but does not start it. After you set the serial paths, run `mg400ctl start furnace`.
 It installs the `furnace` dependency group into `.venv` and grants the service only the `dialout` supplementary group.
 The installer creates `/var/lib/mg400/furnace` with owner `1000:1000` and mode `0750`.
 
@@ -42,10 +42,15 @@ The installer creates `/var/lib/mg400/furnace` with owner `1000:1000` and mode `
 | `MG400_FURNACE_MAX_RAMP` | `100` | Finite cap greater than `0`, at most `100` °C/min |
 | `MG400_FURNACE_GAS_MAP` | `Gas 1` to `Gas 3` | JSON map from channel to gas label |
 | `MG400_FURNACE_IDLE_GAS` | All off | JSON map from channel to percent for orphan expiry, cooling completion, or uncertain recovery |
+| `MG400_FURNACE_BIND` | `127.0.0.1` | Listen address |
+| `MG400_FURNACE_PORT` | `8769` | Port from `1` to `65535` |
+| `MG400_FURNACE_BASE_PATH` | `/` | Base path that starts with `/` |
+| `MG400_FURNACE_ORPHAN_GRACE_MIN` | `15` | Orphan grace in minutes, at least `0` |
 
 The gas map uses channel keys `0`, `1`, and `2`, which address MFC units `7`, `8`, and `9`.
 Percent means percent of that controller's full-scale flow. Do not interpret it as a generic volumetric flow rate.
-The service listens on `127.0.0.1:8769` with the base path `/`. The orphan grace period is `15` min.
+The example settings file does not contain the last 4 settings. The `mg400ctl` shutdown check reads the listen address, port, and base path.
+The microscope and the orchestrator use the fixed URL `http://127.0.0.1:8769/`. If you change the listen address, port, or base path, these 2 clients cannot reach the furnace service.
 Idle gas defaults to all off. Any nonzero idle plan requires the operator's process decision.
 
 In the settings file, enclose the gas map and idle gas JSON objects in single quotes.
@@ -68,7 +73,7 @@ The service checks no token, `Host`, or `Origin`. The VPN is the access boundary
 
 The lease lasts `3` s. The console renews it while it is open.
 When renewal fails, select **Take control** explicitly after resolving the cause.
-An automation holder blocks console and manual commands, including requests that reuse its client identifier.
+When another client holds the lease, the service refuses **Take control**. A contract lease also blocks the manual-lease routes, including requests that reuse its client identifier.
 The stop buttons do not require control. **Release** releases the lease without immediately stopping a bounded sequence.
 
 The service attempts a read-only furnace attachment at startup and applies the recovery rules below.
@@ -84,6 +89,7 @@ HOLD continues temperature regulation while it pauses the controller program. ST
 
 Enter a target and ramp rate, select **Apply and run…**, then confirm in the page.
 Targets must be at least `0` °C and within the configured temperature cap. Ramp rates must be positive and within the configured ramp cap.
+The ramp duration (the difference between target and current PV, divided by the ramp rate) must be at most `3200` min. If it is longer, the service refuses the command and locks the furnace.
 The driver writes the target to both `SP1` and `SP2` before RUN. It uses current PV to calculate ramp duration.
 When controller step `2` begins, the service requests and verifies HOLD.
 Do not infer HOLD from a target match alone.
@@ -100,8 +106,10 @@ The hold timer starts only after verified HOLD and PV within `1` °C of the targ
 The service advances after the hold duration. Ramp and settling time make total duration longer than the sum of holds.
 It does not repeatedly send temperature setters during a hold.
 After the final hold, heating stops. The end-gas plan continues until PV falls below its threshold. The service then applies idle gas, which defaults to all off.
+If the controller enters STOP during a sequence, for example from its front panel, the service locks the furnace until a fault acknowledgement.
 
-The `set_sequence` command applies edits during a run. The console disables **Save sequence** while a sequence runs.
+The `set_sequence` command applies edits during a run. During end-gas cooling, the service refuses `set_sequence` and `start_sequence`.
+The console disables **Save sequence** and **Start sequence…** while a sequence runs. It also disables **Start sequence…** during cooling.
 The active step uses its numerical index. Inserting or removing an earlier row changes which row that index selects.
 If a shorter table removes the active index, the service selects the new final step.
 Editing fields alone does not change outputs. Save or start the sequence to send those edits.
@@ -112,7 +120,9 @@ Accepted edits are persisted, including future gas plans.
 
 The gas area shows the measured percent of each gas. Without readback, it shows unverified.
 **Send flow** applies the entered percent.
-**Stop all gas** stops all gas channels and does not require control.
+**Stop all gas** sends `POST /api/flow/gas/stop` for each channel. It stops all gas channels and does not require control.
+**Close** on a gas row stops that channel and does not require control. It is sent 1 time. The result is confirmed, not confirmed, or unknown.
+`set_gas_valve` with `open: true` sends full-scale flow (`100` %). `open: false` is the same as a stop of that channel.
 A missing optional reply means unverified. It does not prove zero flow or a closed valve.
 A transport or invalid-reply failure locks control. **Stop all gas**, `POST /api/flow/gas/stop`, and `POST /api/flow/stop-all` remain available.
 Check physical flow and use independent isolation when required.
@@ -127,7 +137,7 @@ Missing furnace replies leave recording metadata blank and add an event. Capture
 
 Recordings stay under `/var/lib/mg400/recordings/`. Finalized recordings include the timestamps CSV and a summary targeting 3 minutes. Shorter clips are not lengthened.
 Cancelled or failed recordings retain local partial files without a promised summary.
-See the [recording instructions](microscope.en.md) for command receipts, cancellation, and chip-linked manifests.
+See the [recording instructions](microscope.en.md#recording-and-furnace-sequences) for command receipts, cancellation, and chip-linked manifests.
 
 ## Client loss, recovery, and shutdown
 
@@ -138,9 +148,11 @@ See the [recording instructions](microscope.en.md) for command receipts, cancell
 | No client holds control | Stop is available. Other commands require control |
 | Startup reads matching RUN or HOLD | Resume valid saved intent only when the target matches within `2` °C and live settings satisfy the caps |
 | Startup reads unmatched RUN or HOLD | Attempt heat stop and idle gas, then lock until acknowledgement |
+| Saved state has a fault or an interrupted command | Lock until acknowledgement, also when the controller shows STOP |
 | Startup reads STOP | Remain idle, including when saved state contains a cooling plan |
 | SIGINT, SIGTERM, or SIGHUP | Attempt heat and gas stop independently, close transports, and exit |
 
+Matching state requires the same furnace serial path, slave address, gas serial path, and gas map as when the state was saved. If you change these settings during heating, the next startup stops the outputs and locks.
 The service writes `state.json` atomically at phase changes and every `60` s during a hold.
 It preserves wall-clock hold and orphan times across restart.
 State files and the persistent `.state.json.lock` use mode `0600`.
@@ -154,7 +166,8 @@ If all persistent writes and invalidation fail, the service cannot guarantee a d
 
 **Stop heat and gas** in the console, `POST /api/stop`, `POST /api/furnace/stop`, and `POST /api/sequence/stop` cancel remaining steps and attempt both output stops.
 A confirmed response requires verified stopped heat and gas. Otherwise the response remains unconfirmed.
-Stop is available regardless of lease ownership or expiry failure. Authentication and request-format checks still apply.
+Without a gas controller, or without gas readback, a stop remains unconfirmed.
+Stop is available regardless of lease ownership or expiry failure. The JSON, `X-MG400-Client`, and body-format checks still apply.
 
 Before host maintenance, coordinate shutdown with all clients.
 `mg400ctl stop furnace` and `mg400ctl restart furnace` refuse an active sequence or cooling gas plan.
@@ -174,7 +187,7 @@ All paths follow the configured base prefix.
 | --- | --- |
 | `GET /api/describe` | Command schemas and caps |
 | `GET /api/state` | Furnace, sequence, and gas state |
-| `GET /api/events` | Service events |
+| `GET /api/events` | Service events after sequence number `since` |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | Acquire, renew, or release the contract lease |
 | `POST /api/command` | Submit `connect`, `connect_flow`, `apply_setpoint`, `set_sequence`, `start_sequence`, `set_gas_flow`, `set_gas_valve`, or `inspect_gas_flow` |
 | `POST /api/stop`, `POST /api/furnace/stop`, `POST /api/sequence/stop` | Stop heat and gas, and cancel the sequence |
@@ -183,8 +196,14 @@ All paths follow the configured base prefix.
 | `POST /api/manual/heartbeat`, `POST /api/manual/renew`, `POST /api/manual/release` | Acquire, renew, or release the manual lease with an empty object |
 | `POST /api/furnace/acknowledge` | Acknowledge a fault. See above |
 
+`POST /api/stop` accepts an optional `wait_s` from `0` to `15`. The furnace service checks the value but does not wait. It returns `stop` and `state`.
+`POST /api/furnace/stop` and `POST /api/sequence/stop` accept only `{}` and return `ok`, `stop`, and `status`.
+The gas stop routes return `ok` and `status`. `ok` means only that the service is not locked. It does not prove zero flow.
+
 If connection fails, check the configured stable device paths and access permissions.
-The furnace uses `9600` baud, `8` data bits, no parity, and `1` stop bit. Match its configured slave address.
+The furnace uses `9600` baud, `8` data bits, no parity, and `1` stop bit. Match its configured slave address. The driver supports the AI-808 and AI-518P controllers.
+The gas line uses `9600` baud, `8` data bits, no parity, and `1` stop bit. The MFC addresses are `7`, `8`, and `9`. A Modbus relay at address `4` on the same line controls the gas solenoids.
 If control is refused, check the lease holder, caps, and fault before retrying explicitly.
 If a stop is unconfirmed, inspect the device and use physical protection. Do not treat a successful HTTP response as physical confirmation.
-Use `mg400ctl logs furnace` to read service events.
+After a configuration error, the service exits with status `2` and systemd does not restart it.
+Use `mg400ctl logs furnace` to read errors and service events.

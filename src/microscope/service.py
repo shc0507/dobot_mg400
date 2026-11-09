@@ -58,8 +58,8 @@ LOGGER = logging.getLogger(__name__)
 # Turret nudges in full steps, and their speed in MICRO 4 pulses/s.
 # These are the turret keys and speed of `python -m microscope.calibrate setup`.
 NUDGE_STEPS = (-10, -1, 1, 10)
-# The objective on each turret position, by side-camera marker ID.
-OBJECTIVE_NAMES = {0: "PENDING0", 1: "PENDING1", 2: "PENDING2", 3: "PENDING3"}
+# The objective on each turret position, by side-camera marker ID (ISO 8578 colour ring).
+OBJECTIVE_NAMES = {0: "5x", 1: "10x", 2: "20x", 3: "50x"}
 NUDGE_SPEED = 40
 # The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
 # Single frames, recordings and the device jobs keep the full frame.

@@ -569,3 +569,62 @@ def test_an_unconfigured_service_stays_not_configured_across_refreshes():
     finally:
         reads.set()
         wait_for(lambda: not dashboard.threads)
+
+
+AGENT = "agent-bench"
+
+
+def test_agent_page_idles_after_10_min_and_the_console_renews_its_leases(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    taken = post(rig, "control/stage/take", page=AGENT).get_json()["control"]
+    holder = taken["holder"]
+    assert re.fullmatch(r"agent-bench-[0-9a-f]{12}", holder) and stage.holder == holder
+    assert taken["idle_left_s"] == 600
+    # No page beat: the console renews the agent lease itself.
+    rig.clock.value += 1.0
+    wait_for(lambda: ("renew", holder) in stage.calls)
+    rig.clock.value += 590
+    time.sleep(0.05)
+    assert stage.holder == holder
+    # Any agent request stamps the beat.
+    assert post(rig, "command/stage", {"action": "move"}, page=AGENT).status_code == 202
+    rig.clock.value += 590
+    time.sleep(0.05)
+    assert stage.holder == holder
+    rig.clock.value += 11
+    wait_for(lambda: stage.holder is None)
+    assert ("release", holder) in stage.calls and rig.service.console.control() == []
+
+
+def test_agent_lease_lost_during_renewal_is_never_reacquired(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    stage.holder = "stage-panel"
+    rig.clock.value += 1.0
+    wait_for(lambda: rig.service.console.control() == [])
+    assert stage.holder == "stage-panel" and ("release", holder) not in stage.calls
+    assert sum(call[0] == "acquire" for call in stage.calls) == 1
+
+
+def test_agent_page_names_are_checked(rig):
+    response = post(rig, "control/stage/take", page="agent-" + "x" * 65)
+    assert response.status_code == 400
+    assert post(rig, "control/stage/take", page="agent-a b").status_code == 400
+    assert rig.devices["stage"].holder is None
+
+
+def test_state_route_reads_one_device_without_a_lease(rig):
+    stage = rig.devices["stage"]
+    response = rig.client.get("/lab/api/console/state/stage", headers=headers(AGENT))
+    body = response.get_json()
+    assert response.status_code == 200 and body["device"] == "stage"
+    assert body["state"]["connected"] is True and body["control"] is None
+    assert not any(call[0] in {"acquire", "renew"} for call in stage.calls)
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    body = rig.client.get("/lab/api/console/state/stage", headers=headers(AGENT)).get_json()
+    assert body["control"]["holder"] == holder and body["control"]["mine"] is True
+    other = rig.client.get("/lab/api/console/state/stage").get_json()
+    assert other["control"]["mine"] is False
+    assert rig.client.get("/lab/api/console/state/nope").status_code == 404

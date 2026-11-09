@@ -9,9 +9,14 @@ once and never retried.
 A stage hold runs on the console: a worker sends ``hold`` once, a ``keepalive``
 every ``HOLD_KEEPALIVE_S`` while the page refreshes the hold within
 ``HOLD_DEADMAN_S``, then ``release_hold`` once.
+
+An agent page (a page identity ``agent-<session>``, used by ``labctl``) is idle
+only after ``AGENT_IDLE_S`` without a request. The console renews its leases
+every ``AGENT_RENEW_S`` and names each agent identity after the session.
 """
 
 import copy
+import re
 import threading
 import time
 import uuid
@@ -23,6 +28,10 @@ from labkit.errors import ServiceError
 from ..clients import SERVICES
 
 BEAT_TIMEOUT_S = 3.0
+AGENT_PREFIX = "agent-"
+AGENT_PAGE = re.compile(r"agent-[A-Za-z0-9_.-]{1,64}")
+AGENT_IDLE_S = 600.0
+AGENT_RENEW_S = 1.0
 WATCH_INTERVAL_S = 0.2
 # A robot disable waits up to 5 s for the disabled mode and up to 5 s for rest.
 ROBOT_DISABLE_S = 12.0
@@ -50,6 +59,10 @@ def classify(error):
     if type(error) is ValueError:
         return "refused"
     return "unknown"
+
+
+def is_agent(page):
+    return isinstance(page, str) and page.startswith(AGENT_PREFIX)
 
 
 def deployed_commit(settings, root=None):
@@ -81,7 +94,8 @@ class Session:
     def __init__(self, device, page, identity, adapter, commands, now):
         self.device, self.page, self.identity = device, page, identity
         self.adapter, self.commands = adapter, commands
-        self.beat = self.started = now
+        self.beat = self.started = self.renewed = now
+        self.agent = is_agent(page)
         self.state = "held"
         self.renewing = False
         self.message = None
@@ -149,14 +163,35 @@ class Console:
                 late = [
                     item
                     for item in self.sessions.values()
-                    if item.state == "held" and now - item.beat > BEAT_TIMEOUT_S
+                    if item.state == "held" and now - item.beat > self._idle(item)
                 ]
                 for item in late:
                     item.state = "releasing"
-                    item.message = "No browser heartbeat for 3 s."
+                    item.message = (
+                        "No agent request for 10 min."
+                        if item.agent
+                        else "No browser heartbeat for 3 s."
+                    )
+                # The console renews agent leases itself; agents call only now and then.
+                due = [
+                    item
+                    for item in self.sessions.values()
+                    if item.agent
+                    and item.state == "held"
+                    and not item.renewing
+                    and now - item.renewed >= AGENT_RENEW_S
+                ]
+                for item in due:
+                    item.renewing, item.renewed = True, now
             for item in late:
                 self._end(item, release=True)
+            for item in due:
+                self._spawn(lambda item=item: self._renew(item), "renew-" + item.device)
             time.sleep(WATCH_INTERVAL_S)
+
+    @staticmethod
+    def _idle(item):
+        return AGENT_IDLE_S if item.agent else BEAT_TIMEOUT_S
 
     def _ensure_watcher(self):
         with self.lock:
@@ -165,10 +200,14 @@ class Console:
 
     # Clients ---------------------------------------------------------------
 
-    def _client(self, device, purpose):
+    def _client(self, device, purpose, page=None):
         if device not in SERVICES:
             raise ServiceError(404, "Unknown console device.")
-        identity = f"console-{purpose}-{uuid.uuid4().hex}"
+        if is_agent(page):
+            # The Control card then shows which agent session holds the device.
+            identity = f"{page}-{uuid.uuid4().hex[:12]}"
+        else:
+            identity = f"console-{purpose}-{uuid.uuid4().hex}"
         adapter = self.service.console_client(device, identity)
         if adapter is None:
             raise ServiceError(
@@ -217,20 +256,36 @@ class Console:
     # Control ---------------------------------------------------------------
 
     def entry(self, item, page=None):
-        return {
+        now = self.clock()
+        result = {
             "device": item.device,
             "holder": item.identity,
             "mine": page is not None and item.page == page,
             "state": item.state,
             "message": item.message,
-            "held_s": round(max(0.0, self.clock() - item.started), 1),
+            "held_s": round(max(0.0, now - item.started), 1),
         }
+        if item.agent:
+            result["idle_left_s"] = round(max(0.0, AGENT_IDLE_S - (now - item.beat)), 1)
+        return result
+
+    def touch(self, page):
+        """Stamp an agent page's sessions: every agent request counts as a beat."""
+        if not is_agent(page):
+            return
+        with self.lock:
+            now = self.clock()
+            for item in self.sessions.values():
+                if item.page == page and item.state == "held":
+                    item.beat = now
 
     def control(self, page=None):
         with self.lock:
             return [self.entry(item, page) for item in self.sessions.values()]
 
     def take(self, device, page):
+        if is_agent(page) and not AGENT_PAGE.fullmatch(page):
+            raise ValueError("Agent pages are agent- and 1 to 64 letters, digits, _, . or -.")
         with self.lock:
             if self.closing:
                 raise ServiceError(409, "The console is shutting down.")
@@ -248,7 +303,7 @@ class Console:
         try:
             if not self.service.dashboard_configured(device):
                 self.service.console_start_demo(device)
-            identity, adapter = self._client(device, "control")
+            identity, adapter = self._client(device, "control", page)
             description = adapter.describe()
             commands = description.get("commands") if isinstance(description, dict) else None
             if not isinstance(commands, dict):
@@ -339,7 +394,7 @@ class Console:
             ]
             for item in items:
                 item.beat = now
-            due = [item for item in items if not item.renewing]
+            due = [item for item in items if not item.renewing and not item.agent]
             for item in due:
                 item.renewing = True
         for item in due:
@@ -389,6 +444,7 @@ class Console:
             raise ValueError("Command params must be a JSON object.")
         if "action" in params:
             raise ValueError("Command params must not name an action.")
+        self.touch(page)
         item = self._owned(device, page)
         fresh = None
         if item is not None:
@@ -546,6 +602,7 @@ class Console:
         The service refuses it unless this page's identity holds the lease.
         The runner and the relay never reach these service routes.
         """
+        self.touch(page)
         item = self._owned(device, page)
         if item is None:
             raise ServiceError(409, "Take control of this device first.")
@@ -565,6 +622,24 @@ class Console:
             "command_id": command_id if isinstance(command_id, str) else None,
             "result": result if isinstance(result, dict) else None,
         }
+
+    def device_state(self, device, page=None):
+        """Read one device's full state with a fresh identity and no lease."""
+        _, adapter = self._client(device, "read")
+        try:
+            value = adapter.state()
+        except Exception as exc:
+            if classify(exc) == "refused":
+                raise ServiceError(409, self.service.dashboard.text(str(exc))) from exc
+            raise ServiceError(502, "The service state read failed.") from exc
+        finally:
+            self._close(adapter)
+        if not isinstance(value, dict):
+            raise ServiceError(502, "The service returned an invalid object.")
+        with self.lock:
+            item = self.sessions.get(device)
+            control = self.entry(item, page) if item is not None else None
+        return {"device": device, "state": value, "control": control}
 
     def read(self, device, path):
         """Read one service route with a fresh identity and no lease."""

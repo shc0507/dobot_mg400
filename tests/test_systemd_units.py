@@ -60,7 +60,6 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-vision.service",
         "mg400-microscope.service",
         "mg400-orchestrator.service",
-        "mg400-gateway.service",
     ],
 )
 def test_services_with_settings_read_the_shared_environment_file(name):
@@ -127,7 +126,6 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-microscope.service": ["dialout video"],
         "mg400-orchestrator.service": [],
         "mg400-proxy.service": [],
-        "mg400-gateway.service": [],
     }
 
 
@@ -196,13 +194,6 @@ def test_orchestrator_drains_shutdown():
     ]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert service["TimeoutStopSec"] == ["infinity"]
-
-
-def test_gateway_has_no_device_groups():
-    service = unit_sections("mg400-gateway.service")["Service"]
-    assert command("mg400-gateway.service") == ["/opt/mg400/.venv/bin/python", "-m", "gateway"]
-    assert service["RestartPreventExitStatus"] == ["2"]
-    assert not service.get("SupplementaryGroups")
 
 
 def test_camera_capture_reads_the_generated_configuration():

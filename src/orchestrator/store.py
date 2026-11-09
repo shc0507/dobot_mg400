@@ -93,10 +93,6 @@ class RunStore:
                     chip_id TEXT, step INTEGER, kind TEXT NOT NULL,
                     data_json TEXT NOT NULL, created_at REAL NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS gateway_calls (
-                    id INTEGER PRIMARY KEY, caller TEXT NOT NULL, tool TEXT NOT NULL,
-                    arguments_json TEXT NOT NULL, created_at REAL NOT NULL
-                );
             """)
 
     def _check(self, path, *, directory=False):
@@ -231,39 +227,6 @@ class RunStore:
         if type(offset) is not int or not 0 <= offset <= 1000000:
             raise ValueError("Read offset must be an integer from 0 to 1000000.")
         return -1 if limit is None else limit, offset
-
-    def audit_call(self, caller, tool, arguments):
-        """Commit a gateway call independently of any recipe run, before its read."""
-        if (
-            not isinstance(caller, str)
-            or not caller.strip()
-            or len(caller) > 128
-            or any(not " " <= char <= "~" for char in caller)
-        ):
-            raise ValueError("Audit caller must contain 1 to 128 printable characters.")
-        # Keep original invalid names/arguments, including escaped surrogates.
-        # Escaping can expand the transport's bounded 64 KiB request body.
-        tool_json = json.dumps(tool, ensure_ascii=True, allow_nan=False)
-        payload = json.dumps(arguments, ensure_ascii=True, allow_nan=False)
-        if len(tool_json) + len(payload) > 524288:
-            raise ValueError("Audit call exceeds 512 KiB.")
-        with self._lock, self._db:
-            row = self._db.execute(
-                "INSERT INTO gateway_calls(caller,tool,arguments_json,created_at) VALUES(?,?,?,?)",
-                (caller, tool_json, payload, time.time()),
-            )
-            return row.lastrowid
-
-    def audit_calls(self, *, limit=100, offset=0):
-        """Read bounded audit records without requiring a run identity."""
-        page = self._page(limit, offset)
-        with self._lock:
-            return [
-                {**dict(row), "tool": json.loads(row["tool"])}
-                for row in self._db.execute(
-                    "SELECT * FROM gateway_calls ORDER BY id DESC LIMIT ? OFFSET ?", page
-                )
-            ]
 
     def runs(self, *, limit=None, offset=0, chip_id=None):
         page = self._page(limit, offset)

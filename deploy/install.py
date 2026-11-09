@@ -281,7 +281,7 @@ FIXED_SETTINGS = {
 
 def obsolete(key, value):
     """Removed settings: service tokens, and empty settings that are not in the example."""
-    return (key.endswith("_TOKEN") and key != "MG400_GATEWAY_TOKEN") or not value
+    return key.endswith("_TOKEN") or not value
 
 
 def merge_settings(current, example):
@@ -833,7 +833,7 @@ def install(args, host, run, chown, out):
     if "microscope" in selected:
         directory(host.data / "calibration/microscope", 0o750, service)
         directory(host.data / "recordings", 0o750, service)
-    if {"orch", "gateway", "microscope"} & selected.keys():
+    if {"orch", "microscope"} & selected.keys():
         directory(host.data / "runs", 0o750, service)
     if "orch" in selected:
         directory(host.data / "zones", 0o750, service)

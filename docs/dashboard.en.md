@@ -46,7 +46,6 @@ The workspaces send manual commands through the console. The console forwards ea
 - **Run** shows the current run and its steps. The card shows only while a run exists. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service. Only a warning or an error shows its level. A successful vision inference is not an event.
 - **Safety** gives **Stop heat and gas** and **Stop all gas**. **STOP ALL MOTION** is in the header. Each button acts on 1 press. The stop result band shows the results.
-- **Agent proposals** shows the number of waiting proposals. The card shows only while 1 or more proposals wait. See [agent proposals](#agent-proposals).
 
 ### Motion workspace
 
@@ -167,10 +166,6 @@ If a result is unknown, check the device and follow its recovery procedure befor
 ## Run control and recovery
 
 The console has no controls yet to hold, abort, or recover a run. Use the run routes of the [recipe service](orchestrator.en.md#http-service).
-
-## Agent proposals
-
-The console has no controls yet to approve agent proposals. The Overview shows only the number of waiting proposals. See the [gateway policy](agent-gateway.en.md#approval-policy) for supported steps and limits.
 
 ## Chip passport
 

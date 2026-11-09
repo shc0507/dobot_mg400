@@ -31,10 +31,9 @@ WuLab is a lab automation stack on one host (Olares). The **WuLab Console** is t
 
 - Access is over the VPN at `http://100.64.0.1:8080/` (the console is at `/lab/`). The VPN is the access boundary. The console checks no token.
 - The physical emergency stop must stay within reach during hardware operation. A web button is not a safety interlock.
-- Workspaces: **Overview** (run, events, safety, agent proposals), **Motion** (robot arm, cameras, stage, keyboard jog), **Cameras** (6 views), **Furnace + microscope**.
+- Workspaces: **Overview** (run, events, safety), **Motion** (robot arm, cameras, stage, keyboard jog), **Cameras** (6 views), **Furnace + microscope**.
 - Demo mode runs the console offline with simulated devices. Agents use rehearsal only.
 - Other pages: the chip passport (`/chip`). Instrument services also have their own panels.
-- An MCP agent gateway can read state and propose catalog recipes for human approval. It cannot approve or start runs or command devices. The console shows only the count of waiting proposals.
 
 ## Capabilities and Constraints
 
@@ -50,7 +49,7 @@ WuLab is a lab automation stack on one host (Olares). The **WuLab Console** is t
   - Stage: soft limits, when they are configured.
 - **Outcomes:** a command is sent 1 time. An unknown outcome shows as unknown and is not retried. Status older than 3 seconds shows as stale.
 - **Implementation:** server-rendered Flask pages with plain JavaScript and CSS (`src/orchestrator/web/`). Workspace CSS is prefixed `#ws-<id>` and uses the shell classes and colors from `shell.css`. See `docs/agents/console-design/CONTRACT.md`.
-- **Not built yet:** console controls to hold, abort or recover a run, and to approve agent proposals.
+- **Not built yet:** console controls to hold, abort or recover a run.
 - **Terminology:** use the terms in `GLOSSARY.md` (for example chip, not wafer; lease; station; clearance position).
 
 ## Brand Commitments

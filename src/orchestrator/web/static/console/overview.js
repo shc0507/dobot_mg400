@@ -17,7 +17,6 @@
       "control.thisPage": "This page", "control.console": "Console (other page)", "control.unknown": "Unknown",
       "control.take": "Take control", "control.release": "Release",
       "control.takeLabel": "Take control of {device}", "control.releaseLabel": "Release {device}",
-      "proposals.title": "Agent proposals", "proposals.count": "{count} waiting.",
     },
     zh: {
       "run.title": "运行", "run.status": "状态：{status}",
@@ -28,7 +27,6 @@
       "control.thisPage": "本页", "control.console": "控制台（其他页面）", "control.unknown": "未知",
       "control.take": "获取控制", "control.release": "释放",
       "control.takeLabel": "获取 {device} 的控制", "control.releaseLabel": "释放 {device}",
-      "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。",
     },
   };
 
@@ -125,13 +123,11 @@
       el("div", { class: "lc-card-head" }, el("h2", { id: "ov-control", text: t("control.title") }), n.releaseAll),
       el("div", { class: "lc-rows" }, ...n.rows.map(row => row.node)));
 
-    // The run and the proposals cards show only when they have content.
-    n.proposals = el("p", { class: "lc-muted" });
+    // The run card shows only when it has content.
     n.runCard = section("ov-run", t("run.title"), n.run);
-    n.proposalsCard = section("ov-proposals", t("proposals.title"), n.proposals);
     view.root.replaceChildren(el("div", { class: "lc-layout" },
       el("div", { class: "lc-col-main" }, controlCard, n.runCard, events),
-      el("aside", { class: "lc-col-side" }, safetyCard, n.proposalsCard)));
+      el("aside", { class: "lc-col-side" }, safetyCard)));
     update();
   }
 
@@ -186,10 +182,6 @@
       row.button.setAttribute("aria-label", t(row.mine ? "control.releaseLabel" : "control.takeLabel", { device: deviceName(row.device) }));
     }
     n.releaseAll.disabled = !(snapshot?.control || []).some(item => item.state === "held");
-
-    const waiting = (snapshot?.approvals || []).filter(item => item.decision === "pending").length;
-    setText(n.proposals, waiting ? t("proposals.count", { count: waiting }) : "");
-    n.proposalsCard.hidden = !waiting;
   }
 
   async function loadEvents() {

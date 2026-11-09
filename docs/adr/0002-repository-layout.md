@@ -20,7 +20,7 @@
 | `src/labkit` | 共用访问检查、租约、事件、服务契约和 HTTP 客户端 |
 | `src/vision`, `src/thermal_cam`, `src/furnace` | 定位、QR 读取、热成像和炉子及气体控制 |
 | `src/toupcam_camera`, `src/cameras`, `src/microscope` | 共用 Toupcam 支持、UVC 摄像头和显微镜控制 |
-| `src/orchestrator`, `src/gateway`, `src/analysis` | 配方与运行记录、智能体访问，以及后续图像指标与优化 |
+| `src/orchestrator`, `src/analysis` | 配方与运行记录，以及后续图像指标与优化 |
 | `apps/control_panel`, `recipes`, `config`, `deploy` | 机械臂页面、TOML 配方、配置和安装 |
 | `firmware/three-motor-demo`, `firmware/microscope-axes` | 位移台和显微镜固件 |
 | `docs`, `docs/adr`, `docs/agents`, `tests` | 人员指南、决定、智能体流程和离线测试 |

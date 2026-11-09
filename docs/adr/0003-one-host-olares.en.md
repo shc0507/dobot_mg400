@@ -22,7 +22,6 @@ Connect every lab device to Olares and run its services there. Each device has 1
 | Thermal / furnace / microscope | 8768 / 8769 / 8770 |
 | Vision | 8771, loopback |
 | Orchestrator and dashboard | 8772 |
-| Agent gateway | 8773, loopback |
 
 - Store settings in `/etc/mg400/mg400.env`. The file holds only hardware facts. Bind addresses and ports are fixed defaults in code. Code and units contain no host-specific addresses or paths.
 - `MG400_OPTIONAL_SERVICES` selects optional services. The installer prepares only those. Most services use `/opt/mg400/.venv`. Vision uses `/opt/mg400/.venv-vision`.

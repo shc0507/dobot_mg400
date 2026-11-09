@@ -376,7 +376,8 @@ def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, 
     assert installed.read_bytes() == binary.read_bytes() and mode(installed) == 0o755
     config = host.root / "etc/mg400/go2rtc.yaml"
     assert mode(config) == 0o640
-    assert config.read_text() == module.render_go2rtc(DEVICES)
+    # The offline runner accepts the NVENC probe.
+    assert config.read_text() == module.render_go2rtc(DEVICES, nvenc=True)
     assert config.read_text().startswith("api:\n  listen: 127.0.0.1:1984\n")
     assert (
         f"  camera3: v4l2:device?video={DEVICES[2]}"
@@ -1574,7 +1575,45 @@ def test_installer_renders_side_stream_capture_size(host, module, tmp_path):
     binary.write_bytes(b"offline executable")
     assert host.install("--go2rtc", str(binary)) == 0
     config = (host.root / "etc/mg400/go2rtc.yaml").read_text()
-    assert config == module.render_go2rtc(DEVICES, [(1280, 720), (3840, 2160), (1280, 720)])
+    sizes = [(1280, 720), (3840, 2160), (1280, 720)]
+    assert config == module.render_go2rtc(DEVICES, sizes, nvenc=True)
+
+
+def test_previews_fall_back_to_libx264_without_nvenc(host, module, tmp_path):
+    host.settings.parent.mkdir(parents=True)
+    host.settings.write_text(f"MG400_CAMERA_DEVICES={','.join(DEVICES)}\n")
+    binary = tmp_path / "go2rtc"
+    binary.write_bytes(b"offline executable")
+
+    calls = []
+
+    def fallback(command, **options):
+        calls.append(command)
+        if "h264_nvenc" in command:
+            return SimpleNamespace(returncode=1, stdout="", stderr="No NVENC capable devices")
+        if command[1:3] == ["-c", "import sys; print(sys.version_info >= (3, 12))"]:
+            return SimpleNamespace(returncode=0, stdout="True\n", stderr="")
+        if command[:2] == ["systemctl", "show"]:
+            return SimpleNamespace(returncode=0, stdout="MainPID=0\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="abc1234\n", stderr="")
+
+    assert host.install("--go2rtc", str(binary), runner=fallback) == 0
+    config = (host.root / "etc/mg400/go2rtc.yaml").read_text()
+    assert config == module.render_go2rtc(DEVICES)
+    assert "-c:v libx264" in config and "bitrate=4M" in config
+    assert any("h264_nvenc" in command for command in calls)
+    assert "encode H.264 with libx264" in host.out.getvalue()
+
+
+def test_nvenc_previews_keep_fast_start_and_use_3_mbit(module):
+    rendered = module.render_go2rtc(DEVICES, nvenc=True)
+    h264 = next(line for line in rendered.splitlines() if line.startswith("  h264: "))
+    assert "-c:v h264_nvenc" in h264 and "-fps_mode passthrough" in h264
+    assert "-forced-idr 1" in h264 and "-force_key_frames expr:gte(t,n_forced)" in h264
+    assert "libx264" not in rendered
+    for number in range(1, 4):
+        assert f"  camera{number}_h264: ffmpeg:camera{number}#video=h264#bitrate=3M\n" in rendered
+    assert "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n" in rendered
 
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])

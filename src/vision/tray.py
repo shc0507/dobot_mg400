@@ -216,7 +216,9 @@ def cross_check_slots(
 ):
     """Check each groove; unknown evidence cannot pass or imply an empty slot.
 
-    Station values are robot XY pairs. A chip observation is explicitly
+    Station values are robot XY pairs, or None for a slot that has no taught
+    station (a cup pick at the observed XY); then only the chip is checked.
+    A chip observation is explicitly
     {"state": "present", "center_xy_mm": [x, y]}, {"state": "empty"}, or
     {"state": "unknown"}. Empty/unknown mappings do not assert emptiness.
     """
@@ -245,7 +247,7 @@ def cross_check_slots(
         station_error, chip_error, separation = None, None, None
         if ident not in taught_stations:
             missing.append("taught_station")
-        else:
+        elif taught_stations[ident] is not None:
             station = _finite_array(taught_stations[ident], "taught station XY", shape=(2,))
             station_error = _segment_residual(station, segment)
             if station_error > tolerance:

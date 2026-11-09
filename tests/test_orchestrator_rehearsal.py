@@ -53,19 +53,25 @@ def wait_for(predicate, timeout=5):
 @pytest.mark.parametrize("path", RECIPES, ids=lambda path: path.name)
 def test_every_recipe_rehearses_without_hardware(tmp_path, path, monkeypatch):
     assert RECIPES
-    if path.name == "tray-transfer.toml":
-        from test_recipe_tray_transfer import run_tray_rehearsal
+    if path.name in {"tray-transfer.toml", "chip-pick.toml"}:
+        from test_recipe_tray_transfer import _cup_configuration, run_tray_rehearsal
 
         def no_port(*args, **kwargs):
             pytest.fail("The new tray acceptance case must not bind or connect a port")
 
+        cup = path.name == "chip-pick.toml"
         with monkeypatch.context() as patch:
             for method in ("bind", "listen", "connect"):
                 patch.setattr(socket.socket, method, no_port)
-            result = run_tray_rehearsal(tmp_path, patch)
+            if cup:
+                result = run_tray_rehearsal(
+                    tmp_path, patch, configure=_cup_configuration(patch), pick="source"
+                )
+            else:
+                result = run_tray_rehearsal(tmp_path, patch)
         assert result["status"] == "completed", result
         assert all(step["status"] == "completed" for step in result["row"]["steps"])
-        assert result["occupancy"] == {"source": False, "target": True}
+        assert result["occupancy"] == {"source": False, "target": not cup}
         return
     registry = default_registry()
     recipe = load_recipe(path, registry)

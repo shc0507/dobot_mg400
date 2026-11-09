@@ -36,7 +36,6 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
         calibration_options = calibration_settings(
             {
                 "nominal_tag_height_mm": float(env.get("MG400_VISION_TAG_HEIGHT_MM") or "100"),
-                "nominal_distance_mm": float(env.get("MG400_VISION_TAG_TIP_MM") or "246"),
                 "rms_limit_mm": float(env.get("MG400_VISION_CALIBRATION_RMS_MM") or "1"),
             }
         )

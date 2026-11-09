@@ -50,7 +50,8 @@ Command-line options override environment settings. Empty environment values use
 | `MG400_VISION_FRAME_TIMEOUT` | `--frame-timeout` | `2` seconds for each HTTP socket operation and the body-read deadline. Finite and greater than 0 |
 | None | `--demo` | Use offline fixtures without the detector runtime |
 
-Calibration uses fixed defaults: the camera-model directory `/var/lib/mg400/calibration/cameras/`, a nominal arm-tag height of `100` mm above the flange, a nominal tag-to-tip distance of `246` mm, and an acceptance limit of `1` mm RMS.
+Calibration uses fixed defaults: the camera-model directory `/var/lib/mg400/calibration/cameras/`, a nominal arm-tag height of `100` mm above the flange, and an acceptance limit of `1` mm RMS.
+The nominal tag-to-tip distance is the nominal tag height plus `tool_dz_mm`.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 Configuration and startup failures exit with status 2.
 
@@ -135,12 +136,13 @@ Calibration uses 3 leased commands:
 | Command | Parameters and result |
 | --- | --- |
 | `read_markers` | `camera`. Returns `markers` with `id` and `center_px`, plus `image_size`, `camera_device`, `frame_sha256`, and `read_at`. |
-| `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, `image_size`, and `scan_r_deg`. Fits and stores the model through the owned lease. |
+| `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, `image_size`, `scan_r_deg`, and `tool_dz_mm`. Fits and stores the model through the owned lease. |
 | `check_calibration` | `camera`, `flange_mm`, and optional `limit_px`. Returns the marker 4 check from the same frame. |
 
 `tag_points` contains 24 uncorrected flange XYZ rows. `tag_pixels` contains their 24 pixel XY rows.
 The fitter applies the nominal tag height to these grid points.
 `scan_r_deg` is the flange R of all 24 grid points, in degrees.
+`tool_dz_mm` is the measured tool Z offset from the tool file, in millimeters.
 `tray_points` contains 2 to 4 rows with transformed fingertip XY and original contact flange Z.
 The skill rotates the configured tool XY offset by each recorded R, then adds it to the reference flange XY.
 It preserves flange Z for the unknown-distance fit, without applying the tool Z offset.
@@ -255,7 +257,8 @@ It uses `cv2.calibrateCamera` with `CALIB_USE_INTRINSIC_GUESS` and radial `k1` a
 The remaining 6 tag points never participate in fitting.
 
 The joint fit also uses the tray references to recover `D`, the vertical tag-to-tip distance.
-Its default nominal value is 246 mm, with a fixed permitted difference of 10 mm.
+Its nominal value is the nominal tag height plus `tool_dz_mm`, with a fixed permitted difference of 10 mm.
+After a tool change, write the measured offset first, then calibrate.
 The nominal tag height above the flange defaults to 100 mm.
 The fit reports `distance_mm` and separate `rms_mm.held_out` and `rms_mm.tray` values.
 
@@ -383,7 +386,7 @@ It uses these fields:
 | --- | --- |
 | `camera` | Calibrated camera number, from 1 to 4. |
 | `tray` | Validated tray-model document, not a host file path. |
-| `targets` | Requested slot IDs mapped to their exact taught robot XY pairs. |
+| `targets` | Requested slot IDs mapped to their exact taught robot XY pairs. A `null` value means that the slot has no taught station. Then only the chip is checked. |
 | `axis` | `long` or `short`, according to the explicit suction convention. |
 
 The complete JSON command must fit within 16 KiB. A valid tray file does not guarantee that its command fits.
@@ -402,6 +405,7 @@ Stop, lease loss, invalid metadata, or revoked publication prevents the service 
 
 The `vision.find_chip(slot)` and `vision.slot_state(slot)` skills require fresh owned stationary robot state and a calibration drift check.
 The composite `vision.tray_transfer` also requires a measured suction convention and exact taught slot targets.
+The cup skill `vision.pick_chip(slot)` does not require slot stations. See [cup chip pick](orchestrator.en.md#cup-chip-pick).
 It keeps observation results within the guarded step and checks camera, image dimensions, and calibration identity across the observations.
 See [vision-guided tray transfer](orchestrator.en.md#vision-guided-tray-transfer) for configuration and the supervised workflow.
 
@@ -460,7 +464,7 @@ Low resolution, occlusion, or tilt can prevent a conclusive comparison.
 ### Check station and chip evidence
 
 Call `cross_check_slots` with explicit evidence keyed by slot ID.
-`taught_stations` maps each slot to a taught robot XY pair.
+`taught_stations` maps each slot to a taught robot XY pair. A `None` value checks only the chip.
 `chips` supplies one of these observations for each slot:
 
 | Observation | Meaning |

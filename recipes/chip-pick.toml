@@ -1,0 +1,15 @@
+name = "Cup chip pick"
+version = 1
+
+[params.slot]
+type = "string"
+
+[params.speed]
+type = "integer"
+default = 1
+
+[[steps]]
+skill = "vision.pick_chip"
+params = { slot = "${slot}", speed = "${speed}" }
+timeout_s = 120
+on_fail = "hold"

@@ -50,7 +50,8 @@ GPU 内存配置在模型加载前执行。
 | `MG400_VISION_FRAME_TIMEOUT` | `--frame-timeout` | 每次 HTTP 套接字操作和响应正文读取的时限均为 `2` 秒。必须有限且大于 0 |
 | 无 | `--demo` | 使用离线数据，不加载检测运行库 |
 
-校准使用固定默认值：相机模型目录 `/var/lib/mg400/calibration/cameras/`，机械臂标记高于法兰的名义高度 `100` mm，标记到指尖的名义距离 `246` mm，验收阈值 `1` mm RMS。
+校准使用固定默认值：相机模型目录 `/var/lib/mg400/calibration/cameras/`，机械臂标记高于法兰的名义高度 `100` mm，验收阈值 `1` mm RMS。
+标记到指尖的名义距离等于名义标记高度加 `tool_dz_mm`。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 配置或启动失败时，退出码为 2。
 
@@ -136,12 +137,13 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 | 命令 | 参数与结果 |
 | --- | --- |
 | `read_markers` | `camera`。返回含 `id` 和 `center_px` 的 `markers`，以及 `image_size`、`camera_device`、`frame_sha256` 和 `read_at`。 |
-| `calibrate_camera` | `camera`、`tag_points`、`tag_pixels`、`tray_points`、`tray_pixels`、`image_size` 和 `scan_r_deg`。在持有租约时拟合并保存模型。 |
+| `calibrate_camera` | `camera`、`tag_points`、`tag_pixels`、`tray_points`、`tray_pixels`、`image_size`、`scan_r_deg` 和 `tool_dz_mm`。在持有租约时拟合并保存模型。 |
 | `check_calibration` | `camera`、`flange_mm` 和可选 `limit_px`。返回同一图像的标记 4 检查。 |
 
 `tag_points` 包含 24 行未经修正的法兰 XYZ，`tag_pixels` 包含对应的 24 行像素 XY。
 拟合程序为这些网格点加上名义标记高度。
 `scan_r_deg` 是全部 24 个网格点的法兰 R，单位为度。
+`tool_dz_mm` 是工具文件中的实测工具 Z 偏移，单位为毫米。
 `tray_points` 包含 2 到 4 行修正后的指尖 XY 和原始接触法兰 Z。
 技能按各参考点记录的 R 旋转配置工具的 XY 偏移，再加到参考法兰 XY。
 它保留法兰 Z，用于拟合未知距离，不应用工具 Z 偏移。
@@ -256,7 +258,8 @@ go2rtc 不提供采集时间戳或传感器帧 ID。`read_at` 是服务读取时
 其余 6 个标记点始终不参与拟合。
 
 联合拟合还使用托盘参考点，恢复标记到指尖的垂直距离 `D`。
-其名义值默认为 246 mm，固定允许偏差为 10 mm。
+其名义值等于名义标记高度加 `tool_dz_mm`，固定允许偏差为 10 mm。
+更换工具后，先写入实测偏移，再标定。
 标记高于法兰的名义高度默认为 100 mm。
 拟合报告 `distance_mm`，并分别报告 `rms_mm.held_out` 和 `rms_mm.tray`。
 
@@ -384,7 +387,7 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 | --- | --- |
 | `camera` | 已校准的相机编号，范围为 1 到 4。 |
 | `tray` | 通过校验的托盘模型文档，不是主机文件路径。 |
-| `targets` | 请求的槽位 ID，以及各槽位准确的示教机器人 XY 对。 |
+| `targets` | 请求的槽位 ID，以及各槽位准确的示教机器人 XY 对。值为 `null` 时，该槽位没有示教工位，只检查芯片。 |
 | `axis` | 按显式吸取约定选择 `long` 或 `short`。 |
 
 完整 JSON 命令不得超过 16 KiB。托盘文件有效，不代表完整命令符合大小限制。
@@ -403,6 +406,7 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 
 `vision.find_chip(slot)` 和 `vision.slot_state(slot)` 技能要求新鲜、已持有控制权的静止机器人状态，并执行校准漂移检查。
 组合技能 `vision.tray_transfer` 还要求实测吸取约定和准确的示教槽位目标。
+吸盘技能 `vision.pick_chip(slot)` 不要求槽位工位，见[吸盘取芯片](orchestrator.md#吸盘取芯片)。
 它把观测结果保留在受保护步骤内，并检查各次观测的相机、图像尺寸和校准身份。
 配置和监督流程见[视觉引导的托盘转移](orchestrator.md#视觉引导的托盘转移)。
 
@@ -461,7 +465,7 @@ cross_check_slots(location, *, taught_stations, chips,
 ### 检查工位与芯片证据
 
 调用 `cross_check_slots` 时，按槽位 ID 显式提供证据。
-`taught_stations` 把每个槽位映射到示教机器人 XY 坐标对。
+`taught_stations` 把每个槽位映射到示教机器人 XY 坐标对。值为 `None` 时，只检查芯片。
 `chips` 为每个槽位提供下列一种观察：
 
 | 观察 | 含义 |

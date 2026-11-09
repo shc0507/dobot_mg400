@@ -119,10 +119,17 @@ def _check_calibration(ctx, camera, robot):
     return result
 
 
-class _TrayInputs:
-    """Explicit physical inputs, pinned once per guarded transfer."""
+TRAY_STATION = "tray"
 
-    def __init__(self, robot, slots):
+
+class _TrayInputs:
+    """Explicit physical inputs, pinned once per guarded transfer.
+
+    With cup=True the slots need no taught stations and no chip-axis or R
+    settings: the round cup picks at the observed XY with the tray station's R.
+    """
+
+    def __init__(self, robot, slots, *, cup=False):
         def setting(name):
             key = "MG400_ORCH_" + name
             value = os.environ.get(key)
@@ -146,15 +153,19 @@ class _TrayInputs:
             return value
 
         self.camera = integer("TRAY_CAMERA", 1, 4)
-        self.axis = setting("CHIP_AXIS")
-        if self.axis not in {"long", "short"}:
-            raise ValueError("CHIP_AXIS must explicitly select long or short.")
-        self.offset = number("CHIP_R_OFFSET_DEG")
-        self.minimum, self.maximum = number("CHIP_R_MIN_DEG"), number("CHIP_R_MAX_DEG")
-        if not 0 < self.maximum - self.minimum < 180:
-            raise ValueError(
-                "The taught chip-R interval must be nonempty and narrower than 180 degrees."
-            )
+        if cup:
+            # The service reports an axis angle; the round cup does not use it.
+            self.axis = "long"
+        else:
+            self.axis = setting("CHIP_AXIS")
+            if self.axis not in {"long", "short"}:
+                raise ValueError("CHIP_AXIS must explicitly select long or short.")
+            self.offset = number("CHIP_R_OFFSET_DEG")
+            self.minimum, self.maximum = number("CHIP_R_MIN_DEG"), number("CHIP_R_MAX_DEG")
+            if not 0 < self.maximum - self.minimum < 180:
+                raise ValueError(
+                    "The taught chip-R interval must be nonempty and narrower than 180 degrees."
+                )
         raw = _read_tray(setting("TRAY_FILE"))
         self.tray = tomllib.loads(raw.decode("utf-8"))
         # The service performs full geometric model validation before returning
@@ -174,6 +185,11 @@ class _TrayInputs:
             raise ValueError("Tray slot IDs are ambiguous.")
         self.targets = {}
         for slot in slots:
+            if cup:
+                if not isinstance(slot, str) or slot not in ids:
+                    raise ValueError("The requested slot must name a tray slot.")
+                self.targets[slot] = None
+                continue
             if not isinstance(slot, str) or slot not in ids or slot not in robot.stations:
                 raise ValueError("Each requested slot needs its exact explicitly taught station.")
             station = robot.stations[slot]
@@ -305,6 +321,31 @@ def find_chip(ctx, slot: str):
     if result["state"] != "present":
         raise RuntimeError("No chip is present in the requested source slot.")
     return result
+
+
+def pick_chip(ctx, slot: str, *, speed: int = 1):
+    """Pick the chip seen in one tray slot with the suction cup; the chip stays held.
+
+    XY is the calibrated observation. Z, R, approach, zone and route come from the
+    one taught station "tray": its Z is the cup pick height on a chip top.
+    """
+    robot = _Transfer(ctx, speed)
+    if TRAY_STATION not in robot.stations:
+        raise ValueError(f'Teach the station "{TRAY_STATION}": the cup tip on a chip in the tray.')
+    inputs = _TrayInputs(robot, [slot], cup=True)
+    robot.check_speed()
+    baseline = _check_calibration(ctx, inputs.camera, robot)
+    seen = _observe(ctx, robot, inputs, baseline)["slots"][slot]
+    if seen["state"] != "present":
+        raise RuntimeError("No chip is present in the requested slot.")
+    x_mm, y_mm = seen["center_xy_mm"]
+    route = robot.measured_source(
+        TRAY_STATION, x_mm=x_mm, y_mm=y_mm, r_deg=robot.stations[TRAY_STATION]["r_deg"]
+    )
+    (planned,) = robot.plan(route)
+    with _RouteZones(ctx.zones) as zones:
+        robot.pick(planned, zones)
+    return {"slot": slot, "center_xy_mm": [x_mm, y_mm], "observed": seen}
 
 
 def tray_transfer(ctx, from_slot: str, to_slot: str, *, speed: int = 1):

@@ -314,6 +314,22 @@ labctl station rm tray-pick
 
 写入或文件同步失败时，旧文件保持不变。替换后的目录同步失败会报错，但新文件可能已经可见。遇到该错误后，先检查工位文件，再重复编辑。
 
+### 更换工具偏移
+
+更换工具后，用 `retool` 写入新的实测偏移。已有工位时，不得手动编辑 `tool.toml`。
+
+```sh
+labctl station retool --offset DX DY DZ
+```
+
+把 `DX`、`DY` 和 `DZ` 替换为实测值，单位为毫米。命令按以下顺序执行：
+
+1. 把 `stations.toml` 和 `tool.toml` 复制到同一目录下的 `NAME.bak-<UTC time>`。
+2. 换算每个工位，使其法兰位姿不变。接近距离、区域、路线和 `saved_at` 不变。
+3. 写入新的 `tool.toml`。
+
+换算后的工位超出指尖工作空间时，命令停止，不修改任何文件。修改工作空间边界，或重新示教该工位。在没有配方运行时执行此命令。`--stations-file PATH` 和 `--tool-file PATH` 覆盖路径。命令输出新旧偏移、备份路径和换算后的工位。
+
 ## 工位转移
 
 `robot.pick` 和 `robot.place` 使用工位名称。`robot.transfer` 把两者组合起来，公开参数为 `from` 和 `to`。这些名称与其他配方参数一样，接受完整的类型和未知字段检查。
@@ -400,6 +416,20 @@ uv run labctl run recipes/tray-transfer.toml --param 'from_slot="YOUR_SOURCE_SLO
 
 把两个占位符替换为准确的示教槽位 ID。硬件运行期间，操作员须始终守在急停旁。
 
+## 吸盘取芯片
+
+`recipes/chip-pick.toml` 要求字符串参数 `slot`。其步骤 `vision.pick_chip` 用吸盘吸取该托盘槽位中看到的芯片。步骤结束后，芯片保持吸住。在后续步骤中放置芯片，例如 `robot.place`。
+
+- XY 取步骤观测到的已校准芯片中心。
+- Z、R、接近距离、区域和路线取自 1 个名为 `tray` 的示教工位。示教时，把吸盘端点放在托盘内芯片的上表面。
+- 该步骤不需要槽位工位，也不需要 `CHIP_AXIS` 或 `CHIP_R_*` 配置。它需要 `MG400_ORCH_TRAY_FILE` 和 `MG400_ORCH_TRAY_CAMERA`。
+
+吸取前，步骤执行校准漂移检查和 1 次槽位观测。槽位必须恰好有 1 个芯片。证据缺失或含糊时，运行在运动前暂停。机器人必须从 1 个示教工位或其接近点出发，并位于已校准网格内。机械臂遮挡槽位，因此吸取后步骤不再检查该槽位。
+
+```sh
+uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'
+```
+
 ## 坩埚装载与卸载
 
 `crucible.load` 把芯片从示教托盘工位转移到 `crucible-load`，再插入坩埚。
@@ -474,7 +504,7 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 演示电动台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
 高温炉演示持有自己的串口模拟器和临时状态。坩埚操作单元不发送加热或供气命令。
 
-安装后，`labctl` 和 `mg400ctl` 使用同一分派器。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show` 或 `station rm`。管理命令仍要求 root。
+安装后，`labctl` 和 `mg400ctl` 使用同一分派器。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show`、`station rm` 或 `station retool`。管理命令仍要求 root。
 
 root 调用配方或工位命令时，分派器先用 `runuser --pty` 切换至 UID/GID 1000，再启动 Python。它使用安装后的解释器绝对路径，并传入 `-I`。子进程接收主机配置文件中所有非空的 `MG400_*` 配置和固定的服务 URL。
 

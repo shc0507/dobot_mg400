@@ -298,6 +298,24 @@ def test_chip_y_is_measured_and_can_differ_from_station_y(location):
     assert chips["groove_06"]["center_xy_mm"][1] == 160
 
 
+def test_a_none_station_checks_only_the_observed_chip(location):
+    stations, chips = _evidence(location)
+    stations["groove_06"] = None
+    chips["groove_06"] = {"state": "present", "center_xy_mm": [38.075, 160]}
+    report = cross_check_slots(location, taught_stations=stations, chips=chips)
+    assert report["slots"]["groove_06"]["status"] == "ok"
+    assert report["slots"]["groove_06"]["station_residual_mm"] is None
+    chips["groove_06"] = {"state": "present", "center_xy_mm": [41.0, 160]}
+    with pytest.raises(TrayCheckError) as caught:
+        cross_check_slots(location, taught_stations=stations, chips=chips)
+    assert caught.value.report["slots"]["groove_06"]["failures"] == ["chip_outside_groove"]
+    del stations["groove_06"]
+    chips["groove_06"] = {"state": "empty"}
+    with pytest.raises(TrayCheckError) as caught:
+        cross_check_slots(location, taught_stations=stations, chips=chips)
+    assert caught.value.report["slots"]["groove_06"]["missing"] == ["taught_station"]
+
+
 def test_explicit_same_location_target_checks_full_xy_and_preserves_report(location):
     stations, chips = _evidence(location)
     chips["groove_06"] = {"state": "present", "center_xy_mm": [38.075, 160]}

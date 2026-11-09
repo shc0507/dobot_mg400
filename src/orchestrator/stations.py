@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .tool import Pose, ToolOffset, finite, flange_to_fingertip
+from .tool import Pose, ToolOffset, fingertip_to_flange, finite, flange_to_fingertip
 
 DEFAULT_STATIONS = Path("/var/lib/mg400/robot/stations.toml")
 DEFAULT_TOOL = Path("/var/lib/mg400/robot/tool.toml")
@@ -172,16 +172,58 @@ def _parent(path):
         os.close(fd)
 
 
-def _read(parent, name):
+def _read_bytes(parent, name):
     # Pin and inspect the inode before opening it for reading: never activate a device.
     fd = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
     try:
         _check(os.fstat(fd))
         reader = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY | os.O_CLOEXEC)
         with os.fdopen(reader, "rb") as source:
-            return tomllib.load(source)
+            return source.read()
     finally:
         os.close(fd)
+
+
+def _read(parent, name):
+    return tomllib.loads(_read_bytes(parent, name).decode("utf-8"))
+
+
+def _stage(parent, name, data, *, prefix=None):
+    """Write and sync a 0640 file; return its name. With prefix=None, create name itself."""
+    target = name if prefix is None else f".{prefix}-{uuid.uuid4().hex}"
+    fd = os.open(
+        target,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o640,
+        dir_fd=parent,
+    )
+    try:
+        with os.fdopen(fd, "wb") as output:
+            os.fchmod(output.fileno(), 0o640)
+            _check(os.fstat(output.fileno()))
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        _discard(parent, target)
+        raise
+    return target
+
+
+def _discard(parent, name):
+    try:
+        os.unlink(name, dir_fd=parent)
+    except FileNotFoundError:
+        pass
+
+
+def _render(stations):
+    lines = ["[stations]"]
+    for station, values in sorted(stations.items()):
+        lines.extend(("", f"[stations.{station}]"))
+        for key, value in values.items():
+            lines.append(f"{key} = {json.dumps(value, ensure_ascii=True, allow_nan=False)}")
+    return ("\n".join(lines) + "\n").encode("ascii")
 
 
 def load_tool(path=DEFAULT_TOOL):
@@ -215,33 +257,60 @@ class StationStore:
             stations = self._load(parent, name)
             change(stations)
             stations = validate(stations, self.workspace)
-            lines = ["[stations]"]
-            for station, values in sorted(stations.items()):
-                lines.extend(("", f"[stations.{station}]"))
-                for key, value in values.items():
-                    lines.append(f"{key} = {json.dumps(value, ensure_ascii=True, allow_nan=False)}")
-            temporary = f".{name}-{uuid.uuid4().hex}"
-            fd = os.open(
-                temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o640,
-                dir_fd=parent,
-            )
+            temporary = _stage(parent, name, _render(stations), prefix=name)
             try:
-                with os.fdopen(fd, "w") as output:
-                    os.fchmod(output.fileno(), 0o640)
-                    _check(os.fstat(output.fileno()))
-                    output.write("\n".join(lines) + "\n")
-                    output.flush()
-                    os.fsync(output.fileno())
                 os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
                 os.fsync(parent)
             finally:
-                try:
-                    os.unlink(temporary, dir_fd=parent)
-                except FileNotFoundError:
-                    pass
+                _discard(parent, temporary)
             return stations
+
+    def retool(self, offset, tool_path=DEFAULT_TOOL):
+        """Write a new tool offset and convert the stations so every flange target stays.
+
+        Both old files are first copied to NAME.bak-<UTC time>. Every converted
+        station must pass validation before any file changes. The new files are
+        staged and synced first; only two renames remain at the end.
+        """
+        if not isinstance(offset, ToolOffset):
+            raise ValueError("A measured ToolOffset is required.")
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        with _parent(tool_path) as (tool_parent, tool_name), _parent(self.path) as (parent, name):
+            fcntl.flock(parent, fcntl.LOCK_EX)
+            tool_raw = _read_bytes(tool_parent, tool_name)
+            old = ToolOffset.from_config(tomllib.loads(tool_raw.decode("utf-8")))
+            try:
+                stations_raw = _read_bytes(parent, name)
+            except FileNotFoundError:
+                stations_raw = None
+            stations = self._load(parent, name)
+            for values in stations.values():
+                pose = Pose(**{axis: values[axis] for axis in AXES})
+                values.update(asdict(flange_to_fingertip(fingertip_to_flange(pose, old), offset)))
+            stations = validate(stations, self.workspace)
+            backups = []
+            if stations_raw is not None:
+                _stage(parent, f"{name}.bak-{stamp}", stations_raw)
+                backups.append(f"{Path(self.path).absolute()}.bak-{stamp}")
+            _stage(tool_parent, f"{tool_name}.bak-{stamp}", tool_raw)
+            backups.append(f"{Path(tool_path).absolute()}.bak-{stamp}")
+            text = f"offset_mm = {json.dumps([offset.dx_mm, offset.dy_mm, offset.dz_mm])}\n"
+            staged_tool = _stage(tool_parent, tool_name, text.encode("ascii"), prefix=tool_name)
+            staged = _stage(parent, name, _render(stations), prefix=name)
+            try:
+                os.replace(staged, name, src_dir_fd=parent, dst_dir_fd=parent)
+                os.replace(staged_tool, tool_name, src_dir_fd=tool_parent, dst_dir_fd=tool_parent)
+                os.fsync(parent)
+                os.fsync(tool_parent)
+            finally:
+                _discard(parent, staged)
+                _discard(tool_parent, staged_tool)
+        return {
+            "old_offset_mm": [old.dx_mm, old.dy_mm, old.dz_mm],
+            "offset_mm": [offset.dx_mm, offset.dy_mm, offset.dz_mm],
+            "backups": backups,
+            "stations": stations,
+        }
 
     def save(self, name, pose, *, approach_mm, zone="", via=None):
         _name(name)

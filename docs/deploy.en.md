@@ -113,6 +113,7 @@ The installer works in this order:
    By default, install the stage and tool dependencies in `/opt/mg400/.venv`.
 5. Install requested external assets and the required weights when `vision` is enabled. Check size and SHA-256 before atomic replacement.
 6. If cameras are configured, install go2rtc and generate `go2rtc.yaml`. Otherwise, remove the old `go2rtc.yaml`.
+   If ffmpeg can encode with `h264_nvenc`, the H.264 previews use NVENC. If not, they use `libx264`.
    If `--toupcam` is supplied, install the library bytes verified in step 1.
 7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
 8. Install selected service definitions and reload systemd.

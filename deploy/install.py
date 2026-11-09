@@ -337,18 +337,44 @@ def camera_capture_sizes(value, devices, side_stream=""):
 # - -fps_mode passthrough: each source frame goes out once, with its own timestamp. A
 #   guessed rate does not add or drop frames. x264 budgets its bitrate at 30 fps.
 # - A keyframe each second: a viewer that joins a running encoder waits at most 1 s.
-FFMPEG_TEMPLATES = (
-    "ffmpeg:\n"
+#   NVENC makes each forced keyframe an IDR frame, so a viewer can start on it.
+FFMPEG_RTSP = (
     '  rtsp: "-fflags nobuffer -flags low_delay -timeout 5000000 -user_agent go2rtc/ffmpeg'
     ' -rtsp_flags prefer_tcp -fpsprobesize 0 -i {input}"\n'
+)
+H264_X264 = (
     '  h264: "-c:v libx264 -g 50 -profile:v high -level:v 4.1 -preset:v superfast'
     " -tune:v zerolatency -pix_fmt:v yuv420p -fps_mode passthrough -x264-params fps=30"
     ' -force_key_frames expr:gte(t,n_forced)"\n'
 )
+# The GPU encoder uses about 13 % of 1 CPU core per 1280x720 preview, not 31 %.
+H264_NVENC = (
+    '  h264: "-c:v h264_nvenc -g 50 -bf 0 -profile:v high -level:v 4.1 -preset:v p4'
+    " -tune:v ll -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough"
+    ' -force_key_frames expr:gte(t,n_forced)"\n'
+)
 
 
-def render_go2rtc(devices, sizes=None, *, modes=None):
+def nvenc_available(run):
+    """Return True when ffmpeg on the service PATH can encode H.264 with NVENC."""
+    ffmpeg = shutil.which("ffmpeg", path=SERVICE_PATH)
+    if ffmpeg is None:
+        return False
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi"]
+    command += ["-i", "color=s=256x144:r=30", "-frames:v", "5", "-c:v", "h264_nvenc"]
+    command += ["-f", "null", "-"]
+    try:
+        result = run(command, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
     """Return per-camera MJPEG capture settings and on-demand H.264 previews.
+
+    With nvenc, the previews use the GPU encoder. It needs 3 Mbit/s for the quality
+    that libx264 gives at 4 Mbit/s at 1280x720.
 
     The API and RTSP listen on loopback only. ffmpeg reads and returns the H.264
     previews through RTSP. The microscope preview comes from the microscope service.
@@ -376,9 +402,10 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
     )
     # go2rtc starts each ffmpeg encoder for its first viewer and stops it after the last.
     # Sensor noise can raise a 640x480 stream to about 9 Mbit/s. A 1280x720 preview gets
-    # 4 Mbit/s and a smaller one 2 Mbit/s.
+    # 4 Mbit/s (3 Mbit/s with NVENC) and a smaller one 2 Mbit/s.
+    large = 3 if nvenc else 4
     streams += "".join(
-        f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate={4 if width > 640 else 2}M\n"
+        f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate={large if width > 640 else 2}M\n"
         for name, (width, _, _) in zip(configured.streams, configured.modes)
         if name in configured.preloaded
     )
@@ -395,7 +422,7 @@ def render_go2rtc(devices, sizes=None, *, modes=None):
         "api:\n  listen: 127.0.0.1:1984\n"
         "rtsp:\n  listen: 127.0.0.1:8554\n"
         'webrtc:\n  listen: ""\n'
-        f"{FFMPEG_TEMPLATES}"
+        f"ffmpeg:\n{FFMPEG_RTSP}{H264_NVENC if nvenc else H264_X264}"
         f"{preload}"
         f"streams:\n{streams}"
     )
@@ -690,6 +717,10 @@ def install(args, host, run, chown, out):
             file=out,
             flush=True,
         )
+    # The H.264 previews use the NVIDIA encoder when ffmpeg can open it, else libx264.
+    nvenc = bool(devices) and "ffmpeg" not in tools and nvenc_available(run)
+    if devices and "ffmpeg" not in tools:
+        step(f"camera previews encode H.264 with {'h264_nvenc' if nvenc else 'libx264'}")
 
     # Vision requires the released model even without the optional bulk-fetch flag.
     required_assets = {"vision-weights"} if "vision" in selected else set()
@@ -825,7 +856,7 @@ def install(args, host, run, chown, out):
         if not args.dry_run:
             write_file(
                 host.go2rtc_config,
-                render_go2rtc(devices, modes=camera_config.modes),
+                render_go2rtc(devices, modes=camera_config.modes, nvenc=nvenc),
                 0o640,
                 (0, SERVICE_GID),
                 chown,

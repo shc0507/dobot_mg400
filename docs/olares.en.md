@@ -296,12 +296,13 @@ After the last viewer leaves a large stream, the preview service releases its up
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
-Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate. A stream wider than 640 gets at most 4 Mbit/s, other streams 2 Mbit/s. This route accepts no query.
+Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate. A stream wider than 640 gets at most 4 Mbit/s, or 3 Mbit/s with NVENC. Other streams get 2 Mbit/s. This route accepts no query.
 go2rtc reads the `1296x968` microscope preview from `http://127.0.0.1:8770/api/camera/microscope/mjpeg`. It serves it as H.264 at `/camera/microscope.mp4`, at most 3 Mbit/s.
 go2rtc reads the microscope preview only while an H.264 viewer is open. If the microscope service has no frame, `/camera/microscope.mp4` returns 502, and the console uses the relayed MJPEG.
 `/camera/fps.json` returns, for each MJPEG stream, the frames per second that each viewer got in the last 2 s. A stream with no viewer has `null`. The console reads these values for the camera status.
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.
 ffmpeg does not probe the input frame rate. It sends each source frame once and 1 keyframe each 1 s. Thus a new view shows its first frame in about 1 s, also for the microscope at a low frame rate. `-fps_mode` needs ffmpeg 5.1 or later.
+The installer runs ffmpeg to test `h264_nvenc`. If the test passes, the H.264 previews use the NVIDIA GPU encoder. If not, they use `libx264`. After you change the GPU or its driver, run the installer again.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
 Single-frame requests use the same go2rtc stream, at its configured resolution; they do not switch mode or open another device capture.
 

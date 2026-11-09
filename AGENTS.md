@@ -61,12 +61,13 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
 | Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
-| Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py` | `test_deploy_install.py`, `test_camera_preview.py` | [olares.md](docs/olares.md#摄像头) |
-| Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
+| Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py` | `test_deploy_install.py`, `test_camera_preview.py`, `test_console_cameras.py` | [olares.md](docs/olares.md#摄像头) |
+| Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py`, `test_console.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
 | QR reader | `src/vision/qr.py`, `qr_micro.py` | `test_vision_qr*.py` | Module docstrings |
 | Simulator | `src/mg400/sim/` | `test_mg400_sim.py`, `sim_mg400.py`, `test_web_keyboard_integration.py`, `test_robot_service_e2e.py` | [development.md](docs/development.md#离线机器人模拟器) |
 | Vision localizer | `src/vision/localizer.py` | `test_vision_localizer.py` | Module docstrings |
 | Console screenshots | `scripts/console_shots.py` | `test_console_shots.py` | Module docstring |
+| Repository checks: CI test selection, doc pairs, file limits | `scripts/select_tests.py`, `scripts/check_doc_pairs.py` | `test_select_tests.py`, `test_doc_pairs.py`, `test_repo_files.py` | This section, [ADR 0007](docs/adr/0007-bilingual-documentation.en.md), [ADR 0004](docs/adr/0004-large-files-and-assets.en.md) |
 | Agent coordination signals | `scripts/agent_signal.py`, `.claude/settings.json` | `test_agent_signal.py` | [coordinator.md](docs/agents/coordinator.md) |
 | Detector evaluation | `scripts/vision_eval.py` | `test_vision_eval.py` | [vision.md](docs/vision.md#检测模型评估) |
 | Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md) |

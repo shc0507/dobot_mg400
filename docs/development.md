@@ -30,18 +30,21 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-`uv sync` 默认安装 `dev` 和 `stage` 依赖组。
-`stage` 组含位移台服务使用的 Flask、waitress 和 pySerial。
+`uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator`、`gateway`、`microscope` 和 `gateway-clients`。
+`vision-gpu` 和 `notebook` 不在默认组中。
+`stage` 组含位移台服务使用的 Flask、waitress、pySerial、NumPy 和 OpenCV。
 机器人服务和交互终端只用标准库，不依赖 `stage` 组。
 
 测试不连接机械臂或 Arduino。
 拉取请求和推送到 `main` 时，GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.12 上运行以上检查。
+拉取请求只运行 `scripts/select_tests.py` 按改动文件选出的 pytest 文件。推送到 `main` 时运行全部测试。
 `pytest` 运行 Python 测试，`node --test` 运行实验室控制台的 JavaScript 测试。
 离线检查不能替代真机验证。
 
 测试共用的 fixture 位于 `tests/conftest.py`。
 位移台测试的 `stage_rig`、`stage_ports` 和 `stage_usb` 也在此文件，测试按名称引用。
 模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_ws.py`。
+服务契约测试的共用检查位于 `tests/contract_helpers.py`。
 位移台的时钟、串口和串口列表替身位于 `tests/stage_helpers.py`。
 新增测试时复用这些模块，不得在测试文件中另写副本。
 
@@ -94,8 +97,19 @@ wait "$sim_pid"
 | `src/mg400/` | 后端、控制协议和反馈处理 |
 | `src/mg400/sim/` | 回环控制器模拟器，共用测试模型 |
 | `src/stage_controller/` | 位移台服务：Flask 接口和串口协议 |
+| `src/labkit/` | 共用的服务契约、租约、事件、访问检查和 HTTP 客户端，见 [ADR 0001](adr/0001-instrument-service-contract.md) |
+| `src/cameras/` | AC410 摄像头模式和 UVC 读取 |
+| `src/vision/` | [视觉服务](vision.md)：定位、QR 读取、托盘和相机校准 |
+| `src/thermal_cam/` | [热像仪服务](thermal.md) |
+| `src/furnace/` | [炉温与气体服务](furnace.md) |
+| `src/microscope/`、`src/toupcam_camera/` | [显微镜服务](microscope.md)和 Toupcam 摄像头 |
+| `src/orchestrator/` | [配方服务](orchestrator.md)和 `labctl`。`web/` 是[实验室控制台](dashboard.md) |
+| `src/gateway/` | [MCP 网关](agent-gateway.md) |
+| `recipes/` | TOML 配方 |
+| `config/trays/`、`config/proxy/`、`config/udev/` | 托盘几何、代理模板和 USB 访问规则模板 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
-| `scripts/` | 摄像头预览、控制模式切换和交互终端入口 |
+| `firmware/microscope-axes/` | 显微镜转盘与调焦的固件，见[固件说明](../firmware/microscope-axes/README.md) |
+| `scripts/` | 摄像头预览、控制模式切换、交互终端入口、控制台截图（`console_shots.py`）、测试选择（`select_tests.py`）、文档对检查（`check_doc_pairs.py`）、代理信号（`agent_signal.py`）、检测模型评估（`vision_eval.py`）和控制台字体（`console_font.py`） |
 | `examples/` | 单文件教学和 notebook |
 | `tests/` | Python 和 JavaScript 离线测试 |
 | `docs/` | 操作、部署和开发指南，`docs/agents/` 保存代理操作规程 |
@@ -118,7 +132,7 @@ WebSocket 按键点动由 `web_control.py` 调度，机械臂长按复用 `keybo
 `controller_protocol.py` 解析命令应答，`feedback.py` 读取关节反馈。
 `joint_control.py` 执行受限运动和吸盘输出。
 TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
-当前没有 ROS 2 后端或视觉感知。
+当前没有 ROS 2 后端。
 
 `src/stage_controller/` 是位移台服务，不导入 `mg400`，也不使用机械臂的连接锁。
 `__main__.py` 读取 `MG400_STAGE_*` 环境变量和命令行参数，再启动 waitress。

@@ -30,10 +30,10 @@
 - 设备字段名包含单位：`pv_c`、`ramp_c_per_min`、`flow_pct`、`x_mm`、`r_deg`。
 - POST 请求必须携带 `Content-Type: application/json` 和 `X-MG400-Client`。客户端 ID 包含 1 至 128 个可打印 ASCII 字符。
 - 错误响应使用 `{"error": "..."}`：`400` 请求无效，`409` 状态或租约冲突，`415` 非 JSON，`503` 设备连接丢失。
-- 服务监听回环地址，不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
+- 服务监听回环地址，不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。Lab Console 控制套接字拒绝 `Origin` 与 `Host` 不同的 WebSocket。
 - 同时只有 1 个控制客户端。默认租约为 3 s。读取和 `stop` 不要求租约。租约到期时停止运动。炉子遵循 [0005](0005-furnace-lifecycle.md)。在 `on_lease_expiry` 中声明行为。
 - 命令结果未知时，设置 `locked` 和 `fault`。人员解除锁定前，拒绝 `stop` 以外的命令。不得自动重试运动。
-- `--demo` 使用模拟设备。通过 `state.demo` 和 `describe.demo` 标明模式。客户端拒绝不同的 `contract` 版本。
+- `--demo` 使用模拟设备。通过 `state.demo` 和 `describe.demo` 标明模式。客户端拒绝不同的 `contract` 版本。机器人服务没有 `--demo`：运行 `python -m mg400.sim`，并传入 `--robot-host`。
 - 保留机械臂现有协议。增加 `describe`、`stop`、`events` 和 `last_command`。
 
 ## 影响

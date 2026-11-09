@@ -10,7 +10,7 @@ You are one worker. The coordinator dispatched you with one task: an issue numbe
 
 ## Rules
 
-- Tests: run the area's tests locally. CI runs the full suite on push.
+- Tests: run the area's tests locally. CI on a PR runs only the tests that `scripts/select_tests.py` selects; a push to `main` runs the full suite.
 - Before push: merge `origin/main` into the branch. Force-push is blocked, so merge instead of rebasing.
 - PR: `gh pr create`; body states what changed, why, tests run, and the device check if any.
 - CI: right after push, start `gh pr checks <n> --watch --interval 20` in the background (`run_in_background`) and do the docs, screenshots and cleanup while it runs. Merge yourself when CI is green and the device check passed: `gh pr merge <n> --merge`.

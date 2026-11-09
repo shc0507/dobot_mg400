@@ -21,6 +21,7 @@ Manual focus moves remain available without a reference for supervised setup. Th
 Objective and light calibration can turn at working focus within the measured `MG400_MICROSCOPE_NUDGE_STEPS` window.
 This exception requires a known focus reference, measured limits, stationary focus, and the supervised confirmations in the [microscope guide](../../docs/microscope.en.md).
 Unset or `0` preserves the clearance rule. The allowed positive window is `1` through `20` full steps.
+The service `objective_nudge` also turns the turret at working focus within this window.
 Experiments and full objective switches still require clearance.
 
 For supervised `H-06` measurements, use `python -m microscope.calibrate setup` after stopping the microscope service.
@@ -75,6 +76,8 @@ OBJ: enabled=0 moving=0 speed=400 remaining=0 pos=0
 FOCUS: enabled=0 moving=0 speed=800 remaining=0 pos=0
 FOCUS_REF: zeroed=0 limited=0 min=0 max=0 homing=0
 ```
+
+After power-up or reset, the board prints `DUAL_A4988_READY` and then the `STATUS` lines. The host discards these lines after the reset delay.
 
 ## Focus reference and limits
 

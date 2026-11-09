@@ -65,6 +65,7 @@ MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/serv
   --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2
 kill "$sim_pid"
 wait "$sim_pid"
+rm -r "$sim_dir"
 ```
 
 在另一个终端用 [Python 客户端](#python-客户端) 连接 `http://127.0.0.1:18766/`，按以下顺序发送命令：
@@ -75,7 +76,7 @@ wait "$sim_pid"
 4. 运行 `stop_sync`，等待停止确认，再运行 `disable`。
 
 在终端按 `Ctrl+C` 结束机器人服务。
-随后两条命令结束本次模拟器进程。
+随后的命令结束本次模拟器进程，并删除临时锁目录。
 
 模拟器立即到达关节和笛卡尔目标，不计算真实运动学、路径或碰撞。
 逆解返回当前关节值。`J1` 点动改变关节反馈，其余点动只改变运动模式。
@@ -140,15 +141,16 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 
 | 接口 | 用途 |
 | --- | --- |
-| `GET {前缀}api/state` | 读取一次状态 |
-| `GET {前缀}api/describe` | 读取契约版本、命令参数和租约行为 |
-| `POST {前缀}api/stop` | 请求停止并读取确认结果 |
-| `GET {前缀}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
-| `POST {前缀}api/command` | 发送一个命令 |
-| `POST {前缀}api/heartbeat` | 续期控制租约 |
-| `GET {前缀}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
+| `GET {prefix}api/state` | 读取一次状态 |
+| `GET {prefix}api/describe` | 读取契约版本、命令参数和租约行为 |
+| `POST {prefix}api/stop` | 请求停止并读取确认结果 |
+| `GET {prefix}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
+| `POST {prefix}api/command` | 发送一个命令 |
+| `POST {prefix}api/heartbeat` | 续期控制租约 |
+| `GET {prefix}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
 
-`{前缀}` 是 `--base-path` 的值，默认为 `/`。
+`{prefix}` 是 `--base-path` 的值，默认为 `/`。
+本节用尖括号表示占位符，例如 `<client-id>` 表示客户端 ID。
 按键只能经 WebSocket 发送。
 
 ### 访问与客户端 ID
@@ -158,7 +160,7 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 真机控制模式用客户端 ID 区分客户端，长度为 1–128 个可打印 ASCII 字符。
 同一时刻只有一个客户端 ID 持有控制权。
 控制者必须在 3 秒内续期控制租约（控制权的有效期）。
-心跳和按键更新都能续期。
+心跳、按键更新和控制者的命令都能续期。
 服务 3 秒内未收到续期时，请求停止机械臂并锁定控制。
 
 ### HTTP 接口
@@ -166,14 +168,14 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 POST 请求必须满足以下条件：
 
 1. 带 `Content-Type: application/json` 和 `X-MG400-Panel: 1`。
-2. 真机控制模式带 `X-MG400-Client: <客户端 ID>`。
+2. 真机控制模式带 `X-MG400-Client: <client-id>`。
 3. 正文为 1–4096 字节的 JSON 对象，用 `Content-Length` 标明长度。
 
 `api/command` 和 `api/heartbeat` 成功时返回 200 和状态对象。
 拒绝时返回 400（请求无效）、403（拒绝）或 409（状态冲突）。
 拒绝的正文为 `{"error": "..."}`。
 
-命令正文为 `{"action": "<命令>", ...}`，不得包含其他字段：
+命令正文为 `{"action": "<action>", ...}`，不得包含其他字段：
 
 | 命令 | 其他字段 | 行为 |
 | --- | --- | --- |
@@ -183,7 +185,7 @@ POST 请求必须满足以下条件：
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
 | `home` | 无 | J1–J4 移动到 0° |
-| `execute` | `targets`：`x`、`y`、`z`、`r`，另有可选 `speed` | 直线移动到法兰坐标 |
+| `execute` | `targets`（含 `x`、`y`、`z`、`r`），可选 `speed` | 直线移动到法兰坐标 |
 | `vacuum` | `operation`：`suck`、`release` 或 `off` | 控制真空吸盘，见 [真空吸盘](#真空吸盘) |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
@@ -199,7 +201,7 @@ POST 请求必须满足以下条件：
 主机配置无效时，服务拒绝启动。修改上限后，重启服务。
 
 未提供 `speed` 时，即使主机上限提高，协议命令仍为 `SpeedL=1,AccL=1`。
-这些配置不改变 `home`、全局 `SpeedFactor` 或键盘点动。
+这些配置不改变 `home`、`SpeedFactor` 或键盘点动。
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
 `recoverable` 为 `true` 时也可用：停止或下使能未确认，控制器无报警，且反馈新鲜。
@@ -207,6 +209,31 @@ POST 请求必须满足以下条件：
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
+
+### 状态对象
+
+`api/state`、WebSocket 状态推送和成功回复返回同一个状态对象。真机控制模式的字段如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `mode` | 服务模式，为 `robot` |
+| `instance`、`version` | 服务实例 ID 和递增版本号，重启后实例 ID 改变 |
+| `robot_host` | 机械臂地址 |
+| `syncing`、`feedback_fresh` | 是否连接反馈，反馈是否新鲜 |
+| `robot_mode`、`robot_error` | 控制器模式和报警标志 |
+| `enabled` | 模式为 5 或 7 时为 `true` |
+| `joints` | 实测关节 J1–J4，单位为度 |
+| `actual` | 法兰位姿 X、Y、Z、R。运动中为 4 个 `null` |
+| `speed_factor` | 控制器反馈的全局速度百分比 |
+| `busy`、`locked`、`stop_unconfirmed`、`recoverable` | 执行中、控制锁定、停止未确认、可恢复 |
+| `alarms` | 当前报警列表，见上文 |
+| `message`、`last_command` | 服务消息和最近命令结果 |
+| `vacuum`、`payload_kg` | 吸盘实测状态和负载，见 [真空吸盘](#真空吸盘) |
+| `controller_id` | 持有控制权的客户端 ID，无持有者时为 `null` |
+| `keyboard_enabled`、`keyboard_arming` | 键盘点动已开启，正在开启 |
+| `keyboard_active_key`、`keyboard_speed_percent`、`keyboard_disarm_reason` | 正在执行的按键、键盘速度和关闭原因 |
+
+只读模式只返回 `mode`、`robot_host`、`enabled`（`null`）、`syncing`、`actual`（4 个 `null`）、`joints`、`robot_mode`、`robot_error`、`feedback_fresh` 和 `message`。
 
 ### 契约发现、停止与事件
 
@@ -249,7 +276,8 @@ POST 请求必须满足以下条件：
 `since` 默认为 0，必须是非负整数。
 响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
 服务保留最近 1000 个事件，重启后序号重新开始。
-事件对应既有的状态消息、锁定、报警、和键盘关闭原因，不增加日志行。
+事件记录既有的状态消息、锁定和解锁、停止未确认及其清除。
+事件还记录反馈模式和报警标志的变化、报警和键盘关闭原因，不增加日志行。
 
 ### Python 客户端
 
@@ -264,7 +292,7 @@ POST 请求必须满足以下条件：
 ```python
 from mg400.client import RobotClient
 
-with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
+with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
     robot.run("start_sync")
     robot.run("enable")
     result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
@@ -277,6 +305,7 @@ with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
 - `run(action, timeout=30, **fields)` 等待 `busy == False`，并检查属于本次动作和客户端的新 `last_command`。
 - `vacuum(operation, timeout=30)` 用 `run()` 发送 1 次 `vacuum` 命令。`operation` 取 `suck`、`release` 或 `off`，其他值抛出 `ValueError`。见[真空吸盘](#真空吸盘)。
 - `vacuum_state` 返回最新状态的 `vacuum` 字段。连接前为 `None`。
+- `keys(seq, held)` 经 WebSocket 发送 1 次按键集合并返回协议回复，不重试。
 - `RobotClientError` 表示请求被拒绝或结果未知。如果服务提供错误码，异常保留 `status` 和 `close_code`。
 
 `run()` 接受 `ok`。对于 `stop`、`disable` 和 `stop_sync`，停止仍获确认时，也接受 `stopped`。
@@ -307,9 +336,9 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 按以下顺序通信：
 
-1. 连接后 3 秒内，发送 `{"type":"hello","protocol":1,"client":"<客户端 ID>"}`。
+1. 连接后 3 秒内，发送 `{"type":"hello","protocol":1,"client":"<client-id>"}`。
 2. 等待服务推送 `{"type":"state","state":{...}}`。
-3. 发送请求 `{"type":"<类型>","id":<整数>,"body":{...}}`。
+3. 发送请求 `{"type":"<type>","id":<integer>,"body":{...}}`。
 4. 按 `id` 匹配回复。
 
 `protocol` 是消息格式版本，当前为 1。hello 不得含其他字段。
@@ -322,12 +351,12 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 | --- | --- |
 | `command` | 与 `api/command` 的正文相同 |
 | `heartbeat` | `{}` |
-| `keys` | `{"seq":<序号>,"held":[<按键>]}` |
+| `keys` | `{"seq":<seq>,"held":[<key>]}` |
 
 `id` 是 0 到 2^53 的整数，由客户端选择。
 服务按请求顺序逐个回复，每个请求一个回复。
 成功回复为 `{"type":"reply","id":<id>,"status":200,"state":{...}}`。
-拒绝回复为 `{"type":"reply","id":<id>,"status":<状态码>,"error":"..."}`。
+拒绝回复为 `{"type":"reply","id":<id>,"status":<status>,"error":"..."}`。
 状态码含义同 HTTP 接口，500 表示服务内部错误。
 `body` 无效时，服务只回复错误，连接保持打开。
 `command` 的成功回复表示命令已受理，不表示动作已完成。
@@ -336,10 +365,10 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 `keys` 的 `seq` 与键盘开关命令共用一个递增序号，服务忽略不大于上次值的消息。
 `held` 列出当前按住的键，取值为 W、A、S、D、Q、E、R、F、Z、X。
-按住按键时，客户端必须每 100 ms 重发一次。
+按住按键时，客户端必须在 0.4 秒内重发。实验室控制台每 150 ms 重发一次。
 服务 0.4 秒内未收到更新时，停止点动并关闭键盘控制。
 
-关闭码为 4400、4426 或 1013 时，服务先发送 `{"type":"error","status":<状态码>,"error":"..."}`，再关闭连接。
+关闭码为 4400、4426 或 1013 时，服务先发送 `{"type":"error","status":<status>,"error":"..."}`，再关闭连接。
 
 | 关闭码 | 含义 |
 | --- | --- |
@@ -348,6 +377,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 | 4409 | 同一客户端 ID 的新连接替换了此连接 |
 | 1013 | 连接数已满 |
 | 1001 | 服务停止，关闭前推送最后状态 |
+| 1011 | 服务处理连接时出错 |
 | 1002、1003、1007、1009 | 帧格式错误、二进制消息、文本不是 UTF-8 或消息过长 |
 
 连接规则如下：
@@ -355,6 +385,8 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 - 消息只能是不超过 4096 字节的 UTF-8 文本。
 - 服务每 5 秒发送 ping，15 秒未收到任何帧时关闭连接。
 - 最多 8 个客户端 ID 同时保持 hello 后的连接。
+- 最多 8 个连接同时等待 hello。超出时，服务关闭等待最久的连接。
+- `GET api/ws` 不是 WebSocket 升级请求时，服务返回 HTTP 426。
 - 同一客户端 ID 再次发送 hello 时，服务关闭旧连接。
 - 客户端的最新连接关闭，或同一客户端 ID 的新连接替换它时，服务立即关闭该客户端的键盘控制。
 
@@ -364,8 +396,8 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 ## 位移台服务接口
 
-位移台服务的 HTTP 接口使用 JSON，全部位于 `{前缀}contract/api/`。
-`{前缀}` 是位移台基础路径，固定为 `/`。
+位移台服务的 HTTP 接口使用 JSON，全部位于 `{prefix}contract/api/`。
+`{prefix}` 是位移台基础路径，固定为 `/`。
 服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
 
 ### 位移台自动化契约
@@ -495,12 +527,27 @@ J4 使用厂家 ±360° 范围，目标允许范围为 ±358.95°。
 ### 运动命令与坐标缓存
 
 未提供 `speed` 时，`execute` 的 `MovL` 使用 `SpeedL=1,AccL=1`。
-键盘有限轨迹中，W/S、R/F、Q/E 的 `MovL` 使用 `SpeedL=2,AccL=20`。
 控制器逆解验证目标关节范围，控制器规划直线路径。
 复位使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
-A/D 的有限轨迹使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=20`。
-两类关节动作检查整段关节范围，不包含现场碰撞检查。
-机械臂运动不修改全局速度或工具配置。
+`execute` 和复位不修改全局速度或工具配置。
+
+键盘点动开启时，服务发送 `SpeedFactor(<speed>)`，设置全局速度。
+按住按键时，服务发送连续点动命令 `MoveJog`：
+
+| 按键 | 命令 |
+| --- | --- |
+| W/S | `MoveJog(X+,CoordType=0,User=8,Tool=0)`、`MoveJog(X-,CoordType=0,User=8,Tool=0)`，沿 J1 方向伸出和收回 |
+| A/D | `MoveJog(J1+)`、`MoveJog(J1-)` |
+| Q/E | `MoveJog(J4+)`、`MoveJog(J4-)` |
+| R/F | `MoveJog(Z+,CoordType=0,User=0,Tool=0)`、`MoveJog(Z-,CoordType=0,User=0,Tool=0)` |
+
+W/S 开始前，服务确认 User 0 未改变，再用 `SetUser(8,{0,0,0,J1})` 把用户坐标系 8 对齐当前 J1。
+连续点动接近关节界限时，服务提前停止。提前量为每 1% 速度 0.08°。
+
+关节处于 1.05° 余量区时，服务改用有限轨迹向内移动：
+W/S、R/F、Q/E 使用 `MovL`，参数为 `SpeedL=2,AccL=20`。
+A/D 使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=20`。
+关节动作检查整段关节范围，不包含现场碰撞检查。
 
 A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 动作结束后读取坐标，更新状态。

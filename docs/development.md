@@ -309,6 +309,7 @@ with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
 - `RobotClientError` 表示请求被拒绝或结果未知。如果服务提供错误码，异常保留 `status` 和 `close_code`。
 
 `run()` 接受 `ok`。对于 `stop`、`disable` 和 `stop_sync`，停止仍获确认时，也接受 `stopped`。
+服务锁定时，`run("start_sync")` 仍可成功，新持有者因此可以发送 `clear_alarm` 恢复。服务继续拒绝运动。
 请求被拒绝、操作失败、停止取代运动或服务重启，都不能算作运动成功。
 每个客户端 ID 只能有 1 个运行中的程序。`run()` 期间，同一客户端的普通命令串行执行。
 其他线程仍可调用 `command("stop")`、`command("disable")`、`run("stop")` 或 `run("disable")`。

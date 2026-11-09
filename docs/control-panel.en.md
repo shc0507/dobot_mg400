@@ -78,6 +78,7 @@ If a stop or command result cannot be confirmed, use the physical emergency stop
 The console `Release` sends `disable` first and waits up to 12 seconds. Then it sends `stop_sync`.
 If the console page sends no heartbeat within 3 seconds, the console releases control in the same sequence.
 The service disconnects feedback and unlocks control only after it confirms disabled mode 4 and rest.
+If the robot was already disabled and idle, disabled mode 4 is sufficient. You can move a disabled arm by hand, and a `Disable` or `Release` does not lock control.
 Stale feedback cannot confirm a stop. If the service reports an unconfirmed stop, use the physical emergency stop on site.
 If the service recorded no unconfirmed stop during a brief feedback gap, fresh feedback lets it confirm a new explicit `disable` request.
 
@@ -88,7 +89,7 @@ In this case, check the robot state, then run `sudo mg400ctl restart web`.
 For clients that connect directly to the service, such as `RobotClient` and the interactive terminal, `stop_sync` does not disable the robot.
 If the robot is enabled, `stop_sync` stops it and releases control, but keeps feedback connected and control locked.
 The client can send `start_sync` again to cancel the pending disconnect. Then it sends `disable`, then `stop_sync`.
-If the robot is already disabled, `stop_sync` confirms disable and rest, then disconnects.
+If the robot is already disabled, `stop_sync` confirms disable, then disconnects.
 When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control.
 After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.
 

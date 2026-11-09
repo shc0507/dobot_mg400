@@ -311,6 +311,7 @@ with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
 - `RobotClientError` reports a refusal or uncertain outcome. It retains `status` and `close_code` when available.
 
 `run()` accepts `ok`. For `stop`, `disable`, and `stop_sync`, it also accepts `stopped` when the stop remains confirmed.
+`run("start_sync")` can succeed while the service is locked, so the new holder can send `clear_alarm` to recover. The service still refuses motion.
 A rejection, failed operation, superseding stop, or service restart cannot count as successful motion.
 Use 1 active program per client ID. Ordinary commands from the same client are serialized during `run()`.
 A different thread can still call `command("stop")`, `command("disable")`, `run("stop")`, or `run("disable")`.

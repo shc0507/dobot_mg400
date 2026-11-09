@@ -28,11 +28,12 @@ uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-run
 
 服务 `orch` 通过 Flask 和 waitress 运行 `python -m orchestrator serve`。
 按[服务清单](deploy.md#服务清单)安装。它不使用设备组，也不自动启动配方。
-现有的 `run`、`rehearse`、`runs` 和 `station` 命令保持可用。
+上文的 CLI 命令不需要该服务即可运行。
 
 服务监听 `127.0.0.1:8772`。安装的单元设置基础路径 `/lab/`，由代理提供。控制台控制套接字监听 `127.0.0.1:8774`，代理把 `/lab/api/console/socket` 转发到该端口。端口被占用时，服务记录警告并照常启动，页面改用 HTTP。
 它从 `/opt/mg400/recipes` 读取配方目录。
 `--bind`、`--port`、`--base-path`、`--recipes-dir` 和 `--runs-dir` 可覆盖这些默认值。
+未指定选项时，前 4 项依次取 `MG400_ORCH_BIND`、`MG400_ORCH_PORT`、`MG400_ORCH_BASE_PATH` 和 `MG400_ORCH_RECIPES_DIR` 的非空值。`--runs-dir` 未指定时取 `MG400_ORCH_RUNS_DIR`。安装的单元设置 `MG400_ORCH_BASE_PATH=/lab/`。
 
 POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`，后者使用固定的调用者身份。
 通过 `/api/heartbeat` 获取并续期前端控制租约。下表所有自定义修改路由都要求持有该租约。
@@ -53,9 +54,13 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`，后
 | `POST /api/runs/<id>/recovery/confirm` | 确认 `physically_clear: true` 并填写非空 `note` |
 | `POST /api/runs/<id>/recovery/abort` | 用空对象取消恢复 |
 
+配方标识是配方目录中不带 `.toml` 的文件名，格式为 `[A-Za-z0-9][A-Za-z0-9_-]{0,95}`。配方文件必须是普通文件，不超过 256 KiB。目录最多含 256 个配方，路径中不得有符号链接。`note` 最多 2000 个字符。
+
 修改请求被接受后返回 `202` 和 `command_id`。轮询 `/api/state` 和 `/api/runs/<id>`，读取异步结果。
 请求被接受不能证明已完成。同一时间只能有 1 个运行或恢复会话。
 获取设备租约前，先校验完整配方及其所需的区域条件服务。
+
+契约路由 `POST /api/command` 接受 `hold` 和 `abort`，参数为空对象。`hold` 暂停当前运行并取消恢复，`abort` 终止当前运行。`/api/stop` 接受 0 至 15 的 `wait_s`，返回 `confirmed`、`unconfirmed` 或 `pending`。控制台和总览路由见[实验室控制台](dashboard.md)。
 
 当前运行按下文的人工完成和等待旧操作结束规则恢复。它进入下一步，不重放失败步骤。
 已结束运行的恢复另行处理。首个请求创建新的客户端身份，并在人工检查期间保持所需租约。
@@ -99,7 +104,7 @@ timeout_s = 1
 on_fail = "hold"
 ```
 
-参数类型为 `string`、`integer`、`number` 或 `boolean`。没有默认值的参数必须提供覆盖值。`${chip_id}` 替换完整参数值，并保留类型。每步必须包含 `skill`、`params` 和正有限数 `timeout_s`。`on_fail` 默认为 `hold`，也接受 `abort`。
+配方顶层必须恰好包含 `name`、`version`、`params` 和 `steps`。`version` 必须为 `1`。没有参数时，写 `params = {}`。参数名格式为 `[A-Za-z_][A-Za-z0-9_]*`。参数类型为 `string`、`integer`、`number` 或 `boolean`。没有默认值的参数必须提供覆盖值。`${chip_id}` 替换完整参数值，并保留类型。每步必须包含 `skill`、`params` 和正有限数 `timeout_s`，可选 `on_fail` 和 `zone`。`on_fail` 默认为 `hold`：运行暂停，等待人工处理。`abort` 在停止后终止运行。
 
 | 操作单元 | 参数 | 服务 |
 | --- | --- | --- |
@@ -108,14 +113,18 @@ on_fail = "hold"
 | `robot.enable` | 无 | 机器人 |
 | `robot.move` | `x_mm`、`y_mm`、`z_mm`、`r_deg` | 机器人 |
 | `robot.stop` | 无 | 机器人 |
-| `robot.pick` | `station` | 机器人 |
-| `robot.place` | `station` | 机器人 |
-| `robot.transfer` | `from`、`to` | 机器人 |
+| `robot.pick` | `station`，可选 `speed` | 机器人 |
+| `robot.place` | `station`，可选 `speed` | 机器人 |
+| `robot.transfer` | `from`、`to`，可选 `speed` | 机器人 |
+| `vision.check_calibration` | `camera` | 机器人、视觉 |
+| `vision.calibrate` | 见[视觉](vision.md) | 机器人、视觉 |
 | `vision.find_chip` | `slot` | 机器人、视觉 |
 | `vision.slot_state` | `slot` | 机器人、视觉 |
+| `vision.pick_chip` | `slot`，可选 `speed` | 机器人、视觉 |
 | `vision.tray_transfer` | `from_slot`、`to_slot`，可选 `speed` | 机器人、视觉 |
-| `crucible.load` | `from_slot`，可选限制见下文 | 机器人、电动台、高温炉 |
-| `crucible.unload` | `to_slot`，可选限制见下文 | 机器人、电动台、高温炉、热成像 |
+| `crucible.load` | `from_slot`，可选限制见下文和 `speed` | 机器人、电动台、高温炉 |
+| `crucible.unload` | `to_slot`，可选限制见下文和 `speed` | 机器人、电动台、高温炉、热成像 |
+| `microscope.record` | `chip_id`、`seconds`，可选 `run_name`、`mode` | 显微镜 |
 | `sample.record` | `chip_id`、`note` | 无 |
 
 `recipes/example-rehearsal.toml` 示例使能模拟机器人，移动后记录样本，再停止机器人。它不含供气或加热命令。自定义操作单元接收可撤销的上下文，其中包含服务客户端、运行记录和区域管理器。进入命名区域必须有明确配置，并检查配置的进入条件。
@@ -124,20 +133,20 @@ on_fail = "hold"
 
 每次运行使用唯一客户端身份。运行器先检查所需服务的契约，再获取首个控制租约。续期只延长现有租约，不会重新获取。租约丢失后，运行保持暂停，不能通过自动获取控制权恢复。
 
-以下值为固定默认值：
+以下为默认值。设置的非空值覆盖默认值：
 
-| 项目 | 固定默认值 |
-| --- | --- |
-| 记录目录 | `/var/lib/mg400/runs` |
-| 客户端超时 | `2` s |
-| 区域配置 | `/var/lib/mg400/zones/config.toml` |
-| 持久占用记录 | `/var/lib/mg400/zones/occupancy.json` |
-| 机器人 | `http://127.0.0.1:8766/` |
-| 位移台契约 | `http://127.0.0.1:8767/contract/` |
-| 热像仪 | `http://127.0.0.1:8768/` |
-| 炉控 | `http://127.0.0.1:8769/` |
-| 显微镜 | `http://127.0.0.1:8770/` |
-| 视觉 | `http://127.0.0.1:8771/` |
+| 项目 | 设置 | 默认值 |
+| --- | --- | --- |
+| 记录目录 | `MG400_ORCH_RUNS_DIR` | `/var/lib/mg400/runs` |
+| 客户端超时 | `MG400_ORCH_TIMEOUT_S` | `2` s |
+| 区域配置 | `MG400_ORCH_ZONES_FILE` | `/var/lib/mg400/zones/config.toml` |
+| 持久占用记录 | `MG400_ORCH_ZONE_STATE_FILE` | `/var/lib/mg400/zones/occupancy.json` |
+| `robot` | `MG400_ORCH_ROBOT_URL` | `http://127.0.0.1:8766/` |
+| `stage` | `MG400_ORCH_STAGE_URL` | `http://127.0.0.1:8767/contract/` |
+| `thermal` | `MG400_ORCH_THERMAL_URL` | `http://127.0.0.1:8768/` |
+| `furnace` | `MG400_ORCH_FURNACE_URL` | `http://127.0.0.1:8769/` |
+| `microscope` | `MG400_ORCH_MICROSCOPE_URL` | `http://127.0.0.1:8770/` |
+| `vision` | `MG400_ORCH_VISION_URL` | `http://127.0.0.1:8771/` |
 
 服务不检查令牌。服务适配器直接连接，不使用代理配置。见[服务契约](adr/0001-instrument-service-contract.md)。
 
@@ -149,17 +158,12 @@ on_fail = "hold"
 区域等待不能超过步骤剩余时限。自定义区域上下文可以指定更短的超时。
 配置缺失或区域未知时，拒绝进入，不会跳过区域检查。
 
-使用安装后的编排器前，操作员必须准备私密主机目录：
-
-```sh
-sudo install -d -m 0750 -o 1000 -g 1000 /var/lib/mg400/zones
-```
-
+安装器创建 `/var/lib/mg400/zones`，属主为 `1000:1000`，权限为 `0750`。
+默认配置文件不存在时，配置中没有区域：不含 `zone` 的配方照常运行，进入任何区域都被拒绝。
 将配置保存到 `/var/lib/mg400/zones/config.toml`，属主为 `1000:1000`，权限为 `0640`。
 使用本地路径时，父目录必须属于调用者，权限为 `0700` 或 `0750`。
 配置和占用记录只接受具有规定属主的常规文件，权限为 `0600` 或 `0640`。
 存储拒绝不安全的父目录和任何路径分量中的符号链接，在已有的所属目录中原子写入占用记录。
-安装器不会准备此目录。代理不得执行上述主机准备命令。
 控制同一设备的所有硬件运行必须使用相同的配置和占用路径。
 
 存储争用最多等待 2 秒，且不能超过步骤剩余时限。同一进程内的线程排队等待，停止或撤销会取消等待。设备停止命令先于区域存储写入发送。
@@ -183,11 +187,12 @@ owner = "stage"
 conditions = ["robot_clear"]
 ```
 
-自定义区域名称也必须明确指定所属设备和条件。所属设备使用上方配置表中的服务名称。
+自定义区域名称也必须明确指定所属设备和条件。所属设备使用上方配置表中的服务名称：`robot`、`stage`、`thermal`、`furnace`、`microscope` 或 `vision`。
 名称含 1 至 64 个字母、数字、下划线或连字符，以字母或数字开头。
 未知字段、未知条件和重复条件均被拒绝。
 保留区域 `crucible-load` 必须属于机器人，并要求 `stage_at_load`。
 保留区域 `furnace-tube` 必须属于位移台，并要求 `robot_clear`。机器人不能持有它，也不得进入显微镜下方。
+`crucible-load` 和 `furnace-tube` 不能同时被占用。`crucible-load` 被占用时，位移台不接受动作。其他运行在某设备上保留占用时，本次运行不能操作该设备。
 这些所属设备检查不能证明任意 `robot.move` 命令都会避开显微镜。
 仍须由操作员验证路线和工作空间限位。
 
@@ -217,7 +222,8 @@ conditions = ["robot_clear"]
 此操作只清除暂时错误，不清除其他运行的占用，也不重放失败步骤。
 恢复不会重新获取丢失的租约。
 
-旧进程留下的占用也必须通过有审计记录的恢复清除，并使用已持有控制权的客户端。目前没有安装后的恢复命令。
+旧进程留下的占用也必须通过有审计记录的恢复清除，并使用已持有控制权的客户端。
+已安装的服务在 `POST /api/runs/<id>/recovery` 和 `/recovery/confirm` 提供此恢复。它清除该运行在服务记录库中保留的占用，见 [HTTP 服务](#http-服务)。持有者不在该记录库中时，使用下文的 Python API。
 不得通过删除或替换占用文件清除占用。
 
 ### 恢复已退出进程的占用
@@ -285,9 +291,11 @@ EOF、Ctrl-C、SIGTERM 和 SIGHUP 都会请求终止。CLI 等待活动操作和
 
 换算先按法兰角度 R 旋转 `(dx, dy)`，再加到法兰 XY 上。指尖 Z 等于法兰 Z 减去 dz。反向换算减去旋转后的 XY 偏移，并加上 dz。两种换算都保留 R，包括正负号和完整转数。
 
-工具文件为 `MG400_ORCH_TOOL_FILE`，默认为 `/var/lib/mg400/robot/tool.toml`。工位文件为 `/var/lib/mg400/robot/stations.toml`。
+工具文件为 `MG400_ORCH_TOOL_FILE`，默认为 `/var/lib/mg400/robot/tool.toml`。工位文件为 `MG400_ORCH_STATIONS_FILE`，默认为 `/var/lib/mg400/robot/stations.toml`。
 
-工位示教以及下文的工位、托盘和坩埚转移属于已推迟的工作。其代码需要主机配置未提供的实测输入，因此这些命令和步骤在主机上会被拒绝。
+指尖工作空间由 8 个设置定义：`MG400_ORCH_X_MIN_MM`、`MG400_ORCH_X_MAX_MM`、`MG400_ORCH_Y_MIN_MM`、`MG400_ORCH_Y_MAX_MM`、`MG400_ORCH_Z_MIN_MM`、`MG400_ORCH_Z_MAX_MM`、`MG400_ORCH_R_MIN_DEG` 和 `MG400_ORCH_R_MAX_DEG`。它们没有默认值。每项必须是有限数，且最小值小于最大值。每个工位必须位于边界内，接近高度不得超过 Z 上限。
+
+所有工位命令，以及下文的工位、托盘、吸取和坩埚步骤，都需要这些边界、`tool.toml` 和示教工位。缺少任一项时，命令或步骤被拒绝。
 
 操作员先在实验室控制台的 Motion 工作区把机器人移至目标位置。示教时，控制台或其他控制器必须保持控制权。示教要求测量反馈新鲜、机器人空闲、没有锁定且没有未确认的停止。示教命令只读取服务描述和状态。它不会获取或释放控制租约、修改控制器工具配置或发送运动命令。
 
@@ -354,7 +362,7 @@ on_fail = "hold"
 
 拾取先下降，再发送 `vacuum suck`。拾取前吸盘必须关闭。吸气开启后，抬升至该工位的接近高度。放置要求吸气开启。它先下降，发送 `vacuum release`（短暂吹气后关闭），再抬升至该工位的接近高度。每次移动前后，状态检查确认吸气和吹气的实测输出：携带部件时吸气必须开启，否则必须关闭，吹气必须关闭。
 
-安装真空开关并设置 `GRIP_DI` 后，机器人状态的 `vacuum.held` 报告是否吸住部件。吸气后 1 秒内未报告吸住时，操作单元发送 `vacuum release` 并失败。携带部件时 `held` 变为 `false` 表示掉落，运行暂停。放置后 1 秒内 `held` 未变为 `false` 时，操作单元失败。未设置 `GRIP_DI` 时，`held` 为 `null`，操作单元不能确认是否吸住部件。
+安装真空开关并在 `src/mg400/suction.py` 中设置 `GRIP_DI`（默认为 `None`）后，机器人状态的 `vacuum.held` 报告是否吸住部件。吸气后 1 秒内未报告吸住时，操作单元发送 `vacuum release` 并失败。携带部件时 `held` 变为 `false` 表示掉落，运行暂停。放置后 1 秒内 `held` 未变为 `false` 时，操作单元失败。未设置 `GRIP_DI` 时，`held` 为 `null`，操作单元不能确认是否吸住部件。
 
 `robot.pick`、`robot.place` 和 `robot.transfer` 接受整数参数 `speed`，默认值为 1。允许范围从 1 到机器人服务公布的 `MG400_ROBOT_MAX_SPEED_L` 上限，该上限最多为 100。参数或公布的上限无效时，步骤在运动前拒绝。所有移动通过 `execute` 发送，机器人服务仍执行速度和加速度限制。控制器保持 `User=0,Tool=0`。
 
@@ -372,7 +380,18 @@ on_fail = "hold"
 放置后，目标槽位必须有芯片，源槽位必须为空。
 证据缺失或含糊、未吸住、掉落或校准失败时，运行暂停。
 
-该步骤需要没有硬件默认值的实测输入：不超过 16 KiB 的托盘模型 TOML 文件、范围为 1 到 4 的已校准托盘相机、芯片轴 `long` 或 `short`，以及法兰 R 偏移和宽度小于 180 度的窗口。
+该步骤需要没有硬件默认值的实测输入：
+
+| 设置 | 要求 |
+| --- | --- |
+| `MG400_ORCH_TRAY_FILE` | 托盘模型 TOML 文件，不超过 16 KiB |
+| `MG400_ORCH_TRAY_CAMERA` | 已校准托盘相机，范围为 1 到 4 |
+| `MG400_ORCH_CHIP_AXIS` | 芯片轴 `long` 或 `short` |
+| `MG400_ORCH_CHIP_R_OFFSET_DEG` | 法兰 R 偏移 |
+| `MG400_ORCH_CHIP_R_MIN_DEG`、`MG400_ORCH_CHIP_R_MAX_DEG` | 允许的法兰 R 窗口，宽度大于 0 且小于 180 度 |
+
+漂移检查限值为 `MG400_ORCH_DRIFT_LIMIT_PX`，默认为 3 px。该设置只能降低限值，取值大于 0 且不超过 3。
+
 
 托盘文件为符号链接、非普通文件、有多重硬链接或并发变化时，步骤拒绝执行。
 工位转移的输入仍然必需。
@@ -422,7 +441,7 @@ uv run labctl run recipes/tray-transfer.toml --param 'from_slot="YOUR_SOURCE_SLO
 
 - XY 取步骤观测到的已校准芯片中心。
 - Z、R、接近距离、区域和路线取自 1 个名为 `tray` 的示教工位。示教时，把吸盘端点放在托盘内芯片的上表面。
-- 该步骤不需要槽位工位，也不需要 `CHIP_AXIS` 或 `CHIP_R_*` 配置。它需要 `MG400_ORCH_TRAY_FILE` 和 `MG400_ORCH_TRAY_CAMERA`。
+- 该步骤不需要槽位工位，也不需要 `MG400_ORCH_CHIP_AXIS` 或 `MG400_ORCH_CHIP_R_*` 设置。它需要 `MG400_ORCH_TRAY_FILE` 和 `MG400_ORCH_TRAY_CAMERA`。
 
 吸取前，步骤执行校准漂移检查和 1 次槽位观测。槽位必须恰好有 1 个芯片。证据缺失或含糊时，运行在运动前暂停。机器人必须从 1 个示教工位或其接近点出发，并位于已校准网格内。机械臂遮挡槽位，因此吸取后步骤不再检查该槽位。
 
@@ -434,11 +453,13 @@ uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'
 
 `crucible.load` 把芯片从示教托盘工位转移到 `crucible-load`，再插入坩埚。
 `crucible.unload` 退出坩埚，等待命名热区降温，再把芯片转移到示教托盘工位。
-托盘工位不得为 `crucible-load`。该工位必须使用 `crucible-load` 区域。
+必须有名为 `crucible-load` 的示教工位，其区域为 `crucible-load`。托盘工位不得为 `crucible-load`。
+路线上每个工位的区域都必须属于机器人。区域配置必须定义 `crucible-load`（属于机器人，要求 `stage_at_load`）和 `furnace-tube`（属于位移台，要求 `robot_clear`）。
 不得给整个复合步骤声明 `zone = "crucible-load"`。机器人阶段释放该区域后，Insert 才能移动。
 
-以有类型的配方参数提供这些值。默认值 `-1` 表示未设置。
-它不表示安全限制。值缺失、非有限数或无效时，步骤在发送任何命令前拒绝。
+以有类型的配方参数提供这些值。默认值 `-1` 表示未设置，不表示安全限制。
+参数未设置时，步骤读取对应的主机设置：`MG400_ORCH_CRUCIBLE_LOAD_MAX_C`、`MG400_ORCH_CRUCIBLE_UNLOAD_MAX_C`、`MG400_ORCH_CRUCIBLE_AWAKE_S` 或 `MG400_ORCH_CRUCIBLE_MAX_AGE_S`。
+两者都缺失、非有限数或无效时，步骤在发送任何命令前拒绝。
 
 | 参数 | 要求 |
 | --- | --- |
@@ -491,15 +512,16 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 
 ## 演练与安装后的命令
 
-演练在数字环回地址创建并持有演示服务。它检查 `demo = true`，并在运行终止后关闭这些服务。它清除生产设备配置、代理配置和 Python 环境覆盖项。机器人演练要求仓库中有机器人服务 `apps/control_panel/`。演示工厂支持机器人、位移台、热像仪和高温炉。所需服务不受支持时，运行开始前就会报错。
+演练在数字环回地址创建并持有演示服务。它检查 `demo = true`，并在运行终止后关闭这些服务。它清除生产设备配置、代理配置和 Python 环境覆盖项。机器人演练要求仓库中有机器人服务 `apps/control_panel/`。演示工厂支持机器人、位移台、热像仪、高温炉和视觉，不支持显微镜。所需服务不受支持时，运行开始前就会报错。
 
-转移演练保留明确提供的工位输入和区域配置路径。文档规定的配置路径默认值仍然适用。文件必须包含有效几何数据和命名区域定义。演练不会编造偏移、工作空间或区域配置。创建演示服务前，它先解析条件所需的服务。占用文件属于临时演练目录。
+演练只从环境中保留区域配置、工作空间、工位、工具、托盘、芯片、坩埚和漂移设置。转移演练保留明确提供的工位输入和区域配置路径。文档规定的配置路径默认值仍然适用。文件必须包含有效几何数据和命名区域定义。演练不会编造偏移、工作空间或区域配置。创建演示服务前，它先解析条件所需的服务。占用文件属于临时演练目录。
 
 吸盘输出来自临时 SIM-01 模拟器。模拟器响应 `DOExecute`，并在反馈中报告 DO 位。
 
 模拟器没有真空开关，因此 `held` 为 `null`。托盘演练场景在示教槽位吸气时取走芯片，在示教槽位放开时放下芯片。离线测试用带 `held` 的假机器人检查未吸住和掉落路径。演练不能证明物理间隙足够，也不能证明真机吸取成功。
+设置 `MG400_ORCH_TRAY_FILE` 时，托盘演练只接受内置的合成托盘文档，拒绝真实托盘文件。
 
-坩埚演练保留上述明确的安全输入。它可以读取自有热成像演示的命名热区数据。
+坩埚演练保留上述明确的安全输入。它从 `MG400_ORCH_CRUCIBLE_ROIS_FILE` 读取自有热成像演示的命名热区数据。
 没有该数据时，不定义热区。它不会选择真实摄像头、生产高温炉或设备路径。
 演示电动台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
 高温炉演示持有自己的串口模拟器和临时状态。坩埚操作单元不发送加热或供气命令。
@@ -510,4 +532,4 @@ root 调用配方或工位命令时，分派器先用 `runuser --pty` 切换至 
 
 root 演练不会读取主机配置文件。它从调用者环境接收 `MG400_*` 配置，不接收固定的服务 URL。
 
-直接调用已安装命令时，实际和有效 UID/GID 都必须为 1000。它使用调用者的环境配置，不读取 root 配置文件。本地 `uv run labctl` 使用开发者身份。用 `--runs-dir` 指定本地可写目录。
+直接调用已安装命令时，实际和有效 UID/GID 都必须为 1000。它使用调用者的环境配置，不读取 root 配置文件。除演练外，它还接收固定的服务 URL，调用者的 `MG400_*` 值优先。本地 `uv run labctl` 使用开发者身份。用 `--runs-dir` 指定本地可写目录。

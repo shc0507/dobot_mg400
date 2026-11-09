@@ -206,6 +206,19 @@ def test_robot_move_uses_the_shared_completion_predicate_and_relative_pose():
     ]
 
 
+def test_relative_move_waits_briefly_for_a_known_pose():
+    moving = robot_state(None, actual=[None] * 4)
+    agent, http = make(
+        {
+            "api/console/heartbeat": beat({"device": "robot", "holder": "h"}),
+            "api/console/state/robot": states(moving),
+        }
+    )
+    code, result = run_cli(["robot", "move", "0", "0", "1", "0", "--relative"], agent)
+    assert code == 1 and result["error"]["code"] == "busy"
+    assert http.sent("api/console/command/robot") == []
+
+
 def test_robot_superseding_stop_is_unknown_and_alarms_give_the_clear_hint():
     before = robot_state({"id": "i1:1", "action": "enable", "client": "h", "result": "ok"})
     stopped = robot_state({"id": "i1:2", "action": "stop", "client": "x", "result": "ok"})

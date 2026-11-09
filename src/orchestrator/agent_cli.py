@@ -23,6 +23,9 @@ ROBOT_PLAIN = {
 }
 
 
+POSE_WAIT_S = 2.0
+
+
 class UsageError(Exception):
     pass
 
@@ -170,14 +173,22 @@ def _shortcut(agent, args):
         if verb == "move":
             target = [args.x, args.y, args.z, args.r]
             if args.relative:
-                current = agent.state("robot")
-                if not current.get("ok"):
-                    return current
-                actual = (current.get("state") or {}).get("actual")
-                if not isinstance(actual, list) or len(actual) != 4 or None in actual:
-                    return failure(
-                        "busy", "The current pose is unknown while the arm moves.", device="robot"
-                    )
+                # The pose is unknown while the arm moves and until the next feedback sample.
+                deadline = agent.clock() + POSE_WAIT_S
+                while True:
+                    current = agent.state("robot")
+                    if not current.get("ok"):
+                        return current
+                    actual = (current.get("state") or {}).get("actual")
+                    if isinstance(actual, list) and len(actual) == 4 and None not in actual:
+                        break
+                    if agent.clock() >= deadline:
+                        return failure(
+                            "busy",
+                            "The current pose is unknown while the arm moves.",
+                            device="robot",
+                        )
+                    agent.sleep(0.1)
                 target = [a + b for a, b in zip(actual, target, strict=True)]
             params = {"targets": dict(zip("xyzr", target, strict=True))}
             if args.speed is not None:

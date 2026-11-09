@@ -60,14 +60,24 @@ def labctl(console, *argv, session="e2e"):
     return code, json.loads(out.getvalue())
 
 
+def pose(console):
+    """The pose is unknown until the first feedback sample after a move."""
+    deadline = time.monotonic() + 5
+    while True:
+        actual = labctl(console, "robot", "state")[1]["state"]["actual"]
+        if None not in actual or time.monotonic() > deadline:
+            return actual
+        time.sleep(0.1)
+
+
 def test_robot_take_enable_move_vacuum_and_release(console):
     assert labctl(console, "robot", "take")[0] == 0
     code, result = labctl(console, "robot", "enable")
     assert code == 0 and result["state"]["enabled"] is True
-    start = result["state"]["actual"]
+    start = pose(console)
     code, result = labctl(console, "robot", "move", "0", "0", "-10", "0", "--relative")
     assert code == 0, result
-    assert result["state"]["actual"][2] == pytest.approx(start[2] - 10)
+    assert pose(console)[2] == pytest.approx(start[2] - 10)
     code, result = labctl(console, "robot", "move", *map(str, start), "--speed", "999")
     assert code == 1 and result["outcome"] == "refused"
     assert labctl(console, "robot", "vacuum", "suck")[0] == 0

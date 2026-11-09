@@ -497,7 +497,8 @@ def test_disable_disconnect_reconnect_can_enable_without_another_disable(rig):
 
     state.command({"action": "stop_sync"}, "browser-a")
     wait_for(lambda: not state.snapshot()["busy"] and not state.snapshot()["locked"])
-    assert disconnected_control.calls == ["disable", "stationary"]
+    # The arm was already disabled, so no rest check: it may be moved by hand.
+    assert disconnected_control.calls == ["disable"]
     assert not state.snapshot()["syncing"]
     assert not state.snapshot()["locked"]
     assert state.snapshot()["controller_id"] is None
@@ -717,6 +718,33 @@ def test_disabled_disconnect_still_confirms_and_closes_feedback(make_sim_rig):
     assert rig.controller.sent().count("DisableRobot()") == 1
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_disable_skips_rest_check_only_for_a_disabled_arm(make_sim_rig, enabled):
+    rig = make_sim_rig()
+    rig.controller.update(mode=5 if enabled else 4)
+    rig.command("start_sync")
+    rig.wait(lambda s: s["feedback_fresh"] and s["robot_mode"] == (5 if enabled else 4))
+    done = threading.Event()
+
+    def move_by_hand():
+        angle = 0.0
+        while not done.wait(0.001):
+            angle += 0.5
+            rig.controller.update(joints_deg=(angle, 0.0, 0.0, 0.0))
+
+    hand = threading.Thread(target=move_by_hand, daemon=True)
+    hand.start()
+    try:
+        rig.command("disable")
+        rig.wait(lambda s: not s["busy"] and (s["stop_unconfirmed"] or not s["locked"]), timeout=10)
+    finally:
+        done.set()
+        hand.join(1)
+    # Joints that move while the arm is enabled still lock control.
+    assert rig.snapshot()["stop_unconfirmed"] is enabled
+    assert rig.snapshot()["locked"] is enabled
+
+
 def test_pending_disconnect_keeps_feedback_until_old_motion_worker_drains(rig):
     state, feed, controls = rig
     connect(state)
@@ -768,7 +796,7 @@ def test_failed_disconnect_stops_pose_queries_and_preserves_feedback_and_safety_
     assert "unconfirmed" in state.snapshot()["message"]
     state.command({"action": "disable"}, "browser-b")
     wait_for(lambda: not state.snapshot()["busy"])
-    assert control.calls == ["stop", "disable", "stationary"]
+    assert control.calls == ["stop", "disable"]
     assert state.snapshot()["locked"]
     assert state.snapshot()["syncing"]
     assert len(controls) == 1

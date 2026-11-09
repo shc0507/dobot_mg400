@@ -4,7 +4,7 @@
 
 YOLO 从摄像头图像中检测无标签芯片和机械臂。
 芯片身份由槽位和运行记录确定。QR 和 Micro QR 读取器保留用于晶圆侧标签。
-相机标定使用机械臂和托盘上的 ArUco 标记，与芯片检测分开。
+相机校准使用机械臂和托盘上的 ArUco 标记，与芯片检测分开。
 go2rtc 管理摄像头。视觉服务读取其 JPEG 接口，不打开摄像头设备。
 只有启动服务或收到请求时，服务才加载模型或执行推理。
 
@@ -27,6 +27,8 @@ uv run python -m vision --demo
 4 个演示摄像头编号使用相同的图像和检测结果。
 演示使用真实 QR 读取器和模拟定位器，不导入 torch，也不访问摄像头。
 演示结果不能验证真实模型或摄像头几何关系。
+演示摄像头没有稳定端口路径。`calibrate_camera`、`check_calibration` 和 `observe_slots` 返回 400，`read_markers` 返回 `camera_device=null`。
+演示服务启动后即报告 `connected=true`。
 
 启动时，服务加载模型，并用合成图像执行 1 次预热预测。
 预热不请求摄像头图像。
@@ -41,16 +43,19 @@ GPU 内存配置在模型加载前执行。
 
 | 配置项 | 选项 | 默认值与含义 |
 | --- | --- | --- |
-| 无 | `--bind` | `127.0.0.1` |
-| 无 | `--port` | `8771` |
-| 无 | `--base-path` | `/`，所有路由的前缀 |
+| `MG400_VISION_BIND` | `--bind` | `127.0.0.1` |
+| `MG400_VISION_PORT` | `--port` | `8771`，范围为 `1` 到 `65535` |
+| `MG400_VISION_BASE_PATH` | `--base-path` | `/`，所有路由的前缀 |
 | `MG400_VISION_WEIGHTS` | `--weights` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` |
 | `MG400_VISION_DEVICE` | `--device` | CUDA 可用时为 `cuda`，否则为 `cpu`。显式 `cuda:N` 选择设备 |
-| 无 | `--gpu-fraction` | `0.15`，必须有限、大于 0 且不大于 1 |
+| `MG400_VISION_GPU_FRACTION` | `--gpu-fraction` | `0.15`，必须有限、大于 0 且不大于 1 |
 | `MG400_VISION_FRAME_TIMEOUT` | `--frame-timeout` | 每次 HTTP 套接字操作和响应正文读取的时限均为 `2` 秒。必须有限且大于 0 |
 | 无 | `--demo` | 使用离线数据，不加载检测运行库 |
+| `MG400_VISION_CALIBRATION_DIR` | 无 | `/var/lib/mg400/calibration/cameras`，相机模型目录 |
+| `MG400_VISION_TAG_HEIGHT_MM` | 无 | `100`，机械臂标记高于法兰的名义高度，单位为 mm。必须大于 0 且不大于 1000 |
+| `MG400_VISION_CALIBRATION_RMS_MM` | 无 | `1`，校准验收阈值，单位为 mm RMS。必须大于 0 且不大于 1 |
+| `MG400_VISION_CACHE_DIR` | 无 | `/var/lib/mg400/vision/yolo`，用作 Ultralytics 的 `YOLO_CONFIG_DIR` |
 
-校准使用固定默认值：相机模型目录 `/var/lib/mg400/calibration/cameras/`，机械臂标记高于法兰的名义高度 `100` mm，验收阈值 `1` mm RMS。
 标记到指尖的名义距离等于名义标记高度加 `tool_dz_mm`。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 配置或启动失败时，退出码为 2。
@@ -81,7 +86,7 @@ http://127.0.0.1:1984/api/frame.jpeg?src=cameraN
 输出尺寸必须与配置的采集模式一致。不一致时失败，不调整图像尺寸。
 `vision.frames.still(camera)` 和服务读取都从同一 go2rtc 流请求 1 帧。
 它们不改变采集模式，也不另行打开设备采集。
-读取失败返回 503 并记录故障。请求不自动重试。
+读取失败返回 503。请求不自动重试。
 
 结果的 `coordinate_system` 为 `oriented_original_image_pixels`。
 检测字段 `xyxy`、`center_xy`、`polygon` 和 `size_px` 使用该图像的坐标。
@@ -89,17 +94,17 @@ http://127.0.0.1:1984/api/frame.jpeg?src=cameraN
 QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标。
 无法解码的标签标为 `decoded=false`，其文本不是经过验证的身份。
 
-相机模型有效时，检测结果在检测中心提供 `robot_mm`，包含 `x` 和 `y`。
+相机模型有效时，检测结果和 QR 标签在其中心提供 `robot_mm`，包含 `x` 和 `y`。
 服务先消除像素畸变，再求射线与已存水平托盘平面的交点。
-`calibrated_cameras` 列出已加载有效模型的相机。缺少标定时，返回 `calibrated=false`，不提供 `robot_mm`。
-相机端口或图像尺寸改变会使标定失效。服务不会复用其他端口的文件，也不会缩放模型。
+`calibrated_cameras` 列出已加载有效模型的相机。缺少校准时，返回 `calibrated=false`，不提供 `robot_mm`。
+相机端口或图像尺寸改变会使校准失效。服务不会复用其他端口的文件，也不会缩放模型。
 图像尺寸不匹配时，操作失败，不发布机器人坐标。
-机器人运动目标仍必须具备适用平面上的有效标定，并通过常规运动检查。
+机器人运动目标仍必须具备适用平面上的有效校准，并通过常规运动检查。
 
 ## 路由与命令
 
 路由相对于 `--base-path`，遵循 [服务契约](adr/0001-instrument-service-contract.md)。
-同一时刻只运行 1 个操作，包括检测、QR 读取、标记读取、标定、漂移检查和槽位观测。
+同一时刻只运行 1 个操作，包括检测、QR 读取、标记读取、校准、漂移检查和槽位观测。
 重叠请求返回 409，服务不排队执行额外操作。
 
 | 读取路由 | 结果 |
@@ -111,13 +116,15 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 | `GET api/describe` | 契约版本和命令参数说明 |
 | `GET api/events?since=0` | 服务事件，同时写入日志 |
 
-读取路由不要求租约，但保留全部访问检查。
+读取路由不要求租约，也不检查请求头。
 3 个推理路由必须且只能包含 1 个 `camera` 查询参数，不接受其他查询参数。
 响应使用 `Cache-Control: no-store`。
+每个请求正文都不得超过 16 KiB。
 
 命令必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 先通过 `POST api/heartbeat` 获取控制租约，再发送命令。
-租约有效期为 3 秒。命令运行时继续续期。
+租约有效期为 3 秒。命令运行期间，客户端必须通过 `POST api/renew` 续期。
+用 `POST api/release` 释放租约。持有者释放租约时，服务取消其正在运行的命令。
 向 `POST api/command` 发送命令：
 
 ```json
@@ -132,24 +139,24 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 边界必须递增、非负，并位于图像内。
 返回的标签坐标包含裁剪偏移，仍使用完整图像坐标。
 
-标定使用 3 个要求租约的命令：
+校准使用 3 个要求租约的命令：
 
 | 命令 | 参数与结果 |
 | --- | --- |
-| `read_markers` | `camera`。返回含 `id` 和 `center_px` 的 `markers`，以及 `image_size`、`camera_device`、`frame_sha256` 和 `read_at`。 |
-| `calibrate_camera` | `camera`、`tag_points`、`tag_pixels`、`tray_points`、`tray_pixels`、`image_size`、`scan_r_deg` 和 `tool_dz_mm`。在持有租约时拟合并保存模型。 |
+| `read_markers` | `camera`。返回含 `id`、`center_px` 和 `corners_px` 的 `markers`，以及 `camera`、`calibrated=false`、`coordinate_system`、`image_size`、`camera_device`、`frame_sha256` 和 `read_at`。没有稳定端口路径时，`camera_device` 为 `null`。 |
+| `calibrate_camera` | `camera`、`tag_points`、`tag_pixels`、`tray_points`、`tray_pixels`、`image_size`、`scan_r_deg` 和 `tool_dz_mm`。在持有租约时拟合并保存模型。返回 `camera`、`calibrated=true` 和已保存的模型 `calibration`。 |
 | `check_calibration` | `camera`、`flange_mm` 和可选 `limit_px`。返回同一图像的标记 4 检查。 |
 
 `tag_points` 包含 24 行未经修正的法兰 XYZ，`tag_pixels` 包含对应的 24 行像素 XY。
 拟合程序为这些网格点加上名义标记高度。
 `scan_r_deg` 是全部 24 个网格点的法兰 R，单位为度。
-`tool_dz_mm` 是工具文件中的实测工具 Z 偏移，单位为毫米。
+`tool_dz_mm` 是工具文件中的实测工具 Z 偏移，单位为毫米。名义标记高度加 `tool_dz_mm` 必须大于 0 且不超过 1000 mm。
 `tray_points` 包含 2 到 4 行修正后的指尖 XY 和原始接触法兰 Z。
 技能按各参考点记录的 R 旋转配置工具的 XY 偏移，再加到参考法兰 XY。
 它保留法兰 Z，用于拟合未知距离，不应用工具 Z 偏移。
 `tray_pixels` 包含对应的像素 XY。
-`image_size` 为 `[width, height]`。请求正文不得超过 16 KiB。
-使用下述受保护的标定技能采集这些数组。不得把历史接触数据转换为机器人移动命令。
+`image_size` 为 `[width, height]`。
+使用下述受保护的校准技能采集这些数组。不得把历史接触数据转换为机器人移动命令。
 
 命令完成前返回 202 和 `command_id`。
 读取 `state.last_command` 中的 `result`、`message` 和 `finished_at`。
@@ -159,11 +166,13 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 失败或停止的命令为 `output=null`。
 `last_result` 保留最近成功推理的摘要及其完成时间。
 真实模式在首次成功处理图像前报告 `connected=false`。
+任何失败的操作都设置 `fault`，下次成功的操作清除它。只有返回 503 的失败才把 `connected` 设为 `false`。
+`fault` 不为空时，校准技能和漂移检查拒绝执行。此时先完成 1 次成功读取，例如 `GET api/detect`。
 
-## 相机到机器人标定
+## 相机到机器人校准
 
-移动相机、更换 USB 端口、改变采集尺寸或调整机械臂标记、托盘几何关系后，重新标定。
-标定前，操作员必须准备可信参考数据和示教站位。
+移动相机、更换 USB 端口、改变采集尺寸或调整机械臂标记、托盘几何关系后，重新校准。
+校准前，操作员必须准备可信参考数据和示教站位。
 部署或实机扫描前，先审核变更并完成适用的硬件检查。
 软件检查和演练不能验证物理避让空间或真实相机几何关系。
 
@@ -172,7 +181,7 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 机械臂标记位于 J4 轴线上，使用 `DICT_4X4_50` 的 ID `4`。
 托盘参考标记使用同一字典，从 `0`、`1`、`2`、`7` 中选取不重复 ID。
 在私有 TOML 文件中配置 2 到 4 个实测托盘参考点。
-编排器读取 `/var/lib/mg400/calibration/cameras/references.toml`。
+编排器读取 `/var/lib/mg400/calibration/cameras/references.toml`。设置 `MG400_CAMERA_CALIBRATION_REFERENCES` 时，改读该路径。
 文件必须可信、没有链接，且不超过 4 KiB。
 
 以下是模板，不是实测坐标。用操作员记录的法兰数值替换 `X`、`Y`、`Z` 和 `R`：
@@ -184,7 +193,7 @@ flange_mm = [X, Y, Z, R]
 ```
 
 XYZ 的单位为毫米，R 的单位为度。
-`H-08` 的参考接触位置始终属于标定数据，即使某个位置超出当前自动运动限位。
+`H-08` 的参考接触位置始终属于校准数据，即使某个位置超出当前自动运动限位。
 例程绝不会移动到这些接触姿态。
 
 示教 2 个网格角点站位，X 和 Y 均不同，R 相同，并归属同一个明确区域。
@@ -195,7 +204,7 @@ XYZ 的单位为毫米，R 的单位为度。
 
 扫描前，通过批准的人工或示教路线到达低法兰高度的第一个角点。
 机器人必须已使能、空闲，具备新鲜反馈，且由当前运行控制，并位于该姿态。
-标定技能不会使能机器人，不会从其他姿态入场，也不会自动恢复已停止的运行。
+校准技能不会使能机器人，不会从其他姿态入场，也不会自动恢复已停止的运行。
 
 扫描要求视觉服务报告 `connected=true`。真实服务启动后先报告 `connected=false`。
 扫描前，通过获授权的预览租约，为所选相机执行 `read_markers`。
@@ -214,9 +223,10 @@ vision.calibrate(camera: int, corner_a: str, corner_b: str,
 `camera` 选择已配置的相机，`corner_a` 和 `corner_b` 指定示教站位名称。
 例程在两个高度分别采集 3 行、4 列网格，共 24 个标记点。
 每个点都保持静止监测，服务按顺序读取 5 帧 ArUco 图像。
+静止监测要求法兰 XYZ 与预期姿态相差不超过 0.1 mm，R 相差不超过 0.1 度。
 例程使用标记中心的中位数。所需标记缺失或不唯一时，中止扫描。
 
-同一点的各次采样必须具有不同的 RGB SHA256。
+同一点的各次采样必须具有不同的 RGB SHA256。每点的第 1 帧也不得与上一点的最后 1 帧相同。
 这会拒绝完全相同的图像内容，但不能证明传感器图像新鲜。
 go2rtc 不提供采集时间戳或传感器帧 ID。`read_at` 是服务读取时间。
 整个采集期间，相机路径和图像尺寸必须保持不变。
@@ -224,14 +234,14 @@ go2rtc 不提供采集时间戳或传感器帧 ID。`read_at` 是服务读取时
 完成网格后，技能在机器人静止时读取可见托盘标记。
 它只提交 1 次采集点，并且只接受当前控制者对应的准确命令回执。
 失去控制、取消或结果不明时，不重试，也不重新获取控制权。
-运行把已接受的标定保存为产物。
+运行把已接受的校准保存为产物。
 
-例程在标定区域内结束，完成不代表离场。
+例程在校准区域内结束，完成不代表离场。
 区域占用保留，直到后续显式离场或受监督恢复确认区域已清空。
 
-### 离线标定演练
+### 离线校准演练
 
-公开演练 CLI 和演示注册表使用同一演练池拥有的合成机器人与视觉服务。
+公开演练 CLI `labctl rehearse`（见[编排器](orchestrator.md)）和演示注册表使用同一演练池拥有的合成机器人与视觉服务。
 合成相机跟随该机器人，为相机 `1` 生成 `1920x1080` 的 ArUco 图像。
 它们自行生成合成参考数据，不读取主机的参考文件或相机模型文件。
 演练不打开相机设备，也不启动原生采集。
@@ -247,7 +257,7 @@ go2rtc 不提供采集时间戳或传感器帧 ID。`read_at` 是服务读取时
 
 使用该工具偏移定义对应的指尖角点站位，并归属同一个明确由 `robot` 控制的区域。
 扫描前，前序配方步骤必须使能合成机器人，并到达低位的第一个角点。
-标定技能不会暗中使能机器人，也不会获取额外控制权。
+校准技能不会暗中使能机器人，也不会获取额外控制权。
 演练成功只验证软件流程，不能证明硬件可达性、实测相机几何关系或物理避让空间。
 
 ### 拟合、验收与限制
@@ -259,7 +269,7 @@ go2rtc 不提供采集时间戳或传感器帧 ID。`read_at` 是服务读取时
 
 联合拟合还使用托盘参考点，恢复标记到指尖的垂直距离 `D`。
 其名义值等于名义标记高度加 `tool_dz_mm`，固定允许偏差为 10 mm。
-更换工具后，先写入实测偏移，再标定。
+更换工具后，先写入实测偏移，再校准。
 标记高于法兰的名义高度默认为 100 mm。
 拟合报告 `distance_mm`，并分别报告 `rms_mm.held_out` 和 `rms_mm.tray`。
 
@@ -280,23 +290,24 @@ RMS 为水平位置误差的均方根值。
 它保留相机矩阵、畸变、旋转、平移、托盘高度、恢复距离、扫描 R、采样点、划分索引、误差和创建时间。
 模型点以 `tray_tip_xy_flange_z_mm` 保存修正后的托盘 XY 和原始法兰 Z。
 运行产物在 `reference_provenance` 中保存原始参考法兰姿态、标记 ID 和配置工具偏移。
-标定 JSON 不包含这些原始参考来源信息。
+校准 JSON 不包含这些原始参考来源信息。
 
 新模型使用 `schema` 2，并用 `scan_r_deg` 保存扫描 R。
 坐标映射也接受没有 `scan_r_deg` 的 `schema` 1 模型。漂移检查拒绝 `schema` 1 模型。
-使用漂移检查前，重新标定相机。
+使用漂移检查前，重新校准相机。
 
-目录必须已存在，归服务账户所有，权限为 `0700` 或 `0750`。
+安装器创建该目录，属主为 `1000:1000`，权限为 `0700`，见[主机部署](deploy.md)。
+目录必须归服务账户所有，权限为 `0700` 或 `0750`。
 模型必须是权限为 `0600` 或 `0640` 的私有普通文件，不得带符号链接或多个硬链接。
 新模型文件使用 `0600`，在最终权限检查后原子替换。每个文档最多 64 KiB。
 停止、释放租约或租约过期都会拒绝后续发布。
 
-新 USB 端口路径会选取不同的标定键，图像尺寸改变也会阻止坐标使用。
-不得重命名旧文件来绕过检查。使用预期相机及采集模式重新标定。
+新 USB 端口路径会选取不同的校准键，图像尺寸改变也会阻止坐标使用。
+不得重命名旧文件来绕过检查。使用预期相机及采集模式重新校准。
 服务仅凭端口名不能发现所有物理相机移动。
 保持相机固定，发生物理变化后重新验证。
 
-## 标定漂移检查
+## 校准漂移检查
 
 在转移配方的每次视觉引导移动前，调用 `vision.check_calibration(camera)`。
 此类型化技能要求机器人和视觉服务保持当前运行的控制权。
@@ -307,7 +318,7 @@ RMS 为水平位置误差的均方根值。
 真实服务冷启动时，按上文完成获授权的 `read_markers` 预览，再释放其租约。
 漂移检查不会另行获取预览租约，也不会自动恢复服务健康状态。
 
-检查时，机器人必须静止在标定网格内的姿态：
+检查时，机器人必须静止在校准网格内的姿态：
 
 - 法兰 X 和 Y 位于 2 个网格角点之间。
 - 法兰 Z 位于 2 个扫描高度之间。
@@ -318,7 +329,7 @@ RMS 为水平位置误差的均方根值。
 
 ### 限值与命令数据
 
-像素限值为 `3`。
+像素限值默认为 `3`。设置 `MG400_ORCH_DRIFT_LIMIT_PX` 可降低技能使用的限值，取值必须大于 `0` 且不超过 `3`。技能把该值作为 `limit_px` 发送。
 
 技能通过租约发送 `check_calibration` 命令，字段如下：
 
@@ -329,14 +340,14 @@ RMS 为水平位置误差的均方根值。
 | `limit_px` | 可选像素限值，大于 `0` 且不超过 `3`。命令默认值为 `3`。 |
 
 服务读取 1 张当前图像，加载该相机路径的 1 个模型，并在该图像中检测 1 次 `DICT_4X4_50` 标记。
-预期中心和检测中心使用同一模型和图像。服务不运行芯片检测器，不复用缓存结果，也不重写标定。
+预期中心和检测中心使用同一模型和图像。服务不运行芯片检测器，不复用缓存结果，也不重写校准。
 技能不另行读取主机模型。
 
 ### 几何与结果
 
-标记 4 的预期中心取法兰 X 和 Y，Z 取法兰 Z 加 `nominal_tag_height_mm`。标定拟合使用同一标记中心。
+标记 4 的预期中心取法兰 X 和 Y，Z 取法兰 Z 加 `nominal_tag_height_mm`。校准拟合使用同一标记中心。
 服务用存储模型的相机矩阵、畸变、旋转和平移投影该中心。
-投影中心在相机坐标系中的深度必须为正，且像素必须位于标定图像内。
+投影中心在相机坐标系中的深度必须为正，且像素必须位于校准图像内。
 真实相机路径和图像尺寸必须匹配存储模型。
 缺少模型、图像尺寸改变或使用 `schema` 1 模型时，命令失败，消息以 `camera moved, recalibrate:` 开头。
 
@@ -355,16 +366,18 @@ RMS 为水平位置误差的均方根值。
 | `camera_device`、`image_size` | 此图像和模型的相机路径及 `{width,height}`。 |
 | `model_created_at` | 此次检查所用模型的创建时间。 |
 
+`reason` 取以下值之一：`expected_behind_camera`、`expected_outside_image`、`marker_missing`、`marker_beyond_limit` 或 `marker_detection_malformed`。
+
 只有成功命令回执还不够。技能必须取得有效的通过结果。
 技能用回执中的 2 个中心重新计算距离。该距离必须与 `distance_px` 一致，且不超过限值。
 它只接受命令、动作和控制客户端完全匹配的回执。
-读取标记前、读取中和读取后，守卫检查法兰 XYZ 与 R 静止，且机器人控制者和实例不变。
+读取标记前、读取中和读取后，守卫检查法兰 XYZ 与 R 静止（变化不超过 0.1 mm 和 0.1 度），且机器人控制者和实例不变。
 
 检查结果未通过或无效时，抛出 `camera moved, recalibrate`。运行在下一步之前进入 `held` 状态。
 命令失败时，抛出 `Vision calibration failed:` 和服务消息。运行同样进入 `held` 状态。
 较早发生的停止、租约丢失或机器人移动错误保留原始原因。
 Runner 停止并等待已接受的工作结束，同时保留占用区域。
-技能不重试，不重新取得权限，不清空区域，也不自动重新标定。
+技能不重试，不重新取得权限，不清空区域，也不自动重新校准。
 
 1 个标记只提供 1 个图像点。某些相机移动使其他图像点的位移大于标记点。
 例如，标记靠近图像中心时，相机绕镜头光轴旋转。
@@ -385,7 +398,7 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 
 | 字段 | 要求 |
 | --- | --- |
-| `camera` | 已校准的相机编号，范围为 1 到 4。 |
+| `camera` | 已配置的相机编号。该相机必须有稳定端口路径和已安装的校准模型。 |
 | `tray` | 通过校验的托盘模型文档，不是主机文件路径。 |
 | `targets` | 请求的槽位 ID，以及各槽位准确的示教机器人 XY 对。值为 `null` 时，该槽位没有示教工位，只检查芯片。 |
 | `axis` | 按显式吸取约定选择 `long` 或 `short`。 |
@@ -442,17 +455,18 @@ cross_check_slots(location, *, taught_stations, chips,
                   same_location_slots=(), tolerance_mm=None)
 ```
 
-`device` 必须匹配标定中的完整稳定相机路径。图像尺寸也必须匹配。
+`device` 必须匹配校准中的完整稳定相机路径。图像尺寸也必须匹配。
 读取器使用 `DICT_4X4_50` ArUco 标记，要求至少 3 个不重复的可见角点 ID。
 即使其他角点可见，只要角点 ID 重复，就在拟合前拒绝该帧。
 若转盘标记或备用打印件与角点 ID 重复，不要让它们进入托盘图像。
 机械臂标记 ID `4` 不属于托盘角点。
 
 函数先通过相机模型映射实测中心，再按配置的托盘几何拟合相似变换。
+任一角点残差超过 `tolerance_mm` 时，定位失败。
 它返回变换、实测标记残差，以及采用 `robot_xy_mm` 坐标的 `slots`。
 每个槽位包含 `centerline_xy_mm`、`reference_xy_mm`，以及变换后的 `width_mm`。
 输出只提供 XY 几何，不确定物理 Z 或安全机器人路径。
-这里仍采用标定的水平面假设。托盘倾斜和芯片高于该平面都可能影响映射后的 XY。
+这里仍采用校准的水平面假设。托盘倾斜和芯片高于该平面都可能影响映射后的 XY。
 
 只观察到 3 个角点时，`missing_marker` 报告预测的第 4 个标记位置处的单元采样结果。
 此结果仅供诊断，不增加实测标记，不替代缺失证据，也不决定 3 标记拟合是否通过。
@@ -496,7 +510,7 @@ cross_check_slots(location, *, taught_stations, chips,
 
 ## 停止与退出
 
-任何通过认证的客户端都可调用 `POST api/stop`，不必持有租约。
+任何客户端都可调用 `POST api/stop`，不必持有租约。
 请求必须带 `X-MG400-Client` 和 JSON 正文，例如 `{"wait_s":0}`。
 `wait_s` 取 0 到 15 秒。
 工作完成后返回 `confirmed`，仍在运行时返回 `pending`。
@@ -506,7 +520,7 @@ cross_check_slots(location, *, taught_stations, chips,
 启动期间，停止会取消模型发布，并在加载或预热结束前返回 `pending`。
 QR 处理在各阶段之间检查取消状态。
 已开始的模型预测不能强制中断。只有它返回后，停止才能得到确认。
-租约过期会取消控制客户端的命令，不会取消独立的读取请求。
+租约过期或持有者释放租约会取消控制客户端的命令，不会取消独立的读取请求。
 
 SIGINT、SIGTERM 和 SIGHUP 会在退出时请求取消。
 退出最多等待当前推理或启动 15 秒，并结束租约轮询。
@@ -524,7 +538,7 @@ H-22 评估集位于 Olares Files 的 `Home/Datasets/h22-tray-eval-v1/`。它的
 在 Linux 上，从仓库根目录运行：
 
 ```bash
-uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval-v1 --weights chip-arm-yolo26s-seg-v1.pt --px-per-mm 1.554
+uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval-v1 --weights chip-arm-yolo26s-seg-v1.pt --px-per-mm 1.554 --device cuda
 ```
 
 锁定的 `torch` 没有 macOS 版本。在 macOS 上，在另一个环境中安装锁定版本的 `ultralytics`。运行脚本前，设置 `PYTHONPATH=src`。
@@ -532,7 +546,9 @@ uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval
 评估规则：
 
 - 脚本把每帧交给 `Localizer.predict`，与视觉服务相同。该函数先把宽于 4:3 的图像裁成居中的 4:3 区域（1280x720 裁成 960x720），再拉伸到 640x640。检测坐标仍按完整原图像素报告。
-- 脚本使用 `Localizer.predict` 的默认置信度阈值，与服务相同。如果要评估其他阈值，设置 `--confidence`。
+- 脚本只读取 `images/` 中的 `.jpg`、`.jpeg` 和 `.png` 文件。
+- `--weights` 默认读取 `MG400_VISION_WEIGHTS`。`--device` 默认为 `cpu`。使用 GPU 时，设置 `--device cuda`。
+- 脚本使用 `Localizer.predict` 的默认置信度阈值 `0.39`，与服务相同。如果要评估其他阈值，设置 `--confidence`。
 - 检测框与标签框的 IoU（交并比）不小于 0.5 时，二者匹配。脚本按置信度从高到低匹配。每个标签最多匹配 1 个检测。
 - 未匹配的检测计为误检。未匹配的标签计为漏检。
 - 精确率等于匹配数除以检测数。召回率等于匹配数除以标签数。

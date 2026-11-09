@@ -779,11 +779,12 @@ class RobotPanelState:
                     )
                 if disabling:
                     self._disable_verified = True
-                self._message = (
-                    "Robot disable and rest are confirmed."
-                    if disabling
-                    else "Robot stop is confirmed. Disable the robot before recovery."
-                )
+                if not disabling:
+                    self._message = "Robot stop is confirmed. Disable the robot before recovery."
+                elif check_rest:
+                    self._message = "Robot disable and rest are confirmed."
+                else:
+                    self._message = "Robot disable is confirmed."
                 if self._fault:
                     # A later success must not hide an earlier unconfirmed verdict.
                     self._message = (

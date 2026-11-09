@@ -21,6 +21,7 @@
 | `POST api/command` | 请求体为 `{"action": "...", ...}`。返回 `202` 和 `{command_id, state}`。完成结果写入 `state.last_command`。 |
 | `POST api/stop` | 请求体为 `{"wait_s": 0..15}`。返回 `{stop, state}`。`stop` 为 `confirmed`、`pending` 或 `unconfirmed`。任何客户端均可随时停止。重复请求安全。 |
 | `POST api/heartbeat` | 获取或续期调用方的租约。其他客户端持有租约时，返回 `409`。 |
+| `POST api/renew` | 仅续期调用方持有且未过期的租约。否则返回 `409`。 |
 | `POST api/release` | 仅当调用方持有租约时释放它。 |
 | `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`。同一批事件也写入服务日志。 |
 | `GET api/ws` | 可选的状态推送，使用机械臂协议 1。 |

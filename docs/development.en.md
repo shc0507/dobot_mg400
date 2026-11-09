@@ -31,12 +31,14 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-`uv sync` installs the `dev` and `stage` dependency groups by default.
-The `stage` group contains Flask, waitress, and pySerial for the stage service.
+By default, `uv sync` installs the dependency groups in `default-groups` in `pyproject.toml`: `dev`, `stage`, `vision`, `thermal`, `furnace`, `camera`, `orchestrator`, `gateway`, `microscope`, and `gateway-clients`.
+`vision-gpu` and `notebook` are not default groups.
+The `stage` group contains Flask, waitress, pySerial, NumPy, and OpenCV for the stage service.
 The robot service and interactive terminal use only the standard library and do not require the `stage` group.
 
 Tests do not connect to a robot or Arduino.
 For pull requests and pushes to `main`, GitHub Actions (`.github/workflows/ci.yml`) runs these checks on Python 3.12.
+A pull request runs only the pytest files that `scripts/select_tests.py` selects from the changed files. A push to `main` runs all tests.
 `pytest` runs Python tests. `node --test` runs the Lab Console JavaScript tests.
 Offline checks cannot replace physical robot verification.
 
@@ -44,6 +46,7 @@ Shared test fixtures are in `tests/conftest.py`.
 The stage test fixtures `stage_rig`, `stage_ports`, and `stage_usb` are also in this file. Tests use them by name.
 Test doubles are objects that replace real devices in tests.
 Controller, connection, and web service doubles are in `tests/helpers.py`, `tests/sim_mg400.py`, and `tests/panel_ws.py`.
+Shared checks for the service contract tests are in `tests/contract_helpers.py`.
 Stage clock, serial port, and serial port list doubles are in `tests/stage_helpers.py`.
 Reuse these modules in new tests. Do not duplicate them in test files.
 
@@ -96,8 +99,19 @@ Offline rehearsal cannot replace hardware acceptance.
 | `src/mg400/` | Backend, control protocol, and feedback processing |
 | `src/mg400/sim/` | Loopback controller simulator, with a shared test model |
 | `src/stage_controller/` | Stage service: Flask interface and serial protocol |
+| `src/labkit/` | Shared service contract, leases, events, access checks, and HTTP client. See [ADR 0001](adr/0001-instrument-service-contract.en.md) |
+| `src/cameras/` | AC410 camera modes and UVC reading |
+| `src/vision/` | [Vision service](vision.en.md): localization, QR reading, trays, and camera calibration |
+| `src/thermal_cam/` | [Thermal camera service](thermal.en.md) |
+| `src/furnace/` | [Furnace and gas service](furnace.en.md) |
+| `src/microscope/`, `src/toupcam_camera/` | [Microscope service](microscope.en.md) and the Toupcam camera |
+| `src/orchestrator/` | [Recipe service](orchestrator.en.md) and `labctl`. `web/` is the [Lab Console](dashboard.en.md) |
+| `src/gateway/` | [MCP gateway](agent-gateway.en.md) |
+| `recipes/` | TOML recipes |
+| `config/trays/`, `config/proxy/`, `config/udev/` | Tray geometry, proxy template, and USB access rule templates |
 | `firmware/three-motor-demo/` | Stage Arduino firmware and wiring instructions in English |
-| `scripts/` | Camera preview, control mode switching, and the interactive terminal entry point |
+| `firmware/microscope-axes/` | Microscope turret and focus firmware. See the [firmware guide](../firmware/microscope-axes/README.en.md) |
+| `scripts/` | Camera preview, control mode switching, the interactive terminal entry point, console screenshots (`console_shots.py`), test selection (`select_tests.py`), document pair checks (`check_doc_pairs.py`), agent signals (`agent_signal.py`), detector evaluation (`vision_eval.py`), and the console font (`console_font.py`) |
 | `examples/` | Single-file tutorials and notebooks |
 | `tests/` | Python and JavaScript offline tests |
 | `docs/` | Operating, deployment, and development guides. `docs/agents/` contains agent procedures |
@@ -120,7 +134,7 @@ The robot service controls the robot through the TCP protocol.
 `controller_protocol.py` parses command replies. `feedback.py` reads joint feedback.
 `joint_control.py` executes motion with limits and the suction outputs.
 For TCP protocol references and completion criteria, see [Physical robot control interface](hardware.en.md).
-There is currently no ROS 2 backend or visual perception.
+There is currently no ROS 2 backend.
 
 `src/stage_controller/` is the stage service. It does not import `mg400` or use the robot connection lock.
 `__main__.py` reads `MG400_STAGE_*` environment variables and command-line arguments, then starts waitress.

@@ -307,13 +307,14 @@ With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream w
 The H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). go2rtc 1.9.14 does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
 ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). Without an estimate, ffmpeg assumes 90000 fps, and `hevc_nvenc` sends only about 0.1 Mbit/s.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
-Single-frame requests use the same go2rtc stream, at its configured resolution; they do not switch mode or open another device capture.
+Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture.
+The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
 
 The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large streams can exceed its periodic transfer budget together.
-H-21 requires supervised bandwidth checks before simultaneous hardware use.
+Before simultaneous hardware use, do a supervised bandwidth check: open the required views together and make sure that several consecutive JPEG images decode completely.
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
-Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `mg400ctl restart camera vision microscope orch`. These services all read the camera modes.
+Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `mg400ctl restart camera vision microscope orch`. These services all read the camera modes. If `vision` is not enabled, remove `vision` from the command.
 
 Start the camera services:
 
@@ -384,9 +385,9 @@ If an expected preload is missing, run `mg400ctl restart camera`, wait 2 seconds
 Preloading might not start if a device is missing when the capture service starts.
 The console video streams reconnect automatically. The configured `camera<N>.jpg` single-frame endpoints can be slow when a stream starts on demand.
 
-After increasing the resolution, check all required views together under H-21. Check that several consecutive JPEG images decode completely.
+After increasing the resolution, check all required views together under supervision. Check that several consecutive JPEG images decode completely.
 The resolution and frame rate shown by the browser do not rule out corrupted images or partial image damage.
-If these problems occur, restore the `640 × 480` configuration, then check the USB capture path.
+If these problems occur, lower the mode to `640x480@30`, then check the USB capture path and the [USB bandwidth patch](#usb-bandwidth-patch).
 
 Every lab device shares the external hub. Never reset the shared upstream hub to recover a camera.
 Check the affected camera's port and logs. Follow the supervised hardware procedure before changing a device connection.

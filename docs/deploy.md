@@ -51,7 +51,6 @@
 | `mg400-microscope.service` | `microscope` | [显微镜服务](microscope.md)，回环端口 `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | 可选的[视觉服务](vision.md)，回环端口 `8771` | 无 |
 | `mg400-orchestrator.service` | `orch` | [配方服务](orchestrator.md#http-服务)，端口 `8772`，控制台控制套接字端口 `8774` | 无 |
-| `mg400-gateway.service` | `gateway` | 可选的[MCP 网关](agent-gateway.md)，回环端口 `8773` | 无 |
 | `mg400-proxy.service` | `proxy` | [单端口代理](olares.md#单端口代理)，端口 `8080` | 无 |
 
 服务手动启动，不开机自启。
@@ -111,7 +110,7 @@
    在 systemd 服务的默认 `PATH` 中查找显微镜使用的 `ffmpeg` 和 `ffprobe`。配置了摄像头时，查找 `ffmpeg`。缺少时，只给出提示，继续安装。
    检查不通过时，安装器不修改主机。
 2. 创建配置文件，或补全缺少的配置项。非空值保持不变。
-   删除旧的服务 `*_TOKEN` 项（`MG400_GATEWAY_TOKEN` 除外），以及示例中没有的空项。
+   删除旧的服务 `*_TOKEN` 项，以及示例中没有的空项。
 3. 创建 `/var/lib/mg400` 下的目录。安装器拒绝其中的符号链接。
 4. 按服务清单运行 `uv sync`，只安装已启用服务的依赖组。
    `/opt/mg400/.venv` 含所有必需服务的依赖组。
@@ -170,7 +169,7 @@
 | `assets` | 此服务拥有的资源清单名称 |
 
 `web`、`stage`、`camera`、`furnace`、`microscope`、`orch` 和 `proxy` 始终为必需服务。
-可选服务为 `vision`、`thermal` 和 `gateway`。
+可选服务为 `vision` 和 `thermal`。
 `MG400_OPTIONAL_SERVICES` 接受清单中的服务名称，用逗号分隔。
 默认值为空。未知、重复或空项会使安装器拒绝安装。必需服务名称不起作用。
 可选服务 `thermal` 使用 `/opt/mg400/.venv` 中的 `thermal` 依赖组。
@@ -204,10 +203,6 @@
 安装器准备 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
 同一服务还提供[实验室控制台](dashboard.md#实验室控制台)。它是唯一的操作网页，含 Overview、Motion、Cameras 和 Furnace + microscope 工作区，以及独立的运动、加热和气体停止操作。
 控制台没有配方运行控制。启动、终止和恢复运行使用[配方服务接口](orchestrator.md#http-服务)。
-
-可选服务 `gateway` 使用 `gateway` 依赖组。这部分工作已推迟，见[智能体网关](agent-gateway.md)。
-选中 `gateway` 时，安装器也会准备 `runs` 目录，用于审计记录。安装器不会启动网关。
-每个 MCP 请求都必须携带 `MG400_GATEWAY_TOKEN`。安装器不生成它，须在配置文件中手动设置。
 
 服务 `proxy` 不增加 Python 依赖组。首次安装时通过 `--caddy PATH` 提供 Caddy 2，并配置[单端口入口](olares.md#单端口代理)。
 安装器在改文件前检查代理配置，不会启动代理。
@@ -338,7 +333,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
 | `mg400ctl status` | 显示已启用服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`gateway`、`proxy` 或 `all` |
+| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`proxy` 或 `all` |
 | `mg400ctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
 | `mg400ctl restart web` | 重启服务。重启炉控时可加 `--force` |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |

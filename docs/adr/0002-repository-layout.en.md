@@ -20,7 +20,7 @@ This repository owns the migrated WuLab code and keeps its repository name. The 
 | `src/labkit` | Shared access checks, leases, events, service contract, and HTTP client |
 | `src/vision`, `src/thermal_cam`, `src/furnace` | Localization, QR reading, thermal sensing, and furnace/gas control |
 | `src/toupcam_camera`, `src/cameras`, `src/microscope` | Shared Toupcam support, UVC cameras, and microscope control |
-| `src/orchestrator`, `src/gateway` | Recipes, run storage, the Lab Console, and agent access |
+| `src/orchestrator` | Recipes, run storage, and the Lab Console |
 | `apps/control_panel`, `apps/layout-studio`, `recipes`, `config`, `deploy` | Robot service, offline layout editor, TOML recipes, configuration, and installation |
 | `firmware/three-motor-demo`, `firmware/microscope-axes` | Stage and microscope firmware |
 | `docs`, `docs/adr`, `docs/agents`, `tests` | Human guides, decisions, agent procedures, and offline tests |

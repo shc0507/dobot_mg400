@@ -22,7 +22,6 @@ Connect every lab device to Olares and run its services there. Each device has 1
 | Thermal / furnace / microscope | 8768 / 8769 / 8770 |
 | Vision | 8771 |
 | Orchestrator and Lab Console | 8772, console control socket 8774 |
-| Agent gateway | 8773 |
 | Single-port proxy | 8080 |
 
 All services listen only on `127.0.0.1`. The proxy is the only entry point on the VPN.

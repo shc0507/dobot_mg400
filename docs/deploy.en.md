@@ -51,7 +51,6 @@ Service definitions are in `config/systemd/` and are installed in `/etc/systemd/
 | `mg400-microscope.service` | `microscope` | [Microscope service](microscope.en.md), loopback port `8770` | `dialout video` |
 | `mg400-vision.service` | `vision` | Optional [vision service](vision.en.md), loopback port `8771` | None |
 | `mg400-orchestrator.service` | `orch` | [Recipe service](orchestrator.en.md#http-service), port `8772`, console control socket port `8774` | None |
-| `mg400-gateway.service` | `gateway` | Optional [MCP gateway](agent-gateway.en.md), loopback port `8773` | None |
 | `mg400-proxy.service` | `proxy` | [Single-port proxy](olares.en.md#single-port-proxy), port `8080` | None |
 
 Start services manually. They do not start automatically at boot.
@@ -111,7 +110,7 @@ The installer works in this order:
    Look for `ffmpeg` and `ffprobe` for the microscope in the default `PATH` of systemd services. If cameras are configured, look for `ffmpeg`. If a program is missing, show a notice, but do not stop the installation.
    If a check fails, leave the host unchanged.
 2. Create the configuration file or add missing entries. Keep nonempty values.
-   Remove old service `*_TOKEN` entries, except `MG400_GATEWAY_TOKEN`, and empty entries that the example does not contain.
+   Remove old service `*_TOKEN` entries and empty entries that the example does not contain.
 3. Create the directories under `/var/lib/mg400`. Refuse symbolic links there.
 4. Run `uv sync` from the service registry, with dependency groups only for enabled services.
    `/opt/mg400/.venv` gets the dependency groups of all mandatory services.
@@ -170,7 +169,7 @@ Add each new service entry together with its unit files.
 | `assets` | Asset manifest names owned by this service |
 
 `web`, `stage`, `camera`, `furnace`, `microscope`, `orch`, and `proxy` are always mandatory.
-The optional services are `vision`, `thermal`, and `gateway`.
+The optional services are `vision` and `thermal`.
 `MG400_OPTIONAL_SERVICES` accepts service names from the registry, separated by commas.
 The default is empty. Unknown names, duplicates, or empty items cause the installer to refuse installation. Mandatory service names have no effect.
 The optional `thermal` service uses the `thermal` dependency group in `/opt/mg400/.venv`.
@@ -204,10 +203,6 @@ This group includes Flask, waitress, and the `stage`, `thermal`, and `furnace` g
 The installer prepares the `runs` and `zones` directories. It does not invent zone configuration or start the service.
 The same service serves the [Lab Console](dashboard.en.md#lab-console). It is the only operator web page. It has the Overview, Motion, Cameras, and Furnace + microscope workspaces, and separate motion, heat, and gas stop controls.
 The console has no recipe run controls. Use the [recipe service interface](orchestrator.en.md#http-service) to start, abort, and recover runs.
-
-The optional `gateway` service uses the `gateway` dependency group. Its work is postponed. See the [agent gateway](agent-gateway.en.md).
-Selecting `gateway` also prepares the `runs` directory for audit records. The installer does not start the gateway.
-Every MCP request requires `MG400_GATEWAY_TOKEN`. The installer does not generate it. Set it by hand in the configuration file.
 
 The `proxy` service adds no Python dependency group. On the first installation, supply Caddy 2 through `--caddy PATH` and configure the [single-port entry](olares.en.md#single-port-proxy).
 The installer checks the proxy before changing files and never starts the proxy.
@@ -338,7 +333,7 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `mg400ctl assets` | Check external asset content, ownership, and permissions |
 | `mg400ctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
 | `mg400ctl status` | Show the status of the enabled services |
-| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `gateway`, `proxy`, or `all` |
+| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `proxy`, or `all` |
 | `mg400ctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
 | `mg400ctl restart web` | Restart services. Add `--force` to restart the furnace service |
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |

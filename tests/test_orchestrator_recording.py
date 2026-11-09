@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrator.approvals import ALLOWED
 from orchestrator.recipe import validate
 from orchestrator.runner import Context, Revoked, Runner, _Authority
 from orchestrator.skills import default_registry
@@ -206,7 +205,6 @@ def test_recording_writes_intent_before_start_and_completed_metadata_only(
 def test_registered_skill_runs_through_real_runner_and_preserves_chip_association(tmp_path):
     registry, recipe = prepared()
     assert recipe.services == ("microscope",)
-    assert "microscope.record" not in ALLOWED
     service = Microscope()
     plan = ZonePlan({}, ("microscope",), tmp_path / "zones.json", "offline")
     with RunStore(tmp_path / "runs") as store:

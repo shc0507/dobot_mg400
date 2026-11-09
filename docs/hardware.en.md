@@ -210,7 +210,7 @@ Validate in this order:
 1. Check firmware, robot IP, power supply, and the I/O wiring of the vacuum source. Use read-only tests for pose and alarms.
 2. Set the tool TCP and payload. Use the teach pendant to record the actual start, pick, and place points and path.
 3. Validate individual actions gradually at low speed in a controlled workspace. Then validate a fixed pick-and-place sequence.
-4. Before connecting an agent through the [agent gateway](agent-gateway.en.md), add path reachability checks, collision checks, and device protection independent of the model.
+4. Before an agent controls the arm, add path reachability checks, collision checks, and device protection independent of the model.
 
 ## Optional ROS 2 integration
 

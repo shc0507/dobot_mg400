@@ -35,7 +35,7 @@ The DSH-01 routes stay: `GET <base>/api/dashboard/state`, `POST <base>/api/dashb
 
 ### 3.1 State
 
-`GET state` returns the DSH-01 dashboard snapshot (`services`, `cameras`, `orchestrator`, `run`, `operations`, `approvals`) and these keys:
+`GET state` returns the DSH-01 dashboard snapshot (`services`, `cameras`, `orchestrator`, `run`, `operations`) and these keys:
 
 ```json
 {

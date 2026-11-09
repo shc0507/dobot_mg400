@@ -31,7 +31,7 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-By default, `uv sync` installs the dependency groups in `default-groups` in `pyproject.toml`: `dev`, `stage`, `vision`, `thermal`, `furnace`, `camera`, `orchestrator`, `gateway`, `microscope`, and `gateway-clients`.
+By default, `uv sync` installs the dependency groups in `default-groups` in `pyproject.toml`: `dev`, `stage`, `vision`, `thermal`, `furnace`, `camera`, `orchestrator`, and `microscope`.
 `vision-gpu` and `notebook` are not default groups.
 The `stage` group contains Flask, waitress, pySerial, NumPy, and OpenCV for the stage service.
 The robot service and interactive terminal use only the standard library and do not require the `stage` group.
@@ -107,7 +107,6 @@ Offline rehearsal cannot replace hardware acceptance.
 | `src/furnace/` | [Furnace and gas service](furnace.en.md) |
 | `src/microscope/`, `src/toupcam_camera/` | [Microscope service](microscope.en.md) and the Toupcam camera |
 | `src/orchestrator/` | [Recipe service](orchestrator.en.md) and `labctl`. `web/` is the [Lab Console](dashboard.en.md) |
-| `src/gateway/` | [MCP gateway](agent-gateway.en.md) |
 | `recipes/` | TOML recipes |
 | `config/trays/`, `config/proxy/`, `config/udev/` | Tray geometry, proxy template, and USB access rule templates |
 | `firmware/three-motor-demo/` | Stage Arduino firmware and wiring instructions in English |

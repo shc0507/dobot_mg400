@@ -30,7 +30,7 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-`uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator`、`gateway`、`microscope` 和 `gateway-clients`。
+`uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator` 和 `microscope`。
 `vision-gpu` 和 `notebook` 不在默认组中。
 `stage` 组含位移台服务使用的 Flask、waitress、pySerial、NumPy 和 OpenCV。
 机器人服务和交互终端只用标准库，不依赖 `stage` 组。
@@ -105,7 +105,6 @@ rm -r "$sim_dir"
 | `src/furnace/` | [炉温与气体服务](furnace.md) |
 | `src/microscope/`、`src/toupcam_camera/` | [显微镜服务](microscope.md)和 Toupcam 摄像头 |
 | `src/orchestrator/` | [配方服务](orchestrator.md)和 `labctl`。`web/` 是[实验室控制台](dashboard.md) |
-| `src/gateway/` | [MCP 网关](agent-gateway.md) |
 | `recipes/` | TOML 配方 |
 | `config/trays/`、`config/proxy/`、`config/udev/` | 托盘几何、代理模板和 USB 访问规则模板 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |

@@ -1,5 +1,5 @@
 /* Overview workspace. Every rule starts with #ws-overview (or targets the page while it shows). Look: DESIGN.md.
- * Control tiles lead the main column, then the run and the events. Safety and agent proposals are on the side. */
+ * Control tiles lead the main column, then the run and the events. Safety is on the side. */
 /* A slot whose rows take part in the layout of its card. */
 #ws-overview .ov-slot { display: contents; }
 body:has(#ws-overview:not([hidden])) { background: #F2EEE9; }

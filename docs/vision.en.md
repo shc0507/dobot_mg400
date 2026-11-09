@@ -163,7 +163,7 @@ A successful command includes full JSON metadata in `last_command.output`.
 Metadata must contain finite JSON values and fit within 256 KiB when encoded as compact ASCII JSON.
 Invalid or oversized metadata fails with 503 and is not published.
 Failed or stopped commands have `output=null`.
-`last_result` retains a small summary of the latest successful inference, including its completion time.
+`last_result` holds `camera`, `action`, `count`, and `finished_at` of the latest successful operation.
 A live service reports `connected=false` until its first successful frame operation.
 Each failed operation sets `fault`. The next successful operation clears it. Only a failure with 503 sets `connected` to `false`.
 While `fault` is set, the calibration skill and the drift check refuse to run. First complete 1 successful read, for example `GET api/detect`.
@@ -192,7 +192,7 @@ flange_mm = [X, Y, Z, R]
 ```
 
 XYZ values use millimetres. R uses degrees.
-The reference contacts from `H-08` remain calibration data, even when a contact lies outside the current automatic motion limits.
+The reference contacts in `references.toml` remain calibration data, even when a contact lies outside the current automatic motion limits.
 The routine never moves to those contact poses.
 
 Teach 2 grid-corner stations with distinct X and Y, the same R, and the same explicit zone.
@@ -206,8 +206,7 @@ The robot must already be enabled, idle, freshly observed, and owned by the run 
 The calibration skill does not enable the robot, enter the zone from another pose, or recover a stopped run automatically.
 
 The scan requires the vision service to report `connected=true`. A live service initially reports `connected=false`.
-Before the scan, use an authorized preview lease to run `read_markers` for the selected camera.
-Wait for its successful command receipt, then release the preview lease.
+A successful frame operation for the selected camera, for example `GET api/detect?camera=N`, sets `connected=true`.
 The scan refuses unknown vision health. It does not silently issue a preview request or move to establish health.
 
 ### Run the guarded scan
@@ -308,13 +307,13 @@ Keep the camera fixed and revalidate after physical changes.
 
 ## Calibration drift check
 
-Use `vision.check_calibration(camera)` before each vision-guided move in a transfer recipe.
+The vision-guided skills `vision.slot_state`, `vision.find_chip`, `vision.pick_chip`, and `vision.tray_transfer` run this check before they observe the tray. Use `vision.check_calibration(camera)` for a standalone check.
 This typed skill requires the robot and vision services under the run's existing ownership.
 It reads the measured robot pose. It does not move or enable the robot.
 The check uses the existing workspace, suction cup, feedback, and ownership requirements.
 
 The vision service must already report `connected=true` with no fault.
-For a cold live service, complete the authorized `read_markers` preview and release its lease as described above.
+For a cold live service, first complete 1 successful frame operation, as described above.
 The drift check does not acquire a separate preview lease or automatically restore service health.
 
 Run the check with the robot stationary at a pose inside the calibration grid:
@@ -456,8 +455,8 @@ cross_check_slots(location, *, taught_stations, chips,
 
 `device` must match the calibration's full stable camera path. Image dimensions must also match.
 The reader uses `DICT_4X4_50` ArUco markers. It requires at least 3 unique observed corner IDs.
-Any duplicate corner ID refuses the frame before fitting, even when other corners are visible.
-Keep turret tags and spare prints out of the tray image when they repeat a corner ID.
+Any duplicate `DICT_4X4_50` ID in the frame refuses it before fitting, also for an ID that is not a corner.
+Keep repeated tags of any ID, such as turret tags and spare prints, out of the tray image.
 The arm marker ID `4` is not a tray corner.
 
 The function maps measured centers through the camera model and fits a similarity transform to the configured tray geometry.
@@ -488,7 +487,7 @@ Call `cross_check_slots` with explicit evidence keyed by slot ID.
 | `{"state":"unknown"}` | The caller has no conclusive chip observation. |
 
 An omitted chip entry is unknown. Missing detection data never establishes an empty slot.
-Each groove requires a taught station and conclusive chip evidence for a complete check.
+Each groove requires a `taught_stations` entry (an XY pair or `None`) and conclusive chip evidence for a complete check.
 Unknown slot IDs or malformed evidence refuse the request.
 
 The check measures each taught station and observed chip against its bounded groove segment.

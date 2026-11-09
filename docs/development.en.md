@@ -195,7 +195,7 @@ The command body is `{"action": "<action>", ...}`. It must contain no fields bey
 | Command | Additional fields | Behavior |
 | --- | --- | --- |
 | `start_sync` | None | Connect to the robot and take control |
-| `stop_sync` | None | Stop the robot and release control. Keep feedback until disable and rest are confirmed |
+| `stop_sync` | None | Stop the robot and release control. Keep feedback until disable and rest are confirmed. If the robot is already disabled and idle, a confirmed mode 4 is sufficient |
 | `enable` | None | Enable the robot |
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
@@ -260,13 +260,13 @@ Physical robot control mode provides `api/describe`, `api/stop`, and `api/events
 Each command's `params` describes its arguments as JSON Schema, excluding `action`.
 For `stop` and `disable`, `any_client` is `true`.
 For `keyboard`, `ui_only` is `true`. Only interactive interfaces use this command.
-`start_sync` takes control. The existing heartbeat route only renews it.
+`start_sync` takes control. `api/heartbeat` renews only the holder's lease. It never takes control.
 
 The `api/stop` body is `{"wait_s": 0}`.
 `wait_s` is optional and defaults to 0. It must be a finite number from 0–15 seconds.
-The route uses the existing stop worker and releases the state lock while waiting.
+The route runs the stop in the stop worker and releases the state lock while waiting.
 Any client can stop without holding the control lease.
-Repeated requests follow the existing stop deduplication rules.
+While the same type of stop runs, a repeated request starts no new stop.
 A successful response is 200 with `{"stop": "confirmed", "state": {...}}`.
 
 | `stop` | Meaning |
@@ -291,8 +291,8 @@ Each event contains `seq`, `ts_unix`, `level`, `message`, and `fields`.
 `since` defaults to 0 and must be a nonnegative integer.
 The response contains only events with sequences greater than `since`. Use `next` for the next query.
 The service retains the latest 1000 events. Sequence numbering restarts with the service.
-Events record existing state messages, lock and unlock, and unconfirmed stops and their clearance.
-They also record feedback mode and alarm flag changes, alarms, and keyboard close reasons. They add no journal lines.
+Events record state messages, lock and unlock, and unconfirmed stops and their clearance.
+They also record feedback mode and alarm flag changes, alarms, and keyboard close reasons. The `message` of each event is the related service log line.
 
 ### Python client
 
@@ -325,6 +325,8 @@ with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
 
 `run()` accepts `ok`. For `stop`, `disable`, and `stop_sync`, it also accepts `stopped` when the stop remains confirmed.
 `run("start_sync")` can succeed while the service is locked, so the new holder can send `clear_alarm` to recover. The service still refuses motion.
+`start_sync` also waits until `feedback_fresh` is true.
+When another action completes and `stop_unconfirmed` is true, `run()` raises `RobotClientError`. If `locked` is true, `run()` also raises this error, except for `stop`, `disable`, and `stop_sync`.
 A rejection, failed operation, superseding stop, or service restart cannot count as successful motion.
 Use 1 active program per client ID. Ordinary commands from the same client are serialized during `run()`.
 A different thread can still call `command("stop")`, `command("disable")`, `run("stop")`, or `run("disable")`.
@@ -345,7 +347,7 @@ If the arm is enabled, the service keeps feedback and blocks motion until an exp
 The client does not disable the arm automatically. After a confirmed stop, `disable` can complete the disconnect without a service restart.
 The optional `keep_control=True` skips `stop_sync`. It does not keep heartbeats running after exit.
 Calling `close()` directly also ends the threads without renewing or releasing control.
-The service then applies its normal lease-expiry stop and lock.
+The service then applies its lease-expiry stop and lock.
 The optional `timeout=5` sets the connection and reply timeout in seconds.
 
 ### WebSocket interface
@@ -415,7 +417,7 @@ During a network interruption, the service might not detect connection closure. 
 ## Stage service API
 
 The stage service HTTP interface uses JSON. All routes are under `{prefix}contract/api/`.
-`{prefix}` is the stage base path, fixed at `/`.
+`{prefix}` is the value of `--base-path`. If it is unset, the value comes from `MG400_STAGE_BASE_PATH`. The default is `/`.
 The service queries Arduino state every 0.2 seconds and stops expired press-and-hold motion during each query.
 
 ### Stage automation contract
@@ -449,6 +451,7 @@ The client generates `hold_id`: 16–64 characters, with only letters, digits, `
 Each press-and-hold operation must use a new `hold_id`.
 `sampled_at` comes from the field with the same name in `api/state`. It must be within the service clock's last 2 seconds.
 `release_hold` can be sent repeatedly. If it arrives before `hold` with the same `hold_id`, the service rejects the later `hold`.
+The contract also provides `home` (`motor`), `zero` (`motor`, `confirm: true`), `awake` (`motor`, `seconds` 0–60), `goto` (`motor`, `name`), and `pose` (`name`). See [Stage API](stage-panel.en.md#api).
 The service rejects missing or extra parameters.
 
 The control lease lasts 3 seconds by default. Holds still require a separate renewal within 1 second.
@@ -458,7 +461,7 @@ For continuous ownership, acquire explicitly with `ServiceClient.heartbeat()`, t
 The optional `heartbeat_thread(renew_only=True)` helper uses this strict renewal and stops on its first error.
 If a renewal arrives after lease expiry or release, it returns 409 without taking control again.
 An older service without `api/renew` returns 404. The client never falls back to acquisition.
-The existing `heartbeat()` and default `heartbeat_thread()` retain their acquire-or-renew behavior.
+`heartbeat()` and the default `heartbeat_thread()` acquire or renew the lease.
 After a renewal failure, stop motion and reconcile the service state before explicitly taking control again.
 On lease expiry, the service requests that all motors stop.
 Releasing the lease does not stop motion. Wait for completion or request a stop before returning control.
@@ -588,7 +591,7 @@ The `operation` of the `vacuum` command is one of these values:
 
 - The robot must be idle, in controller mode 4 or 5. The command does not enable or move the robot.
 - The service sends each command once. Then it waits up to 1 second for the measured DO bit in the 30004 feedback to change.
-- After the motion stop command, stop and disable send `DOExecute(1,0)` once if a blow is in progress or feedback shows DO1 high. They do not wait for the blow to end and send no DO2 command. If that command fails, the stop result contains `blow_error`; the stop itself does not fail because of it.
+- After the motion stop command, stop and disable send `DOExecute(1,0)` once if a blow is in progress or feedback shows DO1 high. They do not wait for the blow to end and send no DO2 command. If that command fails, the result of `JointControl.stop()` contains `blow_error`; the stop itself does not fail because of it. The robot service does not report `blow_error`, and disable does not record the error.
 - The `vacuum` field of the state object contains `suck`, `blow` and `held`. `suck` and `blow` are the measured levels of DO2 and DO1, or `null` without feedback. `held` is `null` while `GRIP_DI` is not set.
 - The `payload_kg` field of the state object is the payload that the controller reports, in kg.
 - The constants are in `src/mg400/suction.py`: `PRESSURE_DO`, `VACUUM_DO`, `BLOW_SECONDS` and `GRIP_DI`.

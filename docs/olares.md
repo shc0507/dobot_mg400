@@ -57,7 +57,7 @@ MG400_PROXY_PORT=8080
 | `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg`、`/camera/<view>.full.jpg`、`/camera/fps.json` | `127.0.0.1:1985`，仅移除 `/camera` |
 
 `<view>` 为 `camera1` 到 `camera4`。`/camera/<view>.mp4` 的 `<view>` 还可以是 `microscope`。
-代理把根路径 `/` 重定向到实验室控制台 `/lab/`。参见[实验室控制台](dashboard.md#实验室控制台)。
+代理用 `302` 把根路径 `/` 重定向到实验室控制台 `/lab/`，用 `308` 把 `/camera` 和 `/lab` 重定向到带末尾斜杠的路径。其他路径返回 `404`。参见[实验室控制台](dashboard.md#实验室控制台)。
 摄像头路由只转发视频流和单帧图像，供控制台的 Cameras 工作区使用。
 代理不转发机器人、位移台、热像仪、炉控、显微镜和视觉服务。
 控制台、命令行工具和配方运行器在 `127.0.0.1` 直接调用它们。
@@ -78,7 +78,7 @@ MG400_PROXY_PORT=8080
 代理保留浏览器 `Host` 的端口，并用该值设置 `X-Forwarded-Host`。
 它替换请求中的转发地址标头，并移除 `Forwarded` 和 `X-Real-IP`。
 Caddy 原生反向代理转发 WebSocket 的 `Upgrade` 和 `Connection`，上游使用 HTTP/1.1。
-上游响应头和读取超时均为 `60` s。
+上游连接超时为 `2` s，响应头和读取超时均为 `60` s。
 代理不新增请求重试，并禁用管理 API、配置持久化和请求日志。
 此 HTTP 入口使用 VPN 连接，不启用公共 HTTPS。
 
@@ -167,19 +167,19 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    grep -o '/dev/v4l/by-path/[^&]*' /opt/mg400-camera-preview/go2rtc.yaml | paste -sd, | sed 's/^/MG400_CAMERA_DEVICES=/' >> /etc/mg400/mg400.env
    ```
 
-4. 运行安装器，复用已有的 go2rtc：
+4. 按 [单端口代理](#单端口代理) 设置代理地址。安装器只在安装时把该地址写入 `Caddyfile`。
+5. 运行安装器，复用已有的 go2rtc，并指定 Caddy 2 程序：
 
    ```sh
-   /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc
+   /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc --caddy /path/to/caddy
    ```
 
-5. 复制模式切换备份：
+6. 复制模式切换备份：
 
    ```sh
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
-6. 按 [单端口代理](#单端口代理) 设置代理地址。
 7. 删除旧服务的附加配置和开机自启链接，再启动服务。
    第 1 步已备份这些文件：
 
@@ -268,7 +268,7 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 ```
 
 列表为空时，普通流使用 `1280x720@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
-显式列表覆盖这些默认值，包括侧视流。
+显式列表覆盖这些默认值，包括侧视流。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`mg400ctl` 和预览服务拒绝运行。
 以下 4 台摄像头的配置按上表接口顺序排列。
 所有摄像头使用 `1280x720@30`。侧视流 `camera3` 的宽高比与 `3840x2160` 侧视参考图像相同。
 原版 `uvcvideo` 驱动让 AC410 在大于 `640x480` 的模式下占用最大的同步传输时隙，所以共享 USB 2 链路只能容纳 1 路这样的流。
@@ -287,8 +287,8 @@ MG400_MICROSCOPE_SIDE_STREAM=camera3
 预览转发服务不转发大于 `1280x720` 的侧视流。
 `camera3` 以 `3840x2160@30` 运行时，共享 USB 2 链路截断 `camera2` 的图像帧。
 按需启动的流可能发送截断的第 1 帧。显微镜读取线程丢弃不完整的帧。
-大尺寸流的最后 1 个观看者离开后，预览服务在读取响应正文的间隙释放上游读取连接。
-套接字操作仍使用 2 秒超时。这不是总关闭时限。其他读取者可使该流继续运行。
+大尺寸流的最后 1 个观看者离开后，预览服务在收到下 1 个上游数据块后关闭上游读取连接。
+该读取连接没有读取超时。其他读取者可使该流继续运行。
 视频流上限为 30 fps，包括采集模式为 `1920x1080@60` 时。
 观看者可以用 `?fps=N` 请求更低的帧率，N 为 1 到 30，例如 `/camera/camera2.mjpeg?fps=5`。其他查询值返回 404。
 每个预加载的流另有 1 路 H.264 预览 `/camera/<view>.mp4`，格式为分段 MP4，帧率与摄像头相同。宽度大于 640 的流码率上限为 4 Mbit/s，使用 NVENC 时为 3 Mbit/s。其他流为 2 Mbit/s。该路由只接受查询参数 `codec=h265`。
@@ -296,11 +296,10 @@ go2rtc 从 `http://127.0.0.1:8770/api/camera/microscope/mjpeg` 读取 `1296x968`
 go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有画面时，`/camera/microscope.mp4` 返回 502，控制台改用中转的 MJPEG。
 `/camera/fps.json` 返回每路 MJPEG 流在最近 2 s 内发送给每个观看者的帧率。没有观看者的流为 `null`。控制台在摄像头状态中读取这些值。
 go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最后 1 个观看者离开后停止。
-ffmpeg 不探测输入帧率，每个源帧只发送 1 次，每 1 s 发送 1 个关键帧。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
+ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发送 1 次，每 1 s 发送 1 个关键帧。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
 安装器运行 ffmpeg 测试 `h264_nvenc`。测试通过时，H.264 预览用 NVIDIA GPU 编码，否则用 `libx264`。更换 GPU 或驱动后，重新运行安装器。
 使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。宽度大于 640 的流和显微镜码率上限为 2.5 Mbit/s，其他流为 2 Mbit/s。请求 `/camera/<view>.mp4?codec=h265` 得到 H.265；主机没有 H.265 预览时返回 H.264。
 H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。go2rtc 1.9.14 不拆分 RTP 聚合包：ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
-ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`）。不估计时，ffmpeg 假定 90000 fps，`hevc_nvenc` 只输出约 0.1 Mbit/s。
 ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
 单帧请求 `/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。
 全分辨率单帧 `/camera/<view>.full.jpg` 例外：拍摄期间 go2rtc 只以 `4000x3000@15` 采集这 1 台摄像头，其他画面暂停。显微镜正在使用侧视流时返回 409。另一张单帧 45 s 内未完成时返回 503。参见[相机工作区](dashboard.md#相机工作区)。
@@ -318,7 +317,7 @@ mg400ctl start camera
 ```
 
 在实验室控制台的 Cameras 工作区查看画面。
-启用 `proxy` 服务时，视频流链接为 `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`，`mg400ctl camera-url` 会列出这些链接。
+视频流链接使用代理地址：`http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`，`mg400ctl camera-url` 会列出这些链接。
 关闭终端不会停止预览服务。
 停止预览服务时，摄像头采集服务也停止。
 启动失败时，运行 `mg400ctl logs camera`。

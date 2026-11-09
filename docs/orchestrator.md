@@ -14,7 +14,7 @@ uv run labctl runs --runs-dir ./rehearsal-runs
 uv run labctl runs RUN_ID --runs-dir ./rehearsal-runs
 ```
 
-`labctl run RECIPE` 使用配置的仪器服务。真机运行前，必须完成操作员检查。操作员必须守在急停旁。代理只能使用演练。
+`labctl run RECIPE` 使用配置的仪器服务。真机运行前，必须完成操作员检查。操作员必须守在急停旁。Shell 智能体使用[智能体命令行](agent-cli.md)。
 
 `--runs-dir PATH` 指定记录目录。`--param NAME=JSON` 覆盖配方声明的参数。字符串值必须使用 JSON 字符串引号：
 
@@ -525,9 +525,9 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 演示电动台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
 高温炉演示持有自己的串口模拟器和临时状态。坩埚操作单元不发送加热或供气命令。
 
-安装后，`labctl` 和 `mg400ctl` 使用同一分派器。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show`、`station rm` 或 `station retool`。管理命令仍要求 root。
+安装后，`labctl` 和 `mg400ctl` 使用同一分派器。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show`、`station rm` 或 `station retool`。[智能体命令行](agent-cli.md)命令组为 `robot`、`stage`、`furnace`、`microscope`、`vision`、`thermal`、`camera` 和 `all`。管理命令仍要求 root。
 
-root 调用配方或工位命令时，分派器先用 `runuser --pty` 切换至 UID/GID 1000，再启动 Python。它使用安装后的解释器绝对路径，并传入 `-I`。子进程接收主机配置文件中所有非空的 `MG400_*` 配置和固定的服务 URL。
+root 调用配方或工位命令时，分派器先用 `runuser --pty` 切换至 UID/GID 1000，再启动 Python。智能体命令组使用不带 `--pty` 的 `runuser`，因此 stdout 只含 JSON 结果。它使用安装后的解释器绝对路径，并传入 `-I`。子进程接收主机配置文件中所有非空的 `MG400_*` 配置和固定的服务 URL。
 
 root 演练不会读取主机配置文件。它从调用者环境接收 `MG400_*` 配置，不接收固定的服务 URL。
 

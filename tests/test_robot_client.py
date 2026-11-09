@@ -476,6 +476,29 @@ def test_unconfirmed_stop_cannot_be_reported_as_success(make_client, rig):
     assert rig.snapshot()["stop_unconfirmed"]
 
 
+def test_new_client_takes_locked_robot_and_recovers(make_client, rig):
+    first = started(make_client)
+
+    def lose_reset_reply(connection, text):
+        if text == "ResetRobot()":
+            raise OSError("Simulated lost stop reply")
+
+    rig.controller.reply_hooks.append(lose_reset_reply)
+    with pytest.raises(RobotClientError):
+        first.run("stop")
+    rig.controller.reply_hooks.clear()
+    rig.wait(lambda s: not s["busy"])
+    first.close()
+    rig.state._heartbeat -= 10  # The first client's lease has expired.
+
+    console = make_client("console").connect()
+    state = console.run("start_sync")
+    assert state["controller_id"] == "console" and state["stop_unconfirmed"]
+    console.run("clear_alarm")
+    state = rig.snapshot()
+    assert not state["stop_unconfirmed"] and not state["locked"]
+
+
 def test_reply_timeout_never_resends_even_after_late_reply(make_client, service, rig, monkeypatch):
     client = started(make_client)
     release = threading.Event()

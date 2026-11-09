@@ -499,7 +499,9 @@ def test_stop_sync_during_arm_hold_keeps_feedback_after_stop(rig, confirmed):
         wait_for(lambda: state.snapshot()["robot_mode"] == 4)
         state.command({"action": "disable"}, OTHER)
         wait_for(lambda: not state.snapshot()["syncing"] and not state.snapshot()["locked"])
-        rig.log.assert_order("control1.stop", "control1.disable", "control1.stationary")
+        rig.log.assert_order("control1.stop", "control1.disable")
+        # The arm was already disabled, so the disable needs no rest check.
+        assert "control1.stationary" not in rig.log
         assert not state.snapshot()["stop_unconfirmed"]
     else:
         assert snapshot["syncing"]

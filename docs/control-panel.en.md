@@ -77,13 +77,14 @@ If the robot is enabled, `Release` (`stop_sync`) stops it and releases control, 
 The service does not disable the robot automatically.
 Click `Take control` again to cancel the pending disconnect. Then click `Disable`, then `Release`.
 The service disconnects feedback and unlocks control only after it confirms disabled mode 4 and rest.
+If the robot was already disabled and idle, disabled mode 4 is sufficient. You can move a disabled arm by hand, and a `Disable` or `Release` does not lock control.
 Stale feedback cannot confirm a stop. If the service reports an unconfirmed stop, use the physical emergency stop on site.
 If the service recorded no unconfirmed stop during a brief feedback gap, fresh feedback lets it confirm a new explicit `disable` request.
 If the feedback reader fails, the stop stays unconfirmed and the connection lock stays held.
 
 When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control.
 After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.
-If the robot is already disabled, `stop_sync` confirms disable and rest, then disconnects.
+If the robot is already disabled, `stop_sync` confirms disable, then disconnects.
 
 Only one client holds control at a time.
 If the holder does not renew within 3 seconds, the service requests a robot stop and locks control.

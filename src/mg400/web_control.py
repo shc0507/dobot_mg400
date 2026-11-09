@@ -717,11 +717,23 @@ class RobotPanelState:
             return
         self._disable_verified = False
         self._message = reason or ("Disabling the robot." if disabling else "Stopping the robot.")
+        # A disabled arm can be moved by hand. Its joints then move, but no motor
+        # drives them, so a disable needs no rest check.
+        check_rest = not (
+            disabling
+            and self._fresh()
+            and self._sample.mode == 4
+            and not self._sample.error_status
+            and not self._busy
+            and not self._working
+            and not self._job
+            and keyboard is None
+        )
         self._safety_workers += 1
         self._safety_actions.add(disabling)
         thread = threading.Thread(
             target=self._stop,
-            args=(self._control, disabling, keyboard),
+            args=(self._control, disabling, keyboard, check_rest),
             daemon=True,
         )
         self._safety_threads = [worker for worker in self._safety_threads if worker.is_alive()]
@@ -738,7 +750,7 @@ class RobotPanelState:
             return
         self._safety_threads.append(thread)
 
-    def _stop(self, control, disabling, keyboard=None):
+    def _stop(self, control, disabling, keyboard=None, check_rest=True):
         try:
             if keyboard is not None:
                 # The guard refuses new keyboard sends while the session stops itself.
@@ -747,7 +759,8 @@ class RobotPanelState:
                 control.cancel(disabling=disabling)
             if disabling:
                 control.disable()
-                control.verify_stationary()
+                if check_rest:
+                    control.verify_stationary()
             else:
                 result = control.stop()
                 if not result["ok"]:

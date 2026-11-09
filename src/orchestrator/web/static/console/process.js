@@ -47,7 +47,7 @@
       "scope.title": "Microscope",
       "scope.stop": "Stop", "scope.view": "Toupcam", "view.scope": "Microscope", "view.side": "Side camera", "view.switch": "Preview",
       "tile.offline": "OFFLINE",
-      "obj.title": "Objective", "obj.name": "Objective {id}", "turret.title": "Turret",
+      "obj.title": "Objective", "obj.name": "Objective {id}", "obj.named": "Objective {id}, {name}", "turret.title": "Turret",
       "obj.nudge": "Turn the turret {steps} full steps", "obj.offset": "Turret {offset} / ±{limit} full steps",
       "obj.offsetUnknown": "Turret offset unknown. Select another objective first.",
       "focus.title": "Focus", "focus.position": "{pos} / {max} pulses", "focus.unknown": "Position unknown",
@@ -116,7 +116,7 @@
       "scope.title": "显微镜",
       "scope.stop": "停止", "scope.view": "Toupcam", "view.scope": "显微镜", "view.side": "侧面相机", "view.switch": "预览",
       "tile.offline": "离线",
-      "obj.title": "物镜", "obj.name": "物镜 {id}", "turret.title": "转盘",
+      "obj.title": "物镜", "obj.name": "物镜 {id}", "obj.named": "物镜 {id}，{name}", "turret.title": "转盘",
       "obj.nudge": "转盘转动 {steps} 整步", "obj.offset": "转盘 {offset} / ±{limit} 整步",
       "obj.offsetUnknown": "转盘偏移未知。先选择其他物镜。",
       "focus.title": "对焦", "focus.position": "{pos} / {max} 脉冲", "focus.unknown": "位置未知",
@@ -246,6 +246,12 @@
   function objectiveIds(description) {
     const ids = description?.commands?.select_objective?.params?.properties?.id?.enum;
     return Array.isArray(ids) && ids.every(Number.isSafeInteger) ? ids.slice(0, 8) : [0, 1, 2, 3];
+  }
+
+  /** The described objective name for an ID, such as "10x". Null when the service gives none. */
+  function objectiveName(description, id) {
+    const name = description?.commands?.select_objective?.params?.properties?.id?.names?.[String(id)];
+    return typeof name === "string" && name.trim() ? name.trim().slice(0, 12) : null;
   }
 
   /** The described turret nudges in full steps, ascending. None when the service has no objective_nudge. */
@@ -529,7 +535,8 @@
     n.scopeSub = el("span", { class: "lc-muted" });
     n.scopeNote = el("p", { class: "pr-note", "data-role": "scope-note", hidden: true });
     n.objectives = objectiveIds(view.describe.microscope).map(id => {
-      const node = el("button", { type: "button", class: "lc-button pr-objective", role: "radio", "aria-checked": "false", "aria-label": t("obj.name", { id }), "data-role": "objective-" + id, text: String(id), onclick: () => send("microscope", "select_objective", { id }) });
+      const name = objectiveName(view.describe.microscope, id);
+      const node = el("button", { type: "button", class: "lc-button pr-objective", role: "radio", "aria-checked": "false", "aria-label": name ? t("obj.named", { id, name }) : t("obj.name", { id }), "data-role": "objective-" + id, text: name ?? String(id), onclick: () => send("microscope", "select_objective", { id }) });
       node.dataset.id = String(id);
       return node;
     });
@@ -946,7 +953,7 @@
 
   return {
     install, i18n, view,
-    logic: { chartModel, sequenceParams, editorRows, focusFraction, modeKey, recordingId, objectiveIds, nudgeSteps, signed, caps, fmt, snapshotParams, recordingParams, valveState },
+    logic: { chartModel, sequenceParams, editorRows, focusFraction, modeKey, recordingId, objectiveIds, objectiveName, nudgeSteps, signed, caps, fmt, snapshotParams, recordingParams, valveState },
     _internal: { mount, build, update, poll, show, hide, findRole },
   };
 });

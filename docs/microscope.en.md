@@ -86,7 +86,7 @@ The control lease lasts 3 seconds and must be renewed during work.
 
 | Route | Use |
 | --- | --- |
-| `GET /api/describe` | Contract version, supported commands, objective IDs, and lease behavior. |
+| `GET /api/describe` | Contract version, supported commands, objective IDs and names, and lease behavior. |
 | `GET /api/state` | Focus position and zero state, limits, objective ID, turret offset, camera state, busy state, faults, and command result. |
 | `GET /api/events` | Service event history. |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | Acquire, renew, or release ordinary control. |
@@ -162,7 +162,7 @@ The microscope service has no web page. Operate the microscope in the Furnace + 
 
 1. On the microscope card, select **Take control**. If another client holds the lease, the console cannot get control. It does not take over automation control.
 2. Before motion, read the focus position and zero state on the card.
-3. Use the objective buttons to change the objective. The buttons use the objective IDs of `select_objective` in `GET /api/describe`.
+3. Use the objective buttons to change the objective. The buttons show the objective magnifications from `id.names` of `select_objective` in `GET /api/describe`. An objective without a name shows its ID.
 4. At working focus, open **Turret** and use **−10**, **−1**, **+1**, or **+10** to turn the turret in full steps. The text beside them shows the turret offset and its limit.
 5. Use **Autofocus** (local) or **Full autofocus** to focus automatically.
 6. Enter a pulse count between **−** and **+**, then use **−** or **+** to jog within the limits.

@@ -54,7 +54,7 @@ const FURNACE_DESCRIBE = {
 const SCOPE_DESCRIBE = {
   device: "microscope",
   commands: {
-    select_objective: { params: { properties: { id: { enum: [0, 1, 2, 3] } } } },
+    select_objective: { params: { properties: { id: { enum: [0, 1, 2, 3], names: { 0: "5x", 1: "10x", 2: "20x" } } } } },
     objective_nudge: { params: { properties: { steps: { enum: [-10, -1, 1, 10] } } } },
   },
 };
@@ -345,6 +345,10 @@ test("microscope objective, jog, autofocus and recording go through the relay", 
   const { root, calls } = await load();
   const objective = role(root, "objective-2");
   assert.equal(objective.getAttribute("aria-checked"), "true");
+  assert.equal(objective.textContent, "20x");
+  assert.equal(objective.getAttribute("aria-label"), "Objective 2, 20x");
+  // An ID without a described name keeps its number.
+  assert.equal(role(root, "objective-3").textContent, "3");
   role(root, "objective-1").click();
   await flush();
   role(root, "jog").type("50");

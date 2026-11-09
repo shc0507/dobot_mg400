@@ -1,5 +1,5 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
- * camera1 to camera4 and the microscope play H.264 from the proxy at /camera/<view>.mp4.
+ * camera1 to camera4 and the microscope play H.265 or H.264 from the proxy at /camera/<view>.mp4.
  * camera1 to camera4 fall back to MJPEG at /camera/<view>.mjpeg and take snapshots at
  * /camera/<view>.full.jpg. The console relays the microscope MJPEG fallback and full-size PNG snapshot, and
  * the thermal frame. */
@@ -29,6 +29,9 @@
   const USB_TILE_FPS = 3, USB_LARGE_FPS = 6;
   // The host caps the bitrate of each H.264 preview, so the views play it at the camera rate.
   const H264 = 'video/mp4; codecs="avc1.640029"';
+  // A browser that plays HEVC asks for H.265 first. go2rtc sends hev1 boxes, which Safari does not
+  // play although it accepts this type, so H.265 that never played turns into H.264 for the page.
+  const HEVC = 'video/mp4; codecs="hvc1.1.6.L153.B0"';
   // Play near the newest frame: jump when more than JUMP_S behind, speed up above CATCH_UP_S.
   const JUMP_S = 1, CATCH_UP_S = 0.3, KEEP_S = 10, MAX_QUEUE = 4 * 1024 * 1024;
   // Tiles show the measured frame rate: a new value about once a second, none when it is old.
@@ -243,8 +246,11 @@
     return `${basePath}${PREFIX}stream/${view}?fps=${large ? LARGE_FPS : TILE_FPS}`;
   }
 
-  /** The H.264 preview URL of camera1 to camera4 and the microscope, or null for the thermal view. */
-  function videoUrl(view) { return CAMERAS.has(view) || view === "microscope" ? `/camera/${view}.mp4` : null; }
+  /** The video preview URL of camera1 to camera4 and the microscope, or null for the thermal view. */
+  function videoUrl(view, hevc = false) {
+    if (!CAMERAS.has(view) && view !== "microscope") return null;
+    return `/camera/${view}.mp4${hevc ? "?codec=h265" : ""}`;
+  }
 
   /** The live-edge correction for a play position in the last buffered range [start, end]. */
   function chase(time, start, end) {
@@ -294,6 +300,14 @@
   /** True when this browser can play the H.264 previews through Media Source Extensions. */
   function h264Supported() {
     try { return typeof root.fetch === "function" && Boolean(mediaSource()?.isTypeSupported?.(H264)); }
+    catch { return false; }
+  }
+
+  let hevcFailed = false;
+
+  /** True when this browser can play the H.265 previews and no H.265 preview failed on this page. */
+  function hevcSupported() {
+    try { return !hevcFailed && h264Supported() && Boolean(mediaSource().isTypeSupported(HEVC)); }
     catch { return false; }
   }
 
@@ -634,7 +648,8 @@
         this.played = false;
         this.img.hidden = true;
         this.video.hidden = false;
-        this.stopVideo = playH264(this.video, videoUrl(this.view), () => { if (generation === this.generation) this.failed(); });
+        this.hevc = hevcSupported();
+        this.stopVideo = playH264(this.video, videoUrl(this.view, this.hevc), () => { if (generation === this.generation) this.failed(); });
         this.videoRate = meter();
         this.stopCount = countFrames(this.video, this.videoRate);
       } else {
@@ -674,10 +689,11 @@
       if (!this.running || (!this.stopVideo && this.img && this.img.src === BLANK)) return;
       this.failures++;
       this.live = false;
-      // H.264 that never played retries at once as MJPEG: the browser or the host cannot
-      // play it. A failed MJPEG stream retries as H.264.
+      // H.265 that never played retries at once as H.264, and H.264 as MJPEG: the browser or
+      // the host cannot play it. A failed MJPEG stream retries as H.264.
       const fallback = Boolean(this.stopVideo && !this.played);
-      if (this.video) this.mjpeg = fallback;
+      if (fallback && this.hevc) hevcFailed = true;
+      else if (this.video) this.mjpeg = fallback;
       this.halt();
       if (this.retry) clearTimeout(this.retry);
       const generation = this.generation;

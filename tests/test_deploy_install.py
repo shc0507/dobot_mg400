@@ -1616,6 +1616,22 @@ def test_nvenc_previews_keep_fast_start_and_use_3_mbit(module):
     assert "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n" in rendered
 
 
+def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
+    modes = [(1280, 720, 30), (640, 480, 30), (1280, 720, 30)]
+    rendered = module.render_go2rtc(DEVICES, modes=modes, nvenc=True)
+    h265 = next(line for line in rendered.splitlines() if line.startswith("  h265: "))
+    assert "-c:v hevc_nvenc" in h265 and "-bf 0" in h265 and "-fps_mode passthrough" in h265
+    assert "-forced-idr 1" in h265 and "-force_key_frames expr:gte(t,n_forced)" in h265
+    # go2rtc 1.9.14 breaks an RTP aggregation packet of SEI and a small frame.
+    assert h265.endswith('-bsf:v filter_units=remove_types=39|40"')
+    assert "  camera1_h265: ffmpeg:camera1#video=h265#bitrate=2500k\n" in rendered
+    assert "  camera2_h265: ffmpeg:camera2#video=h265#bitrate=2M\n" in rendered
+    assert "  camera3_h265: ffmpeg:camera3#video=h265#bitrate=2500k\n" in rendered
+    assert "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n" in rendered
+    assert "_h265" not in module.render_go2rtc(DEVICES, modes=modes)
+    assert "hevc_nvenc" not in module.render_go2rtc(DEVICES, modes=modes)
+
+
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
 def test_camera_configuration_renders_exact_device_count(module, count):
     devices = [f"/dev/v4l/by-path/offline-{number}-video-index0" for number in range(count)]
@@ -1637,7 +1653,7 @@ def test_camera_configuration_renders_exact_device_count(module, count):
         next(line for line in rendered.splitlines() if line.startswith(f"  {key}: "))
         for key in ("rtsp", "h264")
     )
-    assert "-fpsprobesize 0 -i {input}" in rtsp
+    assert "-fpsprobesize 2 -i {input}" in rtsp
     assert "-c:v libx264" in h264 and "-fps_mode passthrough" in h264
     assert "-x264-params fps=30" in h264 and "-force_key_frames expr:gte(t,n_forced)" in h264
     assert "preload:\n" + "".join(f"  camera{n}: video\n" for n in range(1, count + 1)) in rendered

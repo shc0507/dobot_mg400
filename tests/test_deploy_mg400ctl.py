@@ -1463,3 +1463,24 @@ def test_microscope_import_failures_preserve_targets_and_remove_staging(
         assert not (ctl.destination / "one.csv").exists()
     assert outside.read_bytes() == b"keep"
     assert not list(ctl.host.root.rglob(".mg400-calibration-*"))
+
+
+@pytest.mark.parametrize("group", ["robot", "all", "camera"])
+def test_agent_groups_dispatch_without_a_pty(ctl, monkeypatch, group):
+    monkeypatch.setitem(
+        ctl.module.main.__globals__,
+        "load_services",
+        Mock(side_effect=AssertionError("admin parser")),
+    )
+    assert ctl.call(group, "state") == 0
+    program, argv, _ = ctl.execvpe.call_args.args
+    assert program == "/usr/sbin/runuser"
+    assert argv[:6] == ["runuser", "-u", "mg400user", "-g", "mg400group", "--"]
+    assert argv[6:] == [
+        str(ctl.host.code / ".venv/bin/python"),
+        "-I",
+        "-m",
+        "orchestrator",
+        group,
+        "state",
+    ]

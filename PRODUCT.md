@@ -32,7 +32,8 @@ WuLab is a lab automation stack on one host (Olares). The **WuLab Console** is t
 - Access is over the VPN at `http://100.64.0.1:8080/` (the console is at `/lab/`). The VPN is the access boundary. The console checks no token.
 - The physical emergency stop must stay within reach during hardware operation. A web button is not a safety interlock.
 - Workspaces: **Overview** (run, events, safety, agent proposals), **Motion** (robot arm, cameras, stage, keyboard jog), **Cameras** (6 views), **Furnace + microscope**.
-- Demo mode runs the console offline with simulated devices. Agents use rehearsal only.
+- Demo mode runs the console offline with simulated devices.
+- Shell agents on Olares operate devices with `labctl` device groups through the console ([agent CLI](docs/agent-cli.en.md)). The services keep their protections.
 - Other pages: the chip passport (`/chip`). Instrument services also have their own panels.
 - An MCP agent gateway can read state and propose catalog recipes for human approval. It cannot approve or start runs or command devices. The console shows only the count of waiting proposals.
 

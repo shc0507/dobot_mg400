@@ -44,6 +44,37 @@ def _positive(value):
     return result
 
 
+def command_complete(state, *, action, client_id, baseline, instance):
+    """Return True when client_id's action completed after the baseline command.
+
+    Return False while it is pending. Raise RobotClientError when the action failed,
+    the service is locked, the service restarted, or a stop superseded the action.
+    """
+    if state.get("instance") != instance:
+        raise RobotClientError("The service restarted; command completion is unknown.")
+    result = state.get("last_command") or {}
+    if result.get("id") == baseline or not result:
+        return False
+    matches = result.get("action") == action and result.get("client") == client_id
+    if matches:
+        success = {"ok", "stopped"} if action in {"stop", "disable", "stop_sync"} else {"ok"}
+        if result.get("result") not in success:
+            raise RobotClientError(result.get("message", "Command did not complete."))
+        if state.get("stop_unconfirmed") or (
+            state.get("locked") and action not in {"stop", "disable", "stop_sync"}
+        ):
+            raise RobotClientError("The service is locked; completion is not safe.")
+        if action == "start_sync" and not state.get("feedback_fresh"):
+            return False
+        return state.get("busy") is False
+    if (
+        result.get("action") in {"stop", "disable", "stop_sync"}
+        and result.get("result") != "rejected"
+    ):
+        raise RobotClientError("A stop superseded the command; completion is unknown.")
+    return False
+
+
 class RobotClient:
     """Connect to a panel base URL with an explicit, unique client identity.
 
@@ -490,31 +521,13 @@ class RobotClient:
                 baseline = (accepted.get("last_command") or {}).get("id")
 
             def complete(state):
-                if state.get("instance") != instance:
-                    raise RobotClientError("The service restarted; command completion is unknown.")
-                result = state.get("last_command") or {}
-                if result.get("id") == baseline or not result:
-                    return False
-                matches = result.get("action") == action and result.get("client") == self.client_id
-                if matches:
-                    success = (
-                        {"ok", "stopped"} if action in {"stop", "disable", "stop_sync"} else {"ok"}
-                    )
-                    if result.get("result") not in success:
-                        raise RobotClientError(result.get("message", "Command did not complete."))
-                    if state.get("stop_unconfirmed") or (
-                        state.get("locked") and action not in {"stop", "disable", "stop_sync"}
-                    ):
-                        raise RobotClientError("The service is locked; completion is not safe.")
-                    if action == "start_sync" and not state.get("feedback_fresh"):
-                        return False
-                    return state.get("busy") is False
-                if (
-                    result.get("action") in {"stop", "disable", "stop_sync"}
-                    and result.get("result") != "rejected"
-                ):
-                    raise RobotClientError("A stop superseded the command; completion is unknown.")
-                return False
+                return command_complete(
+                    state,
+                    action=action,
+                    client_id=self.client_id,
+                    baseline=baseline,
+                    instance=instance,
+                )
 
             # A fast completion may be present only in its reply before another state arrives.
             if complete(reply["state"]):

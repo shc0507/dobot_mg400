@@ -337,6 +337,7 @@ Run `mg400ctl` as root, for example `sudo mg400ctl status`.
 | `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
 | `mg400ctl terminal` | Open the [interactive terminal](terminal-control.en.md) |
 | `mg400ctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
+| `labctl robot state` | Agent device groups. See the [agent CLI](agent-cli.en.md) |
 | `mg400ctl camera-url` | Show 1 `/camera/cameraN.mjpeg` link for each camera. If `proxy` is enabled, the links use the proxy address |
 | `mg400ctl camera-check` | Check camera devices, services, and capture streams in order. See [Camera failures](olares.en.md#camera-failures) |
 

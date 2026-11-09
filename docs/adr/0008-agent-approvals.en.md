@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted: 2026-10-30. Approval policy added: 2026-11-02 (H-23).
+Accepted: 2026-10-30. Approval policy added: 2026-11-02 (H-23). Partly superseded by [0010](0010-agent-cli.en.md) for shell agents on Olares.
 
 ## Context
 

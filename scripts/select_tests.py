@@ -32,6 +32,7 @@ ROBOT = [
 ]
 ORCHESTRATOR = [
     "test_orchestrator_*.py",
+    "test_agent_cli*.py",
     "test_recipe_*.py",
     "test_deploy_mg400ctl.py",
     "test_console*.py",
@@ -56,7 +57,8 @@ AREAS = [
     ("scripts/mg400_*.py", ROBOT),
     ("config/robot.toml", ROBOT),
     ("examples/*", ["test_joint_example.py"]),
-    ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py"]),
+    ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py", "test_agent_cli*.py"]),
+    ("src/orchestrator/agent*.py", ["test_agent_cli*.py", "test_orchestrator_cli.py"]),
     ("scripts/console_font.py", ["test_console.py"]),
     ("src/orchestrator/*", ORCHESTRATOR),
     ("recipes/*", ORCHESTRATOR),

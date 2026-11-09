@@ -14,6 +14,8 @@ from pathlib import Path
 
 from labkit.errors import ServiceError
 
+from . import agent_cli
+from .agent_cli import GROUPS as AGENT_GROUPS
 from .clients import SERVICE_URLS, ServiceAdapter, from_settings
 from .recipe import load_recipe, positive
 from .rehearsal import Rehearsal
@@ -191,6 +193,9 @@ def _station(args, settings, out):
 
 
 def main(argv=None, *, out=None, read=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in AGENT_GROUPS:
+        return agent_cli.main(argv, out=out)
     out, read = sys.stdout if out is None else out, input if read is None else read
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)

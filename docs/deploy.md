@@ -337,6 +337,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
 | `mg400ctl terminal` | 打开 [交互终端](terminal-control.md) |
 | `mg400ctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
+| `labctl robot state` | 智能体设备命令组，见[智能体命令行](agent-cli.md) |
 | `mg400ctl camera-url` | 为每台摄像头显示 1 个 `/camera/cameraN.mjpeg` 链接。启用 `proxy` 时，链接使用代理地址 |
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 

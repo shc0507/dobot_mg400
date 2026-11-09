@@ -1075,6 +1075,7 @@ class MicroscopeService:
             "autofocus": {"mode": parameter("string", enum=["full", "local"])},
             "focus_move": {"steps": parameter("integer", minimum=-(2**31), maximum=2**31 - 1)},
             "home_focus": {},
+            "set_focus_zero": {},
             "snapshot": {"path": parameter("string", minLength=1)},
             "start_recording": self._recording_parameters(),
             "stop_recording": {"recording_id": parameter("string", pattern="^[0-9a-f]{32}$")},
@@ -1466,19 +1467,15 @@ class MicroscopeService:
             self._renew_job_authority(client)
             with self._lock:
                 self._handoff_deadline = None
-            return self._dispatch(action, {}, client, manual=True)
+            return self._dispatch(action, {}, client)
 
     def command(self, action, args, client):
         with self._lease.control(client):
             self._manual_holder = None
-            if action == "set_focus_zero":
-                raise ServiceError(403, "Only the Lab Console operator can set focus zero")
             return self._dispatch(action, args, client)
 
     def _arguments(self, action, args):
-        if not isinstance(args, dict) or (
-            action not in self.describe()["commands"] and action != "set_focus_zero"
-        ):
+        if not isinstance(args, dict) or action not in self.describe()["commands"]:
             raise ValueError("Unknown microscope command or parameters")
         if action in (
             "start_recording",
@@ -1529,7 +1526,7 @@ class MicroscopeService:
                 409, f"The turret offset would be {offset:+d}, outside ±{window} full steps"
             )
 
-    def _dispatch(self, action, args, client, *, manual=False):
+    def _dispatch(self, action, args, client):
         self._arguments(action, args)
         self._sync_motor_fault()
         deadline = self._lease_deadline()
@@ -1563,8 +1560,8 @@ class MicroscopeService:
                 self._check_nudge(args["steps"])
             if action == "home_focus" and not self.config.home_switch:
                 raise ServiceError(409, "No configured focus home switch")
-            if action == "set_focus_zero" and (not manual or self.config.home_switch):
-                raise ServiceError(403, "Manual zero requires an operator and no home switch")
+            if action == "set_focus_zero" and self.config.home_switch:
+                raise ServiceError(409, "Use home_focus: a focus home switch is configured")
             job = _Job(
                 uuid.uuid4().hex,
                 action,

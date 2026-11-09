@@ -4,12 +4,10 @@
 the thermal ``crucible`` region reading, a 60-minute PV and SV history and the
 cutoff setting. Every described device command goes through the console relay.
 
-Two operator actions are not in the service descriptions, so the relay and the
-runner never reach them. Each needs this page's control of the device and an
+One operator action is not in the service descriptions, so the relay and the
+runner never reach it. It needs this page's control of the device and an
 in-page confirmation, and is sent once:
 
-- ``POST focus-zero`` ``{"confirmed": true}``: microscope focus zero at the
-  current focus position.
 - ``POST acknowledge`` ``{"confirmed": true}``: acknowledge a furnace fault.
 
 ``POST gas-stop`` ``{"channel_index": 0|1|2}`` closes 1 furnace gas channel
@@ -218,10 +216,6 @@ def register(blueprint, service):
         result.pop("result", None)
         status_code = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
         return jsonify(result), status_code
-
-    @blueprint.post("/focus-zero")
-    def focus_zero():
-        return operator("microscope", "api/manual/set_focus_zero", {"confirm": True})
 
     @blueprint.post("/acknowledge")
     def acknowledge():

@@ -136,10 +136,10 @@ The current focus gears can slip. Pulse counts are relative to the last zero.
 Before each use, refocus the 50x objective on the sample and set zero in the console (see [Lab Console operation](#lab-console-operation)).
 This focus position is the clearance zero. Positive focus motion raises the objectives.
 
-`POST /api/manual/set_focus_zero` accepts only the current lease holder, with an ordinary or a manual lease. Other clients receive HTTP 409.
-Send `{"confirm": true}` only after physical confirmation. A `202` response returns a command ID. Read the command result before the next action.
-The service refuses this operation when a home switch is configured.
-`POST /api/command` refuses `set_focus_zero`, and `GET /api/describe` does not list it. Thus agents, recipes, and the runner cannot set zero.
+`set_focus_zero` is an ordinary command without parameters. The lease holder sends it with `POST /api/command`. Other clients receive HTTP 409.
+A `202` response returns a command ID. Read the command result before the next action.
+The service refuses this command with HTTP 409 when a home switch is configured.
+`POST /api/manual/set_focus_zero` with `{"confirm": true}` does the same operation for the holder of an ordinary or a manual lease.
 The service checks stationary axes, sets `MICRO 4`, establishes zero, installs limits, and verifies the firmware result.
 
 `POST /api/manual/heartbeat` with an empty object acquires manual control. `POST /api/manual/renew` retains manual control.
@@ -180,10 +180,9 @@ Set focus zero:
 
 1. Take microscope control.
 2. Focus the 50x objective on the sample. This position is the verified clearance position.
-3. Select **Set focus zero…**.
-4. Check the physical position, then confirm in the page.
+3. Select **Set focus zero**.
 
-The console sends the zero command 1 time with its own lease.
+The console sends the zero command 1 time with its own lease. It shows no confirmation dialog.
 The card shows a reminder: the focus gears can slip, so re-zero at the 50x focus before each use.
 The console has no focus homing action, because the lab microscope has no home switch.
 

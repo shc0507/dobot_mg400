@@ -1,4 +1,4 @@
-/* Furnace + microscope workspace (DSH-06). Described commands go through the console relay; focus zero and fault acknowledgement use the workspace routes. */
+/* Furnace + microscope workspace (DSH-06). Described commands go through the console relay; fault acknowledgement uses a workspace route. */
 (function (root, factory) {
   "use strict";
   const logic = factory();
@@ -55,9 +55,7 @@
       "focus.bar": "Focus position", "focus.jog": "Jog pulses", "focus.down": "Jog focus −", "focus.up": "Jog focus +",
       "focus.local": "Autofocus", "focus.full": "Full autofocus",
       "zero.reminder": "The focus gears can slip. Re-zero at the 50x focus before each use.",
-      "zero.set": "Set focus zero…",
-      "zero.confirm": "Is the 50x objective focused on the sample? The current focus position becomes zero.",
-      "zero.done": "Focus zero sent.",
+      "zero.set": "Set focus zero",
       "rec.title": "Recording", "rec.off": "off", "rec.snapshot": "Save snapshot", "rec.start": "Start recording", "rec.stop": "Stop recording",
       "rec.arm": "Record next furnace sequence", "rec.disarm": "Cancel sequence recording",
       "rec.stabOn": "Turn stabilization on", "rec.stabOff": "Turn stabilization off",
@@ -70,7 +68,7 @@
       "act.apply_setpoint": "Apply and run", "act.connect": "Connect furnace", "act.connect_flow": "Connect gas flow",
       "act.set_gas_flow": "Send flow", "act.set_sequence": "Save sequence", "act.start_sequence": "Start sequence",
       "act.autofocus": "Autofocus", "act.focus_move": "Focus jog", "act.objective_nudge": "Turret nudge",
-      "act.record_with_sequence": "Record next furnace sequence", "act.select_objective": "Objective",
+      "act.record_with_sequence": "Record next furnace sequence", "act.select_objective": "Objective", "act.set_focus_zero": "Focus zero",
       "act.set_stabilization": "Stabilization", "act.snapshot": "Save snapshot", "act.start_recording": "Start recording",
       "act.stop_recording": "Stop recording", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
       "stop.result": "{device} stop: {outcome}",
@@ -124,9 +122,7 @@
       "focus.bar": "对焦位置", "focus.jog": "点动脉冲", "focus.down": "对焦点动 −", "focus.up": "对焦点动 +",
       "focus.local": "自动对焦", "focus.full": "全程自动对焦",
       "zero.reminder": "对焦齿轮可能打滑。每次使用前在 50x 焦点处重新设零。",
-      "zero.set": "设置对焦零点…",
-      "zero.confirm": "50x 物镜已对焦到样品上吗？当前对焦位置将设为零点。",
-      "zero.done": "已发送对焦零点。",
+      "zero.set": "设置对焦零点",
       "rec.title": "录制", "rec.off": "关", "rec.snapshot": "保存快照", "rec.start": "开始录制", "rec.stop": "停止录制",
       "rec.arm": "录制下一次炉子程序", "rec.disarm": "取消程序录制",
       "rec.stabOn": "开启防抖", "rec.stabOff": "关闭防抖",
@@ -139,7 +135,7 @@
       "act.apply_setpoint": "应用并运行", "act.connect": "连接炉子", "act.connect_flow": "连接气体流量计",
       "act.set_gas_flow": "发送流量", "act.set_sequence": "保存程序", "act.start_sequence": "启动程序",
       "act.autofocus": "自动对焦", "act.focus_move": "对焦点动", "act.objective_nudge": "转盘微调",
-      "act.record_with_sequence": "录制下一次炉子程序", "act.select_objective": "物镜",
+      "act.record_with_sequence": "录制下一次炉子程序", "act.select_objective": "物镜", "act.set_focus_zero": "对焦零点",
       "act.set_stabilization": "防抖", "act.snapshot": "保存快照", "act.start_recording": "开始录制",
       "act.stop_recording": "停止录制", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
       "stop.result": "{device}停止：{outcome}",
@@ -375,7 +371,7 @@
   }
 
   // The button that opens each confirmation. Cancel, Esc and Confirm give the focus back to it.
-  const OPENERS = { apply: "apply", start: "start-sequence", ack: "acknowledge", zero: "zero" };
+  const OPENERS = { apply: "apply", start: "start-sequence", ack: "acknowledge" };
 
   function confirmBox(id, text, onConfirm, extra) {
     const { el, t } = view.api;
@@ -553,7 +549,6 @@
       button(t("focus.local"), () => send("microscope", "autofocus", { mode: "local" }), { "data-role": "af-local" }),
       button(t("focus.full"), () => send("microscope", "autofocus", { mode: "full" }), { "data-role": "af-full" }),
     ];
-    const zeroConfirm = confirmBox("zero", t("zero.confirm"), () => operator("focus-zero", "zero.done"));
     n.snapshot = button(t("rec.snapshot"), saveSnapshot, { "data-role": "snapshot" });
     n.snapPath = input({ type: "text", maxlength: "4096", class: "pr-input pr-wide", autocomplete: "off", "data-role": "snapshot-path" }, view.snapPath, value => { view.snapPath = value; });
     n.record = button(t("rec.start"), toggleRecording, { "data-role": "record" });
@@ -579,7 +574,7 @@
     const preview = el("div", { class: "pr-preview" }, ...n.viewPanes,
       el("div", { class: "pr-seg", role: "group", "aria-label": t("view.switch") }, ...n.viewButtons));
 
-    n.zero = button(t("zero.set"), () => ask("zero"), { class: "lc-danger pr-danger", "data-role": "zero", title: t("zero.reminder") });
+    n.zero = button(t("zero.set"), () => send("microscope", "set_focus_zero", {}), { class: "lc-danger pr-danger", "data-role": "zero", title: t("zero.reminder") });
     const scope = el("section", { class: "lc-card pr-card pr-scope", "aria-labelledby": "pr-scope-title" },
       el("div", { class: "lc-card-head" },
         el("div", { class: "pr-head" }, el("h2", { id: "pr-scope-title", text: t("scope.title") }), n.scopeSub),
@@ -596,8 +591,7 @@
           el("div", { class: "pr-row" },
             el("div", { class: "pr-stepper" }, n.motion[0], jog, n.motion[1]),
             n.motion[2], n.motion[3],
-            el("span", { class: "pr-push" }), n.zero),
-          zeroConfirm)),
+            el("span", { class: "pr-push" }), n.zero))),
       el("div", { class: "pr-more" },
         n.turret = disclosure("turret", t("turret.title"), null, n.nudgeRow),
         disclosure("recording", t("rec.title"), n.recSummary,
@@ -787,7 +781,7 @@
     setText(n.focusText, pos === null ? t("focus.unknown") : limits.length === 2 ? t("focus.position", { pos: String(pos), max: String(limits[1]) }) : String(pos));
     setText(n.focusMin, limits.length === 2 ? t("focus.min", { min: String(limits[0]) }) : t("focus.noLimits"));
     setText(n.focusMax, limits.length === 2 ? t("focus.max", { max: String(limits[1]) }) : "");
-    n.zero.disabled = !idle || busy("focus-zero");
+    n.zero.disabled = !idle || busy("set_focus_zero");
     const recording = scope?.recording || {};
     const armed = scope?.recording_sequence?.armed === true;
     const active = ACTIVE_RECORDING.has(recording.status);
@@ -846,7 +840,7 @@
     });
   }
 
-  /** Send one operator action (focus zero, fault acknowledgement) once. Never retry. */
+  /** Send one operator action (fault acknowledgement) once. Never retry. */
   async function operator(path, doneKey) {
     return act(path, async () => {
       const result = await view.api.request(path, { confirmed: true }, { accept: [409, 502], timeout: 8000 });

@@ -136,10 +136,10 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 每次使用前，重新用 50x 物镜对焦样品，再在控制台设零（见 [Lab Console 操作](#lab-console-操作)）。
 此焦点是避让零点。调焦正向运动抬高物镜。
 
-`POST /api/manual/set_focus_zero` 只接受当前租约持有者，普通租约和手动租约均可。其他客户端收到 HTTP 409。
-完成物理确认后，才发送 `{"confirm": true}`。`202` 响应返回命令 ID，读取命令结果后再执行下一动作。
-有已配置的归零开关时，服务拒绝此操作。
-`POST /api/command` 拒绝 `set_focus_zero`，`GET /api/describe` 也不列出它。因此代理、配方和运行器不能设置零点。
+`set_focus_zero` 是普通命令，没有参数。租约持有者用 `POST /api/command` 发送。其他客户端收到 HTTP 409。
+`202` 响应返回命令 ID，读取命令结果后再执行下一动作。
+有已配置的归零开关时，服务以 HTTP 409 拒绝此命令。
+`POST /api/manual/set_focus_zero` 带 `{"confirm": true}` 时执行同一操作，接受普通租约或手动租约的持有者。
 服务检查两轴静止，设置 `MICRO 4`，建立零点，写入限位，并验证固件结果。
 
 `POST /api/manual/heartbeat` 用空对象取得手动控制权，`POST /api/manual/renew` 保留手动控制权。
@@ -180,10 +180,9 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 1. 取得显微镜控制权。
 2. 用 50x 物镜对焦样品。此位置是已验证的避让位置。
-3. 选择 **Set focus zero…**。
-4. 检查物理位置，再在页面内确认。
+3. 选择 **Set focus zero**。
 
-控制台用自己的租约发送 1 次零点命令。
+控制台用自己的租约发送 1 次零点命令，不显示确认框。
 卡片显示提醒：对焦齿轮可能打滑，每次使用前在 50x 焦点处重新设零。
 控制台没有调焦归零操作，因为实验室显微镜没有归零开关。
 

@@ -443,7 +443,6 @@ def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_
     assert service_post(rig, "manual/set_focus_zero", {"confirm": True}).status_code == 409
     assert service_post(rig, "heartbeat").status_code == 200
     assert service_post(rig, "manual/set_focus_zero", {"confirm": False}).status_code == 400
-    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code in (400, 403)
     zero = service_post(rig, "manual/set_focus_zero", {"confirm": True})
     assert zero.status_code == 202
     assert service_post(rig, "renew").status_code == 200
@@ -466,7 +465,7 @@ def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_
     assert not rig.service.snapshot()["focus_zero_known"]
 
 
-def test_operator_zero_refuses_a_client_without_the_lease(demo_rig):
+def test_focus_zero_refuses_a_client_without_the_lease(demo_rig):
     rig = demo_rig()
     assert service_post(rig, "heartbeat", actor="automation").status_code == 200
     assert service_post(rig, "manual/heartbeat", actor="operator").status_code == 409
@@ -474,8 +473,8 @@ def test_operator_zero_refuses_a_client_without_the_lease(demo_rig):
         service_post(rig, "manual/set_focus_zero", {"confirm": True}, actor="operator").status_code
         == 409
     )
-    response = service_post(rig, "command", {"action": "set_focus_zero"}, actor="automation")
-    assert response.status_code in (400, 403)
+    response = service_post(rig, "command", {"action": "set_focus_zero"}, actor="operator")
+    assert response.status_code == 409
     assert rig.service.snapshot()["manual_client"] is None
     assert not any(command == "FOCUS ZERO" for command in rig.port.commands)
 

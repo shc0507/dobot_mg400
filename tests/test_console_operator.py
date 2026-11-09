@@ -21,7 +21,6 @@ def operator_calls(rig, device):
 @pytest.mark.parametrize(
     "route,device,path,data",
     [
-        ("process/focus-zero", "microscope", "api/manual/set_focus_zero", {"confirm": True}),
         ("process/acknowledge", "furnace", "api/furnace/acknowledge", {}),
     ],
 )
@@ -43,20 +42,20 @@ def test_process_operator_action_needs_confirmation_and_control_and_is_sent_once
 
 
 def test_operator_refusal_and_unknown_outcome_are_reported_without_retry(rig):
-    take(rig, "microscope")
-    scope = rig.devices["microscope"]
-    scope.fail["request"] = ServiceError(403, "Manual zero requires an operator and no home switch")
-    response = post(rig, "ws/process/focus-zero", {"confirmed": True})
+    take(rig, "furnace")
+    furnace = rig.devices["furnace"]
+    furnace.fail["request"] = ServiceError(409, "No fault to acknowledge")
+    response = post(rig, "ws/process/acknowledge", {"confirmed": True})
     assert response.status_code == 409 and response.json["outcome"] == "refused"
-    assert "home switch" in response.json["error"]
-    scope.fail["request"] = ServiceError(0, "Service request failed")
-    response = post(rig, "ws/process/focus-zero", {"confirmed": True})
+    assert "No fault" in response.json["error"]
+    furnace.fail["request"] = ServiceError(0, "Service request failed")
+    response = post(rig, "ws/process/acknowledge", {"confirmed": True})
     assert response.status_code == 502 and response.json["outcome"] == "unknown"
-    assert len(operator_calls(rig, "microscope")) == 2
+    assert len(operator_calls(rig, "furnace")) == 2
 
 
-def test_relay_never_forwards_focus_zero_or_acknowledge(rig):
-    for device, action in (("microscope", "set_focus_zero"), ("furnace", "acknowledge")):
+def test_relay_never_forwards_acknowledge(rig):
+    for device, action in (("furnace", "acknowledge"),):
         take(rig, device)
         response = post(rig, f"command/{device}", {"action": action, "params": {}})
         assert response.status_code in (400, 409)

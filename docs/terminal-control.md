@@ -20,20 +20,23 @@ PTY 是 SSH 分配的交互终端，可用 `ssh -t` 请求。
 终端与机器人服务共用机械臂连接锁。
 多个进程必须配置相同的机械臂地址。
 它们还必须共用锁目录 `/var/lib/mg400/locks`，`mg400ctl terminal` 会设置该目录。
+直接运行时，用 `MG400_CONTROLLER_LOCK_DIR` 设置锁目录。未设置时，锁目录为 `/tmp/mg400-controller-locks`，不能与机器人服务互斥。
 目录和权限要求见 [面板连接锁](deploy.md#面板连接锁)。
 此锁不能阻止 DobotStudio 或其他主机连接。
 
 进入项目目录，运行：
 
 ```sh
-uv run mg400-robot
+MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks uv run mg400-robot
 ```
 
 也可以直接运行：
 
 ```sh
-python3 scripts/mg400_robot.py
+MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 scripts/mg400_robot.py
 ```
+
+程序必须在交互终端中运行。没有终端时，程序退出，退出码为 2。
 
 机械臂地址默认取自 `MG400_ROBOT_HOST`，未设置时取自 `config/robot.toml`。
 用 `--robot-host` 覆盖地址：
@@ -50,7 +53,8 @@ uv run mg400-robot --robot-host 192.168.1.6
 
 输入命令后按 Enter 执行。
 用上、下方向键调用历史命令。
-用左、右方向键移动输入光标。
+用左、右方向键移动输入光标。Home 或 Ctrl+A 移到行首，End 或 Ctrl+E 移到行尾。
+Delete 删除光标处的字符，Ctrl+U 清空输入。
 输入 `help` 查看命令说明，输入 `status` 查看当前状态。
 
 | 命令 | 行为 |
@@ -75,12 +79,17 @@ X/Y/Z 单位为 mm，R 单位为度。
 `home` 使用 `SpeedJ=5,AccJ=5`。
 `home` 会移动机械臂，不是坐标校准命令。
 
-## 控制吸盘
+`status` 和界面显示以下 5 行：
 
-`status` 和界面显示 2 行反馈：
-
+- 机械臂地址和连接状态：`LIVE`、`WAITING / STALE` 或 `DISCONNECTED`。
+- `Mode`、`Error`、`Busy` 和 `Locked`。
+- `Joints (deg)`：关节 J1–J4。
 - `Flange (mm/deg)`：法兰位姿 X、Y、Z 和 R。
-- `Vacuum`：`suck`、`blow` 和 `held` 的实测电平。无反馈时显示 `--`。
+- `Vacuum`：`suck`、`blow` 和 `held` 的实测电平。
+
+无新鲜反馈时，测量值显示 `--`。
+
+## 控制吸盘
 
 `stop` 和下使能结束 DO1 的吹气脉冲，保持 DO2 的吸气。
 输出说明见 [真空吸盘](development.md#真空吸盘)。

@@ -20,20 +20,23 @@ Before use, close other robot control programs.
 The terminal shares the robot connection lock with the robot service.
 All processes must use the same robot address.
 They must also share the lock directory `/var/lib/mg400/locks`. `mg400ctl terminal` sets it.
+For a direct run, set the lock directory with `MG400_CONTROLLER_LOCK_DIR`. If it is unset, the directory is `/tmp/mg400-controller-locks`, and the lock cannot exclude the robot service.
 For directory and permission requirements, see [Panel connection lock](deploy.en.md#panel-connection-lock).
 This lock cannot prevent DobotStudio or other hosts from connecting.
 
 Enter the project directory and run:
 
 ```sh
-uv run mg400-robot
+MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks uv run mg400-robot
 ```
 
 You can also run it directly:
 
 ```sh
-python3 scripts/mg400_robot.py
+MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 scripts/mg400_robot.py
 ```
+
+The program must run in an interactive terminal. Without a terminal, it exits with exit code 2.
 
 The robot address defaults to `MG400_ROBOT_HOST`. If unset, it comes from `config/robot.toml`.
 Override the address with `--robot-host`:
@@ -50,7 +53,8 @@ Check that the motion area contains no people or obstacles. Then enter `enable`.
 
 After entering a command, press Enter to execute it.
 Use the up and down arrow keys to recall previous commands.
-Use the left and right arrow keys to move the input cursor.
+Use the left and right arrow keys to move the input cursor. Home or Ctrl+A moves to the start of the line. End or Ctrl+E moves to the end.
+Delete removes the character at the cursor. Ctrl+U clears the input.
 Enter `help` for command descriptions. Enter `status` for the current state.
 
 | Command | Behavior |
@@ -75,12 +79,17 @@ Linear motion uses `SpeedL=1,AccL=1`.
 `home` uses `SpeedJ=5,AccJ=5`.
 `home` moves the robot. It is not a coordinate calibration command.
 
-## Control the suction cup
+`status` and the interface show these 5 lines:
 
-`status` and the interface show 2 feedback lines:
-
+- The robot address and the connection state: `LIVE`, `WAITING / STALE`, or `DISCONNECTED`.
+- `Mode`, `Error`, `Busy`, and `Locked`.
+- `Joints (deg)`: joints J1–J4.
 - `Flange (mm/deg)`: the flange pose X, Y, Z and R.
-- `Vacuum`: the measured levels of `suck`, `blow` and `held`. Without feedback, the line shows `--`.
+- `Vacuum`: the measured levels of `suck`, `blow` and `held`.
+
+Without fresh feedback, the measured values show `--`.
+
+## Control the suction cup
 
 `stop` and disable end the blow pulse on DO1. They keep suction on DO2.
 See [Vacuum suction cup](development.en.md#vacuum-suction-cup) for the outputs.

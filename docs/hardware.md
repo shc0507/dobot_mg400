@@ -5,7 +5,8 @@
 [返回首页，选择操作入口](../README.md)
 
 本页说明真机控制的 TCP 协议和反馈判定。
-现有真机功能直接通过 TCP 接入，不提供通用抓放接口。
+机器人服务和交互终端直接通过 TCP 接入控制器。
+抓放步骤由 [配方编排](orchestrator.md) 的 `robot.pick`、`robot.transfer` 和 `vision.tray_transfer` 提供。
 日常操作请使用对应指南：
 
 - [机器人服务](control-panel.md)：Lab Console 运动工作区使用的真机控制服务。
@@ -43,7 +44,11 @@ mg400ctl mode
 
 `mg400ctl` 以 UID 1000 运行脚本，与机器人服务共用 [面板连接锁](deploy.md#面板连接锁)。
 脚本使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
-直接以 root 运行脚本时，脚本拒绝取得连接锁，不连接控制器。
+直接运行脚本时，锁目录取自 `MG400_CONTROLLER_LOCK_DIR`，未设置时为 `/tmp/mg400-controller-locks`。
+锁目录的属主可以不是 root，例如 `/var/lib/mg400/locks`。
+此时以 root 运行，脚本拒绝取得连接锁，不连接控制器。
+以 root 运行且未设置该变量时，脚本可能取得另一把锁，不能与机器人服务互斥。所以用 `mg400ctl mode` 运行脚本。
+直接运行时，`--host` 指定控制器地址，`--timeout` 设置请求超时（默认 5 秒，最长 30 秒），`--backup-dir` 设置备份目录（默认 `work/control-mode`）。
 
 切换前，下使能机械臂并停止运行中的程序。
 关闭其他控制客户端，释放[面板连接锁](deploy.md#面板连接锁)。
@@ -202,7 +207,7 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 1. 核对固件、机器人 IP、供电和真空源 I/O 接线。只读测试位姿与报警。
 2. 设定工具 TCP 和负载。用示教器记录真实起点、抓取点、放置点与路径。
 3. 在受控工作区低速逐步验证单次动作，再验证固定抓放。
-4. 接入 agent 前，补充路径可达性、碰撞检查和独立于模型的设备保护。
+4. 通过 [代理网关](agent-gateway.md) 接入 agent 前，补充路径可达性、碰撞检查和独立于模型的设备保护。
 
 ## 可选 ROS 2 路线
 
@@ -242,6 +247,6 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 实现 ROS 2 适配器前，先确定部署环境。
 本项目要求 Python 3.12+。
 `rclpy` 必须与所安装 ROS 发行版的 Python 环境兼容。
-不能假定当前 macOS 的 venv 可直接使用。
+不能假定项目的 venv 可直接使用。
 先在上游支持的 Ubuntu / Humble 环境验证驱动。
 再确定 agent 同进程运行还是通过独立桥接进程通信。

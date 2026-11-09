@@ -5,7 +5,8 @@
 [Return to the home page to choose an interface](../README.en.md)
 
 This page describes the TCP protocol and feedback checks for hardware control.
-Existing hardware functions connect directly through TCP. They do not provide a general pick-and-place interface.
+The robot service and the interactive terminal connect directly to the controller through TCP.
+The [recipe orchestrator](orchestrator.en.md) provides the pick-and-place steps `robot.pick`, `robot.transfer`, and `vision.tray_transfer`.
 For routine operation, use the relevant guide:
 
 - [Robot service](control-panel.en.md): the hardware control service that the Motion workspace of the Lab Console uses.
@@ -44,7 +45,11 @@ mg400ctl mode
 
 `mg400ctl` runs the script as UID 1000 and shares the robot service's [connection lock](deploy.en.md#panel-connection-lock).
 The script uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
-When run directly as root, the script refuses to acquire the connection lock and does not connect to the controller.
+For a direct run, the lock directory comes from `MG400_CONTROLLER_LOCK_DIR`. If it is unset, the directory is `/tmp/mg400-controller-locks`.
+The lock directory can belong to a user other than root, such as `/var/lib/mg400/locks`.
+In that case, the script refuses to acquire the connection lock as root and does not connect to the controller.
+When the script runs as root without this variable, it can acquire a different lock that cannot exclude the robot service. Thus, run the script through `mg400ctl mode`.
+For a direct run, `--host` sets the controller address, `--timeout` sets the request timeout (default 5 seconds, maximum 30 seconds), and `--backup-dir` sets the backup directory (default `work/control-mode`).
 
 Before switching, disable the robot and stop running programs.
 Close other control clients and release the [panel connection lock](deploy.en.md#panel-connection-lock).
@@ -205,7 +210,7 @@ Validate in this order:
 1. Check firmware, robot IP, power supply, and the I/O wiring of the vacuum source. Use read-only tests for pose and alarms.
 2. Set the tool TCP and payload. Use the teach pendant to record the actual start, pick, and place points and path.
 3. Validate individual actions gradually at low speed in a controlled workspace. Then validate a fixed pick-and-place sequence.
-4. Before connecting an agent, add path reachability checks, collision checks, and device protection independent of the model.
+4. Before connecting an agent through the [agent gateway](agent-gateway.en.md), add path reachability checks, collision checks, and device protection independent of the model.
 
 ## Optional ROS 2 integration
 
@@ -247,6 +252,6 @@ Integration requirements and limitations:
 Before implementing a ROS 2 adapter, decide the deployment environment.
 This project requires Python 3.12+.
 `rclpy` must be compatible with the Python environment of the installed ROS distribution.
-Do not assume that the current macOS venv can be used directly.
+Do not assume that the project venv can be used directly.
 First validate the driver in the upstream-supported Ubuntu / Humble environment.
 Then decide whether the agent runs in the same process or communicates through a separate bridge process.

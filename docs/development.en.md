@@ -31,12 +31,14 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-`uv sync` installs the `dev` and `stage` dependency groups by default.
-The `stage` group contains Flask, waitress, and pySerial for the stage service.
+By default, `uv sync` installs the dependency groups in `default-groups` in `pyproject.toml`: `dev`, `stage`, `vision`, `thermal`, `furnace`, `camera`, `orchestrator`, and `microscope`.
+`vision-gpu` and `notebook` are not default groups.
+The `stage` group contains Flask, waitress, pySerial, NumPy, and OpenCV for the stage service.
 The robot service and interactive terminal use only the standard library and do not require the `stage` group.
 
 Tests do not connect to a robot or Arduino.
 For pull requests and pushes to `main`, GitHub Actions (`.github/workflows/ci.yml`) runs these checks on Python 3.12.
+A pull request runs only the pytest files that `scripts/select_tests.py` selects from the changed files. A push to `main` runs all tests.
 `pytest` runs Python tests. `node --test` runs the Lab Console JavaScript tests.
 Offline checks cannot replace physical robot verification.
 
@@ -44,6 +46,7 @@ Shared test fixtures are in `tests/conftest.py`.
 The stage test fixtures `stage_rig`, `stage_ports`, and `stage_usb` are also in this file. Tests use them by name.
 Test doubles are objects that replace real devices in tests.
 Controller, connection, and web service doubles are in `tests/helpers.py`, `tests/sim_mg400.py`, and `tests/panel_ws.py`.
+Shared checks for the service contract tests are in `tests/contract_helpers.py`.
 Stage clock, serial port, and serial port list doubles are in `tests/stage_helpers.py`.
 Reuse these modules in new tests. Do not duplicate them in test files.
 
@@ -67,6 +70,7 @@ MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/serv
   --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2
 kill "$sim_pid"
 wait "$sim_pid"
+rm -r "$sim_dir"
 ```
 
 In another terminal, use the [Python client](#python-client) to connect to `http://127.0.0.1:18766/`. Send these commands in sequence:
@@ -77,7 +81,7 @@ In another terminal, use the [Python client](#python-client) to connect to `http
 4. Run `stop_sync`. Wait for stop confirmation, then run `disable`.
 
 Press `Ctrl+C` in the terminal to stop the robot service.
-The next two commands terminate this simulator process.
+The next commands terminate this simulator process and remove the temporary lock directory.
 
 The simulator reaches joint and Cartesian targets immediately. It does not calculate real kinematics, paths, or collisions.
 Inverse kinematics returns the current joint values. `J1` jogging changes joint feedback. Other jogging changes only the motion mode.
@@ -96,8 +100,18 @@ Offline rehearsal cannot replace hardware acceptance.
 | `src/mg400/` | Backend, control protocol, and feedback processing |
 | `src/mg400/sim/` | Loopback controller simulator, with a shared test model |
 | `src/stage_controller/` | Stage service: Flask interface and serial protocol |
+| `src/labkit/` | Shared service contract, leases, events, access checks, and HTTP client. See [ADR 0001](adr/0001-instrument-service-contract.en.md) |
+| `src/cameras/` | AC410 camera modes and UVC reading |
+| `src/vision/` | [Vision service](vision.en.md): localization, QR reading, trays, and camera calibration |
+| `src/thermal_cam/` | [Thermal camera service](thermal.en.md) |
+| `src/furnace/` | [Furnace and gas service](furnace.en.md) |
+| `src/microscope/`, `src/toupcam_camera/` | [Microscope service](microscope.en.md) and the Toupcam camera |
+| `src/orchestrator/` | [Recipe service](orchestrator.en.md) and `labctl`. `web/` is the [Lab Console](dashboard.en.md) |
+| `recipes/` | TOML recipes |
+| `config/trays/`, `config/proxy/`, `config/udev/` | Tray geometry, proxy template, and USB access rule templates |
 | `firmware/three-motor-demo/` | Stage Arduino firmware and wiring instructions in English |
-| `scripts/` | Camera preview, control mode switching, and the interactive terminal entry point |
+| `firmware/microscope-axes/` | Microscope turret and focus firmware. See the [firmware guide](../firmware/microscope-axes/README.en.md) |
+| `scripts/` | Camera preview, control mode switching, the interactive terminal entry point, console screenshots (`console_shots.py`), test selection (`select_tests.py`), document pair checks (`check_doc_pairs.py`), agent signals (`agent_signal.py`), detector evaluation (`vision_eval.py`), and the console font (`console_font.py`) |
 | `examples/` | Single-file tutorials and notebooks |
 | `tests/` | Python and JavaScript offline tests |
 | `docs/` | Operating, deployment, and development guides. `docs/agents/` contains agent procedures |
@@ -120,7 +134,7 @@ The robot service controls the robot through the TCP protocol.
 `controller_protocol.py` parses command replies. `feedback.py` reads joint feedback.
 `joint_control.py` executes motion with limits and the suction outputs.
 For TCP protocol references and completion criteria, see [Physical robot control interface](hardware.en.md).
-There is currently no ROS 2 backend or visual perception.
+There is currently no ROS 2 backend.
 
 `src/stage_controller/` is the stage service. It does not import `mg400` or use the robot connection lock.
 `__main__.py` reads `MG400_STAGE_*` environment variables and command-line arguments, then starts waitress.
@@ -142,15 +156,16 @@ The service uses only the Python standard library.
 
 | Interface | Purpose |
 | --- | --- |
-| `GET {前缀}api/state` | Read the state once |
-| `GET {前缀}api/describe` | Read the contract version, command parameters, and lease behavior |
-| `POST {前缀}api/stop` | Request a stop and read its confirmation status |
-| `GET {前缀}api/events?since=<seq>` | Read journal events after the specified sequence |
-| `POST {前缀}api/command` | Send one command |
-| `POST {前缀}api/heartbeat` | Renew the control lease |
-| `GET {前缀}api/ws` | WebSocket connection: state updates, commands, heartbeats, and keys |
+| `GET {prefix}api/state` | Read the state once |
+| `GET {prefix}api/describe` | Read the contract version, command parameters, and lease behavior |
+| `POST {prefix}api/stop` | Request a stop and read its confirmation status |
+| `GET {prefix}api/events?since=<seq>` | Read journal events after the specified sequence |
+| `POST {prefix}api/command` | Send one command |
+| `POST {prefix}api/heartbeat` | Renew the control lease |
+| `GET {prefix}api/ws` | WebSocket connection: state updates, commands, heartbeats, and keys |
 
-`{前缀}` means the prefix: the value of `--base-path`, which defaults to `/`.
+`{prefix}` is the value of `--base-path`, which defaults to `/`.
+In this section, angle brackets show placeholders. For example, `<client-id>` is the client ID.
 Keys can only be sent through WebSocket.
 
 ### Access and client ID
@@ -160,7 +175,7 @@ The service listens on `127.0.0.1` and does not check tokens, `Host`, or `Origin
 Physical robot control mode identifies clients by a client ID of 1–128 printable ASCII characters.
 Only one client ID has control at a time.
 The controlling client must renew the control lease within 3 seconds. The lease defines how long control remains valid.
-Heartbeats and key updates both renew the lease.
+Heartbeats, key updates, and commands from the controlling client renew the lease.
 If the service receives no renewal within 3 seconds, it requests a robot stop and locks control.
 
 ### HTTP interface
@@ -168,14 +183,14 @@ If the service receives no renewal within 3 seconds, it requests a robot stop an
 POST requests must meet these conditions:
 
 1. Include `Content-Type: application/json` and `X-MG400-Panel: 1`.
-2. In physical robot control mode, include `X-MG400-Client: <客户端 ID>`. The placeholder means the client ID.
+2. In physical robot control mode, include `X-MG400-Client: <client-id>`.
 3. Send a JSON object of 1–4096 bytes, with its length specified by `Content-Length`.
 
 Successful `api/command` and `api/heartbeat` requests return 200 and the state object.
 Rejection returns 400 (invalid request), 403 (refused), or 409 (state conflict).
 The rejection body is `{"error": "..."}`.
 
-The command body is `{"action": "<命令>", ...}`, where the placeholder means the command. It must contain no fields beyond those listed:
+The command body is `{"action": "<action>", ...}`. It must contain no fields beyond those listed:
 
 | Command | Additional fields | Behavior |
 | --- | --- | --- |
@@ -185,7 +200,7 @@ The command body is `{"action": "<命令>", ...}`, where the placeholder means t
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
 | `home` | None | Move J1–J4 to 0° |
-| `execute` | `targets`: `x`, `y`, `z`, `r`, plus optional `speed` | Move linearly to the flange coordinates |
+| `execute` | `targets` (with `x`, `y`, `z`, `r`), optional `speed` | Move linearly to the flange coordinates |
 | `vacuum` | `operation`: `suck`, `release` or `off` | Control the vacuum suction cup. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
 | `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
@@ -201,7 +216,7 @@ Both host settings default to 1 and accept integers from 1–100. Empty settings
 Invalid host settings prevent service startup. Restart the service after changing a cap.
 
 Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher caps.
-These settings do not change `home`, global `SpeedFactor`, or keyboard jogging.
+These settings do not change `home`, `SpeedFactor`, or keyboard jogging.
 An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
 It is also available when `recoverable` is `true`: a stop or disable is unconfirmed, the controller reports no alarm, and feedback is fresh.
@@ -209,6 +224,31 @@ In this case, the service does not send `ClearError()`. It only disables the rob
 The state object's `alarms` field lists current alarms. It is `null` when there are no alarms.
 Each item contains `id`, `source` (`controller` or `J1`–`J4`), `description`, and `solution`.
 The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
+
+### State object
+
+`api/state`, WebSocket state updates, and successful replies return the same state object. In physical robot control mode, it has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `mode` | Service mode, `robot` |
+| `instance`, `version` | Service instance ID and increasing version number. The instance ID changes after a restart |
+| `robot_host` | Robot address |
+| `syncing`, `feedback_fresh` | Whether feedback is connected, and whether it is fresh |
+| `robot_mode`, `robot_error` | Controller mode and alarm flag |
+| `enabled` | `true` in mode 5 or 7 |
+| `joints` | Measured joints J1–J4 in degrees |
+| `actual` | Flange pose X, Y, Z, R. 4 `null` values during motion |
+| `speed_factor` | Global speed percentage from controller feedback |
+| `busy`, `locked`, `stop_unconfirmed`, `recoverable` | Operation in progress, control locked, stop unconfirmed, recovery available |
+| `alarms` | Current alarm list, described above |
+| `message`, `last_command` | Service message and latest command result |
+| `vacuum`, `payload_kg` | Measured suction state and payload. See [Vacuum suction cup](#vacuum-suction-cup) |
+| `controller_id` | Client ID that holds control, or `null` without a holder |
+| `keyboard_enabled`, `keyboard_arming` | Keyboard jog is on, or is turning on |
+| `keyboard_active_key`, `keyboard_speed_percent`, `keyboard_disarm_reason` | Active key, keyboard speed, and close reason |
+
+Read-only mode returns only `mode`, `robot_host`, `enabled` (`null`), `syncing`, `actual` (4 `null` values), `joints`, `robot_mode`, `robot_error`, `feedback_fresh`, and `message`.
 
 ### Contract discovery, stop, and events
 
@@ -251,7 +291,8 @@ Each event contains `seq`, `ts_unix`, `level`, `message`, and `fields`.
 `since` defaults to 0 and must be a nonnegative integer.
 The response contains only events with sequences greater than `since`. Use `next` for the next query.
 The service retains the latest 1000 events. Sequence numbering restarts with the service.
-Events correspond to existing state messages, locks, alarms, and keyboard close reasons. They add no journal lines.
+Events record existing state messages, lock and unlock, and unconfirmed stops and their clearance.
+They also record feedback mode and alarm flag changes, alarms, and keyboard close reasons. They add no journal lines.
 
 ### Python client
 
@@ -266,7 +307,7 @@ The example sends movement commands to that simulator.
 ```python
 from mg400.client import RobotClient
 
-with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
+with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
     robot.run("start_sync")
     robot.run("enable")
     result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
@@ -279,9 +320,11 @@ with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
 - `run(action, timeout=30, **fields)` waits for `busy == False` and a new `last_command` for its action and client.
 - `vacuum(operation, timeout=30)` sends 1 `vacuum` command through `run()`. `operation` is `suck`, `release` or `off`. Other values raise `ValueError`. See [Vacuum suction cup](#vacuum-suction-cup).
 - `vacuum_state` returns the `vacuum` field of the latest state, or `None` before connection.
+- `keys(seq, held)` sends 1 held-key set through the WebSocket and returns the protocol reply. It does not retry.
 - `RobotClientError` reports a refusal or uncertain outcome. It retains `status` and `close_code` when available.
 
 `run()` accepts `ok`. For `stop`, `disable`, and `stop_sync`, it also accepts `stopped` when the stop remains confirmed.
+`run("start_sync")` can succeed while the service is locked, so the new holder can send `clear_alarm` to recover. The service still refuses motion.
 A rejection, failed operation, superseding stop, or service restart cannot count as successful motion.
 Use 1 active program per client ID. Ordinary commands from the same client are serialized during `run()`.
 A different thread can still call `command("stop")`, `command("disable")`, `run("stop")`, or `run("disable")`.
@@ -309,9 +352,9 @@ The optional `timeout=5` sets the connection and reply timeout in seconds.
 
 Communicate in this sequence:
 
-1. Within 3 seconds of connection, send `{"type":"hello","protocol":1,"client":"<客户端 ID>"}`. The placeholder means the client ID.
+1. Within 3 seconds of connection, send `{"type":"hello","protocol":1,"client":"<client-id>"}`.
 2. Wait for the service to send `{"type":"state","state":{...}}`.
-3. Send a request: `{"type":"<类型>","id":<整数>,"body":{...}}`. The placeholders mean type and integer.
+3. Send a request: `{"type":"<type>","id":<integer>,"body":{...}}`.
 4. Match the reply by `id`.
 
 `protocol` is the message format version, currently 1. The hello must contain no other fields.
@@ -324,12 +367,12 @@ It sends at least one update per second.
 | --- | --- |
 | `command` | Same as the `api/command` body |
 | `heartbeat` | `{}` |
-| `keys` | `{"seq":<序号>,"held":[<按键>]}`. The placeholders mean sequence number and key |
+| `keys` | `{"seq":<seq>,"held":[<key>]}` |
 
 `id` is an integer from 0 to 2^53, selected by the client.
 The service replies in request order, with one reply per request.
 A successful reply is `{"type":"reply","id":<id>,"status":200,"state":{...}}`.
-A rejected reply is `{"type":"reply","id":<id>,"status":<状态码>,"error":"..."}`, where the placeholder means status code.
+A rejected reply is `{"type":"reply","id":<id>,"status":<status>,"error":"..."}`.
 Status codes have the same meanings as in the HTTP interface. 500 means an internal service error.
 For an invalid `body`, the service replies with an error and keeps the connection open.
 A successful `command` reply means that the service accepted the command. It does not mean that the action is complete.
@@ -339,10 +382,10 @@ The service writes one log entry per `command`. It does not log `keys` or `heart
 The `seq` in `keys` shares an increasing sequence number with the keyboard enable/disable command.
 The service ignores messages whose value is not greater than the previous value.
 `held` lists the keys that are currently held: W, A, S, D, Q, E, R, F, Z, and X.
-The client must resend the message at intervals of 100 ms while a key is held.
+While a key is held, the client must resend the message within 0.4 seconds. The Lab Console resends it every 150 ms.
 If the service receives no update within 0.4 seconds, it stops jogging and disables keyboard control.
 
-For close codes 4400, 4426, or 1013, the service sends `{"type":"error","status":<状态码>,"error":"..."}` before it closes the connection.
+For close codes 4400, 4426, or 1013, the service sends `{"type":"error","status":<status>,"error":"..."}` before it closes the connection.
 
 | Close code | Meaning |
 | --- | --- |
@@ -351,6 +394,7 @@ For close codes 4400, 4426, or 1013, the service sends `{"type":"error","status"
 | 4409 | A new connection with the same client ID replaced this connection |
 | 1013 | Connection capacity is full |
 | 1001 | Service shutdown. The service sends the final state before closure |
+| 1011 | The service failed while it handled the connection |
 | 1002, 1003, 1007, 1009 | Invalid frame format, binary message, text that is not UTF-8, or an oversized message |
 
 Connection rules:
@@ -358,6 +402,8 @@ Connection rules:
 - Messages must be UTF-8 text of no more than 4096 bytes.
 - The service sends a ping every 5 seconds. It closes the connection if it receives no frames for 15 seconds.
 - Up to 8 client IDs can have connections after hello at the same time.
+- Up to 8 connections can wait for hello at the same time. When a new connection exceeds this limit, the service closes the connection that waited longest.
+- If `GET api/ws` is not a WebSocket upgrade request, the service returns HTTP 426.
 - When the same client ID sends hello again, the service closes the old connection.
 - The service immediately disables a client's keyboard control when its latest connection closes.
   The same applies when a new connection with the same client ID replaces it.
@@ -368,8 +414,8 @@ During a network interruption, the service might not detect connection closure. 
 
 ## Stage service API
 
-The stage service HTTP interface uses JSON. All routes are under `{前缀}contract/api/`.
-`{前缀}` is the stage base path, fixed at `/`.
+The stage service HTTP interface uses JSON. All routes are under `{prefix}contract/api/`.
+`{prefix}` is the stage base path, fixed at `/`.
 The service queries Arduino state every 0.2 seconds and stops expired press-and-hold motion during each query.
 
 ### Stage automation contract
@@ -499,12 +545,27 @@ A disabled robot with no alarm also does not prove that its current pose permits
 ### Motion commands and coordinate cache
 
 Without `speed`, `execute` uses `MovL` with `SpeedL=1,AccL=1`.
-For finite keyboard trajectories, W/S, R/F, and Q/E use `MovL` with `SpeedL=2,AccL=20`.
 Controller inverse kinematics validates the target joint limits. The controller plans the straight path.
 Reset uses `JointMovJ` with `SpeedJ=5,AccJ=5`.
-The A/D finite trajectory uses `JointMovJ` with `SpeedJ=5,AccJ=20`.
-Both types of joint motion check the joint ranges along the entire segment. They do not include collision checks for the physical setup.
-Robot motion does not change global speed or tool configuration.
+`execute` and reset do not change global speed or tool configuration.
+
+When keyboard jog turns on, the service sends `SpeedFactor(<speed>)`. This sets the global speed.
+While a key is held, the service sends the continuous jog command `MoveJog`:
+
+| Key | Command |
+| --- | --- |
+| W/S | `MoveJog(X+,CoordType=0,User=8,Tool=0)`, `MoveJog(X-,CoordType=0,User=8,Tool=0)`: reach out and in along the J1 direction |
+| A/D | `MoveJog(J1+)`, `MoveJog(J1-)` |
+| Q/E | `MoveJog(J4+)`, `MoveJog(J4-)` |
+| R/F | `MoveJog(Z+,CoordType=0,User=0,Tool=0)`, `MoveJog(Z-,CoordType=0,User=0,Tool=0)` |
+
+Before W/S starts, the service checks that User 0 is unchanged. Then it aligns user frame 8 with the current J1 through `SetUser(8,{0,0,0,J1})`.
+When a continuous jog approaches a joint limit, the service stops it early. The early stop band is 0.08° for each 1% of speed.
+
+When a joint is in the 1.05° margin band, the service uses finite trajectories to move inward:
+W/S, R/F, and Q/E use `MovL` with `SpeedL=2,AccL=20`.
+A/D uses `JointMovJ` with `SpeedJ=5,AccJ=20`.
+Joint motion checks the joint ranges along the entire segment. It does not include collision checks for the physical setup.
 
 A/D uses only measured joint feedback at startup and during motion. It does not query `GetPose`.
 After the action ends, it reads coordinates and updates the state.

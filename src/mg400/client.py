@@ -502,8 +502,11 @@ class RobotClient:
                     )
                     if result.get("result") not in success:
                         raise RobotClientError(result.get("message", "Command did not complete."))
-                    if state.get("stop_unconfirmed") or (
-                        state.get("locked") and action not in {"stop", "disable", "stop_sync"}
+                    # start_sync only takes the lease. A locked service still refuses
+                    # motion, and the new owner needs the lease to Recover.
+                    if action != "start_sync" and (
+                        state.get("stop_unconfirmed")
+                        or (state.get("locked") and action not in {"stop", "disable", "stop_sync"})
                     ):
                         raise RobotClientError("The service is locked; completion is not safe.")
                     if action == "start_sync" and not state.get("feedback_fresh"):

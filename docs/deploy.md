@@ -14,9 +14,11 @@
 | `/opt/mg400` | Git 工作副本和 Python 环境 `.venv`、可选的 `.venv-vision` | `root:1000`，`0750` |
 | `/etc/mg400/mg400.env` | 本主机的硬件配置 | `root:root`，`0600` |
 | `/etc/mg400/go2rtc.yaml` | 摄像头采集配置，由安装器生成 | `root:1000`，`0640` |
+| `/etc/mg400/Caddyfile` | 代理配置，由安装器生成 | `root:1000`，`0640` |
 | `/var/lib/mg400` | 运行数据的上级目录 | `root:1000`，`0750` |
 | `/var/lib/mg400/locks` | 机械臂连接锁 | `1000:1000`，`0700` |
 | `/var/lib/mg400/work` | 模式切换备份 | `1000:1000`，`0750` |
+| `/var/lib/mg400/camera` | 摄像头采集的工作目录，拍摄全分辨率单帧时存放临时的 `still.yaml` | `1000:1000`，`0700` |
 | `/var/lib/mg400/robot` | `tool.toml` 中的实测工具偏移与 `stations.toml` 中的示教工位，文件为 `0600` 或 `0640` | `1000:1000`，`0750` |
 | `/var/lib/mg400/vision` | 启用视觉服务时创建的数据目录 | `1000:1000`，`0750` |
 | `/var/lib/mg400/models` | 按资源清单安装的模型权重，文件权限为 `0640` 或 `0600` | `1000:1000`，`0750` |
@@ -30,6 +32,7 @@
 | `/var/lib/mg400/runs` | 编排器记录和显微镜运行输出，文件为 `0600` 或 `0640` | `1000:1000`，`0750` |
 | `/var/lib/mg400/zones` | 区域配置和保留占用，文件为 `0640` 或 `0600` | `1000:1000`，`0750` |
 | `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
+| `/usr/local/lib/mg400/caddy` | 代理程序 Caddy 2 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
 | `/usr/local/bin/mg400ctl` | 日常命令，链接到 `/opt/mg400/deploy/mg400ctl` | 无 |
 | `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
@@ -56,7 +59,7 @@
 
 - 主机运行 Linux 和 systemd。
 - `/usr/bin/python3` 为 Python 3.12 或更高版本。
-- 主机已安装 Git、`setpriv` 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+- 主机已安装 Git、`runuser`（util-linux）和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
 - 主机能访问 PyPI。`uv sync` 从 PyPI 下载依赖。
 - 主机有一个网口直连机械臂，地址为 `192.168.1.10/24`。
 - 该网口能连接机械臂的 TCP `29999`、`30003` 和 `30004`。
@@ -89,7 +92,7 @@
    /usr/bin/python3 /opt/mg400/deploy/install.py --caddy /path/to/caddy
    ```
 
-   首次安装时，`--caddy` 指定 Caddy 2 程序。之后安装器复用已安装的程序。
+   首次安装时必须用 `--caddy` 指定 Caddy 2 程序，因为 `proxy` 是必需服务。之后安装器复用已安装的程序。
    使用摄像头时，首次安装加 `--go2rtc <go2rtc 程序路径>`。
    使用 Toupcam 时，加 `--toupcam PATH`，指定下文说明的已校验库文件。
    加 `--dry-run` 时，安装器只列出步骤，不修改主机。
@@ -103,16 +106,18 @@
    同时检查服务清单、服务选择、所选单元和 udev 模板。
    如指定 `--toupcam`，检查源文件、目标路径和固定的 SHA-256。
    如指定资源或启用 `vision`，还检查资源清单、目标路径和本地文件。
-   启用 `microscope` 时，在 systemd 服务的默认 `PATH` 中查找 `ffmpeg` 和 `ffprobe`。配置了摄像头时，查找 `ffmpeg`。缺少时，只给出提示，继续安装。
+   检查代理配置和 Caddy 程序。
+   在 systemd 服务的默认 `PATH` 中查找显微镜使用的 `ffmpeg` 和 `ffprobe`。配置了摄像头时，查找 `ffmpeg`。缺少时，只给出提示，继续安装。
    检查不通过时，安装器不修改主机。
 2. 创建配置文件，或补全缺少的配置项。非空值保持不变。
    删除旧的服务 `*_TOKEN` 项，以及示例中没有的空项。
 3. 创建 `/var/lib/mg400` 下的目录。安装器拒绝其中的符号链接。
 4. 按服务清单运行 `uv sync`，只安装已启用服务的依赖组。
-   默认在 `/opt/mg400/.venv` 安装位移台和工具依赖。
+   `/opt/mg400/.venv` 含所有必需服务的依赖组。
 5. 安装指定的外部资源。启用 `vision` 时，同时安装必需的权重。先校验大小和 SHA-256，再原子替换目标。
 6. 配置了摄像头时，安装 go2rtc 并生成 `go2rtc.yaml`。未配置时，删除旧的 `go2rtc.yaml`。
    ffmpeg 能用 `h264_nvenc` 编码时，H.264 预览使用 NVENC，并另有 `hevc_nvenc` 编码的 H.265 预览；否则使用 `libx264`，没有 H.265 预览。
+   写入 `/etc/mg400/Caddyfile`。如指定 `--caddy`，安装 `/usr/local/lib/mg400/caddy`。
    如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
 8. 安装所选服务定义，重新加载 systemd。
@@ -163,7 +168,8 @@
 | `port` | 主 TCP 端口，0 表示无 TCP 端口 |
 | `assets` | 此服务拥有的资源清单名称 |
 
-`web`、`stage`、`camera`、`furnace` 和 `microscope` 始终为必需服务。
+`web`、`stage`、`camera`、`furnace`、`microscope`、`orch` 和 `proxy` 始终为必需服务。
+可选服务为 `vision` 和 `thermal`。
 `MG400_OPTIONAL_SERVICES` 接受清单中的服务名称，用逗号分隔。
 默认值为空。未知、重复或空项会使安装器拒绝安装。必需服务名称不起作用。
 可选服务 `thermal` 使用 `/opt/mg400/.venv` 中的 `thermal` 依赖组。
@@ -203,7 +209,7 @@
 
 安装器按 `venv` 合并已启用服务的 `groups`，每个环境只同步 1 次。
 同步显式使用 `--no-default-groups`，不安装项目的默认依赖组。
-必需服务使用 `stage` 和 `tools`，环境为 `/opt/mg400/.venv`。
+必需服务使用 `/opt/mg400/.venv` 中的 `tools`、`stage`、`furnace`、`microscope` 和 `orchestrator` 依赖组。
 选择 `.venv-vision` 的服务使用 `/opt/mg400/.venv-vision`。
 安装器显式设置 `UV_PROJECT_ENVIRONMENT`，不采用调用者指定的其他环境。
 
@@ -312,12 +318,13 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 显式模式列表覆盖这些默认值。数量、路径或模式无效时，安装器在修改主机前退出。
 只预加载宽度不超过 1280 且高度不超过 720 的流。更大的流按需启动。
 多台摄像头使用大于 `640x480` 的模式时，先安装 [USB 带宽补丁](olares.md#usb-带宽补丁)。
-修改设备或模式后，重新运行安装器，生成新的 `go2rtc.yaml`，再运行 `mg400ctl restart camera vision microscope orch`。
+修改设备或模式后，重新运行安装器，生成新的 `go2rtc.yaml`，再运行 `mg400ctl restart camera vision microscope orch`。未启用 `vision` 时，从命令中去掉 `vision`：`restart` 拒绝未启用的可选服务。
 允许的模式和托盘摄像头配置见[摄像头](olares.md#摄像头)。
 
 ## 日常命令
 
 以 root 身份运行 `mg400ctl`，例如 `sudo mg400ctl status`。
+配方命令 `run`、`rehearse`、`runs` 和 `station` 也可以由 UID/GID `1000` 直接运行，见[配方服务](orchestrator.md)。
 `labctl` 使用相同的参数和行为：
 
 | 命令 | 作用 |
@@ -325,14 +332,17 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
 | `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
 | `mg400ctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
-| `mg400ctl status` | 显示所有服务的状态 |
+| `mg400ctl status` | 显示已启用服务的状态 |
 | `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`proxy` 或 `all` |
-| `mg400ctl stop all` | 停止服务 |
-| `mg400ctl restart web` | 重启服务 |
+| `mg400ctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
+| `mg400ctl restart web` | 重启服务。重启炉控时可加 `--force` |
 | `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
 | `mg400ctl terminal` | 打开 [交互终端](terminal-control.md) |
 | `mg400ctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
-| `mg400ctl camera-url` | 为每台摄像头显示 1 个 `/camera/cameraN.mjpeg` 链接。启用 `proxy` 时，链接使用代理地址 |
+| `mg400ctl mode --switch-to-tcp` | 把控制器切换到 TCP/IP 模式 |
+| `mg400ctl calibration import microscope DIR` | 导入已有的显微镜校准数据，不覆盖已有文件，见[显微镜](microscope.md) |
+| `labctl run`、`labctl rehearse`、`labctl runs`、`labctl station` | 运行、演练和查看配方，管理工位，见[配方服务](orchestrator.md) |
+| `mg400ctl camera-url` | 为每台摄像头显示 1 个 `/camera/cameraN.mjpeg` 链接，链接使用代理地址 |
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 
 `gpu` 以 UID `1000` 运行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
@@ -346,7 +356,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 活动序列或冷却气体计划必须使用 `--force`。状态不可用、格式错误、断开或锁定时也必须使用 `--force`。
 使用 `mg400ctl stop furnace --force` 或 `mg400ctl restart furnace --force` 前，必须与所有客户端协调。
 强制关闭请求服务停止加热和气体。必须核对停止结果。检查仅作提示性保护：状态读取与 systemd 操作之间仍可能启动序列。
-检查使用配置的 IP 监听地址、端口和基础路径。它接受 `localhost`，将 `0.0.0.0` 映射为 `127.0.0.1`，将 `::` 映射为 `::1`。
+检查读取 `MG400_FURNACE_BIND`、`MG400_FURNACE_PORT` 和 `MG400_FURNACE_BASE_PATH`。未设置时，使用 `127.0.0.1`、`8769` 和 `/`。它接受 `localhost`，将 `0.0.0.0` 映射为 `127.0.0.1`，将 `::` 映射为 `::1`。
 检查不使用代理或重定向。
 套接字操作在 `2` s 后超时。每次收到数据块后检查 `2` s 的响应体截止时间。
 标头和传输分块格式读取使用套接字超时，因此这不是整个请求的总时限。
@@ -416,6 +426,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 | `/var/lib/mg400/runs/` | 运行文件和 SQLite 索引 |
 | `/var/lib/mg400/recordings/` | 归档前的炉视频 |
 | `/var/lib/mg400/work/` | 模式切换备份 |
+| `/var/lib/mg400/zones/` | 区域配置和保留占用 |
 
 安装器创建 `/var/lib/mg400/robot`，属主为 `1000:1000`，模式为 `0750`，用于工具和工位数据。
 若 `/var/lib/mg400/tool.toml` 或 `/var/lib/mg400/stations.toml` 存在，安装器只打印移动提示，不修改该文件。

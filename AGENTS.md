@@ -52,27 +52,28 @@ Read only the files that the task needs. The tests are larger than the code, so 
 
 | Area | Code | Tests | Doc |
 | --- | --- | --- | --- |
-| Arm motion, limits, protocol | `src/mg400/joint_control.py`, `joint_limits.py`, `controller_protocol.py`, `feedback.py`, `controller_alarms.py` | `test_joint_control.py`, `test_joint_limits.py`, `test_controller_protocol.py`, `test_feedback.py`, `test_controller_alarms.py` | [hardware.md](docs/hardware.md), [development.md](docs/development.md#真机控制参考) |
-| Keyboard jog | `src/mg400/keyboard_jog.py`, `web_keyboard.py` | `test_keyboard_jog.py`, `test_keyboard_movejog.py`, `test_web_keyboard*.py` | [control-panel.md](docs/control-panel.md#控制机械臂) |
+| Arm motion, limits, protocol | `src/mg400/joint_control.py`, `joint_limits.py`, `controller_protocol.py`, `feedback.py`, `controller_alarms.py`, `config.py` | `test_joint_control.py`, `test_joint_limits.py`, `test_controller_protocol.py`, `test_feedback.py`, `test_controller_alarms.py` | [hardware.md](docs/hardware.md), [development.md](docs/development.md#真机控制参考) |
+| Keyboard jog | `src/mg400/keyboard_jog.py`, `web_keyboard.py` | `test_keyboard_jog.py`, `test_keyboard_movejog.py`, `test_web_keyboard*.py` | [dashboard.md](docs/dashboard.md), [development.md](docs/development.md#运动命令与坐标缓存) |
 | Web panel service | `apps/control_panel/`, `src/mg400/web_control.py`, `websocket.py`, `controller_ownership.py`, `robot_config.py` | `test_control_panel*.py`, `test_web_control.py`, `test_websocket.py`, `test_robot_service_e2e.py`, `test_controller_ownership.py`, `test_robot_config.py` | [control-panel.md](docs/control-panel.md), [development.md](docs/development.md#机器人服务接口) |
 | Robot service Python client | `src/mg400/client.py` | `test_robot_client.py` | [development.md](docs/development.md#python-客户端) |
 | Vacuum suction | `src/mg400/suction.py`, `joint_control.py` (`vacuum`), `web_control.py` | `test_suction.py` | [development.md](docs/development.md#真空吸盘) |
-| Terminal | `src/mg400/terminal_control.py` | `test_terminal_control.py` | [terminal-control.md](docs/terminal-control.md) |
-| Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
+| Terminal | `src/mg400/terminal_control.py`, `scripts/mg400_robot.py` | `test_terminal_control.py` | [terminal-control.md](docs/terminal-control.md) |
+| Mode switch | `src/mg400/control_mode.py`, `scripts/mg400_control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
 | Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
-| Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py` | `test_deploy_install.py`, `test_camera_preview.py` | [olares.md](docs/olares.md#摄像头) |
-| Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
+| Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py` | `test_deploy_install.py`, `test_camera_preview.py`, `test_console_cameras.py` | [olares.md](docs/olares.md#摄像头) |
+| Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py`, `test_console.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
 | QR reader | `src/vision/qr.py`, `qr_micro.py` | `test_vision_qr*.py` | Module docstrings |
 | Simulator | `src/mg400/sim/` | `test_mg400_sim.py`, `sim_mg400.py`, `test_web_keyboard_integration.py`, `test_robot_service_e2e.py` | [development.md](docs/development.md#离线机器人模拟器) |
 | Vision localizer | `src/vision/localizer.py` | `test_vision_localizer.py` | Module docstrings |
 | Console screenshots | `scripts/console_shots.py` | `test_console_shots.py` | Module docstring |
+| Repository checks: CI test selection, doc pairs, file limits | `scripts/select_tests.py`, `scripts/check_doc_pairs.py` | `test_select_tests.py`, `test_doc_pairs.py`, `test_repo_files.py` | This section, [ADR 0007](docs/adr/0007-bilingual-documentation.en.md), [ADR 0004](docs/adr/0004-large-files-and-assets.en.md) |
 | Agent coordination signals | `scripts/agent_signal.py`, `.claude/settings.json` | `test_agent_signal.py` | [coordinator.md](docs/agents/coordinator.md) |
 | Detector evaluation | `scripts/vision_eval.py` | `test_vision_eval.py` | [vision.md](docs/vision.md#检测模型评估) |
-| Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md) |
-| Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py` | [vision.md](docs/vision.md) |
-| Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md) |
-| Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/` | `test_vision_tray.py` | [vision.md](docs/vision.md) |
+| Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md#路由与命令) |
+| Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py`, `test_orchestrator_rehearsal.py` | [vision.md](docs/vision.md#相机到机器人校准) |
+| Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md#校准漂移检查) |
+| Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/`, `src/vision/service.py` (`observe_slots`), `src/orchestrator/skills/vision.py` | `test_vision_tray.py`, `test_recipe_tray_transfer.py` | [vision.md](docs/vision.md#托盘几何与交叉检查) |
 | Thermal camera | `src/thermal_cam/` | `test_thermal_*.py` | [thermal.md](docs/thermal.md) |
 | Toupcam capture and recording | `src/toupcam_camera/camera.py`, `capture.py` | `test_toupcam_camera.py` | Module docstrings; keep vendor `toupcam.py` unchanged |
 | Furnace and gas drivers | `src/furnace/controller.py`, `config.py` | `test_furnace_controller.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |

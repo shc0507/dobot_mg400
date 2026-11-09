@@ -21,6 +21,7 @@ Use contract version 1. Paths are relative to the configured service base path.
 | `POST api/command` | Body `{"action": "...", ...}`. Return `202` with `{command_id, state}`. Completion appears in `state.last_command`. |
 | `POST api/stop` | Body `{"wait_s": 0..15}`. Return `{stop, state}`, with `stop` equal to `confirmed`, `pending`, or `unconfirmed`. Any client may stop at any time. Repeated requests are safe. |
 | `POST api/heartbeat` | Acquire or renew the caller's lease. Return `409` when another client holds it. |
+| `POST api/renew` | Renew only an unexpired lease that the caller holds. Otherwise, return `409`. |
 | `POST api/release` | Release the lease only when the caller holds it. |
 | `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`. These events also enter the service journal. |
 | `GET api/ws` | Optional state push with robot protocol 1. |

@@ -30,9 +30,12 @@
 1. 点击 `Take control`，等待实测坐标。
 2. 点击 `Enable`，使能机械臂。
 3. 选择移动方式：
-   - 点动：选择步长 0.5、2 或 10，再点击方向按钮。
-   - 移动到位姿：点击 `Use actual`，修改 X/Y/Z（mm）和 R（度），设置速度，再点击 `Execute ↗`。
-4. 结束时，点击 `Disable`，再点击 `Release`。
+   - 键盘点动：打开 `Keyboard jog`，按住按键移动。按键和速度见 [Lab Console](dashboard.md)。
+   - 点动按钮：展开 `Jog buttons`，选择步长 0.5、2 或 10，再点击方向按钮。
+   - 移动到位姿：点击 `Use actual`，修改 X/Y/Z（mm）和 R（度），设置速度，再点击 `Execute`。
+   - 复位：点击 `Home…` 并确认，J1–J4 移动到 0°。
+4. 点击 `Stop arm` 可随时停止机械臂。
+5. 结束时，点击 `Release`。
 
 每次点动在一个轴上把实测位姿加 1 个步长。X/Y/Z 的步长单位为 mm，R 为度。
 坐标使用基座坐标系和法兰原点（`User=0,Tool=0`）。
@@ -56,7 +59,7 @@
 
 ## 控制吸盘
 
-[实验室控制台](dashboard.md)的运动页有 **Suck** 和 **Drop**（`release`）。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
+[实验室控制台](dashboard.md)的 Motion 工作区有 **Suck** 和 **Drop**（`release`）。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
 
 ```python
 client.run("vacuum", operation="suck")
@@ -72,18 +75,23 @@ client.run("vacuum", operation="suck")
 它请求受控停止，不是物理急停。
 若停止或命令结果无法确认，使用现场物理急停。
 
-正常结束时，先点击 `Disable`，再点击 `Release`。
-机械臂仍使能时，`Release`（`stop_sync`）停止机械臂并释放控制权，但保留反馈连接和控制锁。
-服务不会自动下使能。
-此时再次点击 `Take control`，会取消待完成的断开请求。然后点击 `Disable`，再点击 `Release`。
+控制台的 `Release` 先发送 `disable`，最多等待 12 秒，再发送 `stop_sync`。
+控制台页面 3 秒内未发出心跳时，控制台用同样的顺序释放控制权。
 服务确认下使能模式 4 和停稳后，才断开反馈并解锁。
+若机械臂原已下使能且空闲，确认模式 4 即可。可以手动移动已下使能的机械臂，`Disable` 或 `Release` 不会锁定控制。
 过期反馈不能确认停止。若服务报告停止未确认，使用现场物理急停。
 若服务在短暂反馈中断期间未记录停止未确认，新鲜反馈恢复后，服务可确认新发出的 `disable` 请求。
-若反馈读取器失效，停止状态保持未确认，连接锁保留。
 
+若反馈读取器失效，停止状态保持未确认，连接锁保留。
+反馈读取器不会重新启动，`Recover` 和 `Clear alarm` 都需要新鲜反馈。
+此时核实机械臂状态，再运行 `sudo mg400ctl restart web`。
+
+直接连接服务的客户端（例如 `RobotClient` 和交互终端）发送 `stop_sync` 时，服务不自动下使能。
+机械臂仍使能时，`stop_sync` 停止机械臂并释放控制权，但保留反馈连接和控制锁。
+此时客户端再次发送 `start_sync`，会取消待完成的断开请求。然后发送 `disable`，再发送 `stop_sync`。
+机械臂已下使能时，`stop_sync` 确认下使能，然后断开。
 `RobotClient` 的 `with` 块结束时，若客户端持有控制权，会发送 `stop_sync`。
 停止获确认后，显式发送 `disable` 即可完成断开，无须重启服务。
-机械臂已下使能时，`stop_sync` 确认下使能和停稳，然后断开。
 
 同一时刻只有一个客户端持有控制权。
 持有者 3 秒内未续租时，服务请求停止机械臂并锁定控制。
@@ -133,7 +141,7 @@ client.run("vacuum", operation="suck")
 
 无报警时发生的停止未确认显示警告，按钮显示 `Recover`。
 核实机械臂状态，再点击 `Recover`。服务在新的控制实例上下使能、确认静止并清除警告。
-不需要重启服务。
+除反馈读取器失效外，不需要重启服务。
 停止未确认期间，服务消息提示恢复方法，之后的成功停止不覆盖此提示。
 
 ### 控制器不在 TCP/IP 模式
@@ -185,8 +193,11 @@ sudo mg400ctl status
 在本地启动时，在能访问机械臂的主机进入项目目录，运行：
 
 ```sh
-python3 apps/control_panel/server.py
+MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 apps/control_panel/server.py
 ```
+
+`MG400_CONTROLLER_LOCK_DIR` 设置连接锁目录，未设置时为 `/tmp/mg400-controller-locks`。
+其他程序使用 `/var/lib/mg400/locks` 时，本地服务必须设置同一目录，否则不能与它们互斥。
 
 省略 `--mode` 时，服务使用 `robot` 模式。
 机械臂地址默认取自 `MG400_ROBOT_HOST`，未设置时取自 `config/robot.toml`，可用 `--robot-host` 指定。
@@ -194,7 +205,9 @@ python3 apps/control_panel/server.py
 停止服务时，服务最长用约 60 秒确认机械臂停止。
 服务定义的 `TimeoutStopSec` 为 90 秒，大于此时间。
 
-服务监听 `127.0.0.1:8766`。`--bind` 和 `--port` 覆盖此固定默认值。
+服务默认监听 `127.0.0.1:8766`。
+`MG400_PANEL_BIND` 和 `MG400_PANEL_PORT` 覆盖默认值，`--bind` 和 `--port` 再覆盖环境变量。
+空值使用默认值。端口不是 1–65535 的整数时，服务拒绝启动。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 路径前缀用 `--base-path` 设置，例如 `--base-path /mg400-panel/`，所有接口都使用此前缀。

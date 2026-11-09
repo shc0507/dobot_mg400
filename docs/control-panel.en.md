@@ -30,9 +30,12 @@ On the robot card of the Motion workspace, use this sequence:
 1. Click `Take control` and wait for measured coordinates.
 2. Click `Enable` to enable the robot.
 3. Select a movement method:
-   - Jog: select the step 0.5, 2, or 10, then click a direction button.
-   - Move to a pose: click `Use actual`, change X/Y/Z (mm) and R (degrees), set the speed, then click `Execute ↗`.
-4. When you finish, click `Disable`, then `Release`.
+   - Keyboard jog: turn on `Keyboard jog`, then hold a key to move. See [Lab Console](dashboard.en.md) for the keys and the speed.
+   - Jog buttons: open `Jog buttons`, select the step 0.5, 2, or 10, then click a direction button.
+   - Move to a pose: click `Use actual`, change X/Y/Z (mm) and R (degrees), set the speed, then click `Execute`.
+   - Home: click `Home…` and confirm. J1–J4 move to 0°.
+4. Click `Stop arm` to stop the robot at any time.
+5. When you finish, click `Release`.
 
 Each jog adds 1 step on one axis to the measured pose. The step unit is mm for X/Y/Z and degrees for R.
 Coordinates use the base frame and flange origin (`User=0,Tool=0`).
@@ -56,7 +59,7 @@ An operator must validate speeds above 1 on hardware before unattended transfers
 
 ## Control the suction cup
 
-The Motion page of the [Lab Console](dashboard.en.md) has **Suck** and **Drop** (`release`). In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example the [Python client](development.en.md#python-client):
+The Motion workspace of the [Lab Console](dashboard.en.md) has **Suck** and **Drop** (`release`). In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example the [Python client](development.en.md#python-client):
 
 ```python
 client.run("vacuum", operation="suck")
@@ -72,18 +75,23 @@ Stop and disable end the blow. They keep the suck output.
 It requests a controlled stop. It is not a physical emergency stop.
 If a stop or command result cannot be confirmed, use the physical emergency stop on site.
 
-When you finish normally, click `Disable` first, then `Release`.
-If the robot is enabled, `Release` (`stop_sync`) stops it and releases control, but keeps feedback connected and control locked.
-The service does not disable the robot automatically.
-Click `Take control` again to cancel the pending disconnect. Then click `Disable`, then `Release`.
+The console `Release` sends `disable` first and waits up to 12 seconds. Then it sends `stop_sync`.
+If the console page sends no heartbeat within 3 seconds, the console releases control in the same sequence.
 The service disconnects feedback and unlocks control only after it confirms disabled mode 4 and rest.
+If the robot was already disabled and idle, disabled mode 4 is sufficient. You can move a disabled arm by hand, and a `Disable` or `Release` does not lock control.
 Stale feedback cannot confirm a stop. If the service reports an unconfirmed stop, use the physical emergency stop on site.
 If the service recorded no unconfirmed stop during a brief feedback gap, fresh feedback lets it confirm a new explicit `disable` request.
-If the feedback reader fails, the stop stays unconfirmed and the connection lock stays held.
 
+If the feedback reader fails, the stop stays unconfirmed and the connection lock stays held.
+The feedback reader does not start again. `Recover` and `Clear alarm` both need fresh feedback.
+In this case, check the robot state, then run `sudo mg400ctl restart web`.
+
+For clients that connect directly to the service, such as `RobotClient` and the interactive terminal, `stop_sync` does not disable the robot.
+If the robot is enabled, `stop_sync` stops it and releases control, but keeps feedback connected and control locked.
+The client can send `start_sync` again to cancel the pending disconnect. Then it sends `disable`, then `stop_sync`.
+If the robot is already disabled, `stop_sync` confirms disable, then disconnects.
 When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control.
 After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.
-If the robot is already disabled, `stop_sync` confirms disable and rest, then disconnects.
 
 Only one client holds control at a time.
 If the holder does not renew within 3 seconds, the service requests a robot stop and locks control.
@@ -133,7 +141,7 @@ The service disables the robot through a new control instance and confirms that 
 
 An unconfirmed stop without an alarm shows a warning, and the button reads `Recover`.
 Check the robot state, then click `Recover`. The service disables the robot through a new control instance, confirms that it is stationary, and clears the warning.
-A service restart is not necessary.
+A service restart is not necessary, except after a feedback reader failure.
 While a stop is unconfirmed, the service message shows the recovery procedure. A later successful stop does not replace this message.
 
 ### Controller not in TCP/IP mode
@@ -185,8 +193,11 @@ sudo mg400ctl status
 For a local start, enter the project directory on a host that can reach the robot and run:
 
 ```sh
-python3 apps/control_panel/server.py
+MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 apps/control_panel/server.py
 ```
+
+`MG400_CONTROLLER_LOCK_DIR` sets the connection lock directory. If it is unset, the directory is `/tmp/mg400-controller-locks`.
+If other programs use `/var/lib/mg400/locks`, the local service must set the same directory. Otherwise it cannot exclude them.
 
 If you omit `--mode`, the service uses `robot` mode.
 The robot address defaults to `MG400_ROBOT_HOST`, or to `config/robot.toml` if that variable is unset. Use `--robot-host` to specify it.
@@ -194,7 +205,9 @@ The robot address defaults to `MG400_ROBOT_HOST`, or to `config/robot.toml` if t
 During service shutdown, the service can take about 60 seconds to confirm that the robot stopped.
 The service's `TimeoutStopSec` is 90 seconds, which is longer than this interval.
 
-The service listens on `127.0.0.1:8766`. `--bind` and `--port` override this fixed default.
+By default, the service listens on `127.0.0.1:8766`.
+`MG400_PANEL_BIND` and `MG400_PANEL_PORT` override the default. `--bind` and `--port` override the environment variables.
+Empty values use the default. If the port is not an integer from 1–65535, the service does not start.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 Set the path prefix with `--base-path`, for example `--base-path /mg400-panel/`. All interface routes use this prefix.

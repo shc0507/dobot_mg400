@@ -28,11 +28,12 @@ uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-run
 
 The `orch` service runs `python -m orchestrator serve` with Flask and waitress.
 Install it through the [service registry](deploy.en.md#service-registry). It uses no device groups and starts no recipe automatically.
-The existing `run`, `rehearse`, `runs`, and `station` commands remain available.
+The CLI commands above run without the service.
 
 The service listens on `127.0.0.1:8772`. The installed unit sets the base path `/lab/`, which the proxy serves. The console control socket listens on `127.0.0.1:8774`, and the proxy forwards `/lab/api/console/socket` to it. If that port is in use, the service logs a warning and starts without the socket, and pages use HTTP.
 It reads the recipe catalog from `/opt/mg400/recipes`.
 The flags `--bind`, `--port`, `--base-path`, `--recipes-dir`, and `--runs-dir` override these defaults.
+Without a flag, the first 4 use the nonempty values of `MG400_ORCH_BIND`, `MG400_ORCH_PORT`, `MG400_ORCH_BASE_PATH`, and `MG400_ORCH_RECIPES_DIR`. Without `--runs-dir`, the service uses `MG400_ORCH_RUNS_DIR`. The installed unit sets `MG400_ORCH_BASE_PATH=/lab/`.
 
 POST requests require `Content-Type: application/json` and `X-MG400-Client` with a stable caller identity.
 Acquire and renew the frontend lease through `/api/heartbeat`. All custom mutation routes below require that lease.
@@ -53,9 +54,13 @@ The following paths are relative to the configured base path:
 | `POST /api/runs/<id>/recovery/confirm` | Confirm `physically_clear: true` and a nonempty `note` |
 | `POST /api/runs/<id>/recovery/abort` | Cancel recovery with an empty object |
 
+A recipe identifier is the file name in the catalog without `.toml`, in the format `[A-Za-z0-9][A-Za-z0-9_-]{0,95}`. A recipe file must be a regular file of at most 256 KiB. The catalog holds at most 256 recipes, and its path must not contain symbolic links. A `note` has at most 2000 characters.
+
 Mutations return `202` and a `command_id` after admission. Poll `/api/state` and `/api/runs/<id>` for the asynchronous outcome.
 Admission does not prove completion. Only 1 run or recovery session can be active.
 The complete recipe and its required zone services are validated before device leases are acquired.
+
+The contract route `POST /api/command` accepts `hold` and `abort` with an empty object. `hold` holds the active run and cancels recovery. `abort` aborts the active run. `/api/stop` accepts `wait_s` from 0 to 15 and returns `confirmed`, `unconfirmed`, or `pending`. For the console and dashboard routes, see the [Lab Console](dashboard.en.md).
 
 Live resumption uses the manual-completion and drain checks described below. It advances to the next step without replaying the failed step.
 Recovery of an ended run is separate. Its first request creates fresh client identities and holds the required leases during manual checks.
@@ -99,7 +104,7 @@ timeout_s = 1
 on_fail = "hold"
 ```
 
-A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter without a default requires an override. `${chip_id}` substitutes the complete parameter value and preserves its type. Each step requires `skill`, `params`, and a positive finite `timeout_s`. `on_fail` defaults to `hold` and also accepts `abort`.
+The recipe top level must contain exactly `name`, `version`, `params`, and `steps`. `version` must be `1`. A recipe without parameters uses `params = {}`. A parameter name has the format `[A-Za-z_][A-Za-z0-9_]*`. A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter without a default requires an override. `${chip_id}` substitutes the complete parameter value and preserves its type. Each step requires `skill`, `params`, and a positive finite `timeout_s`, with optional `on_fail` and `zone`. `on_fail` defaults to `hold`: the run holds and waits for a person. `abort` aborts the run after the stop.
 
 | Skill | Parameters | Service |
 | --- | --- | --- |
@@ -108,14 +113,18 @@ A parameter type is `string`, `integer`, `number`, or `boolean`. A parameter wit
 | `robot.enable` | None | Robot |
 | `robot.move` | `x_mm`, `y_mm`, `z_mm`, `r_deg` | Robot |
 | `robot.stop` | None | Robot |
-| `robot.pick` | `station` | Robot |
-| `robot.place` | `station` | Robot |
-| `robot.transfer` | `from`, `to` | Robot |
+| `robot.pick` | `station`, optional `speed` | Robot |
+| `robot.place` | `station`, optional `speed` | Robot |
+| `robot.transfer` | `from`, `to`, optional `speed` | Robot |
+| `vision.check_calibration` | `camera` | Robot, vision |
+| `vision.calibrate` | See [vision](vision.en.md) | Robot, vision |
 | `vision.find_chip` | `slot` | Robot, vision |
 | `vision.slot_state` | `slot` | Robot, vision |
+| `vision.pick_chip` | `slot`, optional `speed` | Robot, vision |
 | `vision.tray_transfer` | `from_slot`, `to_slot`, optional `speed` | Robot, vision |
-| `crucible.load` | `from_slot`, optional limits below | Robot, stage, furnace |
-| `crucible.unload` | `to_slot`, optional limits below | Robot, stage, furnace, thermal |
+| `crucible.load` | `from_slot`, optional limits below and `speed` | Robot, stage, furnace |
+| `crucible.unload` | `to_slot`, optional limits below and `speed` | Robot, stage, furnace, thermal |
+| `microscope.record` | `chip_id`, `seconds`, optional `run_name`, `mode` | Microscope |
 | `sample.record` | `chip_id`, `note` | None |
 
 The example in `recipes/example-rehearsal.toml` enables the simulated robot, moves it, records a sample, and stops it. It contains no gas or heating command. Custom skills receive a revocable context with service clients, run records, and the zone manager. Named zone entry requires explicit configuration and checks the configured entry conditions.
@@ -124,20 +133,20 @@ The example in `recipes/example-rehearsal.toml` enables the simulated robot, mov
 
 Each run uses a unique client identity. The runner checks all required service contracts before acquiring the first lease. It renews existing leases without an acquisition fallback. A lost lease holds the run and cannot be resumed through automatic reacquisition.
 
-These values are fixed defaults:
+These are the defaults. A nonempty setting overrides its default:
 
-| Item | Fixed default |
-| --- | --- |
-| Record directory | `/var/lib/mg400/runs` |
-| Client timeout | `2` s |
-| Zone configuration | `/var/lib/mg400/zones/config.toml` |
-| Durable occupancy | `/var/lib/mg400/zones/occupancy.json` |
-| Robot | `http://127.0.0.1:8766/` |
-| Stage contract | `http://127.0.0.1:8767/contract/` |
-| Thermal | `http://127.0.0.1:8768/` |
-| Furnace | `http://127.0.0.1:8769/` |
-| Microscope | `http://127.0.0.1:8770/` |
-| Vision | `http://127.0.0.1:8771/` |
+| Item | Setting | Default |
+| --- | --- | --- |
+| Record directory | `MG400_ORCH_RUNS_DIR` | `/var/lib/mg400/runs` |
+| Client timeout | `MG400_ORCH_TIMEOUT_S` | `2` s |
+| Zone configuration | `MG400_ORCH_ZONES_FILE` | `/var/lib/mg400/zones/config.toml` |
+| Durable occupancy | `MG400_ORCH_ZONE_STATE_FILE` | `/var/lib/mg400/zones/occupancy.json` |
+| `robot` | `MG400_ORCH_ROBOT_URL` | `http://127.0.0.1:8766/` |
+| `stage` | `MG400_ORCH_STAGE_URL` | `http://127.0.0.1:8767/contract/` |
+| `thermal` | `MG400_ORCH_THERMAL_URL` | `http://127.0.0.1:8768/` |
+| `furnace` | `MG400_ORCH_FURNACE_URL` | `http://127.0.0.1:8769/` |
+| `microscope` | `MG400_ORCH_MICROSCOPE_URL` | `http://127.0.0.1:8770/` |
+| `vision` | `MG400_ORCH_VISION_URL` | `http://127.0.0.1:8771/` |
 
 The services do not check tokens. Service adapters connect directly and do not use proxy settings. See the [service contract](adr/0001-instrument-service-contract.en.md).
 
@@ -149,17 +158,12 @@ A second holder waits for release and fails after its timeout.
 Zone waits cannot exceed the remaining step deadline. A custom zone context can request a shorter timeout.
 Missing configuration or an unknown zone prevents entry. There is no fallback that skips zone checks.
 
-The operator must prepare the private host directory before using the installed orchestrator:
-
-```sh
-sudo install -d -m 0750 -o 1000 -g 1000 /var/lib/mg400/zones
-```
-
+The installer creates `/var/lib/mg400/zones` with owner `1000:1000` and mode `0750`.
+If the default configuration file does not exist, the configuration has no zones: recipes without `zone` run, and every zone entry is refused.
 Save the configuration as `/var/lib/mg400/zones/config.toml`, owned by `1000:1000`, with mode `0640`.
 For local paths, the parent directory must belong to the caller and use mode `0700` or `0750`.
 Config and occupancy reads accept only regular files with mode `0600` or `0640` and the required owner.
 The store refuses unsafe parents and symbolic links in all path components. It atomically writes occupancy in the existing owned directory.
-The installer does not prepare this directory. Agents must not execute the host preparation command.
 All hardware runs controlling the same equipment must use the same configuration and occupancy paths.
 
 Storage contention waits at most 2 seconds, within the remaining step deadline. Threads of one process queue for the storage, and a stop or revocation cancels the wait. Device stop commands are sent before any zone-storage write.
@@ -183,12 +187,13 @@ owner = "stage"
 conditions = ["robot_clear"]
 ```
 
-Custom zone names also require an explicit owner and conditions. Owners use the service names in the settings table above.
+Custom zone names also require an explicit owner and conditions. Owners use the service names in the settings table above: `robot`, `stage`, `thermal`, `furnace`, `microscope`, or `vision`.
 Names contain 1 to 64 letters, digits, underscores, or hyphens and start with a letter or digit.
 Unknown fields, unknown conditions, and repeated conditions are refused.
 The reserved `crucible-load` zone requires the robot owner and `stage_at_load`.
 The reserved `furnace-tube` zone requires the stage owner and `robot_clear`.
 The robot cannot hold it. Do not send the robot beneath the microscope.
+`crucible-load` and `furnace-tube` cannot be occupied at the same time. While `crucible-load` is occupied, the stage accepts no action. While another run retains a claim on a device, this run cannot operate that device.
 These ownership checks do not prove that arbitrary `robot.move` commands avoid the microscope.
 Operator-verified routes and workspace limits remain required.
 
@@ -218,7 +223,8 @@ A transient guard failure with no claim held by the current run can resume throu
 This clears only the transient error. It does not clear another run's claims or replay the failed step.
 Recovery never reacquires a lost lease.
 
-Claims from an earlier process also require audited recovery with already-owned clients. There is no installed recovery command.
+Claims from an earlier process also require audited recovery with already-owned clients.
+The installed service provides this recovery at `POST /api/runs/<id>/recovery` and `/recovery/confirm`. It clears the claims that the run retains in the service run store. See [HTTP service](#http-service). If the holder is not in that run store, use the Python API below.
 Do not delete or replace the occupancy file to clear a claim.
 
 ### Recover claims from an exited process
@@ -286,9 +292,11 @@ The operator must supply the measured offset from H-08 in `/var/lib/mg400/robot/
 
 The conversion rotates `(dx, dy)` by the flange angle R, then adds the result to flange XY. Fingertip Z equals flange Z minus dz. The inverse conversion subtracts the rotated XY offset and adds dz. Both conversions preserve R, including its sign and complete turns.
 
-The tool file is `MG400_ORCH_TOOL_FILE`, default `/var/lib/mg400/robot/tool.toml`. The station file is `/var/lib/mg400/robot/stations.toml`.
+The tool file is `MG400_ORCH_TOOL_FILE`, default `/var/lib/mg400/robot/tool.toml`. The station file is `MG400_ORCH_STATIONS_FILE`, default `/var/lib/mg400/robot/stations.toml`.
 
-Station teaching and the station, tray, and crucible transfers below are postponed work. Their code needs measured inputs that the host configuration does not provide, so these commands and steps refuse on the host.
+8 settings define the fingertip workspace: `MG400_ORCH_X_MIN_MM`, `MG400_ORCH_X_MAX_MM`, `MG400_ORCH_Y_MIN_MM`, `MG400_ORCH_Y_MAX_MM`, `MG400_ORCH_Z_MIN_MM`, `MG400_ORCH_Z_MAX_MM`, `MG400_ORCH_R_MIN_DEG`, and `MG400_ORCH_R_MAX_DEG`. They have no defaults. Each must be a finite number, and each minimum must be less than its maximum. Every station must be inside the bounds, and its approach height must not exceed the Z maximum.
+
+All station commands, and the station, tray, pick, and crucible steps below, need these bounds, `tool.toml`, and taught stations. If one is missing, the command or step refuses.
 
 An operator first positions the robot in the Motion workspace of the Lab Console. The console, or another controller, must retain control while teaching. Teaching requires fresh measured feedback, an idle robot, no lock, and no unconfirmed stop. The teaching command reads discovery and state only. It never acquires or releases a lease, changes controller tools, or sends motion.
 
@@ -355,7 +363,7 @@ Each leg rises only at its starting station, to that station's approach. It foll
 
 A pick descends, then sends `vacuum suck`. Suction must be off before a pick. With suction on, it rises to that station's approach. A place requires suction on. It descends, sends `vacuum release` (a short blow, then off), and rises to that station's approach. Before and after each move, the state check verifies the measured suck and blow outputs: suck must be on while the cup carries a part and off otherwise, and blow must be off.
 
-When a vacuum switch is installed and `GRIP_DI` is set, `vacuum.held` in the robot state reports whether the cup holds a part. If `held` does not become true within 1 second after suck, the skill sends `vacuum release` and fails. If `held` becomes `false` while the cup carries a part, the part dropped and the run holds. If `held` does not become `false` within 1 second after a place, the skill fails. While `GRIP_DI` is not set, `held` is `null` and the skill cannot confirm that the cup holds a part.
+When a vacuum switch is installed and `GRIP_DI` is set in `src/mg400/suction.py` (default `None`), `vacuum.held` in the robot state reports whether the cup holds a part. If `held` does not become true within 1 second after suck, the skill sends `vacuum release` and fails. If `held` becomes `false` while the cup carries a part, the part dropped and the run holds. If `held` does not become `false` within 1 second after a place, the skill fails. While `GRIP_DI` is not set, `held` is `null` and the skill cannot confirm that the cup holds a part.
 
 `robot.pick`, `robot.place`, and `robot.transfer` accept `speed`, an integer with default 1. The permitted range is 1 through the robot service's advertised `MG400_ROBOT_MAX_SPEED_L` cap, which is at most 100. Invalid values or an invalid advertised cap refuse the step before motion. All moves use `execute`, and the robot service still enforces its speed and acceleration caps. The controller remains at `User=0,Tool=0`.
 
@@ -373,7 +381,18 @@ It requires a chip at the source and an empty target before motion.
 After placement, it requires a chip at the target and an empty source.
 Missing or ambiguous evidence, a part that is not held, a drop, or failed calibration holds the run.
 
-The step needs measured inputs with no hardware defaults: a tray-model TOML file of at most 16 KiB, the calibrated tray camera from 1 to 4, the chip axis `long` or `short`, and a flange R offset and window narrower than 180 degrees.
+The step needs measured inputs with no hardware defaults:
+
+| Setting | Requirement |
+| --- | --- |
+| `MG400_ORCH_TRAY_FILE` | Tray-model TOML file of at most 16 KiB |
+| `MG400_ORCH_TRAY_CAMERA` | Calibrated tray camera from 1 to 4 |
+| `MG400_ORCH_CHIP_AXIS` | Chip axis `long` or `short` |
+| `MG400_ORCH_CHIP_R_OFFSET_DEG` | Flange R offset |
+| `MG400_ORCH_CHIP_R_MIN_DEG`, `MG400_ORCH_CHIP_R_MAX_DEG` | Permitted flange R window, wider than 0 and narrower than 180 degrees |
+
+The drift check limit is `MG400_ORCH_DRIFT_LIMIT_PX`, default 3 px. The setting can only lower the limit. Its value is greater than 0 and at most 3.
+
 Symbolic links, nonregular files, multiple hard links, and concurrent changes of the tray file refuse the step.
 The station-transfer inputs also remain required.
 Teach an actual pick or place target for each exact slot ID.
@@ -421,7 +440,7 @@ Replace both placeholders with exact taught slot IDs. Keep the operator at the e
 
 - XY is the calibrated chip center that the step observes.
 - Z, R, approach, zone and route come from 1 taught station named `tray`. Teach it with the cup tip on the top of a chip in the tray.
-- The step needs no slot stations and no `CHIP_AXIS` or `CHIP_R_*` settings. It needs `MG400_ORCH_TRAY_FILE` and `MG400_ORCH_TRAY_CAMERA`.
+- The step needs no slot stations and no `MG400_ORCH_CHIP_AXIS` or `MG400_ORCH_CHIP_R_*` settings. It needs `MG400_ORCH_TRAY_FILE` and `MG400_ORCH_TRAY_CAMERA`.
 
 Before the pick, the step does a calibration drift check and 1 slot observation. The slot must contain 1 chip. Missing or ambiguous evidence holds the run before motion. The robot must start at 1 taught station or its approach, inside the calibrated grid. The step does not check the slot after the pick, because the arm hides it.
 
@@ -433,11 +452,13 @@ uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'
 
 `crucible.load` moves a chip from a taught tray station to `crucible-load`, then inserts the crucible.
 `crucible.unload` withdraws the crucible, waits for a cold named thermal region, then transfers the chip to a taught tray station.
-The tray station must differ from `crucible-load`. That station must use zone `crucible-load`.
+A taught station named `crucible-load` must exist, with zone `crucible-load`. The tray station must differ from `crucible-load`.
+Every station zone on the routes must belong to the robot. The zone configuration must define `crucible-load` (robot owner, `stage_at_load`) and `furnace-tube` (stage owner, `robot_clear`).
 Do not declare the entire composite step with `zone = "crucible-load"`. Its robot phase releases that zone before Insert can move.
 
-Supply these values as typed recipe parameters. The default value `-1` means unset.
-It is never a safety limit. Missing, nonfinite, or invalid values refuse the step before any command.
+Supply these values as typed recipe parameters. The default value `-1` means unset. It is never a safety limit.
+For an unset parameter, the step reads its host setting: `MG400_ORCH_CRUCIBLE_LOAD_MAX_C`, `MG400_ORCH_CRUCIBLE_UNLOAD_MAX_C`, `MG400_ORCH_CRUCIBLE_AWAKE_S`, or `MG400_ORCH_CRUCIBLE_MAX_AGE_S`.
+If both are missing, nonfinite, or invalid, the step refuses before any command.
 
 | Parameter | Requirement |
 | --- | --- |
@@ -490,15 +511,16 @@ Software checks do not establish physical clearance. The operator must verify th
 
 ## Rehearsal and installed commands
 
-Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its robot service `apps/control_panel/`. Demo factories cover the robot, stage, thermal camera, and furnace. Unsupported required services fail before the run starts.
+Rehearsal creates and owns demo services on numeric loopback addresses. It checks `demo = true` and closes its services after the run terminates. It removes production device settings, proxy settings, and Python environment overrides. Robot rehearsal requires the repository checkout with its robot service `apps/control_panel/`. Demo factories cover the robot, stage, thermal camera, furnace, and vision, but not the microscope. Unsupported required services fail before the run starts.
 
-Transfer rehearsal retains the explicit station inputs and the zone configuration path. The documented configuration path defaults still apply. Files must contain valid geometry and named zone definitions. Rehearsal does not invent an offset, workspace, or zone configuration. It resolves condition services before creating demos. Its occupancy file belongs to the temporary rehearsal directory.
+From the environment, rehearsal keeps only the zone configuration, workspace, station, tool, tray, chip, crucible, and drift settings. Transfer rehearsal retains the explicit station inputs and the zone configuration path. The documented configuration path defaults still apply. Files must contain valid geometry and named zone definitions. Rehearsal does not invent an offset, workspace, or zone configuration. It resolves condition services before creating demos. Its occupancy file belongs to the temporary rehearsal directory.
 
 The suction-cup outputs come from the temporary SIM-01 simulator. The simulator answers `DOExecute` and reports the DO bits in its feedback.
 
 The simulator has no vacuum switch, so `held` is `null`. The tray rehearsal scene removes the chip when suction starts at a taught slot and puts it down when the cup releases at a taught slot. Offline tests use a fake robot with `held` to check the not-held and drop paths. Rehearsal does not establish physical clearance or prove a real suction pick.
+When `MG400_ORCH_TRAY_FILE` is set, tray rehearsal accepts only the built-in synthetic tray document and refuses a real tray file.
 
-Crucible rehearsal preserves the explicit safety inputs above. It can read named-region data for its owned thermal demo.
+Crucible rehearsal preserves the explicit safety inputs above. It reads named-region data for its owned thermal demo from `MG400_ORCH_CRUCIBLE_ROIS_FILE`.
 Without that data, it defines no thermal regions. It never selects a real camera, production furnace, or device path.
 The demo stage starts without a home reference. Offline tests explicitly home their owned simulator and supply contact feedback.
 The furnace demo owns its serial simulators and temporary state. Crucible skills send no heat or gas command.
@@ -509,4 +531,4 @@ When root invokes a recipe or station command, the dispatcher uses `runuser --pt
 
 Root rehearsal does not read the host settings file. It receives the `MG400_*` settings from the caller's environment and no fixed service URL.
 
-A direct installed invocation requires real and effective UID/GID 1000. It uses the caller's environment settings and never reads the root settings file. Local `uv run labctl` uses the developer's identity. Use `--runs-dir` for a local writable directory.
+A direct installed invocation requires real and effective UID/GID 1000. It uses the caller's environment settings and never reads the root settings file. Except for rehearsal, it also receives the fixed service URLs, and the caller's `MG400_*` values take precedence. Local `uv run labctl` uses the developer's identity. Use `--runs-dir` for a local writable directory.

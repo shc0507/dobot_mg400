@@ -342,6 +342,7 @@ def test_interrupted_solve_cannot_publish_or_revive_after_same_client_reacquisit
             "tray_pixels": [[100, 80]] * 3,
             "image_size": [200, 160],
             "scan_r_deg": 0,
+            "tool_dz_mm": 146,
         },
     )
     try:
@@ -383,10 +384,72 @@ def test_calibration_command_requires_a_finite_scan_r_before_frame_access(calibr
         "tray_pixels": [[100, 80]] * 3,
         "image_size": [200, 160],
         "scan_r_deg": scan,
+        "tool_dz_mm": 146,
     }
     if scan == "missing":
         del body["scan_r_deg"]
     assert client.post("/api/command", headers=headers, json=body).status_code == 400
+    frames.read.assert_not_called()
+
+
+def _calibration_body(**changes):
+    body = {
+        "action": "calibrate_camera",
+        "camera": 1,
+        "tag_points": [[0, 0, 0]] * 24,
+        "tag_pixels": [[100, 80]] * 24,
+        "tray_points": [[0, 0, 0]] * 3,
+        "tray_pixels": [[100, 80]] * 3,
+        "image_size": [200, 160],
+        "scan_r_deg": 0,
+        "tool_dz_mm": 80,
+    }
+    body.update(changes)
+    return {key: value for key, value in body.items() if value != "missing"}
+
+
+def test_calibration_nominal_distance_is_tag_height_plus_the_sent_tool_dz(
+    calibrated_service, monkeypatch
+):
+    service, _ = calibrated_service
+    captured = {}
+
+    def solve(*args, **kwargs):
+        captured.update(kwargs)
+        return camera_model()
+
+    monkeypatch.setattr("vision.calibration.fit_calibration", solve)
+    client = create_app(service).test_client()
+    headers = {"X-MG400-Client": "calibration"}
+    assert client.post("/api/heartbeat", headers=headers, json={}).status_code == 200
+    response = client.post("/api/command", headers=headers, json=_calibration_body())
+    assert response.status_code == 202
+    deadline = time.monotonic() + 2
+    while service.snapshot()["busy"] and time.monotonic() < deadline:
+        threading.Event().wait(0.001)
+    assert service.snapshot()["last_command"]["result"] == "ok"
+    assert captured["nominal_distance_mm"] == 180  # 100 mm tag height + 80 mm cup dz
+    assert captured["nominal_tag_height_mm"] == 100
+
+
+@pytest.mark.parametrize("dz", ["missing", None, "80", float("inf"), -100, 901])
+def test_calibration_command_requires_a_valid_tool_dz_before_frame_access(calibrated_service, dz):
+    service, frames = calibrated_service
+    frames.read = Mock(side_effect=AssertionError("Invalid commands never read a frame"))
+    assert "tool_dz_mm" in service.describe()["commands"]["calibrate_camera"]["params"]["required"]
+    client = create_app(service).test_client()
+    headers = {"X-MG400-Client": "calibration"}
+    assert client.post("/api/heartbeat", headers=headers, json={}).status_code == 200
+    body = _calibration_body(tool_dz_mm=dz)
+    if dz == float("inf"):
+        response = client.post(
+            "/api/command",
+            headers={**headers, "Content-Type": "application/json"},
+            data=json.dumps(body).replace("Infinity", "1e999"),
+        )
+    else:
+        response = client.post("/api/command", headers=headers, json=body)
+    assert response.status_code == 400
     frames.read.assert_not_called()
 
 
@@ -822,6 +885,7 @@ def test_scan_collects_exact_grid_and_five_frame_medians_without_commanding_cont
     assert sent["tag_pixels"] == [[100 + point[0] / 10, 80] for point in expected]
     assert sent["tray_points"] == [[-107, -335, 24], [39, -187, 22]]
     assert sent["scan_r_deg"] == 0  # The corner R, not either contact R.
+    assert sent["tool_dz_mm"] == 146  # From the tool file: nominal D = tag height + dz.
     assert [move[:3] for move in rig.moves] == expected[1:]
     assert rig.zones == [("enter", "tray"), ("finish", "tray", {})]
     assert len(rig.artifacts) == 1
@@ -1093,7 +1157,6 @@ def test_entrypoint_calibration_settings_and_bounded_server_cap(tmp_path):
             environ={
                 "MG400_VISION_CALIBRATION_DIR": str(directory),
                 "MG400_VISION_TAG_HEIGHT_MM": "101",
-                "MG400_VISION_TAG_TIP_MM": "247",
                 "MG400_VISION_CALIBRATION_RMS_MM": "0.8",
             },
             service_factory=factory,
@@ -1104,7 +1167,7 @@ def test_entrypoint_calibration_settings_and_bounded_server_cap(tmp_path):
     assert captured["calibration_directory"] == str(directory)
     assert captured["calibration_options"] == {
         "nominal_tag_height_mm": 101,
-        "nominal_distance_mm": 247,
+        "nominal_distance_mm": 246,
         "rms_limit_mm": 0.8,
     }
     assert captured["server"]["max_request_body_size"] == 16385
@@ -1117,7 +1180,6 @@ def test_entrypoint_calibration_settings_and_bounded_server_cap(tmp_path):
     "setting,value",
     [
         ("MG400_VISION_TAG_HEIGHT_MM", "nan"),
-        ("MG400_VISION_TAG_TIP_MM", "inf"),
         ("MG400_VISION_CALIBRATION_RMS_MM", "1.01"),
         ("MG400_VISION_CALIBRATION_RMS_MM", "0"),
         ("MG400_VISION_CALIBRATION_DIR", "relative/data"),

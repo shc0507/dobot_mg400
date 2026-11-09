@@ -16,6 +16,7 @@ from test_orchestrator_transfer import geometry as geometry
 from orchestrator.recipe import load_recipe
 from orchestrator.rehearsal import (
     DEMO_CALIBRATION_DEVICE,
+    DEMO_TRAY_HEIGHT,
     DEMO_TRAY_INITIAL_FLANGE,
     DemoTrayScene,
     write_demo_tray_configuration,
@@ -24,12 +25,14 @@ from orchestrator.runner import Runner
 from orchestrator.skills import default_registry
 from orchestrator.skills.robot import _RouteZones, _Transfer
 from orchestrator.skills.vision import _read_tray, _TrayInputs
+from orchestrator.stations import StationStore, Workspace
 from orchestrator.store import RunStore
 from orchestrator.tool import Pose, fingertip_to_flange
 from vision.service import VisionService, _slot_arguments, _slot_observations, create_app
 from vision.tray import locate_tray, validate_tray
 
 RECIPE = Path(__file__).resolve().parents[1] / "recipes/tray-transfer.toml"
+PICK_RECIPE = Path(__file__).resolve().parents[1] / "recipes/chip-pick.toml"
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +150,9 @@ class InProcessVision:
         pass
 
 
-def run_tray_rehearsal(tmp_path, monkeypatch, *, failure=None, configure=None, change=None):
+def run_tray_rehearsal(
+    tmp_path, monkeypatch, *, failure=None, configure=None, change=None, pick=None
+):
     """Shared all-recipes acceptance: real Runner/service, owned fakes, zero ports."""
     tmp_path.chmod(0o700)
     settings = write_demo_tray_configuration(tmp_path / "configuration")
@@ -174,7 +179,10 @@ def run_tray_rehearsal(tmp_path, monkeypatch, *, failure=None, configure=None, c
     if change:
         change(robot, vision)
     registry = default_registry()
-    recipe = load_recipe(RECIPE, registry, {"from_slot": "source", "to_slot": "target"})
+    if pick is None:
+        recipe = load_recipe(RECIPE, registry, {"from_slot": "source", "to_slot": "target"})
+    else:
+        recipe = load_recipe(PICK_RECIPE, registry, {"slot": pick})
     try:
         with RunStore(tmp_path / "runs") as store:
             runner = Runner(recipe, registry, {"robot": robot, "vision": vision}, store).start()
@@ -254,6 +262,66 @@ def test_missing_physical_input_holds_before_motion(tmp_path, monkeypatch, key):
     )
     assert result["status"] == "held"
     assert not result["calls"] and not result["vision_calls"]
+
+
+def _cup_configuration(monkeypatch):
+    """One taught "tray" station replaces the per-slot stations and the R settings."""
+
+    def configure(settings):
+        workspace = Workspace.from_settings(settings)
+        store = StationStore(workspace, settings["MG400_ORCH_STATIONS_FILE"])
+        store.remove("source")
+        store.remove("target")
+        store.save("tray", Pose(240, 20, DEMO_TRAY_HEIGHT, 0), approach_mm=20, zone="tray")
+        for key in ("CHIP_AXIS", "CHIP_R_OFFSET_DEG", "CHIP_R_MIN_DEG", "CHIP_R_MAX_DEG"):
+            monkeypatch.delenv("MG400_ORCH_" + key)
+
+    return configure
+
+
+def test_cup_pick_uses_seen_xy_tray_z_and_tray_r(tmp_path, monkeypatch):
+    result = run_tray_rehearsal(
+        tmp_path,
+        monkeypatch,
+        configure=_cup_configuration(monkeypatch),
+        pick="source",
+    )
+    assert result["status"] == "completed", result["snapshot"]
+    assert result["occupancy"] == {"source": False, "target": False}
+    assert [name for name, _ in result["vision_calls"]] == ["check_calibration", "observe_slots"]
+    assert result["vision_calls"][1][1]["targets"] == {"source": None}
+    moves = [params["targets"] for name, params in result["calls"] if name == "execute"]
+    suck = [i for i, (name, _) in enumerate(result["calls"]) if name == "vacuum"]
+    assert [params["operation"] for name, params in result["calls"] if name == "vacuum"] == ["suck"]
+    contact = result["calls"][suck[0] - 1][1]["targets"]
+    # Seen XY of the chip in "source", flange Z = tray tip Z + 146, R of the tray station.
+    assert contact["x"] == pytest.approx(220, abs=0.5)
+    assert contact["y"] == pytest.approx(20, abs=0.5)
+    assert contact["z"] == pytest.approx(DEMO_TRAY_HEIGHT + 146)
+    assert contact["r"] == 0
+    assert moves[-1]["z"] == pytest.approx(DEMO_TRAY_HEIGHT + 146 + 20)
+
+
+@pytest.mark.parametrize("case", ["empty-slot", "no-tray-station", "unknown-slot"])
+def test_cup_pick_holds_before_motion_without_evidence_or_station(tmp_path, monkeypatch, case):
+    configure = _cup_configuration(monkeypatch)
+
+    def setup(settings):
+        configure(settings)
+        if case == "no-tray-station":
+            workspace = Workspace.from_settings(settings)
+            StationStore(workspace, settings["MG400_ORCH_STATIONS_FILE"]).remove("tray")
+
+    slot = {"empty-slot": "target", "unknown-slot": "groove_99"}.get(case, "source")
+    result = run_tray_rehearsal(tmp_path, monkeypatch, configure=setup, pick=slot)
+    assert result["status"] == "held", result["snapshot"]
+    expected = {
+        "empty-slot": "No chip is present",
+        "no-tray-station": 'Teach the station "tray"',
+        "unknown-slot": "must name a tray slot",
+    }[case]
+    assert expected in result["row"]["steps"][0]["error"]
+    assert not [name for name, _ in result["calls"] if name in {"execute", "vacuum"}]
 
 
 @pytest.fixture

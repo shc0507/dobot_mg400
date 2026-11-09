@@ -58,6 +58,8 @@ def _slot_arguments(args):
     if not isinstance(targets, dict) or not 1 <= len(targets) <= 128:
         raise ValueError("Slot observation requires explicit taught XY targets.")
     for ident, point in targets.items():
+        if ident in ids and point is None:
+            continue  # Observed without a taught station: a cup pick uses the seen XY.
         if (
             ident not in ids
             or not isinstance(point, list)
@@ -363,6 +365,13 @@ class VisionService:
             "description": "Flange R of all 24 scan points, in degrees.",
         }
         calibration["required"].append("scan_r_deg")
+        calibration["properties"]["tool_dz_mm"] = {
+            "type": "number",
+            "minimum": -1_000_000,
+            "maximum": 1_000_000,
+            "description": "Measured tool Z offset. Nominal tag-to-tip is tag height + dz.",
+        }
+        calibration["required"].append("tool_dz_mm")
         drift = copy.deepcopy(params)
         drift["properties"]["flange_mm"] = {
             "type": "array",
@@ -381,7 +390,12 @@ class VisionService:
         slots = copy.deepcopy(params)
         slots["properties"].update(
             tray={"type": "object", "description": "Bounded tray model data, never a file path."},
-            targets={"type": "object", "minProperties": 1, "maxProperties": 128},
+            targets={
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 128,
+                "description": "Slot ID to taught robot XY, or null for no taught station.",
+            },
             axis={"type": "string", "enum": ["long", "short"]},
         )
         slots["required"] += ["tray", "targets", "axis"]
@@ -490,6 +504,15 @@ class VisionService:
         while not self._quit.wait(0.1):
             self.lease.poll()
 
+    def _nominal_distance(self, tool_dz_mm):
+        """The tag sits above the flange and the tip below it: D = tag height + tool dz."""
+        if type(tool_dz_mm) not in (int, float) or not math.isfinite(tool_dz_mm):
+            raise ValueError("The tool Z offset must be a finite number.")
+        distance = self._calibration_options["nominal_tag_height_mm"] + tool_dz_mm
+        if not 0 < distance <= 1000:
+            raise ValueError("Tag height plus tool Z offset must be from 0 to 1000 mm.")
+        return float(distance)
+
     def _arguments(self, action, args):
         allowed = {"camera", "region"} if action == "read_labels" else {"camera"}
         if action == "calibrate_camera":
@@ -500,6 +523,7 @@ class VisionService:
                 "tray_pixels",
                 "image_size",
                 "scan_r_deg",
+                "tool_dz_mm",
             }
         if action == "check_calibration":
             allowed |= {"flange_mm", "limit_px"}
@@ -529,10 +553,12 @@ class VisionService:
         if action == "calibrate_camera":
             if set(args) != allowed:
                 raise ValueError(
-                    "Calibration needs all 24 tag points, 2 to 4 tray references and the scan R."
+                    "Calibration needs all 24 tag points, 2 to 4 tray references, the scan R "
+                    "and the tool Z offset."
                 )
             image_size(args["image_size"])
             scan_r(args["scan_r_deg"])
+            self._nominal_distance(args["tool_dz_mm"])
             count = len(args["tray_points"]) if isinstance(args["tray_points"], list) else 0
             for name, rows, columns in (
                 ("tag_points", 24, 3),
@@ -700,7 +726,10 @@ class VisionService:
                 args["image_size"],
                 scan_r_deg=args["scan_r_deg"],
                 cancelled=job["cancel"].is_set,
-                **self._calibration_options,
+                **{
+                    **self._calibration_options,
+                    "nominal_distance_mm": self._nominal_distance(args["tool_dz_mm"]),
+                },
             )
             device = self._devices[job["camera"] - 1]
             saved = self.calibrations.save(device, model, commit_guard=lambda: self._commit(job))

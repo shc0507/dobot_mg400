@@ -184,7 +184,7 @@ def test_failed_write_or_sync_reports_the_correct_publication_boundary(store, mo
 
     def open_stream(fd, mode):
         stream = fdopen(fd, mode)
-        return BrokenWriter(stream) if failure == "write" and mode == "w" else stream
+        return BrokenWriter(stream) if failure == "write" and mode == "wb" else stream
 
     def sync(fd):
         directory = stat.S_ISDIR(os.fstat(fd).st_mode)
@@ -430,3 +430,79 @@ def test_missing_tool_or_workspace_fails_before_constructing_robot(
         monkeypatch.setenv(key, value)
     assert cli.main(arguments) == 2
     factory.assert_not_called()
+
+
+def _tool(path, text="offset_mm = [0, 0, 146]\n"):
+    path.write_text(text)
+    path.chmod(0o640)
+    return path
+
+
+def test_retool_keeps_every_flange_target_and_backs_up_both_files(store, tmp_path, monkeypatch):
+    tool = _tool(tmp_path / "tool.toml")
+    store.save("a", Pose(230, 20, 50, 90), approach_mm=20, zone="tray")
+    store.save("b", Pose(300, -40, 10, -14.7), approach_mm=10, via=["a"])
+    before = store.load()
+    old, new = ToolOffset(0, 0, 146), ToolOffset(1.5, -2, 80)
+    flanges = {
+        name: stations.fingertip_to_flange(Pose(*(v[k] for k in stations.AXES)), old)
+        for name, v in before.items()
+    }
+    original_stations, original_tool = store.path.read_bytes(), tool.read_bytes()
+    monkeypatch.setattr(stations.time, "strftime", lambda *_: "20261109T120000Z")
+    result = store.retool(new, tool)
+    assert load_tool(tool) == new
+    after = store.load()
+    for name, values in after.items():
+        flange = stations.fingertip_to_flange(Pose(*(values[k] for k in stations.AXES)), new)
+        for axis in ("x_mm", "y_mm", "z_mm", "r_deg"):
+            assert getattr(flange, axis) == pytest.approx(getattr(flanges[name], axis), abs=1e-9)
+        assert {k: values[k] for k in ("approach_mm", "zone", "saved_at", "via")} == {
+            k: before[name][k] for k in ("approach_mm", "zone", "saved_at", "via")
+        }
+    assert after["a"]["z_mm"] == pytest.approx(50 + 146 - 80)
+    assert result["old_offset_mm"] == [0, 0, 146] and result["offset_mm"] == [1.5, -2, 80]
+    backups = [Path(path) for path in result["backups"]]
+    assert [path.name for path in backups] == [
+        "stations.toml.bak-20261109T120000Z",
+        "tool.toml.bak-20261109T120000Z",
+    ]
+    assert backups[0].read_bytes() == original_stations
+    assert backups[1].read_bytes() == original_tool
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o640 for path in backups)
+    assert not [path for path in tmp_path.iterdir() if path.name.startswith(".")]
+
+
+def test_retool_outside_the_workspace_changes_no_file(store, tmp_path):
+    tool = _tool(tmp_path / "tool.toml")
+    store.save("a", Pose(230, 20, 5, 90), approach_mm=20)
+    original_stations, original_tool = store.path.read_bytes(), tool.read_bytes()
+    with pytest.raises(ValueError, match="outside the fingertip workspace"):
+        store.retool(ToolOffset(0, 0, 200), tool)  # tip Z 5 + 146 - 200 < 0
+    assert store.path.read_bytes() == original_stations and tool.read_bytes() == original_tool
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["stations.toml", "tool.toml"]
+
+
+def test_retool_needs_the_old_measured_tool_file(store, tmp_path):
+    store.save("a", Pose(230, 20, 50, 90), approach_mm=20)
+    with pytest.raises(FileNotFoundError):
+        store.retool(ToolOffset(0, 0, 80), tmp_path / "tool.toml")
+    with pytest.raises(ValueError):
+        store.retool((0, 0, 80), _tool(tmp_path / "tool.toml"))
+
+
+def test_cli_retool_reads_tool_setting_and_prints_backups(store, workspace, tmp_path, monkeypatch):
+    tool = _tool(tmp_path / "tool.toml")
+    store.save("a", Pose(230, 20, 50, 90), approach_mm=20)
+    for key, value in {
+        **settings(workspace),
+        "MG400_ORCH_STATIONS_FILE": str(store.path),
+        "MG400_ORCH_TOOL_FILE": str(tool),
+    }.items():
+        monkeypatch.setenv(key, value)
+    output = io.StringIO()
+    assert cli.main(["station", "retool", "--offset", "0", "-1", "80"], out=output) == 0
+    result = json.loads(output.getvalue())
+    assert result["offset_mm"] == [0, -1, 80] and len(result["backups"]) == 2
+    assert load_tool(tool) == ToolOffset(0, -1, 80)
+    assert store.load()["a"]["z_mm"] == pytest.approx(116)

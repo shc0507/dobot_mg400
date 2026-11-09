@@ -315,6 +315,22 @@ An existing `MG400_ORCH_TOOL_FILE` override is preserved. Update an old override
 
 A write or file-sync failure preserves the old file. A directory-sync failure after replacement reports an error but can leave the new file visible. Inspect the station file before repeating an edit after that error.
 
+### Change the tool offset
+
+After a tool change, write the new measured offset with `retool`. Do not edit `tool.toml` by hand while stations exist.
+
+```sh
+labctl station retool --offset DX DY DZ
+```
+
+Replace `DX`, `DY` and `DZ` with the measured values in millimetres. The command does these steps:
+
+1. It copies `stations.toml` and `tool.toml` to `NAME.bak-<UTC time>` in the same folder.
+2. It converts every station so that its flange pose stays the same. Approach, zone, route and `saved_at` stay the same.
+3. It writes the new `tool.toml`.
+
+If a converted station is outside the fingertip workspace, the command stops and changes no file. Change the workspace bounds or teach that station again. Run the command when no recipe runs. `--stations-file PATH` and `--tool-file PATH` override the paths. The command prints the old and new offsets, the backup paths and the converted stations.
+
 ## Station transfers
 
 `robot.pick` and `robot.place` use a station name. `robot.transfer` combines them with public parameters `from` and `to`. These names receive the same complete type and unknown-field checks as other recipe parameters.
@@ -399,6 +415,20 @@ uv run labctl run recipes/tray-transfer.toml --param 'from_slot="YOUR_SOURCE_SLO
 
 Replace both placeholders with exact taught slot IDs. Keep the operator at the emergency stop throughout the hardware run.
 
+## Cup chip pick
+
+`recipes/chip-pick.toml` requires the string parameter `slot`. Its step `vision.pick_chip` picks the chip seen in that tray slot with the suction cup. The chip stays held after the step. Follow it with a place step, for example `robot.place`.
+
+- XY is the calibrated chip center that the step observes.
+- Z, R, approach, zone and route come from 1 taught station named `tray`. Teach it with the cup tip on the top of a chip in the tray.
+- The step needs no slot stations and no `CHIP_AXIS` or `CHIP_R_*` settings. It needs `MG400_ORCH_TRAY_FILE` and `MG400_ORCH_TRAY_CAMERA`.
+
+Before the pick, the step does a calibration drift check and 1 slot observation. The slot must contain 1 chip. Missing or ambiguous evidence holds the run before motion. The robot must start at 1 taught station or its approach, inside the calibrated grid. The step does not check the slot after the pick, because the arm hides it.
+
+```sh
+uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'
+```
+
 ## Crucible load and unload
 
 `crucible.load` moves a chip from a taught tray station to `crucible-load`, then inserts the crucible.
@@ -473,7 +503,7 @@ Without that data, it defines no thermal regions. It never selects a real camera
 The demo stage starts without a home reference. Offline tests explicitly home their owned simulator and supply contact feedback.
 The furnace demo owns its serial simulators and temporary state. Crucible skills send no heat or gas command.
 
-On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, and `station rm`. Administrative commands retain their root requirement.
+On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, `station rm`, and `station retool`. Administrative commands retain their root requirement.
 
 When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. It uses the absolute installed interpreter with `-I`. The child receives every nonempty `MG400_*` setting from the host settings file and the fixed service URLs.
 

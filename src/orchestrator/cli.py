@@ -24,6 +24,7 @@ from .skills.robot import TRANSFER_SETTINGS
 from .skills.vision import DRIFT_SETTINGS
 from .stations import DEFAULT_STATIONS, DEFAULT_TOOL, StationStore, Workspace, load_tool, teach
 from .store import DEFAULT_RUNS, RunStore
+from .tool import ToolOffset
 from .zones import CONFIG_SETTING, prepare_zones
 
 TERMINAL = {"completed", "aborted"}
@@ -173,6 +174,9 @@ def _station(args, settings, out):
         # This adapter has no robot WebSocket and sends only the two GETs in teach().
         robot = ServiceAdapter(url, "teach-" + uuid.uuid4().hex, timeout=timeout)
         result = teach(store, args.name, robot, offset, approach_mm=args.approach, zone=args.zone)
+    elif args.station_action == "retool":
+        tool = args.tool_file or settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL
+        result = store.retool(ToolOffset(*args.offset), tool)
     elif args.station_action == "rm":
         store.remove(args.name)
         result = {"removed": args.name}
@@ -202,14 +206,19 @@ def main(argv=None, *, out=None, read=None):
     history.add_argument("--runs-dir", type=Path)
     station = commands.add_parser("station", allow_abbrev=False)
     station_actions = station.add_subparsers(dest="station_action", required=True)
-    for action in ("save", "list", "show", "rm"):
+    for action in ("save", "list", "show", "rm", "retool"):
         sub = station_actions.add_parser(action, allow_abbrev=False)
-        if action != "list":
+        if action not in ("list", "retool"):
             sub.add_argument("name")
         sub.add_argument("--stations-file", type=Path)
         if action == "save":
             sub.add_argument("--approach", type=float, required=True)
             sub.add_argument("--zone", default="")
+        if action == "retool":
+            sub.add_argument(
+                "--offset", type=float, nargs=3, required=True, metavar=("DX", "DY", "DZ")
+            )
+        if action in ("save", "retool"):
             sub.add_argument("--tool-file", type=Path)
     args = parser.parse_args(argv)
     try:

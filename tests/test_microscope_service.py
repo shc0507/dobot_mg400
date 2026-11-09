@@ -303,11 +303,12 @@ def test_service_construction_is_inert(monkeypatch):
     assert service._motor is service._camera is service._side is None
 
 
-def test_automation_discovery_does_not_advertise_operator_zero():
+def test_discovery_advertises_focus_zero_for_the_lease_holder():
     from microscope.service import MicroscopeService
 
     service = MicroscopeService(demo=True)
-    assert "set_focus_zero" not in service.describe()["commands"]
+    zero = service.describe()["commands"]["set_focus_zero"]
+    assert zero["params"]["properties"] == {} and zero["any_client"] is False
     response = (
         create_app(service)
         .test_client()
@@ -315,7 +316,7 @@ def test_automation_discovery_does_not_advertise_operator_zero():
             "/api/command", json={"action": "set_focus_zero"}, headers={"X-MG400-Client": "robot"}
         )
     )
-    assert response.status_code == 400
+    assert response.status_code == 409
     assert service._job is None
 
 
@@ -419,7 +420,7 @@ def test_motion_refuses_unknown_focus_zero(demo_rig, action, args):
     assert not rig.service.snapshot()["focus_zero_known"]
 
 
-def test_manual_zero_sets_fixed_microstep_then_limits_and_blocks_automation_zero(demo_rig):
+def test_zero_sets_fixed_microstep_then_limits_for_any_lease_holder(demo_rig):
     rig = demo_rig()
     establish_manual_reference(rig)
     commands = rig.port.commands
@@ -430,10 +431,13 @@ def test_manual_zero_sets_fixed_microstep_then_limits_and_blocks_automation_zero
     )
     acquire_automation(rig)
     before = list(commands)
-    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code == 400
     other = service_post(rig, "manual/set_focus_zero", {"confirm": True}, actor="orchestrator-step")
     assert other.status_code == 409
     assert commands == before
+    state = dispatch(rig, "focus_move", steps=60)
+    assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 60
+    state = dispatch(rig, "set_focus_zero")
+    assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 0
     state = dispatch(rig, "focus_move", steps=60)
     assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 60
 

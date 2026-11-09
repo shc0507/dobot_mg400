@@ -235,14 +235,14 @@ def test_furnace_demo_sequence_round_trip(demos):
     assert sequence["steps"][0]["temperature_c"] == 80 and sequence["running"] is False
 
 
-def test_microscope_demo_has_no_relayed_focus_zero(demos):
+def test_microscope_demo_relays_focus_zero(demos):
     described = demos.client.get("/lab/api/console/describe/microscope", headers=headers())
     commands = described.get_json()["commands"]
     assert {"select_objective", "autofocus", "focus_move", "snapshot"} <= set(commands)
-    assert "set_focus_zero" not in commands
+    assert commands["set_focus_zero"]["params"]["properties"] == {}
     assert post(demos, "control/microscope/take").status_code == 200
     zero = post(demos, "command/microscope", {"action": "set_focus_zero", "params": {}})
-    assert zero.status_code == 400 and "describe" in zero.get_json()["error"]
+    assert zero.status_code == 502 and zero.get_json()["outcome"] == "unknown"
     move = post(demos, "command/microscope", {"action": "focus_move", "params": {"steps": 10}})
     # The unstarted demo answers 503: the relay reports unknown and does not retry.
     assert move.status_code == 502 and move.get_json()["outcome"] == "unknown"

@@ -86,7 +86,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /api/describe` | 契约版本、支持的命令、物镜 ID 和租约行为。 |
+| `GET /api/describe` | 契约版本、支持的命令、物镜 ID 和名称，以及租约行为。 |
 | `GET /api/state` | 调焦位置和零点状态、限位、物镜 ID、转盘偏移、相机状态、忙碌状态、故障及命令结果。 |
 | `GET /api/events` | 服务事件历史。 |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | 取得、续期或释放普通控制权。 |
@@ -162,7 +162,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 1. 在显微镜卡片上选择 **Take control**。其他客户端持有租约时，控制台无法取得控制权，也不接管自动化控制。
 2. 移动前，查看卡片上的调焦位置和零点状态。
-3. 用物镜按钮切换物镜。按钮使用 `GET /api/describe` 中 `select_objective` 的物镜 ID。
+3. 用物镜按钮切换物镜。按钮显示 `GET /api/describe` 中 `select_objective` 的 `id.names` 给出的物镜倍率。没有名称的物镜显示 ID。
 4. 在工作焦点处，展开 **Turret**，用 **−10**、**−1**、**+1** 或 **+10** 按整步转动转盘。按钮旁显示转盘偏移及其上限。
 5. 用 **Autofocus**（局部）或 **Full autofocus** 自动调焦。
 6. 在 **−** 和 **+** 之间填写脉冲数，再用 **−** 或 **+** 在限位内点动。

@@ -532,6 +532,17 @@ def test_nudge_config_uses_the_measured_window_setting():
     assert steps["params"]["properties"]["steps"]["enum"] == [-10, -1, 1, 10]
 
 
+def test_describe_names_each_objective():
+    from microscope.service import OBJECTIVE_NAMES, MicroscopeService
+
+    objective = MicroscopeService(demo=True).describe()["commands"]["select_objective"]
+    ident = objective["params"]["properties"]["id"]
+    assert ident["enum"] == [0, 1, 2, 3]
+    assert ident["names"] == {str(i): name for i, name in OBJECTIVE_NAMES.items()}
+    for i, name in OBJECTIVE_NAMES.items():
+        assert f"{i} = {name}" in ident["description"]
+
+
 def test_nudge_turns_full_steps_at_working_focus_inside_the_window(demo_rig):
     rig = demo_rig()
     establish_manual_reference(rig)

@@ -267,18 +267,6 @@ def parse_settings(text):
     return values
 
 
-# Fixed settings for programs that mg400ctl and labctl start. Their units set the same values.
-FIXED_SETTINGS = {
-    "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
-    "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
-    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
-    "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
-    "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
-    "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",
-    "MG400_ORCH_VISION_URL": "http://127.0.0.1:8771/",
-}
-
-
 def obsolete(key, value):
     """Removed settings: service tokens, and empty settings that are not in the example."""
     return key.endswith("_TOKEN") or not value
@@ -478,12 +466,11 @@ def render_proxy(host, settings, selected):
     ports = {"1985", values["PROXY_PORT"]}
     if len(ports) != 2:
         raise ValueError("Proxy and upstream ports must be distinct.")
-    for prefix, default in PROXY_UPSTREAMS.items():
-        value = port(f"MG400_{prefix}_PORT", default)
-        if value in ports:
+    for prefix, value in PROXY_UPSTREAMS.items():
+        if str(value) in ports:
             raise ValueError("Proxy and upstream ports must be distinct.")
-        ports.add(value)
-        values[prefix + "_PORT"] = value
+        ports.add(str(value))
+        values[prefix + "_PORT"] = str(value)
     if str(ORCH_SOCKET_PORT) in ports:
         raise ValueError("Proxy and upstream ports must be distinct.")
     values["ORCH_SOCKET_PORT"] = str(ORCH_SOCKET_PORT)
@@ -498,10 +485,6 @@ def render_proxy(host, settings, selected):
 
 def prepare_proxy(args, host, settings, selected):
     """Check the proxy without starting its binary or changing files."""
-    if "proxy" not in selected:
-        if args.caddy is not None:
-            raise ValueError("Select proxy in MG400_OPTIONAL_SERVICES before using --caddy.")
-        return None, None
     config = render_proxy(host, settings, selected)
     for destination in (host.caddy, host.proxy_config):
         try:

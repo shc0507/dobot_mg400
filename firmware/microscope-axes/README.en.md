@@ -18,7 +18,7 @@ Before reprogramming a board, an operator must save its existing firmware. Agent
 
 Manual focus moves remain available without a reference for supervised setup. The firmware does not know the furnace geometry or turret clearance. The host must require a known focus zero and limits before automated motion. The host must permit turret rotation only at the verified clearance position, except the bounded calibration moves below.
 
-Objective and light calibration can turn at working focus within the measured `MG400_MICROSCOPE_NUDGE_STEPS` window.
+Objective and light calibration can turn at working focus within the measured turret window `NUDGE_WINDOW`.
 This exception requires a known focus reference, measured limits, stationary focus, and the supervised confirmations in the [microscope guide](../../docs/microscope.en.md).
 Unset or `0` preserves the clearance rule. The allowed positive window is `1` through `20` full steps.
 The service `objective_nudge` also turns the turret at working focus within this window.

@@ -19,21 +19,20 @@ PTY 是 SSH 分配的交互终端，可用 `ssh -t` 请求。
 使用前，关闭其他机械臂控制程序。
 终端与机器人服务共用机械臂连接锁。
 多个进程必须配置相同的机械臂地址。
-它们还必须共用锁目录 `/var/lib/mg400/locks`，`mg400ctl terminal` 会设置该目录。
-直接运行时，用 `MG400_CONTROLLER_LOCK_DIR` 设置锁目录。未设置时，锁目录为 `/tmp/mg400-controller-locks`，不能与机器人服务互斥。
+锁目录固定为 `/var/lib/mg400/locks`，直接运行时也使用此目录。
 目录和权限要求见 [面板连接锁](deploy.md#面板连接锁)。
 此锁不能阻止 DobotStudio 或其他主机连接。
 
 进入项目目录，运行：
 
 ```sh
-MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks uv run mg400-robot
+uv run mg400-robot
 ```
 
 也可以直接运行：
 
 ```sh
-MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 scripts/mg400_robot.py
+python3 scripts/mg400_robot.py
 ```
 
 程序必须在交互终端中运行。没有终端时，程序退出，退出码为 2。

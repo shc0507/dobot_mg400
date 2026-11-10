@@ -10,7 +10,7 @@ Non-stop commands require completed recovery through start() or connect().
 Gas map and idle gas settings are JSON objects keyed by channel 0, 1, or 2.
 MG400_FURNACE_GAS_MAP maps channels to labels. Unlabelled channels show Gas 1 to Gas 3.
 MG400_FURNACE_IDLE_GAS maps channels to percent (unspecified channels are off).
-The orphan grace setting is MG400_FURNACE_ORPHAN_GRACE_MIN, default 15 minutes.
+The orphan grace is fixed at 15 minutes.
 Signal handlers belong to the application: SIGTERM must call close().
 """
 
@@ -31,6 +31,8 @@ from .config import FurnaceConfig, serial_port
 from .controller import GAS_UNIT_IDS, Furnace, MFCFlowController, check_program_minutes
 from .state import StateError, StateStore
 
+# Minutes without a lease renewal before an orphaned run cools down.
+ORPHAN_GRACE_MIN = 15
 FRAME_METADATA_FIELDS = (
     "temperature_sample_time",
     "temperature_c",
@@ -125,9 +127,7 @@ class FurnaceService:
         self.target_tolerance_c = self._number(target_tolerance_c, "Target tolerance", minimum=0)
         self.clock, self.wall_clock = clock, wall_clock
         self.orphan_grace_min = self._number(
-            os.environ.get("MG400_FURNACE_ORPHAN_GRACE_MIN", "15")
-            if orphan_grace_min is None
-            else orphan_grace_min,
+            ORPHAN_GRACE_MIN if orphan_grace_min is None else orphan_grace_min,
             "Orphan grace",
             minimum=0,
         )

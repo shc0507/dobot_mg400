@@ -44,9 +44,9 @@
 服务再用控制器逆解和现有关节范围检查验证目标。
 
 客户端可在 `execute` 命令中提供整数 `speed`。控制台的速度输入即此值。
-主机配置 `MG400_ROBOT_MAX_SPEED_L` 限制该值。超出上限时，服务返回 400。
+速度上限固定为 `20`。超出上限时，服务返回 400。
 运动使用 `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`。
-加速度上限为 `MG400_ROBOT_MAX_ACC_L`。
+加速度上限固定为 `20`。
 未提供 `speed` 时，即使上限提高，命令仍为 `SpeedL=1,AccL=1`。
 
 两个配置均默认为 1，接受 1–100 的整数。空值也使用 1。
@@ -201,11 +201,10 @@ sudo mg400ctl status
 在本地启动时，在能访问机械臂的主机进入项目目录，运行：
 
 ```sh
-MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 apps/control_panel/server.py
+python3 apps/control_panel/server.py
 ```
 
-`MG400_CONTROLLER_LOCK_DIR` 设置连接锁目录，未设置时为 `/tmp/mg400-controller-locks`。
-其他程序使用 `/var/lib/mg400/locks` 时，本地服务必须设置同一目录，否则不能与它们互斥。
+连接锁目录固定为 `/var/lib/mg400/locks`。所有程序共用此目录，因此本地服务与其他程序互斥。
 
 省略 `--mode` 时，服务使用 `robot` 模式。
 机械臂地址默认取自 `MG400_ROBOT_HOST`，未设置时取自 `config/robot.toml`，可用 `--robot-host` 指定。
@@ -214,9 +213,8 @@ MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 apps/control_panel/server
 服务定义的 `TimeoutStopSec` 为 90 秒，大于此时间。
 
 服务默认监听 `127.0.0.1:8766`。
-`MG400_PANEL_BIND` 和 `MG400_PANEL_PORT` 覆盖默认值，`--bind` 和 `--port` 再覆盖环境变量。
-空值使用默认值。端口不是 1–65535 的整数时，服务拒绝启动。
-Lab Console 和配方服务通过 `MG400_ORCH_ROBOT_URL`（默认 `http://127.0.0.1:8766/`）连接本服务。修改地址或端口时，同时修改该设置，见 [配方编排器](orchestrator.md#服务配置)。
+`--bind` 和 `--port` 覆盖默认值。端口不是 1–65535 的整数时，服务拒绝启动。
+Lab Console 和配方服务固定连接 `http://127.0.0.1:8766/`，见 [配方编排器](orchestrator.md#服务配置)。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 路径前缀用 `--base-path` 设置，例如 `--base-path /mg400-panel/`，所有接口都使用此前缀。

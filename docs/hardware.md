@@ -44,10 +44,8 @@ mg400ctl mode
 
 `mg400ctl` 以 UID 1000 运行脚本。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
 脚本使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
-直接运行脚本时，锁目录取自 `MG400_CONTROLLER_LOCK_DIR`，未设置时为 `/tmp/mg400-controller-locks`。
-锁目录的属主可以不是 root，例如 `/var/lib/mg400/locks`。
-此时以 root 运行 `--switch-to-tcp`，脚本拒绝取得连接锁，不连接控制器。
-以 root 运行且未设置该变量时，脚本可能取得另一把锁，不能与机器人服务互斥。所以用 `mg400ctl mode` 运行脚本。
+锁目录固定为 `/var/lib/mg400/locks`，属主为 UID 1000。
+以 root 运行 `--switch-to-tcp` 时，脚本拒绝取得连接锁，不连接控制器。所以用 `mg400ctl mode` 运行脚本。
 直接运行时，`--host` 指定控制器地址，`--timeout` 设置请求超时（默认 5 秒，最长 30 秒），`--backup-dir` 设置备份目录（默认 `work/control-mode`）。
 
 切换前，下使能机械臂并停止运行中的程序。

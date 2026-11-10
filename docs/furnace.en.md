@@ -38,18 +38,13 @@ The installer creates `/var/lib/mg400/furnace` with owner `1000:1000` and mode `
 | `MG400_FURNACE_SERIAL` | Empty | Furnace device under `/dev/serial/by-id/`, required before startup |
 | `MG400_MFC_SERIAL` | Empty | Separate gas-controller device under `/dev/serial/by-id/`, required for gas access |
 | `MG400_FURNACE_SLAVE` | `1` | Integer address from `1` to `247` |
-| `MG400_FURNACE_MAX_C` | `1000` | Finite cap greater than `0`, at most `1000` °C |
-| `MG400_FURNACE_MAX_RAMP` | `100` | Finite cap greater than `0`, at most `100` °C/min |
 | `MG400_FURNACE_GAS_MAP` | `Gas 1` to `Gas 3` | JSON map from channel to gas label |
 | `MG400_FURNACE_IDLE_GAS` | All off | JSON map from channel to percent for orphan expiry, cooling completion, or uncertain recovery |
-| `MG400_FURNACE_BIND` | `127.0.0.1` | Listen address |
-| `MG400_FURNACE_PORT` | `8769` | Port from `1` to `65535` |
-| `MG400_FURNACE_BASE_PATH` | `/` | Base path that starts with `/` |
-| `MG400_FURNACE_ORPHAN_GRACE_MIN` | `15` | Orphan grace in minutes, at least `0` |
 
 The gas map uses channel keys `0`, `1`, and `2`, which address MFC units `7`, `8`, and `9`.
 Percent means percent of that controller's full-scale flow. Do not interpret it as a generic volumetric flow rate.
-The example settings file does not contain the last 4 settings. The `mg400ctl` shutdown check reads the listen address, port, and base path.
+These values are fixed in code: the temperature cap `1000` °C, the ramp cap `100` °C/min, and the orphan grace `15` minutes.
+By default, the service listens on `127.0.0.1:8769` with the base path `/`. `--bind`, `--port`, and `--base-path` override these defaults. The `mg400ctl` shutdown check reads `127.0.0.1:8769`.
 The microscope and the orchestrator use the fixed URL `http://127.0.0.1:8769/`. If you change the listen address, port, or base path, these 2 clients cannot reach the furnace service.
 Idle gas defaults to all off. Any nonzero idle plan requires the operator's process decision.
 

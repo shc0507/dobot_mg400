@@ -119,20 +119,13 @@ def test_reference_coordinates_scale_inward_without_rounding_clearance():
         ReferenceSettings(-20, 20, 4, False)
 
 
-def test_measured_reference_configuration_has_no_hardware_defaults():
-    for missing in (
-        "MG400_MICROSCOPE_FOCUS_LIMITS",
-        "MG400_MICROSCOPE_SWITCH_FOCUS",
-        "MG400_MICROSCOPE_HOME_SWITCH",
-    ):
-        settings = {
-            "MG400_MICROSCOPE_FOCUS_LIMITS": "-8000,8000",
-            "MG400_MICROSCOPE_SWITCH_FOCUS": "0",
-            "MG400_MICROSCOPE_HOME_SWITCH": "0",
-        }
-        settings.pop(missing)
-        with pytest.raises(ValueError, match="required"):
-            ReferenceSettings.from_env(settings)
+def test_measured_reference_configuration_is_fixed_in_code(monkeypatch):
+    import microscope.calibrate as module
+
+    assert ReferenceSettings.measured() == ReferenceSettings(0, 10000, 0, False)
+    monkeypatch.setattr(module, "FOCUS_LIMITS", (1, 10))
+    with pytest.raises(ValueError, match="include zero"):
+        ReferenceSettings.measured()
 
 
 def test_microstep_and_focus_disable_each_require_clearance_and_new_confirmation(supervised_rig):
@@ -312,7 +305,7 @@ def test_terminal_flush_failure_prevents_prompt_or_confirmation(monkeypatch):
 
 @pytest.fixture
 def trial_rig(tmp_path, monkeypatch):
-    monkeypatch.setenv("MG400_ORCH_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr("microscope.paths.RUNS_ROOT", tmp_path / "runs")
     calls = []
     cancel = threading.Event()
 
@@ -578,9 +571,6 @@ def session_factories():
 
     settings = {
         "MG400_MICROSCOPE_SERIAL": "/dev/serial/by-id/fake-supervised",
-        "MG400_MICROSCOPE_FOCUS_LIMITS": "-8000,8000",
-        "MG400_MICROSCOPE_SWITCH_FOCUS": "0",
-        "MG400_MICROSCOPE_HOME_SWITCH": "0",
         "MG400_CAMERA_DEVICES": "/dev/v4l/by-path/fake-side",
         "MG400_MICROSCOPE_SIDE_STREAM": "camera1",
     }
@@ -627,18 +617,13 @@ def test_image_only_reference_capture_has_no_reference_or_motion(
 ):
     from microscope.calibrate import run_calibration
 
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(tmp_path / "calibration"))
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", tmp_path / "calibration")
     rig = session_factories
-    settings = {
-        name: value
-        for name, value in rig.settings.items()
-        if name
-        not in {
-            "MG400_MICROSCOPE_FOCUS_LIMITS",
-            "MG400_MICROSCOPE_SWITCH_FOCUS",
-            "MG400_MICROSCOPE_HOME_SWITCH",
-        }
-    }
+    import microscope.calibrate as module
+
+    # Without motion, the session needs no valid focus configuration.
+    monkeypatch.setattr(module, "FOCUS_LIMITS", (1, 10))
+    settings = dict(rig.settings)
     operator = ScriptedOperator()
     with rig.context(
         environ=settings, factories=rig.factories, operator=operator, motion=False
@@ -654,14 +639,16 @@ def test_image_only_reference_capture_has_no_reference_or_motion(
 
 @pytest.mark.parametrize("gate", ["terminal", "reference", "side", "main-frame", "serial"])
 def test_startup_rejection_never_grants_motion_and_releases_admitted_owners(
-    session_factories, gate
+    session_factories, gate, monkeypatch
 ):
     rig = session_factories
     operator = ScriptedOperator()
     if gate == "terminal":
         operator.require_interactive = lambda: (_ for _ in ()).throw(RuntimeError("no TTY"))
     elif gate == "reference":
-        rig.settings.pop("MG400_MICROSCOPE_FOCUS_LIMITS")
+        import microscope.calibrate as module
+
+        monkeypatch.setattr(module, "FOCUS_LIMITS", (1, 10))
     elif gate == "side":
         rig.factories["side"] = lambda *_: (_ for _ in ()).throw(RuntimeError("queue busy"))
     elif gate == "main-frame":
@@ -766,7 +753,7 @@ def test_calibration_worker_keeps_gui_defaults_and_guarded_callbacks(
 ):
     import microscope.calibrate as module
 
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(tmp_path / "calibration"))
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", tmp_path / "calibration")
     rig = supervised_rig()
     created, runs = [], []
 
@@ -821,7 +808,7 @@ def test_calibration_refused_handoff_cannot_be_hidden_by_source_cleanup(
 ):
     import microscope.calibrate as module
 
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(tmp_path / "calibration"))
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", tmp_path / "calibration")
     rig = supervised_rig("no")
 
     class Algorithm:
@@ -876,7 +863,7 @@ def test_reference_png_reader_rejects_links_and_oversized_header(tmp_path, monke
 
     root = tmp_path / "calibration"
     root.mkdir(mode=0o750)
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(root))
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", root)
     good = root / "reference.png"
     encoded, data = cv2.imencode(".png", np.zeros((4, 4, 3), np.uint8))
     assert encoded
@@ -1492,21 +1479,22 @@ def test_native_interruption_after_gate_admission_retains_accepted_read(monkeypa
     assert queue.owner is None and not device.descriptors
 
 
-@pytest.mark.parametrize("value,expected", [(None, 0), ("", 0), ("0", 0), ("1", 1), ("20", 20)])
-def test_measured_nudge_window_accepts_only_explicit_bounded_integer(value, expected):
-    from microscope.calibrate import nudge_steps
+@pytest.mark.parametrize("value", [0, 1, 20])
+def test_measured_nudge_window_accepts_only_a_bounded_integer(value, monkeypatch):
+    import microscope.calibrate as module
 
-    environ = {} if value is None else {"MG400_MICROSCOPE_NUDGE_STEPS": value}
-    assert nudge_steps(environ) == expected
+    assert module.nudge_steps() == 20
+    monkeypatch.setattr(module, "NUDGE_WINDOW", value)
+    assert module.nudge_steps() == value
 
 
-@pytest.mark.parametrize("value", ["-1", "21", "1.0", " 1", "true", "NaN", 1, True])
+@pytest.mark.parametrize("value", [-1, 21, 1.0, "1", True])
 def test_invalid_nudge_window_fails_before_hardware(value, monkeypatch):
     import microscope.calibrate as module
 
+    monkeypatch.setattr(module, "NUDGE_WINDOW", value)
     with pytest.raises(ValueError, match="0..20"):
-        module.nudge_steps({"MG400_MICROSCOPE_NUDGE_STEPS": value})
-    monkeypatch.setenv("MG400_MICROSCOPE_NUDGE_STEPS", str(value))
+        module.nudge_steps()
     monkeypatch.setattr(module, "supervised_session", lambda **_: pytest.fail("device admitted"))
     assert module.main(["objective"]) == 1
 
@@ -1644,7 +1632,7 @@ def test_at_focus_failure_never_returns_or_restarts_motion(at_focus_rig, event):
 def test_window_requires_focus_start_before_settings_or_device_access(monkeypatch):
     import microscope.calibrate as module
 
-    monkeypatch.setenv("MG400_MICROSCOPE_NUDGE_STEPS", "1")
+    monkeypatch.setattr(module, "NUDGE_WINDOW", 1)
     monkeypatch.setattr(module, "load_settings", lambda _: pytest.fail("settings opened"))
     monkeypatch.setattr(module, "supervised_session", lambda **_: pytest.fail("device opened"))
     assert module.main(["light"]) == 1
@@ -1656,7 +1644,7 @@ def test_only_explicit_calibration_window_changes_algorithm_move_callback(
 ):
     import microscope.calibrate as module
 
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(tmp_path / "calibration"))
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", tmp_path / "calibration")
     rig = supervised_rig()
     entered, options = [], []
     monkeypatch.setattr(rig.session, "prepare_at_focus", lambda *args: entered.append(args))

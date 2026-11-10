@@ -74,24 +74,14 @@ def test_no_unit_names_a_service_token():
         assert "TOKEN" not in (UNITS / name).read_text(), name
 
 
-def test_fixed_defaults_come_from_the_units():
+def test_fixed_defaults_come_from_the_code():
     panel = unit_sections("mg400-web-panel.service")["Service"]
-    assert panel["Environment"] == ["MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks"]
+    assert "Environment" not in panel
     assert "--base-path" not in command("mg400-web-panel.service")
     orchestrator = unit_sections("mg400-orchestrator.service")["Service"]
-    assert orchestrator["Environment"] == [
-        "MG400_ORCH_BASE_PATH=/lab/",
-        *(
-            f"MG400_ORCH_{name}_URL=http://127.0.0.1:{port}/{path}"
-            for name, port, path in (
-                ("ROBOT", 8766, ""),
-                ("STAGE", 8767, "contract/"),
-                ("THERMAL", 8768, ""),
-                ("FURNACE", 8769, ""),
-                ("MICROSCOPE", 8770, ""),
-                ("VISION", 8771, ""),
-            )
-        ),
+    assert "Environment" not in orchestrator
+    assert orchestrator["ExecStart"] == [
+        "/opt/mg400/.venv/bin/python -m orchestrator serve --base-path /lab/"
     ]
 
 
@@ -191,6 +181,8 @@ def test_orchestrator_drains_shutdown():
         "-m",
         "orchestrator",
         "serve",
+        "--base-path",
+        "/lab/",
     ]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert service["TimeoutStopSec"] == ["infinity"]

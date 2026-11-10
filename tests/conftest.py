@@ -40,7 +40,9 @@ def private_thermal_regions(request):
 @pytest.fixture
 def isolated_controller_locks(monkeypatch, tmp_path):
     """Keep controller lock files in the test's own directory."""
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path / "locks"))
+    from mg400 import controller_ownership
+
+    monkeypatch.setattr(controller_ownership, "LOCK_DIR", tmp_path / "locks")
 
 
 @pytest.fixture

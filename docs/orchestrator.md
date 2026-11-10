@@ -33,7 +33,7 @@ uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-run
 服务监听 `127.0.0.1:8772`。安装的单元设置基础路径 `/lab/`，由代理提供。控制台控制套接字监听 `127.0.0.1:8774`，代理把 `/lab/api/console/socket` 转发到该端口。端口被占用时，服务记录警告并照常启动，页面改用 HTTP。
 它从 `/opt/mg400/recipes` 读取配方目录。
 `--bind`、`--port`、`--base-path`、`--recipes-dir` 和 `--runs-dir` 可覆盖这些默认值。
-未指定选项时，前 4 项依次取 `MG400_ORCH_BIND`、`MG400_ORCH_PORT`、`MG400_ORCH_BASE_PATH` 和 `MG400_ORCH_RECIPES_DIR` 的非空值。`--runs-dir` 未指定时取 `MG400_ORCH_RUNS_DIR`。安装的单元设置 `MG400_ORCH_BASE_PATH=/lab/`。
+未指定选项时，服务使用 `127.0.0.1`、`8772`、`/`、`/opt/mg400/recipes` 和 `/var/lib/mg400/runs`。安装的单元传入 `--base-path /lab/`。
 
 POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`，后者使用固定的调用者身份。
 通过 `/api/heartbeat` 获取并续期前端控制租约。下表所有自定义修改路由都要求持有该租约。
@@ -133,20 +133,25 @@ on_fail = "hold"
 
 每次运行使用唯一客户端身份。运行器先检查所需服务的契约，再获取首个控制租约。续期只延长现有租约，不会重新获取。租约丢失后，运行保持暂停，不能通过自动获取控制权恢复。
 
-以下为默认值。设置的非空值覆盖默认值：
+以下值固定在代码中：
+
+| 项目 | 值 |
+| --- | --- |
+| 记录目录 | `/var/lib/mg400/runs`，`--runs-dir` 可覆盖 |
+| 客户端超时 | `2` s |
+| `robot` | `http://127.0.0.1:8766/` |
+| `stage` | `http://127.0.0.1:8767/contract/` |
+| `thermal` | `http://127.0.0.1:8768/` |
+| `furnace` | `http://127.0.0.1:8769/` |
+| `microscope` | `http://127.0.0.1:8770/` |
+| `vision` | `http://127.0.0.1:8771/` |
+
+区域文件为默认值。演练和测试设置非空值以使用自有文件：
 
 | 项目 | 设置 | 默认值 |
 | --- | --- | --- |
-| 记录目录 | `MG400_ORCH_RUNS_DIR` | `/var/lib/mg400/runs` |
-| 客户端超时 | `MG400_ORCH_TIMEOUT_S` | `2` s |
 | 区域配置 | `MG400_ORCH_ZONES_FILE` | `/var/lib/mg400/zones/config.toml` |
 | 持久占用记录 | `MG400_ORCH_ZONE_STATE_FILE` | `/var/lib/mg400/zones/occupancy.json` |
-| `robot` | `MG400_ORCH_ROBOT_URL` | `http://127.0.0.1:8766/` |
-| `stage` | `MG400_ORCH_STAGE_URL` | `http://127.0.0.1:8767/contract/` |
-| `thermal` | `MG400_ORCH_THERMAL_URL` | `http://127.0.0.1:8768/` |
-| `furnace` | `MG400_ORCH_FURNACE_URL` | `http://127.0.0.1:8769/` |
-| `microscope` | `MG400_ORCH_MICROSCOPE_URL` | `http://127.0.0.1:8770/` |
-| `vision` | `MG400_ORCH_VISION_URL` | `http://127.0.0.1:8771/` |
 
 服务不检查令牌。服务适配器直接连接，不使用代理配置。见[服务契约](adr/0001-instrument-service-contract.md)。
 
@@ -293,11 +298,12 @@ EOF、Ctrl-C、SIGTERM 和 SIGHUP 都会请求终止。CLI 等待活动操作和
 
 工具文件为 `MG400_ORCH_TOOL_FILE`，默认为 `/var/lib/mg400/robot/tool.toml`。工位文件为 `MG400_ORCH_STATIONS_FILE`，默认为 `/var/lib/mg400/robot/stations.toml`。
 
-指尖工作空间由 8 个设置定义：`MG400_ORCH_X_MIN_MM`、`MG400_ORCH_X_MAX_MM`、`MG400_ORCH_Y_MIN_MM`、`MG400_ORCH_Y_MAX_MM`、`MG400_ORCH_Z_MIN_MM`、`MG400_ORCH_Z_MAX_MM`、`MG400_ORCH_R_MIN_DEG` 和 `MG400_ORCH_R_MAX_DEG`。它们没有默认值。每项必须是有限数，且最小值小于最大值。每个工位必须位于边界内，接近高度不得超过 Z 上限。
+指尖工作空间固定在 `src/orchestrator/stations.py` 的 `DEFAULT_BOUNDS` 中：X 和 Y 为 `-440` 到 `440` mm，Z 为 `-300` 到 `100` mm，R 为 `-180` 到 `180` 度。每个工位必须位于边界内，接近高度不得超过 Z 上限。
+演练和测试设置全部 8 项 `MG400_ORCH_X_MIN_MM`、`MG400_ORCH_X_MAX_MM`、`MG400_ORCH_Y_MIN_MM`、`MG400_ORCH_Y_MAX_MM`、`MG400_ORCH_Z_MIN_MM`、`MG400_ORCH_Z_MAX_MM`、`MG400_ORCH_R_MIN_DEG` 和 `MG400_ORCH_R_MAX_DEG`，以替换这些边界。每项必须是有限数，且最小值小于最大值。只设置部分项时，命令或步骤被拒绝。
 
-所有工位命令，以及下文的工位、托盘、吸取和坩埚步骤，都需要这些边界、`tool.toml` 和示教工位。缺少任一项时，命令或步骤被拒绝。
+所有工位命令，以及下文的工位、托盘、吸取和坩埚步骤，都需要 `tool.toml` 和示教工位。缺少任一项时，命令或步骤被拒绝。
 
-`robot.move` 用 `tool.toml` 把法兰目标换算为指尖位姿。指尖位姿超出边界时，步骤被拒绝，不发送运动。只设置部分边界时，步骤也被拒绝。8 个设置都未设置时，`robot.move` 只受机器人服务的限制。
+`robot.move` 用 `tool.toml` 把法兰目标换算为指尖位姿。指尖位姿超出边界时，步骤被拒绝，不发送运动。机器人服务另外检查关节限位和逆解。演练的机器人使用自有的合成工具文件，偏移为 `[0, 0, 146]`。
 
 操作员先在实验室控制台的 Motion 工作区把机器人移至目标位置。示教时，控制台或其他控制器必须保持控制权。示教要求测量反馈新鲜、机器人空闲、没有锁定且没有未确认的停止。示教命令只读取服务描述和状态。它不会获取或释放控制租约、修改控制器工具配置或发送运动命令。
 
@@ -366,7 +372,7 @@ on_fail = "hold"
 
 安装真空开关并在 `src/mg400/suction.py` 中设置 `GRIP_DI`（默认为 `None`）后，机器人状态的 `vacuum.held` 报告是否吸住部件。吸气后 1 秒内未报告吸住时，操作单元发送 `vacuum release` 并失败。携带部件时 `held` 变为 `false` 表示掉落，运行暂停。放置后 1 秒内 `held` 未变为 `false` 时，操作单元失败。未设置 `GRIP_DI` 时，`held` 为 `null`，操作单元不能确认是否吸住部件。
 
-`robot.pick`、`robot.place` 和 `robot.transfer` 接受整数参数 `speed`，默认值为 1。允许范围从 1 到机器人服务公布的 `MG400_ROBOT_MAX_SPEED_L` 上限，该上限最多为 100。参数或公布的上限无效时，步骤在运动前拒绝。所有移动通过 `execute` 发送，机器人服务仍执行速度和加速度限制。控制器保持 `User=0,Tool=0`。
+`robot.pick`、`robot.place` 和 `robot.transfer` 接受整数参数 `speed`，默认值为 1。允许范围从 1 到机器人服务公布的速度上限，该上限固定为 20。参数或公布的上限无效时，步骤在运动前拒绝。所有移动通过 `execute` 发送，机器人服务仍执行速度和加速度限制。控制器保持 `User=0,Tool=0`。
 
 每次运动都等待完成及下一份新鲜测量位姿。各轴测得的法兰坐标必须与请求途经点相符，误差不超过 0.1 mm 或 0.1 度。测量位姿暂缺时，只在步骤时限内继续读取。位姿不符、掉落、异常结果或超时都会暂停运行并请求停止，不重试运动或抓取。
 

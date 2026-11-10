@@ -4,6 +4,7 @@ import gc
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -87,8 +88,8 @@ def test_losing_an_owner_object_does_not_clear_an_unreleased_safety_lock(tmp_pat
         ControllerOwnership("192.168.1.6", directory=tmp_path).acquire()
 
 
-def test_shared_directory_environment_is_used_by_independent_instances(monkeypatch, tmp_path):
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", str(tmp_path))
+def test_shared_default_directory_is_used_by_independent_instances(monkeypatch, tmp_path):
+    monkeypatch.setattr(controller_ownership, "LOCK_DIR", tmp_path)
     owner = ControllerOwnership("ROBOT.TEST.")
     contender = ControllerOwnership("robot.test")
     other_robot = ControllerOwnership("192.168.1.7")
@@ -116,7 +117,9 @@ def test_unwritable_lock_directory_prevents_ownership(monkeypatch, tmp_path):
 
 def test_relative_directory_is_rejected_before_connection(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MG400_CONTROLLER_LOCK_DIR", "different-in-each-working-directory")
+    monkeypatch.setattr(
+        controller_ownership, "LOCK_DIR", Path("different-in-each-working-directory")
+    )
     owner = ControllerOwnership("robot.test")
     with pytest.raises(RuntimeError, match="absolute"):
         owner.acquire()

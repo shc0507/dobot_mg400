@@ -1292,9 +1292,6 @@ def test_proxy_dry_run_checks_without_any_host_mutation(host):
         {"MG400_PROXY_PORT": "8080;shutdown"},
         {"MG400_PROXY_PORT": "65536"},
         {"MG400_PROXY_PORT": "8772"},
-        {"MG400_ORCH_PORT": "1985"},
-        {"MG400_ORCH_PORT": "8774"},
-        {"MG400_ORCH_PORT": "http://elsewhere"},
     ],
 )
 def test_proxy_invalid_configuration_refuses_before_host_mutation(host, settings):
@@ -1351,6 +1348,7 @@ def test_proxy_requires_a_caddy_binary(host):
 
 
 def test_proxy_rendering_keeps_verified_origins_and_upgrade_defaults(host, module):
+    # The orchestrator upstream port is fixed. The settings cannot change it.
     proxy_settings(host, MG400_PROXY_BIND="::1", MG400_ORCH_PORT="9001")
     settings = module.parse_settings(host.settings.read_text())
     registry = module.load_services(host.code / "deploy/services.toml")
@@ -1360,7 +1358,7 @@ def test_proxy_rendering_keeps_verified_origins_and_upgrade_defaults(host, modul
         module.enabled_services(registry, "proxy"),
     )
     assert "bind [::1]" in config
-    assert "import instrument 127.0.0.1:9001" in config
+    assert "import instrument 127.0.0.1:8772" in config
     assert "import instrument 127.0.0.1:1985" in config
     assert "header_up Host {http.request.hostport}" in config
     assert "header_up X-Forwarded-Host {http.request.hostport}" in config
@@ -1903,9 +1901,11 @@ def test_microscope_installs_by_default_with_sdk_udev_private_data_and_runtime(
     assert library.read_bytes() == toupcam_library.read_bytes()
     assert mode(library) == 0o755 and host.owner(library) == (0, 0)
     settings = module.parse_settings(host.settings.read_text())
-    for key in ("SWITCH_FOCUS", "HOME_SWITCH", "FOCUS_LIMITS", "SERIAL", "SIDE_STREAM"):
+    for key in ("SERIAL", "SIDE_STREAM"):
         assert settings["MG400_MICROSCOPE_" + key] == ""
-    assert settings["MG400_MICROSCOPE_NUDGE_STEPS"] == "0"
+    # The focus limits, clearance and turret window are fixed in code.
+    for key in ("SWITCH_FOCUS", "HOME_SWITCH", "FOCUS_LIMITS", "NUDGE_STEPS"):
+        assert "MG400_MICROSCOPE_" + key not in settings
     assert settings["MG400_TOUPCAM_SERIAL"] == settings["MG400_TOUPCAM_INDEX"] == ""
     sync = next(
         command for command in names(host.commands) if command[:2] == ["/usr/bin/uv", "sync"]
@@ -1982,7 +1982,7 @@ def test_microscope_upgrade_preserves_library_data_and_measured_settings(
     library = host.root / "usr/local/lib/mg400/libtoupcam.so"
     original_inode = library.stat().st_ino
     microscope_library_owner(module, monkeypatch, library)
-    values = dict(SWITCH_FOCUS="0", HOME_SWITCH="0", FOCUS_LIMITS="0,10000", NUDGE_STEPS="20")
+    values = dict(SERIAL="/dev/serial/by-id/usb-microscope", SIDE_STREAM="camera3")
     lines = host.settings.read_text().splitlines()
     for index, line in enumerate(lines):
         for key, value in values.items():

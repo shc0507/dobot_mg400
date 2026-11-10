@@ -1396,13 +1396,13 @@ def test_recording_columns_match_existing_furnace_source_schema():
     assert FRAME_METADATA_FIELDS == SOURCE_FIELDS
 
 
-def test_furnace_provider_settings_read_the_furnace_url():
+def test_furnace_provider_uses_the_fixed_furnace_url():
     from microscope.service import MicroscopeConfig
 
     config = MicroscopeConfig.from_env(
         {"MG400_MICROSCOPE_FURNACE_URL": "http://127.0.0.1:8769/heat/"}
     )
-    assert config.furnace_url.endswith("/heat/")
+    assert config.furnace_url == "http://127.0.0.1:8769/"
 
 
 def test_recording_cleanup_failure_keeps_stop_unconfirmed(recording_rig):

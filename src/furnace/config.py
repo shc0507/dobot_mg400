@@ -2,9 +2,9 @@
 
 Set MG400_FURNACE_SERIAL and MG400_MFC_SERIAL to stable /dev/serial/by-id/
 paths. Neither port has a default. Explicit port arguments take precedence.
-MG400_FURNACE_SLAVE defaults to 1. MG400_FURNACE_MAX_C and
-MG400_FURNACE_MAX_RAMP default to 1000 and 100. Lower caps are permitted.
-Caps must be finite and positive, and cannot exceed these defaults.
+MG400_FURNACE_SLAVE defaults to 1. The caps are fixed in code: 1000 C and
+100 C/min. Code can pass lower caps. Caps must be finite and positive, and
+cannot exceed these values.
 """
 
 import math
@@ -69,10 +69,8 @@ class FurnaceConfig:
             ):
                 raise ValueError(f"{name} must be a nonempty serial port")
         object.__setattr__(self, "slave_address", resolve_slave_address(self.slave_address))
-        object.__setattr__(self, "max_c", _cap(self.max_c, "MG400_FURNACE_MAX_C", MAX_TEMP))
-        object.__setattr__(
-            self, "max_ramp", _cap(self.max_ramp, "MG400_FURNACE_MAX_RAMP", MAX_RAMP)
-        )
+        object.__setattr__(self, "max_c", _cap(self.max_c, "max_c", MAX_TEMP))
+        object.__setattr__(self, "max_ramp", _cap(self.max_ramp, "max_ramp", MAX_RAMP))
 
     @classmethod
     def from_env(
@@ -91,6 +89,4 @@ class FurnaceConfig:
                 else slave_address
             ),
             flow_port=serial_port(flow_port, "MG400_MFC_SERIAL", required=False),
-            max_c=os.environ.get("MG400_FURNACE_MAX_C", str(MAX_TEMP)),
-            max_ramp=os.environ.get("MG400_FURNACE_MAX_RAMP", str(MAX_RAMP)),
         )

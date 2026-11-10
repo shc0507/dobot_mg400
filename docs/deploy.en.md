@@ -303,8 +303,6 @@ The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console u
 | `MG400_PROXY_PORT` | `8080` | Proxy port, from `1024` to `65535` |
 | `MG400_OPTIONAL_SERVICES` | Empty | Optional service names from the registry, separated by commas |
 | `MG400_ROBOT_HOST` | Address in `config/robot.toml` | Robot address |
-| `MG400_ROBOT_MAX_SPEED_L`, `MG400_ROBOT_MAX_ACC_L` | `1` | Robot speed cap, integer percentages from `1` to `100` |
-| `MG400_ORCH_TOOL_FILE` | `/var/lib/mg400/robot/tool.toml` | Measured tool offset |
 | `MG400_CAMERA_DEVICES` | Empty | 1 to 4 distinct camera devices separated by commas. Empty disables cameras |
 | `MG400_CAMERA_MODES` | Empty | One approved `WIDTHxHEIGHT@FPS` mode per device, in device order |
 | `MG400_STAGE_SERIAL` | Empty | Arduino serial port path. See [Stage configuration](stage-panel.en.md#configuration) |
@@ -361,7 +359,7 @@ The check includes mixed lists and `all`, including a disabled furnace selected 
 An active sequence or cooling gas plan requires `--force`. Unavailable, malformed, disconnected, or locked status also requires `--force`.
 Coordinate with all clients before using `mg400ctl stop furnace --force` or `mg400ctl restart furnace --force`.
 Forced shutdown requests that the service stop heat and gas. Verify the stop result. The check is advisory: a sequence can start between the status read and systemd action.
-The guard reads `MG400_FURNACE_BIND`, `MG400_FURNACE_PORT`, and `MG400_FURNACE_BASE_PATH`. If they are not set, it uses `127.0.0.1`, `8769`, and `/`. It accepts `localhost` and maps `0.0.0.0` to `127.0.0.1`, and `::` to `::1`.
+The guard reads `http://127.0.0.1:8769/api/state`.
 It does not use proxies or redirects.
 Socket operations time out after `2` s. A `2` s body deadline is checked between returned chunks.
 Header and transfer-framing reads use socket timeouts, so this is not a total request deadline.
@@ -385,7 +383,7 @@ If it cannot confirm the stopped state, the robot service stops routine coordina
 Check the robot, then click Recover. Reloading the Lab Console does not clear the warning.
 
 All programs must use the same robot address and the lock directory `/var/lib/mg400/locks`.
-The units and `mg400ctl` set this directory. It must support operating-system file locks.
+This directory is fixed in code. It must support operating-system file locks.
 All programs run as UID 1000. Lock file permissions are `0600`.
 When running as root, the program refuses lock directories not owned by root.
 If an existing lock file has a different owner, the program changes its owner in place and preserves the original file.

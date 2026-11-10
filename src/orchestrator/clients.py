@@ -4,7 +4,6 @@ import copy
 import http.client
 import json
 import math
-import os
 import re
 import threading
 import time
@@ -20,7 +19,9 @@ from .recipe import positive
 
 SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
 
-# Fixed loopback addresses of the lab services. A nonempty setting overrides one.
+# Seconds for one HTTP request to a lab service.
+TIMEOUT_S = 2
+# Fixed loopback addresses of the lab services. The host environment cannot change them.
 SERVICE_URLS = {
     "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
     "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
@@ -189,9 +190,11 @@ class FurnaceAdapter(ServiceAdapter):
 
 
 class RobotAdapter(ServiceAdapter):
-    def __init__(self, url, identity, *, timeout=2):
+    def __init__(self, url, identity, *, timeout=2, tool_file=None):
         super().__init__(url, identity, timeout=timeout)
         self._robot = RobotClient(url, identity, timeout=timeout)
+        # A rehearsal robot names its own synthetic tool. None selects the host tool.
+        self.tool_file = tool_file
 
     def acquire(self):
         self._robot.connect()
@@ -313,8 +316,8 @@ class Borrowed:
 
 
 def from_settings(settings=None, *, identity):
-    settings = os.environ if settings is None else settings
-    timeout = positive(float(settings.get("MG400_ORCH_TIMEOUT_S", "2")), "request timeout")
+    """Return adapters for the fixed loopback services, or for the URLs in settings."""
+    settings = SERVICE_URLS if settings is None else settings
     result = {}
     for name in SERVICES:
         prefix = f"MG400_ORCH_{name.upper()}"
@@ -325,7 +328,7 @@ def from_settings(settings=None, *, identity):
                 "thermal": ThermalAdapter,
                 "furnace": FurnaceAdapter,
             }.get(name, ServiceAdapter)
-            result[name] = adapter(url, identity, timeout=timeout)
+            result[name] = adapter(url, identity, timeout=TIMEOUT_S)
     return result
 
 

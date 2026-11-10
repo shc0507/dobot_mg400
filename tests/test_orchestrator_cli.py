@@ -162,9 +162,8 @@ def test_runs_only_reads_store_and_cannot_restart_held_run(monkeypatch, tmp_path
     monkeypatch.setattr(cli, "RunStore", factory)
     clients = Mock(side_effect=AssertionError("history cannot create clients"))
     monkeypatch.setattr(cli, "from_settings", clients)
-    monkeypatch.setenv("MG400_ORCH_RUNS_DIR", str(tmp_path))
     output = io.StringIO()
-    assert cli.main(["runs", "held-id"], out=output) == 0
+    assert cli.main(["runs", "held-id", "--runs-dir", str(tmp_path)], out=output) == 0
     factory.assert_called_once_with(tmp_path, readonly=True)
     assert json.loads(output.getvalue()) == row
     clients.assert_not_called()

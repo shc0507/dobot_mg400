@@ -47,10 +47,6 @@ DEMO_ENV = (
         "TERM",
         "COLORTERM",
         "TZ",
-        "MG400_ORCH_BIND",
-        "MG400_ORCH_PORT",
-        "MG400_ORCH_BASE_PATH",
-        "MG400_ORCH_RECIPES_DIR",
         CONFIG_SETTING,
         DEMO_MARKER,
     }
@@ -366,10 +362,8 @@ class OrchestratorService:
         clock=time.monotonic,
     ):
         self.settings = dict(os.environ if settings is None else settings)
-        self.catalog = Catalog(
-            recipes_dir or self.settings.get("MG400_ORCH_RECIPES_DIR") or CATALOG_DEFAULT
-        )
-        self.runs_dir = Path(runs_dir or self.settings.get("MG400_ORCH_RUNS_DIR") or DEFAULT_RUNS)
+        self.catalog = Catalog(recipes_dir or CATALOG_DEFAULT)
+        self.runs_dir = Path(runs_dir or DEFAULT_RUNS)
         self.demo = bool(demo)
         self.registry = registry or default_registry(
             calibration_reference_provider=self._demo_calibration_references if self.demo else None
@@ -634,12 +628,8 @@ class OrchestratorService:
                 if self.resources is None
                 else self.resources.existing_client(name, identity, profile=profile)
             )
-        prefix = f"MG400_ORCH_{name.upper()}"
-        settings = {
-            key: value
-            for key, value in self.settings.items()
-            if key in {prefix + "_URL", "MG400_ORCH_TIMEOUT_S"}
-        }
+        key = f"MG400_ORCH_{name.upper()}_URL"
+        settings = {key: self.settings[key]} if self.settings.get(key) else {}
         return from_settings(settings, identity=identity).get(name)
 
     def console_client(self, name, identity):

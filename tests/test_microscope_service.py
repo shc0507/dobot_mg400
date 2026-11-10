@@ -206,21 +206,21 @@ def test_cli_failure_still_cleans_both_resources_and_exits_two(monkeypatch, fail
     assert handlers == {2: 0, 15: 0, 1: 0}
 
 
-@pytest.mark.parametrize("value", ["1", "1,2,3", "0.5,2", "-1,2;bad"])
-def test_focus_config_refuses_noninteger_limits(value):
+def test_real_focus_configuration_uses_the_fixed_measured_values():
     from microscope.service import MicroscopeConfig
 
-    with pytest.raises(ValueError):
-        MicroscopeConfig.from_env({"MG400_MICROSCOPE_FOCUS_LIMITS": value})
-
-
-def test_real_focus_configuration_has_no_invented_defaults():
-    from microscope.service import MicroscopeConfig
-
-    config = MicroscopeConfig.from_env({})
-    assert config.focus_limits is config.switch_focus is config.home_switch is None
+    # The host environment cannot change the focus limits or the clearance.
+    config = MicroscopeConfig.from_env(
+        {
+            "MG400_MICROSCOPE_FOCUS_LIMITS": "-1,1",
+            "MG400_MICROSCOPE_SWITCH_FOCUS": "1",
+            "MG400_MICROSCOPE_HOME_SWITCH": "1",
+        }
+    )
+    assert (config.focus_limits, config.switch_focus, config.home_switch) == ((0, 10000), 0, False)
+    config.validate()
     with pytest.raises(ValueError, match="Measured"):
-        config.validate()
+        MicroscopeConfig().validate()
 
 
 CAMERA_DEVICES = ",".join(
@@ -324,8 +324,8 @@ def test_discovery_advertises_focus_zero_for_the_lease_holder():
 def demo_rig(monkeypatch, tmp_path):
     from microscope.service import MicroscopeConfig, MicroscopeService
 
-    monkeypatch.setenv("MG400_ORCH_RUNS_DIR", str(tmp_path / "runs"))
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(tmp_path / "calibration"))
+    monkeypatch.setattr("microscope.paths.RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", tmp_path / "calibration")
     services = []
 
     def create(*, home_switch=False, **kwargs):
@@ -515,11 +515,8 @@ def refused_nudge(rig, steps):
 def test_nudge_config_uses_the_measured_window_setting():
     from microscope.service import MicroscopeConfig, MicroscopeService
 
-    assert MicroscopeConfig.from_env({}).nudge_steps == 0
-    assert MicroscopeConfig.from_env({"MG400_MICROSCOPE_NUDGE_STEPS": "20"}).nudge_steps == 20
-    for value in ("21", "-1", "2.5"):
-        with pytest.raises(ValueError, match="0..20"):
-            MicroscopeConfig.from_env({"MG400_MICROSCOPE_NUDGE_STEPS": value})
+    assert MicroscopeConfig.from_env({}).nudge_steps == 20
+    assert MicroscopeConfig.from_env({"MG400_MICROSCOPE_NUDGE_STEPS": "0"}).nudge_steps == 20
     with pytest.raises(ValueError, match="nudge window"):
         MicroscopeConfig(
             focus_limits=(0, 10), switch_focus=0, home_switch=False, nudge_steps=21

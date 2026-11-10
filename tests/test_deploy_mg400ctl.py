@@ -169,7 +169,7 @@ def test_recipe_dispatch_precedes_admin_registry_and_drops_root(ctl, monkeypatch
             for key, value in ctl.module.parse_settings(settings).items()
             if key.startswith("MG400_") and value
         }
-        assert forwarded == {**ctl.module.FIXED_SETTINGS, **file_settings}
+        assert forwarded == file_settings
     assert not set(environment) & {"PYTHONPATH", "LD_PRELOAD", "HTTP_PROXY", "HTTPS_PROXY"}
     ctl.getpwuid.assert_called_with(1000)
     ctl.run.assert_not_called()
@@ -190,7 +190,6 @@ def test_nonroot_recipe_forwards_every_caller_setting(ctl, monkeypatch, command)
     assert argv == [program, "-I", "-m", "orchestrator", command]
     assert environment["MG400_ORCH_RUNS_DIR"] == "/tmp/own-runs"
     assert environment["MG400_ORCH_ROBOT_URL"] == "http://robot.invalid"
-    assert ("MG400_ORCH_STAGE_URL" in environment) is (command != "rehearse")
     assert "HTTP_PROXY" not in environment
     ctl.getpwuid.assert_not_called()
 
@@ -291,7 +290,6 @@ def test_terminal_runs_as_the_service_user_on_its_own_terminal(ctl, monkeypatch)
     # Nothing from the root environment except the terminal settings reaches the service user.
     assert environment == {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
         "MG400_ROBOT_HOST": "robot.test",
         "TERM": "xterm-256color",
     }
@@ -1104,57 +1102,19 @@ class FurnaceHTTP:
         self.closed = True
 
 
-@pytest.mark.parametrize(
-    "bind,host",
-    [
-        ("127.0.0.1", "127.0.0.1"),
-        ("0.0.0.0", "127.0.0.1"),
-        ("::", "::1"),
-        ("::1", "::1"),
-        ("192.0.2.1", "192.0.2.1"),
-        ("localhost", "localhost"),
-    ],
-)
-def test_furnace_guard_uses_configured_bind_without_proxy(ctl, bind, host, monkeypatch):
+def test_furnace_guard_uses_fixed_loopback_without_proxy(ctl, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid")
     response = FurnaceHTTP()
     factory = Mock(return_value=response)
     value = ctl.module.furnace_state(
-        {
-            "MG400_FURNACE_BIND": bind,
-            "MG400_FURNACE_PORT": "9000",
-            "MG400_FURNACE_BASE_PATH": "/heat/",
-        },
+        {"MG400_FURNACE_BIND": "192.0.2.1", "MG400_FURNACE_PORT": "9000"},
         connection_factory=factory,
     )
     assert value == {"service": "furnace"}
-    factory.assert_called_once_with(host, 9000, timeout=2)
+    factory.assert_called_once_with("127.0.0.1", 8769, timeout=2)
     args, options = response.requests[0]
-    assert args == ("GET", "/heat/api/state")
+    assert args == ("GET", "/api/state")
     assert "Authorization" not in options["headers"] and response.closed
-
-
-@pytest.mark.parametrize(
-    "settings",
-    [
-        {"MG400_FURNACE_BIND": "user@host"},
-        {"MG400_FURNACE_BIND": "127.0.0.1/evil"},
-        {"MG400_FURNACE_BIND": "remote.example"},
-        {"MG400_FURNACE_BIND": "fe80::1%eth0"},
-        {"MG400_FURNACE_PORT": "0"},
-        {"MG400_FURNACE_BASE_PATH": "//evil"},
-        {"MG400_FURNACE_BASE_PATH": "/a?x=1"},
-        {"MG400_FURNACE_BASE_PATH": "/../"},
-    ],
-)
-def test_furnace_guard_invalid_destination_never_constructs_connection(ctl, settings):
-    factory = Mock(side_effect=AssertionError("network"))
-    with pytest.raises(ValueError):
-        ctl.module.furnace_state(
-            settings,
-            connection_factory=factory,
-        )
-    factory.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1297,9 +1257,7 @@ def test_microscope_import_copies_only_allowlisted_data_with_private_modes(calib
     ctl.execvpe.assert_not_called()
 
 
-def test_microscope_import_uses_host_setting_under_fake_root_not_environment(
-    calibration_ctl, monkeypatch
-):
+def test_microscope_import_uses_the_fixed_directory_not_settings(calibration_ctl, monkeypatch):
     ctl = calibration_ctl
     (ctl.source / "one.csv").write_bytes(b"data")
     ctl.host.settings.write_text(
@@ -1307,18 +1265,9 @@ def test_microscope_import_uses_host_setting_under_fake_root_not_environment(
     )
     monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", "/ignored/environment")
     assert import_calibration(ctl) == 0
-    assert (ctl.host.root / "custom/calibration/one.csv").read_bytes() == b"data"
-    assert not ctl.destination.exists()
+    assert (ctl.destination / "one.csv").read_bytes() == b"data"
+    assert not (ctl.host.root / "custom").exists()
     assert not (ctl.host.root / "ignored").exists()
-
-
-@pytest.mark.parametrize("setting", ["/", "relative/path", "/var/lib/../outside"])
-def test_microscope_import_rejects_unsafe_configured_path_before_writes(calibration_ctl, setting):
-    ctl = calibration_ctl
-    (ctl.source / "one.csv").write_bytes(b"data")
-    ctl.host.settings.write_text(SETTINGS + f"MG400_MICROSCOPE_CALIBRATION_DIR={setting}\n")
-    assert import_calibration(ctl) == 1
-    assert not ctl.destination.exists()
 
 
 @pytest.mark.parametrize(
@@ -1428,8 +1377,6 @@ def test_microscope_import_refuses_empty_overlap_and_parent_traversal(calibratio
     assert import_calibration(ctl) == 1
     (ctl.source / "one.csv").write_bytes(b"data")
     assert import_calibration(ctl, ctl.source / ".." / "incoming") == 1
-    ctl.host.settings.write_text(SETTINGS + "MG400_MICROSCOPE_CALIBRATION_DIR=/incoming/nested\n")
-    assert import_calibration(ctl) == 1
     assert not ctl.destination.exists()
 
 

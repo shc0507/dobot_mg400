@@ -187,7 +187,8 @@ class Agent:
             raise ValueError("A session name is 1 to 64 letters, digits, _, . or -.")
         self.session, self.page = session, "agent-" + session
         self.http = http or Http(url, self.page)
-        settings = os.environ if settings is None else settings
+        settings = {} if settings is None else settings
+        # Tests pass their own URLs. The host environment cannot change them.
         self.urls = {
             name: settings.get(f"MG400_ORCH_{name.upper()}_URL")
             or SERVICE_URLS[f"MG400_ORCH_{name.upper()}_URL"]

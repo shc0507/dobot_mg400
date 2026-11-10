@@ -15,9 +15,9 @@ def main(argv=None, *, environ=None, service_factory=make_service, server_factor
     parser.add_argument(
         "--demo", action="store_true", help="Use isolated simulated furnace and gas devices"
     )
-    parser.add_argument("--bind", default=env.get("MG400_FURNACE_BIND") or "127.0.0.1")
-    parser.add_argument("--port", type=int, default=env.get("MG400_FURNACE_PORT") or "8769")
-    parser.add_argument("--base-path", default=env.get("MG400_FURNACE_BASE_PATH") or "/")
+    parser.add_argument("--bind", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8769)
+    parser.add_argument("--base-path", default="/")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
@@ -30,8 +30,6 @@ def main(argv=None, *, environ=None, service_factory=make_service, server_factor
                 port=env.get("MG400_FURNACE_SERIAL") or None,
                 flow_port=env.get("MG400_MFC_SERIAL") or None,
                 slave_address=env.get("MG400_FURNACE_SLAVE") or 1,
-                max_c=env.get("MG400_FURNACE_MAX_C") or 1000,
-                max_ramp=env.get("MG400_FURNACE_MAX_RAMP") or 100,
             )
             if not config.port:
                 parser.error("Set MG400_FURNACE_SERIAL to the configured serial device")
@@ -39,7 +37,6 @@ def main(argv=None, *, environ=None, service_factory=make_service, server_factor
                 config=config,
                 gas_map=env.get("MG400_FURNACE_GAS_MAP") or {},
                 idle_gas=env.get("MG400_FURNACE_IDLE_GAS") or {},
-                orphan_grace_min=env.get("MG400_FURNACE_ORPHAN_GRACE_MIN") or 15,
             )
         app = create_app(service, base_path=args.base_path)
     except (ValueError, OSError) as error:

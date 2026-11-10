@@ -39,12 +39,10 @@ def serve(
 
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(prog="python -m orchestrator serve")
-    parser.add_argument("--bind", default=env.get("MG400_ORCH_BIND") or "127.0.0.1")
-    parser.add_argument("--port", type=int, default=env.get("MG400_ORCH_PORT") or "8772")
-    parser.add_argument("--base-path", default=env.get("MG400_ORCH_BASE_PATH") or "/")
-    parser.add_argument(
-        "--recipes-dir", default=env.get("MG400_ORCH_RECIPES_DIR") or CATALOG_DEFAULT
-    )
+    parser.add_argument("--bind", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8772)
+    parser.add_argument("--base-path", default="/")
+    parser.add_argument("--recipes-dir", default=CATALOG_DEFAULT)
     parser.add_argument("--runs-dir", help="Private run store; unavailable in demo mode")
     parser.add_argument("--demo", action="store_true", help="Use only owned isolated demo services")
     args = parser.parse_args(argv)
@@ -76,7 +74,8 @@ def serve(
             settings=(
                 dict(env)
                 if args.demo
-                else {**SERVICE_URLS, **{key: value for key, value in env.items() if value}}
+                # The fixed service URLs win over the host environment.
+                else {**{key: value for key, value in env.items() if value}, **SERVICE_URLS}
             ),
             recipes_dir=args.recipes_dir,
             runs_dir=args.runs_dir,

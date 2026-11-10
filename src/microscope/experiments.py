@@ -320,7 +320,7 @@ def main(argv=None):
     parser.add_argument("--ids", default=",".join(map(str, OBJECTIVE_ORDER)))
     parser.add_argument("--focus-microstep", type=int, choices=(1, 2, 4, 8, 16), default=1)
     parser.add_argument("--focus-start", type=int, help="Measured focus start in MICRO 4 pulses")
-    parser.add_argument("--output", help="New directory beneath MG400_ORCH_RUNS_DIR")
+    parser.add_argument("--output", help="New directory beneath /var/lib/mg400/runs")
     args = parser.parse_args(argv)
     try:
         settings = load_settings(args.settings)

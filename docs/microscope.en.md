@@ -33,7 +33,7 @@ It does not start devices or create calibration values.
 The unit runs as `1000:1000` with `dialout` and `video` access.
 It sets `LD_LIBRARY_PATH=/usr/local/lib/mg400` and listens on `127.0.0.1:8770`.
 It reads furnace metadata from `http://127.0.0.1:8769/`.
-`MG400_MICROSCOPE_BIND`, `MG400_MICROSCOPE_PORT`, `MG400_MICROSCOPE_BASE_PATH` (default `/`) and `MG400_MICROSCOPE_FURNACE_URL` change these defaults.
+`MG400_MICROSCOPE_BIND`, `MG400_MICROSCOPE_PORT`, and `MG400_MICROSCOPE_BASE_PATH` (default `/`) change the listen defaults. The furnace address is fixed.
 
 Stop conflicting camera and motor programs before use.
 Start the configured side-camera service with `mg400ctl start camera`, then start `mg400ctl start microscope`.
@@ -63,23 +63,20 @@ Cleanup failures produce a nonzero exit status.
 | `MG400_MICROSCOPE_SIDE_STREAM` | The stream owned by go2rtc for the side camera. |
 | `MG400_TOUPCAM_SERIAL` | Optional camera serial. Set this or the index, never both. |
 | `MG400_TOUPCAM_INDEX` | Optional nonnegative camera index. With both selectors empty, the index is `0`. |
-| `MG400_MICROSCOPE_FOCUS_LIMITS` | Required measured `MIN,MAX` integer pulses, including zero, with nonzero travel. |
-| `MG400_MICROSCOPE_SWITCH_FOCUS` | Required measured clearance position, in pulses within the limits. Without a home switch, it must be `0`. |
-| `MG400_MICROSCOPE_HOME_SWITCH` | Required hardware fact: `1` for a configured focus home switch, or `0` when none exists. |
-| `MG400_MICROSCOPE_NUDGE_STEPS` | Measured turret window for `objective_nudge`, in full steps from `0` through `20`. When it is unset or `0`, the service refuses every nudge. |
 
 Objective IDs: `0` = 5x, `1` = 10x, `2` = 20x, `3` = 50x.
 
-Real startup requires reference-aware firmware and explicit focus settings.
-The generic environment example leaves the physical focus settings empty and sets the turret nudge window to `0`.
-For the current microscope, use these settings from `H-06`:
+Real startup requires reference-aware firmware.
+The `H-06` measured values of the current microscope are fixed in `src/microscope/calibrate.py`:
 
-```ini
-MG400_MICROSCOPE_SWITCH_FOCUS=0
-MG400_MICROSCOPE_HOME_SWITCH=0
-MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
-MG400_MICROSCOPE_NUDGE_STEPS=20
-```
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `FOCUS_LIMITS` | `0,10000` | Focus limits in full-step pulses, including zero |
+| `SWITCH_FOCUS` | `0` | Clearance position. Without a home switch, it must be `0` |
+| `HOME_SWITCH` | `False` | No focus home switch |
+| `NUDGE_WINDOW` | `20` | Turret window for `objective_nudge`, in full steps from `0` through `20`. When it is `0`, the service refuses every nudge |
+
+Change these constants after you replace the microscope or measure it again.
 
 Do not copy demo limits to hardware.
 Route paths below are relative to the base path `/`.
@@ -112,7 +109,7 @@ The service checks the end position, then disables the turret motor.
 A nudge requires a known zero.
 
 In `GET /api/state`, `objective_offset_steps` is the turret offset: the full steps of nudges after `select_objective` aligned an objective.
-`objective_offset_limit_steps` is the value of `MG400_MICROSCOPE_NUDGE_STEPS`.
+`objective_offset_limit_steps` is the value of `NUDGE_WINDOW`.
 The allowed offset is inclusive, from minus the limit to plus the limit. Outside this range, the service refuses the nudge with HTTP 409 before motion.
 
 When `select_objective` turns the turret, the side camera aligns the turret on the target objective. The offset is then `0`.
@@ -294,8 +291,8 @@ The caller must handle cancellation, close camera connections, and stop or disab
 
 | Directory | Contents |
 | --- | --- |
-| `/var/lib/mg400/calibration/microscope` (`MG400_MICROSCOPE_CALIBRATION_DIR`) | Calibration CSV files, reference images, and side-camera calibration captures. |
-| `/var/lib/mg400/runs` (`MG400_ORCH_RUNS_DIR`) | Autofocus curves, objective-switch logs, and image analysis outputs. |
+| `/var/lib/mg400/calibration/microscope` | Calibration CSV files, reference images, and side-camera calibration captures. |
+| `/var/lib/mg400/runs` | Autofocus curves, objective-switch logs, and image analysis outputs. |
 
 Use `microscope.paths.calibration_path()` for calibration paths and `microscope.paths.run_path()` for run paths.
 Relative paths resolve under the corresponding root.
@@ -399,7 +396,7 @@ At active microstep `m`, the lower limit is `ceil(MIN * m / 4)` and the upper li
 This inward rounding must leave usable travel. Clearance and requested absolute positions must convert exactly.
 The tools refuse fractional or out-of-range coordinates.
 
-Without a home switch, the operator establishes zero at clearance. `MG400_MICROSCOPE_SWITCH_FOCUS` must be `0`.
+Without a home switch, the operator establishes zero at clearance. `SWITCH_FOCUS` must be `0`.
 With a configured switch, `FOCUS HOME` establishes the home origin. It never falls back to `FOCUS ZERO`.
 The measured limits and clearance must use that same home origin.
 Every focus move requires a current reference and measured limits.
@@ -451,8 +448,8 @@ Camera dimensions default to `2592x1944`.
 
 ### Calibration at working focus
 
-`MG400_MICROSCOPE_NUDGE_STEPS` sets the measured turret window in full steps.
-Unset or `0` keeps the clearance behavior above. Values from `1` through `20` enable bounded moves at working focus.
+`NUDGE_WINDOW` is the measured turret window in full steps.
+`0` keeps the clearance behavior above. Values from `1` through `20` enable bounded moves at working focus.
 Other values refuse startup. In the calibration tool, this mode applies only to objective and light calibration. The service uses the same window for `objective_nudge`.
 
 Use the value measured in `H-06` at the window-side focus limit, with every objective in its working position.

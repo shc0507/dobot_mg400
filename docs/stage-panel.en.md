@@ -86,7 +86,7 @@ uv run stage-panel
 Local operation also reads the environment variables and arguments in [Configuration](#configuration).
 On Linux, the service user must have read and write access to the serial device, for example, through the `dialout` group.
 Log in again after joining the group.
-When you start the console, set `MG400_ORCH_STAGE_URL` to `http://127.0.0.1:8767/contract/`.
+The console always connects to `http://127.0.0.1:8767/contract/`.
 
 Without an Arduino, use the console demo mode to view the stage card:
 

@@ -56,11 +56,10 @@ def _serve(tmp_path_factory):
     shutil.copy(ROOT / "recipes/example-rehearsal.toml", recipes)
     for name, steps in RECIPES.items():
         (recipes / name).write_text(f'name = "{name}"\nversion = 1\nparams = {{}}\n{steps}')
-    env["MG400_ORCH_RECIPES_DIR"] = str(recipes)
     with open(log, "wb") as output:
         process = subprocess.Popen(
             [sys.executable, "-m", "orchestrator", "serve", "--demo", "--port", str(port)]
-            + ["--base-path", "/lab/"],
+            + ["--base-path", "/lab/", "--recipes-dir", str(recipes)],
             stdout=output,
             stderr=subprocess.STDOUT,
             env=env,

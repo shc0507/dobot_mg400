@@ -10,7 +10,6 @@ import argparse
 import contextlib
 import grp
 import http.client
-import ipaddress
 import json
 import os
 import pwd
@@ -22,12 +21,10 @@ import sys
 import tarfile
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import assets  # noqa: E402
 from install import (  # noqa: E402
-    FIXED_SETTINGS,
     SERVICE_GID,
     SERVICE_UID,
     Host,
@@ -62,35 +59,18 @@ STATION_ACTIONS = {"save", "list", "show", "rm", "retool"}
 def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, clock=time.monotonic):
     """Read bounded live status directly, without proxies or redirects.
 
+    The furnace service listens on its fixed loopback address 127.0.0.1:8769.
     This is an advisory check before systemctl, not a lease held across shutdown.
     A new sequence can start after this read. Operators must coordinate shutdown.
     Socket operations time out after 2 seconds. Body reads also check a 2-second
     deadline between chunks. Header and transfer-framing reads use socket timeouts,
     not a total deadline.
     """
-    bind = settings.get("MG400_FURNACE_BIND") or "127.0.0.1"
-    if bind != "localhost":
-        address = ipaddress.ip_address(bind)
-        if "%" in bind:
-            raise ValueError("Scoped furnace bind addresses are not supported by the guard")
-        bind = str(address)
-    bind = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(bind, bind)
-    port = int(settings.get("MG400_FURNACE_PORT") or 8769)
-    if not 1 <= port <= 65535:
-        raise ValueError("Invalid furnace port")
-    base = settings.get("MG400_FURNACE_BASE_PATH") or "/"
-    if (
-        not base.startswith("/")
-        or any(part in base for part in ("?", "#", "//"))
-        or ".." in base.split("/")
-        or any(ord(character) < 32 or ord(character) == 127 for character in base)
-    ):
-        raise ValueError("Invalid furnace base path")
-    connection = connection_factory(bind, port, timeout=2)
+    connection = connection_factory("127.0.0.1", 8769, timeout=2)
     try:
         connection.request(
             "GET",
-            quote(base.rstrip("/"), safe="/-._~") + "/api/state",
+            "/api/state",
             headers={"Accept": "application/json"},
         )
         response = connection.getresponse()
@@ -168,7 +148,6 @@ def orchestrator(host, argv, execvpe):
         environment = {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             **{key: os.environ[key] for key in PASSED if key in os.environ},
-            **(FIXED_SETTINGS if argv[0] != "rehearse" else {}),
             **{key: value for key, value in settings.items() if key.startswith("MG400_") and value},
         }
         program = str(host.code.absolute() / ".venv/bin/python")
@@ -460,16 +439,11 @@ def _calibration_source(source, relative, expected):
 def import_microscope_calibration(host, source, settings, out):
     """Copy allowlisted host data only; never open a device or overwrite a target."""
     source = Path(source).absolute()
-    configured = Path(
-        settings.get("MG400_MICROSCOPE_CALIBRATION_DIR") or "/var/lib/mg400/calibration/microscope"
-    )
+    configured = Path("/var/lib/mg400/calibration/microscope")
     if (
-        not configured.is_absolute()
-        or configured == Path(configured.anchor)
-        or ".." in configured.parts
-        or ".." in source.parts
+        ".." in source.parts
         or source == Path(source.anchor)
-        or any(ord(char) < 32 or ord(char) == 127 for char in str(source) + str(configured))
+        or any(ord(char) < 32 or ord(char) == 127 for char in str(source))
     ):
         raise ValueError("Calibration paths must be absolute data paths without parent traversal")
     destination = host.root.absolute() / configured.relative_to(configured.anchor)
@@ -863,9 +837,8 @@ def main(
         for unit in services[args.name]:
             command += ["-u", unit]
         return run(command + (["-f"] if args.follow else [])).returncode
-    # Robot programs share the panel's robot connection lock.
-    robot_settings = {"MG400_CONTROLLER_LOCK_DIR": FIXED_SETTINGS["MG400_CONTROLLER_LOCK_DIR"]}
-    robot_settings.update(settings)
+    # Robot programs share the panel's robot connection lock through its fixed default.
+    robot_settings = dict(settings)
     if args.command == "terminal":
         program = host.code / ".venv/bin/mg400-robot"
         as_service_user(host, robot_settings, [str(program)], execvpe)

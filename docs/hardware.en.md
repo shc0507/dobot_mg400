@@ -45,10 +45,8 @@ mg400ctl mode
 
 `mg400ctl` runs the script as UID 1000. A mode read takes no connection lock. `--switch-to-tcp` acquires the [connection lock](deploy.en.md#panel-connection-lock) that the robot service also uses.
 The script uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
-For a direct run, the lock directory comes from `MG400_CONTROLLER_LOCK_DIR`. If it is unset, the directory is `/tmp/mg400-controller-locks`.
-The lock directory can belong to a user other than root, such as `/var/lib/mg400/locks`.
-In that case, `--switch-to-tcp` as root refuses to acquire the connection lock and does not connect to the controller.
-When the script runs as root without this variable, it can acquire a different lock that cannot exclude the robot service. Thus, run the script through `mg400ctl mode`.
+The lock directory is fixed at `/var/lib/mg400/locks`. Its owner is UID 1000.
+When `--switch-to-tcp` runs as root, the script refuses to acquire the connection lock and does not connect to the controller. Thus, run the script through `mg400ctl mode`.
 For a direct run, `--host` sets the controller address, `--timeout` sets the request timeout (default 5 seconds, maximum 30 seconds), and `--backup-dir` sets the backup directory (default `work/control-mode`).
 
 Before switching, disable the robot and stop running programs.

@@ -58,17 +58,18 @@ uv run ruff format --check .
 控制器端口为 `29999`、`30003` 和 `30004`，反馈周期为 `8 ms`。
 启动后，机械臂处于下使能状态。
 
+连接锁目录固定为 `/var/lib/mg400/locks`。主机上没有该目录时，先运行 `sudo install -d -m 0700 -o "$USER" /var/lib/mg400/locks`。
+锁文件按机械臂地址区分，因此模拟器的锁不影响真机。
+
 在项目根目录运行：
 
 ```bash
-sim_dir=$(mktemp -d)
 uv run python -m mg400.sim --host 127.0.0.2 &
 sim_pid=$!
-MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/server.py \
+uv run python apps/control_panel/server.py \
   --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2
 kill "$sim_pid"
 wait "$sim_pid"
-rm -r "$sim_dir"
 ```
 
 在另一个终端用 [Python 客户端](#python-客户端) 连接 `http://127.0.0.1:18766/`，按以下顺序发送命令：
@@ -204,14 +205,13 @@ POST 请求必须满足以下条件：
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
 
 对于 `keyboard`，`speed` 是 1–100 的整数。
-对于 `execute`，可选 `speed` 是整数，范围从 1 到主机的 `MG400_ROBOT_MAX_SPEED_L` 上限。
+对于 `execute`，可选 `speed` 是整数，范围从 1 到速度上限 `20`。
 值无效或超出上限时，服务返回 400，不会将运动排队。
 布尔值、字符串、小数和非有限值均无效。
 
 运动使用 `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`。
-加速度上限为 `MG400_ROBOT_MAX_ACC_L`。
-两个主机配置均默认为 1，接受 1–100 的整数。空值也使用 1。
-主机配置无效时，服务拒绝启动。修改上限后，重启服务。
+加速度上限为 `20`。
+两个上限固定在 `apps/control_panel/server.py` 中。
 
 未提供 `speed` 时，即使主机上限提高，协议命令仍为 `SpeedL=1,AccL=1`。
 这些配置不改变 `home`、`SpeedFactor` 或键盘点动。

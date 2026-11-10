@@ -60,17 +60,18 @@ It accepts only numeric loopback addresses. The default is `127.0.0.2`.
 The controller ports are `29999`, `30003`, and `30004`. The feedback interval is `8 ms`.
 At startup, the robot is disabled.
 
+The connection lock directory is fixed at `/var/lib/mg400/locks`. If the host does not have this directory, first run `sudo install -d -m 0700 -o "$USER" /var/lib/mg400/locks`.
+Each robot address has its own lock file, so the simulator lock does not affect the real robot.
+
 Run these commands in the project root:
 
 ```bash
-sim_dir=$(mktemp -d)
 uv run python -m mg400.sim --host 127.0.0.2 &
 sim_pid=$!
-MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/server.py \
+uv run python apps/control_panel/server.py \
   --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2
 kill "$sim_pid"
 wait "$sim_pid"
-rm -r "$sim_dir"
 ```
 
 In another terminal, use the [Python client](#python-client) to connect to `http://127.0.0.1:18766/`. Send these commands in sequence:
@@ -206,14 +207,13 @@ The command body is `{"action": "<action>", ...}`. It must contain no fields bey
 | `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
 
 For `keyboard`, `speed` is an integer from 1–100.
-For `execute`, optional `speed` is an integer from 1 to the host's `MG400_ROBOT_MAX_SPEED_L` cap.
+For `execute`, optional `speed` is an integer from 1 to the speed cap `20`.
 The service rejects invalid values or values above the cap with 400 before queuing movement.
 Booleans, strings, fractional values, and non-finite values are invalid.
 
 The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
-The acceleration cap is `MG400_ROBOT_MAX_ACC_L`.
-Both host settings default to 1 and accept integers from 1–100. Empty settings also use 1.
-Invalid host settings prevent service startup. Restart the service after changing a cap.
+The acceleration cap is `20`.
+Both caps are fixed in `apps/control_panel/server.py`.
 
 Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher caps.
 These settings do not change `home`, `SpeedFactor`, or keyboard jogging.

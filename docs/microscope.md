@@ -33,7 +33,7 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 单元以 `1000:1000` 运行，具有 `dialout` 和 `video` 访问权限。
 它设置 `LD_LIBRARY_PATH=/usr/local/lib/mg400`，监听 `127.0.0.1:8770`。
 它从 `http://127.0.0.1:8769/` 读取炉控元数据。
-`MG400_MICROSCOPE_BIND`、`MG400_MICROSCOPE_PORT`、`MG400_MICROSCOPE_BASE_PATH`（默认 `/`）和 `MG400_MICROSCOPE_FURNACE_URL` 可改变这些默认值。
+`MG400_MICROSCOPE_BIND`、`MG400_MICROSCOPE_PORT` 和 `MG400_MICROSCOPE_BASE_PATH`（默认 `/`）可改变监听默认值。炉控地址固定。
 
 使用前，停止冲突的相机和电机程序。
 先用 `mg400ctl start camera` 启动已配置的侧视相机服务，再运行 `mg400ctl start microscope`。
@@ -63,23 +63,20 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 | `MG400_MICROSCOPE_SIDE_STREAM` | go2rtc 独占的侧视相机流。 |
 | `MG400_TOUPCAM_SERIAL` | 可选相机序列号。它与索引只能设置一项。 |
 | `MG400_TOUPCAM_INDEX` | 可选的非负相机索引。两项选择器都为空时，索引为 `0`。 |
-| `MG400_MICROSCOPE_FOCUS_LIMITS` | 必填的实测 `MIN,MAX` 整数脉冲，包含零点，且行程不为零。 |
-| `MG400_MICROSCOPE_SWITCH_FOCUS` | 必填的实测避让位置，单位为脉冲，必须在限位内。没有归零开关时，必须为 `0`。 |
-| `MG400_MICROSCOPE_HOME_SWITCH` | 必填硬件事实：有已配置的调焦归零开关时为 `1`，没有时为 `0`。 |
-| `MG400_MICROSCOPE_NUDGE_STEPS` | `objective_nudge` 的实测转盘范围，单位为整步，取 `0` 到 `20`。未配置或为 `0` 时，服务拒绝所有微调。 |
 
 物镜 ID：`0` = 5x，`1` = 10x，`2` = 20x，`3` = 50x。
 
-真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
-通用环境示例的物理调焦参数为空，转盘微调范围为 `0`。
-当前显微镜使用以下 `H-06` 配置：
+真实启动必须使用支持调焦参考状态的固件。
+当前显微镜的 `H-06` 实测值固定在 `src/microscope/calibrate.py` 中：
 
-```ini
-MG400_MICROSCOPE_SWITCH_FOCUS=0
-MG400_MICROSCOPE_HOME_SWITCH=0
-MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
-MG400_MICROSCOPE_NUDGE_STEPS=20
-```
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `FOCUS_LIMITS` | `0,10000` | 调焦限位，单位为整步脉冲，包含零点 |
+| `SWITCH_FOCUS` | `0` | 避让位置。没有归零开关时，必须为 `0` |
+| `HOME_SWITCH` | `False` | 没有调焦归零开关 |
+| `NUDGE_WINDOW` | `20` | `objective_nudge` 的转盘范围，单位为整步，取 `0` 到 `20`。为 `0` 时，服务拒绝所有微调 |
+
+更换显微镜或重新测量后，修改这些常量。
 
 不得把演示限位复制到硬件。
 下列路由路径相对于基础路径 `/`。
@@ -112,7 +109,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 微调必须具有已知零点。
 
 `GET /api/state` 的 `objective_offset_steps` 是转盘偏移，即 `select_objective` 对准物镜后微调累计的整步数。
-`objective_offset_limit_steps` 是 `MG400_MICROSCOPE_NUDGE_STEPS` 的值。
+`objective_offset_limit_steps` 是 `NUDGE_WINDOW` 的值。
 允许偏移从负的上限到正的上限，包含边界。超出范围时，服务在移动前以 HTTP 409 拒绝微调。
 
 `select_objective` 转动转盘时，侧视相机把转盘对准目标物镜。之后偏移为 `0`。
@@ -294,8 +291,8 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 | 目录 | 内容 |
 | --- | --- |
-| `/var/lib/mg400/calibration/microscope`（`MG400_MICROSCOPE_CALIBRATION_DIR`） | 校准 CSV、参考图像和侧视相机校准采集。 |
-| `/var/lib/mg400/runs`（`MG400_ORCH_RUNS_DIR`） | 自动调焦曲线、物镜切换日志和图像分析输出。 |
+| `/var/lib/mg400/calibration/microscope` | 校准 CSV、参考图像和侧视相机校准采集。 |
+| `/var/lib/mg400/runs` | 自动调焦曲线、物镜切换日志和图像分析输出。 |
 
 校准路径使用 `microscope.paths.calibration_path()`，运行路径使用 `microscope.paths.run_path()`。
 相对路径按对应根目录解析。
@@ -399,7 +396,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 向内取整后必须仍有可用行程。避让位置和请求的绝对位置必须能够精确换算。
 工具拒绝不能整除或超出限位的坐标。
 
-没有归零开关时，操作员在避让位置设零。`MG400_MICROSCOPE_SWITCH_FOCUS` 必须为 `0`。
+没有归零开关时，操作员在避让位置设零。`SWITCH_FOCUS` 必须为 `0`。
 配置了开关时，`FOCUS HOME` 建立归零原点。它不会退回 `FOCUS ZERO`。
 实测限位和避让位置必须采用同一个归零原点。
 每次调焦移动都必须具备当前零点和实测限位。
@@ -451,8 +448,8 @@ uv run python -m microscope.experiments --help
 
 ### 工作焦点处的校准
 
-`MG400_MICROSCOPE_NUDGE_STEPS` 配置实测转盘范围，单位为整步。
-未配置或为 `0` 时，保留上述避让行为。`1` 到 `20` 允许工作焦点处的有界移动。
+`NUDGE_WINDOW` 是实测转盘范围，单位为整步。
+为 `0` 时，保留上述避让行为。`1` 到 `20` 允许工作焦点处的有界移动。
 其他值会拒绝启动。在校准工具中，此模式仅适用于物镜和轻量物镜校准。服务的 `objective_nudge` 使用同一范围。
 
 使用 `H-06` 在靠窗口的调焦限位处测得的值，测量时逐个把物镜置于工作位置。

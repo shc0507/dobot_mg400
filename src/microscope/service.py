@@ -38,6 +38,7 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.lease import Lease
 
+from . import calibrate
 from .aruco_locator import Locator
 from .aruco_switch import (
     OBJECTIVE_ORDER,
@@ -47,7 +48,6 @@ from .aruco_switch import (
     select_objective,
 )
 from .autofocus import AutofocusCancelled, AutoFocuser
-from .calibrate import nudge_steps
 from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
@@ -84,15 +84,6 @@ class MicroscopeConfig:
     @classmethod
     def from_env(cls, env=None):
         env = os.environ if env is None else env
-        limits = env.get("MG400_MICROSCOPE_FOCUS_LIMITS", "")
-        clearance = env.get("MG400_MICROSCOPE_SWITCH_FOCUS", "")
-        switch = env.get("MG400_MICROSCOPE_HOME_SWITCH", "")
-        if limits and not re.fullmatch(r"-?\d+,-?\d+", limits):
-            raise ValueError("MG400_MICROSCOPE_FOCUS_LIMITS must be MIN,MAX integer pulses")
-        if clearance and not re.fullmatch(r"-?\d+", clearance):
-            raise ValueError("MG400_MICROSCOPE_SWITCH_FOCUS must be integer pulses")
-        if switch not in ("", "0", "1"):
-            raise ValueError("MG400_MICROSCOPE_HOME_SWITCH must be 0 or 1")
         side_stream = env.get("MG400_MICROSCOPE_SIDE_STREAM", "")
         side_mode = None
         if side_stream:
@@ -106,11 +97,11 @@ class MicroscopeConfig:
             serial=env.get("MG400_MICROSCOPE_SERIAL", ""),
             side_stream=side_stream,
             side_mode=side_mode,
-            focus_limits=tuple(map(int, limits.split(","))) if limits else None,
-            switch_focus=int(clearance) if clearance else None,
-            home_switch=None if not switch else switch == "1",
-            nudge_steps=nudge_steps(env),
-            furnace_url=env.get("MG400_MICROSCOPE_FURNACE_URL", "http://127.0.0.1:8769/"),
+            # The focus limits, clearance and turret window are fixed in code.
+            focus_limits=tuple(calibrate.FOCUS_LIMITS),
+            switch_focus=calibrate.SWITCH_FOCUS,
+            home_switch=calibrate.HOME_SWITCH,
+            nudge_steps=calibrate.nudge_steps(),
         )
 
     def validate(self):
@@ -1527,7 +1518,7 @@ class MicroscopeService:
         """Refuse a nudge before motion unless it stays inside the measured window."""
         window = self.config.nudge_steps
         if not window:
-            raise ServiceError(409, "Turret nudges are off: MG400_MICROSCOPE_NUDGE_STEPS is 0")
+            raise ServiceError(409, "Turret nudges are off: the turret window is 0")
         if self._objective_id is None or self._objective_offset is None:
             raise ServiceError(409, "Turret offset unknown: select another objective first")
         offset = self._objective_offset + steps

@@ -7,9 +7,7 @@ import argparse
 import json
 import logging
 import logging.handlers
-import os
 import queue
-import re
 import signal
 import socket
 import sys
@@ -35,6 +33,9 @@ from mg400.websocket import (  # noqa: E402
 )
 
 MAX_SEQUENCE = 2**53
+# Robot speed cap: SpeedL and AccL percentages for every motion command.
+MAX_SPEED_L = 20
+MAX_ACC_L = 20
 # The WebSocket message format. Change it when a message changes incompatibly.
 PROTOCOL = 1
 
@@ -759,30 +760,18 @@ def start_event_log():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bind", help="HTTP address (default: MG400_PANEL_BIND or 127.0.0.1)")
-    parser.add_argument("--port", type=int, help="HTTP port (default: MG400_PANEL_PORT or 8766)")
+    parser.add_argument("--bind", default="127.0.0.1", help="HTTP address (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8766, help="HTTP port (default: 8766)")
     parser.add_argument("--mode", choices=("robot", "read-only"), default="robot")
     parser.add_argument("--base-path", type=normalize_base_path, default="/")
     parser.add_argument(
         "--robot-host", help="Robot address. Default: MG400_ROBOT_HOST, then config/robot.toml"
     )
     args = parser.parse_args(argv)
-    # An empty environment value counts as unset.
-    bind = args.bind if args.bind is not None else os.environ.get("MG400_PANEL_BIND") or "127.0.0.1"
-    port = args.port
-    if port is None:
-        value = os.environ.get("MG400_PANEL_PORT") or "8766"
-        port = int(value) if re.fullmatch("[0-9]{1,5}", value) else 0
-        if not 1 <= port <= 65535:
-            parser.error("MG400_PANEL_PORT must be a whole number between 1 and 65535")
-    caps = {}
-    for suffix, parameter in (("SPEED", "max_speed_l"), ("ACC", "max_acc_l")):
-        name = f"MG400_ROBOT_MAX_{suffix}_L"
-        value = os.environ.get(name) or "1"
-        cap = int(value) if re.fullmatch("[0-9]{1,3}", value) else 0
-        if not 1 <= cap <= 100:
-            parser.error(f"{name} must be a whole number between 1 and 100")
-        caps[parameter] = cap
+    bind, port = args.bind, args.port
+    if not 1 <= port <= 65535:
+        parser.error("--port must be a whole number between 1 and 65535")
+    caps = {"max_speed_l": MAX_SPEED_L, "max_acc_l": MAX_ACC_L}
     host = args.robot_host
     if not host:
         host = load_robot_host(ROOT / "config/robot.toml")

@@ -44,9 +44,9 @@ See [Lab Console](dashboard.en.md) for the workspace bounds and tool offset.
 The service then checks the target with the controller's inverse kinematics and the existing joint range checks.
 
 Clients can supply an integer `speed` with the `execute` command. The console speed input sets this value.
-The host setting `MG400_ROBOT_MAX_SPEED_L` limits this value. The service rejects values above the cap with 400.
+The speed cap is fixed at `20`. The service rejects values above the cap with 400.
 The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
-The acceleration cap is `MG400_ROBOT_MAX_ACC_L`.
+The acceleration cap is fixed at `20`.
 Without `speed`, the command remains `SpeedL=1,AccL=1`, even with higher caps.
 
 Both settings default to 1 and accept integers from 1–100. Empty settings also use 1.
@@ -196,11 +196,10 @@ sudo mg400ctl status
 For a local start, enter the project directory on a host that can reach the robot and run:
 
 ```sh
-MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks python3 apps/control_panel/server.py
+python3 apps/control_panel/server.py
 ```
 
-`MG400_CONTROLLER_LOCK_DIR` sets the connection lock directory. If it is unset, the directory is `/tmp/mg400-controller-locks`.
-If other programs use `/var/lib/mg400/locks`, the local service must set the same directory. Otherwise it cannot exclude them.
+The connection lock directory is fixed at `/var/lib/mg400/locks`. All programs share this directory, so the local service excludes the other programs.
 
 If you omit `--mode`, the service uses `robot` mode.
 The robot address defaults to `MG400_ROBOT_HOST`, or to `config/robot.toml` if that variable is unset. Use `--robot-host` to specify it.
@@ -209,9 +208,8 @@ During service shutdown, the service can take about 60 seconds to confirm that t
 The service's `TimeoutStopSec` is 90 seconds, which is longer than this interval.
 
 By default, the service listens on `127.0.0.1:8766`.
-`MG400_PANEL_BIND` and `MG400_PANEL_PORT` override the default. `--bind` and `--port` override the environment variables.
-Empty values use the default. If the port is not an integer from 1–65535, the service does not start.
-The Lab Console and the recipe service connect to this service through `MG400_ORCH_ROBOT_URL` (default `http://127.0.0.1:8766/`). If you change the address or port, also change this setting. See [Recipe orchestrator](orchestrator.en.md#service-settings).
+`--bind` and `--port` override the default. If the port is not an integer from 1–65535, the service does not start.
+The Lab Console and the recipe service always connect to `http://127.0.0.1:8766/`. See [Recipe orchestrator](orchestrator.en.md#service-settings).
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 Set the path prefix with `--base-path`, for example `--base-path /mg400-panel/`. All interface routes use this prefix.

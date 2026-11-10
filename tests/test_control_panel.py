@@ -268,8 +268,6 @@ def test_main_refuses_bad_arguments_before_constructing_a_backend(
     monkeypatch, capsys, argv, message
 ):
     main = PANEL["main"]
-    monkeypatch.delenv("MG400_PANEL_BIND", raising=False)
-    monkeypatch.delenv("MG400_PANEL_PORT", raising=False)
     backends = {name: Mock() for name in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
     for name, backend in backends.items():
         monkeypatch.setitem(main.__globals__, name, backend)
@@ -285,27 +283,20 @@ def test_main_refuses_bad_arguments_before_constructing_a_backend(
 
 
 @pytest.mark.parametrize(
-    ("environment", "argv", "address"),
+    ("argv", "address"),
     [
-        ({}, [], ("127.0.0.1", 8766)),
-        ({"MG400_PANEL_BIND": "", "MG400_PANEL_PORT": ""}, [], ("127.0.0.1", 8766)),
-        ({"MG400_PANEL_BIND": "localhost", "MG400_PANEL_PORT": "9000"}, [], ("localhost", 9000)),
-        (
-            {"MG400_PANEL_BIND": "0.0.0.0", "MG400_PANEL_PORT": "9000"},
-            ["--bind", "::1", "--port", "9001"],
-            ("::1", 9001),
-        ),
+        ([], ("127.0.0.1", 8766)),
+        (["--bind", "::1", "--port", "9001"], ("::1", 9001)),
     ],
-    ids=["defaults", "empty-means-unset", "environment", "options-win"],
+    ids=["defaults", "options"],
 )
-def test_listen_address_comes_from_options_then_environment(
-    monkeypatch, signal_table, environment, argv, address
+def test_listen_address_comes_from_options_then_fixed_defaults(
+    monkeypatch, signal_table, argv, address
 ):
     main = PANEL["main"]
-    for name in ("MG400_PANEL_BIND", "MG400_PANEL_PORT"):
-        monkeypatch.delenv(name, raising=False)
-    for name, value in environment.items():
-        monkeypatch.setenv(name, value)
+    # The host environment no longer selects the listen address.
+    monkeypatch.setenv("MG400_PANEL_BIND", "0.0.0.0")
+    monkeypatch.setenv("MG400_PANEL_PORT", "9000")
     server = Mock(server_port=address[1])
     panel_server = Mock(return_value=server)
     monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock(return_value=closing_state()))
@@ -316,20 +307,18 @@ def test_listen_address_comes_from_options_then_environment(
     assert panel_server.call_args.args[0] == address
 
 
-@pytest.mark.parametrize("value", ["0", "65536", "80a", " 80", "-1"])
-def test_invalid_port_environment_is_refused_before_a_backend(monkeypatch, capsys, value):
+@pytest.mark.parametrize("value", ["0", "65536", "-1"])
+def test_invalid_port_option_is_refused_before_a_backend(monkeypatch, capsys, value):
     main = PANEL["main"]
-    monkeypatch.delenv("MG400_PANEL_BIND", raising=False)
-    monkeypatch.setenv("MG400_PANEL_PORT", value)
     backends = {name: Mock() for name in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
     for name, backend in backends.items():
         monkeypatch.setitem(main.__globals__, name, backend)
 
     with pytest.raises(SystemExit) as error:
-        main([])
+        main(["--port", value])
 
     assert error.value.code == 2
-    assert "MG400_PANEL_PORT must be a whole number" in capsys.readouterr().err
+    assert "--port must be a whole number" in capsys.readouterr().err
     for backend in backends.values():
         backend.assert_not_called()
 
@@ -696,7 +685,7 @@ def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal
     backends = PANEL["main"].__globals__
     assert code == 0
     backends["load_robot_host"].assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
-    backends["RobotPanelState"].assert_called_once_with("robot.test", max_speed_l=1, max_acc_l=1)
+    backends["RobotPanelState"].assert_called_once_with("robot.test", max_speed_l=20, max_acc_l=20)
     state.command.assert_not_called()
     state.close.assert_called_once_with()
     assert len(before_close) == 1
@@ -998,37 +987,14 @@ def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
     assert request(server, "POST", "/api/stop", "{}", ROBOT_HEADERS)[0] == 403
 
 
-@pytest.mark.parametrize("name", ["MG400_ROBOT_MAX_SPEED_L", "MG400_ROBOT_MAX_ACC_L"])
-@pytest.mark.parametrize(
-    "value", ["0", "101", "-1", "1.0", "true", " 1", "1 ", "NaN", "1e2", "9" * 500]
-)
-def test_invalid_robot_caps_fail_before_backend_construction(monkeypatch, capsys, name, value):
-    main = PANEL["main"]
-    monkeypatch.setenv(name, value)
-    backends = {key: Mock() for key in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
-    for key, backend in backends.items():
-        monkeypatch.setitem(main.__globals__, key, backend)
-    with pytest.raises(SystemExit) as error:
-        main(["--robot-host", "robot.test"])
-    assert error.value.code == 2
-    assert f"{name} must be a whole number between 1 and 100" in capsys.readouterr().err
-    for backend in backends.values():
-        backend.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "speed,acceleration,expected",
-    [("", "", (1, 1)), ("20", "7", (20, 7)), ("100", "100", (100, 100))],
-)
-def test_robot_caps_are_loaded_from_host_environment(
-    monkeypatch, signal_table, speed, acceleration, expected
-):
-    monkeypatch.setenv("MG400_ROBOT_MAX_SPEED_L", speed)
-    monkeypatch.setenv("MG400_ROBOT_MAX_ACC_L", acceleration)
+def test_robot_caps_are_fixed_in_code(monkeypatch, signal_table):
+    # The host environment no longer raises or lowers the speed cap.
+    monkeypatch.setenv("MG400_ROBOT_MAX_SPEED_L", "100")
+    monkeypatch.setenv("MG400_ROBOT_MAX_ACC_L", "100")
     code, _ = run_panel(monkeypatch, closing_state())
     assert code == 0
     PANEL["main"].__globals__["RobotPanelState"].assert_called_once_with(
-        "robot.test", max_speed_l=expected[0], max_acc_l=expected[1]
+        "robot.test", max_speed_l=20, max_acc_l=20
     )
 
 

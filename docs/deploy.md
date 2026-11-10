@@ -303,8 +303,6 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `MG400_PROXY_PORT` | `8080` | 代理端口，范围为 `1024` 到 `65535` |
 | `MG400_OPTIONAL_SERVICES` | 空 | 服务清单中的可选服务名称，用逗号分隔 |
 | `MG400_ROBOT_HOST` | `config/robot.toml` 中的地址 | 机械臂地址 |
-| `MG400_ROBOT_MAX_SPEED_L`、`MG400_ROBOT_MAX_ACC_L` | `1` | 机械臂速度上限，整数百分比，范围为 `1` 到 `100` |
-| `MG400_ORCH_TOOL_FILE` | `/var/lib/mg400/robot/tool.toml` | 实测工具偏移 |
 | `MG400_CAMERA_DEVICES` | 空 | 1 到 4 个不同的摄像头设备，用逗号分隔。为空时关闭摄像头 |
 | `MG400_CAMERA_MODES` | 空 | 每台设备对应 1 个允许的 `WIDTHxHEIGHT@FPS` 模式，顺序与设备相同 |
 | `MG400_STAGE_SERIAL` | 空 | Arduino 的串口路径，见 [位移台配置项](stage-panel.md#配置项) |
@@ -361,7 +359,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 活动序列或冷却气体计划必须使用 `--force`。状态不可用、格式错误、断开或锁定时也必须使用 `--force`。
 使用 `mg400ctl stop furnace --force` 或 `mg400ctl restart furnace --force` 前，必须与所有客户端协调。
 强制关闭请求服务停止加热和气体。必须核对停止结果。检查仅作提示性保护：状态读取与 systemd 操作之间仍可能启动序列。
-检查读取 `MG400_FURNACE_BIND`、`MG400_FURNACE_PORT` 和 `MG400_FURNACE_BASE_PATH`。未设置时，使用 `127.0.0.1`、`8769` 和 `/`。它接受 `localhost`，将 `0.0.0.0` 映射为 `127.0.0.1`，将 `::` 映射为 `::1`。
+检查读取 `http://127.0.0.1:8769/api/state`。
 检查不使用代理或重定向。
 套接字操作在 `2` s 后超时。每次收到数据块后检查 `2` s 的响应体截止时间。
 标头和传输分块格式读取使用套接字超时，因此这不是整个请求的总时限。
@@ -385,7 +383,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 检查机械臂，再点击 Recover。重新加载实验室控制台不会清除警告。
 
 所有程序必须使用相同的机械臂地址和锁目录 `/var/lib/mg400/locks`。
-单元和 `mg400ctl` 设置此目录。它必须支持操作系统文件锁。
+此目录固定在代码中。它必须支持操作系统文件锁。
 所有程序以 UID 1000 运行。锁文件权限为 `0600`。
 以 root 运行时，程序拒绝使用属主不是 root 的锁目录。
 已有锁文件的属主不同时，原地修改属主，保留原文件。

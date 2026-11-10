@@ -3,9 +3,11 @@
 import fcntl
 import hashlib
 import os
-import tempfile
 import threading
 from pathlib import Path
+
+# The deployed panel and every direct run on the host share this directory.
+LOCK_DIR = Path("/var/lib/mg400/locks")
 
 
 class ControllerOwnership:
@@ -16,11 +18,7 @@ class ControllerOwnership:
     """
 
     def __init__(self, host, *, directory=None):
-        self._directory = Path(
-            directory
-            or os.environ.get("MG400_CONTROLLER_LOCK_DIR")
-            or Path(tempfile.gettempdir()) / "mg400-controller-locks"
-        )
+        self._directory = Path(directory or LOCK_DIR)
         key = hashlib.sha256(host.strip().lower().rstrip(".").encode()).hexdigest()
         self._path = self._directory / f"{key}.lock"
         self._fd = None

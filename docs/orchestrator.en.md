@@ -33,7 +33,7 @@ The CLI commands above run without the service.
 The service listens on `127.0.0.1:8772`. The installed unit sets the base path `/lab/`, which the proxy serves. The console control socket listens on `127.0.0.1:8774`, and the proxy forwards `/lab/api/console/socket` to it. If that port is in use, the service logs a warning and starts without the socket, and pages use HTTP.
 It reads the recipe catalog from `/opt/mg400/recipes`.
 The flags `--bind`, `--port`, `--base-path`, `--recipes-dir`, and `--runs-dir` override these defaults.
-Without a flag, the first 4 use the nonempty values of `MG400_ORCH_BIND`, `MG400_ORCH_PORT`, `MG400_ORCH_BASE_PATH`, and `MG400_ORCH_RECIPES_DIR`. Without `--runs-dir`, the service uses `MG400_ORCH_RUNS_DIR`. The installed unit sets `MG400_ORCH_BASE_PATH=/lab/`.
+Without a flag, the service uses `127.0.0.1`, `8772`, `/`, `/opt/mg400/recipes`, and `/var/lib/mg400/runs`. The installed unit passes `--base-path /lab/`.
 
 POST requests require `Content-Type: application/json` and `X-MG400-Client` with a stable caller identity.
 Acquire and renew the frontend lease through `/api/heartbeat`. All custom mutation routes below require that lease.
@@ -133,20 +133,25 @@ The example in `recipes/example-rehearsal.toml` enables the simulated robot, mov
 
 Each run uses a unique client identity. The runner checks all required service contracts before acquiring the first lease. It renews existing leases without an acquisition fallback. A lost lease holds the run and cannot be resumed through automatic reacquisition.
 
-These are the defaults. A nonempty setting overrides its default:
+These values are fixed in code:
+
+| Item | Value |
+| --- | --- |
+| Record directory | `/var/lib/mg400/runs`. `--runs-dir` overrides it |
+| Client timeout | `2` s |
+| `robot` | `http://127.0.0.1:8766/` |
+| `stage` | `http://127.0.0.1:8767/contract/` |
+| `thermal` | `http://127.0.0.1:8768/` |
+| `furnace` | `http://127.0.0.1:8769/` |
+| `microscope` | `http://127.0.0.1:8770/` |
+| `vision` | `http://127.0.0.1:8771/` |
+
+The zone files are defaults. Rehearsals and tests set a nonempty value to use their own files:
 
 | Item | Setting | Default |
 | --- | --- | --- |
-| Record directory | `MG400_ORCH_RUNS_DIR` | `/var/lib/mg400/runs` |
-| Client timeout | `MG400_ORCH_TIMEOUT_S` | `2` s |
 | Zone configuration | `MG400_ORCH_ZONES_FILE` | `/var/lib/mg400/zones/config.toml` |
 | Durable occupancy | `MG400_ORCH_ZONE_STATE_FILE` | `/var/lib/mg400/zones/occupancy.json` |
-| `robot` | `MG400_ORCH_ROBOT_URL` | `http://127.0.0.1:8766/` |
-| `stage` | `MG400_ORCH_STAGE_URL` | `http://127.0.0.1:8767/contract/` |
-| `thermal` | `MG400_ORCH_THERMAL_URL` | `http://127.0.0.1:8768/` |
-| `furnace` | `MG400_ORCH_FURNACE_URL` | `http://127.0.0.1:8769/` |
-| `microscope` | `MG400_ORCH_MICROSCOPE_URL` | `http://127.0.0.1:8770/` |
-| `vision` | `MG400_ORCH_VISION_URL` | `http://127.0.0.1:8771/` |
 
 The services do not check tokens. Service adapters connect directly and do not use proxy settings. See the [service contract](adr/0001-instrument-service-contract.en.md).
 
@@ -365,7 +370,7 @@ A pick descends, then sends `vacuum suck`. Suction must be off before a pick. Wi
 
 When a vacuum switch is installed and `GRIP_DI` is set in `src/mg400/suction.py` (default `None`), `vacuum.held` in the robot state reports whether the cup holds a part. If `held` does not become true within 1 second after suck, the skill sends `vacuum release` and fails. If `held` becomes `false` while the cup carries a part, the part dropped and the run holds. If `held` does not become `false` within 1 second after a place, the skill fails. While `GRIP_DI` is not set, `held` is `null` and the skill cannot confirm that the cup holds a part.
 
-`robot.pick`, `robot.place`, and `robot.transfer` accept `speed`, an integer with default 1. The permitted range is 1 through the robot service's advertised `MG400_ROBOT_MAX_SPEED_L` cap, which is at most 100. Invalid values or an invalid advertised cap refuse the step before motion. All moves use `execute`, and the robot service still enforces its speed and acceleration caps. The controller remains at `User=0,Tool=0`.
+`robot.pick`, `robot.place`, and `robot.transfer` accept `speed`, an integer with default 1. The permitted range is 1 through the robot service's advertised speed cap, which is fixed at 20. Invalid values or an invalid advertised cap refuse the step before motion. All moves use `execute`, and the robot service still enforces its speed and acceleration caps. The controller remains at `User=0,Tool=0`.
 
 Each move waits for completion and the next fresh measured pose. The measured flange coordinates must match the requested waypoint within 0.1 mm or 0.1 degrees on each axis. Missing pose samples cause reads only, within the step deadline. A mismatch, drop, unexpected outcome, or timeout holds the run and requests stops. No move or grasp is retried.
 

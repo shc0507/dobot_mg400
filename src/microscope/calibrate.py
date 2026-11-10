@@ -35,7 +35,13 @@ from .paths import calibration_path, private_open
 from .side_capture import SideCaptureCancelled
 
 MODES = (1, 2, 4, 8, 16)
-NUDGE_SETTING = "MG400_MICROSCOPE_NUDGE_STEPS"
+# Measured H-06 values of the lab microscope, in full-step pulses. The microscope
+# has no focus home switch, so manual zero is at clearance.
+FOCUS_LIMITS = (0, 10000)
+SWITCH_FOCUS = 0
+HOME_SWITCH = False
+# Turret window for objective_nudge, in full steps from 0 to 20. 0 refuses every nudge.
+NUDGE_WINDOW = 20
 FOCUS_DEFAULTS = {
     "half_range": 5000,
     "coarse_step": 1000,
@@ -117,17 +123,11 @@ def load_settings(path):
     return value
 
 
-def nudge_steps(environ):
-    """Require an explicit measured integer window; empty keeps MIC-05 behavior."""
-    value = environ.get(NUDGE_SETTING, "")
-    if value == "":
-        return 0
-    if not isinstance(value, str) or not re.fullmatch(r"\d{1,2}", value):
-        raise ValueError(f"{NUDGE_SETTING} must be an integer within 0..20")
-    window = int(value)
-    if not 0 <= window <= 20:
-        raise ValueError(f"{NUDGE_SETTING} must be an integer within 0..20")
-    return window
+def nudge_steps():
+    """Return the measured turret window. Read the constant at call time."""
+    if type(NUDGE_WINDOW) is not int or not 0 <= NUDGE_WINDOW <= 20:
+        raise ValueError("The turret nudge window must be an integer within 0..20")
+    return NUDGE_WINDOW
 
 
 @dataclass(frozen=True)
@@ -151,16 +151,9 @@ class ReferenceSettings:
             raise ValueError("Without a home switch, the clearance position must be zero")
 
     @classmethod
-    def from_env(cls, environ):
-        limits = environ.get("MG400_MICROSCOPE_FOCUS_LIMITS", "")
-        clearance = environ.get("MG400_MICROSCOPE_SWITCH_FOCUS", "")
-        home = environ.get("MG400_MICROSCOPE_HOME_SWITCH", "")
-        if not re.fullmatch(r"-?\d+,-?\d+", limits) or not re.fullmatch(r"-?\d+", clearance):
-            raise ValueError("Measured H-06 focus limits and clearance are required")
-        if home not in ("0", "1"):
-            raise ValueError("The measured H-06 home-switch configuration is required")
-        minimum, maximum = map(int, limits.split(","))
-        return cls(minimum, maximum, int(clearance), home == "1")
+    def measured(cls):
+        """Return the fixed H-06 values. Read the constants at call time."""
+        return cls(*FOCUS_LIMITS, SWITCH_FOCUS, HOME_SWITCH)
 
     def scaled(self, microstep):
         if type(microstep) is not int or microstep not in MODES:
@@ -1070,7 +1063,7 @@ def supervised_session(
         r"/dev/serial/by-id/[A-Za-z0-9_.:+-]+", serial
     ):
         raise ValueError("Set the stable MG400_MICROSCOPE_SERIAL device path")
-    reference = ReferenceSettings.from_env(settings) if motion else None
+    reference = ReferenceSettings.measured() if motion else None
     if (
         not isinstance(resolution, (tuple, list))
         or len(resolution) != 2
@@ -1707,7 +1700,7 @@ def main(argv=None):
     parser.add_argument(
         "--reference", default="objective_reference.png", help="Private calibration PNG"
     )
-    parser.add_argument("--output", help="File beneath MG400_MICROSCOPE_CALIBRATION_DIR")
+    parser.add_argument("--output", help="File beneath /var/lib/mg400/calibration/microscope")
     args = parser.parse_args(argv)
     try:
         if args.kind == "setup":
@@ -1723,11 +1716,11 @@ def main(argv=None):
             with setup_session() as session:
                 run_setup(session)
             return 0
-        window = nudge_steps(os.environ)
+        window = nudge_steps()
         if window and args.kind in ("objective", "light"):
             if args.focus_start is None:
                 raise ValueError("At-focus calibration requires --focus-start")
-            measured = ReferenceSettings.from_env(os.environ)
+            measured = ReferenceSettings.measured()
             if not measured.minimum <= args.focus_start <= measured.maximum:
                 raise ValueError("--focus-start is outside the measured focus limits")
         settings = load_settings(args.settings)

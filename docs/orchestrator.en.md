@@ -16,7 +16,7 @@ uv run labctl runs RUN_ID --runs-dir ./rehearsal-runs
 
 `labctl run RECIPE` uses configured instrument services. Before a hardware run, complete the required operator checks and keep an operator at the emergency stop. Shell agents use the [agent CLI](agent-cli.en.md).
 
-`--runs-dir PATH` selects the record directory. `--param NAME=JSON` overrides a declared recipe parameter. Quote string values as JSON strings:
+`--runs-dir PATH` selects the record directory. Without `--runs-dir`, a rehearsal writes its records to a temporary directory, removes them at exit, and ignores `MG400_ORCH_RUNS_DIR`. `--param NAME=JSON` overrides a declared recipe parameter. Quote string values as JSON strings:
 
 ```sh
 uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-runs --param 'chip_id="demo-chip-2"' --time-scale 0.1

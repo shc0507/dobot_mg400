@@ -16,7 +16,7 @@ uv run labctl runs RUN_ID --runs-dir ./rehearsal-runs
 
 `labctl run RECIPE` 使用配置的仪器服务。真机运行前，必须完成操作员检查。操作员必须守在急停旁。Shell 智能体使用[智能体命令行](agent-cli.md)。
 
-`--runs-dir PATH` 指定记录目录。`--param NAME=JSON` 覆盖配方声明的参数。字符串值必须使用 JSON 字符串引号：
+`--runs-dir PATH` 指定记录目录。演练未指定 `--runs-dir` 时，把记录写入临时目录，结束后删除，并忽略 `MG400_ORCH_RUNS_DIR`。`--param NAME=JSON` 覆盖配方声明的参数。字符串值必须使用 JSON 字符串引号：
 
 ```sh
 uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-runs --param 'chip_id="demo-chip-2"' --time-scale 0.1

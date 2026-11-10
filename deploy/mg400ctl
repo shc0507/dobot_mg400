@@ -891,8 +891,11 @@ def main(
             base = f"http://127.0.0.1:{CAMERA_PORT}/"
         if not devices:
             print("Cameras are off: MG400_CAMERA_DEVICES is empty.", file=out)
-        for number in range(1, len(devices) + 1):
-            print(f"{base}camera{number}.mjpeg", file=out)
+        # The preview does not relay a side stream above 1280x720; the microscope owns it.
+        side = settings.get("MG400_MICROSCOPE_SIDE_STREAM", "").strip()
+        for stream in camera_config.streams:
+            if stream != side or stream in camera_config.preloaded:
+                print(f"{base}{stream}.mjpeg", file=out)
     return 0
 
 

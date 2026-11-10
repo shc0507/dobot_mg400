@@ -31,6 +31,8 @@ from .service import FurnaceService
 from .sim import FurnaceSerial, MFCSerial
 from .state import StateStore
 
+STOP_RETRY_S = 0.25
+
 
 class _AutomationLease:
     """Classify contract ownership atomically through the public lease API."""
@@ -344,6 +346,19 @@ class FurnaceWebService:
             self.lifecycle.acknowledge(client=client)
             return None
 
+    @staticmethod
+    def _stop_confirmed(status):
+        flow = status["flow"]
+        return (
+            status["run_state_code"] == 1
+            and not status["locked"]
+            and all(
+                channel["available"] and channel["actual_percent"] == 0
+                for channel in flow["gas_channels"]
+            )
+            and all(valve["open"] is False and valve["verified"] for valve in flow["gas_valves"])
+        )
+
     def stop(self, client, wait_s=0):
         validate_client(client)
         if (
@@ -353,22 +368,19 @@ class FurnaceWebService:
             or not math.isfinite(wait_s)
         ):
             raise ValueError("wait_s must be a finite number from 0 to 15")
+        deadline = time.monotonic() + wait_s
         serial = self._begin()
-        try:
-            status = self.lifecycle.stop_sequence()
-        except Exception as error:
-            self._finish(serial, "stop", client, "failed", str(error))
-            return "unconfirmed"
-        flow = status["flow"]
-        confirmed = (
-            status["run_state_code"] == 1
-            and not status["locked"]
-            and all(
-                channel["available"] and channel["actual_percent"] == 0
-                for channel in flow["gas_channels"]
-            )
-            and all(valve["open"] is False and valve["verified"] for valve in flow["gas_valves"])
-        )
+        while True:
+            try:
+                status = self.lifecycle.stop_sequence()
+            except Exception as error:
+                self._finish(serial, "stop", client, "failed", str(error))
+                return "unconfirmed"
+            confirmed = self._stop_confirmed(status)
+            # Repeat the stop, which is safe, until it is confirmed or wait_s ends.
+            if confirmed or status["locked"] or time.monotonic() >= deadline:
+                break
+            time.sleep(min(STOP_RETRY_S, max(0, deadline - time.monotonic())))
         self._finish(
             serial,
             "stop",

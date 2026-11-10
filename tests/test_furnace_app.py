@@ -12,6 +12,7 @@ import pytest
 import serial
 from contract_helpers import assert_error, check_contract
 
+from furnace import app as app_module
 from furnace import controller as p
 from furnace.__main__ import main
 from furnace.app import create_app, make_service
@@ -372,3 +373,22 @@ def test_stop_finishes_while_expiry_callback_is_pending(service, clock, monkeypa
         release.set()
         worker.join(2)
     assert not worker.is_alive() and not errors
+
+
+def test_stop_repeats_until_confirmed_within_wait_s(service, monkeypatch):
+    calls = []
+    real = service.lifecycle.stop_sequence
+
+    def flaky():
+        status = real()
+        calls.append(status)
+        if len(calls) == 1:
+            status = {**status, "run_state_code": 0}
+        return status
+
+    monkeypatch.setattr(service.lifecycle, "stop_sequence", flaky)
+    monkeypatch.setattr(app_module, "STOP_RETRY_S", 0)
+    assert service.stop("other", 0) == "unconfirmed"
+    calls.clear()
+    assert service.stop("other", 1) == "confirmed"
+    assert len(calls) == 2

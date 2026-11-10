@@ -11,7 +11,7 @@ from .config import FurnaceConfig
 
 def main(argv=None, *, environ=None, service_factory=make_service, server_factory=None):
     env = os.environ if environ is None else environ
-    parser = argparse.ArgumentParser(description="Furnace service and operator page")
+    parser = argparse.ArgumentParser(description="Furnace service")
     parser.add_argument(
         "--demo", action="store_true", help="Use isolated simulated furnace and gas devices"
     )

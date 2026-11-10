@@ -12,7 +12,7 @@ Lab Console 的 Cameras 工作区显示热像画面。Furnace + microscope 工�
 可选单元 `mg400-thermal.service` 以 `1000:1000` 运行 `thermal-cam`，使用 `UMask=0077`，不添加设备附加组。
 它读取 `/etc/mg400/mg400.env`，并在启动时打开 P1 摄像头。
 CLI 配置无效时以状态码 `2` 退出，不自动重启。
-`rois.toml` 无效时，服务以状态码 `1` 退出。systemd 每 `3` s 重启一次服务，直到文件改正。
+`rois.toml` 无效时，服务在打开端口前同样以状态码 `2` 退出。用 `mg400ctl logs thermal` 查看错误，改正文件后再启动服务。
 安装程序不启动此服务，单元也不随主机开机启动。
 
 把 `thermal` 加入 `MG400_OPTIONAL_SERVICES`，保留其他已选服务。

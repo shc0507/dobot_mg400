@@ -1379,3 +1379,34 @@ def test_a_lock_is_a_warning_and_an_unlock_and_messages_are_info():
         ("info", "Control unlocked."),
         ("info", "Robot disable and rest are confirmed."),
     ]
+
+
+def test_feedback_reader_reconnects_and_recover_unlocks_without_a_restart(
+    make_sim_rig, monkeypatch
+):
+    monkeypatch.setattr(RobotPanelState, "RECONNECT_SECONDS", 0.05)
+    rig = make_sim_rig()
+    rig.connect()
+    original = rig._feed.read_latest
+    failures = []
+
+    def lost_once():
+        if not failures:
+            failures.append(1)
+            raise ConnectionError("Offline fixture feedback lost")
+        return original()
+
+    monkeypatch.setattr(rig._feed, "read_latest", lost_once)
+    # The lost connection latches an unconfirmed stop, even after feedback returns.
+    rig.wait(lambda s: s["stop_unconfirmed"] and s["locked"] and not s["busy"])
+    rig.wait(lambda s: s["feedback_fresh"] and s["recoverable"])
+    assert rig.snapshot()["syncing"]
+    assert not rig.state._feedback_failed
+    rig.command("clear_alarm")
+    rig.wait(lambda s: not s["busy"] and not s["locked"] and not s["stop_unconfirmed"])
+    snapshot = rig.snapshot()
+    assert snapshot["robot_mode"] == 4 and snapshot["feedback_fresh"]
+    # Later stops confirm on the reconnected feedback.
+    rig.command("stop")
+    rig.wait(lambda s: not s["busy"] and s["locked"])
+    assert not rig.snapshot()["stop_unconfirmed"]

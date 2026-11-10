@@ -298,6 +298,8 @@ The tool file is `MG400_ORCH_TOOL_FILE`, default `/var/lib/mg400/robot/tool.toml
 
 All station commands, and the station, tray, pick, and crucible steps below, need these bounds, `tool.toml`, and taught stations. If one is missing, the command or step refuses.
 
+`robot.move` uses `tool.toml` to convert the flange target to a fingertip pose. If the fingertip pose is outside the bounds, the step refuses and sends no motion. If only some bounds are set, the step also refuses. If none of the 8 settings is set, only the robot service limits apply to `robot.move`.
+
 An operator first positions the robot in the Motion workspace of the Lab Console. The console, or another controller, must retain control while teaching. Teaching requires fresh measured feedback, an idle robot, no lock, and no unconfirmed stop. The teaching command reads discovery and state only. It never acquires or releases a lease, changes controller tools, or sends motion.
 
 ```sh

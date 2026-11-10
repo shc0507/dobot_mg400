@@ -188,7 +188,9 @@
       "dev.unconfigured": "Not configured", "dev.offline": "Not running", "dev.unreachable": "Not reachable", "dev.loading": "Loading…",
       "arm.enabled": "Enabled", "arm.disabled": "Disabled", "arm.busy": "Moving", "arm.alarm": "Alarm",
       "arm.locked": "Stop not confirmed", "arm.lockedHelp": "Check the arm, then press Recover.", "arm.errorOnly": "The controller reports an error.",
-      "arm.recover": "Recover", "arm.noFeedback": "Not connected", "arm.cap": "speed cap {cap}",
+      "arm.recover": "Recover", "arm.noFeedback": "Not connected",
+      "arm.stopped": "Stopped", "arm.stoppedHelp": "Press Disable to unlock the arm.",
+      "arm.alarmHelp": "Fix the alarm cause, then press Clear alarm.", "arm.waitFeedback": "Waiting for fresh feedback.", "arm.cap": "speed cap {cap}",
       "ctl.take": "Take control", "ctl.release": "Release",
       "ctl.console": "In use by another page", "ctl.other": "In use by another client",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
@@ -255,7 +257,9 @@
       "dev.unconfigured": "未配置", "dev.offline": "未运行", "dev.unreachable": "无法连接", "dev.loading": "加载中…",
       "arm.enabled": "已使能", "arm.disabled": "未使能", "arm.busy": "运动中", "arm.alarm": "报警",
       "arm.locked": "停止未确认", "arm.lockedHelp": "检查机械臂，然后按“恢复”。", "arm.errorOnly": "控制器报告错误。",
-      "arm.recover": "恢复", "arm.noFeedback": "未连接", "arm.cap": "速度上限 {cap}",
+      "arm.recover": "恢复", "arm.noFeedback": "未连接",
+      "arm.stopped": "已停止", "arm.stoppedHelp": "按“下使能”恢复控制。",
+      "arm.alarmHelp": "先排除报警，再按“清除报警”。", "arm.waitFeedback": "等待新的反馈。", "arm.cap": "速度上限 {cap}",
       "ctl.take": "获取控制权", "ctl.release": "释放",
       "ctl.console": "另一个页面正在使用", "ctl.other": "另一个客户端正在使用",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
@@ -1081,22 +1085,29 @@
       updateControl("robot", data.robot);
       const ready = Boolean(robot && ownsRobot && robot.feedback_fresh && !robot.locked && !robot.stop_unconfirmed);
       // The robot service reports enabled only in modes 5 and 7, not while it jogs.
-      const enabled = model.armOn = Boolean(robot && (robot.enabled === true || robot.busy === true || robot.keyboard_enabled === true));
+      // A locked arm unlocks only through a verified disable, so Disable stays offered.
+      const enabled = model.armOn = Boolean(robot && (robot.enabled === true || robot.busy === true || robot.keyboard_enabled === true || robot.locked === true));
       refs.enable.textContent = t(enabled ? "arm.disable" : "arm.enable");
       refs.enable.disabled = enabled ? !robot : !ready || busy("robot");
-      refs.clear.disabled = !(robot && ownsRobot);
-      refs.clear.textContent = t(robot && (robot.locked || robot.stop_unconfirmed) ? "arm.recover" : "arm.clear");
+      // Offer Clear alarm or Recover only in the states where the robot service accepts clear_alarm.
+      const alarmNow = Boolean(fresh && (robot.robot_mode === 9 || robot.robot_error));
+      const recoverable = robot?.recoverable === true;
+      refs.clear.hidden = !(alarmNow || recoverable);
+      refs.clear.disabled = !(ownsRobot && fresh && !robot.busy);
+      refs.clear.textContent = t(alarmNow ? "arm.clear" : "arm.recover");
       refs.home.disabled = !(ready && robot.enabled === true && !robot.busy) || model.inflight.has("robot:move");
       // Change live regions only when the text changes, so a screen reader reads it once.
-      const locked = Boolean(robot && (robot.locked || robot.stop_unconfirmed));
+      const unconfirmed = robot?.stop_unconfirmed === true;
+      const locked = Boolean(robot && (robot.locked || unconfirmed));
+      const help = !locked ? "" : !unconfirmed ? "arm.stoppedHelp" : recoverable ? "arm.lockedHelp" : alarmNow ? "arm.alarmHelp" : "arm.waitFeedback";
       const alarms = alarmRows(robot).map(item => t("arm.alarmItem", { id: item.id }) + ": " + item.text);
       if (robot?.robot_error && !alarms.length) alarms.push(t("arm.errorOnly"));
-      const alarmText = [locked, ...alarms].join("\n");
+      const alarmText = [help, ...alarms].join("\n");
       if (alarmText !== refs.alarmText) {
         refs.alarmText = alarmText;
-        refs.alarmTitle.textContent = t(locked ? "arm.locked" : "arm.alarm");
+        refs.alarmTitle.textContent = t(unconfirmed ? "arm.locked" : locked ? "arm.stopped" : "arm.alarm");
         refs.alarms.replaceChildren(...alarms.map(text => el("p", { text })));
-        refs.alarmHelp.textContent = locked ? t("arm.lockedHelp") : "";
+        refs.alarmHelp.textContent = help ? t(help) : "";
       }
       refs.alarmHelp.hidden = !locked;
       refs.alarmNote.hidden = !locked && !alarms.length;

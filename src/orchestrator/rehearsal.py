@@ -2,6 +2,7 @@
 
 import copy
 import errno
+import functools
 import ipaddress
 import json
 import math
@@ -440,6 +441,8 @@ class _DemoClient:
         if profile not in self._PROFILES:
             raise ValueError("Unknown rehearsal client profile.")
         self._owner, self._adapter = owner, adapter
+        # A data attribute, not a method: the synthetic tool of the demo robot.
+        self.tool_file = getattr(adapter, "tool_file", None)
         self._methods = self._PROFILES[profile]
         self._closed = False
         self._calls = 0
@@ -638,8 +641,15 @@ class Rehearsal:
         self._serve(server)
         self._stack.callback(server.stop_sockets)
         url = f"http://127.0.0.1:{server.server_port}"
-        self._endpoints["robot"] = (RobotAdapter, url)
-        self.clients["robot"] = RobotAdapter(url, self.identity)
+        # The demo robot carries the same tool length as the lab robot.
+        tool = self.directory / "tool.toml"
+        if not tool.exists():
+            fd = os.open(tool, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write("offset_mm = [0, 0, 146]\n")
+        adapter = functools.partial(RobotAdapter, tool_file=tool)
+        self._endpoints["robot"] = (adapter, url)
+        self.clients["robot"] = adapter(url, self.identity)
 
     def _serve(self, server):
         self._stack.callback(server.server_close)

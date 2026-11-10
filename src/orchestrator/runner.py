@@ -89,9 +89,12 @@ class _Authority:
 class StepClient:
     """Expose guarded operations only, never the underlying service client."""
 
-    __slots__ = ("__call", "__remaining")
+    __slots__ = ("__call", "__remaining", "tool_file")
 
     def __init__(self, authority, service, *, zones=None, device=None):
+        # A rehearsal robot names its synthetic tool file; other services have none.
+        self.tool_file = getattr(service, "tool_file", None)
+
         def invoke(method, *args, **kwargs):
             if (
                 zones is not None

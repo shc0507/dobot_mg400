@@ -299,11 +299,12 @@ The conversion rotates `(dx, dy)` by the flange angle R, then adds the result to
 
 The tool file is `MG400_ORCH_TOOL_FILE`, default `/var/lib/mg400/robot/tool.toml`. The station file is `MG400_ORCH_STATIONS_FILE`, default `/var/lib/mg400/robot/stations.toml`.
 
-8 settings define the fingertip workspace: `MG400_ORCH_X_MIN_MM`, `MG400_ORCH_X_MAX_MM`, `MG400_ORCH_Y_MIN_MM`, `MG400_ORCH_Y_MAX_MM`, `MG400_ORCH_Z_MIN_MM`, `MG400_ORCH_Z_MAX_MM`, `MG400_ORCH_R_MIN_DEG`, and `MG400_ORCH_R_MAX_DEG`. They have no defaults. Each must be a finite number, and each minimum must be less than its maximum. Every station must be inside the bounds, and its approach height must not exceed the Z maximum.
+The fingertip workspace is fixed in `DEFAULT_BOUNDS` in `src/orchestrator/stations.py`: X and Y from `-440` to `440` mm, Z from `-300` to `100` mm, and R from `-180` to `180` degrees. Every station must be inside the bounds, and its approach height must not exceed the Z maximum.
+Rehearsals and tests set all 8 settings `MG400_ORCH_X_MIN_MM`, `MG400_ORCH_X_MAX_MM`, `MG400_ORCH_Y_MIN_MM`, `MG400_ORCH_Y_MAX_MM`, `MG400_ORCH_Z_MIN_MM`, `MG400_ORCH_Z_MAX_MM`, `MG400_ORCH_R_MIN_DEG`, and `MG400_ORCH_R_MAX_DEG` to replace these bounds. Each must be a finite number, and each minimum must be less than its maximum. If only some are set, the command or step refuses.
 
-All station commands, and the station, tray, pick, and crucible steps below, need these bounds, `tool.toml`, and taught stations. If one is missing, the command or step refuses.
+All station commands, and the station, tray, pick, and crucible steps below, need `tool.toml` and taught stations. If one is missing, the command or step refuses.
 
-`robot.move` uses `tool.toml` to convert the flange target to a fingertip pose. If the fingertip pose is outside the bounds, the step refuses and sends no motion. If only some bounds are set, the step also refuses. If none of the 8 settings is set, only the robot service limits apply to `robot.move`.
+`robot.move` uses `tool.toml` to convert the flange target to a fingertip pose. If the fingertip pose is outside the bounds, the step refuses and sends no motion. The robot service also checks joint limits and inverse kinematics. A rehearsal robot uses its own synthetic tool file with the offset `[0, 0, 146]`.
 
 An operator first positions the robot in the Motion workspace of the Lab Console. The console, or another controller, must retain control while teaching. Teaching requires fresh measured feedback, an idle robot, no lock, and no unconfirmed stop. The teaching command reads discovery and state only. It never acquires or releases a lease, changes controller tools, or sends motion.
 

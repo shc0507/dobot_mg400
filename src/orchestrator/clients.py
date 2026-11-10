@@ -190,9 +190,11 @@ class FurnaceAdapter(ServiceAdapter):
 
 
 class RobotAdapter(ServiceAdapter):
-    def __init__(self, url, identity, *, timeout=2):
+    def __init__(self, url, identity, *, timeout=2, tool_file=None):
         super().__init__(url, identity, timeout=timeout)
         self._robot = RobotClient(url, identity, timeout=timeout)
+        # A rehearsal robot names its own synthetic tool. None selects the host tool.
+        self.tool_file = tool_file
 
     def acquire(self):
         self._robot.connect()

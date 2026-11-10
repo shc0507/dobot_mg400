@@ -784,7 +784,7 @@ def test_motion_capabilities_are_required_at_plan_and_direct_move_boundaries(geo
     assert not ctx.robot.calls
 
 
-def test_robot_move_checks_the_fingertip_workspace_when_bounds_are_set(geometry, monkeypatch):
+def test_robot_move_always_checks_the_fingertip_workspace(geometry, monkeypatch):
     move = default_registry()["robot.move"].function
     robot = Mock()
     ctx = Mock(clients={"robot": robot})
@@ -795,11 +795,14 @@ def test_robot_move_checks_the_fingertip_workspace_when_bounds_are_set(geometry,
         with pytest.raises(ValueError, match=f"fingertip {axis}=.*outside the workspace"):
             move(ctx, *target)
     assert robot.run.call_count == 1
-    # Partial bounds refuse. Without any bound setting, the service limits apply alone.
+    # Partial bounds refuse. Without any bound setting, the fixed bounds apply.
     monkeypatch.delenv("MG400_ORCH_X_MIN_MM")
     with pytest.raises(ValueError, match="MG400_ORCH_X_MIN_MM"):
         move(ctx, 230.0, 0.0, 50.0, 0.0)
     for key in BOUND_SETTINGS:
         monkeypatch.delenv(key, raising=False)
-    move(ctx, 600.0, 0.0, 4.0, 0.0)
+    move(ctx, 400.0, 0.0, 4.0, 0.0)
+    assert robot.run.call_count == 2
+    with pytest.raises(ValueError, match="fingertip x_mm=.*outside the workspace"):
+        move(ctx, 600.0, 0.0, 4.0, 0.0)
     assert robot.run.call_count == 2

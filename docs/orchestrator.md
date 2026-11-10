@@ -298,11 +298,12 @@ EOF、Ctrl-C、SIGTERM 和 SIGHUP 都会请求终止。CLI 等待活动操作和
 
 工具文件为 `MG400_ORCH_TOOL_FILE`，默认为 `/var/lib/mg400/robot/tool.toml`。工位文件为 `MG400_ORCH_STATIONS_FILE`，默认为 `/var/lib/mg400/robot/stations.toml`。
 
-指尖工作空间由 8 个设置定义：`MG400_ORCH_X_MIN_MM`、`MG400_ORCH_X_MAX_MM`、`MG400_ORCH_Y_MIN_MM`、`MG400_ORCH_Y_MAX_MM`、`MG400_ORCH_Z_MIN_MM`、`MG400_ORCH_Z_MAX_MM`、`MG400_ORCH_R_MIN_DEG` 和 `MG400_ORCH_R_MAX_DEG`。它们没有默认值。每项必须是有限数，且最小值小于最大值。每个工位必须位于边界内，接近高度不得超过 Z 上限。
+指尖工作空间固定在 `src/orchestrator/stations.py` 的 `DEFAULT_BOUNDS` 中：X 和 Y 为 `-440` 到 `440` mm，Z 为 `-300` 到 `100` mm，R 为 `-180` 到 `180` 度。每个工位必须位于边界内，接近高度不得超过 Z 上限。
+演练和测试设置全部 8 项 `MG400_ORCH_X_MIN_MM`、`MG400_ORCH_X_MAX_MM`、`MG400_ORCH_Y_MIN_MM`、`MG400_ORCH_Y_MAX_MM`、`MG400_ORCH_Z_MIN_MM`、`MG400_ORCH_Z_MAX_MM`、`MG400_ORCH_R_MIN_DEG` 和 `MG400_ORCH_R_MAX_DEG`，以替换这些边界。每项必须是有限数，且最小值小于最大值。只设置部分项时，命令或步骤被拒绝。
 
-所有工位命令，以及下文的工位、托盘、吸取和坩埚步骤，都需要这些边界、`tool.toml` 和示教工位。缺少任一项时，命令或步骤被拒绝。
+所有工位命令，以及下文的工位、托盘、吸取和坩埚步骤，都需要 `tool.toml` 和示教工位。缺少任一项时，命令或步骤被拒绝。
 
-`robot.move` 用 `tool.toml` 把法兰目标换算为指尖位姿。指尖位姿超出边界时，步骤被拒绝，不发送运动。只设置部分边界时，步骤也被拒绝。8 个设置都未设置时，`robot.move` 只受机器人服务的限制。
+`robot.move` 用 `tool.toml` 把法兰目标换算为指尖位姿。指尖位姿超出边界时，步骤被拒绝，不发送运动。机器人服务另外检查关节限位和逆解。演练的机器人使用自有的合成工具文件，偏移为 `[0, 0, 146]`。
 
 操作员先在实验室控制台的 Motion 工作区把机器人移至目标位置。示教时，控制台或其他控制器必须保持控制权。示教要求测量反馈新鲜、机器人空闲、没有锁定且没有未确认的停止。示教命令只读取服务描述和状态。它不会获取或释放控制租约、修改控制器工具配置或发送运动命令。
 

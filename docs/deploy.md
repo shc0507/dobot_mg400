@@ -347,7 +347,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl calibration import microscope DIR` | 导入已有的显微镜校准数据，不覆盖已有文件，见[显微镜](microscope.md) |
 | `labctl run`、`labctl rehearse`、`labctl runs`、`labctl station` | 运行、演练和查看配方，管理工位，见[配方服务](orchestrator.md) |
 | `labctl robot state` | 智能体设备命令组，见[智能体命令行](agent-cli.md) |
-| `mg400ctl camera-url` | 为每台摄像头显示 1 个 `/camera/cameraN.mjpeg` 链接，链接使用代理地址 |
+| `mg400ctl camera-url` | 为每台摄像头显示 1 个 `/camera/cameraN.mjpeg` 链接，链接使用代理地址。高于 1280x720 的显微镜侧视流没有链接 |
 | `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 
 `gpu` 以 UID `1000` 运行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。

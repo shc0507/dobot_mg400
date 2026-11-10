@@ -347,7 +347,7 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `mg400ctl calibration import microscope DIR` | Import existing microscope calibration data without overwriting files. See [Microscope](microscope.en.md) |
 | `labctl run`, `labctl rehearse`, `labctl runs`, `labctl station` | Run, rehearse, and read recipes, and manage stations. See [Recipe service](orchestrator.en.md) |
 | `labctl robot state` | Agent device groups. See the [agent CLI](agent-cli.en.md) |
-| `mg400ctl camera-url` | Show 1 `/camera/cameraN.mjpeg` link for each camera. The links use the proxy address |
+| `mg400ctl camera-url` | Show 1 `/camera/cameraN.mjpeg` link for each camera. The links use the proxy address. A microscope side stream above 1280x720 has no link |
 | `mg400ctl camera-check` | Check camera devices, services, and capture streams in order. See [Camera failures](olares.en.md#camera-failures) |
 
 `gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID `1000`.

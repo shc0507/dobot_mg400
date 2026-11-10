@@ -5,6 +5,7 @@ from the arguments or, without arguments, one per line from stdin. Print one
 test file per line, or `tests` when the full suite must run.
 """
 
+import re
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -103,6 +104,7 @@ AREAS = [
     ("*.md", []),
     ("docs/*", []),
     (".agents/*", []),
+    (".claude/skills/*", []),
     ("skills-lock.json", []),
     ("LICENSE", []),
     (".gitignore", []),
@@ -111,11 +113,30 @@ AREAS = [
 ]
 
 
+def importers(package, tests):
+    """Return the test files that import `package`, directly or through a test helper."""
+
+    def users(name):
+        statement = re.compile(rf"^\s*(?:from|import)\s+{re.escape(name)}\b", re.MULTILINE)
+        return {f for f in tests.glob("*.py") if statement.search(f.read_text(encoding="utf-8"))}
+
+    direct = users(package)
+    helpers = {f.stem for f in direct if not f.name.startswith("test_")}
+    found = {f for f in direct if f.name.startswith("test_")}
+    for helper in helpers:
+        found |= {f for f in users(helper) if f.name.startswith("test_")}
+    return {f.name for f in found}
+
+
 def select(changed, root=ROOT):
     """Return the pytest targets for the changed paths."""
     tests = root / "tests"
     patterns = set(ALWAYS)
     for path in changed:
+        # The area table can miss a module that imports the changed package.
+        parts = Path(path).parts
+        if len(parts) > 2 and parts[0] == "src":
+            patterns.update(importers(parts[1], tests))
         if fnmatch(path, "tests/test_*.py"):
             patterns.add(Path(path).name)
             continue

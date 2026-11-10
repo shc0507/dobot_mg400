@@ -261,8 +261,10 @@ def main(argv=None, *, out=None, read=None):
                         "MG400_ORCH_ZONE_STATE_FILE": str(Path(temporary) / "occupancy.json"),
                     }
                     plan = prepare_zones(recipe, registry, demo_settings)
+                    # Without --runs-dir, records stay out of the production run store.
+                    records = args.runs_dir or Path(temporary) / "runs"
                     with (
-                        RunStore(directory) as store,
+                        RunStore(records) as store,
                         Rehearsal(temporary, plan.required_services, identity=identity) as demo,
                     ):
                         return _drive(

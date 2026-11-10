@@ -307,7 +307,14 @@ With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream w
 The H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). go2rtc 1.9.14 does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
 ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). Without an estimate, ffmpeg assumes 90000 fps, and `hevc_nvenc` sends only about 0.1 Mbit/s.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
-Single-frame requests use the same go2rtc stream, at its configured resolution; they do not switch mode or open another device capture.
+`/camera/<view>.jpg` uses the same go2rtc stream at its configured resolution. It does not switch mode or open another device capture.
+
+`/camera/<view>.full.jpg?size=3840x2160` captures a JPEG at the specified native size.
+`size` accepts only dimensions from the MJPEG modes above. It uses the lowest supported frame rate for those dimensions.
+Without query parameters, `/camera/<view>.full.jpg` still captures `4000x3000`.
+
+The service does not enlarge low-resolution images. Each capture pauses the other camera streams and restores them after capture.
+When `MG400_MICROSCOPE_SIDE_STREAM` is configured, the service rejects all `.full.jpg` requests while a microscope job runs.
 
 The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large streams can exceed its periodic transfer budget together.
 H-21 requires supervised bandwidth checks before simultaneous hardware use.

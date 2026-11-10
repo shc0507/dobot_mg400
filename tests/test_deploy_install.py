@@ -241,6 +241,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         ("calibration", 0o750),
         ("cameras", 0o700),
         ("microscope", 0o750),
+        ("twin", 0o750),
         ("camera", 0o700),
         ("furnace", 0o750),
         ("locks", 0o700),
@@ -306,6 +307,7 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         "calibration",
         "calibration/cameras",
         "calibration/microscope",
+        "calibration/twin",
         "furnace",
         "recordings",
         "runs",
@@ -1092,6 +1094,7 @@ def test_default_dry_run_lists_every_step(host):
         "Would ensure <host>/var/lib/mg400/recordings (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/runs (0750, 1000:1000)",
         "Would ensure <host>/var/lib/mg400/zones (0750, 1000:1000)",
+        "Would ensure <host>/var/lib/mg400/calibration/twin (0750, 1000:1000)",
         "Would ensure <host>/opt/mg400 (0750, 0:1000)",
         "Would prepare Python environment <host>/opt/mg400/.venv",
         "Would run: /usr/bin/uv sync --locked --no-default-groups --group furnace "
@@ -1183,7 +1186,7 @@ def test_furnace_json_setting_rejects_del(module):
 def test_enabled_orchestrator_installs_private_data_and_group_without_starting_it(module, host):
     select_optional(host, "orch")
     assert host.install() == 0
-    for name in ("runs", "zones"):
+    for name in ("runs", "zones", "calibration/twin"):
         directory = host.data / name
         assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
         assert list(directory.iterdir()) == []
@@ -1197,6 +1200,26 @@ def test_enabled_orchestrator_installs_private_data_and_group_without_starting_i
         command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
         for command, _ in host.commands
     )
+
+
+def test_orchestrator_upgrade_preserves_twin_profiles_and_selection(host):
+    assert host.install() == 0
+    directory = host.data / "calibration/twin"
+    profiles = directory / "profiles"
+    profiles.mkdir(mode=0o750)
+    originals = {
+        profiles / "stage.json": b'{"name":"Stage calibration"}\n',
+        directory / "selection.json": b'{"camera1":"stage"}\n',
+    }
+    for path, data in originals.items():
+        path.write_bytes(data)
+        path.chmod(0o600)
+
+    assert host.install() == 0
+
+    assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
+    for path, data in originals.items():
+        assert path.read_bytes() == data and mode(path) == 0o600
 
 
 def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricating_runs(

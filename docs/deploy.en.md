@@ -124,6 +124,59 @@ You must stop services before updating the code. Running services can read a mix
 After the update, start services, then reload the Lab Console if it is open.
 Do not edit files in `/opt/mg400`. Modified files can cause `git switch` to abort the update.
 
+## Update the Digital Twin test instance from Windows
+
+`deploy/twin.py` updates an existing Digital Twin test instance on Olares from a Windows PC.
+Before you run it, enable the VPN through LarePass.
+The PC must have the SSH key `~/.ssh/olares_ed25519`, and the project must contain `work/olares-known_hosts`.
+
+First, run the tests for the area you changed.
+In PowerShell at the project root, preview the update:
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py --check
+```
+
+Without `--check`, the script deploys the update:
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py
+```
+
+The script applies these update rules:
+
+- Transfer only changed source files, including uncommitted changes to Git-tracked files and new files that Git does not ignore.
+- Delete previously deployed source files that no longer exist locally.
+- Sync dependencies only when `pyproject.toml` or `uv.lock` changes. Otherwise, reuse installed packages.
+- If only static console JavaScript/CSS changes, do not restart services.
+- If backend code or templates change, restart `mg400-twin-test`.
+- Restart `mg400-camera-preview.service` for camera code or dependency changes only when the override below is active and verified.
+
+The script preserves the calibration profile and run data directories.
+After deployment, the script checks service health. It does not run tests.
+If deployment fails, the script rolls back the update.
+After the update, open the [Digital Twin test instance](http://100.64.0.1:8082/lab/#twin).
+
+Native sampling in the test instance uses a camera service override.
+As root, manually install `/etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf`:
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python /opt/mg400-twin-test/scripts/camera_preview.py
+```
+
+After installation, run `systemctl daemon-reload` and `systemctl restart mg400-camera-preview.service`.
+The updater checks the override file and systemd's current `ExecStart` to confirm that the service uses the test instance code.
+To restore the original camera preview, remove only this override file:
+
+```sh
+rm /etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf
+systemctl daemon-reload
+systemctl restart mg400-camera-preview.service
+```
+
 ## Toupcam library
 
 Get `linux/x64/libtoupcam.so` from the [Toupcam 59.30594.20260120 SDK archive](https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip).

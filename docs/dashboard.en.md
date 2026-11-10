@@ -11,7 +11,7 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 The console is the only operator web page.
 
 - Row 1 of the header shows the console name, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Hover over the console name to see the deployed commit. The controlled devices show only while this page holds 1 or more devices. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
-- The workspaces are **Overview**, **Motion**, **Cameras** and **Furnace + microscope**.
+- The workspaces are **Overview**, **Motion**, **Cameras**, **Digital Twin** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - The status strip shows 1 chip for each service: a dot and a text. The **Runs** chip shows only while a run exists. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
 - When the console does not answer for 3 seconds, the strip shows only **Console offline** and the age of the last state. Check the VPN and the `orch` service.
@@ -97,7 +97,7 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 - camera1 to camera4 and the microscope load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate and stays near the newest frame. A view of camera1 to camera4 wider than 640 uses at most 4 Mbit/s, a smaller one at most 2 Mbit/s, and the microscope view at most 3 Mbit/s. This keeps room on the VPN link for control traffic.
 - If the browser supports HEVC, a view first requests `/camera/<view>.mp4?codec=h265`. If H.265 does not start to play, the page uses H.264.
 - If the browser or the host cannot play H.264, camera1 to camera4 load MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Wall and rail views get at most 3 frames a second, and the large view at most 6.
-- **Snapshot** on camera1 to camera4 downloads a `4000x3000` JPEG from `/camera/<view>.full.jpg`. The 4 cameras share 1 USB 2 link, so go2rtc captures only that camera during the still. The previews and readers of the other cameras stop for approximately 3 seconds and then recover automatically. Only 1 still runs at a time. Other requests wait.
+- **Snapshot** on camera1 to camera4 downloads a `4000x3000` JPEG from `/camera/<view>.full.jpg`. The 4 cameras share 1 USB 2 link, so go2rtc captures only that camera during the still. The previews and readers of the other cameras stop for approximately 3 seconds and then recover automatically. Only 1 still runs at a time. Other requests wait. With a configured microscope side camera, a microscope job blocks all full-size snapshots.
 - The console relays the thermal frame, the microscope MJPEG fallback stream and the microscope **Snapshot**. If the microscope view cannot play H.264, it loads the relayed MJPEG. The microscope **Snapshot** downloads the Toupcam frame as a lossless PNG at full size, `2592x1944`. It needs no control.
 - While a microscope job runs, **Snapshot** on camera3 returns `409`, because an objective switch reads the side stream.
 - The microscope relay sends only the newest complete frame. Wall and rail views get at most 10 frames a second, and the large view at most 30. It opens at most 2 microscope streams.
@@ -108,6 +108,53 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 - When the thermal service has no camera connection, the thermal settings show **Connect camera**. **Calibrate shutter…** needs a confirmation. These 2 commands are `any_client` commands and need no control.
 - **Draw region** closes the settings. Drag the `crucible` region on the thermal view. A bar on the view shows the bounds, **Save region** and **Cancel**. **Save region** is available only when the thermal service lists `set_region` in `api/describe`, and it needs a confirmation in the page. Otherwise, put the bounds in `rois.toml`.
 - Set the camera devices on the host as described in [Cameras](olares.en.md#cameras).
+
+### Digital Twin workspace
+
+Digital Twin estimates stage positions from camera images. The monitor image, detected markers, and axis readings come from the same frame.
+The camera dropdown lists the configured shared optical cameras from `camera1` through `camera4`. It selects the overhead stage camera `camera1` by default.
+
+New calibration profiles for real cameras default to `3840x2160`. Monitoring uses the saved profile's image dimensions. Endpoint capture uses the draft dimensions.
+If an existing `1280x720` profile matches the shared stream dimensions, Digital Twin reads that stream directly.
+Native captures preserve the camera's actual pixels without image resizing.
+
+Create a calibration profile in the console:
+
+1. Open **Calibration**. Select the camera. Click **New profile**.
+2. Enter the profile name and travel.
+3. Move the stage manually in the Motion workspace.
+4. When the stage is stationary, return to Digital Twin. Capture an endpoint.
+5. Capture 2 endpoints for each of the 3 axes, for 6 endpoints in total.
+6. Click **Save calibration**. The console automatically selects the saved profile for monitoring.
+
+The list in **Calibration** shows only saved profiles for the selected camera. Click **Load** on a profile row. This loads the editable draft and selects the profile for monitoring. Click **Delete** to delete the saved profile.
+If monitoring uses that profile, the console clears that selection. Deletion preserves the editable draft.
+
+Upload a calibration profile:
+
+1. Select the camera used to capture the endpoints.
+2. Click **Upload profile**.
+3. Select a JSON file no larger than 1 MiB.
+
+The file's `format` must be `furnace-twin.calibration-profile`, and its `schema_version` must be `1`.
+
+The console checks the structure, numeric values, and marker data. It recalculates the axis fits. You can also upload valid partial profiles.
+The console saves a snapshot with a new UUID (unique identifier) and binds it to the selected camera.
+Uploads never overwrite existing profiles. The console automatically selects the new profile for monitoring.
+
+In **Monitor**, select a saved profile from the profile dropdown. Click **Start sampling**. Click **Pause sampling** to stop sampling.
+Monitor uses the selected saved profile. Draft edits affect monitoring only after you save them.
+
+**Target rate** sets the sampling frequency limit. When capture is slower, the console skips missed sample times, so the actual frame rate decreases.
+During sampling or automatic tuning, Digital Twin sends no separate preview requests.
+Each native capture pauses the other camera streams and restores them after capture.
+When a microscope side camera is configured, a microscope job blocks all native captures.
+
+**Save calibration** needs no local file picker. Digital Twin sends no motion commands.
+You can save a partial profile and capture the remaining endpoints later.
+The console saves host profiles in `/var/lib/mg400/calibration/twin/profiles/`.
+The console records the selected profile in `/var/lib/mg400/calibration/twin/selection.json`.
+Demo mode uses temporary profiles and a fixed `640x480` synthetic scene. It reads no host profiles or real cameras.
 
 ### Furnace + microscope workspace
 

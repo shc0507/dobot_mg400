@@ -246,9 +246,13 @@ def test_shell_and_apis_need_no_token(rig):
     assert page.status_code == 200
     text = page.get_data(as_text=True)
     assert "STOP ALL MOTION" in text and "abc1234" in text
-    for name in ("overview", "motion", "cameras", "process"):
+    for name in ("overview", "motion", "cameras", "twin", "process"):
         assert f'data-workspace="{name}"' in text
         assert rig.client.get(f"/lab/console-static/{name}.js").status_code == 200
+    assert 'id="ws-twin"' in text
+    assert 'src="/lab/console-static/twin.js"' in text
+    assert 'href="/lab/console-static/twin.css"' in text
+    assert rig.client.get("/lab/console-static/twin.css").status_code == 200
     assert 'href="/lab/chip"' in text and rig.client.get("/lab/chip").status_code == 200
     assert PRIVATE not in text and "lc-token" not in text
     assert "Access-Control-Allow-Origin" not in page.headers
@@ -274,6 +278,7 @@ def test_state_reports_frame_data_without_secrets(rig):
         "overview",
         "motion",
         "cameras",
+        "twin",
         "process",
     ]
     assert "readiness" not in body
@@ -512,7 +517,17 @@ def test_rehearsal_console_profile_adds_events_only():
 def test_workspace_registry_needs_unique_ids_and_both_titles():
     from orchestrator.web.workspaces import Workspace, discover
 
-    assert [item.id for item in discover()][0] == "overview"
+    workspaces = discover()
+    assert [(item.id, item.order) for item in workspaces] == [
+        ("overview", 0),
+        ("motion", 20),
+        ("cameras", 30),
+        ("twin", 35),
+        ("process", 40),
+    ]
+    twin = next(item for item in workspaces if item.id == "twin")
+    assert twin.title == {"en": "Digital Twin", "zh": "数字孪生"}
+    assert callable(twin.register) and twin.script and twin.style
     with pytest.raises(ValueError):
         Workspace(id="Bad Id", order=1, title={"en": "x", "zh": "x"})
     with pytest.raises(ValueError):

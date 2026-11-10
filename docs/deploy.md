@@ -124,6 +124,59 @@
 更新后，启动服务，再重新加载已打开的实验室控制台。
 不要在 `/opt/mg400` 修改文件。修改的文件可能让 `git switch` 中止更新。
 
+## 从 Windows 更新数字孪生测试实例
+
+`deploy/twin.py` 从 Windows 电脑更新 Olares 上已安装的数字孪生测试实例。
+运行前，用 LarePass 开启 VPN。
+电脑必须有 SSH 密钥 `~/.ssh/olares_ed25519`，项目内必须有 `work/olares-known_hosts`。
+
+先运行所改区域的测试。
+在项目根目录的 PowerShell 中预览更新：
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py --check
+```
+
+不加 `--check` 时，脚本部署更新：
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py
+```
+
+脚本按以下规则更新：
+
+- 只传输更改的源文件，包括 Git 跟踪的未提交修改和未被忽略的新文件。
+- 删除以前部署过、现已在本地删除的源文件。
+- 只有 `pyproject.toml` 或 `uv.lock` 更改时才同步依赖，否则复用已安装的包。
+- 只更改控制台静态 JavaScript/CSS 时，不重启服务。
+- 后端代码或模板更改时，重启 `mg400-twin-test`。
+- 下述相机覆盖配置已生效且通过检查时，相机代码或依赖更改会重启 `mg400-camera-preview.service`。
+
+脚本保留校准配置和运行数据目录。
+部署后，脚本检查服务健康状态，不运行测试。
+部署失败时，脚本回滚本次更新。
+更新后，打开[数字孪生测试实例](http://100.64.0.1:8082/lab/#twin)。
+
+测试实例的原生尺寸采样使用相机服务覆盖文件。
+由 root 手动安装 `/etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf`：
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python /opt/mg400-twin-test/scripts/camera_preview.py
+```
+
+安装后，运行 `systemctl daemon-reload` 和 `systemctl restart mg400-camera-preview.service`。
+更新脚本检查覆盖文件和 systemd 当前的 `ExecStart`，确认服务使用测试实例的代码。
+恢复原相机预览时，只删除此覆盖文件：
+
+```sh
+rm /etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf
+systemctl daemon-reload
+systemctl restart mg400-camera-preview.service
+```
+
 ## Toupcam 库
 
 从 [Toupcam 59.30594.20260120 SDK 压缩包](https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip)提取 `linux/x64/libtoupcam.so`。

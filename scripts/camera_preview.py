@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Condition, Lock, Thread
 
-from cameras.config import camera_configuration
+from cameras.config import MJPEG_MODES, camera_configuration
 from cameras.jpeg import jpeg_size
 from cameras.rate import SendRate
 
@@ -36,7 +36,7 @@ MAX_FPS = 30
 GO2RTC = "http://127.0.0.1:1984"
 # A full-resolution still needs the shared USB 2 link alone: its stream uses almost all of
 # it. go2rtc reads this overlay after its main config. The overlay turns off the other
-# cameras and the H.264 encoders and sets one camera to the largest AC410 MJPEG mode.
+# cameras and the H.264 encoders and sets one camera to the requested AC410 MJPEG mode.
 # The capture unit deletes a left-over overlay before go2rtc starts.
 STILL_CONFIG = Path("/var/lib/mg400/camera/still.yaml")
 STILL_MODE = (4000, 3000, 15)
@@ -121,9 +121,20 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True, max_frame=MAX_FRAME):
             yield frame
 
 
-def still_overlay(stream):
-    """Return the go2rtc overlay that streams only `stream`, at the largest MJPEG mode."""
-    width, height, fps = STILL_MODE
+def still_mode(query):
+    """Select the requested native size at its lowest supported capture rate."""
+    if not query:
+        return STILL_MODE
+    return min(
+        (mode for mode in MJPEG_MODES if query == f"size={mode[0]}x{mode[1]}"),
+        key=lambda mode: mode[2],
+        default=None,
+    )
+
+
+def still_overlay(stream, mode=STILL_MODE):
+    """Return the go2rtc overlay that streams only `stream`, at the requested mode."""
+    width, height, fps = mode
     lines = []
     for name, device in zip(CAMERAS.streams, CAMERAS.devices):
         source = (
@@ -166,9 +177,9 @@ def microscope_busy():
         return False
 
 
-def grab_still(stream):
+def grab_still(stream, mode=STILL_MODE):
     """Return 1 settled full-resolution JPEG. The other cameras pause for a few seconds."""
-    STILL_CONFIG.write_text(still_overlay(stream))
+    STILL_CONFIG.write_text(still_overlay(stream, mode))
     try:
         restart_go2rtc()
         start = time.monotonic()
@@ -183,7 +194,7 @@ def grab_still(stream):
                     size = jpeg_size(frame)
                 except RuntimeError:
                     continue
-                if now - start >= STILL_SETTLE_S and size == STILL_MODE[:2]:
+                if now - start >= STILL_SETTLE_S and size == mode[:2]:
                     return frame
         raise OSError("The camera sent no full-resolution frame")
     finally:
@@ -345,8 +356,8 @@ class Preview(BaseHTTPRequestHandler):
             rates = {source: feed.fps() for source, feed in FEEDS.items()}
             self.respond(json.dumps(rates).encode(), "application/json")
             return
-        if route in STILLS and not query:
-            self.still(STILLS[route])
+        if route in STILLS and (mode := still_mode(query)) is not None:
+            self.still(STILLS[route], mode, wait=not query)
             return
         if query or route not in STREAMS:
             self.send_error(404)
@@ -361,15 +372,17 @@ class Preview(BaseHTTPRequestHandler):
             return
         self.respond(body, "image/jpeg")
 
-    def still(self, stream):
-        if SIDE == stream and microscope_busy():
-            self.send_error(409, "The microscope is using this camera")
-            return
-        if not STILL_LOCK.acquire(timeout=45):
+    def still(self, stream, mode=STILL_MODE, *, wait=True):
+        acquired = STILL_LOCK.acquire(timeout=45) if wait else STILL_LOCK.acquire(blocking=False)
+        if not acquired:
             self.send_error(503, "Another still is in progress")
             return
         try:
-            body = grab_still(stream)
+            # Every still pauses the side stream, including a still from another camera.
+            if SIDE and microscope_busy():
+                self.send_error(409, "The microscope is busy")
+                return
+            body = grab_still(stream, mode)
         except (OSError, ValueError, UnicodeError, HTTPException):
             self.send_error(502)
             return

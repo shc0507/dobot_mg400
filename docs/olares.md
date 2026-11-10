@@ -306,7 +306,14 @@ ffmpeg 不探测输入帧率，每个源帧只发送 1 次，每 1 s 发送 1 �
 H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。go2rtc 1.9.14 不拆分 RTP 聚合包：ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
 ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`）。不估计时，ffmpeg 假定 90000 fps，`hevc_nvenc` 只输出约 0.1 Mbit/s。
 ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
-单帧请求从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。
+`/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。
+
+`/camera/<view>.full.jpg?size=3840x2160` 采集指定原生尺寸的 JPEG。
+`size` 只接受上述 MJPEG 模式中的尺寸，并使用该尺寸支持的最低帧率。
+无查询参数的 `/camera/<view>.full.jpg` 仍采集 `4000x3000`。
+
+服务不会放大低分辨率图像。每次采集会暂停其他相机流，采集结束后恢复。
+配置了 `MG400_MICROSCOPE_SIDE_STREAM` 时，显微镜任务运行期间拒绝所有 `.full.jpg` 请求。
 
 4 台 AC410 与热像仪共用 480 Mbit/s 的 USB 2 链路。多路大尺寸流可能超过其周期传输预算。
 同时使用真实设备前，必须按 H-21 在有人监督下检查带宽。

@@ -39,6 +39,7 @@ This document provides permanent information/instructions for the convenience of
 ## UX design
 
 - Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
+- Prioritize the English UI. Keep translations simple and use existing fonts or system fallbacks. Do not rebuild fonts solely for translated text unless the user asks.
 
 ## Reading the codebase
 
@@ -70,6 +71,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Agent coordination signals | `scripts/agent_signal.py`, `.claude/settings.json` | `test_agent_signal.py` | [coordinator.md](docs/agents/coordinator.md) |
 | Detector evaluation | `scripts/vision_eval.py` | `test_vision_eval.py` | [vision.md](docs/vision.md#检测模型评估) |
 | Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md) |
+| Digital Twin monitor and calibration | `src/vision/stage_twin/`, `src/orchestrator/web/twin.py`, `src/orchestrator/web/workspaces/twin.py`, `src/orchestrator/web/static/console/twin.*` | `test_stage_twin.py`, `test_console_twin.py`, `test_console_twin.mjs` | [dashboard.md](docs/dashboard.md#数字孪生工作区) |
 | Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py` | [vision.md](docs/vision.md) |
 | Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md) |
 | Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/` | `test_vision_tray.py` | [vision.md](docs/vision.md) |

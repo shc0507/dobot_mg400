@@ -10,7 +10,9 @@ SERVER_OPTIONS = {
     # Each microscope stream holds one worker.
     "threads": 16,
     "clear_untrusted_proxy_headers": False,
-    "max_request_body_size": 65537,
+    # Allow a 1 MiB calibration file inside a JSON string (up to 6 escaped
+    # bytes per source byte). Flask keeps the 64 KiB limit on other routes.
+    "max_request_body_size": 6 * 1024 * 1024 + 1025,
 }
 # The console control socket (orchestrator.web.control_socket). Waitress cannot upgrade a
 # connection, so the socket has its own loopback port. The proxy routes

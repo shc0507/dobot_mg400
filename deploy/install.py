@@ -837,6 +837,7 @@ def install(args, host, run, chown, out):
         directory(host.data / "runs", 0o750, service)
     if "orch" in selected:
         directory(host.data / "zones", 0o750, service)
+        directory(host.data / "calibration/twin", 0o750, service)
     directory(host.code, 0o750, (0, SERVICE_GID))
     # The system Python keeps the environment readable for the service user.
     for venv, groups in service_environments(selected).items():

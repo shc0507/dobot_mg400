@@ -1465,7 +1465,7 @@ def test_microscope_import_failures_preserve_targets_and_remove_staging(
     assert not list(ctl.host.root.rglob(".mg400-calibration-*"))
 
 
-@pytest.mark.parametrize("group", ["robot", "all", "camera"])
+@pytest.mark.parametrize("group", ["robot", "all", "camera", "do", "chip"])
 def test_agent_groups_dispatch_without_a_pty(ctl, monkeypatch, group):
     monkeypatch.setitem(
         ctl.module.main.__globals__,

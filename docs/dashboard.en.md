@@ -32,7 +32,7 @@ The console is the only operator web page.
 - The console releases the lease when no heartbeat arrives for 3 seconds, or when the page closes. If a renewal fails, the control ends and the console does not request it again.
 - Before the console releases the robot, it disables the arm. This applies to **Release**, **Release all**, a page close and a missing heartbeat. The disable also stops motion. The robot service then stays unlocked.
 - **Release all** releases only the console's own leases.
-- Agent pages: `labctl` uses the page identity `agent-<session>`. The holder on the **Control** card is `agent-<session>-<12 hex>`. The console renews an agent page's leases every 1 second. It releases them after 10 minutes without a request from that page. Any request from the page counts.
+- Agent pages: `labctl` uses the page identity `agent-<session>`. The holder on the **Control** card is `agent-<session>-<12 hex>`. The console renews an agent page's leases every 1 second. It releases them after 10 minutes without a request from that page. Any request from the page counts. While a `labctl do` run borrows a device, the page cannot command or release it, and the idle timeout does not apply.
 - `GET /lab/api/console/state/<device>` returns the full state of 1 device and its console holder. It needs no control.
 
 ### Command relay

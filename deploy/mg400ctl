@@ -51,7 +51,10 @@ CALIBRATION_MAX_BYTES = 2 * 1024 * 1024 * 1024
 CALIBRATION_MAX_DEPTH = 32
 # Agent groups print 1 JSON object to the caller's stdout. They run without --pty,
 # which merges stderr into stdout and writes \r\n.
-AGENT_GROUPS = {"robot", "stage", "furnace", "microscope", "vision", "thermal", "camera", "all"}
+AGENT_GROUPS = {
+    *("robot", "stage", "furnace", "microscope", "vision", "thermal", "camera", "all"),
+    *("do", "chip"),
+}
 ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs", "station", *AGENT_GROUPS}
 STATION_ACTIONS = {"save", "list", "show", "rm", "retool"}
 

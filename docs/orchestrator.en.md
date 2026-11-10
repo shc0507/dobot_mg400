@@ -45,7 +45,7 @@ The following paths are relative to the configured base path:
 | Method and path | Request or result |
 | --- | --- |
 | `GET /api/recipes` | List recipe identifiers, names, and parameter declarations |
-| `POST /api/runs` | Start with a required `recipe` identifier and an optional `params` object |
+| `POST /api/runs` | Start with a required `recipe` identifier and an optional `params` object. With `borrow: true`, the run uses the devices that the client's console page holds, and the console keeps their leases |
 | `GET /api/runs` | List recorded runs |
 | `GET /api/runs/<id>` | Read a run and its recorded results |
 | `POST /api/runs/<id>/resume` | Supply `manually_completed: true`, a nonempty `note`, and `physically_clear: true` when this run retains zone claims |

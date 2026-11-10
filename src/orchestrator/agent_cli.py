@@ -10,10 +10,18 @@ import signal
 import sys
 from contextlib import contextmanager
 
-from .agent import DEFAULT_TIMEOUT_S, DEFAULT_URL, Agent, exit_code, failure, parse_params
+from .agent import (
+    DEFAULT_TIMEOUT_S,
+    DEFAULT_URL,
+    DO_TIMEOUT_S,
+    Agent,
+    exit_code,
+    failure,
+    parse_params,
+)
 
 DEVICES = ("robot", "stage", "furnace", "microscope", "vision", "thermal")
-GROUPS = frozenset({*DEVICES, "camera", "all"})
+GROUPS = frozenset({*DEVICES, "camera", "all", "do", "chip"})
 # Shortcuts: name -> (action, fixed params).
 ROBOT_PLAIN = {
     "enable": "enable",
@@ -151,6 +159,13 @@ def _parser():
     still.add_argument("view")
     still.add_argument("--out")
 
+    do = groups.add_parser("do", parents=[common], allow_abbrev=False)
+    do.add_argument("recipe")
+    do.add_argument("params", nargs="*", metavar="NAME=VALUE")
+    do.add_argument("--timeout", type=float, default=DO_TIMEOUT_S, metavar="S")
+    verbs = group("chip")
+    verb(verbs, "locate").add_argument("slot")
+
     verbs = group("all")
     verb(verbs, "state")
     events = verb(verbs, "events")
@@ -269,6 +284,12 @@ def dispatch(agent, args):
         }[verb]()
     if group == "camera":
         return agent.camera_still(args.view, args.out)
+    if group == "do":
+        if args.timeout <= 0:
+            raise UsageError("--timeout must be positive.")
+        return agent.do(args.recipe, parse_params(args.params, sys.stdin), timeout=args.timeout)
+    if group == "chip":
+        return agent.chip_locate(args.slot)
     reads = {
         "state": lambda: agent.state(group),
         "describe": lambda: agent.describe(group),

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from labkit.errors import ServiceError
 
-from ..clients import SERVICES
+from ..clients import SERVICES, Borrowed
 
 BEAT_TIMEOUT_S = 3.0
 AGENT_PREFIX = "agent-"
@@ -44,6 +44,7 @@ HOLD_DEADMAN_S = 0.5
 HOLD_KEEPALIVE_S = 0.2
 HOLD_JOIN_S = 2.0
 HOLD_ENDED = "Hold has ended. Release and press again."
+LENT = "A run is using this device."
 
 
 def _status(error):
@@ -98,6 +99,8 @@ class Session:
         self.agent = is_agent(page)
         self.state = "held"
         self.renewing = False
+        # A run borrows held devices: the console keeps the lease, the page cannot command.
+        self.lent = False
         self.message = None
         # Stage only: the latest hold and the identities of ended holds.
         self.hold = None
@@ -163,7 +166,7 @@ class Console:
                 late = [
                     item
                     for item in self.sessions.values()
-                    if item.state == "held" and now - item.beat > self._idle(item)
+                    if item.state == "held" and not item.lent and now - item.beat > self._idle(item)
                 ]
                 for item in late:
                     item.state = "releasing"
@@ -264,6 +267,7 @@ class Console:
             "state": item.state,
             "message": item.message,
             "held_s": round(max(0.0, now - item.started), 1),
+            "lent": item.lent,
         }
         if item.agent:
             result["idle_left_s"] = round(max(0.0, AGENT_IDLE_S - (now - item.beat)), 1)
@@ -351,6 +355,8 @@ class Console:
             item = self.sessions.get(device)
             if item is None or item.page != page or item.state != "held":
                 return None
+            if item.lent:
+                raise ServiceError(409, LENT)
             return item
 
     def release(self, device, page):
@@ -362,6 +368,8 @@ class Console:
                 raise ServiceError(409, "Another console page controls this device.")
             if item.state != "held":
                 return {"device": device, "result": item.state}
+            if item.lent:
+                raise ServiceError(409, LENT)
             item.state = "releasing"
         error = self._end(item, release=True)
         self.service.events.add("info", "Console released control.", device=device)
@@ -415,6 +423,35 @@ class Console:
             self.service.events.add("warning", "Console lost control.", device=item.device)
         finally:
             item.renewing = False
+
+    def lend(self, page, devices):
+        """Lend this page's held devices to 1 run. Return name -> Borrowed adapter."""
+        with self.lock:
+            missing = [
+                name
+                for name in devices
+                if (item := self.sessions.get(name)) is None
+                or item.page != page
+                or item.state != "held"
+                or item.lent
+            ]
+            if missing:
+                raise ServiceError(
+                    409, "Take control of these devices first: " + ", ".join(sorted(missing)) + "."
+                )
+            items = [self.sessions[name] for name in devices]
+            for item in items:
+                item.lent = True
+        return {
+            item.device: Borrowed(item.adapter, lambda item=item: self.unlend(item))
+            for item in items
+        }
+
+    def unlend(self, item):
+        """Return a lent device to its page. The idle time starts again."""
+        with self.lock:
+            item.lent = False
+            item.beat = self.clock()
 
     # Relay -----------------------------------------------------------------
 

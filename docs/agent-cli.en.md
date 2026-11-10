@@ -60,6 +60,21 @@ Shortcuts:
 
 Each command waits for its result. The default `--timeout` is 300 seconds. `--no-wait` returns after the console accepts the command.
 
+## Composite runs
+
+| Command | Effect |
+| --- | --- |
+| `labctl do RECIPE [NAME=VALUE ...] [--timeout S]` | Run 1 catalog recipe with the devices that the session holds |
+| `labctl chip locate SLOT` | Run `slot-state` for 1 slot. Print `state`, `center_xy_mm` and `angle_deg` |
+
+- Take every device of the recipe first. Otherwise the call fails, and `hint` names the `take` commands.
+- The run borrows the session's devices. The console keeps the leases, so the arm stays enabled and the microscope keeps focus zero. During the run, the session cannot command these devices. Stops still work.
+- The CLI holds the orchestrator lease during the run. A run that holds after a failed step is aborted. When the run ends, the devices return to the session.
+- If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort the run on the Overview.
+- The default `--timeout` is 1800 seconds. At the timeout, the CLI aborts the run.
+- The output has `run_id`, `status` (`completed` or `aborted`), `steps` with `skill`, `status`, `result` and `error`, and `devices`.
+- One-step catalog recipes: `slot-state`, `station-transfer`, `crucible-load`, `crucible-unload`, `microscope-record`, `check-calibration`. `chip-pick` and `tray-transfer` are also in the catalog.
+
 ## Stops
 
 Stops need no control and no session. They are sent once and never retried.
@@ -104,6 +119,7 @@ A refusal:
 
 ## Limitations
 
+- No operator prompt for a held run: `do` aborts it.
 - No keyboard jog and no stage hold. They need refreshes every 100 ms and 500 ms.
 - A motion that started before the CLI stopped continues as commanded.
 - Image files go to `/tmp/labctl/` unless `--out` is given. The installed CLI runs as UID 1000 and cannot write into `/home/olares`.

@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import roi
 from .camera import P1Camera, diagnose
 from .service import ThermalFrame
 
@@ -94,6 +95,11 @@ def main():
         return 0
     if args.probe:
         return probe(args.frames, args.output)
+    try:
+        # The service reads this file at startup; a bad file must stop before bind.
+        roi.load_regions(roi.DEFAULT_ROI_PATH)
+    except ValueError as exc:
+        parser.error(str(exc))
     host = args.bind
     url_host = f"[{host}]" if ":" in host else host
     url = f"http://{url_host}:{args.port}{prefix}"

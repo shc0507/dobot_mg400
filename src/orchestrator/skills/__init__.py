@@ -2,8 +2,12 @@
 
 import inspect
 import math
+import os
 from dataclasses import dataclass
 from typing import get_type_hints
+
+from ..stations import BOUND_SETTINGS, DEFAULT_TOOL, Workspace, load_tool
+from ..tool import Pose, flange_to_fingertip
 
 
 def typed(value, kind, label):
@@ -86,6 +90,25 @@ class Registry:
             raise ValueError(f"Unknown skill: {name!r}") from None
 
 
+def check_move(flange, settings=None):
+    """Check a flange target against the fingertip workspace bounds, when they are set.
+
+    Without any bound setting, the robot service limits apply alone.
+    """
+    settings = os.environ if settings is None else settings
+    if not any(key in settings for key in BOUND_SETTINGS):
+        return
+    workspace = Workspace.from_settings(settings)
+    offset = load_tool(settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
+    fingertip = flange_to_fingertip(flange, offset)
+    for axis, (low, high) in workspace.bounds.items():
+        value = getattr(fingertip, axis)
+        if not low <= value <= high:
+            raise ValueError(
+                f"Move fingertip {axis}={value:g} is outside the workspace [{low:g}, {high:g}]."
+            )
+
+
 def default_registry(*, calibration_reference_provider=None):
     from .calibrate import calibrate, calibration_skill
     from .crucible import load, unload
@@ -107,6 +130,7 @@ def default_registry(*, calibration_reference_provider=None):
         return ctx.clients["robot"].run("enable")
 
     def move(ctx, x_mm: float, y_mm: float, z_mm: float, r_deg: float):
+        check_move(Pose(x_mm, y_mm, z_mm, r_deg))
         return ctx.clients["robot"].run(
             "execute", targets={"x": x_mm, "y": y_mm, "z": z_mm, "r": r_deg}
         )

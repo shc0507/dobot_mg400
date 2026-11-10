@@ -216,6 +216,29 @@ def test_rehearsal_strips_environment_and_closes_only_after_abort_drain(
     assert cli.os.environ["MG400_ROBOT_HOST"] == "ambient"
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_rehearsal_records_stay_out_of_production_store(recipe, monkeypatch, tmp_path, explicit):
+    production = tmp_path / "production"
+    monkeypatch.setenv("MG400_ORCH_RUNS_DIR", str(production))
+    stores = []
+    real_store = cli.RunStore
+
+    def store(directory, **kwargs):
+        stores.append(directory)
+        return real_store(directory, **kwargs)
+
+    monkeypatch.setattr(cli, "RunStore", store)
+    arguments = ["--runs-dir", str(tmp_path / "chosen")] if explicit else []
+    assert cli.main(["rehearse", str(recipe), *arguments], out=io.StringIO()) == 0
+    assert not production.exists()
+    if explicit:
+        assert stores == [tmp_path / "chosen"]
+    else:
+        assert stores[0].name == "runs"
+        assert stores[0].parent.name.startswith("mg400-rehearsal-")
+        assert not stores[0].exists()
+
+
 def test_real_wait_only_cli_run_and_readonly_history(recipe, tmp_path):
     directory = tmp_path / "runs"
     output = io.StringIO()

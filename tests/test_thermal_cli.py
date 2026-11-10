@@ -12,7 +12,8 @@ from thermal_cam import app
 
 
 @pytest.fixture(autouse=True)
-def clean_settings(monkeypatch):
+def clean_settings(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.roi, "DEFAULT_ROI_PATH", tmp_path / "absent.toml")
     for name in (
         "MG400_THERMAL_BIND",
         "MG400_THERMAL_PORT",
@@ -198,3 +199,19 @@ def test_environment_settings_and_cli_override(monkeypatch, sockets, override, c
     assert (
         "http://[::1]:8768/lab/thermal" if override else "http://0.0.0.0:9999/thermal"
     ) in capsys.readouterr().out
+
+
+def test_invalid_region_file_exits_2_before_bind(monkeypatch, tmp_path, capsys):
+    def forbidden(*args, **kwargs):
+        pytest.fail("An invalid region file must not open a socket or camera")
+
+    path = tmp_path / "rois.toml"
+    path.write_text("[regions.bad]\nx0 = 0\n")
+    monkeypatch.setattr(cli.roi, "DEFAULT_ROI_PATH", path)
+    monkeypatch.setattr(cli.socket, "socket", forbidden)
+    monkeypatch.setattr(app, "create_app", forbidden)
+    monkeypatch.setattr(sys, "argv", ["thermal-cam", "--demo"])
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 2
+    assert "Region 'bad' must define exactly x0, y0, x1 and y1." in capsys.readouterr().err

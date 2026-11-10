@@ -18,7 +18,7 @@ from orchestrator.rehearsal import Rehearsal
 from orchestrator.runner import Revoked, StepClient, _Authority
 from orchestrator.skills import default_registry
 from orchestrator.skills.robot import TRANSFER_SETTINGS, pick, place, transfer
-from orchestrator.stations import AXES, StationStore, Workspace
+from orchestrator.stations import AXES, BOUND_SETTINGS, StationStore, Workspace
 from orchestrator.store import RunStore
 from orchestrator.tool import Pose, ToolOffset, fingertip_to_flange, flange_to_fingertip
 
@@ -782,3 +782,24 @@ def test_motion_capabilities_are_required_at_plan_and_direct_move_boundaries(geo
             robot.move(robot.pose(geometry.load()["source"]))
     ctx.robot.describe.assert_called_once_with()
     assert not ctx.robot.calls
+
+
+def test_robot_move_checks_the_fingertip_workspace_when_bounds_are_set(geometry, monkeypatch):
+    move = default_registry()["robot.move"].function
+    robot = Mock()
+    ctx = Mock(clients={"robot": robot})
+    # The tool offset (3, 4, 5) puts the fingertip 5 mm below the flange.
+    move(ctx, 230.0, 0.0, 5.0, 0.0)
+    assert robot.run.call_count == 1
+    for target, axis in (((230.0, 0.0, 4.0, 0.0), "z_mm"), ((600.0, 0.0, 50.0, 0.0), "x_mm")):
+        with pytest.raises(ValueError, match=f"fingertip {axis}=.*outside the workspace"):
+            move(ctx, *target)
+    assert robot.run.call_count == 1
+    # Partial bounds refuse. Without any bound setting, the service limits apply alone.
+    monkeypatch.delenv("MG400_ORCH_X_MIN_MM")
+    with pytest.raises(ValueError, match="MG400_ORCH_X_MIN_MM"):
+        move(ctx, 230.0, 0.0, 50.0, 0.0)
+    for key in BOUND_SETTINGS:
+        monkeypatch.delenv(key, raising=False)
+    move(ctx, 600.0, 0.0, 4.0, 0.0)
+    assert robot.run.call_count == 2

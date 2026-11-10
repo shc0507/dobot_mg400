@@ -16,7 +16,7 @@ uv run labctl runs RUN_ID --runs-dir ./rehearsal-runs
 
 `labctl run RECIPE` uses configured instrument services. Before a hardware run, complete the required operator checks and keep an operator at the emergency stop. Shell agents use the [agent CLI](agent-cli.en.md).
 
-`--runs-dir PATH` selects the record directory. `--param NAME=JSON` overrides a declared recipe parameter. Quote string values as JSON strings:
+`--runs-dir PATH` selects the record directory. Without `--runs-dir`, a rehearsal writes its records to a temporary directory, removes them at exit, and ignores `MG400_ORCH_RUNS_DIR`. `--param NAME=JSON` overrides a declared recipe parameter. Quote string values as JSON strings:
 
 ```sh
 uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-runs --param 'chip_id="demo-chip-2"' --time-scale 0.1
@@ -302,6 +302,8 @@ The tool file is `MG400_ORCH_TOOL_FILE`, default `/var/lib/mg400/robot/tool.toml
 8 settings define the fingertip workspace: `MG400_ORCH_X_MIN_MM`, `MG400_ORCH_X_MAX_MM`, `MG400_ORCH_Y_MIN_MM`, `MG400_ORCH_Y_MAX_MM`, `MG400_ORCH_Z_MIN_MM`, `MG400_ORCH_Z_MAX_MM`, `MG400_ORCH_R_MIN_DEG`, and `MG400_ORCH_R_MAX_DEG`. They have no defaults. Each must be a finite number, and each minimum must be less than its maximum. Every station must be inside the bounds, and its approach height must not exceed the Z maximum.
 
 All station commands, and the station, tray, pick, and crucible steps below, need these bounds, `tool.toml`, and taught stations. If one is missing, the command or step refuses.
+
+`robot.move` uses `tool.toml` to convert the flange target to a fingertip pose. If the fingertip pose is outside the bounds, the step refuses and sends no motion. If only some bounds are set, the step also refuses. If none of the 8 settings is set, only the robot service limits apply to `robot.move`.
 
 An operator first positions the robot in the Motion workspace of the Lab Console. The console, or another controller, must retain control while teaching. Teaching requires fresh measured feedback, an idle robot, no lock, and no unconfirmed stop. The teaching command reads discovery and state only. It never acquires or releases a lease, changes controller tools, or sends motion.
 

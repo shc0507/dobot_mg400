@@ -398,6 +398,22 @@ def test_camera_url_uses_the_proxy_when_it_is_enabled(ctl):
     assert ctl.out.getvalue() == "http://[fd00::1]:9443/camera/camera1.mjpeg\n"
 
 
+def test_camera_url_omits_the_microscope_side_stream_above_720p(ctl):
+    devices = "MG400_CAMERA_DEVICES=" + ",".join(CAMERAS[:2]) + "\n"
+    ctl.host.settings.write_text(SETTINGS + devices + "MG400_MICROSCOPE_SIDE_STREAM=camera2\n")
+    assert ctl.call("camera-url") == 0
+    assert ctl.out.getvalue() == "http://127.0.0.1:8080/camera/camera1.mjpeg\n"
+    ctl.out.truncate(0)
+    ctl.out.seek(0)
+    ctl.host.settings.write_text(
+        SETTINGS
+        + devices
+        + "MG400_MICROSCOPE_SIDE_STREAM=camera2\nMG400_CAMERA_MODES=1280x720@30,1280x720@30\n"
+    )
+    assert ctl.call("camera-url") == 0
+    assert ctl.out.getvalue().splitlines()[-1] == "http://127.0.0.1:8080/camera/camera2.mjpeg"
+
+
 def test_camera_url_without_cameras(ctl):
     assert ctl.call("camera-url") == 0
     assert ctl.out.getvalue() == "Cameras are off: MG400_CAMERA_DEVICES is empty.\n"

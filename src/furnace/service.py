@@ -28,7 +28,7 @@ from labkit.lease import Lease
 
 from . import controller as protocol
 from .config import FurnaceConfig, serial_port
-from .controller import GAS_UNIT_IDS, Furnace, MFCFlowController
+from .controller import GAS_UNIT_IDS, Furnace, MFCFlowController, check_program_minutes
 from .state import StateError, StateStore
 
 # Minutes without a lease renewal before an orphaned run cools down.
@@ -567,6 +567,10 @@ class FurnaceService:
 
     def _validate_recipe(self, steps, end_gas, end_gas_until_c):
         steps = self._validate_steps(steps)
+        for before, step in zip(steps, steps[1:]):
+            check_program_minutes(
+                abs(step["temperature_c"] - before["temperature_c"]) / step["ramp_rate_c_per_min"]
+            )
         if any("gas" in step for step in steps) and (end_gas is None or end_gas_until_c is None):
             raise ValueError("A sequence with gas requires end_gas and end_gas_until_c")
         if (end_gas is None) != (end_gas_until_c is None):
@@ -583,6 +587,8 @@ class FurnaceService:
         validated, gas, until = self._validate_recipe(steps, end_gas, end_gas_until_c)
         if self._sequence_phase == "cooling":
             raise ValueError("Stop the cooling gas plan before replacing the sequence")
+        if self._sequence_running:
+            self._check_step_ramp(validated[min(self._sequence_index, len(validated) - 1)])
         self._steps, self._end_gas, self._end_gas_until_c = validated, gas, until
         if self._sequence_running and self._sequence_index >= len(validated):
             self._sequence_index = len(validated) - 1
@@ -602,6 +608,7 @@ class FurnaceService:
         )
         self._connect()
         self._check_unlocked()
+        self._check_step_ramp(recipe[0][0])
         self._steps, self._end_gas, self._end_gas_until_c = recipe
         self._sequence_running = True
         self._sequence_index = 0
@@ -620,6 +627,7 @@ class FurnaceService:
         )
         self._connect()
         self._check_unlocked()
+        self._furnace.check_ramp_time(target, ramp)
         self._sequence_running = False
         self._sequence_phase = "manual"
         self._hold_started_at = self._hold_started_wall = None
@@ -633,6 +641,10 @@ class FurnaceService:
 
         self._transition(apply)
         self._snapshot = self._read_snapshot(track=False)
+
+    def _check_step_ramp(self, step):
+        # Refuse before any write: a refused ramp must not lock the furnace.
+        self._furnace.check_ramp_time(step["temperature_c"], step["ramp_rate_c_per_min"])
 
     def _signature(self):
         step = self._steps[self._sequence_index]
@@ -653,6 +665,8 @@ class FurnaceService:
         thermal_changed = (
             self._applied_signature is None or signature[:3] != self._applied_signature[:3]
         )
+        if thermal_changed:
+            self._check_step_ramp(step)
         self._active_target = step["temperature_c"]
         self._active_ramp = step["ramp_rate_c_per_min"]
         if thermal_changed:

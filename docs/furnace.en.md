@@ -84,7 +84,7 @@ HOLD continues temperature regulation while it pauses the controller program. ST
 
 Enter a target and ramp rate, select **Apply and run…**, then confirm in the page.
 Targets must be at least `0` °C and within the configured temperature cap. Ramp rates must be positive and within the configured ramp cap.
-The ramp duration (the difference between target and current PV, divided by the ramp rate) must be at most `3200` min. If it is longer, the service refuses the command and locks the furnace.
+The ramp duration (the difference between target and current PV, divided by the ramp rate) must be at most `3200` min. If it is longer, the service refuses the command before it writes to the controller. The furnace does not lock. A sequence checks each step in the same way: the first step from the current PV, and each later step from the previous target.
 The driver writes the target to both `SP1` and `SP2` before RUN. It uses current PV to calculate ramp duration.
 When controller step `2` begins, the service requests and verifies HOLD.
 Do not infer HOLD from a target match alone.
@@ -192,7 +192,7 @@ All paths follow the configured base prefix.
 | `POST /api/manual/heartbeat`, `POST /api/manual/renew`, `POST /api/manual/release` | Acquire, renew, or release the manual lease with an empty object |
 | `POST /api/furnace/acknowledge` | Acknowledge a fault. See above |
 
-`POST /api/stop` accepts an optional `wait_s` from `0` to `15`. The furnace service checks the value but does not wait. It returns `stop` and `state`.
+`POST /api/stop` accepts an optional `wait_s` from `0` to `15`. The furnace service repeats the stop until the stop is confirmed, the service locks, or `wait_s` ends. It returns `stop` and `state`.
 `POST /api/furnace/stop` and `POST /api/sequence/stop` accept only `{}` and return `ok`, `stop`, and `status`.
 The gas stop routes return `ok` and `status`. `ok` means only that the service is not locked. It does not prove zero flow.
 

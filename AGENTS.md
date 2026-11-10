@@ -89,7 +89,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 
 Run the tests of one area, for example: `uv run pytest -q tests/test_joint_control.py tests/test_joint_limits.py` or `node --test tests/test_console.mjs`.
 
-CI runs ruff and all `tests/*.mjs` on every run. On a pull request, CI runs only the pytest files that `scripts/select_tests.py` selects from the changed files. The script runs the full suite when a change touches shared code or a path that it does not map: `src/labkit/`, shared test helpers, `tests/fixtures/`, `pyproject.toml`, `uv.lock`, `.github/`, `apps/layout-studio/`, the `firmware/three-motor-demo/` source, or the script itself. A push to `main` runs the full suite. When you add an area or move code, update `AREAS` in `scripts/select_tests.py` and the table above. To see the selection for a branch, run `git diff --name-only origin/main... | uv run python scripts/select_tests.py`.
+CI runs ruff and all `tests/*.mjs` on every run. On a pull request, CI runs only the pytest files that `scripts/select_tests.py` selects from the changed files. For a changed `src/<package>/` file, it also selects the test files that import the package, directly or through a test helper. The script runs the full suite when a change touches shared code or a path that it does not map: `src/labkit/`, shared test helpers, `tests/fixtures/`, `pyproject.toml`, `uv.lock`, `.github/`, `apps/layout-studio/`, the `firmware/three-motor-demo/` source, or the script itself. A push to `main` runs the full suite. When you add an area or move code, update `AREAS` in `scripts/select_tests.py` and the table above. To see the selection for a branch, run `git diff --name-only origin/main... | uv run python scripts/select_tests.py`.
 
 ## Test stage
 

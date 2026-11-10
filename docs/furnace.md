@@ -84,7 +84,7 @@ HOLD 暂停控制器程序，但继续调温。STOP 关闭加热，炉体被动�
 
 输入目标温度和斜率后，点击 **Apply and run…**，再在页面内确认。
 目标温度必须至少为 `0` °C，且不超过配置上限。斜率必须为正，且不超过配置上限。
-爬升时长（目标温度与当前 PV 之差除以斜率）不得超过 `3200` min。超过时，服务拒绝命令并锁定炉子。
+爬升时长（目标温度与当前 PV 之差除以斜率）不得超过 `3200` min。超过时，服务在写入控制器前拒绝命令，炉子不锁定。序列按同一规则检查每一步：第一步从当前 PV 算起，之后每一步从上一步目标算起。
 驱动在 RUN 前把目标温度同时写入 `SP1` 和 `SP2`，用当前 PV 计算爬升时间。
 控制器进入步骤 `2` 时，服务请求并验证 HOLD。
 不得仅凭温度达到目标就认定已进入 HOLD。
@@ -192,7 +192,7 @@ HOLD 暂停控制器程序，但继续调温。STOP 关闭加热，炉体被动�
 | `POST /api/manual/heartbeat`、`POST /api/manual/renew`、`POST /api/manual/release` | 用空对象取得、续期或释放手动租约 |
 | `POST /api/furnace/acknowledge` | 确认故障，见上文 |
 
-`POST /api/stop` 可带 `wait_s`，范围为 `0` 至 `15`。炉控服务检查该值，但不等待。它返回 `stop` 和 `state`。
+`POST /api/stop` 可带 `wait_s`，范围为 `0` 至 `15`。炉控服务重复停止，直到停止确认、服务锁定或 `wait_s` 用完。它返回 `stop` 和 `state`。
 `POST /api/furnace/stop` 和 `POST /api/sequence/stop` 只接受 `{}`，返回 `ok`、`stop` 和 `status`。
 气体停止路由返回 `ok` 和 `status`。`ok` 只表示服务未锁定，不证明流量为零。
 

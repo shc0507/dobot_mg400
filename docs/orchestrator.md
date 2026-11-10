@@ -16,7 +16,7 @@ uv run labctl runs RUN_ID --runs-dir ./rehearsal-runs
 
 `labctl run RECIPE` 使用配置的仪器服务。真机运行前，必须完成操作员检查。操作员必须守在急停旁。Shell 智能体使用[智能体命令行](agent-cli.md)。
 
-`--runs-dir PATH` 指定记录目录。`--param NAME=JSON` 覆盖配方声明的参数。字符串值必须使用 JSON 字符串引号：
+`--runs-dir PATH` 指定记录目录。演练未指定 `--runs-dir` 时，把记录写入临时目录，结束后删除，并忽略 `MG400_ORCH_RUNS_DIR`。`--param NAME=JSON` 覆盖配方声明的参数。字符串值必须使用 JSON 字符串引号：
 
 ```sh
 uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-runs --param 'chip_id="demo-chip-2"' --time-scale 0.1
@@ -301,6 +301,8 @@ EOF、Ctrl-C、SIGTERM 和 SIGHUP 都会请求终止。CLI 等待活动操作和
 指尖工作空间由 8 个设置定义：`MG400_ORCH_X_MIN_MM`、`MG400_ORCH_X_MAX_MM`、`MG400_ORCH_Y_MIN_MM`、`MG400_ORCH_Y_MAX_MM`、`MG400_ORCH_Z_MIN_MM`、`MG400_ORCH_Z_MAX_MM`、`MG400_ORCH_R_MIN_DEG` 和 `MG400_ORCH_R_MAX_DEG`。它们没有默认值。每项必须是有限数，且最小值小于最大值。每个工位必须位于边界内，接近高度不得超过 Z 上限。
 
 所有工位命令，以及下文的工位、托盘、吸取和坩埚步骤，都需要这些边界、`tool.toml` 和示教工位。缺少任一项时，命令或步骤被拒绝。
+
+`robot.move` 用 `tool.toml` 把法兰目标换算为指尖位姿。指尖位姿超出边界时，步骤被拒绝，不发送运动。只设置部分边界时，步骤也被拒绝。8 个设置都未设置时，`robot.move` 只受机器人服务的限制。
 
 操作员先在实验室控制台的 Motion 工作区把机器人移至目标位置。示教时，控制台或其他控制器必须保持控制权。示教要求测量反馈新鲜、机器人空闲、没有锁定且没有未确认的停止。示教命令只读取服务描述和状态。它不会获取或释放控制租约、修改控制器工具配置或发送运动命令。
 

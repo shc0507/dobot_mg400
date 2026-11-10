@@ -32,6 +32,8 @@ POLL_S = 0.2
 BEAT_S = 1.0
 DEFAULT_TIMEOUT_S = 300.0
 STOP_TIMEOUT_S = 2.0
+DO_TIMEOUT_S = 1800.0
+ABORT_WAIT_S = 30.0
 EXIT = {"usage": 2, "invalid": 2, "unknown": 3, "timeout": 3, "interrupted": 130}
 
 
@@ -531,6 +533,177 @@ class Agent:
             return {"ok": True, "device": "stage", "ports": body.get("ports", [])}
 
         return self._guard(read, "stage")
+
+    # Composite runs -------------------------------------------------------------
+
+    def do(self, recipe, params=None, *, timeout=DO_TIMEOUT_S):
+        """Run 1 catalog recipe with this session's held devices (borrowed control).
+
+        The CLI holds the orchestrator lease during the run: if the CLI dies, the
+        lease expires, the run holds and motion stops. A held run is aborted.
+        """
+        params = {} if params is None else params
+        info = {"recipe": recipe}
+        try:
+            self.beat()
+            status, body = self.http.request("api/heartbeat", {})
+        except Unreachable as error:
+            return failure("unreachable", str(error), **info)
+        except ServiceError as error:
+            return failure(code_for(error.status, error.message), error.message, **info)
+        if status != 200:
+            message = body.get("error", "The orchestrator lease was refused.")
+            return failure(code_for(status, message), message, status=status, **info)
+        done, lost = threading.Event(), []
+
+        def renew():
+            while not done.wait(BEAT_S):
+                try:
+                    status, body = self.http.request("api/renew", {})
+                    self.beat()
+                except (Unreachable, ServiceError) as error:
+                    lost.append(str(error))
+                    return
+                if status != 200:
+                    lost.append(body.get("error", "The orchestrator lease was lost."))
+                    return
+
+        worker = threading.Thread(target=renew, name="labctl-renew", daemon=True)
+        worker.start()
+        run_id = None
+        try:
+            run_id, result = self._drive(recipe, params, timeout, info, lost)
+        except KeyboardInterrupt:
+            if run_id is None:
+                run_id = self._current_run()
+            if run_id is not None:
+                self._abort(run_id)
+            result = failure("interrupted", "Interrupted; the run abort was sent.", **info)
+        finally:
+            done.set()
+            worker.join(BEAT_S * 3)
+            try:
+                self.http.request("api/release", {})
+            except Unreachable:
+                pass
+        if run_id is not None:
+            result.update(run_id=run_id, steps=self._steps(run_id))
+        try:
+            result["devices"] = [item["device"] for item in self.beat()]
+        except (Unreachable, ServiceError):
+            pass
+        return result
+
+    def _current_run(self):
+        try:
+            status, body = self.http.request("api/state")
+        except Unreachable:
+            return None
+        active = body.get("active_run") if status == 200 else None
+        return active.get("run_id") if isinstance(active, dict) else None
+
+    def _abort(self, run_id):
+        try:
+            self.http.request(f"api/runs/{run_id}/abort", {})
+        except Unreachable:
+            pass
+
+    def _drive(self, recipe, params, timeout, info, lost):
+        status, body = self.http.request(
+            "api/runs", {"recipe": recipe, "params": params, "borrow": True}
+        )
+        if status != 202:
+            message = body.get("error", "The run was refused.")
+            result = failure(code_for(status, message), message, status=status, **info)
+            if message.startswith("Take control of these devices first:"):
+                names = message.split(":", 1)[1].strip(" .").split(", ")
+                result["hint"] = "; ".join(f"labctl {name} take" for name in names)
+            return None, result
+        command_id = body.get("command_id")
+        run_id, aborted = None, False
+        deadline = self.clock() + timeout
+        while True:
+            try:
+                status, state = self.http.request("api/state")
+            except Unreachable:
+                status, state = 0, {}
+            if status == 200:
+                last = state.get("last_command") or {}
+                active = state.get("active_run") or {}
+                if run_id is None and last.get("id") == command_id:
+                    if last.get("result") != "ok":
+                        message = last.get("message") or "The run did not start."
+                        return None, failure("failed", message, outcome="failed", **info)
+                    run_id = active.get("run_id")
+                if run_id is not None and active.get("run_id") == run_id:
+                    if active.get("status") == "held" and not aborted:
+                        # No operator prompt for agents: a held run is aborted.
+                        self._abort(run_id)
+                        aborted = True
+                    if active.get("closed") and active.get("status") in {"completed", "aborted"}:
+                        return run_id, self._outcome(active, info)
+            if lost and not aborted:
+                message = "The orchestrator lease was lost; the run holds: " + lost[0]
+                return run_id, failure("unknown", message, **info)
+            if self.clock() >= deadline:
+                if run_id is not None and not aborted:
+                    self._abort(run_id)
+                    aborted = True
+                    deadline = self.clock() + ABORT_WAIT_S
+                    continue
+                return run_id, failure("timeout", f"No result within {timeout:g} s.", **info)
+            self.sleep(POLL_S)
+
+    @staticmethod
+    def _outcome(active, info):
+        if active.get("status") == "completed":
+            return {"ok": True, **info, "outcome": "ok", "status": "completed"}
+        message = active.get("detail") or "The run was aborted."
+        result = failure("failed", str(message), outcome="failed", **info)
+        result["status"] = "aborted"
+        return result
+
+    def _steps(self, run_id):
+        try:
+            status, body = self.http.request(f"api/runs/{run_id}")
+        except Unreachable:
+            return None
+        if status != 200:
+            return None
+        steps = []
+        for step in body.get("steps", []):
+            try:
+                value = json.loads(step["result_json"]) if step.get("result_json") else None
+            except (TypeError, ValueError):
+                value = step.get("result_json")
+            steps.append(
+                {
+                    "skill": step.get("skill"),
+                    "status": step.get("status"),
+                    "result": value,
+                    "error": step.get("error"),
+                }
+            )
+        return steps
+
+    def chip_locate(self, slot):
+        """Run the slot-state recipe for 1 slot and print the slot result."""
+        result = self.do("slot-state", {"slot": slot})
+        if not result.get("ok"):
+            return result
+        steps = result.get("steps") or [{}]
+        value = steps[-1].get("result") if isinstance(steps[-1], dict) else None
+        if not isinstance(value, dict):
+            return failure("unknown", "The slot result is missing.", run_id=result.get("run_id"))
+        return {
+            "ok": True,
+            "slot": slot,
+            "state": value.get("state"),
+            "center_xy_mm": value.get("center_xy_mm"),
+            "angle_deg": value.get("angle_deg"),
+            "reason": value.get("reason"),
+            "run_id": result.get("run_id"),
+        }
 
     # Stops --------------------------------------------------------------------
 

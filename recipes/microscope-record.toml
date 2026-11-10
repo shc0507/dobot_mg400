@@ -1,0 +1,22 @@
+name = "Microscope recording"
+version = 1
+
+[params.chip_id]
+type = "string"
+
+[params.seconds]
+type = "number"
+
+[params.run_name]
+type = "string"
+default = ""
+
+[params.mode]
+type = "string"
+default = "time_lapse"
+
+[[steps]]
+skill = "microscope.record"
+params = { chip_id = "${chip_id}", seconds = "${seconds}", run_name = "${run_name}", mode = "${mode}" }
+timeout_s = 3600
+on_fail = "hold"

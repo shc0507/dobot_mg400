@@ -60,6 +60,21 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 每条命令等待其结果。默认 `--timeout` 为 300 秒。`--no-wait` 在控制台接受命令后返回。
 
+## 组合运行
+
+| 命令 | 作用 |
+| --- | --- |
+| `labctl do RECIPE [NAME=VALUE ...] [--timeout S]` | 用本会话持有的设备运行 1 个目录配方 |
+| `labctl chip locate SLOT` | 对 1 个槽位运行 `slot-state`。输出 `state`、`center_xy_mm` 和 `angle_deg` |
+
+- 先获取配方用到的每台设备。否则调用失败，`hint` 列出要运行的 `take` 命令。
+- 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能，显微镜保留对焦零点。运行期间，本会话不能向这些设备发命令。停止仍然有效。
+- 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
+- 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。在 Overview 上终止该运行。
+- 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
+- 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。
+- 单步目录配方：`slot-state`、`station-transfer`、`crucible-load`、`crucible-unload`、`microscope-record`、`check-calibration`。目录中还有 `chip-pick` 和 `tray-transfer`。
+
 ## 停止
 
 停止不需要控制权和会话。只发送 1 次，不重试。
@@ -104,6 +119,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 ## 限制
 
+- 没有保持运行的操作员提示：`do` 终止该运行。
 - 不支持键盘点动和电动台按住运动。它们需要每 100 毫秒和 500 毫秒刷新。
 - 命令行退出前已开始的运动按命令继续。
 - 未给 `--out` 时，图像文件保存到 `/tmp/labctl/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。

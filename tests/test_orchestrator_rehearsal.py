@@ -16,7 +16,26 @@ from orchestrator.runner import Runner
 from orchestrator.skills import default_registry
 from orchestrator.store import RunStore
 
-RECIPES = sorted((Path(__file__).resolve().parents[1] / "recipes").glob("*.toml"))
+# One-step agent recipes wrap 1 skill. They need taught stations, tray data or the
+# microscope, so they are checked by loading only.
+ONE_STEP = {
+    "slot-state.toml": ("vision.slot_state", {"slot": "groove_07"}),
+    "station-transfer.toml": ("robot.transfer", {"from_station": "a", "to_station": "b"}),
+    "crucible-load.toml": ("crucible.load", {"from_slot": "groove_01"}),
+    "crucible-unload.toml": ("crucible.unload", {"to_slot": "groove_01"}),
+    "microscope-record.toml": ("microscope.record", {"chip_id": "chip-1", "seconds": 10.0}),
+    "check-calibration.toml": ("vision.check_calibration", {}),
+}
+CATALOG = sorted((Path(__file__).resolve().parents[1] / "recipes").glob("*.toml"))
+RECIPES = [path for path in CATALOG if path.name not in ONE_STEP]
+
+
+@pytest.mark.parametrize("name", sorted(ONE_STEP))
+def test_one_step_agent_recipes_load_with_their_parameters(name):
+    skill, params = ONE_STEP[name]
+    path = CATALOG[0].parent / name
+    recipe = load_recipe(path, default_registry(), overrides=params)
+    assert [step.skill for step in recipe.steps] == [skill]
 
 
 @pytest.fixture(autouse=True)

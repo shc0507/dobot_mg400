@@ -421,3 +421,87 @@ def test_frames_are_saved_to_the_out_path(tmp_path):
 
 def test_constants_match_the_design():
     assert agent_module.POLL_S == 0.2 and agent_module.DEFAULT_TIMEOUT_S == 300
+
+
+def run_routes(
+    statuses,
+    *,
+    result_json='{"state": "present", "center_xy_mm": [1, 2], "angle_deg": 30, "reason": null}',
+):
+    """Orchestrator routes for 1 borrowed run that steps through statuses."""
+    statuses = list(statuses)
+
+    def state(data):
+        status = statuses.pop(0) if len(statuses) > 1 else statuses[0]
+        return 200, {
+            "last_command": {"id": "cmd", "result": "ok"},
+            "active_run": {
+                "run_id": "r1",
+                "status": status,
+                "closed": status != "running" and status != "held",
+                "detail": "Step failed.",
+            },
+        }
+
+    return {
+        "api/console/heartbeat": beat({"device": "robot", "holder": "h"}),
+        "api/heartbeat": (200, {}),
+        "api/renew": (200, {}),
+        "api/release": (200, {}),
+        "api/runs": (202, {"command_id": "cmd"}),
+        "api/state": state,
+        "api/runs/r1/abort": (202, {"command_id": "a"}),
+        "api/runs/r1": (
+            200,
+            {
+                "steps": [
+                    {
+                        "skill": "vision.slot_state",
+                        "status": "completed",
+                        "result_json": result_json,
+                        "error": None,
+                    }
+                ]
+            },
+        ),
+    }
+
+
+def test_do_runs_with_borrowed_control_and_releases_the_orchestrator_lease():
+    agent, http = make(run_routes(["running", "completed"]))
+    code, result = run_cli(["do", "slot-state", "slot=groove_07"], agent)
+    assert code == 0 and result["run_id"] == "r1" and result["devices"] == ["robot"]
+    assert http.sent("api/runs") == [
+        {"recipe": "slot-state", "params": {"slot": "groove_07"}, "borrow": True}
+    ]
+    assert http.sent("api/release") == [{}] and http.sent("api/runs/r1/abort") == []
+
+
+def test_do_aborts_a_held_run_once():
+    agent, http = make(run_routes(["held", "held", "aborted"]))
+    code, result = run_cli(["do", "slot-state"], agent)
+    assert code == 1 and result["status"] == "aborted"
+    assert http.sent("api/runs/r1/abort") == [{}]
+
+
+def test_do_names_the_devices_to_take():
+    routes = run_routes(["running"])
+    routes["api/runs"] = (409, {"error": "Take control of these devices first: robot, vision."})
+    agent, http = make(routes)
+    code, result = run_cli(["do", "chip-pick"], agent)
+    assert code == 1 and result["hint"] == "labctl robot take; labctl vision take"
+    assert http.sent("api/release") == [{}]
+
+
+def test_chip_locate_prints_the_slot_result():
+    agent, _ = make(run_routes(["completed"]))
+    code, result = run_cli(["chip", "locate", "groove_07"], agent)
+    assert code == 0 and result == {
+        "ok": True,
+        "slot": "groove_07",
+        "state": "present",
+        "center_xy_mm": [1, 2],
+        "angle_deg": 30,
+        "reason": None,
+        "run_id": "r1",
+    }

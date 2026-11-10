@@ -628,3 +628,26 @@ def test_state_route_reads_one_device_without_a_lease(rig):
     other = rig.client.get("/lab/api/console/state/stage").get_json()
     assert other["control"]["mine"] is False
     assert rig.client.get("/lab/api/console/state/nope").status_code == 404
+
+
+def test_lent_devices_refuse_page_commands_but_accept_stops(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    with pytest.raises(ServiceError, match="Take control of these devices first: robot"):
+        rig.service.console.lend(AGENT, ["stage", "robot"])
+    assert rig.service.console.control()[0]["lent"] is False
+    lent = rig.service.console.lend(AGENT, ["stage"])
+    refused = post(rig, "command/stage", {"action": "move"}, page=AGENT)
+    assert refused.status_code == 409 and "run is using" in refused.get_json()["error"]
+    assert post(rig, "control/stage/release", page=AGENT).status_code == 409
+    assert post(rig, "stop/stage", page=AGENT).get_json()["outcome"] == "confirmed"
+    # A lent session never idles out, and the borrowed adapter never releases the lease.
+    rig.clock.value += 700
+    time.sleep(0.05)
+    lent["stage"].acquire()
+    lent["stage"].release()
+    assert stage.holder == holder
+    lent["stage"].close()
+    assert rig.service.console.control()[0]["lent"] is False
+    assert post(rig, "command/stage", {"action": "move"}, page=AGENT).status_code == 202

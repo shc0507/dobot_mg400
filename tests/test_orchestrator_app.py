@@ -21,7 +21,7 @@ from orchestrator.app import (
     demo_environment,
     demo_isolated,
 )
-from orchestrator.clients import Clients
+from orchestrator.clients import Borrowed, Clients
 from orchestrator.skills import default_registry
 
 
@@ -943,3 +943,31 @@ def test_serve_passes_the_server_options():
     # Fixed loopback service URLs apply unless a nonempty setting overrides one.
     assert settings["MG400_ORCH_ROBOT_URL"] == "http://127.0.0.1:8766/"
     assert settings["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:9000/"
+
+
+def test_borrowed_runs_use_lent_adapters_and_return_them(rig, monkeypatch):
+    recipe(rig, fail=True)
+    client = create_app(rig).test_client()
+    assert post(client, "/api/heartbeat").status_code == 200
+    assert_error(post(client, "/api/runs", {"recipe": "recipe", "borrow": 1}), 400)
+    # The client's console page holds no stage.
+    assert_error(post(client, "/api/runs", {"recipe": "recipe", "borrow": True}), 409)
+    held = Instrument("stage", "agent-x-0123456789ab")
+    held.acquire()
+    returned = []
+    monkeypatch.setattr(
+        rig.console,
+        "lend",
+        lambda page, devices: {
+            name: Borrowed(held, lambda name=name: returned.append(name)) for name in devices
+        },
+    )
+    reply = post(client, "/api/runs", {"recipe": "recipe", "borrow": True})
+    assert reply.status_code == 202, reply.get_json()
+    wait_for(lambda: rig.current is not None and rig.job["done"].is_set())
+    runner = rig.current
+    wait_for(lambda: runner.snapshot()["status"] == "held")
+    assert post(client, f"/api/runs/{runner.run_id}/abort").status_code == 202
+    assert runner.wait_closed(3)
+    assert returned == ["stage"] and not rig.created
+    assert held.holder == "agent-x-0123456789ab" and "release" not in held.calls

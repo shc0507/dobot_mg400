@@ -45,7 +45,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`，后
 | 方法与路径 | 请求或结果 |
 | --- | --- |
 | `GET /api/recipes` | 列出配方标识、名称和参数声明 |
-| `POST /api/runs` | 提供必填的 `recipe` 标识和可选的 `params` 对象后启动 |
+| `POST /api/runs` | 提供必填的 `recipe` 标识和可选的 `params` 对象后启动。带 `borrow: true` 时，运行使用该客户端控制台页面持有的设备，租约仍由控制台持有 |
 | `GET /api/runs` | 列出运行记录 |
 | `GET /api/runs/<id>` | 读取运行及其已记录结果 |
 | `POST /api/runs/<id>/resume` | 提供 `manually_completed: true` 和非空 `note`。此运行保留区域占用时，还必须提供 `physically_clear: true` |

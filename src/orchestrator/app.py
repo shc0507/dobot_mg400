@@ -726,11 +726,17 @@ class OrchestratorService:
             )
         return recipe, plan
 
-    def run(self, prepared, client):
+    def run(self, prepared, client, *, borrow=False):
+        """Start a run. With borrow, the run uses the devices that this client's
+        console page holds, and the console keeps their leases."""
         recipe, plan = prepared
+        lent = self.console.lend(client, plan.required_services) if borrow else None
 
         def start(job):
-            services = self._clients(plan.required_services, "run-" + uuid.uuid4().hex)
+            if lent is not None:
+                services = lent
+            else:
+                services = self._clients(plan.required_services, "run-" + uuid.uuid4().hex)
             if job["cancelled"].is_set():
                 for service in services.values():
                     service.close()
@@ -753,9 +759,13 @@ class OrchestratorService:
             else:
                 runner.start()
 
-        with self.lease.control(client), self.lock:
-            return self._schedule("run", client, start, exclusive=True)
-            return self._schedule("run", client, start, exclusive=True)
+        try:
+            with self.lease.control(client), self.lock:
+                return self._schedule("run", client, start, exclusive=True)
+        except BaseException:
+            for service in (lent or {}).values():
+                service.close()
+            raise
 
     def get_run(self, run_id):
         result = self.store.get(run_id)
@@ -1072,8 +1082,12 @@ def create_app(service, *, base_path="/"):
 
     @app.post(prefix + "/api/runs")
     def run():
-        prepared = service.prepare_run(request.get_json())
-        command_id = service.run(prepared, request.headers["X-MG400-Client"])
+        data = request.get_json()
+        borrow = data.pop("borrow", False) if isinstance(data, dict) else False
+        if type(borrow) is not bool:
+            raise ValueError("borrow must be true or false.")
+        prepared = service.prepare_run(data)
+        command_id = service.run(prepared, request.headers["X-MG400-Client"], borrow=borrow)
         return jsonify(command_id=command_id), 202
 
     @app.get(prefix + "/api/runs/<run_id>")

@@ -281,6 +281,37 @@ class RobotAdapter(ServiceAdapter):
         self._robot.close()
 
 
+class Borrowed:
+    """A console-held adapter lent to one run. The console keeps the lease.
+
+    acquire and heartbeat only check ownership; release does nothing; close
+    returns the device to the console. Every other call goes to the adapter.
+    """
+
+    def __init__(self, adapter, on_close):
+        self._adapter, self._on_close = adapter, on_close
+        self._closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._adapter, name)
+
+    def acquire(self):
+        if not self._adapter.owned(self._adapter.state()):
+            raise RuntimeError("The lent device is no longer held by the console.")
+
+    def heartbeat(self):
+        if not self._adapter.owned(self._adapter.state()):
+            raise RuntimeError("The lent device is no longer held by the console.")
+
+    def release(self):
+        return None
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._on_close()
+
+
 def from_settings(settings=None, *, identity):
     settings = os.environ if settings is None else settings
     timeout = positive(float(settings.get("MG400_ORCH_TIMEOUT_S", "2")), "request timeout")

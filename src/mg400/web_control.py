@@ -88,6 +88,7 @@ class RobotPanelState:
     FEEDBACK_SECONDS = 0.25
     CONNECT_SECONDS = 1.5
     ALARM_READ_SECONDS = 1.0
+    RECONNECT_SECONDS = 1.0
     KEY_LEASE_SECONDS = KEY_LEASE_SECONDS
     KEYBOARD_JOIN_SECONDS = KEYBOARD_JOIN_SECONDS
 
@@ -669,29 +670,49 @@ class RobotPanelState:
         self._ownership.release()
 
     def _read_feedback(self):
-        try:
-            with self._connection_factory(self.robot_host, timeout_s=1.0) as connection:
-                while not self._reader_stop.is_set():
-                    sample = connection.read_latest()
-                    with self._lock:
-                        if self._reader_stop.is_set():
-                            return
-                        first = self._sample is None
-                        self._sample, self._received = sample, time.monotonic()
-                        if first:
-                            self._finish_commands("sync", "ok", "Robot feedback is connected.")
-                        if first and not self._locked:
-                            self._message = "Robot feedback is connected."
-        except Exception as error:
-            with self._lock:
-                if not self._reader_stop.is_set():
-                    self._feedback_failed = True
+        """Read feedback until sync stops. After a lost connection, reconnect.
+
+        A lost connection latches an unconfirmed stop: the service could not watch
+        the robot. Fresh feedback after the reconnect makes Recover possible.
+        """
+        stop = self._reader_stop
+        while True:
+            try:
+                with self._connection_factory(self.robot_host, timeout_s=1.0) as connection:
+                    while not stop.is_set():
+                        sample = connection.read_latest()
+                        with self._lock:
+                            if stop.is_set():
+                                return
+                            first = self._sample is None
+                            reconnected = self._feedback_failed
+                            self._feedback_failed = False
+                            self._sample, self._received = sample, time.monotonic()
+                            if first:
+                                self._finish_commands("sync", "ok", "Robot feedback is connected.")
+                            if first and not self._locked:
+                                self._message = "Robot feedback is connected."
+                            if reconnected:
+                                self._message = "Robot feedback is reconnected." + (
+                                    " " + self._recovery_hint() if self._fault else ""
+                                )
+                    return
+            except Exception as error:
+                with self._lock:
+                    if stop.is_set():
+                        return
                     if self._sample is None and not self._busy:
+                        self._feedback_failed = True
                         self._syncing = False
                         self._message = f"Robot feedback connection failed: {error}"
                         self._finish_commands("sync", "failed", self._message)
-                    else:
+                        return
+                    if not self._feedback_failed:
+                        self._feedback_failed = True
+                        self._record_fault()
                         self._request_stop(reason=f"Robot feedback failed: {error}")
+            if stop.wait(self.RECONNECT_SECONDS):
+                return
 
     def _request_stop(self, *, disabling=False, disconnect=False, reason=None, record=None):
         """Latch cancellation before a separate worker sends the stop command.

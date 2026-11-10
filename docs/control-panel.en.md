@@ -82,9 +82,9 @@ If the robot was already disabled and idle, disabled mode 4 is sufficient. You c
 Stale feedback cannot confirm a stop. If the service reports an unconfirmed stop, use the physical emergency stop on site.
 If the service recorded no unconfirmed stop during a brief feedback gap, fresh feedback lets it confirm a new explicit `disable` request.
 
-If the feedback reader fails, the stop stays unconfirmed and the connection lock stays held.
-The feedback reader does not start again. `Recover` and `Clear alarm` both need fresh feedback.
-In this case, check the robot state, then run `sudo mg400ctl restart web`.
+If the feedback connection fails, the service records an unconfirmed stop and keeps the connection lock.
+The service connects again every 1 second. `Recover` and `Clear alarm` both need fresh feedback.
+When fresh feedback returns, check the robot state, then click `Recover`.
 
 For clients that connect directly to the service, such as `RobotClient` and the interactive terminal, `stop_sync` does not disable the robot.
 If the robot is enabled, `stop_sync` stops it and releases control, but keeps feedback connected and control locked.
@@ -123,10 +123,15 @@ The descriptions come from Dobot's alarm tables.
 Use this recovery sequence:
 
 1. Remove the cause according to the alarm's corrective action.
-2. Click `Recover` on the robot card.
+2. Click `Clear alarm` on the robot card.
 3. Wait for the service to report that the alarm is cleared and confirm that the robot is disabled and stationary.
 
-While the service is locked, the button reads `Recover`. Otherwise, it reads `Clear alarm`. An alarm locks the service, so the button reads `Recover` during an alarm.
+The robot card shows the button only when the service accepts it:
+
+- During an alarm, the button reads `Clear alarm`.
+- After an unconfirmed stop without an alarm, the button reads `Recover`. It needs fresh feedback.
+- After a confirmed stop, the card shows `Stopped` and no button. Click `Disable` to unlock control.
+
 Both buttons send `clear_alarm`.
 `clear_alarm` sends only `ClearError()`. It does not send `Continue()`.
 Motion paused before the alarm does not resume.
@@ -144,7 +149,7 @@ The service disables the robot through a new control instance and confirms that 
 
 An unconfirmed stop without an alarm shows a warning, and the button reads `Recover`.
 Check the robot state, then click `Recover`. The service disables the robot through a new control instance, confirms that it is stationary, and clears the warning.
-A service restart is not necessary, except after a feedback reader failure.
+A service restart is not necessary.
 While a stop is unconfirmed, the service message shows the recovery procedure. A later successful stop does not replace this message.
 
 ### Controller not in TCP/IP mode

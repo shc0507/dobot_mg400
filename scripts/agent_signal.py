@@ -2,13 +2,15 @@
 """Worker-to-coordinator signals for coding agents in Herdr panes.
 
 Agent hooks run `hook`. It writes each event as one JSON line to a file for
-the Herdr pane of the agent. The coordinator runs `wait` in the background.
+the Herdr terminal of the agent. The terminal id stays the same when the pane
+moves; the pane id and the HERDR_PANE_ID of the agent do not. The
+coordinator runs `wait` in the background.
 `wait` exits at the first new events of the given workers and prints them,
 with the report text or the screen lines inline.
 
     agent_signal.py hook [JSON]      # JSON on stdin (Claude Code and Codex hooks),
                                      # or as the last argument (Codex notify)
-    agent_signal.py wait NAME|PANE ... [--timeout-min 60]
+    agent_signal.py wait NAME|PANE|TERMINAL ... [--timeout-min 60]
 
 Events:
     report   the final message contains the report block
@@ -16,7 +18,7 @@ Events:
              (a question, or the worker stopped)
     blocked  a permission or question dialog waits for an answer
     error    the turn ended on an API error, for example a usage limit
-    exit     the pane has no agent (found by `wait`)
+    exit     no agent runs in the terminal (found by `wait`)
 
 A turn that ends while background work runs (a CI watch, a Monitor) makes no
 event. The agent starts a new turn when that work completes.
@@ -58,57 +60,113 @@ def report_block(text):
     return "\n".join(block).strip()
 
 
-def events_file(pane):
-    return ROOT / "events" / f"{safe(pane)}.jsonl"
+def events_file(key):
+    return ROOT / "events" / f"{safe(key)}.jsonl"
 
 
-def emit(pane, kind, **fields):
-    path = events_file(pane)
+def emit(key, kind, pane=None, **fields):
+    """Append an event to the file of `key`, a terminal id (or a pane id as fallback)."""
+    path = events_file(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "t": time.strftime("%Y-%m-%d %H:%M:%S"),
         "ts": time.time(),
         "kind": kind,
-        "pane": pane,
+        "key": key,
+        "pane": pane or key,
     }
     with open(path, "a", encoding="utf-8") as out:
         out.write(json.dumps(record | fields) + "\n")
 
 
-def blocked(pane, message, src="hook"):
+def blocked(key, message, src="hook", pane=None):
     """Write a blocked event, unless one for the same dialog came in the last 60 s."""
-    path = events_file(pane)
+    path = events_file(key)
     last = path.read_text(encoding="utf-8").splitlines()[-1:] if path.exists() else []
     if last:
         previous = json.loads(last[0])
         if previous["kind"] == "blocked" and time.time() - previous.get("ts", 0) < 60:
             return
-    emit(pane, "blocked", text=message[:300], src=src)
+    emit(key, "blocked", pane, text=message[:300], src=src)
+
+
+def ancestors():
+    """Return the pids of this process and of its parents."""
+    pids, pid = set(), os.getpid()
+    while pid > 1 and pid not in pids:
+        pids.add(pid)
+        try:
+            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        except Exception:
+            break
+    return pids
+
+
+def herdr_result(*args):
+    return json.loads(herdr(*args))["result"]
+
+
+def own_pane(env_pane):
+    """Return the Herdr pane that runs this process, or None.
+
+    HERDR_PANE_ID keeps the id from the pane start, and a move to another
+    workspace changes the pane id. Herdr still resolves the old id, and the
+    pane process info confirms it: the pane shell is a parent of this process.
+    """
+    mine = ancestors()
+
+    def runs_here(pane):
+        info = herdr_result("pane", "process-info", "--pane", pane["pane_id"])["process_info"]
+        pids = {info.get("shell_pid")} | {
+            p.get("pid") for p in info.get("foreground_processes", [])
+        }
+        return bool(pids & mine)
+
+    try:
+        pane = herdr_result("pane", "get", env_pane)["pane"]
+        if runs_here(pane):
+            return pane
+    except Exception:
+        pass
+    try:
+        return next((p for p in herdr_result("pane", "list")["panes"] if runs_here(p)), None)
+    except Exception:
+        return None
 
 
 def hook(arg):
-    pane = os.environ.get("HERDR_PANE_ID")
-    if not pane:
+    env_pane = os.environ.get("HERDR_PANE_ID")
+    if not env_pane:
         return  # Not in a Herdr pane.
     data = json.loads(arg if arg is not None else (sys.stdin.read() or "{}"))
+    found = own_pane(env_pane) or {}
+    pane = found.get("pane_id") or env_pane
+    key = found.get("terminal_id") or pane
+
+    def emit_(kind, **fields):
+        emit(key, kind, pane, **fields)
+
+    def blocked_(message):
+        blocked(key, message, pane=pane)
+
     event = data.get("hook_event_name") or data.get("type", "")
     if event in ("Stop", "agent-turn-complete"):
         text = data.get("last_assistant_message") or data.get("last-assistant-message") or ""
         block = report_block(text)
         if block:
             words = block.split()
-            emit(pane, "report", slug=words[1] if len(words) > 1 else "?", text=block)
+            emit_("report", slug=words[1] if len(words) > 1 else "?", text=block)
         elif not data.get("background_tasks"):
-            emit(pane, "idle", text="\n".join(text.strip().splitlines()[-6:]))
+            emit_("idle", text="\n".join(text.strip().splitlines()[-6:]))
     elif event == "Notification" and data.get("notification_type") in DIALOGS:
-        blocked(pane, data.get("message", ""))
+        blocked_(data.get("message", ""))
     elif event == "PermissionRequest":
-        blocked(pane, f"{data.get('tool_name')}: {json.dumps(data.get('tool_input'))[:200]}")
+        blocked_(f"{data.get('tool_name')}: {json.dumps(data.get('tool_input'))[:200]}")
     elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
         questions = (data.get("tool_input") or {}).get("questions") or []
-        blocked(pane, "question: " + " | ".join(q.get("question", "") for q in questions))
+        blocked_("question: " + " | ".join(q.get("question", "") for q in questions))
     elif event == "StopFailure":
-        emit(pane, "error", text=f"{data.get('error')} {data.get('error_details') or ''}"[:300])
+        emit_("error", text=f"{data.get('error')} {data.get('error_details') or ''}"[:300])
 
 
 def herdr(*args):
@@ -116,9 +174,10 @@ def herdr(*args):
 
 
 def herdr_agents():
-    """Return the live Herdr agents by pane, or None when Herdr does not answer."""
+    """Return the live Herdr agents by terminal id, or None when Herdr does not answer."""
     try:
-        return {a["pane_id"]: a for a in json.loads(herdr("agent", "list"))["result"]["agents"]}
+        agents = json.loads(herdr("agent", "list"))["result"]["agents"]
+        return {a.get("terminal_id") or a["pane_id"]: a for a in agents}
     except Exception:
         return None
 
@@ -136,50 +195,65 @@ def screen(pane):
     return lines[-SCREEN_LINES:]
 
 
-def backstop(panes, agents, seen):
+def resolve(target, agents):
+    """Return the terminal id for an agent name, a pane id or a terminal id."""
+    for key, agent in agents.items():
+        if target in (key, agent.get("name"), agent.get("pane_id")):
+            return key
+    return target
+
+
+def backstop(keys, agents, seen, missing):
     """Add the events that hooks cannot see: Herdr's blocked state and exits."""
-    for pane in panes:
-        agent = agents.get(pane)
+    for key in keys:
+        agent = agents.get(key)
         if agent is None:
-            if seen.get(pane) != "exit":
-                seen[pane] = "exit"
-                emit(pane, "exit", text="no agent in this pane", src="herdr")
-        elif agent.get("agent_status") == "blocked" and seen.get(pane) != agent.get(
+            # Two checks in a row, so that a pane move or a short Herdr gap is no exit.
+            if key in missing and seen.get(key) != "exit":
+                seen[key] = "exit"
+                emit(key, "exit", text="no agent in this terminal", src="herdr")
+            missing.add(key)
+            continue
+        missing.discard(key)
+        if seen.get(key) == "exit":
+            del seen[key]
+        if agent.get("agent_status") == "blocked" and seen.get(key) != agent.get(
             "state_change_seq"
         ):
-            seen[pane] = agent.get("state_change_seq")
-            blocked(pane, "dialog on screen (Herdr)", src="herdr")
+            seen[key] = agent.get("state_change_seq")
+            blocked(key, "dialog on screen (Herdr)", src="herdr", pane=agent.get("pane_id"))
 
 
 def wait(targets, timeout_min):
     in_herdr = os.environ.get("HERDR_ENV") == "1"
     agents = (herdr_agents() if in_herdr else None) or {}
-    by_name = {a["name"]: pane for pane, a in agents.items() if a.get("name")}
-    panes = [by_name.get(t, t) for t in targets]
-    names = {pane: name for name, pane in by_name.items()}
+    keys = [resolve(t, agents) for t in targets]
     cursors = ROOT / "cursor"
     cursors.mkdir(parents=True, exist_ok=True)
     seen_file = ROOT / "herdr-seen.json"
     seen = json.loads(seen_file.read_text()) if seen_file.exists() else {}
     deadline = time.time() + timeout_min * 60
-    checked = 0.0
+    checked, missing = 0.0, set()
     while True:
         if agents and time.time() - checked > 5:
             checked = time.time()
             agents = herdr_agents() or agents
-            backstop(panes, agents, seen)
+            backstop(keys, agents, seen, missing)
             seen_file.write_text(json.dumps(seen))
+        # The terminal file, and the pane file of a hook that could not find its terminal.
+        files = dict.fromkeys(keys)
+        files |= dict.fromkeys(a["pane_id"] for k, a in agents.items() if k in keys)
         new, ends = [], {}
-        for pane in panes:
-            cursor = cursors / safe(pane)
+        for key in files:
+            cursor = cursors / safe(key)
             done = int(cursor.read_text() or 0) if cursor.exists() else 0
-            path = events_file(pane)
+            path = events_file(key)
             lines = path.read_text(encoding="utf-8").split("\n")[:-1] if path.exists() else []
             new += [json.loads(line) for line in lines[done:]]
             ends[cursor] = len(lines)
         if new or time.time() >= deadline:
-            for event in new:
-                show(event, names, in_herdr)
+            for event in sorted(new, key=lambda e: e.get("ts", 0)):
+                show(event, agents, in_herdr)
             if not new:
                 print(f"tick: no events in {timeout_min:g} min")
             five, week = usage().get("five"), usage().get("week")
@@ -191,12 +265,16 @@ def wait(targets, timeout_min):
         time.sleep(1)
 
 
-def show(event, names, in_herdr):
-    pane = event["pane"]
-    head = f"{event['kind']} {names.get(pane, '?')} ({pane})"
+def show(event, agents, in_herdr):
+    key = event.get("key") or event["pane"]
+    agent = agents.get(key) or next(
+        (a for a in agents.values() if a["pane_id"] == event["pane"]), {}
+    )
+    pane = agent.get("pane_id") or event["pane"]
+    head = f"{event['kind']} {agent.get('name', '?')} ({pane})"
     if event.get("slug"):
         head += f" {event['slug']}"
-    ctx = usage(pane).get("ctx")
+    ctx = (usage(key) or usage(pane)).get("ctx")
     if isinstance(ctx, (int, float)):
         head += f", ctx {ctx:.0f}% left"
     print(head + ":")

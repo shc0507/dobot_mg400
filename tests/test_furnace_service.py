@@ -943,3 +943,31 @@ def test_unstarted_stop_with_busy_storage_still_stops_outputs(lab):
         assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
     finally:
         os.close(directory)
+
+
+def test_ramp_over_program_time_is_refused_before_writes_without_lock(lab):
+    service = lab.make(
+        config=FurnaceConfig(port="sim://furnace", flow_port="sim://mfc", max_c=1000, max_ramp=10)
+    )
+    service.start(background=False)
+    service.lease.acquire("operator")
+    before = len(writes(lab.serial))
+    with pytest.raises(ValueError, match="controller maximum is 3200.0"):
+        service.apply_setpoint(1000, 0.2, client="operator")
+    with pytest.raises(ValueError, match="controller maximum"):
+        service.start_sequence(
+            [dict(temperature_c=1000, ramp_rate_c_per_min=0.2, hold_minutes=1)], client="operator"
+        )
+    with pytest.raises(ValueError, match="controller maximum"):
+        service.start_sequence(
+            [
+                dict(temperature_c=30, ramp_rate_c_per_min=10, hold_minutes=1),
+                dict(temperature_c=1000, ramp_rate_c_per_min=0.2, hold_minutes=1),
+            ],
+            client="operator",
+        )
+    assert len(writes(lab.serial)) == before
+    status = service.status()
+    assert not status["locked"] and not status["sequence"]["running"]
+    service.apply_setpoint(30, 10, client="operator")
+    assert len(writes(lab.serial)) > before

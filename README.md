@@ -12,7 +12,7 @@ Dobot MG400 + 真空吸盘的真机控制项目。
 
 | 我想做什么 | 入口与说明 |
 | --- | --- |
-| 在终端查看状态并输入命令控制 | [交互终端](docs/terminal-control.md)，运行 `uv run mg400-robot` |
+| 在终端查看状态并输入命令控制 | [交互终端](docs/terminal-control.md)，运行 `sudo mg400ctl terminal` |
 | 在网页控制机械臂、吸盘和位移台，查看摄像头，操作炉子和显微镜 | [实验室控制台](docs/dashboard.md#实验室控制台)，打开 `http://100.64.0.1:8080/` |
 | 了解机械臂和吸盘的控制、停止与恢复，配置机器人服务 | [机器人服务](docs/control-panel.md) |
 | 了解位移台的控制和停止，配置位移台服务 | [位移台](docs/stage-panel.md) |

@@ -24,7 +24,7 @@
 服务的 `objective_nudge` 也可在此范围内于工作焦点处转动转盘。
 实验和完整物镜切换仍必须避让。
 
-人工监督测量 `H-06` 时，先停止显微镜服务，再使用 `python -m microscope.calibrate setup`。
+人工监督测量 `H-06` 时，先停止显微镜服务，再使用 `sudo mg400ctl calibrate setup`。
 控制台不打开相机，不写配置文件，也从不发送 `FOCUS LIMIT`。
 其计数位置不能测量物理行程。遵守显微镜指南中的操作说明和按键规则。
 

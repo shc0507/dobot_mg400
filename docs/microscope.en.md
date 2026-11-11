@@ -361,21 +361,20 @@ Stop requests can interrupt a completion wait.
 Unknown transport or completion outcomes latch a fault and require an explicit reconnect.
 See the [firmware guide](../firmware/microscope-axes/README.en.md) for commands, wiring, and firmware limits.
 
-## Supervised calibration and experiments
+## Supervised calibration
 
 These commands require a person at an interactive terminal. Both input and output must be TTYs.
 Do not run them from an agent, service contract, orchestrator, Lab Console, or unattended script.
 They do not stop other services automatically.
 An operator must release conflicting microscope and camera owners before starting them.
-The commands read `MG400_*` settings from the terminal environment.
-Run them as the account that owns the calibration and run directories.
+Run them with `sudo mg400ctl calibrate`. It runs the tool as UID `1000` with the `MG400_*` settings of the host.
 
 Set `MG400_MICROSCOPE_SERIAL` to the stable controller path.
-Calibration and experiments select the main camera with `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
+Calibration selects the main camera with `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
 Their motion also requires the measured `H-06` limits, clearance, and home-switch configuration listed above.
 Missing measurements refuse startup. Do not substitute demonstration values.
 
-Calibration and experiments acquire the main camera, any required side camera, and exclusive serial access before motion.
+Calibration acquires the main camera, any required side camera, and exclusive serial access before motion.
 Each required camera must supply a valid first frame.
 Side capture uses `MG400_CAMERA_DEVICES`, `MG400_CAMERA_MODES`, and `MG400_MICROSCOPE_SIDE_STREAM` to select the physical device and mode.
 The supervised adapter opens the stable device directly through `CAP_V4L2` and requires the `uvcvideo` driver.
@@ -385,7 +384,7 @@ This ownership excludes competing capture on that device. It does not exclude un
 
 ### Reference and motion rules
 
-These rules apply to calibration and experiments.
+These rules apply to calibration.
 The supervised setup console has separate manual measurement rules below.
 
 The measured limits and clearance use `MICRO 4` coordinates.
@@ -419,17 +418,16 @@ Cancellation and `SIGINT`, `SIGTERM`, or `SIGHUP` use the same cleanup rule.
 Display options without opening devices:
 
 ```sh
-uv run python -m microscope.calibrate --help
-uv run python -m microscope.experiments --help
+sudo mg400ctl calibrate --help
 ```
 
 Run calibration commands only under the supervision rules above:
 
 | Command | Operation and default output |
 | --- | --- |
-| `python -m microscope.calibrate reference` | Capture a raw PNG as `objective_reference.png`. It does not home, set zero, or move focus. |
-| `python -m microscope.calibrate objective` | Run objective calibration and write `objective_calibration.csv`. |
-| `python -m microscope.calibrate light` | Run light-objective calibration and write `light_objective_calibration.csv`. |
+| `sudo mg400ctl calibrate reference` | Capture a raw PNG as `objective_reference.png`. It does not home, set zero, or move focus. |
+| `sudo mg400ctl calibrate objective` | Run objective calibration and write `objective_calibration.csv`. |
+| `sudo mg400ctl calibrate light` | Run light-objective calibration and write `light_objective_calibration.csv`. |
 
 `--reference` selects the private calibration PNG for objective or light calibration. Its default is `objective_reference.png`.
 `--output` selects a file beneath `/var/lib/mg400/calibration/microscope`.
@@ -456,8 +454,8 @@ Do not estimate this value from calibration data or use another microscope's mea
 With a positive window, both commands require `--focus-start N` in measured `MICRO 4` coordinates, inside the focus limits:
 
 ```sh
-python -m microscope.calibrate objective --focus-start N
-python -m microscope.calibrate light --focus-start N
+sudo mg400ctl calibrate objective --focus-start N
+sudo mg400ctl calibrate light --focus-start N
 ```
 
 Replace `N` with the measured starting focus coordinate.
@@ -475,14 +473,14 @@ The prompt states the focus return before requesting a new `CLEAR` answer.
 After zero or home and converted limits, focus returns to its earlier position at the new microstep.
 This return rounds to the nearest pulse and must stay inside the limits.
 In this mode only, a calibration request to disable focus uses `STOP FOCUS` and preserves the reference.
-Experiments and full objective switches still turn the turret only at clearance.
+Full objective switches still turn the turret only at clearance.
 
 ### Supervised setup console
 
 Use this console for the `H-06` clearance, travel-limit, and turret-window measurements:
 
 ```sh
-python -m microscope.calibrate setup
+sudo mg400ctl calibrate setup
 ```
 
 Stop the microscope service first. Keep a person at the emergency stop who can see the focus and every objective.
@@ -517,28 +515,6 @@ An interrupted move can leave the current position unknown.
 These counts do not measure physical position or prove clearance.
 Observe each move and record the measured values separately. The console does not install them.
 
-### Experiment commands
-
-Use `python -m microscope.experiments focus|switch|combined` with the required settings.
-Each command runs 1 pass. `--output` selects a new private directory beneath `/var/lib/mg400/runs`.
-Without it, outputs use `microscope/experiments/` with a unique command directory.
-Settings, summary rows, focus curves, switch logs, and available final images stay in that directory.
-Failures retain partial results and a terminal failure row.
-
-Use `[focus]` and `[switch]` tables with `--settings FILE`.
-`--ids` supplies distinct objective IDs in adjacent positive turret order.
-The experiment treats that order as a bounded line, not a circular route.
-`--focus-microstep` defaults to `1` and accepts `1`, `2`, `4`, `8`, or `16`.
-Focus and combined trials require `--focus-start`, expressed in measured `MICRO 4` coordinates.
-The tool moves to that explicit start before the focus reference trial and before each combined focus trial.
-
-Focus trials retain offsets of `-2000`, `-1000`, `1000`, and `2000` active-mode pulses.
-Their full scan half-range must be at least `2000`.
-Switch trials test both adjacent directions with offsets of `0`, `-50`, `50`, `-100`, and `100` full steps.
-The offset moves use `MICRO 1`. The ArUco switcher uses `MICRO 4`.
-These changes require the supervised confirmations above.
-The tools do not shrink scans to fit limits. An incompatible move aborts before dispatch.
-
 ### Import existing calibration data
 
 The operator runs the import on Olares after reviewing the source data:
@@ -554,26 +530,6 @@ It refuses existing destinations instead of overwriting them.
 Destination directories use owner `1000:1000` and mode `0750`. Files use owner `1000:1000` and mode `0640`.
 Completed copies remain if a later copy fails. Inspect them before another attempt.
 The importer opens no devices. Run the import on Olares.
-
-## Other command-line entrypoints
-
-Display the supported options without connecting devices:
-
-```sh
-uv run python -m microscope.autofocus --help
-uv run python -m microscope.aruco_locator --help
-```
-
-Running autofocus without `--help` connects the serial controller and opens the Toupcam camera.
-Its required `--half-range` is the allowed travel on each side of the start position, in pulses.
-An operator must determine this value from the real hardware limits.
-`--port` overrides the serial setting, and `--output` selects a file under the run root.
-`--camera-index` selects the Toupcam camera, default `0`. This command ignores `MG400_TOUPCAM_SERIAL` and `MG400_TOUPCAM_INDEX`.
-
-The locator processes a saved `--image` or a `--folder` of PNG images without motor access.
-It requires the calibration reference images.
-Its `--output` directory defaults to `microscope/scan_position_results` under the run root.
-The other algorithms expose Python APIs and have no standalone command-line entrypoint.
 
 ## Offline checks
 

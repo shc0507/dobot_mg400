@@ -82,7 +82,6 @@ uv sync
 uv run stage-panel
 ```
 
-`uv run python -m stage_controller` 与 `uv run stage-panel` 等效。
 本地运行也读取 [配置项](#配置项) 中的环境变量和参数。
 在 Linux 上，运行服务的用户必须能读写串口设备，例如加入 `dialout` 组。
 加入组后，重新登录。

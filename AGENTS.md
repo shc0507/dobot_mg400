@@ -58,8 +58,8 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Web panel service | `apps/control_panel/`, `src/mg400/web_control.py`, `websocket.py`, `controller_ownership.py`, `robot_config.py` | `test_control_panel*.py`, `test_web_control.py`, `test_websocket.py`, `test_robot_service_e2e.py`, `test_controller_ownership.py`, `test_robot_config.py` | [control-panel.md](docs/control-panel.md), [development.md](docs/development.md#机器人服务接口) |
 | Robot service Python client | `src/mg400/client.py` | `test_robot_client.py` | [development.md](docs/development.md#python-客户端) |
 | Vacuum suction | `src/mg400/suction.py`, `joint_control.py` (`vacuum`), `web_control.py` | `test_suction.py` | [development.md](docs/development.md#真空吸盘) |
-| Terminal | `src/mg400/terminal_control.py`, `scripts/mg400_robot.py` | `test_terminal_control.py` | [terminal-control.md](docs/terminal-control.md) |
-| Mode switch | `src/mg400/control_mode.py`, `scripts/mg400_control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
+| Terminal | `src/mg400/terminal_control.py` | `test_terminal_control.py` | [terminal-control.md](docs/terminal-control.md) |
+| Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
 | Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py`, `errors.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
 | Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py` | `test_deploy_install.py`, `test_camera_preview.py`, `test_console_cameras.py` | [olares.md](docs/olares.md#摄像头) |

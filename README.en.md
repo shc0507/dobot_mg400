@@ -12,7 +12,7 @@ Choose an operation guide for your task:
 
 | Goal | Guide and description |
 | --- | --- |
-| View state and enter control commands in a terminal | [Interactive terminal](docs/terminal-control.en.md). Run `uv run mg400-robot` |
+| View state and enter control commands in a terminal | [Interactive terminal](docs/terminal-control.en.md). Run `sudo mg400ctl terminal` |
 | Control the robot, suction cup, and stage, view the cameras, and operate the furnace and microscope in a web page | [Lab Console](docs/dashboard.en.md#lab-console). Open `http://100.64.0.1:8080/` |
 | Read about robot and suction cup control, stop, and recovery, and configure the robot service | [Robot service](docs/control-panel.en.md) |
 | Read about stage control and stop, and configure the stage service | [Stage](docs/stage-panel.en.md) |

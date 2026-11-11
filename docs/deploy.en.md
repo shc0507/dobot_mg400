@@ -346,6 +346,7 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `mg400ctl terminal` | Open the [interactive terminal](terminal-control.en.md) |
 | `mg400ctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
 | `mg400ctl mode --switch-to-tcp` | Switch the controller to TCP/IP mode |
+| `mg400ctl calibrate ...` | Run the [supervised microscope calibration](microscope.en.md#supervised-calibration) |
 | `mg400ctl calibration import microscope DIR` | Import existing microscope calibration data without overwriting files. See [Microscope](microscope.en.md) |
 | `labctl run`, `labctl rehearse`, `labctl runs`, `labctl station` | Run, rehearse, and read recipes, and manage stations. See [Recipe service](orchestrator.en.md) |
 | `labctl robot state` | Agent device groups. See the [agent CLI](agent-cli.en.md) |

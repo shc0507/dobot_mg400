@@ -54,17 +54,14 @@ Reload the rules and reconnect the camera after changing permissions.
 Close other camera applications before connecting.
 Only 1 process can own the camera at a time.
 
-The following commands access real USB hardware.
-An operator must run them with the thermal service and other camera owners stopped:
+To check the camera, connect it through the service and read the state:
 
 ```sh
-uv run thermal-cam --diagnose
-uv run thermal-cam --probe --frames 30 --output captures/probe.npz
+sudo labctl thermal call connect
+sudo labctl thermal state
 ```
 
-The diagnostic reports backend and device access without initializing the camera or starting acquisition.
-The probe opens the camera, captures the requested frames, reports the result, and closes the camera.
-The optional output saves the final frame as a lossless NPZ file.
+When the connection fails, the state shows `error` and `diagnostics`: USB backend and device access.
 
 ## Start the service
 
@@ -97,7 +94,6 @@ uv run thermal-cam --help
 ```
 
 With `--no-connect`, the server waits for the `connect` command. In the console, use **Connect camera** on the thermal view to send it.
-Use `python -m thermal_cam` as an alternative entrypoint.
 Run 1 server process and 1 worker.
 Do not use automatic development reload while acquiring camera data.
 

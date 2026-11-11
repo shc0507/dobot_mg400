@@ -19,30 +19,19 @@ PTY 是 SSH 分配的交互终端，可用 `ssh -t` 请求。
 使用前，关闭其他机械臂控制程序。
 终端与机器人服务共用机械臂连接锁。
 多个进程必须配置相同的机械臂地址。
-锁目录固定为 `/var/lib/mg400/locks`，直接运行时也使用此目录。
+锁目录固定为 `/var/lib/mg400/locks`。
 目录和权限要求见 [面板连接锁](deploy.md#面板连接锁)。
 此锁不能阻止 DobotStudio 或其他主机连接。
 
-进入项目目录，运行：
+在按 [主机部署](deploy.md) 安装的主机上运行：
 
 ```sh
-uv run mg400-robot
+sudo mg400ctl terminal
 ```
 
-也可以直接运行：
-
-```sh
-python3 scripts/mg400_robot.py
-```
-
+终端以 UID 1000 运行，并读取 `/etc/mg400/mg400.env`。
 程序必须在交互终端中运行。没有终端时，程序退出，退出码为 2。
-
 机械臂地址默认取自 `MG400_ROBOT_HOST`，未设置时取自 `config/robot.toml`。
-用 `--robot-host` 覆盖地址：
-
-```sh
-uv run mg400-robot --robot-host 192.168.1.6
-```
 
 启动程序不会连接、使能或移动机械臂。
 输入 `connect` 后，等待界面显示实测状态。
@@ -123,14 +112,3 @@ Ctrl+C 后终端保持打开。
 机械臂可能继续到已发送轨迹的终点。
 不要删除锁文件来解除占用。
 锁的处理方式见 [面板连接锁](deploy.md#面板连接锁)。
-
-## 在部署主机启动
-
-在按 [主机部署](deploy.md) 安装的主机上，以 root 身份运行：
-
-```sh
-mg400ctl terminal
-```
-
-终端以 UID 1000 运行，并读取 `/etc/mg400/mg400.env`。
-启动后显示 `DISCONNECTED`，输入 `connect` 才连接机械臂。

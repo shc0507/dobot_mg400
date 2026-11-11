@@ -1,12 +1,10 @@
 """Local chip/arm inference. No cloud inference or camera/motor access.
 
 Python: annotate_image('input.jpg', 'output.jpg', weights='models/weights.pt')
-CLI: python -m vision.localizer input.jpg --output output.jpg --weights /path/to/weights.pt
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import time
@@ -287,27 +285,3 @@ def annotate_image(input_image, output_image, *, weights=None, confidence=0.39):
     """Simple file-in/file-out interface. Return the output path."""
     Localizer(weights).annotate(input_image, output_image, confidence=confidence)
     return Path(output_image).resolve()
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--weights", type=Path)
-    parser.add_argument("--confidence", type=float, default=0.39)
-    parser.add_argument("--device", default="cpu")
-    args = parser.parse_args()
-    if not args.input.is_file():
-        parser.error("Input image does not exist.")
-    output = args.output or args.input.with_name(args.input.stem + "_annotated.png")
-    try:
-        metadata = Localizer(args.weights, device=args.device).annotate(
-            args.input, output, confidence=args.confidence
-        )
-    except (FileNotFoundError, ValueError, ImportError) as error:
-        parser.exit(1, f"{error}\n")
-    print(json.dumps(metadata, indent=2))
-
-
-if __name__ == "__main__":
-    main()

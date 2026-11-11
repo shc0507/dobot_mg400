@@ -21,7 +21,6 @@ and the mode to full step, so the joints stay ``None`` until half-step is set
 again, and the offsets need a new snapshot unless the stage did not move.
 """
 
-import uuid
 from pathlib import Path
 
 from flask import abort, jsonify, request, send_file
@@ -98,30 +97,18 @@ def _holder(service, device, value, page):
 
 
 def read(service, device, page):
-    """Read one device once. Any failure becomes an unavailable row, never an error."""
-    if not service.dashboard_configured(device):
-        return {"available": False, "reason": "unconfigured"}
-    adapter = None
+    """Read one device from the device cache. A missing state becomes an unavailable row."""
+    entry = service.devices.wait(device)
+    if entry["phase"] in {"unconfigured", "offline"}:
+        return {"available": False, "reason": entry["phase"]}
+    if entry["phase"] != "ready":
+        return {"available": False, "reason": "unreachable"}
     try:
-        adapter = service.console_client(device, f"console-twin-{uuid.uuid4().hex}")
-        if adapter is None:
-            return {"available": False, "reason": "offline"}
-        state = adapter.state()
-        if not isinstance(state, dict):
-            raise ValueError("Invalid state.")
-        row = READERS[device](state)
-        lease = state.get("lease")
-        holder = lease.get("holder") if isinstance(lease, dict) else state.get("controller_id")
+        row = READERS[device](entry["state"])
     except Exception:
         return {"available": False, "reason": "unreachable"}
-    finally:
-        if adapter is not None:
-            try:
-                adapter.close()
-            except Exception:
-                pass
     row["available"] = True
-    row["holder"] = _holder(service, device, holder, page)
+    row["holder"] = _holder(service, device, entry["holder"], page)
     return row
 
 

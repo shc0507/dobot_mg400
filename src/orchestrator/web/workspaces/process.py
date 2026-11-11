@@ -129,12 +129,10 @@ class ProcessStatus:
         self.crucible_busy = False
 
     def _raw(self):
-        console = self.service.console
-        with console.lock:
-            raw = copy.deepcopy(console.raw)
-            read_at = console.events_at
-        age = None if read_at is None else round(max(0.0, console.clock() - read_at), 1)
-        return raw, age
+        entries = {name: self.service.devices.get(name) for name in ("furnace", "microscope")}
+        raw = {name: entry["state"] for name, entry in entries.items()}
+        ages = [entry["age_s"] for entry in entries.values() if entry["age_s"] is not None]
+        return raw, round(max(ages), 1) if ages else None
 
     def _sample(self, furnace, now):
         pv = _number((furnace or {}).get("pv"))

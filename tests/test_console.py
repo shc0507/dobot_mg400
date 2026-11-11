@@ -496,7 +496,12 @@ def test_events_merge_newest_first_and_reset_after_service_restart(rig):
     rig.devices["robot"].event("warning", "Robot alarm " + PRIVATE, 12.0)
     rig.devices["stage"].event("error", "Stage fault", 11.0)
     console = rig.service.console
-    console._collect()
+
+    def collect():
+        for name in ("robot", "stage"):
+            console.pull_events(name, rig.service.console_client(name, "console-test"))
+
+    collect()
     rows = console.event_report()["events"]
     service_rows = [row for row in rows if row["service"] != "runs"]
     assert [row["message"] for row in service_rows] == [
@@ -504,12 +509,12 @@ def test_events_merge_newest_first_and_reset_after_service_restart(rig):
         "Stage fault",
         "Stage moved",
     ]
-    console._collect()
+    collect()
     assert len([row for row in console.event_report()["events"] if row["service"] != "runs"]) == 3
     stage = rig.devices["stage"]
     stage.events, stage.seq = [], 0
     stage.event("info", "Restarted", 20.0)
-    console._collect()
+    collect()
     stage_rows = [row for row in console.event_report()["events"] if row["service"] == "stage"]
     assert [row["message"] for row in stage_rows] == ["Restarted"]
 
@@ -571,6 +576,7 @@ def test_proxy_root_redirects_to_the_console():
 
 
 def test_an_unconfigured_service_stays_not_configured_across_refreshes():
+    from orchestrator.devices import Devices
     from orchestrator.web.backend import Dashboard
 
     reads = threading.Event()
@@ -587,20 +593,24 @@ def test_an_unconfigured_service_stays_not_configured_across_refreshes():
         settings={},
         demo=False,
         dashboard_configured=lambda name: name == "robot",
-        dashboard_client=client,
+        console_client=client,
         dashboard_summary=summary,
     )
+    service.devices = Devices(service)
     dashboard = Dashboard(service)
     try:
+        dashboard.refresh()
+        wait_for(lambda: service.devices.get("microscope")["phase"] == "unconfigured")
         for _ in range(5):
             dashboard.refresh()
             phases = {card["id"]: card["phase"] for card in dashboard.snapshot()["services"]}
             assert phases["microscope"] == "unconfigured"
             # A configured service shows loading until its first read settles.
             assert phases["robot"] == "loading"
-            wait_for(lambda: dashboard.reading <= {"robot"})
+            wait_for(lambda: not dashboard.reading)
     finally:
         reads.set()
+        service.devices.close()
         wait_for(lambda: not dashboard.threads)
 
 

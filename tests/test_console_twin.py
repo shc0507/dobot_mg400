@@ -17,6 +17,9 @@ class Clock:
 
 
 class FakeAdapter:
+    def describe(self):
+        return {}
+
     def __init__(self, state):
         self._state = state
 

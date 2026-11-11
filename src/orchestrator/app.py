@@ -382,11 +382,13 @@ class OrchestratorService:
         self.report = None
         self.poll_stop = threading.Event()
         self.poller = None
+        from .devices import Devices
         from .web.backend import Dashboard
         from .web.console import Console
 
         self.dashboard = Dashboard(self, clock=clock)
         self.console = Console(self, clock=clock)
+        self.devices = Devices(self, clock=clock, on_events=self.console.pull_events)
 
     def _demo_calibration_references(self):
         if not self.demo or self.resources is None:
@@ -979,6 +981,7 @@ class OrchestratorService:
 
     def close(self):
         self.dashboard.begin_close()
+        self.devices.close()
         with self.lock:
             self.closing = True
             self._lost("Orchestrator service is shutting down.")

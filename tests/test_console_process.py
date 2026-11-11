@@ -106,7 +106,8 @@ def status(rig):
 
 
 def test_status_reports_page_fields_and_crucible(rig):
-    rig.service.console._collect()
+    rig.service.devices.fresh("furnace")
+    rig.service.devices.fresh("microscope")
     body = status(rig)
     assert body["furnace"]["pv"] == 24.5 and body["furnace"]["control_mode"] == "STOPPED"
     assert "lease" not in body["furnace"] and "lease_secret" not in body["furnace"]
@@ -123,7 +124,7 @@ def test_status_reports_page_fields_and_crucible(rig):
 def test_history_keeps_60_minutes_at_the_sample_interval(rig):
     now = [1000.0]
     reader = process.ProcessStatus(rig.service, wall=lambda: now[0])
-    rig.service.console._collect()
+    rig.service.devices.fresh("furnace")
     for step in range(800):
         now[0] = 1000.0 + step * 2.5
         reader.report()
@@ -197,7 +198,7 @@ def test_furnace_demo_heats_and_sends_gas_only_through_the_relay(demos):
         {"action": "set_gas_flow", "params": {"channel_index": 0, "flow_percent": 10}},
     )
     assert gas.status_code == 202, gas.get_json()
-    demos.service.console._collect()
+    demos.service.devices.fresh("furnace")
     body = status(demos)
     assert body["furnace"]["sv"] == 120
     assert body["furnace"]["flow"]["gas_channels"][0]["gas_name"] == "Demo gas 1"
@@ -211,7 +212,7 @@ def test_gas_stop_closes_1_channel_without_control_and_reports_the_valves(demos)
     params = {"channel_index": 1, "flow_percent": 10}
     gas = post(demos, "command/furnace", {"action": "set_gas_flow", "params": params})
     assert gas.status_code == 202, gas.get_json()
-    demos.service.console._collect()
+    demos.service.devices.fresh("furnace")
     valves = status(demos)["furnace"]["flow"]["gas_valves"]
     assert {"channel_index": 1, "open": True, "verified": True} in valves
     for bad in ({"channel_index": 3}, {"channel_index": True}, {"channel_index": 1, "x": 1}, {}):
@@ -220,7 +221,7 @@ def test_gas_stop_closes_1_channel_without_control_and_reports_the_valves(demos)
     response = post(demos, "ws/process/gas-stop", {"channel_index": 1}, page="console-page-b")
     assert response.status_code == 200
     assert response.get_json() == {"channel_index": 1, "outcome": "confirmed"}
-    demos.service.console._collect()
+    demos.service.devices.fresh("furnace")
     valves = status(demos)["furnace"]["flow"]["gas_valves"]
     assert {"channel_index": 1, "open": False, "verified": True} in valves
 
@@ -230,7 +231,7 @@ def test_furnace_demo_sequence_round_trip(demos):
     steps = [{"temperature_c": 80, "ramp_rate_c_per_min": 5, "hold_minutes": 1}]
     saved = post(demos, "command/furnace", {"action": "set_sequence", "params": {"steps": steps}})
     assert saved.status_code == 202, saved.get_json()
-    demos.service.console._collect()
+    demos.service.devices.fresh("furnace")
     sequence = status(demos)["furnace"]["sequence"]
     assert sequence["steps"][0]["temperature_c"] == 80 and sequence["running"] is False
 
@@ -246,6 +247,6 @@ def test_microscope_demo_relays_focus_zero(demos):
     move = post(demos, "command/microscope", {"action": "focus_move", "params": {"steps": 10}})
     # The unstarted demo answers 503: the relay reports unknown and does not retry.
     assert move.status_code == 502 and move.get_json()["outcome"] == "unknown"
-    demos.service.console._collect()
+    demos.service.devices.fresh("microscope")
     scope = status(demos)["microscope"]
     assert scope["focus_zero_known"] is False and scope["focus_position_pulses"] is None

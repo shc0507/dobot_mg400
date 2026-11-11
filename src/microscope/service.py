@@ -17,7 +17,6 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -349,7 +348,7 @@ class FurnaceReadings:
 
 
 class _ContractLease:
-    """Contract acquisition revokes manual classification under the same lease lock."""
+    """Lease changes end the reference handoff under the same lease lock."""
 
     def __init__(self, service):
         self.service = service
@@ -371,14 +370,12 @@ class _ContractLease:
             self.service._renew_job_authority(client)
             with self.service._lock:
                 self.service._handoff_deadline = None
-                self.service._manual_holder = None
             return value
 
     def renew(self, client):
         with self.raw.control(client):
             value = self.raw.renew(client)
             self.service._renew_job_authority(client)
-            self.service._manual_holder = None
             return value
 
     def release(self, client):
@@ -388,9 +385,7 @@ class _ContractLease:
             lease_state = self.raw.snapshot()
             if lease_state["holder"] == client:
                 self.service._prepare_idle_handoff(sampled_at + lease_state["remaining_s"])
-            value = self.raw.release(client)
-            self.service._manual_holder = None
-            return value
+            return self.raw.release(client)
 
     def control(self, client, *, require_holder=True):
         return self.raw.control(client, require_holder=require_holder)
@@ -687,7 +682,6 @@ class MicroscopeService:
         self._previews = {}
         self._lease = Lease(self.config.lease_seconds, clock=clock, on_expire=self.on_lease_expired)
         self.lease = _ContractLease(self)
-        self._manual_holder = None
         self._handoff_deadline = None
         self.events = EventLog()
         self._readings = readings or FurnaceReadings(
@@ -1152,7 +1146,6 @@ class MicroscopeService:
                     ),
                 },
                 last_result=copy.deepcopy(self._last_result),
-                manual_client=self._manual_holder,
                 recording=copy.deepcopy(self._recording_data),
                 recording_sequence=copy.deepcopy(self._recording_sequence),
                 stabilization=bool(
@@ -1350,26 +1343,6 @@ class MicroscopeService:
                 self._recording_sequence["armed"] = False
             return first
 
-    @contextmanager
-    def _manual_control(self, client, *, renew_only=False):
-        with self._lease.control(client, require_holder=False):
-            self._expire_handoff_locked()
-            holder = self._lease.snapshot()["holder"]
-            if holder is not None and (holder != client or self._manual_holder != client):
-                raise ServiceError(409, "Automation or another operator holds control")
-            if renew_only:
-                if holder != client or self._manual_holder != client:
-                    raise ServiceError(409, "Manual control expired; acquire it explicitly")
-                self._lease.renew(client)
-            else:
-                self._lease.acquire(client)
-                self._expire_handoff_locked()
-                self._manual_holder = client
-            self._renew_job_authority(client)
-            with self._lock:
-                self._handoff_deadline = None
-            yield
-
     def _lease_deadline(self):
         sampled_at = self._clock()
         return sampled_at + self._lease.snapshot()["remaining_s"]
@@ -1433,47 +1406,8 @@ class MicroscopeService:
                 self._latch_fault("reference", str(error))
         self.stop("lease-released", 0)
 
-    def manual_heartbeat(self, client, *, renew_only=False):
-        with self._manual_control(client, renew_only=renew_only):
-            return self._lease.snapshot()
-
-    def manual_release(self, client):
-        with self._lease.control(client, require_holder=False):
-            self._expire_handoff_locked()
-            holder = self._lease.snapshot()["holder"]
-            if holder is not None and (holder != client or self._manual_holder != client):
-                raise ServiceError(409, "Automation or another operator holds control")
-            if holder == client:
-                sampled_at = self._clock()
-                lease_state = self._lease.snapshot()
-                self._prepare_idle_handoff(sampled_at + lease_state["remaining_s"])
-            value = self._lease.release(client)
-            self._manual_holder = None
-            return value
-
-    def manual_command(self, action, args, client):
-        if (
-            action != "set_focus_zero"
-            or not isinstance(args, dict)
-            or set(args) != {"confirm"}
-            or args["confirm"] is not True
-        ):
-            raise ValueError("Only confirmed manual focus zero is supported")
-        # The operator's current lease holder, of either lease class, may set
-        # zero. Agents, recipes and the runner use command(), which refuses it.
-        with self._lease.control(client, require_holder=False):
-            self._expire_handoff_locked()
-            if self._lease.snapshot()["holder"] != client:
-                raise ServiceError(409, "Take control before setting focus zero")
-            self._lease.renew(client)
-            self._renew_job_authority(client)
-            with self._lock:
-                self._handoff_deadline = None
-            return self._dispatch(action, {}, client)
-
     def command(self, action, args, client):
         with self._lease.control(client):
-            self._manual_holder = None
             return self._dispatch(action, args, client)
 
     def _arguments(self, action, args):
@@ -2007,7 +1941,6 @@ class MicroscopeService:
 
     def on_lease_expired(self):
         self.expiry_count += 1
-        self._manual_holder = None
         self.stop("lease-expired", 0)
 
     def close(self):

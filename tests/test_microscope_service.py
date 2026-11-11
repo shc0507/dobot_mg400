@@ -39,73 +39,11 @@ class AdapterService:
     def command(self, action, args, client):
         raise ServiceError(403, "Use the explicit operator action")
 
-    def manual_heartbeat(self, client, *, renew_only=False):
-        self.calls.append(("heartbeat", client, renew_only))
-        return self.lease.renew(client) if renew_only else self.lease.acquire(client)
-
-    def manual_release(self, client):
-        self.calls.append(("release", client))
-        return self.lease.release(client)
-
-    def manual_command(self, action, args, client):
-        with self.lease.control(client):
-            self.calls.append((action, args, client))
-            return "offline-command"
-
     def start(self):
         self.started = True
 
     def close(self):
         self.closed = True
-
-
-def test_adapter_manual_zero_requires_explicit_confirmation_and_service_lease():
-    service = AdapterService()
-    client = create_app(service, base_path="/scope").test_client()
-    headers = {"X-MG400-Client": "operator"}
-    route = "/scope/api/manual/set_focus_zero"
-    assert client.post(route, json={"confirm": True}, headers=headers).status_code == 409
-    assert client.post("/scope/api/manual/heartbeat", json={}, headers=headers).status_code == 200
-    for body in (
-        {},
-        {"confirm": False},
-        {"confirm": 1},
-        {"confirm": "true"},
-        {"confirm": True, "x": 1},
-    ):
-        assert client.post(route, json=body, headers=headers).status_code == 400
-    assert all(call[0] != "set_focus_zero" for call in service.calls)
-    reply = client.post(route, json={"confirm": True}, headers=headers)
-    assert reply.status_code == 202
-    assert reply.json["command_id"] == "offline-command"
-    assert reply.json["state"]["lease"]["holder"] == "operator"
-    assert service.calls[-1] == ("set_focus_zero", {"confirm": True}, "operator")
-    assert client.post("/scope/api/manual/renew", json={}, headers=headers).status_code == 200
-    assert client.post("/scope/api/manual/release", json={}, headers=headers).status_code == 200
-    assert client.post("/scope/api/manual/renew", json={}, headers=headers).status_code == 409
-    assert not service.started
-
-
-def test_manual_routes_require_json_and_client_and_bound_payload():
-    service = AdapterService()
-    client = create_app(service).test_client()
-    route = "/api/manual/heartbeat"
-    auth = {}
-    assert client.post(route, json={}, headers=auth).status_code == 400
-    headers = {**auth, "X-MG400-Client": "operator"}
-    assert client.post(route, data="{}", headers=headers).status_code == 415
-    assert client.post(route, json=[], headers=headers).status_code == 400
-    assert client.post(route, json={"unexpected": True}, headers=headers).status_code == 400
-    assert client.post(route, json={"data": "x" * 65536}, headers=headers).status_code == 413
-    reply = client.post(route, json={}, headers=headers)
-    assert reply.status_code == 200
-    assert reply.headers["Cache-Control"] == "no-store"
-    assert reply.headers["X-Content-Type-Options"] == "nosniff"
-    assert (
-        client.post("/api/command", json={"action": "set_focus_zero"}, headers=headers).status_code
-        == 403
-    )
-    assert all(call[0] != "set_focus_zero" for call in service.calls)
 
 
 class AdapterConfig:
@@ -363,8 +301,8 @@ def wait_command(rig, command_id, *, timeout=5):
 
 
 def establish_manual_reference(rig):
-    assert service_post(rig, "manual/heartbeat").status_code == 200
-    response = service_post(rig, "manual/set_focus_zero", {"confirm": True})
+    assert service_post(rig, "heartbeat").status_code == 200
+    response = service_post(rig, "command", {"action": "set_focus_zero"})
     assert response.status_code == 202, response.json
     state = wait_command(rig, response.json["command_id"])
     assert state["last_command"]["result"] == "ok", state
@@ -425,7 +363,7 @@ def test_zero_sets_fixed_microstep_then_limits_for_any_lease_holder(demo_rig):
     )
     acquire_automation(rig)
     before = list(commands)
-    other = service_post(rig, "manual/set_focus_zero", {"confirm": True}, actor="orchestrator-step")
+    other = service_post(rig, "command", {"action": "set_focus_zero"}, actor="orchestrator-step")
     assert other.status_code == 409
     assert commands == before
     state = dispatch(rig, "focus_move", steps=60)
@@ -660,7 +598,7 @@ def test_home_requires_configured_switch_and_never_substitutes_manual_zero(demo_
     assert "FOCUS HOME" in rig.port.commands and "FOCUS ZERO" not in rig.port.commands
 
 
-@pytest.mark.parametrize("route", ["release", "manual/release"])
+@pytest.mark.parametrize("route", ["release"])
 def test_active_release_cancels_old_job_before_same_client_can_reacquire(
     demo_rig, monkeypatch, route
 ):
@@ -676,8 +614,8 @@ def test_active_release_cancels_old_job_before_same_client_can_reacquire(
         return original(job)
 
     monkeypatch.setattr(rig.service, "_reference_focus", delayed)
-    assert service_post(rig, "manual/heartbeat").status_code == 200
-    response = service_post(rig, "manual/set_focus_zero", {"confirm": True})
+    assert service_post(rig, "heartbeat").status_code == 200
+    response = service_post(rig, "command", {"action": "set_focus_zero"})
     assert response.status_code == 202 and entered.wait(1)
     job = rig.service._job
     try:
@@ -704,7 +642,7 @@ def test_idle_manual_reference_handoff_to_different_automation_client(demo_rig):
     establish_manual_reference(rig)
     rig.clock.now = 1
     before = list(rig.port.commands)
-    assert service_post(rig, "manual/release").status_code == 200
+    assert service_post(rig, "release").status_code == 200
     assert rig.service.snapshot()["focus_zero_known"]
     assert "FOCUS DISABLE" not in rig.port.commands[len(before) :]
     rig.clock.now = 2.99
@@ -725,7 +663,7 @@ def test_handoff_acquisition_cannot_revive_reference_at_expiry_without_poll(
     rig = demo_rig()
     establish_manual_reference(rig)
     rig.clock.now = 1
-    assert service_post(rig, "manual/release").status_code == 200
+    assert service_post(rig, "release").status_code == 200
     rig.clock.now = deadline
     assert service_post(rig, "heartbeat", actor=actor).status_code == 200
     assert rig.service._stop_done.wait(1)
@@ -757,7 +695,7 @@ def test_unsafe_idle_release_never_hands_off_a_moving_axis(demo_rig):
         rig.port.sim.objective.enabled = True
         rig.port.sim.objective.moving = True
         rig.port.sim.objective.remaining = 100000
-    assert service_post(rig, "manual/release").status_code == 200
+    assert service_post(rig, "release").status_code == 200
     assert rig.service._stop_done.wait(1)
     assert not rig.service.snapshot()["focus_zero_known"]
     assert not rig.port.sim.objective.enabled
@@ -997,7 +935,7 @@ def test_cli_can_run_and_close_actual_demo_service_without_a_socket():
     assert microscope_main.main(["--demo"], environ={}, server_factory=lambda *a, **kw: server) == 0
 
 
-@pytest.mark.parametrize("route", ["release", "manual/release"])
+@pytest.mark.parametrize("route", ["release"])
 def test_handoff_deadline_is_anchored_before_remaining_interval_is_sampled(
     demo_rig, monkeypatch, route
 ):
@@ -1021,12 +959,12 @@ def test_handoff_deadline_is_anchored_before_remaining_interval_is_sampled(
     assert not rig.service.snapshot()["focus_zero_known"]
 
 
-@pytest.mark.parametrize("route", ["heartbeat", "manual/heartbeat"])
+@pytest.mark.parametrize("route", ["heartbeat"])
 def test_acquire_crossing_handoff_deadline_cannot_preserve_reference(demo_rig, monkeypatch, route):
     rig = demo_rig()
     establish_manual_reference(rig)
     rig.clock.now = 1
-    assert service_post(rig, "manual/release").status_code == 200
+    assert service_post(rig, "release").status_code == 200
     rig.clock.now = 2.99
     acquire = rig.service._lease.acquire
 

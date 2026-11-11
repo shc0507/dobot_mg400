@@ -35,7 +35,6 @@ AGENT_RENEW_S = 1.0
 WATCH_INTERVAL_S = 0.2
 # A robot disable waits up to 5 s for the disabled mode and up to 5 s for rest.
 ROBOT_DISABLE_S = 12.0
-EVENT_LIMIT = 500
 # Lease operations have their own routes. The relay never forwards them.
 LEASE_ACTIONS = frozenset({"start_sync", "stop_sync", "heartbeat", "renew", "release"})
 # Stage hold: the stage firmware stops a hold 1 s after the last keepalive.
@@ -127,7 +126,6 @@ class Console:
         self.closing = False
         self.watcher = None
         self.threads = set()
-        self.events = deque(maxlen=EVENT_LIMIT)
         self.cursors = {}
         self.event_errors = {}
         self.commit = deployed_commit(service.settings)
@@ -625,12 +623,13 @@ class Console:
                     device="stage",
                 )
 
-    def _cached(self, device):
-        """Return the device cache row, or raise when the device has no fresh state."""
+    def _cached(self, device, fresh=False):
+        """Return the device cache row, or raise when the device has no fresh state.
+        With fresh, the row comes from a read that started after this call."""
         if device not in SERVICES:
             raise ServiceError(404, "Unknown console device.")
         entry = self.service.devices.wait(device)
-        if entry["phase"] != "ready":
+        if fresh or entry["phase"] != "ready":
             # Take control can start a demo service after the last cached read.
             entry = self.service.devices.fresh(device)
         if entry["phase"] in {"unconfigured", "offline"}:
@@ -641,9 +640,9 @@ class Console:
             raise ServiceError(502, "The service state read failed.")
         return entry
 
-    def device_state(self, device, page=None):
+    def device_state(self, device, page=None, fresh=False):
         """Return one device's full state from the device cache."""
-        value = self._cached(device)["state"]
+        value = self._cached(device, fresh)["state"]
         with self.lock:
             item = self.sessions.get(device)
             control = self.entry(item, page) if item is not None else None
@@ -691,34 +690,29 @@ class Console:
             pass
 
     def _merge(self, name, report):
+        """Store new events of one service. A restarted service starts a new sequence."""
         if not isinstance(report, dict) or not isinstance(report.get("events"), list):
             raise ValueError("Invalid event report.")
         cursor = report.get("next")
         if type(cursor) is not int or cursor < 0:
             raise ValueError("Invalid event cursor.")
         text = self.service.dashboard.text
+        rows = []
+        for event in report["events"]:
+            if not isinstance(event, dict) or type(event.get("seq")) is not int:
+                continue
+            level, stamp = event.get("level"), event.get("ts_unix")
+            rows.append(
+                (
+                    name,
+                    event["seq"],
+                    stamp if type(stamp) in {int, float} else time.time(),
+                    level if level in {"debug", "info", "warning", "error", "critical"} else "info",
+                    text(event.get("message")) or "",
+                )
+            )
+        self.service.store.add_device_events(rows)
         with self.lock:
-            if cursor < self.cursors.get(name, 0):
-                # A restarted service starts a new sequence.
-                self.events = deque(
-                    (item for item in self.events if item["service"] != name), maxlen=EVENT_LIMIT
-                )
-            for event in report["events"]:
-                if not isinstance(event, dict) or type(event.get("seq")) is not int:
-                    continue
-                level = event.get("level")
-                stamp = event.get("ts_unix")
-                self.events.append(
-                    {
-                        "service": name,
-                        "seq": event["seq"],
-                        "ts_unix": stamp if type(stamp) in {int, float} else None,
-                        "level": level
-                        if level in {"debug", "info", "warning", "error", "critical"}
-                        else "info",
-                        "message": text(event.get("message")) or "",
-                    }
-                )
             self.cursors[name] = cursor
 
     def pull_events(self, name, adapter):
@@ -728,7 +722,6 @@ class Console:
             report = adapter.events(cursor)
             if isinstance(report, dict) and type(report.get("next")) is int:
                 if report["next"] < cursor:
-                    # A restarted service starts a new sequence: read it all.
                     report = adapter.events(0)
             self._merge(name, report)
             with self.lock:
@@ -737,18 +730,18 @@ class Console:
             with self.lock:
                 self.event_errors[name] = "Events are unavailable."
 
-    def event_report(self):
+    def event_report(self, **query):
+        """Stored events, newest first, with the services whose events are unavailable now."""
+        rows = [
+            {**row, "service": row.pop("device"), "ts_unix": row.pop("ts")}
+            for row in self.service.store.device_events(**query)
+        ]
         with self.lock:
-            rows = sorted(
-                self.events,
-                key=lambda item: (item["ts_unix"] or 0, item["seq"]),
-                reverse=True,
-            )
             errors = dict(self.event_errors)
         for name in SERVICES:
             if self.service.devices.get(name)["phase"] in {"unavailable", "stale"}:
                 errors[name] = "Events are unavailable."
-        return {"events": copy.deepcopy(rows), "errors": errors}
+        return {"events": rows, "errors": errors}
 
     # Lifetime --------------------------------------------------------------
 

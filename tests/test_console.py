@@ -491,7 +491,7 @@ def test_ambiguous_take_cleans_up_its_own_identity_once(rig):
     assert rig.service.console.control() == []
 
 
-def test_events_merge_newest_first_and_reset_after_service_restart(rig):
+def test_events_are_stored_newest_first_and_kept_after_service_restart(rig):
     rig.devices["stage"].event("info", "Stage moved", 10.0)
     rig.devices["robot"].event("warning", "Robot alarm " + PRIVATE, 12.0)
     rig.devices["stage"].event("error", "Stage fault", 11.0)
@@ -515,8 +515,12 @@ def test_events_merge_newest_first_and_reset_after_service_restart(rig):
     stage.events, stage.seq = [], 0
     stage.event("info", "Restarted", 20.0)
     collect()
-    stage_rows = [row for row in console.event_report()["events"] if row["service"] == "stage"]
-    assert [row["message"] for row in stage_rows] == ["Restarted"]
+    stage_rows = console.event_report(device="stage")["events"]
+    assert [row["message"] for row in stage_rows] == ["Restarted", "Stage fault", "Stage moved"]
+    last = max(row["id"] for row in console.event_report()["events"])
+    stage.event("info", "Later", 21.0)
+    collect()
+    assert [row["message"] for row in console.event_report(since=last)["events"]] == ["Later"]
 
 
 def test_rehearsal_console_profile_adds_events_only():
@@ -694,3 +698,25 @@ def test_lent_devices_refuse_page_commands_but_accept_stops(rig, monkeypatch):
     lent["stage"].close()
     assert rig.service.console.control()[0]["lent"] is False
     assert post(rig, "command/stage", {"action": "move"}, page=AGENT).status_code == 202
+
+
+def test_history_route_keeps_state_changes_and_samples_values(rig):
+    stage = rig.devices["stage"]
+    devices = rig.service.devices
+
+    def rows():
+        response = rig.client.get("/lab/api/console/history?device=stage", headers=headers())
+        assert response.status_code == 200
+        return response.get_json()["states"]
+
+    devices.fresh("stage")
+    assert [row["row"]["busy"] for row in rows()] == [False]
+    stage.state = {**stage.state, "position": 1.0, "ts_unix": 5.0}
+    devices.fresh("stage")
+    assert len(rows()) == 1  # A value change waits for the 10 s sample time.
+    stage.state = {**stage.state, "busy": True}
+    devices.fresh("stage")
+    assert [row["row"]["busy"] for row in rows()] == [True, False]
+    assert rows()[0]["state"]["position"] == 1.0
+    response = rig.client.get("/lab/api/console/history?device=nope", headers=headers())
+    assert response.status_code == 404

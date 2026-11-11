@@ -93,6 +93,18 @@ class RunStore:
                     chip_id TEXT, step INTEGER, kind TEXT NOT NULL,
                     data_json TEXT NOT NULL, created_at REAL NOT NULL
                 );
+                -- Device history. A restarted service reuses seq, never (seq, ts).
+                CREATE TABLE IF NOT EXISTS device_events (
+                    id INTEGER PRIMARY KEY, device TEXT NOT NULL, seq INTEGER NOT NULL,
+                    ts REAL, level TEXT NOT NULL, message TEXT NOT NULL,
+                    UNIQUE(device, seq, ts)
+                );
+                CREATE TABLE IF NOT EXISTS device_states (
+                    id INTEGER PRIMARY KEY, device TEXT NOT NULL, ts REAL NOT NULL,
+                    phase TEXT NOT NULL, row_json TEXT NOT NULL, state_json TEXT
+                );
+                CREATE INDEX IF NOT EXISTS device_events_ts ON device_events(ts);
+                CREATE INDEX IF NOT EXISTS device_states_ts ON device_states(device, ts);
             """)
 
     def _check(self, path, *, directory=False):
@@ -463,6 +475,62 @@ class RunStore:
                 return {**result, "data": b"".join(chunks)}
         except OSError as error:
             raise ValueError("Cannot read artifact safely.") from error
+
+    def add_device_events(self, rows):
+        """Insert (device, seq, ts, level, message) rows; skip rows already stored."""
+        with self._lock, self._db:
+            self._db.executemany(
+                "INSERT OR IGNORE INTO device_events(device,seq,ts,level,message) "
+                "VALUES(?,?,?,?,?)",
+                rows,
+            )
+
+    def add_device_state(self, device, ts, phase, row, state):
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO device_states(device,ts,phase,row_json,state_json) VALUES(?,?,?,?,?)",
+                (device, ts, phase, encoded(row), None if state is None else encoded(state)),
+            )
+
+    def _device_rows(self, table, columns, device, since, start, end, limit):
+        self._page(limit)
+        clauses, parameters = ["id>?"], [since]
+        for clause, value in (("device=?", device), ("ts>=?", start), ("ts<=?", end)):
+            if value is not None:
+                clauses.append(clause)
+                parameters.append(value)
+        with self._lock:
+            return [
+                dict(row)
+                for row in self._db.execute(
+                    f"SELECT {columns} FROM {table} WHERE {' AND '.join(clauses)} "
+                    "ORDER BY ts DESC, id DESC LIMIT ?",
+                    (*parameters, limit),
+                )
+            ]
+
+    def device_events(self, *, device=None, since=0, start=None, end=None, limit=500):
+        """Return stored device events, newest first. id is the cursor for since."""
+        return self._device_rows(
+            "device_events", "id,device,seq,ts,level,message", device, since, start, end, limit
+        )
+
+    def device_states(self, *, device=None, start=None, end=None, limit=500):
+        """Return stored device state rows, newest first."""
+        rows = self._device_rows(
+            "device_states", "id,device,ts,phase,row_json,state_json", device, 0, start, end, limit
+        )
+        for row in rows:
+            row["row"] = json.loads(row.pop("row_json"))
+            state = row.pop("state_json")
+            row["state"] = None if state is None else json.loads(state)
+        return rows
+
+    def prune_devices(self, before):
+        """Delete device history older than the time before."""
+        with self._lock, self._db:
+            for table in ("device_events", "device_states"):
+                self._db.execute(f"DELETE FROM {table} WHERE ts<?", (before,))
 
     def close(self):
         with self._lock:

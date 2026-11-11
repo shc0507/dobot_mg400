@@ -128,6 +128,13 @@ def test_robot_take_enable_move_vacuum_and_release(console):
     assert code == 0 and result["result"] == "released"
     code, result = labctl(console, "robot", "state")
     assert code == 0 and result["state"]["enabled"] is False and result["mine"] is False
+    code, result = labctl(console, "all", "history", "--device", "robot")
+    assert code == 0 and {row["device"] for row in result["states"]} == {"robot"}
+    code, result = labctl(console, "all", "events", "--device", "runs")
+    assert code == 0 and result["events"], result
+    newest = result["events"][0]["id"]
+    code, result = labctl(console, "all", "events", "--device", "runs", "--since", str(newest))
+    assert code == 0 and result["events"] == []
 
 
 def test_commands_need_control_and_one_controller_per_device(console):
@@ -192,7 +199,10 @@ def test_killed_cli_during_do_holds_the_run(runs):
         stdout=subprocess.DEVNULL,
     )
     deadline = time.monotonic() + 20
-    while (active := orchestrator_state(runs).get("active_run") or {}).get("step") != 1:
+    # The previous test's closed run also reports step 1, so wait for an open run.
+    while (active := orchestrator_state(runs).get("active_run") or {}).get("closed", True) or (
+        active.get("step") != 1
+    ):
         assert time.monotonic() < deadline, (active, process.poll())
         time.sleep(0.1)
     # A lent device refuses commands from its page; stops still work.

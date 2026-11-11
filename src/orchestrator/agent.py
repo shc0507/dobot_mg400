@@ -528,13 +528,10 @@ class Agent:
         return failure(code, message, status=status, device=device, **info)
 
     def stage_ports(self):
-        def read():
-            status, body = self.http.request("api/console/ws/motion/stage/ports")
-            if status != 200:
-                raise ServiceError(status, body.get("error", "Port read failed."))
-            return {"ok": True, "device": "stage", "ports": body.get("ports", [])}
-
-        return self._guard(read, "stage")
+        result = self.state("stage")
+        if not result.get("ok"):
+            return result
+        return {"ok": True, "device": "stage", "ports": (result["state"] or {}).get("ports", [])}
 
     # Composite runs -------------------------------------------------------------
 

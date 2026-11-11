@@ -230,7 +230,7 @@
       "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
       "axis.teachConfirm": "Is {axis} at its safe zero position? The current marker position replaces the camera reference.",
       "axis.offset": "Marker offset {x}, {y} px", "axis.checkFailed": "Reference check failed: {error}",
-      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found", "stage.refresh": "Refresh ports",
+      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found",
       "pose.title": "Named poses", "pose.needRef": "Home or zero all 3 axes before a named pose.",
       "axis.zeroConfirm": "Set the current position of {axis} as zero. Check the physical position first.",
       "named.title": "Named positions",
@@ -299,7 +299,7 @@
       "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
       "axis.teachConfirm": "{axis}在安全零点吗？当前标记位置将替换摄像头参考。",
       "axis.offset": "标记偏移 {x}, {y} px", "axis.checkFailed": "参考检查失败：{error}",
-      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口", "stage.refresh": "刷新串口",
+      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口",
       "pose.title": "命名位姿", "pose.needRef": "使用命名位姿前，先让全部 3 轴回零或设零。",
       "axis.zeroConfirm": "把{axis}的当前位置设为零点。请先检查实际位置。",
       "named.title": "命名位置",
@@ -334,7 +334,7 @@
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, views: { arm: STATION_VIEWS.arm[0], stage: STATION_VIEWS.stage[0] },
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
-      ports: null, port: "", portsLoading: false, refView: {},
+      ports: "", port: "", refView: {},
     };
     let refs = {};
 
@@ -925,7 +925,7 @@
         row.check = el("button", { type: "button", class: "mo-btn", text: t("axis.check"), onclick: () => checkReference(id) });
         row.teach = el("button", {
           type: "button", class: "mo-btn", text: t("axis.teach"),
-          onclick: () => askConfirm("stage", t("axis.teachConfirm", { axis }), () => send("stage", "teach_reference", { motor: id, confirmed: true }, "ref-" + id, "stage/teach")),
+          onclick: () => askConfirm("stage", t("axis.teachConfirm", { axis }), () => send("stage", "teach_reference", { motor: id, confirm: true }, "ref-" + id)),
         });
         row.view = el("div", { class: "mo-ref", hidden: true });
         row.zero = el("button", {
@@ -986,9 +986,8 @@
       refs.stageFoldEl = el("details", { class: "mo-fold" }, el("summary", { text: t("fold.stage") }), refs.stageFold);
       refs.namedBlock = el("div", { class: "mo-named", hidden: true });
       refs.portSelect = el("select", { class: "mo-input", "aria-label": t("stage.port"), onchange: event => { model.port = event.target.value; } });
-      refs.connect = el("button", { type: "button", class: "mo-btn mo-primary", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }, "connect", "stage/connect").then(() => { model.ports = null; }) });
-      refs.refreshPorts = el("button", { type: "button", class: "mo-btn", text: t("stage.refresh"), onclick: () => { if (!model.portsLoading) loadPorts(); } });
-      refs.connectRow = el("div", { class: "mo-row mo-connect", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect, refs.refreshPorts);
+      refs.connect = el("button", { type: "button", class: "mo-btn mo-primary", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }) });
+      refs.connectRow = el("div", { class: "mo-row mo-connect", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect);
       refs.stageLast = el("p", { class: "mo-muted mo-last", role: "status" });
       refs.poseBlock = el("div", { class: "mo-named", hidden: true });
       const card = el("section", { class: "mo-station mo-station-stage", "aria-labelledby": "mo-stage-title" },
@@ -1223,26 +1222,21 @@
       refs.stageLast.textContent = stage ? lastText("stage", stage.last_command) : "";
       const disconnected = Boolean(stage && stage.connected !== true);
       refs.connectRow.hidden = !disconnected;
-      if (disconnected && model.ports === null && !model.portsLoading) loadPorts();
+      if (disconnected) renderPorts(stage.ports || []);
       refs.connect.disabled = !ownsStage || !model.port || busy("stage");
-      refs.refreshPorts.disabled = model.portsLoading;
     }
 
-    async function loadPorts() {
-      model.portsLoading = true;
-      update();
-      try {
-        const body = await api.request("stage/ports");
-        model.ports = Array.isArray(body.ports) ? body.ports : [];
-      } catch { model.ports = []; }
-      finally { model.portsLoading = false; }
-      if (!model.ports.some(item => item.device === model.port)) model.port = model.ports[0]?.device || "";
-      refs.portSelect.replaceChildren(...(model.ports.length
+    function renderPorts(ports) {
+      // The state repeats the list at each poll; rebuild only on a change, so a choice stays open.
+      const key = JSON.stringify(ports);
+      if (key === model.ports) return;
+      model.ports = key;
+      if (!ports.some(item => item.device === model.port)) model.port = ports[0]?.device || "";
+      refs.portSelect.replaceChildren(...(ports.length
         // The full by-id path is long; it goes in the tooltip.
-        ? model.ports.map(item => el("option", { value: item.device, title: item.device, text: portLabel(item) }))
+        ? ports.map(item => el("option", { value: item.device, title: item.device, text: portLabel(item) }))
         : [el("option", { value: "", text: t("stage.noPorts") })]));
       refs.portSelect.value = model.port;
-      update();
     }
 
     async function checkReference(id) {

@@ -140,7 +140,7 @@ on_fail = "hold"
 | 记录目录 | `/var/lib/mg400/runs`，`--runs-dir` 可覆盖 |
 | 客户端超时 | `2` s |
 | `robot` | `http://127.0.0.1:8766/` |
-| `stage` | `http://127.0.0.1:8767/contract/` |
+| `stage` | `http://127.0.0.1:8767/` |
 | `thermal` | `http://127.0.0.1:8768/` |
 | `furnace` | `http://127.0.0.1:8769/` |
 | `microscope` | `http://127.0.0.1:8770/` |

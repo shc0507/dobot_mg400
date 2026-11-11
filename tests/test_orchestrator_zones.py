@@ -1664,16 +1664,15 @@ def test_foreign_run_occupancy_does_not_request_physical_clearance():
     assert runner.resolutions == [{"manually_completed": True, "note": "repaired this run"}]
 
 
-def test_stage_stop_all_bypasses_only_its_own_known_stop_action(zone_context):
+def test_only_the_stop_action_bypasses_zones(zone_context):
     manager, authority, _ = zone_context
     manager.store.acquire("crucible-load", claim("another-run"))
-    stage = ZoneService("stage")
-    StepClient(authority, stage, zones=manager, device="stage").command("stop_all")
-    assert stage.calls == ["stop_all"]
-    robot = ZoneService("robot")
-    with pytest.raises(RuntimeError, match="another run"):
-        StepClient(authority, robot, zones=manager, device="robot").command("stop_all")
-    assert robot.calls == []
+    service = ZoneService("stage")
+    stage = StepClient(authority, service, zones=manager, device="stage")
+    stage.command("stop")
+    with pytest.raises(RuntimeError, match="blocked"):
+        stage.command("stop_all")
+    assert service.calls == ["stop"]
 
 
 def test_stage_dispatch_and_robot_zone_admission_are_serialized(zone_settings, monkeypatch):

@@ -443,25 +443,25 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 ## 位移台服务接口
 
-位移台服务的 HTTP 接口使用 JSON，全部位于 `{prefix}contract/api/`。
+位移台服务的 HTTP 接口使用 JSON，全部位于 `{prefix}api/`。
 `{prefix}` 是 `--base-path` 的值，默认为 `/`。
 服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
 
 ### 位移台自动化契约
 
-`labkit.client.ServiceClient` 的基地址为 `http://127.0.0.1:8767/contract`，包含 `/contract`。
+`labkit.client.ServiceClient` 的基地址为 `http://127.0.0.1:8767/`。
 接口遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)。
 
 | 接口 | 用途 |
 | --- | --- |
-| `GET /contract/api/describe` | 读取命令参数、限制、演示标志和租约规则 |
-| `GET /contract/api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command` |
-| `POST /contract/api/heartbeat` | 取得或续期控制租约。其他客户端占用时返回 409 |
-| `POST /contract/api/renew` | 仅续期调用者持有且未过期的租约，否则返回 409 |
-| `POST /contract/api/release` | 释放调用者的控制租约，不发送停止命令 |
-| `POST /contract/api/command` | 正文携带 `action` 和对应参数。接受后返回 202、`command_id` 和 `state` |
-| `POST /contract/api/stop` | 任意客户端可请求停止，无须租约。`wait_s` 为 0–15 秒，默认 0 |
-| `GET /contract/api/events?since=0` | 读取活动事件和 `next` 游标。每条活动只记录一次，同时写入服务日志 |
+| `GET /api/describe` | 读取命令参数、限制、演示标志和租约规则 |
+| `GET /api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command` |
+| `POST /api/heartbeat` | 取得或续期控制租约。其他客户端占用时返回 409 |
+| `POST /api/renew` | 仅续期调用者持有且未过期的租约，否则返回 409 |
+| `POST /api/release` | 释放调用者的控制租约，不发送停止命令 |
+| `POST /api/command` | 正文携带 `action` 和对应参数。接受后返回 202、`command_id` 和 `state` |
+| `POST /api/stop` | 任意客户端可请求停止，无须租约。`wait_s` 为 0–15 秒，默认 0 |
+| `GET /api/events?since=0` | 读取活动事件和 `next` 游标。每条活动只记录一次，同时写入服务日志 |
 
 | `action` | 参数 | 完成判定 |
 | --- | --- | --- |
@@ -469,7 +469,8 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 | `hold` | `motor`、`direction`、`speed`、`hold_id`、`sampled_at` | Arduino 确认开始长按。电机继续运动 |
 | `keepalive` | `motor`、`hold_id` | Arduino 确认续期长按 |
 | `release_hold` | `motor`、`hold_id` | 结束对应长按 |
-| `stop_all` | 无 | Arduino 确认停止请求。无须持有租约。故障锁定时使用专用停止接口 |
+| `connect` | `port` | 连接状态 `ports` 列出的串口。演示模式只接受 `DEMO`。服务锁定时也可发送 |
+| `teach_reference` | `motor`、`confirm: true` | 把当前标记位置保存为该轴的参考 |
 | `set_microstep` | `microstep` | Arduino 确认细分模式 |
 
 `motor` 取 `bottom`、`top` 或 `insert`，`direction` 取 `cw` 或 `ccw`。
@@ -501,19 +502,10 @@ labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
 停止确认尚未结束时，重新连接请求返回 409，防止用新连接的反馈确认旧设备已停止。
 `last_command` 区分 `ok`、`failed`、`rejected` 和 `stopped`。服务不自动重试运动。
 
-### 操作接口
+### 参考检查
 
-实验室控制台还使用以下 4 个接口，前缀与契约相同：
-
-| 接口 | 正文 | 用途 |
-| --- | --- | --- |
-| `GET /contract/api/ports` | 无 | 列出可连接的串口。设置 `MG400_STAGE_SERIAL` 时只列出该设备 |
-| `POST /contract/api/connect` | `{"port": "..."}` | 连接 `api/ports` 列出的串口，演示模式只接受 `DEMO`。调用者必须持有位移台租约 |
-| `GET /contract/api/motors/<motor>/reference` | 无 | 读取相机图像和标记的像素偏移 |
-| `POST /contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | 把当前标记位置保存为该轴的参考。调用者必须持有位移台租约 |
-
-`api/ports` 返回 `{"ports": [{"device": "...", "description": "..."}]}`。
-`api/connect` 和 `teach_reference` 成功时返回状态对象和 `lease`。
+`GET /api/motors/<motor>/reference` 读取相机图像和标记的像素偏移。图像太大，不放入状态。
+状态的 `ports` 在未连接时列出串口 `{"device", "description"}`，已连接时为空。设置 `MG400_STAGE_SERIAL` 时只列出该设备。
 
 ### 访问检查
 

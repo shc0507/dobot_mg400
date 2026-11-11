@@ -76,7 +76,7 @@ Robot arm:
 Stage:
 
 - The header row has the state, **Take control** and **Stop stage**. **Stop stage** needs no control. When another page or client holds the stage, the control button says so. A demo stage shows DEMO.
-- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. Each port shows its description and device name. The full device path is in the tooltip. **Refresh ports** reads the port list again.
+- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. Each port shows its description and device name. The full device path is in the tooltip. The port list updates automatically.
 - Each axis row shows the position, **Hold −**, **Hold +**, the hold speed in pulses/s and the keys of the axis. With a confirmed reference the position is in mm. Without one it is the pulse count. While the Arduino is not connected, the position shows —. An axis shows its state only when it is not idle.
 - **Hold −** and **Hold +** move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
 - The console sends the stage commands of a hold. It sends 1 `hold`, then 1 `keepalive` every 0.2 s while the page refreshes the hold. The page refreshes the hold through `ws/motion/stage/hold` every 150 ms. When no refresh arrives for 0.5 s, the console releases the hold. If the console stops, the firmware stops the axis 1 s after the last `keepalive`.

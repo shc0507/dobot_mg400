@@ -9,5 +9,5 @@ def test_every_port_is_distinct_and_on_loopback():
 
 def test_orchestrator_service_urls_come_from_the_table():
     assert SERVICE_URLS["MG400_ORCH_ROBOT_URL"] == "http://127.0.0.1:8766/"
-    assert SERVICE_URLS["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:8767/contract/"
+    assert SERVICE_URLS["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:8767/"
     assert len(SERVICE_URLS) == 6

@@ -941,7 +941,7 @@ def test_serve_passes_the_server_options():
     assert {key: seen[key] for key in SERVER_OPTIONS} == SERVER_OPTIONS
     # The fixed loopback service URLs win over the host environment.
     assert settings["MG400_ORCH_ROBOT_URL"] == "http://127.0.0.1:8766/"
-    assert settings["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:8767/contract/"
+    assert settings["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:8767/"
 
 
 def test_borrowed_runs_use_lent_adapters_and_return_them(rig, monkeypatch):

@@ -99,7 +99,8 @@ class ServiceClient:
         return self._call("api/command", {"action": action, **args})
 
     def stop(self, wait_s=0):
-        return self._call("api/stop", {"wait_s": wait_s})
+        # No describe first: a slow or broken describe must not hold back a stop.
+        return self._request("api/stop", {"wait_s": wait_s})
 
     def heartbeat(self):
         return self._call("api/heartbeat", {})

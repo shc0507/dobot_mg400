@@ -70,7 +70,7 @@ When the driver wakes, the motor may move to the A4988 Home microstep position.
 Keep LarePass VPN connected.
 Open the [Lab Console](http://100.64.0.1:8080/). Go to the `Motion` workspace.
 The stage service listens only on a loopback address. The console process calls it on the host through `127.0.0.1`.
-The console connects to `http://127.0.0.1:8767/contract/`. See [Recipe service](orchestrator.en.md).
+The console connects to `http://127.0.0.1:8767/`. See [Recipe service](orchestrator.en.md).
 If the card shows `Not running` or `Not reachable`, see [Service configuration](#service-configuration).
 
 ### Start locally
@@ -86,7 +86,7 @@ uv run stage-panel
 Local operation also reads the environment variables and arguments in [Configuration](#configuration).
 On Linux, the service user must have read and write access to the serial device, for example, through the `dialout` group.
 Log in again after joining the group.
-The console always connects to `http://127.0.0.1:8767/contract/`.
+The console always connects to `http://127.0.0.1:8767/`.
 
 Without an Arduino, use the console demo mode to view the stage card:
 
@@ -127,7 +127,7 @@ Use this sequence:
 
 The serial-port list shows ports on the host that runs the service.
 For an Olares deployment, the list comes from the Olares host, not the computer with the browser.
-After you connect the Arduino, click `Refresh ports` to update the list.
+After you connect the Arduino, the list updates automatically.
 When `MG400_STAGE_SERIAL` is set, the list shows only that device. See [Configuration](#configuration).
 Otherwise, the list may contain other serial ports.
 Run `ls -l /dev/serial/by-id/` on the host. Find the Arduino by its device name.
@@ -279,27 +279,24 @@ The service does not reconnect automatically or retry movements.
 
 ## API
 
-All routes are under `<base>/contract/api/`. `<base>` is `/`.
+All routes are under `<base>api/`. `<base>` is `/`.
 POST requests must have a JSON body and `X-MG400-Client`.
 
 | Route | Request | Purpose |
 | --- | --- | --- |
-| `GET contract/api/describe` | None | Read command parameters, limits, the demo flag, and lease rules |
-| `GET contract/api/state` | None | Read the connection, motors, microstep mode, reference metadata, and lease |
-| `GET contract/api/events?since=0` | None | Read activity events |
-| `POST contract/api/heartbeat` | `{}` | Get or renew the control lease |
-| `POST contract/api/renew` | `{}` | Renew the lease that the caller holds |
-| `POST contract/api/release` | `{}` | Release the lease without stopping motion |
-| `POST contract/api/command` | `action` and its parameters | Send a contract command |
-| `POST contract/api/stop` | `{"wait_s": 0}` | Stop all motors. No lease is necessary. `wait_s` is optional, 0–15 s. The reply `stop` is `confirmed`, `pending` or `unconfirmed` |
-| `GET contract/api/ports` | None | List the serial ports that the service can connect |
-| `POST contract/api/connect` | `{"port": "..."}` | Connect a listed serial port. Requires the lease |
-| `GET contract/api/motors/<motor>/reference` | None | Read the camera image and marker offset |
-| `POST contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | Store the current marker position as the reference. Requires the lease |
+| `GET api/describe` | None | Read command parameters, limits, the demo flag, and lease rules |
+| `GET api/state` | None | Read the connection, motors, microstep mode, reference metadata, and lease |
+| `GET api/events?since=0` | None | Read activity events |
+| `POST api/heartbeat` | `{}` | Get or renew the control lease |
+| `POST api/renew` | `{}` | Renew the lease that the caller holds |
+| `POST api/release` | `{}` | Release the lease without stopping motion |
+| `POST api/command` | `action` and its parameters | Send a contract command |
+| `POST api/stop` | `{"wait_s": 0}` | Stop all motors. No lease is necessary. `wait_s` is optional, 0–15 s. The reply `stop` is `confirmed`, `pending` or `unconfirmed` |
+| `GET api/motors/<motor>/reference` | None | Read the camera image and marker offset |
 
 `<motor>` is `bottom`, `top`, or `insert`.
-The contract commands are `move`, `hold`, `keepalive`, `release_hold`, `stop_all`, `set_microstep`, `home`, `zero`, `awake`, `goto`, and `pose`.
-`zero` requires `motor` and `confirm: true`.
+The contract commands are `move`, `hold`, `keepalive`, `release_hold`, `set_microstep`, `home`, `zero`, `awake`, `goto`, `pose`, `connect`, and `teach_reference`.
+`zero` and `teach_reference` require `motor` and `confirm: true`. `connect` requires a `port` that the state `ports` lists. The service accepts it also when locked.
 `pose` moves each axis to its configured position, 1 axis at a time in the configured order.
 `awake` extends driver energization for 0–60 seconds. It sends no STEP pulses and does not establish a reference. 0 cancels the extension.
 In demo mode, `connect` accepts only `DEMO`.
@@ -322,7 +319,7 @@ Reference teaching updates the stage calibration file. The service sends output 
 
 ### Configuration
 
-The service listens on `127.0.0.1:8767` with the base path `/`. The contract is at `contract/` below it.
+The service listens on `127.0.0.1:8767` with the base path `/`.
 The arguments `--bind`, `--port`, and `--base-path` change these defaults. The environment variables below set the other settings.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
@@ -418,8 +415,8 @@ The following errors appear on the stage card or in console notices. Errors that
 
 | Symptom | Action |
 | --- | --- |
-| The serial-port list shows `No serial port found`, or the Arduino is missing | Run `ls -l /dev/serial/by-id/` on the host. If the Arduino is absent, inspect its USB data cable and power, then click `Refresh ports`. If `MG400_STAGE_SERIAL` is set, confirm that it matches the Arduino path. |
-| `That port is no longer available. Refresh the port list.` | Click `Refresh ports`. Select the serial port again. |
+| The serial-port list shows `No serial port found`, or the Arduino is missing | Run `ls -l /dev/serial/by-id/` on the host. If the Arduino is absent, inspect its USB data cable and power, then connect the Arduino. If `MG400_STAGE_SERIAL` is set, confirm that it matches the Arduino path. |
+| `That port is no longer available. Select another port.` | Select another port in the list. |
 | `Cannot open <port>: ...`, containing `Permission denied` | The service user cannot read or write the serial port. Confirm that the device group is `dialout`. For local operation, add the user to `dialout` and log in again. |
 | `<port> is in use by another program.` | Another program has the serial port open. Close that program, for example, the Arduino IDE serial monitor or another `stage-panel` process. |
 | `Arduino did not reply in time. Check the port and uploaded sketch.` | Confirm that the selected port is the Arduino and that `firmware/three-motor-demo` is uploaded. The service disconnects after this error. After fixing the problem, click `Connect` again. |

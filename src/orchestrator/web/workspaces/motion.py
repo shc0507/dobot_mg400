@@ -14,16 +14,9 @@ adds these routes under ``<base>/api/console/ws/motion``:
   once on the robot session of the page that holds robot control. The page arms
   and disarms the keyboard with the described ``keyboard`` command.
 
-The stage operator routes reach stage routes that are not in its description,
-so the relay and the runner never send them. Each change needs this page's
-stage control and is sent once:
-
-- ``GET stage/ports`` lists the serial ports; ``POST stage/connect``
-  ``{"port"}`` connects the Arduino on one listed port.
-- ``GET stage/reference/<motor>`` checks the camera reference marker of one
-  axis and returns the marked frame and the pixel offset.
-- ``POST stage/teach`` ``{"motor", "confirmed": true}`` saves the current marker
-  position as the reference of that axis.
+``GET stage/reference/<motor>`` checks the camera reference marker of one axis
+and returns the marked frame and the pixel offset. Stage ``connect`` and
+``teach_reference`` are described commands that the page sends through the relay.
 
 Hold-to-move uses the described ``hold`` command family on this page's stage
 session. The console, not the page, sends the stage commands:
@@ -77,6 +70,7 @@ STAGE_FIELDS = (
     "locked",
     "fault",
     "feedback_fresh",
+    "ports",
     "microstep",
     "microstep_modes",
     "limits",
@@ -214,32 +208,7 @@ def _hold_id(value):
     return value
 
 
-def _operator(service, page, path, data):
-    result = service.console.operator("stage", page, path, data)
-    result.pop("result", None)
-    status = {"accepted": 200, "refused": 409, "unknown": 502}[result["outcome"]]
-    return jsonify(result), status
-
-
 def register(blueprint, service):
-    @blueprint.get("/stage/ports")
-    def stage_ports():
-        ports = service.console.read("stage", "api/ports").get("ports")
-        rows = [
-            {"device": item["device"], "description": str(item.get("description", ""))[:120]}
-            for item in (ports if isinstance(ports, list) else [])
-            if isinstance(item, dict) and isinstance(item.get("device"), str)
-        ]
-        return jsonify(ports=rows)
-
-    @blueprint.post("/stage/connect")
-    def stage_connect():
-        page = _page()
-        data = _body({"port"})
-        if not isinstance(data["port"], str) or not data["port"]:
-            raise ValueError("Select a serial port.")
-        return _operator(service, page, "api/connect", {"port": data["port"]})
-
     @blueprint.get("/stage/reference/<motor>")
     def stage_reference(motor):
         view = service.console.read("stage", f"api/motors/{_motor(motor)}/reference")
@@ -253,15 +222,6 @@ def register(blueprint, service):
             offset_px=offset if isinstance(offset, list) else None,
             distance_px=distance if type(distance) in {int, float} else None,
         )
-
-    @blueprint.post("/stage/teach")
-    def stage_teach():
-        page = _page()
-        data = _body({"motor", "confirmed"})
-        if data["confirmed"] is not True:
-            raise ValueError("Confirm the action inside the page.")
-        motor = _motor(data["motor"])
-        return _operator(service, page, f"api/motors/{motor}/teach_reference", {"confirm": True})
 
     @blueprint.post("/stage/hold")
     def stage_hold():

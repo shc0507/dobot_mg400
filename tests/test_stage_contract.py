@@ -26,7 +26,11 @@ def contract(stage_rig):
 
 
 def post(web, route, body=None, client=CLIENT):
-    return web.post("/contract/api/" + route, json=body or {}, headers=client)
+    return web.post("/api/" + route, json=body or {}, headers=client)
+
+
+def reconnect(web, headers):
+    return web.post("/api/command", json={"action": "connect", "port": "DEMO"}, headers=headers)
 
 
 def acquire(web):
@@ -43,7 +47,6 @@ def test_stage_contract_conformance(contract):
     controller, transport, clock, web, _ = contract
     check_contract(
         web,
-        base_path="/contract",
         advance=clock.advance,
         expiry_count=lambda: transport.commands.count("stop all"),
     )
@@ -55,11 +58,8 @@ def test_contract_accepts_any_host_and_origin(stage_rig):
     controller, _, _ = stage_rig
     web = create_app(controller).test_client()
     headers = {"Host": "stage.example", "Origin": "https://other.example"}
-    assert web.get("/contract/api/state", headers=headers).status_code == 200
-    assert (
-        web.post("/contract/api/heartbeat", json={}, headers={**headers, **CLIENT}).status_code
-        == 200
-    )
+    assert web.get("/api/state", headers=headers).status_code == 200
+    assert web.post("/api/heartbeat", json={}, headers={**headers, **CLIENT}).status_code == 200
 
 
 def test_any_client_can_stop_a_hold_during_automation(contract):
@@ -85,7 +85,7 @@ def test_fixed_motion_finishes_only_after_fresh_idle_feedback(contract):
     assert response.json["state"]["last_command"] is None
     clock.advance(2)
     controller.poll()
-    state = web.get("/contract/api/state").json
+    state = web.get("/api/state").json
     assert state["busy"] is False
     assert state["last_command"]["id"] == command_id
     assert state["last_command"]["result"] == "ok"
@@ -104,7 +104,7 @@ def test_unreferenced_move_that_reaches_its_target_reports_ok(stage_rig, directi
         clock.advance(1)
         acquire(web)
         controller.poll()
-    state = web.get("/contract/api/state").json
+    state = web.get("/api/state").json
     expected = start + (400 if direction == "cw" else -400)
     assert controller.snapshot()["motors"][0]["position"] == expected
     assert state["last_command"]["result"] == "ok"
@@ -140,9 +140,7 @@ def test_contract_maps_microstep_hold_keepalive_release_and_stop(contract):
     assert "microstep 2" in transport.commands
     assert "hold" in transport.commands
     assert "keepalive" in transport.commands
-    assert (
-        post(web, "command", {"action": "stop_all"}, {"X-MG400-Client": "other"}).status_code == 202
-    )
+    assert post(web, "stop", client={"X-MG400-Client": "other"}).status_code == 200
     assert all(m["mode"] == "idle" for m in controller.snapshot()["motors"])
 
 
@@ -197,15 +195,15 @@ def test_an_accepted_keepalive_adds_no_activity_event(contract):
     )
     renew = dict(action="keepalive", motor="bottom", hold_id=HOLD_ID)
     assert post(web, "command", start).status_code == 202
-    cursor = web.get("/contract/api/events?since=0").json["next"]
+    cursor = web.get("/api/events?since=0").json["next"]
     assert post(web, "command", renew).status_code == 202
-    assert web.get(f"/contract/api/events?since={cursor}").json["events"] == []
+    assert web.get(f"/api/events?since={cursor}").json["events"] == []
     assert controller.snapshot()["last_command"]["action"] == "keepalive"
     # A refused keepalive is still logged.
     clock.advance(1.1)
     controller.poll()
     assert post(web, "command", renew).status_code == 409
-    events = web.get(f"/contract/api/events?since={cursor}").json["events"]
+    events = web.get(f"/api/events?since={cursor}").json["events"]
     assert any("keepalive rejected" in event["message"] for event in events)
 
 
@@ -215,14 +213,14 @@ def test_activity_entries_are_mirrored_once_without_poll_replay(contract):
     move(web)
     controller.poll()
     legacy = controller.snapshot()["events"]
-    response = web.get("/contract/api/events?since=0").json
+    response = web.get("/api/events?since=0").json
     assert [event["message"] for event in response["events"]] == [
         event["message"] for event in reversed(legacy)
     ]
     assert len({event["fields"]["activity_id"] for event in response["events"]}) == len(legacy)
     cursor = response["next"]
     controller.poll()
-    assert web.get(f"/contract/api/events?since={cursor}").json["events"] == []
+    assert web.get(f"/api/events?since={cursor}").json["events"] == []
 
 
 def test_unknown_outcome_locks_contract_without_retrying_motion(contract, monkeypatch):
@@ -238,7 +236,7 @@ def test_unknown_outcome_locks_contract_without_retrying_motion(contract, monkey
     monkeypatch.setattr(transport, "command", lose_reply)
     response = move(web)
     assert response.status_code == 503
-    state = web.get("/contract/api/state").json
+    state = web.get("/api/state").json
     assert state["locked"] is True
     assert state["fault"]["code"] == "device_link_lost"
     assert state["last_command"]["result"] == "failed"
@@ -270,9 +268,7 @@ def test_unconfirmed_stop_keeps_a_fault_until_manual_reconnect(contract, monkeyp
     controller.poll()
     assert controller.snapshot()["locked"] is True
     controller.disconnect()
-    assert (
-        web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers).status_code == 200
-    )
+    assert reconnect(web, headers).status_code == 202
     assert controller.snapshot()["locked"] is False
 
 
@@ -375,11 +371,12 @@ def test_reconnect_cannot_clear_unknown_outcome_while_a_motor_reports_motion(con
     monkeypatch.setattr(transport, "command", lose_stop)
     acquire(web)
     controller.poll()
-    response = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
-    assert response.status_code == 200
-    assert response.json["connected"] is True
-    assert response.json["locked"] is True
-    assert response.json["fault"]["code"] == "stop_unconfirmed"
+    response = reconnect(web, headers)
+    assert response.status_code == 202
+    state = response.json["state"]
+    assert state["connected"] is True
+    assert state["locked"] is True
+    assert state["fault"]["code"] == "stop_unconfirmed"
     assert move(web, motor="top").status_code == 409
     with pytest.raises(ControllerError, match="Only stop is allowed"):
         controller.move("top", "cw", 1, 100)
@@ -409,7 +406,7 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     def disconnect_during_wait(_seconds):
         controller.disconnect()
         if replace_connection:
-            response = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
+            response = reconnect(web, headers)
             assert response.status_code == 409
             assert "Stop confirmation" in response.json["error"]
 
@@ -426,9 +423,9 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     assert replacement_attempts == []
     # Recovery against the same still-moving board keeps the lock after stop returns.
     monkeypatch.setattr(controller, "_factory", lambda _port: transport)
-    recovered = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
-    assert recovered.status_code == 200
-    assert recovered.json["locked"] is True
+    recovered = reconnect(web, headers)
+    assert recovered.status_code == 202
+    assert recovered.json["state"]["locked"] is True
     assert move(web, motor="top").status_code == 409
     assert "motor top" not in transport.commands
 
@@ -441,16 +438,15 @@ def test_prefixed_contract_keeps_its_lease_and_operator_guard_boundaries(stage_r
     proxy = {"Host": "lab.example:8080", "X-Forwarded-Host": "lab.example:8080"}
     access = dict(proxy)
     headers = {**access, **CLIENT}
-    assert web.get(base + "/contract/api/state", headers=headers).status_code == 200
-    assert web.post(base + "/contract/api/heartbeat", json={}, headers=headers).status_code == 200
-    assert web.post(base + "/contract/api/stop", json={}, headers=access).status_code == 400
-    assert web.get(base + "/contract/api/ports", headers=access).status_code == 200
-    teach = base + "/contract/api/motors/insert/teach_reference"
+    assert web.get(base + "/api/state", headers=headers).status_code == 200
+    assert web.post(base + "/api/heartbeat", json={}, headers=headers).status_code == 200
+    assert web.post(base + "/api/stop", json={}, headers=access).status_code == 400
+    teach = {"action": "teach_reference", "motor": "insert", "confirm": True}
     other = {**access, "X-MG400-Client": "other"}
-    assert web.post(teach, json={"confirm": True}, headers=other).status_code == 409
+    assert web.post(base + "/api/command", json=teach, headers=other).status_code == 409
     assert (
         web.post(
-            base + "/contract/api/stop", json={}, headers={**headers, "X-MG400-Client": "other"}
+            base + "/api/stop", json={}, headers={**headers, "X-MG400-Client": "other"}
         ).status_code
         == 200
     )

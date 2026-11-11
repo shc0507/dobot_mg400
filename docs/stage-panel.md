@@ -70,7 +70,7 @@ Arduino 接在 Olares 宿主机的 USB 上，必须运行 `firmware/three-motor-
 保持 LarePass VPN 连接。
 打开 [Lab Console](http://100.64.0.1:8080/)，进入 `Motion` 工作区。
 位移台服务只监听回环地址。控制台进程在宿主机上通过 `127.0.0.1` 调用它。
-控制台连接 `http://127.0.0.1:8767/contract/`，见 [配方服务](orchestrator.md)。
+控制台连接 `http://127.0.0.1:8767/`，见 [配方服务](orchestrator.md)。
 卡片显示 `Not running` 或 `Not reachable` 时，参见 [服务配置](#服务配置)。
 
 ### 在本地启动
@@ -86,7 +86,7 @@ uv run stage-panel
 本地运行也读取 [配置项](#配置项) 中的环境变量和参数。
 在 Linux 上，运行服务的用户必须能读写串口设备，例如加入 `dialout` 组。
 加入组后，重新登录。
-控制台固定连接 `http://127.0.0.1:8767/contract/`。
+控制台固定连接 `http://127.0.0.1:8767/`。
 
 没有 Arduino 时，用控制台的演示模式查看位移台卡片：
 
@@ -127,7 +127,7 @@ Arduino 未连接时，卡片显示 `Arduino not connected`、`Serial port` 列�
 
 串口列表显示运行服务的主机的串口。
 部署在 Olares 时，列表来自 Olares 宿主机，不是浏览器所在的电脑。
-插入 Arduino 后，点击 `Refresh ports` 更新列表。
+插入 Arduino 后，列表自动更新。
 设置 `MG400_STAGE_SERIAL` 时，列表只显示该设备，见 [配置项](#配置项)。
 未设置时，列表可能含有其他串口。
 在宿主机运行 `ls -l /dev/serial/by-id/`，按设备名找到 Arduino。
@@ -279,27 +279,24 @@ USB 断开时，服务不能保证停止，已开始的步进移动可能走完�
 
 ## 接口
 
-所有路由位于 `<base>/contract/api/` 下。`<base>` 为 `/`。
+所有路由位于 `<base>api/` 下。`<base>` 为 `/`。
 POST 必须带 JSON 正文和 `X-MG400-Client`。
 
 | 路由 | 请求 | 用途 |
 | --- | --- | --- |
-| `GET contract/api/describe` | 无 | 读取命令参数、限制、演示标志和租约规则 |
-| `GET contract/api/state` | 无 | 读取连接、电机、细分模式、参考元数据和租约 |
-| `GET contract/api/events?since=0` | 无 | 读取活动事件 |
-| `POST contract/api/heartbeat` | `{}` | 取得或续期控制租约 |
-| `POST contract/api/renew` | `{}` | 续期调用者持有的租约 |
-| `POST contract/api/release` | `{}` | 释放租约，不停止运动 |
-| `POST contract/api/command` | `action` 和参数 | 发送契约命令 |
-| `POST contract/api/stop` | `{"wait_s": 0}` | 停止所有电机，不需要租约。`wait_s` 可选，0–15 秒。回复的 `stop` 为 `confirmed`、`pending` 或 `unconfirmed` |
-| `GET contract/api/ports` | 无 | 列出可连接的串口 |
-| `POST contract/api/connect` | `{"port": "..."}` | 连接列出的串口，要求租约 |
-| `GET contract/api/motors/<motor>/reference` | 无 | 读取相机图像和标记偏移 |
-| `POST contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | 保存当前标记位置为参考，要求租约 |
+| `GET api/describe` | 无 | 读取命令参数、限制、演示标志和租约规则 |
+| `GET api/state` | 无 | 读取连接、电机、细分模式、参考元数据和租约 |
+| `GET api/events?since=0` | 无 | 读取活动事件 |
+| `POST api/heartbeat` | `{}` | 取得或续期控制租约 |
+| `POST api/renew` | `{}` | 续期调用者持有的租约 |
+| `POST api/release` | `{}` | 释放租约，不停止运动 |
+| `POST api/command` | `action` 和参数 | 发送契约命令 |
+| `POST api/stop` | `{"wait_s": 0}` | 停止所有电机，不需要租约。`wait_s` 可选，0–15 秒。回复的 `stop` 为 `confirmed`、`pending` 或 `unconfirmed` |
+| `GET api/motors/<motor>/reference` | 无 | 读取相机图像和标记偏移 |
 
 `<motor>` 取 `bottom`、`top` 或 `insert`。
-契约命令为 `move`、`hold`、`keepalive`、`release_hold`、`stop_all`、`set_microstep`、`home`、`zero`、`awake`、`goto` 和 `pose`。
-`zero` 要求 `motor` 和 `confirm: true`。
+契约命令为 `move`、`hold`、`keepalive`、`release_hold`、`set_microstep`、`home`、`zero`、`awake`、`goto`、`pose`、`connect` 和 `teach_reference`。
+`zero` 和 `teach_reference` 要求 `motor` 和 `confirm: true`。`connect` 要求状态 `ports` 列出的 `port`，服务锁定时也可发送。
 `pose` 按配置顺序逐轴移动，每次只移动 1 轴。
 `awake` 延长驱动器通电 0–60 秒，不发送 STEP 脉冲，也不建立参考。0 取消延长。
 演示模式的 `connect` 只接受 `DEMO`。
@@ -322,7 +319,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 
 ### 配置项
 
-服务监听 `127.0.0.1:8767`，基础路径为 `/`，契约位于其下的 `contract/`。
+服务监听 `127.0.0.1:8767`，基础路径为 `/`。
 参数 `--bind`、`--port`、`--base-path` 可改变这些默认值。下表的环境变量设置其他配置。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
@@ -418,8 +415,8 @@ mg400ctl stop stage
 
 | 现象 | 处理 |
 | --- | --- |
-| 串口列表显示 `No serial port found`，或找不到 Arduino | 在宿主机运行 `ls -l /dev/serial/by-id/`。没有 Arduino 时，检查 USB 数据线和 Arduino 供电，再点击 `Refresh ports`。设置了 `MG400_STAGE_SERIAL` 时，确认它与 Arduino 的路径相同。 |
-| `That port is no longer available. Refresh the port list.` | 点击 `Refresh ports`，再选择串口。 |
+| 串口列表显示 `No serial port found`，或找不到 Arduino | 在宿主机运行 `ls -l /dev/serial/by-id/`。没有 Arduino 时，检查 USB 数据线和 Arduino 供电，再插入 Arduino。设置了 `MG400_STAGE_SERIAL` 时，确认它与 Arduino 的路径相同。 |
+| `That port is no longer available. Select another port.` | 选择列表中的另一个串口。 |
 | `Cannot open <port>: ...`，其中含 `Permission denied` | 服务用户不能读写该串口。确认设备属组为 `dialout`。本地运行时，把用户加入 `dialout` 组并重新登录。 |
 | `<port> is in use by another program.` | 另一个程序占用该串口。关闭该程序，例如 Arduino IDE 的串口监视器或另一个 `stage-panel` 进程。 |
 | `Arduino did not reply in time. Check the port and uploaded sketch.` | 确认所选串口是 Arduino，并已上传 `firmware/three-motor-demo`。出错后服务断开连接，修复后再点击 `Connect`。 |

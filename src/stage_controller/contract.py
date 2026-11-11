@@ -32,7 +32,7 @@ class StageContract:
         speed = parameter("integer", minimum=1, maximum=MAX_SPEED, description="STEP pulses/s")
         hold_id = parameter("string", pattern="^[A-Za-z0-9_-]{16,64}$")
 
-        def spec(properties, *, any_client=False):
+        def spec(properties, *, any_client=False, recovery=False):
             return command(
                 parameter(
                     "object",
@@ -41,6 +41,7 @@ class StageContract:
                     additionalProperties=False,
                 ),
                 any_client=any_client,
+                recovery=recovery,
             )
 
         return describe(
@@ -70,7 +71,10 @@ class StageContract:
                 ),
                 "keepalive": spec(dict(motor=motor, hold_id=hold_id)),
                 "release_hold": spec(dict(motor=motor, hold_id=hold_id)),
-                "stop_all": spec({}, any_client=True),
+                "connect": spec(dict(port=parameter("string")), recovery=True),
+                "teach_reference": spec(
+                    dict(motor=motor, confirm=parameter("boolean", const=True))
+                ),
                 "set_microstep": spec(
                     dict(microstep=parameter("integer", enum=list(MICROSTEP_MODES)))
                 ),
@@ -153,7 +157,7 @@ class StageContract:
         if set(args) != expected:
             raise ValueError("Command arguments must match the discovery schema.")
         entry = {"id": uuid.uuid4().hex, "action": action, "client": client}
-        if action == "zero":
+        if action in ("zero", "teach_reference", "connect"):
             try:
                 getattr(self, action)(**args, client=client)
             except (ValueError, ControllerError) as exc:
@@ -167,14 +171,14 @@ class StageContract:
                     ) from exc
                 raise
             with self._lock:
-                self._finish_command(entry, "ok", "Reference operation confirmed.")
+                self._finish_command(entry, "ok", f"{action} confirmed.")
             return entry["id"]
         with self.lease.control(client, require_holder=not specs[action]["any_client"]), self._lock:
             if (
                 self._error is not None
                 or self._contract_fault is not None
                 or self._contract_stopping
-            ) and action != "stop_all":
+            ):
                 raise ServiceError(409, "The service is locked. Only stop is allowed.")
             try:
                 self._automation_client = client

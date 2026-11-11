@@ -35,7 +35,6 @@ session. The console, not the page, sends the stage commands:
 """
 
 import re
-import uuid
 
 from flask import jsonify, request
 
@@ -122,7 +121,7 @@ def _holder(service, device, value, page):
 def _robot(state):
     result = _pick(state, ROBOT_FIELDS)
     result["last_command"] = _last_command(state.get("last_command"))
-    return result, state.get("controller_id")
+    return result
 
 
 def _stage(state):
@@ -144,37 +143,26 @@ def _stage(state):
     result["at_poses"] = [
         name for name, value in at.items() if isinstance(value, dict) and value.get("matched")
     ]
-    lease = state.get("lease")
-    return result, lease.get("holder") if isinstance(lease, dict) else None
+    return result
 
 
 READERS = {"robot": _robot, "stage": _stage}
 
 
-def read(service, device, page):
-    """Read one device once. Any failure becomes an unavailable row, never an error."""
-    if not service.dashboard_configured(device):
+def read(service, device, page, *, fresh=False):
+    """Read one device from the device cache. A missing state becomes an unavailable row."""
+    entry = service.devices.fresh(device) if fresh else service.devices.wait(device)
+    if entry["phase"] in {"unconfigured", "offline"}:
         # Demo: Take control starts the owned demo service on first use.
-        return {"available": False, "reason": "offline" if service.demo else "unconfigured"}
-    adapter = None
+        return {"available": False, "reason": "offline" if service.demo else entry["phase"]}
+    if entry["phase"] != "ready":
+        return {"available": False, "reason": "unreachable"}
     try:
-        adapter = service.console_client(device, f"console-motion-{uuid.uuid4().hex}")
-        if adapter is None:
-            return {"available": False, "reason": "offline"}
-        state = adapter.state()
-        if not isinstance(state, dict):
-            raise ValueError("Invalid state.")
-        result, holder = READERS[device](state)
+        result = READERS[device](entry["state"])
     except Exception:
         return {"available": False, "reason": "unreachable"}
-    finally:
-        if adapter is not None:
-            try:
-                adapter.close()
-            except Exception:
-                pass
     result["available"] = True
-    result["holder"] = _holder(service, device, holder, page)
+    result["holder"] = _holder(service, device, entry["holder"], page)
     return result
 
 
@@ -309,7 +297,8 @@ def register(blueprint, service):
         if type(step) not in {int, float} or step not in JOG_STEPS:
             raise ValueError("The jog step must be 0.5, 2 or 10.")
         speed = _speed(data)
-        robot = read(service, "robot", page)
+        # The target is relative to the actual pose, so a cached pose is too old.
+        robot = read(service, "robot", page, fresh=True)
         actual = robot.get("actual") if robot.get("available") else None
         pose = actual[:4] if isinstance(actual, list) and len(actual) >= 4 else None
         if pose is None or any(type(value) not in {int, float} for value in pose):

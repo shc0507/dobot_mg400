@@ -89,6 +89,21 @@ wait "$sim_pid"
 
 ## 代码结构
 
+### 分层
+
+仓库分为 4 层。每层只调用下一层。
+
+| 层 | 组成 | 用途 |
+| --- | --- | --- |
+| 后端 | 设备服务（`apps/control_panel/`、`src/stage_controller/`、`src/thermal_cam/`、`src/furnace/`、`src/microscope/`、`src/vision/`）和 `firmware/` | 每台设备 1 个进程，只监听 `127.0.0.1`。用户和代理不直接调用后端 |
+| 编排器 | `src/orchestrator/` | 设备缓存 `devices.py` 为每台设备运行 1 个读取线程：每 250 ms 读 1 次 `api/state`，每 1 s 读 1 次事件，实例变化时读 `describe`。控制台和 `labctl` 只从这个缓存读设备状态。命令、租约和配方运行也经过编排器 |
+| 工具 | `labctl`（`src/orchestrator/agent_cli.py`）和 `mg400ctl`（`deploy/mg400ctl`） | 代理用 `labctl` 操作设备。管理员用 `mg400ctl` 启停服务、查看日志、备份和检查硬件 |
+| 前端 | 实验室控制台（`src/orchestrator/web/`） | 浏览器页面，经代理访问编排器 |
+
+例外：`labctl` 的停止命令同时发给编排器和设备服务。
+
+### 目录
+
 | 路径 | 用途 |
 | --- | --- |
 | `config/robot.toml` | 机器人地址，`MG400_ROBOT_HOST` 未设置时使用 |

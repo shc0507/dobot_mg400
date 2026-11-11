@@ -91,6 +91,21 @@ Offline rehearsal cannot replace hardware acceptance.
 
 ## Code structure
 
+### Layers
+
+The repository has 4 layers. Each layer calls only the layer below it.
+
+| Layer | Parts | Purpose |
+| --- | --- | --- |
+| Backend | Device services (`apps/control_panel/`, `src/stage_controller/`, `src/thermal_cam/`, `src/furnace/`, `src/microscope/`, `src/vision/`) and `firmware/` | 1 process for each device. It listens only on `127.0.0.1`. Users and agents do not call the backend directly |
+| Orchestrator | `src/orchestrator/` | The device cache `devices.py` runs 1 reader thread for each device. The thread reads `api/state` every 250 ms, the events every 1 s, and `describe` when the instance changes. The console and `labctl` read device state only from this cache. Commands, leases, and recipe runs also go through the orchestrator |
+| Toolkit | `labctl` (`src/orchestrator/agent_cli.py`) and `mg400ctl` (`deploy/mg400ctl`) | Agents use `labctl` to operate the devices. Administrators use `mg400ctl` to start and stop the services, read the logs, make backups, and check the hardware |
+| Frontend | Lab Console (`src/orchestrator/web/`) | Browser page. It reaches the orchestrator through the proxy |
+
+Exception: a `labctl` stop goes to the orchestrator and also directly to the device service.
+
+### Directories
+
 | Path | Purpose |
 | --- | --- |
 | `config/robot.toml` | Robot address, used when `MG400_ROBOT_HOST` is not set |

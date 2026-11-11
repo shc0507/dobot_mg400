@@ -144,6 +144,10 @@ def report(rig):
     return rig.service.dashboard.snapshot()
 
 
+def stage_card(rig):
+    return next(item for item in report(rig)["services"] if item["id"] == "stage")
+
+
 def operation(rig, identity):
     return next(item for item in report(rig)["operations"] if item["id"] == identity)
 
@@ -198,8 +202,7 @@ def test_state_is_cached_allowlisted_and_redacts_private_data(rig):
         token=PRIVATE, url="http://private.invalid:9876", fault={"message": PRIVATE}
     )
     device.state["lease"]["holder"] = "prefix " + PRIVATE + " http://private.invalid:9876 <script>"
-    rig.service.dashboard.refresh()
-    wait_for(lambda: not rig.service.dashboard.reading)
+    rig.service.devices.fresh("stage")
     data = report(rig)
     encoded = json.dumps(data)
     assert PRIVATE not in encoded and "http://private.invalid:9876" not in encoded
@@ -210,8 +213,9 @@ def test_state_is_cached_allowlisted_and_redacts_private_data(rig):
     assert "[redacted]" in stage["lease_holder"]
     assert "token" not in stage and "url" not in stage
     assert all(camera["url"] is None for camera in data["cameras"])
-    rig.service.dashboard.clock = lambda: time.monotonic() + 4
-    assert all(item["phase"] == "stale" for item in report(rig)["services"])
+    rig.service.devices.close()
+    rig.service.devices.clock = lambda: time.monotonic() + 4
+    assert stage_card(rig)["phase"] == "stale"
 
 
 IDLE_ROBOT = {"syncing": False, "feedback_fresh": False, "robot_error": None, "alarms": None}
@@ -234,8 +238,7 @@ IDLE_ROBOT = {"syncing": False, "feedback_fresh": False, "robot_error": None, "a
 )
 def test_an_idle_robot_is_not_connected_and_only_real_faults_count(rig, change, connected, fault):
     rig.devices["robot"].state.update(change)
-    rig.service.dashboard.refresh()
-    wait_for(lambda: not rig.service.dashboard.reading)
+    rig.service.devices.fresh("robot")
     robot = next(item for item in report(rig)["services"] if item["id"] == "robot")
     assert robot["connected"] is connected
     assert (robot["fault"] is not None) is fault

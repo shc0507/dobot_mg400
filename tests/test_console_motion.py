@@ -56,6 +56,9 @@ def motion_state(rig, page="console-page-a"):
 
 
 class FakeAdapter:
+    def describe(self):
+        return {}
+
     def __init__(self, state, holder):
         self._state, self._holder = state, holder
 
@@ -209,6 +212,7 @@ def take(rig, device, page="console-page-a"):
 
 def robot_ready(rig):
     def ready():
+        rig.service.devices.fresh("robot")
         robot = motion_state(rig)["robot"]
         return robot if robot.get("feedback_fresh") and robot.get("actual")[0] is not None else None
 
@@ -225,6 +229,7 @@ def settled(rig):
     """Wait for an idle arm with a known pose."""
 
     def ready():
+        rig.service.devices.fresh("robot")
         robot = motion_state(rig)["robot"]
         return robot if robot["actual"][0] is not None and not robot["busy"] else None
 
@@ -234,6 +239,7 @@ def settled(rig):
 def test_take_and_release_control_of_both_devices(sim):
     for device in ("robot", "stage"):
         assert take(sim, device)["mine"] is True
+        sim.service.devices.fresh(device)
         assert motion_state(sim)[device]["holder"] == "mine"
         assert motion_state(sim, page="console-page-b")[device]["holder"] == "console"
         # Another page cannot take it over.

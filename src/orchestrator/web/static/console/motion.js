@@ -334,7 +334,7 @@
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, views: { arm: STATION_VIEWS.arm[0], stage: STATION_VIEWS.stage[0] },
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
-      ports: "", port: "", refView: {},
+      port: "", refView: {},
     };
     let refs = {};
 
@@ -1228,9 +1228,10 @@
 
     function renderPorts(ports) {
       // The state repeats the list at each poll; rebuild only on a change, so a choice stays open.
+      // The key lives on the element: a rebuilt card has a new, empty select.
       const key = JSON.stringify(ports);
-      if (key === model.ports) return;
-      model.ports = key;
+      if (key === refs.portSelect.dataset.ports) return;
+      refs.portSelect.dataset.ports = key;
       if (!ports.some(item => item.device === model.port)) model.port = ports[0]?.device || "";
       refs.portSelect.replaceChildren(...(ports.length
         // The full by-id path is long; it goes in the tooltip.

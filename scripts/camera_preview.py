@@ -47,6 +47,8 @@ STILL_SETTLE_S = 1.0
 STILL_TIMEOUT_S = 10.0
 STILLS = {f"{stream}.full.jpg": stream for stream in CAMERAS.streams}
 STILL_LOCK = Lock()
+# The microscope service makes its lossless full-size still. go2rtc has only the preview.
+MICROSCOPE_STILL = ports.url("microscope", "api/camera/microscope/still.png")
 
 
 def iter_mjpeg(upstream, *, keep_reading=lambda: True, max_frame=MAX_FRAME):
@@ -304,9 +306,10 @@ def stream_fps(query):
     return int(match.group(1)) if match and int(match.group(1)) <= MAX_FPS else None
 
 
+# go2rtc reads the microscope MJPEG preview from the microscope service.
 FEEDS = {
     source: CameraFeed(source, on_demand=source not in CAMERAS.preloaded)
-    for source in STREAMS.values()
+    for source in (*STREAMS.values(), "microscope")
 }
 
 
@@ -348,6 +351,17 @@ class Preview(BaseHTTPRequestHandler):
             return
         if route in STILLS and not query:
             self.still(STILLS[route])
+            return
+        if route == "microscope.png" and not query:
+            try:
+                with urllib.request.urlopen(MICROSCOPE_STILL, timeout=5) as upstream:
+                    body = upstream.read()
+            except (OSError, HTTPException):
+                body = b""
+            if not body:  # 204: the microscope has no frame.
+                self.send_error(502)
+                return
+            self.respond(body, "image/png")
             return
         if query or route not in STREAMS:
             self.send_error(404)

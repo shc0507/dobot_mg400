@@ -216,8 +216,8 @@ class Agent:
             raise ServiceError(status, body.get("error", "Heartbeat failed."))
         return [item for item in body.get("control", []) if item.get("mine")]
 
-    def _read(self, device):
-        status, body = self._get("state/" + device)
+    def _read(self, device, fresh=False):
+        status, body = self._get("state/" + device + ("?fresh=1" if fresh else ""))
         if status != 200:
             raise ServiceError(status, body.get("error", "State read failed."))
         return body
@@ -279,18 +279,28 @@ class Agent:
 
         return self._guard(read, device)
 
+    def _history(self, path, **query):
+        query = {key: value for key, value in query.items() if value is not None}
+        status, body = self._get(path + ("?" + urllib.parse.urlencode(query) if query else ""))
+        if status != 200:
+            raise ServiceError(status, body.get("error", "History read failed."))
+        return body
+
     def events(self, since=0, device=None):
+        """Stored events after the event id since, newest first."""
+
         def read():
-            status, body = self._get("events")
-            if status != 200:
-                raise ServiceError(status, body.get("error", "Event read failed."))
-            rows = [
-                item
-                for item in body.get("events", [])
-                if (device is None or item.get("service") == device)
-                and (type(item.get("seq")) is int and item["seq"] > since)
-            ]
-            return {"ok": True, "events": rows, "errors": body.get("errors", {})}
+            body = self._history("events", since=since, device=device)
+            return {"ok": True, "events": body.get("events", []), "errors": body.get("errors", {})}
+
+        return self._guard(read, device)
+
+    def history(self, device=None, start=None, end=None):
+        """Stored device state rows, newest first."""
+
+        def read():
+            body = self._history("history", device=device, to=end, **{"from": start})
+            return {"ok": True, "states": body.get("states", [])}
 
         return self._guard(read, device)
 
@@ -348,7 +358,8 @@ class Agent:
         try:
             control = {item["device"]: item for item in self.beat()}
             holder = control.get(device, {}).get("holder")
-            before = self._read(device).get("state") if wait else None
+            # The baseline must postdate earlier commands, so it skips the device cache.
+            before = self._read(device, fresh=True).get("state") if wait else None
         except Unreachable as error:
             return failure("unreachable", str(error), device=device, **info)
         except ServiceError as error:

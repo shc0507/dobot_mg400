@@ -25,7 +25,8 @@ The CLI adds no limits and no checks. The services keep the test-stage protectio
 | --- | --- |
 | `labctl all state` | State of every device, the control holders and the current run |
 | `labctl all session` | This session's devices and the idle time left (`idle_left_s`) |
-| `labctl all events [--since N] [--device D]` | Merged events, newest first |
+| `labctl all events [--since ID] [--device D]` | Stored events, newest first. `ID` is the `id` of an event |
+| `labctl all history [--device D] [--from T] [--to T]` | Stored device state rows, newest first. `T` is a Unix time |
 | `labctl <device> state` | Full state of 1 device, its holder and `mine` |
 | `labctl <device> describe` | Described commands and their JSON Schemas |
 | `labctl <device> take`, `labctl <device> release` | Take or release control |

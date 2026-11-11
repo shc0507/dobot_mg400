@@ -171,6 +171,10 @@ def _parser():
     events = verb(verbs, "events")
     events.add_argument("--since", type=int, default=0)
     events.add_argument("--device", choices=[*DEVICES, "runs"])
+    history = verb(verbs, "history")
+    history.add_argument("--device", choices=DEVICES)
+    history.add_argument("--from", type=float, dest="start", metavar="UNIX_TIME")
+    history.add_argument("--to", type=float, dest="end", metavar="UNIX_TIME")
     verb(verbs, "stop")
     verb(verbs, "release")
     verb(verbs, "session")
@@ -281,6 +285,7 @@ def dispatch(agent, args):
             "release": agent.release_all,
             "session": agent.session_report,
             "events": lambda: agent.events(args.since, args.device),
+            "history": lambda: agent.history(args.device, args.start, args.end),
         }[verb]()
     if group == "camera":
         return agent.camera_still(args.view, args.out)

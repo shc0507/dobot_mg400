@@ -75,12 +75,32 @@ def console_blueprints(service, prefix):
     def device_state(name):
         page = request.headers.get("X-MG400-Client")
         page = validate_client(page) if page else None
-        return jsonify(console().device_state(_device(name), page))
+        fresh = request.args.get("fresh") == "1"
+        return jsonify(console().device_state(_device(name), page, fresh=fresh))
+
+    def _history_query(*extra):
+        """device, from, to and limit (and extra integer keys) from the query string."""
+        args, query = request.args, {}
+        if "device" in args:
+            device = args["device"]
+            query["device"] = device if device == "runs" else _device(device)
+        keys = [("from", "start", float), ("to", "end", float), ("limit", "limit", int)]
+        for key, name, kind in keys + [(key, key, int) for key in extra]:
+            if key in args:
+                try:
+                    query[name] = kind(args[key])
+                except ValueError:
+                    raise ValueError(f"Invalid {key} value.") from None
+        return query
 
     @blueprint.get("/api/console/events")
     def events():
         console().refresh_events()
-        return jsonify(console().event_report())
+        return jsonify(console().event_report(**_history_query("since")))
+
+    @blueprint.get("/api/console/history")
+    def history():
+        return jsonify(states=service.store.device_states(**_history_query()))
 
     @blueprint.get("/api/console/describe/<name>")
     def describe(name):

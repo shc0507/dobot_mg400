@@ -250,15 +250,18 @@ class MFCFlowController:
         packet = (payload + "\r").encode("ascii")
 
         with self._io_lock:
-            self.serial.reset_input_buffer()
             self.serial.reset_output_buffer()
             response = b""
             for _ in range(FLOW_RESPONSE_ATTEMPTS):
+                # Drop the tail of a late reply so it cannot read as the next reply.
+                self.serial.reset_input_buffer()
                 self.serial.write(packet)
                 self.serial.flush()
                 response = self.serial.read_until(b"\r")
                 if response.endswith(b"\r"):
                     break
+        if response and not response.endswith(b"\r"):
+            raise RuntimeError(f"MFC unit {unit_id} returned an incomplete response")
 
         try:
             body = response[:-1].decode("ascii")

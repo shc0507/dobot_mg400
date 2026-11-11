@@ -168,6 +168,18 @@ class MFCFlowControllerTests(unittest.TestCase):
             ],
         )
 
+    def test_split_reply_is_not_read_as_a_new_reply(self):
+        class LateTail(FakeSerial):
+            # The tail of a reply that crossed the timeout sits in the input buffer.
+            def reset_input_buffer(self):
+                self.responses = [item for item in self.responses if item != b"A0\r"]
+
+        controller = MFCFlowController(serial_connection=LateTail([b"N0F", b"A0\r", b"N0FA0\r"]))
+        self.assertEqual(controller.read_flow_percent(7), 40.0)
+        controller = MFCFlowController(serial_connection=FakeSerial([b"N0F"] * 4))
+        with self.assertRaisesRegex(RuntimeError, "incomplete response"):
+            controller.read_flow_percent(7)
+
     def test_sets_percent_with_manual_defined_framing(self):
         serial = FakeSerial(
             [

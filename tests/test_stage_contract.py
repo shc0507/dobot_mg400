@@ -91,6 +91,26 @@ def test_fixed_motion_finishes_only_after_fresh_idle_feedback(contract):
     assert state["last_command"]["result"] == "ok"
 
 
+@pytest.mark.parametrize("direction", ["cw", "ccw"])
+def test_unreferenced_move_that_reaches_its_target_reports_ok(stage_rig, direction):
+    controller, _, clock = stage_rig
+    web = create_app(controller).test_client()
+    acquire(web)
+    assert post(web, "command", dict(action="set_microstep", microstep=2)).status_code == 202
+    start = controller.snapshot()["motors"][0]["position"]
+    body = dict(action="move", motor="bottom", direction=direction, speed=50, steps=400)
+    assert post(web, "command", body).status_code == 202
+    for _ in range(9):
+        clock.advance(1)
+        acquire(web)
+        controller.poll()
+    state = web.get("/contract/api/state").json
+    expected = start + (400 if direction == "cw" else -400)
+    assert controller.snapshot()["motors"][0]["position"] == expected
+    assert state["last_command"]["result"] == "ok"
+    assert state["last_command"]["message"] == "Position confirmed."
+
+
 def test_contract_maps_microstep_hold_keepalive_release_and_stop(contract):
     controller, transport, clock, web, _ = contract
     acquire(web)

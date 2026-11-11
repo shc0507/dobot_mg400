@@ -118,8 +118,8 @@ class StageContract:
         for command_id, entry in list(self._pending_commands.items()):
             if self._motors[entry["motor"]].mode == "idle":
                 del self._pending_commands[command_id]
-                state = self._motors[entry["motor"]]
-                reached = self._ready(entry["motor"]) and state.position == entry["target"]
+                # A manual move needs no reference: compare raw pulse counts.
+                reached = self._motors[entry["motor"]].position == entry["target"]
                 self._finish_command(
                     entry,
                     "failed" if result == "ok" and not reached else result,

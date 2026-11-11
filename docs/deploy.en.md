@@ -243,6 +243,11 @@ The destination is `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`, with perm
 The manifest records the license as `AGPL-3.0`, as declared by Roboflow.
 Downloads fail if the release does not contain the file.
 
+The `twin-model` entry specifies `twin.glb` in this repository's `twin-model-v1` release. It is the 3D bench model of the Lab Console Twin workspace.
+Its size is 3,427,844 bytes. Its SHA-256 is `9a22eccd158ea96442fcb69b4392dac22881ff3f1a6350ea900bf5d698bc339e`.
+The destination is `/var/lib/mg400/twin/twin.glb`, with permissions `0640`. The asset belongs to `orch`.
+Installation does not require it. Without it, the Twin workspace shows that it cannot load the model.
+
 Assets must belong to an enabled service and appear in its `assets` list.
 When `vision` is enabled, installation requires `vision-weights`, even without `--fetch-assets`.
 Supply a verified local file with `--asset vision-weights=PATH`, or let the installer download the manifest asset.

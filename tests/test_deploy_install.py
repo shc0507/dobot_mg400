@@ -36,6 +36,9 @@ def host(module, monkeypatch, tmp_path, tmp_path_factory):
     (code / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
     shutil.copy(ROOT / "deploy/services.toml", code / "deploy")
+    # The tests write their own asset manifests, so the copy leaves out the console model asset.
+    registry = code / "deploy/services.toml"
+    registry.write_text(registry.read_text().replace('assets = ["twin-model"]', "assets = []"))
     shutil.copytree(ROOT / "config/systemd", code / "config/systemd")
     shutil.copytree(ROOT / "config/proxy", code / "config/proxy")
     commands = []

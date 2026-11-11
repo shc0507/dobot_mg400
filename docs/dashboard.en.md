@@ -134,6 +134,18 @@ Every device command goes through the console relay. Use **Take control** for th
 - **Start recording** and **Record next furnace sequence** send the recording commands with **Run name**, **Mode**, **Interval s** and **Output fps**. **Live** uses no interval. A failed recording shows its error.
 - **Turn stabilization on** and **Turn stabilization off** switch the stabilization.
 
+### Twin workspace
+
+The Twin workspace shows a 3D model of the bench. The model follows the robot, the stage, the microscope turret and the furnace. While the workspace is open, the page reads the devices 4 times per second. The page sends no commands and takes no control.
+
+- The page loads three.js r128 from `cdn.jsdelivr.net`. The browser must have internet access for this workspace.
+- The model is the `twin-model` asset at `/var/lib/mg400/twin/twin.glb`. To install it, run `install.py --fetch-assets` (see [External assets](deploy.en.md#external-assets)). To build a new model, run `build.py -- --console <path>` in the twin authoring folder, outside the repository. The model shows the bench as in the first bench video. Joint value 0 is that state.
+- Robot J1 to J4 come from the robot joints. When the robot feedback is stale, the robot is see-through. During an alarm, the robot is red.
+- Each stage axis comes from its pulse count: mm = −pulses / 80 + offset, at 1/2 step. The offsets are in `twin.py`. When the microstep mode is not 1/2 step, or when the counts lose their reference, the stage is see-through. To measure the offsets again, run `tools/stage_snapshot.py` in the twin authoring folder.
+- While the stage moves, the stage and the insert axis are blue.
+- The turret turns 72 degrees for each objective from objective 1. The turn direction is not checked. The focus does not move in the model.
+- Above 50 °C the furnace glows. The glow is full at 1000 °C. A tag above the furnace shows PV.
+
 ### Run offline
 
 ```sh

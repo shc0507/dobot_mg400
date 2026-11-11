@@ -54,7 +54,7 @@ optional = false
 venv = ".venv"
 groups = ["orchestrator"]
 port = 8772
-assets = []
+assets = ["twin-model"]
 
 [[service]]
 name = "stage"

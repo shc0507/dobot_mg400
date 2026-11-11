@@ -1,24 +1,15 @@
 """Console workspace: Cameras.
 
-The browser loads camera1 to camera4 from the proxy at ``/camera/<view>.mjpeg``
-and ``/camera/<view>.jpg``, and the H.264 views at ``/camera/<view>.mp4``. The
-console process relays the other views:
+The browser loads camera1 to camera4 and the microscope from the proxy at
+``/camera/<view>.mp4``, ``.mjpeg`` and the still URLs. The console relays only data:
 
 - thermal: the thermal frame API through the thermal service client;
-- microscope: the Toupcam MJPEG fallback and the full-size PNG still through the
-  microscope service client;
 - camera 4 chip detections: the vision ``api/detect`` result.
-
-The microscope relay bounds its open streams. One upstream reader is shared by
-its viewers; a viewer gets only the newest frame, at most at the requested
-frame rate, and never a backlog. The reader closes the upstream connection when
-the last viewer leaves.
 """
 
 import base64
 import json
 import math
-import re
 import secrets
 import struct
 import threading
@@ -28,10 +19,9 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-from flask import Response, jsonify, request
+from flask import jsonify, request
 
 from cameras.config import camera_configuration
-from cameras.rate import SendRate
 from labkit import ports
 from labkit.errors import ServiceError
 
@@ -39,29 +29,19 @@ from . import Workspace
 
 CAMERAS = ("camera1", "camera2", "camera3", "camera4")
 VIEWS = (*CAMERAS, "thermal", "microscope")
-MJPEG = ("microscope",)
-# The microscope service allows 4 preview streams. Keep 2 for its own panel.
-MAX_MICROSCOPE_STREAMS = 2
+# The browser loads these views from the camera preview behind the proxy.
+PROXIED = (*CAMERAS, "microscope")
 STALE_S = 2.0
 RECENT_S = 5.0
 # The tile polls every 40 ms. Viewers within 40 ms share 1 upstream read.
 THERMAL_CACHE_S = 0.04
 DETECTION_CACHE_S = 1.0
-# The camera preview reports the MJPEG frames per second that each viewer of camera1 to
-# camera4 gets. H.264 tiles count their frames in the browser.
+# The camera preview reports the MJPEG frames per second that each viewer of a proxied
+# view gets. H.264 tiles count their frames in the browser.
 PREVIEW_FPS_URL = ports.url("camera", "fps.json")
 PREVIEW_FPS_CACHE_S = 0.5
-MAX_FRAME = 8 * 1024 * 1024
-# A lossless full-size microscope still, 2592x1944 RGB, is about 15 MB as PNG.
-MAX_STILL = 80 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
-CHUNK = 64 * 1024
 UPSTREAM_TIMEOUT_S = 5.0
-# A stream may cap its frame rate with ?fps=. Grid and strip tiles ask for TILE_FPS.
-TILE_FPS = 10
-MAX_FPS = 30
-PART_BOUNDARY = b"frame"
-_BOUNDARY = re.compile(r'boundary="?([A-Za-z0-9\'()+_,./:=?-]{1,70})"?')
 
 
 class SourceError(Exception):
@@ -139,23 +119,7 @@ class HttpSources:
             return {}
         if not isinstance(payload, dict):
             return {}
-        return {view: payload[view] for view in CAMERAS if _finite(payload.get(view))}
-
-    def open_stream(self, view):
-        http = self._client("microscope")
-        if http is None:
-            raise SourceError("The microscope service is not configured.")
-        return _open(http.base_url + "api/camera/microscope/mjpeg")
-
-    def still(self, view):
-        http = self._client("microscope")
-        if http is None:
-            raise SourceError("The microscope service is not configured.")
-        response = _open(http.base_url + "api/camera/microscope/still.png")
-        if response.status != 200:
-            response.close()
-            raise SourceError("The microscope has no frame.")
-        return _read(response, MAX_STILL)
+        return {view: payload[view] for view in PROXIED if _finite(payload.get(view))}
 
     def _json(self, name, path):
         http = self._client(name)
@@ -184,271 +148,41 @@ def _reject(value):
     raise ValueError("JSON numbers must be finite.")
 
 
-class _Slot:
-    def __init__(self, relay, view):
-        self.relay, self.view, self.closed = relay, view, False
-        self.lock = threading.Lock()
-
-    def release(self):
-        with self.lock:
-            if self.closed:
-                return
-            self.closed = True
-        self.relay._release(self.view)
-
-
 class Relay:
-    """Stream bounds and per-view frame times."""
+    """Per-view frame times of the relayed thermal view."""
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.lock = threading.Lock()
-        self.open = dict.fromkeys(VIEWS, 0)
         self.frame_at = {}
         self.error = {}
-        self.started = 0
-        self.feeds = {view: _Feed(view, self) for view in MJPEG}
-        self.sent = {view: SendRate() for view in MJPEG}
-
-    # Streams -----------------------------------------------------------------
-
-    def acquire(self, view):
-        with self.lock:
-            if self.open[view] >= MAX_MICROSCOPE_STREAMS:
-                raise ServiceError(503, "The camera stream limit is reached. Close another view.")
-            self.open[view] += 1
-            self.started += 1
-        return _Slot(self, view)
-
-    def _release(self, view):
-        with self.lock:
-            self.open[view] = max(0, self.open[view] - 1)
 
     def saw_frame(self, view, at=None):
         with self.lock:
             self.frame_at[view] = self.clock() if at is None else at
             self.error.pop(view, None)
 
-    def sent_frame(self, view, at=None):
-        with self.lock:
-            self.sent[view].add(self.clock() if at is None else at)
-
     def failed(self, view, message):
         with self.lock:
             self.error[view] = (message, self.clock())
 
-    def streams(self):
-        with self.lock:
-            return dict(self.open)
-
     def view_state(self, view):
         now = self.clock()
         with self.lock:
-            opened = self.open[view]
             seen = self.frame_at.get(view)
             error = self.error.get(view)
-            fps = self.sent[view].per_viewer(now, opened) if view in self.sent else None
         age = None if seen is None else max(0.0, now - seen)
         if error is not None and (seen is None or error[1] >= seen):
             state = "offline"
-        elif age is None or (not opened and age > RECENT_S):
+        elif age is None or age > RECENT_S:
             state = "offline"
         else:
             state = "live" if age <= STALE_S else "stale"
         return {
             "state": state,
             "age_s": None if age is None else round(age, 1),
-            "streams": opened,
-            "fps": fps,
             "error": None if error is None else error[0],
         }
-
-
-def _content_length(headers):
-    for line in headers.split(b"\r\n"):
-        name, _, value = line.partition(b":")
-        if name.strip().lower() == b"content-length":
-            value = value.strip()
-            if not value.isdigit() or int(value) > MAX_FRAME:
-                raise SourceError("The source sent an invalid frame length.")
-            return int(value)
-    return None
-
-
-def _jpegs(chunks, marker):
-    """Yield each complete JPEG part of a multipart stream. Bound the buffer.
-
-    A part with Content-Length is complete after that many bytes. A part
-    without it is complete at the next boundary.
-    """
-    buffer = b""
-    for chunk in chunks:
-        buffer += chunk
-        while True:
-            start = buffer.find(marker)
-            if start < 0:
-                buffer = buffer[-(len(marker) - 1) :]
-                break
-            buffer = buffer[start:]
-            head_end = buffer.find(b"\r\n\r\n", len(marker))
-            if head_end < 0:
-                if len(buffer) > 8192:
-                    raise SourceError("The source sent invalid frame headers.")
-                break
-            body = head_end + 4
-            length = _content_length(buffer[len(marker) : head_end])
-            if length is not None:
-                if len(buffer) < body + length:
-                    break
-                frame, buffer = buffer[body : body + length], buffer[body + length :]
-            else:
-                end = buffer.find(b"\r\n" + marker, body)
-                if end < 0:
-                    break
-                frame, buffer = buffer[body:end], buffer[end + 2 :]
-            if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
-                yield frame
-        if len(buffer) > MAX_FRAME + 8192:
-            raise SourceError("The source frame is too large.")
-
-
-def _part(frame):
-    return (
-        b"--"
-        + PART_BOUNDARY
-        + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
-        + str(len(frame)).encode("ascii")
-        + b"\r\n\r\n"
-        + frame
-        + b"\r\n"
-    )
-
-
-class _Feed:
-    """One upstream reader per view. Its viewers share only the newest frame.
-
-    A viewer never gets a backlog: when it is slow, it skips to the newest frame.
-    The reader stops and closes the upstream when the last viewer leaves.
-    """
-
-    def __init__(self, view, relay):
-        self.view, self.relay = view, relay
-        self.condition = threading.Condition()
-        self.viewers = 0
-        self.upstream = None
-        self.generation = 0
-        self.done = True
-        self.sequence = 0
-        self.frame = None
-
-    def join(self, open_upstream):
-        """Count one viewer. Open the upstream if no reader runs. Return the generation."""
-        with self.condition:
-            self.viewers += 1
-            if not self.done:
-                return self.generation
-        try:
-            upstream, marker = open_upstream()
-        except BaseException:
-            with self.condition:
-                self.viewers -= 1
-            raise
-        extra = None
-        with self.condition:
-            if not self.done:
-                # Another viewer opened the view at the same time: use its reader.
-                extra = upstream
-            else:
-                self.upstream, self.done, self.frame = upstream, False, None
-                self.generation += 1
-                generation = self.generation
-                reader = threading.Thread(
-                    target=self._read,
-                    args=(upstream, marker, generation),
-                    name="console-camera-" + self.view,
-                    daemon=True,
-                )
-            result = self.generation
-        if extra is not None:
-            _close(extra)
-            return result
-        try:
-            reader.start()
-        except BaseException:
-            self._end(generation)
-            with self.condition:
-                self.viewers -= 1
-            raise
-        return result
-
-    def leave(self):
-        with self.condition:
-            self.viewers = max(0, self.viewers - 1)
-            if self.viewers:
-                return
-            generation = self.generation
-        self._end(generation)
-
-    def _end(self, generation):
-        with self.condition:
-            if self.generation != generation or self.done:
-                return False
-            upstream, self.upstream, self.done = self.upstream, None, True
-            self.condition.notify_all()
-        _close(upstream)
-        return True
-
-    def _read(self, upstream, marker, generation):
-        try:
-            for frame in _jpegs(_iter_response(upstream), marker):
-                with self.condition:
-                    if self.generation != generation or self.done:
-                        return
-                    self.sequence += 1
-                    self.frame = frame
-                    self.condition.notify_all()
-                self.relay.saw_frame(self.view)
-        except (OSError, SourceError, ValueError):
-            if self._end(generation):
-                self.relay.failed(self.view, "The stream ended.")
-        finally:
-            self._end(generation)
-
-    def next(self, generation, last, timeout):
-        """Return (sequence, frame) newer than last, or None when the reader ended."""
-        with self.condition:
-            self.condition.wait_for(
-                lambda: (
-                    (self.frame is not None and self.sequence != last)
-                    or self.generation != generation
-                    or self.done
-                ),
-                timeout,
-            )
-            if self.generation == generation and self.frame is not None and self.sequence != last:
-                return self.sequence, self.frame
-            return None
-
-
-def _close(upstream):
-    try:
-        upstream.close()
-    except OSError:
-        pass
-
-
-def _iter_response(response):
-    while True:
-        chunk = response.read1(CHUNK) if hasattr(response, "read1") else response.read(CHUNK)
-        if not chunk:
-            return
-        yield chunk
-
-
-def _view(name):
-    if name not in VIEWS:
-        raise ServiceError(404, "Unknown camera view.")
-    return name
 
 
 def _mode_text(mode):
@@ -563,7 +297,6 @@ class _Cache:
 def register(blueprint, service):
     clock = getattr(getattr(service, "console", None), "clock", time.monotonic)
     relay = Relay(clock)
-    service.camera_relay = relay
     thermal_cache = _Cache(clock, THERMAL_CACHE_S)
     detection_cache = _Cache(clock, DETECTION_CACHE_S)
     fps_cache = _Cache(clock, PREVIEW_FPS_CACHE_S)
@@ -582,7 +315,7 @@ def register(blueprint, service):
         views = []
         for view in VIEWS:
             row = {"id": view, "configured": source.configured(view)}
-            if view in CAMERAS:
+            if view in PROXIED:
                 # The browser loads these streams from the proxy; it shows their state.
                 row["url"] = f"/camera/{view}.mjpeg"
                 row["fps"] = preview_fps.get(view)
@@ -590,96 +323,7 @@ def register(blueprint, service):
                 row.update(relay.view_state(view))
             row["mode"] = _mode_text(modes.get(view))
             views.append(row)
-        return jsonify(
-            views=views,
-            limits={"microscope": MAX_MICROSCOPE_STREAMS},
-        )
-
-    def stream(view):
-        _view(view)
-        if view not in MJPEG:
-            raise ServiceError(404, "This view has no stream.")
-        fps = request.args.get("fps", str(TILE_FPS))
-        if set(request.args) - {"fps"} or not fps.isdecimal() or not 1 <= int(fps) <= MAX_FPS:
-            raise ValueError(f"fps must be an integer from 1 to {MAX_FPS}.")
-        fps = int(fps)
-        slot = relay.acquire(view)
-        feed = relay.feeds[view]
-
-        def open_upstream():
-            upstream = sources().open_stream(view)
-            content_type = upstream.headers.get("Content-Type", "")
-            match = _BOUNDARY.search(content_type)
-            if not content_type.lower().startswith("multipart/x-mixed-replace") or not match:
-                _close(upstream)
-                raise SourceError("The source did not send an MJPEG stream.")
-            return upstream, b"--" + match.group(1).encode("ascii")
-
-        try:
-            generation = feed.join(open_upstream)
-        except SourceError as error:
-            slot.release()
-            relay.failed(view, str(error))
-            raise ServiceError(502, str(error)) from None
-        except BaseException:
-            slot.release()
-            raise
-        closed = threading.Event()
-
-        def close():
-            if closed.is_set():
-                return
-            closed.set()
-            feed.leave()
-            slot.release()
-
-        def body():
-            # Send only the newest frame, at most fps a second. A slow viewer skips frames.
-            interval, last, due = 1.0 / fps, None, 0.0
-            try:
-                while not closed.is_set():
-                    wait = due - time.monotonic()
-                    if wait > 0:
-                        time.sleep(wait)
-                    item = feed.next(generation, last, UPSTREAM_TIMEOUT_S)
-                    if item is None:
-                        return
-                    last, frame = item
-                    due = time.monotonic() + interval
-                    relay.sent_frame(view)
-                    yield _part(frame)
-            finally:
-                close()
-
-        response = Response(
-            body(),
-            content_type="multipart/x-mixed-replace; boundary=" + PART_BOUNDARY.decode("ascii"),
-        )
-        # A response can close before its body runs: release the slot then too.
-        response.call_on_close(close)
-        response.headers["X-Accel-Buffering"] = "no"
-        response.headers["Cache-Control"] = "no-store"
-        return response
-
-    def snapshot(view):
-        _view(view)
-        if view not in MJPEG:
-            raise ServiceError(404, "This view has no relayed snapshot.")
-        try:
-            body = sources().still(view)
-        except SourceError as error:
-            relay.failed(view, str(error))
-            raise ServiceError(502, str(error)) from None
-        relay.saw_frame(view)
-        name = f"{view}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"
-        return Response(
-            body,
-            mimetype="image/png",
-            headers={"Content-Disposition": f'attachment; filename="{name}"'},
-        )
-
-    blueprint.add_url_rule("/stream/<view>", "stream", stream, methods=["GET"])
-    blueprint.add_url_rule("/snapshot/<view>", "snapshot", snapshot, methods=["GET"])
+        return jsonify(views=views)
 
     @blueprint.get("/thermal/frame")
     def thermal_frame():

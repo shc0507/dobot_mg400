@@ -192,7 +192,10 @@ def test_killed_cli_during_do_holds_the_run(runs):
         stdout=subprocess.DEVNULL,
     )
     deadline = time.monotonic() + 20
-    while (active := orchestrator_state(runs).get("active_run") or {}).get("step") != 1:
+    # The previous test's closed run also reports step 1, so wait for an open run.
+    while (active := orchestrator_state(runs).get("active_run") or {}).get("closed", True) or (
+        active.get("step") != 1
+    ):
         assert time.monotonic() < deadline, (active, process.poll())
         time.sleep(0.1)
     # A lent device refuses commands from its page; stops still work.

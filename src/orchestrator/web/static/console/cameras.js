@@ -1,8 +1,7 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
  * camera1 to camera4 and the microscope play H.265 or H.264 from the proxy at /camera/<view>.mp4.
- * camera1 to camera4 fall back to MJPEG at /camera/<view>.mjpeg and take snapshots at
- * /camera/<view>.full.jpg. The console relays the microscope MJPEG fallback and full-size PNG snapshot, and
- * the thermal frame. */
+ * They fall back to MJPEG at /camera/<view>.mjpeg. camera1 to camera4 take snapshots at
+ * /camera/<view>.full.jpg, the microscope at /camera/microscope.png. The console relays the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -22,7 +21,7 @@
   const W = 160, H = 120;
   const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
   const PREFIX = "/api/console/ws/cameras/";
-  // The relay sends only the newest frame. Small tiles ask for fewer frames.
+  // The preview sends only the newest frame. Small tiles ask for fewer frames.
   const TILE_FPS = 10, LARGE_FPS = 30;
   // A 1280x720 USB view at the camera rate needs about 35 Mbit/s. The VPN link carries about 22 Mbit/s,
   // so the USB previews ask for less and leave room for keys, holds and stops.
@@ -241,9 +240,9 @@
   const CAMERAS = new Set(["camera1", "camera2", "camera3", "camera4"]);
 
   /** The stream URL: a large microscope tile gets the source rate, others TILE_FPS. USB views get USB_LARGE_FPS or USB_TILE_FPS. */
-  function streamUrl(view, large, basePath = "") {
+  function streamUrl(view, large) {
     if (CAMERAS.has(view)) return `/camera/${view}.mjpeg?fps=${large ? USB_LARGE_FPS : USB_TILE_FPS}`;
-    return `${basePath}${PREFIX}stream/${view}?fps=${large ? LARGE_FPS : TILE_FPS}`;
+    return `/camera/${view}.mjpeg?fps=${large ? LARGE_FPS : TILE_FPS}`;
   }
 
   /** The video preview URL of camera1 to camera4 and the microscope, or null for the thermal view. */
@@ -285,8 +284,8 @@
   }
 
   /** The snapshot URL: a full-resolution JPEG for camera1 to camera4, a full-size PNG for the microscope. */
-  function snapshotUrl(view, basePath = "") {
-    return CAMERAS.has(view) ? `/camera/${view}.full.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
+  function snapshotUrl(view) {
+    return CAMERAS.has(view) ? `/camera/${view}.full.jpg` : `/camera/${view}.png`;
   }
 
   function backoff(failures) { return Math.min(15000, 1000 * 2 ** Math.min(4, failures)); }
@@ -523,9 +522,9 @@
       return { ...(engine.status.get("thermal") || {}), ...thermalRow(engine.thermal, engine.thermalAt, nowMs(), engine.thermalFailed) };
     }
     const row = engine.status.get(view) || null;
-    // The browser loads camera1 to camera4 and the H.264 microscope itself: a loaded tile is live.
-    const own = [...engine.tiles].filter(tile => tile.view === view && (CAMERAS.has(view) || tile.stopVideo));
-    if (row && (CAMERAS.has(view) || own.length)) {
+    // The browser loads camera1 to camera4 and the microscope itself: a loaded tile is live.
+    const own = [...engine.tiles].filter(tile => tile.view === view);
+    if (row) {
       const live = own.some(tile => tile.live);
       return { ...row, state: live ? "live" : "offline", age_s: live ? 0 : null };
     }
@@ -571,7 +570,7 @@
       await new Promise(resolve => canvas.toBlob(blob => { if (blob) download(`thermal-${stamp()}.png`, blob); resolve(); }, "image/png"));
       return;
     }
-    const link = h("a", { href: snapshotUrl(view, base()), download: `${view}-${stamp()}.${CAMERAS.has(view) ? "jpg" : "png"}` });
+    const link = h("a", { href: snapshotUrl(view), download: `${view}-${stamp()}.${CAMERAS.has(view) ? "jpg" : "png"}` });
     doc().body.append(link);
     link.click();
     link.remove();
@@ -655,7 +654,7 @@
       } else {
         if (this.video) this.video.hidden = true;
         this.img.hidden = false;
-        this.img.src = streamUrl(this.view, this.large, base());
+        this.img.src = streamUrl(this.view, this.large);
       }
       pollStatus();
     }
@@ -664,7 +663,7 @@
     halt() {
       if (this.stopCount) { this.stopCount(); this.stopCount = null; }
       if (this.stopVideo) { this.stopVideo(); this.stopVideo = null; }
-      // Replacing the source closes the stream, so the console ends its relay.
+      // Replacing the source closes the stream, so the preview ends its reader.
       if (this.img) this.img.src = BLANK;
     }
 

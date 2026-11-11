@@ -48,6 +48,7 @@
 - **Control** 是第 1 张卡片。每台设备占 1 行，带 **Take control** 或 **Release**，卡片另有 **Release all**。参见[控制权](#控制权)。
 - **Run** 显示当前运行及其步骤。有运行时才显示该卡片。参见[运行控制与恢复](#运行控制与恢复)。
 - **Events** 合并各服务的 `api/events`，最新事件在前。可筛选警告或单个服务。只有警告和错误显示级别。视觉推理成功不记为事件。
+- 编排器把事件和设备状态变化保存在 `/var/lib/mg400/runs/runs.db` 中，保留 30 天。服务重启后记录仍在。设备数值变化时，每台设备每 10 s 最多记 1 行状态。`api/console/history` 和 `labctl all history` 读取状态记录。
 - **Safety** 提供 **Stop heat and gas** 和 **Stop all gas**。**STOP ALL MOTION** 在页头。每个按钮按 1 次即生效。结果显示在停止结果条中。
 
 ### 运动工作区

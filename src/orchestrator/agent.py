@@ -279,18 +279,28 @@ class Agent:
 
         return self._guard(read, device)
 
+    def _history(self, path, **query):
+        query = {key: value for key, value in query.items() if value is not None}
+        status, body = self._get(path + ("?" + urllib.parse.urlencode(query) if query else ""))
+        if status != 200:
+            raise ServiceError(status, body.get("error", "History read failed."))
+        return body
+
     def events(self, since=0, device=None):
+        """Stored events after the event id since, newest first."""
+
         def read():
-            status, body = self._get("events")
-            if status != 200:
-                raise ServiceError(status, body.get("error", "Event read failed."))
-            rows = [
-                item
-                for item in body.get("events", [])
-                if (device is None or item.get("service") == device)
-                and (type(item.get("seq")) is int and item["seq"] > since)
-            ]
-            return {"ok": True, "events": rows, "errors": body.get("errors", {})}
+            body = self._history("events", since=since, device=device)
+            return {"ok": True, "events": body.get("events", []), "errors": body.get("errors", {})}
+
+        return self._guard(read, device)
+
+    def history(self, device=None, start=None, end=None):
+        """Stored device state rows, newest first."""
+
+        def read():
+            body = self._history("history", device=device, to=end, **{"from": start})
+            return {"ok": True, "states": body.get("states", [])}
 
         return self._guard(read, device)
 

@@ -243,6 +243,11 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 清单按 Roboflow 声明记录许可证 `AGPL-3.0`。
 发布中没有文件时，下载会失败。
 
+`twin-model` 对应本仓库 `twin-model-v1` 发布中的 `twin.glb`。它是控制台实时台面工作区的 3D 台面模型。
+大小为 3,427,844 字节，SHA-256 为 `9a22eccd158ea96442fcb69b4392dac22881ff3f1a6350ea900bf5d698bc339e`。
+目标为 `/var/lib/mg400/twin/twin.glb`，权限为 `0640`。该资源属于 `orch`。
+安装不必包含它。没有它时，实时台面工作区显示无法加载模型。
+
 资源必须属于已启用服务，并列在该服务的 `assets` 中。
 启用 `vision` 时，安装必须包含 `vision-weights`，即使未指定 `--fetch-assets`。
 用 `--asset vision-weights=PATH` 提供通过校验的本地文件，或让安装器下载清单中的资源。

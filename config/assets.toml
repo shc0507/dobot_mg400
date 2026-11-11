@@ -7,3 +7,13 @@ mode = "0640"
 service = "vision"
 source = "WuLabPrinceton/Visual-Localization@cc329b3 models/download_manifest.json"
 license = "AGPL-3.0"
+
+[twin-model]
+url = "https://github.com/shc0507/dobot_mg400/releases/download/twin-model-v1/twin.glb"
+sha256 = "9a22eccd158ea96442fcb69b4392dac22881ff3f1a6350ea900bf5d698bc339e"
+bytes = 3427844
+install = "/var/lib/mg400/twin/twin.glb"
+mode = "0640"
+service = "orch"
+source = "Bench twin authoring folder, build.py --console (Draco GLB)"
+license = "Project internal; MG400 link meshes from HarvestX MG400_ROS2 (Apache-2.0)"

@@ -1,8 +1,9 @@
 """Console workspace: Twin (a 3D model of the bench that follows the devices).
 
-The page loads the bench model ``console-static/twin.glb`` (built in the twin
-authoring folder, see the docs) and polls this route:
+The page loads the bench model and polls the state:
 
+- ``GET model`` sends the model file ``MODEL`` (the ``twin-model`` asset of the
+  installer; 404 when it is not installed).
 - ``GET state`` reads the robot, stage, microscope and furnace once each with a
   fresh read identity. It returns the fields the page shows, the joint values of
   the model and its signals. It never acquires, renews or releases a lease.
@@ -19,14 +20,16 @@ joints are ``None``.
 """
 
 import uuid
+from pathlib import Path
 
-from flask import jsonify, request
+from flask import abort, jsonify, request, send_file
 
 from labkit.lease import validate_client
 
 from . import Workspace
 
 DEVICES = ("robot", "stage", "microscope", "furnace")
+MODEL = Path("/var/lib/mg400/twin/twin.glb")  # config/assets.toml: twin-model
 STAGE_MICROSTEP = 2
 STAGE = {  # model joint: (motor, sign, pulses per mm, offset mm)
     "stage_bottom": ("bottom", -1, 80.0, 11.01),
@@ -169,6 +172,12 @@ def signals(rows):
 
 
 def register(blueprint, service):
+    @blueprint.get("/model")
+    def model():
+        if not MODEL.is_file():
+            abort(404)
+        return send_file(MODEL, mimetype="model/gltf-binary", max_age=3600)
+
     @blueprint.get("/state")
     def state():
         page = request.headers.get("X-MG400-Client")

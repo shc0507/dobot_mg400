@@ -139,7 +139,7 @@ Every device command goes through the console relay. Use **Take control** for th
 The Twin workspace shows a 3D model of the bench. The model follows the robot, the stage, the microscope turret and the furnace. While the workspace is open, the page reads the devices 4 times per second. The page sends no commands and takes no control.
 
 - The page loads three.js r128 from `cdn.jsdelivr.net`. The browser must have internet access for this workspace.
-- The model file is `console-static/twin.glb`. To build it, run `build.py -- --console <path>` in the twin authoring folder, outside the repository. The model shows the bench as in the first bench video. Joint value 0 is that state.
+- The model is the `twin-model` asset at `/var/lib/mg400/twin/twin.glb`. To install it, run `install.py --fetch-assets` (see [External assets](deploy.en.md#external-assets)). To build a new model, run `build.py -- --console <path>` in the twin authoring folder, outside the repository. The model shows the bench as in the first bench video. Joint value 0 is that state.
 - Robot J1 to J4 come from the robot joints. When the robot feedback is stale, the robot is see-through. During an alarm, the robot is red.
 - Each stage axis comes from its pulse count: mm = −pulses / 80 + offset, at 1/2 step. The offsets are in `twin.py`. When the microstep mode is not 1/2 step, or when the counts lose their reference, the stage is see-through. To measure the offsets again, run `tools/stage_snapshot.py` in the twin authoring folder.
 - While the stage moves, the stage and the insert axis are blue.

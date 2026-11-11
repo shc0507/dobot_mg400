@@ -1,5 +1,5 @@
 /* Twin workspace: a 3D model of the bench that follows the devices.
- * The model (console-static/twin.glb) carries entities (userData.entity) and joints (userData.joint, joint_type,
+ * The model (GET api/console/ws/twin/model, the twin-model asset) carries entities (userData.entity) and joints (userData.joint, joint_type,
  * joint_axis in Blender axes, joint_coef for the robot links). GET api/console/ws/twin/state returns the joint
  * values and signals; the page moves the joints and colours the entities. three.js r128 loads from jsDelivr. */
 (function () {
@@ -157,7 +157,7 @@
     const loader = new THREE.GLTFLoader();
     const draco = new THREE.DRACOLoader(); draco.setDecoderPath(CDN + "examples/js/libs/draco/");
     loader.setDRACOLoader(draco);
-    loader.load(view.api.base + "/console-static/twin.glb", gltf => {
+    loader.load(view.api.base + "/api/console/ws/twin/model", gltf => {
       const tw = view.three;
       tw.scene.add(gltf.scene);
       gltf.scene.traverse(o => {

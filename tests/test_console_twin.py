@@ -106,9 +106,14 @@ def test_twin_workspace_is_found_with_both_titles():
     assert item.register is not None and item.title == {"en": "Twin", "zh": "实时台面"}
 
 
-def test_model_file_is_served(rig):
-    response = rig.client.get("/lab/console-static/twin.glb")
+def test_model_is_served_from_the_asset_path(rig, tmp_path, monkeypatch):
+    path = tmp_path / "twin.glb"
+    monkeypatch.setattr(twin, "MODEL", path)
+    assert rig.client.get("/lab/api/console/ws/twin/model").status_code == 404
+    path.write_bytes(b"glTF" + bytes(16))
+    response = rig.client.get("/lab/api/console/ws/twin/model")
     assert response.status_code == 200 and response.data[:4] == b"glTF"
+    assert response.mimetype == "model/gltf-binary"
 
 
 def test_state_maps_joints_and_signals_and_hides_identities(rig):

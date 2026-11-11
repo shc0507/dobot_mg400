@@ -1,7 +1,8 @@
 """Flask routes for services that implement instrument contract version 1.
 
 The service supplies describe(), snapshot(), command(action, args, client),
-stop(client, wait_s), on_lease_expired(), and an EventLog named events. command
+stop(client, wait_s, **params), on_lease_expired(), and an EventLog named events.
+Stop params are limited to the names in the optional stop_params attribute. command
 returns a command ID. stop returns confirmed, pending, or unconfirmed. The service
 owns its device lock and updates last_command when a command finishes. command
 must recheck locked and device state under that same lock before device access. Its poll
@@ -97,7 +98,10 @@ def contract_blueprint(service, *, base_path="/", lease):
 
     @bp.post("/api/stop")
     def stop():
-        wait_s = body().get("wait_s", 0)
+        data = body()
+        wait_s = data.pop("wait_s", 0)
+        if set(data) - set(getattr(service, "stop_params", ())):
+            raise ValueError("Unknown stop parameters.")
         # JSON integers can exceed the floating-point range used by isfinite.
         if (
             isinstance(wait_s, bool)
@@ -107,7 +111,7 @@ def contract_blueprint(service, *, base_path="/", lease):
         ):
             raise ValueError("wait_s must be a finite number from 0 to 15.")
         # Stop does not wait for a lease transition or require its holder.
-        outcome = service.stop(request.headers["X-MG400-Client"], wait_s)
+        outcome = service.stop(request.headers["X-MG400-Client"], wait_s, **data)
         return jsonify(stop=outcome, state=snapshot())
 
     @bp.post("/api/command")

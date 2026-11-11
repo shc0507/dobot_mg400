@@ -114,12 +114,11 @@ def test_removed_page_and_legacy_routes_are_not_served(service):
     "path,method,body",
     [
         ("/api/state", "GET", None),
-        ("/api/furnace/acknowledge", "POST", {}),
-        ("/api/flow/gas/stop", "POST", {"channel_index": 0}),
+        ("/api/command", "POST", {}),
         ("/api/stop", "POST", {}),
     ],
 )
-def test_legacy_and_contract_post_checks_are_uniform(service, path, method, body):
+def test_contract_post_checks_are_uniform(service, path, method, body):
     client = create_app(service).test_client()
     if method != "GET":
         assert_error(
@@ -135,42 +134,30 @@ def test_legacy_and_contract_post_checks_are_uniform(service, path, method, body
         assert_error(client.open(path, method=method, json={}), 400)
 
 
-def test_acknowledge_needs_the_lease_holder_or_a_free_lease(service, monkeypatch):
+def test_acknowledge_is_a_recovery_command_for_the_lease_holder(service, monkeypatch):
     calls = []
     monkeypatch.setattr(service.lifecycle, "acknowledge", lambda *, client: calls.append(client))
+    assert service.describe()["commands"]["acknowledge"]["recovery"] is True
     client = create_app(service).test_client()
+    ack = {"action": "acknowledge"}
+    assert_error(post(client, "/api/command", ack, actor="page-test"), 409)
     assert post(client, "/api/heartbeat", actor="automation").status_code == 200
-    assert_error(post(client, "/api/furnace/acknowledge", actor="page-test"), 409)
-    assert_error(post(client, "/api/furnace/acknowledge", {"x": 1}, actor="automation"), 400)
+    assert_error(post(client, "/api/command", ack, actor="page-test"), 409)
+    assert_error(post(client, "/api/command", {**ack, "x": 1}, actor="automation"), 400)
     assert calls == []
-    assert post(client, "/api/furnace/acknowledge", actor="automation").status_code == 200
+    assert post(client, "/api/command", ack, actor="automation").status_code == 202
     assert calls == ["automation"]
-    assert service.lifecycle.lease.snapshot()["holder"] == "automation"
-    assert service.status()["manual_client"] is None
-    assert post(client, "/api/furnace/stop").status_code == 200
-    assert post(client, "/api/release", actor="automation").status_code == 200
-    assert post(client, "/api/furnace/acknowledge").status_code == 200
-    assert calls == ["automation", "page-test"]
-    assert service.status()["manual_client"] == "page-test"
 
 
-def test_same_id_contract_acquisition_removes_manual_provenance(service):
+def test_gas_channel_stop_needs_no_lease_and_checks_its_channel(service):
     client = create_app(service).test_client()
-    assert post(client, "/api/manual/heartbeat").status_code == 200
-    assert post(client, "/api/heartbeat").status_code == 200
-    assert_error(post(client, "/api/manual/renew"), 409)
-    assert post(client, "/api/stop").status_code == 200
-
-
-def test_expired_manual_renew_never_reacquires_or_steals_automation(service, clock):
-    client = create_app(service).test_client()
-    assert post(client, "/api/manual/heartbeat").status_code == 200
-    clock.advance(4)
-    assert_error(post(client, "/api/manual/renew"), 409)
-    assert service.lifecycle.lease.snapshot()["holder"] is None
     assert post(client, "/api/heartbeat", actor="automation").status_code == 200
-    assert_error(post(client, "/api/manual/renew"), 409)
-    assert service.lifecycle.lease.snapshot()["holder"] == "automation"
+    reply = post(client, "/api/stop", {"gas_channel": 1}, actor="other")
+    assert reply.status_code == 200
+    assert reply.get_json()["stop"] in ("confirmed", "unconfirmed")
+    assert reply.get_json()["state"]["last_command"]["action"] == "gas_stop"
+    for body in ({"gas_channel": 3}, {"gas_channel": True}, {"channel_index": 0}):
+        assert_error(post(client, "/api/stop", body, actor="other"), 400)
 
 
 def test_sequence_commands_preserve_editor_and_gas_plan(service):
@@ -187,7 +174,7 @@ def test_sequence_commands_preserve_editor_and_gas_plan(service):
     assert state["busy"] and state["sequence"]["running"]
     assert state["last_command"]["result"] == "ok"
     assert state["flow"]["gas_channels"][0]["target_percent"] == 10
-    assert post(client, "/api/sequence/stop", actor="bystander").get_json()["stop"] == "confirmed"
+    assert post(client, "/api/stop", actor="bystander").get_json()["stop"] == "confirmed"
 
 
 def test_stop_stays_available_after_expiry_callback_failure(service, clock):
@@ -202,9 +189,7 @@ def test_stop_stays_available_after_expiry_callback_failure(service, clock):
     with pytest.raises(RuntimeError):
         service.lifecycle.lease.poll()
     assert post(client, "/api/stop", actor="other").status_code == 200
-    assert (
-        post(client, "/api/flow/gas/stop", {"channel_index": 0}, actor="other").status_code == 200
-    )
+    assert post(client, "/api/stop", {"gas_channel": 0}, actor="other").status_code == 200
 
 
 def test_stop_refuses_false_confirmation_for_silent_gas(service):
@@ -298,49 +283,6 @@ def test_cli_demo_signals_stop_and_close_fake_server(service, monkeypatch):
     assert service.lifecycle.status()["run_state_code"] == 1
 
 
-def test_manual_dispatch_retains_lease_during_racing_automation_acquire(service, monkeypatch):
-    monkeypatch.setattr(threading.Thread, "start", THREAD_START)
-    entered, release, attempted, acquired = (threading.Event() for _ in range(4))
-    original = service.lifecycle.acknowledge
-    results = {}
-    app = create_app(service)
-
-    def blocked(*args, **kwargs):
-        entered.set()
-        assert release.wait(2)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(service.lifecycle, "acknowledge", blocked)
-
-    def manual():
-        results["manual"] = post(app.test_client(), "/api/furnace/acknowledge").status_code
-
-    def automation():
-        attempted.set()
-        results["automation"] = post(
-            app.test_client(), "/api/heartbeat", actor="automation"
-        ).status_code
-        acquired.set()
-
-    first, second = threading.Thread(target=manual), threading.Thread(target=automation)
-    first.start()
-    try:
-        assert entered.wait(2)
-        second.start()
-        assert attempted.wait(2)
-        assert not acquired.wait(0.05)
-    finally:
-        release.set()
-        first.join(2)
-        if second.ident is not None:
-            second.join(2)
-    assert not first.is_alive() and not second.is_alive()
-    assert results == {"manual": 200, "automation": 409}
-    assert post(app.test_client(), "/api/manual/release").status_code == 200
-    assert post(app.test_client(), "/api/heartbeat", actor="automation").status_code == 200
-    assert_error(post(app.test_client(), "/api/manual/heartbeat", actor="automation"), 409)
-
-
 def test_stop_finishes_while_expiry_callback_is_pending(service, clock, monkeypatch):
     monkeypatch.setattr(threading.Thread, "start", THREAD_START)
     entered, release = threading.Event(), threading.Event()
@@ -392,3 +334,44 @@ def test_stop_repeats_until_confirmed_within_wait_s(service, monkeypatch):
     calls.clear()
     assert service.stop("other", 1) == "confirmed"
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "disconnected",
+        "locked",
+        "fault",
+        "flow-unknown",
+        "flow-nonzero",
+        "valve-open",
+        "valve-unverified",
+        "duplicate",
+    ],
+)
+def test_gas_channel_stop_confirms_only_exact_flow_and_valve_feedback(service, monkeypatch, change):
+    flow = {
+        "connected": True,
+        "locked": False,
+        "fault": None,
+        "error": None,
+        "gas_channels": [
+            {"channel_index": 1, "available": True, "actual_percent": 0, "error": None}
+        ],
+        "gas_valves": [{"channel_index": 1, "open": False, "verified": True}],
+    }
+    edits = {
+        "disconnected": lambda: flow.update(connected=False),
+        "locked": lambda: flow.update(locked=True),
+        "fault": lambda: flow.update(fault={"code": "unknown"}),
+        "flow-unknown": lambda: flow["gas_channels"][0].update(available=False),
+        "flow-nonzero": lambda: flow["gas_channels"][0].update(actual_percent=2),
+        "valve-open": lambda: flow["gas_valves"][0].update(open=True),
+        "valve-unverified": lambda: flow["gas_valves"][0].update(verified=False),
+        "duplicate": lambda: flow["gas_channels"].append(dict(flow["gas_channels"][0])),
+    }
+    if change:
+        edits[change]()
+    monkeypatch.setattr(service.lifecycle, "stop_gas_flow", lambda channel: flow)
+    assert service.stop("other", 0, gas_channel=1) == ("unconfirmed" if change else "confirmed")

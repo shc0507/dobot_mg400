@@ -625,33 +625,6 @@ class Console:
                     device="stage",
                 )
 
-    def operator(self, device, page, path, data):
-        """Send one operator-only service request on this page's lease, once.
-
-        The service refuses it unless this page's identity holds the lease.
-        The runner and the relay never reach these service routes.
-        """
-        self.touch(page)
-        item = self._owned(device, page)
-        if item is None:
-            raise ServiceError(409, "Take control of this device first.")
-        try:
-            result = item.adapter.request(path, data)
-        except Exception as exc:
-            outcome = classify(exc)
-            message = str(exc) if outcome == "refused" else "The outcome is unknown."
-            self.service.events.add(
-                "warning", "Console operator action " + outcome + ".", device=device, path=path
-            )
-            return {"outcome": outcome, "error": self.service.dashboard.text(message)}
-        self.service.events.add("info", "Console operator action sent.", device=device, path=path)
-        command_id = result.get("command_id") if isinstance(result, dict) else None
-        return {
-            "outcome": "accepted",
-            "command_id": command_id if isinstance(command_id, str) else None,
-            "result": result if isinstance(result, dict) else None,
-        }
-
     def _cached(self, device):
         """Return the device cache row, or raise when the device has no fresh state."""
         if device not in SERVICES:

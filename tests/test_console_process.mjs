@@ -439,7 +439,7 @@ test("a furnace fault shows Acknowledge, which is sent once after a confirmation
   role(root, "acknowledge").click();
   role(root, "confirm-ack").click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(calls.filter(call => call[1] === "acknowledge"), [["request", "acknowledge", { confirmed: true }]]);
+  assert.deepEqual(calls.filter(call => call[0] === "relay"), [["relay", "furnace", "acknowledge", {}]]);
   const healthy = await load();
   assert.equal(role(healthy.root, "acknowledge").hidden, true);
 });

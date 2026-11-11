@@ -1,8 +1,6 @@
 """Service adapters and leases. No endpoint is contacted during construction."""
 
 import copy
-import http.client
-import json
 import math
 import re
 import threading
@@ -76,18 +74,16 @@ class ServiceAdapter:
         return self._http.command(action, **params)
 
     def request(self, path, data=None):
-        """Send one Lab Console operator request with this identity. Never retried.
-
-        With data it is a POST. The runner and the recipes never call this.
-        """
+        """Send one request with this identity (a read without data). Never retried."""
         return self._http._call(path, data)
 
     def events(self, since=0):
         """Read the contract event replay once; the robot service serves the same route."""
         return self._http.events(since)
 
-    def stop(self):
-        return self._http.stop(wait_s=min(1, self.timeout / 2))
+    def stop(self, **params):
+        """Stop the device, or 1 part of it with service stop params (furnace gas_channel)."""
+        return self._http.stop(wait_s=min(1, self.timeout / 2), **params)
 
     def recovery_stop(self, expected_instance):
         """Reconcile only after old work drains; generic services need a fresh stop."""
@@ -113,74 +109,6 @@ class ThermalAdapter(ServiceAdapter):
     def roi(self, name):
         """Read one explicit named region without a frame or coordinate fallback."""
         return self._http.roi(name)
-
-
-class _GasStopClient(ServiceClient):
-    """Bound gas discovery and response bodies without changing other requests.
-
-    The body deadline is checked between bounded read1 calls. Connect, headers,
-    framing, and each blocking read retain the configured socket timeout; this
-    is not a hard deadline for the complete HTTP exchange.
-    """
-
-    _BODY_LIMIT = 256 * 1024
-
-    def _body(self, response):
-        deadline = time.monotonic() + self.timeout
-        chunks, size = [], 0
-        while True:
-            if time.monotonic() >= deadline:
-                raise ServiceError(0, "Gas-stop response body deadline exceeded.")
-            block = response.read1(min(64 * 1024, self._BODY_LIMIT - size + 1))
-            if time.monotonic() >= deadline:
-                raise ServiceError(0, "Gas-stop response body deadline exceeded.")
-            if not block:
-                return b"".join(chunks)
-            size += len(block)
-            if size > self._BODY_LIMIT:
-                raise ServiceError(502, "Gas-stop response exceeds 256 KiB.")
-            chunks.append(block)
-
-    def _request(self, path, data=None):
-        headers = {"Accept": "application/json"}
-        encoded = None
-        if data is not None:
-            encoded = json.dumps(data, allow_nan=False).encode("utf-8")
-            headers.update({"Content-Type": "application/json", "X-MG400-Client": self.client_id})
-        request = urllib.request.Request(self.base_url + path, data=encoded, headers=headers)
-        try:
-            with self._opener.open(request, timeout=self.timeout) as response:
-                payload = self._body(response)
-        except urllib.error.HTTPError as error:
-            try:
-                detail = json.loads(self._body(error)).get("error", error.reason)
-            except (ValueError, AttributeError, OSError, http.client.HTTPException, ServiceError):
-                detail = error.reason
-            finally:
-                error.close()
-            raise ServiceError(error.code, detail) from error
-        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
-            raise ServiceError(0, f"Service request failed: {error}") from error
-        try:
-            result = json.loads(payload)
-        except (ValueError, UnicodeError) as error:
-            raise ServiceError(502, "The service returned invalid JSON.") from error
-        if not isinstance(result, dict):
-            raise ServiceError(502, "The service response must be a JSON object.")
-        return result
-
-
-class FurnaceAdapter(ServiceAdapter):
-    def __init__(self, url, identity, *, timeout=2):
-        super().__init__(url, identity, timeout=timeout)
-        self._gas_http = _GasStopClient(url, identity, timeout=timeout)
-        self._gas_http._opener = self._http._opener
-
-    def gas_stop(self, channel):
-        """Stop one gas channel without acquiring a lease or requesting a full stop."""
-        if type(channel) is not int or not 0 <= channel <= 2:
-            raise ValueError("Gas channel must be an integer from 0 to 2.")
-        return self._gas_http._call("api/flow/gas/stop", {"channel_index": channel})
 
 
 class RobotAdapter(ServiceAdapter):
@@ -320,7 +248,6 @@ def from_settings(settings=None, *, identity):
             adapter = {
                 "robot": RobotAdapter,
                 "thermal": ThermalAdapter,
-                "furnace": FurnaceAdapter,
             }.get(name, ServiceAdapter)
             result[name] = adapter(url, identity, timeout=TIMEOUT_S)
     return result

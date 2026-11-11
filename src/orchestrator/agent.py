@@ -22,7 +22,7 @@ from labkit import ports
 from labkit.errors import ServiceError
 from mg400.client import RobotClientError, command_complete
 
-from .clients import SERVICE_URLS, SERVICES, FurnaceAdapter, RobotAdapter, ServiceAdapter
+from .clients import SERVICE_URLS, SERVICES, RobotAdapter, ServiceAdapter
 
 DEFAULT_URL = ports.url("orch", "lab/")
 CAMERA_URL = ports.url("camera")
@@ -510,23 +510,6 @@ class Agent:
                 return failure("timeout", f"No result within {timeout:g} s.", device=device, **info)
             self.sleep(POLL_S)
 
-    def operator(self, device, path, data):
-        """Send one console workspace request (stage connect, furnace acknowledge) once."""
-        info = {"action": path.rsplit("/", 1)[-1]}
-        try:
-            self.beat()
-            status, body = self.http.request("api/console/ws/" + path, data)
-        except Unreachable as error:
-            return failure("unknown", str(error), device=device, **info)
-        except ServiceError as error:
-            code = code_for(error.status, error.message)
-            return failure(code, error.message, status=error.status, device=device, **info)
-        if status in {200, 202} and body.get("outcome", "accepted") == "accepted":
-            return {"ok": True, "device": device, **info, "outcome": "accepted", **body}
-        message = body.get("error", "The request was refused.")
-        code = "unknown" if status >= 500 else code_for(status, message)
-        return failure(code, message, status=status, device=device, **info)
-
     def stage_ports(self):
         result = self.state("stage")
         if not result.get("ok"):
@@ -852,8 +835,8 @@ class Agent:
         def direct(index):
             identity = f"{self.page}-gas-{uuid.uuid4().hex[:12]}"
             try:
-                value = FurnaceAdapter(self.urls["furnace"], identity, timeout=STOP_TIMEOUT_S)
-                value = value.gas_stop(index)
+                value = ServiceAdapter(self.urls["furnace"], identity, timeout=STOP_TIMEOUT_S)
+                value = value.stop(gas_channel=index)
             except Exception:
                 return "unreachable"
             return "sent" if isinstance(value, dict) else "unconfirmed"

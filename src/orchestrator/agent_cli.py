@@ -305,7 +305,7 @@ def dispatch(agent, args):
             return agent.stage_ports()
         return agent.call("stage", "connect", {"port": args.port})
     if group == "furnace" and verb == "acknowledge":
-        return agent.operator("furnace", "process/acknowledge", {"confirmed": True})
+        return agent.call("furnace", "acknowledge", {})
     if group == "furnace" and verb == "gas-off":
         return agent.gas_off(args.channel)
     if group == "microscope" and verb == "frame":

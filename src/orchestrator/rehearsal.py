@@ -19,7 +19,7 @@ from mg400.controller_ownership import ControllerOwnership
 from mg400.sim import Simulator
 from mg400.web_control import RobotPanelState
 
-from .clients import FurnaceAdapter, RobotAdapter, ServiceAdapter, ThermalAdapter
+from .clients import RobotAdapter, ServiceAdapter, ThermalAdapter
 
 DEMO_SERVICES = frozenset({"robot", "stage", "thermal", "furnace", "vision"})
 
@@ -431,7 +431,6 @@ class _DemoClient:
         "recovery_stop",
         "release",
         "roi",
-        "gas_stop",
     }
     # The console reads events, relays manual commands and keyboard keys. It renews
     # only when a browser heartbeat asks, so the profile adds no renewal thread.
@@ -736,8 +735,8 @@ class Rehearsal:
         server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
         self._serve(server)
         url = f"http://127.0.0.1:{server.server_port}"
-        self._endpoints["furnace"] = (FurnaceAdapter, url)
-        self.clients["furnace"] = FurnaceAdapter(url, self.identity)
+        self._endpoints["furnace"] = (ServiceAdapter, url)
+        self.clients["furnace"] = ServiceAdapter(url, self.identity)
 
     def _vision(self):
         from werkzeug.serving import make_server

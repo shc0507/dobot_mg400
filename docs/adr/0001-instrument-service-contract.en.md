@@ -19,7 +19,7 @@ Use contract version 1. Paths are relative to the configured service base path.
 | `GET api/describe` | `{service, version, contract: 1, demo, zones, lease_seconds, on_lease_expiry, commands: {name: {params: <JSON Schema>, any_client: bool, recovery?: true}}}` |
 | `GET api/state` | `{service, seq, ts_unix, demo, connected, busy, locked, fault, lease, last_command, ...}` |
 | `POST api/command` | Body `{"action": "...", ...}`. Return `202` with `{command_id, state}`. Completion appears in `state.last_command`. |
-| `POST api/stop` | Body `{"wait_s": 0..15}`. Return `{stop, state}`, with `stop` equal to `confirmed`, `pending`, or `unconfirmed`. Any client may stop at any time. Repeated requests are safe. |
+| `POST api/stop` | Body `{"wait_s": 0..15}`. Return `{stop, state}`, with `stop` equal to `confirmed`, `pending`, or `unconfirmed`. Any client may stop at any time. Repeated requests are safe. A service can accept named stop parameters to stop 1 part, such as the furnace `gas_channel`. |
 | `POST api/heartbeat` | Acquire or renew the caller's lease. Return `409` when another client holds it. |
 | `POST api/renew` | Renew only an unexpired lease that the caller holds. Otherwise, return `409`. |
 | `POST api/release` | Release the lease only when the caller holds it. |

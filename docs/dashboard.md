@@ -134,6 +134,18 @@
 - **Start recording** 和 **Record next furnace sequence** 带 **Run name**、**Mode**、**Interval s** 和 **Output fps** 发送录制命令。**Live** 不使用间隔。录制失败时显示错误。
 - **Turn stabilization on** 和 **Turn stabilization off** 开关防抖。
 
+### 实时台面工作区
+
+实时台面工作区显示台面的 3D 模型。模型跟随机械臂、位移台、显微镜物镜转盘和炉子。工作区打开时，页面每秒读取设备 4 次。页面不发送命令，也不获取控制权。
+
+- 页面从 `cdn.jsdelivr.net` 加载 three.js r128。使用此工作区时，浏览器必须能访问互联网。
+- 模型文件是 `console-static/twin.glb`。要生成它，在仓库外的孪生建模目录运行 `build.py -- --console <path>`。模型显示第一段台面视频中的台面。关节值 0 就是这个状态。
+- 机械臂 J1 到 J4 来自机械臂关节角。机械臂反馈过期时，机械臂半透明。报警时，机械臂显示红色。
+- 位移台每轴来自它的脉冲计数：mm = −pulses / 80 + offset，细分为 1/2 步。offset 在 `twin.py` 中。细分不是 1/2 步，或计数丢失参考时，位移台半透明。要重新测量 offset，在孪生建模目录运行 `tools/stage_snapshot.py`。
+- 位移台运动时，位移台和送样轴显示蓝色。
+- 从物镜 1 起，每换一个物镜，转盘转 72 度。转动方向尚未核对。模型中的调焦不移动。
+- 炉温高于 50 °C 时，炉子发光。1000 °C 时发光最强。炉子上方的标签显示 PV。
+
 ### 离线运行
 
 ```sh

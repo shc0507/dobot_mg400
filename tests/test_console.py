@@ -275,6 +275,7 @@ def test_state_reports_frame_data_without_secrets(rig):
         "motion",
         "cameras",
         "process",
+        "twin",
     ]
     assert "readiness" not in body
     assert PRIVATE not in response.get_data(as_text=True)

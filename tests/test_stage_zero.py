@@ -320,11 +320,11 @@ def test_preview_route_and_contract_zero_keep_lease_checks(stage_rig):
     access = {}
     holder = {**access, "X-MG400-Client": "runner"}
     other = {**access, "X-MG400-Client": "operator"}
-    preview = "/contract/api/motors/insert/reference"
+    preview = "/api/motors/insert/reference"
 
     def zero(confirm, headers):
         body = {"action": "zero", "motor": "insert", "confirm": confirm}
-        return client.post("/contract/api/command", json=body, headers=headers)
+        return client.post("/api/command", json=body, headers=headers)
 
     assert zero(True, access).status_code == 400
     controller.lease.acquire("runner")
@@ -389,23 +389,7 @@ def test_camera_slow_body_checks_budget_between_single_buffer_reads():
     assert response.closed
 
 
-def test_reference_teaching_is_operator_only_not_a_contract_command(stage_rig, tmp_path):
-    controller, transport, _ = stage_rig
-    reference(controller)
-    controller._config_path = config_file(tmp_path, controller._geometry)
-    before = controller._config_path.read_bytes()
-    assert "teach_reference" not in controller.describe()["commands"]
-    controller.lease.acquire("automation")
-    with pytest.raises(ValueError, match="Unknown stage command"):
-        controller.command("teach_reference", {"motor": "insert", "confirm": True}, "automation")
-    with pytest.raises(ControllerError, match="controlled by automation"):
-        controller.teach_reference("insert", True)
-    assert controller._config_path.read_bytes() == before
-    assert not controller._frame_source.calls
-    assert not transport.commands
-
-
-def test_operator_teaching_route_needs_the_lease_holder(stage_rig, tmp_path):
+def test_teach_reference_command_needs_the_lease_holder(stage_rig, tmp_path):
     controller, transport, _ = stage_rig
     reference(controller, pixel=(10, 10))
     controller._config_path = config_file(tmp_path, controller._geometry)
@@ -413,8 +397,8 @@ def test_operator_teaching_route_needs_the_lease_holder(stage_rig, tmp_path):
     client = create_app(controller).test_client()
     access = {}
     operator = {**access, "X-MG400-Client": "stage-operator"}
-    endpoint = "/contract/api/motors/insert/teach_reference"
-    confirm = {"confirm": True}
+    endpoint = "/api/command"
+    confirm = {"action": "teach_reference", "motor": "insert", "confirm": True}
     assert client.post(endpoint, json=confirm, headers=access).status_code == 400
     # Nobody holds the lease: a client that does not hold it is refused.
     assert client.post(endpoint, json=confirm, headers=operator).status_code == 409
@@ -423,11 +407,12 @@ def test_operator_teaching_route_needs_the_lease_holder(stage_rig, tmp_path):
     assert controller._config_path.read_bytes() == before
     controller.lease.release("automation")
     controller.lease.acquire("stage-operator")
-    assert client.post(endpoint, json={"confirm": 1}, headers=operator).status_code == 400
+    unconfirmed = {**confirm, "confirm": 1}
+    assert client.post(endpoint, json=unconfirmed, headers=operator).status_code == 400
     assert controller._config_path.read_bytes() == before
     response = client.post(endpoint, json=confirm, headers=operator)
-    assert response.status_code == 200
-    assert response.json["lease"]["holder"] == "stage-operator"
+    assert response.status_code == 202
+    assert response.json["state"]["lease"]["holder"] == "stage-operator"
     assert controller._geometry.motors["insert"].reference["pixel"] == pytest.approx(
         [99.5, 99.5], abs=1
     )

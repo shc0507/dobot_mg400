@@ -679,7 +679,7 @@ class Rehearsal:
         controller.start()
         server = make_server("127.0.0.1", 0, create_app(controller=controller), threaded=True)
         self._serve(server)
-        url = f"http://127.0.0.1:{server.server_port}/contract"
+        url = f"http://127.0.0.1:{server.server_port}/"
         self._endpoints["stage"] = (ServiceAdapter, url)
         self.clients["stage"] = ServiceAdapter(url, self.identity)
 

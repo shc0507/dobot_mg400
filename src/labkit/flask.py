@@ -120,7 +120,7 @@ def contract_blueprint(service, *, base_path="/", lease):
         client = request.headers["X-MG400-Client"]
 
         def dispatch():
-            if service.snapshot()["locked"]:
+            if service.snapshot()["locked"] and not commands[action].get("recovery"):
                 raise ServiceError(409, "The service is locked. Only stop is allowed.")
             return service.command(action, data, client)
 

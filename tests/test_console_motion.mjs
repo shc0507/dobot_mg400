@@ -68,7 +68,6 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
       sent.push([path, options]);
       if (replies[path]) return replies[path](data);
       if (path === "state") return { robot, stage };
-      if (path === "stage/ports") return { ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] };
       if (path.startsWith("stage/reference/")) return { image: "data:image/jpeg;base64,AAAA", offset_px: [1.5, -2], distance_px: 2.5 };
       return { outcome: "accepted" };
     },
@@ -335,16 +334,6 @@ test("the suction buttons wait for a measured state and show held when the servi
   assert.equal(node.textContent, "Held");
 });
 
-test("Refresh ports reads the serial ports again", async () => {
-  const page = await mounted({ stage: { ...STAGE, connected: false } });
-  await page.settle();
-  const reads = () => page.calls.filter(call => call[1] === "stage/ports").length;
-  assert.equal(reads(), 1);
-  page.find("Refresh ports").click();
-  await page.settle();
-  assert.equal(reads(), 2);
-});
-
 test("named poses need all axes referenced and send 1 pose command", async () => {
   const ready = { ...STAGE.motors[0], automation_ready: true };
   const page = await mounted({ stage: { ...STAGE, motors: [ready], poses: ["load", "inspect"], at_poses: ["load"] } });
@@ -401,15 +390,12 @@ test("an idle axis shows no state, a disconnected stage no position, and ports g
   assert.equal(logic.portLabel({ device: "/dev/ttyUSB0" }), "ttyUSB0");
 });
 
-test("a disconnected stage lists ports and connects on this page's control", async () => {
-  const page = await mounted({ stage: { ...STAGE, connected: false } });
+test("a disconnected stage lists the state ports and sends 1 connect command", async () => {
+  const page = await mounted({ stage: { ...STAGE, connected: false, ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] } });
   await page.settle();
-  assert.ok(page.calls.some(call => call[1] === "stage/ports"));
   page.find("Connect").click();
   await page.settle();
-  assert.deepEqual(page.calls.filter(call => call[1] === "stage/connect"), [["request", "stage/connect", { port: "/dev/ttyACM0" }]]);
-  const connected = await mounted();
-  assert.equal(connected.calls.some(call => call[1] === "stage/ports"), false);
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "connect", { port: "/dev/ttyACM0" }]]);
 });
 
 test("Check reference shows the marked frame and Teach reference needs a confirmation", async () => {
@@ -423,10 +409,10 @@ test("Check reference shows the marked frame and Teach reference needs a confirm
   assert.match(page.root.textContent, /Marker offset 1\.5, -2\.0 px/);
   page.find("Teach reference…").click();
   await page.settle();
-  assert.equal(page.calls.some(call => call[1] === "stage/teach"), false);
+  assert.equal(page.calls.some(call => call[0] === "relay"), false);
   page.find("Confirm").click();
   await page.settle();
-  assert.deepEqual(page.calls.filter(call => call[1] === "stage/teach"), [["request", "stage/teach", { motor: "insert", confirmed: true }]]);
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "teach_reference", { motor: "insert", confirm: true }]]);
 });
 
 /** A window and a document with listeners, and interval callbacks the test runs by hand. */

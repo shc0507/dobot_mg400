@@ -162,7 +162,7 @@ class MotorController(StageReference, StageAutomation, StageContract):
                 )
             # Only a listed port: a remote client must not open arbitrary device paths.
             if not isinstance(port, str) or port not in {item["device"] for item in self.ports()}:
-                raise ValueError("That port is no longer available. Refresh the port list.")
+                raise ValueError("That port is no longer available. Select another port.")
             if self._transport is not None:
                 raise ControllerError("Disconnect the current board before choosing another port.")
             transport = self._factory(port)
@@ -463,6 +463,8 @@ class MotorController(StageReference, StageAutomation, StageContract):
                 else None,
                 "connected": connected,
                 "port": self._port,
+                # Ports matter only before connect; listing them scans sysfs.
+                "ports": [] if connected else self.ports(),
                 "demo": self.demo,
                 "error": self._error,
                 "baud_rate": BAUD_RATE,

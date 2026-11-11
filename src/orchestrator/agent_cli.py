@@ -308,7 +308,7 @@ def dispatch(agent, args):
     if group == "stage" and verb == "connect":
         if not args.port:
             return agent.stage_ports()
-        return agent.operator("stage", "motion/stage/connect", {"port": args.port})
+        return agent.call("stage", "connect", {"port": args.port})
     if group == "furnace" and verb == "acknowledge":
         return agent.operator("furnace", "process/acknowledge", {"confirmed": True})
     if group == "furnace" and verb == "gas-off":

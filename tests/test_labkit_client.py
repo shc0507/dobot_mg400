@@ -84,12 +84,18 @@ def test_all_methods_use_the_contract_paths_body_headers_and_timeout(transport):
 
 def test_first_operation_checks_version_before_dispatch(transport):
     client = ServiceClient("http://localhost", "a")
-    transport.responses.append({"stop": "confirmed"})
-    assert client.stop()["stop"] == "confirmed"
+    transport.responses.append({"service": "x"})
+    client.state()
     assert [request.full_url for request, _ in transport.calls] == [
         "http://localhost/api/describe",
-        "http://localhost/api/stop",
+        "http://localhost/api/state",
     ]
+
+
+def test_stop_skips_describe(transport):
+    transport.responses[:] = [{"stop": "confirmed"}]
+    assert ServiceClient("http://localhost", "a").stop()["stop"] == "confirmed"
+    assert [request.full_url for request, _ in transport.calls] == ["http://localhost/api/stop"]
 
 
 def test_strict_renewal_has_a_separate_route_and_preserves_request_headers(transport):

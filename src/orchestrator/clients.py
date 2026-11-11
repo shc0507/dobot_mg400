@@ -23,10 +23,7 @@ SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
 # Seconds for one HTTP request to a lab service.
 TIMEOUT_S = 2
 # Fixed loopback addresses of the lab services. The host environment cannot change them.
-SERVICE_URLS = {
-    f"MG400_ORCH_{name.upper()}_URL": ports.url(name, "contract/" if name == "stage" else "")
-    for name in SERVICES
-}
+SERVICE_URLS = {f"MG400_ORCH_{name.upper()}_URL": ports.url(name) for name in SERVICES}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

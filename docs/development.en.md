@@ -447,25 +447,25 @@ During a network interruption, the service might not detect connection closure. 
 
 ## Stage service API
 
-The stage service HTTP interface uses JSON. All routes are under `{prefix}contract/api/`.
+The stage service HTTP interface uses JSON. All routes are under `{prefix}api/`.
 `{prefix}` is the value of `--base-path`. The default is `/`.
 The service queries Arduino state every 0.2 seconds and stops expired press-and-hold motion during each query.
 
 ### Stage automation contract
 
-The base URL for `labkit.client.ServiceClient` is `http://127.0.0.1:8767/contract`, including `/contract`.
+The base URL for `labkit.client.ServiceClient` is `http://127.0.0.1:8767/`.
 The interface follows the [instrument service contract](adr/0001-instrument-service-contract.en.md).
 
 | Interface | Purpose |
 | --- | --- |
-| `GET /contract/api/describe` | Read command parameters, limits, demo status, and lease rules |
-| `GET /contract/api/state` | Read motor state plus `service`, `seq`, `ts_unix`, `busy`, `locked`, `fault`, `lease`, and `last_command` |
-| `POST /contract/api/heartbeat` | Acquire or renew the control lease. Return 409 if another client holds it |
-| `POST /contract/api/renew` | Renew only an existing, unexpired lease held by the caller. Otherwise return 409 |
-| `POST /contract/api/release` | Release the caller's control lease without sending a stop command |
-| `POST /contract/api/command` | Send `action` and its parameters. Acceptance returns 202, `command_id`, and `state` |
-| `POST /contract/api/stop` | Any client can request a stop without a lease. `wait_s` is 0–15 seconds, default 0 |
-| `GET /contract/api/events?since=0` | Read activity events and the `next` cursor. Record each activity once and also write it to the service journal |
+| `GET /api/describe` | Read command parameters, limits, demo status, and lease rules |
+| `GET /api/state` | Read motor state plus `service`, `seq`, `ts_unix`, `busy`, `locked`, `fault`, `lease`, and `last_command` |
+| `POST /api/heartbeat` | Acquire or renew the control lease. Return 409 if another client holds it |
+| `POST /api/renew` | Renew only an existing, unexpired lease held by the caller. Otherwise return 409 |
+| `POST /api/release` | Release the caller's control lease without sending a stop command |
+| `POST /api/command` | Send `action` and its parameters. Acceptance returns 202, `command_id`, and `state` |
+| `POST /api/stop` | Any client can request a stop without a lease. `wait_s` is 0–15 seconds, default 0 |
+| `GET /api/events?since=0` | Read activity events and the `next` cursor. Record each activity once and also write it to the service journal |
 
 | `action` | Parameters | Completion |
 | --- | --- | --- |
@@ -473,7 +473,8 @@ The interface follows the [instrument service contract](adr/0001-instrument-serv
 | `hold` | `motor`, `direction`, `speed`, `hold_id`, `sampled_at` | Arduino acknowledges the hold start. The motor continues moving |
 | `keepalive` | `motor`, `hold_id` | Arduino acknowledges hold renewal |
 | `release_hold` | `motor`, `hold_id` | End the matching hold |
-| `stop_all` | None | Arduino acknowledges the stop request. No lease is required. When fault-locked, use the dedicated stop interface |
+| `connect` | `port` | Connect a serial port that the state `ports` lists. Demo mode accepts only `DEMO`. The service accepts it also when locked |
+| `teach_reference` | `motor`, `confirm: true` | Save the current marker position as the reference of that axis |
 | `set_microstep` | `microstep` | Arduino confirms the microstep mode |
 
 The values for `motor` are `bottom`, `top`, and `insert`. The values for `direction` are `cw` and `ccw`.
@@ -505,19 +506,10 @@ Later idle feedback does not clear the fault. Check the physical state, then run
 Reconnection returns 409 while stop confirmation is in progress. Feedback from a new connection cannot confirm that the old device stopped.
 `last_command` distinguishes `ok`, `failed`, `rejected`, and `stopped`. The service never retries motion automatically.
 
-### Operator routes
+### Reference check
 
-The Lab Console also uses these 4 routes, with the same prefix as the contract:
-
-| Interface | Body | Purpose |
-| --- | --- | --- |
-| `GET /contract/api/ports` | None | List available serial ports. When `MG400_STAGE_SERIAL` is set, list only that device |
-| `POST /contract/api/connect` | `{"port": "..."}` | Connect to a serial port listed by `api/ports`. Demo mode accepts only `DEMO`. The caller must hold the stage lease |
-| `GET /contract/api/motors/<motor>/reference` | None | Read the camera image and the marker's pixel offset |
-| `POST /contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | Save the current marker position as the reference of that axis. The caller must hold the stage lease |
-
-`api/ports` returns `{"ports": [{"device": "...", "description": "..."}]}`.
-On success, `api/connect` and `teach_reference` return the state object with `lease`.
+`GET /api/motors/<motor>/reference` reads the camera image and the pixel offset of the marker. The image is too large for the state.
+When the stage is not connected, the state `ports` lists the serial ports as `{"device", "description"}`. When it is connected, the list is empty. When `MG400_STAGE_SERIAL` is set, the list has only that device.
 
 ### Access checks
 

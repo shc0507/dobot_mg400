@@ -96,12 +96,7 @@ class StepClient:
         self.tool_file = getattr(service, "tool_file", None)
 
         def invoke(method, *args, **kwargs):
-            if (
-                zones is not None
-                and method in {"run", "command"}
-                and args[0] != "stop"
-                and not (device == "stage" and args[0] == "stop_all")
-            ):
+            if zones is not None and method in {"run", "command"} and args[0] != "stop":
 
                 def guarded():
                     with zones.guard(device, authority):

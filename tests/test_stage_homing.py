@@ -209,7 +209,7 @@ def test_contract_move_needs_no_home_and_keeps_soft_limits_after_home(stage_rig)
     args = dict(motor="bottom", direction="cw", speed=10, steps=1001)
     controller.command("move", args, "client")
     assert "steps 1001" in transport.commands
-    controller.command("stop_all", {}, "client")
+    controller.stop("client", 0)
     controller.lease.release("client")
     clock.advance(1.5)
     controller.poll()
@@ -416,13 +416,13 @@ def test_reference_commands_need_the_lease_holder_and_valid_requests(stage_rig):
     ]
 
     def send(body, headers):
-        return web.post("/contract/api/command", json=body, headers=headers)
+        return web.post("/api/command", json=body, headers=headers)
 
     for body in commands:
-        assert web.post("/contract/api/command", data="{}", headers=holder).status_code == 415
+        assert web.post("/api/command", data="{}", headers=holder).status_code == 415
         assert send(body, {}).status_code == 400
         assert send(body, holder).status_code == 409
-    assert web.post("/contract/api/heartbeat", json={}, headers=holder).status_code == 200
+    assert web.post("/api/heartbeat", json={}, headers=holder).status_code == 200
     for body in commands:
         assert send(body, other).status_code == 409
     assert not transport.commands
@@ -432,28 +432,26 @@ def test_reference_commands_need_the_lease_holder_and_valid_requests(stage_rig):
     clock.advance(1)
     assert send(dict(action="awake", motor="insert", seconds=60), holder).status_code == 202
     assert send(commands[2], holder).status_code == 202
-    assert web.post("/contract/api/stop", json={}, headers=other).status_code == 200
+    assert web.post("/api/stop", json={}, headers=other).status_code == 200
 
 
 def test_contract_home_completion_and_positive_awake(stage_rig):
     controller, transport, clock = stage_rig
     web = create_app(controller).test_client()
     headers = {"X-MG400-Client": "automation"}
-    assert web.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
-    response = web.post(
-        "/contract/api/command", json=dict(action="home", motor="insert"), headers=headers
-    )
+    assert web.post("/api/heartbeat", json={}, headers=headers).status_code == 200
+    response = web.post("/api/command", json=dict(action="home", motor="insert"), headers=headers)
     assert response.status_code == 202
     command_id = response.json["command_id"]
     assert response.json["state"]["last_command"] is None
     clock.advance(0.5)
     controller.poll()
-    state = web.get("/contract/api/state").json
+    state = web.get("/api/state").json
     assert state["last_command"]["id"] == command_id
     assert state["last_command"]["result"] == "ok"
     assert (
         web.post(
-            "/contract/api/command",
+            "/api/command",
             json=dict(action="awake", motor="insert", seconds=60),
             headers=headers,
         ).status_code

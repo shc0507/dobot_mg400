@@ -143,7 +143,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 | 旧位置 | 内容 | 新位置 |
 | --- | --- | --- |
 | `/opt/mg400-web-control` | 网页面板代码 | `/opt/mg400`，`/etc/mg400/mg400.env` |
-| `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `labctl terminal`、`labctl mode` |
+| `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `labctl mode` |
 | `$DOCS/mg400-data` | 连接锁、模式切换备份 | `/var/lib/mg400` |
 | `/opt/mg400-camera-preview` | go2rtc、采集配置和预览程序 | `/usr/local/lib/mg400`、`/etc/mg400` |
 

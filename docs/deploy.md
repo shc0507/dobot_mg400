@@ -343,7 +343,6 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `labctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
 | `labctl restart web` | 重启服务。重启炉控时可加 `--force` |
 | `labctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
-| `labctl terminal` | 打开 [交互终端](terminal-control.md) |
 | `labctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
 | `labctl mode --switch-to-tcp` | 把控制器切换到 TCP/IP 模式 |
 | `labctl calibrate ...` | 运行 [受监督的显微镜校准](microscope.md#受监督的校准) |

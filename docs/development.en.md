@@ -99,7 +99,7 @@ The repository has 4 layers. Each layer calls only the layer below it.
 | --- | --- | --- |
 | Backend | Device services (`apps/control_panel/`, `src/stage_controller/`, `src/thermal_cam/`, `src/furnace/`, `src/microscope/`, `src/vision/`) and `firmware/` | 1 process for each device. It listens only on `127.0.0.1`. Users and agents do not call the backend directly |
 | Orchestrator | `src/orchestrator/` | The device cache `devices.py` runs 1 reader thread for each device. The thread reads `api/state` every 250 ms, the events every 1 s, and `describe` when the instance changes. The console and `labctl` read device state only from this cache. Commands, leases, and recipe runs also go through the orchestrator |
-| Toolkit | `labctl` (`src/orchestrator/agent_cli.py`) and `mg400ctl` (`deploy/mg400ctl`) | Agents use `labctl` to operate the devices. Administrators use `mg400ctl` to start and stop the services, read the logs, make backups, and check the hardware |
+| Toolkit | `labctl` (`deploy/labctl`, device groups in `src/orchestrator/agent_cli.py`) | Agents use the device groups to operate the devices. Administrators use the service commands to start and stop the services, read the logs, make backups, and check the hardware |
 | Frontend | Lab Console (`src/orchestrator/web/`) | Browser page. It reaches the orchestrator through the proxy |
 
 Exception: a `labctl` stop goes to the orchestrator and also directly to the device service.
@@ -112,7 +112,7 @@ Exception: a `labctl` stop goes to the orchestrator and also directly to the dev
 | `apps/control_panel/` | Standalone Python robot service, without a web page |
 | `apps/layout-studio/` | Offline layout editor that uses simulated data and sends no control commands |
 | `config/systemd/` | systemd definitions for all services, with configuration from `/etc/mg400/mg400.env` |
-| `deploy/` | The `install.py` installer, the `mg400ctl` command for routine operations, and configuration examples |
+| `deploy/` | The `install.py` installer, the `labctl` command for routine operations, and configuration examples |
 | `src/mg400/` | Backend, control protocol, and feedback processing |
 | `src/mg400/sim/` | Loopback controller simulator, with a shared test model |
 | `src/stage_controller/` | Stage service: Flask interface and serial protocol |
@@ -502,7 +502,7 @@ The dedicated stop interface returns `stop` and `state`. The `stop` value is `co
 It returns `confirmed` only after all motors report idle.
 While waiting for feedback, the service permits other stop requests but blocks new motion.
 If the stop wait expires or a serial outcome is unknown, `locked` is true and `fault` is non-null.
-Later idle feedback does not clear the fault. Check the physical state, then run `mg400ctl restart stage` and connect again. The fault clears only after all motors report idle.
+Later idle feedback does not clear the fault. Check the physical state, then run `labctl restart stage` and connect again. The fault clears only after all motors report idle.
 Reconnection returns 409 while stop confirmation is in progress. Feedback from a new connection cannot confirm that the old device stopped.
 `last_command` distinguishes `ok`, `failed`, `rejected`, and `stopped`. The service never retries motion automatically.
 

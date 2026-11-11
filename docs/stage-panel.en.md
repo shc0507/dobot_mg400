@@ -37,12 +37,12 @@ A program that does not use the lock can still open the same port. The service c
 For an Olares deployment, upload the firmware from a computer with the Arduino IDE:
 
 1. Click `Stop stage` in the console.
-2. Run `mg400ctl stop stage` on the host. The service sends `stop all`, then closes the serial port.
+2. Run `labctl stop stage` on the host. The service sends `stop all`, then closes the serial port.
 3. Disconnect the Arduino from the Olares host. Connect it to that computer.
 4. Upload the firmware as the firmware guide specifies.
 5. Reconnect the Arduino to a USB port on the Olares host.
 6. Run `ls -l /dev/serial/by-id/` on the host. Confirm that the Arduino path matches `MG400_STAGE_SERIAL`.
-7. Run `mg400ctl start stage`. Then connect the Arduino as [Connection](#connection) specifies.
+7. Run `labctl start stage`. Then connect the Arduino as [Connection](#connection) specifies.
 
 When you run the service locally, stop the `stage-panel` process before uploading firmware.
 
@@ -112,7 +112,7 @@ Before you release control, wait for motion to finish or click `Stop stage`.
 
 If the stop cannot be confirmed, the card shows a fault and the service blocks new motion.
 First use the physical emergency stop and check the motors.
-After the stop request finishes, run `mg400ctl restart stage`. Then connect again.
+After the stop request finishes, run `labctl restart stage`. Then connect again.
 See [Stage automation contract](development.en.md#stage-automation-contract) for the interface.
 
 ### Connection
@@ -310,7 +310,7 @@ See [Stage automation contract](development.en.md#stage-automation-contract) for
 
 ## Service configuration
 
-[Host deployment](deploy.en.md) installs the `mg400-stage-panel.service` service. Its `mg400ctl` name is `stage`.
+[Host deployment](deploy.en.md) installs the `mg400-stage-panel.service` service. Its `labctl` name is `stage`.
 The service runs as a user and group with numeric ID `1000`. It also joins `dialout` for serial-port read and write access.
 The service starts manually. It is not configured to start at boot.
 Starting the service does not open a serial port. The port opens only after you click `Connect` in the console.
@@ -392,10 +392,10 @@ Restart the service after changing the configuration file.
 ### Start and stop
 
 ```sh
-mg400ctl start stage
-mg400ctl status
-mg400ctl logs stage
-mg400ctl stop stage
+labctl start stage
+labctl status
+labctl logs stage
+labctl stop stage
 ```
 
 After startup, the journal shows the listen address, for example, `Stage Controller: http://127.0.0.1:8767`.
@@ -406,7 +406,7 @@ If the service refuses to start because of a configuration error, systemd does n
 After a restart, the service is disconnected from the Arduino. Connect again in the console.
 After a host reboot, start the service manually.
 
-After updating the code, run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies. Then run `mg400ctl restart stage`.
+After updating the code, run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies. Then run `labctl restart stage`.
 
 ## Troubleshooting
 
@@ -422,5 +422,5 @@ The following errors appear on the stage card or in console notices. Errors that
 | `In use by another client` | Another client holds the lease. Wait until it releases control, then click `Take control`. |
 | `position unknown, home first` | A named position or pose needs a confirmed reference. Set zero as [Manual zero and camera reference](#manual-zero-and-camera-reference) specifies, or home the axis. |
 | `Stage target is outside the configured soft limits.` | Decrease the steps, or change the direction. |
-| The card shows `Not running` or `Not reachable` | Run `mg400ctl status` on the host. Confirm that `stage` is running. |
+| The card shows `Not running` or `Not reachable` | Run `labctl status` on the host. Confirm that `stage` is running. |
 | The service journal shows `Failed to load environment files` | Run the installer as [Host deployment](deploy.en.md#installation-and-updates) specifies to create `/etc/mg400/mg400.env`. Start the service again. |

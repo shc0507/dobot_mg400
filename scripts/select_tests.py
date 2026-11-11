@@ -35,7 +35,7 @@ ORCHESTRATOR = [
     "test_orchestrator_*.py",
     "test_agent_cli*.py",
     "test_recipe_*.py",
-    "test_deploy_mg400ctl.py",
+    "test_deploy_labctl.py",
     "test_console*.py",
     "test_dashboard*.py",
 ]
@@ -60,7 +60,7 @@ AREAS = [
     ("scripts/console_font.py", ["test_console.py"]),
     ("src/orchestrator/*", ORCHESTRATOR),
     ("recipes/*", ORCHESTRATOR),
-    ("deploy/mg400ctl", ORCHESTRATOR),
+    ("deploy/labctl", ORCHESTRATOR),
     ("src/microscope/*", MICROSCOPE),
     ("firmware/microscope-axes/*", MICROSCOPE),
     ("src/toupcam_camera/*", ["test_toupcam_camera.py", *MICROSCOPE]),

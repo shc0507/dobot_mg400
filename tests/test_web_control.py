@@ -1350,7 +1350,7 @@ def test_rejected_commands_while_disabled_at_rest_point_to_tcp_mode(make_sim_rig
     rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "disable")
     snapshot = rig.snapshot()
     assert TCP_HINT in snapshot["message"]
-    assert "sudo mg400ctl mode --switch-to-tcp" in snapshot["message"]
+    assert "sudo labctl mode --switch-to-tcp" in snapshot["message"]
     assert "physical emergency stop" not in snapshot["message"]
     # A rejected stop is never a confirmed stop.
     assert snapshot["locked"] and snapshot["stop_unconfirmed"]

@@ -170,10 +170,10 @@ client.run("vacuum", operation="suck")
 按以下顺序恢复：
 
 1. 核实机械臂静止。
-2. 运行 `sudo mg400ctl mode`，核对控制器模式。
-3. 运行 `sudo mg400ctl stop web`。
-4. 运行 `sudo mg400ctl mode --switch-to-tcp`。
-5. 运行 `sudo mg400ctl start web`，再在控制台点击 `Take control`。
+2. 运行 `sudo labctl mode`，核对控制器模式。
+3. 运行 `sudo labctl stop web`。
+4. 运行 `sudo labctl mode --switch-to-tcp`。
+5. 运行 `sudo labctl start web`，再在控制台点击 `Take control`。
 
 切换条件见 [从服务器切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式)。
 
@@ -191,12 +191,12 @@ python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
 
 ## 服务配置
 
-服务名为 `mg400-web-panel.service`，由 [主机部署](deploy.md) 安装，`mg400ctl` 名称为 `web`。
+服务名为 `mg400-web-panel.service`，由 [主机部署](deploy.md) 安装，`labctl` 名称为 `web`。
 在宿主机启动或检查服务：
 
 ```sh
-sudo mg400ctl start web
-sudo mg400ctl status
+sudo labctl start web
+sudo labctl status
 ```
 
 在本地启动时，在能访问机械臂的主机进入项目目录，运行：
@@ -226,7 +226,7 @@ Lab Console 和配方服务固定连接 `http://127.0.0.1:8766/`，见 [配方�
 
 接口说明见 [机器人服务接口](development.md#机器人服务接口)。
 
-更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `mg400ctl restart web`。
+更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `labctl restart web`。
 
 ### 服务日志
 
@@ -245,7 +245,7 @@ Lab Console 和配方服务固定连接 `http://127.0.0.1:8766/`，见 [配方�
 在 Olares 宿主机读取日志：
 
 ```sh
-sudo mg400ctl logs web -n 200
+sudo labctl logs web -n 200
 ```
 
 控制锁定时，在日志中找第一条 `Stop or disable unconfirmed.`。

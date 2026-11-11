@@ -29,7 +29,7 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 
 安装前，把 `thermal`、`vision` 等可选服务加入 `MG400_OPTIONAL_SERVICES`。
 服务列表和视觉运行环境见[主机部署](deploy.md#服务清单)。
-所有者安装并启动视觉服务后，运行 `mg400ctl gpu`，以 UID `1000` 读取 GPU 内存。
+所有者安装并启动视觉服务后，运行 `labctl gpu`，以 UID `1000` 读取 GPU 内存。
 
 ## 单端口代理
 
@@ -70,7 +70,7 @@ MG400_PROXY_PORT=8080
 /usr/local/lib/mg400/caddy validate --config /etc/mg400/Caddyfile --adapter caddyfile
 ```
 
-明确运行 `mg400ctl start proxy` 启动代理。
+明确运行 `labctl start proxy` 启动代理。
 在 VPN 规则中允许 TCP `8080`，或已配置的代理端口。
 打开 `http://100.64.0.1:8080/`。代理把它重定向到实验室控制台。
 后续更新可复用已安装的二进制文件，不必再次传入 `--caddy`。
@@ -143,7 +143,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 | 旧位置 | 内容 | 新位置 |
 | --- | --- | --- |
 | `/opt/mg400-web-control` | 网页面板代码 | `/opt/mg400`，`/etc/mg400/mg400.env` |
-| `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `mg400ctl terminal`、`mg400ctl mode` |
+| `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `labctl terminal`、`labctl mode` |
 | `$DOCS/mg400-data` | 连接锁、模式切换备份 | `/var/lib/mg400` |
 | `/opt/mg400-camera-preview` | go2rtc、采集配置和预览程序 | `/usr/local/lib/mg400`、`/etc/mg400` |
 
@@ -188,8 +188,8 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    rm -f /etc/systemd/system/*.wants/mg400-*.service
    systemctl daemon-reload
    systemctl is-enabled mg400-web-panel mg400-stage-panel mg400-camera-preview
-   mg400ctl start web stage camera
-   mg400ctl status
+   labctl start web stage camera
+   labctl status
    ```
 
    `is-enabled` 对三项都显示 `static`，表示服务不会开机自启。
@@ -200,7 +200,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    - Motion 工作区的位移台卡片能连接 Arduino。
 
 旧目录保留到核对完成。
-要恢复旧布局，先运行 `mg400ctl stop all`，再把 `/root/mg400-old-units` 中的文件复制回 `/etc/systemd/system/` 并运行 `systemctl daemon-reload`。
+要恢复旧布局，先运行 `labctl stop all`，再把 `/root/mg400-old-units` 中的文件复制回 `/etc/systemd/system/` 并运行 `systemctl daemon-reload`。
 然后把 `start-terminal.sh.disabled` 改回原名，恢复旧的终端启动脚本。
 
 ## USB 设备布局
@@ -268,12 +268,12 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 ```
 
 列表为空时，普通流使用 `1280x720@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
-显式列表覆盖这些默认值，包括侧视流。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`mg400ctl` 和预览服务拒绝运行。
+显式列表覆盖这些默认值，包括侧视流。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
 以下 4 台摄像头的配置按上表接口顺序排列。
 所有摄像头使用 `1280x720@30`。侧视流 `camera3` 的宽高比与 `3840x2160` 侧视参考图像相同。
 原版 `uvcvideo` 驱动让 AC410 在大于 `640x480` 的模式下占用最大的同步传输时隙，所以共享 USB 2 链路只能容纳 1 路这样的流。
 安装 [USB 带宽补丁](#usb-带宽补丁) 后，4 路 `1280x720@30` 可以同时以 30 fps 运行。
-提高模式前，先用 `mg400ctl camera-check` 和内核日志检查带宽：
+提高模式前，先用 `labctl camera-check` 和内核日志检查带宽：
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
@@ -308,19 +308,19 @@ ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 
 同时使用真实设备前，必须在有人监督下检查带宽：同时打开所需画面，确认连续多张 JPEG 能完整解码。
 托盘上约 30 mm 的 Micro QR 标签含 17 个模块，横向至少需要 70 像素。
 图像宽度为 1280 像素时，556 mm 的托盘视野约有 2.3 像素/mm。
-保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器，再运行 `mg400ctl restart camera vision microscope orch`。这些服务都读取摄像头模式。未启用 `vision` 时，从命令中去掉 `vision`。
+保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器，再运行 `labctl restart camera vision microscope orch`。这些服务都读取摄像头模式。未启用 `vision` 时，从命令中去掉 `vision`。
 
 启动摄像头服务：
 
 ```sh
-mg400ctl start camera
+labctl start camera
 ```
 
 在实验室控制台的 Cameras 工作区查看画面。
-视频流链接使用代理地址：`http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`，`mg400ctl camera-url` 会列出这些链接。
+视频流链接使用代理地址：`http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`，`labctl camera-url` 会列出这些链接。
 关闭终端不会停止预览服务。
 停止预览服务时，摄像头采集服务也停止。
-启动失败时，运行 `mg400ctl logs camera`。
+启动失败时，运行 `labctl logs camera`。
 
 服务端只保留最新待处理帧，网络变慢时丢弃积压帧。
 服务端发送超时为 1.5 秒。H.264 预览的发送超时为 5 秒。
@@ -344,10 +344,10 @@ mg400ctl start camera
 2. 重启主机，或重新加载驱动：
 
    ```bash
-   sudo mg400ctl stop camera thermal
+   sudo labctl stop camera thermal
    sudo rmmod uvcvideo
    sudo modprobe uvcvideo
-   sudo mg400ctl start camera thermal
+   sudo labctl start camera thermal
    ```
 
 3. 确认 `cat /sys/module/uvcvideo/parameters/mjpeg_bpp` 输出 `200`。
@@ -361,7 +361,7 @@ mg400ctl start camera
 
 ### 摄像头故障
 
-画面异常时，先运行 `mg400ctl camera-check`。
+画面异常时，先运行 `labctl camera-check`。
 它按 USB 接口路径检查已配置的摄像头，再检查 2 个服务和应预加载的 go2rtc 流。
 对更大的流，它报告按需启动，不要求或启动连续预加载。
 全部正常时，退出码为 0。有问题时，退出码为 1，并显示下一步操作。
@@ -374,7 +374,7 @@ mg400ctl start camera
 若摄像头已被识别，但视频流帧率很低，在 Olares 主机运行
 `curl -s http://127.0.0.1:1984/api/preload`。
 确认输出包含所有宽度不超过 1280 且高度不超过 720 的已配置流。
-若应预加载的流缺失，运行 `mg400ctl restart camera`，等待 2 秒后再次查询。
+若应预加载的流缺失，运行 `labctl restart camera`，等待 2 秒后再次查询。
 采集服务启动时若设备缺失，预加载可能未建立。
 控制台的视频流会自动重连。已配置的 `camera<N>.jpg` 单帧接口在流按需启动时可能较慢。
 

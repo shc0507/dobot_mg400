@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Control host services and recipes with mg400ctl or labctl.
+"""Control host services and recipes with labctl.
 
 Administrative commands require root. Recipe commands run as UID/GID 1000.
 terminal and mode run as the service user (UID 1000) with the settings from
@@ -624,7 +624,7 @@ def camera_check(host, devices, run, out, services, *, preloaded=None):
     for unit in services["camera"]:
         print(f"service  {unit:<30} {states.get(unit, 'unknown')}", file=out)
     if not all(states.get(unit, "").startswith("active ") for unit in services["camera"]):
-        print("Start the cameras: mg400ctl start camera", file=out)
+        print("Start the cameras: labctl start camera", file=out)
         return 1
     names = [f"camera{number}" for number in range(1, len(devices) + 1)]
     expected = names if preloaded is None else list(preloaded)
@@ -640,7 +640,7 @@ def camera_check(host, devices, run, out, services, *, preloaded=None):
     absent = [name for name in expected if name not in preload.stdout]
     if absent:
         print(f"streams  not loaded: {' '.join(absent)}", file=out)
-        print("Run mg400ctl restart camera, wait 2 seconds, then check again.", file=out)
+        print("Run labctl restart camera, wait 2 seconds, then check again.", file=out)
         return 1
     print("streams  configured preloads loaded", file=out)
     return 0
@@ -730,7 +730,7 @@ def main(
     passed = argv[1:] if argv[:1] == ["calibrate"] else []
     args = parser.parse_args(argv[:1] if passed else argv)
     if os.geteuid() != 0:
-        print("Run mg400ctl as root, for example: sudo mg400ctl status", file=sys.stderr)
+        print("Run labctl as root, for example: sudo labctl status", file=sys.stderr)
         return 1
     if args.command == "backup":
         try:

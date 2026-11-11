@@ -34,13 +34,13 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program | `root:root`, `0755` |
 | `/usr/local/lib/mg400/caddy` | Caddy 2 proxy program | `root:root`, `0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | Optional Toupcam 59.30594.20260120 Linux x64 library | `root:root`, `0755` |
-| `/usr/local/bin/mg400ctl` | Routine command tool, linked to `/opt/mg400/deploy/mg400ctl` | None |
+| `/usr/local/bin/labctl` | Routine command tool, linked to `/opt/mg400/deploy/labctl` | None |
 | `/usr/local/bin/labctl` | Another link to the same command, with identical arguments and behavior | None |
 
 All services run as the user and group with numeric ID `1000`.
 Service definitions are in `config/systemd/` and are installed in `/etc/systemd/system/`:
 
-| Service | `mg400ctl` name | Purpose | Supplementary groups |
+| Service | `labctl` name | Purpose | Supplementary groups |
 | --- | --- | --- | --- |
 | `mg400-web-panel.service` | `web` | [Robot service](development.en.md#robot-service-interface), port `8766` | None |
 | `mg400-stage-panel.service` | `stage` | [Stage service](stage-panel.en.md), port `8767` | `dialout` |
@@ -71,7 +71,7 @@ Start services manually. They do not start automatically at boot.
 ## Installation and updates
 
 Run the commands in this section as root.
-Before an update, stop the services with `mg400ctl stop all`.
+Before an update, stop the services with `labctl stop all`.
 
 1. Get the code. For the first installation, run:
 
@@ -125,7 +125,7 @@ The installer works in this order:
    If `--toupcam` is supplied, install the library bytes verified in step 1.
 7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
 8. Install selected service definitions and reload systemd.
-9. Create the `mg400ctl` and `labctl` links.
+9. Create the `labctl` link and remove an old `mg400ctl` link.
 
 The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
@@ -159,7 +159,7 @@ Do not install the vendor's `99-toupcam.rules`: it grants broad `0666` access to
 ## Service registry
 
 `deploy/services.toml` contains a `[[service]]` entry for each implemented service.
-The installer, `mg400ctl`, and `labctl` share this registry.
+The installer and `labctl` share this registry.
 Add each new service entry together with its unit files.
 
 | Field | Meaning |
@@ -179,13 +179,13 @@ The optional `thermal` service uses the `thermal` dependency group in `/opt/mg40
 Add `thermal` to `MG400_OPTIONAL_SERVICES`, preserving other selections, then run the installer.
 It installs the thermal USB access rule and prepares `/var/lib/mg400/thermal` with owner `1000:1000` and mode `0750`.
 It does not create region coordinates or start the camera. Configure named regions as described in the [thermal guide](thermal.en.md).
-The owner starts the service explicitly with `mg400ctl start thermal`. Startup opens the camera automatically.
+The owner starts the service explicitly with `labctl start thermal`. Startup opens the camera automatically.
 
-Use `mg400ctl logs thermal` and `mg400ctl stop thermal` for logs and shutdown.
+Use `labctl logs thermal` and `labctl stop thermal` for logs and shutdown.
 Stop other camera applications first. Only 1 process can own the P1 camera.
 
 The `furnace` service uses the `furnace` dependency group.
-Configure its serial paths before hardware use, then start it explicitly with `mg400ctl start furnace`.
+Configure its serial paths before hardware use, then start it explicitly with `labctl start furnace`.
 The installer does not start the furnace.
 
 The `microscope` service uses the `microscope` dependency group in `/opt/mg400/.venv`.
@@ -198,7 +198,7 @@ Add `vision` to `MG400_OPTIONAL_SERVICES`, preserving other selections. Run the 
 It prepares `/var/lib/mg400/vision` with owner `1000:1000` and mode `0750`, and installs the verified `vision-weights` asset.
 Without `vision` in the selection, it does not prepare this environment, directory, asset, or unit.
 
-The owner performs the first installation, runs `mg400ctl start vision`, and checks `mg400ctl gpu` on Olares.
+The owner performs the first installation, runs `labctl start vision`, and checks `labctl gpu` on Olares.
 See [Vision service](vision.en.md) for runtime settings and [Olares networking](olares.en.md#network) for access rules.
 
 The `orch` service uses the `orchestrator` dependency group in `/opt/mg400/.venv`.
@@ -276,7 +276,7 @@ Local files and downloads use the same size and SHA-256 checks. Do not change th
 With `--dry-run`, the installer only shows planned steps. It does not download, write, or change permissions.
 Dry runs still verify specified local files. They cannot confirm remote asset availability.
 
-Run `mg400ctl assets` to check each manifest asset:
+Run `labctl assets` to check each manifest asset:
 
 - `present`: content, size, ownership, and permissions match the manifest.
 - `missing`: the destination file does not exist.
@@ -291,7 +291,7 @@ This command does not download assets, change files, or start services.
 Services read this file at startup. After a change, restart the affected service.
 Empty entries use their defaults.
 Values must not contain inner quotes or backslashes, except the furnace JSON settings below.
-The installer and `mg400ctl` reject lines that systemd could interpret differently.
+The installer and `labctl` reject lines that systemd could interpret differently.
 Only `MG400_FURNACE_GAS_MAP` and `MG400_FURNACE_IDLE_GAS` accept single-quoted JSON objects.
 Their inner double quotes remain literal. Escapes, apostrophes, control characters, duplicate keys, and nonfinite numbers are refused.
 See [furnace configuration](furnace.en.md#configuration) for syntax and process limits.
@@ -321,48 +321,48 @@ Configure microscope device selection, focus limits, and camera streams as descr
 Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
 The camera service provides only configured streams, named `camera1` through `camera4` in device order.
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
-An explicit mode list overrides these defaults. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `mg400ctl`, and the preview service refuse to run. Invalid counts, paths, or modes stop installation before host changes.
+An explicit mode list overrides these defaults. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `labctl`, and the preview service refuse to run. Invalid counts, paths, or modes stop installation before host changes.
 Only streams with width at most 1280 and height at most 720 are preloaded. Larger streams start on demand.
 Before several cameras use modes above `640x480`, install the [USB bandwidth patch](olares.en.md#usb-bandwidth-patch).
-After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `mg400ctl restart camera vision microscope orch`. If `vision` is not enabled, remove `vision` from the command: `restart` refuses optional services that are not enabled.
+After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `labctl restart camera vision microscope orch`. If `vision` is not enabled, remove `vision` from the command: `restart` refuses optional services that are not enabled.
 See [Cameras](olares.en.md#cameras) for approved modes and the tray-camera configuration.
 
 ## Routine commands
 
-Run `mg400ctl` as root, for example `sudo mg400ctl status`.
+Run `labctl` as root, for example `sudo labctl status`.
 UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `station` directly. See [Recipe service](orchestrator.en.md).
 `labctl` uses the same arguments and behavior:
 
 | Command | Effect |
 | --- | --- |
-| `mg400ctl backup FILE.tar` | Save private host settings and data, excluding process locks |
-| `mg400ctl assets` | Check external asset content, ownership, and permissions |
-| `mg400ctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
-| `mg400ctl status` | Show the status of the enabled services |
-| `mg400ctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `proxy`, or `all` |
-| `mg400ctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
-| `mg400ctl restart web` | Restart services. Add `--force` to restart the furnace service |
-| `mg400ctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
-| `mg400ctl terminal` | Open the [interactive terminal](terminal-control.en.md) |
-| `mg400ctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
-| `mg400ctl mode --switch-to-tcp` | Switch the controller to TCP/IP mode |
+| `labctl backup FILE.tar` | Save private host settings and data, excluding process locks |
+| `labctl assets` | Check external asset content, ownership, and permissions |
+| `labctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
+| `labctl status` | Show the status of the enabled services |
+| `labctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `proxy`, or `all` |
+| `labctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
+| `labctl restart web` | Restart services. Add `--force` to restart the furnace service |
+| `labctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
+| `labctl terminal` | Open the [interactive terminal](terminal-control.en.md) |
+| `labctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
+| `labctl mode --switch-to-tcp` | Switch the controller to TCP/IP mode |
 | `labctl calibrate ...` | Run the [supervised microscope calibration](microscope.en.md#supervised-calibration) |
-| `mg400ctl calibration import microscope DIR` | Import existing microscope calibration data without overwriting files. See [Microscope](microscope.en.md) |
+| `labctl calibration import microscope DIR` | Import existing microscope calibration data without overwriting files. See [Microscope](microscope.en.md) |
 | `labctl run`, `labctl rehearse`, `labctl runs`, `labctl station` | Run, rehearse, and read recipes, and manage stations. See [Recipe service](orchestrator.en.md) |
 | `labctl robot state` | Agent device groups. See the [agent CLI](agent-cli.en.md) |
-| `mg400ctl camera-url` | Show 1 `/camera/cameraN.mjpeg` link for each camera. The links use the proxy address. A microscope side stream above 1280x720 has no link |
-| `mg400ctl camera-check` | Check camera devices, services, and capture streams in order. See [Camera failures](olares.en.md#camera-failures) |
+| `labctl camera-url` | Show 1 `/camera/cameraN.mjpeg` link for each camera. The links use the proxy address. A microscope side stream above 1280x720 has no link |
+| `labctl camera-check` | Check camera devices, services, and capture streams in order. See [Camera failures](olares.en.md#camera-failures) |
 
 `gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID `1000`.
 It is a read-only diagnostic. It does not start services, load the model, or change GPU settings.
 The command receives no host settings.
-GPU output alone does not confirm that vision selected CUDA. Check `mg400ctl logs vision` and the service state.
+GPU output alone does not confirm that vision selected CUDA. Check `labctl logs vision` and the service state.
 
 Furnace `stop` and `restart` query live state before changing any selected service.
 The check includes mixed lists and `all`, including a disabled furnace selected by `stop all`.
 `stop` skips the check only when systemd reports every furnace unit as not installed and inactive. If systemd gives no clear answer, the check runs.
 An active sequence or cooling gas plan requires `--force`. Unavailable, malformed, disconnected, or locked status also requires `--force`.
-Coordinate with all clients before using `mg400ctl stop furnace --force` or `mg400ctl restart furnace --force`.
+Coordinate with all clients before using `labctl stop furnace --force` or `labctl restart furnace --force`.
 Forced shutdown requests that the service stop heat and gas. Verify the stop result. The check is advisory: a sequence can start between the status read and systemd action.
 The guard reads `http://127.0.0.1:8769/api/state`.
 It does not use proxies or redirects.
@@ -399,7 +399,7 @@ This lock does not restrict DobotStudio or other hosts. Close other control prog
 
 ## Backup
 
-`mg400ctl backup FILE.tar` archives `/etc/mg400/mg400.env` and `/var/lib/mg400` with numeric owners and file modes.
+`labctl backup FILE.tar` archives `/etc/mg400/mg400.env` and `/var/lib/mg400` with numeric owners and file modes.
 It excludes only `/var/lib/mg400/locks`, which contains process connection locks.
 It also preserves furnace state and `.state.json.lock` under `/var/lib/mg400/furnace`.
 
@@ -453,14 +453,14 @@ Restore by hand on the new host:
 1. Bring active lab work to a safe end on the old host. Stop the services:
 
    ```sh
-   mg400ctl stop all
+   labctl stop all
    ```
 
    Stop any other process that writes host data before continuing.
 2. Create the backup on the old host:
 
    ```sh
-   mg400ctl backup /root/mg400-host.tar
+   labctl backup /root/mg400-host.tar
    ```
 
 3. Transfer the archive securely to `/root/mg400-host.tar` on the new host. Keep owner `root:root` and mode `0600`.
@@ -468,7 +468,7 @@ Restore by hand on the new host:
    Keep hardware disconnected during restoration. Before restoring data, stop the newly installed services:
 
    ```sh
-   mg400ctl stop all
+   labctl stop all
    ```
 
 5. Restore only a trusted archive from this command. Inspect its members first:

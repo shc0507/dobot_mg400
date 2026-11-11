@@ -28,7 +28,7 @@ Preserve ramp, HOLD, and hold-timer behavior. Apply configured temperature and r
 
 Persist `/var/lib/mg400/furnace/state.json` atomically at each phase change and every 60 s during a hold. Store steps, index, phase, hold start as wall-clock time, elapsed time, gas plan, and orphan time.
 
-`mg400ctl` refuses furnace stop or restart during a sequence unless the caller supplies `--force`. When `MG400_FURNACE_GAS_MAP` is empty, the channels are named `Gas 1` to `Gas 3` and gas commands work. The operator supplies the gas labels and process defaults.
+`labctl` refuses furnace stop or restart during a sequence unless the caller supplies `--force`. When `MG400_FURNACE_GAS_MAP` is empty, the channels are named `Gas 1` to `Gas 3` and gas commands work. The operator supplies the gas labels and process defaults.
 
 ## Consequences
 

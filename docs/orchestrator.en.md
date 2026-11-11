@@ -532,7 +532,7 @@ Without that data, it defines no thermal regions. It never selects a real camera
 The demo stage starts without a home reference. Offline tests explicitly home their owned simulator and supply contact feedback.
 The furnace demo owns its serial simulators and temporary state. Crucible skills send no heat or gas command.
 
-On an installed host, `labctl` and `mg400ctl` use the same dispatcher. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, `station rm`, and `station retool`. The [agent CLI](agent-cli.en.md) groups are `robot`, `stage`, `furnace`, `microscope`, `vision`, `thermal`, `camera`, and `all`. Administrative commands retain their root requirement.
+On an installed host, `labctl` dispatches all commands. Recipe commands are exactly `run`, `rehearse`, and `runs`. Station commands are exactly `station save`, `station list`, `station show`, `station rm`, and `station retool`. The [agent CLI](agent-cli.en.md) groups are `robot`, `stage`, `furnace`, `microscope`, `vision`, `thermal`, `camera`, and `all`. Administrative commands retain their root requirement.
 
 When root invokes a recipe or station command, the dispatcher uses `runuser --pty` to select UID/GID 1000 before starting Python. Agent groups use `runuser` without `--pty`, so stdout holds only the JSON result. It uses the absolute installed interpreter with `-I`. The child receives every nonempty `MG400_*` setting from the host settings file and the fixed service URLs.
 

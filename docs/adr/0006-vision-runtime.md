@@ -21,7 +21,7 @@ Olares 配备 24 GB 的 RTX 5090 笔记本 GPU（H-13，2026-11-02）。其他�
 - `mg400-vision.service` 使用 `/opt/mg400/.venv-vision/bin/python -m vision` 启动。默认绑定回环地址，端口为 8771。
 - `MG400_VISION_DEVICE` 在可用时默认为 `cuda`，否则为 `cpu`。加载模型前，通过 `torch.cuda.set_per_process_memory_fraction` 应用内存比例 0.15。
 - 启动时执行 1 次预热推理，同时只执行 1 次推理。演示模式使用测试检测结果，不要求 torch。go2rtc 继续管理摄像头。
-- 配置 `MG400_VISION_WEIGHTS` 和 `MG400_VISION_DEVICE`。`mg400ctl gpu` 以 UID 1000 执行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
+- 配置 `MG400_VISION_WEIGHTS` 和 `MG400_VISION_DEVICE`。`labctl gpu` 以 UID 1000 执行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
 
 ## 影响
 

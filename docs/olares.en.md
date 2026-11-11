@@ -29,7 +29,7 @@ The Olares network interface connected directly to the robot uses `192.168.1.10/
 
 Add optional services such as `thermal` and `vision` to `MG400_OPTIONAL_SERVICES` before installation.
 See [Host deployment](deploy.en.md#service-registry) for the service list and the vision runtime.
-The owner installs and starts vision, then runs `mg400ctl gpu` to read GPU memory as UID `1000`.
+The owner installs and starts vision, then runs `labctl gpu` to read GPU memory as UID `1000`.
 
 ## Single-port proxy
 
@@ -70,7 +70,7 @@ After configuration, install the supplied binary and check the generated configu
 /usr/local/lib/mg400/caddy validate --config /etc/mg400/Caddyfile --adapter caddyfile
 ```
 
-Start the proxy explicitly with `mg400ctl start proxy`.
+Start the proxy explicitly with `labctl start proxy`.
 Permit TCP `8080` through the VPN, or the configured proxy port.
 Open `http://100.64.0.1:8080/`. The proxy redirects it to the Lab Console.
 After an update, the installer can reuse the installed binary without `--caddy`.
@@ -143,7 +143,7 @@ Below, `$DOCS` means `/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqntt
 | Old location | Contents | New location |
 | --- | --- | --- |
 | `/opt/mg400-web-control` | Web panel code | `/opt/mg400`, `/etc/mg400/mg400.env` |
-| `$DOCS/mg400-terminal`, `$DOCS/mg400-tools` | Interactive terminal code, startup scripts, and mode switch tools | `mg400ctl terminal`, `mg400ctl mode` |
+| `$DOCS/mg400-terminal`, `$DOCS/mg400-tools` | Interactive terminal code, startup scripts, and mode switch tools | `labctl terminal`, `labctl mode` |
 | `$DOCS/mg400-data` | Connection locks and mode switch backups | `/var/lib/mg400` |
 | `/opt/mg400-camera-preview` | go2rtc, capture configuration, and preview program | `/usr/local/lib/mg400`, `/etc/mg400` |
 
@@ -188,8 +188,8 @@ Do this migration only once. Before migration, close all panel pages and interac
    rm -f /etc/systemd/system/*.wants/mg400-*.service
    systemctl daemon-reload
    systemctl is-enabled mg400-web-panel mg400-stage-panel mg400-camera-preview
-   mg400ctl start web stage camera
-   mg400ctl status
+   labctl start web stage camera
+   labctl status
    ```
 
    If `is-enabled` shows `static` for all 3 services, they will not start at boot.
@@ -200,7 +200,7 @@ Do this migration only once. Before migration, close all panel pages and interac
    - The stage card in the Motion workspace can connect to the Arduino.
 
 Keep the old directories until you complete these checks.
-To restore the old layout, first run `mg400ctl stop all`.
+To restore the old layout, first run `labctl stop all`.
 Then copy the files from `/root/mg400-old-units` to `/etc/systemd/system/` and run `systemctl daemon-reload`.
 Rename `start-terminal.sh.disabled` to its original name to restore the old terminal startup script.
 
@@ -269,12 +269,12 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 ```
 
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
-An explicit list overrides these defaults, including the side stream. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `mg400ctl`, and the preview service refuse to run.
+An explicit list overrides these defaults, including the side stream. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `labctl`, and the preview service refuse to run.
 The following 4-camera configuration uses the port order in the table above.
 All cameras use `1280x720@30`. The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
 The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`, so the shared USB 2 link holds only 1 such stream.
 With the [USB bandwidth patch](#usb-bandwidth-patch), 4 streams at `1280x720@30` run together at 30 fps.
-Before you raise a mode, check the bandwidth with `mg400ctl camera-check` and the kernel log:
+Before you raise a mode, check the bandwidth with `labctl camera-check` and the kernel log:
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
@@ -309,19 +309,19 @@ The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large stre
 Before simultaneous hardware use, do a supervised bandwidth check: open the required views together and make sure that several consecutive JPEG images decode completely.
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
-Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `mg400ctl restart camera vision microscope orch`. These services all read the camera modes. If `vision` is not enabled, remove `vision` from the command.
+Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `labctl restart camera vision microscope orch`. These services all read the camera modes. If `vision` is not enabled, remove `vision` from the command.
 
 Start the camera services:
 
 ```sh
-mg400ctl start camera
+labctl start camera
 ```
 
 Use the Cameras workspace of the Lab Console to see the views.
-The stream links use the proxy address: `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`. `mg400ctl camera-url` prints them.
+The stream links use the proxy address: `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`. `labctl camera-url` prints them.
 Closing the terminal does not stop the preview service.
 Stopping the preview service also stops the camera capture service.
-If startup fails, run `mg400ctl logs camera`.
+If startup fails, run `labctl logs camera`.
 
 The server keeps only the latest pending frame. It discards queued frames when the network slows.
 The server send timeout is 1.5 seconds. For an H.264 preview, it is 5 seconds.
@@ -345,10 +345,10 @@ Before you install it, make sure that the host has `dkms` and the `linux-headers
 2. Reboot the host, or load the driver again:
 
    ```bash
-   sudo mg400ctl stop camera thermal
+   sudo labctl stop camera thermal
    sudo rmmod uvcvideo
    sudo modprobe uvcvideo
-   sudo mg400ctl start camera thermal
+   sudo labctl start camera thermal
    ```
 
 3. Make sure that `cat /sys/module/uvcvideo/parameters/mjpeg_bpp` prints `200`.
@@ -362,7 +362,7 @@ Limits:
 
 ### Camera failures
 
-If an image looks wrong, first run `mg400ctl camera-check`.
+If an image looks wrong, first run `labctl camera-check`.
 It checks configured cameras by their USB port paths, then checks the 2 services and the expected go2rtc preloaded streams.
 It reports larger streams as demand-started and does not require or start a continuous preload for them.
 It exits with code 0 if all checks pass. If a check fails, it exits with code 1 and shows the next action.
@@ -376,7 +376,7 @@ If the host recognizes neither the hub nor the cameras, a preview service restar
 If the host recognizes the cameras but the stream frame rate is very low, run
 `curl -s http://127.0.0.1:1984/api/preload` on the Olares host.
 Check that the output includes each configured stream whose width is at most 1280 and height is at most 720.
-If an expected preload is missing, run `mg400ctl restart camera`, wait 2 seconds, and query again.
+If an expected preload is missing, run `labctl restart camera`, wait 2 seconds, and query again.
 Preloading might not start if a device is missing when the capture service starts.
 The console video streams reconnect automatically. The configured `camera<N>.jpg` single-frame endpoints can be slow when a stream starts on demand.
 

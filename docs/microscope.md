@@ -36,9 +36,9 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 `--bind`、`--port` 和 `--base-path`（默认 `/`）可改变监听默认值。炉控地址固定。
 
 使用前，停止冲突的相机和电机程序。
-先用 `mg400ctl start camera` 启动已配置的侧视相机服务，再运行 `mg400ctl start microscope`。
+先用 `labctl start camera` 启动已配置的侧视相机服务，再运行 `labctl start microscope`。
 显微镜单元不会自动启动相机服务。
-用 `mg400ctl logs microscope` 检查故障，用 `mg400ctl stop microscope` 停止服务。
+用 `labctl logs microscope` 检查故障，用 `labctl stop microscope` 停止服务。
 单元没有 systemd 停止超时，允许清理完成。清理出错后，检查原因再重启。
 日常真机使用前，操作员必须完成 `H-21`。
 
@@ -245,7 +245,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 取消或失败的录像保留已有本地文件，不保证生成摘要视频。
 收尾要求已有采集帧和有效媒体，主机必须装有 FFmpeg 和 ffprobe。
 缺少 `ffmpeg` 或 `ffprobe` 时，录像失败，错误信息写明缺少的程序。
-服务日志记录每次录像失败的原因，用 `mg400ctl logs microscope` 查看。
+服务日志记录每次录像失败的原因，用 `labctl logs microscope` 查看。
 收尾后，录像保存在 `/var/lib/mg400/recordings`。
 每个录像是目录 `/var/lib/mg400/recordings/<recording_id>/`，含 `run.json`、60 分钟分段 `video_0001.mp4`、`video_0002.mp4` 等、`video.timestamps.csv` 和 `<recording_id>_shortened_3_min.mp4`。
 设置 `MG400_FURNACE_ARCHIVE_DIR` 时，收尾把该目录复制到 `<archive>/<recording_id>/`，不替换已有副本。
@@ -520,7 +520,7 @@ sudo labctl calibrate setup
 操作员检查源数据后，在 Olares 运行导入：
 
 ```sh
-sudo mg400ctl calibration import microscope DIR
+sudo labctl calibration import microscope DIR
 ```
 
 把 `DIR` 替换为 Objective-Control `3a2dad0` 的数据目录。

@@ -267,10 +267,8 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
     }
     for unit in host.units.iterdir():
         assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
-    command = host.root / "usr/local/bin/mg400ctl"
-    assert command.is_symlink() and command.readlink() == host.code / "deploy/mg400ctl"
-    lab_command = host.root / "usr/local/bin/labctl"
-    assert lab_command.is_symlink() and lab_command.readlink() == command.readlink()
+    command = host.root / "usr/local/bin/labctl"
+    assert command.is_symlink() and command.readlink() == host.code / "deploy/labctl"
     assert not (host.root / "etc/mg400/go2rtc.yaml").exists()
 
     uv = [options for command, options in host.commands if command[0] == "/usr/bin/uv"]
@@ -329,6 +327,15 @@ def test_repeated_install_keeps_settings(module, host):
     assert host.install() == 0
     assert host.settings.read_text() == settings
     assert str(host.settings) not in host.out.getvalue().split("Installed")[1]
+
+
+def test_install_removes_old_mg400ctl_link(host):
+    old = host.root / "usr/local/bin/mg400ctl"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.symlink_to(host.code / "deploy/mg400ctl")
+    assert host.install() == 0
+    assert not old.is_symlink()
+    assert (host.root / "usr/local/bin/labctl").readlink() == host.code / "deploy/labctl"
 
 
 def test_existing_settings_keep_their_values_and_gain_missing_keys(module, host):
@@ -477,7 +484,7 @@ def test_failed_dependency_sync_installs_no_units(host):
 
     assert host.install(runner=failing) == 1
     assert not host.units.exists()
-    assert not (host.root / "usr/local/bin/mg400ctl").exists()
+    assert not (host.root / "usr/local/bin/labctl").exists()
 
 
 def test_settings_lines_parse_like_systemd(module):
@@ -1112,8 +1119,7 @@ def test_default_dry_run_lists_every_step(host):
         "Would install <host>/etc/systemd/system/mg400-stage-panel.service",
         "Would install <host>/etc/systemd/system/mg400-web-panel.service",
         "Would run: systemctl daemon-reload",
-        "Would link <host>/usr/local/bin/mg400ctl to <host>/opt/mg400/deploy/mg400ctl",
-        "Would link <host>/usr/local/bin/labctl to <host>/opt/mg400/deploy/mg400ctl",
+        "Would link <host>/usr/local/bin/labctl to <host>/opt/mg400/deploy/labctl",
     ]
 
 

@@ -3,7 +3,7 @@
 Every service listens on 127.0.0.1 only. The proxy is the only entry on the VPN, and
 MG400_PROXY_PORT can change its port. No other port is a setting.
 
-deploy/install.py and deploy/mg400ctl load this file by path with the system Python,
+deploy/install.py and deploy/labctl load this file by path with the system Python,
 so it imports nothing.
 """
 

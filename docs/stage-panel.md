@@ -37,12 +37,12 @@ Arduino 接在 Olares 宿主机的 USB 上，必须运行 `firmware/three-motor-
 部署在 Olares 时，在装有 Arduino IDE 的电脑上传固件：
 
 1. 在控制台点击 `Stop stage`。
-2. 在宿主机运行 `mg400ctl stop stage`。服务发送 `stop all`，再关闭串口。
+2. 在宿主机运行 `labctl stop stage`。服务发送 `stop all`，再关闭串口。
 3. 从 Olares 宿主机拔下 Arduino，接到该电脑。
 4. 按固件说明上传固件。
 5. 把 Arduino 接回 Olares 宿主机的 USB。
 6. 在宿主机运行 `ls -l /dev/serial/by-id/`，确认 Arduino 的路径与 `MG400_STAGE_SERIAL` 相同。
-7. 运行 `mg400ctl start stage`，再按 [连接](#连接) 连接 Arduino。
+7. 运行 `labctl start stage`，再按 [连接](#连接) 连接 Arduino。
 
 在本地运行服务时，上传前停止 `stage-panel` 进程。
 
@@ -112,7 +112,7 @@ uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 -
 
 停止无法确认时，卡片显示故障，服务禁止新运动。
 先使用现场物理急停并核对电机状态。
-停止请求结束后，运行 `mg400ctl restart stage`，再重新连接。
+停止请求结束后，运行 `labctl restart stage`，再重新连接。
 接口说明见 [位移台自动化契约](development.md#位移台自动化契约)。
 
 ### 连接
@@ -310,7 +310,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 
 ## 服务配置
 
-服务名为 `mg400-stage-panel.service`，由 [主机部署](deploy.md) 安装，`mg400ctl` 名称为 `stage`。
+服务名为 `mg400-stage-panel.service`，由 [主机部署](deploy.md) 安装，`labctl` 名称为 `stage`。
 服务以数字 ID `1000` 的用户和组运行，并加入 `dialout` 组，用于读写串口。
 服务手动启动，未设置开机自启。
 服务启动不打开串口，在控制台点击 `Connect` 后才打开。
@@ -392,10 +392,10 @@ ls -lL /dev/serial/by-id/
 ### 启动与停止
 
 ```sh
-mg400ctl start stage
-mg400ctl status
-mg400ctl logs stage
-mg400ctl stop stage
+labctl start stage
+labctl status
+labctl logs stage
+labctl stop stage
 ```
 
 启动后，日志显示监听地址，例如 `Stage Controller: http://127.0.0.1:8767`。
@@ -406,7 +406,7 @@ mg400ctl stop stage
 重启后，服务未连接 Arduino，在控制台重新连接。
 主机重启后，手动启动服务。
 
-更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `mg400ctl restart stage`。
+更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `labctl restart stage`。
 
 ## 故障排查
 
@@ -422,5 +422,5 @@ mg400ctl stop stage
 | `In use by another client` | 另一个客户端持有租约。等它释放控制权，再点击 `Take control`。 |
 | `position unknown, home first` | 命名位置或位姿需要已确认的参考。按 [设零与相机参考](#设零与相机参考) 设零，或回零。 |
 | `Stage target is outside the configured soft limits.` | 减少步数，或改变方向。 |
-| 卡片显示 `Not running` 或 `Not reachable` | 在宿主机运行 `mg400ctl status`，确认 `stage` 已启动。 |
+| 卡片显示 `Not running` 或 `Not reachable` | 在宿主机运行 `labctl status`，确认 `stage` 已启动。 |
 | 服务日志显示 `Failed to load environment files` | 按 [主机部署](deploy.md#安装与更新) 运行安装器，创建 `/etc/mg400/mg400.env`，再启动服务。 |

@@ -76,8 +76,8 @@ class Host:
         self.toupcam = root / "usr/local/lib/mg400/libtoupcam.so"
         self.proxy_config = self.etc / "Caddyfile"
         self.units = root / "etc/systemd/system"
-        self.command = root / "usr/local/bin/mg400ctl"
-        self.lab_command = root / "usr/local/bin/labctl"
+        self.command = root / "usr/local/bin/labctl"
+        self.old_command = root / "usr/local/bin/mg400ctl"
         self.udev = root / "etc/udev/rules.d"
         self.dev = root / "dev"
 
@@ -891,12 +891,15 @@ def install(args, host, run, chown, out):
         if not args.dry_run:
             write_file(host.units / name, content, 0o644, (0, 0), chown)
     system(["systemctl", "daemon-reload"])
-    for command in (host.command, host.lab_command):
-        step(f"link {command} to {host.code / 'deploy/mg400ctl'}")
+    step(f"link {host.command} to {host.code / 'deploy/labctl'}")
+    if not args.dry_run:
+        host.command.parent.mkdir(parents=True, exist_ok=True)
+        host.command.unlink(missing_ok=True)
+        host.command.symlink_to(host.code / "deploy/labctl")
+    if host.old_command.is_symlink():
+        step(f"remove {host.old_command}")
         if not args.dry_run:
-            command.parent.mkdir(parents=True, exist_ok=True)
-            command.unlink(missing_ok=True)
-            command.symlink_to(host.code / "deploy/mg400ctl")
+            host.old_command.unlink()
     return settings, devices
 
 
@@ -942,7 +945,7 @@ def main(argv=None, *, host=None, run=subprocess.run, chown=os.fchown, out=sys.s
         print("Cameras are off: MG400_CAMERA_DEVICES is empty.", file=out)
     if not settings.get("MG400_STAGE_SERIAL"):
         print("The stage panel offers every serial port: MG400_STAGE_SERIAL is empty.", file=out)
-    print("No service was started, stopped or restarted. Use: mg400ctl start NAME", file=out)
+    print("No service was started, stopped or restarted. Use: labctl start NAME", file=out)
     return 0
 
 

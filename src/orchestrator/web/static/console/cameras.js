@@ -249,7 +249,7 @@
   /** The video preview URL of camera1 to camera4 and the microscope, or null for the thermal view. */
   function videoUrl(view, hevc = false) {
     if (!CAMERAS.has(view) && view !== "microscope") return null;
-    return `/camera/${view}.mp4${hevc ? "?codec=h265" : ""}`;
+    return `/camera/${view}.mp4${hevc && view !== "camera1" ? "?codec=h265" : ""}`;
   }
 
   /** The live-edge correction for a play position in the last buffered range [start, end]. */
@@ -284,8 +284,9 @@
     return [mode, rate, ...extra].filter(Boolean).join(" · ");
   }
 
-  /** The snapshot URL: a full-resolution JPEG for camera1 to camera4, a full-size PNG for the microscope. */
+  /** The snapshot URL: native 4K for the stage, full-resolution JPEGs for other USB cameras, PNG for the microscope. */
   function snapshotUrl(view, basePath = "") {
+    if (view === "camera1") return "/camera/camera1.full.jpg?size=3840x2160";
     return CAMERAS.has(view) ? `/camera/${view}.full.jpg` : `${basePath}${PREFIX}snapshot/${view}`;
   }
 
@@ -648,7 +649,8 @@
         this.played = false;
         this.img.hidden = true;
         this.video.hidden = false;
-        this.hevc = hevcSupported();
+        // Some HEVC browsers expose padded rows. H.264 preserves the stage's native display size.
+        this.hevc = this.view !== "camera1" && hevcSupported();
         this.stopVideo = playH264(this.video, videoUrl(this.view, this.hevc), () => { if (generation === this.generation) this.failed(); });
         this.videoRate = meter();
         this.stopCount = countFrames(this.video, this.videoRate);

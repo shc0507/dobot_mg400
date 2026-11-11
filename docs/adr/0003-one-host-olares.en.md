@@ -29,11 +29,9 @@ Connect every lab device to Olares and run its services there. Each device has 1
 - Keep models, calibration, taught stations, tool offsets, stage configuration, thermal regions, furnace state, runs, and recordings under `/var/lib/mg400`.
 - Data ownership is `1000:1000`, directory mode `0750`, and file mode `0640` or `0600`. The private stage calibration directory `/var/lib/mg400/stage` uses mode `0700`. The installer creates data directories.
 - Inventory every USB device by device name, VID:PID, stable path, hub/port, and service. Use `/dev/serial/by-id/` and `/dev/v4l/by-path/` identities.
-- Connect every USB device through 1 self-powered hub on 1 host port. Put the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
-- Keep each camera on its fixed hub port. The 3 AC410 cameras report the same serial number, so stable names must distinguish their ports.
+- Use 2 USB hubs. The original self-powered hub carries `camera1`, the thermal camera, and controllers through USB 2 root port `12`. Put the Toupcam camera on its USB 3 side. The second bus-powered hub carries `camera2`, `camera3`, and `camera4` through USB 2 root port `6`. Never reset either shared hub.
+- Keep each camera on its fixed hub port. The 4 AC410 cameras report the same serial number, so stable names must distinguish their ports.
 - Render enabled services' udev templates with their VID/PID, `MODE="0660"`, and `@SERVICE_GROUP@` replaced by the group for GID 1000. Install `/etc/udev/rules.d/70-mg400-<name>.rules` as root with mode `0644`. Reload the rules and trigger USB enumeration.
-
-Device moves are complete. Wiring and mounting wait until the owner ends the hardware freeze. Inventories, measurements, reviews, decisions, and software work may proceed. Software uses demo and rehearsal modes.
 
 ## Consequences
 

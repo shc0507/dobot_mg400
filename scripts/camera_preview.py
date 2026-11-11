@@ -34,8 +34,8 @@ MAX_FRAME = 4 * 1024 * 1024
 # rate, so 3 previews leave room on the VPN link for control traffic.
 MAX_FPS = 30
 GO2RTC = "http://127.0.0.1:1984"
-# A full-resolution still needs the shared USB 2 link alone: its stream uses almost all of
-# it. go2rtc reads this overlay after its main config. The overlay turns off the other
+# A still that changes capture mode needs the shared USB 2 link alone. go2rtc reads this
+# overlay after its main config. The overlay turns off the other
 # cameras and the H.264 encoders and sets one camera to the requested AC410 MJPEG mode.
 # The capture unit deletes a left-over overlay before go2rtc starts.
 STILL_CONFIG = Path("/var/lib/mg400/camera/still.yaml")
@@ -175,6 +175,26 @@ def microscope_busy():
             return json.load(response).get("busy") is True
     except (OSError, ValueError, HTTPException):
         return False
+
+
+def grab_shared_still(stream, mode):
+    """Read a complete JPEG from the existing camera stream at the requested size."""
+    with urllib.request.urlopen(GO2RTC + "/api/frame.jpeg?src=" + stream, timeout=5) as upstream:
+        frame = upstream.read(STILL_MAX_FRAME + 1)
+        length = upstream.headers.get("Content-Length")
+    if (
+        not 4 <= len(frame) <= STILL_MAX_FRAME
+        or not frame.endswith(b"\xff\xd9")
+        or (length is not None and int(length) != len(frame))
+    ):
+        raise ValueError("Invalid or incomplete JPEG frame")
+    try:
+        size = jpeg_size(frame)
+    except RuntimeError as error:
+        raise ValueError(str(error)) from error
+    if size != mode[:2]:
+        raise ValueError("The camera sent an unexpected frame size")
+    return frame
 
 
 def grab_still(stream, mode=STILL_MODE):
@@ -378,11 +398,15 @@ class Preview(BaseHTTPRequestHandler):
             self.send_error(503, "Another still is in progress")
             return
         try:
-            # Every still pauses the side stream, including a still from another camera.
-            if SIDE and microscope_busy():
-                self.send_error(409, "The microscope is busy")
-                return
-            body = grab_still(stream, mode)
+            native_mode = CAMERAS.modes[CAMERAS.streams.index(stream)]
+            if stream in CAMERAS.preloaded and native_mode[:2] == mode[:2]:
+                body = grab_shared_still(stream, mode)
+            else:
+                # A mode change pauses every camera, including the microscope side stream.
+                if SIDE and microscope_busy():
+                    self.send_error(409, "The microscope is busy")
+                    return
+                body = grab_still(stream, mode)
         except (OSError, ValueError, UnicodeError, HTTPException):
             self.send_error(502)
             return

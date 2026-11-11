@@ -4,6 +4,7 @@
 (function (root, factory) {
   "use strict";
   const exported = factory(root);
+  root.LabTwin = exported;
   if (typeof module !== "undefined" && module.exports) module.exports = exported;
   else if (root.LabConsole) root.LabConsole.register(exported.workspace());
 })(typeof window !== "undefined" ? window : globalThis, function (root) {
@@ -171,7 +172,28 @@
     } catch { return { automatic: true, maxFrames: 4 }; }
   }
 
-  function workspace() {
+  // Motion and Position Monitor share one acquisition queue, including cancellation.
+  let acquisition = Promise.resolve();
+  function acquire(action) {
+    const pending = acquisition.catch(() => {}).then(action);
+    acquisition = pending;
+    return pending;
+  }
+
+  function positionMonitor() {
+    const monitor = workspace({ compact: true });
+    const mount = monitor.mount;
+    monitor.mount = (node, api) => mount(node, {
+      ...api,
+      onLanguage() {}, // Motion rebuilds this card with its own language update.
+      t: (key, vars = {}) => String(i18n[api.lang?.()]?.[key] ?? i18n.en[key] ?? key)
+        .replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ""),
+      request: (path, data, options) => api.consoleRequest("/api/console/ws/twin/" + path, data, options),
+    });
+    return monitor;
+  }
+
+  function workspace({ compact = false } = {}) {
     let host, api, nodes = {}, state = null, section = "monitor", visible = false, busy = false, loading = false;
     let running = false, measuring = false, version = 0, timer = null, lastStarted = null, previewTimer = null, previewVersion = 0, previewPending = false, editTimer = null;
     let latest = null, lastSnap = null, cache = {}, display = {}, log = [], times = [], tuning = null, pendingAction = null;
@@ -204,11 +226,20 @@
     function invalidate(clear = true) {
       version++; clearTimeout(timer); timer = null; lastStarted = null; running = false; tuning = null;
       if (clear) { latest = null; cache = {}; display = {}; log = []; times = []; }
+      else if (compact) display = readings(cache, {}, monitorProfile()).display;
     }
     function saveSettings() { try { root.localStorage?.setItem("lab-twin-tuning", JSON.stringify(settings)); } catch { /* Storage can be unavailable. */ } }
 
     function build() {
       clearPreview(); nodes = {};
+      if (compact) {
+        nodes.message = h("p", { class: "tw-message", role: "status", text: errorMessage, hidden: !errorMessage });
+        nodes.warning = h("p", { class: "tw-message", role: "status" });
+        nodes.source = h("span", { class: "tw-muted" });
+        const tools = buildSampling();
+        host.replaceChildren(buildPosition(tools, nodes.source, nodes.warning, nodes.message));
+        render(); return;
+      }
       const cameras = (state?.cameras || []).map(item => ({ value: item.id, label: item.label || item.id }));
       nodes.camera = select(cameras.length ? cameras : [{ value: "", label: t("noCamera") }], state?.camera || "", value => replaceDraft(() => mutate("source", { camera: value })), t("camera"));
       nodes.profiles = select([{ value: "", label: t("noSavedProfile") }, ...(state?.profiles || []).map(item => ({ value: item.id, label: item.name }))], state?.selected_profile || "", value => {
@@ -226,7 +257,7 @@
       nodes.cancel = button("cancel", () => { pendingAction = null; nodes.confirm.hidden = true; syncSelection(); render(); });
       nodes.confirm = h("div", { class: "tw-confirm", hidden: !pendingAction }, h("span", { text: t("replace") }), nodes.discard, nodes.cancel);
       nodes.monitor = h("div", { class: "tw-section" }); nodes.calibration = h("div", { class: "tw-section" });
-      host.replaceChildren(h("div", { class: "tw-toolbar" }, h("div", { class: "tw-tabs", role: "tablist", "aria-label": "Digital Twin" }, nodes.monitorTab, nodes.calibrationTab),
+      host.replaceChildren(h("div", { class: "tw-toolbar" }, h("div", { class: "tw-tabs", role: "tablist", "aria-label": host.getAttribute("aria-label") || "Digital Twin" }, nodes.monitorTab, nodes.calibrationTab),
         label("camera", nodes.camera), label("profile", nodes.profiles), nodes.refresh), nodes.warning, nodes.message, nodes.confirm, nodes.monitor, nodes.calibration);
       buildMonitor(); buildCalibration(); render(); startPreview();
     }
@@ -239,11 +270,14 @@
       nodes[name] = { image, overlay, placeholder };
       return h("div", { class: "tw-media" }, image, overlay, placeholder);
     }
-    function buildMonitor() {
+    function buildSampling() {
       nodes.sampling = button("start", toggleSampling, { class: "lc-button tw-button tw-primary" });
       nodes.rate = select(RATES.map(value => ({ value, label: value + " Hz" })), rate, value => { rate = Number(value); if (running || tuning?.searching) schedule(); }, t("rate"));
       nodes.sampleState = h("span", { class: "tw-state", role: "status" });
-      const tools = h("div", { class: "tw-row" }, nodes.sampling, label("rate", nodes.rate), nodes.sampleState);
+      return h("div", { class: "tw-row" }, nodes.sampling, label("rate", nodes.rate), nodes.sampleState);
+    }
+    function buildMonitor() {
+      const tools = buildSampling();
       const frame = media("sampleMedia");
       nodes.preview = h("img", { alt: t("preview"), hidden: true });
       nodes.previewInset = h("div", { class: "tw-inset" }, nodes.preview, h("span", { text: t("preview") })); frame.append(nodes.previewInset);
@@ -256,6 +290,13 @@
         h("div", { class: "tw-row" }, check("automatic", settings.automatic, value => { settings.automatic = value; saveSettings(); }), label("frames", nodes.tuneFrames), nodes.tuneNow),
         h("p", { class: "tw-muted" }, t("preset") + " · ", nodes.preset), nodes.tuneStatus);
       const cameraCard = card(heading("frame", check("outlines", outlines, value => { outlines = value; paintSample(); })), tools, frame, nodes.dimensions, stats, tune);
+      const positionCard = buildPosition();
+      nodes.markers = h("div", { class: "tw-markers" }); nodes.tracks = h("tbody"); nodes.logs = h("tbody"); nodes.count = h("span", { class: "tw-muted" });
+      const details = h("details", { class: "lc-card tw-card tw-fold" }, h("summary", { text: t("details") }), table([t("axis"), t("pair"), t("estimate"), t("offtrack")], nodes.tracks));
+      nodes.monitor.append(h("div", { class: "tw-monitor-grid" }, cameraCard, positionCard), card(heading("tags"), nodes.markers), details,
+        card(heading("log", nodes.count), table([t("time"), "X (mm)", "Y (mm)", "Insert (mm)", t("tags"), t("processing")], nodes.logs)));
+    }
+    function buildPosition(...extra) {
       nodes.axis = {};
       const values = h("div", { class: "tw-readings" }, AXES.map(axis => {
         const value = h("strong"), status = h("span", { class: "tw-axis-status" }); nodes.axis[axis] = { value, status };
@@ -266,13 +307,9 @@
       nodes.insertDot = h("span", { class: "tw-point", hidden: true }); nodes.insertLabel = h("span"); nodes.insertPending = h("p", { class: "tw-muted", text: t("pending") });
       nodes.insertMap = h("div", { class: "tw-insert-track", role: "img", "aria-label": t("insert") }, nodes.insertDot);
       nodes.recovery = h("p", { class: "tw-muted" });
-      const positionCard = card(heading("positions"), values, h("div", { class: "tw-map-title" }, h("h3", { text: t("xy") }), nodes.xyLabel), nodes.xyPending, nodes.xyMap,
+      return card(heading("positions"), ...extra, values, h("div", { class: "tw-map-title" }, h("h3", { text: t("xy") }), nodes.xyLabel), nodes.xyPending, nodes.xyMap,
         h("div", { class: "tw-map-title" }, h("h3", { text: t("insert") }), nodes.insertLabel), nodes.insertPending,
         h("div", { class: "tw-map-title tw-muted" }, h("span", { text: t("out") }), h("span", { text: t("in") })), nodes.insertMap, nodes.recovery);
-      nodes.markers = h("div", { class: "tw-markers" }); nodes.tracks = h("tbody"); nodes.logs = h("tbody"); nodes.count = h("span", { class: "tw-muted" });
-      const details = h("details", { class: "lc-card tw-card tw-fold" }, h("summary", { text: t("details") }), table([t("axis"), t("pair"), t("estimate"), t("offtrack")], nodes.tracks));
-      nodes.monitor.append(h("div", { class: "tw-monitor-grid" }, cameraCard, positionCard), card(heading("tags"), nodes.markers), details,
-        card(heading("log", nodes.count), table([t("time"), "X (mm)", "Y (mm)", "Insert (mm)", t("tags"), t("processing")], nodes.logs)));
     }
     function buildCalibration() {
       nodes.profileFile = h("input", { type: "file", accept: ".json,application/json", "aria-label": t("profileFile"), hidden: true, onchange: uploadFile });
@@ -335,6 +372,16 @@
       nodes.camera.value = state?.camera || ""; nodes.profiles.value = state?.selected_profile || "";
     }
     function render() {
+      if (compact) {
+        nodes.sampling.disabled = loading || !state?.camera || !AXES.some(axis => calibrated(monitorProfile(), axis));
+        nodes.sampling.textContent = t(running ? "pause" : "start");
+        setText("sampleState", t(loading ? "loading" : measuring ? "working" : running ? "sampling" : "paused"));
+        const camera = state?.cameras?.find(item => item.id === state.camera);
+        setText("source", [camera?.label || state?.camera, monitorProfile()?.name].filter(Boolean).join(" · "));
+        const warning = state?.warning || (!loading && !monitorProfile() ? t("pending") : "");
+        nodes.warning.textContent = warning; nodes.warning.hidden = !warning;
+        renderReadings(); return;
+      }
       if (!nodes.monitor) return;
       nodes.monitor.hidden = section !== "monitor"; nodes.calibration.hidden = section !== "calibration";
       for (const [key, tab] of [["monitor", nodes.monitorTab], ["calibration", nodes.calibrationTab]]) { tab.setAttribute("aria-selected", String(section === key)); tab.className = "tw-button tw-tab" + (section === key ? " tw-selected" : ""); }
@@ -380,7 +427,7 @@
       nodes.insertMap.setAttribute("aria-label", t("insert") + ": " + number(display.insert?.value_mm) + " mm, " + axisStatus(display.insert, "insert"));
       const recoveryKey = "twin.recovery." + latest?.insert_recovery?.status;
       nodes.recovery.textContent = i18n.en[recoveryKey] ? api.t(recoveryKey) : "";
-      renderMarkers(nodes.markers, latest?.detections || [], monitorProfile());
+      if (nodes.markers) renderMarkers(nodes.markers, latest?.detections || [], monitorProfile());
     }
     function renderMarkers(container, detections, calibration = profile()) {
       const found = new Set(detections.map(item => item.id));
@@ -454,7 +501,7 @@
       pausePreview();
       for (const image of [nodes.preview, nodes.calPreview]) { image?.removeAttribute("src"); if (image) image.hidden = true; }
     }
-    function canPreview() { return visible && state?.camera && !busy && !running && !measuring && !tuning?.searching && !root.document?.hidden; }
+    function canPreview() { return !compact && visible && state?.camera && !busy && !running && !measuring && !tuning?.searching && !root.document?.hidden; }
     function startPreview() {
       if (!canPreview() || previewTimer || previewPending) return;
       const generation = ++previewVersion;
@@ -489,10 +536,18 @@
     }
     async function refresh() {
       if (loading || busy) return;
+      const generation = version;
       loading = true; render();
-      try { state = await api.request("state"); message(); build(); }
-      catch (error) { message(error.message); }
-      finally { loading = false; render(); }
+      try {
+        const updated = await api.request("state");
+        if (compact && generation !== version) return;
+        state = updated; message(); build();
+      }
+      catch (error) { if (!compact || generation === version) message(error.message); }
+      finally {
+        loading = false; render();
+        if (compact && generation !== version && visible) refresh();
+      }
     }
     async function mutate(path, data) {
       if (busy || loading || pendingAction) return false;
@@ -592,7 +647,10 @@
     }
     function cancelTuning() {
       if (!state || (!tuning?.searching && !measuring)) return;
-      api.request("tuning/cancel", {}, { timeout: 45000 }).catch(error => { if (visible) message(error.message); });
+      const cancellation = api.request("tuning/cancel", {}, { timeout: 45000 });
+      // Signal cancellation immediately; the next view waits for both requests.
+      acquisition = Promise.allSettled([acquisition, cancellation]);
+      cancellation.catch(error => { if (visible) message(error.message); });
     }
     function toggleSampling() {
       if (busy || loading || !state) return;
@@ -607,15 +665,18 @@
     async function sample(manual = false) {
       if (measuring || busy || loading || !state?.camera || !visible || section !== "monitor" || (manual && running) || (!manual && !running && !tuning?.searching)) return;
       measuring = true; clearTimeout(timer); timer = null; clearPreview();
+      if (compact) display = readings(cache, {}, monitorProfile()).display;
       const generation = version, started = Date.now(); lastStarted = started; render();
       try {
-        const result = await api.request("measure", { automatic: settings.automatic, max_frames: settings.maxFrames, tune: manual }, { timeout: 45000 });
+        const result = await acquire(() => generation !== version || !visible ? null
+          : api.request("measure", { automatic: settings.automatic, max_frames: settings.maxFrames, tune: manual }, { timeout: 45000 }));
         if (generation !== version || !visible) return;
         if (result.camera && result.camera !== state.camera) return;
         if (result.profile_id && result.profile_id !== monitorProfile()?.id) {
           invalidate(); await refresh(); return;
         }
-        await decodeImage(result); if (generation !== version || !visible) return;
+        if (!compact) await decodeImage(result);
+        if (generation !== version || !visible) return;
         latest = result; const reading = readings(cache, result.axes, monitorProfile(), result.captured_at);
         cache = reading.cache; display = reading.display; tuning = result.tuning || result.tuning_policy || null;
         times = [...times.slice(-7), started];
@@ -634,14 +695,25 @@
         host = node; api = shellApi; build();
         api.onLanguage(() => build());
         root.document.addEventListener?.("visibilitychange", () => {
-          if (root.document.hidden) { cancelTuning(); version++; clearTimeout(timer); clearPreview(); }
+          if (root.document.hidden) {
+            cancelTuning(); version++; clearTimeout(timer); clearPreview();
+            if (compact) { display = readings(cache, {}, monitorProfile()).display; render(); }
+          }
           else if (visible) { startPreview(); schedule(); }
         });
       },
-      show() { visible = true; refresh(); startPreview(); schedule(); },
+      show() {
+        visible = true;
+        if (compact) {
+          invalidate(); state = null;
+          try { settings = preferences(root.localStorage); } catch { settings = preferences(null); }
+        }
+        refresh(); startPreview(); schedule();
+      },
       hide() { visible = false; cancelTuning(); invalidate(false); clearPreview(); clearTimeout(editTimer); editTimer = null; render(); },
+      rebuild: build,
       _state: () => ({ state, section, running, latest, display, log, busy, measuring, dirty }),
     };
   }
-  return { workspace, i18n, AXES, ENDPOINTS, RATES, logic: { readings, calibrated, fraction, mapPosition, travel, effectiveRate, nextDue, safeImage, detectionGeometry, preferences, number } };
+  return { workspace, positionMonitor, i18n, AXES, ENDPOINTS, RATES, logic: { readings, calibrated, fraction, mapPosition, travel, effectiveRate, nextDue, safeImage, detectionGeometry, preferences, number } };
 });

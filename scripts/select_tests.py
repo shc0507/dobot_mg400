@@ -58,6 +58,7 @@ AREAS = [
     ("examples/*", ["test_joint_example.py"]),
     ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py"]),
     ("scripts/console_font.py", ["test_console.py"]),
+    ("scripts/console_preview.py", ["test_console_preview.py", "test_console_twin.py"]),
     ("src/orchestrator/*", ORCHESTRATOR),
     ("recipes/*", ORCHESTRATOR),
     ("deploy/mg400ctl", ORCHESTRATOR),

@@ -218,15 +218,23 @@ test("Disable stays offered while the arm jogs; Enable needs a disabled arm and 
 
 test("each station switches its view with the tabs inside the frame", async () => {
   const page = await mounted();
-  const tabs = label => page.root.all().filter(node => node.className.startsWith("mo-tab") && node.textContent === label);
-  assert.equal(tabs("Insert rail").length, 2);
-  assert.equal(tabs("Microscope")[0].getAttribute("aria-pressed"), "true");
-  assert.equal(tabs("Tray")[0].getAttribute("aria-pressed"), "false");
-  tabs("Tray")[0].click();
-  assert.equal(tabs("Tray")[0].getAttribute("aria-pressed"), "true");
-  assert.equal(tabs("Insert rail")[0].getAttribute("aria-pressed"), "false");
-  assert.ok(page.root.all().some(node => node.getAttribute("aria-label") === "Tray, OFFLINE"));
+  for (const [station, labels] of [
+    ["stage", ["Microscope", "Stage", "Microscope side", "Insert rail", "Tray", "Thermal"]],
+    ["arm", ["Insert rail", "Tray", "Microscope side", "Stage", "Microscope", "Thermal"]],
+  ]) {
+    const frame = page.root.all().find(node => node.className === "mo-view mo-view-" + station);
+    const tabs = frame.all().filter(node => node.className.startsWith("mo-tab") && node.tagName === "BUTTON");
+    assert.deepEqual(tabs.map(node => node.textContent), labels);
+    assert.equal(tabs[0].getAttribute("aria-pressed"), "true");
+    for (const tab of [...tabs.slice(1), tabs[0]]) {
+      tab.click();
+      assert.equal(tab.getAttribute("aria-pressed"), "true");
+      assert.equal(tabs.filter(node => node.getAttribute("aria-pressed") === "true").length, 1);
+      assert.ok(frame.all().some(node => node.getAttribute("aria-label") === `${tab.textContent}, OFFLINE`));
+    }
+  }
   assert.equal(page.root.all().some(node => /Swap view/.test(node.textContent)), false);
+  assert.equal(page.calls.some(call => call[0] === "relay"), false);
 });
 
 test("only a demo device shows a badge, and a held device names its holder on the button", async () => {
@@ -343,7 +351,7 @@ test("Set zero sends only after the page confirmation", async () => {
 
 test("a stage step needs no zero or reference", async () => {
   const second = await mounted();
-  second.find("Move Insert plus by the steps").click();
+  second.find("Move Insert Out by the steps").click();
   await second.settle();
   assert.deepEqual(second.calls.filter(call => call[0] === "relay"), [["relay", "stage", "move", { motor: "insert", direction: "cw", speed: 50, steps: 50 }]]);
 });
@@ -360,6 +368,27 @@ test("an arm without fresh feedback reads Not connected and greys its last pose"
   // An ok command shows only the service message, not a second Last line.
   assert.equal(texts.filter(text => text.includes("Robot disable and rest are confirmed.")).length, 1);
   assert.equal(texts.some(text => text.startsWith("Last:")), false);
+});
+
+test("arm XY plot follows controller coordinates, marks retained poses and hides unknown positions", async () => {
+  const page = await mounted({ robot: { ...ROBOT, actual: [250, -100, 40, 30] } });
+  const refs = page.ws._test.refs();
+  assert.equal(refs.armXYDot.getAttribute("style"), "left:75%;bottom:40%");
+  assert.equal(refs.armXYDot.getAttribute("data-stale"), "false");
+  assert.match(refs.armXYMap.getAttribute("aria-label"), /X 250.00 mm; Y -100.00 mm/);
+  assert.equal(page.root.all().find(node => node.className === "mo-pose mo-zr-readings").textContent, "Z40.00mmR30.00°");
+  page.ws._test.data.robot = { ...ROBOT, actual: null, busy: true };
+  page.ws._test.update();
+  assert.equal(refs.armXYState.textContent, "Last known");
+  assert.equal(refs.armXYDot.hidden, false);
+  assert.equal(refs.armXYDot.getAttribute("data-stale"), "true");
+  page.ws._test.data.robot = { ...ROBOT, actual: [650, -200, 40, 30] };
+  page.ws._test.update();
+  assert.equal(refs.armXYScale.textContent, "−700 … 700 mm");
+  page.ws._test.data.robot = { ...ROBOT, actual: null };
+  page.ws._test.update();
+  assert.equal(refs.armXYDot.hidden, true);
+  assert.equal(refs.armXYState.textContent, "No position");
 });
 
 test("an idle axis shows no state, a disconnected stage no position, and ports get short labels", async () => {
@@ -526,6 +555,35 @@ test("stage hold keys map to 1 axis and 1 direction", () => {
 
 const press = { button: 0, pointerId: 1, preventDefault() {} };
 
+test("physical stage labels send the original controller directions for holds and steps", async () => {
+  const motors = ["bottom", "top", "insert"].map(id => ({ ...STAGE.motors[0], id }));
+  const page = await keyboardPage({ stage: { ...STAGE, motors } });
+  try {
+    for (const [motor, axis, label, direction] of [
+      ["bottom", "Bottom (Y)", "Up", "ccw"], ["bottom", "Bottom (Y)", "Down", "cw"],
+      ["top", "Top (X)", "Left", "cw"], ["top", "Top (X)", "Right", "ccw"],
+      ["insert", "Insert", "In", "ccw"], ["insert", "Insert", "Out", "cw"],
+    ]) {
+      const button = page.find(`Hold to move ${axis} ${label}`);
+      assert.equal(button.textContent, `Hold ${label}`);
+      button.listeners.get("pointerdown")(press);
+      await page.settle();
+      const hold = page.holdCalls().filter(call => call[1] === "stage/hold").at(-1)[2];
+      assert.equal(hold.motor, motor);
+      assert.equal(hold.direction, direction);
+      button.listeners.get("pointerup")({});
+      await page.settle();
+      page.find(`Move ${axis} ${label} by the steps`).click();
+      await page.settle();
+      assert.deepEqual(page.calls.filter(call => call[0] === "relay").at(-1),
+        ["relay", "stage", "move", { motor, direction, speed: 50, steps: 50 }]);
+    }
+    const top = page.root.all().find(node => node.className === "mo-axis" && node.getAttribute("aria-label") === "Top (X)");
+    assert.deepEqual(top.children.filter(node => node.className === "mo-hold").map(node => node.textContent), ["Hold Left", "Hold Right"]);
+    assert.deepEqual(top.all().filter(node => node.tagName === "KBD").map(node => [node.textContent, node.getAttribute("title")]), [["L", "Left"], ["J", "Right"]]);
+  } finally { page.restore(); }
+});
+
 test("stage holds, their releases and arm keys ask for the control socket", async () => {
   const page = await keyboardPage();
   try {
@@ -533,7 +591,7 @@ test("stage holds, their releases and arm keys ask for the control socket", asyn
     await page.settle();
     page.key("keydown", "KeyW");
     page.key("keyup", "KeyW");
-    const button = page.find("Hold to move Insert plus");
+    const button = page.find("Hold to move Insert Out");
     button.listeners.get("pointerdown")(press);
     button.listeners.get("pointerup")({});
     await page.settle();
@@ -550,7 +608,7 @@ test("a Hold button refreshes the hold while pressed and releases it on pointeru
   const page = await keyboardPage({ stage });
   try {
     const before = page.intervals.length;
-    const button = page.find("Hold to move Insert plus");
+    const button = page.find("Hold to move Insert Out");
     button.listeners.get("pointerdown")(press);
     await page.settle();
     page.intervals[before]();
@@ -560,7 +618,7 @@ test("a Hold button refreshes the hold while pressed and releases it on pointeru
     await page.ws._test.refresh();
     assert.equal(button.disabled, false);
     assert.equal(button.getAttribute("aria-pressed"), "true");
-    assert.equal(page.find("Move Insert plus by the steps").disabled, true);
+    assert.equal(page.find("Move Insert Out by the steps").disabled, true);
     button.listeners.get("pointerup")({});
     button.listeners.get("lostpointercapture")({});
     await page.settle();
@@ -574,7 +632,7 @@ test("a Hold button refreshes the hold while pressed and releases it on pointeru
     assert.equal(page.intervals[before], null);
     assert.equal(button.getAttribute("aria-pressed"), "false");
     // A pointerup anywhere in the window also ends a button hold.
-    page.find("Hold to move Insert minus").listeners.get("pointerdown")(press);
+    page.find("Hold to move Insert In").listeners.get("pointerdown")(press);
     page.win.get("pointerup")({});
     await page.settle();
     assert.deepEqual(page.holdCalls().slice(3).map(call => call[1]), ["stage/hold", "stage/release"]);
@@ -587,7 +645,7 @@ test("a refused hold ends at once and needs a new press", async () => {
   const page = await keyboardPage({ replies: { "stage/hold": () => (++sent > 1 ? refused : { outcome: "accepted" }) } });
   try {
     const before = page.intervals.length;
-    const button = page.find("Hold to move Insert minus");
+    const button = page.find("Hold to move Insert In");
     button.listeners.get("pointerdown")(press);
     await page.settle();
     page.intervals[before]();
@@ -649,6 +707,6 @@ test("the stage keyboard holds 1 axis and stops on keyup, blur, a hidden tab, lo
 
 test("without stage control the Hold buttons and the stage keyboard are unavailable", async () => {
   const page = await mounted({ owns: [], stage: { ...STAGE, holder: null } });
-  assert.equal(page.find("Hold to move Insert plus").disabled, true);
+  assert.equal(page.find("Hold to move Insert Out").disabled, true);
   assert.equal(page.find("Stage keyboard").disabled, true);
 });

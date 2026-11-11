@@ -763,6 +763,117 @@ class MJPEG(io.BytesIO):
         )
 
 
+def configure_native_camera(module, monkeypatch):
+    monkeypatch.setattr(
+        module,
+        "CAMERAS",
+        SimpleNamespace(
+            devices=module.CAMERAS.devices,
+            streams=module.CAMERAS.streams,
+            modes=((3840, 2160, 30), (1280, 720, 30), (3840, 2160, 30)),
+            preloaded=("camera1", "camera2"),
+        ),
+    )
+
+
+@pytest.fixture
+def shared_still(preview, monkeypatch):
+    module, upstream = preview
+    configure_native_camera(module, monkeypatch)
+    monkeypatch.setattr(module, "SIDE", "camera3")
+    monkeypatch.setattr(module, "microscope_busy", Mock(return_value=True))
+    monkeypatch.setattr(module, "STILL_CONFIG", Mock())
+    monkeypatch.setattr(module, "restart_go2rtc", Mock())
+    monkeypatch.setattr(module, "grab_still", Mock(side_effect=AssertionError("Mode changed")))
+    yield module, upstream
+    module.microscope_busy.assert_not_called()
+    module.STILL_CONFIG.write_text.assert_not_called()
+    module.STILL_CONFIG.unlink.assert_not_called()
+    module.restart_go2rtc.assert_not_called()
+    module.grab_still.assert_not_called()
+    assert not module.STILL_LOCK.locked()
+
+
+@pytest.mark.parametrize("camera, size", [(1, (3840, 2160)), (2, (1280, 720))])
+def test_sized_still_reuses_preloaded_native_stream_during_microscope_job(
+    shared_still, camera, size
+):
+    module, upstream = shared_still
+    frame = jpeg(*size)
+
+    def urlopen(_target, timeout=None):
+        assert module.STILL_LOCK.locked()
+        response = io.BytesIO(frame)
+        response.headers = {"Content-Length": str(len(frame))}
+        return response
+
+    upstream.side_effect = urlopen
+    status, headers, body = request(module, f"camera{camera}.full.jpg?size={size[0]}x{size[1]}")
+    assert status == 200
+    assert body == frame
+    assert headers["Content-Type"] == "image/jpeg"
+    assert headers["Content-Length"] == str(len(frame))
+    assert headers["Cache-Control"] == "no-store"
+    upstream.assert_called_once_with(
+        f"http://127.0.0.1:1984/api/frame.jpeg?src=camera{camera}", timeout=5
+    )
+
+
+@pytest.mark.parametrize(
+    "frame, length",
+    [
+        (jpeg(1280, 720), None),
+        (jpeg(3840, 2160)[:-2], None),
+        (b"\xff\xd8broken\xff\xd9", None),
+        (b"not a JPEG\xff\xd9", None),
+        (jpeg(3840, 2160), "1000"),
+        (jpeg(3840, 2160), "invalid"),
+    ],
+)
+def test_native_still_rejects_invalid_frames_without_restart(shared_still, frame, length):
+    module, upstream = shared_still
+    response = io.BytesIO(frame)
+    response.headers = {} if length is None else {"Content-Length": length}
+    upstream.side_effect = lambda *_args, **_kwargs: response
+    status, headers, _ = request(module, "camera1.full.jpg?size=3840x2160")
+    assert status == 502
+    assert headers["Cache-Control"] == "no-store"
+    assert upstream.call_count == 1
+
+
+def test_native_still_bounds_the_frame_read(shared_still, monkeypatch):
+    module, upstream = shared_still
+    monkeypatch.setattr(module, "STILL_MAX_FRAME", 64)
+    response = Mock(wraps=io.BytesIO(jpeg(3840, 2160) + bytes(128)))
+    response.headers = {}
+    upstream.side_effect = lambda *_args, **_kwargs: nullcontext(response)
+    assert request(module, "camera1.full.jpg?size=3840x2160")[0] == 502
+    response.read.assert_called_once_with(65)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        urllib.error.URLError("Camera unavailable"),
+        OSError("Camera unavailable"),
+        IncompleteRead(b""),
+    ],
+)
+def test_native_still_upstream_failure_returns_502_without_restart(shared_still, error):
+    module, upstream = shared_still
+    upstream.side_effect = error
+    assert request(module, "camera1.full.jpg?size=3840x2160")[0] == 502
+    assert upstream.call_count == 1
+
+
+def test_native_still_rejects_an_occupied_capture_slot(shared_still):
+    module, upstream = shared_still
+    with module.STILL_LOCK:
+        assert request(module, "camera1.full.jpg?size=3840x2160")[0] == 503
+        assert module.STILL_LOCK.locked()
+    upstream.assert_not_called()
+
+
 @pytest.fixture
 def still(preview, monkeypatch, tmp_path):
     module, _ = preview
@@ -841,6 +952,22 @@ def test_sized_still_uses_native_dimensions_at_the_lowest_supported_rate(still, 
     assert '  camera2: ""' in overlay.splitlines()
     assert '  camera3: ""' in overlay.splitlines()
     assert restored is None and not module.STILL_CONFIG.exists()
+    assert calls[-2:] == ["http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
+    assert not module.STILL_LOCK.locked()
+
+
+@pytest.mark.parametrize(
+    "route, size",
+    [("camera1.full.jpg", (4000, 3000)), ("camera3.full.jpg?size=3840x2160", (3840, 2160))],
+)
+def test_preloaded_native_mode_preserves_other_still_captures(still, monkeypatch, route, size):
+    module, calls, overlays = still
+    configure_native_camera(module, monkeypatch)
+    status, _, body = request(module, route)
+    assert status == 200
+    assert body == jpeg(*size)
+    assert len(overlays) == 2
+    assert overlays[0] is not None and overlays[1] is None
     assert calls[-2:] == ["http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
     assert not module.STILL_LOCK.locked()
 

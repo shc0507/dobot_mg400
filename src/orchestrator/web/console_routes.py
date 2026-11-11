@@ -10,7 +10,7 @@ from labkit.lease import validate_client
 from ..clients import SERVICES
 from .workspaces import discover
 
-_ASSET = re.compile(r"[a-z][a-z0-9-]{0,31}\.(js|css|woff2)")
+_ASSET = re.compile(r"[a-z][a-z0-9-]{0,31}\.(js|css|woff2|png)")
 
 
 def _page():

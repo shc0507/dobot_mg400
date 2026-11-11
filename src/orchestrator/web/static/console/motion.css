@@ -1,15 +1,15 @@
 /* Motion workspace. Every rule starts with #ws-motion (or targets the page while Motion shows).
  * Look: a warm tinted ground with white cards on soft corners. One blue marks what you can press
  * or what is on now; red is only for stops; video sits in dark wells. See DESIGN.md. */
-body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
+body:has(#ws-motion:not([hidden])) { background: var(--lc-ground); }
 
 #ws-motion {
-  --mo-ground: #F2EEE9; --mo-card: #FFFFFF; --mo-surface: #F7F4F0; --mo-fill: #F2EEE9; --mo-fill-hover: #E9E3DC;
-  --mo-line: #EDE6DE; --mo-edge: #E0D8CF; --mo-text: #2A2622; --mo-text-2: #6F625A; --mo-count: #8A7F74;
-  --mo-action: #2E5BFF; --mo-action-hover: #2149E0; --mo-action-soft: #E8EEFF; --mo-on-action: #FFFFFF;
-  --mo-stop: #B4232C; --mo-stop-soft: #FDE8E8; --mo-stop-hover: #F9D6D6;
-  --mo-ok: #27774C; --mo-warn: #8F6200; --mo-warn-soft: #FFF3D6; --mo-bad: #B4232C; --mo-info: #2E5BFF;
-  --mo-well: #171310; --mo-shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05);
+  --mo-ground: var(--lc-ground); --mo-card: var(--lc-card); --mo-surface: var(--lc-surface); --mo-fill: var(--lc-fill); --mo-fill-hover: var(--lc-fill-hover);
+  --mo-line: var(--lc-line); --mo-edge: var(--lc-edge); --mo-text: var(--lc-text); --mo-text-2: var(--lc-text-2); --mo-count: var(--lc-count);
+  --mo-action: var(--lc-action); --mo-action-hover: var(--lc-action-hover); --mo-action-soft: var(--lc-action-soft); --mo-on-action: var(--lc-on-action);
+  --mo-stop: var(--lc-stop); --mo-stop-soft: var(--lc-stop-soft); --mo-stop-hover: var(--lc-stop-hover);
+  --mo-ok: var(--lc-ok); --mo-warn: var(--lc-warn); --mo-warn-soft: var(--lc-warn-soft); --mo-bad: var(--lc-stop); --mo-info: var(--lc-action);
+  --mo-well: var(--lc-well); --mo-shadow: var(--lc-shadow);
   display: flex; flex-direction: column; gap: 20px; color: var(--mo-text);
 }
 #ws-motion ::selection { background: var(--mo-action-soft); color: var(--mo-text); }
@@ -18,9 +18,16 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion h2 { margin: 0; font-size: 18px; font-weight: 700; white-space: nowrap; }
 #ws-motion p { margin: 0; }
 
-/* Two stations. Their views share 1 row, so both frames have the same height. */
-#ws-motion .mo-stations { display: grid; grid-template-columns: minmax(0, 711fr) minmax(0, 649fr); grid-template-rows: auto auto; gap: 12px 20px; align-items: start; }
-#ws-motion .mo-station { grid-row: span 2; display: grid; grid-template-rows: subgrid; min-width: 0; padding: 12px 12px 14px; border-radius: 20px; background: var(--mo-card); box-shadow: var(--mo-shadow); }
+/* Stage controls and position share a row. The camera fills the remaining height. */
+#ws-motion .mo-stations { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr); gap: 20px; align-items: stretch; }
+#ws-motion .mo-station { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding: 16px; border-radius: 20px; background: var(--mo-card); box-shadow: var(--mo-shadow); }
+#ws-motion .mo-station-stage .mo-body { order: -1; }
+#ws-motion .mo-station-arm { grid-column: 1 / -1; }
+#ws-motion .mo-position { display: flex; flex-direction: column; min-width: 0; }
+#ws-motion .mo-position > .tw-card { flex: 1; }
+#ws-motion .mo-position .tw-xy { max-width: 280px; align-self: center; }
+#ws-motion .mo-position .tw-readings { padding: 14px 12px; border-radius: 12px; background: var(--mo-surface); }
+#ws-motion .mo-position .tw-axis-status { min-height: 28px; }
 #ws-motion .mo-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 0 4px; container-type: inline-size; }
 #ws-motion .mo-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 44px; }
 #ws-motion .mo-head > * { flex: none; }
@@ -58,13 +65,19 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-stop:disabled { opacity: 1; }
 
 /* Views: 1 live view per frame, the tabs inside the frame. */
-#ws-motion .mo-view { position: relative; min-width: 0; overflow: hidden; border-radius: 16px; background: var(--mo-well); }
-#ws-motion .mo-view-arm { aspect-ratio: 16 / 9; }
-#ws-motion .mo-view-stage { height: 100%; min-height: 240px; }
-#ws-motion .mo-view-media { position: absolute; inset: 0; }
-#ws-motion .mo-tabs { position: absolute; top: 8px; left: 8px; right: 140px; z-index: 3; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
-#ws-motion .mo-tab { pointer-events: auto; min-height: 32px; padding: 0 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.88); color: var(--mo-text); font-size: 13px; }
-#ws-motion .mo-tab:hover { background: #FFFFFF; }
+#ws-motion .mo-view { position: relative; display: flex; flex-direction: column; min-width: 0; overflow: hidden; border-radius: 16px; background: var(--mo-well); }
+#ws-motion .mo-view-arm { flex: 1; }
+#ws-motion .mo-view-arm .mo-view-media { min-height: 320px; aspect-ratio: 16 / 9; }
+#ws-motion .mo-view-stage { flex: 1 0 360px; min-height: 360px; }
+#ws-motion .mo-view-media { position: relative; flex: 1; min-height: 280px; }
+#ws-motion .mo-tabs { order: -1; flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; }
+#ws-motion .mo-view .lcam-tile[data-view="thermal"] .lcam-head { left: 8px; }
+#ws-motion .mo-view .lcam-readings { order: -1; display: flex; flex-wrap: wrap; gap: 6px; }
+#ws-motion .mo-view .lcam-readings span { display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 8px; border-radius: 8px; background: rgba(23, 19, 16, 0.72); color: #F2EEE9; font-size: 12px; }
+#ws-motion .mo-view .lcam-readings small { font-size: 12px; }
+#ws-motion .mo-view .lcam-colorbar { top: 56px; bottom: 48px; }
+#ws-motion .mo-tab { pointer-events: auto; min-height: 32px; padding: 0 12px; border-radius: 10px; background: var(--lc-well-chip); color: var(--mo-text); font-size: 13px; }
+#ws-motion .mo-tab:hover { background: var(--lc-well-chip-hover); }
 #ws-motion .mo-tab.mo-on, #ws-motion .mo-tab.mo-on:hover { background: var(--mo-action); color: var(--mo-on-action); }
 #ws-motion .mo-view .lcam-tile { position: absolute; inset: 0; border: 0; border-radius: 0; background: transparent; }
 #ws-motion .mo-view .lcam-stage { position: absolute; inset: 0; aspect-ratio: auto; background: var(--mo-well); cursor: default; }
@@ -72,7 +85,7 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-view .lcam-empty { background: var(--mo-well); color: #CFC6BC; }
 #ws-motion .mo-view .lcam-head { position: absolute; top: 8px; right: 8px; z-index: 3; padding: 0; }
 #ws-motion .mo-view .lcam-names { display: none; }
-#ws-motion .mo-view .lcam-badge { min-height: 32px; padding: 0 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.88); font-size: 13px; letter-spacing: 0; }
+#ws-motion .mo-view .lcam-badge { min-height: 32px; padding: 0 10px; border-radius: 10px; background: var(--lc-well-chip); font-size: 13px; letter-spacing: 0; }
 #ws-motion .mo-view .lcam-badge.tone-ok { color: var(--mo-ok); } #ws-motion .mo-view .lcam-badge.tone-warn { color: var(--mo-warn); }
 #ws-motion .mo-view .lcam-badge.tone-bad { color: var(--mo-bad); } #ws-motion .mo-view .lcam-badge.tone-off { color: var(--mo-text-2); }
 #ws-motion .mo-view .lcam-badge.tone-ok .lc-dot { background: var(--mo-ok); } #ws-motion .mo-view .lcam-badge.tone-warn .lc-dot { background: var(--mo-warn); }
@@ -83,17 +96,18 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-view .lcam-mode { color: #F2EEE9; }
 #ws-motion .mo-view .lcam-note { color: #CFC6BC; }
 #ws-motion .mo-view .lcam-buttons { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: flex; gap: 6px; }
-#ws-motion .mo-view .lcam-buttons .lc-button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 10px; background: rgba(255, 255, 255, 0.88); color: var(--mo-text); font-size: 13px; }
-#ws-motion .mo-view .lcam-buttons .lc-button:hover { background: #FFFFFF; }
+#ws-motion .mo-view .lcam-buttons .lc-button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--lc-well-chip); color: var(--mo-text); font-size: 13px; }
+#ws-motion .mo-view .lcam-buttons .lc-button:hover { background: var(--lc-well-chip-hover); }
 #ws-motion .mo-cam-off { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--mo-well); }
 #ws-motion .mo-cam-badge { padding: 4px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.12); color: #CFC6BC; font-size: 13px; font-weight: 600; }
 
-/* Arm: the keyboard map beside the readout. */
-#ws-motion .mo-armbody { display: grid; grid-template-columns: minmax(0, 62fr) minmax(190px, 38fr); gap: 16px 20px; align-items: start; }
+/* Arm: a large camera above keyboard controls, beside the position readout. */
+#ws-motion .mo-armbody { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(280px, 1fr); gap: 16px 20px; align-items: stretch; }
+#ws-motion .mo-arm-visual { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 #ws-motion .mo-kb { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 16px; background: var(--mo-surface); }
 #ws-motion .mo-kb-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 #ws-motion .mo-switch { display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 4px 0 0; border: 0; background: transparent; color: var(--mo-text); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
-#ws-motion .mo-knob { position: relative; flex: none; width: 40px; height: 22px; border-radius: 999px; background: #D6CDC3; transition: background-color 150ms ease-out; }
+#ws-motion .mo-knob { position: relative; flex: none; width: 40px; height: 22px; border-radius: 999px; background: var(--lc-knob-off); transition: background-color 150ms ease-out; }
 #ws-motion .mo-knob::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 1px 2px rgba(60, 40, 20, 0.25); transition: transform 150ms ease-out; }
 #ws-motion .mo-switch.mo-on .mo-knob { background: var(--mo-action); }
 #ws-motion .mo-switch.mo-on .mo-knob::after { transform: translateX(18px); }
@@ -118,6 +132,23 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-reading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; min-width: 0; padding: 4px 0; font-size: 13px; color: var(--mo-text-2); }
 #ws-motion .mo-joints .mo-reading { flex-direction: column; align-items: flex-start; gap: 0; }
 #ws-motion .mo-pose .mo-reading { border-bottom: 1px solid var(--mo-line); }
+#ws-motion .mo-arm-position { display: flex; flex: 1; flex-direction: column; gap: 10px; padding: 12px; border-radius: 14px; background: var(--mo-surface); }
+#ws-motion .mo-xy-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; font-size: 13px; font-weight: 600; }
+#ws-motion .mo-xy-state { color: var(--mo-ok); font-size: 12px; font-weight: 400; }
+#ws-motion .mo-xy-state[data-stale="true"] { color: var(--mo-text-2); }
+#ws-motion .mo-pose-value { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 4px; min-width: 0; }
+#ws-motion .mo-arm-position > .mo-pose:not(.mo-zr-readings) .mo-reading { flex-direction: column; align-items: flex-start; gap: 4px; border: 0; }
+#ws-motion .mo-xy-map { position: relative; flex: none; align-self: center; margin: auto 22px; width: calc(100% - 44px); max-width: 240px; aspect-ratio: 1; border: 1px solid var(--mo-line); background-color: var(--mo-card); background-image: linear-gradient(to right, var(--mo-line) 1px, transparent 1px), linear-gradient(to top, var(--mo-line) 1px, transparent 1px); background-size: 25% 25%; }
+#ws-motion .mo-xy-map::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 1px solid var(--mo-edge); }
+#ws-motion .mo-xy-map::after { content: ""; position: absolute; bottom: 50%; left: 0; right: 0; border-bottom: 1px solid var(--mo-edge); }
+#ws-motion .mo-xy-point { position: absolute; z-index: 1; width: 12px; height: 12px; border: 2px solid var(--mo-card); border-radius: 50%; background: var(--mo-ok); transform: translate(-50%, 50%); box-shadow: 0 0 0 2px var(--mo-ok); }
+#ws-motion .mo-xy-point[data-stale="true"] { background: var(--mo-warn-soft); border-color: var(--mo-warn); box-shadow: 0 0 0 2px var(--mo-warn-soft); }
+#ws-motion .mo-xy-zero, #ws-motion .mo-xy-x, #ws-motion .mo-xy-y { position: absolute; color: var(--mo-text-2); font-size: 12px; }
+#ws-motion .mo-xy-zero { left: calc(50% - 12px); top: calc(50% + 3px); }
+#ws-motion .mo-xy-x { right: -20px; bottom: calc(50% - 18px); }
+#ws-motion .mo-xy-y { left: calc(50% + 5px); top: -18px; }
+#ws-motion .mo-xy-scale { align-self: center; color: var(--mo-text-2); font-size: 12px; }
+#ws-motion .mo-zr-readings .mo-reading { flex-wrap: wrap; }
 #ws-motion .mo-deg::after { content: "°"; }
 #ws-motion .mo-vac { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
 #ws-motion .mo-vac-state, #ws-motion .mo-vac-held { font-size: 13px; font-weight: 600; color: var(--mo-text-2); }
@@ -159,7 +190,7 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 #ws-motion .mo-narrow { width: 76px; }
 #ws-motion .mo-kcap { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 6px; background: var(--mo-fill); color: var(--mo-text-2); font: inherit; font-size: 12px; font-weight: 600; }
 #ws-motion .mo-kcap.mo-on { background: var(--mo-action); color: var(--mo-on-action); }
-#ws-motion .mo-hint { min-width: 20px; height: 20px; background: rgba(255, 255, 255, 0.7); }
+#ws-motion .mo-hint { min-width: 20px; height: 20px; background: var(--mo-card); }
 
 /* Stage: 1 row per axis, Hold first. */
 #ws-motion .mo-axes { display: flex; flex-direction: column; }
@@ -216,10 +247,12 @@ body:has(#ws-motion:not([hidden])) { background: #F2EEE9; }
 @media (max-width: 1100px) {
   #ws-motion .mo-stations { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   #ws-motion .mo-station { grid-row: auto; display: flex; flex-direction: column; gap: 12px; }
-  #ws-motion .mo-view-stage { height: auto; aspect-ratio: 16 / 9; }
+  #ws-motion .mo-view-stage { flex: none; min-height: 0; }
+  #ws-motion .mo-view-stage .mo-view-media { flex: none; height: clamp(280px, 60vw, 480px); }
 }
 @media (max-width: 720px) {
   #ws-motion .mo-armbody { grid-template-columns: minmax(0, 1fr); }
+  #ws-motion .mo-view-arm .mo-view-media { min-height: 280px; }
   #ws-motion .mo-axis { grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1fr); }
   #ws-motion .mo-axis .mo-axval { grid-column: 2 / -1; }
   #ws-motion .mo-axspeed, #ws-motion .mo-axkeys { display: none; }

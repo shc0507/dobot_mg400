@@ -65,8 +65,9 @@ class CameraConfig:
     def preloaded(self):
         return tuple(
             stream
-            for stream, (width, height, _) in zip(self.streams, self.modes)
-            if width <= 1280 and height <= 720
+            for stream, mode in zip(self.streams, self.modes)
+            if (mode[0] <= 1280 and mode[1] <= 720)
+            or (stream == "camera1" and mode == (3840, 2160, 30))
         )
 
     def mode(self, camera):

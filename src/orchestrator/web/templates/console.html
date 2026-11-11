@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="en">
+{% set brand = {'name': 'AI Chemistry Console', 'logo': base_path ~ '/console-static/console-logo.png', 'position_title': 'Position Finder'} %}
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WuLab Console</title>
+  <title>{{ brand.get('name', 'WuLab Console') }}</title>
+  <script src="{{ base_path }}/console-static/theme.js"></script>
   <link rel="stylesheet" href="{{ base_path }}/console-static/shell.css">
   {% for item in workspaces %}{% if item.style %}
   <link rel="stylesheet" href="{{ base_path }}/console-static/{{ item.id }}.css">
@@ -14,21 +16,31 @@
     <header class="lc-header">
       <div class="lc-row1">
       <div class="lc-brand" title="{{ commit }}">
+        {% if brand.logo %}
+        <img src="{{ brand.logo }}" width="36" height="36" alt="" aria-hidden="true">
+        {% else %}
         <svg width="28" height="28" viewBox="0 0 30 30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="23" r="4"></circle><path d="M10.5 20 L17 11 L24 14"></path><circle cx="17" cy="11" r="2.2"></circle><path d="M24 14 L26 18 M24 14 L27 12"></path></svg>
+        {% endif %}
         <div class="lc-brand-text">
+          {% if brand.name %}
+          <span class="lc-name">{{ brand.name }}</span>
+          {% else %}
           <span class="lc-name" data-i18n="console.name">WuLab Console</span>
+          {% endif %}
         </div>
       </div>
       <nav class="lc-tabs" aria-label="Workspaces" id="lc-tabs">
         <div class="lc-track">
           {% for item in workspaces %}
-          <a href="#{{ item.id }}" data-workspace="{{ item.id }}" data-title-en="{{ item.title.en }}" data-title-zh="{{ item.title.zh }}">{{ item.title.en }}</a>
+          {% set title = {'en': brand.position_title, 'zh': brand.position_title} if item.id == 'twin' and brand.position_title else item.title %}
+          <a href="#{{ item.id }}" data-workspace="{{ item.id }}" data-title-en="{{ title.en }}" data-title-zh="{{ title.zh }}">{{ title.en }}</a>
           {% endfor %}
         </div>
         <a class="lc-passport" href="{{ base_path }}/chip" data-title-en="Chip passport" data-title-zh="芯片履历">Chip passport</a>
       </nav>
       <div class="lc-actions">
         <span class="lc-pill" id="lc-controls" hidden><span class="lc-dot" aria-hidden="true"></span><span id="lc-controls-text"></span></span>
+        <button type="button" class="lc-button" id="lc-theme" aria-label="Switch to dark mode">Dark mode</button>
         <button type="button" class="lc-button" id="lc-lang">中文</button>
       </div>
       </div>
@@ -40,7 +52,7 @@
   </div>
   <main id="lc-main">
     {% for item in workspaces %}
-    <section class="lc-workspace" id="ws-{{ item.id }}" data-workspace="{{ item.id }}" aria-label="{{ item.title.en }}" hidden></section>
+    <section class="lc-workspace" id="ws-{{ item.id }}" data-workspace="{{ item.id }}" aria-label="{{ brand.position_title if item.id == 'twin' and brand.position_title else item.title.en }}" hidden></section>
     {% endfor %}
   </main>
   <script src="{{ base_path }}/console-static/shell.js" defer></script>

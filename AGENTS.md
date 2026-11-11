@@ -9,7 +9,8 @@ This document provides permanent information/instructions for the convenience of
 - VPN is necessary to access services on Olares (`100.64.0.1`). Turn it on with the LarePass application.
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
 - 排查真机报警或碰撞时，先读 [报警与历史日志](docs/hardware.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
-- When git-committing a task, also write a brief description of what was done.
+- When the user asks to commit, write a commit message that briefly describes the changes and commit to the current branch. Do not rerun tests, linters, or format checks for a commit request.
+- Leave pushing and publishing branches to the user.
 - Coordinator and workers: a coordinator session reads [docs/agents/coordinator.md](docs/agents/coordinator.md) and keeps the board in `work/board.md`. A dispatched worker reads [docs/agents/worker.md](docs/agents/worker.md).
 
 ## Temporary screenshot cleanup
@@ -39,6 +40,7 @@ This document provides permanent information/instructions for the convenience of
 ## UX design
 
 - Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
+- Use the local preview for appearance work. Deploy appearance changes to Olares only when the user requests it. Keep checks focused on the changed views and reuse the browser check script with 2 to 4 screenshots.
 - Prioritize the English UI. Keep translations simple and use existing fonts or system fallbacks. Do not rebuild fonts solely for translated text unless the user asks.
 
 ## Reading the codebase
@@ -46,7 +48,7 @@ This document provides permanent information/instructions for the convenience of
 Read only the files that the task needs. The tests are larger than the code, so a full read costs many tokens.
 
 - Find the files for a task with a search first. Then read only the files that the task changes or calls.
-- Use the table below to find the tests and the doc for an area. Read and run only those tests. Before you commit, run `ruff check`, `ruff format --check` and the area tests. Do not run the full suite locally.
+- Use the table below to find the tests and the doc for an area. After each implementation update, run `ruff check`, `ruff format --check` and the area tests. Reuse these results when committing. Do not run the full suite locally.
 - Read a large test file by search, not from the top. List its tests with `rg -n "^def test_" <file>`, then read only the tests that you need.
 - Read the shared test helpers (`tests/conftest.py`, `tests/helpers.py`, `tests/sim_mg400.py`, `tests/panel_ws.py`, `tests/stage_helpers.py`) only when a test that you read uses them.
 - Do not read `uv.lock`, `firmware/`, `apps/layout-studio/` or `examples/` unless the task names them. Load a skill from `.agents/skills/` only when the task needs it.
@@ -82,7 +84,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Microscope recordings and furnace metadata | `src/furnace/recordings.py`, `video.py`, `src/microscope/service.py`, `src/orchestrator/skills/recording.py` | `test_furnace_recordings.py`, `test_furnace_video.py`, `test_furnace_local_run_sync.py`, `test_microscope_panel.py`, `test_orchestrator_recording.py` | [microscope.md](docs/microscope.md), [furnace.md](docs/furnace.md) |
 | Furnace run lifecycle and recovery | `src/furnace/service.py`, `state.py`, `sim.py` | `test_furnace_service.py`, `test_furnace_sim.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Recipe orchestration and rehearsal | `src/orchestrator/`, `recipes/`, `deploy/mg400ctl` | `test_orchestrator_*.py`, `test_recipe_tray_transfer.py`, `test_deploy_mg400ctl.py` | [orchestrator.md](docs/orchestrator.md) |
-| Lab Console | `src/orchestrator/web/`, `src/orchestrator/app.py`, `scripts/console_font.py` | `test_console*.py`, `test_console*.mjs`, `test_dashboard.py`, `test_dashboard_passport.py` | [dashboard.md](docs/dashboard.md) |
+| Lab Console | `src/orchestrator/web/`, `src/orchestrator/app.py`, `scripts/console_font.py`, `scripts/console_preview.py` | `test_console*.py`, `test_console*.mjs`, `test_dashboard.py`, `test_dashboard_passport.py` | [dashboard.md](docs/dashboard.md) |
 | MCP gateway and approval policy | `src/gateway/`, `src/orchestrator/approvals.py`, `src/orchestrator/store.py` | `test_gateway*.py`, `test_approvals.py` | [agent-gateway.md](docs/agent-gateway.md) |
 | Microscope motor firmware and simulator | `firmware/microscope-axes/`, `src/microscope/sim.py` | `test_microscope_protocol.py` | [Firmware guide](firmware/microscope-axes/README.md) |
 | Microscope algorithms, service and panel, motors, and camera input | `src/microscope/`, `src/cameras/` | `test_microscope_calibrate.py`, `test_microscope_calibration_policy.py`, `test_microscope_focus_completion.py`, `test_microscope_motors.py`, `test_microscope_io.py`, `test_microscope_service.py`, `test_microscope_panel.py` | [microscope.md](docs/microscope.md) |

@@ -954,6 +954,33 @@ def test_live_twin_samples_default_to_4k_and_reuse_matching_preview(monkeypatch)
     ]
 
 
+def test_live_4k_stage_samples_reuse_capture_without_mode_changes(monkeypatch):
+    content = BytesIO()
+    Image.new("RGB", (3840, 2160), "white").save(content, format="JPEG")
+    calls = []
+
+    def open_frame(url, timeout):
+        calls.append((url, timeout))
+        assert url == "http://127.0.0.1:1984/api/frame.jpeg?src=camera1"
+        return BytesIO(content.getvalue())
+
+    monkeypatch.setattr("vision.frames.build_opener", lambda *args: open_frame)
+    frames = twin.CameraFrames(
+        {
+            "MG400_CAMERA_DEVICES": ",".join(
+                f"/dev/v4l/by-path/usb-camera{number}" for number in range(1, 5)
+            ),
+            "MG400_CAMERA_MODES": "3840x2160@30,1280x720@30,1280x720@30,1280x720@30",
+        }
+    )
+    for dimensions in (None, [3840, 2160], [3840, 2160]):
+        with Image.open(BytesIO(frames.sample("camera1", dimensions))) as image:
+            image.load()
+            assert image.size == (3840, 2160)
+    assert len(calls) == 3
+    assert all(timeout == 2 for _, timeout in calls)
+
+
 def test_monitor_requests_saved_dimensions_while_capture_requests_draft_dimensions(
     console, monkeypatch
 ):

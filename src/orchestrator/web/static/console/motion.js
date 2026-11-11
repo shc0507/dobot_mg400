@@ -15,7 +15,7 @@
   ];
   const CAMERAS = ["camera2", "camera4", "camera3"];
   // Each station shows the view of its own device first. Any of its views can take the frame.
-  const STATION_VIEWS = { arm: ["camera2", "camera4", "camera3"], stage: ["microscope", "camera3", "camera2"] };
+  const STATION_VIEWS = { arm: ["camera2", "camera4", "camera3", "camera1", "microscope", "thermal"], stage: ["microscope", "camera1", "camera3", "camera2", "camera4", "thermal"] };
   // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
   const KEYS = "WASDQERFZX";
   // The keyboard jog keys in pairs, each with the label of its pair. The first key of a pair moves out, +, up or opens.
@@ -25,8 +25,13 @@
   const JOG_KEYS = { "z+": "R", "z-": "F", "r+": "Q", "r-": "E" };
   const KEYS_MS = 150;
   // Stage hold: the console keeps 1 axis moving while this page refreshes the hold (dead-man 0.5 s).
-  // Each pair is the Hold − key (ccw) and the Hold + key (cw) of 1 axis.
+  // Each pair keeps its existing ccw / cw bindings. Physical directions match the original stage controller.
   const STAGE_KEYS = [["I", "K", "bottom"], ["J", "L", "top"], ["U", "O", "insert"]];
+  const STAGE_DIRECTIONS = {
+    bottom: { ccw: "up", cw: "down" },
+    top: { ccw: "right", cw: "left" },
+    insert: { ccw: "in", cw: "out" },
+  };
   const HOLD_MS = 150;
   const POLL_MS = 1000;
   const EVENTS_MS = 2000;
@@ -38,6 +43,13 @@
   function actualPose(robot) {
     const values = Array.isArray(robot?.actual) ? robot.actual.slice(0, 4) : [];
     return values.length === 4 && values.every(value => typeof value === "number" && Number.isFinite(value)) ? values : null;
+  }
+
+  // Equal X/Y scales, centred on the origin. This is a plot scale, not a motion limit.
+  function armXY(pose) {
+    if (!Array.isArray(pose) || !pose.slice(0, 2).every(value => typeof value === "number" && Number.isFinite(value)) || pose.length < 2) return null;
+    const extent = Math.max(500, Math.ceil(Math.max(Math.abs(pose[0]), Math.abs(pose[1])) / 100) * 100);
+    return { extent, x: (pose[0] / extent + 1) / 2, y: (pose[1] / extent + 1) / 2 };
   }
 
   /** One jog: the actual pose plus one step on one axis. */
@@ -204,6 +216,7 @@
       "key.D": "J1 −", "key.F": "Z down", "key.Z": "Suck", "key.X": "Drop",
       "pair.reach": "Out / In", "pair.j1": "J1 + / −", "pair.z": "Z up / down", "pair.j4": "J4 + / −", "pair.suction": "Suck / Drop",
       "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons", "fold.stage": "Step moves and zero",
+      "pose.xy": "X/Y position", "pose.current": "Current", "pose.last": "Last known", "pose.unknown": "No position",
       "vac.title": "Suction", "vac.suck": "Suck", "vac.release": "Drop",
       "vac.state.suck": "Sucking", "vac.state.blow": "Blowing", "vac.state.off": "Off",
       "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}",
@@ -213,16 +226,18 @@
       "stage.stepping": "Stepping", "stage.full": "Full", "stage.keys": "Keys",
       "stage.steppingConfirm": "Set {mode}? This clears the zero and soft limits of all 3 axes.",
       "stage.zeroNone": "Set zero needs the stage calibration file and zero support in the firmware. Hold and step work without them.",
-      "axis.bottom": "Bottom", "axis.top": "Top", "axis.insert": "Insert",
+      "axis.bottom": "Bottom (Y)", "axis.top": "Top (X)", "axis.insert": "Insert",
+      "direction.up": "Up", "direction.down": "Down", "direction.left": "Left", "direction.right": "Right",
+      "direction.in": "In", "direction.out": "Out",
       "axis.idle": "Idle", "axis.moving": "Moving", "axis.cooldown": "Cooling down",
       "axis.pulses": "{n} pulses", "axis.mm": "{mm} mm",
       "ref.homed": "Homed", "ref.zeroed": "Zero confirmed", "ref.homeRequired": "Home required",
       "ref.zeroRequired": "Zero required", "ref.unavailable": "Reference unavailable",
       "axis.steps": "Steps", "axis.speed": "Pulses/s", "axis.speedUnit": "p/s", "axis.speedLabel": "{axis} speed, pulses/s", "axis.unit": "pulses",
-      "axis.minus": "Step −", "axis.plus": "Step +", "axis.minusLabel": "Move {axis} minus by the steps",
-      "axis.plusLabel": "Move {axis} plus by the steps", "axis.badCount": "Enter whole steps from 1 to {max} and a speed from 1 to {speed}.",
-      "axis.holdMinus": "Hold −", "axis.holdPlus": "Hold +", "axis.holdMinusLabel": "Hold to move {axis} minus",
-      "axis.holdPlusLabel": "Hold to move {axis} plus", "axis.badSpeed": "Enter a speed from 1 to {speed} pulses/s.",
+      "axis.step": "Step {direction}", "axis.stepLabel": "Move {axis} {direction} by the steps",
+      "axis.badCount": "Enter whole steps from 1 to {max} and a speed from 1 to {speed}.",
+      "axis.hold": "Hold {direction}", "axis.holdLabel": "Hold to move {axis} {direction}",
+      "axis.badSpeed": "Enter a speed from 1 to {speed} pulses/s.",
       "kb.stage": "Stage keyboard", "kb.axis": "{axis} − / +",
       "axis.home": "Home…", "axis.homeConfirm": "Clear the travel path. {axis} moves to its reference switch.",
       "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
@@ -247,7 +262,7 @@
       "stage.needControl": "Take control of the stage to step, home or set zero.",
       "cam.offline": "OFFLINE",
       "view.arm": "Arm view", "view.stage": "Stage view", "view.camera2": "Insert rail", "view.camera4": "Tray",
-      "view.camera3": "Microscope side", "view.microscope": "Microscope",
+      "view.camera3": "Microscope side", "view.microscope": "Microscope", "view.camera1": "Stage", "view.thermal": "Thermal",
     },
     zh: {
       "arm.title": "机械臂", "stage.title": "位移台",
@@ -271,6 +286,7 @@
       "key.D": "J1 −", "key.F": "Z 下", "key.Z": "吸取", "key.X": "放下",
       "pair.reach": "伸出 / 收回", "pair.j1": "J1 + / −", "pair.z": "Z 上 / 下", "pair.j4": "J4 + / −", "pair.suction": "吸取 / 放下",
       "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮", "fold.stage": "步进和零点",
+      "pose.xy": "X/Y 位置", "pose.current": "当前位置", "pose.last": "最后位置", "pose.unknown": "无位置",
       "vac.title": "吸盘", "vac.suck": "吸取", "vac.release": "放下",
       "vac.state.suck": "吸取中", "vac.state.blow": "吹气中", "vac.state.off": "已关闭",
       "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}",
@@ -280,16 +296,18 @@
       "stage.stepping": "细分", "stage.full": "整步", "stage.keys": "按键",
       "stage.steppingConfirm": "设为{mode}？这会清除全部 3 轴的零点和软限位。",
       "stage.zeroNone": "设零需要位移台标定文件和固件的设零支持。没有它们时，按住移动和步进仍可使用。",
-      "axis.bottom": "底部轴", "axis.top": "顶部轴", "axis.insert": "插入轴",
+      "axis.bottom": "底部轴 (Y)", "axis.top": "顶部轴 (X)", "axis.insert": "插入轴",
+      "direction.up": "上", "direction.down": "下", "direction.left": "左", "direction.right": "右",
+      "direction.in": "进", "direction.out": "出",
       "axis.idle": "空闲", "axis.moving": "运动中", "axis.cooldown": "冷却中",
       "axis.pulses": "{n} 脉冲", "axis.mm": "{mm} mm",
       "ref.homed": "已回零", "ref.zeroed": "零点已确认", "ref.homeRequired": "需要回零",
       "ref.zeroRequired": "需要设零", "ref.unavailable": "参考不可用",
       "axis.steps": "步数", "axis.speed": "脉冲/秒", "axis.speedUnit": "脉冲/秒", "axis.speedLabel": "{axis}速度，脉冲/秒", "axis.unit": "脉冲",
-      "axis.minus": "步进 −", "axis.plus": "步进 +", "axis.minusLabel": "{axis}按步数负向移动",
-      "axis.plusLabel": "{axis}按步数正向移动", "axis.badCount": "请输入 1 到 {max} 的整数步数和 1 到 {speed} 的速度。",
-      "axis.holdMinus": "按住 −", "axis.holdPlus": "按住 +", "axis.holdMinusLabel": "按住使{axis}负向移动",
-      "axis.holdPlusLabel": "按住使{axis}正向移动", "axis.badSpeed": "请输入 1 到 {speed} 的速度（脉冲/秒）。",
+      "axis.step": "向{direction}步进", "axis.stepLabel": "{axis}按步数向{direction}移动",
+      "axis.badCount": "请输入 1 到 {max} 的整数步数和 1 到 {speed} 的速度。",
+      "axis.hold": "按住向{direction}", "axis.holdLabel": "按住使{axis}向{direction}移动",
+      "axis.badSpeed": "请输入 1 到 {speed} 的速度（脉冲/秒）。",
       "kb.stage": "位移台键盘", "kb.axis": "{axis} − / +",
       "axis.home": "回零…", "axis.homeConfirm": "请清空行程。{axis}将移动到参考开关。",
       "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
@@ -314,7 +332,7 @@
       "stage.needControl": "获取位移台控制权后，才能步进、回零或设零。",
       "cam.offline": "离线",
       "view.arm": "机械臂视图", "view.stage": "位移台视图", "view.camera2": "插入导轨", "view.camera4": "托盘",
-      "view.camera3": "显微镜侧视", "view.microscope": "显微镜",
+      "view.camera3": "显微镜侧视", "view.microscope": "显微镜", "view.camera1": "位移台", "view.thermal": "热像仪",
     },
   };
 
@@ -322,6 +340,7 @@
 
   function workspace() {
     let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false;
+    let positionMonitor = null, positionHost = null;
     const data = { robot: null, stage: null, events: [], cap: null, kbCap: null, loaded: false };
     // on: this page armed the keyboard. seen: the service reported it on or arming since then.
     const kb = { on: false, seen: false, speed: null, held: new Set(), seq: 0, timer: null, pending: 0 };
@@ -520,6 +539,14 @@
 
       // Readout: pose, joints and suction.
       refs.pose = AXES.map(() => el("b", { class: "mo-num" }));
+      refs.armXYDot = el("span", { class: "mo-xy-point", hidden: true });
+      refs.armXYState = el("span", { class: "mo-xy-state" });
+      refs.armXYScale = el("span", { class: "mo-xy-scale" });
+      refs.armXYMap = el("div", { class: "mo-xy-map", role: "img", "aria-label": t("pose.xy") },
+        refs.armXYDot, el("span", { class: "mo-xy-zero", text: "0" }),
+        el("span", { class: "mo-xy-x", text: "X →" }), el("span", { class: "mo-xy-y", text: "Y ↑" }));
+      const poseReading = (axis, i) => el("div", { class: "mo-reading" }, el("span", { text: axis.toUpperCase() }),
+        el("span", { class: "mo-pose-value" }, refs.pose[i], el("span", { class: "mo-unit", text: axis === "r" ? "°" : "mm" })));
       refs.joints = [0, 1, 2, 3].map(() => el("b", { class: "mo-num-small mo-deg" }));
       refs.vacState = el("span", { class: "mo-vac-state" });
       // The grip switch is not installed yet. Held shows when the robot service reports it.
@@ -528,8 +555,11 @@
         el("button", { type: "button", class: "mo-btn", text: t("vac." + operation), "aria-label": t("vac.label", { action: t("vac." + operation) }),
           onclick: () => send("robot", "vacuum", { operation }, "vacuum") })]));
       const readout = el("div", { class: "mo-readout" },
-        el("div", { class: "mo-pose", role: "group", "aria-label": t("pose.actual") },
-          ...AXES.map((axis, i) => el("div", { class: "mo-reading" }, el("span", { text: axis.toUpperCase() }), refs.pose[i]))),
+        el("div", { class: "mo-arm-position", role: "group", "aria-label": t("pose.actual") },
+          el("div", { class: "mo-xy-heading" }, el("span", { text: t("pose.xy") }), refs.armXYState),
+          el("div", { class: "mo-pose" }, ...AXES.slice(0, 2).map(poseReading)),
+          refs.armXYMap, refs.armXYScale,
+          el("div", { class: "mo-pose mo-zr-readings" }, poseReading("z", 2), poseReading("r", 3))),
         el("div", { class: "mo-joints", role: "group", "aria-label": t("pose.joints") },
           ...refs.joints.map((node, i) => el("div", { class: "mo-reading" }, el("span", { text: "J" + (i + 1) }), node))),
         el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld),
@@ -588,13 +618,13 @@
       refs.armLast = el("p", { class: "mo-muted mo-last", role: "status" });
 
       return el("section", { class: "mo-station mo-station-arm", "aria-labelledby": "mo-arm-title" },
-        buildView("arm"),
         el("div", { class: "mo-body" },
           el("div", { class: "mo-head" },
             el("h2", { id: "mo-arm-title", text: t("arm.title") }), refs.armStatus, refs.armBadge,
             el("span", { class: "mo-actions" }, refs.enable, refs.home, controlButton("robot"), refs.armStop)),
           refs.alarmNote, confirmSlot("home"),
-          el("div", { class: "mo-armbody" }, kbBox, readout),
+          el("div", { class: "mo-armbody" },
+            el("div", { class: "mo-arm-visual" }, buildView("arm"), kbBox), readout),
           el("div", { class: "mo-folds" }, jogFold, moveFold),
           refs.armMessage, refs.armLast));
     }
@@ -872,13 +902,15 @@
       }));
       refs.axes = {};
       refs.holdKeys = {};
-      const keyCap = key => (refs.holdKeys[key] = el("kbd", { class: "mo-kcap", text: key }));
+      const keyCap = (key, direction) => (refs.holdKeys[key] = el("kbd", { class: "mo-kcap", text: key, title: direction }));
       const keysFor = id => STAGE_KEYS.find(([, , motor]) => motor === id);
       const rows = [];
       const setup = [];
       for (const motor of motors) {
         const id = motor.id;
         const axis = t("axis." + id);
+        const directionLabel = direction => t("direction." + STAGE_DIRECTIONS[id][direction]);
+        const directions = id === "top" ? ["cw", "ccw"] : ["ccw", "cw"];
         model.axis[id] = model.axis[id] || { steps: String(stage?.defaults?.steps || 50), speed: String(stage?.defaults?.speed || 50) };
         const row = {};
         row.state = el("span", { class: "mo-axstate" });
@@ -898,8 +930,8 @@
           if (!steps || !speed) { api.notify(t("axis.badCount", { max: limits.steps || 100000, speed: limits.speed || 1000 }), "warn"); return; }
           send("stage", "move", { motor: id, direction, speed, steps }, "move-" + id);
         };
-        row.minus = el("button", { type: "button", class: "mo-btn", text: t("axis.minus"), "aria-label": t("axis.minusLabel", { axis }), onclick: move("ccw") });
-        row.plus = el("button", { type: "button", class: "mo-btn", text: t("axis.plus"), "aria-label": t("axis.plusLabel", { axis }), onclick: move("cw") });
+        row.minus = el("button", { type: "button", class: "mo-btn", text: t("axis.step", { direction: directionLabel("ccw") }), "aria-label": t("axis.stepLabel", { axis, direction: directionLabel("ccw") }), onclick: move("ccw") });
+        row.plus = el("button", { type: "button", class: "mo-btn", text: t("axis.step", { direction: directionLabel("cw") }), "aria-label": t("axis.stepLabel", { axis, direction: directionLabel("cw") }), onclick: move("cw") });
         // The pointer capture sends pointerup to the pressed button, also outside it.
         const holdButton = (direction, text, label) => el("button", {
           type: "button", class: "mo-hold", text, "aria-label": label,
@@ -912,8 +944,8 @@
           onpointerup: buttonUp, onpointercancel: buttonUp, onlostpointercapture: buttonUp,
           oncontextmenu: event => event.preventDefault?.(),
         });
-        row.holdMinus = holdButton("ccw", t("axis.holdMinus"), t("axis.holdMinusLabel", { axis }));
-        row.holdPlus = holdButton("cw", t("axis.holdPlus"), t("axis.holdPlusLabel", { axis }));
+        row.holdMinus = holdButton("ccw", t("axis.hold", { direction: directionLabel("ccw") }), t("axis.holdLabel", { axis, direction: directionLabel("ccw") }));
+        row.holdPlus = holdButton("cw", t("axis.hold", { direction: directionLabel("cw") }), t("axis.holdLabel", { axis, direction: directionLabel("cw") }));
         row.home = motor.homing_available ? el("button", {
           type: "button", class: "mo-btn", text: t("axis.home"),
           onclick: () => askConfirm("stage", t("axis.homeConfirm", { axis }), () => send("stage", "home", { motor: id }, "ref-" + id)),
@@ -932,12 +964,12 @@
         const keys = keysFor(id);
         rows.push(el("div", { class: "mo-axis", role: "group", "aria-label": axis },
           el("span", { class: "mo-axname" }, el("b", { text: axis }), row.state),
-          row.value, row.holdMinus, row.holdPlus,
+          row.value, ...directions.map(direction => direction === "ccw" ? row.holdMinus : row.holdPlus),
           el("label", { class: "mo-axspeed" }, input("speed", { "aria-label": t("axis.speedLabel", { axis }) }), el("span", { text: t("axis.speedUnit") })),
-          keys ? el("span", { class: "mo-axkeys", "aria-hidden": "true" }, keyCap(keys[0]), keyCap(keys[1])) : el("span")));
+          keys ? el("span", { class: "mo-axkeys", "aria-hidden": "true" }, ...directions.map(direction => keyCap(keys[direction === "ccw" ? 0 : 1], directionLabel(direction)))) : el("span")));
         setup.push(el("div", { class: "mo-setup", role: "group", "aria-label": axis },
           el("span", { class: "mo-axname" }, el("b", { text: axis }), row.ref),
-          el("label", { class: "mo-inline" }, t("axis.steps"), input("steps", {})), row.minus, row.plus,
+          el("label", { class: "mo-inline" }, t("axis.steps"), input("steps", {})), ...directions.map(direction => direction === "ccw" ? row.minus : row.plus),
           row.home, row.zero, row.check, row.teach, row.view));
       }
       refs.named = [];
@@ -1027,8 +1059,13 @@
       dropTiles();
       refs = { confirms: {}, tiles: {}, views: {}, viewTabs: {} };
       refs.log = el("div", { class: "lc-events mo-events" });
+      if (root.LabTwin && !positionMonitor) {
+        positionHost = el("div", { class: "mo-position tw-compact" });
+        positionMonitor = root.LabTwin.positionMonitor();
+        positionMonitor.mount(positionHost, api);
+      } else positionMonitor?.rebuild();
       rootNode.replaceChildren(
-        el("div", { class: "mo-stations" }, buildArm(), buildStageCard()),
+        el("div", { class: "mo-stations" }, buildStageCard(), positionHost, buildArm()),
         el("section", { class: "mo-log", "aria-labelledby": "mo-log-title" },
           el("h2", { id: "mo-log-title", text: t("log.title") }), refs.log));
       renderCameras();
@@ -1116,6 +1153,15 @@
         // Old feedback stays visible in grey, so it never reads as the current pose.
         refs.pose[i].className = "mo-num" + (pose && fresh ? "" : " mo-stale");
       });
+      const point = armXY(shownPose), current = Boolean(pose && fresh);
+      const positionState = t(!point ? "pose.unknown" : current ? "pose.current" : "pose.last");
+      refs.armXYDot.hidden = !point;
+      refs.armXYDot.setAttribute("data-stale", String(!current));
+      if (point) refs.armXYDot.setAttribute("style", `left:${point.x * 100}%;bottom:${point.y * 100}%`);
+      refs.armXYState.textContent = positionState;
+      refs.armXYState.setAttribute("data-stale", String(!current));
+      refs.armXYScale.textContent = `−${point?.extent || 500} … ${point?.extent || 500} mm`;
+      refs.armXYMap.setAttribute("aria-label", t("pose.xy") + ": " + positionState + (point ? `; X ${fixed(shownPose[0], 2)} mm; Y ${fixed(shownPose[1], 2)} mm` : ""));
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;
       refs.steps.forEach((node, i) => {
@@ -1296,8 +1342,8 @@
         build();
         start();
       },
-      show() { shown = true; if (api) { renderCameras(); start(); } },
-      hide() { disarm("focus"); stageOff(); shown = false; stop(); dropTiles(); for (const slot of Object.values(refs.views || {})) slot.replaceChildren(); },
+      show() { shown = true; if (api) { renderCameras(); start(); positionMonitor?.show(); } },
+      hide() { disarm("focus"); stageOff(); shown = false; stop(); positionMonitor?.hide(); dropTiles(); for (const slot of Object.values(refs.views || {})) slot.replaceChildren(); },
       _test: { data, model, kb, sh, refs: () => refs, refresh, update },
     };
   }

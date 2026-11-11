@@ -368,7 +368,10 @@ Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distingu
 The camera service provides only configured streams, named `camera1` through `camera4` in device order.
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.
-Only streams with width at most 1280 and height at most 720 are preloaded. Larger streams start on demand.
+Streams with width at most 1280 and height at most 720 are preloaded, as is `camera1` at `3840x2160@30`.
+Preloaded capture continues when the browser is closed. Other larger streams start on demand.
+The lab configuration uses `3840x2160@30` for `camera1` and `1280x720@30` for the other 3 cameras.
+The `camera1` preview keeps native `3840x2160` pixels, with caps of 8 Mbit/s for H.264 and 6 Mbit/s for H.265.
 Before several cameras use modes above `640x480`, install the [USB bandwidth patch](olares.en.md#usb-bandwidth-patch).
 After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `mg400ctl restart camera vision microscope orch`.
 See [Cameras](olares.en.md#cameras) for approved modes and the tray-camera configuration.

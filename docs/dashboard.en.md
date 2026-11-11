@@ -13,6 +13,7 @@ The console is the only operator web page.
 - Row 1 of the header shows the console name, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Hover over the console name to see the deployed commit. The controlled devices show only while this page holds 1 or more devices. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
 - The workspaces are **Overview**, **Motion**, **Cameras**, **Digital Twin** and **Furnace + microscope**.
 - The language switch changes between English and 中文. The browser keeps the selected language.
+- Select **Dark mode** or **Light mode** beside the language switch to change the dashboard appearance. Light mode is the default. The browser saves the choice for this Console address.
 - The status strip shows 1 chip for each service: a dot and a text. The **Runs** chip shows only while a run exists. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
 - When the console does not answer for 3 seconds, the strip shows only **Console offline** and the age of the last state. Check the VPN and the `orch` service.
 - The stop result band below the header shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
@@ -50,11 +51,15 @@ The workspaces send manual commands through the console. The console forwards ea
 
 ### Motion workspace
 
-The Motion workspace has 2 stations side by side: the robot arm under its camera view, and the stage under the microscope view. Below 1100 px the stations stack. **Robot and stage activity** below them lists the events of both devices and the outcome of each command from this page.
+The Motion workspace places stage controls and **Stage position** side by side. The robot arm controls and camera appear below them. Below 1100 px the panels stack. **Robot and stage activity** lists device events and the outcome of each command from this page.
+
+**Stage position** shows camera measurements for X, Y and Insert, with travel plots. **Start sampling** and **Target rate** use the camera and saved calibration selected in **Digital Twin**. Camera selection and calibration stay in **Digital Twin**. Leaving Motion pauses sampling. Paused or unavailable measurements show **Last recorded** with the measurement time. Return to Motion and start sampling to read the current position.
 
 Views:
 
-- Each station shows 1 live view. The tabs inside the frame pick the view: **Insert rail** (camera2), **Tray** (camera4) or **Microscope side** (camera3) for the arm, and **Microscope**, **Microscope side** or **Insert rail** for the stage.
+- Each station shows 1 live view. Both offer **Insert rail** (camera2), **Tray** (camera4), **Microscope side** (camera3), **Stage** (camera1), **Microscope** and **Thermal**. The arm starts with **Insert rail**. The stage starts with **Microscope**. Camera selectors wrap above the image.
+- On wide screens, the stage and position panels have equal heights, and the camera fills the remaining space. On narrow screens, the panels stack.
+- The robot header spans the panel. A larger camera and keyboard controls occupy the left column, with position and suction on the right. Below 720 px, the camera, keyboard controls and readout stack.
 - **Snapshot** and **Expand** are inside the frame. Without the Cameras workspace a view shows OFFLINE.
 
 Robot arm:
@@ -66,7 +71,7 @@ Robot arm:
 - After an unconfirmed stop, the note shows Stop not confirmed and **Clear alarm** becomes **Recover**. Check the robot, then select **Recover**. A restart is not necessary.
 - **Keyboard jog** is the main arm control. When this page holds control and the robot is enabled, turn on the switch to start keyboard jog at the selected speed. The speed is from 1 to the `keyboard` speed cap that the robot service describes. The key map shows each key and its motion: W/S (reach out and in), A/D (base J1), R/F (Z up and down), Q/E (flange J4) and Z/X (suction: suck and drop). A held key lights up. Z and X run 1 suction action per press, also while the key stays held.
 - While the switch is on and the page has focus, hold a key to move. The page sends the held keys through `ws/motion/keys` on each change and every 150 ms while a key is held. The arm stops 0.4 s after the last update. A window focus loss, a hidden tab, leaving the Motion tab, the switch off or a loss of control releases all keys and turns the keyboard off. When the robot service turns the keyboard off, the page shows the reason below the switch. Stop and **STOP ALL MOTION** work at all times.
-- The readout shows the actual X, Y, Z and R, and J1 to J4 in degrees. While the arm moves, the robot service sends no pose, and the readout shows the last known pose in grey. Without fresh feedback, the readout also shows the last values in grey. Below it is **Suction**: the measured state (Sucking, Blowing or Off) and **Suck** and **Drop**. **Drop** turns suction off and blows a short pulse. The buttons need control and an idle arm. When the robot service reports `held`, the block also shows Held or Not held.
+- The readout shows actual X and Y on a Cartesian plot, with Z and R on 1 row. It also shows J1 to J4 in degrees. While the arm moves, the robot service sends no pose, and the readout shows the last known pose in grey. Without fresh feedback, the readout also shows the last values in grey. Below it is **Suction**: the measured state (Sucking, Blowing or Off) and **Suck** and **Drop**. **Drop** turns suction off and blows a short pulse. The buttons need control and an idle arm. When the robot service reports `held`, the block also shows Held or Not held.
 - **Jog buttons** (folded) moves ±X, ±Y, Z up and down, or R ± by 1 step of 0.5, 2 or 10 mm (degrees for R). Each press sends 1 `execute` move from a fresh read of the actual pose. While the keyboard is on, the Z and R buttons show the key that moves the same way: R and F for Z, Q and E for R.
 - **Move to a pose** (folded): **Use actual** copies the actual pose. **Execute** moves to the entered pose. The speed is from 1 to the `execute` speed cap that the robot service describes.
 - The console sends jog and pose targets with no bounds check and no tool file. The robot service applies its speed cap and refuses motion while the controller reports an alarm. Jog and pose use the `ws/motion/jog` and `ws/motion/move` routes.
@@ -75,15 +80,16 @@ Stage:
 
 - The header row has the state, **Take control** and **Stop stage**. **Stop stage** needs no control. When another page or client holds the stage, the control button says so. A demo stage shows DEMO.
 - If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. Each port shows its description and device name. The full device path is in the tooltip. **Refresh ports** reads the port list again.
-- Each axis row shows the position, **Hold −**, **Hold +**, the hold speed in pulses/s and the keys of the axis. With a confirmed reference the position is in mm. Without one it is the pulse count. While the Arduino is not connected, the position shows —. An axis shows its state only when it is not idle.
-- **Hold −** and **Hold +** move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
+- Each axis row shows the position, direction-labeled Hold buttons, the hold speed in pulses/s and the keys of the axis. With a confirmed reference the position is in mm. Without one it is the pulse count. While the Arduino is not connected, the position shows —. An axis shows its state only when it is not idle.
+- The Hold buttons move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
+- Bottom (Y) uses **Hold Up** / **Hold Down**. Top (X) uses **Hold Left** / **Hold Right**. Insert moves the crucible with **Hold In** / **Hold Out**. Step buttons use the same directions. The controller maps `ccw` to Up, Right, and In, and `cw` to Down, Left, and Out.
 - The console sends the stage commands of a hold. It sends 1 `hold`, then 1 `keepalive` every 0.2 s while the page refreshes the hold. The page refreshes the hold through `ws/motion/stage/hold` every 150 ms. When no refresh arrives for 0.5 s, the console releases the hold. If the console stops, the firmware stops the axis 1 s after the last `keepalive`.
 - **Stepping** below the axes sets the stepping mode of all 3 axes: Full, 1/2, 1/4, 1/8 or 1/16. A change clears the zero and soft limits of all 3 axes and needs a confirmation.
-- **Keys**: when this page holds stage control, turn on the switch. While the page has focus, hold I/K (Bottom − and +), J/L (Top − and +) or U/O (Insert − and +). Each key moves its axis like the Hold button. The page releases the hold and turns the keyboard off on a window focus loss or a hidden tab. It does the same when you leave the Motion tab, turn off the switch or lose control.
+- **Keys**: when this page holds stage control, turn on the switch. While the page has focus, hold I/K (Bottom/Y Up and Down), J/L (Top/X Right and Left) or U/O (Insert In and Out). Each key moves its axis like the Hold button. The page releases the hold and turns the keyboard off on a window focus loss or a hidden tab. It does the same when you leave the Motion tab, turn off the switch or lose control.
 - After a refused or interrupted hold, release the button or the key, then press again. **Stop stage** and **STOP ALL MOTION** stop a held axis at all times.
 - **Named positions** sends `goto` for each named position of an axis. **Named poses** sends 1 `pose` for the selected pose. The pose moves 1 axis at a time in the configured order. It is available when all 3 axes are homed or zeroed. Both show only when the stage config has them.
-- **Step moves and zero** (folded) has 1 block for each axis: the reference state, **Step −** and **Step +**, **Home…**, **Set zero…**, **Check reference** and **Teach reference…**.
-- **Step −** and **Step +** send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
+- **Step moves and zero** (folded) has 1 block for each axis: the reference state, directional Step buttons, **Home…**, **Set zero…**, **Check reference** and **Teach reference…**.
+- The Step buttons send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
 - **Set zero…** shows only when the stage service can zero the axis. It needs the [stage calibration](stage-panel.en.md#stage-calibration) file `/var/lib/mg400/stage/stage.toml` and zero support in the firmware. Without them, the fold says so, and hold and step still work. Without stage control, the fold says that control is necessary. **Home…** (boards with switches) and **Set zero…** need a confirmation. **Set zero…** sets the zero and the soft limits.
 - For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels. **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
 
@@ -94,14 +100,14 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 - **All views** shows 6 views as a wall that fits the window: camera1 to camera4, the thermal camera and the microscope (Toupcam). Inside its frame, each view shows its role, a green dot while live or STALE, OFFLINE or FROZEN with the frame age, its mode with the measured frame rate, and **Snapshot** and **Expand**. The tooltip on the role shows the camera ID. The microscope shows its decoded size while it plays. Camera 4 adds the detection count to the mode line.
 - **Large view** shows 1 view large and a rail of the other 5. **Expand** or a click on a rail view puts that view in the large place. **All views** goes back to the wall.
 - The measured frame rate updates about every 1 s, for example `640×480 · 29.8 fps`. An H.264 view counts the frames that the browser shows. An MJPEG view shows the frames per second that the camera preview or the microscope relay sent to each viewer in the last 2 s. With several viewers of the same view, it shows their mean. The thermal view counts the new frames that it gets. Without a new measurement, the view shows no frame rate.
-- camera1 to camera4 and the microscope load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate and stays near the newest frame. A view of camera1 to camera4 wider than 640 uses at most 4 Mbit/s, a smaller one at most 2 Mbit/s, and the microscope view at most 3 Mbit/s. This keeps room on the VPN link for control traffic.
-- If the browser supports HEVC, a view first requests `/camera/<view>.mp4?codec=h265`. If H.265 does not start to play, the page uses H.264.
+- camera1 to camera4 and the microscope load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate. Stage (`camera1`) shows native `3840x2160` without resizing, at most 8 Mbit/s. Other views wider than 640 use at most 4 Mbit/s, or 3 Mbit/s with NVENC. Smaller views use at most 2 Mbit/s, and the microscope view at most 3 Mbit/s.
+- Stage (`camera1`) uses H.264 to preserve its native display dimensions. If the browser supports HEVC, other views first request `/camera/<view>.mp4?codec=h265`. If H.265 does not start to play, the page uses H.264.
 - If the browser or the host cannot play H.264, camera1 to camera4 load MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Wall and rail views get at most 3 frames a second, and the large view at most 6.
-- **Snapshot** on camera1 to camera4 downloads a `4000x3000` JPEG from `/camera/<view>.full.jpg`. The 4 cameras share 1 USB 2 link, so go2rtc captures only that camera during the still. The previews and readers of the other cameras stop for approximately 3 seconds and then recover automatically. Only 1 still runs at a time. Other requests wait. With a configured microscope side camera, a microscope job blocks all full-size snapshots.
+- **Snapshot** on Stage (`camera1`) downloads a native `3840x2160` JPEG from `/camera/camera1.full.jpg?size=3840x2160`. It reads the continuous stream without restarting go2rtc or interrupting other views. A running microscope job does not block this matching-size request. Other cameras download `4000x3000` from `/camera/<view>.full.jpg`. These mode changes temporarily pause other camera streams and restore them afterward. Only 1 still runs at a time. With a configured microscope side camera, a microscope job blocks mode changes.
 - The console relays the thermal frame, the microscope MJPEG fallback stream and the microscope **Snapshot**. If the microscope view cannot play H.264, it loads the relayed MJPEG. The microscope **Snapshot** downloads the Toupcam frame as a lossless PNG at full size, `2592x1944`. It needs no control.
 - While a microscope job runs, **Snapshot** on camera3 returns `409`, because an objective switch reads the side stream.
 - The microscope relay sends only the newest complete frame. Wall and rail views get at most 10 frames a second, and the large view at most 30. It opens at most 2 microscope streams.
-- The streams stop when you leave the workspace, hide the browser tab or close the page.
+- Browser previews stop when you leave the workspace, hide the browser tab or close the page. Preloaded camera capture continues.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.
 - The thermal view shows its maximum and mean temperatures. The colour bar and the markers show the minimum and the center. **Settings** on the thermal view opens the thermal settings beside it: the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. The settings also have the crucible region, the shutter calibration and the export of CSV, Raw + JSON and PNG. Esc, **Close** or a press outside the settings closes them.
 - On the thermal view, the pointer reads the temperature of 1 sensor pixel. The text at the bottom of the view shows the pixel and its temperature. Click to pin the pixel. Click again to unpin it.
@@ -115,7 +121,8 @@ Digital Twin estimates stage positions from camera images. The monitor image, de
 The camera dropdown lists the configured shared optical cameras from `camera1` through `camera4`. It selects the overhead stage camera `camera1` by default.
 
 New calibration profiles for real cameras default to `3840x2160`. Monitoring uses the saved profile's image dimensions. Endpoint capture uses the draft dimensions.
-If an existing `1280x720` profile matches the shared stream dimensions, Digital Twin reads that stream directly.
+With `camera1` at `3840x2160@30`, new `3840x2160` captures and saved `3840x2160` profiles use the continuous shared stream.
+For sampling without interrupting other views, the profile dimensions must match the configured stream dimensions.
 Native captures preserve the camera's actual pixels without image resizing.
 
 Create a calibration profile in the console:
@@ -147,8 +154,9 @@ Monitor uses the selected saved profile. Draft edits affect monitoring only afte
 
 **Target rate** sets the sampling frequency limit. When capture is slower, the console skips missed sample times, so the actual frame rate decreases.
 During sampling or automatic tuning, Digital Twin sends no separate preview requests.
-Each native capture pauses the other camera streams and restores them after capture.
-When a microscope side camera is configured, a microscope job blocks all native captures.
+Matching native captures read the preloaded stream without an overlay or a go2rtc restart. They do not check whether the microscope is busy.
+Captures that require a mode change temporarily pause the other camera streams and restore them afterward.
+When a microscope side camera is configured, a microscope job blocks mode changes.
 
 **Save calibration** needs no local file picker. Digital Twin sends no motion commands.
 You can save a partial profile and capture the remaining endpoints later.
@@ -179,6 +187,20 @@ Every device command goes through the console relay. Use **Take control** for th
 - **Turn stabilization on** and **Turn stabilization off** switch the stabilization.
 
 ### Run offline
+
+For a local dashboard preview on Windows or Linux, run this command from the repository root:
+
+```sh
+uv run --no-default-groups --group vision python scripts/console_preview.py
+```
+
+Open `http://127.0.0.1:8790/lab/#twin`. The preview uses the real dashboard assets and Digital Twin routes with a fixed synthetic camera image. It requires no VPN or Olares connection.
+
+Device controls remain unavailable. Local calibration profiles persist under `work/console-preview/` and do not change Olares profiles. The first start creates a Mock stage profile for monitor and profile management checks. The fixed image cannot validate endpoint calibration or physical accuracy.
+
+Refresh the browser after CSS or JavaScript changes. Restart the preview after Python or HTML template changes. Use `Ctrl+C` in its terminal to stop it. Use Olares to verify real camera resolution, capture timing, and device commands.
+
+For the full device demo on Linux:
 
 ```sh
 uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 --base-path /lab/

@@ -1,15 +1,15 @@
 /* Styles for the Cameras workspace and the shared camera tile. Workspace rules start with #ws-cameras;
  * tile rules use .lcam-tile so the Motion and Furnace + microscope workspaces can show tiles too. */
-body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
+body:has(#ws-cameras:not([hidden])) { background: var(--lc-ground); }
 
 #ws-cameras {
-  --cm-ground: #F2EEE9; --cm-card: #FFFFFF; --cm-surface: #F7F4F0; --cm-fill: #F2EEE9; --cm-fill-hover: #E9E3DC;
-  --cm-line: #EDE6DE; --cm-edge: #E0D8CF; --cm-text: #2A2622; --cm-text-2: #6F625A; --cm-count: #8A7F74;
-  --cm-action: #2E5BFF; --cm-action-hover: #2149E0; --cm-action-soft: #E8EEFF; --cm-on-action: #FFFFFF;
-  --cm-stop: #B4232C; --cm-stop-soft: #FDE8E8; --cm-ok: #27774C; --cm-warn: #8F6200; --cm-bad: #B4232C;
-  --cm-well: #171310; --cm-well-text: #CFC6BC; --cm-well-chip: rgba(255, 255, 255, 0.9); --cm-well-scrim: rgba(23, 19, 16, 0.72);
-  --cm-shadow: 0 1px 2px rgba(60, 40, 20, 0.06), 0 4px 14px rgba(60, 40, 20, 0.05);
-  --cm-lift: 0 8px 28px rgba(60, 40, 20, 0.18), 0 2px 6px rgba(60, 40, 20, 0.08);
+  --cm-ground: var(--lc-ground); --cm-card: var(--lc-card); --cm-surface: var(--lc-surface); --cm-fill: var(--lc-fill); --cm-fill-hover: var(--lc-fill-hover);
+  --cm-line: var(--lc-line); --cm-edge: var(--lc-edge); --cm-text: var(--lc-text); --cm-text-2: var(--lc-text-2); --cm-count: var(--lc-count);
+  --cm-action: var(--lc-action); --cm-action-hover: var(--lc-action-hover); --cm-action-soft: var(--lc-action-soft); --cm-on-action: var(--lc-on-action);
+  --cm-stop: var(--lc-stop); --cm-stop-soft: var(--lc-stop-soft); --cm-ok: var(--lc-ok); --cm-warn: var(--lc-warn); --cm-bad: var(--lc-stop);
+  --cm-well: var(--lc-well); --cm-well-text: var(--lc-well-text); --cm-well-chip: var(--lc-well-chip); --cm-well-scrim: var(--lc-well-scrim);
+  --cm-shadow: var(--lc-shadow);
+  --cm-lift: var(--lc-lift);
   color: var(--cm-text);
 }
 #ws-cameras ::selection { background: var(--cm-action-soft); color: var(--cm-text); }
@@ -79,7 +79,7 @@ body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
 #ws-cameras .lcam-cell .lcam-note:empty { display: none; }
 #ws-cameras .lcam-cell .lcam-buttons { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: flex; gap: 6px; }
 #ws-cameras .lcam-cell .lcam-buttons .lc-button { min-height: 30px; padding: 0 10px; border-radius: 10px; background: var(--cm-well-chip); font-size: 12px; }
-#ws-cameras .lcam-cell .lcam-buttons .lc-button:hover:not(:disabled) { background: #FFFFFF; }
+#ws-cameras .lcam-cell .lcam-buttons .lc-button:hover:not(:disabled) { background: var(--lc-well-chip-hover); }
 #ws-cameras .lcam-cell .lcam-buttons .lc-button.lcam-on, #ws-cameras .lcam-cell .lcam-buttons .lc-button.lcam-on:hover { background: var(--cm-action); color: var(--cm-on-action); }
 #ws-cameras .lcam-cell .lcam-colorbar { top: 76px; bottom: 48px; border-radius: 10px; background: var(--cm-well-scrim); }
 #ws-cameras .lcam-mode-large .lcam-big .lcam-colorbar { top: 104px; }
@@ -145,10 +145,10 @@ body:has(#ws-cameras:not([hidden])) { background: #F2EEE9; }
 .lcam-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; image-rendering: pixelated; }
 img.lcam-media, video.lcam-media { image-rendering: auto; }
 .lcam-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.lcam-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; background: #0A0E11; }
+.lcam-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--lc-well-text); font-size: 13px; background: #0A0E11; }
 .lcam-colorbar { position: absolute; top: 8px; right: 8px; bottom: 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px; border-radius: 6px; background: rgba(10, 14, 17, 0.85); pointer-events: none; }
 .lcam-cb-bar { flex: 1 1 auto; width: 10px; border-radius: 6px; }
-.lcam-cb-label { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+.lcam-cb-label { font-size: 12px; color: var(--lc-well-label); font-variant-numeric: tabular-nums; }
 .lcam-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 10px 12px; }
 .lcam-meta { display: flex; flex-direction: column; min-width: 0; font-size: 12px; }
 .lcam-mode { color: var(--soft); font-variant-numeric: tabular-nums; }

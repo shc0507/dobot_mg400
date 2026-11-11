@@ -210,16 +210,20 @@ Rename `start-terminal.sh.disabled` to its original name to restore the old term
 
 ## USB device layout
 
-Every lab USB device connects through 1 self-powered hub on 1 host port.
-The controller is `0000:80:14.0`, with USB 2 port `12` and USB 3 port `3`.
-Keep the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
-A reset disconnects the motor, furnace, gas, and camera connections together.
+Lab USB devices use 2 hubs on controller `0000:80:14.0`.
+The original self-powered hub uses USB 2 root port `12` and USB 3 root port `3`.
+It carries `camera1`, the thermal camera, and the other lab devices.
+The second hub uses USB 2 root port `6` for `camera2`, `camera3`, and `camera4`.
+All 4 AC410 cameras connect at 480 Mbit/s. Both hubs use the same host controller.
+
+Keep the Toupcam camera on the original hub's USB 3 side. Never reset the original hub.
+A reset disconnects its motor, furnace, gas, and camera connections together.
 
 Keep each camera on its listed hub port.
 The 4 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
-The camera on `12.1.4` is the microscope side camera. It watches the objective turret. go2rtc owns it, and the microscope reads its shared stream.
-The camera on `12.1.2` sees the stage from above. The camera on `12.1.3` looks along the Insert rail, with the tray behind it.
-The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in the console.
+The camera on `6.4` is the microscope side camera. It watches the objective turret. go2rtc owns it, and the microscope reads its shared stream.
+The camera on `12.1.2` sees the stage from above. The camera on `6.1` looks along the Insert rail, with the tray behind it.
+The camera on `6.2` sees the tray. Its path is configured as `camera4`.
 
 | Device | VID:PID | Stable identity | Hub port | Service |
 | --- | --- | --- | --- | --- |
@@ -229,9 +233,9 @@ The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in th
 | Gas controller FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace` (`MG400_MFC_SERIAL`) |
 | Thermal Master P1 | `3474:45c2` | libusb, serial `P1016021DG040100208` | `12.1.1` | `thermal` |
 | AC410 stage camera, from above | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
-| AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera` |
-| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera`, shared through go2rtc |
-| AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0` | `12.2.1` | `camera` |
+| AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0` | `6.1` | `camera` |
+| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0` | `6.4` | `camera`, shared through go2rtc |
+| AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.2:1.0-video-index0` | `6.2` | `camera` |
 | ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
 Use the full serial paths for controllers.
@@ -275,48 +279,63 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream.
 The following 4-camera configuration uses the port order in the table above.
-All cameras use `1280x720@30`. The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
-The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`, so the shared USB 2 link holds only 1 such stream.
-With the [USB bandwidth patch](#usb-bandwidth-patch), 4 streams at `1280x720@30` run together at 30 fps.
+`camera1` uses `3840x2160@30`. The other 3 cameras use `1280x720@30`.
+The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
+The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`. A shared USB 2 link then holds only 1 such stream.
+The [USB bandwidth patch](#usb-bandwidth-patch) supports concurrent `1280x720@30` capture settings for all 4 streams. Measure the actual delivered frame rate.
 Before you raise a mode, check the bandwidth with `mg400ctl camera-check` and the kernel log:
 
 ```ini
-MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
-MG400_CAMERA_MODES=1280x720@30,1280x720@30,1280x720@30,1280x720@30
+MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.2:1.0-video-index0
+MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
-Only streams with width at most 1280 and height at most 720 are preloaded.
-Larger streams start when a video stream, microscope, or still consumer requests them.
+Streams with width at most 1280 and height at most 720 are preloaded, as is `camera1` at `3840x2160@30`.
+Preloaded capture continues when the browser is closed.
+Other larger streams start when a video stream, microscope, or still consumer requests them.
 The microscope service reads its side stream only during `select_objective`.
 The preview relay does not serve a side stream above `1280x720`.
-While `camera3` runs at `3840x2160@30`, the shared USB 2 link truncates `camera2` frames.
 A demand-started stream can send a truncated first frame. The microscope reader drops incomplete frames.
-After the last viewer leaves a large stream, the preview service releases its upstream reader between body reads.
+After the last viewer leaves a demand-started stream, the preview service releases its upstream reader between body reads.
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
-Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate. A stream wider than 640 gets at most 4 Mbit/s, or 3 Mbit/s with NVENC. Other streams get 2 Mbit/s. This route accepts only the query `codec=h265`.
+Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate.
+At `3840x2160@30`, `camera1` sends native `3840x2160` video without resizing, at most 8 Mbit/s.
+Other streams wider than 640 get at most 4 Mbit/s, or 3 Mbit/s with NVENC. Smaller streams get 2 Mbit/s.
+H.264 encoders select the level automatically. This route accepts only the query `codec=h265`.
 go2rtc reads the `1296x968` microscope preview from `http://127.0.0.1:8770/api/camera/microscope/mjpeg`. It serves it as H.264 at `/camera/microscope.mp4`, at most 3 Mbit/s.
 go2rtc reads the microscope preview only while an H.264 viewer is open. If the microscope service has no frame, `/camera/microscope.mp4` returns 502, and the console uses the relayed MJPEG.
 `/camera/fps.json` returns, for each MJPEG stream, the frames per second that each viewer got in the last 2 s. A stream with no viewer has `null`. The console reads these values for the camera status.
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.
 ffmpeg does not probe the input frame rate. It sends each source frame once and 1 keyframe each 1 s. Thus a new view shows its first frame in about 1 s, also for the microscope at a low frame rate. `-fps_mode` needs ffmpeg 5.1 or later.
 The installer runs ffmpeg to test `h264_nvenc`. If the test passes, the H.264 previews use the NVIDIA GPU encoder. If not, they use `libx264`. After you change the GPU or its driver, run the installer again.
-With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream wider than 640 and the microscope get at most 2.5 Mbit/s. Other streams get 2 Mbit/s. A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264.
+With NVENC, each preview also has an H.265 version from `hevc_nvenc`.
+At `3840x2160@30`, `camera1` sends native `3840x2160` video without resizing, at most 6 Mbit/s.
+Other streams wider than 640 and the microscope get at most 2.5 Mbit/s. Smaller streams get 2 Mbit/s.
+A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264.
 The H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). go2rtc 1.9.14 does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
 ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). Without an estimate, ffmpeg assumes 90000 fps, and `hevc_nvenc` sends only about 0.1 Mbit/s.
-ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
+For `camera1` at `3840x2160@30`, ffmpeg reads the shared HTTP MJPEG stream at `http://127.0.0.1:1984/api/stream.mjpeg?src=camera1`.
+This preserves the full native dimensions. Other encoders read their input through RTSP.
+All encoders send their output through RTSP, which listens only on `127.0.0.1:8554`.
+If ffmpeg is not installed on the host, the H.264 preview returns 502.
 `/camera/<view>.jpg` uses the same go2rtc stream at its configured resolution. It does not switch mode or open another device capture.
 
 `/camera/<view>.full.jpg?size=3840x2160` captures a JPEG at the specified native size.
-`size` accepts only dimensions from the MJPEG modes above. It uses the lowest supported frame rate for those dimensions.
+`size` accepts only dimensions from the MJPEG modes above. A mode change uses the lowest supported frame rate for those dimensions.
 Without query parameters, `/camera/<view>.full.jpg` still captures `4000x3000`.
 
-The service does not enlarge low-resolution images. Each capture pauses the other camera streams and restores them after capture.
-When `MG400_MICROSCOPE_SIDE_STREAM` is configured, the service rejects all `.full.jpg` requests while a microscope job runs.
+The service does not enlarge low-resolution images.
+If the requested dimensions match a preloaded stream, the service reads that stream without an overlay or a go2rtc restart.
+Thus `/camera/camera1.full.jpg?size=3840x2160` preserves the other streams and does not check whether the microscope is busy.
+Other captures temporarily pause the other camera streams and restore them after capture.
+When `MG400_MICROSCOPE_SIDE_STREAM` is configured, a running microscope job blocks captures that require a mode change.
 
-The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large streams can exceed its periodic transfer budget together.
+`camera1` shares the original hub's USB 2 connection with the thermal camera and controllers.
+`camera2`, `camera3`, and `camera4` share the second hub's USB 2 connection.
+Large streams can exceed the periodic transfer budget of a shared connection.
 H-21 requires supervised bandwidth checks before simultaneous hardware use.
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
@@ -369,13 +388,14 @@ Limits:
 
 - DKMS builds the module again for each new kernel of the same series. When the host starts a kernel of a different series, it uses the stock driver and ignores `mjpeg_bpp`. Then run the script again.
 - If the build fails, the script removes its DKMS package. The stock driver stays.
-- 4 streams at `1920x1080@30` are near the link limit. Do not use this configuration.
+- On 1 shared USB 2 link, 4 streams at `1920x1080@30` are near the link limit. Do not use this configuration on that link.
 
 ### Camera failures
 
 If an image looks wrong, first run `mg400ctl camera-check`.
 It checks configured cameras by their USB port paths, then checks the 2 services and the expected go2rtc preloaded streams.
-It reports larger streams as demand-started and does not require or start a continuous preload for them.
+It expects a continuous preload for `camera1` at `3840x2160@30`.
+It reports other larger streams as demand-started and does not require or start a continuous preload for them.
 It exits with code 0 if all checks pass. If a check fails, it exits with code 1 and shows the next action.
 If a camera is missing, it does not check the services.
 
@@ -387,6 +407,7 @@ If the host recognizes neither the hub nor the cameras, a preview service restar
 If the host recognizes the cameras but the stream frame rate is very low, run
 `curl -s http://127.0.0.1:1984/api/preload` on the Olares host.
 Check that the output includes each configured stream whose width is at most 1280 and height is at most 720.
+Also check for `camera1` when its mode is `3840x2160@30`.
 If an expected preload is missing, run `mg400ctl restart camera`, wait 2 seconds, and query again.
 Preloading might not start if a device is missing when the capture service starts.
 The console video streams reconnect automatically. The configured `camera<N>.jpg` single-frame endpoints can be slow when a stream starts on demand.
@@ -395,6 +416,6 @@ After increasing the resolution, check all required views together under H-21. C
 The resolution and frame rate shown by the browser do not rule out corrupted images or partial image damage.
 If these problems occur, restore the `640 × 480` configuration, then check the USB capture path.
 
-Every lab device shares the external hub. Never reset the shared upstream hub to recover a camera.
+Each hub carries multiple devices. Never reset a shared upstream hub to recover a camera.
 Check the affected camera's port and logs. Follow the supervised hardware procedure before changing a device connection.
 A restored USB connection does not authorize robot, stage, furnace, or gas commands.

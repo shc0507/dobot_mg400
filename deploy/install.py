@@ -339,18 +339,25 @@ def camera_capture_sizes(value, devices, side_stream=""):
 #   guessed rate does not add or drop frames. x264 budgets its bitrate at 30 fps.
 # - A keyframe each second: a viewer that joins a running encoder waits at most 1 s.
 #   NVENC makes each forced keyframe an IDR frame, so a viewer can start on it.
+# - Each H.264 encoder selects its level from the source dimensions. Level 4.1 cannot
+#   encode 3840x2160. go2rtc applies raw options before the codec template.
 FFMPEG_RTSP = (
     '  rtsp: "-fflags nobuffer -flags low_delay -timeout 5000000 -user_agent go2rtc/ffmpeg'
     ' -rtsp_flags prefer_tcp -fpsprobesize 2 -i {input}"\n'
 )
+# go2rtc crops RTP/JPEG frames to at most 2040x2040. HTTP preserves the complete JPEG.
+# Multipart JPEG has no timestamps, so its input rate must match the 30 fps capture.
+FFMPEG_MJPEG_30 = (
+    '  mjpeg30: "-fflags nobuffer -flags low_delay -f mpjpeg -r 30 -fpsprobesize 2 -i {input}"\n'
+)
 H264_X264 = (
-    '  h264: "-c:v libx264 -g 50 -profile:v high -level:v 4.1 -preset:v superfast'
+    '  h264: "-c:v libx264 -g 50 -profile:v high -preset:v superfast'
     " -tune:v zerolatency -pix_fmt:v yuv420p -fps_mode passthrough -x264-params fps=30"
     ' -force_key_frames expr:gte(t,n_forced)"\n'
 )
 # The GPU encoder uses about 13 % of 1 CPU core per 1280x720 preview, not 31 %.
 H264_NVENC = (
-    '  h264: "-c:v h264_nvenc -g 50 -bf 0 -profile:v high -level:v 4.1 -preset:v p4'
+    '  h264: "-c:v h264_nvenc -g 50 -bf 0 -profile:v high -preset:v p4'
     " -tune:v ll -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough"
     ' -force_key_frames expr:gte(t,n_forced)"\n'
 )
@@ -387,10 +394,12 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
 
     With nvenc, the previews use the GPU encoder. It needs 3 Mbit/s for the quality
     that libx264 gives at 4 Mbit/s at 1280x720. Each H.264 preview then also has an
-    H.265 preview, <name>_h265, at 2.5 Mbit/s.
+    H.265 preview, <name>_h265, at 2.5 Mbit/s. Camera 1 at 3840x2160 uses 8 Mbit/s
+    for H.264 or 6 Mbit/s for H.265. Each preview keeps its source dimensions.
 
-    The API and RTSP listen on loopback only. ffmpeg reads and returns the H.264
-    previews through RTSP. The microscope preview comes from the microscope service.
+    The API and RTSP listen on loopback only. ffmpeg reads 4K through HTTP MJPEG
+    and other sources through RTSP. It returns encoded previews through RTSP.
+    The microscope preview comes from the microscope service.
     """
     if sizes is not None and modes is not None:
         raise ValueError("Use camera sizes or modes, not both.")
@@ -415,22 +424,31 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
     )
     # go2rtc starts each ffmpeg encoder for its first viewer and stops it after the last.
     # Sensor noise can raise a 640x480 stream to about 9 Mbit/s. A 1280x720 preview gets
-    # 4 Mbit/s (3 Mbit/s with NVENC) and a smaller one 2 Mbit/s.
+    # 4 Mbit/s (3 Mbit/s with NVENC), a smaller one 2 Mbit/s, and camera 1 at 4K 8 Mbit/s.
     large = 3 if nvenc else 4
+    preview_inputs = {
+        name: f"http://127.0.0.1:1984/api/stream.mjpeg?src={name}#input=mjpeg30"
+        if width > 1280
+        else name
+        for name, (width, _, _) in zip(configured.streams, configured.modes)
+        if name in configured.preloaded
+    }
     streams += "".join(
-        f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate={large if width > 640 else 2}M\n"
+        f"  {name}_h264: ffmpeg:{preview_inputs[name]}#video=h264"
+        f"#bitrate={8 if width > 1280 else large if width > 640 else 2}M\n"
         for name, (width, _, _) in zip(configured.streams, configured.modes)
         if name in configured.preloaded
     )
     if nvenc:
         streams += "".join(
-            f"  {name}_h265: ffmpeg:{name}#video=h265#bitrate={'2500k' if width > 640 else '2M'}\n"
+            f"  {name}_h265: ffmpeg:{preview_inputs[name]}#video=h265"
+            f"#bitrate={'6M' if width > 1280 else '2500k' if width > 640 else '2M'}\n"
             for name, (width, _, _) in zip(configured.streams, configured.modes)
             if name in configured.preloaded
         )
     # go2rtc reads the microscope MJPEG preview (1296x968) only for an H.264 viewer.
-    # With its 3 Mbit/s cap, the microscope and 4 previews at 1280x720 need about
-    # 19 Mbit/s of the 22 Mbit/s VPN link.
+    # With NVENC, the microscope, camera 1 at 4K, and 3 previews at 1280x720 have a
+    # combined H.264 cap of 20 Mbit/s on the 22 Mbit/s VPN link.
     streams += (
         "  microscope: http://127.0.0.1:8770/api/camera/microscope/mjpeg\n"
         "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"
@@ -443,7 +461,8 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
         "api:\n  listen: 127.0.0.1:1984\n"
         "rtsp:\n  listen: 127.0.0.1:8554\n"
         'webrtc:\n  listen: ""\n'
-        f"ffmpeg:\n{FFMPEG_RTSP}{H264_NVENC + H265_NVENC if nvenc else H264_X264}"
+        f"ffmpeg:\n{FFMPEG_RTSP}{FFMPEG_MJPEG_30}"
+        f"{H264_NVENC + H265_NVENC if nvenc else H264_X264}"
         f"{preload}"
         f"streams:\n{streams}"
     )

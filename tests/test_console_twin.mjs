@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { workspace, logic, i18n } = require("../src/orchestrator/web/static/console/twin.js");
+const { workspace, positionMonitor, logic, i18n } = require("../src/orchestrator/web/static/console/twin.js");
 const FIT = { min: 0, max: 45 };
 const PROFILE = {
   id: "draft-one", name: "Stage overhead", camera: { device_id: "camera1", dimensions: [640, 480] },
@@ -107,7 +107,7 @@ function el(tag, props, ...children) {
   return node;
 }
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
-async function mounted(t, handlers = {}) {
+async function mounted(t, handlers = {}, compact = false) {
   const timers = new Map(); let timerId = 0, current = state();
   t.mock.method(globalThis, "setTimeout", (action, delay) => { timers.set(++timerId, { action, delay }); return timerId; });
   t.mock.method(globalThis, "clearTimeout", id => timers.delete(id));
@@ -137,12 +137,67 @@ async function mounted(t, handlers = {}) {
     },
     relay() { throw new Error("Digital Twin must not issue motor commands."); },
   };
-  const ws = workspace(); ws.mount(rootNode, api); ws.show(); await settle();
+  api.consoleRequest = (path, body, options) => {
+    assert.ok(path.startsWith("/api/console/ws/twin/"));
+    return api.request(path.slice("/api/console/ws/twin/".length), body, options);
+  };
+  const ws = compact ? positionMonitor() : workspace(); ws.mount(rootNode, api); ws.show(); await settle();
   t.after(() => { ws.hide(); globalThis.document = previousDocument; });
   const find = name => rootNode.all().find(node => node.getAttribute("aria-label") === name || (node.tagName === "BUTTON" && node.textContent === name));
   const runTimer = async delay => { const entry = [...timers].find(([, timer]) => timer.delay === delay); assert.ok(entry); timers.delete(entry[0]); entry[1].action(); await settle(); };
-  return { ws, rootNode, calls, messages, frameRequests, find, timers, documentEvents, runTimer, async runSample() { find("Start sampling")?.click(); await runTimer(0); } };
+  return { ws, api, rootNode, calls, messages, frameRequests, find, timers, documentEvents, runTimer, async runSample() { find("Start sampling")?.click(); await runTimer(0); } };
 }
+
+test("Motion position card samples the saved calibration without calibration controls or preview requests", async t => {
+  const page = await mounted(t, {}, true);
+  assert.equal(page.find("Camera"), undefined);
+  assert.equal(page.find("Saved profile"), undefined);
+  assert.equal(page.find("Calibration"), undefined);
+  assert.match(page.rootNode.textContent, /Stage overhead/);
+  page.find("Target rate").change(2);
+  await page.runSample();
+  assert.equal(page.ws._state().display.x.value_mm, 15);
+  assert.equal(page.ws._state().display.insert.value_mm, 75);
+  assert.ok(page.rootNode.all().some(node => node.className === "tw-point" && node.style.left === "50%"));
+  assert.ok([...page.timers.values()].some(timer => timer.delay > 0 && timer.delay <= 500));
+  assert.deepEqual(page.frameRequests, []);
+  page.find("Pause sampling").click(); await settle();
+  assert.match(page.rootNode.textContent, /Last recorded/);
+  assert.equal(page.ws._state().display.x.held, true);
+  assert.equal(page.timers.size, 0);
+});
+
+test("Motion reloads the selected profile on return and disables sampling after failed refresh", async t => {
+  let current = state(), fail = false;
+  const page = await mounted(t, { state: () => { if (fail) throw new Error("Camera unavailable"); return clone(current); } }, true);
+  await page.runSample(); page.ws.hide();
+  current.active_profile = null;
+  page.ws.show(); await settle();
+  assert.deepEqual(page.ws._state().display, {});
+  assert.equal(page.find("Start sampling").disabled, true);
+  page.ws.hide(); current = state(); fail = true;
+  page.ws.show(); await settle();
+  assert.equal(page.find("Start sampling").disabled, true);
+  assert.match(page.rootNode.textContent, /Camera unavailable/);
+});
+
+test("switching from Position Monitor to Motion waits for the pending sample and discards its result", async t => {
+  let resolve, measurements = 0;
+  const page = await mounted(t, { measure: () => ++measurements === 1 ? new Promise(done => { resolve = done; }) : clone(SAMPLE) });
+  await page.runSample(); page.ws.hide();
+  const compact = positionMonitor(), node = new Element("div");
+  compact.mount(node, page.api); compact.show(); await settle();
+  t.after(() => compact.hide());
+  node.all().find(item => item.tagName === "BUTTON" && item.textContent === "Start sampling").click();
+  await page.runTimer(0);
+  assert.equal(measurements, 1);
+  resolve(clone(SAMPLE)); await settle();
+  assert.equal(measurements, 2);
+  assert.equal(page.ws._state().latest, null);
+  assert.equal(compact._state().display.x.value_mm, 15);
+  compact.hide();
+  assert.equal(page.timers.size, 0);
+});
 
 test("the workspace uses Console cameras and exposes all six calibration endpoints", async t => {
   const page = await mounted(t);

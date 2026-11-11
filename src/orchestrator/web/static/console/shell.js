@@ -21,6 +21,8 @@
       "stop.all": "STOP ALL MOTION",
       "lang.switch": "中文",
       "lang.switchLabel": "Switch language to Chinese",
+      "theme.light": "Light mode", "theme.dark": "Dark mode",
+      "theme.lightLabel": "Switch to light mode", "theme.darkLabel": "Switch to dark mode",
       "controls.some": "You control: {devices}",
       "service.robot": "Robot", "service.stage": "Stage", "service.cameras": "Cameras",
       "service.thermal": "Thermal", "service.vision": "Vision", "service.microscope": "Microscope",
@@ -45,6 +47,8 @@
       "stop.all": "停止全部运动",
       "lang.switch": "English",
       "lang.switchLabel": "切换到英文",
+      "theme.light": "Light mode", "theme.dark": "Dark mode",
+      "theme.lightLabel": "Switch to light mode", "theme.darkLabel": "Switch to dark mode",
       "controls.some": "本页控制：{devices}",
       "service.robot": "机械臂", "service.stage": "位移台", "service.cameras": "相机",
       "service.thermal": "热像仪", "service.vision": "视觉", "service.microscope": "显微镜",
@@ -431,6 +435,7 @@
     const button = $("lc-lang");
     button.textContent = t("lang.switch");
     button.setAttribute("aria-label", t("lang.switchLabel"));
+    renderTheme();
     renderControls();
     renderStrip();
     renderBand();
@@ -441,6 +446,21 @@
     shell.lang = lang === "zh" ? "zh" : "en";
     try { root.localStorage.setItem(LANG_KEY, shell.lang); } catch { /* Storage may be blocked. */ }
     applyLanguage();
+  }
+
+  function renderTheme() {
+    const button = $("lc-theme");
+    if (!button) return;
+    const next = shell.doc.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    button.textContent = t("theme." + next);
+    button.setAttribute("aria-label", t("theme." + next + "Label"));
+  }
+
+  function toggleTheme() {
+    const page = shell.doc.documentElement;
+    page.dataset.theme = page.dataset.theme === "dark" ? "light" : "dark";
+    try { root.localStorage.setItem("labconsole.theme", page.dataset.theme); } catch { /* Storage may be blocked. */ }
+    renderTheme();
   }
 
   async function poll() {
@@ -614,6 +634,7 @@
     try { stored = root.localStorage.getItem(LANG_KEY); } catch { /* Storage may be blocked. */ }
     shell.lang = pickLanguage(stored, root.navigator?.language);
     $("lc-lang").addEventListener("click", () => setLanguage(shell.lang === "en" ? "zh" : "en"));
+    $("lc-theme")?.addEventListener("click", toggleTheme);
     $("lc-stop-all").addEventListener("click", () => { stopAll().catch(() => {}); });
     root.addEventListener("hashchange", () => show(String(root.location.hash || "").slice(1)));
     root.addEventListener("pagehide", () => {

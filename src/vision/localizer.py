@@ -254,6 +254,7 @@ class Localizer:
         metadata = {
             "weights": str(self.weights),
             "image_size": {"width": width, "height": height},
+            "region": [x_offset, 0, x_offset + crop_width, height],
             "preprocessing": (
                 f"EXIF orientation, RGB, center crop {crop_width}x{height}, "
                 f"stretch {self.input_size}x{self.input_size}"

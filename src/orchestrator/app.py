@@ -979,7 +979,6 @@ class OrchestratorService:
 
     def close(self):
         self.dashboard.begin_close()
-        self.console.close()
         with self.lock:
             self.closing = True
             self._lost("Orchestrator service is shutting down.")
@@ -1000,6 +999,8 @@ class OrchestratorService:
             ):
                 break
             time.sleep(0.02)
+        # After the drain: the run has returned its lent leases, so the console releases them.
+        self.console.close()
         self.poll_stop.set()
         if self.poller is not None:
             self.poller.join()

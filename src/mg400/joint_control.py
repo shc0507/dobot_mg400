@@ -888,6 +888,10 @@ class JointControl:
                 if index == PRESSURE_DO and not status:
                     self._blowing = False
             return self._fresh({mode})[0]
+        except Exception:
+            # The keyboard path turns no vacuum error into a stop, so end the blow here.
+            self._end_blow()
+            raise
         finally:
             self.finish_operation()
 

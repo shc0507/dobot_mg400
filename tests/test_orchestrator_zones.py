@@ -1489,7 +1489,7 @@ def test_owned_robot_zone_recovery_confirms_manual_disable_without_relocking(tmp
             wait_zone(lambda: runner._settled)
             assert runner.snapshot()["zones"]["tray"]["status"] == "unknown"
             raw = demo.robot_state.snapshot()
-            assert "fault" not in raw and "connected" not in raw and raw["locked"] is True
+            assert "fault" not in raw and "connected" not in raw and raw["locked"] is False
             # Explicit operator-equivalent recovery reaches only this owned SIM-01 rig.
             demo.clients["robot"].run("disable", timeout=3)
             assert demo.robot_state.snapshot()["locked"] is False

@@ -131,6 +131,7 @@ The robot card shows the button only when the service accepts it:
 - During an alarm, the button reads `Clear alarm`.
 - After an unconfirmed stop without an alarm, the button reads `Recover`. It needs fresh feedback.
 - After a confirmed stop, the card shows `Stopped` and no button. Click `Disable` to unlock control.
+- A `stop` command that arrives while the robot is enabled and idle, without an alarm or keyboard control, does not lock control after the stop is confirmed.
 
 Both buttons send `clear_alarm`.
 `clear_alarm` sends only `ClearError()`. It does not send `Continue()`.

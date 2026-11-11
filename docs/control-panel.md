@@ -131,6 +131,7 @@ client.run("vacuum", operation="suck")
 - 报警期间，按钮显示 `Clear alarm`。
 - 无报警的停止未确认后，按钮显示 `Recover`，需要新鲜反馈。
 - 停止已确认后，卡片显示 `Stopped`，不显示按钮。点击 `Disable` 解锁控制。
+- 机器人已使能且空闲，没有报警或键盘控制时，`stop` 命令确认停止后不锁定控制。
 
 两种按钮都发送 `clear_alarm`。
 `clear_alarm` 只发送 `ClearError()`，不发送 `Continue()`。

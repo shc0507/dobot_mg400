@@ -115,11 +115,11 @@ HOLD 暂停控制器程序，但继续调温。STOP 关闭加热，炉体被动�
 
 气体区域显示每路气体的实测百分比。没有回读时显示未确认。
 **Send flow** 应用填写的百分比。
-**Stop all gas** 逐路发送 `POST /api/flow/gas/stop`，停止所有气体通道，不要求控制权。
+**Stop all gas** 逐路发送 `POST /api/stop` `{"gas_channel": N}`，停止所有气体通道，不要求控制权。
 每路气体的 **Close** 停止该通道，不要求控制权。它只发送 1 次，结果为已确认、未确认或未知。
 `set_gas_valve` 的 `open: true` 以满量程（`100` %）供气。`open: false` 等同于停止该通道。
 缺少可选回复表示未验证，不证明流量为零或阀门已关。
-通信失败或回复无效会锁定控制。**Stop all gas**、`POST /api/flow/gas/stop` 和 `POST /api/flow/stop-all` 仍然可用。
+通信失败或回复无效会锁定控制。**Stop all gas** 和 `POST /api/stop` 仍然可用。
 请核对实际流量，并按要求使用独立隔离装置。
 
 ## 显微镜录像
@@ -155,12 +155,12 @@ HOLD 暂停控制器程序，但继续调温。STOP 关闭加热，炉体被动�
 命令中断或结果不明时，必须检查并确认。
 炉子锁定时，卡片显示 **Acknowledge fault…**。它要求炉子控制权和页面内确认。
 只有检查设备并确认控制器显示 STOP 后，才能点击并确认。
-`POST /api/furnace/acknowledge` 接受 `{}`，只接受当前租约持有者，契约租约和手动租约均可。无人持有控制权时，它先为调用者取得手动控制权。运行器从不调用此路由。
+`acknowledge` 命令不带参数，只接受当前租约持有者。它是恢复命令，炉子锁定时也可发送。
 启动恢复完成前，服务以 HTTP 409 拒绝确认。炉子未连接或未读到 STOP 时，服务也以 HTTP 409 拒绝确认。
 存储失败会锁定运行中的控制，服务仍分别尝试停止各类输出。
 若所有持久写入和失效处理均失败，服务不能保证故障记录持久保存。
 
-控制台的 **Stop heat and gas**，以及 `POST /api/stop`、`POST /api/furnace/stop` 和 `POST /api/sequence/stop`，取消剩余步骤，并尝试停止两类输出。
+控制台的 **Stop heat and gas**，以及 `POST /api/stop`，取消剩余步骤，并尝试停止两类输出。
 只有验证加热和气体均已停止，响应才确认停止。否则响应保持未确认。
 未配置气体控制器或气体没有回读时，停止保持未确认。
 停止不受租约归属或到期回调失败的限制。JSON、`X-MG400-Client` 和请求体格式检查仍然适用。
@@ -174,7 +174,7 @@ HOLD 暂停控制器程序，但继续调温。STOP 关闭加热，炉体被动�
 
 ## API 与故障排查
 
-服务提供[仪器契约](adr/0001-instrument-service-contract.md)、停止路由和操作员路由。
+服务只提供[仪器契约](adr/0001-instrument-service-contract.md)。
 所有路由共用生命周期、上限和气体策略。
 修改请求必须使用 JSON 和 `X-MG400-Client`。
 所有路径均使用配置的基础前缀。
@@ -185,16 +185,11 @@ HOLD 暂停控制器程序，但继续调温。STOP 关闭加热，炉体被动�
 | `GET /api/state` | 炉控、序列和气体状态 |
 | `GET /api/events` | 序号 `since` 之后的服务事件 |
 | `POST /api/heartbeat`、`POST /api/renew`、`POST /api/release` | 取得、续期或释放契约租约 |
-| `POST /api/command` | 提交 `connect`、`connect_flow`、`apply_setpoint`、`set_sequence`、`start_sequence`、`set_gas_flow`、`set_gas_valve` 或 `inspect_gas_flow` |
-| `POST /api/stop`、`POST /api/furnace/stop`、`POST /api/sequence/stop` | 停止加热和气体，取消序列 |
-| `POST /api/flow/gas/stop` | 用 `channel_index` 停止 1 路气体 |
-| `POST /api/flow/stop-all` | 停止所有气体 |
-| `POST /api/manual/heartbeat`、`POST /api/manual/renew`、`POST /api/manual/release` | 用空对象取得、续期或释放手动租约 |
-| `POST /api/furnace/acknowledge` | 确认故障，见上文 |
+| `POST /api/command` | 提交 `connect`、`connect_flow`、`apply_setpoint`、`set_sequence`、`start_sequence`、`set_gas_flow`、`set_gas_valve`、`inspect_gas_flow` 或 `acknowledge` |
+| `POST /api/stop` | 停止加热和气体，取消序列。带 `gas_channel` 时只停止该路气体 |
 
 `POST /api/stop` 可带 `wait_s`，范围为 `0` 至 `15`。炉控服务重复停止，直到停止确认、服务锁定或 `wait_s` 用完。它返回 `stop` 和 `state`。
-`POST /api/furnace/stop` 和 `POST /api/sequence/stop` 只接受 `{}`，返回 `ok`、`stop` 和 `status`。
-气体停止路由返回 `ok` 和 `status`。`ok` 只表示服务未锁定，不证明流量为零。
+`POST /api/stop` 带 `gas_channel`（`0`、`1` 或 `2`）时，只停止该路气体，加热和其他气体不变。只有该路流量回读为零且阀门关闭已验证，`stop` 才为 `confirmed`。
 
 连接失败时，检查配置的稳定设备路径和访问权限。
 炉控器使用 `9600` 波特率、`8` 个数据位、无校验和 `1` 个停止位。必须与配置的从站地址一致。驱动支持 AI-808 和 AI-518P 控制器。

@@ -39,15 +39,6 @@ def flask_adapter(test_client, identity):
     return adapter_type("http://demo.invalid", identity)
 
 
-def furnace_adapter(test_client, identity):
-    """The furnace demo adapter with the lease-free gas stop of FurnaceAdapter."""
-    adapter = flask_adapter(test_client, identity)
-    adapter.gas_stop = lambda channel: adapter.request(
-        "api/flow/gas/stop", {"channel_index": channel}
-    )
-    return adapter
-
-
 def build(tmp_path, adapters):
     recipes = tmp_path / "recipes"
     recipes.mkdir()
@@ -163,7 +154,7 @@ def demos(tmp_path, monkeypatch):
     rig = build(
         tmp_path,
         {
-            "furnace": lambda identity: furnace_adapter(furnace_client, identity),
+            "furnace": lambda identity: flask_adapter(furnace_client, identity),
             "microscope": lambda identity: flask_adapter(microscope_client, identity),
         },
     )

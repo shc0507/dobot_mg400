@@ -12,12 +12,11 @@ import copy
 import math
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import minimalmodbus
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from werkzeug.exceptions import HTTPException
 
 from labkit.describe import command, describe, parameter
@@ -34,59 +33,17 @@ from .state import StateStore
 STOP_RETRY_S = 0.25
 
 
-class _AutomationLease:
-    """Classify contract ownership atomically through the public lease API."""
-
-    def __init__(self, owner):
-        self.owner = owner
-        self.lease = owner.lifecycle.lease
-
-    @property
-    def on_expire(self):
-        return self.lease.on_expire
-
-    @on_expire.setter
-    def on_expire(self, value):
-        self.lease.on_expire = value
-
-    def acquire(self, client):
-        with self.lease.control(client, require_holder=False):
-            result = self.lease.acquire(client)
-            self.owner.manual_holder = None
-            return result
-
-    def renew(self, client):
-        with self.lease.control(client):
-            result = self.lease.renew(client)
-            self.owner.manual_holder = None
-            return result
-
-    def release(self, client):
-        with self.lease.control(client, require_holder=False):
-            result = self.lease.release(client)
-            if self.owner.manual_holder == client:
-                self.owner.manual_holder = None
-            return result
-
-    def snapshot(self):
-        return self.lease.snapshot()
-
-    def poll(self):
-        return self.lease.poll()
-
-    def control(self, client, *, require_holder=True):
-        return self.lease.control(client, require_holder=require_holder)
-
-
 class FurnaceWebService:
     """Add contract metadata without bypassing the lifecycle's output guards."""
+
+    # api/stop {"gas_channel": N} stops 1 gas channel and leaves the furnace running.
+    stop_params = ("gas_channel",)
 
     def __init__(self, lifecycle, *, demo=False, temporary=None, wall_clock=time.time):
         self.lifecycle = lifecycle
         self.demo = bool(demo)
         self.events = lifecycle.events
-        self.manual_holder = None
-        self.lease = _AutomationLease(self)
+        self.lease = lifecycle.lease
         self._temporary = temporary
         self._wall_clock = wall_clock
         self._metadata_lock = threading.Lock()
@@ -158,6 +115,7 @@ class FurnaceWebService:
                 "open": parameter("boolean"),
             },
             "inspect_gas_flow": {"channel_index": parameter("integer", minimum=0, maximum=2)},
+            "acknowledge": {},
         }
         required = {
             "apply_setpoint": ["temperature_c", "ramp_rate_c_per_min"],
@@ -183,7 +141,8 @@ class FurnaceWebService:
                         properties=properties,
                         required=required.get(name, []),
                         additionalProperties=False,
-                    )
+                    ),
+                    recovery=name == "acknowledge",
                 )
                 for name, properties in schema.items()
             },
@@ -191,8 +150,6 @@ class FurnaceWebService:
 
     def status(self):
         value = self.lifecycle.status()
-        holder = value["lease"]["holder"]
-        value["manual_client"] = self.manual_holder if holder == self.manual_holder else None
         value["demo"] = self.demo
         if self._startup_error and not value["connected"]:
             value["error"] = self._startup_error
@@ -272,6 +229,8 @@ class FurnaceWebService:
                 self.lifecycle.set_gas_flow(
                     args["channel_index"], args["flow_percent"], client=client
                 )
+            elif action == "acknowledge":
+                self.lifecycle.acknowledge(client=client)
             elif action == "set_gas_valve":
                 self.lifecycle.set_gas_valve(args["channel_index"], args["open"], client=client)
             else:
@@ -291,60 +250,7 @@ class FurnaceWebService:
 
     def command(self, action, args, client):
         with self.lifecycle.lease.control(client):
-            self.manual_holder = None
             return self._execute(action, args, client)
-
-    @contextmanager
-    def _manual_control(self, client, *, renew_only=False):
-        lease = self.lifecycle.lease
-        with lease.control(client, require_holder=False):
-            holder = lease.snapshot()["holder"]
-            if holder is not None and (holder != client or self.manual_holder != client):
-                raise ServiceError(
-                    409, "Another client controls the furnace. Stop remains available."
-                )
-            if renew_only:
-                if holder != client or self.manual_holder != client:
-                    raise ServiceError(
-                        409, "Manual control expired. Take control again explicitly."
-                    )
-                lease.renew(client)
-            else:
-                lease.acquire(client)
-                self.manual_holder = client
-            yield
-
-    def manual_heartbeat(self, client, *, renew_only=False):
-        with self._manual_control(client, renew_only=renew_only):
-            return self.lifecycle.lease.snapshot()
-
-    def manual_release(self, client):
-        with self.lifecycle.lease.control(client, require_holder=False):
-            holder = self.lifecycle.lease.snapshot()["holder"]
-            if holder is not None and (holder != client or self.manual_holder != client):
-                raise ServiceError(409, "Another client controls the furnace")
-            result = self.lifecycle.lease.release(client)
-            self.manual_holder = None
-            return result
-
-    def manual_command(self, action, args, client):
-        """Acknowledge a fault for the lease holder, or claim manual control when free.
-
-        The Lab Console acknowledges on its own lease. The runner never calls this.
-        """
-        if action != "acknowledge":
-            raise ValueError("Unknown operator action")
-        if args:
-            raise ValueError("Acknowledgement takes no parameters")
-        lease = self.lifecycle.lease
-        with lease.control(client, require_holder=False):
-            if lease.snapshot()["holder"] == client:
-                lease.renew(client)
-                self.lifecycle.acknowledge(client=client)
-                return None
-        with self._manual_control(client):
-            self.lifecycle.acknowledge(client=client)
-            return None
 
     @staticmethod
     def _stop_confirmed(status):
@@ -359,8 +265,40 @@ class FurnaceWebService:
             and all(valve["open"] is False and valve["verified"] for valve in flow["gas_valves"])
         )
 
-    def stop(self, client, wait_s=0):
+    def _gas_stop(self, client, channel):
+        serial = self._begin()
+        try:
+            flow = self.lifecycle.stop_gas_flow(channel)
+        except ValueError:
+            raise
+        except Exception as error:
+            self._finish(serial, "gas_stop", client, "failed", str(error))
+            return "unconfirmed"
+        gas = [row for row in flow["gas_channels"] if row.get("channel_index") == channel]
+        valve = [row for row in flow["gas_valves"] if row.get("channel_index") == channel]
+        # HTTP success alone does not confirm a physical stop: read the flow and the valve back.
+        confirmed = (
+            flow["connected"] is True
+            and flow["locked"] is False
+            and flow["fault"] is None
+            and flow["error"] is None
+            and len(gas) == len(valve) == 1
+            and gas[0].get("available") is True
+            and gas[0].get("error") is None
+            and gas[0].get("actual_percent") == 0
+            and valve[0].get("open") is False
+            and valve[0].get("verified") is True
+        )
+        result, message = ("stopped", "") if confirmed else ("failed", "Gas stop is unconfirmed")
+        self._finish(serial, "gas_stop", client, result, message)
+        return "confirmed" if confirmed else "unconfirmed"
+
+    def stop(self, client, wait_s=0, gas_channel=None):
         validate_client(client)
+        if gas_channel is not None:
+            if type(gas_channel) is not int or not 0 <= gas_channel <= 2:
+                raise ValueError("gas_channel must be 0, 1 or 2")
+            return self._gas_stop(client, gas_channel)
         if (
             isinstance(wait_s, bool)
             or not isinstance(wait_s, (int, float))
@@ -444,19 +382,10 @@ def make_service(
 
 
 def create_app(service, *, base_path="/"):
-    """Serve the contract, stop and operator routes."""
-    blueprint = contract_blueprint(service, base_path=base_path, lease=service.lease)
-    prefix = base_path.rstrip("/")
+    """Serve the contract at the base path."""
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
-    app.register_blueprint(blueprint)
-
-    @app.before_request
-    def access():
-        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-            if request.mimetype != "application/json":
-                raise ServiceError(415, "Expected Content-Type: application/json")
-            validate_client(request.headers.get("X-MG400-Client"))
+    app.register_blueprint(contract_blueprint(service, base_path=base_path, lease=service.lease))
 
     @app.after_request
     def headers(response):
@@ -465,65 +394,8 @@ def create_app(service, *, base_path="/"):
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
-    @app.errorhandler(ServiceError)
-    def service_error(error):
-        return jsonify(error=error.message), error.status
-
-    @app.errorhandler(ValueError)
-    def bad_request(error):
-        return jsonify(error=str(error)), 400
-
     @app.errorhandler(HTTPException)
     def http_error(error):
         return jsonify(error=error.description), error.code
-
-    def body():
-        value = request.get_json()
-        if not isinstance(value, dict):
-            raise ValueError("Expected a JSON object")
-        return value
-
-    @app.post(prefix + "/api/manual/<operation>")
-    def manual_lease(operation):
-        if body():
-            raise ValueError("Manual lease requests take an empty object")
-        client = request.headers["X-MG400-Client"]
-        if operation == "heartbeat":
-            value = service.manual_heartbeat(client)
-        elif operation == "renew":
-            value = service.manual_heartbeat(client, renew_only=True)
-        elif operation == "release":
-            value = service.manual_release(client)
-        else:
-            raise ValueError("Unknown manual lease operation")
-        return jsonify(lease=value)
-
-    @app.post(prefix + "/api/furnace/acknowledge")
-    def acknowledge():
-        service.manual_command("acknowledge", body(), request.headers["X-MG400-Client"])
-        return jsonify(ok=True, status=service.status())
-
-    @app.post(prefix + "/api/furnace/stop")
-    @app.post(prefix + "/api/sequence/stop")
-    def stop_furnace():
-        if body():
-            raise ValueError("Stop takes an empty object")
-        outcome = service.stop(request.headers["X-MG400-Client"])
-        return jsonify(ok=outcome == "confirmed", stop=outcome, status=service.status())
-
-    @app.post(prefix + "/api/flow/gas/stop")
-    def stop_gas():
-        args = body()
-        if set(args) != {"channel_index"}:
-            raise ValueError("Expected channel_index")
-        result = service.lifecycle.stop_gas_flow(args["channel_index"])
-        return jsonify(ok=not result["locked"], status=result)
-
-    @app.post(prefix + "/api/flow/stop-all")
-    def stop_flow():
-        if body():
-            raise ValueError("Stop takes an empty object")
-        result = service.lifecycle.stop_all_flow()
-        return jsonify(ok=not result["locked"], status=result)
 
     return app

@@ -115,11 +115,11 @@ Accepted edits are persisted, including future gas plans.
 
 The gas area shows the measured percent of each gas. Without readback, it shows unverified.
 **Send flow** applies the entered percent.
-**Stop all gas** sends `POST /api/flow/gas/stop` for each channel. It stops all gas channels and does not require control.
+**Stop all gas** sends `POST /api/stop` `{"gas_channel": N}` for each channel. It stops all gas channels and does not require control.
 **Close** on a gas row stops that channel and does not require control. It is sent 1 time. The result is confirmed, not confirmed, or unknown.
 `set_gas_valve` with `open: true` sends full-scale flow (`100` %). `open: false` is the same as a stop of that channel.
 A missing optional reply means unverified. It does not prove zero flow or a closed valve.
-A transport or invalid-reply failure locks control. **Stop all gas**, `POST /api/flow/gas/stop`, and `POST /api/flow/stop-all` remain available.
+A transport or invalid-reply failure locks control. **Stop all gas** and `POST /api/stop` remain available.
 Check physical flow and use independent isolation when required.
 
 ## Microscope recording
@@ -155,12 +155,12 @@ Do not remove a state or lock file to clear a fault.
 An interrupted command or uncertain outcome requires inspection and acknowledgement.
 When the furnace is locked, the card shows **Acknowledge fault…**. It requires furnace control and a confirmation in the page.
 Select and confirm it only after you check the device and make sure that the controller shows STOP.
-`POST /api/furnace/acknowledge` takes `{}` and accepts only the current lease holder, with a contract or a manual lease. When no client holds control, it first acquires manual control for the caller. The runner never calls this route.
+The `acknowledge` command takes no parameters and accepts only the current lease holder. It is a recovery command: you can send it also when the furnace is locked.
 The service refuses acknowledgement with HTTP 409 until startup recovery completes. It also refuses with HTTP 409 unless the furnace is connected and reads STOP.
 A storage failure locks runtime control and still attempts independent output stops.
 If all persistent writes and invalidation fail, the service cannot guarantee a durable fault record.
 
-**Stop heat and gas** in the console, `POST /api/stop`, `POST /api/furnace/stop`, and `POST /api/sequence/stop` cancel remaining steps and attempt both output stops.
+**Stop heat and gas** in the console, and `POST /api/stop` cancel remaining steps and attempt both output stops.
 A confirmed response requires verified stopped heat and gas. Otherwise the response remains unconfirmed.
 Without a gas controller, or without gas readback, a stop remains unconfirmed.
 Stop is available regardless of lease ownership or expiry failure. The JSON, `X-MG400-Client`, and body-format checks still apply.
@@ -174,7 +174,7 @@ See [routine deployment commands](deploy.en.md#routine-commands).
 
 ## API and troubleshooting
 
-The service provides the [instrument contract](adr/0001-instrument-service-contract.en.md), stop routes, and operator routes.
+The service provides only the [instrument contract](adr/0001-instrument-service-contract.en.md).
 All routes use the same lifecycle, caps, and gas policy.
 Mutations require JSON and `X-MG400-Client`.
 All paths follow the configured base prefix.
@@ -185,16 +185,11 @@ All paths follow the configured base prefix.
 | `GET /api/state` | Furnace, sequence, and gas state |
 | `GET /api/events` | Service events after sequence number `since` |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | Acquire, renew, or release the contract lease |
-| `POST /api/command` | Submit `connect`, `connect_flow`, `apply_setpoint`, `set_sequence`, `start_sequence`, `set_gas_flow`, `set_gas_valve`, or `inspect_gas_flow` |
-| `POST /api/stop`, `POST /api/furnace/stop`, `POST /api/sequence/stop` | Stop heat and gas, and cancel the sequence |
-| `POST /api/flow/gas/stop` | Stop 1 gas channel with `channel_index` |
-| `POST /api/flow/stop-all` | Stop all gas |
-| `POST /api/manual/heartbeat`, `POST /api/manual/renew`, `POST /api/manual/release` | Acquire, renew, or release the manual lease with an empty object |
-| `POST /api/furnace/acknowledge` | Acknowledge a fault. See above |
+| `POST /api/command` | Submit `connect`, `connect_flow`, `apply_setpoint`, `set_sequence`, `start_sequence`, `set_gas_flow`, `set_gas_valve`, `inspect_gas_flow`, or `acknowledge` |
+| `POST /api/stop` | Stop heat and gas, and cancel the sequence. With `gas_channel`, stop only that gas channel |
 
 `POST /api/stop` accepts an optional `wait_s` from `0` to `15`. The furnace service repeats the stop until the stop is confirmed, the service locks, or `wait_s` ends. It returns `stop` and `state`.
-`POST /api/furnace/stop` and `POST /api/sequence/stop` accept only `{}` and return `ok`, `stop`, and `status`.
-The gas stop routes return `ok` and `status`. `ok` means only that the service is not locked. It does not prove zero flow.
+With `gas_channel` (`0`, `1`, or `2`), `POST /api/stop` stops only that gas channel. Heat and the other gas channels do not change. `stop` is `confirmed` only when the flow readback of that channel is zero and the valve close is verified.
 
 If connection fails, check the configured stable device paths and access permissions.
 The furnace uses `9600` baud, `8` data bits, no parity, and `1` stop bit. Match its configured slave address. The driver supports the AI-808 and AI-518P controllers.

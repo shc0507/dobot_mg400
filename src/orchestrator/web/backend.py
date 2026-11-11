@@ -20,46 +20,6 @@ LABELS = {
 CAMERAS = {"camera": "Camera preview", "thermal": "Thermal camera", "microscope": "Microscope"}
 
 
-def gas_confirmed(value, channel):
-    """HTTP success alone does not confirm a gas channel's physical stop."""
-    state = value.get("status") if isinstance(value, dict) else None
-    if (
-        not isinstance(value, dict)
-        or value.get("ok") is not True
-        or not isinstance(state, dict)
-        or state.get("connected") is not True
-        or state.get("locked") is not False
-        or "fault" not in state
-        or state["fault"] is not None
-        or state.get("error") is not None
-    ):
-        return False
-    selected = []
-    for key in ("gas_channels", "gas_valves"):
-        rows = state.get(key)
-        if not isinstance(rows, list):
-            return False
-        matches = [
-            item
-            for item in rows
-            if isinstance(item, dict)
-            and type(item.get("channel_index")) is int
-            and item["channel_index"] == channel
-        ]
-        if len(matches) != 1:
-            return False
-        selected.append(matches[0])
-    flow, valve = selected
-    return (
-        flow.get("available") is True
-        and flow.get("error") is None
-        and type(flow.get("actual_percent")) in {int, float}
-        and flow["actual_percent"] == 0
-        and valve.get("open") is False
-        and valve.get("verified") is True
-    )
-
-
 class Dashboard:
     """Own a short admission gate; never wait on the orchestrator under this lock."""
 
@@ -299,12 +259,10 @@ class Dashboard:
                             "message": "No configured service or running owned demo is available.",
                         }
                     else:
-                        value = adapter.stop() if channel is None else adapter.gas_stop(channel)
-                        confirmed = (
-                            isinstance(value, dict) and value.get("stop") == "confirmed"
-                            if channel is None
-                            else gas_confirmed(value, channel)
+                        value = adapter.stop(
+                            **({} if channel is None else {"gas_channel": channel})
                         )
+                        confirmed = isinstance(value, dict) and value.get("stop") == "confirmed"
                         result = {
                             "status": "confirmed" if confirmed else "unconfirmed",
                             "message": "Stop confirmed by service feedback."

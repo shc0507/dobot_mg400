@@ -1,23 +1,17 @@
 """Dashboard access and safety transactions with injected instruments only."""
 
 import copy
-import io
 import json
 import socket
 import threading
 import time
-import urllib.error
 from types import SimpleNamespace
 
 import pytest
 
-import orchestrator.clients as client_module
-from labkit.client import ServiceClient
 from labkit.errors import ServiceError
 from orchestrator.app import OrchestratorService, create_app
-from orchestrator.clients import FurnaceAdapter, from_settings
-from orchestrator.rehearsal import Rehearsal
-from orchestrator.web.backend import SERVICES, gas_confirmed
+from orchestrator.web.backend import SERVICES
 
 PRIVATE = "dashboard-private-instrument-token-0000000"
 
@@ -28,22 +22,6 @@ def wait_for(predicate, timeout=3):
         if time.monotonic() >= deadline:
             pytest.fail("Offline dashboard work did not settle")
         time.sleep(0.005)
-
-
-def gas_state(channel):
-    return {
-        "ok": True,
-        "status": {
-            "connected": True,
-            "locked": False,
-            "fault": None,
-            "error": None,
-            "gas_channels": [
-                {"channel_index": channel, "available": True, "actual_percent": 0, "error": None}
-            ],
-            "gas_valves": [{"channel_index": channel, "open": False, "verified": True}],
-        },
-    }
 
 
 class Device:
@@ -80,16 +58,15 @@ class Device:
                     device.read()
                 return copy.deepcopy(device.state)
 
-            def stop(self):
+            def stop(self, gas_channel=None):
+                if gas_channel is not None:
+                    device.calls.append(("gas", gas_channel))
+                    return device.gas(gas_channel) if device.gas else {"stop": "confirmed"}
                 with device.lock:
                     device.stop_count += 1
                     count = device.stop_count
                     device.calls.append("stop")
                 return device.stop(count) if device.stop else {"stop": "confirmed"}
-
-            def gas_stop(self, channel):
-                device.calls.append(("gas", channel))
-                return device.gas(channel) if device.gas else gas_state(channel)
 
             def close(self):
                 if device.cleanup and "dashboard-stop-" in identity:
@@ -522,10 +499,7 @@ def test_gas_off_attempts_all_channels_without_holding_run_or_broader_stop(rig):
     def gas(channel):
         if channel == 0:
             raise OSError(PRIVATE)
-        value = gas_state(channel)
-        if channel == 1:
-            value["status"]["gas_channels"][0]["available"] = False
-        return value
+        return {"stop": "unconfirmed" if channel == 1 else "confirmed"}
 
     rig.devices["furnace"].gas = gas
     response = post(rig, "gas", {"confirmed": True})
@@ -546,56 +520,6 @@ def test_gas_off_attempts_all_channels_without_holding_run_or_broader_stop(rig):
     }
     assert all(device.stop_count == 0 for device in rig.devices.values())
     assert PRIVATE not in json.dumps(result)
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        "disconnected",
-        "locked",
-        "fault",
-        "missing-fault",
-        "flow-unknown",
-        "flow-nonzero",
-        "flow-bool",
-        "valve-open",
-        "valve-unverified",
-        "duplicate",
-    ],
-)
-def test_gas_confirmation_requires_exact_target_feedback(change):
-    value = gas_state(1)
-    state = value["status"]
-    if change == "disconnected":
-        state["connected"] = False
-    elif change == "locked":
-        state["locked"] = True
-    elif change == "fault":
-        state["fault"] = {"code": "unknown"}
-    elif change == "missing-fault":
-        del state["fault"]
-    elif change == "flow-unknown":
-        state["gas_channels"][0]["available"] = False
-    elif change == "flow-nonzero":
-        state["gas_channels"][0]["actual_percent"] = 2
-    elif change == "flow-bool":
-        state["gas_channels"][0]["actual_percent"] = False
-    elif change == "valve-open":
-        state["gas_valves"][0]["open"] = True
-    elif change == "valve-unverified":
-        state["gas_valves"][0]["verified"] = False
-    else:
-        state["gas_channels"].append(copy.deepcopy(state["gas_channels"][0]))
-    assert not gas_confirmed(value, 1)
-
-
-@pytest.mark.parametrize("ok", [False, None, 1, "true"])
-def test_explicit_or_malformed_gas_failure_is_never_confirmed(ok):
-    value = gas_state(1)
-    value["ok"] = ok
-    assert not gas_confirmed(value, 1)
-    del value["ok"]
-    assert not gas_confirmed(value, 1)
 
 
 def test_owned_client_cleanup_is_part_of_gate_and_shutdown(rig):
@@ -693,430 +617,3 @@ def test_camera_links_are_absent_and_private_endpoints_stay_hidden(tmp_path):
     assert all(item["url"] is None for item in service.dashboard.snapshot()["cameras"])
     assert PRIVATE not in json.dumps(service.dashboard.snapshot())
     service.close()
-
-
-class Opener:
-    def __init__(self, replies):
-        self.replies = iter(replies)
-        self.calls = []
-
-    def open(self, request, timeout):
-        self.calls.append((request, timeout))
-        reply = next(self.replies)
-        if isinstance(reply, Exception):
-            raise reply
-        return io.BytesIO(reply)
-
-
-def adapter(monkeypatch, replies):
-    obj = FurnaceAdapter("http://127.0.0.1:1/furnace/", "review", timeout=0.25)
-    opener = Opener(replies)
-    monkeypatch.setattr(obj._http, "_opener", opener)
-    monkeypatch.setattr(obj._gas_http, "_opener", opener)
-    return obj, opener
-
-
-@pytest.mark.parametrize("channel", [0, 1, 2])
-def test_exact_channel_stop_preserves_unconfirmed_result(monkeypatch, channel):
-    reply = {"ok": False, "status": {"locked": True, "gas_channels": []}}
-    obj, network = adapter(monkeypatch, [b'{"contract":1}', json.dumps(reply).encode()])
-    assert obj.gas_stop(channel) == reply
-    assert len(network.calls) == 2
-    description, stop = [request for request, _ in network.calls]
-    assert description.get_method() == "GET"
-    assert description.full_url.endswith("/furnace/api/describe")
-    assert stop.get_method() == "POST"
-    assert stop.full_url.endswith("/furnace/api/flow/gas/stop")
-    assert json.loads(stop.data) == {"channel_index": channel}
-    assert stop.get_header("X-mg400-client") == "review"
-    assert stop.get_header("Authorization") is None
-    assert all(timeout == 0.25 for _, timeout in network.calls)
-
-
-@pytest.mark.parametrize("channel", [True, False, -1, 3, 0.0, "0", None, {}, []])
-def test_invalid_channel_never_describes_or_stops(monkeypatch, channel):
-    obj, network = adapter(monkeypatch, [])
-    with pytest.raises(ValueError):
-        obj.gas_stop(channel)
-    assert network.calls == []
-
-
-@pytest.mark.parametrize("payload", [b'{"contract":2}', b'{"contract":true}', b"{}"])
-def test_wrong_contract_never_stops(monkeypatch, payload):
-    obj, network = adapter(monkeypatch, [payload])
-    with pytest.raises(ServiceError):
-        obj.gas_stop(0)
-    assert len(network.calls) == 1
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        b"[]",
-        b"null",
-        b"invalid",
-        urllib.error.HTTPError("http://127.0.0.1:1/", 403, "Denied", {}, io.BytesIO(b"{}")),
-    ],
-)
-def test_failure_does_not_fallback_to_broader_stop(monkeypatch, reply):
-    obj, network = adapter(monkeypatch, [b'{"contract":1}', reply])
-    with pytest.raises(ServiceError):
-        obj.gas_stop(1)
-    assert len(network.calls) == 2
-    assert network.calls[-1][0].full_url.endswith("/api/flow/gas/stop")
-
-
-def test_selection_never_uses_environment_proxy(monkeypatch):
-    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:9")
-    obj = from_settings(
-        {"MG400_ORCH_FURNACE_URL": "http://127.0.0.1:1/furnace"}, identity="review"
-    )["furnace"]
-    assert isinstance(obj, FurnaceAdapter)
-    assert obj._gas_http._opener is obj._http._opener
-    handlers = obj._http._opener.handlers
-    assert not any(getattr(handler, "proxies", {}) for handler in handlers)
-    redirect = next(handler for handler in handlers if hasattr(handler, "redirect_request"))
-    assert redirect.redirect_request(None, None, 307, "", {}, "http://other.invalid") is None
-
-
-GAS_BODY_LIMIT = 256 * 1024
-
-
-class GasBoundBody(io.BytesIO):
-    def __init__(self, payload, *, clock=None, tick=0, chunk=65536, failure=None):
-        super().__init__(payload)
-        self.clock, self.tick, self.chunk, self.failure = clock, tick, chunk, failure
-        self.requests = []
-        self.returned = 0
-
-    def read(self, *args):
-        raise AssertionError("Gas responses must use bounded read1 calls")
-
-    def read1(self, size):
-        assert 0 < size <= 65536
-        self.requests.append(size)
-        if self.clock is not None:
-            self.clock.now += self.tick
-        if self.failure is not None:
-            raise self.failure
-        block = io.BytesIO.read(self, min(size, self.chunk))
-        self.returned += len(block)
-        return block
-
-
-class GasBoundOpener:
-    def __init__(self, responses):
-        self.responses = iter(responses)
-        self.calls = []
-
-    def open(self, request, timeout):
-        self.calls.append((request, timeout))
-        result = next(self.responses)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-
-def gas_bounded_adapter(monkeypatch, responses, *, clock=None):
-    obj = FurnaceAdapter(
-        "http://127.0.0.1:1/furnace/",
-        "bounded-gas",
-        timeout=0.25,
-    )
-    opener = GasBoundOpener(responses)
-    monkeypatch.setattr(obj._gas_http, "_opener", opener)
-    if clock is not None:
-        monkeypatch.setattr(client_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
-    return obj, opener
-
-
-def gas_padded_payload(value, size):
-    encoded = json.dumps(value).encode()
-    assert len(encoded) <= size
-    return encoded + b" " * (size - len(encoded))
-
-
-def gas_responses_for_phase(phase, response):
-    if phase == "describe":
-        return [response]
-    return [GasBoundBody(b'{"contract":1}'), response]
-
-
-def gas_assert_only_expected_requests(network, phase):
-    paths = [request.full_url for request, _ in network.calls]
-    expected = ["http://127.0.0.1:1/furnace/api/describe"]
-    if phase == "stop":
-        expected.append("http://127.0.0.1:1/furnace/api/flow/gas/stop")
-    assert paths == expected
-    assert all(timeout == 0.25 for _, timeout in network.calls)
-
-
-def test_gas_body_exact_limit_is_accepted_for_discovery_and_stop(monkeypatch):
-    expected = {"ok": False, "status": {"locked": True}}
-    describe = GasBoundBody(gas_padded_payload({"contract": 1}, GAS_BODY_LIMIT))
-    stop = GasBoundBody(gas_padded_payload(expected, GAS_BODY_LIMIT))
-    obj, network = gas_bounded_adapter(monkeypatch, [describe, stop])
-    assert obj.gas_stop(2) == expected
-    for stream in (describe, stop):
-        assert stream.closed
-        assert stream.returned == GAS_BODY_LIMIT
-        assert stream.requests == [65536, 65536, 65536, 65536, 1]
-    gas_assert_only_expected_requests(network, "stop")
-
-
-@pytest.mark.parametrize("phase", ["describe", "stop"])
-@pytest.mark.parametrize("http_error", [False, True])
-def test_gas_body_over_limit_stops_reading_and_closes(monkeypatch, phase, http_error):
-    stream = GasBoundBody(b"x" * (GAS_BODY_LIMIT + 4096))
-    response = stream
-    if http_error:
-        response = urllib.error.HTTPError("http://127.0.0.1:1/", 503, "Unavailable", {}, stream)
-    obj, network = gas_bounded_adapter(monkeypatch, gas_responses_for_phase(phase, response))
-    with pytest.raises(ServiceError) as raised:
-        obj.gas_stop(0)
-    assert raised.value.status == (503 if http_error else 502)
-    assert ("Unavailable" if http_error else "exceeds 256 KiB") in str(raised.value)
-    assert stream.closed and stream.returned == GAS_BODY_LIMIT + 1
-    assert stream.requests == [65536, 65536, 65536, 65536, 1]
-    gas_assert_only_expected_requests(network, phase)
-
-
-@pytest.mark.parametrize("phase", ["describe", "stop"])
-@pytest.mark.parametrize("http_error", [False, True])
-def test_gas_dripping_body_reaches_deadline_between_reads(monkeypatch, phase, http_error):
-    clock = SimpleNamespace(now=0.0)
-    stream = GasBoundBody(b" " * 1000, clock=clock, tick=0.1, chunk=8)
-    response = stream
-    if http_error:
-        response = urllib.error.HTTPError("http://127.0.0.1:1/", 502, "Bad Gateway", {}, stream)
-    obj, network = gas_bounded_adapter(
-        monkeypatch, gas_responses_for_phase(phase, response), clock=clock
-    )
-    with pytest.raises(ServiceError) as raised:
-        obj.gas_stop(1)
-    assert raised.value.status == (502 if http_error else 0)
-    assert ("Bad Gateway" if http_error else "body deadline exceeded") in str(raised.value)
-    assert stream.closed and stream.returned == 24 and len(stream.requests) == 3
-    assert clock.now == pytest.approx(0.3)
-    gas_assert_only_expected_requests(network, phase)
-
-
-@pytest.mark.parametrize("phase", ["describe", "stop"])
-@pytest.mark.parametrize("http_error", [False, True])
-def test_gas_body_read_failure_closes_and_preserves_http_error(monkeypatch, phase, http_error):
-    stream = GasBoundBody(b"", failure=TimeoutError("offline socket timeout"))
-    response = stream
-    if http_error:
-        response = urllib.error.HTTPError("http://127.0.0.1:1/", 403, "Forbidden", {}, stream)
-    obj, network = gas_bounded_adapter(monkeypatch, gas_responses_for_phase(phase, response))
-    with pytest.raises(ServiceError) as raised:
-        obj.gas_stop(2)
-    assert raised.value.status == (403 if http_error else 0)
-    assert ("Forbidden" if http_error else "offline socket timeout") in str(raised.value)
-    assert stream.closed and len(stream.requests) == 1
-    gas_assert_only_expected_requests(network, phase)
-
-
-def test_gas_bounded_http_error_keeps_json_detail(monkeypatch):
-    stream = GasBoundBody(b'{"error":"Denied by existing guard"}')
-    error = urllib.error.HTTPError("http://127.0.0.1:1/", 403, "Forbidden", {}, stream)
-    obj, network = gas_bounded_adapter(monkeypatch, gas_responses_for_phase("stop", error))
-    with pytest.raises(ServiceError, match="Denied by existing guard") as raised:
-        obj.gas_stop(2)
-    assert raised.value.status == 403 and stream.closed
-    gas_assert_only_expected_requests(network, "stop")
-
-
-def test_gas_bounds_do_not_change_other_adapter_reads_or_skip_own_discovery(monkeypatch):
-    description = {"contract": 1, "lease_seconds": 5}
-    obj, network = gas_bounded_adapter(
-        monkeypatch, [GasBoundBody(b'{"contract":1}'), GasBoundBody(b'{"ok":true}')]
-    )
-    assert type(obj._http) is ServiceClient
-    ordinary = GasBoundOpener([io.BytesIO(gas_padded_payload(description, GAS_BODY_LIMIT + 1))])
-    monkeypatch.setattr(obj._http, "_opener", ordinary)
-    assert obj.describe() == description
-    assert obj.gas_stop(0) == {"ok": True}
-    gas_assert_only_expected_requests(network, "stop")
-    assert len(ordinary.calls) == 1
-
-
-@pytest.fixture
-def inprocess_furnace(monkeypatch):
-    """Run the real owned factory with Flask requests and simulated serial only."""
-    from urllib.parse import urlsplit
-
-    import werkzeug.serving
-
-    apps = []
-    constructor = FurnaceAdapter.__init__
-
-    class LocalOpener:
-        def __init__(self, app):
-            self.app = app
-
-        def open(self, request, timeout):
-            url = urlsplit(request.full_url)
-            assert url.hostname == "127.0.0.1" and url.port == 1
-            response = self.app.test_client().open(
-                url.path,
-                method=request.get_method(),
-                data=request.data,
-                headers=dict(request.header_items()),
-                base_url="http://127.0.0.1:1",
-            )
-            body = io.BytesIO(response.get_data())
-            if response.status_code >= 400:
-                raise urllib.error.HTTPError(
-                    request.full_url, response.status_code, "Offline service error", {}, body
-                )
-            return body
-
-    def server(host, port, app, *, threaded):
-        assert (host, port, threaded) == ("127.0.0.1", 0, True)
-        apps.append(app)
-        return SimpleNamespace(server_port=1)
-
-    def adapter_init(self, *args, **kwargs):
-        constructor(self, *args, **kwargs)
-        self._http._opener = self._gas_http._opener = LocalOpener(apps[-1])
-
-    monkeypatch.setattr(werkzeug.serving, "make_server", server)
-    monkeypatch.setattr(Rehearsal, "_serve", lambda self, server: None)
-    monkeypatch.setattr(FurnaceAdapter, "__init__", adapter_init)
-    return apps
-
-
-def test_owned_furnace_gas_stop_keeps_the_existing_heat_water_and_holder(
-    tmp_path, inprocess_furnace, monkeypatch
-):
-    import furnace.app
-
-    original = furnace.app.make_service
-    created = []
-
-    def create(*args, **kwargs):
-        assert kwargs == {"demo": True}
-        service = original(*args, **kwargs)
-        created.append(service)
-        return service
-
-    monkeypatch.setattr(furnace.app, "make_service", create)
-    with Rehearsal(tmp_path, ("furnace",), identity="owned-demo-holder") as demo:
-        initial = demo.clients["furnace"]
-        assert isinstance(initial, FurnaceAdapter)
-        initial.acquire()
-        try:
-            initial.command("connect_flow")
-            initial.command("apply_setpoint", temperature_c=50, ramp_rate_c_per_min=5)
-            initial.command("set_gas_flow", channel_index=1, flow_percent=5)
-            initial.command("set_gas_valve", channel_index=1, open=True)
-            before = initial.state()
-            assert before["run_state_code"] == 0 and before["target_c"] == 50
-            fresh = demo.new_clients("dashboard-gas-stop")["furnace"]
-            result = fresh.gas_stop(1)
-            after = fresh.state()
-            assert len(created) == 1
-            assert initial.identity == "owned-demo-holder"
-            assert fresh.identity == "dashboard-gas-stop"
-            assert before["lease"]["holder"] == after["lease"]["holder"] == initial.identity
-            assert after["run_state_code"] == before["run_state_code"]
-            assert after["target_c"] == before["target_c"]
-            assert after["flow"]["water_channels"] == before["flow"]["water_channels"]
-            assert result["ok"] is True
-            channel = result["status"]["gas_channels"][1]
-            valve = result["status"]["gas_valves"][1]
-            assert channel["actual_percent"] == 0
-            assert valve["open"] is False and valve["verified"] is True
-            fresh.close()
-            with pytest.raises(RuntimeError, match="no longer active"):
-                fresh.gas_stop(1)
-            # Closing a client does not replace the same active demo resource.
-            other = demo.new_clients("another-gas-stop")["furnace"]
-            assert other.gas_stop(1)["ok"] is True
-            assert len(created) == 1 and other.state()["target_c"] == 50
-        finally:
-            initial.stop()
-            initial.release()
-    with pytest.raises(RuntimeError, match="no longer active"):
-        other.gas_stop(1)
-    assert inprocess_furnace
-
-
-@pytest.mark.parametrize("closing", ["client", "context"])
-def test_gas_stop_rejects_new_calls_and_drains_accepted_calls_before_close(
-    tmp_path, inprocess_furnace, monkeypatch, closing
-):
-    entered, finish, closed = (threading.Event() for _ in range(3))
-    calls, results, errors = [], [], []
-    original = FurnaceAdapter.gas_stop
-
-    def blocked(self, channel):
-        if self.identity == "blocked-gas-stop":
-            calls.append(channel)
-            entered.set()
-            assert finish.wait(4)
-            return {"ok": False, "status": {"locked": True, "fault": {"code": "offline"}}}
-        return original(self, channel)
-
-    monkeypatch.setattr(FurnaceAdapter, "gas_stop", blocked)
-    demo = Rehearsal(tmp_path, ("furnace",), identity="lifetime-owner")
-    demo.__enter__()
-    fresh = demo.new_clients("blocked-gas-stop")["furnace"]
-    saved_call = fresh.gas_stop
-
-    def request():
-        try:
-            results.append(saved_call(2))
-        except BaseException as error:
-            errors.append(error)
-
-    worker = threading.Thread(target=request)
-    closer = None
-    worker.start()
-    try:
-        assert entered.wait(2)
-        # This factory call would block if gas_stop retained the context lock.
-        other = demo.new_clients("independent-gas-stop")["furnace"]
-        assert other.describe()["demo"] is True
-
-        def close():
-            if closing == "client":
-                fresh.close()
-            else:
-                demo.__exit__(None, None, None)
-            closed.set()
-
-        closer = threading.Thread(target=close)
-        closer.start()
-
-        def refuses_new_calls():
-            try:
-                fresh.describe()
-            except RuntimeError as error:
-                assert "no longer active" in str(error)
-                return True
-            return False
-
-        wait_for(refuses_new_calls)
-        assert not closed.is_set()
-        with pytest.raises(RuntimeError, match="no longer active"):
-            saved_call(0)
-        if closing == "client":
-            assert other.gas_stop(0)["ok"] is True
-        else:
-            with pytest.raises(RuntimeError, match="no longer active"):
-                other.gas_stop(0)
-        assert calls == [2]
-        finish.set()
-        worker.join(2)
-        closer.join(2)
-        assert not worker.is_alive() and not closer.is_alive()
-        assert closed.is_set() and errors == []
-        assert results == [{"ok": False, "status": {"locked": True, "fault": {"code": "offline"}}}]
-    finally:
-        finish.set()
-        worker.join(3)
-        if closer is not None:
-            closer.join(3)
-        demo.__exit__(None, None, None)

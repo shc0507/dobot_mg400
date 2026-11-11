@@ -19,7 +19,7 @@
 | `GET api/describe` | `{service, version, contract: 1, demo, zones, lease_seconds, on_lease_expiry, commands: {name: {params: <JSON Schema>, any_client: bool, recovery?: true}}}` |
 | `GET api/state` | `{service, seq, ts_unix, demo, connected, busy, locked, fault, lease, last_command, ...}` |
 | `POST api/command` | 请求体为 `{"action": "...", ...}`。返回 `202` 和 `{command_id, state}`。完成结果写入 `state.last_command`。 |
-| `POST api/stop` | 请求体为 `{"wait_s": 0..15}`。返回 `{stop, state}`。`stop` 为 `confirmed`、`pending` 或 `unconfirmed`。任何客户端均可随时停止。重复请求安全。 |
+| `POST api/stop` | 请求体为 `{"wait_s": 0..15}`。返回 `{stop, state}`。`stop` 为 `confirmed`、`pending` 或 `unconfirmed`。任何客户端均可随时停止。重复请求安全。服务可接受命名的停止参数，只停止 1 个部分，例如炉子的 `gas_channel`。 |
 | `POST api/heartbeat` | 获取或续期调用方的租约。其他客户端持有租约时，返回 `409`。 |
 | `POST api/renew` | 仅续期调用方持有且未过期的租约。否则返回 `409`。 |
 | `POST api/release` | 仅当调用方持有租约时释放它。 |

@@ -1,4 +1,4 @@
-/* Furnace + microscope workspace (DSH-06). Described commands go through the console relay; fault acknowledgement uses a workspace route. */
+/* Furnace + microscope workspace (DSH-06). Described commands go through the console relay. */
 (function (root, factory) {
   "use strict";
   const logic = factory();
@@ -76,7 +76,6 @@
       "status.stale": "Data is stale ({age} s).", "status.unavailable": "Status is unavailable.",
       "fault": "Fault: {message}. Make sure the controller shows STOP, then acknowledge.",
       "fault.ack": "Acknowledge fault…", "fault.confirm": "Is the furnace safe and the controller at STOP? Acknowledging clears the fault.",
-      "fault.done": "Fault acknowledgement sent.",
       "scope.fault": "Fault: {message}. Only Stop is allowed.",
       "scope.failed": "{action} failed: {message}",
       "phase.idle": "Idle", "phase.ramping": "Ramping", "phase.holding": "Holding", "phase.cooling": "Cooling",
@@ -143,7 +142,6 @@
       "status.stale": "数据已过期（{age} s）。", "status.unavailable": "状态不可用。",
       "fault": "故障：{message}。确认控制器显示 STOP 后再确认故障。",
       "fault.ack": "确认故障…", "fault.confirm": "炉子安全且控制器处于 STOP 吗？确认后将清除故障。",
-      "fault.done": "已发送故障确认。",
       "scope.fault": "故障：{message}。只允许停止。",
       "scope.failed": "{action} 失败：{message}",
       "phase.idle": "空闲", "phase.ramping": "升温中", "phase.holding": "保持中", "phase.cooling": "冷却中",
@@ -510,7 +508,7 @@
       el("button", { type: "button", class: "lc-stop pr-stop-wide", "data-role": "stop-furnace", text: t("furnace.stop"), onclick: stopFurnace }),
       n.furnaceNote,
       n.ack = button(t("fault.ack"), () => ask("ack"), { class: "lc-danger pr-danger", "data-role": "acknowledge", hidden: true }),
-      confirmBox("ack", t("fault.confirm"), () => operator("acknowledge", "fault.done")),
+      confirmBox("ack", t("fault.confirm"), () => send("furnace", "acknowledge", {})),
       n.connectRow = el("div", { class: "pr-row" }, n.connect),
       el("div", { class: "pr-tiles" }, ...tiles),
       el("p", { class: "pr-state" },
@@ -843,18 +841,6 @@
       const name = view.api.t(key) === key ? action : view.api.t(key);
       if (result?.outcome === "accepted") view.api.notify(view.api.t("sent", { action: name }), "info");
       else if (result?.outcome === "refused") view.api.notify(view.api.t("refused", { error: result.error || "" }), "error");
-      return result;
-    });
-  }
-
-  /** Send one operator action (fault acknowledgement) once. Never retry. */
-  async function operator(path, doneKey) {
-    return act(path, async () => {
-      const result = await view.api.request(path, { confirmed: true }, { accept: [409, 502], timeout: 8000 });
-      const t = view.api.t;
-      if (result?.outcome === "accepted") view.api.notify(t(doneKey), "info");
-      else if (result?.outcome === "refused") view.api.notify(t("refused", { error: result.error || "" }), "error");
-      else view.api.notify(t("unknown"), "warn");
       return result;
     });
   }

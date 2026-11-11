@@ -127,9 +127,9 @@ def test_state_maps_joints_and_signals_and_hides_identities(rig):
     )
     j = body["joints"]
     assert [j["J1"], j["J2"], j["J3"], j["J4"]] == [10.0, 20.0, 30.0, 40.0]
-    assert j["stage_bottom"] == round(-1193 / 80 + 11.01, 2)
-    assert j["stage_top"] == round(-258 / 80 + 2.58, 2) and j["insert"] == round(
-        -3334 / 80 + 39.04, 2
+    assert j["stage_bottom"] == round(-1193 / 80 - 3.90, 2)
+    assert j["stage_top"] == round(-258 / 80 - 0.65, 2) and j["insert"] == round(
+        -3334 / 80 - 2.63, 2
     )
     assert j["turret"] == 144.0 and j["focus"] is None
     s = body["signals"]

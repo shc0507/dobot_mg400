@@ -9,7 +9,7 @@ class Element {
   constructor(tag) {
     this.tagName = tag.toUpperCase();
     this.children = []; this.attributes = {}; this.listeners = new Map();
-    this.hidden = false; this.disabled = false; this.className = ""; this.ownText = ""; this.value = "";
+    this.hidden = false; this.disabled = false; this.className = ""; this.ownText = ""; this.value = ""; this.dataset = {};
   }
   set textContent(value) { this.ownText = String(value); this.children = []; }
   get textContent() { return this.ownText + this.children.map(child => child.textContent).join(""); }
@@ -393,6 +393,9 @@ test("an idle axis shows no state, a disconnected stage no position, and ports g
 test("a disconnected stage lists the state ports and sends 1 connect command", async () => {
   const page = await mounted({ stage: { ...STAGE, connected: false, ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] } });
   await page.settle();
+  // The card is rebuilt after the robot description loads; the new select still lists the port.
+  const select = page.root.all().find(node => node.tagName === "SELECT");
+  assert.deepEqual(select.children.map(node => node.ownText), ["Arduino · ttyACM0"]);
   page.find("Connect").click();
   await page.settle();
   assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "connect", { port: "/dev/ttyACM0" }]]);

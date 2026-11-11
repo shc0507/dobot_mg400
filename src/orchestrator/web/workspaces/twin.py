@@ -16,7 +16,9 @@ The stage reports only pulse counts. ``STAGE`` maps them; camera snapshots of
 the stage markers at half-step measured it (2026-11-11):
 mm = sign * pulses / pulses_per_mm + offset. The mapping holds while the counts
 keep their reference and the microstep mode stays the same. Otherwise the stage
-joints are ``None``.
+joints are ``None``. A stage connect resets the Arduino: the counts return to 0
+and the mode to full step, so the joints stay ``None`` until half-step is set
+again, and the offsets need a new snapshot unless the stage did not move.
 """
 
 import uuid
@@ -32,9 +34,9 @@ DEVICES = ("robot", "stage", "microscope", "furnace")
 MODEL = Path("/var/lib/mg400/twin/twin.glb")  # config/assets.toml: twin-model
 STAGE_MICROSTEP = 2
 STAGE = {  # model joint: (motor, sign, pulses per mm, offset mm)
-    "stage_bottom": ("bottom", -1, 80.0, 11.01),
-    "stage_top": ("top", -1, 80.0, 2.58),
-    "insert": ("insert", -1, 80.0, 39.04),
+    "stage_bottom": ("bottom", -1, 80.0, -3.90),
+    "stage_top": ("top", -1, 80.0, -0.65),
+    "insert": ("insert", -1, 80.0, -2.63),
 }
 # The model shows objective 1 (10x) at work; 1 turret step = 72 deg (direction not checked).
 WORKING_OBJECTIVE = 1

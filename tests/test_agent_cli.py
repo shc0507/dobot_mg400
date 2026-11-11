@@ -19,7 +19,7 @@ class FakeHttp:
 
     def request(self, path, data=None, *, raw=False):
         self.calls.append((path, data))
-        handler = self.routes.get(path)
+        handler = self.routes.get(path.partition("?")[0])
         if handler is None:
             return 404, {"error": "Not found."}
         if isinstance(handler, Exception):
@@ -201,6 +201,8 @@ def test_robot_move_uses_the_shared_completion_predicate_and_relative_pose():
     )
     code, result = run_cli(["robot", "move", "0", "0", "-10", "0", "--relative"], agent)
     assert code == 0 and result["outcome"] == "ok"
+    # The completion baseline skips the device cache, which can predate the last command.
+    assert ("api/console/state/robot?fresh=1", None) in http.calls
     assert http.sent("api/console/command/robot") == [
         {"action": "execute", "params": {"targets": {"x": 250.0, "y": 10.0, "z": 30.0, "r": 30.0}}}
     ]

@@ -216,8 +216,8 @@ class Agent:
             raise ServiceError(status, body.get("error", "Heartbeat failed."))
         return [item for item in body.get("control", []) if item.get("mine")]
 
-    def _read(self, device):
-        status, body = self._get("state/" + device)
+    def _read(self, device, fresh=False):
+        status, body = self._get("state/" + device + ("?fresh=1" if fresh else ""))
         if status != 200:
             raise ServiceError(status, body.get("error", "State read failed."))
         return body
@@ -348,7 +348,8 @@ class Agent:
         try:
             control = {item["device"]: item for item in self.beat()}
             holder = control.get(device, {}).get("holder")
-            before = self._read(device).get("state") if wait else None
+            # The baseline must postdate earlier commands, so it skips the device cache.
+            before = self._read(device, fresh=True).get("state") if wait else None
         except Unreachable as error:
             return failure("unreachable", str(error), device=device, **info)
         except ServiceError as error:

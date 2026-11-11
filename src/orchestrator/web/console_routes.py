@@ -75,7 +75,8 @@ def console_blueprints(service, prefix):
     def device_state(name):
         page = request.headers.get("X-MG400-Client")
         page = validate_client(page) if page else None
-        return jsonify(console().device_state(_device(name), page))
+        fresh = request.args.get("fresh") == "1"
+        return jsonify(console().device_state(_device(name), page, fresh=fresh))
 
     @blueprint.get("/api/console/events")
     def events():

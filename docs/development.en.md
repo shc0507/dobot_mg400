@@ -177,12 +177,13 @@ The service uses only the Python standard library.
 | `POST {prefix}api/stop` | Request a stop and read its confirmation status |
 | `GET {prefix}api/events?since=<seq>` | Read journal events after the specified sequence |
 | `POST {prefix}api/command` | Send one command |
-| `POST {prefix}api/heartbeat` | Renew the control lease |
+| `POST {prefix}api/heartbeat` | Renew the control lease. A contract request also takes the lease |
+| `POST {prefix}api/renew`, `POST {prefix}api/release` | Contract requests: renew or release the lease. See [Contract lease and commands](#contract-lease-and-commands) |
 | `GET {prefix}api/ws` | WebSocket connection: state updates, commands, heartbeats, and keys |
 
 `{prefix}` is the value of `--base-path`, which defaults to `/`.
 In this section, angle brackets show placeholders. For example, `<client-id>` is the client ID.
-Keys can only be sent through WebSocket.
+Send keys through WebSocket or with the contract command `keys`.
 
 ### Access and client ID
 
@@ -196,7 +197,7 @@ If the service receives no renewal within 3 seconds, it requests a robot stop an
 
 ### HTTP interface
 
-POST requests must meet these conditions:
+POST requests with `X-MG400-Panel` must meet these conditions:
 
 1. Include `Content-Type: application/json` and `X-MG400-Panel: 1`.
 2. In physical robot control mode, include `X-MG400-Client: <client-id>`.
@@ -262,8 +263,23 @@ The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
 | `controller_id` | Client ID that holds control, or `null` without a holder |
 | `keyboard_enabled`, `keyboard_arming` | Keyboard jog is on, or is turning on |
 | `keyboard_active_key`, `keyboard_speed_percent`, `keyboard_disarm_reason` | Active key, keyboard speed, and close reason |
+| `service`, `seq`, `ts_unix`, `demo` | Contract fields: `robot`, the version number, Unix time, and `false` |
+| `connected` | Feedback is connected and fresh |
+| `fault` | `null`, or `{code, message}`. `code` is `stop_unconfirmed` or `robot_alarm` |
+| `lease` | `{holder, remaining_s}`. `holder` is the same as `controller_id` |
 
 Read-only mode returns only `mode`, `robot_host`, `enabled` (`null`), `syncing`, `actual` (4 `null` values), `joints`, `robot_mode`, `robot_error`, `feedback_fresh`, and `message`.
+
+### Contract lease and commands
+
+POST requests without `X-MG400-Panel` follow the [instrument service contract](adr/0001-instrument-service-contract.en.md), for example the requests of `labkit.client.ServiceClient`:
+
+- Include `Content-Type: application/json` and `X-MG400-Client`. Other content types return 415.
+- `api/heartbeat` takes or renews the lease. When it takes the lease, the service runs `start_sync`. When another client holds the lease, it returns 409.
+- `api/renew` renews only a lease that the caller holds. `api/release` runs `stop_sync`.
+- When the lease expires, the service does the same stop and disconnect as `stop_sync`. If the robot is enabled, the service stops and locks, and keeps feedback until a disable.
+- `api/command` returns 202, `command_id`, and `state` when it accepts a command. A refusal from the robot core returns 409.
+- The `keys` command has `seq` and `held`, the same as a WebSocket key update. Its `command_id` is `null`.
 
 ### Contract discovery, stop, and events
 
@@ -274,8 +290,8 @@ Physical robot control mode provides `api/describe`, `api/stop`, and `api/events
 `contract` is 1, and `demo` is `false`.
 Each command's `params` describes its arguments as JSON Schema, excluding `action`.
 For `stop` and `disable`, `any_client` is `true`.
-For `keyboard`, `ui_only` is `true`. Only interactive interfaces use this command.
-`start_sync` takes control. `api/heartbeat` renews only the holder's lease. It never takes control.
+For `keyboard` and `keys`, `ui_only` is `true`. Only interactive interfaces use these commands.
+With `X-MG400-Panel`, `start_sync` takes control, and `api/heartbeat` renews only the holder's lease. It never takes control.
 
 The `api/stop` body is `{"wait_s": 0}`.
 `wait_s` is optional and defaults to 0. It must be a finite number from 0–15 seconds.

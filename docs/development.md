@@ -175,12 +175,13 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 | `POST {prefix}api/stop` | 请求停止并读取确认结果 |
 | `GET {prefix}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
 | `POST {prefix}api/command` | 发送一个命令 |
-| `POST {prefix}api/heartbeat` | 续期控制租约 |
+| `POST {prefix}api/heartbeat` | 续期控制租约。契约请求也取得租约 |
+| `POST {prefix}api/renew`、`POST {prefix}api/release` | 契约请求：续期或释放租约，见 [契约租约与命令](#契约租约与命令) |
 | `GET {prefix}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
 
 `{prefix}` 是 `--base-path` 的值，默认为 `/`。
 本节用尖括号表示占位符，例如 `<client-id>` 表示客户端 ID。
-按键只能经 WebSocket 发送。
+按键经 WebSocket 或契约命令 `keys` 发送。
 
 ### 访问与客户端 ID
 
@@ -194,7 +195,7 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 
 ### HTTP 接口
 
-POST 请求必须满足以下条件：
+带 `X-MG400-Panel` 的 POST 请求必须满足以下条件：
 
 1. 带 `Content-Type: application/json` 和 `X-MG400-Panel: 1`。
 2. 真机控制模式带 `X-MG400-Client: <client-id>`。
@@ -260,8 +261,23 @@ POST 请求必须满足以下条件：
 | `controller_id` | 持有控制权的客户端 ID，无持有者时为 `null` |
 | `keyboard_enabled`、`keyboard_arming` | 键盘点动已开启，正在开启 |
 | `keyboard_active_key`、`keyboard_speed_percent`、`keyboard_disarm_reason` | 正在执行的按键、键盘速度和关闭原因 |
+| `service`、`seq`、`ts_unix`、`demo` | 契约字段：`robot`、版本号、Unix 时间和 `false` |
+| `connected` | 反馈已连接且新鲜 |
+| `fault` | `null`，或 `{code, message}`。`code` 为 `stop_unconfirmed` 或 `robot_alarm` |
+| `lease` | `{holder, remaining_s}`。`holder` 与 `controller_id` 相同 |
 
 只读模式只返回 `mode`、`robot_host`、`enabled`（`null`）、`syncing`、`actual`（4 个 `null`）、`joints`、`robot_mode`、`robot_error`、`feedback_fresh` 和 `message`。
+
+### 契约租约与命令
+
+不带 `X-MG400-Panel` 的 POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)，例如 `labkit.client.ServiceClient` 的请求：
+
+- 请求带 `Content-Type: application/json` 和 `X-MG400-Client`。其他内容类型返回 415。
+- `api/heartbeat` 取得或续期租约。取得租约时，服务执行 `start_sync`。其他客户端持有租约时，返回 409。
+- `api/renew` 只续期调用者持有的租约。`api/release` 执行 `stop_sync`。
+- 租约过期时，服务执行与 `stop_sync` 相同的停止和断开。机械臂已使能时，服务停止并锁定，保留反馈直到下使能。
+- `api/command` 接受后返回 202、`command_id` 和 `state`。机器人核心的拒绝返回 409。
+- `keys` 命令带 `seq` 和 `held`，与 WebSocket 按键更新相同。它的 `command_id` 为 `null`。
 
 ### 契约发现、停止与事件
 
@@ -272,8 +288,8 @@ POST 请求必须满足以下条件：
 `contract` 为 1，`demo` 为 `false`。
 每个命令的 `params` 用 JSON Schema 描述参数，不含 `action`。
 `stop` 和 `disable` 的 `any_client` 为 `true`。
-`keyboard` 的 `ui_only` 为 `true`，只供交互界面使用。
-`start_sync` 取得控制权。`api/heartbeat` 只续期持有者的租约，不取得控制权。
+`keyboard` 和 `keys` 的 `ui_only` 为 `true`，只供交互界面使用。
+带 `X-MG400-Panel` 时，`start_sync` 取得控制权，`api/heartbeat` 只续期持有者的租约，不取得控制权。
 
 `api/stop` 的正文为 `{"wait_s": 0}`。
 `wait_s` 可省略，默认为 0，范围为 0–15 秒，必须是有限数值。

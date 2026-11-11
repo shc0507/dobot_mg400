@@ -13,9 +13,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from helpers import Feed, PanelControl, wait_for
 from panel_ws import PANEL, PanelServer, running
 
+from labkit.client import ServiceClient
+from labkit.errors import ServiceError
 from mg400.controller_ownership import ControllerOwnership
+from mg400.feedback import Feedback
+from mg400.web_control import RobotPanelState
 
 ReadOnlyPanelState = PANEL["ReadOnlyPanelState"]
 PANEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -241,7 +246,7 @@ def test_http_command_guard(server):
     auth = {}
     assert request(server, "GET", "/api/state")[0] == 200
     body = json.dumps({"action": "stop_sync"})
-    assert request(server, "POST", "/api/command", body, auth)[0] == 403
+    assert request(server, "POST", "/api/command", body, auth)[0] == 415
     headers = {**auth, "Content-Type": "application/json", "X-MG400-Panel": "1"}
     assert request(server, "POST", "/api/command", body, headers)[0] == 200
     assert request(server, "POST", "/api/command", '{"action":"enable"}', headers)[0] == 403
@@ -386,14 +391,14 @@ def test_key_updates_have_no_http_endpoint(base_path):
     [
         ({"Content-Type": None}, 403),
         ({"Content-Type": "text/plain"}, 403),
-        ({"X-MG400-Panel": None}, 403),
+        ({"X-MG400-Panel": "0"}, 403),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "x" * 129}, 400),
     ],
     ids=[
         "no-content-type",
         "text-content-type",
-        "no-panel-header",
+        "wrong-panel-header",
         "no-client-id",
         "long-client-id",
     ],
@@ -555,7 +560,10 @@ CLIENT = "X-MG400-Client: browser-a"
 @pytest.mark.parametrize(
     ("raw", "status"),
     [
-        (http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, CLIENT]), 403),
+        (
+            http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, "X-MG400-Panel: 0"]),
+            403,
+        ),
         (http11("POST", "/api/other", EMPTY_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 404),
         (http11("POST", "/api/heartbeat", b"{", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 400),
         (
@@ -941,7 +949,7 @@ def test_contract_routes_follow_base_path_and_event_cursor(base_path):
 @pytest.mark.parametrize(
     ("change", "status"),
     [
-        ({"X-MG400-Panel": None}, 403),
+        ({"X-MG400-Panel": "0"}, 403),
         ({"Content-Type": "text/plain"}, 403),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "\x7f"}, 400),
@@ -1026,3 +1034,62 @@ def test_invalid_execute_speed_reports_400_without_feedback_or_motion(transport,
             feedback.assert_not_called()
     finally:
         state.close()
+
+
+def test_labkit_client_drives_the_robot_contract():
+    feed = Feed()
+    state = RobotPanelState("robot.test", connection_factory=feed, control_factory=PanelControl)
+    try:
+        with running(state) as server:
+            url = f"http://127.0.0.1:{server.server_port}/"
+            agent, other = ServiceClient(url, "agent-a"), ServiceClient(url, "agent-b")
+            assert agent.state()["lease"] == {"holder": None, "remaining_s": 0}
+            # The lease grant connects the robot.
+            assert agent.heartbeat()["lease"]["holder"] == "agent-a"
+            wait_for(lambda: agent.state()["connected"])
+            current = agent.state()
+            assert current["service"] == "robot" and current["demo"] is False
+            assert current["fault"] is None and isinstance(current["seq"], int)
+            for call in (
+                other.heartbeat,
+                other.renew,
+                other.release,
+                lambda: other.command("enable"),
+            ):
+                with pytest.raises(ServiceError) as refused:
+                    call()
+                assert refused.value.status == 409
+            assert agent.renew()["lease"]["holder"] == "agent-a"
+            keys = agent.command("keys", seq=1, held=[])
+            assert keys["command_id"] is None
+            enable = agent.command("enable")
+            wait_for(
+                lambda: (agent.state()["last_command"] or {}).get("id") == enable["command_id"]
+            )
+            assert agent.state()["last_command"]["result"] == "ok"
+            feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+            wait_for(lambda: agent.state()["robot_mode"] == 4)
+            # The release disconnects: a disabled arm needs no rest check.
+            agent.release()
+            wait_for(lambda: not agent.state()["syncing"])
+            assert agent.state()["lease"]["holder"] is None
+            assert not agent.state()["locked"]
+            assert other.stop()["stop"] in {"confirmed", "pending"}
+    finally:
+        state.close()
+
+
+@pytest.mark.parametrize(
+    ("headers", "status"),
+    [
+        ({"X-MG400-Client": "agent-a"}, 415),
+        ({"Content-Type": "application/json"}, 400),
+    ],
+    ids=["not-json", "no-client"],
+)
+def test_contract_posts_check_type_and_client_before_the_state(headers, status):
+    state = RecordingState()
+    with running(state) as server:
+        assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == status
+        assert request(server, "POST", "/api/keys", "{}", headers)[0] == 404
+    assert state.calls == []

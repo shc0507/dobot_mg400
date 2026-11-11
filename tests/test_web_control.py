@@ -1074,10 +1074,12 @@ def test_contract_description_preserves_legacy_commands_and_parameters(rig):
         "execute",
         "vacuum",
         "keyboard",
+        "keys",
         "clear_alarm",
     }
     assert {name for name, spec in commands.items() if spec["any_client"]} == {"stop", "disable"}
     assert commands["keyboard"]["ui_only"] is True
+    assert commands["keys"]["ui_only"] is True
     target = commands["execute"]["params"]["properties"]["targets"]
     assert target["required"] == ["x", "y", "z", "r"]
     assert set(target["properties"]) == {"x", "y", "z", "r"}
@@ -1424,3 +1426,33 @@ def test_feedback_reader_reconnects_and_recover_unlocks_without_a_restart(
     rig.command("stop")
     rig.wait(lambda s: not s["busy"] and s["locked"])
     assert not rig.snapshot()["stop_unconfirmed"]
+
+
+def test_contract_lease_expiry_disconnects_like_stop_sync(rig):
+    state, feed, controls = rig
+    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+    state.acquire("agent-a")
+    wait_for(lambda: state.snapshot()["connected"])
+    with state._lock:
+        state._heartbeat -= 4
+    with pytest.raises(RuntimeError, match="Acquire"):
+        state.renew("agent-a")
+    wait_for(lambda: not state.snapshot()["syncing"])
+    snapshot = state.snapshot()
+    assert snapshot["lease"] == {"holder": None, "remaining_s": 0}
+    assert not snapshot["locked"]
+    assert controls[0].calls == ["disable"]
+
+
+def test_contract_lease_expiry_of_an_enabled_arm_stops_and_locks(rig):
+    state, feed, controls = rig
+    state.acquire("agent-a")
+    wait_for(lambda: state.snapshot()["connected"])
+    with state._lock:
+        state._heartbeat -= 4
+    # The watchdog expires the lease without a request.
+    wait_for(lambda: controls[0].stop_entered.is_set())
+    snapshot = state.snapshot()
+    assert snapshot["locked"] and snapshot["lease"]["holder"] is None
+    # Feedback stays until an explicit disable, as after stop_sync.
+    assert snapshot["syncing"]

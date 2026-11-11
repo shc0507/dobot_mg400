@@ -23,7 +23,6 @@ ROBOT = [
     "test_websocket.py",
     "test_control_panel*.py",
     "test_robot_*.py",
-    "test_terminal_control.py",
     "test_control_mode.py",
     "test_mg400_sim.py",
     "test_suction.py",

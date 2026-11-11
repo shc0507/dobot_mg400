@@ -10,9 +10,8 @@ The [recipe orchestrator](orchestrator.en.md) provides the pick-and-place steps 
 For routine operation, use the relevant guide:
 
 - [Robot service](control-panel.en.md): the hardware control service that the Motion workspace of the Lab Console uses.
-- [Interactive terminal](terminal-control.en.md): terminal commands for the robot and suction cup.
 
-The robot service and interactive terminal share the robot address configuration.
+The robot service reads the robot address from the configuration.
 See `MG400_ROBOT_HOST` in [Configuration file](deploy.en.md#configuration-file).
 
 ## Direct TCP interface

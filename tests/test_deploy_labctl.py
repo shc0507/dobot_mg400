@@ -266,42 +266,23 @@ def test_logs_follow_both_camera_units(ctl):
     ]
 
 
-def test_terminal_runs_as_the_service_user_on_its_own_terminal(ctl, monkeypatch):
+@pytest.mark.parametrize("switch", [False, True])
+def test_mode_runs_the_switch_script_as_the_service_user(ctl, switch, monkeypatch):
     for name in ("COLORTERM", "LANG", "LC_ALL", "LC_CTYPE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("SECRET_OF_ROOT", "hidden")
-    assert ctl.call("terminal") == 0
+    assert ctl.call("mode", *["--switch-to-tcp"] * switch) == 0
     ctl.chdir.assert_called_once_with(ctl.host.code)
-    ctl.getpwuid.assert_called_with(1000)
-    (program, argv, environment), _ = ctl.execvpe.call_args
+    program, argv, environment = ctl.execvpe.call_args.args
     # PATH of the service user does not contain /usr/sbin: use the absolute path.
     assert program == "/usr/sbin/runuser"
-    assert argv == [
-        "runuser",
-        "--pty",
-        "-u",
-        "mg400user",
-        "-g",
-        "mg400group",
-        "--",
-        str(ctl.host.code / ".venv/bin/python"),
-        "-m",
-        "mg400.terminal_control",
-    ]
     # Nothing from the root environment except the terminal settings reaches the service user.
     assert environment == {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "MG400_ROBOT_HOST": "robot.test",
         "TERM": "xterm-256color",
     }
-    ctl.run.assert_not_called()
-
-
-@pytest.mark.parametrize("switch", [False, True])
-def test_mode_runs_the_switch_script_as_the_service_user(ctl, switch):
-    assert ctl.call("mode", *["--switch-to-tcp"] * switch) == 0
-    argv = ctl.execvpe.call_args.args[1]
     assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
     assert argv[7:] == [
         str(ctl.host.code / ".venv/bin/python"),
@@ -441,7 +422,7 @@ def test_non_root_and_missing_settings_are_refused(ctl, monkeypatch, capsys):
     assert "as root" in capsys.readouterr().err
     monkeypatch.setattr(ctl.module.main.__globals__["os"], "geteuid", lambda: 0)
     ctl.host.settings.unlink()
-    assert ctl.call("terminal") == 1
+    assert ctl.call("mode") == 1
     assert "Run deploy/install.py first" in capsys.readouterr().err
     ctl.run.assert_not_called()
     ctl.execvpe.assert_not_called()
@@ -454,17 +435,16 @@ def test_non_root_and_missing_settings_are_refused(ctl, monkeypatch, capsys):
     ],
     ids=["unreadable-line"],
 )
-@pytest.mark.parametrize("command", ["terminal", "mode"])
-def test_unsafe_settings_never_start_a_robot_program(ctl, capsys, settings, message, command):
+def test_unsafe_settings_never_start_a_robot_program(ctl, capsys, settings, message):
     ctl.host.settings.write_text(settings)
-    assert ctl.call(command) == 1
+    assert ctl.call("mode") == 1
     assert message in capsys.readouterr().err
     ctl.execvpe.assert_not_called()
 
 
 def test_missing_service_user_is_reported(ctl, capsys):
     ctl.getpwuid.side_effect = KeyError(1000)
-    assert ctl.call("terminal") == 1
+    assert ctl.call("mode") == 1
     assert "Create a user and a group with ID 1000 first" in capsys.readouterr().err
     ctl.execvpe.assert_not_called()
 

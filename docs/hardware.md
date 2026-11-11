@@ -10,9 +10,8 @@
 日常操作请使用对应指南：
 
 - [机器人服务](control-panel.md)：Lab Console 运动工作区使用的真机控制服务。
-- [交互终端](terminal-control.md)：终端命令控制机械臂和吸盘。
 
-机器人服务和交互终端共用机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
+机器人服务的机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
 
 ## 直接 TCP 接口
 

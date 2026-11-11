@@ -143,7 +143,7 @@ Below, `$DOCS` means `/olares/userdata/Cache/pvc-appcache-qumusphusis-aah2phqntt
 | Old location | Contents | New location |
 | --- | --- | --- |
 | `/opt/mg400-web-control` | Web panel code | `/opt/mg400`, `/etc/mg400/mg400.env` |
-| `$DOCS/mg400-terminal`, `$DOCS/mg400-tools` | Interactive terminal code, startup scripts, and mode switch tools | `labctl terminal`, `labctl mode` |
+| `$DOCS/mg400-terminal`, `$DOCS/mg400-tools` | Interactive terminal code, startup scripts, and mode switch tools | `labctl mode` |
 | `$DOCS/mg400-data` | Connection locks and mode switch backups | `/var/lib/mg400` |
 | `/opt/mg400-camera-preview` | go2rtc, capture configuration, and preview program | `/usr/local/lib/mg400`, `/etc/mg400` |
 

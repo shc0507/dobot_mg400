@@ -343,7 +343,6 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `labctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
 | `labctl restart web` | Restart services. Add `--force` to restart the furnace service |
 | `labctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
-| `labctl terminal` | Open the [interactive terminal](terminal-control.en.md) |
 | `labctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
 | `labctl mode --switch-to-tcp` | Switch the controller to TCP/IP mode |
 | `labctl calibrate ...` | Run the [supervised microscope calibration](microscope.en.md#supervised-calibration) |

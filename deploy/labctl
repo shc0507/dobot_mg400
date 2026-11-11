@@ -2,7 +2,7 @@
 """Control host services and recipes with labctl.
 
 Administrative commands require root. Recipe commands run as UID/GID 1000.
-terminal and mode run as the service user (UID 1000) with the settings from
+mode runs as the service user (UID 1000) with the settings from
 /etc/mg400/mg400.env, so they share the robot connection lock with the panels.
 """
 
@@ -716,7 +716,6 @@ def main(
     logs.add_argument("name", choices=list(services))
     logs.add_argument("-n", "--lines", type=int, default=50)
     logs.add_argument("-f", "--follow", action="store_true")
-    commands.add_parser("terminal", help="Open the interactive robot terminal")
     mode = commands.add_parser("mode", help="Read the controller mode, or switch it to TCP")
     mode.add_argument("--switch-to-tcp", action="store_true")
     commands.add_parser(
@@ -777,7 +776,7 @@ def main(
         if args.command in ("camera-check", "camera-url"):
             camera_config = camera_configuration(settings)
             devices = list(camera_config.devices)
-        if args.command in ("terminal", "mode", "calibrate"):
+        if args.command in ("mode", "calibrate"):
             pwd.getpwuid(SERVICE_UID)
             grp.getgrgid(SERVICE_GID)
     except FileNotFoundError:
@@ -848,9 +847,7 @@ def main(
     # Robot programs share the panel's robot connection lock through its fixed default.
     robot_settings = dict(settings)
     python = str(host.code / ".venv/bin/python")
-    if args.command == "terminal":
-        as_service_user(host, robot_settings, [python, "-m", "mg400.terminal_control"], execvpe)
-    elif args.command == "calibrate":
+    if args.command == "calibrate":
         command = [python, "-m", "microscope.calibrate", *passed]
         as_service_user(host, settings, command, execvpe)
     elif args.command == "mode":

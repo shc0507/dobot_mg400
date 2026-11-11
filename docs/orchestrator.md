@@ -533,7 +533,7 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 演示电动台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
 高温炉演示持有自己的串口模拟器和临时状态。坩埚操作单元不发送加热或供气命令。
 
-安装后，`labctl` 和 `mg400ctl` 使用同一分派器。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show`、`station rm` 或 `station retool`。[智能体命令行](agent-cli.md)命令组为 `robot`、`stage`、`furnace`、`microscope`、`vision`、`thermal`、`camera` 和 `all`。管理命令仍要求 root。
+安装后，`labctl` 分派所有命令。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show`、`station rm` 或 `station retool`。[智能体命令行](agent-cli.md)命令组为 `robot`、`stage`、`furnace`、`microscope`、`vision`、`thermal`、`camera` 和 `all`。管理命令仍要求 root。
 
 root 调用配方或工位命令时，分派器先用 `runuser --pty` 切换至 UID/GID 1000，再启动 Python。智能体命令组使用不带 `--pty` 的 `runuser`，因此 stdout 只含 JSON 结果。它使用安装后的解释器绝对路径，并传入 `-I`。子进程接收主机配置文件中所有非空的 `MG400_*` 配置和固定的服务 URL。
 

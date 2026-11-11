@@ -21,7 +21,7 @@ Run vision as its own process on Olares in `/opt/mg400/.venv-vision`. A separate
 - Start `mg400-vision.service` with `/opt/mg400/.venv-vision/bin/python -m vision`. Default binding is loopback on port 8771.
 - `MG400_VISION_DEVICE` defaults to `cuda` when available, otherwise `cpu`. Apply a memory fraction of 0.15 through `torch.cuda.set_per_process_memory_fraction` before loading the model.
 - Perform 1 warm-up inference at startup and only 1 inference at a time. Demo mode uses fixture detections without torch. go2rtc remains the camera owner.
-- Configure `MG400_VISION_WEIGHTS` and `MG400_VISION_DEVICE`. `mg400ctl gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID 1000.
+- Configure `MG400_VISION_WEIGHTS` and `MG400_VISION_DEVICE`. `labctl gpu` runs `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv` as UID 1000.
 
 ## Consequences
 

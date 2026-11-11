@@ -97,7 +97,7 @@ wait "$sim_pid"
 | --- | --- | --- |
 | 后端 | 设备服务（`apps/control_panel/`、`src/stage_controller/`、`src/thermal_cam/`、`src/furnace/`、`src/microscope/`、`src/vision/`）和 `firmware/` | 每台设备 1 个进程，只监听 `127.0.0.1`。用户和代理不直接调用后端 |
 | 编排器 | `src/orchestrator/` | 设备缓存 `devices.py` 为每台设备运行 1 个读取线程：每 250 ms 读 1 次 `api/state`，每 1 s 读 1 次事件，实例变化时读 `describe`。控制台和 `labctl` 只从这个缓存读设备状态。命令、租约和配方运行也经过编排器 |
-| 工具 | `labctl`（`src/orchestrator/agent_cli.py`）和 `mg400ctl`（`deploy/mg400ctl`） | 代理用 `labctl` 操作设备。管理员用 `mg400ctl` 启停服务、查看日志、备份和检查硬件 |
+| 工具 | `labctl`（`deploy/labctl`，设备命令组在 `src/orchestrator/agent_cli.py`） | 代理用设备命令组操作设备。管理员用服务命令启停服务、查看日志、备份和检查硬件 |
 | 前端 | 实验室控制台（`src/orchestrator/web/`） | 浏览器页面，经代理访问编排器 |
 
 例外：`labctl` 的停止命令同时发给编排器和设备服务。
@@ -110,7 +110,7 @@ wait "$sim_pid"
 | `apps/control_panel/` | 独立 Python 机器人服务，不提供网页 |
 | `apps/layout-studio/` | 离线布局编辑器，使用模拟数据，不发送控制命令 |
 | `config/systemd/` | 所有服务的 systemd 定义，配置从 `/etc/mg400/mg400.env` 读取 |
-| `deploy/` | 安装器 `install.py`、日常命令 `mg400ctl` 和配置示例 |
+| `deploy/` | 安装器 `install.py`、日常命令 `labctl` 和配置示例 |
 | `src/mg400/` | 后端、控制协议和反馈处理 |
 | `src/mg400/sim/` | 回环控制器模拟器，共用测试模型 |
 | `src/stage_controller/` | 位移台服务：Flask 接口和串口协议 |
@@ -498,7 +498,7 @@ labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
 仅确认所有电机空闲后才返回 `confirmed`。
 等待反馈时，服务允许其他停止请求，但禁止新运动。
 停止等待到期或串口结果未知时，`locked` 为真且 `fault` 非空。
-后续空闲反馈不清除故障。核对现场状态后，运行 `mg400ctl restart stage`，再重新连接。确认所有电机空闲后才清除。
+后续空闲反馈不清除故障。核对现场状态后，运行 `labctl restart stage`，再重新连接。确认所有电机空闲后才清除。
 停止确认尚未结束时，重新连接请求返回 409，防止用新连接的反馈确认旧设备已停止。
 `last_command` 区分 `ok`、`failed`、`rejected` 和 `stopped`。服务不自动重试运动。
 

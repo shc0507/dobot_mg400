@@ -20,7 +20,7 @@ from unittest.mock import Mock
 
 import pytest
 from stage_helpers import home_stage
-from test_deploy_mg400ctl import ctl as ctl
+from test_deploy_labctl import ctl as ctl
 from test_orchestrator_runner import FakeService, running, until
 from test_orchestrator_transfer import Robot
 

@@ -36,9 +36,9 @@ It reads furnace metadata from `http://127.0.0.1:8769/`.
 `--bind`, `--port`, and `--base-path` (default `/`) change the listen defaults. The furnace address is fixed.
 
 Stop conflicting camera and motor programs before use.
-Start the configured side-camera service with `mg400ctl start camera`, then start `mg400ctl start microscope`.
+Start the configured side-camera service with `labctl start camera`, then start `labctl start microscope`.
 The microscope unit does not start the camera service automatically.
-Use `mg400ctl logs microscope` to inspect failures and `mg400ctl stop microscope` to stop the service.
+Use `labctl logs microscope` to inspect failures and `labctl stop microscope` to stop the service.
 The unit permits cleanup to finish without a systemd stop timeout. A cleanup error requires inspection before restart.
 An operator must complete `H-21` before routine hardware use.
 
@@ -245,7 +245,7 @@ Finalized recordings retain video segments, `video.timestamps.csv`, and a summar
 Cancelled or failed recordings retain their local partial files without a promised summary.
 Finalization requires recorded frames and valid media. It requires FFmpeg and ffprobe on the host.
 If `ffmpeg` or `ffprobe` is missing, the recording fails, and its error names the missing program.
-The service log records the cause of each failed recording. Use `mg400ctl logs microscope` to read it.
+The service log records the cause of each failed recording. Use `labctl logs microscope` to read it.
 Finalization keeps the recordings in `/var/lib/mg400/recordings`.
 Each recording is the directory `/var/lib/mg400/recordings/<recording_id>/`. It holds `run.json`, the 60-minute segments `video_0001.mp4`, `video_0002.mp4` and so on, `video.timestamps.csv`, and `<recording_id>_shortened_3_min.mp4`.
 When `MG400_FURNACE_ARCHIVE_DIR` is set, finalization copies the directory to `<archive>/<recording_id>/` and never replaces an existing copy.
@@ -520,7 +520,7 @@ Observe each move and record the measured values separately. The console does no
 The operator runs the import on Olares after reviewing the source data:
 
 ```sh
-sudo mg400ctl calibration import microscope DIR
+sudo labctl calibration import microscope DIR
 ```
 
 Replace `DIR` with the data directory from Objective-Control `3a2dad0`.

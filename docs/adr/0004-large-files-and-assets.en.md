@@ -15,7 +15,7 @@ Model weights and native libraries must remain available without placing binary 
 Publish model weights as GitHub Release assets. Describe each installed asset in `config/assets.toml` with `url`, `sha256`, `bytes`, `install`, `mode`, `service`, `source`, and `license`. The `install` field is an absolute destination path under `/var/lib/mg400/`.
 
 - The installer downloads to a temporary file in the target directory. It checks byte count and SHA-256, replaces the destination atomically, and sets ownership and mode. Refuse symbolic links.
-- `--fetch-assets` downloads assets. `--asset NAME=PATH` installs local files with the same checks. Dry runs list planned actions. `mg400ctl assets` reports present, missing, or mismatched assets.
+- `--fetch-assets` downloads assets. `--asset NAME=PATH` installs local files with the same checks. Dry runs list planned actions. `labctl assets` reports present, missing, or mismatched assets.
 - Install only assets for enabled services. Store model weights under `/var/lib/mg400/models/` and calibration/run data under `/var/lib/mg400`.
 - Keep files larger than 1,000,000 bytes out of Git, except generated `uv.lock`. Images must not exceed 300,000 bytes.
 - Reject these file extensions: `.dll`, `.so`, `.dylib`, `.exe`, `.bin`, `.pt`, `.pth`, `.onnx`, `.engine`, `.npz`, `.h5`, `.zip`, `.stp`.

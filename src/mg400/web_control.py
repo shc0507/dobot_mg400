@@ -944,8 +944,8 @@ class RobotPanelState:
                         f"Robot stop or disable is unconfirmed: the controller rejected it "
                         f"({control.rejection}). Feedback shows the robot disabled and still, "
                         "without an alarm. The controller is probably not in TCP/IP mode. "
-                        "Check it with sudo mg400ctl mode. To recover, run sudo mg400ctl stop web, "
-                        "sudo mg400ctl mode --switch-to-tcp, then sudo mg400ctl start web."
+                        "Check it with sudo labctl mode. To recover, run sudo labctl stop web, "
+                        "sudo labctl mode --switch-to-tcp, then sudo labctl start web."
                     )
         finally:
             with self._lock:

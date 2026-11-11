@@ -1,4 +1,4 @@
-"""Check mg400ctl commands without systemd, root rights or a service user."""
+"""Check labctl commands without systemd, root rights or a service user."""
 
 import hashlib
 import io
@@ -21,7 +21,7 @@ MG400_CAMERA_DEVICES=
 @pytest.fixture
 def ctl(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", Mock(side_effect=AssertionError("No real commands")))
-    module = SimpleNamespace(**runpy.run_path(str(ROOT / "deploy/mg400ctl"), run_name="test_ctl"))
+    module = SimpleNamespace(**runpy.run_path(str(ROOT / "deploy/labctl"), run_name="test_ctl"))
     globals_ = module.main.__globals__
     monkeypatch.setattr(globals_["os"], "geteuid", lambda: 0)
     chdir = Mock()
@@ -534,7 +534,7 @@ def test_camera_check_reports_stopped_services_and_missing_streams(cameras):
     plug(cameras, CAMERAS)
     cameras.run.side_effect = answer({**ACTIVE, "mg400-camera-capture.service": "inactive"})
     assert cameras.call("camera-check") == 1
-    assert "mg400ctl start camera" in cameras.out.getvalue()
+    assert "labctl start camera" in cameras.out.getvalue()
     cameras.run.side_effect = answer(ACTIVE, preload='{"camera1": {}, "camera3": {}}')
     assert cameras.call("camera-check") == 1
     assert "not loaded: camera2" in cameras.out.getvalue()
@@ -704,12 +704,12 @@ def test_invalid_registry_fails_before_commands(optional_ctl, capsys):
     optional_ctl.run.assert_not_called()
 
 
-def test_help_names_both_command_links(ctl, capsys):
+def test_help_names_labctl(ctl, capsys):
     with pytest.raises(SystemExit) as exit_:
         ctl.call("--help")
     assert exit_.value.code == 0
     help_text = capsys.readouterr().out
-    assert "mg400ctl or labctl" in help_text
+    assert "with labctl." in help_text
     ctl.run.assert_not_called()
 
 

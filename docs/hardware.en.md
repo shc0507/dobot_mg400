@@ -40,7 +40,7 @@ The server must reach the robot's TCP ports `445`, `22000`, and `29999`.
 On a host installed through [Host deployment](deploy.en.md), read the mode as root:
 
 ```sh
-mg400ctl mode
+labctl mode
 ```
 
 `labctl` runs the tool as UID 1000. A mode read takes no connection lock. `--switch-to-tcp` acquires the [connection lock](deploy.en.md#panel-connection-lock) that the robot service also uses.
@@ -49,7 +49,7 @@ The lock directory is fixed at `/var/lib/mg400/locks`. Its owner is UID 1000.
 
 Before switching, disable the robot and stop running programs.
 Close other control clients and release the [panel connection lock](deploy.en.md#panel-connection-lock).
-Then run `mg400ctl mode --switch-to-tcp`.
+Then run `labctl mode --switch-to-tcp`.
 The script reads `MG400_ROBOT_HOST`. If it is unset, the script reads `config/robot.toml`.
 Switching accepts only an original mode of `tp` or `tcp`.
 It checks that the robot is disabled, programs are stopped, no alarms are active, and `isCollision` and `isSafeSuspend` are 0.
@@ -62,7 +62,7 @@ This order comes from the [DobotLink source](https://github.com/Dobot-Arm/DobotL
 
 Success requires HTTP `status: true`, matching configuration readback, and a successful `RobotMode()` response of `4`.
 The script does not enable the robot, clear alarms, or send motion commands.
-`mg400ctl` stores backups in `/var/lib/mg400/work/control-mode/`.
+`labctl` stores backups in `/var/lib/mg400/work/control-mode/`.
 If an error occurs after writing, the controller state may already have changed.
 The script reports the backup path. It does not automatically repeat the switch request or roll back.
 Check the state and error before deciding whether to run it again.

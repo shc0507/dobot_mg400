@@ -34,13 +34,13 @@
 | `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/caddy` | 代理程序 Caddy 2 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
-| `/usr/local/bin/mg400ctl` | 日常命令，链接到 `/opt/mg400/deploy/mg400ctl` | 无 |
+| `/usr/local/bin/labctl` | 日常命令，链接到 `/opt/mg400/deploy/labctl` | 无 |
 | `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
 
 所有服务以数字 ID `1000` 的用户和组运行。
 服务定义位于 `config/systemd/`，安装到 `/etc/systemd/system/`：
 
-| 服务 | `mg400ctl` 名称 | 用途 | 附加组 |
+| 服务 | `labctl` 名称 | 用途 | 附加组 |
 | --- | --- | --- | --- |
 | `mg400-web-panel.service` | `web` | [机器人服务](development.md#机器人服务接口)，端口 `8766` | 无 |
 | `mg400-stage-panel.service` | `stage` | [位移台服务](stage-panel.md)，端口 `8767` | `dialout` |
@@ -71,7 +71,7 @@
 ## 安装与更新
 
 以 root 身份运行本节命令。
-更新前，先停止服务：`mg400ctl stop all`。
+更新前，先停止服务：`labctl stop all`。
 
 1. 获取代码。首次安装时运行：
 
@@ -125,7 +125,7 @@
    如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
 8. 安装所选服务定义，重新加载 systemd。
-9. 链接 `mg400ctl` 和 `labctl`。
+9. 链接 `labctl`，删除旧的 `mg400ctl` 链接。
 
 安装器不启动、不停止，也不重启服务。
 更新代码前必须停止服务。运行中的服务可能读取新旧混合的文件。
@@ -159,7 +159,7 @@
 ## 服务清单
 
 `deploy/services.toml` 保存每个已实现服务的 `[[service]]` 条目。
-安装器、`mg400ctl` 和 `labctl` 共用此清单。
+安装器和 `labctl` 共用此清单。
 新增服务时，把条目与对应单元文件一起加入仓库。
 
 | 字段 | 含义 |
@@ -179,13 +179,13 @@
 把 `thermal` 加入 `MG400_OPTIONAL_SERVICES`，保留其他选项，然后运行安装程序。
 安装程序安装热像仪 USB 访问规则，并以 `1000:1000`、`0750` 创建 `/var/lib/mg400/thermal`。
 它不创建区域坐标，也不启动摄像头。命名区域的配置见[热像仪说明](thermal.md)。
-由所有者执行 `mg400ctl start thermal` 启动服务。服务启动时自动打开摄像头。
+由所有者执行 `labctl start thermal` 启动服务。服务启动时自动打开摄像头。
 
-用 `mg400ctl logs thermal` 查看日志，用 `mg400ctl stop thermal` 停止服务。
+用 `labctl logs thermal` 查看日志，用 `labctl stop thermal` 停止服务。
 先关闭其他摄像头程序。P1 摄像头只能由 1 个进程独占。
 
 服务 `furnace` 使用 `furnace` 依赖组。
-真机使用前配置串口路径，再明确运行 `mg400ctl start furnace`。
+真机使用前配置串口路径，再明确运行 `labctl start furnace`。
 安装器不会启动炉控服务。
 
 服务 `microscope` 在 `/opt/mg400/.venv` 中使用 `microscope` 依赖组。
@@ -198,7 +198,7 @@
 安装器准备 `/var/lib/mg400/vision`，属主为 `1000:1000`，权限为 `0750`，并安装已校验的 `vision-weights` 资源。
 未选中 `vision` 时，不准备该环境、目录、资源或单元。
 
-首次安装、运行 `mg400ctl start vision` 和在 Olares 检查 `mg400ctl gpu` 均由所有者执行。
+首次安装、运行 `labctl start vision` 和在 Olares 检查 `labctl gpu` 均由所有者执行。
 运行配置见[视觉服务](vision.md)，访问规则见 [Olares 网络](olares.md#网络)。
 
 服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
@@ -276,7 +276,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 加 `--dry-run` 只显示计划步骤，不下载、不写入，也不修改权限。
 试运行仍校验指定的本地文件，不能确认远程资源是否可用。
 
-运行 `mg400ctl assets` 可检查清单中的每项资源：
+运行 `labctl assets` 可检查清单中的每项资源：
 
 - `present`：内容、大小、所有者和权限符合清单。
 - `missing`：目标文件不存在。
@@ -291,7 +291,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 服务启动时读取该文件。修改后，重启对应服务。
 值为空的项使用默认值。
 除下述炉控 JSON 配置外，值不得含内部引号或反斜杠。
-安装器和 `mg400ctl` 拒绝 systemd 可能读成其他值的行。
+安装器和 `labctl` 拒绝 systemd 可能读成其他值的行。
 只有 `MG400_FURNACE_GAS_MAP` 和 `MG400_FURNACE_IDLE_GAS` 接受单引号包围的 JSON 对象。
 内部双引号原样保留。转义、撇号、控制字符、重复键和非有限数字均被拒绝。
 语法及工艺限制见[炉控配置](furnace.md#配置)。
@@ -321,48 +321,48 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。
 摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera4`。
 模式列表为空时，普通摄像头使用 `1280x720@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
-显式模式列表覆盖这些默认值。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`mg400ctl` 和预览服务拒绝运行。数量、路径或模式无效时，安装器在修改主机前退出。
+显式模式列表覆盖这些默认值。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。数量、路径或模式无效时，安装器在修改主机前退出。
 只预加载宽度不超过 1280 且高度不超过 720 的流。更大的流按需启动。
 多台摄像头使用大于 `640x480` 的模式时，先安装 [USB 带宽补丁](olares.md#usb-带宽补丁)。
-修改设备或模式后，重新运行安装器，生成新的 `go2rtc.yaml`，再运行 `mg400ctl restart camera vision microscope orch`。未启用 `vision` 时，从命令中去掉 `vision`：`restart` 拒绝未启用的可选服务。
+修改设备或模式后，重新运行安装器，生成新的 `go2rtc.yaml`，再运行 `labctl restart camera vision microscope orch`。未启用 `vision` 时，从命令中去掉 `vision`：`restart` 拒绝未启用的可选服务。
 允许的模式和托盘摄像头配置见[摄像头](olares.md#摄像头)。
 
 ## 日常命令
 
-以 root 身份运行 `mg400ctl`，例如 `sudo mg400ctl status`。
+以 root 身份运行 `labctl`，例如 `sudo labctl status`。
 配方命令 `run`、`rehearse`、`runs` 和 `station` 也可以由 UID/GID `1000` 直接运行，见[配方服务](orchestrator.md)。
 `labctl` 使用相同的参数和行为：
 
 | 命令 | 作用 |
 | --- | --- |
-| `mg400ctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
-| `mg400ctl assets` | 检查外部资源的内容、所有者和权限 |
-| `mg400ctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
-| `mg400ctl status` | 显示已启用服务的状态 |
-| `mg400ctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`proxy` 或 `all` |
-| `mg400ctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
-| `mg400ctl restart web` | 重启服务。重启炉控时可加 `--force` |
-| `mg400ctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
-| `mg400ctl terminal` | 打开 [交互终端](terminal-control.md) |
-| `mg400ctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
-| `mg400ctl mode --switch-to-tcp` | 把控制器切换到 TCP/IP 模式 |
+| `labctl backup FILE.tar` | 私密备份主机配置和数据，排除进程锁 |
+| `labctl assets` | 检查外部资源的内容、所有者和权限 |
+| `labctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
+| `labctl status` | 显示已启用服务的状态 |
+| `labctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`proxy` 或 `all` |
+| `labctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
+| `labctl restart web` | 重启服务。重启炉控时可加 `--force` |
+| `labctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
+| `labctl terminal` | 打开 [交互终端](terminal-control.md) |
+| `labctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
+| `labctl mode --switch-to-tcp` | 把控制器切换到 TCP/IP 模式 |
 | `labctl calibrate ...` | 运行 [受监督的显微镜校准](microscope.md#受监督的校准) |
-| `mg400ctl calibration import microscope DIR` | 导入已有的显微镜校准数据，不覆盖已有文件，见[显微镜](microscope.md) |
+| `labctl calibration import microscope DIR` | 导入已有的显微镜校准数据，不覆盖已有文件，见[显微镜](microscope.md) |
 | `labctl run`、`labctl rehearse`、`labctl runs`、`labctl station` | 运行、演练和查看配方，管理工位，见[配方服务](orchestrator.md) |
 | `labctl robot state` | 智能体设备命令组，见[智能体命令行](agent-cli.md) |
-| `mg400ctl camera-url` | 为每台摄像头显示 1 个 `/camera/cameraN.mjpeg` 链接，链接使用代理地址。高于 1280x720 的显微镜侧视流没有链接 |
-| `mg400ctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
+| `labctl camera-url` | 为每台摄像头显示 1 个 `/camera/cameraN.mjpeg` 链接，链接使用代理地址。高于 1280x720 的显微镜侧视流没有链接 |
+| `labctl camera-check` | 依次检查摄像头设备、服务和采集流，见 [摄像头故障](olares.md#摄像头故障) |
 
 `gpu` 以 UID `1000` 运行 `nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv`。
 此诊断只读状态，不启动服务、不加载模型，也不修改 GPU 配置。
 该命令不接收主机配置。
-GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl logs vision` 和服务状态。
+GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs vision` 和服务状态。
 
 炉控 `stop` 和 `restart` 在修改任何所选服务前，先读取实时状态。
 检查覆盖混合列表及 `all`，也覆盖 `stop all` 选中的已停用炉控服务。
 仅当 systemd 报告全部炉控单元未安装且未运行时，`stop` 才跳过此检查。systemd 未给出明确结果时，仍执行检查。
 活动序列或冷却气体计划必须使用 `--force`。状态不可用、格式错误、断开或锁定时也必须使用 `--force`。
-使用 `mg400ctl stop furnace --force` 或 `mg400ctl restart furnace --force` 前，必须与所有客户端协调。
+使用 `labctl stop furnace --force` 或 `labctl restart furnace --force` 前，必须与所有客户端协调。
 强制关闭请求服务停止加热和气体。必须核对停止结果。检查仅作提示性保护：状态读取与 systemd 操作之间仍可能启动序列。
 检查读取 `http://127.0.0.1:8769/api/state`。
 检查不使用代理或重定向。
@@ -399,7 +399,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 
 ## 备份
 
-`mg400ctl backup FILE.tar` 归档 `/etc/mg400/mg400.env` 和 `/var/lib/mg400`，保留数字属主和文件权限。
+`labctl backup FILE.tar` 归档 `/etc/mg400/mg400.env` 和 `/var/lib/mg400`，保留数字属主和文件权限。
 它只排除存放进程连接锁的 `/var/lib/mg400/locks`。
 它也保留 `/var/lib/mg400/furnace` 下的炉控状态和 `.state.json.lock`。
 
@@ -453,14 +453,14 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
 1. 先让旧主机上的实验安全结束。停止服务：
 
    ```sh
-   mg400ctl stop all
+   labctl stop all
    ```
 
    继续前，停止其他写入主机数据的进程。
 2. 在旧主机创建备份：
 
    ```sh
-   mg400ctl backup /root/mg400-host.tar
+   labctl backup /root/mg400-host.tar
    ```
 
 3. 安全地把归档传到新主机的 `/root/mg400-host.tar`。保留属主 `root:root` 和权限 `0600`。
@@ -468,7 +468,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `mg400ctl log
    恢复期间保持硬件断开。恢复数据前，停止新安装的服务：
 
    ```sh
-   mg400ctl stop all
+   labctl stop all
    ```
 
 5. 只恢复本命令生成的可信归档。先检查归档成员：

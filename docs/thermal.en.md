@@ -12,7 +12,7 @@ The Cameras workspace of the Lab Console shows the thermal view. The Furnace + m
 The optional `mg400-thermal.service` runs `thermal-cam` as `1000:1000`, with `UMask=0077` and no supplementary device group.
 It reads `/etc/mg400/mg400.env` and opens the P1 camera at startup.
 Invalid CLI settings exit with status `2`, which does not trigger an automatic restart.
-An invalid `rois.toml` also exits with status `2` before the service opens its port. Read the error with `mg400ctl logs thermal`, correct the file, then start the service.
+An invalid `rois.toml` also exits with status `2` before the service opens its port. Read the error with `labctl logs thermal`, correct the file, then start the service.
 The installer does not start this service, and the unit has no boot-time activation.
 
 Add `thermal` to `MG400_OPTIONAL_SERVICES`, preserving other selected services.
@@ -28,9 +28,9 @@ Only the owner installs or starts the service on the lab host. Close other P1 ca
 After installation and configuration, use these commands:
 
 ```sh
-mg400ctl start thermal
-mg400ctl logs thermal
-mg400ctl stop thermal
+labctl start thermal
+labctl logs thermal
+labctl stop thermal
 ```
 
 Complete the supervised thermal validation before using measurements for lab automation. Software installation does not confirm measurement accuracy or freshness.

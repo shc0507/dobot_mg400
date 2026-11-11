@@ -170,10 +170,10 @@ The mode switch script must get the [panel connection lock](deploy.en.md#panel-c
 Use this recovery sequence:
 
 1. Make sure that the robot is stationary.
-2. Run `sudo mg400ctl mode` and read the controller mode.
-3. Run `sudo mg400ctl stop web`.
-4. Run `sudo mg400ctl mode --switch-to-tcp`.
-5. Run `sudo mg400ctl start web`, then click `Take control` in the console.
+2. Run `sudo labctl mode` and read the controller mode.
+3. Run `sudo labctl stop web`.
+4. Run `sudo labctl mode --switch-to-tcp`.
+5. Run `sudo labctl start web`, then click `Take control` in the console.
 
 For the switch conditions, see [Switch to TCP/IP mode from the server](hardware.en.md#switch-to-tcpip-mode-from-the-server).
 
@@ -191,12 +191,12 @@ It provides no coordinate feedback and accepts no motion commands.
 
 ## Service configuration
 
-The service is `mg400-web-panel.service`, installed by [Host deployment](deploy.en.md). Its `mg400ctl` name is `web`.
+The service is `mg400-web-panel.service`, installed by [Host deployment](deploy.en.md). Its `labctl` name is `web`.
 Start or check the service on the host:
 
 ```sh
-sudo mg400ctl start web
-sudo mg400ctl status
+sudo labctl start web
+sudo labctl status
 ```
 
 For a local start, enter the project directory on a host that can reach the robot and run:
@@ -226,7 +226,7 @@ If a reverse proxy is in front of the service, the proxy must meet these require
 
 See [Robot service interface](development.en.md#robot-service-interface) for the interface reference.
 
-After updating code, run the installer as described in [Host deployment](deploy.en.md#installation-and-updates), then run `mg400ctl restart web`.
+After updating code, run the installer as described in [Host deployment](deploy.en.md#installation-and-updates), then run `labctl restart web`.
 
 ### Service logs
 
@@ -245,7 +245,7 @@ A separate thread writes the logs. Blocking standard error does not delay a stop
 Read the logs on the Olares host:
 
 ```sh
-sudo mg400ctl logs web -n 200
+sudo labctl logs web -n 200
 ```
 
 When control is locked, find the first `Stop or disable unconfirmed.` in the logs.

@@ -29,7 +29,7 @@ Closing the process stops simulated outputs and removes its temporary state.
 
 ## Configuration
 
-The host service reads `/etc/mg400/mg400.env`. The installer always installs the furnace service but does not start it. After you set the serial paths, run `mg400ctl start furnace`.
+The host service reads `/etc/mg400/mg400.env`. The installer always installs the furnace service but does not start it. After you set the serial paths, run `labctl start furnace`.
 It installs the `furnace` dependency group into `.venv` and grants the service only the `dialout` supplementary group.
 The installer creates `/var/lib/mg400/furnace` with owner `1000:1000` and mode `0750`.
 
@@ -44,7 +44,7 @@ The installer creates `/var/lib/mg400/furnace` with owner `1000:1000` and mode `
 The gas map uses channel keys `0`, `1`, and `2`, which address MFC units `7`, `8`, and `9`.
 Percent means percent of that controller's full-scale flow. Do not interpret it as a generic volumetric flow rate.
 These values are fixed in code: the temperature cap `1000` °C, the ramp cap `100` °C/min, and the orphan grace `15` minutes.
-By default, the service listens on `127.0.0.1:8769` with the base path `/`. `--bind`, `--port`, and `--base-path` override these defaults. The `mg400ctl` shutdown check reads `127.0.0.1:8769`.
+By default, the service listens on `127.0.0.1:8769` with the base path `/`. `--bind`, `--port`, and `--base-path` override these defaults. The `labctl` shutdown check reads `127.0.0.1:8769`.
 The microscope and the orchestrator use the fixed URL `http://127.0.0.1:8769/`. If you change the listen address, port, or base path, these 2 clients cannot reach the furnace service.
 Idle gas defaults to all off. Any nonzero idle plan requires the operator's process decision.
 
@@ -166,7 +166,7 @@ Without a gas controller, or without gas readback, a stop remains unconfirmed.
 Stop is available regardless of lease ownership or expiry failure. The JSON, `X-MG400-Client`, and body-format checks still apply.
 
 Before host maintenance, coordinate shutdown with all clients.
-`mg400ctl stop furnace` and `mg400ctl restart furnace` refuse an active sequence or cooling gas plan.
+`labctl stop furnace` and `labctl restart furnace` refuse an active sequence or cooling gas plan.
 They also refuse unavailable, malformed, disconnected, or locked live status. `all` and mixed target lists receive the same check before any service changes.
 Use `--force` only after coordinating the interruption. It permits shutdown and requests heat and gas stop. Verify the stop result.
 The status check is advisory: another client can start a sequence after the check and before systemd acts.
@@ -197,4 +197,4 @@ The gas line uses `9600` baud, `8` data bits, no parity, and `1` stop bit. The M
 If control is refused, check the lease holder, caps, and fault before retrying explicitly.
 If a stop is unconfirmed, inspect the device and use physical protection. Do not treat a successful HTTP response as physical confirmation.
 After a configuration error, the service exits with status `2` and systemd does not restart it.
-Use `mg400ctl logs furnace` to read errors and service events.
+Use `labctl logs furnace` to read errors and service events.

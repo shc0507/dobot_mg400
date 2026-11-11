@@ -39,7 +39,7 @@
 在按 [主机部署](deploy.md) 安装的主机上，以 root 身份读取模式：
 
 ```sh
-mg400ctl mode
+labctl mode
 ```
 
 `labctl` 以 UID 1000 运行工具。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
@@ -48,7 +48,7 @@ mg400ctl mode
 
 切换前，下使能机械臂并停止运行中的程序。
 关闭其他控制客户端，释放[面板连接锁](deploy.md#面板连接锁)。
-然后运行 `mg400ctl mode --switch-to-tcp`。
+然后运行 `labctl mode --switch-to-tcp`。
 脚本读取 `MG400_ROBOT_HOST`，未设置时读取 `config/robot.toml`。
 切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止、无报警，且 `isCollision` 和 `isSafeSuspend` 为 0。
 若保存的模式已是 `tcp` 且 `RobotMode()` 返回 `4`，脚本不写入，并报告 `changed: false`。
@@ -60,7 +60,7 @@ mg400ctl mode
 
 成功要求 HTTP 返回 `status: true`、配置读回一致且 `RobotMode()` 成功返回 `4`。
 脚本不使能、不清除报警，也不发送运动命令。
-`mg400ctl` 把备份存入 `/var/lib/mg400/work/control-mode/`。
+`labctl` 把备份存入 `/var/lib/mg400/work/control-mode/`。
 写入后发生错误时，控制器状态可能已改变。
 脚本会报告备份路径，不会自动重发切换请求或回滚。
 先核对状态和报错，再决定是否重新执行。

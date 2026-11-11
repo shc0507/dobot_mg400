@@ -210,7 +210,7 @@ def test_service_files_and_code_hold_no_host_values():
     ]
     for path in code:
         suffixes = {".service", ".path", ".py", ".html", ".js", ".css", ".svg", ".example"}
-        if path.suffix in suffixes or path.name == "mg400ctl":
+        if path.suffix in suffixes or path.name == "labctl":
             text = path.read_text()
             assert [value for value in HOST_VALUES if value in text] == [], path
 

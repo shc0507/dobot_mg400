@@ -323,16 +323,13 @@ Reference teaching updates the stage calibration file. The service sends output 
 ### Configuration
 
 The service listens on `127.0.0.1:8767` with the base path `/`. The contract is at `contract/` below it.
-The environment variables below and the arguments `--bind`, `--port`, and `--base-path` change these defaults.
+The arguments `--bind`, `--port`, and `--base-path` change these defaults. The environment variables below set the other settings.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 | Environment variable | Argument | Default | Purpose |
 | --- | --- | --- | --- |
 | `MG400_STAGE_SERIAL` | `--serial` | None | Arduino serial-port path |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | Measured stage calibration and named targets |
-| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | Listen address |
-| `MG400_STAGE_PORT` | `--port` | `8767` | Listen port, 1–65535 |
-| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | Base path |
 
 An empty environment variable has the same effect as an unset variable.
 

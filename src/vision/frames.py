@@ -14,6 +14,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 from PIL import Image, ImageOps
 
 from cameras.config import camera_configuration
+from labkit import ports
 
 _MAX_BYTES = 8 * 1024 * 1024
 _MAX_PIXELS = 16_000_000
@@ -130,7 +131,7 @@ class Go2RTCSource:
     def still(self, camera: int) -> Image.Image:
         """Read one frame from the same configured stream and check its dimensions."""
         camera = validate_camera(camera, self.camera_count)
-        url = f"http://127.0.0.1:1984/api/frame.jpeg?src=camera{camera}"
+        url = ports.url("go2rtc", f"api/frame.jpeg?src=camera{camera}")
         opener = self._opener
         if opener is None:
             opener = build_opener(ProxyHandler({}), _NoRedirect())

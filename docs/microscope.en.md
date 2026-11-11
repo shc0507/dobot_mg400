@@ -33,7 +33,7 @@ It does not start devices or create calibration values.
 The unit runs as `1000:1000` with `dialout` and `video` access.
 It sets `LD_LIBRARY_PATH=/usr/local/lib/mg400` and listens on `127.0.0.1:8770`.
 It reads furnace metadata from `http://127.0.0.1:8769/`.
-`MG400_MICROSCOPE_BIND`, `MG400_MICROSCOPE_PORT`, and `MG400_MICROSCOPE_BASE_PATH` (default `/`) change the listen defaults. The furnace address is fixed.
+`--bind`, `--port`, and `--base-path` (default `/`) change the listen defaults. The furnace address is fixed.
 
 Stop conflicting camera and motor programs before use.
 Start the configured side-camera service with `mg400ctl start camera`, then start `mg400ctl start microscope`.

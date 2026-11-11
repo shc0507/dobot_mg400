@@ -33,7 +33,7 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 单元以 `1000:1000` 运行，具有 `dialout` 和 `video` 访问权限。
 它设置 `LD_LIBRARY_PATH=/usr/local/lib/mg400`，监听 `127.0.0.1:8770`。
 它从 `http://127.0.0.1:8769/` 读取炉控元数据。
-`MG400_MICROSCOPE_BIND`、`MG400_MICROSCOPE_PORT` 和 `MG400_MICROSCOPE_BASE_PATH`（默认 `/`）可改变监听默认值。炉控地址固定。
+`--bind`、`--port` 和 `--base-path`（默认 `/`）可改变监听默认值。炉控地址固定。
 
 使用前，停止冲突的相机和电机程序。
 先用 `mg400ctl start camera` 启动已配置的侧视相机服务，再运行 `mg400ctl start microscope`。

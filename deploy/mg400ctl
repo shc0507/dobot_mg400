@@ -35,9 +35,10 @@ from install import (  # noqa: E402
     parse_settings,
     unique_json_object,
 )
+from labkit import ports  # noqa: E402
 
-CAMERA_PORT = 1985
-PRELOAD = "http://127.0.0.1:1984/api/preload"
+CAMERA_PORT = ports.PORTS["camera"]
+PRELOAD = ports.url("go2rtc", "api/preload")
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 BACKUP_OWNER = (0, 0)
 CALIBRATION_OWNER = (SERVICE_UID, SERVICE_GID)
@@ -59,14 +60,14 @@ STATION_ACTIONS = {"save", "list", "show", "rm", "retool"}
 def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, clock=time.monotonic):
     """Read bounded live status directly, without proxies or redirects.
 
-    The furnace service listens on its fixed loopback address 127.0.0.1:8769.
+    The furnace service listens on its fixed loopback address (labkit/ports.py).
     This is an advisory check before systemctl, not a lease held across shutdown.
     A new sequence can start after this read. Operators must coordinate shutdown.
     Socket operations time out after 2 seconds. Body reads also check a 2-second
     deadline between chunks. Header and transfer-framing reads use socket timeouts,
     not a total deadline.
     """
-    connection = connection_factory("127.0.0.1", 8769, timeout=2)
+    connection = connection_factory(ports.HOST, ports.PORTS["furnace"], timeout=2)
     try:
         connection.request(
             "GET",
@@ -857,7 +858,7 @@ def main(
         if "proxy" in enabled:
             # The preview listens on loopback. Off the host, only the proxy reaches it.
             bind = settings.get("MG400_PROXY_BIND") or "127.0.0.1"
-            port = int(settings.get("MG400_PROXY_PORT") or registry["proxy"]["port"])
+            port = int(settings.get("MG400_PROXY_PORT") or ports.PORTS["proxy"])
             bind = f"[{bind}]" if ":" in bind else bind
             base = f"http://{bind}:{port}/camera/"
         else:

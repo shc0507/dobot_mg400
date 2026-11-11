@@ -8,7 +8,6 @@ units = ["mg400-web-panel.service"]
 optional = false
 venv = ".venv"
 groups = ["tools"]
-port = 8766
 assets = []
 
 [[service]]
@@ -17,7 +16,6 @@ units = ["mg400-vision.service"]
 optional = true
 venv = ".venv-vision"
 groups = ["vision", "vision-gpu"]
-port = 8771
 assets = ["vision-weights"]
 
 [[service]]
@@ -26,7 +24,6 @@ units = ["mg400-thermal.service"]
 optional = true
 venv = ".venv"
 groups = ["thermal"]
-port = 8768
 assets = []
 
 [[service]]
@@ -35,7 +32,6 @@ units = ["mg400-furnace.service"]
 optional = false
 venv = ".venv"
 groups = ["furnace"]
-port = 8769
 assets = []
 
 [[service]]
@@ -44,7 +40,6 @@ units = ["mg400-microscope.service"]
 optional = false
 venv = ".venv"
 groups = ["microscope"]
-port = 8770
 assets = []
 
 [[service]]
@@ -53,7 +48,6 @@ units = ["mg400-orchestrator.service"]
 optional = false
 venv = ".venv"
 groups = ["orchestrator"]
-port = 8772
 assets = ["twin-model"]
 
 [[service]]
@@ -62,7 +56,6 @@ units = ["mg400-stage-panel.service"]
 optional = false
 venv = ".venv"
 groups = ["stage"]
-port = 8767
 assets = []
 
 [[service]]
@@ -71,7 +64,6 @@ units = ["mg400-camera-preview.service", "mg400-camera-capture.service"]
 optional = false
 venv = ".venv"
 groups = []
-port = 1985
 assets = []
 
 [[service]]
@@ -80,5 +72,4 @@ units = ["mg400-proxy.service"]
 optional = false
 venv = ".venv"
 groups = []
-port = 8080
 assets = []

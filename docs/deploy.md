@@ -169,7 +169,6 @@
 | `optional` | 可选服务为 `true`，必需服务为 `false` |
 | `venv` | Python 环境，限 `.venv` 或 `.venv-vision` |
 | `groups` | 此服务使用的 uv 依赖组 |
-| `port` | 主 TCP 端口，0 表示无 TCP 端口 |
 | `assets` | 此服务拥有的资源清单名称 |
 
 `web`、`stage`、`camera`、`furnace`、`microscope`、`orch` 和 `proxy` 始终为必需服务。

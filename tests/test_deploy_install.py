@@ -656,7 +656,6 @@ def add_optional_service(
         stream.write(
             f'\n[[service]]\nname = "{name}"\nunits = ["mg400-{name}.service"]\n'
             f'optional = true\nvenv = "{venv}"\ngroups = {json.dumps(list(groups))}\n'
-            f"port = 8799\n"
             f"assets = {json.dumps(list(asset_names))}\n"
         )
     (host.code / "config/systemd" / f"mg400-{name}.service").write_text("[Service]\n")
@@ -840,11 +839,8 @@ def test_vision_asset_preflight_refuses_invalid_manifest_or_target_before_change
         ('units = ["mg400-stage-panel.service"]', 'units = ["mg400-web-panel.service"]'),
         ('groups = ["stage"]', 'groups = ["stage", "stage"]'),
         ('groups = ["tools"]', 'groups = ["--all-groups"]'),
-        ("port = 8766", 'port = 8766\ntoken = "MG400_PANEL_TOKEN"'),
-        ("port = 8766", "port = true"),
-        ("port = 8766", "port = 65536"),
-        ("port = 8766", "port = -1"),
-        ("port = 8767", "port = 8766"),
+        ('venv = ".venv"', 'venv = ".venv"\ntoken = "MG400_PANEL_TOKEN"'),
+        ('venv = ".venv"', 'venv = ".venv"\nport = 8766'),
         ("assets = []", 'assets = ["../model"]'),
         ("assets = []", 'assets = ["model", "model"]'),
         ("optional = false\n", ""),

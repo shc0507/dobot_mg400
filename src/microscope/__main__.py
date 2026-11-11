@@ -5,6 +5,8 @@ import logging
 import os
 import signal
 
+from labkit import ports
+
 from .app import create_app
 
 
@@ -14,9 +16,9 @@ def main(
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(description="Microscope contract service")
     parser.add_argument("--demo", action="store_true", help="Use simulated motors and cameras")
-    parser.add_argument("--bind", default=env.get("MG400_MICROSCOPE_BIND") or "127.0.0.1")
-    parser.add_argument("--port", type=int, default=env.get("MG400_MICROSCOPE_PORT") or "8770")
-    parser.add_argument("--base-path", default=env.get("MG400_MICROSCOPE_BASE_PATH") or "/")
+    parser.add_argument("--bind", default=ports.HOST)
+    parser.add_argument("--port", type=int, default=ports.PORTS["microscope"])
+    parser.add_argument("--base-path", default="/")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")

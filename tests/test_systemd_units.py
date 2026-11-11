@@ -131,7 +131,6 @@ def test_vision_uses_the_isolated_environment():
         "optional": True,
         "venv": ".venv-vision",
         "groups": ["vision", "vision-gpu"],
-        "port": 8771,
         "assets": ["vision-weights"],
     }
 
@@ -152,7 +151,6 @@ def test_microscope_uses_verified_sdk_path_and_is_installed_by_default():
         "optional": False,
         "venv": ".venv",
         "groups": ["microscope"],
-        "port": 8770,
         "assets": [],
     }
 
@@ -255,6 +253,5 @@ def test_thermal_service_uses_primary_group_usb_access():
         "optional": True,
         "venv": ".venv",
         "groups": ["thermal"],
-        "port": 8768,
         "assets": [],
     }

@@ -103,7 +103,7 @@ Do not use automatic development reload while acquiring camera data.
 
 ### Settings and access
 
-The service listens on `127.0.0.1:8768` with the base path `/`. `MG400_THERMAL_BIND`, `MG400_THERMAL_PORT`, and `MG400_THERMAL_BASE_PATH` set these defaults. `--bind`, `--port`, and `--base-path` override them.
+The service listens on `127.0.0.1:8768` with the base path `/`. `--bind`, `--port`, and `--base-path` change them.
 Invalid settings exit with status 2 before opening a listener or camera.
 An invalid region file is read after the listener opens. Then the process exits with status 1.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.

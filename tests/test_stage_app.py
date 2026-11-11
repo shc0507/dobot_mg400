@@ -15,6 +15,7 @@ from stage_controller.app import create_app
 
 HOST = "100.64.0.1:8767"
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+# MG400_STAGE_BIND, _PORT and _BASE_PATH are no longer settings. Clear them to show it.
 SETTINGS = (
     "MG400_STAGE_BIND",
     "MG400_STAGE_PORT",
@@ -278,21 +279,18 @@ def test_loopback_bind_starts(monkeypatch, capsys, bind):
     assert "Stage Controller: http://127.0.0.1:8767" in capsys.readouterr().out
 
 
-def test_settings_come_from_the_environment(monkeypatch, capsys):
+def test_bind_and_port_settings_are_ignored(monkeypatch):
     monkeypatch.setenv("MG400_STAGE_BIND", "100.64.0.1")
     monkeypatch.setenv("MG400_STAGE_PORT", "8770")
+    monkeypatch.setenv("MG400_STAGE_BASE_PATH", "/from-env/")
     started = run_main(monkeypatch, ["--demo"])
-    assert (started["host"], started["port"]) == ("100.64.0.1", 8770)
-    client = started["app"].test_client()
-    assert client.get("/contract/api/ports", headers={"Host": "100.64.0.1:8770"}).status_code == 200
+    assert (started["host"], started["port"]) == ("127.0.0.1", 8767)
+    assert started["app"].test_client().get("/contract/api/ports").status_code == 200
 
 
-@pytest.mark.parametrize("port", ["8770", "not-a-port"])
-def test_options_override_the_environment(monkeypatch, port):
-    monkeypatch.setenv("MG400_STAGE_BIND", "100.64.0.1")
-    monkeypatch.setenv("MG400_STAGE_PORT", port)
-    started = run_main(monkeypatch, ["--demo", "--bind", "127.0.0.1", "--port", "8771"])
-    assert (started["host"], started["port"]) == ("127.0.0.1", 8771)
+def test_options_set_bind_and_port(monkeypatch):
+    started = run_main(monkeypatch, ["--demo", "--bind", "100.64.0.1", "--port", "8771"])
+    assert (started["host"], started["port"]) == ("100.64.0.1", 8771)
 
 
 def test_empty_settings_use_the_defaults(monkeypatch):
@@ -303,16 +301,11 @@ def test_empty_settings_use_the_defaults(monkeypatch):
     assert started["app"].extensions["motor_controller"].serial is None
 
 
-@pytest.mark.parametrize(
-    "port", ["0", "65536", "99999", "-1", "+8767", " 8767", "8767x", "87.5", "8_767", "８７６７"]
-)
-def test_environment_port_must_be_a_tcp_port(monkeypatch, capsys, port):
-    monkeypatch.setenv("MG400_STAGE_PORT", port)
+@pytest.mark.parametrize("port", ["0", "65536", "-1", "8767x", "87.5"])
+def test_port_option_must_be_a_tcp_port(monkeypatch, port):
     with pytest.raises(SystemExit) as exit_info:
-        run_main(monkeypatch, ["--demo"])
+        run_main(monkeypatch, ["--demo", "--port", port])
     assert exit_info.value.code == 2
-    message = "MG400_STAGE_PORT must be a whole number between 1 and 65535"
-    assert message in capsys.readouterr().err
 
 
 def test_serial_setting_limits_the_port_list(monkeypatch, capsys, stage_usb):
@@ -474,9 +467,8 @@ def service():
             port = probe.getsockname()[1]
         # Like the systemd unit, pass the settings in the environment.
         env = {key: value for key, value in os.environ.items() if key not in SETTINGS}
-        env["MG400_STAGE_PORT"] = str(port)
         process = subprocess.Popen(
-            [sys.executable, "-m", "stage_controller", "--demo"],
+            [sys.executable, "-m", "stage_controller", "--demo", "--port", str(port)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -598,19 +590,14 @@ def test_invalid_stage_base_path_precedes_controller_construction(monkeypatch, p
         stage_app.create_app(base_path=prefix)
 
 
-def test_stage_base_path_cli_overrides_environment_without_device_access(monkeypatch, capsys):
-    monkeypatch.setenv("MG400_STAGE_BASE_PATH", "/from-env/")
-    configured = run_main(monkeypatch, ["--demo"])
-    assert configured["app"].test_client().get("/from-env/contract/api/ports").status_code == 200
-    assert "http://127.0.0.1:8767/from-env/" in capsys.readouterr().out
+def test_stage_base_path_option_without_device_access(monkeypatch, capsys):
     configured = run_main(monkeypatch, ["--demo", "--base-path", "/from-cli"])
     web = configured["app"].test_client()
     assert web.get("/from-cli/contract/api/ports").status_code == 200
-    assert web.get("/from-env/contract/api/ports").status_code == 404
-    monkeypatch.setenv("MG400_STAGE_BASE_PATH", "/../invalid")
+    assert "http://127.0.0.1:8767/from-cli/" in capsys.readouterr().out
     monkeypatch.setattr(
         stage_main, "MotorController", lambda **kwargs: pytest.fail("controller started")
     )
     with pytest.raises(SystemExit) as error:
-        stage_main.main(["--demo"])
+        stage_main.main(["--demo", "--base-path", "/../invalid"])
     assert error.value.code == 2

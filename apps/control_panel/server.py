@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from labkit import ports  # noqa: E402
 from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
@@ -798,7 +799,9 @@ def start_event_log():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="127.0.0.1", help="HTTP address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8766, help="HTTP port (default: 8766)")
+    parser.add_argument(
+        "--port", type=int, default=ports.PORTS["robot"], help="HTTP port (default: %(default)s)"
+    )
     parser.add_argument("--mode", choices=("robot", "read-only"), default="robot")
     parser.add_argument("--base-path", type=normalize_base_path, default="/")
     parser.add_argument(

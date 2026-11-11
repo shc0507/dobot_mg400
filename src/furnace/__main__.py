@@ -5,6 +5,8 @@ import logging
 import os
 import signal
 
+from labkit import ports
+
 from .app import create_app, make_service
 from .config import FurnaceConfig
 
@@ -15,8 +17,8 @@ def main(argv=None, *, environ=None, service_factory=make_service, server_factor
     parser.add_argument(
         "--demo", action="store_true", help="Use isolated simulated furnace and gas devices"
     )
-    parser.add_argument("--bind", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8769)
+    parser.add_argument("--bind", default=ports.HOST)
+    parser.add_argument("--port", type=int, default=ports.PORTS["furnace"])
     parser.add_argument("--base-path", default="/")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:

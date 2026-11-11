@@ -444,7 +444,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 ## 位移台服务接口
 
 位移台服务的 HTTP 接口使用 JSON，全部位于 `{prefix}contract/api/`。
-`{prefix}` 是 `--base-path` 的值，未设置时取 `MG400_STAGE_BASE_PATH`，默认为 `/`。
+`{prefix}` 是 `--base-path` 的值，默认为 `/`。
 服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
 
 ### 位移台自动化契约

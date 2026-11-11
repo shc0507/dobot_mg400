@@ -32,7 +32,7 @@ http://:@PROXY_PORT@ {
 	redir @bare {http.request.uri.path}/ 308
 	# /camera/<view>.mp4, .mjpeg and .jpg reach the preview as /<view>.mp4, .mjpeg and .jpg.
 	handle_path /camera/* {
-		import instrument 127.0.0.1:1985
+		import instrument 127.0.0.1:@CAMERA_PORT@
 	}
 	# One WebSocket per console page carries holds, keys and stops outside the browser's
 	# 6-connection limit. Waitress cannot serve it, so it has its own port.

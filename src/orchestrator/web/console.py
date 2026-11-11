@@ -652,12 +652,13 @@ class Console:
             "result": result if isinstance(result, dict) else None,
         }
 
-    def _cached(self, device):
-        """Return the device cache row, or raise when the device has no fresh state."""
+    def _cached(self, device, fresh=False):
+        """Return the device cache row, or raise when the device has no fresh state.
+        With fresh, the row comes from a read that started after this call."""
         if device not in SERVICES:
             raise ServiceError(404, "Unknown console device.")
         entry = self.service.devices.wait(device)
-        if entry["phase"] != "ready":
+        if fresh or entry["phase"] != "ready":
             # Take control can start a demo service after the last cached read.
             entry = self.service.devices.fresh(device)
         if entry["phase"] in {"unconfigured", "offline"}:
@@ -668,9 +669,9 @@ class Console:
             raise ServiceError(502, "The service state read failed.")
         return entry
 
-    def device_state(self, device, page=None):
+    def device_state(self, device, page=None, fresh=False):
         """Return one device's full state from the device cache."""
-        value = self._cached(device)["state"]
+        value = self._cached(device, fresh)["state"]
         with self.lock:
             item = self.sessions.get(device)
             control = self.entry(item, page) if item is not None else None

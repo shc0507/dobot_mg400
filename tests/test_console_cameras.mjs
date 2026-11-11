@@ -102,13 +102,13 @@ test("the workspace never parses data as HTML and never stores a token", () => {
   assert.ok(!/Authorization/.test(source));
 });
 
-test("cameras load from the proxy and the microscope from the console relay", () => {
-  assert.equal(logic.streamUrl("camera2", false, "/lab"), "/camera/camera2.mjpeg?fps=3");
-  assert.equal(logic.streamUrl("camera2", true, "/lab"), "/camera/camera2.mjpeg?fps=6");
-  assert.equal(logic.snapshotUrl("camera4", "/lab"), "/camera/camera4.full.jpg");
-  assert.equal(logic.streamUrl("microscope", false, "/lab"), "/lab/api/console/ws/cameras/stream/microscope?fps=10");
-  assert.equal(logic.streamUrl("microscope", true, "/lab"), "/lab/api/console/ws/cameras/stream/microscope?fps=30");
-  assert.equal(logic.snapshotUrl("microscope", "/lab"), "/lab/api/console/ws/cameras/snapshot/microscope");
+test("cameras and the microscope load from the proxy", () => {
+  assert.equal(logic.streamUrl("camera2", false), "/camera/camera2.mjpeg?fps=3");
+  assert.equal(logic.streamUrl("camera2", true), "/camera/camera2.mjpeg?fps=6");
+  assert.equal(logic.snapshotUrl("camera4"), "/camera/camera4.full.jpg");
+  assert.equal(logic.streamUrl("microscope", false), "/camera/microscope.mjpeg?fps=10");
+  assert.equal(logic.streamUrl("microscope", true), "/camera/microscope.mjpeg?fps=30");
+  assert.equal(logic.snapshotUrl("microscope"), "/camera/microscope.png");
 });
 
 test("USB cameras and the microscope play H.264 from the proxy; the thermal view has none", () => {
@@ -121,18 +121,15 @@ test("USB cameras and the microscope play H.264 from the proxy; the thermal view
   assert.equal(logic.videoUrl("thermal", true), null);
 });
 
-test("a playing H.264 microscope tile is live; the relay state applies to its MJPEG fallback", () => {
-  const relay = { id: "microscope", state: "offline", age_s: null, fps: null };
+test("a playing microscope tile is live", () => {
+  const relay = { id: "microscope", fps: null };
   cameras.engine.status.set("microscope", relay);
-  const tile = { view: "microscope", live: false, stopVideo: () => {} };
+  const tile = { view: "microscope", live: false };
   cameras.engine.tiles.add(tile);
   try {
     assert.deepEqual(logic.rowFor("microscope"), { ...relay, state: "offline", age_s: null });
     tile.live = true;
     assert.deepEqual(logic.rowFor("microscope"), { ...relay, state: "live", age_s: 0 });
-    // An MJPEG fallback tile shows the state that the console relay reports.
-    tile.stopVideo = null;
-    assert.deepEqual(logic.rowFor("microscope"), relay);
   } finally {
     cameras.engine.tiles.delete(tile);
     cameras.engine.status.delete("microscope");

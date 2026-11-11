@@ -371,6 +371,18 @@ def test_robot_plane_axis_does_not_trust_raw_detector_angle(scene):
     assert long["target"]["state"] == "empty"
 
 
+@pytest.mark.parametrize("region", [[0, 0, 933, 1080], [950, 0, 1920, 1080]])
+def test_groove_outside_detector_region_cannot_mean_empty(scene, region):
+    image, model, location, detections = evidence(scene)
+    detections["region"] = [240, 0, 1680, 1080]
+    assert (
+        _slot_observations(image, model, location, detections, "long")["target"]["state"] == "empty"
+    )
+    detections["region"] = region
+    with pytest.raises(ValueError, match="not fully visible"):
+        _slot_observations(image, model, location, detections, "long")
+
+
 def test_whole_request_bound_includes_tray_and_targets(scene):
     _, scene = scene
     args = {

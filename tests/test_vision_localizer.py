@@ -283,6 +283,7 @@ def test_predict_crops_wide_frames_to_centered_4x3_and_reports_full_frame_pixels
     assert source[:, [0, -1]].reshape(-1, 3).tolist() == [[0, 0, 255]] * 1280
     assert annotated.size == (1280, 720)
     assert metadata["image_size"] == {"width": 1280, "height": 720}
+    assert metadata["region"] == [160, 0, 1120, 720]
     assert metadata["coordinate_system"] == "oriented_original_image_pixels"
     assert "center crop 960x720" in metadata["preprocessing"]
     item = json.loads(json.dumps(metadata))["detections"][0]

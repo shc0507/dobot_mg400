@@ -406,7 +406,7 @@ Each observation uses 1 current frame and the camera-bound calibration model.
 The service locates the tray and maps detector evidence from that frame into robot XY.
 An empty result requires successful inference and valid tray, target, and calibration evidence.
 Missing data or ambiguous chip association does not establish an empty slot.
-The entire requested groove must be visible. Either arm occlusion or a clipped chip mask prevents conclusive evidence.
+The entire requested groove must be inside the detector region (the centered 4:3 crop). Either arm occlusion or a clipped chip mask prevents conclusive evidence.
 Chip evidence for a requested groove must not overlap another configured groove.
 An axis is ambiguous when mask side lengths differ by at most 1% of the longer side.
 

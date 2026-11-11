@@ -5,9 +5,10 @@ import math
 import re
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from labkit.errors import ServiceError
 from labkit.lease import validate_client
@@ -62,7 +63,7 @@ def create_app(*, demo=False, auto_connect=True, service=None, base_path="/"):
         try:
             return controller.latest()
         except RuntimeError as exc:
-            raise HTTPException(503, str(exc)) from exc
+            raise ServiceError(503, str(exc)) from exc
 
     @app.get(prefix + "/api/frame")
     def frame():
@@ -79,6 +80,11 @@ def add_contract_routes(app, controller, *, prefix=""):
     @app.exception_handler(ServiceError)
     async def service_error(request, error):
         return JSONResponse({"error": error.message}, status_code=error.status)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request, error):
+        # Every service replies {"error"}; FastAPI's default is {"detail"}.
+        return JSONResponse({"error": str(error.detail)}, status_code=error.status_code)
 
     async def body(request):
         headers = request.headers
@@ -148,7 +154,10 @@ def add_contract_routes(app, controller, *, prefix=""):
 
     @app.post(prefix + "/api/stop")
     async def stop(request: Request):
-        wait_s = (await body(request)).get("wait_s", 0)
+        data = await body(request)
+        wait_s = data.pop("wait_s", 0)
+        if data:
+            raise ServiceError(400, "Unknown stop parameters.")
         if (
             isinstance(wait_s, bool)
             or not isinstance(wait_s, (int, float))

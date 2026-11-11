@@ -276,7 +276,7 @@ Contract POST requests require `Content-Type: application/json` and exactly 1 `X
 The client ID must contain 1–128 printable ASCII characters.
 Send a JSON object of at most 4096 bytes. `/api/stop` accepts `{"wait_s":0}` with a finite value from 0–15.
 It returns immediately because there is no output to stop.
-Contract errors use `{"error":"..."}`.
+All errors use `{"error":"..."}`.
 HTTP 400 means invalid input, 409 lease conflict, and 415 non-JSON input.
 
 ### Named sensor regions

@@ -95,6 +95,18 @@ def _slot_observations(image, model, location, detections, axis, requested=None)
         or len(detections["detections"]) > 128
     ):
         raise ValueError("Incomplete current-frame detector evidence.")
+    # The detector sees only this region (the real model crops to 4:3); outside it means unseen.
+    region = detections.get("region", [0, 0, image.width, image.height])
+    if (
+        not isinstance(region, list)
+        or len(region) != 4
+        or any(type(value) is not int for value in region)
+        or not (
+            0 <= region[0] < region[2] <= image.width and 0 <= region[1] < region[3] <= image.height
+        )
+    ):
+        raise ValueError("Incomplete current-frame detector evidence.")
+    left, top, right, bottom = region
     requested = set(location["slots"]) if requested is None else set(requested)
     slots, pixels = {}, {}
     for ident, geometry in location["slots"].items():
@@ -129,9 +141,7 @@ def _slot_observations(image, model, location, detections, axis, requested=None)
         if (
             not np.isfinite(projected).all()
             or np.any(depth <= 0)
-            or any(
-                not 0 < x < image.width - 1 or not 0 < y < image.height - 1 for x, y in projected
-            )
+            or any(not left < x < right - 1 or not top < y < bottom - 1 for x, y in projected)
         ):
             raise ValueError("A requested groove is not fully visible in the current frame.")
         pixels[ident] = cv2.convexHull(projected.astype(np.float32))
@@ -171,7 +181,7 @@ def _slot_observations(image, model, location, detections, axis, requested=None)
                 or any(
                     type(value) not in (int, float) or not math.isfinite(value) for value in point
                 )
-                or not (0 < point[0] < image.width - 1 and 0 < point[1] < image.height - 1)
+                or not (left < point[0] < right - 1 and top < point[1] < bottom - 1)
                 for point in polygon
             )
         ):

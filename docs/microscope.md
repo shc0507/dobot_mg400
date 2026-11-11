@@ -139,12 +139,9 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 `set_focus_zero` 是普通命令，没有参数。租约持有者用 `POST /api/command` 发送。其他客户端收到 HTTP 409。
 `202` 响应返回命令 ID，读取命令结果后再执行下一动作。
 有已配置的归零开关时，服务以 HTTP 409 拒绝此命令。
-`POST /api/manual/set_focus_zero` 带 `{"confirm": true}` 时执行同一操作，接受普通租约或手动租约的持有者。
 服务检查两轴静止，设置 `MICRO 4`，建立零点，写入限位，并验证固件结果。
 
-`POST /api/manual/heartbeat` 用空对象取得手动控制权，`POST /api/manual/renew` 保留手动控制权。
-自动化持有租约时，手动请求无法取得控制权，即使复用同一客户端 ID。
-用手动控制权建立零点后，通过 `POST /api/manual/release` 释放手动控制权，再由另一客户端取得普通控制权。
+建立零点后，通过 `POST /api/release` 释放控制权，再由另一客户端取得控制权。
 健康且空闲时，释放操作可保留已验证的参考状态，最长到原租约的剩余截止时间。
 重新检查必须确认两轴静止、调焦轴已启用，且零点、限位和固件会话一致。
 下一客户端必须在截止时间前取得控制权。释放不会增加租约时间。

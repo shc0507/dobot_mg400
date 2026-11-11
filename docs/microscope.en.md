@@ -139,12 +139,9 @@ This focus position is the clearance zero. Positive focus motion raises the obje
 `set_focus_zero` is an ordinary command without parameters. The lease holder sends it with `POST /api/command`. Other clients receive HTTP 409.
 A `202` response returns a command ID. Read the command result before the next action.
 The service refuses this command with HTTP 409 when a home switch is configured.
-`POST /api/manual/set_focus_zero` with `{"confirm": true}` does the same operation for the holder of an ordinary or a manual lease.
 The service checks stationary axes, sets `MICRO 4`, establishes zero, installs limits, and verifies the firmware result.
 
-`POST /api/manual/heartbeat` with an empty object acquires manual control. `POST /api/manual/renew` retains manual control.
-An automation lease blocks manual acquisition, even if a request reuses the same client ID.
-After zero succeeds with manual control, release manual control through `POST /api/manual/release` before another client acquires ordinary control.
+After zero succeeds, release control through `POST /api/release` before another client acquires control.
 A healthy idle release can retain the verified reference only until the former lease's remaining deadline.
 The fresh check requires stationary axes, enabled focus, and matching zero, limits, and firmware session.
 The next client must acquire control before that deadline. Release does not grant an additional lease period.

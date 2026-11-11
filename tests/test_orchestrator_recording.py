@@ -36,7 +36,6 @@ class Microscope:
             "last_result": None,
             "recording": {"id": None, "status": "idle"},
             "recording_sequence": {"armed": False},
-            "manual_client": None,
         }
 
     def describe(self):
@@ -425,7 +424,6 @@ def test_completion_audit_failure_keeps_only_intent_and_does_not_retry(tmp_path,
         lambda state: state.pop("locked"),
         lambda state: state["lease"].update(holder="foreign"),
         lambda state: state.update(busy=True),
-        lambda state: state.update(manual_client=Microscope.identity),
         lambda state: state.update(recording_sequence={"armed": True}),
         lambda state: state.update(recording_sequence={}),
         lambda state: state.pop("recording_sequence"),

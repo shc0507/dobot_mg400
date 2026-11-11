@@ -735,6 +735,27 @@ class RobotPanelState:
             self._release_ownership_if_idle()
             raise
 
+    def _idle_at_rest(self):
+        """Whether fresh feedback shows an enabled idle robot without an alarm, and no work runs."""
+        return (
+            self._fresh()
+            and self._sample.mode == 5
+            and not self._sample.error_status
+            and not (
+                self._locked
+                or self._fault
+                or self._busy
+                or self._working
+                or self._job
+                or self._safety_workers
+                or self._clearing
+                or self._kb_on
+                or self._kb_arming
+                or self._kb_thread is not None
+                or self._kb_session is not None
+            )
+        )
+
     def _release_ownership_if_idle(self):
         """Keep ownership until feedback and all controller work have ended."""
         if (
@@ -806,6 +827,8 @@ class RobotPanelState:
         keyboard worker exits, so the stops never overlap.
         """
         self._ownership.acquire()
+        # A user stop of an idle robot that needs no recovery confirms without the lock.
+        unlock = record is not None and not (disabling or disconnect) and self._idle_at_rest()
         self._cancel_generation += 1
         if record is not None:
             record["generation"] = self._cancel_generation
@@ -838,7 +861,13 @@ class RobotPanelState:
         self._safety_actions.add(disabling)
         thread = threading.Thread(
             target=self._stop,
-            args=(self._control, disabling, keyboard, check_rest),
+            args=(
+                self._control,
+                disabling,
+                keyboard,
+                check_rest,
+                unlock and self._cancel_generation,
+            ),
             daemon=True,
         )
         self._safety_threads = [worker for worker in self._safety_threads if worker.is_alive()]
@@ -855,7 +884,7 @@ class RobotPanelState:
             return
         self._safety_threads.append(thread)
 
-    def _stop(self, control, disabling, keyboard=None, check_rest=True):
+    def _stop(self, control, disabling, keyboard=None, check_rest=True, unlock=None):
         try:
             if keyboard is not None:
                 # The guard refuses new keyboard sends while the session stops itself.
@@ -890,6 +919,11 @@ class RobotPanelState:
                     self._message = "Robot disable and rest are confirmed."
                 else:
                     self._message = "Robot disable is confirmed."
+                if unlock == self._cancel_generation and self._sample.mode == 5:
+                    # No other stop came since the request, so robot recipes can run back to back.
+                    self._control = self._new_control()
+                    self._locked = False
+                    self._message = "Robot stop is confirmed. The robot is enabled and idle."
                 if self._fault:
                     # A later success must not hide an earlier unconfirmed verdict.
                     self._message = (

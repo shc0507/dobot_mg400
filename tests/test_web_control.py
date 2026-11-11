@@ -810,7 +810,8 @@ def test_confirmed_stop_suspends_pose_queries_until_disable_recovers(rig):
     control.read_pose = Mock(wraps=control.read_pose)
     connect(state)
     wait_for(lambda: control.read_pose.call_count > 0)
-    state.command({"action": "stop"}, "browser-a")
+    with state._lock:
+        state._request_stop(reason="Robot operation failed")
     wait_for(lambda: not state.snapshot()["busy"])
     queries_after_stop = control.read_pose.call_count
     time.sleep(0.2)
@@ -820,6 +821,19 @@ def test_confirmed_stop_suspends_pose_queries_until_disable_recovers(rig):
     state.command({"action": "disable"}, "browser-a")
     wait_for(lambda: not state.snapshot()["locked"])
     assert controls[-1].pose_entered.wait(1)
+
+
+def test_stop_of_an_idle_enabled_robot_confirms_without_the_lock(rig):
+    state, _, controls = rig
+    connect(state)
+    assert state.stop("orchestrator", wait_s=2)["stop"] == "confirmed"
+    assert "stop" in controls[0].calls
+    snapshot = state.snapshot()
+    assert not snapshot["locked"] and not snapshot["busy"]
+    assert snapshot["controller_id"] == "browser-a"
+    execute(state)
+    wait_for(lambda: any(call[0] == "linear" for call in controls[-1].calls))
+    assert controls[-1] is not controls[0]
 
 
 def test_failed_reconnect_does_not_claim_browser_lease(rig):

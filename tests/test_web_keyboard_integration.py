@@ -477,6 +477,24 @@ def test_z_sucks_and_x_releases_once_per_press_without_motion(rig):
     assert rig.controller.mutations() == ["SpeedFactor(1)", *SUCK, *RELEASE]
 
 
+def test_a_failed_release_key_turns_the_blow_output_off(rig, monkeypatch):
+    real_wait = JointControl._wait_output
+
+    def blow_times_out(control, index, status, modes, timeout=1.0):
+        if (index, status) == (1, 1):
+            raise TimeoutError("DO1 was not confirmed")
+        return real_wait(control, index, status, modes, timeout)
+
+    monkeypatch.setattr(JointControl, "_wait_output", blow_times_out)
+    rig.connect()
+    rig.arm_ready()
+    mark = rig.controller.mark()
+    rig.keys("X")
+    wait_for(lambda: "DOExecute(1,0)" in rig.controller.sent(mark), describe=rig.describe)
+    assert outputs(rig, mark) == RELEASE
+    rig.wait(lambda s: s["vacuum"]["blow"] is False and not s["busy"])
+
+
 def test_arm_keys_jog_after_a_suction_key(rig):
     rig.connect()
     rig.arm_ready()

@@ -30,7 +30,7 @@
 
 ### 从服务器切换 TCP/IP 模式
 
-`mg400ctl mode` 默认只读。
+`labctl mode` 默认只读。
 它通过 SMB（网络文件共享）读取模式，通过 HTTP 读取运行状态。
 `configured_mode` 为保存的配置，不能单独证明模式已生效。
 `tp` 表示在线模式，`tcp` 表示 TCP/IP 模式。
@@ -42,7 +42,7 @@
 mg400ctl mode
 ```
 
-`mg400ctl` 以 UID 1000 运行工具。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
+`labctl` 以 UID 1000 运行工具。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
 工具使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
 锁目录固定为 `/var/lib/mg400/locks`，属主为 UID 1000。
 

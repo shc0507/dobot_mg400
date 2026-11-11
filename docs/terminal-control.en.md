@@ -26,7 +26,7 @@ This lock cannot prevent DobotStudio or other hosts from connecting.
 On a host installed through [Host deployment](deploy.en.md), run:
 
 ```sh
-sudo mg400ctl terminal
+sudo labctl terminal
 ```
 
 The terminal runs as UID 1000. It reads `/etc/mg400/mg400.env`.

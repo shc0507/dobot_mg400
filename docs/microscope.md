@@ -367,7 +367,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 不得从代理、服务契约、编排器、Lab Console 或无人值守脚本运行。
 工具不会自动停止其他服务。
 启动前，操作员必须释放冲突的显微镜和相机占用。
-用 `sudo mg400ctl calibrate` 运行。它以 UID `1000` 和主机的 `MG400_*` 配置运行工具。
+用 `sudo labctl calibrate` 运行。它以 UID `1000` 和主机的 `MG400_*` 配置运行工具。
 
 把 `MG400_MICROSCOPE_SERIAL` 配置为控制板的稳定路径。
 校准的主相机使用 `MG400_TOUPCAM_SERIAL` 或 `MG400_TOUPCAM_INDEX`，不得同时配置。
@@ -418,16 +418,16 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 以下命令显示选项，不打开设备：
 
 ```sh
-sudo mg400ctl calibrate --help
+sudo labctl calibrate --help
 ```
 
 校准命令必须遵守上述监督规则：
 
 | 命令 | 操作与默认输出 |
 | --- | --- |
-| `sudo mg400ctl calibrate reference` | 采集原始 PNG，保存为 `objective_reference.png`。不归零、不设零，也不移动调焦轴。 |
-| `sudo mg400ctl calibrate objective` | 执行物镜校准，写入 `objective_calibration.csv`。 |
-| `sudo mg400ctl calibrate light` | 执行轻量物镜校准，写入 `light_objective_calibration.csv`。 |
+| `sudo labctl calibrate reference` | 采集原始 PNG，保存为 `objective_reference.png`。不归零、不设零，也不移动调焦轴。 |
+| `sudo labctl calibrate objective` | 执行物镜校准，写入 `objective_calibration.csv`。 |
+| `sudo labctl calibrate light` | 执行轻量物镜校准，写入 `light_objective_calibration.csv`。 |
 
 `--reference` 为物镜或轻量物镜校准选择私有校准 PNG，默认为 `objective_reference.png`。
 `--output` 选择 `/var/lib/mg400/calibration/microscope` 内的文件。
@@ -454,8 +454,8 @@ sudo mg400ctl calibrate --help
 范围为正时，两条命令都必须提供 `--focus-start N`，单位为实测 `MICRO 4` 坐标，且必须在调焦限位内：
 
 ```sh
-sudo mg400ctl calibrate objective --focus-start N
-sudo mg400ctl calibrate light --focus-start N
+sudo labctl calibrate objective --focus-start N
+sudo labctl calibrate light --focus-start N
 ```
 
 把 `N` 替换为实测调焦起点坐标。
@@ -480,7 +480,7 @@ sudo mg400ctl calibrate light --focus-start N
 使用此控制台测量 `H-06` 的避让位置、行程限位和转盘范围：
 
 ```sh
-sudo mg400ctl calibrate setup
+sudo labctl calibrate setup
 ```
 
 先停止显微镜服务。操作员必须能触及急停，并看清调焦轴和所有物镜。

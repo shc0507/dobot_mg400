@@ -367,7 +367,7 @@ These commands require a person at an interactive terminal. Both input and outpu
 Do not run them from an agent, service contract, orchestrator, Lab Console, or unattended script.
 They do not stop other services automatically.
 An operator must release conflicting microscope and camera owners before starting them.
-Run them with `sudo mg400ctl calibrate`. It runs the tool as UID `1000` with the `MG400_*` settings of the host.
+Run them with `sudo labctl calibrate`. It runs the tool as UID `1000` with the `MG400_*` settings of the host.
 
 Set `MG400_MICROSCOPE_SERIAL` to the stable controller path.
 Calibration selects the main camera with `MG400_TOUPCAM_SERIAL` or `MG400_TOUPCAM_INDEX`, never both.
@@ -418,16 +418,16 @@ Cancellation and `SIGINT`, `SIGTERM`, or `SIGHUP` use the same cleanup rule.
 Display options without opening devices:
 
 ```sh
-sudo mg400ctl calibrate --help
+sudo labctl calibrate --help
 ```
 
 Run calibration commands only under the supervision rules above:
 
 | Command | Operation and default output |
 | --- | --- |
-| `sudo mg400ctl calibrate reference` | Capture a raw PNG as `objective_reference.png`. It does not home, set zero, or move focus. |
-| `sudo mg400ctl calibrate objective` | Run objective calibration and write `objective_calibration.csv`. |
-| `sudo mg400ctl calibrate light` | Run light-objective calibration and write `light_objective_calibration.csv`. |
+| `sudo labctl calibrate reference` | Capture a raw PNG as `objective_reference.png`. It does not home, set zero, or move focus. |
+| `sudo labctl calibrate objective` | Run objective calibration and write `objective_calibration.csv`. |
+| `sudo labctl calibrate light` | Run light-objective calibration and write `light_objective_calibration.csv`. |
 
 `--reference` selects the private calibration PNG for objective or light calibration. Its default is `objective_reference.png`.
 `--output` selects a file beneath `/var/lib/mg400/calibration/microscope`.
@@ -454,8 +454,8 @@ Do not estimate this value from calibration data or use another microscope's mea
 With a positive window, both commands require `--focus-start N` in measured `MICRO 4` coordinates, inside the focus limits:
 
 ```sh
-sudo mg400ctl calibrate objective --focus-start N
-sudo mg400ctl calibrate light --focus-start N
+sudo labctl calibrate objective --focus-start N
+sudo labctl calibrate light --focus-start N
 ```
 
 Replace `N` with the measured starting focus coordinate.
@@ -480,7 +480,7 @@ Full objective switches still turn the turret only at clearance.
 Use this console for the `H-06` clearance, travel-limit, and turret-window measurements:
 
 ```sh
-sudo mg400ctl calibrate setup
+sudo labctl calibrate setup
 ```
 
 Stop the microscope service first. Keep a person at the emergency stop who can see the focus and every objective.

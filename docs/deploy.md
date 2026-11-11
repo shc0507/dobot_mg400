@@ -346,7 +346,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `mg400ctl terminal` | 打开 [交互终端](terminal-control.md) |
 | `mg400ctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
 | `mg400ctl mode --switch-to-tcp` | 把控制器切换到 TCP/IP 模式 |
-| `mg400ctl calibrate ...` | 运行 [受监督的显微镜校准](microscope.md#受监督的校准) |
+| `labctl calibrate ...` | 运行 [受监督的显微镜校准](microscope.md#受监督的校准) |
 | `mg400ctl calibration import microscope DIR` | 导入已有的显微镜校准数据，不覆盖已有文件，见[显微镜](microscope.md) |
 | `labctl run`、`labctl rehearse`、`labctl runs`、`labctl station` | 运行、演练和查看配方，管理工位，见[配方服务](orchestrator.md) |
 | `labctl robot state` | 智能体设备命令组，见[智能体命令行](agent-cli.md) |

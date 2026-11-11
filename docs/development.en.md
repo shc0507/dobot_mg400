@@ -135,7 +135,7 @@ Exception: a `labctl` stop goes to the orchestrator and also directly to the dev
 
 Open the [layout editor](../apps/layout-studio/index.html) in a browser to edit and export interface layouts.
 
-`terminal_control.py` provides the interactive terminal for the physical robot (`mg400ctl terminal`).
+`terminal_control.py` provides the interactive terminal for the physical robot (`labctl terminal`).
 It reuses the connection lock, feedback checks, and action execution from `web_control.py`. It does not start an HTTP service.
 
 `apps/control_panel/server.py` is the robot service. It provides the HTTP interface and WebSocket interface, without a web page.
@@ -166,7 +166,7 @@ See [Stage service API](#stage-service-api) for interface details.
 
 After `start_sync`, the robot service connects to the robot and holds the connection lock.
 The Lab Console and custom clients read state and send commands through the service.
-`mg400ctl terminal` and `mg400ctl mode` connect directly to the robot.
+`labctl terminal` and `labctl mode` connect directly to the robot.
 They share the connection lock with the service and cannot connect at the same time as the service.
 The service uses only the Python standard library.
 

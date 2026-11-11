@@ -26,7 +26,7 @@ PTY 是 SSH 分配的交互终端，可用 `ssh -t` 请求。
 在按 [主机部署](deploy.md) 安装的主机上运行：
 
 ```sh
-sudo mg400ctl terminal
+sudo labctl terminal
 ```
 
 终端以 UID 1000 运行，并读取 `/etc/mg400/mg400.env`。

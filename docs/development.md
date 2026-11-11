@@ -133,7 +133,7 @@ wait "$sim_pid"
 
 用浏览器打开 [布局编辑器](../apps/layout-studio/index.html)，可编辑并导出界面布局。
 
-`terminal_control.py` 提供 `mg400-robot` 真机交互终端。
+`terminal_control.py` 提供真机交互终端（`labctl terminal`）。
 它复用 `web_control.py` 的连接锁、反馈检查和动作执行，不启动 HTTP 服务。
 
 `apps/control_panel/server.py` 是机器人服务，提供 HTTP 接口和 WebSocket 接口，不提供网页。
@@ -164,7 +164,7 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 
 机器人服务执行 `start_sync` 后连接机械臂，并持有连接锁。
 实验室控制台和自写客户端通过服务读取状态和发送命令。
-`mg400-robot` 和 `scripts/mg400_control_mode.py` 直接连接机械臂。
+`labctl terminal` 和 `labctl mode` 直接连接机械臂。
 它们与服务共用连接锁，不能与服务同时连接。
 服务只使用 Python 标准库。
 

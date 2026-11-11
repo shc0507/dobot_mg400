@@ -26,12 +26,12 @@ The Python README above specifies controller V1.5.6.0+.
 For troubleshooting, trying V1.6.0.0+ is recommended.
 The official manual for the installed firmware is the final reference.
 Before control, enter TCP/IP secondary development mode.
-Select it in DobotStudio Pro or use the script below.
+Select it in DobotStudio Pro or use the command below.
 Do not mix in the 6-axis robot SDK.
 
 ### Switch to TCP/IP mode from the server
 
-[`scripts/mg400_control_mode.py`](../scripts/mg400_control_mode.py) is read-only by default.
+`labctl mode` is read-only by default.
 It reads the mode through SMB (network file sharing) and the operating state through HTTP.
 `configured_mode` is the saved configuration. It cannot by itself prove that the mode is active.
 `tp` means online mode. `tcp` means TCP/IP mode.
@@ -43,11 +43,9 @@ On a host installed through [Host deployment](deploy.en.md), read the mode as ro
 mg400ctl mode
 ```
 
-`mg400ctl` runs the script as UID 1000. A mode read takes no connection lock. `--switch-to-tcp` acquires the [connection lock](deploy.en.md#panel-connection-lock) that the robot service also uses.
-The script uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
+`labctl` runs the tool as UID 1000. A mode read takes no connection lock. `--switch-to-tcp` acquires the [connection lock](deploy.en.md#panel-connection-lock) that the robot service also uses.
+The tool uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
 The lock directory is fixed at `/var/lib/mg400/locks`. Its owner is UID 1000.
-When `--switch-to-tcp` runs as root, the script refuses to acquire the connection lock and does not connect to the controller. Thus, run the script through `mg400ctl mode`.
-For a direct run, `--host` sets the controller address, `--timeout` sets the request timeout (default 5 seconds, maximum 30 seconds), and `--backup-dir` sets the backup directory (default `work/control-mode`).
 
 Before switching, disable the robot and stop running programs.
 Close other control clients and release the [panel connection lock](deploy.en.md#panel-connection-lock).

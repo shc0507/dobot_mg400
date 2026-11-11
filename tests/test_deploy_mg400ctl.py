@@ -285,7 +285,9 @@ def test_terminal_runs_as_the_service_user_on_its_own_terminal(ctl, monkeypatch)
         "-g",
         "mg400group",
         "--",
-        str(ctl.host.code / ".venv/bin/mg400-robot"),
+        str(ctl.host.code / ".venv/bin/python"),
+        "-m",
+        "mg400.terminal_control",
     ]
     # Nothing from the root environment except the terminal settings reaches the service user.
     assert environment == {
@@ -303,10 +305,24 @@ def test_mode_runs_the_switch_script_as_the_service_user(ctl, switch):
     assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
     assert argv[7:] == [
         str(ctl.host.code / ".venv/bin/python"),
-        str(ctl.host.code / "scripts/mg400_control_mode.py"),
+        "-m",
+        "mg400.control_mode",
         "--backup-dir",
         str(ctl.host.data / "work/control-mode"),
         *["--switch-to-tcp"] * switch,
+    ]
+
+
+@pytest.mark.parametrize("passed", [["--help"], ["objective", "--focus-start", "12"]])
+def test_calibrate_passes_arguments_to_the_microscope_tool_as_the_service_user(ctl, passed):
+    assert ctl.call("calibrate", *passed) == 0
+    argv = ctl.execvpe.call_args.args[1]
+    assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
+    assert argv[7:] == [
+        str(ctl.host.code / ".venv/bin/python"),
+        "-m",
+        "microscope.calibrate",
+        *passed,
     ]
 
 

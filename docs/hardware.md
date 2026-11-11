@@ -25,12 +25,12 @@
 故障排查建议尝试 V1.6.0.0+。
 最终以本机固件对应的官方手册为准。
 控制前，进入 TCP/IP 二次开发模式。
-可在 DobotStudio Pro 中选择，也可使用下文脚本。
+可在 DobotStudio Pro 中选择，也可使用下文命令。
 不要混用 6 轴机器人 SDK。
 
 ### 从服务器切换 TCP/IP 模式
 
-[`scripts/mg400_control_mode.py`](../scripts/mg400_control_mode.py) 默认只读。
+`labctl mode` 默认只读。
 它通过 SMB（网络文件共享）读取模式，通过 HTTP 读取运行状态。
 `configured_mode` 为保存的配置，不能单独证明模式已生效。
 `tp` 表示在线模式，`tcp` 表示 TCP/IP 模式。
@@ -42,11 +42,9 @@
 mg400ctl mode
 ```
 
-`mg400ctl` 以 UID 1000 运行脚本。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
-脚本使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
+`labctl` 以 UID 1000 运行工具。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
+工具使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
 锁目录固定为 `/var/lib/mg400/locks`，属主为 UID 1000。
-以 root 运行 `--switch-to-tcp` 时，脚本拒绝取得连接锁，不连接控制器。所以用 `mg400ctl mode` 运行脚本。
-直接运行时，`--host` 指定控制器地址，`--timeout` 设置请求超时（默认 5 秒，最长 30 秒），`--backup-dir` 设置备份目录（默认 `work/control-mode`）。
 
 切换前，下使能机械臂并停止运行中的程序。
 关闭其他控制客户端，释放[面板连接锁](deploy.md#面板连接锁)。

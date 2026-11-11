@@ -5,16 +5,12 @@ Coordinates and offsets are ORIGINAL image pixels. A reference defines zero;
 this is not a measurement of the optical axis or a guarantee of mechanical seating.
 """
 
-import argparse
-import csv
-import json
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from .paths import calibration_path, directory, private_open, run_path
+from .paths import calibration_path, private_open
 
 REFERENCES = {
     0: "side_20261020_222952_249760200.png",
@@ -198,58 +194,3 @@ def annotate(path, result, references, output):
         raise RuntimeError("Cannot encode annotated image")
     with private_open(output, "wb") as image_file:
         image_file.write(encoded.tobytes())
-
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--image", type=Path)
-    ap.add_argument("--folder", type=Path)
-    ap.add_argument("--output", type=Path, default=run_path("microscope/scan_position_results"))
-    ap.add_argument("--near-px", type=float, default=50.0)
-    ap.add_argument("--id", type=int, choices=list(COLORS), help="Only report this objective ID")
-    args = ap.parse_args()
-    cv2.setNumThreads(1)
-    loc = Locator(args.near_px)
-    args.output = run_path(args.output)
-    directory(args.output)
-    files = [args.image] if args.image else sorted(args.folder.glob("*.png"))
-    results = []
-
-    def run(path):
-        result = dict(loc.locate(read_gray(path), target_id=args.id), file=path.name)
-        return result
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        for i, result in enumerate(pool.map(run, files)):
-            results.append(result)
-            if (i + 1) % 30 == 0:
-                print(f"{i + 1}/{len(files)}", flush=True)
-    payload = {"near_px": args.near_px, "references": loc.references, "results": results}
-    with private_open(args.output / "detections.json", "w", encoding="utf-8") as output:
-        output.write(json.dumps(payload, indent=2))
-    with private_open(args.output / "positions.csv", "w", newline="", encoding="utf-8-sig") as f:
-        fields = ["file", "status", "id", "color", "dx_px", "dy_px", "range", "direction"]
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        for r in results:
-            for m in r["markers"] or [{}]:
-                writer.writerow(
-                    dict(
-                        file=r["file"],
-                        status=r["status"],
-                        **{k: m[k] for k in fields[2:] if k in m},
-                    )
-                )
-    # Near poses and sparse full-rotation samples; avoid writing 360 huge images.
-    previews = args.output / "previews"
-    directory(previews)
-    for i, (path, result) in enumerate(zip(files, results)):
-        if i % 15 == 0 or any(m["range"] == "near" for m in result["markers"]):
-            annotate(path, result, loc.references, previews / (path.stem + ".jpg"))
-    print(f"Saved {len(results)} independent predictions to {args.output}", flush=True)
-    if args.image:
-        print(json.dumps(results[0], indent=2), flush=True)
-
-
-if __name__ == "__main__":
-    main()

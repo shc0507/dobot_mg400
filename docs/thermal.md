@@ -54,17 +54,14 @@ uv sync --locked
 连接前，关闭其他相机应用。
 同一时间只能有 1 个进程占用相机。
 
-以下命令会访问真实 USB 硬件。
-操作员必须先停止热像服务和其他占用相机的程序，再执行命令：
+检查相机时，通过服务连接相机，再读取状态：
 
 ```sh
-uv run thermal-cam --diagnose
-uv run thermal-cam --probe --frames 30 --output captures/probe.npz
+sudo labctl thermal call connect
+sudo labctl thermal state
 ```
 
-诊断命令报告后端和设备访问情况，不初始化相机或启动采集。
-采集检查会打开相机，采集指定帧数，报告结果，然后关闭相机。
-可选输出把最后一帧保存为无损 NPZ 文件。
+连接失败时，状态显示 `error` 和 `diagnostics`：USB 后端和设备访问情况。
 
 ## 启动服务
 
@@ -97,7 +94,6 @@ uv run thermal-cam --help
 ```
 
 使用 `--no-connect` 时，服务器等待 `connect` 命令。在控制台中，用热像画面上的 **Connect camera** 发送该命令。
-也可以通过 `python -m thermal_cam` 启动。
 只运行 1 个服务器进程和 1 个工作进程。
 采集相机数据时，不要启用开发模式的自动重载。
 

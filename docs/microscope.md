@@ -361,21 +361,20 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 传输或完成状态不确定时，程序锁存故障，必须显式重连。
 命令、接线和固件限制见[固件指南](../firmware/microscope-axes/README.md)。
 
-## 受监督的校准与实验
+## 受监督的校准
 
 这些命令必须由操作员在交互终端运行。输入和输出都必须是 TTY。
 不得从代理、服务契约、编排器、Lab Console 或无人值守脚本运行。
 工具不会自动停止其他服务。
 启动前，操作员必须释放冲突的显微镜和相机占用。
-命令从终端环境读取 `MG400_*` 配置。
-使用校准目录和运行目录的所有者账户运行。
+用 `sudo labctl calibrate` 运行。它以 UID `1000` 和主机的 `MG400_*` 配置运行工具。
 
 把 `MG400_MICROSCOPE_SERIAL` 配置为控制板的稳定路径。
-校准和实验的主相机使用 `MG400_TOUPCAM_SERIAL` 或 `MG400_TOUPCAM_INDEX`，不得同时配置。
+校准的主相机使用 `MG400_TOUPCAM_SERIAL` 或 `MG400_TOUPCAM_INDEX`，不得同时配置。
 这些命令的运动还必须具备上表所列的 `H-06` 实测限位、避让位置和归零开关配置。
 缺少测量值时，工具拒绝启动。不得用演示值代替。
 
-校准和实验运动前，工具取得主相机、所需侧视相机和独占串口。
+校准运动前，工具取得主相机、所需侧视相机和独占串口。
 每个所需相机都必须先提供有效首帧。
 侧视采集通过 `MG400_CAMERA_DEVICES`、`MG400_CAMERA_MODES` 和 `MG400_MICROSCOPE_SIDE_STREAM` 选择物理设备及模式。
 受监督适配器通过 `CAP_V4L2` 直接打开稳定设备路径，并要求 `uvcvideo` 驱动。
@@ -385,7 +384,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 ### 零点与运动规则
 
-这些规则适用于校准和实验。
+这些规则适用于校准。
 受监督的配置控制台采用下述独立人工测量规则。
 
 实测限位和避让位置采用 `MICRO 4` 坐标。
@@ -419,17 +418,16 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 以下命令显示选项，不打开设备：
 
 ```sh
-uv run python -m microscope.calibrate --help
-uv run python -m microscope.experiments --help
+sudo labctl calibrate --help
 ```
 
 校准命令必须遵守上述监督规则：
 
 | 命令 | 操作与默认输出 |
 | --- | --- |
-| `python -m microscope.calibrate reference` | 采集原始 PNG，保存为 `objective_reference.png`。不归零、不设零，也不移动调焦轴。 |
-| `python -m microscope.calibrate objective` | 执行物镜校准，写入 `objective_calibration.csv`。 |
-| `python -m microscope.calibrate light` | 执行轻量物镜校准，写入 `light_objective_calibration.csv`。 |
+| `sudo labctl calibrate reference` | 采集原始 PNG，保存为 `objective_reference.png`。不归零、不设零，也不移动调焦轴。 |
+| `sudo labctl calibrate objective` | 执行物镜校准，写入 `objective_calibration.csv`。 |
+| `sudo labctl calibrate light` | 执行轻量物镜校准，写入 `light_objective_calibration.csv`。 |
 
 `--reference` 为物镜或轻量物镜校准选择私有校准 PNG，默认为 `objective_reference.png`。
 `--output` 选择 `/var/lib/mg400/calibration/microscope` 内的文件。
@@ -456,8 +454,8 @@ uv run python -m microscope.experiments --help
 范围为正时，两条命令都必须提供 `--focus-start N`，单位为实测 `MICRO 4` 坐标，且必须在调焦限位内：
 
 ```sh
-python -m microscope.calibrate objective --focus-start N
-python -m microscope.calibrate light --focus-start N
+sudo labctl calibrate objective --focus-start N
+sudo labctl calibrate light --focus-start N
 ```
 
 把 `N` 替换为实测调焦起点坐标。
@@ -475,14 +473,14 @@ python -m microscope.calibrate light --focus-start N
 设零或归零并发送换算限位后，调焦轴按新细分返回先前位置。
 返回位置取最近的整数脉冲，且必须在限位内。
 仅在此模式下，校准的调焦禁用请求改用 `STOP FOCUS`，保留零点。
-实验和完整物镜切换仍只在避让位置转动转盘。
+完整物镜切换仍只在避让位置转动转盘。
 
 ### 受监督的配置控制台
 
 使用此控制台测量 `H-06` 的避让位置、行程限位和转盘范围：
 
 ```sh
-python -m microscope.calibrate setup
+sudo labctl calibrate setup
 ```
 
 先停止显微镜服务。操作员必须能触及急停，并看清调焦轴和所有物镜。
@@ -517,28 +515,6 @@ python -m microscope.calibrate setup
 这些计数不能测量物理位置，也不能证明已避开窗口。
 观察每次移动，并另行记录实测值。控制台不会写入这些值。
 
-### 实验命令
-
-使用 `python -m microscope.experiments focus|switch|combined` 并提供所需配置。
-每条命令只执行 1 轮。`--output` 选择 `/var/lib/mg400/runs` 内的新私有目录。
-未指定时，输出位于 `microscope/experiments/` 下的独立命令目录。
-配置、汇总行、调焦曲线、切换日志和可用的最终图像都保留在该目录。
-失败时保留部分结果和终止失败行。
-
-通过 `--settings FILE` 使用 `[focus]` 和 `[switch]` 表。
-`--ids` 提供按转盘正方向相邻排列的不重复物镜 ID。
-实验把该顺序视为有边界的直线，不作环形路线。
-`--focus-microstep` 默认为 `1`，接受 `1`、`2`、`4`、`8` 或 `16`。
-调焦和组合实验必须提供 `--focus-start`，单位为实测 `MICRO 4` 坐标。
-调焦参考试验前和每次组合调焦试验前，工具移动到该明确起点。
-
-调焦试验保留 `-2000`、`-1000`、`1000` 和 `2000` 的偏移，单位为当前细分脉冲。
-完整扫描半范围必须至少为 `2000`。
-切换试验覆盖两个相邻方向，偏移为 `0`、`-50`、`50`、`-100` 和 `100` 整步。
-偏移移动使用 `MICRO 1`，ArUco 切换器使用 `MICRO 4`。
-这些改变必须经过上述监督确认。
-工具不会缩小扫描范围来适应限位。不符合要求的移动会在发送前中止。
-
 ### 导入现有校准数据
 
 操作员检查源数据后，在 Olares 运行导入：
@@ -554,26 +530,6 @@ sudo mg400ctl calibration import microscope DIR
 目标目录归 `1000:1000` 所有，权限为 `0750`。文件归 `1000:1000` 所有，权限为 `0640`。
 后续复制失败时，已完成的副本保留。再次尝试前，先检查这些副本。
 导入器不打开设备。在 Olares 上运行导入。
-
-## 其他命令行入口
-
-以下命令显示支持的选项，不连接设备：
-
-```sh
-uv run python -m microscope.autofocus --help
-uv run python -m microscope.aruco_locator --help
-```
-
-不带 `--help` 运行自动调焦会连接串口控制器并打开 Toupcam 相机。
-必填的 `--half-range` 表示起点两侧各自允许的行程，单位为脉冲。
-操作员必须根据真实硬件限位确定此值。
-`--port` 覆盖串口配置，`--output` 选择运行根目录内的文件。
-`--camera-index` 选择 Toupcam 相机，默认为 `0`。此命令不读取 `MG400_TOUPCAM_SERIAL` 和 `MG400_TOUPCAM_INDEX`。
-
-定位器处理已保存的 `--image` 或 `--folder` 内的 PNG 图像，不访问电机。
-它必须具备校准参考图像。
-其 `--output` 目录默认为运行根目录下的 `microscope/scan_position_results`。
-其他算法提供 Python API，没有独立命令行入口。
 
 ## 离线检查
 

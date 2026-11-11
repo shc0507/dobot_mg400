@@ -53,7 +53,6 @@ AREAS = [
     # Areas.
     ("src/mg400/*", ROBOT),
     ("apps/control_panel/*", ROBOT),
-    ("scripts/mg400_*.py", ROBOT),
     ("config/robot.toml", ROBOT),
     ("examples/*", ["test_joint_example.py"]),
     ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py", "test_agent_cli*.py"]),

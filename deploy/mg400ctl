@@ -719,9 +719,16 @@ def main(
     commands.add_parser("terminal", help="Open the interactive robot terminal")
     mode = commands.add_parser("mode", help="Read the controller mode, or switch it to TCP")
     mode.add_argument("--switch-to-tcp", action="store_true")
+    commands.add_parser(
+        "calibrate",
+        add_help=False,
+        help="Run the supervised microscope calibration tool (stop microscope first)",
+    )
     commands.add_parser("camera-url", help="Print the camera stream links")
     commands.add_parser("camera-check", help="Check the camera devices, services and streams")
-    args = parser.parse_args(argv)
+    # The calibration tool parses its own options, --help included.
+    passed = argv[1:] if argv[:1] == ["calibrate"] else []
+    args = parser.parse_args(argv[:1] if passed else argv)
     if os.geteuid() != 0:
         print("Run mg400ctl as root, for example: sudo mg400ctl status", file=sys.stderr)
         return 1
@@ -770,7 +777,7 @@ def main(
         if args.command in ("camera-check", "camera-url"):
             camera_config = camera_configuration(settings)
             devices = list(camera_config.devices)
-        if args.command in ("terminal", "mode"):
+        if args.command in ("terminal", "mode", "calibrate"):
             pwd.getpwuid(SERVICE_UID)
             grp.getgrgid(SERVICE_GID)
     except FileNotFoundError:
@@ -840,13 +847,17 @@ def main(
         return run(command + (["-f"] if args.follow else [])).returncode
     # Robot programs share the panel's robot connection lock through its fixed default.
     robot_settings = dict(settings)
+    python = str(host.code / ".venv/bin/python")
     if args.command == "terminal":
-        program = host.code / ".venv/bin/mg400-robot"
-        as_service_user(host, robot_settings, [str(program)], execvpe)
+        as_service_user(host, robot_settings, [python, "-m", "mg400.terminal_control"], execvpe)
+    elif args.command == "calibrate":
+        command = [python, "-m", "microscope.calibrate", *passed]
+        as_service_user(host, settings, command, execvpe)
     elif args.command == "mode":
         command = [
-            str(host.code / ".venv/bin/python"),
-            str(host.code / "scripts/mg400_control_mode.py"),
+            python,
+            "-m",
+            "mg400.control_mode",
             "--backup-dir",
             str(host.data / "work/control-mode"),
         ]

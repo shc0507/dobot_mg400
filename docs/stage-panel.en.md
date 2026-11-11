@@ -82,7 +82,6 @@ uv sync
 uv run stage-panel
 ```
 
-`uv run python -m stage_controller` is equivalent to `uv run stage-panel`.
 Local operation also reads the environment variables and arguments in [Configuration](#configuration).
 On Linux, the service user must have read and write access to the serial device, for example, through the `dialout` group.
 Log in again after joining the group.

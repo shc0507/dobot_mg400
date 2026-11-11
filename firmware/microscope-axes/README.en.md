@@ -24,7 +24,7 @@ Unset or `0` preserves the clearance rule. The allowed positive window is `1` th
 The service `objective_nudge` also turns the turret at working focus within this window.
 Experiments and full objective switches still require clearance.
 
-For supervised `H-06` measurements, use `python -m microscope.calibrate setup` after stopping the microscope service.
+For supervised `H-06` measurements, use `sudo labctl calibrate setup` after stopping the microscope service.
 The console opens no cameras, writes no settings file, and never sends `FOCUS LIMIT`.
 Its counted positions do not measure physical travel. Follow the operator instructions and key controls in the microscope guide.
 

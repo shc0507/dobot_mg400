@@ -1,78 +1,19 @@
-"""Command-line server, USB diagnosis, and real-camera acquisition smoke test."""
+"""Thermal camera service entry point."""
 
 import argparse
 import errno
-import json
 import socket
 import sys
-import time
-from pathlib import Path
 
 from labkit import ports
 
 from . import roi
-from .camera import P1Camera, diagnose
-from .service import ThermalFrame
-
-
-def probe(frames: int, output: Path | None):
-    camera = P1Camera()
-    started = time.monotonic()
-    try:
-        device = camera.open()
-        current = None
-        for sequence in range(1, frames + 1):
-            ir, raw = camera.read()
-            current = ThermalFrame.from_arrays(ir, raw, sequence)
-        result = {
-            "ok": True,
-            "source": "camera",
-            "device": device,
-            "frames": frames,
-            "elapsed_s": round(time.monotonic() - started, 2),
-            "last_frame": current.metadata(),
-            "usb_stats": camera.stats(),
-        }
-        if output:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(current.npz())
-            result["snapshot"] = str(output.resolve())
-        print(json.dumps(result, indent=2))
-        return 0
-    except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "source": "camera",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "diagnostics": diagnose(),
-                },
-                indent=2,
-            )
-        )
-        return 1
-    finally:
-        camera.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    modes = parser.add_mutually_exclusive_group()
-    modes.add_argument(
-        "--diagnose", action="store_true", help="Report USB backend/device availability"
-    )
-    modes.add_argument(
-        "--probe", action="store_true", help="Capture real P1 frames and report temperatures"
-    )
-    modes.add_argument(
+    parser.add_argument(
         "--demo", action="store_true", help="Explicit simulated camera for GUI development"
-    )
-    parser.add_argument(
-        "--frames", type=int, default=30, help="Number of real frames to capture with --probe"
-    )
-    parser.add_argument(
-        "--output", type=Path, help="Save the last probe frame as a lossless .npz file"
     )
     parser.add_argument("--no-connect", action="store_true", help="Wait for the connect command")
     parser.add_argument("--bind", default=ports.HOST)
@@ -85,17 +26,10 @@ def main():
         prefix = normalize_base_path(args.base_path)
     except ValueError as exc:
         parser.error(str(exc))
-    if not 1 <= args.frames <= 10000:
-        parser.error("--frames must be between 1 and 10000")
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     if not args.bind or args.bind != args.bind.strip():
         parser.error("--bind must be a nonempty address without surrounding whitespace")
-    if args.diagnose:
-        print(json.dumps(diagnose(), indent=2))
-        return 0
-    if args.probe:
-        return probe(args.frames, args.output)
     try:
         # The service reads this file at startup; a bad file must stop before bind.
         roi.load_regions(roi.DEFAULT_ROI_PATH)

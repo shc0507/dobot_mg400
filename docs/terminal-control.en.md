@@ -19,30 +19,19 @@ A PTY is an interactive terminal allocated by SSH. Request it with `ssh -t`.
 Before use, close other robot control programs.
 The terminal shares the robot connection lock with the robot service.
 All processes must use the same robot address.
-The lock directory is fixed at `/var/lib/mg400/locks`. A direct run also uses this directory.
+The lock directory is fixed at `/var/lib/mg400/locks`.
 For directory and permission requirements, see [Panel connection lock](deploy.en.md#panel-connection-lock).
 This lock cannot prevent DobotStudio or other hosts from connecting.
 
-Enter the project directory and run:
+On a host installed through [Host deployment](deploy.en.md), run:
 
 ```sh
-uv run mg400-robot
+sudo labctl terminal
 ```
 
-You can also run it directly:
-
-```sh
-python3 scripts/mg400_robot.py
-```
-
+The terminal runs as UID 1000. It reads `/etc/mg400/mg400.env`.
 The program must run in an interactive terminal. Without a terminal, it exits with exit code 2.
-
 The robot address defaults to `MG400_ROBOT_HOST`. If unset, it comes from `config/robot.toml`.
-Override the address with `--robot-host`:
-
-```sh
-uv run mg400-robot --robot-host 192.168.1.6
-```
 
 Starting the program does not connect, enable, or move the robot.
 Enter `connect`, then wait until the interface shows measured state.
@@ -123,14 +112,3 @@ If the process exits or the network fails, the stop command may not arrive.
 The robot may continue to the end of the trajectory already sent.
 Do not remove lock files to release ownership.
 For lock handling, see [Panel connection lock](deploy.en.md#panel-connection-lock).
-
-## Start on a deployed host
-
-On a host installed through [Host deployment](deploy.en.md), run as root:
-
-```sh
-mg400ctl terminal
-```
-
-The terminal runs as UID 1000. It reads `/etc/mg400/mg400.env`.
-It shows `DISCONNECTED` after startup. It connects to the robot only when you enter `connect`.

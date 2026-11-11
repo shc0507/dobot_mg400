@@ -151,6 +151,8 @@ class RobotPanelState:
         self._started = 0.0
         self._owner = None
         self._heartbeat = 0.0
+        # A contract lease disconnects at its end, as stop_sync does. The legacy one only stops.
+        self._lease_disconnects = False
         self._busy = False
         self._working = False
         self._job = None
@@ -255,7 +257,69 @@ class RobotPanelState:
                 "keyboard_active_key": self._kb_active if self._kb_thread is not None else None,
                 "keyboard_speed_percent": self._kb_speed,
                 "keyboard_disarm_reason": self._kb_reason,
+                # Instrument contract v1 fields.
+                "service": "robot",
+                "seq": self._version,
+                "ts_unix": time.time(),
+                "demo": False,
+                "connected": self._fresh(),
+                "fault": self._fault_state(sample),
+                "lease": self._lease(),
             }
+
+    def _fault_state(self, sample):
+        if self._fault:
+            return {"code": "stop_unconfirmed", "message": self._message}
+        if sample is not None and (sample.error_status or sample.mode == 9):
+            return {"code": "robot_alarm", "message": "The robot reports an alarm."}
+        return None
+
+    def _lease(self):
+        if self._owner is None:
+            return {"holder": None, "remaining_s": 0}
+        remaining = self.LEASE_SECONDS - (time.monotonic() - self._heartbeat)
+        return {"holder": self._owner, "remaining_s": max(0.0, remaining)}
+
+    # Contract lease routes. The lease is the controlling browser: the grant connects
+    # (start_sync), a release does stop_sync, and an expiry does the same.
+
+    def acquire(self, client_id):
+        with self._lock:
+            self._expire_lease()
+            if self._owner not in (None, client_id):
+                raise RuntimeError("Another client holds the control lease")
+            if self._owner is None:
+                self.command({"action": "start_sync"}, client_id)
+                self._lease_disconnects = True
+            self._heartbeat = time.monotonic()
+            return self._lease()
+
+    def renew(self, client_id):
+        with self._lock:
+            self._expire_lease()
+            if self._owner != client_id:
+                raise RuntimeError("Acquire the control lease before renewing it")
+            self._heartbeat = time.monotonic()
+            return self._lease()
+
+    def release(self, client_id):
+        with self._lock:
+            self._expire_lease()
+            if self._owner not in (None, client_id):
+                raise RuntimeError("Another client holds the control lease")
+            if self._owner is not None:
+                self.command({"action": "stop_sync"}, client_id)
+            return self._lease()
+
+    def submit(self, payload, client_id):
+        """Run one contract command. Return (command_id, state); keys have no command ID."""
+        if not isinstance(payload, dict):
+            raise ValueError("Request must be a JSON object")
+        if payload.get("action") == "keys":
+            return None, self.keys({k: v for k, v in payload.items() if k != "action"}, client_id)
+        with self._lock:
+            state = self.command(payload, client_id)
+            return f"{self._instance}:{self._command_number}", state
 
     def describe(self):
         """Describe the legacy robot command protocol without changing its payloads."""
@@ -321,6 +385,17 @@ class RobotPanelState:
             ],
         )
         commands["keyboard"] = describe_command(keyboard)
+        commands["keys"] = describe_command(
+            parameter(
+                "object",
+                properties={
+                    "seq": parameter("integer", minimum=0, maximum=2**53),
+                    "held": parameter("array", items=parameter("string")),
+                },
+                required=["seq", "held"],
+                additionalProperties=False,
+            )
+        )
         metadata = describe(
             service="robot",
             version="0.1.0",
@@ -331,6 +406,7 @@ class RobotPanelState:
             commands=commands,
         )
         metadata["commands"]["keyboard"]["ui_only"] = True
+        metadata["commands"]["keys"]["ui_only"] = True
         return metadata
 
     def stop(self, client_id, wait_s=0):
@@ -432,6 +508,12 @@ class RobotPanelState:
                     self._reader_stop.set()
                     self._message = "The browser control lease expired before feedback connected."
                     self._finish_commands("sync", "stopped", self._message)
+                elif self._lease_disconnects:
+                    self._request_stop(
+                        disabling=self._fresh() and self._sample.mode == 4,
+                        disconnect=True,
+                        reason="The control lease expired.",
+                    )
                 else:
                     self._request_stop(reason="The browser control lease expired.")
 
@@ -550,6 +632,8 @@ class RobotPanelState:
                     if self._owner is None and self._kb_seq_client != client_id:
                         # Each page numbers its keyboard messages from 1.
                         self._kb_seq, self._kb_seq_client = 0, client_id
+                    if self._owner is None:
+                        self._lease_disconnects = False
                     self._owner = client_id
                     self._heartbeat = time.monotonic()
                 else:

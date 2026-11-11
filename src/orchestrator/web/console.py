@@ -372,12 +372,12 @@ class Console:
         return {"device": device, "result": "released" if error is None else "unconfirmed"}
 
     def release_all(self, page=None):
-        """Release the console's own leases: one page's, or every page's."""
+        """Release the console's own leases: one page's, or every page's. Lent leases stay."""
         with self.lock:
             items = [
                 item
                 for item in self.sessions.values()
-                if item.state == "held" and (page is None or item.page == page)
+                if item.state == "held" and not item.lent and (page is None or item.page == page)
             ]
             for item in items:
                 item.state = "releasing"

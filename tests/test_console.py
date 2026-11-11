@@ -447,6 +447,38 @@ def test_page_close_and_release_all_release_only_console_leases(rig):
     assert rig.devices["robot"].holder == "robot-panel"
 
 
+def test_release_all_keeps_leases_lent_to_a_run(rig):
+    holder = post(rig, "control/stage/take").get_json()["control"]["holder"]
+    lent = rig.service.console.lend("console-page-a", ["stage"])
+    assert post(rig, "release-all").get_json()["results"] == {}
+    assert post(rig, "release-page").get_json()["results"] == {}
+    assert rig.devices["stage"].holder == holder
+    lent["stage"].close()
+    assert post(rig, "release-all").get_json()["results"] == {"stage": "released"}
+
+
+def test_close_releases_lent_leases_after_the_run_drains(rig):
+    post(rig, "control/stage/take")
+    lent = rig.service.console.lend("console-page-a", ["stage"])
+
+    class Runner:
+        closed = False
+
+        def shutdown(self, reason):
+            lent["stage"].close()
+            self.closed = True
+
+        def wait_closed(self, timeout=30):
+            return self.closed
+
+        def hold(self, reason):
+            pass
+
+    rig.service.current = Runner()
+    rig.service.close()
+    assert rig.devices["stage"].holder is None
+
+
 def test_ambiguous_take_cleans_up_its_own_identity_once(rig):
     stage = rig.devices["stage"]
     stage.fail["acquire"] = ServiceError(0, "Service request failed: reset")

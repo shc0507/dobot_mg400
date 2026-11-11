@@ -157,7 +157,7 @@ def test_failing_step_holds_owned_robot_and_resumes_after_explicit_manual_recove
             assert state["controller_id"] == "orch-failure-demo"
             assert "ResetRobot()" in demo.simulator.controller.sent()
             assert store.get(runner.run_id)["steps"][2]["status"] == "pending"
-            assert "fault" not in state and "connected" not in state
+            assert state["fault"] is None and state["lease"]["holder"] == "orch-failure-demo"
             assert state["locked"] is True
             with pytest.raises(RuntimeError, match="manual recovery"):
                 runner.clients.reconcile()

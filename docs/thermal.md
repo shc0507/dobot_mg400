@@ -103,7 +103,7 @@ uv run thermal-cam --help
 
 ### 配置与访问
 
-服务监听 `127.0.0.1:8768`，基础路径为 `/`。`MG400_THERMAL_BIND`、`MG400_THERMAL_PORT` 和 `MG400_THERMAL_BASE_PATH` 设置这些默认值。`--bind`、`--port` 和 `--base-path` 覆盖它们。
+服务监听 `127.0.0.1:8768`，基础路径为 `/`。`--bind`、`--port` 和 `--base-path` 可改变它们。
 配置无效时，程序以状态码 2 退出，不打开监听端口或相机。
 区域文件在监听端口打开后读取。文件无效时，进程以状态码 1 退出。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。

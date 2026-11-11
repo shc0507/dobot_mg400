@@ -417,7 +417,7 @@ During a network interruption, the service might not detect connection closure. 
 ## Stage service API
 
 The stage service HTTP interface uses JSON. All routes are under `{prefix}contract/api/`.
-`{prefix}` is the value of `--base-path`. If it is unset, the value comes from `MG400_STAGE_BASE_PATH`. The default is `/`.
+`{prefix}` is the value of `--base-path`. The default is `/`.
 The service queries Arduino state every 0.2 seconds and stops expired press-and-hold motion during each query.
 
 ### Stage automation contract

@@ -26,7 +26,7 @@ Connect every lab device to Olares and run its services there. Each device has 1
 
 All services listen only on `127.0.0.1`. The proxy is the only entry point on the VPN.
 
-- Store settings in `/etc/mg400/mg400.env`. The file holds hardware facts and the proxy address (`MG400_PROXY_BIND`, `MG400_PROXY_PORT`). The other bind addresses and ports are defaults in code. The `MG400_<SERVICE>_BIND` and `MG400_<SERVICE>_PORT` settings can change them. Code and units contain no host-specific addresses or paths.
+- Store settings in `/etc/mg400/mg400.env`. The file holds hardware facts and the proxy address (`MG400_PROXY_BIND`, `MG400_PROXY_PORT`). The other services listen on fixed loopback ports. `src/labkit/ports.py` holds the only port table. No setting changes these ports. Code and units contain no host-specific addresses or paths.
 - `MG400_OPTIONAL_SERVICES` selects optional services. The installer prepares only those. Most services use `/opt/mg400/.venv`. Vision uses `/opt/mg400/.venv-vision`.
 - Keep models, calibration, taught stations, tool offsets, stage configuration, thermal regions, furnace state, runs, and recordings under `/var/lib/mg400`.
 - `/var/lib/mg400` is `0:1000` with mode `0750`. Its data directories are `1000:1000` with mode `0750`, and files use mode `0640` or `0600`. The private directories `locks`, `camera`, `stage`, and `calibration/cameras` use mode `0700`. The installer creates data directories.

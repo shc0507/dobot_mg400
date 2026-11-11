@@ -1,10 +1,11 @@
 import argparse
 import logging
 import os
-import re
 import signal
 
 from waitress import create_server
+
+from labkit import ports
 
 from .app import create_app, normalize_base_path
 from .controller import MotorController
@@ -36,8 +37,10 @@ def main(argv=None):
     parser.add_argument(
         "--demo", action="store_true", help="Simulate motors without serial hardware"
     )
-    parser.add_argument("--bind", help="HTTP address (default: MG400_STAGE_BIND or 127.0.0.1)")
-    parser.add_argument("--port", type=int, help="HTTP port (default: MG400_STAGE_PORT or 8767)")
+    parser.add_argument("--bind", default=ports.HOST, help="HTTP address (default: 127.0.0.1)")
+    parser.add_argument(
+        "--port", type=int, default=ports.PORTS["stage"], help="HTTP port (default: %(default)s)"
+    )
     parser.add_argument(
         "--serial",
         help="Offer only this Arduino device, for example /dev/serial/by-id/... "
@@ -50,21 +53,14 @@ def main(argv=None):
     parser.add_argument(
         "--base-path",
         type=normalize_base_path,
-        default=os.environ.get("MG400_STAGE_BASE_PATH") or "/",
-        help="URL prefix (default: MG400_STAGE_BASE_PATH or /)",
+        default="/",
+        help="URL prefix (default: /)",
     )
     args = parser.parse_args(argv)
+    bind, port = args.bind, args.port
+    if not 1 <= port <= 65535:
+        parser.error("--port must be between 1 and 65535")
     # An empty environment value counts as unset.
-    bind = args.bind if args.bind is not None else os.environ.get("MG400_STAGE_BIND") or "127.0.0.1"
-    if args.port is not None:
-        port = args.port
-        if not 1 <= port <= 65535:
-            parser.error("--port must be between 1 and 65535")
-    else:
-        value = os.environ.get("MG400_STAGE_PORT") or "8767"
-        port = int(value) if re.fullmatch("[0-9]{1,5}", value) else 0
-        if not 1 <= port <= 65535:
-            parser.error("MG400_STAGE_PORT must be a whole number between 1 and 65535")
     if args.serial is not None:
         serial = args.serial or None
     else:

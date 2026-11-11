@@ -6,6 +6,8 @@ import os
 import signal
 import sys
 
+from labkit import ports
+
 SERVER_OPTIONS = {
     # Each microscope stream holds one worker.
     "threads": 16,
@@ -15,7 +17,7 @@ SERVER_OPTIONS = {
 # The console control socket (orchestrator.web.control_socket). Waitress cannot upgrade a
 # connection, so the socket has its own loopback port. The proxy routes
 # /lab/api/console/socket here (ORCH_SOCKET_PORT in deploy/install.py).
-SOCKET_PORT = 8774
+SOCKET_PORT = ports.PORTS["orch-socket"]
 
 
 def serve(
@@ -40,7 +42,7 @@ def serve(
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(prog="python -m orchestrator serve")
     parser.add_argument("--bind", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8772)
+    parser.add_argument("--port", type=int, default=ports.PORTS["orch"])
     parser.add_argument("--base-path", default="/")
     parser.add_argument("--recipes-dir", default=CATALOG_DEFAULT)
     parser.add_argument("--runs-dir", help="Private run store; unavailable in demo mode")

@@ -18,13 +18,14 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from labkit import ports
 from labkit.errors import ServiceError
 from mg400.client import RobotClientError, command_complete
 
 from .clients import SERVICE_URLS, SERVICES, FurnaceAdapter, RobotAdapter, ServiceAdapter
 
-DEFAULT_URL = "http://127.0.0.1:8772/lab/"
-CAMERA_URL = "http://127.0.0.1:1985/"
+DEFAULT_URL = ports.url("orch", "lab/")
+CAMERA_URL = ports.url("camera")
 SESSION = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 MOTION = ("robot", "stage", "microscope")
 FINAL = {"ok", "failed", "rejected", "stopped"}

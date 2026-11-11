@@ -32,6 +32,7 @@ from flask import Response, jsonify, request
 
 from cameras.config import camera_configuration
 from cameras.rate import SendRate
+from labkit import ports
 from labkit.errors import ServiceError
 
 from . import Workspace
@@ -48,7 +49,7 @@ THERMAL_CACHE_S = 0.04
 DETECTION_CACHE_S = 1.0
 # The camera preview reports the MJPEG frames per second that each viewer of camera1 to
 # camera4 gets. H.264 tiles count their frames in the browser.
-PREVIEW_FPS_URL = "http://127.0.0.1:1985/fps.json"
+PREVIEW_FPS_URL = ports.url("camera", "fps.json")
 PREVIEW_FPS_CACHE_S = 0.5
 MAX_FRAME = 8 * 1024 * 1024
 # A lossless full-size microscope still, 2592x1944 RGB, is about 15 MB as PNG.

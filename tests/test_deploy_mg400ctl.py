@@ -616,7 +616,7 @@ def optional_ctl(ctl, tmp_path):
         (ROOT / "deploy/services.toml").read_text()
         + '\n[[service]]\nname = "optional"\nunits = ["mg400-optional.service"]\n'
         'optional = true\nvenv = ".venv-vision"\ngroups = ["vision"]\n'
-        "port = 8799\nassets = []\n"
+        "assets = []\n"
     )
     ctl.host.registry = registry
     return ctl

@@ -43,9 +43,9 @@ GPU 内存配置在模型加载前执行。
 
 | 配置项 | 选项 | 默认值与含义 |
 | --- | --- | --- |
-| `MG400_VISION_BIND` | `--bind` | `127.0.0.1` |
-| `MG400_VISION_PORT` | `--port` | `8771`，范围为 `1` 到 `65535` |
-| `MG400_VISION_BASE_PATH` | `--base-path` | `/`，所有路由的前缀 |
+| 无 | `--bind` | `127.0.0.1` |
+| 无 | `--port` | `8771`，范围为 `1` 到 `65535` |
+| 无 | `--base-path` | `/`，所有路由的前缀 |
 | `MG400_VISION_WEIGHTS` | `--weights` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` |
 | `MG400_VISION_DEVICE` | `--device` | CUDA 可用时为 `cuda`，否则为 `cpu`。显式 `cuda:N` 选择设备 |
 | `MG400_VISION_GPU_FRACTION` | `--gpu-fraction` | `0.15`，必须有限、大于 0 且不大于 1 |

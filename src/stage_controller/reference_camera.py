@@ -6,6 +6,8 @@ from contextlib import closing
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
+from labkit import ports
+
 from .protocol import ControllerError
 
 MAX_JPEG_BYTES = 4 * 1024 * 1024
@@ -26,7 +28,7 @@ class ReferenceCamera:
 
         if not isinstance(stream, str) or not NAME.fullmatch(stream):
             raise ControllerError("Invalid reference stream name.")
-        url = f"http://127.0.0.1:1984/api/frame.jpeg?src={stream}"
+        url = ports.url("go2rtc", f"api/frame.jpeg?src={stream}")
         opener = self.opener or build_opener(ProxyHandler({}), _NoRedirect())
         try:
             with closing(opener.open(url, timeout=2)) as response:

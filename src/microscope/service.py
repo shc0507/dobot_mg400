@@ -32,6 +32,7 @@ from furnace.recordings import (
     normalize_recording_settings,
 )
 from furnace.video import VideoToolsMissing
+from labkit import ports
 from labkit.client import ServiceClient
 from labkit.describe import command, describe, parameter
 from labkit.errors import ServiceError
@@ -79,7 +80,7 @@ class MicroscopeConfig:
     nudge_steps: int = 0
     lease_seconds: float = 3.0
     focus_speed: int = 800
-    furnace_url: str = "http://127.0.0.1:8769/"
+    furnace_url: str = ports.url("furnace")
 
     @classmethod
     def from_env(cls, env=None):

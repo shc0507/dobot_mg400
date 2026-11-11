@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from labkit import ports
 from labkit.client import _HTTPS, ServiceClient
 from labkit.errors import ServiceError
 from mg400.client import RobotClient, RobotClientError
@@ -23,12 +24,8 @@ SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
 TIMEOUT_S = 2
 # Fixed loopback addresses of the lab services. The host environment cannot change them.
 SERVICE_URLS = {
-    "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
-    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
-    "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
-    "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
-    "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",
-    "MG400_ORCH_VISION_URL": "http://127.0.0.1:8771/",
+    f"MG400_ORCH_{name.upper()}_URL": ports.url(name, "contract/" if name == "stage" else "")
+    for name in SERVICES
 }
 
 

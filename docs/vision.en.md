@@ -43,9 +43,9 @@ Command-line options override environment settings. Empty environment values use
 
 | Setting | Option | Default and meaning |
 | --- | --- | --- |
-| `MG400_VISION_BIND` | `--bind` | `127.0.0.1` |
-| `MG400_VISION_PORT` | `--port` | `8771`. Range `1` to `65535` |
-| `MG400_VISION_BASE_PATH` | `--base-path` | `/`. Prefix for all routes |
+| None | `--bind` | `127.0.0.1` |
+| None | `--port` | `8771`. Range `1` to `65535` |
+| None | `--base-path` | `/`. Prefix for all routes |
 | `MG400_VISION_WEIGHTS` | `--weights` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` |
 | `MG400_VISION_DEVICE` | `--device` | `cuda` when available, otherwise `cpu`. Explicit `cuda:N` selects a device |
 | `MG400_VISION_GPU_FRACTION` | `--gpu-fraction` | `0.15`. Finite value greater than 0 and at most 1 |

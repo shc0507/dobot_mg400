@@ -169,7 +169,6 @@ Add each new service entry together with its unit files.
 | `optional` | `true` for optional services, `false` for mandatory services |
 | `venv` | Python environment, either `.venv` or `.venv-vision` |
 | `groups` | uv dependency groups for this service |
-| `port` | Primary TCP port, or 0 for no TCP port |
 | `assets` | Asset manifest names owned by this service |
 
 `web`, `stage`, `camera`, `furnace`, `microscope`, `orch`, and `proxy` are always mandatory.

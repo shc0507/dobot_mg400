@@ -323,16 +323,13 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 ### 配置项
 
 服务监听 `127.0.0.1:8767`，基础路径为 `/`，契约位于其下的 `contract/`。
-下表的环境变量和参数 `--bind`、`--port`、`--base-path` 可改变这些默认值。
+参数 `--bind`、`--port`、`--base-path` 可改变这些默认值。下表的环境变量设置其他配置。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 | 环境变量 | 参数 | 默认值 | 用途 |
 | --- | --- | --- | --- |
 | `MG400_STAGE_SERIAL` | `--serial` | 无 | Arduino 的串口路径 |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | 位移台实测校准和命名目标 |
-| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | 监听地址 |
-| `MG400_STAGE_PORT` | `--port` | `8767` | 监听端口，1–65535 |
-| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | 基础路径 |
 
 值为空的环境变量等同于未设置。
 

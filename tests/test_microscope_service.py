@@ -157,18 +157,12 @@ def test_cli_signals_stop_service_close_server_and_restore_handlers(monkeypatch,
     assert handlers == {2: 0, 15: 0, 1: 0}
 
 
-@pytest.mark.parametrize(
-    "environ",
-    [
-        {"MG400_MICROSCOPE_PORT": "65536"},
-        {"MG400_MICROSCOPE_PORT": "invalid"},
-    ],
-)
-def test_cli_rejects_bad_settings_before_construction(environ):
+@pytest.mark.parametrize("port", ["65536", "invalid"])
+def test_cli_rejects_bad_settings_before_construction(port):
     with pytest.raises(SystemExit) as error:
         microscope_main.main(
-            [],
-            environ=environ,
+            ["--port", port],
+            environ={},
             config_factory=AdapterConfig,
             service_factory=lambda *_args, **_kwargs: pytest.fail("service constructed"),
         )

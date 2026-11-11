@@ -122,8 +122,9 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
         "camera1_h264.mp4",
         "microscope.mp4?src=admin",
         "microscope_h264.mp4",
-        "microscope.mjpeg",
+        "microscope.mjpeg?src=admin",
         "microscope.jpg",
+        "microscope.png?x=1",
         "thermal.mp4",
         "camera1.mjpeg/extra",
         "camera0/detections.json",
@@ -142,6 +143,18 @@ def test_unknown_routes_cannot_proxy_go2rtc(preview, route):
     module, upstream = preview
     assert request(module, route)[0] == 404
     upstream.assert_not_called()
+
+
+def test_microscope_still_relays_the_full_size_png(preview):
+    module, upstream = preview
+    upstream.side_effect = lambda *_args, **_kwargs: io.BytesIO(b"\x89PNG-frame")
+    status, headers, body = request(module, "microscope.png")
+    assert (status, headers["Content-Type"], body) == (200, "image/png", b"\x89PNG-frame")
+    upstream.assert_called_once_with(
+        "http://127.0.0.1:8770/api/camera/microscope/still.png", timeout=5
+    )
+    upstream.side_effect = lambda *_args, **_kwargs: io.BytesIO(b"")
+    assert request(module, "microscope.png")[0] == 502
 
 
 def test_upstream_failure_returns_uncached_error(preview):
@@ -402,15 +415,15 @@ def test_feed_clears_old_frame_before_retrying_truncated_http_stream(preview, mo
         feed.wait_after(0, timeout=0)
 
 
-@pytest.mark.parametrize("camera", [1, 2, 3])
-def test_mjpeg_route_streams_complete_parts_and_closes_connection(preview, monkeypatch, camera):
+@pytest.mark.parametrize("view", ["camera1", "camera2", "camera3", "microscope"])
+def test_mjpeg_route_streams_complete_parts_and_closes_connection(preview, monkeypatch, view):
     module, upstream = preview
     frames = [b"\xff\xd8first\xff\xd9", b"\xff\xd8second\xff\xd9"]
     feed = Mock()
     feed.wait_after.side_effect = [(1, frames[0]), (4, frames[1]), OSError("Disconnected")]
-    monkeypatch.setitem(module.FEEDS, f"camera{camera}", feed)
+    monkeypatch.setitem(module.FEEDS, view, feed)
     connection = Mock()
-    status, headers, body = request(module, f"camera{camera}.mjpeg", connection=connection)
+    status, headers, body = request(module, f"{view}.mjpeg", connection=connection)
     assert status == 200
     assert headers["Content-Type"] == "multipart/x-mixed-replace; boundary=frame"
     assert headers["Connection"].lower() == "close"
@@ -440,7 +453,12 @@ def test_fps_route_reports_the_frames_each_mjpeg_viewer_gets(preview, monkeypatc
     status, headers, body = request(module, "fps.json")
     assert status == 200
     assert headers["Content-Type"] == "application/json"
-    assert json.loads(body) == {"camera1": None, "camera2": 5.0, "camera3": None}
+    assert json.loads(body) == {
+        "camera1": None,
+        "camera2": 5.0,
+        "camera3": None,
+        "microscope": None,
+    }
     # Frames older than 2 s do not count, and a view without viewers has no rate.
     now[0] = 102.5
     assert feed.fps() is None
@@ -517,9 +535,10 @@ def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkey
     )
     module = load_preview()
     assert request(module, "")[0] == 404
-    assert tuple(module.FEEDS) == tuple(f"camera{camera}" for camera in range(1, count + 1))
+    cameras = tuple(f"camera{camera}" for camera in range(1, count + 1))
+    assert tuple(module.FEEDS) == (*cameras, "microscope")
     assert all(feed.thread is None for feed in module.FEEDS.values())
-    assert not any(feed.on_demand for feed in module.FEEDS.values())
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False] * count + [True]
     for camera in range(count + 1, 6):
         for route in (
             f"camera{camera}.jpg",
@@ -538,7 +557,7 @@ def test_fourth_camera_still_route_keeps_fixed_destination(preview, monkeypatch)
     )
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,1600x1200@30")
     module = load_preview()
-    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, True]
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, True, True]
     for route in ("", "preview.js", "camera4/detections.json"):
         assert request(module, route)[0] == 404
     upstream.assert_not_called()
@@ -551,14 +570,14 @@ def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(pre
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera2")
     module = load_preview()
     assert module.CAMERAS.mode(2) == (3840, 2160, 30)
-    assert list(module.FEEDS) == ["camera1", "camera3"]
+    assert list(module.FEEDS) == ["camera1", "camera3", "microscope"]
     monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,1600x1200,320x240")
     module = load_preview()
     assert module.CAMERAS.mode(2) == (1600, 1200, 30)
-    assert list(module.FEEDS) == ["camera1", "camera3"]
+    assert list(module.FEEDS) == ["camera1", "camera3", "microscope"]
     monkeypatch.setenv("MG400_CAMERA_CAPTURE_SIZES", "640x360,640x480,1600x1200")
     module = load_preview()
-    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, False, True]
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, False, True, True]
     monkeypatch.setenv("MG400_CAMERA_MODES", "1920x1080@60,640x480@30,640x480@30")
     with pytest.raises(ValueError):
         load_preview()

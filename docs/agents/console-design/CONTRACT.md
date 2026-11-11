@@ -171,23 +171,18 @@ root.append(node);
 
 ### 9.2 Server routes
 
-camera1 to camera4 and the microscope play `/camera/<view>.mp4` from the proxy. camera1 to camera4 fall back to `/camera/<view>.mjpeg?fps=3` (`fps=6` when large) and take snapshots from `/camera/<view>.full.jpg`. The camera preview sends each viewer only the newest frame.
+camera1 to camera4 and the microscope play `/camera/<view>.mp4` from the proxy. camera1 to camera4 fall back to `/camera/<view>.mjpeg?fps=3` (`fps=6` when large) and take snapshots from `/camera/<view>.full.jpg`. The microscope falls back to `/camera/microscope.mjpeg?fps=10` (`fps=30` when large) and takes snapshots from `/camera/microscope.png`. The camera preview sends each viewer only the newest frame.
 
 The console routes start with `<base>/api/console/ws/cameras/`.
 
 | Method and path | Response |
 | --- | --- |
-| `GET status` | `{"views": [{"id", "configured", "url"?, "state"?, "age_s"?, "streams"?, "error"?, "mode"}], "limits"}`. camera1 to camera4 carry `url`; relayed views carry the relay state. |
-| `GET stream/microscope?fps=…` | The microscope MJPEG stream (`multipart/x-mixed-replace`). `fps` is an integer from 1 to 30; the default is 10. `503` at the stream bound. `502` if the source fails. |
-| `GET snapshot/microscope` | One PNG as an attachment. |
+| `GET status` | `{"views": [{"id", "configured", "url"?, "fps"?, "state"?, "age_s"?, "error"?, "mode"}]}`. camera1 to camera4 and the microscope carry `url` and `fps`; the thermal view carries the relay state. |
 | `GET thermal/frame` | The thermal frame: `sequence`, `timestamp`, `stats`, `temperatures_c` ([y][x] in °C) and `age_s`. `?full=1` adds `raw`, `ir` and `raw_unit`. |
 | `GET thermal/regions` | `{"regions": {"<name>": {"x0", "y0", "x1", "y1"}}}` in sensor pixels. |
 | `GET detections/4` | `{"available", "image_size", "detections": [{"label", "confidence", "xyxy"}]}` from the vision service. |
 
-- **Bounds.** At most 2 relayed microscope streams (its service allows 4; 2 stay for the microscope page).
-- **Newest frame only.** The microscope has one upstream reader, shared by all its viewers. A viewer gets the newest complete JPEG as its own multipart part (boundary `frame`, with `Content-Length`), at most `fps` parts a second. A slow viewer skips frames and never gets a backlog.
-- **Frame rate per tile.** `LabCameras.tile` asks for `fps` 10 for a grid or strip tile, and 30 for a large tile (`large: true`, the Focus view). A tile restarts its stream when it changes size.
-- **Relay end.** When the last viewer of a view closes its connection, the console closes the upstream connection. Each viewer frees its own slot. When the upstream ends or fails, the stream ends and the tile reconnects after a back-off of 1 s to 15 s.
-- **States.** A view is `live` when its last frame is at most 2 s old, `stale` when it is older, and `offline` when no stream is open for 5 s, the source failed, or no frame came. The thermal state comes from the frame timestamp.
-- **Sources.** camera1 to camera4 come from the proxy. The thermal, vision and microscope views use the console service clients (the demo services in demo mode). Tests attach fake sources as `service.camera_sources`.
+- **Frame rate per tile.** A tile restarts its MJPEG stream when it changes size. When a stream ends or fails, the tile reconnects after a back-off of 1 s to 15 s.
+- **States.** A proxied view is `live` while its tile plays. The thermal view is `live` when its last frame is at most 2 s old, `stale` when it is older, and `offline` after 5 s, when the source failed, or when no frame came. The thermal state comes from the frame timestamp.
+- **Sources.** camera1 to camera4 and the microscope come from the proxy. The thermal and vision views use the console service clients (the demo services in demo mode). Tests attach fake sources as `service.camera_sources`.
 - **Thermal commands.** The region editor sends `set_region` (`{"name": "crucible", "x0", "y0", "x1", "y1"}`) and the shutter button sends `shutter` (`{}`) through `api.relay("thermal", …)`, each after an in-page confirmation. The buttons are disabled until the thermal `api/describe` lists the command.

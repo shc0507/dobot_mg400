@@ -128,6 +128,13 @@ def test_robot_take_enable_move_vacuum_and_release(console):
     assert code == 0 and result["result"] == "released"
     code, result = labctl(console, "robot", "state")
     assert code == 0 and result["state"]["enabled"] is False and result["mine"] is False
+    code, result = labctl(console, "all", "history", "--device", "robot")
+    assert code == 0 and {row["device"] for row in result["states"]} == {"robot"}
+    code, result = labctl(console, "all", "events", "--device", "runs")
+    assert code == 0 and result["events"], result
+    newest = result["events"][0]["id"]
+    code, result = labctl(console, "all", "events", "--device", "runs", "--since", str(newest))
+    assert code == 0 and result["events"] == []
 
 
 def test_commands_need_control_and_one_controller_per_device(console):

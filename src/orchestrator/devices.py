@@ -15,6 +15,11 @@ from .clients import SERVICES
 STATE_S = 0.25
 EVENTS_S = 1.0
 STALE_S = 3
+# State history: a row at each phase or normalized change, else at most one per SAMPLE_S.
+SAMPLE_S = 10.0
+KEEP_S = 30 * 24 * 3600
+PRUNE_S = 3600.0
+VOLATILE = ("ts_unix", "seq")
 
 
 def _flag(value):
@@ -67,6 +72,8 @@ class Devices:
         self.reads = dict.fromkeys(SERVICES, 0)
         self.changed = threading.Condition(self.lock)
         self.wakes = {name: threading.Event() for name in SERVICES}
+        self.recorded = {}
+        self.pruned_at = None
 
     @staticmethod
     def _entry(phase, **values):
@@ -106,6 +113,33 @@ class Devices:
             self.entries[name] = entry
             self.reads[name] += 1
             self.changed.notify_all()
+        self._record(name, entry)
+
+    def _record(self, name, entry):
+        """Write the state history row of one read when it is due. Only this reader
+        thread writes self.recorded[name]."""
+        store = getattr(self.service, "store", None)
+        if store is None:
+            return
+        state = entry["state"]
+        row = normalize(name, state, entry["describe"]) if entry["phase"] == "ready" else {}
+        key = (entry["phase"], row)
+        values = {k: v for k, v in state.items() if k not in VOLATILE} if state else None
+        last = self.recorded.get(name)
+        now = time.time()
+        if last and last[0] == key and (last[1] == values or now - last[2] < SAMPLE_S):
+            return
+        try:
+            store.add_device_state(name, now, entry["phase"], row, state)
+            with self.lock:
+                prune = self.pruned_at is None or now - self.pruned_at >= PRUNE_S
+                if prune:
+                    self.pruned_at = now
+            if prune:
+                store.prune_devices(now - KEEP_S)
+        except Exception:
+            return  # The store is closed or unavailable; the next read tries again.
+        self.recorded[name] = (key, values, now)
 
     def _run(self, name):
         adapter = description = None

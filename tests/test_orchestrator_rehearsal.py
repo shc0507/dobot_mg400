@@ -269,7 +269,7 @@ def test_partial_fresh_factory_failure_closes_only_its_new_adapters(tmp_path, mo
     original_init, original_close = ServiceAdapter.__init__, RobotAdapter.close
 
     def construct(self, url, identity, **kwargs):
-        if identity == "broken" and url.endswith("/contract"):
+        if identity == "broken" and type(self) is ServiceAdapter:
             raise ValueError("Synthetic adapter failure")
         return original_init(self, url, identity, **kwargs)
 

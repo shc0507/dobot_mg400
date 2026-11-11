@@ -389,14 +389,12 @@ class FurnaceService:
             return
         controller = self._ensure_flow_controller()
         unit = controller.gas_unit_id(channel)
-        if unit in controller._valve_override_units:
-            # A prior zero write may have failed while SVC still succeeded.
-            # Prime the new explicit target before SVN can restore regulation.
-            controller._send_without_response(unit, "SFR", f"{round(percent * 100):X}")
-            controller._controlled_unit_ids.add(unit)
-            controller._restore_normal_valve(unit)
-        else:
-            controller.set_flow_percent_unconfirmed(unit, percent)
+        # Every stop sends SVC, and a restarted process does not remember it: always send SVN.
+        # Prime the new target first so SVN cannot restore an older setpoint.
+        controller._send_without_response(unit, "SFR", f"{round(percent * 100):X}")
+        controller._controlled_unit_ids.add(unit)
+        controller._send_without_response(unit, "SVN")
+        controller._valve_override_units.discard(unit)
         self._gas_valves[channel] = controller.set_gas_solenoid(channel, True)
         self._gas_targets[channel] = percent
         self._flow_channels[("gas", unit)].update(target_percent=percent, setpoint_verified=False)
@@ -950,6 +948,9 @@ class FurnaceService:
                 self._mark_stopped()
             except Exception as error:
                 errors.append(error)
+                # A replugged USB port stays "open" but every write fails: reopen on the next stop.
+                self._furnace, dead = None, self._furnace
+                self._close_quietly(dead)
         if gas:
             gas_stopped = False
             try:
@@ -957,6 +958,8 @@ class FurnaceService:
                 gas_stopped = True
             except Exception as error:
                 errors.append(error)
+                self._flow_controller, dead = None, self._flow_controller
+                self._close_quietly(dead)
             if idle and gas_stopped and any(self.idle_gas.values()):
                 try:
                     self._apply_gas(self.idle_gas)
@@ -968,6 +971,14 @@ class FurnaceService:
                     except Exception as cleanup_error:
                         errors.append(cleanup_error)
         return errors
+
+    @staticmethod
+    def _close_quietly(handle):
+        try:
+            if handle is not None:
+                handle.close(stop_output=False)
+        except Exception:
+            pass
 
     def stop_furnace(self):
         return self.stop_sequence()

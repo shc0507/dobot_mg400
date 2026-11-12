@@ -2,7 +2,7 @@
 
 # 本地控制台开发
 
-本地预览使用实际 Lab Console 界面和数字孪生接口，摄像头数据为模拟数据。它不连接 Olares，也不使用 LarePass VPN。
+本地预览使用实际 Lab Console 界面、数字孪生接口和转盘校准接口，摄像头数据为模拟数据。它不连接 Olares，也不使用 LarePass VPN。
 
 外观开发使用此预览。共享仪表板的页头显示 AI Chemistry Console，标志来自 `src/orchestrator/web/static/console/console-logo.png`。Digital Twin 标签显示为 Position Finder。工作区地址仍为 `#twin`。只有明确要求时，才把外观修改部署到 Olares。
 
@@ -16,6 +16,8 @@ Set-Location C:\Users\Swift\Documents\Github\dobot_mg400
 ```
 
 打开[本地数字孪生控制台](http://127.0.0.1:8790/lab/#twin)。保持终端打开。在该终端按 `Ctrl+C` 停止预览。关闭浏览器不会停止服务。
+
+打开[本地炉子与显微镜工作区](http://127.0.0.1:8790/lab/#process)，检查 **Turret calibration**。
 
 如果缺少环境或依赖包，从仓库根目录安装预览和测试依赖：
 
@@ -38,6 +40,7 @@ uv sync --locked --no-default-groups --group vision --group dev
 - 控制台样式和脚本位于 `src/orchestrator/web/static/console/`。修改 CSS 或 JavaScript 后，刷新浏览器。如果仍显示旧版本，按 `Ctrl+F5`。
 - 修改 Python 或 HTML 模板后，重启预览。模板位于 `src/orchestrator/web/templates/`。启动脚本不会自动重新加载 Python 或模板。
 - 在数字孪生监控和校准视图中检查布局、摄像头选择、校验提示和配置操作。
+- 转盘校准使用 `turret.js` 和 `turret.css`，由 `process.js` 挂载。在 **Turret calibration** 中检查逐物镜记录、**Retake**、实时与已记录图像切换、错误提示和配置列表。检查 **Save & use** 是否保存并选择完整配置。检查物镜按钮旁的 **Lens calibration** 是否显示所选配置。
 - 用语言按钮旁的 **Dark mode** / **Light mode** 切换主题，检查两种模式下的外观。浏览器按控制台地址记住所选模式。
 - 优先完善英文标签。翻译使用现有字体或系统后备字体。本地预览不必重新构建字体。
 
@@ -45,10 +48,15 @@ uv sync --locked --no-default-groups --group vision --group dev
 
 - 配置和摄像头选择保存在 `work/console-preview/calibration/twin/`。Git 忽略 `work/`。本地配置不会与 Olares 同步。
 - 如果该目录不存在，启动时创建 `Mock stage` 配置。用它检查监控读数，以及配置的保存、加载、上传和删除。
-- 每个演示摄像头都返回同一张固定的 `640 × 480` 标记图像。切换摄像头不会选择物理摄像头。读数不模拟位移台运动。
+- 数字孪生的每个演示摄像头都返回同一张固定的 `640 × 480` 标记图像。切换摄像头不会选择物理摄像头。读数不模拟位移台运动。
 - 固定图像无法提供不同的校准端点。重复采集低端点和高端点无法建立新的轴校准。
 - 上传的配置即使通过格式校验，图像尺寸仍可能不匹配。用于 `3840 × 2160` 图像的配置无法测量 `640 × 480` 模拟帧。
 - 如须重置本地配置，先停止预览。把 `work/console-preview/calibration/twin/` 改成未使用的备份名称。重启预览后会再次创建 `Mock stage`。如须保留原配置，保留备份。在界面中删除配置不会重新创建初始配置。
+- 转盘校准使用 `1280 × 720` 模拟 Camera3 图像，图中只有当前物镜标记。物镜标记边长约为 8 mm。ID 0、1、2、3 分别对应 5x、10x、20x、50x。点击 **Record** 时，模拟图像切换到所选物镜。
+- 转盘配置保存在 `work/console-preview/calibration/microscope/turret_profiles/`。点击 **Start calibration** 后，依次记录 4 个物镜。点击 **Finish calibration**，再点击 **Save & use**。未完成的配置使用 **Save profile** 保存，用 **Load draft** 继续编辑。JSON 上传上限为 2 MiB。
+- **Lens calibration** 选择的完整配置供 5x、10x、20x 和 50x 按钮使用。重启预览后，所选配置保留。完整配置包含全部 4 个物镜的记录。记录时的对焦位置仅供参考，未知位置保留为未知，不按 `0` 处理。
+- 实机 **Start calibration** 只释放转盘电机。建议先手动把对焦轴移到界面显示的避让位置。界面以整步显示避让位置和已知的记录位置。自动移动前，当前对焦零点必须已知。转盘转动前，对焦轴必须到达已配置的避让位置。
+- 保持当前物镜标记清晰且完整可见。对齐使用固定摄像头下已记录的图像坐标。移动摄像头或改变其对焦、变焦后，重新记录全部 4 个物镜。本地模拟不验证定位精度或实际电机行为。
 
 ## 运行本地检查
 
@@ -65,6 +73,12 @@ $env:PYTHONPATH = Join-Path (Get-Location) 'src'
 
 ```powershell
 node --test tests/test_console_twin.mjs
+```
+
+修改转盘校准 JavaScript 后，运行：
+
+```powershell
+node --test tests/test_console_turret.mjs
 ```
 
 同时在浏览器中检查修改后的视图。自动测试无法确认布局是否正确。代码更新后运行测试。提交时沿用这些结果。手动推送和发布分支。

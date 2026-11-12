@@ -178,13 +178,33 @@ Every device command goes through the console relay. Use **Take control** for th
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
 - The microscope card shows 1 large preview. The **Microscope** and **Side camera** switch in the preview selects the Toupcam view or the camera3 side view. Only the shown view streams. The preview uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
 - The objective buttons, nudges, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
-- The objective buttons and the focus controls are below the preview: the focus bar, **−** and **+** with the jog pulses between them, **Autofocus** (local), **Full autofocus** and **Set focus zero**.
+- The objective buttons and focus controls are below the preview. Focus controls include the focus bar, **−**, **+**, **Autofocus** (local), **Full autofocus** and **Set focus zero**. The jog pulses appear between **−** and **+**.
+- **Lens calibration** is beside the objective buttons. Use it to choose a saved complete profile. The 5x, 10x, 20x and 50x buttons use that profile. The selection persists after a service restart.
 - **Turret**, **Recording** and **Sequence** are closed groups. Open a group to use its controls.
 - The **−10**, **−1**, **+1** and **+10** buttons in **Turret** turn the turret in full steps at the current focus. They do not raise the focus to clearance first. The text beside them shows the turret offset and its limit. A button is unavailable when the offset is unknown, or when the nudge would move the offset outside the limit.
 - **Set focus zero** needs microscope control and no confirmation. The console sends it 1 time. The focus gears can slip. Re-zero at the 50x focus before each use.
 - **Save snapshot** in **Recording** saves 1 PNG. Leave **Snapshot path** empty for the service default, or enter a relative path without `.` or `..` parts.
 - **Start recording** and **Record next furnace sequence** send the recording commands with **Run name**, **Mode**, **Interval s** and **Output fps**. **Live** uses no interval. A failed recording shows its error.
 - **Turn stabilization on** and **Turn stabilization off** switch the stabilization.
+
+#### Turret calibration
+
+Use **Turret calibration** to record each objective after manual positioning. Only the current objective marker must be in focus and fully visible. Objective markers have approximately 8 mm sides: ID 0 = 5x, ID 1 = 10x, ID 2 = 20x, ID 3 = 50x.
+
+1. Take microscope control. We recommend that you first move the focus manually to the clearance position shown in the interface. Click **New profile** and enter a profile name.
+2. Click **Start calibration**. It releases only the turret motor. It does not move the focus axis.
+3. Seat the current objective in its detent manually. Check Camera3, then click **Record**. Click **Next** to record all 4 objectives. **Retake** replaces the current objective image.
+4. Check the captured images. After recording all 4 objectives, click **Finish calibration**. Then click **Save & use** to save and select the profile. To end early, click **End session**. Then use **Save profile** to save the incomplete profile.
+
+**Live** shows the live image. **Captured** shows the current objective capture. Calibration polling and preview stop when you leave the workspace. A failed capture or upload shows an error and preserves the previous captures.
+
+The saved profile list offers **Select**, **Download** and **Delete**. Both **Select** and **Lens calibration** select a complete profile. Use **Load draft** for an incomplete profile. Click **Start calibration** again to continue capture. The camera and focus position must match the draft. **Upload JSON** accepts profile files of at most 2 MiB.
+
+Alignment uses recorded image coordinates. Keep Camera3 fixed. After moving or rotating Camera3, or changing its focus or zoom, record all 4 objectives again.
+
+A complete profile contains captures for all 4 objectives. Recorded focus is informational and does not affect profile completeness or selection. Unknown focus stays unknown instead of becoming `0`. The interface shows clearance and known recorded positions in full steps. The current focus zero must be known before automatic movement. The focus axis must reach the configured clearance position before the turret turns.
+
+The interface shows when focus is not zeroed or the profile cannot support automatic switching. It shows an error when the selected profile is invalid.
 
 ### Run offline
 
@@ -195,6 +215,8 @@ uv run --no-default-groups --group vision python scripts/console_preview.py
 ```
 
 Open `http://127.0.0.1:8790/lab/#twin`. The preview uses the real dashboard assets and Digital Twin routes with a fixed synthetic camera image. It requires no VPN or Olares connection.
+
+Open `http://127.0.0.1:8790/lab/#process` to preview turret calibration. Camera3 uses a synthetic `1280 × 720` image. **Start calibration**, objective capture and profile operations use a local simulator. They require no physical microscope control. Profiles persist under `work/console-preview/calibration/microscope/turret_profiles/`.
 
 Device controls remain unavailable. Local calibration profiles persist under `work/console-preview/` and do not change Olares profiles. The first start creates a Mock stage profile for monitor and profile management checks. The fixed image cannot validate endpoint calibration or physical accuracy.
 

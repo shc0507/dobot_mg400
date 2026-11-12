@@ -124,6 +124,116 @@ def detect(gray, target_id=None):
     return {"shape": [h, w], "status": "ok" if markers else "not_detected", "markers": markers}
 
 
+def _fit_marker_edges(gray, corners):
+    """Use outer-edge samples to reduce marker corner noise."""
+    lines = []
+    for start, end in zip(corners, np.roll(corners, -1, axis=0)):
+        edge = end - start
+        length = np.linalg.norm(edge)
+        if length < 24:
+            return corners
+        normal = np.array([-edge[1], edge[0]]) / length
+        base = start + np.linspace(0.12, 0.88, min(400, int(length)))[:, None] * edge
+        radius = min(3.0, length / 12)
+        offsets = np.linspace(-radius, radius, 25)
+        points = base[:, None, :] + offsets[None, :, None] * normal
+        samples = cv2.remap(
+            gray,
+            points[:, :, 0].astype(np.float32),
+            points[:, :, 1].astype(np.float32),
+            cv2.INTER_LINEAR,
+        ).astype(float)
+        # Clockwise marker corners put the black interior on the positive normal.
+        weights = np.maximum(-np.diff(samples, axis=1), 0)
+        totals = weights.sum(axis=1)
+        keep = totals > 20
+        if np.count_nonzero(keep) < 12:
+            return corners
+        position = weights @ ((offsets[:-1] + offsets[1:]) / 2) / np.maximum(totals, 1)
+        hits = base + position[:, None] * normal
+        vx, vy, x, y = cv2.fitLine(
+            hits[keep].astype(np.float32), cv2.DIST_HUBER, 0, 0.001, 0.001
+        ).flatten()
+        lines.append((np.array([x, y]), np.array([vx, vy])))
+    refined = []
+    try:
+        for index, (point, direction) in enumerate(lines):
+            other, other_direction = lines[index - 1]
+            distance = np.linalg.solve(
+                np.column_stack((direction, -other_direction)), other - point
+            )[0]
+            refined.append(point + distance * direction)
+    except np.linalg.LinAlgError:
+        return corners
+    refined = np.asarray(refined, np.float32)
+    if not np.isfinite(refined).all() or np.max(np.linalg.norm(refined - corners, axis=1)) > 3:
+        return corners
+    return refined if cv2.isContourConvex(refined) else corners
+
+
+def detect_objectives(image, target_id=None):
+    """Detect objective IDs 0 through 3 across the full image."""
+    if target_id is not None and (type(target_id) is not int or target_id not in COLORS):
+        raise ValueError(f"Unknown objective ID {target_id}")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    h, w = gray.shape
+    result = {"shape": [h, w], "status": "not_detected", "markers": []}
+    if float(gray.mean()) < 2:
+        return dict(result, status="black_frame")
+    found = {}
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    for variant in ("half_resolution", "native", "threshold3", "threshold11", "contrast"):
+        parameters = cv2.aruco.DetectorParameters()
+        parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        scale = min(1.0, 1920 / w) if variant == "half_resolution" else 1.0
+        source = gray if scale == 1 else cv2.resize(gray, (round(w * scale), round(h * scale)))
+        if variant.startswith("threshold"):
+            parameters.adaptiveThreshConstant = float(variant[9:])
+            parameters.adaptiveThreshWinSizeMax = 63
+            parameters.perspectiveRemovePixelPerCell = 12
+        if variant == "contrast":
+            parameters.adaptiveThreshWinSizeMax = 63
+            parameters.adaptiveThreshWinSizeStep = 4
+            source = cv2.createCLAHE(2.0, (8, 8)).apply(gray)
+        corners, ids, _ = cv2.aruco.ArucoDetector(dictionary, parameters).detectMarkers(source)
+        if ids is None:
+            continue
+        known = [int(i) for i in ids.flatten() if int(i) in COLORS]
+        if len(known) != len(set(known)):
+            return dict(result, status="duplicate_ids")
+        for corner, ident in zip(corners, ids.flatten()):
+            ident = int(ident)
+            if ident not in COLORS or ident in found:
+                continue
+            points = (corner.reshape(4, 2) / scale).astype(np.float32)
+            cv2.cornerSubPix(
+                gray,
+                points.reshape(-1, 1, 2),
+                (4, 4),
+                (-1, -1),
+                (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 40, 0.001),
+            )
+            points = _fit_marker_edges(gray, points)
+            found[ident] = {
+                "id": ident,
+                "color": COLORS[ident],
+                "corners": points.tolist(),
+                "center": marker_center(points).tolist(),
+                "method": variant,
+            }
+        objective_found = (
+            target_id in found if target_id is not None else any(i in found for i in COLORS)
+        )
+        if objective_found:
+            break
+    result["markers"] = [found[i] for i in COLORS if i in found]
+    if target_id is not None and target_id not in found:
+        result["status"] = "target_not_visible"
+    elif result["markers"]:
+        result["status"] = "ok"
+    return result
+
+
 class Locator:
     def __init__(self, near_px=50.0):
         self.near_px = near_px

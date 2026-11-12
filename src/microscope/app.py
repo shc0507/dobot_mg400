@@ -28,6 +28,10 @@ def create_app(service, *, base_path="/"):
 
     @app.before_request
     def access():
+        if request.path == prefix + "/api/turret-calibration/upload":
+            # JSON can escape each profile byte as 6 bytes. The decoded profile
+            # retains its separate 2 MiB limit in the profile store.
+            request.max_content_length = 12 * 1024 * 1024 + 64 * 1024
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json.")
@@ -199,5 +203,23 @@ def create_app(service, *, base_path="/"):
             "set_focus_zero", args, request.headers["X-MG400-Client"]
         )
         return jsonify(command_id=command_id, state=state()), 202
+
+    @app.get(prefix + "/api/turret-calibration")
+    def turret_calibration_state():
+        return jsonify(service.turret_calibration_state())
+
+    @app.post(prefix + "/api/turret-calibration/<action>")
+    def turret_calibration_action(action):
+        return jsonify(
+            service.turret_calibration_action(action, body(), request.headers["X-MG400-Client"])
+        )
+
+    @app.get(prefix + "/api/turret-calibration/profile/<ident>")
+    def turret_calibration_profile(ident):
+        return Response(
+            service.turret_calibration_profile(ident),
+            mimetype="application/json",
+            headers={"Content-Disposition": 'attachment; filename="turret-profile.json"'},
+        )
 
     return app

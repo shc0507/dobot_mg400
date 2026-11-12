@@ -314,16 +314,18 @@
 
   const view = { api: null, root: null, global: null, timer: null, status: null, describe: {}, describeAt: {}, rows: null, dirty: false,
     endGas: { 0: "0", 1: "0", 2: "0" }, endUntil: "", target: "200", ramp: "10", jog: "100", flows: { 0: "0", 1: "0", 2: "0" },
-    confirm: null, busy: new Set(), tiles: {}, nodes: {}, open: {}, scopeView: "microscope",
+    confirm: null, busy: new Set(), tiles: {}, nodes: {}, open: {}, scopeView: "microscope", turretCalibration: null,
     snapPath: "", rec: { name: "", mode: "time_lapse", interval: "30", fps: "1" } };
 
   function show() {
     if (!view.api || view.timer) return;
+    view.turretCalibration?.show();
     poll();
     view.timer = setInterval(poll, POLL_MS);
   }
 
   function hide() {
+    view.turretCalibration?.hide();
     if (view.timer) clearInterval(view.timer);
     view.timer = null;
   }
@@ -357,6 +359,7 @@
     view.root = node;
     view.api = api;
     view.global = global || {};
+    view.turretCalibration = view.global.LabTurret?.create(api, view.global) || null;
     view.rows = editorRows(null);
     api.onLanguage(() => build());
     api.onState(() => update());
@@ -591,7 +594,9 @@
       preview,
       el("div", { class: "pr-band" },
         el("span", { class: "pr-band-label", id: "pr-obj-title", text: t("obj.title") }),
-        el("div", { class: "pr-objectives", role: "radiogroup", "aria-labelledby": "pr-obj-title" }, ...n.objectives),
+        el("div", { class: "tr-objective-controls" },
+          el("div", { class: "pr-objectives", role: "radiogroup", "aria-labelledby": "pr-obj-title" }, ...n.objectives),
+          view.turretCalibration?.profileSelector),
         el("span", { class: "pr-band-label", text: t("focus.title") }),
         el("div", { class: "pr-focus" },
           el("div", { class: "pr-focus-bar" }, n.focusBar, el("div", { class: "pr-bar-labels" }, n.focusMin, n.focusText, n.focusMax)),
@@ -612,7 +617,7 @@
           n.recState, n.recError)));
 
     view.root.replaceChildren(el("div", { class: "pr-workspace" }, n.stale = el("p", { class: "pr-warn", hidden: true }),
-      el("div", { class: "pr-layout" }, scope, furnace)));
+      el("div", { class: "pr-layout" }, scope, furnace), view.turretCalibration?.element));
     showView(view.scopeView);
     buildSequence();
     update();
@@ -763,6 +768,7 @@
     setDisabled("take-microscope", mMine || mHolder === "other" || busy("take-microscope"));
     setDisabled("release-microscope", !mMine || busy("release-microscope"));
     const idle = mMine && scope?.connected === true && !scope?.busy && !scope?.locked;
+    view.turretCalibration?.setMicroscopeBusy(scope?.busy || ["select_objective", "nudge", "focus_move", "autofocus", "set_focus_zero"].some(key => view.busy.has(key)));
     const canMove = idle && scope?.focus_zero_known === true;
     for (const node of n.objectives) {
       const selected = scope?.objective_id === Number(node.dataset.id);

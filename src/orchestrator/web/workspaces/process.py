@@ -34,6 +34,7 @@ from labkit.errors import ServiceError
 from labkit.lease import validate_client
 
 from ..backend import gas_confirmed
+from ..turret import register as register_turret
 from . import Workspace
 
 HISTORY_S = 3600
@@ -200,6 +201,7 @@ class ProcessStatus:
 
 def register(blueprint, service):
     status = ProcessStatus(service)
+    register_turret(blueprint, service)
 
     @blueprint.get("/status")
     def read_status():

@@ -177,6 +177,54 @@ systemctl daemon-reload
 systemctl restart mg400-camera-preview.service
 ```
 
+### Microscope test backend
+
+Use `mg400-microscope.service` for the turret calibration test backend to retain 1 device owner.
+The original Console and test Console share the microscope API on port `8770`.
+Restart only when the microscope is idle, has no active control lease, and is not recording.
+Restart preserves `/var/lib/mg400/calibration/microscope` but clears the focus reference and unsaved draft.
+
+The test backend reads microscope motion settings from environment variables.
+If the host environment file omits these settings, retain the existing backend's fixed values below in the override.
+
+Deploy the test code first.
+As root, install the override file `/etc/systemd/system/mg400-microscope.service.d/twin-turret.conf`:
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+Environment=MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
+Environment=MG400_MICROSCOPE_SWITCH_FOCUS=0
+Environment=MG400_MICROSCOPE_HOME_SWITCH=0
+Environment=MG400_MICROSCOPE_NUDGE_STEPS=20
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python -m microscope
+```
+
+After installation, reload systemd and restart the service:
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
+
+Poll `GET /api/state` and `GET /api/turret-calibration` at `http://127.0.0.1:8770/` until both requests succeed.
+Confirm that the state reports `connected` as `true` and `fault` as `null`.
+
+The current `deploy/twin.py` does not manage the microscope service or this override file.
+With this override active, run `systemctl stop mg400-microscope.service` before subsequent updates to the test instance backend or dependencies.
+After the update or script rollback, run `systemctl start mg400-microscope.service`.
+Check the APIs above again.
+
+To restore the original backend, remove only this override file.
+Restart the service under the idle conditions above:
+
+```sh
+rm /etc/systemd/system/mg400-microscope.service.d/twin-turret.conf
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
+
 ## Toupcam library
 
 Get `linux/x64/libtoupcam.so` from the [Toupcam 59.30594.20260120 SDK archive](https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip).

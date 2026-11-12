@@ -146,6 +146,27 @@ def test_adapter_construction_makes_no_tls_context(monkeypatch):
     ServiceAdapter("http://127.0.0.1:1", "orch-tls-stage")
 
 
+@pytest.mark.parametrize("action", ["begin", "record"])
+def test_turret_capture_timeout_does_not_change_lease_transport(monkeypatch, action):
+    adapter = ServiceAdapter("http://127.0.0.1:1", "orch-turret")
+    original_timeout = adapter._http.timeout
+    calls = []
+
+    def call(client, path, data=None):
+        calls.append((client, path, data))
+        return {"session": None}
+
+    monkeypatch.setattr(adapter._client_type, "_call", call)
+    path = "api/turret-calibration/" + action
+    assert adapter.request(path, {"objective_id": 0}) == {"session": None}
+    assert len(calls) == 1
+    capture, requested, data = calls[0]
+    assert requested == path and data == {"objective_id": 0}
+    assert capture is not adapter._http and capture.timeout == 15
+    assert capture._opener is adapter._http._opener
+    assert adapter._http.timeout == original_timeout
+
+
 def reconciliation_pool(monkeypatch, name, state):
     """An already-owned, stopped run; only adapter state reads are replaced."""
     identity = "orch-recovery-test"

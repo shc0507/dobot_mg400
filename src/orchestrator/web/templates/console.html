@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="{{ base_path }}/console-static/shell.css">
   {% for item in workspaces %}{% if item.style %}
   <link rel="stylesheet" href="{{ base_path }}/console-static/{{ item.id }}.css">
+  {% if item.id == 'process' %}<link rel="stylesheet" href="{{ base_path }}/console-static/turret.css">{% endif %}
   {% endif %}{% endfor %}
 </head>
 <body data-base-path="{{ base_path }}" data-commit="{{ commit }}">
@@ -57,6 +58,7 @@
   </main>
   <script src="{{ base_path }}/console-static/shell.js" defer></script>
   {% for item in workspaces %}{% if item.script %}
+  {% if item.id == 'process' %}<script src="{{ base_path }}/console-static/turret.js" defer></script>{% endif %}
   <script src="{{ base_path }}/console-static/{{ item.id }}.js" defer></script>
   {% endif %}{% endfor %}
 </body>

@@ -85,6 +85,13 @@ class ServiceAdapter:
 
         With data it is a POST. The runner and the recipes never call this.
         """
+        if path in {"api/turret-calibration/begin", "api/turret-calibration/record"}:
+            # Fresh-frame capture can outlast a normal state read. Keep its
+            # timeout separate so the lease heartbeat retains its own deadline.
+            capture = self._client_type(self._http.base_url, self.identity, timeout=15)
+            capture._opener = self._http._opener
+            capture._version_checked = self._http._version_checked
+            return capture._call(path, data)
         return self._http._call(path, data)
 
     def events(self, since=0):

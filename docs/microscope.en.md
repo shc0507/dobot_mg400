@@ -89,6 +89,9 @@ The control lease lasts 3 seconds and must be renewed during work.
 | `GET /api/describe` | Contract version, supported commands, objective IDs and names, and lease behavior. |
 | `GET /api/state` | Focus position and zero state, limits, objective ID, turret offset, camera state, busy state, faults, and command result. |
 | `GET /api/events` | Service event history. |
+| `GET /api/turret-calibration` | Manual calibration session, draft, saved profiles, and selection. |
+| `POST /api/turret-calibration/<action>` | `begin`, `record`, `finish`, `cancel`, `save`, `load`, `select`, `delete`, or `upload`, with microscope control. |
+| `GET /api/turret-calibration/profile/<id>` | Download a saved profile as JSON. |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | Acquire, renew, or release ordinary control. |
 | `POST /api/command` | Submit an action and its parameters. A `202` response returns a command ID, not a completion proof. |
 | `POST /api/stop` | Stop from any authenticated client without a controlling lease. Read its `confirmed`, `pending`, or `unconfirmed` result. |
@@ -96,9 +99,8 @@ The control lease lasts 3 seconds and must be renewed during work.
 The command actions are `select_objective` with `id`, `objective_nudge` with `steps`, `autofocus` with `mode` (`full` or `local`), `focus_move` with relative `steps`, `home_focus`, and `snapshot` with an optional `path`.
 Read the command ID in `last_command` and its result before the next action.
 Each `select_objective` turn follows a completed clearance move and a fresh stationary-position check.
-Before it moves, `select_objective` identifies the current objective in 1 side-camera frame.
-If it cannot identify an objective, the command fails. `last_command.message` gives the cause, for example a side frame size that differs from the reference size.
-In this case nothing moves, the focus zero stays known, and the service latches no fault.
+Before it moves, `select_objective` checks 1 side-camera frame. With a selected turret profile, this check requires only an objective marker in focus and fully visible. It then moves focus to clearance and uses a new frame to identify the objective against the profile. Without a selected profile, it uses the previous locator before moving.
+If the initial image check fails, nothing moves, the focus zero stays known, and the service latches no fault. If profile identification fails after the clearance move, no turret turn starts. `last_command.message` gives the cause.
 The turret has a gap between objective `3` and objective `0`.
 `select_objective` turns the turret through the objectives between the current and the target objective. It never turns across the gap.
 If a turret turn fails, `objective_id` is `null`.
@@ -162,7 +164,7 @@ The microscope service has no web page. Operate the microscope in the Furnace + 
 
 1. On the microscope card, select **Take control**. If another client holds the lease, the console cannot get control. It does not take over automation control.
 2. Before motion, read the focus position and zero state on the card.
-3. Use the objective buttons to change the objective. The buttons show the objective magnifications from `id.names` of `select_objective` in `GET /api/describe`. An objective without a name shows its ID.
+3. Choose a saved complete profile in **Lens calibration** beside the objective buttons. The 5x, 10x, 20x and 50x buttons use that profile. The selection persists after a service restart. Buttons show the objective magnifications from `id.names` of `select_objective` in `GET /api/describe`. An objective without a name shows its ID.
 4. At working focus, open **Turret** and use **−10**, **−1**, **+1**, or **+10** to turn the turret in full steps. The text beside them shows the turret offset and its limit.
 5. Use **Autofocus** (local) or **Full autofocus** to focus automatically.
 6. Enter a pulse count between **−** and **+**, then use **−** or **+** to jog within the limits.
@@ -359,6 +361,24 @@ An unknown version or failed handshake refuses the connection.
 Stop requests can interrupt a completion wait.
 Unknown transport or completion outcomes latch a fault and require an explicit reconnect.
 See the [firmware guide](../firmware/microscope-axes/README.en.md) for commands, wiring, and firmware limits.
+
+## Guided turret calibration
+
+Open **Furnace + microscope → Turret calibration** and take microscope control. Objective markers use `DICT_4X4_50` and have sides of about `8 mm`: `0` = 5x, `1` = 10x, `2` = 20x, and `3` = 50x.
+
+1. We recommend that you first move the focus manually to the configured clearance position. Keep focus fixed while you record all objectives.
+2. Enter a profile name and select **Start calibration**. This disables only the turret motor. It does not move, enable, or zero focus.
+3. Manually turn each lens into its mechanical detent. Keep its marker in focus and fully visible. Select **Record** for that lens. The service checks 3 fresh frames and retains a preview with the measured corners. Use **Retake** to replace a capture.
+4. After recording all 4 objectives, select **Finish calibration**. Then select **Save & use** to save and select the profile. To end early, select **End session**. Then use **Save profile** to save the incomplete profile. The turret stays disabled. Use **Load draft** to resume an incomplete saved profile.
+5. Choose a complete profile in **Lens calibration** beside the objective buttons. You can also use **Select** in the profile list. **Upload JSON**, **Download**, and **Delete** manage saved profiles. Uploads must match the turret profile format and be no larger than `2 MiB`. Each accepted upload gets a new profile ID.
+
+The service stores profiles under `/var/lib/mg400/calibration/microscope/turret_profiles`. A complete profile contains captures for all 4 objectives. Recorded focus is informational and does not affect profile completeness or selection. Unknown focus stays unknown instead of becoming `0`. The objective buttons use the selected profile, and the selection persists after a service restart.
+
+The selected profile must be complete and match the configured side camera. The current focus zero must be known before automatic movement. The focus axis must reach the configured clearance position before the turret turns. Calibration mode does not infer the current objective from a manually recorded image.
+
+Alignment compares the current objective marker with its recorded image coordinates. Keep the camera position, orientation, focus, and zoom fixed. After changing any of them, record all 4 objectives again. The previous locator remains available until a new profile is first selected. After deleting the selected profile, select another complete profile before automatic switching.
+
+The profile format uses `schema_version: 2` and `dictionary: "DICT_4X4_50"`. Each capture stores `shape`, `objective_corners`, and `preview_jpeg`. Recreate older profiles before using them.
 
 ## Supervised calibration and experiments
 

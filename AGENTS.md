@@ -74,6 +74,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Detector evaluation | `scripts/vision_eval.py` | `test_vision_eval.py` | [vision.md](docs/vision.md#检测模型评估) |
 | Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md) |
 | Digital Twin monitor and calibration | `src/vision/stage_twin/`, `src/orchestrator/web/twin.py`, `src/orchestrator/web/workspaces/twin.py`, `src/orchestrator/web/static/console/twin.*` | `test_stage_twin.py`, `test_console_twin.py`, `test_console_twin.mjs` | [dashboard.md](docs/dashboard.md#数字孪生工作区) |
+| Turret image-coordinate calibration | `src/microscope/turret_calibration.py`, `src/microscope/service.py`, `src/orchestrator/web/turret.py`, `turret_preview.py`, `static/console/turret.*` | `test_microscope_turret.py`, `test_microscope_turret_service.py`, `test_console_turret.py`, `test_console_turret.mjs`, `test_console_preview.py` | [microscope.md](docs/microscope.md) |
 | Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py` | [vision.md](docs/vision.md) |
 | Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md) |
 | Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/` | `test_vision_tray.py` | [vision.md](docs/vision.md) |

@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const path = new URL("../src/orchestrator/web/static/console/process.js", import.meta.url).pathname;
+const path = require.resolve("../src/orchestrator/web/static/console/process.js");
 
 class Element {
   constructor(tag) {
@@ -77,7 +77,7 @@ function statusBody(overrides = {}) {
   };
 }
 
-async function load({ owns = ["furnace", "microscope"], status = statusBody(), cameras = null } = {}) {
+async function load({ owns = ["furnace", "microscope"], status = statusBody(), cameras = null, turret = null } = {}) {
   delete require.cache[path];
   const logic = require(path);
   const calls = [];
@@ -85,6 +85,7 @@ async function load({ owns = ["furnace", "microscope"], status = statusBody(), c
   let registered = null;
   const global = {
     LabCameras: cameras,
+    LabTurret: turret,
     crypto: { getRandomValues: array => array.fill(171) },
     document: { createElementNS: (_ns, tag) => new Element(tag) },
   };
@@ -365,6 +366,33 @@ test("microscope objective, jog, autofocus and recording go through the relay", 
     ["autofocus", { mode: "local" }],
     ["start_recording", { recording_id: "ab".repeat(16), mode: "time_lapse", output_fps: 1, capture_interval_seconds: 30 }],
   ]);
+});
+
+test("lens calibration stays beside the objective buttons and uses the shared turret lifecycle", async () => {
+  const events = [], status = statusBody();
+  let selector;
+  const turret = { create(api) {
+    selector = api.el("label", { "data-role": "turret-profile-selector", text: "Lens calibration" });
+    return {
+      element: api.el("section", { "data-role": "turret-calibration" }), profileSelector: selector,
+      show: () => events.push("show"), hide: () => events.push("hide"),
+      setMicroscopeBusy: value => { selector.disabled = Boolean(value); },
+    };
+  } };
+  const { root, calls, setLang, logic } = await load({ turret, status });
+  const controls = walk(root).find(node => node.className === "tr-objective-controls");
+  assert.equal(controls.children[1], selector);
+  assert.equal(controls.children[0].getAttribute("role"), "radiogroup");
+  assert.equal(walk(root).filter(node => node === selector).length, 1);
+  assert.equal(selector.disabled, false);
+  assert.deepEqual(events, ["show", "hide"]);
+  assert.equal(calls.some(call => call[0] === "relay"), false);
+  status.microscope.busy = true;
+  await logic._internal.poll();
+  assert.equal(selector.disabled, true);
+  setLang("zh");
+  assert.equal(walk(root).filter(node => node === selector).length, 1);
+  assert.ok(role(root, "turret-calibration"));
 });
 
 test("the 4 turret nudges relay objective_nudge and stay inside the window", async () => {

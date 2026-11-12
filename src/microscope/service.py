@@ -38,7 +38,7 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.lease import Lease
 
-from .aruco_locator import Locator
+from .aruco_locator import Locator, detect_objectives
 from .aruco_switch import (
     OBJECTIVE_ORDER,
     ArucoObjectiveSwitcher,
@@ -52,6 +52,7 @@ from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
 from .sim import MicroscopeSimulator
+from .turret_session import TurretCalibrationMixin
 
 LOGGER = logging.getLogger(__name__)
 
@@ -451,7 +452,7 @@ class _AuthorityCancel:
 
 
 class _Unidentified(RuntimeError):
-    """The side camera did not identify an objective. No motion has started."""
+    """The side camera did not identify an objective before a turret turn."""
 
 
 @dataclass
@@ -650,7 +651,7 @@ def _reduced(pixels):
     return pixels[top : top + keep_height, left : left + keep_width]
 
 
-class MicroscopeService:
+class MicroscopeService(TurretCalibrationMixin):
     def __init__(
         self,
         config=None,
@@ -666,6 +667,7 @@ class MicroscopeService:
         readings=None,
         recordings_root=None,
         recording_finalizer=finalize_run_recording,
+        turret_store=None,
     ):
         config = config or MicroscopeConfig()
         self.demo = bool(demo)
@@ -728,6 +730,7 @@ class MicroscopeService:
         # Full steps that nudges turned the turret since select_objective aligned it.
         # None: unknown, at start and after a failed or stopped turn.
         self._objective_offset = None
+        self._init_turret_calibration(turret_store)
         self._last_command = self._last_result = None
         self.expiry_count = 0
 
@@ -1140,7 +1143,10 @@ class MicroscopeService:
                 ts_unix=self._wall_clock(),
                 demo=self.demo,
                 connected=bool(self._started and self._motor and self._motor.connected),
-                busy=self._job is not None or self._stopping or self._recording_draining(),
+                busy=self._job is not None
+                or self._turret_session is not None
+                or self._stopping
+                or self._recording_draining(),
                 locked=self._fault is not None,
                 fault=copy.deepcopy(self._fault),
                 lease=lease_state,
@@ -1352,6 +1358,7 @@ class MicroscopeService:
             self._seq += 1
             if self._job is not None:
                 self._job.cancel.set()
+            self._cancel_turret_session_locked()
             if self._recording is not None:
                 self._recording.cancel.set()
                 self._recording.finish.set()
@@ -1389,6 +1396,8 @@ class MicroscopeService:
                 self._job.cancel.renew(deadline)
             if self._recording is not None and self._recording.client == client:
                 self._recording.cancel.renew(deadline)
+            if self._turret_session is not None and self._turret_session.client == client:
+                self._turret_session.cancel.renew(deadline)
 
     def _expire_handoff_locked(self):
         # The caller holds the raw lease lock, so acquisition cannot revive a
@@ -1406,6 +1415,7 @@ class MicroscopeService:
         with self._lock:
             candidate = (
                 self._job is None
+                and self._turret_session is None
                 and self._recording is None
                 and not self._stopping
                 and not self._fault
@@ -1545,7 +1555,12 @@ class MicroscopeService:
                 raise ServiceError(503, "Microscope is not connected")
             if self._fault:
                 raise ServiceError(409, "Microscope is locked; only stop is allowed")
-            if self._job is not None or self._stopping or self._recording_draining():
+            if (
+                self._job is not None
+                or self._turret_session is not None
+                or self._stopping
+                or self._recording_draining()
+            ):
                 raise ServiceError(409, "Microscope is busy")
             if action == "start_recording" or (
                 action == "record_with_sequence" and args["enabled"]
@@ -1579,6 +1594,8 @@ class MicroscopeService:
                 copy.deepcopy(args),
                 _AuthorityCancel(self._clock, deadline),
             )
+            if action == "select_objective":
+                job.turret_profile = self._turret_profile_for_switch()
             self._job = job
             self._seq += 1
             thread = threading.Thread(
@@ -1686,17 +1703,42 @@ class MicroscopeService:
         }
         return locator
 
-    def _identify(self, job, locator):
-        """Return the visible objective ID, or refuse before any motion."""
+    def _side_frame(self, job, *, fresh=False):
         try:
-            packet = self._side.get_frame_packet(timeout=5.0)
+            if fresh:
+                latest = self._side.get_frame_packet(wait=False, copy=False)
+                cursor = latest[0] if latest is not None else None
+                threshold, deadline = time.monotonic(), time.monotonic() + 5.0
+                packet = None
+                while time.monotonic() < deadline:
+                    self._check_job(job)
+                    candidate = self._side.get_frame_packet(after_id=cursor, timeout=0.2)
+                    if candidate is None:
+                        continue
+                    frame_id, captured_at, _ = candidate
+                    if (
+                        type(frame_id) is not int
+                        or isinstance(captured_at, bool)
+                        or not isinstance(captured_at, (int, float))
+                        or not math.isfinite(captured_at)
+                    ):
+                        raise _Unidentified("Invalid side-camera frame metadata")
+                    if (cursor is None or frame_id > cursor) and captured_at >= threshold:
+                        packet = candidate
+                        break
+            else:
+                packet = self._side.get_frame_packet(timeout=5.0)
         except RuntimeError as error:
             cause = error.__cause__ or error
             raise _Unidentified(f"Side camera is unavailable: {cause}") from error
         self._check_job(job)
         if packet is None:
             raise _Unidentified("No fresh side-camera frame")
-        measurement = locator.locate(packet[2], only_target=False)
+        return packet[2]
+
+    def _identify(self, job, locator, *, fresh=False):
+        """Return the visible objective ID before a turret turn."""
+        measurement = locator.locate(self._side_frame(job, fresh=fresh), only_target=False)
         if not measurement["markers"]:
             status = measurement["status"]
             if status == "image_size_mismatch":
@@ -1712,18 +1754,37 @@ class MicroscopeService:
     def _select(self, job, motor):
         # The side stream runs only during a switch. At 3840x2160 it truncates
         # the frames of other cameras on the shared USB 2 link.
-        locator = self._locator()
+        profile = getattr(job, "turret_profile", None)
+        locator = self._profile_locator(profile) if profile is not None else self._locator()
         try:
             self._side.open()
         except RuntimeError as error:
             raise _Unidentified(f"Side camera is unavailable: {error}") from error
         try:
+            if profile is not None:
+                # Check objective visibility before moving focus. Compare its
+                # coordinates only at the configured clearance position.
+                detection = detect_objectives(self._side_frame(job))
+                if detection["status"] != "ok" or not detection["markers"]:
+                    raise _Unidentified(f"Objective identification failed: {detection['status']}")
+                height, width = detection["shape"]
+                ref_height, ref_width = next(iter(profile["captures"].values()))["shape"]
+                if height * ref_width != width * ref_height:
+                    raise _Unidentified(
+                        "Side-camera aspect ratio does not match the turret profile"
+                    )
+                position = self._guard_reference(job).focus.position
+                if position != self.config.switch_focus:
+                    motor.focus_move(self.config.switch_focus - position)
+                self._guard_reference(job, clearance=True)
             return self._switch(job, motor, locator)
         finally:
             self._side.close()
 
     def _switch(self, job, motor, locator):
-        current = self._identify(job, locator)
+        current = self._identify(
+            job, locator, fresh=getattr(job, "turret_profile", None) is not None
+        )
         target = job.args["id"]
         completed = []
         for _ in range(3):
@@ -1899,7 +1960,7 @@ class MicroscopeService:
             outcome, message = "stopped", str(error)
             self.stop("command-cancel", 0)
         except _Unidentified as error:
-            # Nothing moved: keep the motor state and the focus reference.
+            # No turret turn started. Keep the confirmed focus reference.
             outcome, message = "failed", str(error)
         except (ValueError, CommandRejected) as error:
             outcome, message = "failed", str(error)
@@ -1952,6 +2013,7 @@ class MicroscopeService:
                 return "unconfirmed" if self._recording_stop_fault else self._stop_outcome
             if self._job is not None:
                 self._job.cancel.set()
+            self._cancel_turret_session_locked()
             if self._recording is not None:
                 self._recording.cancel.set()
                 self._recording.finish.set()

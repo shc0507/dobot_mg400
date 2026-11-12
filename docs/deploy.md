@@ -177,6 +177,54 @@ systemctl daemon-reload
 systemctl restart mg400-camera-preview.service
 ```
 
+### 显微镜测试后端
+
+测试转盘校准后端时，复用 `mg400-microscope.service`，保持 1 个设备所有者。
+原控制台和测试控制台共用端口 `8770` 的显微镜 API。
+仅在显微镜空闲、无有效控制租约且未录像时重启。
+重启保留 `/var/lib/mg400/calibration/microscope`，但清除对焦参考和未保存草稿。
+
+测试后端从环境变量读取显微镜运动参数。
+主机环境文件未提供这些参数时，在覆盖文件中保留下面这些现有后端的固定值。
+
+先部署测试代码。
+由 root 安装覆盖文件 `/etc/systemd/system/mg400-microscope.service.d/twin-turret.conf`：
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+Environment=MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
+Environment=MG400_MICROSCOPE_SWITCH_FOCUS=0
+Environment=MG400_MICROSCOPE_HOME_SWITCH=0
+Environment=MG400_MICROSCOPE_NUDGE_STEPS=20
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python -m microscope
+```
+
+安装后，重新加载 systemd 并重启服务：
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
+
+轮询 `http://127.0.0.1:8770/` 的 `GET /api/state` 和 `GET /api/turret-calibration`，直到两者返回成功。
+确认状态中的 `connected` 为 `true`，且 `fault` 为 `null`。
+
+当前 `deploy/twin.py` 不管理显微镜服务及此覆盖文件。
+使用此覆盖时，后续更新测试实例后端或依赖前，先运行 `systemctl stop mg400-microscope.service`。
+更新结束或脚本回滚后，运行 `systemctl start mg400-microscope.service`。
+再次检查上述 API。
+
+恢复原后端时，仅删除此覆盖文件。
+按上述空闲条件重启服务：
+
+```sh
+rm /etc/systemd/system/mg400-microscope.service.d/twin-turret.conf
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
+
 ## Toupcam 库
 
 从 [Toupcam 59.30594.20260120 SDK 压缩包](https://www.touptekphotonics.com/downloads/software/toupcamsdk.20260120.zip)提取 `linux/x64/libtoupcam.so`。

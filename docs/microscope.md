@@ -89,6 +89,9 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 | `GET /api/describe` | 契约版本、支持的命令、物镜 ID 和名称，以及租约行为。 |
 | `GET /api/state` | 调焦位置和零点状态、限位、物镜 ID、转盘偏移、相机状态、忙碌状态、故障及命令结果。 |
 | `GET /api/events` | 服务事件历史。 |
+| `GET /api/turret-calibration` | 手动校准会话、草稿、已保存配置和选择状态。 |
+| `POST /api/turret-calibration/<action>` | 持有显微镜控制权时执行 `begin`、`record`、`finish`、`cancel`、`save`、`load`、`select`、`delete` 或 `upload`。 |
+| `GET /api/turret-calibration/profile/<id>` | 下载已保存配置的 JSON。 |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | 取得、续期或释放普通控制权。 |
 | `POST /api/command` | 提交动作和参数。`202` 响应返回命令 ID，不代表命令完成。 |
 | `POST /api/stop` | 任何已认证客户端都能停止，无须持有控制租约。读取其 `confirmed`、`pending` 或 `unconfirmed` 结果。 |
@@ -96,9 +99,8 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 命令动作包括带 `id` 的 `select_objective`、带 `steps` 的 `objective_nudge`、带 `mode`（`full` 或 `local`）的 `autofocus`、带相对 `steps` 的 `focus_move`、`home_focus`，以及带可选 `path` 的 `snapshot`。
 执行下一动作前，读取 `last_command` 中对应命令 ID 的结果。
 `select_objective` 每次转动转盘前，服务完成避让移动，并重新检查位置静止。
-移动前，`select_objective` 用 1 帧侧视图像识别当前物镜。
-如果无法识别物镜，命令失败。`last_command.message` 给出原因，例如侧视图像尺寸与参考图像尺寸不同。
-这时不发生任何移动，调焦零点保持已知，服务不锁存故障。
+移动前，`select_objective` 检查 1 帧侧视图像。已选择转盘配置时，此检查只要求物镜标记清晰且完整可见。随后对焦轴移到避让位置，再用新图像按配置识别物镜。未选择配置时，在移动前使用原定位方法。
+首次图像检查失败时，不发生任何移动，调焦零点保持已知，服务不锁存故障。避让移动后按配置识别失败时，不启动转盘旋转。`last_command.message` 给出原因。
 物镜 `3` 和物镜 `0` 之间的转盘位置有空缺。
 `select_objective` 只经过当前物镜和目标物镜之间的物镜转动转盘，不跨过该空缺。
 转盘转动失败后，`objective_id` 为 `null`。
@@ -162,7 +164,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 1. 在显微镜卡片上选择 **Take control**。其他客户端持有租约时，控制台无法取得控制权，也不接管自动化控制。
 2. 移动前，查看卡片上的调焦位置和零点状态。
-3. 用物镜按钮切换物镜。按钮显示 `GET /api/describe` 中 `select_objective` 的 `id.names` 给出的物镜倍率。没有名称的物镜显示 ID。
+3. 在 **Lens calibration** 中选择已保存的完整配置。该选项位于物镜按钮旁。5x、10x、20x 和 50x 按钮使用该配置切换物镜。所选配置在服务重启后保留。按钮显示 `GET /api/describe` 中 `select_objective` 的 `id.names` 给出的物镜倍率。没有名称的物镜显示 ID。
 4. 在工作焦点处，展开 **Turret**，用 **−10**、**−1**、**+1** 或 **+10** 按整步转动转盘。按钮旁显示转盘偏移及其上限。
 5. 用 **Autofocus**（局部）或 **Full autofocus** 自动调焦。
 6. 在 **−** 和 **+** 之间填写脉冲数，再用 **−** 或 **+** 在限位内点动。
@@ -359,6 +361,24 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 停止请求可以中断完成等待。
 传输或完成状态不确定时，程序锁存故障，必须显式重连。
 命令、接线和固件限制见[固件指南](../firmware/microscope-axes/README.md)。
+
+## 引导式转盘校准
+
+打开 **Furnace + microscope → Turret calibration** 并取得显微镜控制权。物镜标记使用 `DICT_4X4_50`，边长约为 `8 mm`：`0` = 5x、`1` = 10x、`2` = 20x、`3` = 50x。
+
+1. 建议先手动把对焦轴移到已配置的避让位置。记录全部物镜期间保持对焦位置不变。
+2. 输入配置名称，选择 **Start calibration**。此操作只禁用转盘电机，不移动、启用或归零对焦轴。
+3. 手动把各物镜转入机械定位点。保持物镜标记清晰且完整可见。选择该物镜的 **Record**。服务检查 3 帧新图像，并保存预览和测得的角点。用 **Retake** 替换记录。
+4. 记录全部 4 个物镜后，选择 **Finish calibration**。再选择 **Save & use**，保存并选择该配置。提前结束时，选择 **End session**。再用 **Save profile** 保存未完成的配置。转盘保持禁用。用 **Load draft** 继续记录已保存但未完成的配置。
+5. 用物镜按钮旁的 **Lens calibration** 选择完整配置。也可使用配置列表中的 **Select**。用 **Upload JSON**、**Download** 和 **Delete** 管理配置。上传文件必须符合转盘配置格式，且不超过 `2 MiB`。每次接受上传都会生成新的配置 ID。
+
+服务把配置保存在 `/var/lib/mg400/calibration/microscope/turret_profiles`。完整配置包含全部 4 个物镜的记录。记录时的对焦位置仅供参考，不影响配置是否完整或可选。未知位置保留为未知，不按 `0` 处理。所选配置供物镜按钮使用，并在服务重启后保留。
+
+所选配置必须完整，且与侧视摄像头一致。自动移动前，当前对焦零点必须已知。转盘转动前，对焦轴必须到达已配置的避让位置。校准模式不会根据手动记录的图像推断当前物镜。
+
+对齐时，将当前物镜标记与已记录的图像坐标比较。保持摄像头位置、朝向、对焦和变焦不变。改变其中任一项后，重新记录全部 4 个物镜。首次选择新配置前仍使用原定位方法。删除已选配置后，先选择另一份完整配置，再自动切换。
+
+配置格式使用 `schema_version: 2` 和 `dictionary: "DICT_4X4_50"`。每次记录保存 `shape`、`objective_corners` 和 `preview_jpeg`。旧版配置必须重新记录后使用。
 
 ## 受监督的校准与实验
 

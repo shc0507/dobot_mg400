@@ -178,13 +178,33 @@ Monitor 使用所选的已保存配置。草稿修改在保存后才用于监测
 - 炉子因故障锁定时，显示 **Acknowledge fault…**。它需要炉子控制权和页面中的确认。确认前，先确认控制器显示 STOP。
 - 显微镜卡片显示 1 个大预览。预览中的 **Microscope** 和 **Side camera** 切换 Toupcam 画面和 camera3 侧面画面。只有显示的画面传输视频流。Cameras 工作区提供 `window.LabCameras.tile` 时使用该画面，否则显示 OFFLINE。
 - 物镜按钮、微调、点动和自动对焦只在对焦零点已知时可用。服务先把焦距升到安全高度，再切换物镜。对焦条按测量的限位显示位置。
-- 预览下方是物镜按钮和对焦控件：对焦条、**−** 和 **+**（中间为点动脉冲）、**Autofocus**（局部）、**Full autofocus** 和 **Set focus zero**。
+- 预览下方是物镜按钮和对焦控件。对焦控件包括对焦条、**−**、**+**、**Autofocus**（局部）、**Full autofocus** 和 **Set focus zero**。点动脉冲显示在 **−** 和 **+** 之间。
+- **Lens calibration** 位于物镜按钮旁。用它选择已保存的完整配置。5x、10x、20x 和 50x 按钮使用该配置。所选配置在服务重启后保留。
 - **Turret**、**Recording** 和 **Sequence** 默认收起。展开后使用其中的控件。
 - **Turret** 中的 **−10**、**−1**、**+1** 和 **+10** 在当前焦距按整步转动转盘，不先把焦距升到安全高度。按钮旁显示转盘偏移及其上限。偏移未知或微调会使偏移超出上限时，按钮不可用。
 - **Set focus zero** 需要显微镜控制权，不需要确认。控制台只发送 1 次。对焦齿轮可能打滑。每次使用前，在 50x 焦点处重新设零。
 - **Recording** 中的 **Save snapshot** 保存 1 张 PNG。**Snapshot path** 留空时使用服务默认路径，也可以输入不含 `.` 或 `..` 段的相对路径。
 - **Start recording** 和 **Record next furnace sequence** 带 **Run name**、**Mode**、**Interval s** 和 **Output fps** 发送录制命令。**Live** 不使用间隔。录制失败时显示错误。
 - **Turn stabilization on** 和 **Turn stabilization off** 开关防抖。
+
+#### 转盘校准
+
+在 **Turret calibration** 中记录各物镜的手动定位图像。只要求当前物镜标记清晰且完整可见。物镜标记边长约为 8 mm，对应关系为 ID 0 = 5x、ID 1 = 10x、ID 2 = 20x、ID 3 = 50x。
+
+1. 获取显微镜控制权。建议先手动把对焦轴移到界面显示的避让位置。点击 **New profile**，填写配置名称。
+2. 点击 **Start calibration**。它只释放转盘电机，不移动对焦轴。
+3. 手动把当前物镜卡入定位点。检查 Camera3 画面，再点击 **Record**。点击 **Next**，依次记录全部 4 个物镜。**Retake** 替换当前物镜的图像。
+4. 检查已记录的图像。记录全部 4 个物镜后，点击 **Finish calibration**。再点击 **Save & use**，保存并选择该配置。如须提前结束，点击 **End session**。再用 **Save profile** 保存未完成的配置。
+
+**Live** 显示实时画面，**Captured** 显示当前物镜的已记录图像。离开工作区后，校准轮询和预览停止。采集或上传失败时，页面显示错误并保留已有图像。
+
+已存配置列表支持 **Select**、**Download** 和 **Delete**。**Select** 与 **Lens calibration** 均可选择完整配置。未完成的配置使用 **Load draft** 加载。再次点击 **Start calibration** 可继续采集，摄像头和对焦位置必须与草稿一致。**Upload JSON** 接受不超过 2 MiB 的配置文件。
+
+对齐使用已记录的图像坐标。保持 Camera3 固定。移动或转动 Camera3，或改变其对焦、变焦后，重新记录全部 4 个物镜。
+
+完整配置包含全部 4 个物镜的记录。记录时的对焦位置仅供参考，不影响配置是否完整或可选。未知位置保留为未知，不按 `0` 处理。界面以整步显示避让位置和已知的记录位置。自动移动前，当前对焦零点必须已知。转盘转动前，对焦轴必须到达已配置的避让位置。
+
+对焦未归零或配置无法用于自动切换时，界面显示提示。已选配置失效时，界面显示错误。
 
 ### 离线运行
 
@@ -195,6 +215,8 @@ uv run --no-default-groups --group vision python scripts/console_preview.py
 ```
 
 打开 `http://127.0.0.1:8790/lab/#twin`。预览使用实际控制台资源和数字孪生接口，摄像头图像为固定的模拟图像。它不连接 VPN 或 Olares。
+
+打开 `http://127.0.0.1:8790/lab/#process` 可预览转盘校准。Camera3 使用 `1280 × 720` 模拟图像。**Start calibration**、逐物镜记录和配置操作使用本地模拟服务，不要求实际显微镜控制权。配置保存在 `work/console-preview/calibration/microscope/turret_profiles/`。
 
 设备控制不可用。本地校准配置保存在 `work/console-preview/`，不修改 Olares 上的配置。首次启动会创建 Mock stage 配置，可用于监控和配置管理检查。固定图像无法验证端点校准或实际精度。
 

@@ -62,7 +62,7 @@ def main(
             port=args.port,
             threads=6,
             clear_untrusted_proxy_headers=False,
-            max_request_body_size=65537,
+            max_request_body_size=12 * 1024 * 1024 + 64 * 1024,
         )
         service.start()
         server.run()

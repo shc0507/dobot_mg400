@@ -1,8 +1,9 @@
-"""Serve the real Console UI and offline Digital Twin on native Windows or Linux.
+"""Serve the Console UI with offline stage and turret calibration previews.
 
 Run ``python scripts/console_preview.py`` and open ``http://127.0.0.1:8790/lab/#twin``.
 Profiles persist in ``work/console-preview``. Device controls remain unavailable.
-The fixed camera scene supports UI checks, not device motion or live calibration.
+Open ``#process`` for synthetic turret capture and profile management.
+The fixed camera scenes support UI checks, not device motion or live calibration.
 """
 
 import argparse
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from labkit.errors import ServiceError  # noqa: E402
 from orchestrator.clients import SERVICES  # noqa: E402
 from orchestrator.web.console_routes import console_blueprints  # noqa: E402
+from orchestrator.web.turret_preview import TurretPreview  # noqa: E402
 from orchestrator.web.twin import ProfileStore  # noqa: E402
 from orchestrator.web.workspaces.cameras import SourceError  # noqa: E402
 from vision.stage_twin import ENDPOINTS, capture_endpoint, new_profile  # noqa: E402
@@ -140,6 +142,9 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
         console=console,
         dashboard=dashboard,
         camera_sources=OfflineCameras(),
+        turret_preview=TurretPreview(
+            Path(storage_root) / "calibration" / "microscope" / "turret_profiles"
+        ),
         dashboard_configured=lambda name: name == "stage",
         console_client=lambda name, *args: stage if name == "stage" else None,
     )

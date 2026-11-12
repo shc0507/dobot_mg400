@@ -26,6 +26,7 @@ VOLATILE = (
     "version",
     "sampled_at",
     "sample_time",
+    "fps",
     "frames",
     "frame_age_s",
     "frame_sequence",

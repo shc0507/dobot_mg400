@@ -9,11 +9,11 @@ source = "WuLabPrinceton/Visual-Localization@cc329b3 models/download_manifest.js
 license = "AGPL-3.0"
 
 [twin-model]
-url = "https://github.com/shc0507/dobot_mg400/releases/download/twin-model-v1/twin.glb"
-sha256 = "9a22eccd158ea96442fcb69b4392dac22881ff3f1a6350ea900bf5d698bc339e"
-bytes = 3427844
+url = "https://github.com/shc0507/dobot_mg400/releases/download/twin-model-v2/twin.glb"
+sha256 = "1cf153e44ffe8d68d1f3edb60b896b7d8fcacf02f62f419b220bfc8d9d7028bc"
+bytes = 3447272
 install = "/var/lib/mg400/twin/twin.glb"
 mode = "0640"
 service = "orch"
 source = "Bench twin authoring folder, build.py --console (Draco GLB)"
-license = "Project internal; MG400 link meshes from HarvestX MG400_ROS2 (Apache-2.0)"
+license = "Project internal; MG400 links cut from Dobot's MG400 STEP model"

@@ -19,7 +19,18 @@ STALE_S = 3
 SAMPLE_S = 10.0
 KEEP_S = 30 * 24 * 3600
 PRUNE_S = 3600.0
-VOLATILE = ("ts_unix", "seq")
+# Top-level state keys that change at each read. A change in only these keys writes no row.
+VOLATILE = (
+    "ts_unix",
+    "seq",
+    "version",
+    "sampled_at",
+    "sample_time",
+    "frames",
+    "frame_age_s",
+    "frame_sequence",
+    "camera_stats",
+)
 
 
 def _flag(value):

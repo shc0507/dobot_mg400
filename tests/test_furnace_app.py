@@ -216,7 +216,11 @@ def test_contract_command_has_completed_id_and_events(service):
     result = response.get_json()
     assert result["command_id"] == result["state"]["last_command"]["id"]
     assert result["state"]["last_command"]["result"] == "ok"
-    assert client.get("/api/events").get_json()["events"]
+    finished = client.get("/api/events").get_json()["events"][-1]
+    assert finished["message"] == "Furnace command finished"
+    assert finished["fields"]["params"] == {"temperature_c": 30, "ramp_rate_c_per_min": 5}
+    assert finished["fields"]["action"] == "apply_setpoint"
+    assert finished["fields"]["result"] == "ok" and finished["fields"]["client"]
 
 
 @pytest.mark.parametrize(

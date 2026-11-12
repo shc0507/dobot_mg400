@@ -177,7 +177,7 @@ class FurnaceWebService:
             self._serial += 1
             return self._serial
 
-    def _finish(self, serial, action, client, result, message=""):
+    def _finish(self, serial, action, client, result, message="", params=None):
         value = dict(
             id=str(serial),
             action=action,
@@ -192,7 +192,12 @@ class FurnaceWebService:
         self.events.add(
             "info" if result in ("ok", "stopped") else "warning",
             "Furnace command finished",
-            command=value,
+            command_id=value["id"],
+            action=action,
+            params=params or {},
+            client=client,
+            result=result,
+            message_detail=message,
         )
 
     def _execute(self, action, args, client):
@@ -236,16 +241,16 @@ class FurnaceWebService:
             else:
                 self.lifecycle.inspect_gas_flow(args["channel_index"], client=client)
         except (ValueError, ServiceError) as error:
-            self._finish(serial, action, client, "rejected", str(error))
+            self._finish(serial, action, client, "rejected", str(error), args)
             raise
         except Exception as error:
-            self._finish(serial, action, client, "failed", str(error))
+            self._finish(serial, action, client, "failed", str(error), args)
             raise ServiceError(503, str(error)) from error
         state = self.lifecycle.status()
         if state["locked"]:
-            self._finish(serial, action, client, "failed", state["fault"]["message"])
+            self._finish(serial, action, client, "failed", state["fault"]["message"], args)
             raise ServiceError(409, state["fault"]["message"])
-        self._finish(serial, action, client, "ok")
+        self._finish(serial, action, client, "ok", "", args)
         return str(serial)
 
     def command(self, action, args, client):

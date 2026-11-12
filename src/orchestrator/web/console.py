@@ -709,6 +709,7 @@ class Console:
                     stamp if type(stamp) in {int, float} else time.time(),
                     level if level in {"debug", "info", "warning", "error", "critical"} else "info",
                     text(event.get("message")) or "",
+                    event.get("fields") if isinstance(event.get("fields"), dict) else {},
                 )
             )
         self.service.store.add_device_events(rows)

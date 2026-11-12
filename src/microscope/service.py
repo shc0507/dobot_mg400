@@ -1860,6 +1860,8 @@ class MicroscopeService:
                 "Microscope command finished",
                 command_id=job.ident,
                 action=job.action,
+                params=job.args,
+                client=job.client,
                 result=outcome,
                 message_detail=message,
             )

@@ -25,7 +25,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | --- | --- |
 | `labctl all state` | 所有设备的状态、控制持有者和当前运行 |
 | `labctl all session` | 本会话的设备和剩余空闲时间（`idle_left_s`） |
-| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id` |
+| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id`。`fields` 是事件详情，例如 `action`、`params`、`client` 和 `result` |
 | `labctl all history [--device D] [--from T] [--to T]` | 已保存的设备状态记录，最新在前。`T` 是 Unix 时间 |
 | `labctl <device> state` | 1 台设备的完整状态、持有者和 `mine` |
 | `labctl <device> describe` | 服务列出的命令及其 JSON Schema |

@@ -56,10 +56,10 @@ class Device:
             "start_sync": {"params": {"type": "object"}, "any_client": False},
         }
 
-    def event(self, level, message, ts):
+    def event(self, level, message, ts, **fields):
         self.seq += 1
         self.events.append(
-            {"seq": self.seq, "ts_unix": ts, "level": level, "message": message, "fields": {}}
+            {"seq": self.seq, "ts_unix": ts, "level": level, "message": message, "fields": fields}
         )
 
     def _maybe_fail(self, call):
@@ -492,7 +492,7 @@ def test_ambiguous_take_cleans_up_its_own_identity_once(rig):
 
 
 def test_events_are_stored_newest_first_and_kept_after_service_restart(rig):
-    rig.devices["stage"].event("info", "Stage moved", 10.0)
+    rig.devices["stage"].event("info", "Stage moved", 10.0, action="move", result="ok")
     rig.devices["robot"].event("warning", "Robot alarm " + PRIVATE, 12.0)
     rig.devices["stage"].event("error", "Stage fault", 11.0)
     console = rig.service.console
@@ -509,6 +509,7 @@ def test_events_are_stored_newest_first_and_kept_after_service_restart(rig):
         "Stage fault",
         "Stage moved",
     ]
+    assert service_rows[-1]["fields"] == {"action": "move", "result": "ok"}
     collect()
     assert len([row for row in console.event_report()["events"] if row["service"] != "runs"]) == 3
     stage = rig.devices["stage"]
@@ -700,7 +701,9 @@ def test_lent_devices_refuse_page_commands_but_accept_stops(rig, monkeypatch):
     assert post(rig, "command/stage", {"action": "move"}, page=AGENT).status_code == 202
 
 
-def test_history_route_keeps_state_changes_and_samples_values(rig):
+def test_history_route_keeps_state_changes_and_samples_values(rig, monkeypatch):
+    from orchestrator import devices as devices_module
+
     stage = rig.devices["stage"]
     devices = rig.service.devices
 
@@ -718,5 +721,12 @@ def test_history_route_keeps_state_changes_and_samples_values(rig):
     devices.fresh("stage")
     assert [row["row"]["busy"] for row in rows()] == [True, False]
     assert rows()[0]["state"]["position"] == 1.0
+    monkeypatch.setattr(devices_module, "SAMPLE_S", 0.0)
+    stage.state = {**stage.state, "sampled_at": 6.0, "seq": 9}
+    devices.fresh("stage")
+    assert len(rows()) == 2  # Read-time fields alone write no row.
+    stage.state = {**stage.state, "position": 2.0}
+    devices.fresh("stage")
+    assert len(rows()) == 3
     response = rig.client.get("/lab/api/console/history?device=nope", headers=headers())
     assert response.status_code == 404

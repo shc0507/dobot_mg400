@@ -97,6 +97,7 @@ class RunStore:
                 CREATE TABLE IF NOT EXISTS device_events (
                     id INTEGER PRIMARY KEY, device TEXT NOT NULL, seq INTEGER NOT NULL,
                     ts REAL, level TEXT NOT NULL, message TEXT NOT NULL,
+                    fields_json TEXT NOT NULL DEFAULT '{}',
                     UNIQUE(device, seq, ts)
                 );
                 CREATE TABLE IF NOT EXISTS device_states (
@@ -105,7 +106,13 @@ class RunStore:
                 );
                 CREATE INDEX IF NOT EXISTS device_events_ts ON device_events(ts);
                 CREATE INDEX IF NOT EXISTS device_states_ts ON device_states(device, ts);
+                DROP TABLE IF EXISTS gateway_calls;
             """)
+            columns = {row[1] for row in self._db.execute("PRAGMA table_info(device_events)")}
+            if "fields_json" not in columns:
+                self._db.execute(
+                    "ALTER TABLE device_events ADD COLUMN fields_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def _check(self, path, *, directory=False):
         info = path.lstat()
@@ -477,12 +484,12 @@ class RunStore:
             raise ValueError("Cannot read artifact safely.") from error
 
     def add_device_events(self, rows):
-        """Insert (device, seq, ts, level, message) rows; skip rows already stored."""
+        """Insert (device, seq, ts, level, message, fields) rows; skip rows already stored."""
         with self._lock, self._db:
             self._db.executemany(
-                "INSERT OR IGNORE INTO device_events(device,seq,ts,level,message) "
-                "VALUES(?,?,?,?,?)",
-                rows,
+                "INSERT OR IGNORE INTO device_events(device,seq,ts,level,message,fields_json) "
+                "VALUES(?,?,?,?,?,?)",
+                [(*row[:5], encoded(row[5])) for row in rows],
             )
 
     def add_device_state(self, device, ts, phase, row, state):
@@ -511,9 +518,18 @@ class RunStore:
 
     def device_events(self, *, device=None, since=0, start=None, end=None, limit=500):
         """Return stored device events, newest first. id is the cursor for since."""
-        return self._device_rows(
-            "device_events", "id,device,seq,ts,level,message", device, since, start, end, limit
+        rows = self._device_rows(
+            "device_events",
+            "id,device,seq,ts,level,message,fields_json",
+            device,
+            since,
+            start,
+            end,
+            limit,
         )
+        for row in rows:
+            row["fields"] = json.loads(row.pop("fields_json"))
+        return rows
 
     def device_states(self, *, device=None, start=None, end=None, limit=500):
         """Return stored device state rows, newest first."""

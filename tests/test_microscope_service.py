@@ -393,6 +393,8 @@ def test_turret_turns_follow_clearance_moves_and_fresh_reference_checks(demo_rig
     state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "ok", state
     assert state["objective_id"] == 2 and len(state["last_result"]["switches"]) == 2
+    finished = rig.service.events.since()["events"][-1]["fields"]
+    assert finished["params"] == {"id": 2} and finished["client"] == state["last_command"]["client"]
     moves = [item for item in rig.port.commands if item.startswith(("FOCUS MOVE ", "OBJ MOVE "))]
     assert moves == [
         "FOCUS MOVE 60",

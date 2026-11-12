@@ -64,10 +64,13 @@
   function eventRow(item) {
     const { el, deviceName } = view.api;
     const marked = item.level && item.level !== "info" && item.level !== "debug";
+    const fields = item.fields || {};
+    const detail = [fields.action, fields.result, fields.message_detail].filter(value => typeof value === "string" && value).join(" · ");
     return el("div", { class: "lc-event level-" + item.level },
       el("span", { class: "lc-mono", text: clock(item.ts_unix) }),
       el("span", { class: "lc-event-src", text: deviceName(item.service) }),
-      el("span", { class: "lc-event-text" }, marked ? el("span", { class: "lc-event-level", text: item.level }) : null, item.message));
+      el("span", { class: "lc-event-text" }, marked ? el("span", { class: "lc-event-level", text: item.level }) : null, item.message,
+        detail ? el("span", { class: "lc-muted", text: " · " + detail }) : null));
   }
 
   /** One press sends the stop. The stop result band of the shell shows the outcome. A stop is never disabled. */

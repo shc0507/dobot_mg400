@@ -23,6 +23,14 @@ from .suction import PRESSURE_DO, bit, command_text
 from .suction import STEPS as VACUUM_STEPS
 
 
+def _rest(joints, mode):
+    """Joints that rest and agreement checks compare: J1-J3 while disabled (mode 4), else all four.
+
+    A disabled J4 has no holding torque, and the tool's gas tube turns it after every disable.
+    """
+    return tuple(joints)[:3] if mode == 4 else tuple(joints)
+
+
 class TargetRejectedError(ValueError):
     """The target was rejected before its movement command was sent."""
 
@@ -569,7 +577,10 @@ class JointControl:
                     raise RuntimeError("Control stopped before command was sent")
                 if pending is not None:
                     sample, _ = self._fresh(pending["send_modes"])
-                    if not self._near(sample.joints_deg, pending["expected"]):
+                    if not self._near(
+                        _rest(sample.joints_deg, sample.mode),
+                        _rest(pending["expected"], sample.mode),
+                    ):
                         raise RuntimeError("Robot moved before command was sent")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -668,12 +679,14 @@ class JointControl:
                     minimum = tuple(map(min, zip(minimum, sample.joints_deg, strict=True)))
                     maximum = tuple(map(max, zip(maximum, sample.joints_deg, strict=True)))
                 ready = sample.mode in final_modes and (
-                    target is None or self._near(sample.joints_deg, target)
+                    target is None or self._near(sample.joints_deg[: len(target)], target)
                 )
                 if not ready:
                     anchor = stable_since = None
                     count = 0
-                elif anchor is None or not self._near(sample.joints_deg, anchor, 0.025):
+                elif anchor is None or not self._near(
+                    _rest(sample.joints_deg, sample.mode), _rest(anchor, sample.mode), 0.025
+                ):
                     anchor, stable_since, count = sample.joints_deg, received, 1
                 else:
                     count += 1
@@ -693,7 +706,9 @@ class JointControl:
         self._fresh(modes)
         mode, joints = self._dashboard_state()
         sample, _ = self._fresh(modes)
-        if mode != sample.mode or not self._near(joints, sample.joints_deg):
+        if mode != sample.mode or not self._near(
+            _rest(joints, mode), _rest(sample.joints_deg, mode)
+        ):
             delta = tuple(
                 actual - reference
                 for actual, reference in zip(
@@ -722,11 +737,13 @@ class JointControl:
         if mode == 4:
             current_mode, current_joints = self._dashboard_state()
             sample = self._fresh({4})[0]
-            if current_mode != 4 or not self._near(current_joints, sample.joints_deg):
+            if current_mode != 4 or not self._near(
+                _rest(current_joints, 4), _rest(sample.joints_deg, 4)
+            ):
                 raise RuntimeError("Disabled stationary state was not confirmed before enable")
             if stationary_error is not None or (
-                not self._near(current_joints, stationary.joints_deg)
-                or not self._near(sample.joints_deg, stationary.joints_deg)
+                not self._near(_rest(current_joints, 4), _rest(stationary.joints_deg, 4))
+                or not self._near(_rest(sample.joints_deg, 4), _rest(stationary.joints_deg, 4))
             ):
                 error = stationary_error or RuntimeError(
                     "Disabled stationary state was not confirmed before enable"
@@ -840,13 +857,15 @@ class JointControl:
                     "EnableRobot()", modes={4, 5}, send_modes={4}, expected=joints
                 )
             stage = "after EnableRobot()" if mode == 4 else "already enabled idle check"
-            sample = self._wait_stable(joints, modes={4, 5}, final_modes={5})
+            # From a disabled start, J4 holds wherever the tube left it at EnableRobot().
+            expected = _rest(joints, mode)
+            sample = self._wait_stable(expected, modes={4, 5}, final_modes={5})
             actual_mode, actual = self._dashboard_state()
             sample = self._fresh({5})[0]
             if (
                 actual_mode != 5
-                or not self._near(actual, joints)
-                or not self._near(sample.joints_deg, joints)
+                or not self._near(actual[: len(expected)], expected)
+                or not self._near(sample.joints_deg[: len(expected)], expected)
             ):
                 raise RuntimeError("Enabled idle state was not confirmed")
             return sample

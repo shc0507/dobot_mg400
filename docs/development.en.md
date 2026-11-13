@@ -551,6 +551,7 @@ The current position and path are checked against the original ranges.
 When the current position is within the original range, it can move from the margin area toward an allowed target.
 J4 uses the manufacturer's ±360° range. Its allowed target range is ±358.95°.
 Angles use raw controller readings without adding or subtracting 360°.
+While the robot is disabled, the rest check and the angle agreement checks use J1–J3 only. A disabled J4 has no holding torque, and the tool's gas tube turns it.
 
 The conditional J2 lower limit and `J3−J2` check retain the
 [HarvestX reference model limits](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_common/include/mg400_common/kinematics.hpp).

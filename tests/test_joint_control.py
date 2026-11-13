@@ -660,7 +660,7 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
             jitter_stage == "precheck" or ("EnableRobot()", 29999) in commands
         )
         offset = jitter_deg if jitter_active and int((now[0] - 10.0) / 0.1) % 2 else 0.0
-        sample[0] = Feedback((*START[:3], START[3] + offset), sample[0].mode, 0, False)
+        sample[0] = Feedback((*START[:2], START[2] + offset, START[3]), sample[0].mode, 0, False)
         return sample[0], now[0]
 
     control.feedback_snapshot = feedback
@@ -676,7 +676,7 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
         with pytest.raises(PreparationRejectedError, match="Wait until the robot") as failure:
             fresh_control.enable()
         diagnostic = str(failure.value.__cause__)
-        assert "joint_span_deg=(0.0, 0.0, 0.0, 0.026)" in diagnostic
+        assert "joint_span_deg=(0.0, 0.0, 0.026, 0.0)" in diagnostic
         assert not fresh_control.stopped and not fresh_control.busy
         assert fresh_control._pending is None and fresh_control._stop_result is None
         assert not any(text in {"EnableRobot()", "ResetRobot()"} for text, _ in commands)
@@ -692,7 +692,7 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
         assert diagnostic.count("Robot did not reach a fresh, verified stationary state") == 2
         assert "physical stop not confirmed" in diagnostic
         assert diagnostic.endswith("use the physical emergency stop")
-        assert "joint_span_deg=(0.0, 0.0, 0.0, 0.026)" in diagnostic
+        assert "joint_span_deg=(0.0, 0.0, 0.026, 0.0)" in diagnostic
         assert fresh_control.stopped
         assert not fresh_control.stop()["stationary_verified"]
         assert "stage=after EnableRobot()" in diagnostic
@@ -732,7 +732,7 @@ def test_disabled_stationary_timeout_rechecks_safety_before_allowing_retry(rig, 
 
     def feedback():
         offset = 0.026 if int((now[0] - 10.0) / 0.1) % 2 else 0.0
-        sample[0] = Feedback((*START[:3], START[3] + offset), 4, 0, False)
+        sample[0] = Feedback((*START[:2], START[2] + offset, START[3]), 4, 0, False)
         return sample[0], now[0]
 
     control.feedback_snapshot = feedback
@@ -753,7 +753,7 @@ def test_disabled_stationary_timeout_rechecks_safety_before_allowing_retry(rig, 
                 if fault == "stale":
                     control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
                 if fault == "source_difference":
-                    return ",".join(map(str, (*START[:3], START[3] + 0.2, 0, 0)))
+                    return ",".join(map(str, (*START[:2], START[2] + 0.2, START[3], 0, 0)))
                 if fault in {"cancelled", "disabling"}:
                     control.cancel(disabling=fault == "disabling")
                 if fault == "uncertain":
@@ -932,7 +932,7 @@ def test_disable_after_confirmed_stop_requires_new_stop_verification(
 
     def feedback():
         if drift_started[0] is not None:
-            joints = (*START[:3], START[3] - (now[0] - drift_started[0]))
+            joints = (*START[:2], START[2] - (now[0] - drift_started[0]), START[3])
             sample[0] = Feedback(joints, 4, 0, False)
         return sample[0], now[0]
 
@@ -976,7 +976,8 @@ def test_disable_during_drift_does_not_allow_enable_or_prove_rest(rig, monkeypat
     control, sample, now, commands = rig
 
     def feedback():
-        sample[0] = Feedback((*START[:3], START[3] + now[0] - 10.0), sample[0].mode, 0, False)
+        joints = (*START[:2], START[2] + now[0] - 10.0, START[3])
+        sample[0] = Feedback(joints, sample[0].mode, 0, False)
         return sample[0], now[0]
 
     control.feedback_snapshot = feedback
@@ -1004,6 +1005,25 @@ def test_disable_during_drift_does_not_allow_enable_or_prove_rest(rig, monkeypat
     assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == [
         "DisableRobot()",
     ]
+
+
+def test_disabled_j4_turning_alone_proves_rest_and_allows_enable(rig, monkeypatch):
+    # A disabled J4 has no holding torque; the suction tube turns it after every disable.
+    control, sample, now, commands = rig
+
+    def feedback():
+        joints = START if sample[0].mode == 5 else (*START[:3], START[3] + 40 * (now[0] - 10.0))
+        sample[0] = Feedback(joints, sample[0].mode, 0, False)
+        return sample[0], now[0]
+
+    control.feedback_snapshot = feedback
+    assert control.disable().mode == 4
+    assert control.verify_stationary().mode == 4
+
+    fresh_control = JointControl(control.host, control.feedback_snapshot)
+    monkeypatch.setattr(fresh_control, "_command", control._command)
+    assert fresh_control.enable().mode == 5
+    assert "EnableRobot()" in [text for text, _ in commands]
 
 
 def test_disable_does_not_require_stationary_angle_agreement(rig, monkeypatch):
@@ -1188,14 +1208,14 @@ def test_stationary_timeout_reports_observed_joint_span_and_stable_dwell(rig, mo
     def fresh(modes):
         step = int((now[0] - 10.0 + 0.000001) / 0.1)
         offset = (0.0, 0.01, 0.03, 0.04)[step]
-        return Feedback((*START[:3], START[3] + offset), 4, 0, False), 10.0 + step * 0.1
+        return Feedback((*START[:2], START[2] + offset, START[3]), 4, 0, False), 10.0 + step * 0.1
 
     monkeypatch.setattr(control, "_fresh", fresh)
     with pytest.raises(TimeoutError) as failure:
         control._wait_stable(modes={4}, final_modes={4}, timeout=0.36)
     diagnostic = str(failure.value)
     assert "samples=4" in diagnostic
-    assert "joint_span_deg=(0.0, 0.0, 0.0, 0.04)" in diagnostic
+    assert "joint_span_deg=(0.0, 0.0, 0.04, 0.0)" in diagnostic
     assert "longest_stable_s=0.100" in diagnostic
     assert "required_stable_s=0.4" in diagnostic
     assert "tolerance_deg=0.025" in diagnostic
@@ -2076,8 +2096,8 @@ def test_linear_move_rechecks_start_after_preflight(cartesian_rig, monkeypatch):
 
 def test_preflight_returns_latest_verified_passive_baseline(rig, monkeypatch):
     control, _, now, commands = rig
-    dashboard = (*START[:3], START[3] - 0.06)
-    latest = (*START[:3], START[3] + 0.02)
+    dashboard = (*START[:2], START[2] - 0.06, START[3])
+    latest = (*START[:2], START[2] + 0.02, START[3])
     monkeypatch.setattr(control, "_dashboard_state", lambda: (5, dashboard))
 
     def feedback():
@@ -2095,7 +2115,7 @@ def test_preflight_returns_latest_verified_passive_baseline(rig, monkeypatch):
 def test_enable_accepts_a_new_settled_position_only_while_disabled(rig, monkeypatch, initial_mode):
     control, sample, now, commands = rig
     sample[0] = Feedback(START, initial_mode, 0, False)
-    settled = (*START[:3], START[3] + 0.2)
+    settled = (*START[:2], START[2] + 0.2, START[3])
 
     def feedback():
         joints = START if now[0] < 10.1 else settled
@@ -2148,7 +2168,7 @@ def test_disabled_preflight_rechecks_settled_state_before_enable(rig, monkeypatc
     sample[0] = Feedback(START, 4, 0, False)
     original_command = control._command
     mode_reads = 0
-    changed = (*START[:3], START[3] + 0.11)
+    changed = (*START[:2], START[2] + 0.11, START[3])
 
     def command(text, *args, **kwargs):
         nonlocal mode_reads
@@ -2165,8 +2185,8 @@ def test_disabled_preflight_rechecks_settled_state_before_enable(rig, monkeypatc
                 return "[[1],[],[],[],[]]"
             if text == "GetAngle()":
                 if fault == "source_difference":
-                    sample[0] = Feedback((*START[:3], START[3] - 0.09), 4, 0, False)
-                    return ",".join(map(str, (*START[:3], START[3] + 0.09, 0, 0)))
+                    sample[0] = Feedback((*START[:2], START[2] - 0.09, START[3]), 4, 0, False)
+                    return ",".join(map(str, (*START[:2], START[2] + 0.09, START[3], 0, 0)))
                 if fault == "stale":
                     control.feedback_snapshot = lambda: (sample[0], now[0] - 1)
                 if fault in {"passive_angles", "both_angles"}:
@@ -2197,7 +2217,7 @@ def test_disabled_preflight_still_rejects_initial_source_mismatch(rig, monkeypat
 
     def command(text, *args, **kwargs):
         if text == "GetAngle()":
-            return ",".join(map(str, (*START[:3], START[3] + 0.2, 0, 0)))
+            return ",".join(map(str, (*START[:2], START[2] + 0.2, START[3], 0, 0)))
         return original_command(text, *args, **kwargs)
 
     monkeypatch.setattr(control, "_command", command)

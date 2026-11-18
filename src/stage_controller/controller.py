@@ -128,6 +128,7 @@ class MotorController(StageReference, StageAutomation, StageContract):
         self._complete_motion_commands("stopped" if self._contract_stopping else command_result)
 
     def _lose_connection(self, exc):
+        self._stop_epoch += 1
         self._references.clear()
         self._end_sequence("failed", str(exc))
         self._complete_sequence_stops(f"Connection lost; motor stop is unconfirmed: {exc}")
@@ -192,6 +193,7 @@ class MotorController(StageReference, StageAutomation, StageContract):
 
     def disconnect(self):
         with self._lock:
+            self._stop_epoch += 1
             self._cancel_sequence()
             self._references.clear()
             if self._transport is not None:
@@ -379,6 +381,7 @@ class MotorController(StageReference, StageAutomation, StageContract):
 
     def stop_all(self):
         with self._lock:
+            self._stop_epoch += 1
             self._require_connection()
             self._cancel_sequence()
             try:

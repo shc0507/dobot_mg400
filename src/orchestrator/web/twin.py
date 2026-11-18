@@ -32,6 +32,23 @@ from vision.stage_twin.marker_registry import MARKER_GROUPS
 
 PROFILE_ROOT = Path("/var/lib/mg400/calibration/twin")
 CAMERA_LABELS = ("Stage", "Insert rail", "Microscope side", "Tray")
+_CONSOLE_LOCK = threading.Lock()
+
+
+def get_twin_console(service):
+    """Share the Console's optical calibration and frame processing across workspaces."""
+    with _CONSOLE_LOCK:
+        manager = getattr(service, "_twin_console", None)
+        if manager is None:
+            demo = bool(getattr(service, "demo", False))
+            if demo and getattr(service, "temporary", None) is None:
+                raise RuntimeError("The demo service has not started.")
+            root = Path(service.temporary.name) / "calibration" / "twin" if demo else PROFILE_ROOT
+            frames = getattr(service, "twin_frames", None) or CameraFrames(
+                getattr(service, "settings", {}), demo=demo
+            )
+            manager = service._twin_console = TwinConsole(root, frames)
+        return manager
 
 
 class CameraFrames:

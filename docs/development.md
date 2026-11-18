@@ -376,7 +376,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 | 接口 | 用途 |
 | --- | --- |
 | `GET /contract/api/describe` | 读取命令参数、限制、演示标志和租约规则 |
-| `GET /contract/api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command` |
+| `GET /contract/api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command`、`stop_epoch` |
 | `POST /contract/api/heartbeat` | 取得或续期控制租约。其他客户端占用时返回 409 |
 | `POST /contract/api/renew` | 仅续期调用者持有且未过期的租约，否则返回 409 |
 | `POST /contract/api/release` | 释放调用者的控制租约，不发送停止命令 |
@@ -386,12 +386,14 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 | `action` | 参数 | 完成判定 |
 | --- | --- | --- |
-| `move` | `motor`、`direction`、`speed`、`steps` | 新鲜反馈确认目标电机空闲后，更新 `last_command` |
+| `move` | `motor`、`direction`、`speed`、`steps` | 新鲜反馈确认电机空闲且达到请求的脉冲计数后完成 |
+| `move_guarded` | `motor`、`direction`、`speed`、`steps`、`stop_epoch` | 在同一原子操作中检查序号并启动移动。完成判定同 `move` |
 | `hold` | `motor`、`direction`、`speed`、`hold_id`、`sampled_at` | Arduino 确认开始长按。电机继续运动 |
 | `keepalive` | `motor`、`hold_id` | Arduino 确认续期长按 |
 | `release_hold` | `motor`、`hold_id` | 结束对应长按 |
 | `stop_all` | 无 | Arduino 确认停止请求。无须持有租约。故障锁定时使用专用停止接口 |
 | `set_microstep` | `microstep` | Arduino 确认细分模式 |
+| `set_microstep_guarded` | `microstep`、`stop_epoch` | 所有电机空闲时，原子检查序号并确认细分模式 |
 
 `motor` 取 `bottom`、`top` 或 `insert`，`direction` 取 `cw` 或 `ccw`。
 `speed` 是 1–1000 的整数，`steps` 是 1–100000 的整数，`microstep` 取 1、2、4、8 或 16。
@@ -400,6 +402,14 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 `sampled_at` 取自 `api/state` 的同名字段，必须在服务时钟的最近 2 秒内。
 `release_hold` 可以重复发送。它先于同一 `hold_id` 的 `hold` 到达时，服务拒绝之后到达的 `hold`。
 服务拒绝缺少或多余的参数。
+
+取得控制权后，读取状态中的非负整数 `stop_epoch`。发送 `move_guarded` 时携带该值。服务在启动运动的同一把锁内检查它。序号已改变时返回 409，阻止排队中的命令继续已取消的序列。
+
+`set_microstep_guarded` 在改变模式前执行相同的序号检查。它保留序号，不发送 STEP 脉冲。后续 `move_guarded` 命令使用原序号。不要通过刷新序号来继续已取消的序列。模式变化仍会清除全部 3 轴的零点参考和软限位。
+
+停止、租约归属变化、断开连接、通信丢失、手动运动命令和不带序号保护的细分命令都会增加 `stop_epoch`。租约续期保留该序号。取消后，先读取当前状态，再启动新序列。
+
+`move` 和 `move_guarded` 可在未回零时确认有界的相对脉冲计数。此结果确认脉冲，不确认实际行程。未确认参考时，电机的 `position_mm` 保持 `null`。
 
 控制租约默认有效 3 秒，长按仍须在 1 秒内单独续期。
 长按续期不续期控制租约。

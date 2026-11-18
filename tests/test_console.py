@@ -221,21 +221,15 @@ def post(rig, path, data=None, page="console-page-a"):
     )
 
 
-def test_console_font_covers_every_chinese_string():
-    """The console serves its own Chinese face. A new Chinese string needs a new font subset."""
+def test_console_fonts_are_local_with_system_fallbacks():
+    """New translated text can use system fonts without rebuilding the bundled subset."""
     web = Path(console_module.__file__).parent
-    covered = set((web / "static/console/wulab-sans-sc.txt").read_text(encoding="utf-8"))
-    used: set[str] = set()
-    for path in web.rglob("*"):
-        if path.suffix in {".py", ".js", ".html"}:
-            used |= set(
-                re.findall(
-                    r"[\u3000-\u303f\u3400-\u9fff\uff00-\uffef]", path.read_text(encoding="utf-8")
-                )
-            )
-    missing = "".join(sorted(used - covered))
-    assert not missing, f"Run scripts/console_font.py (see its docstring). Missing: {missing}"
     css = (web / "static/console/shell.css").read_text(encoding="utf-8")
+    body = re.search(r"body\s*\{[^}]*font-family:\s*([^;]+)", css)
+    assert body is not None
+    family = body.group(1)
+    for fallback in ("system-ui", '"PingFang SC"', '"Microsoft YaHei"', "sans-serif"):
+        assert family.index('"WuLab Sans SC"') < family.index(fallback)
     for weight in (400, 600, 700):
         assert (web / f"static/console/wulab-sans-sc-{weight}.woff2").stat().st_size < 120_000
         assert f'url("wulab-sans-sc-{weight}.woff2")' in css
@@ -250,6 +244,8 @@ def test_shell_and_apis_need_no_token(rig):
         assert f'data-workspace="{name}"' in text
         assert rig.client.get(f"/lab/console-static/{name}.js").status_code == 200
     assert 'id="ws-twin"' in text
+    assert 'id="ws-sample-transfer"' in text
+    assert 'src="/lab/console-static/sample-transfer.js"' in text
     assert 'src="/lab/console-static/twin.js"' in text
     assert 'href="/lab/console-static/twin.css"' in text
     assert rig.client.get("/lab/console-static/twin.css").status_code == 200
@@ -280,6 +276,7 @@ def test_state_reports_frame_data_without_secrets(rig):
         "cameras",
         "twin",
         "process",
+        "sample-transfer",
     ]
     assert "readiness" not in body
     assert PRIVATE not in response.get_data(as_text=True)
@@ -524,6 +521,7 @@ def test_workspace_registry_needs_unique_ids_and_both_titles():
         ("cameras", 30),
         ("twin", 35),
         ("process", 40),
+        ("sample-transfer", 50),
     ]
     twin = next(item for item in workspaces if item.id == "twin")
     assert twin.title == {"en": "Digital Twin", "zh": "数字孪生"}

@@ -38,6 +38,7 @@ ORCHESTRATOR = [
     "test_dashboard*.py",
     "test_gateway*.py",
     "test_approvals.py",
+    "test_transfer_profiles.py",
 ]
 MICROSCOPE = ["test_microscope_*.py"]
 DEPLOY = ["test_deploy_*.py", "test_systemd_units.py", "test_udev_rules.py", "test_console.py"]
@@ -56,6 +57,14 @@ AREAS = [
     ("scripts/mg400_*.py", ROBOT),
     ("config/robot.toml", ROBOT),
     ("examples/*", ["test_joint_example.py"]),
+    (
+        "src/orchestrator/transfer_profiles.py",
+        ["test_transfer_profiles.py", "test_console_sample_transfer.py", "test_console_preview.py"],
+    ),
+    (
+        "src/orchestrator/transfer_motion.py",
+        ["test_console_sample_transfer.py", "test_console_preview.py"],
+    ),
     ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py"]),
     ("scripts/console_font.py", ["test_console.py"]),
     (

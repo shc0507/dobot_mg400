@@ -9,6 +9,15 @@
 
   const i18n = {
     en: {
+      "guide.title": "Getting started",
+      "guide.intro": "Your workspace for live cameras, motion, alignment and furnace controls.",
+      "guide.check.title": "Check the lab",
+      "guide.check.text": "Review device status above. Open Cameras to see the live views.",
+      "guide.control.title": "Take control",
+      "guide.control.text": "Take control of the device you need below. Only one page can control a device at a time.",
+      "guide.work.title": "Open a workspace",
+      "guide.work.text": "Use Motion, Position Finder or Furnace. Release control when you finish.",
+      "guide.stop.text": "stops the arm, stage and microscope. Use Safety to stop heat or gas.",
       "run.title": "Run", "run.status": "Status: {status}",
       "events.title": "Events · all services", "events.all": "All", "events.warnings": "Warnings",
       "events.service": "Service", "events.none": "No events yet.", "events.unavailable": "Events unavailable: {services}",
@@ -20,6 +29,15 @@
       "proposals.title": "Agent proposals", "proposals.count": "{count} waiting.",
     },
     zh: {
+      "guide.title": "开始使用",
+      "guide.intro": "查看实时相机、控制运动、检查位置和操作炉子。",
+      "guide.check.title": "检查设备",
+      "guide.check.text": "查看上方的设备状态。打开相机工作区，查看实时画面。",
+      "guide.control.title": "获取控制",
+      "guide.control.text": "在下方获取所需设备的控制权。同一设备同时只能由一个页面控制。",
+      "guide.work.title": "打开工作区",
+      "guide.work.text": "使用运动、Position Finder 或炉子工作区。完成后释放控制权。",
+      "guide.stop.text": "停止机械臂、位移台和显微镜。使用安全区的按钮停止加热或气体。",
       "run.title": "运行", "run.status": "状态：{status}",
       "events.title": "事件 · 全部服务", "events.all": "全部", "events.warnings": "警告",
       "events.service": "服务", "events.none": "暂无事件。", "events.unavailable": "事件不可用：{services}",
@@ -93,6 +111,18 @@
     const { el, t, deviceName, releaseAll, notify } = view.api;
     const n = view.n = { keys: {} };
 
+    const guide = el("section", { class: "lc-card ov-guide", "aria-labelledby": "ov-guide-title" },
+      el("div", { class: "ov-guide-heading" },
+        el("h2", { id: "ov-guide-title", text: t("guide.title") }),
+        el("p", { class: "ov-guide-intro", text: t("guide.intro") })),
+      el("ol", { class: "ov-guide-steps" }, ...["check", "control", "work"].map((step, index) =>
+        el("li", { class: "ov-guide-step" },
+          el("span", { class: "ov-guide-number", "aria-hidden": "true", text: String(index + 1).padStart(2, "0") }),
+          el("div", {}, el("h3", { text: t(`guide.${step}.title`) }),
+            el("p", { text: t(`guide.${step}.text`) }))))),
+      el("p", { class: "ov-guide-stop" },
+        el("strong", { text: t("stop.all") }), " ", t("guide.stop.text")));
+
     n.run = el("div", { class: "ov-slot" });
     n.filters = ["all", "warnings"].map(id => [id, el("button", {
       type: "button", class: "lc-filter", "aria-pressed": "false", text: t("events." + id),
@@ -130,7 +160,7 @@
     n.runCard = section("ov-run", t("run.title"), n.run);
     n.proposalsCard = section("ov-proposals", t("proposals.title"), n.proposals);
     view.root.replaceChildren(el("div", { class: "lc-layout" },
-      el("div", { class: "lc-col-main" }, controlCard, n.runCard, events),
+      el("div", { class: "lc-col-main" }, guide, controlCard, n.runCard, events),
       el("aside", { class: "lc-col-side" }, safetyCard, n.proposalsCard)));
     update();
   }

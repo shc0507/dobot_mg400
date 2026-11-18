@@ -301,6 +301,9 @@ class Dashboard:
             return any(not operation["done"].is_set() for operation in self.operations)
 
     def reserve(self, action):
+        transfer = getattr(self.service, "sample_transfer", None)
+        if action == "motion" and transfer is not None:
+            transfer.cancel()
         with self.lock:
             if self.closing or not self.service.started or self.service.closing:
                 raise ServiceError(409, "The dashboard is shutting down or has not started.")

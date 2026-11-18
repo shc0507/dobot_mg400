@@ -7,7 +7,11 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from flask import Blueprint, Flask, jsonify
+from test_console import Device
 
+from labkit.errors import ServiceError
+from labkit.events import EventLog
 from orchestrator.app import DemoResources, OrchestratorService, create_app
 from orchestrator.web import console as console_module
 from orchestrator.web.workspaces import discover, motion
@@ -157,6 +161,102 @@ def test_unreachable_device_is_reported_without_an_error(fake, monkeypatch):
         "robot": {"available": False, "reason": "unreachable"},
         "stage": {"available": False, "reason": "unreachable"},
     }
+
+
+@pytest.fixture
+def contract_rig():
+    stage = Device("stage")
+    service = SimpleNamespace(
+        settings={"MG400_CONSOLE_COMMIT": "abc1234"},
+        events=EventLog(),
+        dashboard=SimpleNamespace(text=lambda value: value),
+        dashboard_configured=lambda name: name == "stage",
+        console_client=lambda name, identity: stage.adapter(identity),
+    )
+    service.console = console_module.Console(service, clock=Clock())
+    app = Flask(__name__)
+    blueprint = Blueprint("motion", __name__)
+    motion.register(blueprint, service)
+    app.register_blueprint(blueprint, url_prefix="/lab/api/console/ws/motion")
+    app.register_error_handler(
+        ServiceError, lambda error: (jsonify(error=error.message), error.status)
+    )
+    yield SimpleNamespace(service=service, client=app.test_client(), devices={"stage": stage})
+    service.console.close()
+
+
+@pytest.mark.parametrize("state_ports", ["legacy", [], None, [{"device": "COM3"}, "bad"]])
+def test_stage_port_listing_supports_state_and_legacy_routes(contract_rig, state_ports):
+    stage = contract_rig.devices["stage"]
+    stage.replies["api/state"] = {} if state_ports == "legacy" else {"ports": state_ports}
+    stage.replies["api/ports"] = {"ports": [{"device": "COM4", "description": "Arduino"}]}
+    response = contract_rig.client.get("/lab/api/console/ws/motion/stage/ports")
+    assert response.status_code == 200
+    expected = (
+        [{"device": "COM4", "description": "Arduino"}]
+        if state_ports == "legacy"
+        else [{"device": "COM3", "description": ""}]
+        if state_ports
+        else []
+    )
+    assert response.json == {"ports": expected}
+    requests = [(call[2], call[3]) for call in stage.calls if call[0] == "request"]
+    assert requests == [("api/state", None)] + (
+        [("api/ports", None)] if state_ports == "legacy" else []
+    )
+    assert stage.holder is None
+
+
+@pytest.mark.parametrize("described", [False, True])
+@pytest.mark.parametrize(
+    "route,body,action,params,path,data",
+    [
+        ("connect", {"port": "COM3"}, "connect", {"port": "COM3"}, "api/connect", {"port": "COM3"}),
+        (
+            "teach",
+            {"motor": "insert", "confirmed": True},
+            "teach_reference",
+            {"motor": "insert", "confirm": True},
+            "api/motors/insert/teach_reference",
+            {"confirm": True},
+        ),
+    ],
+)
+def test_stage_operator_selects_the_advertised_api_and_keeps_control(
+    contract_rig, described, route, body, action, params, path, data
+):
+    stage = contract_rig.devices["stage"]
+    if described:
+        stage.commands[action] = {"params": {"type": "object"}, "any_client": False}
+    target = "ws/motion/stage/" + route
+    assert post(contract_rig, target, body).status_code == 409
+    contract_rig.service.console.take("stage", "console-page-a")
+    assert post(contract_rig, target, body, page="other-page").status_code == 409
+    response = post(contract_rig, target, body)
+    assert response.status_code == 200
+    assert response.json == {"outcome": "accepted", "command_id": "c-1" if described else "op-1"}
+    writes = [call for call in stage.calls if call[0] in {"command", "request"}]
+    assert writes == [
+        ("command", stage.holder, action, params)
+        if described
+        else ("request", stage.holder, path, data)
+    ]
+
+
+@pytest.mark.parametrize(
+    "error_status,http_status,outcome", [(409, 409, "refused"), (0, 502, "unknown")]
+)
+def test_stage_contract_command_failure_does_not_retry_legacy_route(
+    contract_rig, error_status, http_status, outcome
+):
+    stage = contract_rig.devices["stage"]
+    stage.commands["connect"] = {"params": {"type": "object"}, "any_client": False}
+    contract_rig.service.console.take("stage", "console-page-a")
+    stage.fail["command"] = ServiceError(error_status, "Connection failed")
+    response = post(contract_rig, "ws/motion/stage/connect", {"port": "COM3"})
+    assert response.status_code == http_status and response.json["outcome"] == outcome
+    writes = [call for call in stage.calls if call[0] in {"command", "request"}]
+    assert writes == [("command", stage.holder, "connect", {"port": "COM3"})]
 
 
 # Robot and stage simulators ------------------------------------------------

@@ -11,7 +11,7 @@
 控制台是唯一的操作网页。
 
 - 页头第 1 行显示控制台名称、工作区标签、**Chip passport** 链接、本页控制的设备和语言切换。鼠标悬停在控制台名称上显示部署的提交。本页控制 1 台或多台设备时，才显示所控制的设备。第 2 行是状态条。**STOP ALL MOTION** 是页头右侧的高按钮，跨越这 2 行。
-- 工作区为 **Overview**、**Motion**、**Cameras**、**Digital Twin** 和 **Furnace + microscope**。
+- 工作区为 **Overview**、**Motion**、**Cameras**、**Position Finder**、**Furnace** 和 **Sample Transfer**。Sample Transfer 在 Position Finder 的端点之间移动插入轴，并保存命名位置。
 - 语言切换在 English 和中文之间切换。浏览器保存所选语言。
 - 在语言按钮旁选择 **Dark mode** 或 **Light mode**，切换控制台外观。默认使用浅色模式。浏览器按控制台地址保存所选模式。
 - 状态条为每个服务显示 1 个标签：圆点和文字。有运行时才显示 **Runs** 标签。需要注意的状态（例如过期、故障、不可用）带底色。状态超过 3 秒即显示过期。
@@ -44,6 +44,7 @@
 
 ### 总览工作区
 
+- **Control** 上方的 **Getting started** 介绍设备状态、相机画面、控制权、工作区和停止按钮。
 - **Run** 显示当前运行及其步骤。有运行时才显示该卡片。参见[运行控制与恢复](#运行控制与恢复)。
 - **Events** 合并各服务的 `api/events`，最新事件在前。可筛选警告或单个服务。只有警告和错误显示级别。视觉推理成功不记为事件。
 - **Safety** 提供 **Stop heat and gas** 和 **Stop all gas**。**STOP ALL MOTION** 在页头。每个按钮按 1 次即生效。结果显示在停止结果条中。
@@ -164,7 +165,7 @@ Monitor 使用所选的已保存配置。草稿修改在保存后才用于监测
 控制台将所选配置记录到 `/var/lib/mg400/calibration/twin/selection.json`。
 演示模式使用临时配置和固定的 `640x480` 合成图像，不读取主机配置或真实相机。
 
-### 炉子与显微镜工作区
+### 炉子工作区
 
 每条设备命令都通过控制台转发。先用 **Take control** 获取炉子或显微镜的控制权。**Stop heat and gas**、**Stop all gas**、**Close** 和显微镜 **Stop** 不需要控制权。
 
@@ -206,6 +207,43 @@ Monitor 使用所选的已保存配置。草稿修改在保存后才用于监测
 
 对焦未归零或配置无法用于自动切换时，界面显示提示。已选配置失效时，界面显示错误。
 
+### 样品转移工作区
+
+**Operate** 显示转移控制和当前坐标。**Calibration** 记录命名位置，并提供手动位移台调整和已存配置管理。两个视图都保留位置读数和停止按钮。
+
+在 **Position Finder** 中选择已校准插入轴行程的相机配置。**Extract Sample** 把插入轴移到 **Fully out**，即 0 mm。**Insert Sample** 把插入轴移到 **Fully in**，即配置中的插入轴行程。目标直接来自 Position Finder。Sample Transfer 配置不改变这些目标。每次操作沿用开始时的来源和目标。
+
+这两个操作保持 X 和 Y 不动。每次转移前，检查 X 和 Y 是否对齐。此工作区尚未实现芯片识别、机械臂转移或移到命名位置。
+
+记录命名位置：
+
+1. 在 **Position Finder** 中选择能测量 X、Y 和插入轴的已存配置。
+2. 打开 **Sample Transfer → Calibration**。获取位移台控制权。点击 **New profile**。输入配置名称。
+3. 用 **Manual stage adjustment** 移到目标位置。每次点击按钮发送 10 个脉冲。
+4. 输入位置名称。点击 **Record position**。
+5. 重复记录其他位置。不同位置使用不同名称。
+6. 点击 **Save profile**。之后从已存列表加载或选择配置。
+
+**Record position** 在服务器上拍摄新图像。它保存 Position Finder 的有效 X、Y 和插入轴坐标，单位为 mm。记录坐标不取自电机计数或界面之前显示的读数。记录同名位置会替换该位置。可以从草稿中删除单个位置，再保存配置。
+
+**Save profile** 保留草稿。用 **Load draft** 继续编辑。配置列表支持 **Select**、**Delete**、**Upload JSON** 和 **Download**。选择只用于查看已存位置配置，不移动位移台，也不改变 Extract/Insert 目标。
+
+转移文件使用 `sample-transfer.calibration-profile`，结构版本为 `2`。命名记录保存在 `positions` 中。服务器先校验上传文件，再保存。上传上限为 128 KiB。每个配置最多保存 64 个位置，名称最多为 120 个字符。
+
+版本 `1` 文件的旧端点加载为 **Fully out** 和 **Fully in** 命名位置。未知的 X 或 Y 坐标保持未知。加载不改写原文件。主机配置保存在 `/var/lib/mg400/calibration/sample-transfer/`。
+
+每个位置配置使用记录时的 Position Finder 配置和相机。保留该光学校准配置。移动相机后，重新校准图像坐标并记录命名位置。
+
+Extract/Insert 使用混合定位：用电机脉冲估算行程，用新的 Position Finder 图像修正下一次移动。每次点击后，所有位移台电机空闲时准备 1/8 细分。该模式适用于全部 3 轴，转移后保持不变。模式变化会清除各轴的零点参考和软限位。只有插入轴接收运动脉冲。
+
+0.9° 电机直接连接 5 mm 导程丝杆时，标称换算为 `(360 / 0.9) * 8 / 5 = 640` 脉冲/mm。标称指令分辨率为 `1 / 640` mm，不代表定位精度。操作先用短距离移动检查换算，再在远离目标时使用较大的移动批次。接近目标时，减小批次并降低脉冲速率。状态显示当前阶段、细分模式和脉冲换算。
+
+每批移动停止后再采集新的相机测量。连续 3 次一致读数距目标不超过 0.5 mm 时完成。读数缺失时，保持静止并有限重试。插入轴坐标无法读取、控制失效或细分模式改变时，操作结束。失败或结果不确定的运动命令不会自动重试。
+
+已验证的脉冲换算保存在 `/var/lib/mg400/calibration/sample-transfer/motion-scale.json`，按光学来源、位移台串口和方向区分。每次操作先检查已存换算，再移动较长距离。操作时限为 600 秒。在 640 脉冲/mm 下，1000 脉冲/秒的上限对应标称最高速度 1.5625 mm/秒。加速、相机检查和最后修正还会增加耗时。
+
+获取位移台控制权后，移动和记录按钮才可用。**STOP** 和 **STOP ALL MOTION** 不要求控制权。离开工作区或隐藏页面时，页面请求停止由它启动的运动。
+
 ### 离线运行
 
 在 Windows 或 Linux 上预览本地控制台时，从仓库根目录运行：
@@ -214,11 +252,15 @@ Monitor 使用所选的已保存配置。草稿修改在保存后才用于监测
 uv run --no-default-groups --group vision python scripts/console_preview.py
 ```
 
-打开 `http://127.0.0.1:8790/lab/#twin`。预览使用实际控制台资源和数字孪生接口，摄像头图像为固定的模拟图像。它不连接 VPN 或 Olares。
+打开 `http://127.0.0.1:8790/lab/#twin`。预览使用实际控制台资源和数字孪生接口，摄像头图像为模拟图像。它不连接 VPN 或 Olares。
 
 打开 `http://127.0.0.1:8790/lab/#process` 可预览转盘校准。Camera3 使用 `1280 × 720` 模拟图像。**Start calibration**、逐物镜记录和配置操作使用本地模拟服务，不要求实际显微镜控制权。配置保存在 `work/console-preview/calibration/microscope/turret_profiles/`。
 
-设备控制不可用。本地校准配置保存在 `work/console-preview/`，不修改 Olares 上的配置。首次启动会创建 Mock stage 配置，可用于监控和配置管理检查。固定图像无法验证端点校准或实际精度。
+打开 `http://127.0.0.1:8790/lab/#sample-transfer`，可预览命名位置记录、移动和停止。在 Position Finder 中为 Camera1 选择 `Mock stage` 配置。Camera1 标记随模拟位移台移动。转移配置保存在 `work/console-preview/calibration/sample-transfer/`。
+
+新建模拟配置使用 `3840 × 2880` 图像，以检查微小移动。已有的 `640 × 480` 配置保持不变。备份旧配置并创建新模拟配置的方法，参见[本地预览配置](../DEV_NOTE.md#配置与模拟数据)。预览耗时不能预测实际转移耗时。
+
+其他设备控制仍不可用。本地校准配置保存在 `work/console-preview/`，不修改 Olares 上的配置。首次启动会创建 `Mock stage` 配置。模拟运动无法验证实际精度或真实设备命令。
 
 修改 CSS 或 JavaScript 后，刷新浏览器。修改 Python 或 HTML 模板后，重启预览。在预览终端按 `Ctrl+C` 停止。真实摄像头的分辨率、采样耗时和设备命令仍须在 Olares 上验证。
 

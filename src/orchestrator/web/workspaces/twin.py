@@ -1,21 +1,15 @@
 """Digital Twin workspace routes; use existing Console request identity."""
 
-import threading
-from pathlib import Path
-
 from flask import Response, jsonify, request
 
 from labkit.lease import validate_client
-from orchestrator.web.twin import PROFILE_ROOT, CameraFrames, TwinConsole
+from orchestrator.web.twin import get_twin_console
 from vision.stage_twin import MAX_PROFILE_BYTES
 
 from . import Workspace
 
 
 def register(blueprint, service):
-    manager = None
-    lock = threading.Lock()
-
     @blueprint.before_app_request
     def upload_limit():
         if request.endpoint == blueprint.name + ".profile_upload":
@@ -24,19 +18,7 @@ def register(blueprint, service):
             request.max_content_length = 6 * MAX_PROFILE_BYTES + 1024
 
     def console():
-        nonlocal manager
-        with lock:
-            if manager is None:
-                demo = bool(getattr(service, "demo", False))
-                if demo and getattr(service, "temporary", None) is None:
-                    raise RuntimeError("The demo service has not started.")
-                root = (
-                    Path(service.temporary.name) / "calibration" / "twin" if demo else PROFILE_ROOT
-                )
-                manager = TwinConsole(
-                    root, CameraFrames(getattr(service, "settings", {}), demo=demo)
-                )
-            return manager
+        return get_twin_console(service)
 
     def page():
         return console().page(validate_client(request.headers.get("X-MG400-Client")))

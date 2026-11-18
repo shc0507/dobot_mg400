@@ -177,6 +177,62 @@ systemctl daemon-reload
 systemctl restart mg400-camera-preview.service
 ```
 
+### Stage test backend
+
+Use `mg400-stage-panel.service` for Sample Transfer tests to retain 1 device owner.
+The original Console and test Console share the root `/api` on port `8767`.
+Restart only when the stage is idle and has no active control lease.
+After restart, check that the service remains disconnected and all axis references are cleared.
+
+Preserve the original host `stage_controller` package.
+Create a separate copy of the package currently deployed on the host.
+Add `move_guarded`, `set_microstep_guarded` and their required changes to the copy.
+Run the stage tests.
+After verification, make `/var/lib/mg400/twin-test/stage-runtime` a symbolic link to the copy's runtime directory.
+As root, install `/etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf`:
+
+```ini
+[Service]
+WorkingDirectory=/var/lib/mg400/twin-test/stage-runtime
+ExecStart=
+ExecStart=/opt/mg400/.venv/bin/python -m stage_controller
+```
+
+The test Console must use the host's root API.
+As root, install `/etc/systemd/system/mg400-twin-test.service.d/stage-api.conf`:
+
+```ini
+[Service]
+Environment=MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/
+```
+
+Under the idle conditions above, run:
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-stage-panel.service
+systemctl restart mg400-twin-test.service
+```
+
+Poll `GET /api/describe` and `GET /api/state` at `http://127.0.0.1:8767/` until both requests succeed.
+Check that `move_guarded` and `set_microstep_guarded` are available, the service remains disconnected, and all axis references are cleared.
+The original package files and root API remain unchanged.
+`deploy/twin.py` does not manage or update this copy or the stage override file.
+For later stage changes, you must use a separate copy of the current host package.
+After you apply the changes, test this copy again.
+
+To restore the original backend, remove only the stage override file.
+Restart under the idle conditions above:
+
+```sh
+rm /etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf
+systemctl daemon-reload
+systemctl restart mg400-stage-panel.service
+```
+
+Keep the test Console's root URL so it matches the running service.
+Check the APIs, disconnected state, and cleared axis references again.
+
 ### Microscope test backend
 
 Use `mg400-microscope.service` for the turret calibration test backend to retain 1 device owner.

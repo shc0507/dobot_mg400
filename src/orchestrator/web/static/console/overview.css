@@ -1,5 +1,5 @@
 /* Overview workspace. Every rule starts with #ws-overview (or targets the page while it shows). Look: DESIGN.md.
- * Control tiles lead the main column, then the run and the events. Safety and agent proposals are on the side. */
+ * A short guide leads the main column, then control, the run and events. Safety and agent proposals are on the side. */
 /* A slot whose rows take part in the layout of its card. */
 #ws-overview .ov-slot { display: contents; }
 body:has(#ws-overview:not([hidden])) { background: var(--lc-ground); }
@@ -19,6 +19,18 @@ body:has(#ws-overview:not([hidden])) { background: var(--lc-ground); }
 #ws-overview .lc-card-head { min-height: 40px; }
 #ws-overview .lc-muted { color: var(--ov-text-2); }
 #ws-overview .lc-strong { font-weight: 600; }
+/* First-use guide */
+#ws-overview .ov-guide { padding: 26px; gap: 22px; background: linear-gradient(120deg, var(--ov-action-soft), var(--ov-card) 70%); }
+#ws-overview .ov-guide-heading { display: grid; gap: 7px; }
+#ws-overview .ov-guide h2 { font-size: 26px; letter-spacing: -0.025em; }
+#ws-overview .ov-guide-intro { color: var(--ov-text-2); font-size: 14px; line-height: 1.6; }
+#ws-overview .ov-guide-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; list-style: none; padding: 0; margin: 0; }
+#ws-overview .ov-guide-step { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 0; }
+#ws-overview .ov-guide-number { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--ov-card); color: var(--ov-action); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; box-shadow: inset 0 0 0 1px var(--ov-action-soft); }
+#ws-overview .ov-guide-step h3 { margin-bottom: 6px; font-size: 15px; font-weight: 600; }
+#ws-overview .ov-guide-step p { color: var(--ov-text-2); font-size: 13px; line-height: 1.65; }
+#ws-overview .ov-guide-stop { padding-top: 16px; border-top: 1px solid var(--ov-line); color: var(--ov-text-2); font-size: 12px; line-height: 1.6; }
+#ws-overview .ov-guide-stop strong { color: var(--ov-stop); font-weight: 600; }
 /* Run */
 #ws-overview .lc-steps { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
 #ws-overview .lc-step { gap: 2px; padding: 10px 12px; border: 0; border-radius: 12px; background: var(--ov-surface); }
@@ -74,6 +86,10 @@ body:has(#ws-overview:not([hidden])) { background: var(--lc-ground); }
   #ws-overview :is(.lc-stop, .lc-danger, .lc-button, .lc-filter):active { transform: none; }
 }
 @media (max-width: 720px) {
+  #ws-overview .ov-guide { padding: 20px; }
+  #ws-overview .ov-guide-steps { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  #ws-overview .ov-guide-step { flex-direction: row; gap: 12px; }
+  #ws-overview .ov-guide-number { flex-shrink: 0; }
   #ws-overview .lc-event { grid-template-columns: auto minmax(0, 1fr); }
   #ws-overview .lc-event > :last-child { grid-column: 1 / -1; }
 }

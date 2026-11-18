@@ -11,7 +11,7 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 The console is the only operator web page.
 
 - Row 1 of the header shows the console name, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Hover over the console name to see the deployed commit. The controlled devices show only while this page holds 1 or more devices. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
-- The workspaces are **Overview**, **Motion**, **Cameras**, **Digital Twin** and **Furnace + microscope**.
+- The workspaces are **Overview**, **Motion**, **Cameras**, **Position Finder**, **Furnace** and **Sample Transfer**. Sample Transfer moves Insert between the Position Finder endpoints and stores named stage positions.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - Select **Dark mode** or **Light mode** beside the language switch to change the dashboard appearance. Light mode is the default. The browser saves the choice for this Console address.
 - The status strip shows 1 chip for each service: a dot and a text. The **Runs** chip shows only while a run exists. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
@@ -44,6 +44,7 @@ The workspaces send manual commands through the console. The console forwards ea
 
 ### Overview workspace
 
+- **Getting started**, above **Control**, explains device status, camera views, control ownership, workspaces and stop controls.
 - **Run** shows the current run and its steps. The card shows only while a run exists. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service. Only a warning or an error shows its level. A successful vision inference is not an event.
 - **Safety** gives **Stop heat and gas** and **Stop all gas**. **STOP ALL MOTION** is in the header. Each button acts on 1 press. The stop result band shows the results.
@@ -164,7 +165,7 @@ The console saves host profiles in `/var/lib/mg400/calibration/twin/profiles/`.
 The console records the selected profile in `/var/lib/mg400/calibration/twin/selection.json`.
 Demo mode uses temporary profiles and a fixed `640x480` synthetic scene. It reads no host profiles or real cameras.
 
-### Furnace + microscope workspace
+### Furnace workspace
 
 Every device command goes through the console relay. Use **Take control** for the furnace or the microscope first. **Stop heat and gas**, **Stop all gas**, **Close** and the microscope **Stop** need no control.
 
@@ -206,6 +207,43 @@ A complete profile contains captures for all 4 objectives. Recorded focus is inf
 
 The interface shows when focus is not zeroed or the profile cannot support automatic switching. It shows an error when the selected profile is invalid.
 
+### Sample Transfer workspace
+
+**Operate** shows the transfer controls and current coordinates. **Calibration** records named positions and contains manual stage adjustment and saved profile management. Position readings and stop controls remain available in both views.
+
+In **Position Finder**, select a saved camera profile with calibrated Insert travel. **Extract Sample** moves Insert to **Fully out**, at 0 mm. **Insert Sample** moves Insert to **Fully in**, at the profile's Insert travel distance. These targets come directly from Position Finder. Sample Transfer profiles do not change them. Each operation keeps the source and target selected when it starts.
+
+These actions leave X and Y unchanged. Check their alignment before each transfer. Chip recognition, robot transfer and movement to named positions are not implemented in this workspace.
+
+Record named positions:
+
+1. In **Position Finder**, select a saved camera profile that can measure X, Y and Insert.
+2. Open **Sample Transfer → Calibration**. Take stage control. Click **New profile**. Enter a profile name.
+3. Use **Manual stage adjustment** to reach the position. Each button press sends 10 pulses.
+4. Enter a position name. Click **Record position**.
+5. Repeat for other positions. Use distinct names to keep separate records.
+6. Click **Save profile**. Use the saved list to load or select it later.
+
+**Record position** captures a new camera image on the server. It saves valid X, Y and Insert coordinates from Position Finder in mm. Motor counts and previous displayed readings do not supply the recorded coordinates. Recording an existing name replaces that position. Delete individual positions from the draft, then save the profile.
+
+**Save profile** preserves drafts. **Load draft** continues editing. The profile list supports **Select**, **Delete**, **Upload JSON** and **Download**. Selection only chooses a stored position profile for review. It does not move the stage or change the Extract/Insert targets.
+
+Transfer files use `sample-transfer.calibration-profile`, schema version `2`, with named records in `positions`. The server validates uploaded files before saving them. Uploads are limited to 128 KiB. Each profile can contain 64 positions with names of up to 120 characters.
+
+Version `1` files load their old endpoints as **Fully out** and **Fully in** named positions. Unknown X or Y coordinates stay unknown. Loading does not rewrite the original files. Host profiles persist under `/var/lib/mg400/calibration/sample-transfer/`.
+
+Each position profile uses its recorded Position Finder profile and camera. Keep that optical profile available. After repositioning the camera, repeat optical calibration and record the named positions again.
+
+Extract/Insert use hybrid positioning: motor pulses estimate travel, and new Position Finder images correct the next move. Each click prepares 1/8 stepping while all stage motors are idle. This mode applies to all 3 stage axes and remains selected after transfer. A mode change clears their zero references and soft limits. Only Insert receives movement pulses.
+
+For a directly coupled 0.9° motor and 5 mm-lead screw, the nominal scale is `(360 / 0.9) * 8 / 5 = 640` pulses/mm. Nominal command resolution is `1 / 640` mm. This is not a positioning-accuracy guarantee. The operation checks the scale with short movements, then uses larger batches when far from the target. It reduces the batch size and pulse rate near the target. The status shows the phase, stepping mode and pulse scale.
+
+Every batch stops before a new camera measurement. The operation requires 3 consistent readings within 0.5 mm of the target. Missing readings receive bounded retries while stationary. An unreadable Insert coordinate, invalidated control or changed stepping mode ends the operation. Failed or uncertain movement commands are not retried automatically.
+
+Verified pulse scales persist in `/var/lib/mg400/calibration/sample-transfer/motion-scale.json`, separately for the optical source, stage port and direction. Each new operation checks its stored scale before longer movements. The operation limit is 600 seconds. The 1000 pulses/second cap gives a nominal maximum of 1.5625 mm/second at 640 pulses/mm. Acceleration, camera checks and final corrections add time.
+
+Take stage control to enable the movement and recording buttons. **STOP** and **STOP ALL MOTION** work without control. Leaving the workspace or hiding the page requests a stop for motion started by that page.
+
 ### Run offline
 
 For a local dashboard preview on Windows or Linux, run this command from the repository root:
@@ -214,11 +252,15 @@ For a local dashboard preview on Windows or Linux, run this command from the rep
 uv run --no-default-groups --group vision python scripts/console_preview.py
 ```
 
-Open `http://127.0.0.1:8790/lab/#twin`. The preview uses the real dashboard assets and Digital Twin routes with a fixed synthetic camera image. It requires no VPN or Olares connection.
+Open `http://127.0.0.1:8790/lab/#twin`. The preview uses the real dashboard assets and Digital Twin routes with synthetic camera images. It requires no VPN or Olares connection.
 
 Open `http://127.0.0.1:8790/lab/#process` to preview turret calibration. Camera3 uses a synthetic `1280 × 720` image. **Start calibration**, objective capture and profile operations use a local simulator. They require no physical microscope control. Profiles persist under `work/console-preview/calibration/microscope/turret_profiles/`.
 
-Device controls remain unavailable. Local calibration profiles persist under `work/console-preview/` and do not change Olares profiles. The first start creates a Mock stage profile for monitor and profile management checks. The fixed image cannot validate endpoint calibration or physical accuracy.
+Open `http://127.0.0.1:8790/lab/#sample-transfer` to preview named position recording, movement and stopping. Select the `Mock stage` profile for Camera1 in Position Finder. Camera1 markers follow the synthetic stage. Transfer profiles persist under `work/console-preview/calibration/sample-transfer/`.
+
+New mock profiles use `3840 × 2880` images for fine motion checks. Existing `640 × 480` profiles remain unchanged. See [local preview profiles](../DEV_NOTE.en.md#profiles-and-mock-data) to back them up and create a new mock profile. Preview timing does not predict physical transfer duration.
+
+Other device controls remain unavailable. Local calibration profiles persist under `work/console-preview/` and do not change Olares profiles. The first start creates the `Mock stage` profile. Synthetic motion cannot validate physical accuracy or real device commands.
 
 Refresh the browser after CSS or JavaScript changes. Restart the preview after Python or HTML template changes. Use `Ctrl+C` in its terminal to stop it. Use Olares to verify real camera resolution, capture timing, and device commands.
 

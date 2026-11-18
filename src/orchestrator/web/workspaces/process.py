@@ -250,6 +250,6 @@ def register(blueprint, service):
 WORKSPACE = Workspace(
     id="process",
     order=40,
-    title={"en": "Furnace + microscope", "zh": "炉子与显微镜"},
+    title={"en": "Furnace", "zh": "炉子"},
     register=register,
 )

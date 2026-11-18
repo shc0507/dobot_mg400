@@ -25,6 +25,7 @@ class StageContract:
         self._pending_commands = {}
         self._contract_fault = None
         self._contract_stopping = 0
+        self._stop_epoch = 0
 
     def describe(self):
         motor = parameter("string", enum=list(MOTOR_IDS))
@@ -59,6 +60,15 @@ class StageContract:
                         steps=parameter("integer", minimum=1, maximum=MAX_STEPS),
                     )
                 ),
+                "move_guarded": spec(
+                    dict(
+                        motor=motor,
+                        direction=direction,
+                        speed=speed,
+                        steps=parameter("integer", minimum=1, maximum=MAX_STEPS),
+                        stop_epoch=parameter("integer", minimum=0),
+                    )
+                ),
                 "hold": spec(
                     dict(
                         motor=motor,
@@ -73,6 +83,12 @@ class StageContract:
                 "stop_all": spec({}, any_client=True),
                 "set_microstep": spec(
                     dict(microstep=parameter("integer", enum=list(MICROSTEP_MODES)))
+                ),
+                "set_microstep_guarded": spec(
+                    dict(
+                        microstep=parameter("integer", enum=list(MICROSTEP_MODES)),
+                        stop_epoch=parameter("integer", minimum=0),
+                    )
                 ),
                 "home": spec(dict(motor=motor)),
                 "zero": spec(dict(motor=motor, confirm=parameter("boolean", const=True))),
@@ -103,6 +119,8 @@ class StageContract:
                 else None
             ),
             "last_command": dict(self._last_command) if self._last_command else None,
+            # Both counters only increase. Ownership changes invalidate old moves too.
+            "stop_epoch": self._stop_epoch + self.lease.epoch,
         }
 
     def _finish_command(self, entry, result, message, *, log=True):
@@ -119,11 +137,11 @@ class StageContract:
             if self._motors[entry["motor"]].mode == "idle":
                 del self._pending_commands[command_id]
                 state = self._motors[entry["motor"]]
-                reached = self._ready(entry["motor"]) and state.position == entry["target"]
+                reached = self._feedback_fresh() and state.position == entry["target"]
                 self._finish_command(
                     entry,
                     "failed" if result == "ok" and not reached else result,
-                    "Position confirmed."
+                    "Requested pulse count confirmed."
                     if reached
                     else "Motor stopped without the requested position.",
                 )
@@ -177,15 +195,24 @@ class StageContract:
             ) and action != "stop_all":
                 raise ServiceError(409, "The service is locked. Only stop is allowed.")
             try:
+                if action in ("move_guarded", "set_microstep_guarded"):
+                    epoch = args["stop_epoch"]
+                    if type(epoch) is not int or epoch < 0:
+                        raise ValueError("The stop epoch must be a nonnegative integer.")
+                    if epoch != self._stop_epoch + self.lease.epoch:
+                        raise ControllerError("Stage motion was cancelled or control changed.")
+                    args = {key: value for key, value in args.items() if key != "stop_epoch"}
+                elif action in ("move", "hold", "home", "goto", "pose", "set_microstep"):
+                    self._stop_epoch += 1
                 self._automation_client = client
-                if action in ("move", "hold", "keepalive") or (
+                if action in ("move", "move_guarded", "hold", "keepalive") or (
                     action == "awake" and args["seconds"] != 0
                 ):
                     self._require_connection()
                     self._read_status()
                     if args["motor"] not in MOTOR_IDS:
                         raise ValueError("Choose a valid motor.")
-                    if action == "move":
+                    if action in ("move", "move_guarded"):
                         # Validate before arithmetic and before any serial mutation.
                         if (
                             type(args["steps"]) is not int
@@ -206,10 +233,12 @@ class StageContract:
                             raise ControllerError(
                                 "Stage target is outside the configured soft limits."
                             )
-                if action == "set_microstep":
+                if action in ("set_microstep", "set_microstep_guarded"):
                     self.set_microstep(args["microstep"])
                 elif action == "keepalive":
                     self.keep_hold_alive(**args)
+                elif action == "move_guarded":
+                    self.move(**args)
                 else:
                     getattr(self, action)(**args)
             except (ValueError, ControllerError) as exc:
@@ -225,7 +254,7 @@ class StageContract:
                 raise
             finally:
                 self._automation_client = None
-            if action == "move":
+            if action in ("move", "move_guarded"):
                 self._pending_commands[entry["id"]] = {
                     **entry,
                     "motor": args["motor"],
@@ -244,6 +273,7 @@ class StageContract:
         # This path deliberately bypasses the lease, including failed expiry.
         deadline = time.monotonic() + wait_s
         with self._lock:
+            self._stop_epoch += 1
             if self._transport is None:
                 if any(motor.mode != "idle" for motor in self._motors.values()):
                     self._lock_unconfirmed_stop()

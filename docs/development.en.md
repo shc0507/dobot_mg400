@@ -380,7 +380,7 @@ The interface follows the [instrument service contract](adr/0001-instrument-serv
 | Interface | Purpose |
 | --- | --- |
 | `GET /contract/api/describe` | Read command parameters, limits, demo status, and lease rules |
-| `GET /contract/api/state` | Read motor state plus `service`, `seq`, `ts_unix`, `busy`, `locked`, `fault`, `lease`, and `last_command` |
+| `GET /contract/api/state` | Read motor state plus `service`, `seq`, `ts_unix`, `busy`, `locked`, `fault`, `lease`, `last_command`, and `stop_epoch` |
 | `POST /contract/api/heartbeat` | Acquire or renew the control lease. Return 409 if another client holds it |
 | `POST /contract/api/renew` | Renew only an existing, unexpired lease held by the caller. Otherwise return 409 |
 | `POST /contract/api/release` | Release the caller's control lease without sending a stop command |
@@ -390,12 +390,14 @@ The interface follows the [instrument service contract](adr/0001-instrument-serv
 
 | `action` | Parameters | Completion |
 | --- | --- | --- |
-| `move` | `motor`, `direction`, `speed`, `steps` | Update `last_command` after fresh feedback confirms that the target motor is idle |
+| `move` | `motor`, `direction`, `speed`, `steps` | Complete after fresh feedback confirms that the motor is idle at the requested pulse count |
+| `move_guarded` | `motor`, `direction`, `speed`, `steps`, `stop_epoch` | Check the epoch and start the move atomically. Completion follows `move` |
 | `hold` | `motor`, `direction`, `speed`, `hold_id`, `sampled_at` | Arduino acknowledges the hold start. The motor continues moving |
 | `keepalive` | `motor`, `hold_id` | Arduino acknowledges hold renewal |
 | `release_hold` | `motor`, `hold_id` | End the matching hold |
 | `stop_all` | None | Arduino acknowledges the stop request. No lease is required. When fault-locked, use the dedicated stop interface |
 | `set_microstep` | `microstep` | Arduino confirms the microstep mode |
+| `set_microstep_guarded` | `microstep`, `stop_epoch` | Check the epoch and confirm the microstep mode atomically while all motors are idle |
 
 The values for `motor` are `bottom`, `top`, and `insert`. The values for `direction` are `cw` and `ccw`.
 `speed` is an integer from 1–1000. `steps` is an integer from 1–100000. `microstep` is 1, 2, 4, 8, or 16.
@@ -404,6 +406,14 @@ Each press-and-hold operation must use a new `hold_id`.
 `sampled_at` comes from the field with the same name in `api/state`. It must be within the service clock's last 2 seconds.
 `release_hold` can be sent repeatedly. If it arrives before `hold` with the same `hold_id`, the service rejects the later `hold`.
 The service rejects missing or extra parameters.
+
+For `move_guarded`, send the nonnegative integer `stop_epoch` from the state read after acquiring control. The service checks it under the same lock that starts movement. A changed epoch returns 409, so a queued command cannot continue a cancelled sequence.
+
+`set_microstep_guarded` uses the same epoch check before changing the mode. It preserves the epoch and sends no STEP pulses. Use that original epoch for subsequent `move_guarded` commands. Do not refresh it to continue a cancelled sequence. A mode change still clears the zero references and soft limits of all 3 axes.
+
+`stop_epoch` increases on stops, lease ownership changes, disconnection, link loss, manual motion commands, and unguarded microstep commands. Lease renewal preserves the epoch. Read the current state before starting a new sequence after cancellation.
+
+Both `move` and `move_guarded` can confirm a bounded relative pulse count without a homed reference. This confirms pulses, not physical travel. Without a confirmed reference, the motor's `position_mm` remains `null`.
 
 The control lease lasts 3 seconds by default. Holds still require a separate renewal within 1 second.
 Hold renewal does not renew the control lease.

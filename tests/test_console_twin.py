@@ -98,7 +98,7 @@ def app_for(service):
 @pytest.fixture
 def routes(tmp_path, monkeypatch):
     frames = Frames()
-    monkeypatch.setattr(workspace, "CameraFrames", lambda settings, demo: frames)
+    monkeypatch.setattr(twin, "CameraFrames", lambda settings, demo: frames)
     service = SimpleNamespace(demo=True, temporary=SimpleNamespace(name=str(tmp_path)), settings={})
     return app_for(service).test_client(), frames, tmp_path / "calibration" / "twin"
 
@@ -343,7 +343,7 @@ def test_cancel_tuning_route_preserves_profile_and_does_not_read_camera(console,
     policy = page.policy = TuningPolicy(("x",), automatic=False)
     assert policy.start_manual()
     before = copy.deepcopy(page.profile)
-    monkeypatch.setattr(workspace, "TwinConsole", lambda root, frames: manager)
+    monkeypatch.setattr(workspace, "get_twin_console", lambda service: manager)
     client = app_for(SimpleNamespace(demo=False, settings={})).test_client()
     invalid = client.post("/twin/tuning/cancel", json={"tune": False}, headers=headers())
     assert invalid.status_code == 400
@@ -823,7 +823,7 @@ def test_frame_route_returns_the_selected_camera_bytes_without_profile_write(rou
 
 def test_preview_frame_remains_available_while_detector_is_busy(console, monkeypatch):
     manager, frames = console
-    monkeypatch.setattr(workspace, "TwinConsole", lambda root, frames: manager)
+    monkeypatch.setattr(workspace, "get_twin_console", lambda service: manager)
     client = app_for(SimpleNamespace(demo=False, settings={})).test_client()
     with manager.processing():
         preview = client.get("/twin/frame?camera=camera2")

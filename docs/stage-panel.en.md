@@ -279,7 +279,7 @@ POST requests must have a JSON body and `X-MG400-Client`.
 | Route | Request | Purpose |
 | --- | --- | --- |
 | `GET contract/api/describe` | None | Read command parameters, limits, the demo flag, and lease rules |
-| `GET contract/api/state` | None | Read the connection, motors, microstep mode, reference metadata, and lease |
+| `GET contract/api/state` | None | Read the connection, motors, microstep mode, reference metadata, lease, and `stop_epoch` |
 | `GET contract/api/events?since=0` | None | Read activity events |
 | `POST contract/api/heartbeat` | `{}` | Get or renew the control lease |
 | `POST contract/api/renew` | `{}` | Renew the lease that the caller holds |
@@ -292,7 +292,8 @@ POST requests must have a JSON body and `X-MG400-Client`.
 | `POST contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | Store the current marker position as the reference. Requires the lease |
 
 `<motor>` is `bottom`, `top`, or `insert`.
-The contract commands are `move`, `hold`, `keepalive`, `release_hold`, `stop_all`, `set_microstep`, `home`, `zero`, `awake`, `goto`, and `pose`.
+The contract commands are `move`, `move_guarded`, `hold`, `keepalive`, `release_hold`, `stop_all`, `set_microstep`, `set_microstep_guarded`, `home`, `zero`, `awake`, `goto`, and `pose`.
+`set_microstep_guarded` requires `microstep` and `stop_epoch`. It confirms the mode only when the epoch still matches and all motors are idle. It preserves that epoch for subsequent guarded moves. A mode change still clears zero references and soft limits for all 3 axes.
 `zero` requires `motor` and `confirm: true`.
 `pose` moves each axis to its configured position, 1 axis at a time in the configured order.
 `awake` extends driver energization for 0–60 seconds. It sends no STEP pulses and does not establish a reference. 0 cancels the extension.

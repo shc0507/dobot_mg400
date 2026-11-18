@@ -1,9 +1,9 @@
-"""Serve the Console UI with offline stage and turret calibration previews.
+"""Serve the Console UI with offline calibration and Sample Transfer previews.
 
 Run ``python scripts/console_preview.py`` and open ``http://127.0.0.1:8790/lab/#twin``.
-Profiles persist in ``work/console-preview``. Device controls remain unavailable.
+Profiles persist in ``work/console-preview``. Physical devices remain unavailable.
 Open ``#process`` for synthetic turret capture and profile management.
-The fixed camera scenes support UI checks, not device motion or live calibration.
+Open ``#sample-transfer`` for simulated Insert moves and optical endpoint capture.
 """
 
 import argparse
@@ -23,6 +23,11 @@ sys.path.insert(0, str(ROOT / "src"))
 from labkit.errors import ServiceError  # noqa: E402
 from orchestrator.clients import SERVICES  # noqa: E402
 from orchestrator.web.console_routes import console_blueprints  # noqa: E402
+from orchestrator.web.sample_transfer_preview import (  # noqa: E402
+    PreviewStage,
+    PreviewStageFrames,
+    TransferPreviewAdapter,
+)
 from orchestrator.web.turret_preview import TurretPreview  # noqa: E402
 from orchestrator.web.twin import ProfileStore  # noqa: E402
 from orchestrator.web.workspaces.cameras import SourceError  # noqa: E402
@@ -60,11 +65,11 @@ def seed_profile(root):
     import numpy as np
 
     profile = new_profile(name="Mock stage")
-    profile["camera"].update(device_id="demo:camera1", label="Stage", dimensions=[640, 480])
+    profile["camera"].update(device_id="demo:camera1", label="Stage", dimensions=[3840, 2880])
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     moving = {"x": 18, "y": 14, "insert": 22}
     for endpoint, definition in ENDPOINTS.items():
-        pixels = np.full((480, 640), 255, dtype=np.uint8)
+        pixels = np.full((2880, 3840), 255, dtype=np.uint8)
         offset = -45 if definition["limit"] == "min" else 45
         for marker, x, y in ((10, 40, 40), (14, 180, 160), (18, 320, 160), (22, 460, 300)):
             if marker == moving[definition["axis"]]:
@@ -72,7 +77,10 @@ def seed_profile(root):
                     y += offset
                 else:
                     x += offset
-            pixels[y : y + 60, x : x + 60] = cv2.aruco.generateImageMarker(dictionary, marker, 60)
+            x, y = x * 6, y * 6
+            pixels[y : y + 360, x : x + 360] = cv2.aruco.generateImageMarker(
+                dictionary, marker, 360
+            )
         encoded = cv2.imencode(".jpg", pixels)[1].tobytes()
         profile["endpoints"][endpoint] = capture_endpoint(encoded, endpoint)
     ProfileStore(root).save(profile)
@@ -148,6 +156,9 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
         dashboard_configured=lambda name: name == "stage",
         console_client=lambda name, *args: stage if name == "stage" else None,
     )
+    preview_stage = PreviewStage()
+    service.twin_frames = PreviewStageFrames(preview_stage)
+    service.sample_transfer_adapter = TransferPreviewAdapter(service, preview_stage)
     app = Flask(__name__)
 
     for blueprint in console_blueprints(service, "/lab"):
@@ -162,6 +173,8 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
         if action not in {"motion", "heat", "gas"}:
             abort(404)
         targets = ("robot", "stage", "microscope") if action == "motion" else ("furnace",)
+        transfer = getattr(service, "sample_transfer", None)
+        transfer_stop = transfer.stop() if action == "motion" and transfer is not None else None
         operation = {
             "id": str(uuid4()),
             "action": action,
@@ -172,6 +185,11 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
                 name: {"status": "unavailable", "message": UNAVAILABLE} for name in targets
             },
         }
+        if transfer_stop is not None:
+            operation["results"]["stage"] = {
+                "status": "confirmed",
+                "message": "Preview stage stopped.",
+            }
         operations.append(operation)
         del operations[:-20]
         return jsonify(operation_id=operation["id"]), 202

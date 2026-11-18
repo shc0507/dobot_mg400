@@ -177,6 +177,62 @@ systemctl daemon-reload
 systemctl restart mg400-camera-preview.service
 ```
 
+### 位移台测试后端
+
+测试样品转移时，复用 `mg400-stage-panel.service`，保持 1 个设备所有者。
+原控制台和测试控制台共用端口 `8767` 的根路径 `/api`。
+仅在位移台空闲且无有效控制租约时重启。
+重启后，检查服务保持断开连接且各轴参考已清除。
+
+保留主机原 `stage_controller` 包。
+从主机当前部署的包创建独立副本。
+将 `move_guarded`、`set_microstep_guarded` 及其所需改动移入副本。
+运行位移台测试。
+验证后，将 `/var/lib/mg400/twin-test/stage-runtime` 设为指向副本运行目录的符号链接。
+由 root 安装 `/etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf`：
+
+```ini
+[Service]
+WorkingDirectory=/var/lib/mg400/twin-test/stage-runtime
+ExecStart=
+ExecStart=/opt/mg400/.venv/bin/python -m stage_controller
+```
+
+测试控制台必须使用主机的根路径 API。
+由 root 安装 `/etc/systemd/system/mg400-twin-test.service.d/stage-api.conf`：
+
+```ini
+[Service]
+Environment=MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/
+```
+
+按上述空闲条件执行：
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-stage-panel.service
+systemctl restart mg400-twin-test.service
+```
+
+轮询 `http://127.0.0.1:8767/` 的 `GET /api/describe` 和 `GET /api/state`，直到两者返回成功。
+检查 `move_guarded` 和 `set_microstep_guarded` 可用，服务仍断开连接且各轴参考已清除。
+原包文件和根路径 API 保持不变。
+`deploy/twin.py` 不管理或更新此副本及位移台覆盖文件。
+后续修改位移台时，必须使用主机当前包的独立副本。
+移入改动后，再测试此副本。
+
+恢复原后端时，仅删除位移台覆盖文件。
+按上述空闲条件重启：
+
+```sh
+rm /etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf
+systemctl daemon-reload
+systemctl restart mg400-stage-panel.service
+```
+
+保留测试控制台的根路径 URL，使其匹配实际服务。
+再次检查上述 API、断开连接状态和已清除的轴参考。
+
 ### 显微镜测试后端
 
 测试转盘校准后端时，复用 `mg400-microscope.service`，保持 1 个设备所有者。

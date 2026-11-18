@@ -279,7 +279,7 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 | 路由 | 请求 | 用途 |
 | --- | --- | --- |
 | `GET contract/api/describe` | 无 | 读取命令参数、限制、演示标志和租约规则 |
-| `GET contract/api/state` | 无 | 读取连接、电机、细分模式、参考元数据和租约 |
+| `GET contract/api/state` | 无 | 读取连接、电机、细分模式、参考元数据、租约和 `stop_epoch` |
 | `GET contract/api/events?since=0` | 无 | 读取活动事件 |
 | `POST contract/api/heartbeat` | `{}` | 取得或续期控制租约 |
 | `POST contract/api/renew` | `{}` | 续期调用者持有的租约 |
@@ -292,7 +292,8 @@ POST 必须带 JSON 正文和 `X-MG400-Client`。
 | `POST contract/api/motors/<motor>/teach_reference` | `{"confirm": true}` | 保存当前标记位置为参考，要求租约 |
 
 `<motor>` 取 `bottom`、`top` 或 `insert`。
-契约命令为 `move`、`hold`、`keepalive`、`release_hold`、`stop_all`、`set_microstep`、`home`、`zero`、`awake`、`goto` 和 `pose`。
+契约命令为 `move`、`move_guarded`、`hold`、`keepalive`、`release_hold`、`stop_all`、`set_microstep`、`set_microstep_guarded`、`home`、`zero`、`awake`、`goto` 和 `pose`。
+`set_microstep_guarded` 要求 `microstep` 和 `stop_epoch`。仅当序号仍匹配且所有电机空闲时，才确认模式。它保留该序号，供后续受保护的移动使用。模式变化仍会清除全部 3 轴的零点参考和软限位。
 `zero` 要求 `motor` 和 `confirm: true`。
 `pose` 按配置顺序逐轴移动，每次只移动 1 轴。
 `awake` 延长驱动器通电 0–60 秒，不发送 STEP 脉冲，也不建立参考。0 取消延长。

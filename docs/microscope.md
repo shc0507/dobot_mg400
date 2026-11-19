@@ -5,7 +5,7 @@
 `microscope` 包在 Linux 上提供自动调焦、物镜切换、图像校准和侧视相机采集。
 它不依赖桌面或 Tk。
 契约服务检查调焦零点、行程限位和物镜转盘避让位置。
-Lab Console 的 Furnace + microscope 工作区通过服务提供日常控制。直接调用算法不会取得服务租约，也不提供服务联锁。
+Lab Console 的 Furnace 工作区通过服务提供日常控制。直接调用算法不会取得服务租约，也不提供服务联锁。
 真实运动前，操作员必须确认安全调焦行程及炉顶窗口的避让位置。
 
 ## Linux 环境
@@ -17,7 +17,7 @@ Lab Console 的 Furnace + microscope 工作区通过服务提供日常控制。�
 uv sync --locked
 ```
 
-默认的 `microscope` 依赖组包含 NumPy、opencv-python-headless、pyserial、Flask 和 waitress。
+默认的 `microscope` 依赖组包含 NumPy、opencv-python-headless、pyserial、Flask、waitress 和 minimalmodbus。
 导入包不会打开相机或串口。
 Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 真实 Toupcam 采集必须具备匹配的 Linux 厂商库和设备权限。
@@ -33,11 +33,12 @@ Toupcam 适配器为 `toupcam_camera.MicroscopeCamera`。
 单元以 `1000:1000` 运行，具有 `dialout` 和 `video` 访问权限。
 它设置 `LD_LIBRARY_PATH=/usr/local/lib/mg400`，监听 `127.0.0.1:8770`。
 它从 `http://127.0.0.1:8769/` 读取炉控元数据。
+`--bind`、`--port` 和 `--base-path`（默认 `/`）可改变监听默认值。炉控地址固定。
 
 使用前，停止冲突的相机和电机程序。
-先用 `mg400ctl start camera` 启动已配置的侧视相机服务，再运行 `mg400ctl start microscope`。
+先用 `labctl start camera` 启动已配置的侧视相机服务，再运行 `labctl start microscope`。
 显微镜单元不会自动启动相机服务。
-用 `mg400ctl logs microscope` 检查故障，用 `mg400ctl stop microscope` 停止服务。
+用 `labctl logs microscope` 检查故障，用 `labctl stop microscope` 停止服务。
 单元没有 systemd 停止超时，允许清理完成。清理出错后，检查原因再重启。
 日常真机使用前，操作员必须完成 `H-21`。
 
@@ -62,21 +63,20 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 | `MG400_MICROSCOPE_SIDE_STREAM` | go2rtc 独占的侧视相机流。 |
 | `MG400_TOUPCAM_SERIAL` | 可选相机序列号。它与索引只能设置一项。 |
 | `MG400_TOUPCAM_INDEX` | 可选的非负相机索引。两项选择器都为空时，索引为 `0`。 |
-| `MG400_MICROSCOPE_FOCUS_LIMITS` | 必填的实测 `MIN,MAX` 整数脉冲，包含零点，且行程不为零。 |
-| `MG400_MICROSCOPE_SWITCH_FOCUS` | 必填的实测避让位置，单位为脉冲，必须在限位内。没有归零开关时，必须为 `0`。 |
-| `MG400_MICROSCOPE_HOME_SWITCH` | 必填硬件事实：有已配置的调焦归零开关时为 `1`，没有时为 `0`。 |
-| `MG400_MICROSCOPE_NUDGE_STEPS` | `objective_nudge` 的实测转盘范围，单位为整步，取 `0` 到 `20`。未配置或为 `0` 时，服务拒绝所有微调。 |
 
-真实启动必须使用支持调焦参考状态的固件，并显式配置调焦参数。
-通用环境示例的物理调焦参数为空，转盘微调范围为 `0`。
-当前显微镜使用以下 `H-06` 配置：
+物镜 ID：`0` = 5x，`1` = 10x，`2` = 20x，`3` = 50x。
 
-```ini
-MG400_MICROSCOPE_SWITCH_FOCUS=0
-MG400_MICROSCOPE_HOME_SWITCH=0
-MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
-MG400_MICROSCOPE_NUDGE_STEPS=20
-```
+真实启动必须使用支持调焦参考状态的固件。
+当前显微镜的 `H-06` 实测值固定在 `src/microscope/calibrate.py` 中：
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `FOCUS_LIMITS` | `0,10000` | 调焦限位，单位为 `MICRO 4` 脉冲，包含零点 |
+| `SWITCH_FOCUS` | `0` | 避让位置。没有归零开关时，必须为 `0` |
+| `HOME_SWITCH` | `False` | 没有调焦归零开关 |
+| `NUDGE_WINDOW` | `20` | `objective_nudge` 的转盘范围，单位为整步，取 `0` 到 `20`。为 `0` 时，服务拒绝所有微调 |
+
+更换显微镜或重新测量后，修改这些常量。
 
 不得把演示限位复制到硬件。
 下列路由路径相对于基础路径 `/`。
@@ -94,7 +94,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 | `GET /api/turret-calibration/profile/<id>` | 下载已保存配置的 JSON。 |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | 取得、续期或释放普通控制权。 |
 | `POST /api/command` | 提交动作和参数。`202` 响应返回命令 ID，不代表命令完成。 |
-| `POST /api/stop` | 任何已认证客户端都能停止，无须持有控制租约。读取其 `confirmed`、`pending` 或 `unconfirmed` 结果。 |
+| `POST /api/stop` | 任何带 `X-MG400-Client` 请求头的客户端都能停止，无须持有控制租约。读取其 `confirmed`、`pending` 或 `unconfirmed` 结果。 |
 
 命令动作包括带 `id` 的 `select_objective`、带 `steps` 的 `objective_nudge`、带 `mode`（`full` 或 `local`）的 `autofocus`、带相对 `steps` 的 `focus_move`、`home_focus`，以及带可选 `path` 的 `snapshot`。
 执行下一动作前，读取 `last_command` 中对应命令 ID 的结果。
@@ -111,7 +111,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 微调必须具有已知零点。
 
 `GET /api/state` 的 `objective_offset_steps` 是转盘偏移，即 `select_objective` 对准物镜后微调累计的整步数。
-`objective_offset_limit_steps` 是 `MG400_MICROSCOPE_NUDGE_STEPS` 的值。
+`objective_offset_limit_steps` 是 `NUDGE_WINDOW` 的值。
 允许偏移从负的上限到正的上限，包含边界。超出范围时，服务在移动前以 HTTP 409 拒绝微调。
 
 `select_objective` 转动转盘时，侧视相机把转盘对准目标物镜。之后偏移为 `0`。
@@ -141,18 +141,16 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 `set_focus_zero` 是普通命令，没有参数。租约持有者用 `POST /api/command` 发送。其他客户端收到 HTTP 409。
 `202` 响应返回命令 ID，读取命令结果后再执行下一动作。
 有已配置的归零开关时，服务以 HTTP 409 拒绝此命令。
-`POST /api/manual/set_focus_zero` 带 `{"confirm": true}` 时执行同一操作，接受普通租约或手动租约的持有者。
 服务检查两轴静止，设置 `MICRO 4`，建立零点，写入限位，并验证固件结果。
 
-`POST /api/manual/heartbeat` 用空对象取得手动控制权，`POST /api/manual/renew` 保留手动控制权。
-自动化持有租约时，手动请求无法取得控制权，即使复用同一客户端 ID。
-用手动控制权建立零点后，通过 `POST /api/manual/release` 释放手动控制权，再由另一客户端取得普通控制权。
+建立零点后，通过 `POST /api/release` 释放控制权，再由另一客户端取得控制权。
 健康且空闲时，释放操作可保留已验证的参考状态，最长到原租约的剩余截止时间。
 重新检查必须确认两轴静止、调焦轴已启用，且零点、限位和固件会话一致。
 下一客户端必须在截止时间前取得控制权。释放不会增加租约时间。
 检查失败或超时后，服务停止并禁用两轴，零点随之失效。
 
 显式停止、租约到期、固件复位或调焦参考状态变化都会使服务零点失效。
+命令被拒绝或失败时，服务也停止两个电机并使零点失效，例如调焦移动越过限位。只有无法识别物镜的命令保留零点。
 命令或停止结果不确定时，服务锁存故障，锁定普通命令。
 停止仍可用，但成功停止不会清除该故障。
 排除原因后，通过受控的服务重启重新连接，并重新建立零点。
@@ -160,7 +158,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 ## Lab Console 操作
 
-显微镜服务没有网页。在 Lab Console 的 Furnace + microscope 工作区操作显微镜：
+显微镜服务没有网页。在 Lab Console 的 Furnace 工作区操作显微镜：
 
 1. 在显微镜卡片上选择 **Take control**。其他客户端持有租约时，控制台无法取得控制权，也不接管自动化控制。
 2. 移动前，查看卡片上的调焦位置和零点状态。
@@ -185,7 +183,7 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 3. 选择 **Set focus zero**。
 
 控制台用自己的租约发送 1 次零点命令，不显示确认框。
-卡片显示提醒：对焦齿轮可能打滑，每次使用前在 50x 焦点处重新设零。
+**Set focus zero** 按钮的提示文字给出提醒：对焦齿轮可能打滑，每次使用前在 50x 焦点处重新设零。
 控制台没有调焦归零操作，因为实验室显微镜没有归零开关。
 
 | 预览路由 | 结果 |
@@ -206,16 +204,16 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 
 ## 录像与炉控序列
 
-在 Furnace + microscope 工作区录制本服务已独占的相机。
+在 Furnace 工作区录制本服务已独占的相机。
 录像命令要求有效的普通控制权和空闲服务，不取得炉控控制权，也不启动炉控序列。
 采集和收尾期间，保持控制台打开并持有控制权。
 
 | 动作 | 参数与结果 |
 | --- | --- |
 | `start_recording` | 提供新的 `recording_id`，恰好包含 32 个小写十六进制字符。可选字段为 `run_name`、`mode`、`capture_interval_seconds` 和 `output_fps`。 |
-| `stop_recording` | 提供同一客户端正在录制的 `recording_id`。完成条件包括采集关闭、摘要视频编译和已配置的归档复制。 |
+| `stop_recording` | 提供同一客户端正在录制的 `recording_id`。完成条件包括采集关闭、摘要视频编译，以及设置 `MG400_FURNACE_ARCHIVE_DIR` 时的归档复制。 |
 | `record_with_sequence` | 用 `enabled: true`、新的 `recording_id` 和可选录像字段预备单次录制。用 `enabled: false` 和该 ID 取消。 |
-| `set_stabilization` | 用布尔值 `enabled` 改变相机防抖状态。 |
+| `set_stabilization` | 用布尔值 `enabled` 改变相机防抖状态。服务启动时防抖为开启。 |
 
 控制台提供 **Start recording** 和 **Stop recording**。**Record next furnace sequence** 预备序列录制，**Cancel sequence recording** 取消预备。
 **Turn stabilization on** 和 **Turn stabilization off** 切换相机防抖。
@@ -224,6 +222,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 `time_lapse` 默认每隔 30 秒采集一帧，输出帧率为每秒 1 帧。
 `live` 默认输出帧率为每秒 30 帧，没有采集间隔。
 显式 `capture_interval_seconds` 范围为 0.1 至 3600，显式 `output_fps` 范围为 0.1 至 120。
+`live` 拒绝 `capture_interval_seconds`。可用磁盘空间低于 2 GB 时，`live` 录像停止。录像超过 128 个分段时失败。
 
 读取 `recording`、`recording_sequence`、`last_result` 和匹配的 `last_command` 回执。
 报告成功前，检查录像 ID、命令 ID、动作、客户端和预期结果。
@@ -248,8 +247,10 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 取消或失败的录像保留已有本地文件，不保证生成摘要视频。
 收尾要求已有采集帧和有效媒体，主机必须装有 FFmpeg 和 ffprobe。
 缺少 `ffmpeg` 或 `ffprobe` 时，录像失败，错误信息写明缺少的程序。
-服务日志记录每次录像失败的原因，用 `mg400ctl logs microscope` 查看。
+服务日志记录每次录像失败的原因，用 `labctl logs microscope` 查看。
 收尾后，录像保存在 `/var/lib/mg400/recordings`。
+每个录像是目录 `/var/lib/mg400/recordings/<recording_id>/`，含 `run.json`、60 分钟分段 `video_0001.mp4`、`video_0002.mp4` 等、`video.timestamps.csv` 和 `<recording_id>_shortened_3_min.mp4`。
+设置 `MG400_FURNACE_ARCHIVE_DIR` 时，收尾把该目录复制到 `<archive>/<recording_id>/`，不替换已有副本。
 
 Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。电机停止指令不等待编码器。
 可选参数 `wait_s` 在同一个 `0..15` 秒限时内观察电机和录像的清理结果。
@@ -298,7 +299,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 根目录必须为绝对路径，不得包含父目录跳转。
 解析路径不会创建文件。
 
-把 `objective_views/`、`current_objective.txt`、`objective_reference.png` 和 `side_camera_images/` 放在校准根目录内。
+把 `objective_views/`、`objective_reference.png` 和 `side_camera_images/` 放在校准根目录内。
 定位器从 `side_camera_images/` 读取 `microscope.aruco_locator.REFERENCES` 列出的文件。
 图像尺寸和预期标记 ID 必须匹配。
 改变相机位置或标记后，重新校准。
@@ -314,7 +315,6 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 显微镜侧视相机为固定集线器端口 `12.1.4` 上的 AC410，拍摄物镜转盘。
 当前视频流顺序使用 `MG400_MICROSCOPE_SIDE_STREAM=camera3`。
-执行 `H-21` 前，把此相机放回转盘上的原位置。
 服务与预览通过 go2rtc 采集该 V4L2 设备。
 `select_objective` 运行期间，`USBCamera` 保持 1 个到 `http://127.0.0.1:1984/api/stream.mjpeg` 的连接。
 侧视读取线程只在此命令运行期间工作。预览转发服务不转发大于 `1280x720` 的侧视流。
@@ -327,6 +327,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 | `MG400_CAMERA_DEVICES` | 按相机预览安装程序顺序排列的稳定设备路径。 |
 | `MG400_MICROSCOPE_SIDE_STREAM` | 侧视相机对应的已配置 go2rtc 流。默认不选择任何流。 |
 | `MG400_CAMERA_MODES` | 可选的逗号分隔 `WIDTHxHEIGHT@FPS` 列表，每个已配置设备对应 1 个值。 |
+| `MG400_CAMERA_CAPTURE_SIZES` | 可选的旧式 `WIDTHxHEIGHT` 列表，帧率为 30 fps。不要与 `MG400_CAMERA_MODES` 同时设置。 |
 
 启用采集前，确认侧视相机设备路径对应的流。
 模式列表和尺寸列表只能配置其一，同时配置时安装程序拒绝执行。
@@ -364,7 +365,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 ## 引导式转盘校准
 
-打开 **Furnace + microscope → Turret calibration** 并取得显微镜控制权。物镜标记使用 `DICT_4X4_50`，边长约为 `8 mm`：`0` = 5x、`1` = 10x、`2` = 20x、`3` = 50x。
+打开 **Furnace → Turret calibration** 并取得显微镜控制权。物镜标记使用 `DICT_4X4_50`，边长约为 `8 mm`：`0` = 5x、`1` = 10x、`2` = 20x、`3` = 50x。
 
 1. 建议先手动把对焦轴移到已配置的避让位置。记录全部物镜期间保持对焦位置不变。
 2. 输入配置名称，选择 **Start calibration**。此操作只禁用转盘电机，不移动、启用或归零对焦轴。
@@ -380,21 +381,20 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 配置格式使用 `schema_version: 2` 和 `dictionary: "DICT_4X4_50"`。每次记录保存 `shape`、`objective_corners` 和 `preview_jpeg`。旧版配置必须重新记录后使用。
 
-## 受监督的校准与实验
+## 受监督的校准
 
 这些命令必须由操作员在交互终端运行。输入和输出都必须是 TTY。
 不得从代理、服务契约、编排器、Lab Console 或无人值守脚本运行。
 工具不会自动停止其他服务。
 启动前，操作员必须释放冲突的显微镜和相机占用。
-命令从终端环境读取 `MG400_*` 配置。
-使用校准目录和运行目录的所有者账户运行。
+用 `sudo labctl calibrate` 运行。它以 UID `1000` 和主机的 `MG400_*` 配置运行工具。
 
 把 `MG400_MICROSCOPE_SERIAL` 配置为控制板的稳定路径。
-校准和实验的主相机使用 `MG400_TOUPCAM_SERIAL` 或 `MG400_TOUPCAM_INDEX`，不得同时配置。
+校准的主相机使用 `MG400_TOUPCAM_SERIAL` 或 `MG400_TOUPCAM_INDEX`，不得同时配置。
 这些命令的运动还必须具备上表所列的 `H-06` 实测限位、避让位置和归零开关配置。
 缺少测量值时，工具拒绝启动。不得用演示值代替。
 
-校准和实验运动前，工具取得主相机、所需侧视相机和独占串口。
+校准运动前，工具取得主相机、所需侧视相机和独占串口。
 每个所需相机都必须先提供有效首帧。
 侧视采集通过 `MG400_CAMERA_DEVICES`、`MG400_CAMERA_MODES` 和 `MG400_MICROSCOPE_SIDE_STREAM` 选择物理设备及模式。
 受监督适配器通过 `CAP_V4L2` 直接打开稳定设备路径，并要求 `uvcvideo` 驱动。
@@ -404,7 +404,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 ### 零点与运动规则
 
-这些规则适用于校准和实验。
+这些规则适用于校准。
 受监督的配置控制台采用下述独立人工测量规则。
 
 实测限位和避让位置采用 `MICRO 4` 坐标。
@@ -412,7 +412,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 向内取整后必须仍有可用行程。避让位置和请求的绝对位置必须能够精确换算。
 工具拒绝不能整除或超出限位的坐标。
 
-没有归零开关时，操作员在避让位置设零。`MG400_MICROSCOPE_SWITCH_FOCUS` 必须为 `0`。
+没有归零开关时，操作员在避让位置设零。`SWITCH_FOCUS` 必须为 `0`。
 配置了开关时，`FOCUS HOME` 建立归零原点。它不会退回 `FOCUS ZERO`。
 实测限位和避让位置必须采用同一个归零原点。
 每次调焦移动都必须具备当前零点和实测限位。
@@ -438,17 +438,16 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 以下命令显示选项，不打开设备：
 
 ```sh
-uv run python -m microscope.calibrate --help
-uv run python -m microscope.experiments --help
+sudo labctl calibrate --help
 ```
 
 校准命令必须遵守上述监督规则：
 
 | 命令 | 操作与默认输出 |
 | --- | --- |
-| `python -m microscope.calibrate reference` | 采集原始 PNG，保存为 `objective_reference.png`。不归零、不设零，也不移动调焦轴。 |
-| `python -m microscope.calibrate objective` | 执行物镜校准，写入 `objective_calibration.csv`。 |
-| `python -m microscope.calibrate light` | 执行轻量物镜校准，写入 `light_objective_calibration.csv`。 |
+| `sudo labctl calibrate reference` | 采集原始 PNG，保存为 `objective_reference.png`。不归零、不设零，也不移动调焦轴。 |
+| `sudo labctl calibrate objective` | 执行物镜校准，写入 `objective_calibration.csv`。 |
+| `sudo labctl calibrate light` | 执行轻量物镜校准，写入 `light_objective_calibration.csv`。 |
 
 `--reference` 为物镜或轻量物镜校准选择私有校准 PNG，默认为 `objective_reference.png`。
 `--output` 选择 `/var/lib/mg400/calibration/microscope` 内的文件。
@@ -464,8 +463,8 @@ uv run python -m microscope.experiments --help
 
 ### 工作焦点处的校准
 
-`MG400_MICROSCOPE_NUDGE_STEPS` 配置实测转盘范围，单位为整步。
-未配置或为 `0` 时，保留上述避让行为。`1` 到 `20` 允许工作焦点处的有界移动。
+`NUDGE_WINDOW` 是实测转盘范围，单位为整步。
+为 `0` 时，保留上述避让行为。`1` 到 `20` 允许工作焦点处的有界移动。
 其他值会拒绝启动。在校准工具中，此模式仅适用于物镜和轻量物镜校准。服务的 `objective_nudge` 使用同一范围。
 
 使用 `H-06` 在靠窗口的调焦限位处测得的值，测量时逐个把物镜置于工作位置。
@@ -475,8 +474,8 @@ uv run python -m microscope.experiments --help
 范围为正时，两条命令都必须提供 `--focus-start N`，单位为实测 `MICRO 4` 坐标，且必须在调焦限位内：
 
 ```sh
-python -m microscope.calibrate objective --focus-start N
-python -m microscope.calibrate light --focus-start N
+sudo labctl calibrate objective --focus-start N
+sudo labctl calibrate light --focus-start N
 ```
 
 把 `N` 替换为实测调焦起点坐标。
@@ -494,14 +493,14 @@ python -m microscope.calibrate light --focus-start N
 设零或归零并发送换算限位后，调焦轴按新细分返回先前位置。
 返回位置取最近的整数脉冲，且必须在限位内。
 仅在此模式下，校准的调焦禁用请求改用 `STOP FOCUS`，保留零点。
-实验和完整物镜切换仍只在避让位置转动转盘。
+完整物镜切换仍只在避让位置转动转盘。
 
 ### 受监督的配置控制台
 
 使用此控制台测量 `H-06` 的避让位置、行程限位和转盘范围：
 
 ```sh
-python -m microscope.calibrate setup
+sudo labctl calibrate setup
 ```
 
 先停止显微镜服务。操作员必须能触及急停，并看清调焦轴和所有物镜。
@@ -536,34 +535,12 @@ python -m microscope.calibrate setup
 这些计数不能测量物理位置，也不能证明已避开窗口。
 观察每次移动，并另行记录实测值。控制台不会写入这些值。
 
-### 实验命令
-
-使用 `python -m microscope.experiments focus|switch|combined` 并提供所需配置。
-每条命令只执行 1 轮。`--output` 选择 `/var/lib/mg400/runs` 内的新私有目录。
-未指定时，输出位于 `microscope/experiments/` 下的独立命令目录。
-配置、汇总行、调焦曲线、切换日志和可用的最终图像都保留在该目录。
-失败时保留部分结果和终止失败行。
-
-通过 `--settings FILE` 使用 `[focus]` 和 `[switch]` 表。
-`--ids` 提供按转盘正方向相邻排列的不重复物镜 ID。
-实验把该顺序视为有边界的直线，不作环形路线。
-`--focus-microstep` 默认为 `1`，接受 `1`、`2`、`4`、`8` 或 `16`。
-调焦和组合实验必须提供 `--focus-start`，单位为实测 `MICRO 4` 坐标。
-调焦参考试验前和每次组合调焦试验前，工具移动到该明确起点。
-
-调焦试验保留 `-2000`、`-1000`、`1000` 和 `2000` 的偏移，单位为当前细分脉冲。
-完整扫描半范围必须至少为 `2000`。
-切换试验覆盖两个相邻方向，偏移为 `0`、`-50`、`50`、`-100` 和 `100` 整步。
-偏移移动使用 `MICRO 1`，ArUco 切换器使用 `MICRO 4`。
-这些改变必须经过上述监督确认。
-工具不会缩小扫描范围来适应限位。不符合要求的移动会在发送前中止。
-
 ### 导入现有校准数据
 
 操作员检查源数据后，在 Olares 运行导入：
 
 ```sh
-sudo mg400ctl calibration import microscope DIR
+sudo labctl calibration import microscope DIR
 ```
 
 把 `DIR` 替换为 Objective-Control `3a2dad0` 的数据目录。
@@ -572,26 +549,7 @@ sudo mg400ctl calibration import microscope DIR
 目标已存在时拒绝复制，不会覆盖。
 目标目录归 `1000:1000` 所有，权限为 `0750`。文件归 `1000:1000` 所有，权限为 `0640`。
 后续复制失败时，已完成的副本保留。再次尝试前，先检查这些副本。
-导入器不打开设备。操作员必须在 Olares 导入，并在迁移议题中报告结果。
-
-## 其他命令行入口
-
-以下命令显示支持的选项，不连接设备：
-
-```sh
-uv run python -m microscope.autofocus --help
-uv run python -m microscope.aruco_locator --help
-```
-
-不带 `--help` 运行自动调焦会连接串口控制器并打开 Toupcam 相机。
-必填的 `--half-range` 表示起点两侧各自允许的行程，单位为脉冲。
-操作员必须根据真实硬件限位确定此值。
-`--port` 覆盖串口配置，`--output` 选择运行根目录内的文件。
-
-定位器处理已保存的 `--image` 或 `--folder` 内的 PNG 图像，不访问电机。
-它必须具备校准参考图像。
-其 `--output` 目录默认为运行根目录下的 `microscope/scan_position_results`。
-其他算法提供 Python API，没有独立命令行入口。
+导入器不打开设备。在 Olares 上运行导入。
 
 ## 离线检查
 

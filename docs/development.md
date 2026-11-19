@@ -30,18 +30,21 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-`uv sync` 默认安装 `dev` 和 `stage` 依赖组。
-`stage` 组含位移台服务使用的 Flask、waitress 和 pySerial。
+`uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator` 和 `microscope`。
+`vision-gpu` 和 `notebook` 不在默认组中。
+`stage` 组含位移台服务使用的 Flask、waitress、pySerial、NumPy 和 OpenCV。
 机器人服务和交互终端只用标准库，不依赖 `stage` 组。
 
 测试不连接机械臂或 Arduino。
 拉取请求和推送到 `main` 时，GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.12 上运行以上检查。
+拉取请求只运行 `scripts/select_tests.py` 按改动文件选出的 pytest 文件。推送到 `main` 时运行全部测试。
 `pytest` 运行 Python 测试，`node --test` 运行实验室控制台的 JavaScript 测试。
 离线检查不能替代真机验证。
 
 测试共用的 fixture 位于 `tests/conftest.py`。
 位移台测试的 `stage_rig`、`stage_ports` 和 `stage_usb` 也在此文件，测试按名称引用。
 模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_ws.py`。
+服务契约测试的共用检查位于 `tests/contract_helpers.py`。
 位移台的时钟、串口和串口列表替身位于 `tests/stage_helpers.py`。
 新增测试时复用这些模块，不得在测试文件中另写副本。
 
@@ -55,13 +58,15 @@ uv run ruff format --check .
 控制器端口为 `29999`、`30003` 和 `30004`，反馈周期为 `8 ms`。
 启动后，机械臂处于下使能状态。
 
+连接锁目录固定为 `/var/lib/mg400/locks`。主机上没有该目录时，先运行 `sudo install -d -m 0700 -o "$USER" /var/lib/mg400/locks`。
+锁文件按机械臂地址区分，因此模拟器的锁不影响真机。
+
 在项目根目录运行：
 
 ```bash
-sim_dir=$(mktemp -d)
 uv run python -m mg400.sim --host 127.0.0.2 &
 sim_pid=$!
-MG400_CONTROLLER_LOCK_DIR="$sim_dir/locks" uv run python apps/control_panel/server.py \
+uv run python apps/control_panel/server.py \
   --bind 127.0.0.1 --port 18766 --robot-host 127.0.0.2
 kill "$sim_pid"
 wait "$sim_pid"
@@ -75,7 +80,7 @@ wait "$sim_pid"
 4. 运行 `stop_sync`，等待停止确认，再运行 `disable`。
 
 在终端按 `Ctrl+C` 结束机器人服务。
-随后两条命令结束本次模拟器进程。
+随后的命令结束本次模拟器进程，并删除临时锁目录。
 
 模拟器立即到达关节和笛卡尔目标，不计算真实运动学、路径或碰撞。
 逆解返回当前关节值。`J1` 点动改变关节反馈，其余点动只改变运动模式。
@@ -84,27 +89,49 @@ wait "$sim_pid"
 
 ## 代码结构
 
+### 分层
+
+仓库分为 4 层。每层只调用下一层。
+
+| 层 | 组成 | 用途 |
+| --- | --- | --- |
+| 后端 | 设备服务（`apps/control_panel/`、`src/stage_controller/`、`src/thermal_cam/`、`src/furnace/`、`src/microscope/`、`src/vision/`）和 `firmware/` | 每台设备 1 个进程，只监听 `127.0.0.1`。用户和代理不直接调用后端 |
+| 编排器 | `src/orchestrator/` | 设备缓存 `devices.py` 为每台设备运行 1 个读取线程：每 250 ms 读 1 次 `api/state`，每 1 s 读 1 次事件，实例变化时读 `describe`。控制台和 `labctl` 只从这个缓存读设备状态。命令、租约和配方运行也经过编排器 |
+| 工具 | `labctl`（`deploy/labctl`，设备命令组在 `src/orchestrator/agent_cli.py`） | 代理用设备命令组操作设备。管理员用服务命令启停服务、查看日志、备份和检查硬件 |
+| 前端 | 实验室控制台（`src/orchestrator/web/`） | 浏览器页面，经代理访问编排器 |
+
+例外：`labctl` 的停止命令同时发给编排器和设备服务。
+
+### 目录
+
 | 路径 | 用途 |
 | --- | --- |
 | `config/robot.toml` | 机器人地址，`MG400_ROBOT_HOST` 未设置时使用 |
 | `apps/control_panel/` | 独立 Python 机器人服务，不提供网页 |
 | `apps/layout-studio/` | 离线布局编辑器，使用模拟数据，不发送控制命令 |
 | `config/systemd/` | 所有服务的 systemd 定义，配置从 `/etc/mg400/mg400.env` 读取 |
-| `deploy/` | 安装器 `install.py`、日常命令 `mg400ctl` 和配置示例 |
+| `deploy/` | 安装器 `install.py`、日常命令 `labctl` 和配置示例 |
 | `src/mg400/` | 后端、控制协议和反馈处理 |
 | `src/mg400/sim/` | 回环控制器模拟器，共用测试模型 |
 | `src/stage_controller/` | 位移台服务：Flask 接口和串口协议 |
+| `src/labkit/` | 共用的服务契约、租约、事件、访问检查和 HTTP 客户端，见 [ADR 0001](adr/0001-instrument-service-contract.md) |
+| `src/cameras/` | AC410 摄像头模式和 UVC 读取 |
+| `src/vision/` | [视觉服务](vision.md)：定位、QR 读取、托盘和相机校准 |
+| `src/thermal_cam/` | [热像仪服务](thermal.md) |
+| `src/furnace/` | [炉温与气体服务](furnace.md) |
+| `src/microscope/`、`src/toupcam_camera/` | [显微镜服务](microscope.md)和 Toupcam 摄像头 |
+| `src/orchestrator/` | [配方服务](orchestrator.md)和 `labctl`。`web/` 是[实验室控制台](dashboard.md) |
+| `recipes/` | TOML 配方 |
+| `config/trays/`、`config/proxy/`、`config/udev/` | 托盘几何、代理模板和 USB 访问规则模板 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
-| `scripts/` | 摄像头预览、控制模式切换和交互终端入口 |
+| `firmware/microscope-axes/` | 显微镜转盘与调焦的固件，见[固件说明](../firmware/microscope-axes/README.md) |
+| `scripts/` | 摄像头预览、控制模式切换、控制台截图（`console_shots.py`）、测试选择（`select_tests.py`）、文档对检查（`check_doc_pairs.py`）、代理信号（`agent_signal.py`）、检测模型评估（`vision_eval.py`）和控制台字体（`console_font.py`） |
 | `examples/` | 单文件教学和 notebook |
 | `tests/` | Python 和 JavaScript 离线测试 |
 | `docs/` | 操作、部署和开发指南，`docs/agents/` 保存代理操作规程 |
 | `work/` | 本地运行数据、备份和临时文件，不纳入 Git |
 
 用浏览器打开 [布局编辑器](../apps/layout-studio/index.html)，可编辑并导出界面布局。
-
-`terminal_control.py` 提供 `mg400-robot` 真机交互终端。
-它复用 `web_control.py` 的连接锁、反馈检查和动作执行，不启动 HTTP 服务。
 
 `apps/control_panel/server.py` 是机器人服务，提供 HTTP 接口和 WebSocket 接口，不提供网页。
 实验室控制台的 Motion 工作区通过该服务控制机械臂和吸盘。
@@ -118,7 +145,7 @@ WebSocket 按键点动由 `web_control.py` 调度，机械臂长按复用 `keybo
 `controller_protocol.py` 解析命令应答，`feedback.py` 读取关节反馈。
 `joint_control.py` 执行受限运动和吸盘输出。
 TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
-当前没有 ROS 2 后端或视觉感知。
+当前没有 ROS 2 后端。
 
 `src/stage_controller/` 是位移台服务，不导入 `mg400`，也不使用机械臂的连接锁。
 `__main__.py` 读取 `MG400_STAGE_*` 环境变量和命令行参数，再启动 waitress。
@@ -134,22 +161,24 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 
 机器人服务执行 `start_sync` 后连接机械臂，并持有连接锁。
 实验室控制台和自写客户端通过服务读取状态和发送命令。
-`mg400-robot` 和 `scripts/mg400_control_mode.py` 直接连接机械臂。
-它们与服务共用连接锁，不能与服务同时连接。
+`labctl mode` 直接连接机械臂。
+它与服务共用连接锁，不能与服务同时连接。
 服务只使用 Python 标准库。
 
 | 接口 | 用途 |
 | --- | --- |
-| `GET {前缀}api/state` | 读取一次状态 |
-| `GET {前缀}api/describe` | 读取契约版本、命令参数和租约行为 |
-| `POST {前缀}api/stop` | 请求停止并读取确认结果 |
-| `GET {前缀}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
-| `POST {前缀}api/command` | 发送一个命令 |
-| `POST {前缀}api/heartbeat` | 续期控制租约 |
-| `GET {前缀}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
+| `GET {prefix}api/state` | 读取一次状态 |
+| `GET {prefix}api/describe` | 读取契约版本、命令参数和租约行为 |
+| `POST {prefix}api/stop` | 请求停止并读取确认结果 |
+| `GET {prefix}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
+| `POST {prefix}api/command` | 发送一个命令 |
+| `POST {prefix}api/heartbeat` | 续期控制租约。契约请求也取得租约 |
+| `POST {prefix}api/renew`、`POST {prefix}api/release` | 契约请求：续期或释放租约，见 [契约租约与命令](#契约租约与命令) |
+| `GET {prefix}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
 
-`{前缀}` 是 `--base-path` 的值，默认为 `/`。
-按键只能经 WebSocket 发送。
+`{prefix}` 是 `--base-path` 的值，默认为 `/`。
+本节用尖括号表示占位符，例如 `<client-id>` 表示客户端 ID。
+按键经 WebSocket 或契约命令 `keys` 发送。
 
 ### 访问与客户端 ID
 
@@ -158,48 +187,47 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 真机控制模式用客户端 ID 区分客户端，长度为 1–128 个可打印 ASCII 字符。
 同一时刻只有一个客户端 ID 持有控制权。
 控制者必须在 3 秒内续期控制租约（控制权的有效期）。
-心跳和按键更新都能续期。
+心跳、按键更新和控制者的命令都能续期。
 服务 3 秒内未收到续期时，请求停止机械臂并锁定控制。
 
 ### HTTP 接口
 
-POST 请求必须满足以下条件：
+带 `X-MG400-Panel` 的 POST 请求必须满足以下条件：
 
 1. 带 `Content-Type: application/json` 和 `X-MG400-Panel: 1`。
-2. 真机控制模式带 `X-MG400-Client: <客户端 ID>`。
+2. 真机控制模式带 `X-MG400-Client: <client-id>`。
 3. 正文为 1–4096 字节的 JSON 对象，用 `Content-Length` 标明长度。
 
 `api/command` 和 `api/heartbeat` 成功时返回 200 和状态对象。
 拒绝时返回 400（请求无效）、403（拒绝）或 409（状态冲突）。
 拒绝的正文为 `{"error": "..."}`。
 
-命令正文为 `{"action": "<命令>", ...}`，不得包含其他字段：
+命令正文为 `{"action": "<action>", ...}`，不得包含其他字段：
 
 | 命令 | 其他字段 | 行为 |
 | --- | --- | --- |
 | `start_sync` | 无 | 连接机械臂并取得控制权 |
-| `stop_sync` | 无 | 停止机械臂并释放控制权，保留反馈直到下使能和停稳获确认 |
+| `stop_sync` | 无 | 停止机械臂并释放控制权，保留反馈直到下使能和停稳获确认。机械臂已下使能且空闲时，确认模式 4 即可 |
 | `enable` | 无 | 使能机械臂 |
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
 | `home` | 无 | J1–J4 移动到 0° |
-| `execute` | `targets`：`x`、`y`、`z`、`r`，另有可选 `speed` | 直线移动到法兰坐标 |
+| `execute` | `targets`（含 `x`、`y`、`z`、`r`），可选 `speed` | 直线移动到法兰坐标 |
 | `vacuum` | `operation`：`suck`、`release` 或 `off` | 控制真空吸盘，见 [真空吸盘](#真空吸盘) |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
 
 对于 `keyboard`，`speed` 是 1–100 的整数。
-对于 `execute`，可选 `speed` 是整数，范围从 1 到主机的 `MG400_ROBOT_MAX_SPEED_L` 上限。
+对于 `execute`，可选 `speed` 是整数，范围从 1 到速度上限 `20`。
 值无效或超出上限时，服务返回 400，不会将运动排队。
 布尔值、字符串、小数和非有限值均无效。
 
 运动使用 `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`。
-加速度上限为 `MG400_ROBOT_MAX_ACC_L`。
-两个主机配置均默认为 1，接受 1–100 的整数。空值也使用 1。
-主机配置无效时，服务拒绝启动。修改上限后，重启服务。
+加速度上限为 `20`。
+两个上限固定在 `apps/control_panel/server.py` 中。
 
 未提供 `speed` 时，即使主机上限提高，协议命令仍为 `SpeedL=1,AccL=1`。
-这些配置不改变 `home`、全局 `SpeedFactor` 或键盘点动。
+这些配置不改变 `home`、`SpeedFactor` 或键盘点动。
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
 `recoverable` 为 `true` 时也可用：停止或下使能未确认，控制器无报警，且反馈新鲜。
@@ -207,6 +235,46 @@ POST 请求必须满足以下条件：
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
+
+### 状态对象
+
+`api/state`、WebSocket 状态推送和成功回复返回同一个状态对象。真机控制模式的字段如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `mode` | 服务模式，为 `robot` |
+| `instance`、`version` | 服务实例 ID 和递增版本号，重启后实例 ID 改变 |
+| `robot_host` | 机械臂地址 |
+| `syncing`、`feedback_fresh` | 是否连接反馈，反馈是否新鲜 |
+| `robot_mode`、`robot_error` | 控制器模式和报警标志 |
+| `enabled` | 模式为 5 或 7 时为 `true` |
+| `joints` | 实测关节 J1–J4，单位为度 |
+| `actual` | 法兰位姿 X、Y、Z、R。运动中为 4 个 `null` |
+| `speed_factor` | 控制器反馈的全局速度百分比 |
+| `busy`、`locked`、`stop_unconfirmed`、`recoverable` | 执行中、控制锁定、停止未确认、可恢复 |
+| `alarms` | 当前报警列表，见上文 |
+| `message`、`last_command` | 服务消息和最近命令结果 |
+| `vacuum`、`payload_kg` | 吸盘实测状态和负载，见 [真空吸盘](#真空吸盘) |
+| `controller_id` | 持有控制权的客户端 ID，无持有者时为 `null` |
+| `keyboard_enabled`、`keyboard_arming` | 键盘点动已开启，正在开启 |
+| `keyboard_active_key`、`keyboard_speed_percent`、`keyboard_disarm_reason` | 正在执行的按键、键盘速度和关闭原因 |
+| `service`、`seq`、`ts_unix`、`demo` | 契约字段：`robot`、版本号、Unix 时间和 `false` |
+| `connected` | 反馈已连接且新鲜 |
+| `fault` | `null`，或 `{code, message}`。`code` 为 `stop_unconfirmed` 或 `robot_alarm` |
+| `lease` | `{holder, remaining_s}`。`holder` 与 `controller_id` 相同 |
+
+只读模式只返回 `mode`、`robot_host`、`enabled`（`null`）、`syncing`、`actual`（4 个 `null`）、`joints`、`robot_mode`、`robot_error`、`feedback_fresh` 和 `message`。
+
+### 契约租约与命令
+
+不带 `X-MG400-Panel` 的 POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)，例如 `labkit.client.ServiceClient` 的请求：
+
+- 请求带 `Content-Type: application/json` 和 `X-MG400-Client`。其他内容类型返回 415。
+- `api/heartbeat` 取得或续期租约。取得租约时，服务执行 `start_sync`。其他客户端持有租约时，返回 409。
+- `api/renew` 只续期调用者持有的租约。`api/release` 执行 `stop_sync`。
+- 租约过期时，服务执行与 `stop_sync` 相同的停止和断开。机械臂已使能时，服务停止并锁定，保留反馈直到下使能。
+- `api/command` 接受后返回 202、`command_id` 和 `state`。机器人核心的拒绝返回 409。
+- `keys` 命令带 `seq` 和 `held`，与 WebSocket 按键更新相同。它的 `command_id` 为 `null`。
 
 ### 契约发现、停止与事件
 
@@ -217,14 +285,14 @@ POST 请求必须满足以下条件：
 `contract` 为 1，`demo` 为 `false`。
 每个命令的 `params` 用 JSON Schema 描述参数，不含 `action`。
 `stop` 和 `disable` 的 `any_client` 为 `true`。
-`keyboard` 的 `ui_only` 为 `true`，只供交互界面使用。
-`start_sync` 取得控制权，原心跳接口只续期。
+`keyboard` 和 `keys` 的 `ui_only` 为 `true`，只供交互界面使用。
+带 `X-MG400-Panel` 时，`start_sync` 取得控制权，`api/heartbeat` 只续期持有者的租约，不取得控制权。
 
 `api/stop` 的正文为 `{"wait_s": 0}`。
 `wait_s` 可省略，默认为 0，范围为 0–15 秒，必须是有限数值。
-接口沿用停止工作线程，等待时释放状态锁。
+接口在停止工作线程中执行停止，等待时释放状态锁。
 任何客户端都能停止，无须持有控制租约。
-重复请求不改变既有的停止去重规则。
+同类停止正在执行时，重复请求不启动新的停止。
 成功响应为 200 和 `{"stop": "confirmed", "state": {...}}`。
 
 | `stop` | 含义 |
@@ -249,7 +317,8 @@ POST 请求必须满足以下条件：
 `since` 默认为 0，必须是非负整数。
 响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
 服务保留最近 1000 个事件，重启后序号重新开始。
-事件对应既有的状态消息、锁定、报警、和键盘关闭原因，不增加日志行。
+事件记录状态消息、锁定和解锁、停止未确认及其清除。
+事件还记录反馈模式和报警标志的变化、报警和键盘关闭原因。每个事件的 `message` 即对应的服务日志行。
 
 ### Python 客户端
 
@@ -264,7 +333,7 @@ POST 请求必须满足以下条件：
 ```python
 from mg400.client import RobotClient
 
-with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
+with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
     robot.run("start_sync")
     robot.run("enable")
     result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
@@ -277,9 +346,13 @@ with RobotClient("http://127.0.0.1:8766/", "recipe-example") as robot:
 - `run(action, timeout=30, **fields)` 等待 `busy == False`，并检查属于本次动作和客户端的新 `last_command`。
 - `vacuum(operation, timeout=30)` 用 `run()` 发送 1 次 `vacuum` 命令。`operation` 取 `suck`、`release` 或 `off`，其他值抛出 `ValueError`。见[真空吸盘](#真空吸盘)。
 - `vacuum_state` 返回最新状态的 `vacuum` 字段。连接前为 `None`。
+- `keys(seq, held)` 经 WebSocket 发送 1 次按键集合并返回协议回复，不重试。
 - `RobotClientError` 表示请求被拒绝或结果未知。如果服务提供错误码，异常保留 `status` 和 `close_code`。
 
 `run()` 接受 `ok`。对于 `stop`、`disable` 和 `stop_sync`，停止仍获确认时，也接受 `stopped`。
+服务锁定时，`run("start_sync")` 仍可成功，新持有者因此可以发送 `clear_alarm` 恢复。服务继续拒绝运动。
+`start_sync` 还等待 `feedback_fresh` 为真。
+其他动作完成时，若 `stop_unconfirmed` 为真，`run()` 抛出 `RobotClientError`。若 `locked` 为真，`run()` 也抛出该异常，`stop`、`disable` 和 `stop_sync` 除外。
 请求被拒绝、操作失败、停止取代运动或服务重启，都不能算作运动成功。
 每个客户端 ID 只能有 1 个运行中的程序。`run()` 期间，同一客户端的普通命令串行执行。
 其他线程仍可调用 `command("stop")`、`command("disable")`、`run("stop")` 或 `run("disable")`。
@@ -300,16 +373,16 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 客户端不会自动下使能。停止获确认后，发送 `disable` 即可完成断开，无须重启服务。
 可选参数 `keep_control=True` 跳过 `stop_sync`。退出后仍会停止心跳。
 直接调用 `close()` 也会停止线程，不续期或释放控制权。
-服务随后按原有租约超时规则停止机械臂并锁定控制。
+服务随后按租约超时规则停止机械臂并锁定控制。
 可选参数 `timeout=5` 配置连接和回复超时，单位为秒。
 
 ### WebSocket 接口
 
 按以下顺序通信：
 
-1. 连接后 3 秒内，发送 `{"type":"hello","protocol":1,"client":"<客户端 ID>"}`。
+1. 连接后 3 秒内，发送 `{"type":"hello","protocol":1,"client":"<client-id>"}`。
 2. 等待服务推送 `{"type":"state","state":{...}}`。
-3. 发送请求 `{"type":"<类型>","id":<整数>,"body":{...}}`。
+3. 发送请求 `{"type":"<type>","id":<integer>,"body":{...}}`。
 4. 按 `id` 匹配回复。
 
 `protocol` 是消息格式版本，当前为 1。hello 不得含其他字段。
@@ -322,12 +395,12 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 | --- | --- |
 | `command` | 与 `api/command` 的正文相同 |
 | `heartbeat` | `{}` |
-| `keys` | `{"seq":<序号>,"held":[<按键>]}` |
+| `keys` | `{"seq":<seq>,"held":[<key>]}` |
 
 `id` 是 0 到 2^53 的整数，由客户端选择。
 服务按请求顺序逐个回复，每个请求一个回复。
 成功回复为 `{"type":"reply","id":<id>,"status":200,"state":{...}}`。
-拒绝回复为 `{"type":"reply","id":<id>,"status":<状态码>,"error":"..."}`。
+拒绝回复为 `{"type":"reply","id":<id>,"status":<status>,"error":"..."}`。
 状态码含义同 HTTP 接口，500 表示服务内部错误。
 `body` 无效时，服务只回复错误，连接保持打开。
 `command` 的成功回复表示命令已受理，不表示动作已完成。
@@ -336,10 +409,10 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 `keys` 的 `seq` 与键盘开关命令共用一个递增序号，服务忽略不大于上次值的消息。
 `held` 列出当前按住的键，取值为 W、A、S、D、Q、E、R、F、Z、X。
-按住按键时，客户端必须每 100 ms 重发一次。
+按住按键时，客户端必须在 0.4 秒内重发。实验室控制台每 150 ms 重发一次。
 服务 0.4 秒内未收到更新时，停止点动并关闭键盘控制。
 
-关闭码为 4400、4426 或 1013 时，服务先发送 `{"type":"error","status":<状态码>,"error":"..."}`，再关闭连接。
+关闭码为 4400、4426 或 1013 时，服务先发送 `{"type":"error","status":<status>,"error":"..."}`，再关闭连接。
 
 | 关闭码 | 含义 |
 | --- | --- |
@@ -348,6 +421,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 | 4409 | 同一客户端 ID 的新连接替换了此连接 |
 | 1013 | 连接数已满 |
 | 1001 | 服务停止，关闭前推送最后状态 |
+| 1011 | 服务处理连接时出错 |
 | 1002、1003、1007、1009 | 帧格式错误、二进制消息、文本不是 UTF-8 或消息过长 |
 
 连接规则如下：
@@ -355,6 +429,8 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 - 消息只能是不超过 4096 字节的 UTF-8 文本。
 - 服务每 5 秒发送 ping，15 秒未收到任何帧时关闭连接。
 - 最多 8 个客户端 ID 同时保持 hello 后的连接。
+- 最多 8 个连接同时等待 hello。超出时，服务关闭等待最久的连接。
+- `GET api/ws` 不是 WebSocket 升级请求时，服务返回 HTTP 426。
 - 同一客户端 ID 再次发送 hello 时，服务关闭旧连接。
 - 客户端的最新连接关闭，或同一客户端 ID 的新连接替换它时，服务立即关闭该客户端的键盘控制。
 
@@ -364,7 +440,7 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 ## 位移台服务接口
 
-JSON API 默认位于 `/contract/api/`。供 `labkit.client.ServiceClient` 使用的基础地址为 `http://127.0.0.1:8767/contract`。服务遵循[仪器服务契约](adr/0001-instrument-service-contract.md)。
+JSON API 默认位于 `/api/`。`labkit.client.ServiceClient` 使用 `http://127.0.0.1:8767/`。兼容别名 `/contract/api/` 共用同一组处理器和租约。服务遵循[仪器服务契约](adr/0001-instrument-service-contract.md)。
 
 Arduino 广播编码器和开关状态。服务每 0.05 s 读取遥测。公开坐标和相对距离使用电机轴圈数，速度使用圈/秒。`ccw` 增加坐标，`cw` 减少坐标。固件执行控制环。
 
@@ -372,17 +448,18 @@ Arduino 广播编码器和开关状态。服务每 0.05 s 读取遥测。公开�
 
 | 接口 | 用途 |
 | --- | --- |
-| `GET /contract/api/describe` | 读取命令格式、限制、能力和租约规则 |
-| `GET /contract/api/state` | 读取电机、连接、租约、命令结果和取消序号 |
-| `POST /contract/api/heartbeat` | 获取或续期控制权，有其他持有者时返回 409 |
-| `POST /contract/api/renew` | 只续期调用者持有且未过期的租约 |
-| `POST /contract/api/release` | 释放控制权，不发送停止 |
-| `POST /contract/api/command` | 发送 `action` 和参数，接受后返回 202、`command_id` 和 `state` |
-| `POST /contract/api/stop` | 不要求租约的停止请求，`wait_s` 为 0–15 s，默认 0 |
-| `GET /contract/api/events?since=0` | 读取活动和 `next` 游标 |
+| `GET /api/describe` | 读取命令格式、限制、能力和租约规则 |
+| `GET /api/state` | 读取电机、连接、租约、命令结果和取消序号 |
+| `POST /api/heartbeat` | 获取或续期控制权，有其他持有者时返回 409 |
+| `POST /api/renew` | 只续期调用者持有且未过期的租约 |
+| `POST /api/release` | 释放控制权，不发送停止 |
+| `POST /api/command` | 发送 `action` 和参数，接受后返回 202、`command_id` 和 `state` |
+| `POST /api/stop` | 不要求租约的停止请求，`wait_s` 为 0–15 s，默认 0 |
+| `GET /api/events?since=0` | 读取活动和 `next` 游标 |
 
 | `action` | 参数 | 含义 |
 | --- | --- | --- |
+| `connect` | `port` | 连接状态中列出的串口。演示只接受 `DEMO`。服务故障时仍可用 |
 | `move` | `motor`、`direction`、`speed`、`rotations` | 编码器相对移动 |
 | `move_guarded` | `motor`、`direction`、`speed`、`rotations`、`stop_epoch` | 检查取消状态后相对移动 |
 | `move_to_position` | `motor`、`position`、`speed` | 标定后的编码器绝对目标 |
@@ -418,16 +495,11 @@ Arduino 广播编码器和开关状态。服务每 0.05 s 读取遥测。公开�
 
 发现接口报告 `renew_only_heartbeat: true`。使用 `ServiceClient.heartbeat()` 获取控制权，再用 `ServiceClient.renew()` 或 `heartbeat_thread(renew_only=True)` 续期。释放或过期后续期返回 409，不重新获取。无续期接口的旧服务返回 404，不回退。租约过期请求停止。单独释放不会停止移动。
 
-专用停止路由返回 `stop` 和 `state`。结果为 `confirmed`、`pending` 或 `unconfirmed`。确认要求全部电机空闲，无活动标定或方向暂停。等待停止期间允许其他停止请求，但阻止新移动。串口结果未知或停止等待过期会锁定服务。后续空闲反馈不会单独清除该故障。确认实际位移台状态后，运行 `mg400ctl restart stage` 并重新连接。停止确认进行中，重连返回 409。
+专用停止路由返回 `stop` 和 `state`。结果为 `confirmed`、`pending` 或 `unconfirmed`。确认要求全部电机空闲，无活动标定或方向暂停。等待停止期间允许其他停止请求，但阻止新移动。串口结果未知或停止等待过期会锁定服务。后续空闲反馈不会单独清除该故障。确认实际位移台状态后，运行 `labctl restart stage` 并重新连接。停止确认进行中，重连返回 409。
 
-### 操作接口
+### 位移台连接与兼容性
 
-| 接口 | 正文 | 用途 |
-| --- | --- | --- |
-| `GET /contract/api/ports` | 无 | 列出串口，`MG400_STAGE_SERIAL` 限制列表 |
-| `POST /contract/api/connect` | `{"port": "..."}` | 持有租约时连接列表内串口，演示只接受 `DEMO` |
-
-串口接口返回 `{"ports": [{"device": "...", "description": "..."}]}`。连接接口返回含 `lease` 的状态。旧相机路由 `GET /contract/api/motors/<motor>/reference` 和 `POST /contract/api/motors/<motor>/teach_reference` 返回 409，因为相机参考未启用。
+未连接时，状态的 `ports` 以 `{"device", "description"}` 列出可用串口。连接后列表为空。`MG400_STAGE_SERIAL` 将列表限制为该设备。通过 `POST /api/command` 发送 `connect` 命令，不提供独立的操作员连接路由。
 
 旧 `steps`、毫米目标、命名脉冲位姿和相机校准不生成编码器移动。旧几何文件保持未启用。使用上述命令和基于圈数的 Sample Transfer 配置。
 
@@ -471,6 +543,7 @@ J3 不减去 J2，也不改变符号或零点。
 当前位置在原始范围内时，可以从余量区移向允许的目标。
 J4 使用厂家 ±360° 范围，目标允许范围为 ±358.95°。
 角度使用控制器原始读数，不加减 360°。
+机器人下使能时，静止检查和角度一致性检查只用 J1–J3。下使能的 J4 没有保持力矩，工具的气管会转动它。
 
 条件 J2 下限和 `J3−J2` 检查保留
 [HarvestX 参考模型的限制](https://github.com/HarvestX/MG400_ROS2/blob/1a8c7344be44c52030f7216c0f387873ed91fd11/mg400_common/include/mg400_common/kinematics.hpp)。
@@ -488,12 +561,27 @@ J4 使用厂家 ±360° 范围，目标允许范围为 ±358.95°。
 ### 运动命令与坐标缓存
 
 未提供 `speed` 时，`execute` 的 `MovL` 使用 `SpeedL=1,AccL=1`。
-键盘有限轨迹中，W/S、R/F、Q/E 的 `MovL` 使用 `SpeedL=2,AccL=20`。
 控制器逆解验证目标关节范围，控制器规划直线路径。
 复位使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
-A/D 的有限轨迹使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=20`。
-两类关节动作检查整段关节范围，不包含现场碰撞检查。
-机械臂运动不修改全局速度或工具配置。
+`execute` 和复位不修改全局速度或工具配置。
+
+键盘点动开启时，服务发送 `SpeedFactor(<speed>)`，设置全局速度。
+按住按键时，服务发送连续点动命令 `MoveJog`：
+
+| 按键 | 命令 |
+| --- | --- |
+| W/S | `MoveJog(X+,CoordType=0,User=8,Tool=0)`、`MoveJog(X-,CoordType=0,User=8,Tool=0)`，沿 J1 方向伸出和收回 |
+| A/D | `MoveJog(J1+)`、`MoveJog(J1-)` |
+| Q/E | `MoveJog(J4+)`、`MoveJog(J4-)` |
+| R/F | `MoveJog(Z+,CoordType=0,User=0,Tool=0)`、`MoveJog(Z-,CoordType=0,User=0,Tool=0)` |
+
+W/S 开始前，服务确认 User 0 未改变，再用 `SetUser(8,{0,0,0,J1})` 把用户坐标系 8 对齐当前 J1。
+连续点动接近关节界限时，服务提前停止。提前量为每 1% 速度 0.08°。
+
+关节处于 1.05° 余量区时，服务改用有限轨迹向内移动：
+W/S、R/F、Q/E 使用 `MovL`，参数为 `SpeedL=2,AccL=20`。
+A/D 使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=20`。
+关节动作检查整段关节范围，不包含现场碰撞检查。
 
 A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 动作结束后读取坐标，更新状态。
@@ -516,7 +604,7 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 
 - 机械臂必须空闲，控制器模式为 4 或 5。命令不使能、也不移动机械臂。
 - 服务每条命令只发送一次，然后等待 30004 反馈中的 DO 实测位改变，时限 1 秒。
-- 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，停止结果包含 `blow_error`，停止本身不因此失败。
+- 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，`JointControl.stop()` 的结果包含 `blow_error`，停止本身不因此失败。机器人服务不报告 `blow_error`，下使能不记录该错误。
 - 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。未设置 `GRIP_DI` 时，`held` 为 `null`。
 - 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。

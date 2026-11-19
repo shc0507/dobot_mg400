@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrator.approvals import ALLOWED
 from orchestrator.recipe import validate
 from orchestrator.runner import Context, Revoked, Runner, _Authority
 from orchestrator.skills import default_registry
@@ -37,7 +36,6 @@ class Microscope:
             "last_result": None,
             "recording": {"id": None, "status": "idle"},
             "recording_sequence": {"armed": False},
-            "manual_client": None,
         }
 
     def describe(self):
@@ -206,7 +204,6 @@ def test_recording_writes_intent_before_start_and_completed_metadata_only(
 def test_registered_skill_runs_through_real_runner_and_preserves_chip_association(tmp_path):
     registry, recipe = prepared()
     assert recipe.services == ("microscope",)
-    assert "microscope.record" not in ALLOWED
     service = Microscope()
     plan = ZonePlan({}, ("microscope",), tmp_path / "zones.json", "offline")
     with RunStore(tmp_path / "runs") as store:
@@ -427,7 +424,6 @@ def test_completion_audit_failure_keeps_only_intent_and_does_not_retry(tmp_path,
         lambda state: state.pop("locked"),
         lambda state: state["lease"].update(holder="foreign"),
         lambda state: state.update(busy=True),
-        lambda state: state.update(manual_client=Microscope.identity),
         lambda state: state.update(recording_sequence={"armed": True}),
         lambda state: state.update(recording_sequence={}),
         lambda state: state.pop("recording_sequence"),

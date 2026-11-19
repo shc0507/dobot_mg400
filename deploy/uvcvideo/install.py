@@ -118,8 +118,8 @@ def main(argv):
     )
     print(f"Wrote {OPTIONS}.")
     print(
-        "Load the driver: mg400ctl stop camera thermal; rmmod uvcvideo; modprobe uvcvideo; "
-        "mg400ctl start camera thermal. Or reboot."
+        "Load the driver: labctl stop camera thermal; rmmod uvcvideo; modprobe uvcvideo; "
+        "labctl start camera thermal. Or reboot."
     )
 
 

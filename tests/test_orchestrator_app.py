@@ -21,7 +21,7 @@ from orchestrator.app import (
     demo_environment,
     demo_isolated,
 )
-from orchestrator.clients import Clients
+from orchestrator.clients import Borrowed, Clients
 from orchestrator.skills import default_registry
 
 
@@ -504,7 +504,7 @@ def test_demo_environment_drops_hostile_settings_even_with_spoofed_marker():
     assert not demo_isolated(hostile)
     clean = demo_environment(hostile)
     assert demo_isolated(clean)
-    assert set(clean) == {DEMO_MARKER, "MG400_ORCH_RECIPES_DIR", "MG400_ORCH_STATIONS_FILE"}
+    assert set(clean) == {DEMO_MARKER, "MG400_ORCH_STATIONS_FILE"}
 
 
 def test_real_demo_requires_isolated_environment_before_creating_files(tmp_path):
@@ -833,7 +833,6 @@ def test_demo_serve_reexecs_clean_interpreter_before_service_construction():
         DEMO_MARKER: "1",
         "MG400_ORCH_ROBOT_URL": "http://lab.invalid",
         "HTTPS_PROXY": "http://proxy.invalid",
-        "MG400_ORCH_PORT": "8772",
         "PYTHONPATH": "/untrusted",
         "MG400_ORCH_RUNS_DIR": "/host/runs",
     }
@@ -852,7 +851,7 @@ def test_demo_serve_reexecs_clean_interpreter_before_service_construction():
         "orchestrator",
         "serve",
     ]
-    assert demo_isolated(env) and env["MG400_ORCH_PORT"] == "8772"
+    assert demo_isolated(env) and argv[5:] == ["--demo", "--recipes-dir", "/catalog"]
     assert "MG400_ORCH_ROBOT_URL" not in env and "MG400_ORCH_RUNS_DIR" not in env
 
 
@@ -940,6 +939,34 @@ def test_serve_passes_the_server_options():
         server_factory=server,
     )
     assert {key: seen[key] for key in SERVER_OPTIONS} == SERVER_OPTIONS
-    # Fixed loopback service URLs apply unless a nonempty setting overrides one.
+    # The fixed loopback service URLs win over the host environment.
     assert settings["MG400_ORCH_ROBOT_URL"] == "http://127.0.0.1:8766/"
-    assert settings["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:9000/"
+    assert settings["MG400_ORCH_STAGE_URL"] == "http://127.0.0.1:8767/"
+
+
+def test_borrowed_runs_use_lent_adapters_and_return_them(rig, monkeypatch):
+    recipe(rig, fail=True)
+    client = create_app(rig).test_client()
+    assert post(client, "/api/heartbeat").status_code == 200
+    assert_error(post(client, "/api/runs", {"recipe": "recipe", "borrow": 1}), 400)
+    # The client's console page holds no stage.
+    assert_error(post(client, "/api/runs", {"recipe": "recipe", "borrow": True}), 409)
+    held = Instrument("stage", "agent-x-0123456789ab")
+    held.acquire()
+    returned = []
+    monkeypatch.setattr(
+        rig.console,
+        "lend",
+        lambda page, devices: {
+            name: Borrowed(held, lambda name=name: returned.append(name)) for name in devices
+        },
+    )
+    reply = post(client, "/api/runs", {"recipe": "recipe", "borrow": True})
+    assert reply.status_code == 202, reply.get_json()
+    wait_for(lambda: rig.current is not None and rig.job["done"].is_set())
+    runner = rig.current
+    wait_for(lambda: runner.snapshot()["status"] == "held")
+    assert post(client, f"/api/runs/{runner.run_id}/abort").status_code == 202
+    assert runner.wait_closed(3)
+    assert returned == ["stage"] and not rig.created
+    assert held.holder == "agent-x-0123456789ab" and "release" not in held.calls

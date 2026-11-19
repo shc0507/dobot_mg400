@@ -207,6 +207,11 @@ class _Crucible:
 
     def stage_state(self, *, moving=False, load=False, awake=False):
         state = self.generic("stage")
+        if state.get("closed_loop"):
+            raise RuntimeError(
+                "Crucible transfer recipes require a new encoder-to-station mapping. "
+                "Encoder stage execution is unavailable until that mapping is defined."
+            )
         automation = state.get("automation")
         if (
             state.get("feedback_fresh") is not True

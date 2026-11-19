@@ -30,7 +30,7 @@ def begin(rig, *, reference=True):
     if reference:
         establish_manual_reference(rig)
     else:
-        assert service_post(rig, "manual/heartbeat").status_code == 200
+        assert service_post(rig, "heartbeat").status_code == 200
     response = turret(rig, "begin", {"name": "Bench turret"})
     assert response.status_code == 200, response.json
     return response.json
@@ -55,7 +55,7 @@ def test_begin_only_disables_turret_and_keeps_focus_unchanged(demo_rig, known):
         establish_manual_reference(rig)
         assert dispatch(rig, "focus_move", steps=30)["last_command"]["result"] == "ok"
     else:
-        assert service_post(rig, "manual/heartbeat").status_code == 200
+        assert service_post(rig, "heartbeat").status_code == 200
         rig.port.sim.focus.position = 30
     rig.service._objective_id, rig.service._objective_offset = 0, 0
     before = len(rig.port.commands)
@@ -97,7 +97,7 @@ def test_session_blocks_jobs_and_other_clients(demo_rig):
     begin(rig)
     for action, args in (("focus_move", {"steps": 1}), ("select_objective", {"id": 1})):
         assert service_post(rig, "command", {"action": action, **args}).status_code == 409
-    assert service_post(rig, "manual/set_focus_zero", {"confirm": True}).status_code == 409
+    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code == 409
     assert turret(rig, "record", {"objective_id": 0}, actor="other").status_code == 409
     assert turret(rig, "upload", {"profile": "{}"}).status_code == 409
 
@@ -152,7 +152,7 @@ def test_all_exit_paths_end_session_without_enabling_or_moving(demo_rig, exit_ac
     if exit_action in {"finish", "cancel"}:
         assert turret(rig, exit_action).status_code == 200
     elif exit_action == "release":
-        assert service_post(rig, "manual/release").status_code == 200
+        assert service_post(rig, "release").status_code == 200
     elif exit_action == "expiry":
         rig.clock.now += 4
         rig.service.lease.poll()
@@ -242,7 +242,7 @@ def test_selected_profile_from_another_camera_refuses_before_motion(demo_rig):
 
 def test_upload_large_profile_does_not_raise_other_route_limits(demo_rig):
     rig = demo_rig()
-    service_post(rig, "manual/heartbeat")
+    service_post(rig, "heartbeat")
     profile = new_profile("Import", "demo", None)
     text = json.dumps(profile, indent=2) + " " * 100_000
     assert turret(rig, "upload", {"profile": text}).status_code == 200

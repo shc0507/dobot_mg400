@@ -14,6 +14,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 from PIL import Image, ImageOps
 
 from cameras.config import MJPEG_MODES, camera_configuration
+from labkit import ports
 
 _MAX_BYTES = 8 * 1024 * 1024
 _MAX_PIXELS = 16_000_000
@@ -130,7 +131,7 @@ class Go2RTCSource:
     def still(self, camera: int) -> Image.Image:
         """Read one frame from the same configured stream and check its dimensions."""
         camera = validate_camera(camera, self.camera_count)
-        url = f"http://127.0.0.1:1984/api/frame.jpeg?src=camera{camera}"
+        url = ports.url("go2rtc", f"api/frame.jpeg?src=camera{camera}")
         return self._frame(camera, url, self.configuration.mode(camera)[:2])
 
     def full_still(self, camera: int, dimensions) -> Image.Image:
@@ -144,7 +145,7 @@ class Go2RTCSource:
         ):
             raise ValueError("The calibration requires an unsupported camera resolution.")
         width, height = dimensions
-        url = f"http://127.0.0.1:1985/camera{camera}.full.jpg?size={width}x{height}"
+        url = ports.url("camera", f"camera{camera}.full.jpg?size={width}x{height}")
         return self._frame(camera, url, (width, height))
 
     def _frame(self, camera, url, expected):

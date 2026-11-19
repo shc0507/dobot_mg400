@@ -50,7 +50,7 @@ class StageContract:
         hold_id = parameter("string", pattern="^[A-Za-z0-9_-]{16,64}$")
         epoch = parameter("integer", minimum=0)
 
-        def spec(properties, *, any_client=False):
+        def spec(properties, *, any_client=False, recovery=False):
             return command(
                 parameter(
                     "object",
@@ -59,6 +59,7 @@ class StageContract:
                     additionalProperties=False,
                 ),
                 any_client=any_client,
+                recovery=recovery,
             )
 
         move = dict(
@@ -74,6 +75,7 @@ class StageContract:
         )
         stepping = dict(microstep=parameter("integer", enum=list(MICROSTEP_MODES)))
         commands = {
+            "connect": spec(dict(port=parameter("string")), recovery=True),
             "move": spec(move),
             "move_guarded": spec({**move, "stop_epoch": epoch}),
             "move_to_position": spec(absolute),
@@ -191,6 +193,22 @@ class StageContract:
         if set(args) != set(specs[action]["params"]["required"]):
             raise ValueError("Command arguments must match the discovery schema.")
         entry = {"id": uuid.uuid4().hex, "action": action, "client": client}
+        if action == "connect":
+            try:
+                self.connect(**args, client=client)
+            except (ValueError, ControllerError) as exc:
+                with self._lock:
+                    self._finish_command(
+                        entry, "failed" if isinstance(exc, LinkError) else "rejected", str(exc)
+                    )
+                if isinstance(exc, ControllerError):
+                    raise ServiceError(
+                        503 if isinstance(exc, LinkError) else 409, str(exc)
+                    ) from exc
+                raise
+            with self._lock:
+                self._finish_command(entry, "ok", "connect confirmed.")
+            return entry["id"]
         with self.lease.control(client, require_holder=not specs[action]["any_client"]), self._lock:
             if (
                 self._error or self._contract_fault or self._contract_stopping
@@ -288,4 +306,4 @@ class StageContract:
     def on_lease_expired(self):
         outcome = self.stop("lease-expiry", 0)
         with self._lock:
-            self._event(f"Automation lease expired · stop {outcome}")
+            self._event(f"Automation lease expired Â· stop {outcome}")

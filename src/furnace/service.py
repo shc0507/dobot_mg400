@@ -10,7 +10,7 @@ Non-stop commands require completed recovery through start() or connect().
 Gas map and idle gas settings are JSON objects keyed by channel 0, 1, or 2.
 MG400_FURNACE_GAS_MAP maps channels to labels. Unlabelled channels show Gas 1 to Gas 3.
 MG400_FURNACE_IDLE_GAS maps channels to percent (unspecified channels are off).
-The orphan grace setting is MG400_FURNACE_ORPHAN_GRACE_MIN, default 15 minutes.
+The orphan grace is fixed at 15 minutes.
 Signal handlers belong to the application: SIGTERM must call close().
 """
 
@@ -28,9 +28,11 @@ from labkit.lease import Lease
 
 from . import controller as protocol
 from .config import FurnaceConfig, serial_port
-from .controller import GAS_UNIT_IDS, Furnace, MFCFlowController
+from .controller import GAS_UNIT_IDS, Furnace, MFCFlowController, check_program_minutes
 from .state import StateError, StateStore
 
+# Minutes without a lease renewal before an orphaned run cools down.
+ORPHAN_GRACE_MIN = 15
 FRAME_METADATA_FIELDS = (
     "temperature_sample_time",
     "temperature_c",
@@ -125,9 +127,7 @@ class FurnaceService:
         self.target_tolerance_c = self._number(target_tolerance_c, "Target tolerance", minimum=0)
         self.clock, self.wall_clock = clock, wall_clock
         self.orphan_grace_min = self._number(
-            os.environ.get("MG400_FURNACE_ORPHAN_GRACE_MIN", "15")
-            if orphan_grace_min is None
-            else orphan_grace_min,
+            ORPHAN_GRACE_MIN if orphan_grace_min is None else orphan_grace_min,
             "Orphan grace",
             minimum=0,
         )
@@ -389,14 +389,12 @@ class FurnaceService:
             return
         controller = self._ensure_flow_controller()
         unit = controller.gas_unit_id(channel)
-        if unit in controller._valve_override_units:
-            # A prior zero write may have failed while SVC still succeeded.
-            # Prime the new explicit target before SVN can restore regulation.
-            controller._send_without_response(unit, "SFR", f"{round(percent * 100):X}")
-            controller._controlled_unit_ids.add(unit)
-            controller._restore_normal_valve(unit)
-        else:
-            controller.set_flow_percent_unconfirmed(unit, percent)
+        # Every stop sends SVC, and a restarted process does not remember it: always send SVN.
+        # Prime the new target first so SVN cannot restore an older setpoint.
+        controller._send_without_response(unit, "SFR", f"{round(percent * 100):X}")
+        controller._controlled_unit_ids.add(unit)
+        controller._send_without_response(unit, "SVN")
+        controller._valve_override_units.discard(unit)
         self._gas_valves[channel] = controller.set_gas_solenoid(channel, True)
         self._gas_targets[channel] = percent
         self._flow_channels[("gas", unit)].update(target_percent=percent, setpoint_verified=False)
@@ -567,6 +565,10 @@ class FurnaceService:
 
     def _validate_recipe(self, steps, end_gas, end_gas_until_c):
         steps = self._validate_steps(steps)
+        for before, step in zip(steps, steps[1:]):
+            check_program_minutes(
+                abs(step["temperature_c"] - before["temperature_c"]) / step["ramp_rate_c_per_min"]
+            )
         if any("gas" in step for step in steps) and (end_gas is None or end_gas_until_c is None):
             raise ValueError("A sequence with gas requires end_gas and end_gas_until_c")
         if (end_gas is None) != (end_gas_until_c is None):
@@ -583,6 +585,8 @@ class FurnaceService:
         validated, gas, until = self._validate_recipe(steps, end_gas, end_gas_until_c)
         if self._sequence_phase == "cooling":
             raise ValueError("Stop the cooling gas plan before replacing the sequence")
+        if self._sequence_running:
+            self._check_step_ramp(validated[min(self._sequence_index, len(validated) - 1)])
         self._steps, self._end_gas, self._end_gas_until_c = validated, gas, until
         if self._sequence_running and self._sequence_index >= len(validated):
             self._sequence_index = len(validated) - 1
@@ -602,6 +606,7 @@ class FurnaceService:
         )
         self._connect()
         self._check_unlocked()
+        self._check_step_ramp(recipe[0][0])
         self._steps, self._end_gas, self._end_gas_until_c = recipe
         self._sequence_running = True
         self._sequence_index = 0
@@ -620,6 +625,7 @@ class FurnaceService:
         )
         self._connect()
         self._check_unlocked()
+        self._furnace.check_ramp_time(target, ramp)
         self._sequence_running = False
         self._sequence_phase = "manual"
         self._hold_started_at = self._hold_started_wall = None
@@ -633,6 +639,10 @@ class FurnaceService:
 
         self._transition(apply)
         self._snapshot = self._read_snapshot(track=False)
+
+    def _check_step_ramp(self, step):
+        # Refuse before any write: a refused ramp must not lock the furnace.
+        self._furnace.check_ramp_time(step["temperature_c"], step["ramp_rate_c_per_min"])
 
     def _signature(self):
         step = self._steps[self._sequence_index]
@@ -653,6 +663,8 @@ class FurnaceService:
         thermal_changed = (
             self._applied_signature is None or signature[:3] != self._applied_signature[:3]
         )
+        if thermal_changed:
+            self._check_step_ramp(step)
         self._active_target = step["temperature_c"]
         self._active_ramp = step["ramp_rate_c_per_min"]
         if thermal_changed:
@@ -936,6 +948,9 @@ class FurnaceService:
                 self._mark_stopped()
             except Exception as error:
                 errors.append(error)
+                # A replugged USB port stays "open" but every write fails: reopen on the next stop.
+                self._furnace, dead = None, self._furnace
+                self._close_quietly(dead)
         if gas:
             gas_stopped = False
             try:
@@ -943,6 +958,8 @@ class FurnaceService:
                 gas_stopped = True
             except Exception as error:
                 errors.append(error)
+                self._flow_controller, dead = None, self._flow_controller
+                self._close_quietly(dead)
             if idle and gas_stopped and any(self.idle_gas.values()):
                 try:
                     self._apply_gas(self.idle_gas)
@@ -954,6 +971,14 @@ class FurnaceService:
                     except Exception as cleanup_error:
                         errors.append(cleanup_error)
         return errors
+
+    @staticmethod
+    def _close_quietly(handle):
+        try:
+            if handle is not None:
+                handle.close(stop_output=False)
+        except Exception:
+            pass
 
     def stop_furnace(self):
         return self.stop_sequence()

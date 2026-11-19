@@ -16,11 +16,12 @@ Use contract version 1. Paths are relative to the configured service base path.
 
 | Method and path | Request or response |
 | --- | --- |
-| `GET api/describe` | `{service, version, contract: 1, demo, zones, lease_seconds, on_lease_expiry, commands: {name: {params: <JSON Schema>, any_client: bool}}}` |
+| `GET api/describe` | `{service, version, contract: 1, demo, zones, lease_seconds, on_lease_expiry, commands: {name: {params: <JSON Schema>, any_client: bool, recovery?: true}}}` |
 | `GET api/state` | `{service, seq, ts_unix, demo, connected, busy, locked, fault, lease, last_command, ...}` |
 | `POST api/command` | Body `{"action": "...", ...}`. Return `202` with `{command_id, state}`. Completion appears in `state.last_command`. |
-| `POST api/stop` | Body `{"wait_s": 0..15}`. Return `{stop, state}`, with `stop` equal to `confirmed`, `pending`, or `unconfirmed`. Any client may stop at any time. Repeated requests are safe. |
+| `POST api/stop` | Body `{"wait_s": 0..15}`. Return `{stop, state}`, with `stop` equal to `confirmed`, `pending`, or `unconfirmed`. Any client may stop at any time. Repeated requests are safe. A service can accept named stop parameters to stop 1 part, such as the furnace `gas_channel`. |
 | `POST api/heartbeat` | Acquire or renew the caller's lease. Return `409` when another client holds it. |
+| `POST api/renew` | Renew only an unexpired lease that the caller holds. Otherwise, return `409`. |
 | `POST api/release` | Release the lease only when the caller holds it. |
 | `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`. These events also enter the service journal. |
 | `GET api/ws` | Optional state push with robot protocol 1. |
@@ -29,10 +30,10 @@ Use contract version 1. Paths are relative to the configured service base path.
 - Include units in device fields: `pv_c`, `ramp_c_per_min`, `flow_pct`, `x_mm`, `r_deg`.
 - POST requests require `Content-Type: application/json` and `X-MG400-Client`. A client ID contains 1 to 128 printable ASCII characters.
 - Errors use `{"error": "..."}`: `400` invalid request, `409` state or lease conflict, `415` non-JSON, `503` lost device link.
-- Services listen on loopback and check no token, `Host`, or `Origin`. The VPN is the access boundary.
+- Services listen on loopback and check no token, `Host`, or `Origin`. The VPN is the access boundary. The Lab Console control socket refuses a WebSocket whose `Origin` differs from `Host`.
 - There is 1 controlling client. The default lease lasts 3 s. Reads and `stop` require no lease. Motion stops on expiry. The furnace follows [0005](0005-furnace-lifecycle.en.md). Declare the action in `on_lease_expiry`.
-- An unknown command outcome sets `locked` and a `fault`. Refuse commands except `stop` until a person clears the lock. Never retry motion automatically.
-- `--demo` substitutes simulated devices. Report it in `state.demo` and `describe.demo`. Clients reject a different `contract` version.
+- An unknown command outcome sets `locked` and a `fault`. Refuse commands except `stop` until a person clears the lock. A command with `recovery: true`, such as a reconnect, is the way to clear it and runs while locked. Never retry motion automatically.
+- `--demo` substitutes simulated devices. Report it in `state.demo` and `describe.demo`. Clients reject a different `contract` version. The robot service has no `--demo`: run `python -m mg400.sim` and pass `--robot-host`.
 - Keep the robot's current protocol. Add `describe`, `stop`, `events`, and `last_command`.
 
 ## Consequences

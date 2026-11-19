@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import os
@@ -10,7 +9,6 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import uuid
 from contextlib import ExitStack, contextmanager
 from fnmatch import fnmatchcase
@@ -333,47 +331,3 @@ def combine_run_to_target(
         f"speedup: {speed:.2f}x"
     )
     return output_path
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Combine the video segments from one run into a single mp4 and speed it up "
-            "so the total playback time matches the requested length in minutes."
-        )
-    )
-    parser.add_argument("run_name", help="Run folder name or manifest run name to process")
-    parser.add_argument("target_minutes", type=float, help="Desired output duration in minutes")
-    parser.add_argument(
-        "--recordings-root",
-        type=Path,
-        default=DEFAULT_RECORDINGS_ROOT,
-        help="Directory containing private run folders. Defaults to /var/lib/mg400/recordings",
-    )
-    parser.add_argument("--output", type=Path, help="Optional output path for the shortened video")
-    parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
-    parser.add_argument("--ffprobe", default="ffprobe", help="Path to the ffprobe executable")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-
-    try:
-        combine_run_to_target(
-            run_name=args.run_name,
-            target_minutes=args.target_minutes,
-            recordings_root=args.recordings_root,
-            output_path=args.output,
-            ffmpeg_path=args.ffmpeg,
-            ffprobe_path=args.ffprobe,
-        )
-        return 0
-    except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

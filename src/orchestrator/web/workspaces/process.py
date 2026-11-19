@@ -4,14 +4,8 @@
 the thermal ``crucible`` region reading, a 60-minute PV and SV history and the
 cutoff setting. Every described device command goes through the console relay.
 
-One operator action is not in the service descriptions, so the relay and the
-runner never reach it. It needs this page's control of the device and an
-in-page confirmation, and is sent once:
-
-- ``POST acknowledge`` ``{"confirmed": true}``: acknowledge a furnace fault.
-
 ``POST gas-stop`` ``{"channel_index": 0|1|2}`` closes 1 furnace gas channel
-through the furnace gas-stop route. Like a stop, it needs no control, it is sent
+with the furnace ``api/stop`` ``{"gas_channel": N}``. Like a stop, it needs no control, it is sent
 once with a fresh identity and the reply is confirmed, unconfirmed or unknown.
 
 - The furnace and microscope fields come from the console's last service read.
@@ -33,7 +27,6 @@ from flask import jsonify, request
 from labkit.errors import ServiceError
 from labkit.lease import validate_client
 
-from ..backend import gas_confirmed
 from ..turret import register as register_turret
 from . import Workspace
 
@@ -130,12 +123,10 @@ class ProcessStatus:
         self.crucible_busy = False
 
     def _raw(self):
-        console = self.service.console
-        with console.lock:
-            raw = copy.deepcopy(console.raw)
-            read_at = console.events_at
-        age = None if read_at is None else round(max(0.0, console.clock() - read_at), 1)
-        return raw, age
+        entries = {name: self.service.devices.get(name) for name in ("furnace", "microscope")}
+        raw = {name: entry["state"] for name, entry in entries.items()}
+        ages = [entry["age_s"] for entry in entries.values() if entry["age_s"] is not None]
+        return raw, round(max(ages), 1) if ages else None
 
     def _sample(self, furnace, now):
         pv = _number((furnace or {}).get("pv"))
@@ -208,21 +199,6 @@ def register(blueprint, service):
         service.console.refresh_events()
         return jsonify(status.report())
 
-    def operator(device, path, data):
-        if request.get_json() != {"confirmed": True}:
-            raise ValueError("Confirm the action inside the page.")
-        page = request.headers.get("X-MG400-Client")
-        if page is None:
-            raise ServiceError(400, "Send the page identity in X-MG400-Client.")
-        result = service.console.operator(device, validate_client(page), path, data)
-        result.pop("result", None)
-        status_code = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
-        return jsonify(result), status_code
-
-    @blueprint.post("/acknowledge")
-    def acknowledge():
-        return operator("furnace", "api/furnace/acknowledge", {})
-
     @blueprint.post("/gas-stop")
     def gas_stop():
         # The app accepts only a JSON object in a POST body.
@@ -235,8 +211,7 @@ def register(blueprint, service):
         if adapter is None:
             raise ServiceError(409, "The furnace is not configured or its demo is not running.")
         try:
-            confirmed = gas_confirmed(adapter.gas_stop(channel), channel)
-            outcome = "confirmed" if confirmed else "unconfirmed"
+            outcome = adapter.stop(gas_channel=channel)["stop"]
         except Exception:
             outcome = "unknown"
         finally:

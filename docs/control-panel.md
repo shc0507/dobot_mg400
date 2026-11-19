@@ -30,9 +30,12 @@
 1. 点击 `Take control`，等待实测坐标。
 2. 点击 `Enable`，使能机械臂。
 3. 选择移动方式：
-   - 点动：选择步长 0.5、2 或 10，再点击方向按钮。
-   - 移动到位姿：点击 `Use actual`，修改 X/Y/Z（mm）和 R（度），设置速度，再点击 `Execute ↗`。
-4. 结束时，点击 `Disable`，再点击 `Release`。
+   - 键盘点动：打开 `Keyboard jog`，按住按键移动。按键和速度见 [Lab Console](dashboard.md)。
+   - 点动按钮：展开 `Jog buttons`，选择步长 0.5、2 或 10，再点击方向按钮。
+   - 移动到位姿：点击 `Use actual`，修改 X/Y/Z（mm）和 R（度），设置速度，再点击 `Execute`。
+   - 复位：点击 `Home…` 并确认，J1–J4 移动到 0°。
+4. 点击 `Stop arm` 可随时停止机械臂。
+5. 结束时，点击 `Release`。
 
 每次点动在一个轴上把实测位姿加 1 个步长。X/Y/Z 的步长单位为 mm，R 为度。
 坐标使用基座坐标系和法兰原点（`User=0,Tool=0`）。
@@ -41,9 +44,9 @@
 服务再用控制器逆解和现有关节范围检查验证目标。
 
 客户端可在 `execute` 命令中提供整数 `speed`。控制台的速度输入即此值。
-主机配置 `MG400_ROBOT_MAX_SPEED_L` 限制该值。超出上限时，服务返回 400。
+速度上限固定为 `20`。超出上限时，服务返回 400。
 运动使用 `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`。
-加速度上限为 `MG400_ROBOT_MAX_ACC_L`。
+加速度上限固定为 `20`。
 未提供 `speed` 时，即使上限提高，命令仍为 `SpeedL=1,AccL=1`。
 
 两个配置均默认为 1，接受 1–100 的整数。空值也使用 1。
@@ -56,7 +59,7 @@
 
 ## 控制吸盘
 
-[实验室控制台](dashboard.md)的运动页有 **Suck** 和 **Drop**（`release`）。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
+[实验室控制台](dashboard.md)的 Motion 工作区有 **Suck** 和 **Drop**（`release`）。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
 
 ```python
 client.run("vacuum", operation="suck")
@@ -72,18 +75,23 @@ client.run("vacuum", operation="suck")
 它请求受控停止，不是物理急停。
 若停止或命令结果无法确认，使用现场物理急停。
 
-正常结束时，先点击 `Disable`，再点击 `Release`。
-机械臂仍使能时，`Release`（`stop_sync`）停止机械臂并释放控制权，但保留反馈连接和控制锁。
-服务不会自动下使能。
-此时再次点击 `Take control`，会取消待完成的断开请求。然后点击 `Disable`，再点击 `Release`。
+控制台的 `Release` 先发送 `disable`，最多等待 12 秒，再发送 `stop_sync`。
+控制台页面 3 秒内未发出心跳时，控制台用同样的顺序释放控制权。
 服务确认下使能模式 4 和停稳后，才断开反馈并解锁。
+若机械臂原已下使能且空闲，确认模式 4 即可。可以手动移动已下使能的机械臂，`Disable` 或 `Release` 不会锁定控制。
 过期反馈不能确认停止。若服务报告停止未确认，使用现场物理急停。
 若服务在短暂反馈中断期间未记录停止未确认，新鲜反馈恢复后，服务可确认新发出的 `disable` 请求。
-若反馈读取器失效，停止状态保持未确认，连接锁保留。
 
-`RobotClient` 的 `with` 块结束时，若客户端持有控制权，会发送 `stop_sync`。
+若反馈连接失效，服务记录停止未确认，并保留连接锁。
+服务每 1 秒重新连接。`Recover` 和 `Clear alarm` 都需要新鲜反馈。
+新鲜反馈恢复后，核实机械臂状态，再点击 `Recover`。
+
+直接连接服务的客户端（例如 `RobotClient` 和交互终端）发送 `stop_sync` 时，服务不自动下使能。
+机械臂仍使能时，`stop_sync` 停止机械臂并释放控制权，但保留反馈连接和控制锁。
+此时客户端再次发送 `start_sync`，会取消待完成的断开请求。然后发送 `disable`，再发送 `stop_sync`。
+机械臂已下使能时，`stop_sync` 确认下使能，然后断开。
+`RobotClient` 的 `with` 块结束时，若客户端持有控制权，会发送 `stop_sync`。客户端以 `keep_control=True` 创建时，不发送。
 停止获确认后，显式发送 `disable` 即可完成断开，无须重启服务。
-机械臂已下使能时，`stop_sync` 确认下使能和停稳，然后断开。
 
 同一时刻只有一个客户端持有控制权。
 持有者 3 秒内未续租时，服务请求停止机械臂并锁定控制。
@@ -100,7 +108,8 @@ client.run("vacuum", operation="suck")
 已确认停止后，可下使能并重新使能。
 未知命令结果不会因重新取得控制权而解除锁定。
 若断开时无法确认停止，服务停止常规坐标查询。
-此时保留反馈、连接锁和警告，其他客户端不能接管。核实机械臂状态，再点击 `Recover`。
+此时保留反馈、连接锁和警告，其他程序不能连接机械臂。
+3 秒租约过期后，其他客户端可以取得控制权，但点击 `Recover` 前不能移动机械臂。核实机械臂状态，再点击 `Recover`。
 不要删除锁文件来解除占用。
 文件删除后，2 个进程可能各自持锁。
 
@@ -117,7 +126,15 @@ client.run("vacuum", operation="suck")
 2. 在机械臂卡片上点击 `Clear alarm`。
 3. 等待服务提示报警已清除，并确认下使能和静止。
 
-`Clear alarm`（`clear_alarm`）只发送 `ClearError()`，不发送 `Continue()`。
+机械臂卡片只在服务接受时显示按钮：
+
+- 报警期间，按钮显示 `Clear alarm`。
+- 无报警的停止未确认后，按钮显示 `Recover`，需要新鲜反馈。
+- 停止已确认后，卡片显示 `Stopped`，不显示按钮。点击 `Disable` 解锁控制。
+- 机器人已使能且空闲，没有报警或键盘控制时，`stop` 命令确认停止后不锁定控制。
+
+两种按钮都发送 `clear_alarm`。
+`clear_alarm` 只发送 `ClearError()`，不发送 `Continue()`。
 报警前暂停的运动不会恢复。
 报警清除后，服务在新的控制实例上下使能，并确认机械臂静止。
 两项都确认后，控制解锁。
@@ -128,7 +145,7 @@ client.run("vacuum", operation="suck")
 点动退回后，按 [从服务器切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) 核对控制器模式。
 
 碰撞检测触发时，报警列表显示 `-2`（Collision detected）。
-报警在控制台外清除时（例如用机械臂上的 Collision Resume 键），核实机械臂状态，再点击 `Clear alarm`。
+报警在控制台外清除时（例如用机械臂上的 Collision Resume 键），核实机械臂状态，再点击按钮（`Recover` 或 `Clear alarm`）。
 服务在新的控制实例上下使能并确认静止，确认后解锁控制。
 
 无报警时发生的停止未确认显示警告，按钮显示 `Recover`。
@@ -153,10 +170,10 @@ client.run("vacuum", operation="suck")
 按以下顺序恢复：
 
 1. 核实机械臂静止。
-2. 运行 `sudo mg400ctl mode`，核对控制器模式。
-3. 运行 `sudo mg400ctl stop web`。
-4. 运行 `sudo mg400ctl mode --switch-to-tcp`。
-5. 运行 `sudo mg400ctl start web`，再在控制台点击 `Take control`。
+2. 运行 `sudo labctl mode`，核对控制器模式。
+3. 运行 `sudo labctl stop web`。
+4. 运行 `sudo labctl mode --switch-to-tcp`。
+5. 运行 `sudo labctl start web`，再在控制台点击 `Take control`。
 
 切换条件见 [从服务器切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式)。
 
@@ -174,12 +191,12 @@ python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
 
 ## 服务配置
 
-服务名为 `mg400-web-panel.service`，由 [主机部署](deploy.md) 安装，`mg400ctl` 名称为 `web`。
+服务名为 `mg400-web-panel.service`，由 [主机部署](deploy.md) 安装，`labctl` 名称为 `web`。
 在宿主机启动或检查服务：
 
 ```sh
-sudo mg400ctl start web
-sudo mg400ctl status
+sudo labctl start web
+sudo labctl status
 ```
 
 在本地启动时，在能访问机械臂的主机进入项目目录，运行：
@@ -188,13 +205,17 @@ sudo mg400ctl status
 python3 apps/control_panel/server.py
 ```
 
+连接锁目录固定为 `/var/lib/mg400/locks`。所有程序共用此目录，因此本地服务与其他程序互斥。
+
 省略 `--mode` 时，服务使用 `robot` 模式。
 机械臂地址默认取自 `MG400_ROBOT_HOST`，未设置时取自 `config/robot.toml`，可用 `--robot-host` 指定。
 
 停止服务时，服务最长用约 60 秒确认机械臂停止。
 服务定义的 `TimeoutStopSec` 为 90 秒，大于此时间。
 
-服务监听 `127.0.0.1:8766`。`--bind` 和 `--port` 覆盖此固定默认值。
+服务默认监听 `127.0.0.1:8766`。
+`--bind` 和 `--port` 覆盖默认值。端口不是 1–65535 的整数时，服务拒绝启动。
+Lab Console 和配方服务固定连接 `http://127.0.0.1:8766/`，见 [配方编排器](orchestrator.md#服务配置)。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 路径前缀用 `--base-path` 设置，例如 `--base-path /mg400-panel/`，所有接口都使用此前缀。
@@ -205,7 +226,7 @@ python3 apps/control_panel/server.py
 
 接口说明见 [机器人服务接口](development.md#机器人服务接口)。
 
-更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `mg400ctl restart web`。
+更新代码后，按 [主机部署](deploy.md#安装与更新) 运行安装器，再运行 `labctl restart web`。
 
 ### 服务日志
 
@@ -224,7 +245,7 @@ python3 apps/control_panel/server.py
 在 Olares 宿主机读取日志：
 
 ```sh
-sudo mg400ctl logs web -n 200
+sudo labctl logs web -n 200
 ```
 
 控制锁定时，在日志中找第一条 `Stop or disable unconfirmed.`。

@@ -21,8 +21,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from labkit.errors import ServiceError  # noqa: E402
 from labkit.events import EventLog  # noqa: E402
 from orchestrator.clients import SERVICES  # noqa: E402
+from orchestrator.devices import Devices  # noqa: E402
 from orchestrator.web.console import Console  # noqa: E402
 from orchestrator.web.console_routes import console_blueprints  # noqa: E402
+from orchestrator.web.history_preview import PreviewHistory  # noqa: E402
 from orchestrator.web.sample_transfer import LiveTransferAdapter  # noqa: E402
 from orchestrator.web.sample_transfer_preview import (  # noqa: E402
     PreviewStage,
@@ -122,6 +124,7 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
         # The Twin demo route uses this name as its storage root. It is not temporary here.
         temporary=SimpleNamespace(name=str(storage_root)),
         events=EventLog(),
+        store=PreviewHistory(),
         dashboard=dashboard,
         camera_sources=OfflineCameras(),
         turret_preview=TurretPreview(
@@ -132,6 +135,7 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
         console_start_demo=unavailable,
     )
     service.console = Console(service)
+    service.devices = Devices(service, on_events=service.console.pull_events)
     service.console.commit = "local preview"
     preview_stage = PreviewStage()
 
@@ -145,6 +149,7 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
     app.extensions["preview_service"] = service
 
     def close():
+        service.devices.close()
         service.console.close()
         transfer = getattr(service, "sample_transfer", None)
         if transfer is not None:

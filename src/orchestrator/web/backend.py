@@ -20,46 +20,6 @@ LABELS = {
 CAMERAS = {"camera": "Camera preview", "thermal": "Thermal camera", "microscope": "Microscope"}
 
 
-def gas_confirmed(value, channel):
-    """HTTP success alone does not confirm a gas channel's physical stop."""
-    state = value.get("status") if isinstance(value, dict) else None
-    if (
-        not isinstance(value, dict)
-        or value.get("ok") is not True
-        or not isinstance(state, dict)
-        or state.get("connected") is not True
-        or state.get("locked") is not False
-        or "fault" not in state
-        or state["fault"] is not None
-        or state.get("error") is not None
-    ):
-        return False
-    selected = []
-    for key in ("gas_channels", "gas_valves"):
-        rows = state.get(key)
-        if not isinstance(rows, list):
-            return False
-        matches = [
-            item
-            for item in rows
-            if isinstance(item, dict)
-            and type(item.get("channel_index")) is int
-            and item["channel_index"] == channel
-        ]
-        if len(matches) != 1:
-            return False
-        selected.append(matches[0])
-    flow, valve = selected
-    return (
-        flow.get("available") is True
-        and flow.get("error") is None
-        and type(flow.get("actual_percent")) in {int, float}
-        and flow["actual_percent"] == 0
-        and valve.get("open") is False
-        and valve.get("verified") is True
-    )
-
-
 class Dashboard:
     """Own a short admission gate; never wait on the orchestrator under this lock."""
 
@@ -70,8 +30,6 @@ class Dashboard:
         self.reading = set()
         self.operations = []
         self.closing = False
-        self.approval_generation = 0
-        self.cards = {name: self._empty(name) for name in SERVICES}
         self.run = None
         self.orchestrator = {
             "demo": service.demo,
@@ -125,15 +83,7 @@ class Dashboard:
             "demo": None,
             "updated_at": None,
             "error": None,
-            "observed": None,
         }
-
-    def _configured(self, name):
-        try:
-            return bool(self.service.dashboard_configured(name))
-        except Exception:
-            # Unknown: show loading until the read settles the phase.
-            return True
 
     def _spawn(self, function, name):
         def work():
@@ -153,62 +103,30 @@ class Dashboard:
                 raise
         return worker
 
-    def _read(self, name):
-        adapter = None
+    def _card(self, name):
+        """One Overview card from the device cache."""
         card = self._empty(name)
-        try:
-            card["configured"] = self.service.dashboard_configured(name)
-            adapter = self.service.dashboard_client(name, "dashboard-read-" + uuid.uuid4().hex)
-            if adapter is None:
-                return
-            card["configured"] = True
-            description, state = adapter.describe(), adapter.state()
-            if not isinstance(description, dict) or not isinstance(state, dict):
-                raise ValueError("Invalid service state")
-            card.update(phase="ready", updated_at=time.time(), observed=self.clock())
-            for field in ("connected", "busy", "locked"):
-                card[field] = state.get(field) if type(state.get(field)) is bool else None
-            demo = state.get("demo", description.get("demo"))
-            card["demo"] = demo if type(demo) is bool else None
-            lease = state.get("lease")
-            holder = lease.get("holder", False) if isinstance(lease, dict) else False
-            card["lease_holder"] = None if holder is None else self.text(holder, 128) or "Unknown"
-            if name == "robot":
-                flags = [state.get("syncing"), state.get("feedback_fresh")]
-                card["connected"] = (
-                    all(flags) if all(type(flag) is bool for flag in flags) else None
-                )
-                holder = state.get("controller_id", False)
-                card["lease_holder"] = (
-                    None if holder is None else self.text(holder, 128) or "Unknown"
-                )
-                # An arm without feedback has no error status: that is not a fault.
-                error = state.get("robot_error")
-                card["fault"] = (
-                    "Robot error or stop confirmation is unknown."
-                    if error is True
-                    or (error is not False and card["connected"] is not False)
-                    or state.get("alarms")
-                    or state.get("stop_unconfirmed") is not False
-                    else None
-                )
-            else:
-                card["fault"] = (
-                    None
-                    if "fault" in state and state["fault"] is None
-                    else "Service reports a fault or unknown fault state."
-                )
-        except Exception:
-            card.update(phase="unavailable", error="Service state is unavailable.")
-        finally:
-            if adapter is not None:
-                try:
-                    adapter.close()
-                except Exception:
-                    card.update(phase="unavailable", error="Service read cleanup is incomplete.")
-            with self.lock:
-                self.cards[name] = card
-                self.reading.discard(name)
+        entry = self.service.devices.get(name)
+        phase = entry["phase"]
+        if phase == "unconfigured":
+            return card
+        card["configured"] = True
+        if phase == "offline":
+            return card
+        if phase not in {"ready", "stale"}:
+            card.update(
+                phase=phase,
+                error="Service state is unavailable." if phase == "unavailable" else None,
+            )
+            return card
+        holder = entry["holder"]
+        card.update(
+            phase=phase,
+            updated_at=entry["updated_at"],
+            lease_holder=None if holder is None else self.text(holder, 128) or "Unknown",
+            **{key: entry[key] for key in ("connected", "busy", "locked", "fault", "demo")},
+        )
+        return card
 
     def _summary(self):
         try:
@@ -272,28 +190,13 @@ class Dashboard:
         with self.lock:
             if self.closing:
                 return
-            for name in (*SERVICES, "summary"):
-                if name in self.reading:
-                    continue
-                self.reading.add(name)
-                if (
-                    name != "summary"
-                    and self.cards[name]["observed"] is None
-                    and self._configured(name)
-                ):
-                    # An unconfigured service keeps "unconfigured" between reads.
-                    self.cards[name]["phase"] = "loading"
+            self.service.devices.start()
+            if "summary" not in self.reading:
+                self.reading.add("summary")
                 try:
-                    self._spawn(
-                        self._summary if name == "summary" else lambda name=name: self._read(name),
-                        name,
-                    )
+                    self._spawn(self._summary, "summary")
                 except Exception:
-                    self.reading.discard(name)
-                    if name != "summary":
-                        self.cards[name].update(
-                            phase="unavailable", error="State refresh could not start."
-                        )
+                    self.reading.discard("summary")
         self.poll()
 
     def busy(self):
@@ -331,8 +234,6 @@ class Dashboard:
             self.operations = [item for item in self.operations if not item["done"].is_set()] + [
                 item for item in self.operations if item["done"].is_set()
             ][-19:]
-            if action != "gas":
-                self.approval_generation += 1
             self.operations.append(operation)
             return operation, True
 
@@ -361,12 +262,10 @@ class Dashboard:
                             "message": "No configured service or running owned demo is available.",
                         }
                     else:
-                        value = adapter.stop() if channel is None else adapter.gas_stop(channel)
-                        confirmed = (
-                            isinstance(value, dict) and value.get("stop") == "confirmed"
-                            if channel is None
-                            else gas_confirmed(value, channel)
+                        value = adapter.stop(
+                            **({} if channel is None else {"gas_channel": channel})
                         )
+                        confirmed = isinstance(value, dict) and value.get("stop") == "confirmed"
                         result = {
                             "status": "confirmed" if confirmed else "unconfirmed",
                             "message": "Stop confirmed by service feedback."
@@ -452,13 +351,7 @@ class Dashboard:
     def snapshot(self):
         with self.lock:
             now = self.clock()
-            cards = []
-            for saved in self.cards.values():
-                card = copy.deepcopy(saved)
-                observed = card.pop("observed")
-                if card["phase"] == "ready" and observed is not None and now - observed > 3:
-                    card["phase"] = "stale"
-                cards.append(card)
+            cards = [self._card(name) for name in SERVICES]
             orchestrator = copy.deepcopy(self.orchestrator)
             age = max(0, now - self.summary_at) if self.summary_at is not None else 0
             orchestrator["lease"]["remaining_s"] = max(

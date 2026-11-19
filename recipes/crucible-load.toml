@@ -1,0 +1,11 @@
+name = "Crucible load"
+version = 1
+
+[params.from_slot]
+type = "string"
+
+[[steps]]
+skill = "crucible.load"
+params = { from_slot = "${from_slot}" }
+timeout_s = 300
+on_fail = "hold"

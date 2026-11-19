@@ -69,17 +69,16 @@ function mount(snapshot) {
 }
 
 test("the Overview updates in place, so a state update keeps every button", async () => {
-  const snapshot = { value: { services: [{ id: "robot", phase: "ready" }], control: [], approvals: [] } };
+  const snapshot = { value: { services: [{ id: "robot", phase: "ready" }], control: [] } };
   const page = mount(snapshot);
   const stop = page.root.button("Stop heat and gas");
   const take = page.root.all().find(node => node.getAttribute("aria-label") === "Take control of Robot");
   assert.equal(take.disabled, false);
-  snapshot.value = { services: [{ id: "robot", phase: "ready" }], control: [{ device: "robot", mine: true, state: "held" }], approvals: [{ decision: "pending" }] };
+  snapshot.value = { services: [{ id: "robot", phase: "ready" }], control: [{ device: "robot", mine: true, state: "held" }] };
   page.refresh();
   assert.equal(page.root.button("Stop heat and gas"), stop);
   assert.equal(take.textContent, "Release");
   assert.equal(take.getAttribute("aria-label"), "Release Robot");
-  assert.match(page.root.textContent, /1 waiting\./);
   // A device that is not configured says so and offers no button.
   const stageRow = page.root.all().find(node => node.className === "lc-row" && node.textContent.startsWith("Stage"));
   assert.match(stageRow.textContent, /Not configured/);
@@ -89,18 +88,16 @@ test("the Overview updates in place, so a state update keeps every button", asyn
 });
 
 test("empty cards, free holders and info levels are hidden", async () => {
-  const snapshot = { value: { services: [{ id: "robot", phase: "ready" }], control: [], approvals: [] } };
+  const snapshot = { value: { services: [{ id: "robot", phase: "ready" }], control: [] } };
   const page = mount(snapshot);
   const card = id => page.root.all().find(node => node.tagName === "SECTION" && node.getAttribute("aria-labelledby") === id);
   assert.equal(card("ov-run").hidden, true);
-  assert.equal(card("ov-proposals").hidden, true);
   const robotRow = page.root.all().find(node => node.className === "lc-row" && node.textContent.startsWith("Robot"));
   assert.equal(robotRow.children[1].hidden, true);
   assert.doesNotMatch(page.root.textContent, /Free/);
-  snapshot.value = { ...snapshot.value, run: { id: "r1", status: "running", steps: [] }, approvals: [{ decision: "pending" }] };
+  snapshot.value = { ...snapshot.value, run: { id: "r1", status: "running", steps: [] } };
   page.refresh();
   assert.equal(card("ov-run").hidden, false);
-  assert.equal(card("ov-proposals").hidden, false);
   await new Promise(resolve => setImmediate(resolve));
   const levels = page.root.all().filter(node => node.className === "lc-event-level");
   assert.deepEqual(levels.map(node => node.textContent), ["warning"]);

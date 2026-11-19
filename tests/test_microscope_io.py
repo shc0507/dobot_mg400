@@ -25,8 +25,8 @@ from microscope.objective_calibration import measure_image_displacement
 def data_roots(monkeypatch, tmp_path):
     calibration = tmp_path / "calibration"
     runs = tmp_path / "runs"
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(calibration))
-    monkeypatch.setenv("MG400_ORCH_RUNS_DIR", str(runs))
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", calibration)
+    monkeypatch.setattr("microscope.paths.RUNS_ROOT", runs)
     return calibration, runs
 
 
@@ -61,7 +61,7 @@ def test_symlink_ancestor_above_configured_root_is_never_followed(data_roots, mo
     outside.mkdir()
     alias = calibration.parent / "alias"
     alias.symlink_to(outside, target_is_directory=True)
-    monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", str(alias / "newroot"))
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", alias / "newroot")
     with pytest.raises(OSError):
         paths.private_open(alias / "newroot" / "newchild" / "image.png", "wb")
     assert list(outside.iterdir()) == []

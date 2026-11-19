@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 from cameras.jpeg import jpeg_size as _jpeg_size
+from labkit import ports
 
 RECONNECT_SECONDS = 0.5
 
@@ -40,7 +41,7 @@ class Go2RTCCapture:
     def __init__(self, stream, *, opener=None):
         if not isinstance(stream, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", stream):
             raise ValueError("A go2rtc stream name is required")
-        self.url = "http://127.0.0.1:1984/api/stream.mjpeg?src=" + quote(stream, safe="")
+        self.url = ports.url("go2rtc", "api/stream.mjpeg?src=") + quote(stream, safe="")
         self._opener = opener or build_opener(ProxyHandler({}), _NoRedirect())
         self._closed = threading.Event()
         self._condition = threading.Condition()

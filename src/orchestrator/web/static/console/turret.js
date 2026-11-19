@@ -30,8 +30,8 @@
       fileJson: "Select a valid JSON profile file.", fileRead: "Could not read the JSON file.", loading: "Loading calibration…", unavailable: "Calibration state is unavailable.",
       incomplete: "Partial", complete: "Complete", clear: "Dismiss error", working: "Working…", savedNotice: "Calibration profile saved.",
       dirty: "Unsaved name", requiredName: "Enter a profile name.", next: "Next: {name}",
-      focusSummary: "Clearance: {clearance} · Recorded: {recorded}", fullSteps: "{value} full steps", unknownReference: "(focus not zeroed)",
-      switchFocus: "We recommend recording at clearance {value} full steps.",
+      focusSummary: "Clearance: {clearance} · Recorded: {recorded}", focusPulses: "{value} MICRO 4 pulses", unknownReference: "(focus not zeroed)",
+      switchFocus: "We recommend recording at clearance {value} MICRO 4 pulses.",
     },
     zh: {
       title: "转盘校准", camera: "Camera3", live: "实时", captured: "已记录 {name}",
@@ -52,8 +52,8 @@
       fileJson: "请选择有效的 JSON 配置文件。", fileRead: "无法读取 JSON 文件。", loading: "正在读取校准…", unavailable: "校准状态不可用。",
       incomplete: "未完成", complete: "已完成", clear: "关闭错误提示", working: "处理中…", savedNotice: "校准配置已保存。",
       dirty: "名称未保存", requiredName: "请填写配置名称。", next: "下一步：{name}",
-      focusSummary: "避让位置：{clearance} · 记录位置：{recorded}", fullSteps: "{value} 整步", unknownReference: "（对焦未归零）",
-      switchFocus: "建议在避让位置 {value} 整步处记录图像。",
+      focusSummary: "避让位置：{clearance} · 记录位置：{recorded}", focusPulses: "{value} MICRO 4 脉冲", unknownReference: "（对焦未归零）",
+      switchFocus: "建议在避让位置 {value} MICRO 4 脉冲处记录图像。",
     },
   };
 
@@ -191,8 +191,8 @@
       n.progress.textContent = t("progress", { count: captured });
       const clearance = state?.switch_focus, recorded = draft()?.focus_position;
       n.focusSummary.textContent = t("focusSummary", {
-        clearance: Number.isFinite(clearance) ? t("fullSteps", { value: clearance }) : t("unknownReference"),
-        recorded: !draft() ? t("pending") : Number.isFinite(recorded) ? t("fullSteps", { value: recorded }) : t("unknownReference"),
+        clearance: Number.isFinite(clearance) ? t("focusPulses", { value: clearance }) : t("unknownReference"),
+        recorded: !draft() ? t("pending") : Number.isFinite(recorded) ? t("focusPulses", { value: recorded }) : t("unknownReference"),
       });
       n.switchWarning.hidden = !Number.isFinite(clearance);
       n.switchWarning.textContent = t("switchFocus", { value: clearance });

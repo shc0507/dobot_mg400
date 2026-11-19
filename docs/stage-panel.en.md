@@ -16,11 +16,11 @@ Use [Stage Controller v3](../firmware/stage-controller-v3/README.en.md). It conn
 
 ## Connection
 
-Keep LarePass VPN connected for [Olares](http://100.64.0.1:8080/). Open **Motion**, take stage control, select the Arduino port, then select **Connect**. **Refresh ports** reads ports on the service host.
+Keep LarePass VPN connected for [Olares](http://100.64.0.1:8080/). Open **Motion**, take stage control, select the Arduino port, then select **Connect**. The port list updates automatically from service state.
 
 The service opens no serial port at startup. Opening the port can reset the Uno. Connection waits about 2 s, then reads state and capabilities. Only 1 process can own the port. Close Arduino Serial Monitor before connecting. The service does not reconnect or retry motion automatically.
 
-Before uploading firmware, stop motion and run `mg400ctl stop stage`. Follow the firmware guide. After reconnecting the Arduino, check `/dev/serial/by-id/`, start the service, then connect in the Console.
+Before uploading firmware, stop motion and run `labctl stop stage`. Follow the firmware guide. After reconnecting the Arduino, check `/dev/serial/by-id/`, start the service, then connect in the Console.
 
 On a computer connected to the Arduino:
 
@@ -29,7 +29,7 @@ uv sync
 uv run stage-panel
 ```
 
-The equivalent module command is `uv run python -m stage_controller`. On Linux, the service user needs serial read/write permission, usually through `dialout`. Set the Console's `MG400_ORCH_STAGE_URL` to `http://127.0.0.1:8767/contract/`.
+The equivalent module command is `uv run python -m stage_controller`. On Linux, the service user needs serial read/write permission, usually through `dialout`. The Console uses `http://127.0.0.1:8767/`.
 
 For hardware-free operation, use `uv run stage-panel --demo` and connect to `DEMO`. The local Console preview procedure is in [Dashboard](dashboard.en.md#run-offline). Demo mode does not open serial hardware. It cannot verify physical accuracy or clearance.
 
@@ -72,17 +72,16 @@ The legacy `crucible.load` and `crucible.unload` orchestration skills and the `s
 
 ## Service configuration
 
-The systemd unit is `mg400-stage-panel.service`. Its `mg400ctl` name is `stage`. It runs as user/group `1000` with `dialout` membership. The default listener is `127.0.0.1:8767`, with contract routes under `/contract/`.
+The systemd unit is `mg400-stage-panel.service`. Its `labctl` name is `stage`. It runs as user/group `1000` with `dialout` membership. The default listener is `127.0.0.1:8767`, with canonical routes under `/api/`. The `/contract/api/` aliases use the same handlers and lease.
 
 ### Configuration
 
 | Environment | Argument | Default | Purpose |
 | --- | --- | --- | --- |
 | `MG400_STAGE_SERIAL` | `--serial` | Unset | Offer only this Arduino port |
-| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | Listener address |
-| `MG400_STAGE_PORT` | `--port` | `8767` | Listener port |
-| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | URL prefix |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | Legacy geometry retained for compatibility; inactive for encoder motion |
+
+The arguments `--bind`, `--port` and `--base-path` override the local listener defaults. Olares clients use the fixed stage endpoint.
 
 Arguments override environment values. Empty environment values count as unset. Olares reads `/etc/mg400/mg400.env`. Prefer a stable `/dev/serial/by-id/` path for the Arduino. A configured port that is absent produces an empty port list. Demo mode ignores the configured serial path.
 
@@ -90,13 +89,13 @@ Arguments override environment values. Empty environment values count as unset. 
 
 ```sh
 ls -lL /dev/serial/by-id/
-mg400ctl start stage
-mg400ctl status
-mg400ctl logs stage
-mg400ctl stop stage
+labctl start stage
+labctl status
+labctl logs stage
+labctl stop stage
 ```
 
-After changing configuration or installing updated code, run `mg400ctl restart stage`, then connect in the Console. The unit is not enabled at boot. An abnormal exit restarts it after 3 s. Exit status 2 indicates a startup configuration error and does not restart it.
+After changing configuration or installing updated code, run `labctl restart stage`, then connect in the Console. The unit is not enabled at boot. An abnormal exit restarts it after 3 s. Exit status 2 indicates a startup configuration error and does not restart it.
 
 ## Interface
 
@@ -106,7 +105,7 @@ Use [Stage automation contract](development.en.md#stage-automation-contract) for
 
 | Symptom | Action |
 | --- | --- |
-| No serial port | Check USB power/data wiring and `/dev/serial/by-id/`. Verify `MG400_STAGE_SERIAL`, then select **Refresh ports**. |
+| No serial port | Check USB power/data wiring and `/dev/serial/by-id/`. Verify `MG400_STAGE_SERIAL` and wait for the port list to update. |
 | Permission denied | Check `dialout` access. Log in again after changing local group membership. |
 | Port in use | Close other stage services and serial monitors that own the same Arduino. |
 | Connected, motion unavailable | Check encoder firmware capabilities, fixed 1/8 mode, frame age, encoder health, switches and cooldown. |

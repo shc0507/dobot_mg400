@@ -31,12 +31,53 @@ PERMISSION = {
 }
 
 
+def no_herdr(*args):
+    raise FileNotFoundError("herdr")
+
+
 @pytest.fixture
 def state(tmp_path, monkeypatch):
     monkeypatch.setattr(sig, "ROOT", tmp_path)
+    monkeypatch.setattr(sig, "herdr", no_herdr)
     monkeypatch.setenv("HERDR_PANE_ID", "t1:p1")
     monkeypatch.setenv("HERDR_ENV", "0")
     return tmp_path
+
+
+class MovedHerdr:
+    """Herdr after `pane move w1:p11 --new-workspace`: the pane is now w7:p1.
+
+    The terminal id stays, `pane get` still resolves the old id, and the agent
+    keeps HERDR_PANE_ID=w1:p11. Pane w1:p5 is another pane, run by other processes.
+    """
+
+    def __init__(self, shell_pid):
+        self.panes = {
+            "w7:p1": {"pane_id": "w7:p1", "terminal_id": "term_a", "shell": shell_pid},
+            "w1:p5": {"pane_id": "w1:p5", "terminal_id": "term_b", "shell": 1},
+        }
+        self.aliases = {"w1:p11": "w7:p1"}
+        self.agents = [
+            {"name": "alpha", "pane_id": "w7:p1", "terminal_id": "term_a", "agent_status": "done"}
+        ]
+
+    def __call__(self, *args):
+        def out(result):
+            return json.dumps({"result": result})
+
+        if args == ("agent", "list"):
+            return out({"agents": self.agents})
+        if args == ("pane", "list"):
+            return out({"panes": list(self.panes.values())})
+        if args[:2] == ("pane", "get"):
+            pane = self.panes.get(self.aliases.get(args[2], args[2]))
+            return out({"pane": pane}) if pane else json.dumps({"error": {}})
+        if args[:3] == ("pane", "process-info", "--pane"):
+            info = {"shell_pid": self.panes[args[3]]["shell"], "foreground_processes": []}
+            return out({"process_info": info})
+        if args[:2] == ("pane", "read"):
+            return "screen line\n"
+        raise AssertionError(args)
 
 
 def events(state, pane="t1:p1"):
@@ -176,9 +217,10 @@ def test_wait_prints_each_event_once(state, capsys):
 def test_wait_adds_herdr_blocked_and_exit_once(state, monkeypatch, capsys):
     monkeypatch.setenv("HERDR_ENV", "1")
     agents = {
-        "w9:p1": {
+        "term_a": {
             "name": "alpha",
             "pane_id": "w9:p1",
+            "terminal_id": "term_a",
             "agent_status": "blocked",
             "state_change_seq": 7,
         }
@@ -189,9 +231,57 @@ def test_wait_adds_herdr_blocked_and_exit_once(state, monkeypatch, capsys):
     out = capsys.readouterr().out
     blocked = "blocked alpha (w9:p1):\n  dialog on screen (Herdr)\n"
     assert blocked + "  screen:\n    Do you want to proceed?\n" in out
-    assert "exit ? (w9:p3):\n  no agent in this pane\n" in out
-    sig.wait(["alpha", "w9:p3"], 0)
-    assert capsys.readouterr().out.startswith("tick")
+    assert "exit" not in out  # One check without the agent is not yet an exit.
+
+
+def test_exit_needs_two_checks_without_the_agent(state):
+    seen, missing = {}, set()
+    sig.backstop(["term_x"], {}, seen, missing)
+    assert events(state, "term_x") == []
+    sig.backstop(["term_x"], {}, seen, missing)
+    sig.backstop(["term_x"], {}, seen, missing)
+    [event] = events(state, "term_x")
+    assert (event["kind"], event["text"]) == ("exit", "no agent in this terminal")
+
+
+def test_moved_worker_reports_to_its_terminal(state, monkeypatch, capsys):
+    herdr = MovedHerdr(shell_pid=sig.os.getppid())
+    monkeypatch.setattr(sig, "herdr", herdr)
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p11")
+    stop(f"Merged.\n\n```\n{REPORT}\n```")
+    [event] = events(state, "term_a")
+    assert (event["kind"], event["pane"]) == ("report", "w7:p1")
+    assert events(state, "w1:p11") == []
+
+    monkeypatch.setenv("HERDR_ENV", "1")
+    sig.wait(["alpha"], 0)
+    out = capsys.readouterr().out
+    assert out.startswith("report alpha (w7:p1) suction-T4:\n")
+    assert "exit" not in out
+
+
+def test_hook_skips_a_pane_that_does_not_run_it(state, monkeypatch):
+    herdr = MovedHerdr(shell_pid=sig.os.getppid())
+    herdr.aliases = {"w1:p11": "w1:p5"}  # The old id now names another pane.
+    monkeypatch.setattr(sig, "herdr", herdr)
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p11")
+    stop("Deploy now?")
+    [event] = events(state, "term_a")
+    assert event["pane"] == "w7:p1"
+
+
+def test_wait_sees_no_exit_when_the_pane_moves(state, monkeypatch, capsys):
+    monkeypatch.setenv("HERDR_ENV", "1")
+    herdr = MovedHerdr(shell_pid=1)
+    herdr.agents = [dict(herdr.agents[0], pane_id="w1:p11")]
+    monkeypatch.setattr(sig, "herdr", herdr)
+    agents = sig.herdr_agents()
+    [key] = [sig.resolve("alpha", agents)]
+    herdr.agents = [dict(herdr.agents[0], pane_id="w7:p1")]  # The pane moves.
+    seen, missing = {}, set()
+    for _ in range(3):
+        sig.backstop([key], sig.herdr_agents(), seen, missing)
+    assert events(state, key) == []
 
 
 def test_wait_shows_context_and_usage(state, capsys):

@@ -17,7 +17,6 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,12 +31,14 @@ from furnace.recordings import (
     normalize_recording_settings,
 )
 from furnace.video import VideoToolsMissing
+from labkit import ports
 from labkit.client import ServiceClient
 from labkit.describe import command, describe, parameter
 from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.lease import Lease
 
+from . import calibrate
 from .aruco_locator import Locator, detect_objectives
 from .aruco_switch import (
     OBJECTIVE_ORDER,
@@ -47,7 +48,6 @@ from .aruco_switch import (
     select_objective,
 )
 from .autofocus import AutofocusCancelled, AutoFocuser
-from .calibrate import nudge_steps
 from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
@@ -80,20 +80,11 @@ class MicroscopeConfig:
     nudge_steps: int = 0
     lease_seconds: float = 3.0
     focus_speed: int = 800
-    furnace_url: str = "http://127.0.0.1:8769/"
+    furnace_url: str = ports.url("furnace")
 
     @classmethod
     def from_env(cls, env=None):
         env = os.environ if env is None else env
-        limits = env.get("MG400_MICROSCOPE_FOCUS_LIMITS", "")
-        clearance = env.get("MG400_MICROSCOPE_SWITCH_FOCUS", "")
-        switch = env.get("MG400_MICROSCOPE_HOME_SWITCH", "")
-        if limits and not re.fullmatch(r"-?\d+,-?\d+", limits):
-            raise ValueError("MG400_MICROSCOPE_FOCUS_LIMITS must be MIN,MAX integer pulses")
-        if clearance and not re.fullmatch(r"-?\d+", clearance):
-            raise ValueError("MG400_MICROSCOPE_SWITCH_FOCUS must be integer pulses")
-        if switch not in ("", "0", "1"):
-            raise ValueError("MG400_MICROSCOPE_HOME_SWITCH must be 0 or 1")
         side_stream = env.get("MG400_MICROSCOPE_SIDE_STREAM", "")
         side_mode = None
         if side_stream:
@@ -107,11 +98,11 @@ class MicroscopeConfig:
             serial=env.get("MG400_MICROSCOPE_SERIAL", ""),
             side_stream=side_stream,
             side_mode=side_mode,
-            focus_limits=tuple(map(int, limits.split(","))) if limits else None,
-            switch_focus=int(clearance) if clearance else None,
-            home_switch=None if not switch else switch == "1",
-            nudge_steps=nudge_steps(env),
-            furnace_url=env.get("MG400_MICROSCOPE_FURNACE_URL", "http://127.0.0.1:8769/"),
+            # The focus limits, clearance and turret window are fixed in code.
+            focus_limits=tuple(calibrate.FOCUS_LIMITS),
+            switch_focus=calibrate.SWITCH_FOCUS,
+            home_switch=calibrate.HOME_SWITCH,
+            nudge_steps=calibrate.nudge_steps(),
         )
 
     def validate(self):
@@ -358,7 +349,7 @@ class FurnaceReadings:
 
 
 class _ContractLease:
-    """Contract acquisition revokes manual classification under the same lease lock."""
+    """Lease changes end the reference handoff under the same lease lock."""
 
     def __init__(self, service):
         self.service = service
@@ -380,14 +371,12 @@ class _ContractLease:
             self.service._renew_job_authority(client)
             with self.service._lock:
                 self.service._handoff_deadline = None
-                self.service._manual_holder = None
             return value
 
     def renew(self, client):
         with self.raw.control(client):
             value = self.raw.renew(client)
             self.service._renew_job_authority(client)
-            self.service._manual_holder = None
             return value
 
     def release(self, client):
@@ -397,9 +386,7 @@ class _ContractLease:
             lease_state = self.raw.snapshot()
             if lease_state["holder"] == client:
                 self.service._prepare_idle_handoff(sampled_at + lease_state["remaining_s"])
-            value = self.raw.release(client)
-            self.service._manual_holder = None
-            return value
+            return self.raw.release(client)
 
     def control(self, client, *, require_holder=True):
         return self.raw.control(client, require_holder=require_holder)
@@ -697,7 +684,6 @@ class MicroscopeService(TurretCalibrationMixin):
         self._previews = {}
         self._lease = Lease(self.config.lease_seconds, clock=clock, on_expire=self.on_lease_expired)
         self.lease = _ContractLease(self)
-        self._manual_holder = None
         self._handoff_deadline = None
         self.events = EventLog()
         self._readings = readings or FurnaceReadings(
@@ -1166,7 +1152,6 @@ class MicroscopeService(TurretCalibrationMixin):
                     ),
                 },
                 last_result=copy.deepcopy(self._last_result),
-                manual_client=self._manual_holder,
                 recording=copy.deepcopy(self._recording_data),
                 recording_sequence=copy.deepcopy(self._recording_sequence),
                 stabilization=bool(
@@ -1365,26 +1350,6 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._recording_sequence["armed"] = False
             return first
 
-    @contextmanager
-    def _manual_control(self, client, *, renew_only=False):
-        with self._lease.control(client, require_holder=False):
-            self._expire_handoff_locked()
-            holder = self._lease.snapshot()["holder"]
-            if holder is not None and (holder != client or self._manual_holder != client):
-                raise ServiceError(409, "Automation or another operator holds control")
-            if renew_only:
-                if holder != client or self._manual_holder != client:
-                    raise ServiceError(409, "Manual control expired; acquire it explicitly")
-                self._lease.renew(client)
-            else:
-                self._lease.acquire(client)
-                self._expire_handoff_locked()
-                self._manual_holder = client
-            self._renew_job_authority(client)
-            with self._lock:
-                self._handoff_deadline = None
-            yield
-
     def _lease_deadline(self):
         sampled_at = self._clock()
         return sampled_at + self._lease.snapshot()["remaining_s"]
@@ -1451,47 +1416,8 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._latch_fault("reference", str(error))
         self.stop("lease-released", 0)
 
-    def manual_heartbeat(self, client, *, renew_only=False):
-        with self._manual_control(client, renew_only=renew_only):
-            return self._lease.snapshot()
-
-    def manual_release(self, client):
-        with self._lease.control(client, require_holder=False):
-            self._expire_handoff_locked()
-            holder = self._lease.snapshot()["holder"]
-            if holder is not None and (holder != client or self._manual_holder != client):
-                raise ServiceError(409, "Automation or another operator holds control")
-            if holder == client:
-                sampled_at = self._clock()
-                lease_state = self._lease.snapshot()
-                self._prepare_idle_handoff(sampled_at + lease_state["remaining_s"])
-            value = self._lease.release(client)
-            self._manual_holder = None
-            return value
-
-    def manual_command(self, action, args, client):
-        if (
-            action != "set_focus_zero"
-            or not isinstance(args, dict)
-            or set(args) != {"confirm"}
-            or args["confirm"] is not True
-        ):
-            raise ValueError("Only confirmed manual focus zero is supported")
-        # The operator's current lease holder, of either lease class, may set
-        # zero. Agents, recipes and the runner use command(), which refuses it.
-        with self._lease.control(client, require_holder=False):
-            self._expire_handoff_locked()
-            if self._lease.snapshot()["holder"] != client:
-                raise ServiceError(409, "Take control before setting focus zero")
-            self._lease.renew(client)
-            self._renew_job_authority(client)
-            with self._lock:
-                self._handoff_deadline = None
-            return self._dispatch(action, {}, client)
-
     def command(self, action, args, client):
         with self._lease.control(client):
-            self._manual_holder = None
             return self._dispatch(action, args, client)
 
     def _arguments(self, action, args):
@@ -1537,13 +1463,13 @@ class MicroscopeService(TurretCalibrationMixin):
         """Refuse a nudge before motion unless it stays inside the measured window."""
         window = self.config.nudge_steps
         if not window:
-            raise ServiceError(409, "Turret nudges are off: MG400_MICROSCOPE_NUDGE_STEPS is 0")
+            raise ServiceError(409, "Turret nudges are off: the turret window is 0")
         if self._objective_id is None or self._objective_offset is None:
             raise ServiceError(409, "Turret offset unknown: select another objective first")
         offset = self._objective_offset + steps
         if abs(offset) > window:
             raise ServiceError(
-                409, f"The turret offset would be {offset:+d}, outside ±{window} full steps"
+                409, f"The turret offset would be {offset:+d}, outside Â±{window} full steps"
             )
 
     def _dispatch(self, action, args, client):
@@ -1995,6 +1921,8 @@ class MicroscopeService(TurretCalibrationMixin):
                 "Microscope command finished",
                 command_id=job.ident,
                 action=job.action,
+                params=job.args,
+                client=job.client,
                 result=outcome,
                 message_detail=message,
             )
@@ -2077,7 +2005,6 @@ class MicroscopeService(TurretCalibrationMixin):
 
     def on_lease_expired(self):
         self.expiry_count += 1
-        self._manual_holder = None
         self.stop("lease-expired", 0)
 
     def close(self):

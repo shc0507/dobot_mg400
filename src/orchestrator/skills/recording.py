@@ -187,7 +187,6 @@ def record(ctx, chip_id: str, seconds: float, run_name: str = "", mode: str = "t
         or existing["status"] not in {"idle", "completed", "stopped", "failed"}
         or not isinstance(sequence, dict)
         or sequence.get("armed") is not False
-        or state.get("manual_client") is not None
     ):
         raise RuntimeError("A new recording requires an idle microscope and no active recorder.")
     recording_id = uuid.uuid4().hex

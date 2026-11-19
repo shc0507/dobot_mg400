@@ -178,8 +178,8 @@ def test_inspection_preserves_target_when_write_only_channel_is_silent(lab):
 def test_service_sets_gas_flow_and_opens_the_valve_in_same_call(lab):
     lab.service.set_gas_flow(0, 30, client="operator")
     packets = list(lab.mfc.requests)
-    assert packets[0] == b"\x0207SFR$BB8\r"
-    assert packets[1][0:2] == bytes([4, 5])
+    assert packets[0:2] == [b"\x0207SFR$BB8\r", b"\x0207SVN\r"]
+    assert packets[2][0:2] == bytes([4, 5])
     assert lab.mfc.channel_state(7)["actual_percent"] == 30
     lab.service.set_gas_flow(0, 0, client="operator")
     assert lab.mfc.channel_state(7)["actual_percent"] == 0
@@ -524,6 +524,34 @@ def test_sigterm_close_stops_heat_and_gas(lab):
     )
     result = lab.service.close()
     assert not result["locked"]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
+
+
+def test_gas_flows_after_restart_that_left_the_valve_forced_closed(lab):
+    lab.service.set_gas_flow(0, 20, client="operator")
+    lab.service.close()
+    assert lab.mfc.channel_state(7)["override"] == "closed"
+    restarted = lab.make()
+    restarted.start(background=False)
+    restarted.lease.acquire("operator")
+    restarted.set_gas_flow(0, 20, client="operator")
+    assert lab.mfc.channel_state(7)["override"] == "normal"
+    assert lab.mfc.channel_state(7)["actual_percent"] == 20
+
+
+def test_stop_reopens_ports_after_a_dead_serial_handle(lab, monkeypatch):
+    lab.service.start_sequence(
+        recipe(gas={0: 20}), end_gas={}, end_gas_until_c=30, client="operator"
+    )
+    dead = lambda packet: (_ for _ in ()).throw(OSError("device unplugged"))  # noqa: E731
+    monkeypatch.setattr(lab.serial, "write", dead)
+    monkeypatch.setattr(lab.mfc, "write", dead)
+    assert lab.service.stop_sequence()["locked"]
+    monkeypatch.undo()  # The USB devices are back.
+    lab.factories.clear()
+    lab.service.stop_sequence()
+    assert sorted(lab.factories) == [("flow", "sim://mfc"), ("furnace", "sim://furnace")]
     assert lab.serial.registers[p.SRUN_REGISTER] == 1
     assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
 
@@ -943,3 +971,31 @@ def test_unstarted_stop_with_busy_storage_still_stops_outputs(lab):
         assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
     finally:
         os.close(directory)
+
+
+def test_ramp_over_program_time_is_refused_before_writes_without_lock(lab):
+    service = lab.make(
+        config=FurnaceConfig(port="sim://furnace", flow_port="sim://mfc", max_c=1000, max_ramp=10)
+    )
+    service.start(background=False)
+    service.lease.acquire("operator")
+    before = len(writes(lab.serial))
+    with pytest.raises(ValueError, match="controller maximum is 3200.0"):
+        service.apply_setpoint(1000, 0.2, client="operator")
+    with pytest.raises(ValueError, match="controller maximum"):
+        service.start_sequence(
+            [dict(temperature_c=1000, ramp_rate_c_per_min=0.2, hold_minutes=1)], client="operator"
+        )
+    with pytest.raises(ValueError, match="controller maximum"):
+        service.start_sequence(
+            [
+                dict(temperature_c=30, ramp_rate_c_per_min=10, hold_minutes=1),
+                dict(temperature_c=1000, ramp_rate_c_per_min=0.2, hold_minutes=1),
+            ],
+            client="operator",
+        )
+    assert len(writes(lab.serial)) == before
+    status = service.status()
+    assert not status["locked"] and not status["sequence"]["running"]
+    service.apply_setpoint(30, 10, client="operator")
+    assert len(writes(lab.serial)) > before

@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import pytest
 from PIL import Image
-from test_deploy_mg400ctl import ctl as ctl
+from test_deploy_labctl import ctl as ctl
 from test_orchestrator_runner import FakeService, until
 from test_orchestrator_transfer import Robot
 from test_orchestrator_transfer import geometry as geometry

@@ -168,6 +168,18 @@ class MFCFlowControllerTests(unittest.TestCase):
             ],
         )
 
+    def test_split_reply_is_not_read_as_a_new_reply(self):
+        class LateTail(FakeSerial):
+            # The tail of a reply that crossed the timeout sits in the input buffer.
+            def reset_input_buffer(self):
+                self.responses = [item for item in self.responses if item != b"A0\r"]
+
+        controller = MFCFlowController(serial_connection=LateTail([b"N0F", b"A0\r", b"N0FA0\r"]))
+        self.assertEqual(controller.read_flow_percent(7), 40.0)
+        controller = MFCFlowController(serial_connection=FakeSerial([b"N0F"] * 4))
+        with self.assertRaisesRegex(RuntimeError, "incomplete response"):
+            controller.read_flow_percent(7)
+
     def test_sets_percent_with_manual_defined_framing(self):
         serial = FakeSerial(
             [
@@ -412,11 +424,12 @@ def test_environment_settings_and_explicit_port_precedence(monkeypatch):
     monkeypatch.setenv("MG400_FURNACE_SERIAL", "/dev/serial/by-id/env-furnace")
     monkeypatch.setenv("MG400_FURNACE_SLAVE", "3")
     monkeypatch.setenv("MG400_MFC_SERIAL", "/dev/serial/by-id/env-mfc")
+    # The caps are fixed in code. The host environment cannot change them.
     monkeypatch.setenv("MG400_FURNACE_MAX_C", "600.5")
     monkeypatch.setenv("MG400_FURNACE_MAX_RAMP", "12.5")
     config = FurnaceConfig.from_env()
     assert config == FurnaceConfig(
-        "/dev/serial/by-id/env-furnace", 3, "/dev/serial/by-id/env-mfc", 600.5, 12.5
+        "/dev/serial/by-id/env-furnace", 3, "/dev/serial/by-id/env-mfc", 1000, 100
     )
     explicit = FurnaceConfig.from_env(port="/dev/furnace", slave_address=7, flow_port="/dev/mfc")
     assert (explicit.port, explicit.slave_address, explicit.flow_port) == (
@@ -424,25 +437,13 @@ def test_environment_settings_and_explicit_port_precedence(monkeypatch):
         7,
         "/dev/mfc",
     )
-    monkeypatch.setenv("MG400_FURNACE_MAX_C", "500")
-    assert FurnaceConfig.from_env().max_c == 500
-    assert config.max_c == 600.5
+    assert FurnaceConfig(max_c=500).max_c == 500
 
 
-@pytest.mark.parametrize(
-    "setting,maximum",
-    [
-        ("MG400_FURNACE_MAX_C", 1000),
-        ("MG400_FURNACE_MAX_RAMP", 100),
-    ],
-)
+@pytest.mark.parametrize("setting,maximum", [("max_c", 1000), ("max_ramp", 100)])
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0", "-1", "", "bad", "1001"])
-def test_invalid_caps_fail_before_opening(monkeypatch, setting, maximum, value):
-    monkeypatch.setenv("MG400_FURNACE_SERIAL", "/dev/fake")
-    monkeypatch.setenv(setting, value)
-    with pytest.raises(ValueError, match=setting):
-        Furnace()
-    field = "max_c" if maximum == 1000 else "max_ramp"
+def test_invalid_caps_are_refused(setting, maximum, value):
+    field = setting
     for invalid in (value, maximum + 0.01, True):
         with pytest.raises(ValueError, match=setting):
             FurnaceConfig(**{field: invalid})

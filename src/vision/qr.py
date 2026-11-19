@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 import io
 import math
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -319,35 +317,3 @@ def results_csv(codes: list[QRCode]) -> str:
             + [code.text, code.format, code.status, code.source]
         )
     return output.getvalue()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Locate QR and Micro QR codes in a photograph.")
-    parser.add_argument(
-        "image", type=Path, help="Image to scan (coordinates use its stored raster)"
-    )
-    parser.add_argument("--output", type=Path, help="Write CSV to this path instead of stdout")
-    parser.add_argument(
-        "--fast", action="store_true", help="Skip extra contrast and tiled recovery passes"
-    )
-    args = parser.parse_args()
-    try:
-        codes = detect_qr_codes(read_image(args.image), thorough=not args.fast)
-        csv_text = results_csv(codes)
-        if args.output is not None:
-            with args.output.open("w", encoding="utf-8-sig", newline="") as output:
-                output.write(csv_text)
-        else:
-            sys.stdout.write(csv_text)
-    except (OSError, ValueError, cv2.error) as exc:
-        parser.exit(2, f"Error: {exc}\n")
-    print(
-        f"{sum(code.decoded for code in codes)} decoded; "
-        f"{sum(not code.decoded for code in codes)} unverified location(s).",
-        file=sys.stderr,
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

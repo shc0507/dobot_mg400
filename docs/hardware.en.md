@@ -5,13 +5,13 @@
 [Return to the home page to choose an interface](../README.en.md)
 
 This page describes the TCP protocol and feedback checks for hardware control.
-Existing hardware functions connect directly through TCP. They do not provide a general pick-and-place interface.
+The robot service and the interactive terminal connect directly to the controller through TCP.
+The [recipe orchestrator](orchestrator.en.md) provides the pick-and-place steps `robot.pick`, `robot.transfer`, and `vision.tray_transfer`.
 For routine operation, use the relevant guide:
 
 - [Robot service](control-panel.en.md): the hardware control service that the Motion workspace of the Lab Console uses.
-- [Interactive terminal](terminal-control.en.md): terminal commands for the robot and suction cup.
 
-The robot service and interactive terminal share the robot address configuration.
+The robot service reads the robot address from the configuration.
 See `MG400_ROBOT_HOST` in [Configuration file](deploy.en.md#configuration-file).
 
 ## Direct TCP interface
@@ -25,12 +25,12 @@ The Python README above specifies controller V1.5.6.0+.
 For troubleshooting, trying V1.6.0.0+ is recommended.
 The official manual for the installed firmware is the final reference.
 Before control, enter TCP/IP secondary development mode.
-Select it in DobotStudio Pro or use the script below.
+Select it in DobotStudio Pro or use the command below.
 Do not mix in the 6-axis robot SDK.
 
 ### Switch to TCP/IP mode from the server
 
-[`scripts/mg400_control_mode.py`](../scripts/mg400_control_mode.py) is read-only by default.
+`labctl mode` is read-only by default.
 It reads the mode through SMB (network file sharing) and the operating state through HTTP.
 `configured_mode` is the saved configuration. It cannot by itself prove that the mode is active.
 `tp` means online mode. `tcp` means TCP/IP mode.
@@ -39,19 +39,21 @@ The server must reach the robot's TCP ports `445`, `22000`, and `29999`.
 On a host installed through [Host deployment](deploy.en.md), read the mode as root:
 
 ```sh
-mg400ctl mode
+labctl mode
 ```
 
-`mg400ctl` runs the script as UID 1000 and shares the robot service's [connection lock](deploy.en.md#panel-connection-lock).
-The script uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
-When run directly as root, the script refuses to acquire the connection lock and does not connect to the controller.
+`labctl` runs the tool as UID 1000. A mode read takes no connection lock. `--switch-to-tcp` acquires the [connection lock](deploy.en.md#panel-connection-lock) that the robot service also uses.
+The tool uses `pysmb` in `/opt/mg400/.venv`. No separate dependency installation is required.
+The lock directory is fixed at `/var/lib/mg400/locks`. Its owner is UID 1000.
 
 Before switching, disable the robot and stop running programs.
 Close other control clients and release the [panel connection lock](deploy.en.md#panel-connection-lock).
-Then run `mg400ctl mode --switch-to-tcp`.
+Then run `labctl mode --switch-to-tcp`.
 The script reads `MG400_ROBOT_HOST`. If it is unset, the script reads `config/robot.toml`.
 Switching accepts only an original mode of `tp` or `tcp`.
-It checks that the robot is disabled, programs are stopped, and no alarms are active.
+It checks that the robot is disabled, programs are stopped, no alarms are active, and `isCollision` and `isSafeSuspend` are 0.
+If the saved mode is already `tcp` and `RobotMode()` returns `4`, the script writes nothing and reports `changed: false`.
+If `RobotMode()` returns `-1`, the script writes the configuration again.
 The script first backs up the configuration, then writes `/settings/function/remoteControl.json` in the `project` share.
 It then sends the same configuration by POST to `/settings/function/remoteControl` on port `22000`.
 The target fields are `{"mode":"tcp","name":""}`. Other fields keep their original values.
@@ -59,7 +61,7 @@ This order comes from the [DobotLink source](https://github.com/Dobot-Arm/DobotL
 
 Success requires HTTP `status: true`, matching configuration readback, and a successful `RobotMode()` response of `4`.
 The script does not enable the robot, clear alarms, or send motion commands.
-`mg400ctl` stores backups in `/var/lib/mg400/work/control-mode/`.
+`labctl` stores backups in `/var/lib/mg400/work/control-mode/`.
 If an error occurs after writing, the controller state may already have changed.
 The script reports the backup path. It does not automatically repeat the switch request or roll back.
 Check the state and error before deciding whether to run it again.
@@ -205,7 +207,7 @@ Validate in this order:
 1. Check firmware, robot IP, power supply, and the I/O wiring of the vacuum source. Use read-only tests for pose and alarms.
 2. Set the tool TCP and payload. Use the teach pendant to record the actual start, pick, and place points and path.
 3. Validate individual actions gradually at low speed in a controlled workspace. Then validate a fixed pick-and-place sequence.
-4. Before connecting an agent, add path reachability checks, collision checks, and device protection independent of the model.
+4. Before an agent controls the arm, add path reachability checks, collision checks, and device protection independent of the model.
 
 ## Optional ROS 2 integration
 
@@ -247,6 +249,6 @@ Integration requirements and limitations:
 Before implementing a ROS 2 adapter, decide the deployment environment.
 This project requires Python 3.12+.
 `rclpy` must be compatible with the Python environment of the installed ROS distribution.
-Do not assume that the current macOS venv can be used directly.
+Do not assume that the project venv can be used directly.
 First validate the driver in the upstream-supported Ubuntu / Humble environment.
 Then decide whether the agent runs in the same process or communicates through a separate bridge process.

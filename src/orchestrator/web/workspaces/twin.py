@@ -1,141 +1,202 @@
-"""Digital Twin workspace routes; use existing Console request identity."""
+"""Console workspace: Twin (a 3D model of the bench that follows the devices).
 
-import time
+The page loads the bench model and polls the state:
 
-from flask import Response, jsonify, request
+- ``GET model`` sends the model file ``MODEL`` (the ``twin-model`` asset of the
+  installer; 404 when it is not installed).
+- ``GET state`` reads the robot, stage, microscope and furnace once each with a
+  fresh read identity. It returns the fields the page shows, the joint values of
+  the model and its signals. It never acquires, renews or releases a lease.
+
+Joint values are relative to the model's own state (the first bench video):
+robot J1-J4 in degrees, ``stage_bottom``, ``stage_top`` and ``insert`` in mm,
+``turret`` in degrees. A value is ``None`` when it is unknown.
+
+The legacy stage reports pulse counts. ``STAGE`` maps them; camera snapshots of
+the stage markers at half-step measured it:
+mm = sign * pulses / pulses_per_mm + offset. The mapping holds while the counts
+keep their reference and the microstep mode stays the same. Otherwise the stage
+joints are ``None``. A stage connect resets the Arduino: the counts return to 0
+and the mode to full step, so the joints stay ``None`` until half-step is set
+again, and the offsets need a new snapshot unless the stage did not move.
+
+Encoder stages report shaft rotations. Their model geometry remains uncalibrated
+until a rotation-to-model mapping defines each axis's scale, direction and zero.
+The device rows retain fresh encoder rotations, but model travel stays unknown.
+"""
+
+from pathlib import Path
+
+from flask import abort, jsonify, request, send_file
 
 from labkit.lease import validate_client
 
+from ...transfer_motion import fresh as encoder_fresh
 from . import Workspace
 
-# Keep the detector and image libraries unloaded until this legacy view is enabled.
-MAX_PROFILE_BYTES = 1024 * 1024
+DEVICES = ("robot", "stage", "microscope", "furnace")
+MODEL = Path("/var/lib/mg400/twin/twin.glb")  # config/assets.toml: twin-model
+STAGE_MICROSTEP = 2
+STAGE = {  # model joint: (motor, sign, pulses per mm, offset mm)
+    "stage_bottom": ("bottom", -1, 80.0, -3.90),
+    "stage_top": ("top", -1, 80.0, -0.65),
+    "insert": ("insert", -1, 80.0, -2.63),
+}
+# The model shows objective 1 (10x) at work; 1 turret step = 72 deg (direction not checked).
+WORKING_OBJECTIVE = 1
+TURRET_STEP_DEG = 72.0
+HOT_C = 50.0
+
+
+def _pick(source, fields):
+    return {key: source[key] for key in fields if key in source}
+
+
+def _robot(state):
+    row = _pick(state, ("joints", "actual", "enabled", "busy", "robot_error", "feedback_fresh"))
+    row["alarms"] = len(state.get("alarms") or ())
+    return row
+
+
+def _stage(state):
+    row = _pick(state, ("connected", "busy", "fault", "feedback_fresh", "microstep", "closed_loop"))
+    row["motors"] = {
+        m["id"]: _pick(m, ("position", "mode"))
+        for m in state.get("motors") or ()
+        if isinstance(m, dict) and isinstance(m.get("id"), str)
+    }
+    if state.get("closed_loop"):
+        for motor in state.get("motors") or ():
+            if not isinstance(motor, dict) or motor.get("id") not in row["motors"]:
+                continue
+            row["motors"][motor["id"]]["position_rotations"] = (
+                motor.get("position_rotations") if encoder_fresh(state, motor) else None
+            )
+        row["feedback_fresh"] = all(
+            row["motors"].get(motor, {}).get("position_rotations") is not None
+            for motor in ("bottom", "top", "insert")
+        )
+    return row
+
+
+def _microscope(state):
+    return _pick(
+        state,
+        ("connected", "busy", "fault", "objective_id", "focus_position_pulses", "focus_zero_known"),
+    )
+
+
+def _furnace(state):
+    row = _pick(
+        state, ("connected", "busy", "fault", "pv_c", "target_c", "control_mode", "run_state")
+    )
+    flow = state.get("flow") if isinstance(state.get("flow"), dict) else {}
+    row["valves_open"] = [
+        bool(v.get("open")) for v in flow.get("gas_valves") or () if isinstance(v, dict)
+    ]
+    row["gas_percent"] = [
+        g.get("actual_percent") for g in flow.get("gas_channels") or () if isinstance(g, dict)
+    ]
+    return row
+
+
+READERS = {"robot": _robot, "stage": _stage, "microscope": _microscope, "furnace": _furnace}
+
+
+def _holder(service, device, value, page):
+    if value is None:
+        return None
+    for item in service.console.control(page):
+        if item["device"] == device and item["holder"] == value:
+            return "mine" if item["mine"] else "console"
+    return "other"
+
+
+def read(service, device, page):
+    """Read one device from the device cache. A missing state becomes an unavailable row."""
+    entry = service.devices.wait(device)
+    if entry["phase"] in {"unconfigured", "offline"}:
+        return {"available": False, "reason": entry["phase"]}
+    if entry["phase"] != "ready":
+        return {"available": False, "reason": "unreachable"}
+    try:
+        row = READERS[device](entry["state"])
+    except Exception:
+        return {"available": False, "reason": "unreachable"}
+    row["available"] = True
+    row["holder"] = _holder(service, device, entry["holder"], page)
+    return row
+
+
+def _number(value):
+    return value if type(value) in (int, float) else None
+
+
+def joints(rows):
+    """Model joint values from the device rows (None = unknown)."""
+    out = {}
+    robot = rows.get("robot", {})
+    j = robot.get("joints") if robot.get("available") else None
+    for k in range(4):
+        out[f"J{k + 1}"] = _number(j[k]) if isinstance(j, list) and len(j) == 4 else None
+    stage = rows.get("stage", {})
+    same_mode = (
+        stage.get("available")
+        and not stage.get("closed_loop")
+        and stage.get("microstep") == STAGE_MICROSTEP
+    )
+    for name, (motor, sign, ppm, offset) in STAGE.items():
+        pulses = (
+            _number(stage.get("motors", {}).get(motor, {}).get("position")) if same_mode else None
+        )
+        out[name] = round(sign * pulses / ppm + offset, 2) if pulses is not None else None
+    scope = rows.get("microscope", {})
+    objective = scope.get("objective_id") if scope.get("available") else None
+    out["turret"] = (
+        (objective - WORKING_OBJECTIVE) * TURRET_STEP_DEG if type(objective) is int else None
+    )
+    out["focus"] = None  # focus pulses have no mm scale or zero yet
+    return out
+
+
+def signals(rows):
+    """Conditions the page shows on the model."""
+    robot, stage, furnace = rows.get("robot", {}), rows.get("stage", {}), rows.get("furnace", {})
+    pv = _number(furnace.get("pv_c"))
+    return {
+        "robot_alarm": bool(robot.get("robot_error") or robot.get("alarms")),
+        "robot_stale": not (robot.get("available") and robot.get("feedback_fresh")),
+        "robot_moving": bool(robot.get("busy")),
+        "stage_stale": not (stage.get("available") and stage.get("feedback_fresh")),
+        "stage_moving": bool(stage.get("busy"))
+        or any(m.get("mode") not in (None, "idle") for m in stage.get("motors", {}).values()),
+        "stage_calibrated": bool(
+            stage.get("available")
+            and not stage.get("closed_loop")
+            and stage.get("microstep") == STAGE_MICROSTEP
+        ),
+        "furnace_c": pv,
+        "furnace_hot": pv is not None and pv >= HOT_C,
+        "furnace_running": furnace.get("control_mode") not in (None, "STOPPED"),
+        "gas_on": any(furnace.get("valves_open") or ()),
+    }
 
 
 def register(blueprint, service):
-    @blueprint.before_app_request
-    def upload_limit():
-        if request.endpoint == blueprint.name + ".profile_upload":
-            # The application parses JSON before workspace actions run. A JSON
-            # string can escape each profile byte as 6 ASCII bytes.
-            request.max_content_length = 6 * MAX_PROFILE_BYTES + 1024
-
-    def console():
-        manager = getattr(service, "_twin_console", None)
-        if manager is None:
-            raise RuntimeError("Activate Position Finder (legacy) first.")
-        return manager
-
-    def page():
-        client = validate_client(request.headers.get("X-MG400-Client"))
-        current = console().pages.get(client)
-        if current is None:
-            raise RuntimeError("Activate Position Finder (legacy) first.")
-        return current
-
-    def require_active(current, client):
-        if console().pages.get(client) is not current:
-            raise RuntimeError("Activate Position Finder (legacy) first.")
-        current.touched = time.monotonic()
-
-    @blueprint.post("/enabled")
-    def enabled():
-        data = request.get_json()
-        if (
-            not isinstance(data, dict)
-            or set(data) != {"enabled"}
-            or type(data["enabled"]) is not bool
-        ):
-            raise ValueError("Send enabled as true or false.")
-        client = validate_client(request.headers.get("X-MG400-Client"))
-        if data["enabled"]:
-            from orchestrator.web.twin import get_twin_console
-
-            manager = get_twin_console(service)
-            current = manager.page(client)
-            with current.lock:
-                return jsonify(**manager.state(current), enabled=True, client=client)
-        manager = getattr(service, "_twin_console", None)
-        if manager is not None:
-            with manager.lock:
-                current = manager.pages.pop(client, None)
-                if current is not None:
-                    # An accepted camera read may finish, but no further attempts start.
-                    current.cancelled.set()
-        return jsonify(enabled=False)
+    @blueprint.get("/model")
+    def model():
+        if not MODEL.is_file():
+            abort(404)
+        return send_file(MODEL, mimetype="model/gltf-binary", max_age=3600)
 
     @blueprint.get("/state")
     def state():
-        client = validate_client(request.headers.get("X-MG400-Client"))
-        manager = getattr(service, "_twin_console", None)
-        if manager is None or client not in manager.pages:
-            return jsonify(enabled=False)
-        current = page()
-        with current.lock:
-            require_active(current, client)
-            return jsonify(**console().state(current), enabled=True, client=client)
-
-    @blueprint.get("/frame")
-    def frame():
-        client = validate_client(
-            request.headers.get("X-MG400-Client") or request.args.get("client")
-        )
-        manager = console()
-        current = manager.pages.get(client)
-        if current is None:
-            raise RuntimeError("Activate Position Finder (legacy) first.")
-        with current.lock:
-            require_active(current, client)
-            data, _ = manager.read(request.args.get("camera", "camera1"))
-            return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
-
-    def action(name, allowed):
-        data = request.get_json()
-        if not isinstance(data, dict) or set(data) - allowed:
-            raise ValueError("Send the supported Digital Twin fields as a JSON object.")
-        current = page()
-        with current.lock:
-            require_active(current, request.headers.get("X-MG400-Client"))
-            if name == "measure":
-                result = console().measure(current, data)
-            elif name == "capture":
-                result = console().capture(current, data)
-            elif name == "tuning/cancel":
-                current.policy.cancel()
-                result = console().state(current)
-            else:
-                result = console().mutate(current, name, data)
-            if "cameras" in result:
-                result.update(enabled=True, client=request.headers.get("X-MG400-Client"))
-            if "state" in result:
-                result["state"].update(enabled=True, client=request.headers.get("X-MG400-Client"))
-            return jsonify(result)
-
-    fields = {
-        "source": {"camera"},
-        "profile/new": {"name"},
-        "profile/edit": {"name", "travel_mm"},
-        "profile/select": {"id"},
-        "profile/save": {"name", "travel_mm"},
-        "profile/upload": {"profile"},
-        "profile/delete": {"id"},
-        "clear": {"endpoint"},
-        "capture": {"endpoint", "automatic", "max_frames"},
-        "measure": {"automatic", "max_frames", "tune"},
-        "tuning/cancel": set(),
-    }
-    for name, allowed in fields.items():
-        blueprint.add_url_rule(
-            "/" + name,
-            endpoint=name.replace("/", "_"),
-            view_func=lambda name=name, allowed=allowed: action(name, allowed),
-            methods=["POST"],
-        )
+        page = request.headers.get("X-MG400-Client")
+        page = validate_client(page) if page else None
+        rows = {device: read(service, device, page) for device in DEVICES}
+        return jsonify(devices=rows, joints=joints(rows), signals=signals(rows))
 
 
 WORKSPACE = Workspace(
-    id="twin",
-    order=100,
-    title={"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"},
-    register=register,
+    id="twin", order=50, title={"en": "Twin", "zh": "实时台面"}, register=register
 )

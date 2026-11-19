@@ -92,15 +92,17 @@ def test_demo_start_stop_reconnect_and_no_stale_frame():
         service.disconnect()
 
 
-def test_constructor_failure_is_reported_as_error():
+def test_constructor_failure_is_reported_as_error(monkeypatch):
     def broken_factory():
         raise RuntimeError("constructor unavailable")
 
+    monkeypatch.setattr("thermal_cam.service.diagnose", lambda: {"device_found": False})
     service = CameraService(camera_factory=broken_factory)
     try:
         service.connect()
         wait_until(lambda: service.status()["state"] == "error")
         assert "constructor unavailable" in service.status()["error"]
+        assert service.status()["diagnostics"] == {"device_found": False}
         with pytest.raises(RuntimeError, match="constructor unavailable"):
             service.latest()
     finally:

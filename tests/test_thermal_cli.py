@@ -12,7 +12,8 @@ from thermal_cam import app
 
 
 @pytest.fixture(autouse=True)
-def clean_settings(monkeypatch):
+def clean_settings(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.roi, "DEFAULT_ROI_PATH", tmp_path / "absent.toml")
     for name in (
         "MG400_THERMAL_BIND",
         "MG400_THERMAL_PORT",
@@ -138,10 +139,10 @@ def test_reserved_socket_handoff_and_cleanup(monkeypatch, server_fails, sockets)
 @pytest.mark.parametrize(
     "settings,args",
     [
-        ({"MG400_THERMAL_PORT": "invalid"}, []),
-        ({"MG400_THERMAL_PORT": "65536"}, []),
-        ({"MG400_THERMAL_BASE_PATH": "//thermal"}, []),
-        ({"MG400_THERMAL_BASE_PATH": "/thermal?secret=value"}, []),
+        ({}, ["--port", "invalid"]),
+        ({}, ["--port", "65536"]),
+        ({}, ["--base-path", "//thermal"]),
+        ({}, ["--base-path", "/thermal?secret=value"]),
         ({}, ["--base-path", "/thermal/../other"]),
         ({}, ["--base-path", "/thermal%2fother"]),
         ({}, ["--port", "0"]),
@@ -164,7 +165,7 @@ def test_configuration_errors_precede_socket_or_camera_access(monkeypatch, setti
 
 
 @pytest.mark.parametrize("override", [False, True])
-def test_environment_settings_and_cli_override(monkeypatch, sockets, override, capsys):
+def test_old_settings_are_ignored_and_options_apply(monkeypatch, sockets, override, capsys):
     monkeypatch.setenv("MG400_THERMAL_BIND", "0.0.0.0")
     monkeypatch.setenv("MG400_THERMAL_PORT", "9999")
     monkeypatch.setenv("MG400_THERMAL_BASE_PATH", "/thermal/")
@@ -176,7 +177,7 @@ def test_environment_settings_and_cli_override(monkeypatch, sockets, override, c
         assert kwargs == {
             "demo": True,
             "auto_connect": False,
-            "base_path": "/lab/thermal" if override else "/thermal",
+            "base_path": "/lab/thermal" if override else "/",
         }
         return sentinel
 
@@ -184,17 +185,33 @@ def test_environment_settings_and_cli_override(monkeypatch, sockets, override, c
         def __init__(self, config):
             assert config.app is sentinel
             assert config.workers == 1
-            assert config.host == ("::1" if override else "0.0.0.0")
-            assert config.port == (8768 if override else 9999)
+            assert config.host == ("::1" if override else "127.0.0.1")
+            assert config.port == 8768
 
         def run(self, sockets):
             assert sockets[0].family == (socket.AF_INET6 if override else socket.AF_INET)
-            assert sockets[0].address == (("::1", 8768) if override else ("0.0.0.0", 9999))
+            assert sockets[0].address == (("::1", 8768) if override else ("127.0.0.1", 8768))
 
     monkeypatch.setattr(app, "create_app", fake_app)
     monkeypatch.setattr(uvicorn, "Server", FakeServer)
     assert cli.main() == 0
     assert sockets[0].closed
     assert (
-        "http://[::1]:8768/lab/thermal" if override else "http://0.0.0.0:9999/thermal"
+        "http://[::1]:8768/lab/thermal" if override else "http://127.0.0.1:8768"
     ) in capsys.readouterr().out
+
+
+def test_invalid_region_file_exits_2_before_bind(monkeypatch, tmp_path, capsys):
+    def forbidden(*args, **kwargs):
+        pytest.fail("An invalid region file must not open a socket or camera")
+
+    path = tmp_path / "rois.toml"
+    path.write_text("[regions.bad]\nx0 = 0\n")
+    monkeypatch.setattr(cli.roi, "DEFAULT_ROI_PATH", path)
+    monkeypatch.setattr(cli.socket, "socket", forbidden)
+    monkeypatch.setattr(app, "create_app", forbidden)
+    monkeypatch.setattr(sys, "argv", ["thermal-cam", "--demo"])
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 2
+    assert "Region 'bad' must define exactly x0, y0, x1 and y1." in capsys.readouterr().err

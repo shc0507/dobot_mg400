@@ -36,6 +36,9 @@ def host(module, monkeypatch, tmp_path, tmp_path_factory):
     (code / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
     shutil.copy(ROOT / "deploy/services.toml", code / "deploy")
+    # The tests write their own asset manifests, so the copy leaves out the console model asset.
+    registry = code / "deploy/services.toml"
+    registry.write_text(registry.read_text().replace('assets = ["twin-model"]', "assets = []"))
     shutil.copytree(ROOT / "config/systemd", code / "config/systemd")
     shutil.copytree(ROOT / "config/proxy", code / "config/proxy")
     commands = []
@@ -261,15 +264,12 @@ def test_first_install_creates_settings_data_units_and_command(module, host):
         not in {
             "mg400-thermal.service",
             "mg400-vision.service",
-            "mg400-gateway.service",
         }
     }
     for unit in host.units.iterdir():
         assert unit.read_text() == (ROOT / "config/systemd" / unit.name).read_text()
-    command = host.root / "usr/local/bin/mg400ctl"
-    assert command.is_symlink() and command.readlink() == host.code / "deploy/mg400ctl"
-    lab_command = host.root / "usr/local/bin/labctl"
-    assert lab_command.is_symlink() and lab_command.readlink() == command.readlink()
+    command = host.root / "usr/local/bin/labctl"
+    assert command.is_symlink() and command.readlink() == host.code / "deploy/labctl"
     assert not (host.root / "etc/mg400/go2rtc.yaml").exists()
 
     uv = [options for command, options in host.commands if command[0] == "/usr/bin/uv"]
@@ -331,6 +331,15 @@ def test_repeated_install_keeps_settings(module, host):
     assert str(host.settings) not in host.out.getvalue().split("Installed")[1]
 
 
+def test_install_removes_old_mg400ctl_link(host):
+    old = host.root / "usr/local/bin/mg400ctl"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.symlink_to(host.code / "deploy/mg400ctl")
+    assert host.install() == 0
+    assert not old.is_symlink()
+    assert (host.root / "usr/local/bin/labctl").readlink() == host.code / "deploy/labctl"
+
+
 def test_existing_settings_keep_their_values_and_gain_missing_keys(module, host):
     host.settings.parent.mkdir(parents=True)
     host.settings.write_text(
@@ -361,11 +370,16 @@ def test_merge_removes_service_tokens_and_empty_removed_settings(module):
     example = "A=\n"
     current = (
         "A=\nMG400_PANEL_TOKEN=old\nMG400_ORCH_ROBOT_TOKEN=\nMG400_ORCH_ROBOT_URL=\n"
-        "MG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=keep\n"
+        "MG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=old\n"
     )
     text, changed = module.merge_settings(current, example)
-    assert text == "A=\nMG400_STAGE_BASE_PATH=/stage/\nMG400_GATEWAY_TOKEN=keep\n"
-    assert changed == ["MG400_PANEL_TOKEN", "MG400_ORCH_ROBOT_TOKEN", "MG400_ORCH_ROBOT_URL"]
+    assert text == "A=\nMG400_STAGE_BASE_PATH=/stage/\n"
+    assert changed == [
+        "MG400_PANEL_TOKEN",
+        "MG400_ORCH_ROBOT_TOKEN",
+        "MG400_ORCH_ROBOT_URL",
+        "MG400_GATEWAY_TOKEN",
+    ]
 
 
 def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, tmp_path):
@@ -472,7 +486,7 @@ def test_failed_dependency_sync_installs_no_units(host):
 
     assert host.install(runner=failing) == 1
     assert not host.units.exists()
-    assert not (host.root / "usr/local/bin/mg400ctl").exists()
+    assert not (host.root / "usr/local/bin/labctl").exists()
 
 
 def test_settings_lines_parse_like_systemd(module):
@@ -651,7 +665,6 @@ def add_optional_service(
         stream.write(
             f'\n[[service]]\nname = "{name}"\nunits = ["mg400-{name}.service"]\n'
             f'optional = true\nvenv = "{venv}"\ngroups = {json.dumps(list(groups))}\n'
-            f"port = 8799\n"
             f"assets = {json.dumps(list(asset_names))}\n"
         )
     (host.code / "config/systemd" / f"mg400-{name}.service").write_text("[Service]\n")
@@ -835,11 +848,8 @@ def test_vision_asset_preflight_refuses_invalid_manifest_or_target_before_change
         ('units = ["mg400-stage-panel.service"]', 'units = ["mg400-web-panel.service"]'),
         ('groups = ["stage"]', 'groups = ["stage", "stage"]'),
         ('groups = ["tools"]', 'groups = ["--all-groups"]'),
-        ("port = 8766", 'port = 8766\ntoken = "MG400_PANEL_TOKEN"'),
-        ("port = 8766", "port = true"),
-        ("port = 8766", "port = 65536"),
-        ("port = 8766", "port = -1"),
-        ("port = 8767", "port = 8766"),
+        ('venv = ".venv"', 'venv = ".venv"\ntoken = "MG400_PANEL_TOKEN"'),
+        ('venv = ".venv"', 'venv = ".venv"\nport = 8766'),
         ("assets = []", 'assets = ["../model"]'),
         ("assets = []", 'assets = ["model", "model"]'),
         ("optional = false\n", ""),
@@ -1112,8 +1122,7 @@ def test_default_dry_run_lists_every_step(host):
         "Would install <host>/etc/systemd/system/mg400-stage-panel.service",
         "Would install <host>/etc/systemd/system/mg400-web-panel.service",
         "Would run: systemctl daemon-reload",
-        "Would link <host>/usr/local/bin/mg400ctl to <host>/opt/mg400/deploy/mg400ctl",
-        "Would link <host>/usr/local/bin/labctl to <host>/opt/mg400/deploy/mg400ctl",
+        "Would link <host>/usr/local/bin/labctl to <host>/opt/mg400/deploy/labctl",
     ]
 
 
@@ -1222,23 +1231,6 @@ def test_orchestrator_upgrade_preserves_twin_profiles_and_selection(host):
         assert path.read_bytes() == data and mode(path) == 0o600
 
 
-def test_enabled_gateway_prepares_audit_directory_without_starting_or_fabricating_runs(
-    module, host
-):
-    select_optional(host, "gateway")
-    assert host.install() == 0
-    directory = host.data / "runs"
-    assert mode(directory) == 0o750 and host.owner(directory) == (1000, 1000)
-    assert list(directory.iterdir()) == []
-    assert (host.units / "mg400-gateway.service").exists()
-    sync = next(command for command, _ in host.commands if command[0] == "/usr/bin/uv")
-    assert sync[sync.index("gateway") - 1] == "--group"
-    assert not any(
-        command[:2] in (["systemctl", "start"], ["systemctl", "restart"])
-        for command, _ in host.commands
-    )
-
-
 def test_selected_orchestrator_refuses_symlinked_zone_directory(host, tmp_path):
     select_optional(host, "orch")
     host.data.mkdir(parents=True)
@@ -1328,9 +1320,6 @@ def test_proxy_dry_run_checks_without_any_host_mutation(host):
         {"MG400_PROXY_PORT": "8080;shutdown"},
         {"MG400_PROXY_PORT": "65536"},
         {"MG400_PROXY_PORT": "8772"},
-        {"MG400_ORCH_PORT": "1985"},
-        {"MG400_ORCH_PORT": "8774"},
-        {"MG400_ORCH_PORT": "http://elsewhere"},
     ],
 )
 def test_proxy_invalid_configuration_refuses_before_host_mutation(host, settings):
@@ -1387,6 +1376,7 @@ def test_proxy_requires_a_caddy_binary(host):
 
 
 def test_proxy_rendering_keeps_verified_origins_and_upgrade_defaults(host, module):
+    # The orchestrator upstream port is fixed. The settings cannot change it.
     proxy_settings(host, MG400_PROXY_BIND="::1", MG400_ORCH_PORT="9001")
     settings = module.parse_settings(host.settings.read_text())
     registry = module.load_services(host.code / "deploy/services.toml")
@@ -1396,7 +1386,7 @@ def test_proxy_rendering_keeps_verified_origins_and_upgrade_defaults(host, modul
         module.enabled_services(registry, "proxy"),
     )
     assert "bind [::1]" in config
-    assert "import instrument 127.0.0.1:9001" in config
+    assert "import instrument 127.0.0.1:8772" in config
     assert "import instrument 127.0.0.1:1985" in config
     assert "header_up Host {http.request.hostport}" in config
     assert "header_up X-Forwarded-Host {http.request.hostport}" in config
@@ -1995,9 +1985,11 @@ def test_microscope_installs_by_default_with_sdk_udev_private_data_and_runtime(
     assert library.read_bytes() == toupcam_library.read_bytes()
     assert mode(library) == 0o755 and host.owner(library) == (0, 0)
     settings = module.parse_settings(host.settings.read_text())
-    for key in ("SWITCH_FOCUS", "HOME_SWITCH", "FOCUS_LIMITS", "SERIAL", "SIDE_STREAM"):
+    for key in ("SERIAL", "SIDE_STREAM"):
         assert settings["MG400_MICROSCOPE_" + key] == ""
-    assert settings["MG400_MICROSCOPE_NUDGE_STEPS"] == "0"
+    # The focus limits, clearance and turret window are fixed in code.
+    for key in ("SWITCH_FOCUS", "HOME_SWITCH", "FOCUS_LIMITS", "NUDGE_STEPS"):
+        assert "MG400_MICROSCOPE_" + key not in settings
     assert settings["MG400_TOUPCAM_SERIAL"] == settings["MG400_TOUPCAM_INDEX"] == ""
     sync = next(
         command for command in names(host.commands) if command[:2] == ["/usr/bin/uv", "sync"]
@@ -2074,7 +2066,7 @@ def test_microscope_upgrade_preserves_library_data_and_measured_settings(
     library = host.root / "usr/local/lib/mg400/libtoupcam.so"
     original_inode = library.stat().st_ino
     microscope_library_owner(module, monkeypatch, library)
-    values = dict(SWITCH_FOCUS="0", HOME_SWITCH="0", FOCUS_LIMITS="0,10000", NUDGE_STEPS="20")
+    values = dict(SERIAL="/dev/serial/by-id/usb-microscope", SIDE_STREAM="camera3")
     lines = host.settings.read_text().splitlines()
     for index, line in enumerate(lines):
         for key, value in values.items():

@@ -26,7 +26,6 @@
       "control.thisPage": "This page", "control.console": "Console (other page)", "control.unknown": "Unknown",
       "control.take": "Take control", "control.release": "Release",
       "control.takeLabel": "Take control of {device}", "control.releaseLabel": "Release {device}",
-      "proposals.title": "Agent proposals", "proposals.count": "{count} waiting.",
     },
     zh: {
       "guide.title": "开始使用",
@@ -46,7 +45,6 @@
       "control.thisPage": "本页", "control.console": "控制台（其他页面）", "control.unknown": "未知",
       "control.take": "获取控制", "control.release": "释放",
       "control.takeLabel": "获取 {device} 的控制", "control.releaseLabel": "释放 {device}",
-      "proposals.title": "智能体提议", "proposals.count": "{count} 项待处理。",
     },
   };
 
@@ -84,10 +82,13 @@
   function eventRow(item) {
     const { el, deviceName } = view.api;
     const marked = item.level && item.level !== "info" && item.level !== "debug";
+    const fields = item.fields || {};
+    const detail = [fields.action, fields.result, fields.message_detail].filter(value => typeof value === "string" && value).join(" · ");
     return el("div", { class: "lc-event level-" + item.level },
       el("span", { class: "lc-mono", text: clock(item.ts_unix) }),
       el("span", { class: "lc-event-src", text: deviceName(item.service) }),
-      el("span", { class: "lc-event-text" }, marked ? el("span", { class: "lc-event-level", text: item.level }) : null, item.message));
+      el("span", { class: "lc-event-text" }, marked ? el("span", { class: "lc-event-level", text: item.level }) : null, item.message,
+        detail ? el("span", { class: "lc-muted", text: " · " + detail }) : null));
   }
 
   /** One press sends the stop. The stop result band of the shell shows the outcome. A stop is never disabled. */
@@ -155,13 +156,11 @@
       el("div", { class: "lc-card-head" }, el("h2", { id: "ov-control", text: t("control.title") }), n.releaseAll),
       el("div", { class: "lc-rows" }, ...n.rows.map(row => row.node)));
 
-    // The run and the proposals cards show only when they have content.
-    n.proposals = el("p", { class: "lc-muted" });
+    // The run card shows only when it has content.
     n.runCard = section("ov-run", t("run.title"), n.run);
-    n.proposalsCard = section("ov-proposals", t("proposals.title"), n.proposals);
     view.root.replaceChildren(el("div", { class: "lc-layout" },
       el("div", { class: "lc-col-main" }, guide, controlCard, n.runCard, events),
-      el("aside", { class: "lc-col-side" }, safetyCard, n.proposalsCard)));
+      el("aside", { class: "lc-col-side" }, safetyCard)));
     update();
   }
 
@@ -216,10 +215,6 @@
       row.button.setAttribute("aria-label", t(row.mine ? "control.releaseLabel" : "control.takeLabel", { device: deviceName(row.device) }));
     }
     n.releaseAll.disabled = !(snapshot?.control || []).some(item => item.state === "held");
-
-    const waiting = (snapshot?.approvals || []).filter(item => item.decision === "pending").length;
-    setText(n.proposals, waiting ? t("proposals.count", { count: waiting }) : "");
-    n.proposalsCard.hidden = !waiting;
   }
 
   async function loadEvents() {

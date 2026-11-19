@@ -15,7 +15,7 @@ SPEC = importlib.util.spec_from_file_location(
 preview = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(preview)
 HEADERS = {"X-MG400-Client": "preview-test"}
-TWIN = "/lab/api/console/ws/twin"
+TWIN = "/lab/api/console/ws/position-finder"
 TURRET = "/lab/api/console/ws/process/turret"
 TRANSFER = "/lab/api/console/ws/sample-transfer"
 MOTION = "/lab/api/console/ws/motion"
@@ -50,15 +50,16 @@ def test_real_shell_and_workspace_polls_stay_offline(client):
     assert 'id="ws-sample-transfer"' in shell and 'data-title-en="Sample Transfer"' in shell
     assert 'src="/lab/console-static/sample-transfer.js"' in shell
     assert 'href="/lab/console-static/sample-transfer.css"' in shell
-    assert "/lab/console-static/console-logo.png" in shell
-    logo = client.get("/lab/console-static/console-logo.png")
-    assert logo.status_code == 200 and logo.mimetype == "image/png"
-    for name in ("overview", "motion", "cameras", "twin", "process"):
+    assert "/lab/console-static/console-logo.webp" in shell
+    logo = client.get("/lab/console-static/console-logo.webp")
+    assert logo.status_code == 200 and logo.mimetype == "image/webp"
+    for name in ("overview", "motion", "cameras", "twin", "position-finder", "process"):
         assert f'id="ws-{name}"' in shell
         assert client.get(f"/lab/console-static/{name}.js").status_code == 200
     for path in (
         "/lab/api/console/state",
         "/lab/api/console/events",
+        "/lab/api/console/history",
         "/lab/api/console/ws/motion/state",
         "/lab/api/console/ws/cameras/status",
         "/lab/api/console/ws/process/status",
@@ -70,8 +71,10 @@ def test_real_shell_and_workspace_polls_stay_offline(client):
     assert all(row["connected"] is (row["id"] == "stage") for row in state["services"])
     cameras = client.get("/lab/api/console/ws/cameras/status").get_json()
     assert all(row["configured"] is False for row in cameras["views"])
-    for path in ("thermal/frame", "thermal/regions", "snapshot/microscope"):
+    for path in ("thermal/frame", "thermal/regions"):
         assert client.get("/lab/api/console/ws/cameras/" + path).status_code == 502
+    # The microscope snapshot now uses the host camera proxy, absent in the mock.
+    assert client.get("/lab/api/console/ws/cameras/snapshot/microscope").status_code == 404
 
 
 def test_legacy_stays_asleep_until_explicit_activation(client, tmp_path):
@@ -412,6 +415,8 @@ def test_motion_coordinates_use_live_stage_and_all_stop_routes_cancel_sequence(c
         response = client.post(path, json={}, headers={"X-MG400-Client": identity})
         assert response.status_code in (200, 202), response.json
         stopped = wait_stage(client, settled)
+        wait_stage(client, lambda stage: stage["stop_epoch"] > before)
+        service.devices.fresh("stage")
         state = client.get(MOTION + "/state", headers=HEADERS).json
         assert state["stage_operation"]["status"] == "stopped"
         assert state["stage"]["stop_epoch"] > before

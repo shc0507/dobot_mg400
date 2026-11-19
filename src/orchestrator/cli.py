@@ -14,7 +14,9 @@ from pathlib import Path
 
 from labkit.errors import ServiceError
 
-from .clients import SERVICE_URLS, ServiceAdapter, from_settings
+from . import agent_cli
+from .agent_cli import GROUPS as AGENT_GROUPS
+from .clients import SERVICE_URLS, TIMEOUT_S, ServiceAdapter, from_settings
 from .recipe import load_recipe, positive
 from .rehearsal import Rehearsal
 from .runner import Runner
@@ -169,10 +171,9 @@ def _station(args, settings, out):
     store = StationStore(workspace, path)
     if args.station_action == "save":
         offset = load_tool(args.tool_file or settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL)
-        url = settings.get("MG400_ORCH_ROBOT_URL") or SERVICE_URLS["MG400_ORCH_ROBOT_URL"]
-        timeout = positive(float(settings.get("MG400_ORCH_TIMEOUT_S", "2")), "request timeout")
+        url = SERVICE_URLS["MG400_ORCH_ROBOT_URL"]
         # This adapter has no robot WebSocket and sends only the two GETs in teach().
-        robot = ServiceAdapter(url, "teach-" + uuid.uuid4().hex, timeout=timeout)
+        robot = ServiceAdapter(url, "teach-" + uuid.uuid4().hex, timeout=TIMEOUT_S)
         result = teach(store, args.name, robot, offset, approach_mm=args.approach, zone=args.zone)
     elif args.station_action == "retool":
         tool = args.tool_file or settings.get("MG400_ORCH_TOOL_FILE") or DEFAULT_TOOL
@@ -191,6 +192,9 @@ def _station(args, settings, out):
 
 
 def main(argv=None, *, out=None, read=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in AGENT_GROUPS:
+        return agent_cli.main(argv, out=out)
     out, read = sys.stdout if out is None else out, input if read is None else read
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -224,7 +228,7 @@ def main(argv=None, *, out=None, read=None):
     try:
         if args.command == "station":
             return _station(args, os.environ, out)
-        directory = args.runs_dir or Path(os.environ.get("MG400_ORCH_RUNS_DIR", DEFAULT_RUNS))
+        directory = args.runs_dir or DEFAULT_RUNS
         if args.command == "runs":
             with RunStore(directory, readonly=True) as store:
                 result = store.get(args.run_id) if args.run_id else store.runs()
@@ -256,8 +260,10 @@ def main(argv=None, *, out=None, read=None):
                         "MG400_ORCH_ZONE_STATE_FILE": str(Path(temporary) / "occupancy.json"),
                     }
                     plan = prepare_zones(recipe, registry, demo_settings)
+                    # Without --runs-dir, records stay out of the production run store.
+                    records = args.runs_dir or Path(temporary) / "runs"
                     with (
-                        RunStore(directory) as store,
+                        RunStore(records) as store,
                         Rehearsal(temporary, plan.required_services, identity=identity) as demo,
                     ):
                         return _drive(
@@ -273,9 +279,7 @@ def main(argv=None, *, out=None, read=None):
                             read,
                         )
             plan = prepare_zones(recipe, registry, os.environ)
-            services = from_settings(
-                {**SERVICE_URLS, **{k: v for k, v in os.environ.items() if v}}, identity=identity
-            )
+            services = from_settings(identity=identity)
             with RunStore(directory) as store:
                 return _drive(Runner(recipe, registry, services, store, zone_plan=plan), out, read)
     except (OSError, ValueError, RuntimeError, sqlite3.Error, ServiceError) as error:

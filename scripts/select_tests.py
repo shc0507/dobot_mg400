@@ -5,6 +5,7 @@ from the arguments or, without arguments, one per line from stdin. Print one
 test file per line, or `tests` when the full suite must run.
 """
 
+import re
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -22,7 +23,6 @@ ROBOT = [
     "test_websocket.py",
     "test_control_panel*.py",
     "test_robot_*.py",
-    "test_terminal_control.py",
     "test_control_mode.py",
     "test_mg400_sim.py",
     "test_suction.py",
@@ -32,12 +32,11 @@ ROBOT = [
 ]
 ORCHESTRATOR = [
     "test_orchestrator_*.py",
+    "test_agent_cli*.py",
     "test_recipe_*.py",
-    "test_deploy_mg400ctl.py",
+    "test_deploy_labctl.py",
     "test_console*.py",
     "test_dashboard*.py",
-    "test_gateway*.py",
-    "test_approvals.py",
     "test_transfer_profiles.py",
 ]
 MICROSCOPE = ["test_microscope_*.py"]
@@ -54,7 +53,6 @@ AREAS = [
     # Areas.
     ("src/mg400/*", ROBOT),
     ("apps/control_panel/*", ROBOT),
-    ("scripts/mg400_*.py", ROBOT),
     ("config/robot.toml", ROBOT),
     ("examples/*", ["test_joint_example.py"]),
     (
@@ -65,20 +63,25 @@ AREAS = [
         "src/orchestrator/transfer_motion.py",
         ["test_console_sample_transfer.py", "test_console_preview.py"],
     ),
-    ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py"]),
+    ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py", "test_agent_cli*.py"]),
+    ("src/orchestrator/agent*.py", ["test_agent_cli*.py", "test_orchestrator_cli.py"]),
     ("scripts/console_font.py", ["test_console.py"]),
     (
         "scripts/console_preview.py",
-        ["test_console_preview.py", "test_console_twin.py", "test_console_turret.py"],
+        [
+            "test_console_preview.py",
+            "test_console_twin.py",
+            "test_console_position_finder.py",
+            "test_console_turret.py",
+        ],
     ),
     ("src/orchestrator/*", ORCHESTRATOR),
     ("recipes/*", ORCHESTRATOR),
-    ("deploy/mg400ctl", ORCHESTRATOR),
-    ("src/gateway/*", ["test_gateway*.py", "test_approvals.py"]),
     (
         "src/microscope/turret_calibration.py",
         [*MICROSCOPE, "test_console_preview.py", "test_console_turret.py"],
     ),
+    ("deploy/labctl", ORCHESTRATOR),
     ("src/microscope/*", MICROSCOPE),
     ("firmware/microscope-axes/*", MICROSCOPE),
     ("src/toupcam_camera/*", ["test_toupcam_camera.py", *MICROSCOPE]),
@@ -89,6 +92,7 @@ AREAS = [
             "test_camera_preview.py",
             "test_console_cameras.py",
             "test_console_twin.py",
+            "test_console_position_finder.py",
             "test_stage_twin.py",
             "test_vision_calibration.py",
             "test_vision_drift.py",
@@ -111,13 +115,14 @@ AREAS = [
     ("src/stage_controller/*", ["test_stage_*.py", "test_orchestrator_rehearsal.py"]),
     ("firmware/stage-controller-v3/*", ["test_stage_*.py", "test_console_preview.py"]),
     ("src/thermal_cam/*", ["test_thermal_*.py", "test_orchestrator_rehearsal.py"]),
-    ("src/vision/stage_twin/*", ["test_stage_twin.py", "test_console_twin.py"]),
+    ("src/vision/stage_twin/*", ["test_stage_twin.py", "test_console_position_finder.py"]),
     (
         "src/vision/*",
         [
             "test_vision_*.py",
             "test_stage_twin.py",
             "test_console_twin.py",
+            "test_console_position_finder.py",
             "test_orchestrator_rehearsal.py",
         ],
     ),
@@ -133,6 +138,7 @@ AREAS = [
     ("*.md", []),
     ("docs/*", []),
     (".agents/*", []),
+    (".claude/skills/*", []),
     ("skills-lock.json", []),
     ("LICENSE", []),
     (".gitignore", []),
@@ -141,11 +147,30 @@ AREAS = [
 ]
 
 
+def importers(package, tests):
+    """Return the test files that import `package`, directly or through a test helper."""
+
+    def users(name):
+        statement = re.compile(rf"^\s*(?:from|import)\s+{re.escape(name)}\b", re.MULTILINE)
+        return {f for f in tests.glob("*.py") if statement.search(f.read_text(encoding="utf-8"))}
+
+    direct = users(package)
+    helpers = {f.stem for f in direct if not f.name.startswith("test_")}
+    found = {f for f in direct if f.name.startswith("test_")}
+    for helper in helpers:
+        found |= {f for f in users(helper) if f.name.startswith("test_")}
+    return {f.name for f in found}
+
+
 def select(changed, root=ROOT):
     """Return the pytest targets for the changed paths."""
     tests = root / "tests"
     patterns = set(ALWAYS)
     for path in changed:
+        # The area table can miss a module that imports the changed package.
+        parts = Path(path).parts
+        if len(parts) > 2 and parts[0] == "src":
+            patterns.update(importers(parts[1], tests))
         if fnmatch(path, "tests/test_*.py"):
             patterns.add(Path(path).name)
             continue

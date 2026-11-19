@@ -497,7 +497,8 @@ def test_disable_disconnect_reconnect_can_enable_without_another_disable(rig):
 
     state.command({"action": "stop_sync"}, "browser-a")
     wait_for(lambda: not state.snapshot()["busy"] and not state.snapshot()["locked"])
-    assert disconnected_control.calls == ["disable", "stationary"]
+    # The arm was already disabled, so no rest check: it may be moved by hand.
+    assert disconnected_control.calls == ["disable"]
     assert not state.snapshot()["syncing"]
     assert not state.snapshot()["locked"]
     assert state.snapshot()["controller_id"] is None
@@ -717,6 +718,33 @@ def test_disabled_disconnect_still_confirms_and_closes_feedback(make_sim_rig):
     assert rig.controller.sent().count("DisableRobot()") == 1
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_disable_skips_rest_check_only_for_a_disabled_arm(make_sim_rig, enabled):
+    rig = make_sim_rig()
+    rig.controller.update(mode=5 if enabled else 4)
+    rig.command("start_sync")
+    rig.wait(lambda s: s["feedback_fresh"] and s["robot_mode"] == (5 if enabled else 4))
+    done = threading.Event()
+
+    def move_by_hand():
+        angle = 0.0
+        while not done.wait(0.001):
+            angle += 0.5
+            rig.controller.update(joints_deg=(angle, 0.0, 0.0, 0.0))
+
+    hand = threading.Thread(target=move_by_hand, daemon=True)
+    hand.start()
+    try:
+        rig.command("disable")
+        rig.wait(lambda s: not s["busy"] and (s["stop_unconfirmed"] or not s["locked"]), timeout=10)
+    finally:
+        done.set()
+        hand.join(1)
+    # Joints that move while the arm is enabled still lock control.
+    assert rig.snapshot()["stop_unconfirmed"] is enabled
+    assert rig.snapshot()["locked"] is enabled
+
+
 def test_pending_disconnect_keeps_feedback_until_old_motion_worker_drains(rig):
     state, feed, controls = rig
     connect(state)
@@ -768,7 +796,7 @@ def test_failed_disconnect_stops_pose_queries_and_preserves_feedback_and_safety_
     assert "unconfirmed" in state.snapshot()["message"]
     state.command({"action": "disable"}, "browser-b")
     wait_for(lambda: not state.snapshot()["busy"])
-    assert control.calls == ["stop", "disable", "stationary"]
+    assert control.calls == ["stop", "disable"]
     assert state.snapshot()["locked"]
     assert state.snapshot()["syncing"]
     assert len(controls) == 1
@@ -782,7 +810,8 @@ def test_confirmed_stop_suspends_pose_queries_until_disable_recovers(rig):
     control.read_pose = Mock(wraps=control.read_pose)
     connect(state)
     wait_for(lambda: control.read_pose.call_count > 0)
-    state.command({"action": "stop"}, "browser-a")
+    with state._lock:
+        state._request_stop(reason="Robot operation failed")
     wait_for(lambda: not state.snapshot()["busy"])
     queries_after_stop = control.read_pose.call_count
     time.sleep(0.2)
@@ -792,6 +821,19 @@ def test_confirmed_stop_suspends_pose_queries_until_disable_recovers(rig):
     state.command({"action": "disable"}, "browser-a")
     wait_for(lambda: not state.snapshot()["locked"])
     assert controls[-1].pose_entered.wait(1)
+
+
+def test_stop_of_an_idle_enabled_robot_confirms_without_the_lock(rig):
+    state, _, controls = rig
+    connect(state)
+    assert state.stop("orchestrator", wait_s=2)["stop"] == "confirmed"
+    assert "stop" in controls[0].calls
+    snapshot = state.snapshot()
+    assert not snapshot["locked"] and not snapshot["busy"]
+    assert snapshot["controller_id"] == "browser-a"
+    execute(state)
+    wait_for(lambda: any(call[0] == "linear" for call in controls[-1].calls))
+    assert controls[-1] is not controls[0]
 
 
 def test_failed_reconnect_does_not_claim_browser_lease(rig):
@@ -1032,10 +1074,12 @@ def test_contract_description_preserves_legacy_commands_and_parameters(rig):
         "execute",
         "vacuum",
         "keyboard",
+        "keys",
         "clear_alarm",
     }
     assert {name for name, spec in commands.items() if spec["any_client"]} == {"stop", "disable"}
     assert commands["keyboard"]["ui_only"] is True
+    assert commands["keys"]["ui_only"] is True
     target = commands["execute"]["params"]["properties"]["targets"]
     assert target["required"] == ["x", "y", "z", "r"]
     assert set(target["properties"]) == {"x", "y", "z", "r"}
@@ -1306,7 +1350,7 @@ def test_rejected_commands_while_disabled_at_rest_point_to_tcp_mode(make_sim_rig
     rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "disable")
     snapshot = rig.snapshot()
     assert TCP_HINT in snapshot["message"]
-    assert "sudo mg400ctl mode --switch-to-tcp" in snapshot["message"]
+    assert "sudo labctl mode --switch-to-tcp" in snapshot["message"]
     assert "physical emergency stop" not in snapshot["message"]
     # A rejected stop is never a confirmed stop.
     assert snapshot["locked"] and snapshot["stop_unconfirmed"]
@@ -1351,3 +1395,64 @@ def test_a_lock_is_a_warning_and_an_unlock_and_messages_are_info():
         ("info", "Control unlocked."),
         ("info", "Robot disable and rest are confirmed."),
     ]
+
+
+def test_feedback_reader_reconnects_and_recover_unlocks_without_a_restart(
+    make_sim_rig, monkeypatch
+):
+    monkeypatch.setattr(RobotPanelState, "RECONNECT_SECONDS", 0.05)
+    rig = make_sim_rig()
+    rig.connect()
+    original = rig._feed.read_latest
+    failures = []
+
+    def lost_once():
+        if not failures:
+            failures.append(1)
+            raise ConnectionError("Offline fixture feedback lost")
+        return original()
+
+    monkeypatch.setattr(rig._feed, "read_latest", lost_once)
+    # The lost connection latches an unconfirmed stop, even after feedback returns.
+    rig.wait(lambda s: s["stop_unconfirmed"] and s["locked"] and not s["busy"])
+    rig.wait(lambda s: s["feedback_fresh"] and s["recoverable"])
+    assert rig.snapshot()["syncing"]
+    assert not rig.state._feedback_failed
+    rig.command("clear_alarm")
+    rig.wait(lambda s: not s["busy"] and not s["locked"] and not s["stop_unconfirmed"])
+    snapshot = rig.snapshot()
+    assert snapshot["robot_mode"] == 4 and snapshot["feedback_fresh"]
+    # Later stops confirm on the reconnected feedback.
+    rig.command("stop")
+    rig.wait(lambda s: not s["busy"] and s["locked"])
+    assert not rig.snapshot()["stop_unconfirmed"]
+
+
+def test_contract_lease_expiry_disconnects_like_stop_sync(rig):
+    state, feed, controls = rig
+    feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+    state.acquire("agent-a")
+    wait_for(lambda: state.snapshot()["connected"])
+    with state._lock:
+        state._heartbeat -= 4
+    with pytest.raises(RuntimeError, match="Acquire"):
+        state.renew("agent-a")
+    wait_for(lambda: not state.snapshot()["syncing"])
+    snapshot = state.snapshot()
+    assert snapshot["lease"] == {"holder": None, "remaining_s": 0}
+    assert not snapshot["locked"]
+    assert controls[0].calls == ["disable"]
+
+
+def test_contract_lease_expiry_of_an_enabled_arm_stops_and_locks(rig):
+    state, feed, controls = rig
+    state.acquire("agent-a")
+    wait_for(lambda: state.snapshot()["connected"])
+    with state._lock:
+        state._heartbeat -= 4
+    # The watchdog expires the lease without a request.
+    wait_for(lambda: controls[0].stop_entered.is_set())
+    snapshot = state.snapshot()
+    assert snapshot["locked"] and snapshot["lease"]["holder"] is None
+    # Feedback stays until an explicit disable, as after stop_sync.
+    assert snapshot["syncing"]

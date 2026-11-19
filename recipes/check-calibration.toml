@@ -1,0 +1,12 @@
+name = "Calibration drift check"
+version = 1
+
+[params.camera]
+type = "integer"
+default = 1
+
+[[steps]]
+skill = "vision.check_calibration"
+params = { camera = "${camera}" }
+timeout_s = 60
+on_fail = "hold"

@@ -147,6 +147,15 @@ def write_register(controller, register, value):
     return confirmed
 
 
+def check_program_minutes(minutes):
+    """Raise ValueError when one ramp step exceeds the controller program time."""
+    if minutes > MAX_PROGRAM_TIME_MINUTES:
+        raise ValueError(
+            f"The requested ramp requires {minutes:.1f} minutes; "
+            f"the controller maximum is {MAX_PROGRAM_TIME_MINUTES:.1f}"
+        )
+
+
 class MFCFlowController:
     """RS-485 ASCII driver for the MFCW mass-flow controllers.
 
@@ -241,15 +250,18 @@ class MFCFlowController:
         packet = (payload + "\r").encode("ascii")
 
         with self._io_lock:
-            self.serial.reset_input_buffer()
             self.serial.reset_output_buffer()
             response = b""
             for _ in range(FLOW_RESPONSE_ATTEMPTS):
+                # Drop the tail of a late reply so it cannot read as the next reply.
+                self.serial.reset_input_buffer()
                 self.serial.write(packet)
                 self.serial.flush()
                 response = self.serial.read_until(b"\r")
                 if response.endswith(b"\r"):
                     break
+        if response and not response.endswith(b"\r"):
+            raise RuntimeError(f"MFC unit {unit_id} returned an incomplete response")
 
         try:
             body = response[:-1].decode("ascii")
@@ -995,11 +1007,7 @@ class Furnace(object):
         )
 
         duration_minutes = abs(target - starting_temperature) / ramp_rate
-        if duration_minutes > MAX_PROGRAM_TIME_MINUTES:
-            raise ValueError(
-                f"The requested ramp requires {duration_minutes:.1f} minutes; "
-                f"the controller maximum is {MAX_PROGRAM_TIME_MINUTES:.1f}"
-            )
+        check_program_minutes(duration_minutes)
         raw_t1 = max(1, round(duration_minutes * 10))
 
         # PAF.B=0 selects ramp mode and PAF.C=0 selects minute units. Preserve
@@ -1026,6 +1034,14 @@ class Furnace(object):
         self.pending_hold_target = target
         self.controller_program_step = 1
         return target
+
+    def check_ramp_time(self, temp, rate):
+        """Refuse a ramp longer than the program-time limit. Read only, write nothing."""
+        target = min(float(temp), self.config.max_c)
+        rate = min(float(rate), self.config.max_ramp)
+        _, _, scale = self.get_temperature_format()
+        start = read_register(self.controller, PV_REGISTER) / scale
+        check_program_minutes(abs(target - start) / rate)
 
     def get_program_step(self):
         """Read the controller's current internal program step number."""

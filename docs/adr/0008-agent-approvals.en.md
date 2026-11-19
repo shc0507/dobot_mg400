@@ -4,6 +4,8 @@
 
 ## Status
 
+Superseded: 2026-11-09. The gateway and the proposal flow are removed. Agents use the `labctl` CLI. See ADR 0010.
+
 Accepted: 2026-10-30. Approval policy added: 2026-11-02 (H-23).
 
 ## Context

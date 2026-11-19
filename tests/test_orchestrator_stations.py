@@ -67,7 +67,7 @@ def settings(workspace):
     }
 
 
-def test_workspace_requires_all_explicit_finite_ordered_settings(workspace):
+def test_workspace_settings_must_be_complete_finite_and_ordered(workspace):
     values = settings(workspace)
     assert Workspace.from_settings(values) == workspace
     for key in values:
@@ -79,6 +79,13 @@ def test_workspace_requires_all_explicit_finite_ordered_settings(workspace):
             Workspace.from_settings({k: v for k, v in values.items() if k != key})
     with pytest.raises(ValueError):
         Workspace.from_settings({**values, "MG400_ORCH_X_MIN_MM": "500"})
+
+
+def test_workspace_without_settings_uses_the_fixed_bounds():
+    from orchestrator.stations import DEFAULT_BOUNDS
+
+    assert Workspace.from_settings({}).bounds == DEFAULT_BOUNDS
+    assert Workspace.from_settings({"MG400_ORCH_X_MIN_MM": ""}).bounds == DEFAULT_BOUNDS
 
 
 @pytest.mark.parametrize(

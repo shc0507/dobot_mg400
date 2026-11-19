@@ -1,0 +1,11 @@
+name = "Tray slot state"
+version = 1
+
+[params.slot]
+type = "string"
+
+[[steps]]
+skill = "vision.slot_state"
+params = { slot = "${slot}" }
+timeout_s = 60
+on_fail = "hold"

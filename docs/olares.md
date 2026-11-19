@@ -24,16 +24,12 @@ Olares 直连机械臂的网口地址为 `192.168.1.10/24`，机械臂地址为 
 | 显微镜 | `8770` |
 | 视觉 | `8771` |
 | 实验室控制台和配方服务 | `8772` |
-| MCP 网关 | `8773` |
 | 实验室控制台控制套接字 | `8774` |
 | 摄像头视频流 | `1985` |
 
 安装前，把 `thermal`、`vision` 等可选服务加入 `MG400_OPTIONAL_SERVICES`。
 服务列表和视觉运行环境见[主机部署](deploy.md#服务清单)。
-所有者安装并启动视觉服务后，运行 `mg400ctl gpu`，以 UID `1000` 读取 GPU 内存。
-
-可选的 [MCP 网关](agent-gateway.md) 只监听回环地址，没有代理路由。
-远程 MCP 客户端须使用到回环接口的隧道，并携带 `MG400_GATEWAY_TOKEN` Bearer 凭据。
+所有者安装并启动视觉服务后，运行 `labctl gpu`，以 UID `1000` 读取 GPU 内存。
 
 ## 单端口代理
 
@@ -58,10 +54,10 @@ MG400_PROXY_PORT=8080
 | --- | --- |
 | `/lab/api/console/socket` | `127.0.0.1:8774`，控制台控制套接字（WebSocket） |
 | `/lab/` | `127.0.0.1:8772`，固定基础路径为 `/lab/` |
-| `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg`、`/camera/<view>.full.jpg`、`/camera/fps.json` | `127.0.0.1:1985`，仅移除 `/camera` |
+| `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg`、`/camera/<view>.full.jpg`、`/camera/microscope.png`、`/camera/fps.json` | `127.0.0.1:1985`，仅移除 `/camera` |
 
-`<view>` 为 `camera1` 到 `camera4`。`/camera/<view>.mp4` 的 `<view>` 还可以是 `microscope`。
-代理把根路径 `/` 重定向到实验室控制台 `/lab/`。参见[实验室控制台](dashboard.md#实验室控制台)。
+`<view>` 为 `camera1` 到 `camera4`。`/camera/<view>.mp4` 和 `/camera/<view>.mjpeg` 的 `<view>` 还可以是 `microscope`。
+代理用 `302` 把根路径 `/` 重定向到实验室控制台 `/lab/`，用 `308` 把 `/camera` 和 `/lab` 重定向到带末尾斜杠的路径。其他路径返回 `404`。参见[实验室控制台](dashboard.md#实验室控制台)。
 摄像头路由只转发视频流和单帧图像，供控制台的 Cameras 工作区使用。
 代理不转发机器人、位移台、热像仪、炉控、显微镜和视觉服务。
 控制台、命令行工具和配方运行器在 `127.0.0.1` 直接调用它们。
@@ -74,7 +70,7 @@ MG400_PROXY_PORT=8080
 /usr/local/lib/mg400/caddy validate --config /etc/mg400/Caddyfile --adapter caddyfile
 ```
 
-明确运行 `mg400ctl start proxy` 启动代理。
+明确运行 `labctl start proxy` 启动代理。
 在 VPN 规则中允许 TCP `8080`，或已配置的代理端口。
 打开 `http://100.64.0.1:8080/`。代理把它重定向到实验室控制台。
 后续更新可复用已安装的二进制文件，不必再次传入 `--caddy`。
@@ -82,7 +78,7 @@ MG400_PROXY_PORT=8080
 代理保留浏览器 `Host` 的端口，并用该值设置 `X-Forwarded-Host`。
 它替换请求中的转发地址标头，并移除 `Forwarded` 和 `X-Real-IP`。
 Caddy 原生反向代理转发 WebSocket 的 `Upgrade` 和 `Connection`，上游使用 HTTP/1.1。
-上游响应头和读取超时均为 `60` s。
+上游连接超时为 `2` s，响应头和读取超时均为 `60` s。
 代理不新增请求重试，并禁用管理 API、配置持久化和请求日志。
 此 HTTP 入口使用 VPN 连接，不启用公共 HTTPS。
 
@@ -147,7 +143,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 | 旧位置 | 内容 | 新位置 |
 | --- | --- | --- |
 | `/opt/mg400-web-control` | 网页面板代码 | `/opt/mg400`，`/etc/mg400/mg400.env` |
-| `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `mg400ctl terminal`、`mg400ctl mode` |
+| `$DOCS/mg400-terminal`、`$DOCS/mg400-tools` | 交互终端代码、启动脚本、模式切换工具 | `labctl mode` |
 | `$DOCS/mg400-data` | 连接锁、模式切换备份 | `/var/lib/mg400` |
 | `/opt/mg400-camera-preview` | go2rtc、采集配置和预览程序 | `/usr/local/lib/mg400`、`/etc/mg400` |
 
@@ -171,19 +167,19 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    grep -o '/dev/v4l/by-path/[^&]*' /opt/mg400-camera-preview/go2rtc.yaml | paste -sd, | sed 's/^/MG400_CAMERA_DEVICES=/' >> /etc/mg400/mg400.env
    ```
 
-4. 运行安装器，复用已有的 go2rtc：
+4. 按 [单端口代理](#单端口代理) 设置代理地址。安装器只在安装时把该地址写入 `Caddyfile`。
+5. 运行安装器，复用已有的 go2rtc，并指定 Caddy 2 程序：
 
    ```sh
-   /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc
+   /usr/bin/python3 /opt/mg400/deploy/install.py --go2rtc /opt/mg400-camera-preview/go2rtc --caddy /path/to/caddy
    ```
 
-5. 复制模式切换备份：
+6. 复制模式切换备份：
 
    ```sh
    test -d "$DOCS/mg400-data/work/control-mode" && cp -a "$DOCS/mg400-data/work/control-mode" /var/lib/mg400/work/ && chown -R 1000:1000 /var/lib/mg400/work/control-mode
    ```
 
-6. 按 [单端口代理](#单端口代理) 设置代理地址。
 7. 删除旧服务的附加配置和开机自启链接，再启动服务。
    第 1 步已备份这些文件：
 
@@ -192,8 +188,8 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    rm -f /etc/systemd/system/*.wants/mg400-*.service
    systemctl daemon-reload
    systemctl is-enabled mg400-web-panel mg400-stage-panel mg400-camera-preview
-   mg400ctl start web stage camera
-   mg400ctl status
+   labctl start web stage camera
+   labctl status
    ```
 
    `is-enabled` 对三项都显示 `static`，表示服务不会开机自启。
@@ -204,7 +200,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    - Motion 工作区的位移台卡片能连接 Arduino。
 
 旧目录保留到核对完成。
-要恢复旧布局，先运行 `mg400ctl stop all`，再把 `/root/mg400-old-units` 中的文件复制回 `/etc/systemd/system/` 并运行 `systemctl daemon-reload`。
+要恢复旧布局，先运行 `labctl stop all`，再把 `/root/mg400-old-units` 中的文件复制回 `/etc/systemd/system/` 并运行 `systemctl daemon-reload`。
 然后把 `start-terminal.sh.disabled` 改回原名，恢复旧的终端启动脚本。
 
 ## USB 设备布局
@@ -284,13 +280,13 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 Angetube Live Camera（`camera1`）支持 `3840x2160@30` MJPEG。
 
 列表为空时，普通流使用 `1280x720@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
-显式列表覆盖这些默认值，包括侧视流。
+显式列表覆盖这些默认值，包括侧视流。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
 以下 4 台摄像头的配置按上表接口顺序排列。
 `camera1` 使用 `3840x2160@30`。其他 3 台摄像头使用 `1280x720@30`。
 侧视流 `camera3` 的宽高比与 `3840x2160` 侧视参考图像相同。
 原版 `uvcvideo` 驱动让 AC410 在大于 `640x480` 的模式下占用最大的同步传输时隙。此时，每条共享 USB 2 链路只能容纳 1 路这样的流。
 [USB 带宽补丁](#usb-带宽补丁) 支持 4 路流同时配置为 `1280x720@30` 采集。须测量实际交付帧率。
-提高模式前，先用 `mg400ctl camera-check` 和内核日志检查带宽：
+提高模式前，先用 `labctl camera-check` 和内核日志检查带宽：
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0
@@ -313,10 +309,10 @@ MG400_MICROSCOPE_SIDE_STREAM=camera3
 其他宽度大于 640 的流码率上限为 4 Mbit/s，使用 NVENC 时为 3 Mbit/s。更小的流为 2 Mbit/s。
 H.264 编码器自动选择级别。该路由只接受查询参数 `codec=h265`。
 go2rtc 从 `http://127.0.0.1:8770/api/camera/microscope/mjpeg` 读取 `1296x968` 的显微镜预览，在 `/camera/microscope.mp4` 提供码率上限为 3 Mbit/s 的 H.264 预览。
-go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有画面时，`/camera/microscope.mp4` 返回 502，控制台改用中转的 MJPEG。
+go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有画面时，`/camera/microscope.mp4` 返回 502，控制台改用 `/camera/microscope.mjpeg`。预览服务从 go2rtc 读取该 MJPEG，并从显微镜服务转发 `/camera/microscope.png` 原尺寸静帧。
 `/camera/fps.json` 返回每路 MJPEG 流在最近 2 s 内发送给每个观看者的帧率。没有观看者的流为 `null`。控制台在摄像头状态中读取这些值。
 go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最后 1 个观看者离开后停止。
-ffmpeg 不探测输入帧率，每个源帧只发送 1 次，每 1 s 发送 1 个关键帧。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
+ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发送 1 次，每 1 s 发送 1 个关键帧。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
 安装器运行 ffmpeg 测试 `h264_nvenc`。测试通过时，H.264 预览用 NVIDIA GPU 编码，否则用 `libx264`。更换 GPU 或驱动后，重新运行安装器。
 使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。
 `camera1` 使用 `3840x2160@30` 时，视频保持原生 `3840x2160`，不缩放，码率上限为 6 Mbit/s。
@@ -343,23 +339,23 @@ ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`）。不估计时，ffmpe
 `camera1` 与热像仪和控制器共用原集线器的 USB 2 连接。
 `camera2`、`camera3` 和 `camera4` 共用第二个集线器的 USB 2 连接。
 多路大尺寸流可能超过共享连接的周期传输预算。
-同时使用真实设备前，必须按 H-21 在有人监督下检查带宽。
+同时使用真实设备前，在有人监督下打开所需画面以检查带宽。检查连续多张 JPEG 图像均能完整解码。
 托盘上约 30 mm 的 Micro QR 标签含 17 个模块，横向至少需要 70 像素。
 图像宽度为 1280 像素时，556 mm 的托盘视野约有 2.3 像素/mm。
-保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器，再运行 `mg400ctl restart camera vision microscope orch`。这些服务都读取摄像头模式。
+保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器，再运行 `labctl restart camera vision microscope orch`。这些服务都读取摄像头模式。未启用 `vision` 时，从命令中删除 `vision`。
 更换摄像头后，保留原校准文件。即使安装位置不变，也必须重新校准图像坐标映射。
 
 启动摄像头服务：
 
 ```sh
-mg400ctl start camera
+labctl start camera
 ```
 
 在实验室控制台的 Cameras 工作区查看画面。
-启用 `proxy` 服务时，视频流链接为 `http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`，`mg400ctl camera-url` 会列出这些链接。
+视频流链接使用代理地址：`http://<MG400_PROXY_BIND>:<MG400_PROXY_PORT>/camera/<view>.mjpeg`，`labctl camera-url` 会列出这些链接。
 关闭终端不会停止预览服务。
 停止预览服务时，摄像头采集服务也停止。
-启动失败时，运行 `mg400ctl logs camera`。
+启动失败时，运行 `labctl logs camera`。
 
 服务端只保留最新待处理帧，网络变慢时丢弃积压帧。
 服务端发送超时为 1.5 秒。H.264 预览的发送超时为 5 秒。
@@ -383,10 +379,10 @@ mg400ctl start camera
 2. 重启主机，或重新加载驱动：
 
    ```bash
-   sudo mg400ctl stop camera thermal
+   sudo labctl stop camera thermal
    sudo rmmod uvcvideo
    sudo modprobe uvcvideo
-   sudo mg400ctl start camera thermal
+   sudo labctl start camera thermal
    ```
 
 3. 确认 `cat /sys/module/uvcvideo/parameters/mjpeg_bpp` 输出 `200`。
@@ -400,7 +396,7 @@ mg400ctl start camera
 
 ### 摄像头故障
 
-画面异常时，先运行 `mg400ctl camera-check`。
+画面异常时，先运行 `labctl camera-check`。
 它按 USB 接口路径检查已配置的摄像头，再检查 2 个服务和应预加载的 go2rtc 流。
 它要求 `3840x2160@30` 的 `camera1` 连续预加载。
 对其他更大的流，它报告按需启动，不要求或启动连续预加载。
@@ -415,13 +411,13 @@ mg400ctl start camera
 `curl -s http://127.0.0.1:1984/api/preload`。
 确认输出包含所有宽度不超过 1280 且高度不超过 720 的已配置流。
 `camera1` 的模式为 `3840x2160@30` 时，也检查输出是否包含它。
-若应预加载的流缺失，运行 `mg400ctl restart camera`，等待 2 秒后再次查询。
+若应预加载的流缺失，运行 `labctl restart camera`，等待 2 秒后再次查询。
 采集服务启动时若设备缺失，预加载可能未建立。
 控制台的视频流会自动重连。已配置的 `camera<N>.jpg` 单帧接口在流按需启动时可能较慢。
 
-提高分辨率后，须按 H-21 同时检查所需画面，并验证连续多张 JPEG 能完整解码。
+提高分辨率后，须在有人监督下同时检查所需画面，并验证连续多张 JPEG 能完整解码。
 浏览器显示分辨率和帧率不能排除花屏或部分图像损坏。
-若出现这类问题，恢复 `640 × 480` 配置，再检查 USB 采集链路。
+若出现这类问题，把模式降到 `640x480@30`，再检查 USB 采集链路和 [USB 带宽补丁](#usb-带宽补丁)。
 
 每个集线器连接多台设备。不得通过复位共用上游集线器恢复摄像头。
 检查故障摄像头的端口和日志。改变设备连接前，遵守有人监督的硬件操作流程。

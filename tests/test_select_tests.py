@@ -43,8 +43,21 @@ def test_changed_test_file_runs_itself():
     assert "tests/test_vision_qr.py" in select(["tests/test_vision_qr.py"])
 
 
+def test_package_change_runs_tests_that_import_it(tmp_path):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_direct.py").write_text("from thermal_cam.camera import Camera\n")
+    (tests / "helper_sim.py").write_text("import thermal_cam\n")
+    (tests / "test_indirect.py").write_text("from helper_sim import run\n")
+    (tests / "test_other.py").write_text("import thermal_camera_extra\n")
+    assert select(["src/thermal_cam/camera.py"], root=tmp_path) == [
+        "tests/test_direct.py",
+        "tests/test_indirect.py",
+    ]
+
+
 def test_docs_only_change_runs_doc_checks():
-    assert select(["docs/vision.md", "README.en.md"]) == [
+    assert select(["docs/vision.md", "README.en.md", ".claude/skills/x/SKILL.md"]) == [
         "tests/test_doc_pairs.py",
         "tests/test_repo_files.py",
     ]

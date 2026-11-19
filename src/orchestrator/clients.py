@@ -1,10 +1,7 @@
 """Service adapters and leases. No endpoint is contacted during construction."""
 
 import copy
-import http.client
-import json
 import math
-import os
 import re
 import threading
 import time
@@ -12,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from labkit import ports
 from labkit.client import _HTTPS, ServiceClient
 from labkit.errors import ServiceError
 from mg400.client import RobotClient, RobotClientError
@@ -20,15 +18,10 @@ from .recipe import positive
 
 SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
 
-# Fixed loopback addresses of the lab services. A nonempty setting overrides one.
-SERVICE_URLS = {
-    "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
-    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
-    "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
-    "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
-    "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",
-    "MG400_ORCH_VISION_URL": "http://127.0.0.1:8771/",
-}
+# Seconds for one HTTP request to a lab service.
+TIMEOUT_S = 2
+# Fixed loopback addresses of the lab services. The host environment cannot change them.
+SERVICE_URLS = {f"MG400_ORCH_{name.upper()}_URL": ports.url(name) for name in SERVICES}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -81,10 +74,7 @@ class ServiceAdapter:
         return self._http.command(action, **params)
 
     def request(self, path, data=None):
-        """Send one Lab Console operator request with this identity. Never retried.
-
-        With data it is a POST. The runner and the recipes never call this.
-        """
+        """Send one request with this identity (a read without data). Never retried."""
         if path in {"api/turret-calibration/begin", "api/turret-calibration/record"}:
             # Fresh-frame capture can outlast a normal state read. Keep its
             # timeout separate so the lease heartbeat retains its own deadline.
@@ -98,8 +88,9 @@ class ServiceAdapter:
         """Read the contract event replay once; the robot service serves the same route."""
         return self._http.events(since)
 
-    def stop(self):
-        return self._http.stop(wait_s=min(1, self.timeout / 2))
+    def stop(self, **params):
+        """Stop the device, or 1 part of it with service stop params (furnace gas_channel)."""
+        return self._http.stop(wait_s=min(1, self.timeout / 2), **params)
 
     def recovery_stop(self, expected_instance):
         """Reconcile only after old work drains; generic services need a fresh stop."""
@@ -127,78 +118,12 @@ class ThermalAdapter(ServiceAdapter):
         return self._http.roi(name)
 
 
-class _GasStopClient(ServiceClient):
-    """Bound gas discovery and response bodies without changing other requests.
-
-    The body deadline is checked between bounded read1 calls. Connect, headers,
-    framing, and each blocking read retain the configured socket timeout; this
-    is not a hard deadline for the complete HTTP exchange.
-    """
-
-    _BODY_LIMIT = 256 * 1024
-
-    def _body(self, response):
-        deadline = time.monotonic() + self.timeout
-        chunks, size = [], 0
-        while True:
-            if time.monotonic() >= deadline:
-                raise ServiceError(0, "Gas-stop response body deadline exceeded.")
-            block = response.read1(min(64 * 1024, self._BODY_LIMIT - size + 1))
-            if time.monotonic() >= deadline:
-                raise ServiceError(0, "Gas-stop response body deadline exceeded.")
-            if not block:
-                return b"".join(chunks)
-            size += len(block)
-            if size > self._BODY_LIMIT:
-                raise ServiceError(502, "Gas-stop response exceeds 256 KiB.")
-            chunks.append(block)
-
-    def _request(self, path, data=None):
-        headers = {"Accept": "application/json"}
-        encoded = None
-        if data is not None:
-            encoded = json.dumps(data, allow_nan=False).encode("utf-8")
-            headers.update({"Content-Type": "application/json", "X-MG400-Client": self.client_id})
-        request = urllib.request.Request(self.base_url + path, data=encoded, headers=headers)
-        try:
-            with self._opener.open(request, timeout=self.timeout) as response:
-                payload = self._body(response)
-        except urllib.error.HTTPError as error:
-            try:
-                detail = json.loads(self._body(error)).get("error", error.reason)
-            except (ValueError, AttributeError, OSError, http.client.HTTPException, ServiceError):
-                detail = error.reason
-            finally:
-                error.close()
-            raise ServiceError(error.code, detail) from error
-        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
-            raise ServiceError(0, f"Service request failed: {error}") from error
-        try:
-            result = json.loads(payload)
-        except (ValueError, UnicodeError) as error:
-            raise ServiceError(502, "The service returned invalid JSON.") from error
-        if not isinstance(result, dict):
-            raise ServiceError(502, "The service response must be a JSON object.")
-        return result
-
-
-class FurnaceAdapter(ServiceAdapter):
-    def __init__(self, url, identity, *, timeout=2):
-        super().__init__(url, identity, timeout=timeout)
-        self._gas_http = _GasStopClient(url, identity, timeout=timeout)
-        self._gas_http._opener = self._http._opener
-
-    def gas_stop(self, channel):
-        """Stop one gas channel without acquiring a lease or requesting a full stop."""
-        if type(channel) is not int or not 0 <= channel <= 2:
-            raise ValueError("Gas channel must be an integer from 0 to 2.")
-        return self._gas_http._call("api/flow/gas/stop", {"channel_index": channel})
-
-
 class RobotAdapter(ServiceAdapter):
-    def __init__(self, url, identity, *, timeout=2):
+    def __init__(self, url, identity, *, timeout=2, tool_file=None):
         super().__init__(url, identity, timeout=timeout)
         self._robot = RobotClient(url, identity, timeout=timeout)
+        # A rehearsal robot names its own synthetic tool. None selects the host tool.
+        self.tool_file = tool_file
 
     def acquire(self):
         self._robot.connect()
@@ -288,9 +213,40 @@ class RobotAdapter(ServiceAdapter):
         self._robot.close()
 
 
+class Borrowed:
+    """A console-held adapter lent to one run. The console keeps the lease.
+
+    acquire and heartbeat only check ownership; release does nothing; close
+    returns the device to the console. Every other call goes to the adapter.
+    """
+
+    def __init__(self, adapter, on_close):
+        self._adapter, self._on_close = adapter, on_close
+        self._closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._adapter, name)
+
+    def acquire(self):
+        if not self._adapter.owned(self._adapter.state()):
+            raise RuntimeError("The lent device is no longer held by the console.")
+
+    def heartbeat(self):
+        if not self._adapter.owned(self._adapter.state()):
+            raise RuntimeError("The lent device is no longer held by the console.")
+
+    def release(self):
+        return None
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._on_close()
+
+
 def from_settings(settings=None, *, identity):
-    settings = os.environ if settings is None else settings
-    timeout = positive(float(settings.get("MG400_ORCH_TIMEOUT_S", "2")), "request timeout")
+    """Return adapters for the fixed loopback services, or for the URLs in settings."""
+    settings = SERVICE_URLS if settings is None else settings
     result = {}
     for name in SERVICES:
         prefix = f"MG400_ORCH_{name.upper()}"
@@ -299,9 +255,8 @@ def from_settings(settings=None, *, identity):
             adapter = {
                 "robot": RobotAdapter,
                 "thermal": ThermalAdapter,
-                "furnace": FurnaceAdapter,
             }.get(name, ServiceAdapter)
-            result[name] = adapter(url, identity, timeout=timeout)
+            result[name] = adapter(url, identity, timeout=TIMEOUT_S)
     return result
 
 

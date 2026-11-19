@@ -5,13 +5,13 @@
 [返回首页，选择操作入口](../README.md)
 
 本页说明真机控制的 TCP 协议和反馈判定。
-现有真机功能直接通过 TCP 接入，不提供通用抓放接口。
+机器人服务和交互终端直接通过 TCP 接入控制器。
+抓放步骤由 [配方编排](orchestrator.md) 的 `robot.pick`、`robot.transfer` 和 `vision.tray_transfer` 提供。
 日常操作请使用对应指南：
 
 - [机器人服务](control-panel.md)：Lab Console 运动工作区使用的真机控制服务。
-- [交互终端](terminal-control.md)：终端命令控制机械臂和吸盘。
 
-机器人服务和交互终端共用机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
+机器人服务的机器人地址配置，见 [配置文件](deploy.md#配置文件) 的 `MG400_ROBOT_HOST`。
 
 ## 直接 TCP 接口
 
@@ -24,12 +24,12 @@
 故障排查建议尝试 V1.6.0.0+。
 最终以本机固件对应的官方手册为准。
 控制前，进入 TCP/IP 二次开发模式。
-可在 DobotStudio Pro 中选择，也可使用下文脚本。
+可在 DobotStudio Pro 中选择，也可使用下文命令。
 不要混用 6 轴机器人 SDK。
 
 ### 从服务器切换 TCP/IP 模式
 
-[`scripts/mg400_control_mode.py`](../scripts/mg400_control_mode.py) 默认只读。
+`labctl mode` 默认只读。
 它通过 SMB（网络文件共享）读取模式，通过 HTTP 读取运行状态。
 `configured_mode` 为保存的配置，不能单独证明模式已生效。
 `tp` 表示在线模式，`tcp` 表示 TCP/IP 模式。
@@ -38,18 +38,20 @@
 在按 [主机部署](deploy.md) 安装的主机上，以 root 身份读取模式：
 
 ```sh
-mg400ctl mode
+labctl mode
 ```
 
-`mg400ctl` 以 UID 1000 运行脚本，与机器人服务共用 [面板连接锁](deploy.md#面板连接锁)。
-脚本使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
-直接以 root 运行脚本时，脚本拒绝取得连接锁，不连接控制器。
+`labctl` 以 UID 1000 运行工具。读取模式不取连接锁。`--switch-to-tcp` 取得与机器人服务共用的 [面板连接锁](deploy.md#面板连接锁)。
+工具使用 `/opt/mg400/.venv` 中的 `pysmb`，不必另装依赖。
+锁目录固定为 `/var/lib/mg400/locks`，属主为 UID 1000。
 
 切换前，下使能机械臂并停止运行中的程序。
 关闭其他控制客户端，释放[面板连接锁](deploy.md#面板连接锁)。
-然后运行 `mg400ctl mode --switch-to-tcp`。
+然后运行 `labctl mode --switch-to-tcp`。
 脚本读取 `MG400_ROBOT_HOST`，未设置时读取 `config/robot.toml`。
-切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止及无报警状态。
+切换仅接受原模式 `tp` 或 `tcp`，并核对下使能、程序停止、无报警，且 `isCollision` 和 `isSafeSuspend` 为 0。
+若保存的模式已是 `tcp` 且 `RobotMode()` 返回 `4`，脚本不写入，并报告 `changed: false`。
+若 `RobotMode()` 返回 `-1`，脚本再次写入配置。
 脚本先备份配置，再写入 `project` 共享内的 `/settings/function/remoteControl.json`。
 随后向 `22000` 端口的 `/settings/function/remoteControl` POST 同一配置。
 目标字段为 `{"mode":"tcp","name":""}`，其他字段保持原值。
@@ -57,7 +59,7 @@ mg400ctl mode
 
 成功要求 HTTP 返回 `status: true`、配置读回一致且 `RobotMode()` 成功返回 `4`。
 脚本不使能、不清除报警，也不发送运动命令。
-`mg400ctl` 把备份存入 `/var/lib/mg400/work/control-mode/`。
+`labctl` 把备份存入 `/var/lib/mg400/work/control-mode/`。
 写入后发生错误时，控制器状态可能已改变。
 脚本会报告备份路径，不会自动重发切换请求或回滚。
 先核对状态和报错，再决定是否重新执行。
@@ -202,7 +204,7 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 1. 核对固件、机器人 IP、供电和真空源 I/O 接线。只读测试位姿与报警。
 2. 设定工具 TCP 和负载。用示教器记录真实起点、抓取点、放置点与路径。
 3. 在受控工作区低速逐步验证单次动作，再验证固定抓放。
-4. 接入 agent 前，补充路径可达性、碰撞检查和独立于模型的设备保护。
+4. 让智能体控制机械臂前，补充路径可达性、碰撞检查和独立于模型的设备保护。
 
 ## 可选 ROS 2 路线
 
@@ -242,6 +244,6 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
 实现 ROS 2 适配器前，先确定部署环境。
 本项目要求 Python 3.12+。
 `rclpy` 必须与所安装 ROS 发行版的 Python 环境兼容。
-不能假定当前 macOS 的 venv 可直接使用。
+不能假定项目的 venv 可直接使用。
 先在上游支持的 Ubuntu / Humble 环境验证驱动。
 再确定 agent 同进程运行还是通过独立桥接进程通信。

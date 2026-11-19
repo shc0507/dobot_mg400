@@ -60,7 +60,6 @@ def test_every_service_runs_as_the_panel_user_from_fixed_paths(name):
         "mg400-vision.service",
         "mg400-microscope.service",
         "mg400-orchestrator.service",
-        "mg400-gateway.service",
     ],
 )
 def test_services_with_settings_read_the_shared_environment_file(name):
@@ -75,24 +74,14 @@ def test_no_unit_names_a_service_token():
         assert "TOKEN" not in (UNITS / name).read_text(), name
 
 
-def test_fixed_defaults_come_from_the_units():
+def test_fixed_defaults_come_from_the_code():
     panel = unit_sections("mg400-web-panel.service")["Service"]
-    assert panel["Environment"] == ["MG400_CONTROLLER_LOCK_DIR=/var/lib/mg400/locks"]
+    assert "Environment" not in panel
     assert "--base-path" not in command("mg400-web-panel.service")
     orchestrator = unit_sections("mg400-orchestrator.service")["Service"]
-    assert orchestrator["Environment"] == [
-        "MG400_ORCH_BASE_PATH=/lab/",
-        *(
-            f"MG400_ORCH_{name}_URL=http://127.0.0.1:{port}/{path}"
-            for name, port, path in (
-                ("ROBOT", 8766, ""),
-                ("STAGE", 8767, "contract/"),
-                ("THERMAL", 8768, ""),
-                ("FURNACE", 8769, ""),
-                ("MICROSCOPE", 8770, ""),
-                ("VISION", 8771, ""),
-            )
-        ),
+    assert "Environment" not in orchestrator
+    assert orchestrator["ExecStart"] == [
+        "/opt/mg400/.venv/bin/python -m orchestrator serve --base-path /lab/"
     ]
 
 
@@ -127,7 +116,6 @@ def test_hardware_services_get_only_their_device_groups():
         "mg400-microscope.service": ["dialout video"],
         "mg400-orchestrator.service": [],
         "mg400-proxy.service": [],
-        "mg400-gateway.service": [],
     }
 
 
@@ -143,7 +131,6 @@ def test_vision_uses_the_isolated_environment():
         "optional": True,
         "venv": ".venv-vision",
         "groups": ["vision", "vision-gpu"],
-        "port": 8771,
         "assets": ["vision-weights"],
     }
 
@@ -164,7 +151,6 @@ def test_microscope_uses_verified_sdk_path_and_is_installed_by_default():
         "optional": False,
         "venv": ".venv",
         "groups": ["microscope"],
-        "port": 8770,
         "assets": [],
     }
 
@@ -193,16 +179,11 @@ def test_orchestrator_drains_shutdown():
         "-m",
         "orchestrator",
         "serve",
+        "--base-path",
+        "/lab/",
     ]
     assert service["RestartPreventExitStatus"] == ["2"]
     assert service["TimeoutStopSec"] == ["infinity"]
-
-
-def test_gateway_has_no_device_groups():
-    service = unit_sections("mg400-gateway.service")["Service"]
-    assert command("mg400-gateway.service") == ["/opt/mg400/.venv/bin/python", "-m", "gateway"]
-    assert service["RestartPreventExitStatus"] == ["2"]
-    assert not service.get("SupplementaryGroups")
 
 
 def test_camera_capture_reads_the_generated_configuration():
@@ -229,7 +210,7 @@ def test_service_files_and_code_hold_no_host_values():
     ]
     for path in code:
         suffixes = {".service", ".path", ".py", ".html", ".js", ".css", ".svg", ".example"}
-        if path.suffix in suffixes or path.name == "mg400ctl":
+        if path.suffix in suffixes or path.name == "labctl":
             text = path.read_text()
             assert [value for value in HOST_VALUES if value in text] == [], path
 
@@ -272,6 +253,5 @@ def test_thermal_service_uses_primary_group_usb_access():
         "optional": True,
         "venv": ".venv",
         "groups": ["thermal"],
-        "port": 8768,
         "assets": [],
     }

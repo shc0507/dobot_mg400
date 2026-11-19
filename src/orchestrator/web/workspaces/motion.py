@@ -3,9 +3,8 @@
 The page sends every device command through the console relay. This module
 adds these routes under ``<base>/api/console/ws/motion``:
 
-- ``GET state`` reads the robot and stage state once per request with a fresh
-  read identity and keeps only the fields the page shows. It never acquires,
-  renews or releases a lease.
+- ``GET state`` reads the cached robot and stage state and keeps only the
+  fields the page shows. It never acquires, renews or releases a lease.
 - ``POST jog`` and ``POST move`` send one robot ``execute`` target once through
   ``service.console.command``. The robot service applies its speed cap and refuses
   a move while the controller reports an alarm. A jog adds one step on one axis
@@ -14,16 +13,9 @@ adds these routes under ``<base>/api/console/ws/motion``:
   once on the robot session of the page that holds robot control. The page arms
   and disarms the keyboard with the described ``keyboard`` command.
 
-The stage operator routes use described commands when available. Otherwise,
-they use the legacy operator routes. Each change needs this page's stage
-control and is sent once:
-
-- ``GET stage/ports`` lists the serial ports; ``POST stage/connect``
-  ``{"port"}`` connects the Arduino on one listed port.
-- ``GET stage/reference/<motor>`` checks the camera reference marker of one
-  axis and returns the marked frame and the pixel offset.
-- ``POST stage/teach`` ``{"motor", "confirmed": true}`` saves the current marker
-  position as the reference of that axis.
+``GET stage/reference/<motor>`` checks the camera reference marker of one axis
+and returns the marked frame and the pixel offset. Stage ``connect`` and
+``teach_reference`` are described commands that the page sends through the relay.
 
 Hold-to-move uses the described ``hold`` command family on this page's stage
 session. The console, not the page, sends the stage commands:
@@ -39,7 +31,6 @@ session. The console, not the page, sends the stage commands:
 
 import math
 import re
-import uuid
 
 from flask import jsonify, request
 
@@ -119,6 +110,7 @@ STAGE_FIELDS = (
     "locked",
     "fault",
     "feedback_fresh",
+    "ports",
     "microstep",
     "microstep_modes",
     "limits",
@@ -203,7 +195,7 @@ def _holder(service, device, value, page):
 def _robot(state):
     result = _pick(state, ROBOT_FIELDS)
     result["last_command"] = _last_command(state.get("last_command"))
-    return result, state.get("controller_id")
+    return result
 
 
 def _stage(state):
@@ -225,37 +217,26 @@ def _stage(state):
     result["at_poses"] = [
         name for name, value in at.items() if isinstance(value, dict) and value.get("matched")
     ]
-    lease = state.get("lease")
-    return result, lease.get("holder") if isinstance(lease, dict) else None
+    return result
 
 
 READERS = {"robot": _robot, "stage": _stage}
 
 
-def read(service, device, page):
-    """Read one device once. Any failure becomes an unavailable row, never an error."""
-    if not service.dashboard_configured(device):
+def read(service, device, page, *, fresh=False):
+    """Read one device from the device cache. A missing state becomes an unavailable row."""
+    entry = service.devices.fresh(device) if fresh else service.devices.wait(device)
+    if entry["phase"] in {"unconfigured", "offline"}:
         # Demo: Take control starts the owned demo service on first use.
-        return {"available": False, "reason": "offline" if service.demo else "unconfigured"}
-    adapter = None
+        return {"available": False, "reason": "offline" if service.demo else entry["phase"]}
+    if entry["phase"] != "ready":
+        return {"available": False, "reason": "unreachable"}
     try:
-        adapter = service.console_client(device, f"console-motion-{uuid.uuid4().hex}")
-        if adapter is None:
-            return {"available": False, "reason": "offline"}
-        state = adapter.state()
-        if not isinstance(state, dict):
-            raise ValueError("Invalid state.")
-        result, holder = READERS[device](state)
+        result = READERS[device](entry["state"])
     except Exception:
         return {"available": False, "reason": "unreachable"}
-    finally:
-        if adapter is not None:
-            try:
-                adapter.close()
-            except Exception:
-                pass
     result["available"] = True
-    result["holder"] = _holder(service, device, holder, page)
+    result["holder"] = _holder(service, device, entry["holder"], page)
     return result
 
 
@@ -307,41 +288,7 @@ def _hold_id(value):
     return value
 
 
-def _operator(service, page, path, data, *, action, params=None):
-    commands = service.console.describe("stage")["commands"]
-    if action in commands:
-        result = service.console.command("stage", page, action, data if params is None else params)
-    else:
-        result = service.console.operator("stage", page, path, data)
-    result.pop("result", None)
-    status = {"accepted": 200, "refused": 409, "unknown": 502}[result["outcome"]]
-    return jsonify(result), status
-
-
 def register(blueprint, service):
-    @blueprint.get("/stage/ports")
-    def stage_ports():
-        state = service.console.read("stage", "api/state")
-        ports = (
-            state["ports"]
-            if "ports" in state
-            else service.console.read("stage", "api/ports").get("ports")
-        )
-        rows = [
-            {"device": item["device"], "description": str(item.get("description", ""))[:120]}
-            for item in (ports if isinstance(ports, list) else [])
-            if isinstance(item, dict) and isinstance(item.get("device"), str)
-        ]
-        return jsonify(ports=rows)
-
-    @blueprint.post("/stage/connect")
-    def stage_connect():
-        page = _page()
-        data = _body({"port"})
-        if not isinstance(data["port"], str) or not data["port"]:
-            raise ValueError("Select a serial port.")
-        return _operator(service, page, "api/connect", {"port": data["port"]}, action="connect")
-
     @blueprint.get("/stage/reference/<motor>")
     def stage_reference(motor):
         view = service.console.read("stage", f"api/motors/{_motor(motor)}/reference")
@@ -354,22 +301,6 @@ def register(blueprint, service):
             image=image,
             offset_px=offset if isinstance(offset, list) else None,
             distance_px=distance if type(distance) in {int, float} else None,
-        )
-
-    @blueprint.post("/stage/teach")
-    def stage_teach():
-        page = _page()
-        data = _body({"motor", "confirmed"})
-        if data["confirmed"] is not True:
-            raise ValueError("Confirm the action inside the page.")
-        motor = _motor(data["motor"])
-        return _operator(
-            service,
-            page,
-            f"api/motors/{motor}/teach_reference",
-            {"confirm": True},
-            action="teach_reference",
-            params={"motor": motor, "confirm": True},
         )
 
     @blueprint.post("/stage/hold")
@@ -428,7 +359,8 @@ def register(blueprint, service):
         if type(step) not in {int, float} or step not in JOG_STEPS:
             raise ValueError("The jog step must be 0.5, 2 or 10.")
         speed = _speed(data)
-        robot = read(service, "robot", page)
+        # The target is relative to the actual pose, so a cached pose is too old.
+        robot = read(service, "robot", page, fresh=True)
         actual = robot.get("actual") if robot.get("available") else None
         pose = actual[:4] if isinstance(actual, list) and len(actual) >= 4 else None
         if pose is None or any(type(value) not in {int, float} for value in pose):

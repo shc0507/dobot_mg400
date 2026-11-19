@@ -16,11 +16,11 @@
 
 ## 连接
 
-访问 [Olares](http://100.64.0.1:8080/) 时，保持 LarePass VPN 连接。打开 **Motion**，获取位移台控制权，选择 Arduino 串口，再选 **Connect**。**Refresh ports** 读取服务主机的串口。
+访问 [Olares](http://100.64.0.1:8080/) 时，保持 LarePass VPN 连接。打开 **Motion**，获取位移台控制权，选择 Arduino 串口，再选 **Connect**。串口列表随服务状态自动更新。
 
 服务启动时不打开串口。打开串口可能重置 Uno。连接过程等待约 2 s，再读取状态和能力。只有 1 个进程能占用串口。连接前关闭 Arduino 串口监视器。服务不会自动重连或重试移动。
 
-上传固件前，停止运动并运行 `mg400ctl stop stage`。按固件指南上传。重新接回 Arduino 后，检查 `/dev/serial/by-id/`，启动服务，再从控制台连接。
+上传固件前，停止运动并运行 `labctl stop stage`。按固件指南上传。重新接回 Arduino 后，检查 `/dev/serial/by-id/`，启动服务，再从控制台连接。
 
 在连接 Arduino 的电脑上运行：
 
@@ -29,7 +29,7 @@ uv sync
 uv run stage-panel
 ```
 
-等效模块命令为 `uv run python -m stage_controller`。Linux 服务用户必须能读写串口，通常通过 `dialout` 组授权。将控制台的 `MG400_ORCH_STAGE_URL` 设为 `http://127.0.0.1:8767/contract/`。
+等效模块命令为 `uv run python -m stage_controller`。Linux 服务用户必须能读写串口，通常通过 `dialout` 组授权。控制台使用 `http://127.0.0.1:8767/`。
 
 无硬件时，运行 `uv run stage-panel --demo` 并连接 `DEMO`。本地控制台预览方法见[仪表盘](dashboard.md#离线运行)。演示模式不打开串口硬件，不能验证实际精度或机械间隙。
 
@@ -72,17 +72,16 @@ uv run stage-panel
 
 ## 服务配置
 
-systemd 单元为 `mg400-stage-panel.service`，`mg400ctl` 名称为 `stage`。服务以用户/组 `1000` 运行，并加入 `dialout` 组。默认监听 `127.0.0.1:8767`，契约路由位于 `/contract/` 下。
+systemd 单元为 `mg400-stage-panel.service`，`labctl` 名称为 `stage`。服务以用户/组 `1000` 运行，并加入 `dialout` 组。默认监听 `127.0.0.1:8767`，正式路由位于 `/api/` 下。`/contract/api/` 别名使用同一组处理器和租约。
 
 ### 配置项
 
 | 环境变量 | 参数 | 默认值 | 用途 |
 | --- | --- | --- | --- |
 | `MG400_STAGE_SERIAL` | `--serial` | 未设置 | 只提供此 Arduino 串口 |
-| `MG400_STAGE_BIND` | `--bind` | `127.0.0.1` | 监听地址 |
-| `MG400_STAGE_PORT` | `--port` | `8767` | 监听端口 |
-| `MG400_STAGE_BASE_PATH` | `--base-path` | `/` | URL 前缀 |
 | `MG400_STAGE_CONFIG` | `--config` | `/var/lib/mg400/stage/stage.toml` | 兼容保留的旧几何文件，不用于编码器移动 |
+
+参数 `--bind`、`--port` 和 `--base-path` 可覆盖本地监听默认值。Olares 客户端使用固定的位移台端点。
 
 参数覆盖环境变量，空环境变量视为未设置。Olares 读取 `/etc/mg400/mg400.env`。建议 Arduino 使用稳定的 `/dev/serial/by-id/` 路径。已设串口不存在时，列表为空。演示模式忽略已设串口路径。
 
@@ -90,13 +89,13 @@ systemd 单元为 `mg400-stage-panel.service`，`mg400ctl` 名称为 `stage`。�
 
 ```sh
 ls -lL /dev/serial/by-id/
-mg400ctl start stage
-mg400ctl status
-mg400ctl logs stage
-mg400ctl stop stage
+labctl start stage
+labctl status
+labctl logs stage
+labctl stop stage
 ```
 
-修改配置或安装更新代码后，运行 `mg400ctl restart stage`，再从控制台连接。该单元不随系统启动。异常退出后，服务在 3 s 后重启。退出状态 2 表示启动配置错误，此时不重启。
+修改配置或安装更新代码后，运行 `labctl restart stage`，再从控制台连接。该单元不随系统启动。异常退出后，服务在 3 s 后重启。退出状态 2 表示启动配置错误，此时不重启。
 
 ## 接口
 
@@ -106,7 +105,7 @@ mg400ctl stop stage
 
 | 现象 | 处理 |
 | --- | --- |
-| 无串口 | 检查 USB 供电、数据线和 `/dev/serial/by-id/`。核对 `MG400_STAGE_SERIAL`，再选 **Refresh ports**。 |
+| 无串口 | 检查 USB 供电、数据线和 `/dev/serial/by-id/`。核对 `MG400_STAGE_SERIAL`，等待串口列表更新。 |
 | 权限不足 | 检查 `dialout` 权限。本地组成员变化后，重新登录。 |
 | 串口被占用 | 关闭占用同一 Arduino 的其他位移台服务和串口监视器。 |
 | 已连接但不能移动 | 检查编码器固件能力、固定 1/8 模式、帧龄、编码器状态、开关和冷却时间。 |

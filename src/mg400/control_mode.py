@@ -214,3 +214,7 @@ def main(argv=None):
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

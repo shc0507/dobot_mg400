@@ -247,3 +247,28 @@ def test_store_refuses_database_with_another_owner(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "lstat", lstat)
     with pytest.raises(ValueError, match="ownership"):
         RunStore(directory)
+
+
+def test_store_migrates_device_events_and_drops_gateway_calls(tmp_path):
+    folder = tmp_path / "runs"
+    folder.mkdir(mode=0o750)
+    database = sqlite3.connect(folder / "runs.db")
+    database.executescript("""
+        CREATE TABLE gateway_calls (id INTEGER PRIMARY KEY);
+        CREATE TABLE device_events (
+            id INTEGER PRIMARY KEY, device TEXT NOT NULL, seq INTEGER NOT NULL,
+            ts REAL, level TEXT NOT NULL, message TEXT NOT NULL, UNIQUE(device, seq, ts)
+        );
+        INSERT INTO device_events(device,seq,ts,level,message) VALUES('stage',1,1.0,'info','Old');
+    """)
+    database.close()
+    (folder / "runs.db").chmod(0o600)
+    with RunStore(folder) as store:
+        store.add_device_events([("microscope", 1, 2.0, "info", "New", {"action": "focus_move"})])
+        rows = store.device_events()
+        assert [(row["message"], row["fields"]) for row in rows] == [
+            ("New", {"action": "focus_move"}),
+            ("Old", {}),
+        ]
+        tables = {row[0] for row in store._db.execute("SELECT name FROM sqlite_master")}
+        assert "gateway_calls" not in tables

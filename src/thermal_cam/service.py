@@ -21,7 +21,7 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.lease import Lease, validate_client
 
-from .camera import P1Camera
+from .camera import P1Camera, diagnose
 from .roi import DEFAULT_ROI_PATH, load_regions
 
 MAX_FRAME_AGE_S = 3
@@ -171,6 +171,7 @@ class CameraService:
         self._frames = 0
         self._fps = 0.0
         self._camera_stats = {}
+        self._diagnostics = None
         self._command_serial = 0
         self._last_command = None
 
@@ -262,6 +263,7 @@ class CameraService:
             self._frame = None
             self._state, self._error = "connecting", None
             self._device, self._camera_stats = {}, {}
+            self._diagnostics = None
             self._fps = 0.0
             self._event("info", "Camera connection requested.")
             self._thread = threading.Thread(target=self._run, name="p1-acquisition", daemon=True)
@@ -299,6 +301,7 @@ class CameraService:
                 "fps": round(self._fps, 1),
                 "frame_age_s": age,
                 "camera_stats": dict(self._camera_stats),
+                "diagnostics": self._diagnostics,
             }
 
     def latest(self):
@@ -420,7 +423,10 @@ class CameraService:
                     self._state = "streaming"
                     self._camera_stats = camera.stats()
         except Exception as exc:
+            # A demo has no USB device to inspect.
+            diagnostics = diagnose() if self.source == "camera" else None
             with self._lock:
+                self._diagnostics = diagnostics
                 self._error = f"{type(exc).__name__}: {exc}"
                 self._state = "error"
                 self._frame = None

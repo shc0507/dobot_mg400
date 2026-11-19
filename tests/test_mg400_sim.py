@@ -125,7 +125,7 @@ def test_real_panel_sequence_over_loopback(loopback_host):
                 command("stop_sync")
                 wait_for(lambda: not state.snapshot()["syncing"], timeout=8)
                 assert not state.snapshot()["locked"]
-                assert state.snapshot()["message"] == "Robot disable and rest are confirmed."
+                assert state.snapshot()["message"] == "Robot disable is confirmed."
                 assert not state.snapshot()["stop_unconfirmed"]
                 assert simulator.controller.sample.mode == 4
         finally:

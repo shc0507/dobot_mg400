@@ -142,7 +142,9 @@ def is_active(name):
 
 def ready(*, camera=False):
     name = "camera preview" if camera else "test Console"
-    url = "http://127.0.0.1:1985/fps.json" if camera else URL + "api/console/ws/twin/state"
+    url = (
+        "http://127.0.0.1:1985/fps.json" if camera else URL + "api/console/ws/position-finder/state"
+    )
     deadline = time.monotonic() + 15
     while True:
         try:
@@ -418,7 +420,7 @@ def local(check):
         cleanup = shlex.join(["rm", "-f", remote_archive, remote_helper])
         command += "; twin_result=$?; " + cleanup + '; exit "$twin_result"'
         subprocess.run(["ssh", *options, host, command], check=True)
-    print(URL + "#twin")
+    print(URL + "#motion")
 
 
 def main():

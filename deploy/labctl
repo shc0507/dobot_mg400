@@ -1,8 +1,8 @@
 #!/usr/bin/python3
-"""Control host services and recipes with mg400ctl or labctl.
+"""Control host services and recipes with labctl.
 
 Administrative commands require root. Recipe commands run as UID/GID 1000.
-terminal and mode run as the service user (UID 1000) with the settings from
+mode runs as the service user (UID 1000) with the settings from
 /etc/mg400/mg400.env, so they share the robot connection lock with the panels.
 """
 
@@ -10,7 +10,6 @@ import argparse
 import contextlib
 import grp
 import http.client
-import ipaddress
 import json
 import os
 import pwd
@@ -22,12 +21,10 @@ import sys
 import tarfile
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import assets  # noqa: E402
 from install import (  # noqa: E402
-    FIXED_SETTINGS,
     SERVICE_GID,
     SERVICE_UID,
     Host,
@@ -38,9 +35,10 @@ from install import (  # noqa: E402
     parse_settings,
     unique_json_object,
 )
+from labkit import ports  # noqa: E402
 
-CAMERA_PORT = 1985
-PRELOAD = "http://127.0.0.1:1984/api/preload"
+CAMERA_PORT = ports.PORTS["camera"]
+PRELOAD = ports.url("go2rtc", "api/preload")
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 BACKUP_OWNER = (0, 0)
 CALIBRATION_OWNER = (SERVICE_UID, SERVICE_GID)
@@ -49,42 +47,31 @@ CALIBRATION_MAX_ENTRIES = 20000
 CALIBRATION_MAX_FILE_BYTES = 128 * 1024 * 1024
 CALIBRATION_MAX_BYTES = 2 * 1024 * 1024 * 1024
 CALIBRATION_MAX_DEPTH = 32
-ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs", "station"}
+# Agent groups print 1 JSON object to the caller's stdout. They run without --pty,
+# which merges stderr into stdout and writes \r\n.
+AGENT_GROUPS = {
+    *("robot", "stage", "furnace", "microscope", "vision", "thermal", "camera", "all"),
+    *("do", "chip"),
+}
+ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs", "station", *AGENT_GROUPS}
 STATION_ACTIONS = {"save", "list", "show", "rm", "retool"}
 
 
 def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, clock=time.monotonic):
     """Read bounded live status directly, without proxies or redirects.
 
+    The furnace service listens on its fixed loopback address (labkit/ports.py).
     This is an advisory check before systemctl, not a lease held across shutdown.
     A new sequence can start after this read. Operators must coordinate shutdown.
     Socket operations time out after 2 seconds. Body reads also check a 2-second
     deadline between chunks. Header and transfer-framing reads use socket timeouts,
     not a total deadline.
     """
-    bind = settings.get("MG400_FURNACE_BIND") or "127.0.0.1"
-    if bind != "localhost":
-        address = ipaddress.ip_address(bind)
-        if "%" in bind:
-            raise ValueError("Scoped furnace bind addresses are not supported by the guard")
-        bind = str(address)
-    bind = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(bind, bind)
-    port = int(settings.get("MG400_FURNACE_PORT") or 8769)
-    if not 1 <= port <= 65535:
-        raise ValueError("Invalid furnace port")
-    base = settings.get("MG400_FURNACE_BASE_PATH") or "/"
-    if (
-        not base.startswith("/")
-        or any(part in base for part in ("?", "#", "//"))
-        or ".." in base.split("/")
-        or any(ord(character) < 32 or ord(character) == 127 for character in base)
-    ):
-        raise ValueError("Invalid furnace base path")
-    connection = connection_factory(bind, port, timeout=2)
+    connection = connection_factory(ports.HOST, ports.PORTS["furnace"], timeout=2)
     try:
         connection.request(
             "GET",
-            quote(base.rstrip("/"), safe="/-._~") + "/api/state",
+            "/api/state",
             headers={"Accept": "application/json"},
         )
         response = connection.getresponse()
@@ -162,7 +149,6 @@ def orchestrator(host, argv, execvpe):
         environment = {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             **{key: os.environ[key] for key in PASSED if key in os.environ},
-            **(FIXED_SETTINGS if argv[0] != "rehearse" else {}),
             **{key: value for key, value in settings.items() if key.startswith("MG400_") and value},
         }
         program = str(host.code.absolute() / ".venv/bin/python")
@@ -173,9 +159,10 @@ def orchestrator(host, argv, execvpe):
             runuser = shutil.which("runuser", path="/usr/sbin:/usr/bin:/sbin:/bin")
             if runuser is None:
                 raise FileNotFoundError("runuser is missing. Install util-linux.")
+            pty = [] if argv[0] in AGENT_GROUPS else ["--pty"]
             execvpe(
                 runuser,
-                ["runuser", "--pty", "-u", user, "-g", group, "--", *command],
+                ["runuser", *pty, "-u", user, "-g", group, "--", *command],
                 environment,
             )
         else:
@@ -453,16 +440,11 @@ def _calibration_source(source, relative, expected):
 def import_microscope_calibration(host, source, settings, out):
     """Copy allowlisted host data only; never open a device or overwrite a target."""
     source = Path(source).absolute()
-    configured = Path(
-        settings.get("MG400_MICROSCOPE_CALIBRATION_DIR") or "/var/lib/mg400/calibration/microscope"
-    )
+    configured = Path("/var/lib/mg400/calibration/microscope")
     if (
-        not configured.is_absolute()
-        or configured == Path(configured.anchor)
-        or ".." in configured.parts
-        or ".." in source.parts
+        ".." in source.parts
         or source == Path(source.anchor)
-        or any(ord(char) < 32 or ord(char) == 127 for char in str(source) + str(configured))
+        or any(ord(char) < 32 or ord(char) == 127 for char in str(source))
     ):
         raise ValueError("Calibration paths must be absolute data paths without parent traversal")
     destination = host.root.absolute() / configured.relative_to(configured.anchor)
@@ -642,7 +624,7 @@ def camera_check(host, devices, run, out, services, *, preloaded=None):
     for unit in services["camera"]:
         print(f"service  {unit:<30} {states.get(unit, 'unknown')}", file=out)
     if not all(states.get(unit, "").startswith("active ") for unit in services["camera"]):
-        print("Start the cameras: mg400ctl start camera", file=out)
+        print("Start the cameras: labctl start camera", file=out)
         return 1
     names = [f"camera{number}" for number in range(1, len(devices) + 1)]
     expected = names if preloaded is None else list(preloaded)
@@ -658,7 +640,7 @@ def camera_check(host, devices, run, out, services, *, preloaded=None):
     absent = [name for name in expected if name not in preload.stdout]
     if absent:
         print(f"streams  not loaded: {' '.join(absent)}", file=out)
-        print("Run mg400ctl restart camera, wait 2 seconds, then check again.", file=out)
+        print("Run labctl restart camera, wait 2 seconds, then check again.", file=out)
         return 1
     print("streams  configured preloads loaded", file=out)
     return 0
@@ -734,14 +716,20 @@ def main(
     logs.add_argument("name", choices=list(services))
     logs.add_argument("-n", "--lines", type=int, default=50)
     logs.add_argument("-f", "--follow", action="store_true")
-    commands.add_parser("terminal", help="Open the interactive robot terminal")
     mode = commands.add_parser("mode", help="Read the controller mode, or switch it to TCP")
     mode.add_argument("--switch-to-tcp", action="store_true")
+    commands.add_parser(
+        "calibrate",
+        add_help=False,
+        help="Run the supervised microscope calibration tool (stop microscope first)",
+    )
     commands.add_parser("camera-url", help="Print the camera stream links")
     commands.add_parser("camera-check", help="Check the camera devices, services and streams")
-    args = parser.parse_args(argv)
+    # The calibration tool parses its own options, --help included.
+    passed = argv[1:] if argv[:1] == ["calibrate"] else []
+    args = parser.parse_args(argv[:1] if passed else argv)
     if os.geteuid() != 0:
-        print("Run mg400ctl as root, for example: sudo mg400ctl status", file=sys.stderr)
+        print("Run labctl as root, for example: sudo labctl status", file=sys.stderr)
         return 1
     if args.command == "backup":
         try:
@@ -788,7 +776,7 @@ def main(
         if args.command in ("camera-check", "camera-url"):
             camera_config = camera_configuration(settings)
             devices = list(camera_config.devices)
-        if args.command in ("terminal", "mode"):
+        if args.command in ("mode", "calibrate"):
             pwd.getpwuid(SERVICE_UID)
             grp.getgrgid(SERVICE_GID)
     except FileNotFoundError:
@@ -856,16 +844,17 @@ def main(
         for unit in services[args.name]:
             command += ["-u", unit]
         return run(command + (["-f"] if args.follow else [])).returncode
-    # Robot programs share the panel's robot connection lock.
-    robot_settings = {"MG400_CONTROLLER_LOCK_DIR": FIXED_SETTINGS["MG400_CONTROLLER_LOCK_DIR"]}
-    robot_settings.update(settings)
-    if args.command == "terminal":
-        program = host.code / ".venv/bin/mg400-robot"
-        as_service_user(host, robot_settings, [str(program)], execvpe)
+    # Robot programs share the panel's robot connection lock through its fixed default.
+    robot_settings = dict(settings)
+    python = str(host.code / ".venv/bin/python")
+    if args.command == "calibrate":
+        command = [python, "-m", "microscope.calibrate", *passed]
+        as_service_user(host, settings, command, execvpe)
     elif args.command == "mode":
         command = [
-            str(host.code / ".venv/bin/python"),
-            str(host.code / "scripts/mg400_control_mode.py"),
+            python,
+            "-m",
+            "mg400.control_mode",
             "--backup-dir",
             str(host.data / "work/control-mode"),
         ]
@@ -877,15 +866,18 @@ def main(
         if "proxy" in enabled:
             # The preview listens on loopback. Off the host, only the proxy reaches it.
             bind = settings.get("MG400_PROXY_BIND") or "127.0.0.1"
-            port = int(settings.get("MG400_PROXY_PORT") or registry["proxy"]["port"])
+            port = int(settings.get("MG400_PROXY_PORT") or ports.PORTS["proxy"])
             bind = f"[{bind}]" if ":" in bind else bind
             base = f"http://{bind}:{port}/camera/"
         else:
             base = f"http://127.0.0.1:{CAMERA_PORT}/"
         if not devices:
             print("Cameras are off: MG400_CAMERA_DEVICES is empty.", file=out)
-        for number in range(1, len(devices) + 1):
-            print(f"{base}camera{number}.mjpeg", file=out)
+        # The preview does not relay a side stream above 1280x720; the microscope owns it.
+        side = settings.get("MG400_MICROSCOPE_SIDE_STREAM", "").strip()
+        for stream in camera_config.streams:
+            if stream != side or stream in camera_config.preloaded:
+                print(f"{base}{stream}.mjpeg", file=out)
     return 0
 
 

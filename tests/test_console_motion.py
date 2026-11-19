@@ -7,11 +7,9 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from flask import Blueprint, Flask, jsonify
 from test_console import Device
 
 from labkit.errors import ServiceError
-from labkit.events import EventLog
 from orchestrator.app import DemoResources, OrchestratorService, create_app
 from orchestrator.web import console as console_module
 from orchestrator.web.workspaces import discover, motion
@@ -60,6 +58,9 @@ def motion_state(rig, page="console-page-a"):
 
 
 class FakeAdapter:
+    def describe(self):
+        return {}
+
     def __init__(self, state, holder):
         self._state, self._holder = state, holder
 
@@ -165,83 +166,66 @@ def test_unreachable_device_is_reported_without_an_error(fake, monkeypatch):
 
 
 @pytest.fixture
-def contract_rig():
+def contract_rig(tmp_path):
     stage = Device("stage")
-    service = SimpleNamespace(
+
+    def factory(required, identity):
+        return {name: stage.adapter(identity) for name in required if name == "stage"}
+
+    service = OrchestratorService(
         settings={"MG400_CONSOLE_COMMIT": "abc1234"},
-        events=EventLog(),
-        dashboard=SimpleNamespace(text=lambda value: value),
-        dashboard_configured=lambda name: name == "stage",
-        console_client=lambda name, identity: stage.adapter(identity),
-    )
-    service.console = console_module.Console(service, clock=Clock())
-    app = Flask(__name__)
-    blueprint = Blueprint("motion", __name__)
-    motion.register(blueprint, service)
-    app.register_blueprint(blueprint, url_prefix="/lab/api/console/ws/motion")
-    app.register_error_handler(
-        ServiceError, lambda error: (jsonify(error=error.message), error.status)
-    )
+        recipes_dir=tmp_path,
+        demo=True,
+        client_factory=factory,
+        clock=Clock(),
+    ).start(background=False)
+    app = create_app(service, base_path="/lab")
     yield SimpleNamespace(service=service, client=app.test_client(), devices={"stage": stage})
-    service.console.close()
+    service.close()
 
 
-@pytest.mark.parametrize("state_ports", ["legacy", [], None, [{"device": "COM3"}, "bad"]])
-def test_stage_port_listing_supports_state_and_legacy_routes(contract_rig, state_ports):
-    stage = contract_rig.devices["stage"]
-    stage.replies["api/state"] = {} if state_ports == "legacy" else {"ports": state_ports}
-    stage.replies["api/ports"] = {"ports": [{"device": "COM4", "description": "Arduino"}]}
-    response = contract_rig.client.get("/lab/api/console/ws/motion/stage/ports")
-    assert response.status_code == 200
-    expected = (
-        [{"device": "COM4", "description": "Arduino"}]
-        if state_ports == "legacy"
-        else [{"device": "COM3", "description": ""}]
-        if state_ports
-        else []
-    )
-    assert response.json == {"ports": expected}
-    requests = [(call[2], call[3]) for call in stage.calls if call[0] == "request"]
-    assert requests == [("api/state", None)] + (
-        [("api/ports", None)] if state_ports == "legacy" else []
-    )
-    assert stage.holder is None
-
-
-@pytest.mark.parametrize("described", [False, True])
 @pytest.mark.parametrize(
-    "route,body,action,params,path,data",
-    [
-        ("connect", {"port": "COM3"}, "connect", {"port": "COM3"}, "api/connect", {"port": "COM3"}),
-        (
-            "teach",
-            {"motor": "insert", "confirmed": True},
-            "teach_reference",
-            {"motor": "insert", "confirm": True},
-            "api/motors/insert/teach_reference",
-            {"confirm": True},
-        ),
-    ],
+    "ports", [[], [{"device": "COM3", "description": "Arduino"}], [{"device": "COM4"}]]
 )
-def test_stage_operator_selects_the_advertised_api_and_keeps_control(
-    contract_rig, described, route, body, action, params, path, data
-):
+def test_stage_port_listing_uses_cached_state_without_control_or_legacy_reads(contract_rig, ports):
     stage = contract_rig.devices["stage"]
-    if described:
-        stage.commands[action] = {"params": {"type": "object"}, "any_client": False}
-    target = "ws/motion/stage/" + route
-    assert post(contract_rig, target, body).status_code == 409
-    contract_rig.service.console.take("stage", "console-page-a")
-    assert post(contract_rig, target, body, page="other-page").status_code == 409
-    response = post(contract_rig, target, body)
+    stage.state["ports"] = ports
+    contract_rig.service.devices.fresh("stage")
+    response = contract_rig.client.get("/lab/api/console/ws/motion/state")
     assert response.status_code == 200
-    assert response.json == {"outcome": "accepted", "command_id": "c-1" if described else "op-1"}
+    assert response.json["stage"]["ports"] == ports
+    assert not [call for call in stage.calls if call[0] in {"request", "command", "acquire"}]
+    assert stage.holder is None
+    assert contract_rig.client.get("/lab/api/console/ws/motion/stage/ports").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "action,params",
+    [("connect", {"port": "COM3"}), ("calibrate", {"motor": "insert", "speed": 0.25})],
+)
+def test_stage_operator_uses_the_described_relay_and_keeps_control(contract_rig, action, params):
+    stage = contract_rig.devices["stage"]
+    stage.commands[action] = {"params": {"type": "object"}, "any_client": False}
+    body = {"action": action, "params": params}
+    assert post(contract_rig, "command/stage", body).status_code == 409
+    contract_rig.service.console.take("stage", "console-page-a")
+    assert post(contract_rig, "command/stage", body, page="other-page").status_code == 409
+    response = post(contract_rig, "command/stage", body)
+    assert response.status_code == 202
+    assert response.json == {"outcome": "accepted", "command_id": "c-1"}
     writes = [call for call in stage.calls if call[0] in {"command", "request"}]
-    assert writes == [
-        ("command", stage.holder, action, params)
-        if described
-        else ("request", stage.holder, path, data)
-    ]
+    assert writes == [("command", stage.holder, action, params)]
+
+
+def test_undescribed_stage_operator_does_not_fall_back_to_a_legacy_route(contract_rig):
+    stage = contract_rig.devices["stage"]
+    contract_rig.service.console.take("stage", "console-page-a")
+    response = post(
+        contract_rig, "command/stage", {"action": "connect", "params": {"port": "COM3"}}
+    )
+    assert response.status_code == 400
+    assert not [call for call in stage.calls if call[0] in {"command", "request"}]
+    assert post(contract_rig, "ws/motion/stage/connect", {"port": "COM3"}).status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -254,7 +238,9 @@ def test_stage_contract_command_failure_does_not_retry_legacy_route(
     stage.commands["connect"] = {"params": {"type": "object"}, "any_client": False}
     contract_rig.service.console.take("stage", "console-page-a")
     stage.fail["command"] = ServiceError(error_status, "Connection failed")
-    response = post(contract_rig, "ws/motion/stage/connect", {"port": "COM3"})
+    response = post(
+        contract_rig, "command/stage", {"action": "connect", "params": {"port": "COM3"}}
+    )
     assert response.status_code == http_status and response.json["outcome"] == outcome
     writes = [call for call in stage.calls if call[0] in {"command", "request"}]
     assert writes == [("command", stage.holder, "connect", {"port": "COM3"})]
@@ -310,6 +296,7 @@ def take(rig, device, page="console-page-a"):
 
 def robot_ready(rig):
     def ready():
+        rig.service.devices.fresh("robot")
         robot = motion_state(rig)["robot"]
         return robot if robot.get("feedback_fresh") and robot.get("actual")[0] is not None else None
 
@@ -326,6 +313,7 @@ def settled(rig):
     """Wait for an idle arm with a known pose."""
 
     def ready():
+        rig.service.devices.fresh("robot")
         robot = motion_state(rig)["robot"]
         return robot if robot["actual"][0] is not None and not robot["busy"] else None
 
@@ -335,6 +323,7 @@ def settled(rig):
 def test_take_and_release_control_of_both_devices(sim):
     for device in ("robot", "stage"):
         assert take(sim, device)["mine"] is True
+        sim.service.devices.fresh(device)
         assert motion_state(sim)[device]["holder"] == "mine"
         assert motion_state(sim, page="console-page-b")[device]["holder"] == "console"
         # Another page cannot take it over.

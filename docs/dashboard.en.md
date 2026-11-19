@@ -11,7 +11,7 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 The console is the only operator web page.
 
 - Row 1 of the header shows the console name, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Hover over the console name to see the deployed commit. The controlled devices show only while this page holds 1 or more devices. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
-- The workspaces are **Overview**, **Motion**, **Cameras**, **Furnace**, **Sample Transfer** and **Position Finder (legacy)**. The legacy workspace is last and starts disabled. Sample Transfer uses live encoder rotations and saved named positions.
+- The workspaces are **Overview**, **Motion**, **Cameras**, **Furnace**, **Sample Transfer**, **Twin** and **Position Finder (legacy)**. The legacy workspace is last and starts disabled. Sample Transfer uses live encoder rotations and saved named positions.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - Select **Dark mode** or **Light mode** beside the language switch to change the dashboard appearance. Light mode is the default. The browser saves the choice for this Console address.
 - The status strip shows 1 chip for each service: a dot and a text. The **Runs** chip shows only while a run exists. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
@@ -19,7 +19,7 @@ The console is the only operator web page.
 - The stop result band below the header shows the last stop of the header or the **Safety** card, from any page or client. See [stop controls](#stop-controls).
 - In a window wider than 720 px, the header, the status strip, the stop result band and the notice stay at the top of the window when you scroll.
 - A service that is not configured shows Not configured on every workspace.
-- Chinese text uses a font that the console serves itself, so it also shows offline.
+- Chinese text uses the existing bundled font or a system fallback. Prioritize English labels. Do not rebuild fonts only for translated text.
 - A confirmation in the page takes the keyboard focus. Esc or **Cancel** closes it and sends nothing.
 - The console checks no token, `Host`, or `Origin`. The VPN is the access boundary. See the [single-port proxy](olares.en.md#single-port-proxy) for remote access.
 
@@ -33,6 +33,8 @@ The console is the only operator web page.
 - The console releases the lease when no heartbeat arrives for 3 seconds, or when the page closes. If a renewal fails, the control ends and the console does not request it again.
 - Before the console releases the robot, it disables the arm. This applies to **Release**, **Release all**, a page close and a missing heartbeat. The disable also stops motion. The robot service then stays unlocked.
 - **Release all** releases only the console's own leases.
+- Agent pages: `labctl` uses the page identity `agent-<session>`. The holder on the **Control** card is `agent-<session>-<12 hex>`. The console renews an agent page's leases every 1 second. It releases them after 10 minutes without a request from that page. Any request from the page counts. While a `labctl do` run borrows a device, the page cannot command or release it, and the idle timeout does not apply.
+- `GET /lab/api/console/state/<device>` returns the full state of 1 device and its console holder. It needs no control.
 
 ### Command relay
 
@@ -45,10 +47,11 @@ The workspaces send manual commands through the console. The console forwards ea
 ### Overview workspace
 
 - **Getting started**, above **Control**, explains device status, camera views, control ownership, workspaces and stop controls.
+- **Control** follows **Getting started**. It has 1 row for each device with **Take control** or **Release**, and **Release all**. See [Control](#control).
 - **Run** shows the current run and its steps. The card shows only while a run exists. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service. Only a warning or an error shows its level. A successful vision inference is not an event.
+- The orchestrator keeps the events and the device state changes in `/var/lib/mg400/runs/runs.db` for 30 days. They stay after a service restart. A device whose values change gets at most 1 state row each 10 s. `api/console/history` and `labctl all history` read the state rows.
 - **Safety** gives **Stop heat and gas** and **Stop all gas**. **STOP ALL MOTION** is in the header. Each button acts on 1 press. The stop result band shows the results.
-- **Agent proposals** shows the number of waiting proposals. The card shows only while 1 or more proposals wait. See [agent proposals](#agent-proposals).
 
 ### Motion workspace
 
@@ -82,7 +85,7 @@ Robot arm:
 Stage:
 
 - The header has the state, **Take control** and **Stop stage**. Stop needs no control. A demo stage shows DEMO.
-- If the Arduino is disconnected, select a serial port and **Connect**. **Refresh ports** reads the list again.
+- If the Arduino is disconnected, select a listed serial port and **Connect**. The list updates automatically from service state. Each port shows its description and device name.
 - Positions use measured shaft rotations. Speeds use rotations/s. All 3 axes use fixed 1/8 stepping. Each motor reports its maximum speed. The default speed is 0.25 rotations/s.
 - Hold a direction button to move. Release it to stop. Bottom (Y) uses Up/Down, Top (X) uses Left/Right, and Insert uses In/Out. The controller maps `ccw` to Up, Right and In. These directions increase the coordinate. It maps `cw` to Down, Left and Out.
 - **Keys** retains I/K for Bottom Up/Down, J/L for Top Right/Left, and U/O for Insert In/Out. A hold moves 1 axis at a time. Loss of focus or control, a hidden tab, or leaving Motion releases the hold.
@@ -106,9 +109,9 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 - Stage (`camera1`) uses H.264 to preserve its native display dimensions. If the browser supports HEVC, other views first request `/camera/<view>.mp4?codec=h265`. If H.265 does not start to play, the page uses H.264.
 - If the browser or the host cannot play H.264, camera1 to camera4 load MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Wall and rail views get at most 3 frames a second, and the large view at most 6.
 - **Snapshot** on Stage (`camera1`) downloads a native `3840x2160` JPEG from `/camera/camera1.full.jpg?size=3840x2160`. It reads the continuous stream without restarting go2rtc or interrupting other views. A running microscope job does not block this matching-size request. Other cameras download `4000x3000` from `/camera/<view>.full.jpg`. These mode changes temporarily pause other camera streams and restore them afterward. Only 1 still runs at a time. With a configured microscope side camera, a microscope job blocks mode changes.
-- The console relays the thermal frame, the microscope MJPEG fallback stream and the microscope **Snapshot**. If the microscope view cannot play H.264, it loads the relayed MJPEG. The microscope **Snapshot** downloads the Toupcam frame as a lossless PNG at full size, `2592x1944`. It needs no control.
+- The console relays the thermal frame. If the microscope view cannot play H.264, it uses `/camera/microscope.mjpeg`. Its **Snapshot** downloads a lossless `2592x1944` PNG from `/camera/microscope.png`. It needs no control.
 - While a microscope job runs, **Snapshot** on camera3 returns `409`, because an objective switch reads the side stream.
-- The microscope relay sends only the newest complete frame. Wall and rail views get at most 10 frames a second, and the large view at most 30. It opens at most 2 microscope streams.
+- The microscope proxy sends only the newest complete frame. Wall and rail views get at most 10 frames a second, and the large view at most 30.
 - Browser previews stop when you leave the workspace, hide the browser tab or close the page. Preloaded camera capture continues.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.
 - The thermal view shows its maximum and mean temperatures. The colour bar and the markers show the minimum and the center. **Settings** on the thermal view opens the thermal settings beside it: the units, the palette, an auto or fixed colour scale, and Freeze view. These settings change only the display. The settings also have the crucible region, the shutter calibration and the export of CSV, Raw + JSON and PNG. Esc, **Close** or a press outside the settings closes them.
@@ -117,7 +120,7 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 - **Draw region** closes the settings. Drag the `crucible` region on the thermal view. A bar on the view shows the bounds, **Save region** and **Cancel**. **Save region** is available only when the thermal service lists `set_region` in `api/describe`, and it needs a confirmation in the page. Otherwise, put the bounds in `rois.toml`.
 - Set the camera devices on the host as described in [Cameras](olares.en.md#cameras).
 
-### Digital Twin workspace
+### Position Finder (legacy) workspace
 
 **Position Finder (legacy)** is the last workspace tab. It starts disabled. Use its activation toggle to open **Monitor** and **Calibration**. Turning it off stops sampling and preview requests and releases temporary image data. Saved calibration profiles remain on disk. Enabling it does not connect Motion or Sample Transfer to its measurements.
 
@@ -181,6 +184,7 @@ Every device command goes through the console relay. Use **Take control** for th
 - **Close** stops 1 gas channel through `ws/process/gas-stop`. It sets the flow to 0 and closes the valve, and needs no control. The page shows the result: confirmed, not confirmed or unknown.
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
 - The microscope card shows 1 large preview. The **Microscope** and **Side camera** switch in the preview selects the Toupcam view or the camera3 side view. Only the shown view streams. The preview uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
+- Each objective button shows the objective name that the service describes, for example 10x. Without a name, it shows the objective ID.
 - The objective buttons, nudges, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
 - The objective buttons and focus controls are below the preview. Focus controls include the focus bar, **−**, **+**, **Autofocus** (local), **Full autofocus** and **Set focus zero**. The jog pulses appear between **−** and **+**.
 - **Lens calibration** is beside the objective buttons. Use it to choose a saved complete profile. The 5x, 10x, 20x and 50x buttons use that profile. The selection persists after a service restart.
@@ -206,7 +210,7 @@ The saved profile list offers **Select**, **Download** and **Delete**. Both **Se
 
 Alignment uses recorded image coordinates. Keep Camera3 fixed. After moving or rotating Camera3, or changing its focus or zoom, record all 4 objectives again.
 
-A complete profile contains captures for all 4 objectives. Recorded focus is informational and does not affect profile completeness or selection. Unknown focus stays unknown instead of becoming `0`. The interface shows clearance and known recorded positions in full steps. The current focus zero must be known before automatic movement. The focus axis must reach the configured clearance position before the turret turns.
+A complete profile contains captures for all 4 objectives. Recorded focus is informational and does not affect profile completeness or selection. Unknown focus stays unknown instead of becoming `0`. The interface shows clearance and known recorded positions in `MICRO 4` pulses. The current focus zero must be known before automatic movement. The focus axis must reach the configured clearance position before the turret turns.
 
 The interface shows when focus is not zeroed or the profile cannot support automatic switching. It shows an error when the selected profile is invalid.
 
@@ -232,6 +236,18 @@ Schema versions `1` and `2` retain their millimetre coordinates and source metad
 
 **STOP** and **STOP ALL MOTION** need no control lease. Leaving the workspace or hiding the page requests a stop for motion started by that page.
 
+### Twin workspace
+
+The Twin workspace shows a 3D bench model with live robot, microscope turret and furnace state. It polls 4 times per second while open. It sends no commands and takes no control. Encoder stage readings use rotations, but stage geometry remains uncalibrated.
+
+- The page loads three.js r128 from `cdn.jsdelivr.net`. The browser must have internet access for this workspace.
+- The model is the `twin-model` asset at `/var/lib/mg400/twin/twin.glb`. To install it, run `install.py --fetch-assets` (see [External assets](deploy.en.md#external-assets)). To build a new model, run `build.py -- --console <path>` in the twin authoring folder, outside the repository. The model shows the bench as in the first bench video. Joint value 0 is that state.
+- Robot J1 to J4 come from the robot joints. When the robot feedback is stale, the robot is see-through. During an alarm, the robot is red.
+- Encoder stage coordinates have no calibrated mapping to the model. Stage geometry remains see-through. Do not apply the old pulse-to-millimetre mapping to rotations. A future mapping must define each axis's millimetres per rotation, direction and model-zero offset.
+- While the stage moves, the stage and the insert axis are blue.
+- The turret turns 72 degrees for each objective from objective 1. The turn direction is not checked. The focus does not move in the model.
+- Above 50 °C the furnace glows. The glow is full at 1000 °C. A tag above the furnace shows PV.
+
 ### Run offline
 
 For a local dashboard preview on Windows or Linux, run this command from the repository root:
@@ -240,7 +256,7 @@ For a local dashboard preview on Windows or Linux, run this command from the rep
 uv run --no-default-groups --group vision --group stage python scripts/console_preview.py
 ```
 
-Open `http://127.0.0.1:8790/lab/#motion`. The preview uses the real dashboard assets and requires no VPN or Olares connection. Open `#twin` and use the activation toggle to inspect the legacy monitor and calibration with synthetic camera images.
+Open `http://127.0.0.1:8790/lab/#motion`. The preview uses the real dashboard assets and requires no VPN or Olares connection. Open `#position-finder` and use the activation toggle to inspect the legacy monitor and calibration with synthetic camera images.
 
 Open `http://127.0.0.1:8790/lab/#process` to preview turret calibration. Camera3 uses a synthetic `1280 × 720` image. **Start calibration**, objective capture and profile operations use a local simulator. They require no physical microscope control. Profiles persist under `work/console-preview/calibration/microscope/turret_profiles/`.
 
@@ -289,10 +305,6 @@ If a result is unknown, check the device and follow its recovery procedure befor
 
 The console has no controls yet to hold, abort, or recover a run. Use the run routes of the [recipe service](orchestrator.en.md#http-service).
 
-## Agent proposals
-
-The console has no controls yet to approve agent proposals. The Overview shows only the number of waiting proposals. See the [gateway policy](agent-gateway.en.md#approval-policy) for supported steps and limits.
-
 ## Chip passport
 
 Open `/chip` under the configured service prefix, or select **Chip passport** in the console header.
@@ -322,5 +334,5 @@ Artifact requests use an opaque record ID and the exact chip identifier. They do
 Only checked private regular files can be read. Symlinks, hard links, unsafe permissions, and changed paths or files cause refusal.
 The read limit is 16 MiB per artifact. A refused read does not delete or rewrite the saved record.
 The page previews PNG, JPEG, GIF, and WebP files identified by their bytes.
-It fetches these files with authorization and uses temporary browser blob URLs for previews.
+It fetches these files without credentials and uses temporary browser blob URLs for previews.
 Other file types are available only as downloads. The browser never receives the stored filesystem path.

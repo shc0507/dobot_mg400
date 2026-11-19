@@ -1,4 +1,4 @@
-"""Microscope contract routes, camera previews and the confirmed operator focus zero.
+"""Microscope contract routes, camera previews and turret calibration profiles.
 
 The service owns both lease classifications and every device operation. Creating
 this app does not start the service, connect devices, or infer operator authority
@@ -16,7 +16,7 @@ from labkit.lease import validate_client
 
 
 def create_app(service, *, base_path="/"):
-    """Expose the shared contract plus the separate, confirmed operator action."""
+    """Expose the shared contract, camera reads and turret calibration actions."""
     blueprint = contract_blueprint(service, base_path=base_path, lease=service.lease)
     prefix = base_path.rstrip("/")
     app = Flask(__name__, static_folder=None)
@@ -178,31 +178,6 @@ def create_app(service, *, base_path="/"):
             release()
             raise
         return response
-
-    @app.post(prefix + "/api/manual/<operation>")
-    def manual_lease(operation):
-        if body():
-            raise ValueError("Manual lease requests take an empty object.")
-        client = request.headers["X-MG400-Client"]
-        if operation == "heartbeat":
-            value = service.manual_heartbeat(client)
-        elif operation == "renew":
-            value = service.manual_heartbeat(client, renew_only=True)
-        elif operation == "release":
-            value = service.manual_release(client)
-        else:
-            raise ValueError("Unknown manual lease operation.")
-        return jsonify(lease=value)
-
-    @app.post(prefix + "/api/manual/set_focus_zero")
-    def set_focus_zero():
-        args = body()
-        if set(args) != {"confirm"} or args["confirm"] is not True:
-            raise ValueError("Focus zero requires confirm=true from the operator.")
-        command_id = service.manual_command(
-            "set_focus_zero", args, request.headers["X-MG400-Client"]
-        )
-        return jsonify(command_id=command_id, state=state()), 202
 
     @app.get(prefix + "/api/turret-calibration")
     def turret_calibration_state():

@@ -50,8 +50,10 @@ def test_disconnected_endpoints_and_input_validation():
         assert state.json()["state"] == "disconnected"
         assert state.json()["connected"] is False
         assert state.headers["cache-control"] == "no-store"
-        assert client.get("/api/frame").status_code == 503
+        assert_error(client.get("/api/frame"), 503)
         assert_error(command(client, SHUTTER), 409)
+        stop = {"wait_s": 0, "gas_channel": 0}
+        assert_error(client.post("/api/stop", json=stop, headers={"X-MG400-Client": "a"}), 400)
         assert client.get("/api/state").json()["last_command"] is None
 
 
@@ -193,7 +195,7 @@ def test_removed_routes_return_not_found(method, path, base_path):
         create_app(service=service, auto_connect=False, base_path=base_path),
         base_url="http://lab.example:8080",
     ) as client:
-        assert client.request(method, prefix + path, json={}).status_code == 404
+        assert_error(client.request(method, prefix + path, json={}), 404)
         assert service.status()["state"] == "disconnected"
 
 

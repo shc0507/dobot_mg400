@@ -56,10 +56,10 @@ class Device:
             "start_sync": {"params": {"type": "object"}, "any_client": False},
         }
 
-    def event(self, level, message, ts):
+    def event(self, level, message, ts, **fields):
         self.seq += 1
         self.events.append(
-            {"seq": self.seq, "ts_unix": ts, "level": level, "message": message, "fields": {}}
+            {"seq": self.seq, "ts_unix": ts, "level": level, "message": message, "fields": fields}
         )
 
     def _maybe_fail(self, call):
@@ -277,6 +277,7 @@ def test_state_reports_frame_data_without_secrets(rig):
         "process",
         "sample-transfer",
         "twin",
+        "position-finder",
     ]
     assert "readiness" not in body
     assert PRIVATE not in response.get_data(as_text=True)
@@ -448,6 +449,38 @@ def test_page_close_and_release_all_release_only_console_leases(rig):
     assert rig.devices["robot"].holder == "robot-panel"
 
 
+def test_release_all_keeps_leases_lent_to_a_run(rig):
+    holder = post(rig, "control/stage/take").get_json()["control"]["holder"]
+    lent = rig.service.console.lend("console-page-a", ["stage"])
+    assert post(rig, "release-all").get_json()["results"] == {}
+    assert post(rig, "release-page").get_json()["results"] == {}
+    assert rig.devices["stage"].holder == holder
+    lent["stage"].close()
+    assert post(rig, "release-all").get_json()["results"] == {"stage": "released"}
+
+
+def test_close_releases_lent_leases_after_the_run_drains(rig):
+    post(rig, "control/stage/take")
+    lent = rig.service.console.lend("console-page-a", ["stage"])
+
+    class Runner:
+        closed = False
+
+        def shutdown(self, reason):
+            lent["stage"].close()
+            self.closed = True
+
+        def wait_closed(self, timeout=30):
+            return self.closed
+
+        def hold(self, reason):
+            pass
+
+    rig.service.current = Runner()
+    rig.service.close()
+    assert rig.devices["stage"].holder is None
+
+
 def test_ambiguous_take_cleans_up_its_own_identity_once(rig):
     stage = rig.devices["stage"]
     stage.fail["acquire"] = ServiceError(0, "Service request failed: reset")
@@ -460,12 +493,17 @@ def test_ambiguous_take_cleans_up_its_own_identity_once(rig):
     assert rig.service.console.control() == []
 
 
-def test_events_merge_newest_first_and_reset_after_service_restart(rig):
-    rig.devices["stage"].event("info", "Stage moved", 10.0)
+def test_events_are_stored_newest_first_and_kept_after_service_restart(rig):
+    rig.devices["stage"].event("info", "Stage moved", 10.0, action="move", result="ok")
     rig.devices["robot"].event("warning", "Robot alarm " + PRIVATE, 12.0)
     rig.devices["stage"].event("error", "Stage fault", 11.0)
     console = rig.service.console
-    console._collect()
+
+    def collect():
+        for name in ("robot", "stage"):
+            console.pull_events(name, rig.service.console_client(name, "console-test"))
+
+    collect()
     rows = console.event_report()["events"]
     service_rows = [row for row in rows if row["service"] != "runs"]
     assert [row["message"] for row in service_rows] == [
@@ -473,14 +511,19 @@ def test_events_merge_newest_first_and_reset_after_service_restart(rig):
         "Stage fault",
         "Stage moved",
     ]
-    console._collect()
+    assert service_rows[-1]["fields"] == {"action": "move", "result": "ok"}
+    collect()
     assert len([row for row in console.event_report()["events"] if row["service"] != "runs"]) == 3
     stage = rig.devices["stage"]
     stage.events, stage.seq = [], 0
     stage.event("info", "Restarted", 20.0)
-    console._collect()
-    stage_rows = [row for row in console.event_report()["events"] if row["service"] == "stage"]
-    assert [row["message"] for row in stage_rows] == ["Restarted"]
+    collect()
+    stage_rows = console.event_report(device="stage")["events"]
+    assert [row["message"] for row in stage_rows] == ["Restarted", "Stage fault", "Stage moved"]
+    last = max(row["id"] for row in console.event_report()["events"])
+    stage.event("info", "Later", 21.0)
+    collect()
+    assert [row["message"] for row in console.event_report(since=last)["events"]] == ["Later"]
 
 
 def test_rehearsal_console_profile_adds_events_only():
@@ -551,6 +594,7 @@ def test_proxy_root_redirects_to_the_console():
 
 
 def test_an_unconfigured_service_stays_not_configured_across_refreshes():
+    from orchestrator.devices import Devices
     from orchestrator.web.backend import Dashboard
 
     reads = threading.Event()
@@ -567,18 +611,135 @@ def test_an_unconfigured_service_stays_not_configured_across_refreshes():
         settings={},
         demo=False,
         dashboard_configured=lambda name: name == "robot",
-        dashboard_client=client,
+        console_client=client,
         dashboard_summary=summary,
     )
+    service.devices = Devices(service)
     dashboard = Dashboard(service)
     try:
+        dashboard.refresh()
+        wait_for(lambda: service.devices.get("microscope")["phase"] == "unconfigured")
         for _ in range(5):
             dashboard.refresh()
             phases = {card["id"]: card["phase"] for card in dashboard.snapshot()["services"]}
             assert phases["microscope"] == "unconfigured"
             # A configured service shows loading until its first read settles.
             assert phases["robot"] == "loading"
-            wait_for(lambda: dashboard.reading <= {"robot"})
+            wait_for(lambda: not dashboard.reading)
     finally:
         reads.set()
+        service.devices.close()
         wait_for(lambda: not dashboard.threads)
+
+
+AGENT = "agent-bench"
+
+
+def test_agent_page_idles_after_10_min_and_the_console_renews_its_leases(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    taken = post(rig, "control/stage/take", page=AGENT).get_json()["control"]
+    holder = taken["holder"]
+    assert re.fullmatch(r"agent-bench-[0-9a-f]{12}", holder) and stage.holder == holder
+    assert taken["idle_left_s"] == 600
+    # No page beat: the console renews the agent lease itself.
+    rig.clock.value += 1.0
+    wait_for(lambda: ("renew", holder) in stage.calls)
+    rig.clock.value += 590
+    time.sleep(0.05)
+    assert stage.holder == holder
+    # Any agent request stamps the beat.
+    assert post(rig, "command/stage", {"action": "move"}, page=AGENT).status_code == 202
+    rig.clock.value += 590
+    time.sleep(0.05)
+    assert stage.holder == holder
+    rig.clock.value += 11
+    wait_for(lambda: stage.holder is None)
+    assert ("release", holder) in stage.calls and rig.service.console.control() == []
+
+
+def test_agent_lease_lost_during_renewal_is_never_reacquired(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    stage.holder = "stage-panel"
+    rig.clock.value += 1.0
+    wait_for(lambda: rig.service.console.control() == [])
+    assert stage.holder == "stage-panel" and ("release", holder) not in stage.calls
+    assert sum(call[0] == "acquire" for call in stage.calls) == 1
+
+
+def test_agent_page_names_are_checked(rig):
+    response = post(rig, "control/stage/take", page="agent-" + "x" * 65)
+    assert response.status_code == 400
+    assert post(rig, "control/stage/take", page="agent-a b").status_code == 400
+    assert rig.devices["stage"].holder is None
+
+
+def test_state_route_reads_one_device_without_a_lease(rig):
+    stage = rig.devices["stage"]
+    response = rig.client.get("/lab/api/console/state/stage", headers=headers(AGENT))
+    body = response.get_json()
+    assert response.status_code == 200 and body["device"] == "stage"
+    assert body["state"]["connected"] is True and body["control"] is None
+    assert not any(call[0] in {"acquire", "renew"} for call in stage.calls)
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    body = rig.client.get("/lab/api/console/state/stage", headers=headers(AGENT)).get_json()
+    assert body["control"]["holder"] == holder and body["control"]["mine"] is True
+    other = rig.client.get("/lab/api/console/state/stage").get_json()
+    assert other["control"]["mine"] is False
+    assert rig.client.get("/lab/api/console/state/nope").status_code == 404
+
+
+def test_lent_devices_refuse_page_commands_but_accept_stops(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    with pytest.raises(ServiceError, match="Take control of these devices first: robot"):
+        rig.service.console.lend(AGENT, ["stage", "robot"])
+    assert rig.service.console.control()[0]["lent"] is False
+    lent = rig.service.console.lend(AGENT, ["stage"])
+    refused = post(rig, "command/stage", {"action": "move"}, page=AGENT)
+    assert refused.status_code == 409 and "run is using" in refused.get_json()["error"]
+    assert post(rig, "control/stage/release", page=AGENT).status_code == 409
+    assert post(rig, "stop/stage", page=AGENT).get_json()["outcome"] == "confirmed"
+    # A lent session never idles out, and the borrowed adapter never releases the lease.
+    rig.clock.value += 700
+    time.sleep(0.05)
+    lent["stage"].acquire()
+    lent["stage"].release()
+    assert stage.holder == holder
+    lent["stage"].close()
+    assert rig.service.console.control()[0]["lent"] is False
+    assert post(rig, "command/stage", {"action": "move"}, page=AGENT).status_code == 202
+
+
+def test_history_route_keeps_state_changes_and_samples_values(rig, monkeypatch):
+    from orchestrator import devices as devices_module
+
+    stage = rig.devices["stage"]
+    devices = rig.service.devices
+
+    def rows():
+        response = rig.client.get("/lab/api/console/history?device=stage", headers=headers())
+        assert response.status_code == 200
+        return response.get_json()["states"]
+
+    devices.fresh("stage")
+    assert [row["row"]["busy"] for row in rows()] == [False]
+    stage.state = {**stage.state, "position": 1.0, "ts_unix": 5.0}
+    devices.fresh("stage")
+    assert len(rows()) == 1  # A value change waits for the 10 s sample time.
+    stage.state = {**stage.state, "busy": True}
+    devices.fresh("stage")
+    assert [row["row"]["busy"] for row in rows()] == [True, False]
+    assert rows()[0]["state"]["position"] == 1.0
+    monkeypatch.setattr(devices_module, "SAMPLE_S", 0.0)
+    stage.state = {**stage.state, "sampled_at": 6.0, "seq": 9}
+    devices.fresh("stage")
+    assert len(rows()) == 2  # Read-time fields alone write no row.
+    stage.state = {**stage.state, "position": 2.0}
+    devices.fresh("stage")
+    assert len(rows()) == 3
+    response = rig.client.get("/lab/api/console/history?device=nope", headers=headers())
+    assert response.status_code == 404

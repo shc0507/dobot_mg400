@@ -7,9 +7,7 @@ import argparse
 import json
 import logging
 import logging.handlers
-import os
 import queue
-import re
 import signal
 import socket
 import sys
@@ -22,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from labkit import ports  # noqa: E402
 from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
@@ -35,8 +34,13 @@ from mg400.websocket import (  # noqa: E402
 )
 
 MAX_SEQUENCE = 2**53
+# Robot speed cap: SpeedL and AccL percentages for every motion command.
+MAX_SPEED_L = 20
+MAX_ACC_L = 20
 # The WebSocket message format. Change it when a message changes incompatibly.
 PROTOCOL = 1
+# State fields that change on every read. A change in only these sends no push.
+VOLATILE_FIELDS = {"version", "seq", "ts_unix", "lease"}
 
 
 def normalize_base_path(value):
@@ -357,7 +361,7 @@ class SocketSession:
                     if replied:
                         self._replied.clear()
                     snapshot = self.server.state.snapshot()
-                    content = {key: value for key, value in snapshot.items() if key != "version"}
+                    content = {k: v for k, v in snapshot.items() if k not in VOLATILE_FIELDS}
                     if replied or content != last or now - sent >= self.KEEPALIVE_SECONDS:
                         self._send({"type": "state", "state": snapshot})
                         last, sent = content, now
@@ -638,21 +642,26 @@ class PanelHandler(BaseHTTPRequestHandler):
             self.server.discharge_socket(session)
 
     def do_POST(self):
+        self._quiet = False
         path = urlsplit(self.path).path
-        if path not in {
-            self.server.base_path + "api/command",
-            self.server.base_path + "api/heartbeat",
-            self.server.base_path + "api/stop",
-        }:
+        base = self.server.base_path
+        route = path[len(base) :] if path.startswith(base) else None
+        # Without X-MG400-Panel, a request uses instrument contract v1 (labkit clients).
+        legacy = self.headers.get("X-MG400-Panel") is not None
+        routes = {"api/command", "api/heartbeat", "api/stop"}
+        if route not in (routes if legacy else routes | {"api/renew", "api/release"}):
             self._send(404, {"error": "Not found"})
             return
         if self.headers.get("Transfer-Encoding") is not None:
             self._send(400, {"error": "Send the request body with Content-Length"})
             return
-        if (
-            self.headers.get("Content-Type", "").split(";")[0] != "application/json"
-            or self.headers.get("X-MG400-Panel") != "1"
-        ):
+        if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+            if legacy:
+                self._send(403, {"error": "Use the panel to send commands"})
+            else:
+                self._send(415, {"error": "Expected Content-Type: application/json"})
+            return
+        if legacy and self.headers.get("X-MG400-Panel") != "1":
             self._send(403, {"error": "Use the panel to send commands"})
             return
         try:
@@ -661,26 +670,57 @@ class PanelHandler(BaseHTTPRequestHandler):
                 raise ValueError("Request body must contain 1 to 4096 bytes")
             payload = json.loads(self.rfile.read(length))
             state = self.server.state
+            if not legacy:
+                status, result = self._contract_post(state, route, payload)
+                self._send(status, result)
+                return
             client = None
             if state.mode == "robot":
                 client = self.headers.get("X-MG400-Client", "")
                 if not client or len(client) > 128 or not client.isascii():
                     raise ValueError("Open the panel to identify this browser")
-            if path.endswith("/stop"):
-                if state.mode != "robot":
-                    raise PermissionError("Robot stop is unavailable in read-only mode")
-                if not valid_client(client):
-                    raise ValueError("A printable ASCII client ID is required")
-                if not isinstance(payload, dict) or set(payload) - {"wait_s"}:
-                    raise ValueError("Stop must be a JSON object with only wait_s")
-                result = state.stop(client, payload.get("wait_s", 0))
+            if route == "api/stop":
+                result = self._stop(state, client, payload)
             else:
-                kind = "heartbeat" if path.endswith("/heartbeat") else "command"
+                kind = "heartbeat" if route == "api/heartbeat" else "command"
                 result = dispatch(state, kind, payload, client)
         except (ValueError, PermissionError, RuntimeError) as error:
             self._send(refusal_status(error), {"error": str(error)})
         else:
             self._send(200, result)
+
+    @staticmethod
+    def _stop(state, client, payload):
+        if state.mode != "robot":
+            raise PermissionError("Robot stop is unavailable in read-only mode")
+        if not valid_client(client):
+            raise ValueError("A printable ASCII client ID is required")
+        if not isinstance(payload, dict) or set(payload) - {"wait_s"}:
+            raise ValueError("Stop must be a JSON object with only wait_s")
+        return state.stop(client, payload.get("wait_s", 0))
+
+    def _contract_post(self, state, route, payload):
+        """Serve one contract POST. A refusal of the robot core is a 409 conflict."""
+        client = self.headers.get("X-MG400-Client")
+        if state.mode != "robot":
+            raise PermissionError("Robot control is unavailable in read-only mode")
+        if not valid_client(client):
+            raise ValueError("A printable ASCII client ID is required")
+        if not isinstance(payload, dict):
+            raise ValueError("Expected a JSON object")
+        try:
+            if route == "api/stop":
+                return 200, self._stop(state, client, payload)
+            if route == "api/command":
+                # Key renewals arrive every 150 ms; keep them out of the request log.
+                self._quiet = payload.get("action") == "keys"
+                command_id, snapshot = state.submit(payload, client)
+                return 202, {"command_id": command_id, "state": snapshot}
+            verb = {"api/heartbeat": state.acquire, "api/renew": state.renew}
+            lease = verb.get(route, state.release)(client)
+            return 200, {"lease": lease}
+        except PermissionError as error:
+            raise RuntimeError(str(error)) from error
 
     def log_message(self, format, *args):
         # Keep request bodies out of the request log.
@@ -691,12 +731,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             f"GET {self.server.base_path}api/describe ",
             f"GET {self.server.base_path}api/events",
             f"POST {self.server.base_path}api/heartbeat ",
+            f"POST {self.server.base_path}api/renew ",
         )
-        if (
-            len(args) > 1
-            and isinstance(args[0], str)
-            and args[0].startswith(polls)
-            and (str(args[1]) == "200")
+        if len(args) > 1 and (
+            (isinstance(args[0], str) and args[0].startswith(polls) and str(args[1]) == "200")
+            or (getattr(self, "_quiet", False) and str(args[1]) == "202")
         ):
             return
         super().log_message(format, *args)
@@ -759,30 +798,20 @@ def start_event_log():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bind", help="HTTP address (default: MG400_PANEL_BIND or 127.0.0.1)")
-    parser.add_argument("--port", type=int, help="HTTP port (default: MG400_PANEL_PORT or 8766)")
+    parser.add_argument("--bind", default="127.0.0.1", help="HTTP address (default: 127.0.0.1)")
+    parser.add_argument(
+        "--port", type=int, default=ports.PORTS["robot"], help="HTTP port (default: %(default)s)"
+    )
     parser.add_argument("--mode", choices=("robot", "read-only"), default="robot")
     parser.add_argument("--base-path", type=normalize_base_path, default="/")
     parser.add_argument(
         "--robot-host", help="Robot address. Default: MG400_ROBOT_HOST, then config/robot.toml"
     )
     args = parser.parse_args(argv)
-    # An empty environment value counts as unset.
-    bind = args.bind if args.bind is not None else os.environ.get("MG400_PANEL_BIND") or "127.0.0.1"
-    port = args.port
-    if port is None:
-        value = os.environ.get("MG400_PANEL_PORT") or "8766"
-        port = int(value) if re.fullmatch("[0-9]{1,5}", value) else 0
-        if not 1 <= port <= 65535:
-            parser.error("MG400_PANEL_PORT must be a whole number between 1 and 65535")
-    caps = {}
-    for suffix, parameter in (("SPEED", "max_speed_l"), ("ACC", "max_acc_l")):
-        name = f"MG400_ROBOT_MAX_{suffix}_L"
-        value = os.environ.get(name) or "1"
-        cap = int(value) if re.fullmatch("[0-9]{1,3}", value) else 0
-        if not 1 <= cap <= 100:
-            parser.error(f"{name} must be a whole number between 1 and 100")
-        caps[parameter] = cap
+    bind, port = args.bind, args.port
+    if not 1 <= port <= 65535:
+        parser.error("--port must be a whole number between 1 and 65535")
+    caps = {"max_speed_l": MAX_SPEED_L, "max_acc_l": MAX_ACC_L}
     host = args.robot_host
     if not host:
         host = load_robot_host(ROOT / "config/robot.toml")

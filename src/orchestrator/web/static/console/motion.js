@@ -292,7 +292,9 @@
       "dev.unconfigured": "Not configured", "dev.offline": "Not running", "dev.unreachable": "Not reachable", "dev.loading": "Loading…",
       "arm.enabled": "Enabled", "arm.disabled": "Disabled", "arm.busy": "Moving", "arm.alarm": "Alarm",
       "arm.locked": "Stop not confirmed", "arm.lockedHelp": "Check the arm, then press Recover.", "arm.errorOnly": "The controller reports an error.",
-      "arm.recover": "Recover", "arm.noFeedback": "Not connected", "arm.cap": "speed cap {cap}",
+      "arm.recover": "Recover", "arm.noFeedback": "Not connected",
+      "arm.stopped": "Stopped", "arm.stoppedHelp": "Press Disable to unlock the arm.",
+      "arm.alarmHelp": "Fix the alarm cause, then press Clear alarm.", "arm.waitFeedback": "Waiting for fresh feedback.", "arm.cap": "speed cap {cap}",
       "ctl.take": "Take control", "ctl.release": "Release",
       "ctl.console": "In use by another page", "ctl.other": "In use by another client",
       "ctl.takeLabel": "Take control of {device}", "ctl.releaseLabel": "Release {device}",
@@ -333,7 +335,7 @@
       "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
       "axis.teachConfirm": "Is {axis} at its safe zero position? The current marker position replaces the camera reference.",
       "axis.offset": "Marker offset {x}, {y} px", "axis.checkFailed": "Reference check failed: {error}",
-      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found", "stage.refresh": "Refresh ports",
+      "stage.port": "Serial port", "stage.connect": "Connect", "stage.noPorts": "No serial port found",
       "pose.title": "Named poses", "pose.needRef": "Home or zero all 3 axes before a named pose.",
       "axis.zeroConfirm": "Set the current position of {axis} as zero. Check the physical position first.",
       "named.title": "Named positions",
@@ -421,7 +423,9 @@
       "dev.unconfigured": "未配置", "dev.offline": "未运行", "dev.unreachable": "无法连接", "dev.loading": "加载中…",
       "arm.enabled": "已使能", "arm.disabled": "未使能", "arm.busy": "运动中", "arm.alarm": "报警",
       "arm.locked": "停止未确认", "arm.lockedHelp": "检查机械臂，然后按“恢复”。", "arm.errorOnly": "控制器报告错误。",
-      "arm.recover": "恢复", "arm.noFeedback": "未连接", "arm.cap": "速度上限 {cap}",
+      "arm.recover": "恢复", "arm.noFeedback": "未连接",
+      "arm.stopped": "已停止", "arm.stoppedHelp": "按“下使能”恢复控制。",
+      "arm.alarmHelp": "先排除报警，再按“清除报警”。", "arm.waitFeedback": "等待新的反馈。", "arm.cap": "速度上限 {cap}",
       "ctl.take": "获取控制权", "ctl.release": "释放",
       "ctl.console": "另一个页面正在使用", "ctl.other": "另一个客户端正在使用",
       "ctl.takeLabel": "获取{device}的控制权", "ctl.releaseLabel": "释放{device}",
@@ -462,7 +466,7 @@
       "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
       "axis.teachConfirm": "{axis}在安全零点吗？当前标记位置将替换摄像头参考。",
       "axis.offset": "标记偏移 {x}, {y} px", "axis.checkFailed": "参考检查失败：{error}",
-      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口", "stage.refresh": "刷新串口",
+      "stage.port": "串口", "stage.connect": "连接", "stage.noPorts": "未找到串口",
       "pose.title": "命名位姿", "pose.needRef": "使用命名位姿前，先让全部 3 轴回零或设零。",
       "axis.zeroConfirm": "把{axis}的当前位置设为零点。请先检查实际位置。",
       "named.title": "命名位置",
@@ -550,7 +554,7 @@
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, views: { arm: STATION_VIEWS.arm[0], stage: STATION_VIEWS.stage[0] },
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
-      ports: null, port: "", portsLoading: false, refView: {}, stageTarget: null,
+      port: "", refView: {}, stageTarget: null,
     };
     let refs = {};
 
@@ -1224,9 +1228,8 @@
       refs.stageFoldEl = el("details", { class: "mo-fold" }, el("summary", { text: t("fold.stage") }), refs.stageFold);
       refs.namedBlock = el("div", { class: "mo-named", hidden: true });
       refs.portSelect = el("select", { class: "mo-input", "aria-label": t("stage.port"), onchange: event => { model.port = event.target.value; } });
-      refs.connect = el("button", { type: "button", class: "mo-btn mo-primary", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }, "connect", "stage/connect").then(() => { model.ports = null; }) });
-      refs.refreshPorts = el("button", { type: "button", class: "mo-btn", text: t("stage.refresh"), onclick: () => { if (!model.portsLoading) loadPorts(); } });
-      refs.connectRow = el("div", { class: "mo-row mo-connect", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect, refs.refreshPorts);
+      refs.connect = el("button", { type: "button", class: "mo-btn mo-primary", text: t("stage.connect"), onclick: () => send("stage", "connect", { port: model.port }) });
+      refs.connectRow = el("div", { class: "mo-row mo-connect", hidden: true }, el("label", { class: "mo-inline" }, t("stage.port"), refs.portSelect), refs.connect);
       refs.stageLast = el("p", { class: "mo-muted mo-last", role: "status" });
       refs.poseBlock = el("div", { class: "mo-named", hidden: true });
       const card = el("section", { class: "mo-station mo-station-stage", "aria-labelledby": "mo-stage-title" },
@@ -1518,22 +1521,29 @@
       updateControl("robot", data.robot);
       const ready = Boolean(robot && ownsRobot && robot.feedback_fresh && !robot.locked && !robot.stop_unconfirmed);
       // The robot service reports enabled only in modes 5 and 7, not while it jogs.
-      const enabled = model.armOn = Boolean(robot && (robot.enabled === true || robot.busy === true || robot.keyboard_enabled === true));
+      // A locked arm unlocks only through a verified disable, so Disable stays offered.
+      const enabled = model.armOn = Boolean(robot && (robot.enabled === true || robot.busy === true || robot.keyboard_enabled === true || robot.locked === true));
       refs.enable.textContent = t(enabled ? "arm.disable" : "arm.enable");
       refs.enable.disabled = enabled ? !robot : !ready || busy("robot");
-      refs.clear.disabled = !(robot && ownsRobot);
-      refs.clear.textContent = t(robot && (robot.locked || robot.stop_unconfirmed) ? "arm.recover" : "arm.clear");
+      // Offer Clear alarm or Recover only in the states where the robot service accepts clear_alarm.
+      const alarmNow = Boolean(fresh && (robot.robot_mode === 9 || robot.robot_error));
+      const recoverable = robot?.recoverable === true;
+      refs.clear.hidden = !(alarmNow || recoverable);
+      refs.clear.disabled = !(ownsRobot && fresh && !robot.busy);
+      refs.clear.textContent = t(alarmNow ? "arm.clear" : "arm.recover");
       refs.home.disabled = !(ready && robot.enabled === true && !robot.busy) || model.inflight.has("robot:move");
       // Change live regions only when the text changes, so a screen reader reads it once.
-      const locked = Boolean(robot && (robot.locked || robot.stop_unconfirmed));
+      const unconfirmed = robot?.stop_unconfirmed === true;
+      const locked = Boolean(robot && (robot.locked || unconfirmed));
+      const help = !locked ? "" : !unconfirmed ? "arm.stoppedHelp" : recoverable ? "arm.lockedHelp" : alarmNow ? "arm.alarmHelp" : "arm.waitFeedback";
       const alarms = alarmRows(robot).map(item => t("arm.alarmItem", { id: item.id }) + ": " + item.text);
       if (robot?.robot_error && !alarms.length) alarms.push(t("arm.errorOnly"));
-      const alarmText = [locked, ...alarms].join("\n");
+      const alarmText = [help, ...alarms].join("\n");
       if (alarmText !== refs.alarmText) {
         refs.alarmText = alarmText;
-        refs.alarmTitle.textContent = t(locked ? "arm.locked" : "arm.alarm");
+        refs.alarmTitle.textContent = t(unconfirmed ? "arm.locked" : locked ? "arm.stopped" : "arm.alarm");
         refs.alarms.replaceChildren(...alarms.map(text => el("p", { text })));
-        refs.alarmHelp.textContent = locked ? t("arm.lockedHelp") : "";
+        refs.alarmHelp.textContent = help ? t(help) : "";
       }
       refs.alarmHelp.hidden = !locked;
       refs.alarmNote.hidden = !locked && !alarms.length;
@@ -1653,26 +1663,22 @@
       refs.stageLast.textContent = stage ? lastText("stage", stage.last_command) : "";
       const disconnected = Boolean(stage && stage.connected !== true);
       refs.connectRow.hidden = !disconnected;
-      if (disconnected && model.ports === null && !model.portsLoading) loadPorts();
+      if (disconnected) renderPorts(stage.ports || []);
       refs.connect.disabled = !ownsStage || !model.port || busy("stage");
-      refs.refreshPorts.disabled = model.portsLoading;
     }
 
-    async function loadPorts() {
-      model.portsLoading = true;
-      update();
-      try {
-        const body = await api.request("stage/ports");
-        model.ports = Array.isArray(body.ports) ? body.ports : [];
-      } catch { model.ports = []; }
-      finally { model.portsLoading = false; }
-      if (!model.ports.some(item => item.device === model.port)) model.port = model.ports[0]?.device || "";
-      refs.portSelect.replaceChildren(...(model.ports.length
+    function renderPorts(ports) {
+      // The state repeats the list at each poll; rebuild only on a change, so a choice stays open.
+      // The key lives on the element: a rebuilt card has a new, empty select.
+      const key = JSON.stringify(ports);
+      if (key === refs.portSelect.dataset.ports) return;
+      refs.portSelect.dataset.ports = key;
+      if (!ports.some(item => item.device === model.port)) model.port = ports[0]?.device || "";
+      refs.portSelect.replaceChildren(...(ports.length
         // The full by-id path is long; it goes in the tooltip.
-        ? model.ports.map(item => el("option", { value: item.device, title: item.device, text: portLabel(item) }))
+        ? ports.map(item => el("option", { value: item.device, title: item.device, text: portLabel(item) }))
         : [el("option", { value: "", text: t("stage.noPorts") })]));
       refs.portSelect.value = model.port;
-      update();
     }
 
     function start() {

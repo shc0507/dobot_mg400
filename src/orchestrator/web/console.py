@@ -9,9 +9,14 @@ once and never retried.
 A stage hold runs on the console: a worker sends ``hold`` once, a ``keepalive``
 every ``HOLD_KEEPALIVE_S`` while the page refreshes the hold within
 ``HOLD_DEADMAN_S``, then ``release_hold`` once.
+
+An agent page (a page identity ``agent-<session>``, used by ``labctl``) is idle
+only after ``AGENT_IDLE_S`` without a request. The console renews its leases
+every ``AGENT_RENEW_S`` and names each agent identity after the session.
 """
 
 import copy
+import re
 import threading
 import time
 import uuid
@@ -20,14 +25,16 @@ from pathlib import Path
 
 from labkit.errors import ServiceError
 
-from ..clients import SERVICES
+from ..clients import SERVICES, Borrowed
 
 BEAT_TIMEOUT_S = 3.0
+AGENT_PREFIX = "agent-"
+AGENT_PAGE = re.compile(r"agent-[A-Za-z0-9_.-]{1,64}")
+AGENT_IDLE_S = 600.0
+AGENT_RENEW_S = 1.0
 WATCH_INTERVAL_S = 0.2
 # A robot disable waits up to 5 s for the disabled mode and up to 5 s for rest.
 ROBOT_DISABLE_S = 12.0
-EVENT_LIMIT = 500
-EVENT_REFRESH_S = 1.0
 # Lease operations have their own routes. The relay never forwards them.
 LEASE_ACTIONS = frozenset({"start_sync", "stop_sync", "heartbeat", "renew", "release"})
 # Stage hold: the stage firmware stops a hold 1 s after the last keepalive.
@@ -35,6 +42,7 @@ HOLD_DEADMAN_S = 0.5
 HOLD_KEEPALIVE_S = 0.2
 HOLD_JOIN_S = 2.0
 HOLD_ENDED = "Hold has ended. Release and press again."
+LENT = "A run is using this device."
 
 
 def _status(error):
@@ -50,6 +58,10 @@ def classify(error):
     if type(error) is ValueError:
         return "refused"
     return "unknown"
+
+
+def is_agent(page):
+    return isinstance(page, str) and page.startswith(AGENT_PREFIX)
 
 
 def deployed_commit(settings, root=None):
@@ -81,9 +93,12 @@ class Session:
     def __init__(self, device, page, identity, adapter, commands, now):
         self.device, self.page, self.identity = device, page, identity
         self.adapter, self.commands = adapter, commands
-        self.beat = self.started = now
+        self.beat = self.started = self.renewed = now
+        self.agent = is_agent(page)
         self.state = "held"
         self.renewing = False
+        # A run borrows held devices: the console keeps the lease, the page cannot command.
+        self.lent = False
         self.message = None
         # Stage only: the latest hold and the identities of ended holds.
         self.hold = None
@@ -111,12 +126,8 @@ class Console:
         self.closing = False
         self.watcher = None
         self.threads = set()
-        self.events = deque(maxlen=EVENT_LIMIT)
         self.cursors = {}
         self.event_errors = {}
-        self.raw = {}
-        self.events_at = None
-        self.events_busy = False
         self.commit = deployed_commit(service.settings)
 
     # Threads ---------------------------------------------------------------
@@ -149,14 +160,35 @@ class Console:
                 late = [
                     item
                     for item in self.sessions.values()
-                    if item.state == "held" and now - item.beat > BEAT_TIMEOUT_S
+                    if item.state == "held" and not item.lent and now - item.beat > self._idle(item)
                 ]
                 for item in late:
                     item.state = "releasing"
-                    item.message = "No browser heartbeat for 3 s."
+                    item.message = (
+                        "No agent request for 10 min."
+                        if item.agent
+                        else "No browser heartbeat for 3 s."
+                    )
+                # The console renews agent leases itself; agents call only now and then.
+                due = [
+                    item
+                    for item in self.sessions.values()
+                    if item.agent
+                    and item.state == "held"
+                    and not item.renewing
+                    and now - item.renewed >= AGENT_RENEW_S
+                ]
+                for item in due:
+                    item.renewing, item.renewed = True, now
             for item in late:
                 self._end(item, release=True)
+            for item in due:
+                self._spawn(lambda item=item: self._renew(item), "renew-" + item.device)
             time.sleep(WATCH_INTERVAL_S)
+
+    @staticmethod
+    def _idle(item):
+        return AGENT_IDLE_S if item.agent else BEAT_TIMEOUT_S
 
     def _ensure_watcher(self):
         with self.lock:
@@ -165,10 +197,14 @@ class Console:
 
     # Clients ---------------------------------------------------------------
 
-    def _client(self, device, purpose):
+    def _client(self, device, purpose, page=None):
         if device not in SERVICES:
             raise ServiceError(404, "Unknown console device.")
-        identity = f"console-{purpose}-{uuid.uuid4().hex}"
+        if is_agent(page):
+            # The Control card then shows which agent session holds the device.
+            identity = f"{page}-{uuid.uuid4().hex[:12]}"
+        else:
+            identity = f"console-{purpose}-{uuid.uuid4().hex}"
         adapter = self.service.console_client(device, identity)
         if adapter is None:
             raise ServiceError(
@@ -223,20 +259,37 @@ class Console:
     # Control ---------------------------------------------------------------
 
     def entry(self, item, page=None):
-        return {
+        now = self.clock()
+        result = {
             "device": item.device,
             "holder": item.identity,
             "mine": page is not None and item.page == page,
             "state": item.state,
             "message": item.message,
-            "held_s": round(max(0.0, self.clock() - item.started), 1),
+            "held_s": round(max(0.0, now - item.started), 1),
+            "lent": item.lent,
         }
+        if item.agent:
+            result["idle_left_s"] = round(max(0.0, AGENT_IDLE_S - (now - item.beat)), 1)
+        return result
+
+    def touch(self, page):
+        """Stamp an agent page's sessions: every agent request counts as a beat."""
+        if not is_agent(page):
+            return
+        with self.lock:
+            now = self.clock()
+            for item in self.sessions.values():
+                if item.page == page and item.state == "held":
+                    item.beat = now
 
     def control(self, page=None):
         with self.lock:
             return [self.entry(item, page) for item in self.sessions.values()]
 
     def take(self, device, page):
+        if is_agent(page) and not AGENT_PAGE.fullmatch(page):
+            raise ValueError("Agent pages are agent- and 1 to 64 letters, digits, _, . or -.")
         with self.lock:
             if self.closing:
                 raise ServiceError(409, "The console is shutting down.")
@@ -254,7 +307,7 @@ class Console:
         try:
             if not self.service.dashboard_configured(device):
                 self.service.console_start_demo(device)
-            identity, adapter = self._client(device, "control")
+            identity, adapter = self._client(device, "control", page)
             description = adapter.describe()
             commands = description.get("commands") if isinstance(description, dict) else None
             if not isinstance(commands, dict):
@@ -302,6 +355,8 @@ class Console:
             item = self.sessions.get(device)
             if item is None or item.page != page or item.state != "held":
                 return None
+            if item.lent:
+                raise ServiceError(409, LENT)
             return item
 
     def release(self, device, page):
@@ -313,18 +368,20 @@ class Console:
                 raise ServiceError(409, "Another console page controls this device.")
             if item.state != "held":
                 return {"device": device, "result": item.state}
+            if item.lent:
+                raise ServiceError(409, LENT)
             item.state = "releasing"
         error = self._end(item, release=True)
         self.service.events.add("info", "Console released control.", device=device)
         return {"device": device, "result": "released" if error is None else "unconfirmed"}
 
     def release_all(self, page=None):
-        """Release the console's own leases: one page's, or every page's."""
+        """Release the console's own leases: one page's, or every page's. Lent leases stay."""
         with self.lock:
             items = [
                 item
                 for item in self.sessions.values()
-                if item.state == "held" and (page is None or item.page == page)
+                if item.state == "held" and not item.lent and (page is None or item.page == page)
             ]
             for item in items:
                 item.state = "releasing"
@@ -345,7 +402,7 @@ class Console:
             ]
             for item in items:
                 item.beat = now
-            due = [item for item in items if not item.renewing]
+            due = [item for item in items if not item.renewing and not item.agent]
             for item in due:
                 item.renewing = True
         for item in due:
@@ -367,14 +424,39 @@ class Console:
         finally:
             item.renewing = False
 
+    def lend(self, page, devices):
+        """Lend this page's held devices to 1 run. Return name -> Borrowed adapter."""
+        with self.lock:
+            missing = [
+                name
+                for name in devices
+                if (item := self.sessions.get(name)) is None
+                or item.page != page
+                or item.state != "held"
+                or item.lent
+            ]
+            if missing:
+                raise ServiceError(
+                    409, "Take control of these devices first: " + ", ".join(sorted(missing)) + "."
+                )
+            items = [self.sessions[name] for name in devices]
+            for item in items:
+                item.lent = True
+        return {
+            item.device: Borrowed(item.adapter, lambda item=item: self.unlend(item))
+            for item in items
+        }
+
+    def unlend(self, item):
+        """Return a lent device to its page. The idle time starts again."""
+        with self.lock:
+            item.lent = False
+            item.beat = self.clock()
+
     # Relay -----------------------------------------------------------------
 
     def describe(self, device):
-        identity, adapter = self._client(device, "read")
-        try:
-            description = adapter.describe()
-        finally:
-            self._close(adapter)
+        description = self._cached(device)["describe"]
         commands = description.get("commands") if isinstance(description, dict) else None
         if not isinstance(commands, dict):
             raise ServiceError(502, "The service describes no commands.")
@@ -395,6 +477,7 @@ class Console:
             raise ValueError("Command params must be a JSON object.")
         if "action" in params:
             raise ValueError("Command params must not name an action.")
+        self.touch(page)
         item = self._owned(device, page)
         fresh = None
         if item is not None:
@@ -546,31 +629,30 @@ class Console:
                     device="stage",
                 )
 
-    def operator(self, device, page, path, data):
-        """Send one operator-only service request on this page's lease, once.
-
-        The service refuses it unless this page's identity holds the lease.
-        The runner and the relay never reach these service routes.
-        """
-        item = self._owned(device, page)
-        if item is None:
-            raise ServiceError(409, "Take control of this device first.")
-        try:
-            result = item.adapter.request(path, data)
-        except Exception as exc:
-            outcome = classify(exc)
-            message = str(exc) if outcome == "refused" else "The outcome is unknown."
-            self.service.events.add(
-                "warning", "Console operator action " + outcome + ".", device=device, path=path
+    def _cached(self, device, fresh=False):
+        """Return the device cache row, or raise when the device has no fresh state.
+        With fresh, the row comes from a read that started after this call."""
+        if device not in SERVICES:
+            raise ServiceError(404, "Unknown console device.")
+        entry = self.service.devices.wait(device)
+        if fresh or entry["phase"] != "ready":
+            # Take control can start a demo service after the last cached read.
+            entry = self.service.devices.fresh(device)
+        if entry["phase"] in {"unconfigured", "offline"}:
+            raise ServiceError(
+                409, "The service is not configured or its owned demo is not running."
             )
-            return {"outcome": outcome, "error": self.service.dashboard.text(message)}
-        self.service.events.add("info", "Console operator action sent.", device=device, path=path)
-        command_id = result.get("command_id") if isinstance(result, dict) else None
-        return {
-            "outcome": "accepted",
-            "command_id": command_id if isinstance(command_id, str) else None,
-            "result": result if isinstance(result, dict) else None,
-        }
+        if entry["phase"] != "ready":
+            raise ServiceError(502, "The service state read failed.")
+        return entry
+
+    def device_state(self, device, page=None, fresh=False):
+        """Return one device's full state from the device cache."""
+        value = self._cached(device, fresh)["state"]
+        with self.lock:
+            item = self.sessions.get(device)
+            control = self.entry(item, page) if item is not None else None
+        return {"device": device, "state": value, "control": control}
 
     def read(self, device, path):
         """Read one service route with a fresh identity and no lease."""
@@ -608,96 +690,68 @@ class Console:
     # Events --------------------------------------------------
 
     def refresh_events(self):
-        with self.lock:
-            if self.closing or self.events_busy:
-                return
-            if self.events_at is not None and self.clock() - self.events_at < EVENT_REFRESH_S:
-                return
-            self.events_busy = True
+        """Start the device readers and merge the run events. Device events come from
+        the device cache readers through pull_events."""
+        self.service.devices.start()
         try:
-            self._spawn(self._collect, "events")
+            self._merge("runs", self.service.events.since(self.cursors.get("runs", 0)))
         except Exception:
-            with self.lock:
-                self.events_busy = False
+            pass
 
     def _merge(self, name, report):
+        """Store new events of one service. A restarted service starts a new sequence."""
         if not isinstance(report, dict) or not isinstance(report.get("events"), list):
             raise ValueError("Invalid event report.")
         cursor = report.get("next")
         if type(cursor) is not int or cursor < 0:
             raise ValueError("Invalid event cursor.")
         text = self.service.dashboard.text
+        rows = []
+        for event in report["events"]:
+            if not isinstance(event, dict) or type(event.get("seq")) is not int:
+                continue
+            level, stamp = event.get("level"), event.get("ts_unix")
+            rows.append(
+                (
+                    name,
+                    event["seq"],
+                    stamp if type(stamp) in {int, float} else time.time(),
+                    level if level in {"debug", "info", "warning", "error", "critical"} else "info",
+                    text(event.get("message")) or "",
+                    event.get("fields") if isinstance(event.get("fields"), dict) else {},
+                )
+            )
+        self.service.store.add_device_events(rows)
         with self.lock:
-            if cursor < self.cursors.get(name, 0):
-                # A restarted service starts a new sequence.
-                self.events = deque(
-                    (item for item in self.events if item["service"] != name), maxlen=EVENT_LIMIT
-                )
-            for event in report["events"]:
-                if not isinstance(event, dict) or type(event.get("seq")) is not int:
-                    continue
-                level = event.get("level")
-                stamp = event.get("ts_unix")
-                self.events.append(
-                    {
-                        "service": name,
-                        "seq": event["seq"],
-                        "ts_unix": stamp if type(stamp) in {int, float} else None,
-                        "level": level
-                        if level in {"debug", "info", "warning", "error", "critical"}
-                        else "info",
-                        "message": text(event.get("message")) or "",
-                    }
-                )
             self.cursors[name] = cursor
 
-    def _collect(self):
+    def pull_events(self, name, adapter):
+        """Read one device's event replay. The device cache reader calls this every 1 s."""
         try:
-            for name in SERVICES:
-                if not self.service.dashboard_configured(name):
-                    with self.lock:
-                        self.raw.pop(name, None)
-                        self.event_errors.pop(name, None)
-                    continue
-                adapter = None
-                try:
-                    _, adapter = self._client(name, "events")
-                    adapter.describe()
-                    state = adapter.state()
-                    with self.lock:
-                        self.raw[name] = copy.deepcopy(state) if isinstance(state, dict) else None
-                    cursor = self.cursors.get(name, 0)
-                    report = adapter.events(cursor)
-                    if isinstance(report, dict) and type(report.get("next")) is int:
-                        if report["next"] < cursor:
-                            # A restarted service starts a new sequence: read it all.
-                            report = adapter.events(0)
-                    self._merge(name, report)
-                    with self.lock:
-                        self.event_errors.pop(name, None)
-                except Exception:
-                    with self.lock:
-                        self.event_errors[name] = "Events are unavailable."
-                finally:
-                    if adapter is not None:
-                        self._close(adapter)
-            try:
-                self._merge("runs", self.service.events.since(self.cursors.get("runs", 0)))
-            except Exception:
-                pass
-        finally:
+            cursor = self.cursors.get(name, 0)
+            report = adapter.events(cursor)
+            if isinstance(report, dict) and type(report.get("next")) is int:
+                if report["next"] < cursor:
+                    report = adapter.events(0)
+            self._merge(name, report)
             with self.lock:
-                self.events_at = self.clock()
-                self.events_busy = False
+                self.event_errors.pop(name, None)
+        except Exception:
+            with self.lock:
+                self.event_errors[name] = "Events are unavailable."
 
-    def event_report(self):
+    def event_report(self, **query):
+        """Stored events, newest first, with the services whose events are unavailable now."""
+        rows = [
+            {**row, "service": row.pop("device"), "ts_unix": row.pop("ts")}
+            for row in self.service.store.device_events(**query)
+        ]
         with self.lock:
-            rows = sorted(
-                self.events,
-                key=lambda item: (item["ts_unix"] or 0, item["seq"]),
-                reverse=True,
-            )
-            return {"events": copy.deepcopy(rows), "errors": dict(self.event_errors)}
+            errors = dict(self.event_errors)
+        for name in SERVICES:
+            if self.service.devices.get(name)["phase"] in {"unavailable", "stale"}:
+                errors[name] = "Events are unavailable."
+        return {"events": rows, "errors": errors}
 
     # Lifetime --------------------------------------------------------------
 

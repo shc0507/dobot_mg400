@@ -1,0 +1,18 @@
+name = "Station transfer"
+version = 1
+
+[params.from_station]
+type = "string"
+
+[params.to_station]
+type = "string"
+
+[params.speed]
+type = "integer"
+default = 1
+
+[[steps]]
+skill = "robot.transfer"
+params = { from_station = "${from_station}", to_station = "${to_station}", speed = "${speed}" }
+timeout_s = 120
+on_fail = "hold"

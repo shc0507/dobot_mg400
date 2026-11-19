@@ -9,7 +9,7 @@ class Element {
   constructor(tag) {
     this.tagName = tag.toUpperCase();
     this.children = []; this.attributes = {}; this.listeners = new Map();
-    this.hidden = false; this.disabled = false; this.className = ""; this.ownText = ""; this.value = "";
+    this.hidden = false; this.disabled = false; this.className = ""; this.ownText = ""; this.value = ""; this.dataset = {};
   }
   set textContent(value) { this.ownText = String(value); this.children = []; }
   get textContent() { return this.ownText + this.children.map(child => child.textContent).join(""); }
@@ -71,7 +71,6 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
       sent.push([path, options]);
       if (replies[path]) return replies[path](data);
       if (path === "state") return { robot, stage, stage_position: position, stage_operation: operation };
-      if (path === "stage/ports") return { ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] };
       if (path.startsWith("stage/reference/")) return { image: "data:image/jpeg;base64,AAAA", offset_px: [1.5, -2], distance_px: 2.5 };
       return { outcome: "accepted" };
     },
@@ -306,8 +305,8 @@ test("both languages define the same strings", () => {
 });
 
 test("stage charts read live encoder rotations without loading Position Finder", async () => {
-  const previous = globalThis.LabTwin;
-  globalThis.LabTwin = { positionMonitor() { throw new Error("Legacy monitor must stay asleep"); } };
+  const previous = globalThis.LabPositionFinder;
+  globalThis.LabPositionFinder = { positionMonitor() { throw new Error("Legacy monitor must stay asleep"); } };
   try {
     const ui = await mounted();
     const position = ui.ws._test.refs().stagePosition;
@@ -319,7 +318,7 @@ test("stage charts read live encoder rotations without loading Position Finder",
     assert.ok(ui.root.textContent.includes("Insert travel"));
     assert.ok(!ui.root.textContent.includes("Target rate"));
     assert.ok(!ui.calls.some(call => String(call[1]).includes("/twin/")));
-  } finally { if (previous === undefined) delete globalThis.LabTwin; else globalThis.LabTwin = previous; }
+  } finally { if (previous === undefined) delete globalThis.LabPositionFinder; else globalThis.LabPositionFinder = previous; }
 });
 
 test("stage charts use the position connector and clear readings when it becomes unavailable", async () => {
@@ -500,7 +499,7 @@ test("the suction state comes from the measured outputs; alarm rows are parsed s
 });
 
 test("the arm card shows joints, alarms and the service message; Stop arm needs no control", async () => {
-  const robot = { ...ROBOT, joints: [1.5, -20, 3, 44.26], message: "Robot stop is confirmed. Disable the robot before recovery.",
+  const robot = { ...ROBOT, robot_mode: 9, robot_error: true, joints: [1.5, -20, 3, 44.26], message: "Robot stop is confirmed. Disable the robot before recovery.",
     alarms: [{ id: 22, source: "controller", description: "Joint 2 limit", solution: "Jog J2 back." }] };
   const page = await mounted({ owns: [], robot: { ...robot, holder: null } });
   const texts = page.root.all().map(node => node.ownText);
@@ -519,17 +518,45 @@ test("the arm card shows joints, alarms and the service message; Stop arm needs 
   assert.deepEqual(page.calls.filter(call => call[0] === "stop"), [["stop", "robot"]]);
 });
 
+const clearButton = page => page.root.all().find(node => node.tagName === "BUTTON" && /^(Recover|Clear alarm)$/.test(node.textContent));
+
 test("an unconfirmed stop shows in the alarm note with Recover; a quiet arm has no note", async () => {
-  const locked = await mounted({ robot: { ...ROBOT, locked: true, stop_unconfirmed: true } });
+  const locked = await mounted({ robot: { ...ROBOT, locked: true, stop_unconfirmed: true, recoverable: true } });
   const note = locked.root.all().find(node => node.className === "mo-alarm");
   assert.equal(note.hidden, false);
   assert.match(note.textContent, /^Stop not confirmed.*Check the arm, then press Recover\..*Recover$/);
+  assert.equal(clearButton(locked).hidden, false);
+  assert.equal(clearButton(locked).disabled, false);
   assert.doesNotMatch(locked.root.all().find(node => node.ownText.startsWith("Enabled")).ownText, /Stop not confirmed|Alarm/);
   const quiet = await mounted();
   assert.equal(quiet.root.all().find(node => node.className === "mo-alarm").hidden, true);
   // An error without an alarm list still shows the note.
   const error = await mounted({ robot: { ...ROBOT, robot_error: true } });
   assert.match(error.root.all().find(node => node.className === "mo-alarm").textContent, /The controller reports an error\./);
+});
+
+test("Recover shows only when the service accepts it; a confirmed stop asks for Disable", async () => {
+  // A confirmed stop keeps the lock until a verified disable. The service refuses clear_alarm.
+  for (const enabled of [true, false]) {
+    const stopped = await mounted({ robot: { ...ROBOT, enabled, locked: true, stop_unconfirmed: false, recoverable: false } });
+    const note = stopped.root.all().find(node => node.className === "mo-alarm");
+    assert.equal(note.hidden, false);
+    assert.match(note.textContent, /^Stopped.*Press Disable to unlock the arm\./);
+    assert.equal(clearButton(stopped).hidden, true);
+    assert.equal(stopped.find("Disable").disabled, false);
+    stopped.find("Disable").click();
+    await stopped.settle();
+    assert.deepEqual(stopped.calls.filter(call => call[0] === "relay").map(call => call[2]), ["disable"]);
+  }
+  // An unconfirmed stop without fresh feedback is not recoverable yet.
+  const waiting = await mounted({ robot: { ...ROBOT, feedback_fresh: false, locked: true, stop_unconfirmed: true, recoverable: false } });
+  assert.equal(clearButton(waiting).hidden, true);
+  assert.match(waiting.root.all().find(node => node.className === "mo-alarm").textContent, /Waiting for fresh feedback\./);
+  // During an alarm the service clears the alarm first.
+  const alarm = await mounted({ robot: { ...ROBOT, robot_mode: 9, locked: true, stop_unconfirmed: true, recoverable: false } });
+  assert.equal(clearButton(alarm).hidden, false);
+  assert.equal(clearButton(alarm).textContent, "Clear alarm");
+  assert.match(alarm.root.all().find(node => node.className === "mo-alarm").textContent, /Fix the alarm cause, then press Clear alarm\./);
 });
 
 test("the activity names each command by its button label", async () => {
@@ -649,16 +676,6 @@ test("the suction buttons wait for a measured state and show held when the servi
   assert.equal(node.textContent, "Held");
 });
 
-test("Refresh ports reads the serial ports again", async () => {
-  const page = await mounted({ stage: { ...STAGE, connected: false } });
-  await page.settle();
-  const reads = () => page.calls.filter(call => call[1] === "stage/ports").length;
-  assert.equal(reads(), 1);
-  page.find("Refresh ports").click();
-  await page.settle();
-  assert.equal(reads(), 2);
-});
-
 test("an absolute target needs calibration and sends fractional encoder coordinates", async () => {
   const motor = { ...STAGE.motors[0], positioning_ready: true, calibration: "done",
     lower_limit_set: true, upper_limit_set: true, lower_limit_rotations: 0, upper_limit_rotations: 12.5 };
@@ -754,15 +771,15 @@ test("an idle axis shows no state, a disconnected stage no position, and ports g
   assert.equal(logic.portLabel({ device: "/dev/ttyUSB0" }), "ttyUSB0");
 });
 
-test("a disconnected stage lists ports and connects on this page's control", async () => {
-  const page = await mounted({ stage: { ...STAGE, connected: false } });
+test("a disconnected stage lists the state ports and sends 1 connect command", async () => {
+  const page = await mounted({ stage: { ...STAGE, connected: false, ports: [{ device: "/dev/ttyACM0", description: "Arduino" }] } });
   await page.settle();
-  assert.ok(page.calls.some(call => call[1] === "stage/ports"));
+  // The card is rebuilt after the robot description loads; the new select still lists the port.
+  const select = page.root.all().find(node => node.tagName === "SELECT");
+  assert.deepEqual(select.children.map(node => node.ownText), ["Arduino · ttyACM0"]);
   page.find("Connect").click();
   await page.settle();
-  assert.deepEqual(page.calls.filter(call => call[1] === "stage/connect"), [["request", "stage/connect", { port: "/dev/ttyACM0" }]]);
-  const connected = await mounted();
-  assert.equal(connected.calls.some(call => call[1] === "stage/ports"), false);
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "connect", { port: "/dev/ttyACM0" }]]);
 });
 
 test("stale encoder feedback hides measured position and disables new moves without a camera reference", async () => {

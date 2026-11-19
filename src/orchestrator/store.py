@@ -93,11 +93,26 @@ class RunStore:
                     chip_id TEXT, step INTEGER, kind TEXT NOT NULL,
                     data_json TEXT NOT NULL, created_at REAL NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS gateway_calls (
-                    id INTEGER PRIMARY KEY, caller TEXT NOT NULL, tool TEXT NOT NULL,
-                    arguments_json TEXT NOT NULL, created_at REAL NOT NULL
+                -- Device history. A restarted service reuses seq, never (seq, ts).
+                CREATE TABLE IF NOT EXISTS device_events (
+                    id INTEGER PRIMARY KEY, device TEXT NOT NULL, seq INTEGER NOT NULL,
+                    ts REAL, level TEXT NOT NULL, message TEXT NOT NULL,
+                    fields_json TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE(device, seq, ts)
                 );
+                CREATE TABLE IF NOT EXISTS device_states (
+                    id INTEGER PRIMARY KEY, device TEXT NOT NULL, ts REAL NOT NULL,
+                    phase TEXT NOT NULL, row_json TEXT NOT NULL, state_json TEXT
+                );
+                CREATE INDEX IF NOT EXISTS device_events_ts ON device_events(ts);
+                CREATE INDEX IF NOT EXISTS device_states_ts ON device_states(device, ts);
+                DROP TABLE IF EXISTS gateway_calls;
             """)
+            columns = {row[1] for row in self._db.execute("PRAGMA table_info(device_events)")}
+            if "fields_json" not in columns:
+                self._db.execute(
+                    "ALTER TABLE device_events ADD COLUMN fields_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def _check(self, path, *, directory=False):
         info = path.lstat()
@@ -231,39 +246,6 @@ class RunStore:
         if type(offset) is not int or not 0 <= offset <= 1000000:
             raise ValueError("Read offset must be an integer from 0 to 1000000.")
         return -1 if limit is None else limit, offset
-
-    def audit_call(self, caller, tool, arguments):
-        """Commit a gateway call independently of any recipe run, before its read."""
-        if (
-            not isinstance(caller, str)
-            or not caller.strip()
-            or len(caller) > 128
-            or any(not " " <= char <= "~" for char in caller)
-        ):
-            raise ValueError("Audit caller must contain 1 to 128 printable characters.")
-        # Keep original invalid names/arguments, including escaped surrogates.
-        # Escaping can expand the transport's bounded 64 KiB request body.
-        tool_json = json.dumps(tool, ensure_ascii=True, allow_nan=False)
-        payload = json.dumps(arguments, ensure_ascii=True, allow_nan=False)
-        if len(tool_json) + len(payload) > 524288:
-            raise ValueError("Audit call exceeds 512 KiB.")
-        with self._lock, self._db:
-            row = self._db.execute(
-                "INSERT INTO gateway_calls(caller,tool,arguments_json,created_at) VALUES(?,?,?,?)",
-                (caller, tool_json, payload, time.time()),
-            )
-            return row.lastrowid
-
-    def audit_calls(self, *, limit=100, offset=0):
-        """Read bounded audit records without requiring a run identity."""
-        page = self._page(limit, offset)
-        with self._lock:
-            return [
-                {**dict(row), "tool": json.loads(row["tool"])}
-                for row in self._db.execute(
-                    "SELECT * FROM gateway_calls ORDER BY id DESC LIMIT ? OFFSET ?", page
-                )
-            ]
 
     def runs(self, *, limit=None, offset=0, chip_id=None):
         page = self._page(limit, offset)
@@ -500,6 +482,71 @@ class RunStore:
                 return {**result, "data": b"".join(chunks)}
         except OSError as error:
             raise ValueError("Cannot read artifact safely.") from error
+
+    def add_device_events(self, rows):
+        """Insert (device, seq, ts, level, message, fields) rows; skip rows already stored."""
+        with self._lock, self._db:
+            self._db.executemany(
+                "INSERT OR IGNORE INTO device_events(device,seq,ts,level,message,fields_json) "
+                "VALUES(?,?,?,?,?,?)",
+                [(*row[:5], encoded(row[5])) for row in rows],
+            )
+
+    def add_device_state(self, device, ts, phase, row, state):
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO device_states(device,ts,phase,row_json,state_json) VALUES(?,?,?,?,?)",
+                (device, ts, phase, encoded(row), None if state is None else encoded(state)),
+            )
+
+    def _device_rows(self, table, columns, device, since, start, end, limit):
+        self._page(limit)
+        clauses, parameters = ["id>?"], [since]
+        for clause, value in (("device=?", device), ("ts>=?", start), ("ts<=?", end)):
+            if value is not None:
+                clauses.append(clause)
+                parameters.append(value)
+        with self._lock:
+            return [
+                dict(row)
+                for row in self._db.execute(
+                    f"SELECT {columns} FROM {table} WHERE {' AND '.join(clauses)} "
+                    "ORDER BY ts DESC, id DESC LIMIT ?",
+                    (*parameters, limit),
+                )
+            ]
+
+    def device_events(self, *, device=None, since=0, start=None, end=None, limit=500):
+        """Return stored device events, newest first. id is the cursor for since."""
+        rows = self._device_rows(
+            "device_events",
+            "id,device,seq,ts,level,message,fields_json",
+            device,
+            since,
+            start,
+            end,
+            limit,
+        )
+        for row in rows:
+            row["fields"] = json.loads(row.pop("fields_json"))
+        return rows
+
+    def device_states(self, *, device=None, start=None, end=None, limit=500):
+        """Return stored device state rows, newest first."""
+        rows = self._device_rows(
+            "device_states", "id,device,ts,phase,row_json,state_json", device, 0, start, end, limit
+        )
+        for row in rows:
+            row["row"] = json.loads(row.pop("row_json"))
+            state = row.pop("state_json")
+            row["state"] = None if state is None else json.loads(state)
+        return rows
+
+    def prune_devices(self, before):
+        """Delete device history older than the time before."""
+        with self._lock, self._db:
+            for table in ("device_events", "device_states"):
+                self._db.execute(f"DELETE FROM {table} WHERE ts<?", (before,))
 
     def close(self):
         with self._lock:

@@ -2,6 +2,7 @@
 
 import copy
 import errno
+import functools
 import ipaddress
 import json
 import math
@@ -18,7 +19,7 @@ from mg400.controller_ownership import ControllerOwnership
 from mg400.sim import Simulator
 from mg400.web_control import RobotPanelState
 
-from .clients import FurnaceAdapter, RobotAdapter, ServiceAdapter, ThermalAdapter
+from .clients import RobotAdapter, ServiceAdapter, ThermalAdapter
 
 DEMO_SERVICES = frozenset({"robot", "stage", "thermal", "furnace", "vision"})
 
@@ -430,7 +431,6 @@ class _DemoClient:
         "recovery_stop",
         "release",
         "roi",
-        "gas_stop",
     }
     # The console reads events, relays manual commands and keyboard keys. It renews
     # only when a browser heartbeat asks, so the profile adds no renewal thread.
@@ -440,6 +440,8 @@ class _DemoClient:
         if profile not in self._PROFILES:
             raise ValueError("Unknown rehearsal client profile.")
         self._owner, self._adapter = owner, adapter
+        # A data attribute, not a method: the synthetic tool of the demo robot.
+        self.tool_file = getattr(adapter, "tool_file", None)
         self._methods = self._PROFILES[profile]
         self._closed = False
         self._calls = 0
@@ -638,8 +640,15 @@ class Rehearsal:
         self._serve(server)
         self._stack.callback(server.stop_sockets)
         url = f"http://127.0.0.1:{server.server_port}"
-        self._endpoints["robot"] = (RobotAdapter, url)
-        self.clients["robot"] = RobotAdapter(url, self.identity)
+        # The demo robot carries the same tool length as the lab robot.
+        tool = self.directory / "tool.toml"
+        if not tool.exists():
+            fd = os.open(tool, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write("offset_mm = [0, 0, 146]\n")
+        adapter = functools.partial(RobotAdapter, tool_file=tool)
+        self._endpoints["robot"] = (adapter, url)
+        self.clients["robot"] = adapter(url, self.identity)
 
     def _serve(self, server):
         self._stack.callback(server.server_close)
@@ -669,7 +678,7 @@ class Rehearsal:
         controller.start()
         server = make_server("127.0.0.1", 0, create_app(controller=controller), threaded=True)
         self._serve(server)
-        url = f"http://127.0.0.1:{server.server_port}/contract"
+        url = f"http://127.0.0.1:{server.server_port}/"
         self._endpoints["stage"] = (ServiceAdapter, url)
         self.clients["stage"] = ServiceAdapter(url, self.identity)
 
@@ -726,8 +735,8 @@ class Rehearsal:
         server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
         self._serve(server)
         url = f"http://127.0.0.1:{server.server_port}"
-        self._endpoints["furnace"] = (FurnaceAdapter, url)
-        self.clients["furnace"] = FurnaceAdapter(url, self.identity)
+        self._endpoints["furnace"] = (ServiceAdapter, url)
+        self.clients["furnace"] = ServiceAdapter(url, self.identity)
 
     def _vision(self):
         from werkzeug.serving import make_server

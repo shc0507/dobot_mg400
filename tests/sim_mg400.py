@@ -75,7 +75,7 @@ def short_wait_stable(
         if received != previous:
             previous = received
             if sample.mode not in final_modes or (
-                target is not None and not control._near(sample.joints_deg, target)
+                target is not None and not control._near(sample.joints_deg[: len(target)], target)
             ):
                 anchor, count = None, 0
             elif anchor is None or not control._near(sample.joints_deg, anchor, 0.025):

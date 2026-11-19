@@ -71,7 +71,7 @@ def test_motion_state_includes_only_explicit_position_source(monkeypatch):
 
 
 def test_stage_projection_keeps_encoder_telemetry_and_hides_private_state():
-    stage, _ = motion._stage(
+    stage = motion._stage(
         {
             "closed_loop": True,
             "telemetry_streaming": True,

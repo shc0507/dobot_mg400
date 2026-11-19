@@ -19,14 +19,12 @@ from flask import Flask, jsonify, request
 from flask.json.provider import DefaultJSONProvider
 from werkzeug.exceptions import HTTPException
 
-from labkit.auth import bearer_matches, valid_token
 from labkit.describe import command, describe
 from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.flask import contract_blueprint
 from labkit.lease import Lease, validate_client
 
-from .approvals import Approvals
 from .clients import Clients, from_settings
 from .recipe import Recipe, validate
 from .rehearsal import DEMO_SERVICES
@@ -49,10 +47,6 @@ DEMO_ENV = (
         "TERM",
         "COLORTERM",
         "TZ",
-        "MG400_ORCH_BIND",
-        "MG400_ORCH_PORT",
-        "MG400_ORCH_BASE_PATH",
-        "MG400_ORCH_RECIPES_DIR",
         CONFIG_SETTING,
         DEMO_MARKER,
     }
@@ -368,10 +362,8 @@ class OrchestratorService:
         clock=time.monotonic,
     ):
         self.settings = dict(os.environ if settings is None else settings)
-        self.catalog = Catalog(
-            recipes_dir or self.settings.get("MG400_ORCH_RECIPES_DIR") or CATALOG_DEFAULT
-        )
-        self.runs_dir = Path(runs_dir or self.settings.get("MG400_ORCH_RUNS_DIR") or DEFAULT_RUNS)
+        self.catalog = Catalog(recipes_dir or CATALOG_DEFAULT)
+        self.runs_dir = Path(runs_dir or DEFAULT_RUNS)
         self.demo = bool(demo)
         self.registry = registry or default_registry(
             calibration_reference_provider=self._demo_calibration_references if self.demo else None
@@ -385,18 +377,18 @@ class OrchestratorService:
         self.runners, self.plans = {}, {}
         self.owner = None
         self.resume_cancel = None
-        self.approval_generation = 0
         self.closing = self.started = False
         self.last_command = self.fault = None
         self.report = None
         self.poll_stop = threading.Event()
         self.poller = None
+        from .devices import Devices
         from .web.backend import Dashboard
         from .web.console import Console
 
         self.dashboard = Dashboard(self, clock=clock)
         self.console = Console(self, clock=clock)
-        self.approvals = Approvals(self, clock=clock)
+        self.devices = Devices(self, clock=clock, on_events=self.console.pull_events)
 
     def _demo_calibration_references(self):
         if not self.demo or self.resources is None:
@@ -638,12 +630,8 @@ class OrchestratorService:
                 if self.resources is None
                 else self.resources.existing_client(name, identity, profile=profile)
             )
-        prefix = f"MG400_ORCH_{name.upper()}"
-        settings = {
-            key: value
-            for key, value in self.settings.items()
-            if key in {prefix + "_URL", "MG400_ORCH_TIMEOUT_S"}
-        }
+        key = f"MG400_ORCH_{name.upper()}_URL"
+        settings = {key: self.settings[key]} if self.settings.get(key) else {}
         return from_settings(settings, identity=identity).get(name)
 
     def console_client(self, name, identity):
@@ -730,19 +718,17 @@ class OrchestratorService:
             )
         return recipe, plan
 
-    def approval_ticket(self, client):
-        """Fence slow approval validation/audit without retaining the control locks."""
-        with self.lease.control(client), self.lock, self.dashboard.lock:
-            self._ready()
-            if self.dashboard.busy():
-                raise ServiceError(409, "Dashboard safety requests are still draining.")
-            return self.approval_generation, self.dashboard.approval_generation
-
-    def run(self, prepared, client, *, approval_ticket=None):
+    def run(self, prepared, client, *, borrow=False):
+        """Start a run. With borrow, the run uses the devices that this client's
+        console page holds, and the console keeps their leases."""
         recipe, plan = prepared
+        lent = self.console.lend(client, plan.required_services) if borrow else None
 
         def start(job):
-            services = self._clients(plan.required_services, "run-" + uuid.uuid4().hex)
+            if lent is not None:
+                services = lent
+            else:
+                services = self._clients(plan.required_services, "run-" + uuid.uuid4().hex)
             if job["cancelled"].is_set():
                 for service in services.values():
                     service.close()
@@ -765,18 +751,13 @@ class OrchestratorService:
             else:
                 runner.start()
 
-        with self.lease.control(client), self.lock:
-            if approval_ticket is not None:
-                # The reservation generation and admission gate are atomic with
-                # dashboard reserve(). No app lock is acquired by that method.
-                with self.dashboard.lock:
-                    if approval_ticket != (
-                        self.approval_generation,
-                        self.dashboard.approval_generation,
-                    ):
-                        raise ServiceError(409, "Approval control was revoked before dispatch.")
-                    return self._schedule("run", client, start, exclusive=True)
-            return self._schedule("run", client, start, exclusive=True)
+        try:
+            with self.lease.control(client), self.lock:
+                return self._schedule("run", client, start, exclusive=True)
+        except BaseException:
+            for service in (lent or {}).values():
+                service.close()
+            raise
 
     def get_run(self, run_id):
         result = self.store.get(run_id)
@@ -844,7 +825,6 @@ class OrchestratorService:
 
     def _lost(self, reason):
         with self.lock:
-            self.approval_generation += 1
             if self.job is not None:
                 self.job["cancelled"].set()
             if self.current is not None and not self.current.wait_closed(0):
@@ -1001,7 +981,7 @@ class OrchestratorService:
 
     def close(self):
         self.dashboard.begin_close()
-        self.console.close()
+        self.devices.close()
         with self.lock:
             self.closing = True
             self._lost("Orchestrator service is shutting down.")
@@ -1022,6 +1002,8 @@ class OrchestratorService:
             ):
                 break
             time.sleep(0.02)
+        # After the drain: the run has returned its lent leases, so the console releases them.
+        self.console.close()
         self.poll_stop.set()
         if self.poller is not None:
             self.poller.join()
@@ -1038,17 +1020,6 @@ class OrchestratorService:
 
 
 def create_app(service, *, base_path="/"):
-    settings = getattr(service, "settings", {})
-    proposal_token = settings.get("MG400_GATEWAY_TOKEN", "")
-    requester = settings.get("MG400_GATEWAY_CALLER", "gateway-agent")
-    if proposal_token:
-        validate_client(requester)
-        if (
-            not isinstance(proposal_token, str)
-            or len(proposal_token) < 24
-            or not valid_token(proposal_token)
-        ):
-            raise ValueError("The gateway token needs at least 24 printable ASCII characters.")
     app = Flask(__name__)
     app.json = StrictJSON(app)
     app.config["MAX_CONTENT_LENGTH"] = 65536
@@ -1062,11 +1033,6 @@ def create_app(service, *, base_path="/"):
 
     @app.before_request
     def access():
-        if request.endpoint in {"propose", "get_proposal"}:
-            if not proposal_token:
-                raise ServiceError(409, "Proposal access is not configured.")
-            if not bearer_matches(request.headers.get("Authorization", ""), proposal_token):
-                raise ServiceError(401, "Invalid proposal credential.")
         if request.method == "POST":
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json.")
@@ -1104,47 +1070,18 @@ def create_app(service, *, base_path="/"):
     def recipes():
         return jsonify(recipes=service.catalog.list())
 
-    @app.post(prefix + "/api/proposals")
-    def propose():
-        try:
-            result = service.approvals.propose(request.get_json(), requester)
-        except ValueError:
-            raise ValueError(
-                "Proposal violates the catalog, parameters or host approval policy."
-            ) from None
-        return jsonify(result), 201
-
-    @app.get(prefix + "/api/proposals/<identifier>")
-    def get_proposal(identifier):
-        record = service.approvals.get(identifier)
-        if record["requester"] != requester:
-            raise ServiceError(404, "Proposal unavailable.")
-        return jsonify(record)
-
-    @app.get(prefix + "/api/approvals")
-    def approvals():
-        if not proposal_token:
-            return jsonify(approvals=[], enabled=False)
-        return jsonify(approvals=service.approvals.list(), enabled=True)
-
-    @app.post(prefix + "/api/approvals/<identifier>/decision")
-    def decision(identifier):
-        if not proposal_token:
-            raise ServiceError(409, "Proposal access is not configured.")
-        actor = request.headers["X-MG400-Client"]
-        if actor == requester:
-            raise ServiceError(403, "The gateway identity cannot decide proposals.")
-        result = service.approvals.decide(identifier, request.get_json(), actor)
-        return jsonify(result), 202 if result["decision"] == "approved" else 200
-
     @app.get(prefix + "/api/runs")
     def runs():
         return jsonify(runs=service.store.runs())
 
     @app.post(prefix + "/api/runs")
     def run():
-        prepared = service.prepare_run(request.get_json())
-        command_id = service.run(prepared, request.headers["X-MG400-Client"])
+        data = request.get_json()
+        borrow = data.pop("borrow", False) if isinstance(data, dict) else False
+        if type(borrow) is not bool:
+            raise ValueError("borrow must be true or false.")
+        prepared = service.prepare_run(data)
+        command_id = service.run(prepared, request.headers["X-MG400-Client"], borrow=borrow)
         return jsonify(command_id=command_id), 202
 
     @app.get(prefix + "/api/runs/<run_id>")

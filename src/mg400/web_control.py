@@ -88,6 +88,7 @@ class RobotPanelState:
     FEEDBACK_SECONDS = 0.25
     CONNECT_SECONDS = 1.5
     ALARM_READ_SECONDS = 1.0
+    RECONNECT_SECONDS = 1.0
     KEY_LEASE_SECONDS = KEY_LEASE_SECONDS
     KEYBOARD_JOIN_SECONDS = KEYBOARD_JOIN_SECONDS
 
@@ -150,6 +151,8 @@ class RobotPanelState:
         self._started = 0.0
         self._owner = None
         self._heartbeat = 0.0
+        # A contract lease disconnects at its end, as stop_sync does. The legacy one only stops.
+        self._lease_disconnects = False
         self._busy = False
         self._working = False
         self._job = None
@@ -254,7 +257,69 @@ class RobotPanelState:
                 "keyboard_active_key": self._kb_active if self._kb_thread is not None else None,
                 "keyboard_speed_percent": self._kb_speed,
                 "keyboard_disarm_reason": self._kb_reason,
+                # Instrument contract v1 fields.
+                "service": "robot",
+                "seq": self._version,
+                "ts_unix": time.time(),
+                "demo": False,
+                "connected": self._fresh(),
+                "fault": self._fault_state(sample),
+                "lease": self._lease(),
             }
+
+    def _fault_state(self, sample):
+        if self._fault:
+            return {"code": "stop_unconfirmed", "message": self._message}
+        if sample is not None and (sample.error_status or sample.mode == 9):
+            return {"code": "robot_alarm", "message": "The robot reports an alarm."}
+        return None
+
+    def _lease(self):
+        if self._owner is None:
+            return {"holder": None, "remaining_s": 0}
+        remaining = self.LEASE_SECONDS - (time.monotonic() - self._heartbeat)
+        return {"holder": self._owner, "remaining_s": max(0.0, remaining)}
+
+    # Contract lease routes. The lease is the controlling browser: the grant connects
+    # (start_sync), a release does stop_sync, and an expiry does the same.
+
+    def acquire(self, client_id):
+        with self._lock:
+            self._expire_lease()
+            if self._owner not in (None, client_id):
+                raise RuntimeError("Another client holds the control lease")
+            if self._owner is None:
+                self.command({"action": "start_sync"}, client_id)
+                self._lease_disconnects = True
+            self._heartbeat = time.monotonic()
+            return self._lease()
+
+    def renew(self, client_id):
+        with self._lock:
+            self._expire_lease()
+            if self._owner != client_id:
+                raise RuntimeError("Acquire the control lease before renewing it")
+            self._heartbeat = time.monotonic()
+            return self._lease()
+
+    def release(self, client_id):
+        with self._lock:
+            self._expire_lease()
+            if self._owner not in (None, client_id):
+                raise RuntimeError("Another client holds the control lease")
+            if self._owner is not None:
+                self.command({"action": "stop_sync"}, client_id)
+            return self._lease()
+
+    def submit(self, payload, client_id):
+        """Run one contract command. Return (command_id, state); keys have no command ID."""
+        if not isinstance(payload, dict):
+            raise ValueError("Request must be a JSON object")
+        if payload.get("action") == "keys":
+            return None, self.keys({k: v for k, v in payload.items() if k != "action"}, client_id)
+        with self._lock:
+            state = self.command(payload, client_id)
+            return f"{self._instance}:{self._command_number}", state
 
     def describe(self):
         """Describe the legacy robot command protocol without changing its payloads."""
@@ -320,6 +385,17 @@ class RobotPanelState:
             ],
         )
         commands["keyboard"] = describe_command(keyboard)
+        commands["keys"] = describe_command(
+            parameter(
+                "object",
+                properties={
+                    "seq": parameter("integer", minimum=0, maximum=2**53),
+                    "held": parameter("array", items=parameter("string")),
+                },
+                required=["seq", "held"],
+                additionalProperties=False,
+            )
+        )
         metadata = describe(
             service="robot",
             version="0.1.0",
@@ -330,6 +406,7 @@ class RobotPanelState:
             commands=commands,
         )
         metadata["commands"]["keyboard"]["ui_only"] = True
+        metadata["commands"]["keys"]["ui_only"] = True
         return metadata
 
     def stop(self, client_id, wait_s=0):
@@ -431,6 +508,12 @@ class RobotPanelState:
                     self._reader_stop.set()
                     self._message = "The browser control lease expired before feedback connected."
                     self._finish_commands("sync", "stopped", self._message)
+                elif self._lease_disconnects:
+                    self._request_stop(
+                        disabling=self._fresh() and self._sample.mode == 4,
+                        disconnect=True,
+                        reason="The control lease expired.",
+                    )
                 else:
                     self._request_stop(reason="The browser control lease expired.")
 
@@ -549,6 +632,8 @@ class RobotPanelState:
                     if self._owner is None and self._kb_seq_client != client_id:
                         # Each page numbers its keyboard messages from 1.
                         self._kb_seq, self._kb_seq_client = 0, client_id
+                    if self._owner is None:
+                        self._lease_disconnects = False
                     self._owner = client_id
                     self._heartbeat = time.monotonic()
                 else:
@@ -650,6 +735,27 @@ class RobotPanelState:
             self._release_ownership_if_idle()
             raise
 
+    def _idle_at_rest(self):
+        """Whether fresh feedback shows an enabled idle robot without an alarm, and no work runs."""
+        return (
+            self._fresh()
+            and self._sample.mode == 5
+            and not self._sample.error_status
+            and not (
+                self._locked
+                or self._fault
+                or self._busy
+                or self._working
+                or self._job
+                or self._safety_workers
+                or self._clearing
+                or self._kb_on
+                or self._kb_arming
+                or self._kb_thread is not None
+                or self._kb_session is not None
+            )
+        )
+
     def _release_ownership_if_idle(self):
         """Keep ownership until feedback and all controller work have ended."""
         if (
@@ -669,29 +775,49 @@ class RobotPanelState:
         self._ownership.release()
 
     def _read_feedback(self):
-        try:
-            with self._connection_factory(self.robot_host, timeout_s=1.0) as connection:
-                while not self._reader_stop.is_set():
-                    sample = connection.read_latest()
-                    with self._lock:
-                        if self._reader_stop.is_set():
-                            return
-                        first = self._sample is None
-                        self._sample, self._received = sample, time.monotonic()
-                        if first:
-                            self._finish_commands("sync", "ok", "Robot feedback is connected.")
-                        if first and not self._locked:
-                            self._message = "Robot feedback is connected."
-        except Exception as error:
-            with self._lock:
-                if not self._reader_stop.is_set():
-                    self._feedback_failed = True
+        """Read feedback until sync stops. After a lost connection, reconnect.
+
+        A lost connection latches an unconfirmed stop: the service could not watch
+        the robot. Fresh feedback after the reconnect makes Recover possible.
+        """
+        stop = self._reader_stop
+        while True:
+            try:
+                with self._connection_factory(self.robot_host, timeout_s=1.0) as connection:
+                    while not stop.is_set():
+                        sample = connection.read_latest()
+                        with self._lock:
+                            if stop.is_set():
+                                return
+                            first = self._sample is None
+                            reconnected = self._feedback_failed
+                            self._feedback_failed = False
+                            self._sample, self._received = sample, time.monotonic()
+                            if first:
+                                self._finish_commands("sync", "ok", "Robot feedback is connected.")
+                            if first and not self._locked:
+                                self._message = "Robot feedback is connected."
+                            if reconnected:
+                                self._message = "Robot feedback is reconnected." + (
+                                    " " + self._recovery_hint() if self._fault else ""
+                                )
+                    return
+            except Exception as error:
+                with self._lock:
+                    if stop.is_set():
+                        return
                     if self._sample is None and not self._busy:
+                        self._feedback_failed = True
                         self._syncing = False
                         self._message = f"Robot feedback connection failed: {error}"
                         self._finish_commands("sync", "failed", self._message)
-                    else:
+                        return
+                    if not self._feedback_failed:
+                        self._feedback_failed = True
+                        self._record_fault()
                         self._request_stop(reason=f"Robot feedback failed: {error}")
+            if stop.wait(self.RECONNECT_SECONDS):
+                return
 
     def _request_stop(self, *, disabling=False, disconnect=False, reason=None, record=None):
         """Latch cancellation before a separate worker sends the stop command.
@@ -701,6 +827,8 @@ class RobotPanelState:
         keyboard worker exits, so the stops never overlap.
         """
         self._ownership.acquire()
+        # A user stop of an idle robot that needs no recovery confirms without the lock.
+        unlock = record is not None and not (disabling or disconnect) and self._idle_at_rest()
         self._cancel_generation += 1
         if record is not None:
             record["generation"] = self._cancel_generation
@@ -717,11 +845,29 @@ class RobotPanelState:
             return
         self._disable_verified = False
         self._message = reason or ("Disabling the robot." if disabling else "Stopping the robot.")
+        # A disabled arm can be moved by hand. Its joints then move, but no motor
+        # drives them, so a disable needs no rest check.
+        check_rest = not (
+            disabling
+            and self._fresh()
+            and self._sample.mode == 4
+            and not self._sample.error_status
+            and not self._busy
+            and not self._working
+            and not self._job
+            and keyboard is None
+        )
         self._safety_workers += 1
         self._safety_actions.add(disabling)
         thread = threading.Thread(
             target=self._stop,
-            args=(self._control, disabling, keyboard),
+            args=(
+                self._control,
+                disabling,
+                keyboard,
+                check_rest,
+                unlock and self._cancel_generation,
+            ),
             daemon=True,
         )
         self._safety_threads = [worker for worker in self._safety_threads if worker.is_alive()]
@@ -738,7 +884,7 @@ class RobotPanelState:
             return
         self._safety_threads.append(thread)
 
-    def _stop(self, control, disabling, keyboard=None):
+    def _stop(self, control, disabling, keyboard=None, check_rest=True, unlock=None):
         try:
             if keyboard is not None:
                 # The guard refuses new keyboard sends while the session stops itself.
@@ -747,7 +893,8 @@ class RobotPanelState:
                 control.cancel(disabling=disabling)
             if disabling:
                 control.disable()
-                control.verify_stationary()
+                if check_rest:
+                    control.verify_stationary()
             else:
                 result = control.stop()
                 if not result["ok"]:
@@ -766,11 +913,17 @@ class RobotPanelState:
                     )
                 if disabling:
                     self._disable_verified = True
-                self._message = (
-                    "Robot disable and rest are confirmed."
-                    if disabling
-                    else "Robot stop is confirmed. Disable the robot before recovery."
-                )
+                if not disabling:
+                    self._message = "Robot stop is confirmed. Disable the robot before recovery."
+                elif check_rest:
+                    self._message = "Robot disable and rest are confirmed."
+                else:
+                    self._message = "Robot disable is confirmed."
+                if unlock == self._cancel_generation and self._sample.mode == 5:
+                    # No other stop came since the request, so robot recipes can run back to back.
+                    self._control = self._new_control()
+                    self._locked = False
+                    self._message = "Robot stop is confirmed. The robot is enabled and idle."
                 if self._fault:
                     # A later success must not hide an earlier unconfirmed verdict.
                     self._message = (
@@ -791,8 +944,8 @@ class RobotPanelState:
                         f"Robot stop or disable is unconfirmed: the controller rejected it "
                         f"({control.rejection}). Feedback shows the robot disabled and still, "
                         "without an alarm. The controller is probably not in TCP/IP mode. "
-                        "Check it with sudo mg400ctl mode. To recover, run sudo mg400ctl stop web, "
-                        "sudo mg400ctl mode --switch-to-tcp, then sudo mg400ctl start web."
+                        "Check it with sudo labctl mode. To recover, run sudo labctl stop web, "
+                        "sudo labctl mode --switch-to-tcp, then sudo labctl start web."
                     )
         finally:
             with self._lock:

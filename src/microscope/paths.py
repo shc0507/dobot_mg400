@@ -4,19 +4,22 @@ import os
 import stat
 from pathlib import Path
 
+CALIBRATION_ROOT = Path("/var/lib/mg400/calibration/microscope")
+RUNS_ROOT = Path("/var/lib/mg400/runs")
+
 
 def calibration_root():
-    return _root("MG400_MICROSCOPE_CALIBRATION_DIR", "/var/lib/mg400/calibration/microscope")
+    return _root(CALIBRATION_ROOT)
 
 
 def runs_root():
-    return _root("MG400_ORCH_RUNS_DIR", "/var/lib/mg400/runs")
+    return _root(RUNS_ROOT)
 
 
-def _root(setting, default):
-    path = Path(os.environ.get(setting, default))
+def _root(path):
+    path = Path(path)
     if not path.is_absolute() or ".." in path.parts or path == Path(path.anchor):
-        raise ValueError(f"{setting} must be an absolute path without parent traversal")
+        raise ValueError("Host data roots must be absolute paths without parent traversal")
     return path
 
 

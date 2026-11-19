@@ -18,16 +18,20 @@ def parameter(kind, **keywords):
     return copy.deepcopy(value)
 
 
-def command(params=None, *, any_client=False):
-    """Describe command arguments; the service validates them before device access."""
-    if not isinstance(any_client, bool):
-        raise ValueError("any_client must be a boolean.")
+def command(params=None, *, any_client=False, recovery=False):
+    """Describe command arguments; the service validates them before device access.
+
+    A recovery command (a reconnect or an acknowledge) may run while the service is locked.
+    """
+    if not isinstance(any_client, bool) or not isinstance(recovery, bool):
+        raise ValueError("any_client and recovery must be booleans.")
     if params is None:
         params = {"type": "object", "properties": {}, "additionalProperties": False}
     if not isinstance(params, dict) or params.get("type") != "object":
         raise ValueError("Command parameters must use an object JSON Schema.")
     json.dumps(params, allow_nan=False)
-    return {"params": copy.deepcopy(params), "any_client": any_client}
+    spec = {"params": copy.deepcopy(params), "any_client": any_client}
+    return {**spec, "recovery": True} if recovery else spec
 
 
 def describe(*, service, version, demo, zones, lease_seconds=3, on_lease_expiry, commands):
@@ -53,7 +57,11 @@ def describe(*, service, version, demo, zones, lease_seconds=3, on_lease_expiry,
             raise ValueError("Each command needs a name and description.")
         if "params" not in spec or spec["params"] is None:
             raise ValueError("Each command needs an object parameter schema.")
-        normalized[name] = command(spec["params"], any_client=spec.get("any_client"))
+        normalized[name] = command(
+            spec["params"],
+            any_client=spec.get("any_client"),
+            recovery=spec.get("recovery", False),
+        )
     result = {
         "service": service,
         "version": version,

@@ -14,7 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = "src/orchestrator/web/twin.py"
-STATIC = "src/orchestrator/web/static/console/twin.js"
+STATIC = "src/orchestrator/web/static/console/position-finder.js"
 CAMERA = "scripts/camera_preview.py"
 
 
@@ -236,7 +236,7 @@ def test_console_readiness_accepts_sleeping_legacy_workspace(
     else:
         with pytest.raises(RuntimeError, match="test Console did not become ready"):
             twin.ready()
-    assert request.call_args.args[0].full_url == twin.URL + "api/console/ws/twin/state"
+    assert request.call_args.args[0].full_url == twin.URL + "api/console/ws/position-finder/state"
     assert request.call_args.args[0].get_header("X-mg400-client") == "deploy-check"
 
 

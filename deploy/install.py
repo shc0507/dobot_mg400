@@ -31,6 +31,7 @@ import assets  # noqa: E402
 
 from cameras.config import camera_configuration  # noqa: E402
 from cameras.config import camera_devices as camera_devices  # noqa: E402
+from labkit import ports  # noqa: E402
 
 SOURCE = Path(__file__).resolve().parents[1]
 TOUPCAM_VERSION = "59.30594.20260120"
@@ -75,13 +76,13 @@ class Host:
         self.toupcam = root / "usr/local/lib/mg400/libtoupcam.so"
         self.proxy_config = self.etc / "Caddyfile"
         self.units = root / "etc/systemd/system"
-        self.command = root / "usr/local/bin/mg400ctl"
-        self.lab_command = root / "usr/local/bin/labctl"
+        self.command = root / "usr/local/bin/labctl"
+        self.old_command = root / "usr/local/bin/mg400ctl"
         self.udev = root / "etc/udev/rules.d"
         self.dev = root / "dev"
 
 
-SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "port", "assets"}
+SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "assets"}
 # The default PATH of systemd services. The microscope finds ffmpeg and ffprobe there.
 SERVICE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 SERVICE_NAME = re.compile(r"[a-z][a-z0-9-]*")
@@ -99,7 +100,7 @@ def load_services(path):
     if set(data) != {"service"} or not isinstance(data["service"], list) or not data["service"]:
         raise ValueError("Service registry must contain nonempty [[service]] entries.")
     result = {}
-    used_units, used_assets, used_ports = set(), set(), set()
+    used_units, used_assets = set(), set()
     for entry in data["service"]:
         if not isinstance(entry, dict) or set(entry) != SERVICE_FIELDS:
             raise ValueError("Service registry entry has missing or unknown fields.")
@@ -125,18 +126,10 @@ def load_services(path):
                 or (field == "units" and not values)
             ):
                 raise ValueError(f"Service {name}: invalid or duplicate {field}.")
-        port = entry["port"]
-        if type(port) is not int or not 0 <= port <= 65535:
-            raise ValueError(f"Service {name}: port must be 0 or a valid TCP port.")
-        if (
-            used_units.intersection(entry["units"])
-            or used_assets.intersection(entry["assets"])
-            or (port and port in used_ports)
-        ):
-            raise ValueError(f"Service {name}: duplicate unit, asset, or port.")
+        if used_units.intersection(entry["units"]) or used_assets.intersection(entry["assets"]):
+            raise ValueError(f"Service {name}: duplicate unit or asset.")
         used_units.update(entry["units"])
         used_assets.update(entry["assets"])
-        used_ports.add(port)
         result[name] = entry
     return result
 
@@ -267,21 +260,9 @@ def parse_settings(text):
     return values
 
 
-# Fixed settings for programs that mg400ctl and labctl start. Their units set the same values.
-FIXED_SETTINGS = {
-    "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
-    "MG400_ORCH_ROBOT_URL": "http://127.0.0.1:8766/",
-    "MG400_ORCH_STAGE_URL": "http://127.0.0.1:8767/contract/",
-    "MG400_ORCH_THERMAL_URL": "http://127.0.0.1:8768/",
-    "MG400_ORCH_FURNACE_URL": "http://127.0.0.1:8769/",
-    "MG400_ORCH_MICROSCOPE_URL": "http://127.0.0.1:8770/",
-    "MG400_ORCH_VISION_URL": "http://127.0.0.1:8771/",
-}
-
-
 def obsolete(key, value):
     """Removed settings: service tokens, and empty settings that are not in the example."""
-    return (key.endswith("_TOKEN") and key != "MG400_GATEWAY_TOKEN") or not value
+    return key.endswith("_TOKEN") or not value
 
 
 def merge_settings(current, example):
@@ -450,7 +431,7 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
     # With NVENC, the microscope, camera 1 at 4K, and 3 previews at 1280x720 have a
     # combined H.264 cap of 20 Mbit/s on the 22 Mbit/s VPN link.
     streams += (
-        "  microscope: http://127.0.0.1:8770/api/camera/microscope/mjpeg\n"
+        f"  microscope: {ports.url('microscope', 'api/camera/microscope/mjpeg')}\n"
         "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"
     )
     if nvenc:
@@ -458,8 +439,8 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
     preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"
     return (
-        "api:\n  listen: 127.0.0.1:1984\n"
-        "rtsp:\n  listen: 127.0.0.1:8554\n"
+        f"api:\n  listen: {ports.HOST}:{ports.PORTS['go2rtc']}\n"
+        f"rtsp:\n  listen: {ports.HOST}:{ports.PORTS['go2rtc-rtsp']}\n"
         'webrtc:\n  listen: ""\n'
         f"ffmpeg:\n{FFMPEG_RTSP}{FFMPEG_MJPEG_30}"
         f"{H264_NVENC + H265_NVENC if nvenc else H264_X264}"
@@ -468,10 +449,10 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False):
     )
 
 
-# The proxy serves only the Lab Console (/lab/) and the camera streams (port 1985).
-PROXY_UPSTREAMS = {"ORCH": 8772}
-# Fixed: the console control socket of the orchestrator (SOCKET_PORT in orchestrator/__main__.py).
-ORCH_SOCKET_PORT = 8774
+# The proxy serves only the Lab Console (/lab/) and the camera streams.
+PROXY_UPSTREAMS = {"ORCH": ports.PORTS["orch"], "CAMERA": ports.PORTS["camera"]}
+# The console control socket of the orchestrator.
+ORCH_SOCKET_PORT = ports.PORTS["orch-socket"]
 
 
 def render_proxy(host, settings, selected):
@@ -492,18 +473,15 @@ def render_proxy(host, settings, selected):
         raise ValueError("MG400_PROXY_BIND must be one numeric loopback or VPN address.")
     values = {
         "PROXY_BIND": f"[{address}]" if address.version == 6 else str(address),
-        "PROXY_PORT": port("MG400_PROXY_PORT", 8080, 1024),
+        "PROXY_PORT": port("MG400_PROXY_PORT", ports.PORTS["proxy"], 1024),
     }
-    ports = {"1985", values["PROXY_PORT"]}
-    if len(ports) != 2:
-        raise ValueError("Proxy and upstream ports must be distinct.")
-    for prefix, default in PROXY_UPSTREAMS.items():
-        value = port(f"MG400_{prefix}_PORT", default)
-        if value in ports:
+    used = {values["PROXY_PORT"]}
+    for prefix, value in PROXY_UPSTREAMS.items():
+        if str(value) in used:
             raise ValueError("Proxy and upstream ports must be distinct.")
-        ports.add(value)
-        values[prefix + "_PORT"] = value
-    if str(ORCH_SOCKET_PORT) in ports:
+        used.add(str(value))
+        values[prefix + "_PORT"] = str(value)
+    if str(ORCH_SOCKET_PORT) in used:
         raise ValueError("Proxy and upstream ports must be distinct.")
     values["ORCH_SOCKET_PORT"] = str(ORCH_SOCKET_PORT)
     with assets._local(host.source / "config/proxy/Caddyfile") as stream:
@@ -517,10 +495,6 @@ def render_proxy(host, settings, selected):
 
 def prepare_proxy(args, host, settings, selected):
     """Check the proxy without starting its binary or changing files."""
-    if "proxy" not in selected:
-        if args.caddy is not None:
-            raise ValueError("Select proxy in MG400_OPTIONAL_SERVICES before using --caddy.")
-        return None, None
     config = render_proxy(host, settings, selected)
     for destination in (host.caddy, host.proxy_config):
         try:
@@ -852,7 +826,7 @@ def install(args, host, run, chown, out):
     if "microscope" in selected:
         directory(host.data / "calibration/microscope", 0o750, service)
         directory(host.data / "recordings", 0o750, service)
-    if {"orch", "gateway", "microscope"} & selected.keys():
+    if {"orch", "microscope"} & selected.keys():
         directory(host.data / "runs", 0o750, service)
     if "orch" in selected:
         directory(host.data / "zones", 0o750, service)
@@ -937,12 +911,15 @@ def install(args, host, run, chown, out):
         if not args.dry_run:
             write_file(host.units / name, content, 0o644, (0, 0), chown)
     system(["systemctl", "daemon-reload"])
-    for command in (host.command, host.lab_command):
-        step(f"link {command} to {host.code / 'deploy/mg400ctl'}")
+    step(f"link {host.command} to {host.code / 'deploy/labctl'}")
+    if not args.dry_run:
+        host.command.parent.mkdir(parents=True, exist_ok=True)
+        host.command.unlink(missing_ok=True)
+        host.command.symlink_to(host.code / "deploy/labctl")
+    if host.old_command.is_symlink():
+        step(f"remove {host.old_command}")
         if not args.dry_run:
-            command.parent.mkdir(parents=True, exist_ok=True)
-            command.unlink(missing_ok=True)
-            command.symlink_to(host.code / "deploy/mg400ctl")
+            host.old_command.unlink()
     return settings, devices
 
 
@@ -988,7 +965,7 @@ def main(argv=None, *, host=None, run=subprocess.run, chown=os.fchown, out=sys.s
         print("Cameras are off: MG400_CAMERA_DEVICES is empty.", file=out)
     if not settings.get("MG400_STAGE_SERIAL"):
         print("The stage panel offers every serial port: MG400_STAGE_SERIAL is empty.", file=out)
-    print("No service was started, stopped or restarted. Use: mg400ctl start NAME", file=out)
+    print("No service was started, stopped or restarted. Use: labctl start NAME", file=out)
     return 0
 
 

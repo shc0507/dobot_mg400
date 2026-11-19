@@ -13,9 +13,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from helpers import Feed, PanelControl, wait_for
 from panel_ws import PANEL, PanelServer, running
 
+from labkit.client import ServiceClient
+from labkit.errors import ServiceError
 from mg400.controller_ownership import ControllerOwnership
+from mg400.feedback import Feedback
+from mg400.web_control import RobotPanelState
 
 ReadOnlyPanelState = PANEL["ReadOnlyPanelState"]
 PANEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -241,7 +246,7 @@ def test_http_command_guard(server):
     auth = {}
     assert request(server, "GET", "/api/state")[0] == 200
     body = json.dumps({"action": "stop_sync"})
-    assert request(server, "POST", "/api/command", body, auth)[0] == 403
+    assert request(server, "POST", "/api/command", body, auth)[0] == 415
     headers = {**auth, "Content-Type": "application/json", "X-MG400-Panel": "1"}
     assert request(server, "POST", "/api/command", body, headers)[0] == 200
     assert request(server, "POST", "/api/command", '{"action":"enable"}', headers)[0] == 403
@@ -268,8 +273,6 @@ def test_main_refuses_bad_arguments_before_constructing_a_backend(
     monkeypatch, capsys, argv, message
 ):
     main = PANEL["main"]
-    monkeypatch.delenv("MG400_PANEL_BIND", raising=False)
-    monkeypatch.delenv("MG400_PANEL_PORT", raising=False)
     backends = {name: Mock() for name in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
     for name, backend in backends.items():
         monkeypatch.setitem(main.__globals__, name, backend)
@@ -285,27 +288,20 @@ def test_main_refuses_bad_arguments_before_constructing_a_backend(
 
 
 @pytest.mark.parametrize(
-    ("environment", "argv", "address"),
+    ("argv", "address"),
     [
-        ({}, [], ("127.0.0.1", 8766)),
-        ({"MG400_PANEL_BIND": "", "MG400_PANEL_PORT": ""}, [], ("127.0.0.1", 8766)),
-        ({"MG400_PANEL_BIND": "localhost", "MG400_PANEL_PORT": "9000"}, [], ("localhost", 9000)),
-        (
-            {"MG400_PANEL_BIND": "0.0.0.0", "MG400_PANEL_PORT": "9000"},
-            ["--bind", "::1", "--port", "9001"],
-            ("::1", 9001),
-        ),
+        ([], ("127.0.0.1", 8766)),
+        (["--bind", "::1", "--port", "9001"], ("::1", 9001)),
     ],
-    ids=["defaults", "empty-means-unset", "environment", "options-win"],
+    ids=["defaults", "options"],
 )
-def test_listen_address_comes_from_options_then_environment(
-    monkeypatch, signal_table, environment, argv, address
+def test_listen_address_comes_from_options_then_fixed_defaults(
+    monkeypatch, signal_table, argv, address
 ):
     main = PANEL["main"]
-    for name in ("MG400_PANEL_BIND", "MG400_PANEL_PORT"):
-        monkeypatch.delenv(name, raising=False)
-    for name, value in environment.items():
-        monkeypatch.setenv(name, value)
+    # The host environment no longer selects the listen address.
+    monkeypatch.setenv("MG400_PANEL_BIND", "0.0.0.0")
+    monkeypatch.setenv("MG400_PANEL_PORT", "9000")
     server = Mock(server_port=address[1])
     panel_server = Mock(return_value=server)
     monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock(return_value=closing_state()))
@@ -316,20 +312,18 @@ def test_listen_address_comes_from_options_then_environment(
     assert panel_server.call_args.args[0] == address
 
 
-@pytest.mark.parametrize("value", ["0", "65536", "80a", " 80", "-1"])
-def test_invalid_port_environment_is_refused_before_a_backend(monkeypatch, capsys, value):
+@pytest.mark.parametrize("value", ["0", "65536", "-1"])
+def test_invalid_port_option_is_refused_before_a_backend(monkeypatch, capsys, value):
     main = PANEL["main"]
-    monkeypatch.delenv("MG400_PANEL_BIND", raising=False)
-    monkeypatch.setenv("MG400_PANEL_PORT", value)
     backends = {name: Mock() for name in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
     for name, backend in backends.items():
         monkeypatch.setitem(main.__globals__, name, backend)
 
     with pytest.raises(SystemExit) as error:
-        main([])
+        main(["--port", value])
 
     assert error.value.code == 2
-    assert "MG400_PANEL_PORT must be a whole number" in capsys.readouterr().err
+    assert "--port must be a whole number" in capsys.readouterr().err
     for backend in backends.values():
         backend.assert_not_called()
 
@@ -397,14 +391,14 @@ def test_key_updates_have_no_http_endpoint(base_path):
     [
         ({"Content-Type": None}, 403),
         ({"Content-Type": "text/plain"}, 403),
-        ({"X-MG400-Panel": None}, 403),
+        ({"X-MG400-Panel": "0"}, 403),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "x" * 129}, 400),
     ],
     ids=[
         "no-content-type",
         "text-content-type",
-        "no-panel-header",
+        "wrong-panel-header",
         "no-client-id",
         "long-client-id",
     ],
@@ -566,7 +560,10 @@ CLIENT = "X-MG400-Client: browser-a"
 @pytest.mark.parametrize(
     ("raw", "status"),
     [
-        (http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, CLIENT]), 403),
+        (
+            http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, "X-MG400-Panel: 0"]),
+            403,
+        ),
         (http11("POST", "/api/other", EMPTY_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 404),
         (http11("POST", "/api/heartbeat", b"{", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 400),
         (
@@ -696,7 +693,7 @@ def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal
     backends = PANEL["main"].__globals__
     assert code == 0
     backends["load_robot_host"].assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
-    backends["RobotPanelState"].assert_called_once_with("robot.test", max_speed_l=1, max_acc_l=1)
+    backends["RobotPanelState"].assert_called_once_with("robot.test", max_speed_l=20, max_acc_l=20)
     state.command.assert_not_called()
     state.close.assert_called_once_with()
     assert len(before_close) == 1
@@ -952,7 +949,7 @@ def test_contract_routes_follow_base_path_and_event_cursor(base_path):
 @pytest.mark.parametrize(
     ("change", "status"),
     [
-        ({"X-MG400-Panel": None}, 403),
+        ({"X-MG400-Panel": "0"}, 403),
         ({"Content-Type": "text/plain"}, 403),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "\x7f"}, 400),
@@ -998,37 +995,14 @@ def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
     assert request(server, "POST", "/api/stop", "{}", ROBOT_HEADERS)[0] == 403
 
 
-@pytest.mark.parametrize("name", ["MG400_ROBOT_MAX_SPEED_L", "MG400_ROBOT_MAX_ACC_L"])
-@pytest.mark.parametrize(
-    "value", ["0", "101", "-1", "1.0", "true", " 1", "1 ", "NaN", "1e2", "9" * 500]
-)
-def test_invalid_robot_caps_fail_before_backend_construction(monkeypatch, capsys, name, value):
-    main = PANEL["main"]
-    monkeypatch.setenv(name, value)
-    backends = {key: Mock() for key in ("RobotPanelState", "ReadOnlyPanelState", "PanelServer")}
-    for key, backend in backends.items():
-        monkeypatch.setitem(main.__globals__, key, backend)
-    with pytest.raises(SystemExit) as error:
-        main(["--robot-host", "robot.test"])
-    assert error.value.code == 2
-    assert f"{name} must be a whole number between 1 and 100" in capsys.readouterr().err
-    for backend in backends.values():
-        backend.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "speed,acceleration,expected",
-    [("", "", (1, 1)), ("20", "7", (20, 7)), ("100", "100", (100, 100))],
-)
-def test_robot_caps_are_loaded_from_host_environment(
-    monkeypatch, signal_table, speed, acceleration, expected
-):
-    monkeypatch.setenv("MG400_ROBOT_MAX_SPEED_L", speed)
-    monkeypatch.setenv("MG400_ROBOT_MAX_ACC_L", acceleration)
+def test_robot_caps_are_fixed_in_code(monkeypatch, signal_table):
+    # The host environment no longer raises or lowers the speed cap.
+    monkeypatch.setenv("MG400_ROBOT_MAX_SPEED_L", "100")
+    monkeypatch.setenv("MG400_ROBOT_MAX_ACC_L", "100")
     code, _ = run_panel(monkeypatch, closing_state())
     assert code == 0
     PANEL["main"].__globals__["RobotPanelState"].assert_called_once_with(
-        "robot.test", max_speed_l=expected[0], max_acc_l=expected[1]
+        "robot.test", max_speed_l=20, max_acc_l=20
     )
 
 
@@ -1060,3 +1034,62 @@ def test_invalid_execute_speed_reports_400_without_feedback_or_motion(transport,
             feedback.assert_not_called()
     finally:
         state.close()
+
+
+def test_labkit_client_drives_the_robot_contract():
+    feed = Feed()
+    state = RobotPanelState("robot.test", connection_factory=feed, control_factory=PanelControl)
+    try:
+        with running(state) as server:
+            url = f"http://127.0.0.1:{server.server_port}/"
+            agent, other = ServiceClient(url, "agent-a"), ServiceClient(url, "agent-b")
+            assert agent.state()["lease"] == {"holder": None, "remaining_s": 0}
+            # The lease grant connects the robot.
+            assert agent.heartbeat()["lease"]["holder"] == "agent-a"
+            wait_for(lambda: agent.state()["connected"])
+            current = agent.state()
+            assert current["service"] == "robot" and current["demo"] is False
+            assert current["fault"] is None and isinstance(current["seq"], int)
+            for call in (
+                other.heartbeat,
+                other.renew,
+                other.release,
+                lambda: other.command("enable"),
+            ):
+                with pytest.raises(ServiceError) as refused:
+                    call()
+                assert refused.value.status == 409
+            assert agent.renew()["lease"]["holder"] == "agent-a"
+            keys = agent.command("keys", seq=1, held=[])
+            assert keys["command_id"] is None
+            enable = agent.command("enable")
+            wait_for(
+                lambda: (agent.state()["last_command"] or {}).get("id") == enable["command_id"]
+            )
+            assert agent.state()["last_command"]["result"] == "ok"
+            feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)
+            wait_for(lambda: agent.state()["robot_mode"] == 4)
+            # The release disconnects: a disabled arm needs no rest check.
+            agent.release()
+            wait_for(lambda: not agent.state()["syncing"])
+            assert agent.state()["lease"]["holder"] is None
+            assert not agent.state()["locked"]
+            assert other.stop()["stop"] in {"confirmed", "pending"}
+    finally:
+        state.close()
+
+
+@pytest.mark.parametrize(
+    ("headers", "status"),
+    [
+        ({"X-MG400-Client": "agent-a"}, 415),
+        ({"Content-Type": "application/json"}, 400),
+    ],
+    ids=["not-json", "no-client"],
+)
+def test_contract_posts_check_type_and_client_before_the_state(headers, status):
+    state = RecordingState()
+    with running(state) as server:
+        assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == status
+        assert request(server, "POST", "/api/keys", "{}", headers)[0] == 404
+    assert state.calls == []

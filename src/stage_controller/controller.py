@@ -108,8 +108,8 @@ class MotorController(StageContract, EncoderController):
         with self._lock:
             if self._contract_stopping:
                 raise ControllerError("Stop confirmation is in progress. Wait before connecting.")
-            if port not in {item["device"] for item in self.ports()}:
-                raise ValueError("That port is no longer available. Refresh the port list.")
+            if not isinstance(port, str) or port not in {item["device"] for item in self.ports()}:
+                raise ValueError("That port is no longer available. Select another port.")
             super().connect(port)
             if not any(self._motor_busy(state) for state in self._motors.values()):
                 self._contract_fault = None
@@ -177,6 +177,8 @@ class MotorController(StageContract, EncoderController):
             return {
                 **state,
                 **self._contract_state(),
+                # Scan ports only while disconnected.
+                "ports": [] if state["connected"] else self.ports(),
                 "coordinate_unit": "rotations",
                 "configuration_error": self._configuration_error,
                 "legacy_geometry_active": False,

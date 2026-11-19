@@ -24,7 +24,11 @@ def contract(stage_rig):
 
 
 def post(web, route, body=None, client=CLIENT):
-    return web.post("/contract/api/" + route, json=body or {}, headers=client)
+    return web.post("/api/" + route, json=body or {}, headers=client)
+
+
+def reconnect(web, headers):
+    return web.post("/api/command", json={"action": "connect", "port": "DEMO"}, headers=headers)
 
 
 def acquire(web):
@@ -51,7 +55,6 @@ def test_stage_contract_conformance(contract):
     controller, transport, clock, web, _ = contract
     check_contract(
         web,
-        base_path="/contract",
         advance=clock.advance,
         expiry_count=lambda: transport.commands.count("stop all"),
     )
@@ -250,11 +253,8 @@ def test_contract_accepts_any_host_and_origin(stage_rig):
     controller, _, _ = stage_rig
     web = create_app(controller).test_client()
     headers = {"Host": "stage.example", "Origin": "https://other.example"}
-    assert web.get("/contract/api/state", headers=headers).status_code == 200
-    assert (
-        web.post("/contract/api/heartbeat", json={}, headers={**headers, **CLIENT}).status_code
-        == 200
-    )
+    assert web.get("/api/state", headers=headers).status_code == 200
+    assert web.post("/api/heartbeat", json={}, headers={**headers, **CLIENT}).status_code == 200
 
 
 def test_unconfirmed_stop_keeps_a_fault_until_manual_reconnect(contract, monkeypatch):
@@ -280,9 +280,7 @@ def test_unconfirmed_stop_keeps_a_fault_until_manual_reconnect(contract, monkeyp
     controller.poll()
     assert controller.snapshot()["locked"] is True
     controller.disconnect()
-    assert (
-        web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers).status_code == 200
-    )
+    assert reconnect(web, headers).status_code == 202
     assert controller.snapshot()["locked"] is False
 
 
@@ -388,7 +386,7 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     def disconnect_during_wait(_seconds):
         controller.disconnect()
         if replace_connection:
-            response = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
+            response = reconnect(web, headers)
             assert response.status_code == 409
             assert "Stop confirmation" in response.json["error"]
 
@@ -400,13 +398,15 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     assert response.json["stop"] == "unconfirmed"
     assert response.json["state"]["locked"] is True
     assert response.json["state"]["fault"]["code"] == "stop_unconfirmed"
-    assert response.json["state"]["last_command"]["result"] == "failed"
+    assert response.json["state"]["last_command"]["result"] == (
+        "rejected" if replace_connection else "failed"
+    )
     assert transport.motors["bottom"].mode == "moving"
     assert replacement_attempts == []
     # Recovery against the same still-moving board keeps the lock after stop returns.
     monkeypatch.setattr(controller, "_factory", lambda _port: transport)
-    recovered = web.post("/contract/api/connect", json={"port": "DEMO"}, headers=headers)
-    assert recovered.status_code == 200
-    assert recovered.json["locked"] is True
+    recovered = reconnect(web, headers)
+    assert recovered.status_code == 202
+    assert recovered.json["state"]["locked"] is True
     assert move(web, motor="top").status_code == 409
     assert "motor top" not in transport.commands

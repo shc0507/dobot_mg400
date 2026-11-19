@@ -4,9 +4,11 @@
 
 The local preview uses the real Lab Console interface with simulated devices. It opens Motion by default. Position Finder (legacy) starts disabled. The preview requires no Olares connection or LarePass VPN.
 
-Use this preview for appearance development. The shared dashboard header shows AI Chemistry Console and the logo from `src/orchestrator/web/static/console/console-logo.png`. Deploy appearance changes to Olares only when requested.
+Use this preview for appearance development. The shared dashboard header shows AI Chemistry Console and the logo from `src/orchestrator/web/static/console/console-logo.webp`. Deploy appearance changes to Olares only when requested.
 
-The last workspace tab is Position Finder (legacy). Its address remains `#twin`. Its activation toggle opens the monitor and calibration. Turning it off stops requests and releases temporary image data. Saved profiles remain on disk.
+The last workspace tab is Position Finder (legacy). Its address is `#position-finder`. Its activation toggle opens the monitor and calibration. Turning it off stops requests and releases temporary image data. Saved profiles remain on disk.
+
+The separate **Twin** workspace uses `#twin` and shows the 3D bench model. It uses `twin.js` and `twin.css`. Its model asset and CDN library may be unavailable in an offline preview. Encoder stage geometry stays uncalibrated until a model mapping is defined.
 
 ## Start and stop
 
@@ -62,7 +64,7 @@ Open `http://127.0.0.1:8791/lab/#motion` for that instance. The preview binds to
 - Turret calibration uses a synthetic `1280 × 720` Camera3 image with only the current objective marker. Objective markers have approximately 8 mm sides. IDs 0, 1, 2 and 3 correspond to 5x, 10x, 20x and 50x. **Record** changes the synthetic image to the chosen objective.
 - Turret profiles persist under `work/console-preview/calibration/microscope/turret_profiles/`. Click **Start calibration**. Record all 4 objectives. Click **Finish calibration**, then **Save & use**. Save incomplete profiles with **Save profile** and continue editing with **Load draft**. The JSON upload limit is 2 MiB.
 - The 5x, 10x, 20x and 50x buttons use the complete profile selected in **Lens calibration**. The selection persists after a preview restart. A complete profile contains captures for all 4 objectives. Recorded focus is informational. Unknown focus stays unknown instead of becoming `0`.
-- On hardware, **Start calibration** releases only the turret motor. We recommend that you first move the focus manually to the clearance position shown in the interface. The interface shows clearance and known recorded positions in full steps. The current focus zero must be known before automatic movement. The focus axis must reach the configured clearance position before the turret turns.
+- On hardware, **Start calibration** releases only the turret motor. We recommend that you first move the focus manually to the clearance position shown in the interface. The interface shows clearance and known recorded positions in `MICRO 4` pulses. The current focus zero must be known before automatic movement. The focus axis must reach the configured clearance position before the turret turns.
 - Keep the current objective marker in focus and fully visible. Alignment uses recorded image coordinates with a fixed camera. After moving the camera or changing its focus or zoom, record all 4 objectives again. The local simulator does not verify positioning accuracy or motor behavior.
 
 ## Sample Transfer preview
@@ -77,19 +79,19 @@ Legacy millimetre profiles remain available for review, download and deletion. T
 
 ## Run local checks
 
-After a preview or Digital Twin Python change, run the relevant tests from the repository root:
+After a preview or Position Finder Python change, run the relevant tests from the repository root:
 
 ```powershell
 $env:PYTHONPATH = Join-Path (Get-Location) 'src'
-.\.venv\Scripts\python.exe -m pytest -q tests/test_console_preview.py tests/test_console_twin.py tests/test_stage_twin.py
+.\.venv\Scripts\python.exe -m pytest -q tests/test_console_preview.py tests/test_console_position_finder.py tests/test_stage_twin.py
 .\.venv\Scripts\ruff.exe check
 .\.venv\Scripts\ruff.exe format --check
 ```
 
-For Digital Twin JavaScript changes, use Node.js available on `PATH`:
+For Position Finder JavaScript changes, use Node.js available on `PATH`:
 
 ```powershell
-node --test tests/test_console_twin.mjs
+node --test tests/test_console_position_finder.mjs
 ```
 
 After turret calibration JavaScript changes, run:

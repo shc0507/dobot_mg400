@@ -1,4 +1,4 @@
-"""Check mg400ctl commands without systemd, root rights or a service user."""
+"""Check labctl commands without systemd, root rights or a service user."""
 
 import hashlib
 import io
@@ -21,7 +21,7 @@ MG400_CAMERA_DEVICES=
 @pytest.fixture
 def ctl(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", Mock(side_effect=AssertionError("No real commands")))
-    module = SimpleNamespace(**runpy.run_path(str(ROOT / "deploy/mg400ctl"), run_name="test_ctl"))
+    module = SimpleNamespace(**runpy.run_path(str(ROOT / "deploy/labctl"), run_name="test_ctl"))
     globals_ = module.main.__globals__
     monkeypatch.setattr(globals_["os"], "geteuid", lambda: 0)
     chdir = Mock()
@@ -169,7 +169,7 @@ def test_recipe_dispatch_precedes_admin_registry_and_drops_root(ctl, monkeypatch
             for key, value in ctl.module.parse_settings(settings).items()
             if key.startswith("MG400_") and value
         }
-        assert forwarded == {**ctl.module.FIXED_SETTINGS, **file_settings}
+        assert forwarded == file_settings
     assert not set(environment) & {"PYTHONPATH", "LD_PRELOAD", "HTTP_PROXY", "HTTPS_PROXY"}
     ctl.getpwuid.assert_called_with(1000)
     ctl.run.assert_not_called()
@@ -190,7 +190,6 @@ def test_nonroot_recipe_forwards_every_caller_setting(ctl, monkeypatch, command)
     assert argv == [program, "-I", "-m", "orchestrator", command]
     assert environment["MG400_ORCH_RUNS_DIR"] == "/tmp/own-runs"
     assert environment["MG400_ORCH_ROBOT_URL"] == "http://robot.invalid"
-    assert ("MG400_ORCH_STAGE_URL" in environment) is (command != "rehearse")
     assert "HTTP_PROXY" not in environment
     ctl.getpwuid.assert_not_called()
 
@@ -267,48 +266,44 @@ def test_logs_follow_both_camera_units(ctl):
     ]
 
 
-def test_terminal_runs_as_the_service_user_on_its_own_terminal(ctl, monkeypatch):
+@pytest.mark.parametrize("switch", [False, True])
+def test_mode_runs_the_switch_script_as_the_service_user(ctl, switch, monkeypatch):
     for name in ("COLORTERM", "LANG", "LC_ALL", "LC_CTYPE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("SECRET_OF_ROOT", "hidden")
-    assert ctl.call("terminal") == 0
+    assert ctl.call("mode", *["--switch-to-tcp"] * switch) == 0
     ctl.chdir.assert_called_once_with(ctl.host.code)
-    ctl.getpwuid.assert_called_with(1000)
-    (program, argv, environment), _ = ctl.execvpe.call_args
+    program, argv, environment = ctl.execvpe.call_args.args
     # PATH of the service user does not contain /usr/sbin: use the absolute path.
     assert program == "/usr/sbin/runuser"
-    assert argv == [
-        "runuser",
-        "--pty",
-        "-u",
-        "mg400user",
-        "-g",
-        "mg400group",
-        "--",
-        str(ctl.host.code / ".venv/bin/mg400-robot"),
-    ]
     # Nothing from the root environment except the terminal settings reaches the service user.
     assert environment == {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "MG400_CONTROLLER_LOCK_DIR": "/var/lib/mg400/locks",
         "MG400_ROBOT_HOST": "robot.test",
         "TERM": "xterm-256color",
     }
-    ctl.run.assert_not_called()
+    assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
+    assert argv[7:] == [
+        str(ctl.host.code / ".venv/bin/python"),
+        "-m",
+        "mg400.control_mode",
+        "--backup-dir",
+        str(ctl.host.data / "work/control-mode"),
+        *["--switch-to-tcp"] * switch,
+    ]
 
 
-@pytest.mark.parametrize("switch", [False, True])
-def test_mode_runs_the_switch_script_as_the_service_user(ctl, switch):
-    assert ctl.call("mode", *["--switch-to-tcp"] * switch) == 0
+@pytest.mark.parametrize("passed", [["--help"], ["objective", "--focus-start", "12"]])
+def test_calibrate_passes_arguments_to_the_microscope_tool_as_the_service_user(ctl, passed):
+    assert ctl.call("calibrate", *passed) == 0
     argv = ctl.execvpe.call_args.args[1]
     assert argv[:7] == ["runuser", "--pty", "-u", "mg400user", "-g", "mg400group", "--"]
     assert argv[7:] == [
         str(ctl.host.code / ".venv/bin/python"),
-        str(ctl.host.code / "scripts/mg400_control_mode.py"),
-        "--backup-dir",
-        str(ctl.host.data / "work/control-mode"),
-        *["--switch-to-tcp"] * switch,
+        "-m",
+        "microscope.calibrate",
+        *passed,
     ]
 
 
@@ -400,6 +395,22 @@ def test_camera_url_uses_the_proxy_when_it_is_enabled(ctl):
     assert ctl.out.getvalue() == "http://[fd00::1]:9443/camera/camera1.mjpeg\n"
 
 
+def test_camera_url_omits_the_microscope_side_stream_above_720p(ctl):
+    devices = "MG400_CAMERA_DEVICES=" + ",".join(CAMERAS[:2]) + "\n"
+    ctl.host.settings.write_text(SETTINGS + devices + "MG400_MICROSCOPE_SIDE_STREAM=camera2\n")
+    assert ctl.call("camera-url") == 0
+    assert ctl.out.getvalue() == "http://127.0.0.1:8080/camera/camera1.mjpeg\n"
+    ctl.out.truncate(0)
+    ctl.out.seek(0)
+    ctl.host.settings.write_text(
+        SETTINGS
+        + devices
+        + "MG400_MICROSCOPE_SIDE_STREAM=camera2\nMG400_CAMERA_MODES=1280x720@30,1280x720@30\n"
+    )
+    assert ctl.call("camera-url") == 0
+    assert ctl.out.getvalue().splitlines()[-1] == "http://127.0.0.1:8080/camera/camera2.mjpeg"
+
+
 def test_camera_url_without_cameras(ctl):
     assert ctl.call("camera-url") == 0
     assert ctl.out.getvalue() == "Cameras are off: MG400_CAMERA_DEVICES is empty.\n"
@@ -411,7 +422,7 @@ def test_non_root_and_missing_settings_are_refused(ctl, monkeypatch, capsys):
     assert "as root" in capsys.readouterr().err
     monkeypatch.setattr(ctl.module.main.__globals__["os"], "geteuid", lambda: 0)
     ctl.host.settings.unlink()
-    assert ctl.call("terminal") == 1
+    assert ctl.call("mode") == 1
     assert "Run deploy/install.py first" in capsys.readouterr().err
     ctl.run.assert_not_called()
     ctl.execvpe.assert_not_called()
@@ -424,17 +435,16 @@ def test_non_root_and_missing_settings_are_refused(ctl, monkeypatch, capsys):
     ],
     ids=["unreadable-line"],
 )
-@pytest.mark.parametrize("command", ["terminal", "mode"])
-def test_unsafe_settings_never_start_a_robot_program(ctl, capsys, settings, message, command):
+def test_unsafe_settings_never_start_a_robot_program(ctl, capsys, settings, message):
     ctl.host.settings.write_text(settings)
-    assert ctl.call(command) == 1
+    assert ctl.call("mode") == 1
     assert message in capsys.readouterr().err
     ctl.execvpe.assert_not_called()
 
 
 def test_missing_service_user_is_reported(ctl, capsys):
     ctl.getpwuid.side_effect = KeyError(1000)
-    assert ctl.call("terminal") == 1
+    assert ctl.call("mode") == 1
     assert "Create a user and a group with ID 1000 first" in capsys.readouterr().err
     ctl.execvpe.assert_not_called()
 
@@ -504,7 +514,7 @@ def test_camera_check_reports_stopped_services_and_missing_streams(cameras):
     plug(cameras, CAMERAS)
     cameras.run.side_effect = answer({**ACTIVE, "mg400-camera-capture.service": "inactive"})
     assert cameras.call("camera-check") == 1
-    assert "mg400ctl start camera" in cameras.out.getvalue()
+    assert "labctl start camera" in cameras.out.getvalue()
     cameras.run.side_effect = answer(ACTIVE, preload='{"camera1": {}, "camera3": {}}')
     assert cameras.call("camera-check") == 1
     assert "not loaded: camera2" in cameras.out.getvalue()
@@ -602,7 +612,7 @@ def optional_ctl(ctl, tmp_path):
         (ROOT / "deploy/services.toml").read_text()
         + '\n[[service]]\nname = "optional"\nunits = ["mg400-optional.service"]\n'
         'optional = true\nvenv = ".venv-vision"\ngroups = ["vision"]\n'
-        "port = 8799\nassets = []\n"
+        "assets = []\n"
     )
     ctl.host.registry = registry
     return ctl
@@ -674,12 +684,12 @@ def test_invalid_registry_fails_before_commands(optional_ctl, capsys):
     optional_ctl.run.assert_not_called()
 
 
-def test_help_names_both_command_links(ctl, capsys):
+def test_help_names_labctl(ctl, capsys):
     with pytest.raises(SystemExit) as exit_:
         ctl.call("--help")
     assert exit_.value.code == 0
     help_text = capsys.readouterr().out
-    assert "mg400ctl or labctl" in help_text
+    assert "with labctl." in help_text
     ctl.run.assert_not_called()
 
 
@@ -1088,57 +1098,19 @@ class FurnaceHTTP:
         self.closed = True
 
 
-@pytest.mark.parametrize(
-    "bind,host",
-    [
-        ("127.0.0.1", "127.0.0.1"),
-        ("0.0.0.0", "127.0.0.1"),
-        ("::", "::1"),
-        ("::1", "::1"),
-        ("192.0.2.1", "192.0.2.1"),
-        ("localhost", "localhost"),
-    ],
-)
-def test_furnace_guard_uses_configured_bind_without_proxy(ctl, bind, host, monkeypatch):
+def test_furnace_guard_uses_fixed_loopback_without_proxy(ctl, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid")
     response = FurnaceHTTP()
     factory = Mock(return_value=response)
     value = ctl.module.furnace_state(
-        {
-            "MG400_FURNACE_BIND": bind,
-            "MG400_FURNACE_PORT": "9000",
-            "MG400_FURNACE_BASE_PATH": "/heat/",
-        },
+        {"MG400_FURNACE_BIND": "192.0.2.1", "MG400_FURNACE_PORT": "9000"},
         connection_factory=factory,
     )
     assert value == {"service": "furnace"}
-    factory.assert_called_once_with(host, 9000, timeout=2)
+    factory.assert_called_once_with("127.0.0.1", 8769, timeout=2)
     args, options = response.requests[0]
-    assert args == ("GET", "/heat/api/state")
+    assert args == ("GET", "/api/state")
     assert "Authorization" not in options["headers"] and response.closed
-
-
-@pytest.mark.parametrize(
-    "settings",
-    [
-        {"MG400_FURNACE_BIND": "user@host"},
-        {"MG400_FURNACE_BIND": "127.0.0.1/evil"},
-        {"MG400_FURNACE_BIND": "remote.example"},
-        {"MG400_FURNACE_BIND": "fe80::1%eth0"},
-        {"MG400_FURNACE_PORT": "0"},
-        {"MG400_FURNACE_BASE_PATH": "//evil"},
-        {"MG400_FURNACE_BASE_PATH": "/a?x=1"},
-        {"MG400_FURNACE_BASE_PATH": "/../"},
-    ],
-)
-def test_furnace_guard_invalid_destination_never_constructs_connection(ctl, settings):
-    factory = Mock(side_effect=AssertionError("network"))
-    with pytest.raises(ValueError):
-        ctl.module.furnace_state(
-            settings,
-            connection_factory=factory,
-        )
-    factory.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1281,9 +1253,7 @@ def test_microscope_import_copies_only_allowlisted_data_with_private_modes(calib
     ctl.execvpe.assert_not_called()
 
 
-def test_microscope_import_uses_host_setting_under_fake_root_not_environment(
-    calibration_ctl, monkeypatch
-):
+def test_microscope_import_uses_the_fixed_directory_not_settings(calibration_ctl, monkeypatch):
     ctl = calibration_ctl
     (ctl.source / "one.csv").write_bytes(b"data")
     ctl.host.settings.write_text(
@@ -1291,18 +1261,9 @@ def test_microscope_import_uses_host_setting_under_fake_root_not_environment(
     )
     monkeypatch.setenv("MG400_MICROSCOPE_CALIBRATION_DIR", "/ignored/environment")
     assert import_calibration(ctl) == 0
-    assert (ctl.host.root / "custom/calibration/one.csv").read_bytes() == b"data"
-    assert not ctl.destination.exists()
+    assert (ctl.destination / "one.csv").read_bytes() == b"data"
+    assert not (ctl.host.root / "custom").exists()
     assert not (ctl.host.root / "ignored").exists()
-
-
-@pytest.mark.parametrize("setting", ["/", "relative/path", "/var/lib/../outside"])
-def test_microscope_import_rejects_unsafe_configured_path_before_writes(calibration_ctl, setting):
-    ctl = calibration_ctl
-    (ctl.source / "one.csv").write_bytes(b"data")
-    ctl.host.settings.write_text(SETTINGS + f"MG400_MICROSCOPE_CALIBRATION_DIR={setting}\n")
-    assert import_calibration(ctl) == 1
-    assert not ctl.destination.exists()
 
 
 @pytest.mark.parametrize(
@@ -1412,8 +1373,6 @@ def test_microscope_import_refuses_empty_overlap_and_parent_traversal(calibratio
     assert import_calibration(ctl) == 1
     (ctl.source / "one.csv").write_bytes(b"data")
     assert import_calibration(ctl, ctl.source / ".." / "incoming") == 1
-    ctl.host.settings.write_text(SETTINGS + "MG400_MICROSCOPE_CALIBRATION_DIR=/incoming/nested\n")
-    assert import_calibration(ctl) == 1
     assert not ctl.destination.exists()
 
 
@@ -1463,3 +1422,24 @@ def test_microscope_import_failures_preserve_targets_and_remove_staging(
         assert not (ctl.destination / "one.csv").exists()
     assert outside.read_bytes() == b"keep"
     assert not list(ctl.host.root.rglob(".mg400-calibration-*"))
+
+
+@pytest.mark.parametrize("group", ["robot", "all", "camera", "do", "chip"])
+def test_agent_groups_dispatch_without_a_pty(ctl, monkeypatch, group):
+    monkeypatch.setitem(
+        ctl.module.main.__globals__,
+        "load_services",
+        Mock(side_effect=AssertionError("admin parser")),
+    )
+    assert ctl.call(group, "state") == 0
+    program, argv, _ = ctl.execvpe.call_args.args
+    assert program == "/usr/sbin/runuser"
+    assert argv[:6] == ["runuser", "-u", "mg400user", "-g", "mg400group", "--"]
+    assert argv[6:] == [
+        str(ctl.host.code / ".venv/bin/python"),
+        "-I",
+        "-m",
+        "orchestrator",
+        group,
+        "state",
+    ]

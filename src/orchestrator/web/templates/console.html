@@ -1,5 +1,5 @@
 <!doctype html>
-{% set brand = {'name': 'AI Chemistry Console', 'logo': base_path ~ '/console-static/console-logo.png'} %}
+{% set brand = {'name': 'AI Chemistry Console', 'logo': base_path ~ '/console-static/console-logo.webp'} %}
 <html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
@@ -33,7 +33,7 @@
       <nav class="lc-tabs" aria-label="Workspaces" id="lc-tabs">
         <div class="lc-track">
           {% for item in workspaces %}
-          {% set title = {'en': brand.position_title, 'zh': brand.position_title} if item.id == 'twin' and brand.position_title else item.title %}
+          {% set title = {'en': brand.position_title, 'zh': brand.position_title} if item.id == 'position-finder' and brand.position_title else item.title %}
           <a href="#{{ item.id }}" data-workspace="{{ item.id }}" data-title-en="{{ title.en }}" data-title-zh="{{ title.zh }}">{{ title.en }}</a>
           {% endfor %}
         </div>
@@ -53,7 +53,7 @@
   </div>
   <main id="lc-main">
     {% for item in workspaces %}
-    <section class="lc-workspace" id="ws-{{ item.id }}" data-workspace="{{ item.id }}" aria-label="{{ brand.position_title if item.id == 'twin' and brand.position_title else item.title.en }}" hidden></section>
+    <section class="lc-workspace" id="ws-{{ item.id }}" data-workspace="{{ item.id }}" aria-label="{{ brand.position_title if item.id == 'position-finder' and brand.position_title else item.title.en }}" hidden></section>
     {% endfor %}
   </main>
   <script src="{{ base_path }}/console-static/shell.js" defer></script>

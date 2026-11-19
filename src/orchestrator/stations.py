@@ -1,6 +1,5 @@
 """Validated fingertip stations and serialized, atomic TOML updates."""
 
-import fcntl
 import json
 import os
 import re
@@ -17,6 +16,15 @@ from .tool import Pose, ToolOffset, fingertip_to_flange, finite, flange_to_finge
 DEFAULT_STATIONS = Path("/var/lib/mg400/robot/stations.toml")
 DEFAULT_TOOL = Path("/var/lib/mg400/robot/tool.toml")
 AXES = {"x_mm": "X", "y_mm": "Y", "z_mm": "Z", "r_deg": "R"}
+# Fixed fingertip workspace. X and Y cover the 440 mm MG400 reach. Z covers the
+# reachable flange heights with the 146 mm tool. The robot service still checks
+# joint limits and inverse kinematics for every target.
+DEFAULT_BOUNDS = {
+    "x_mm": (-440.0, 440.0),
+    "y_mm": (-440.0, 440.0),
+    "z_mm": (-300.0, 100.0),
+    "r_deg": (-180.0, 180.0),
+}
 BOUND_SETTINGS = {
     f"MG400_ORCH_{axis}_{side}_{'DEG' if axis == 'R' else 'MM'}"
     for axis in AXES.values()
@@ -51,6 +59,9 @@ class Workspace:
 
     @classmethod
     def from_settings(cls, settings):
+        """Return the fixed bounds. Rehearsals and tests set all 8 settings to replace them."""
+        if not any(settings.get(key) for key in BOUND_SETTINGS):
+            return cls(dict(DEFAULT_BOUNDS))
         bounds = {}
         for field, axis in AXES.items():
             unit = "DEG" if axis == "R" else "MM"
@@ -245,11 +256,15 @@ class StationStore:
         return validate(data["stations"], self.workspace)
 
     def load(self):
+        import fcntl
+
         with _parent(self.path) as (parent, name):
             fcntl.flock(parent, fcntl.LOCK_SH)
             return self._load(parent, name)
 
     def _update(self, change):
+        import fcntl
+
         with _parent(self.path) as (parent, name):
             # A directory lock is stable across atomic file replacement and
             # serializes every read-modify-write without a removable lock file.
@@ -272,6 +287,8 @@ class StationStore:
         station must pass validation before any file changes. The new files are
         staged and synced first; only two renames remain at the end.
         """
+        import fcntl
+
         if not isinstance(offset, ToolOffset):
             raise ValueError("A measured ToolOffset is required.")
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

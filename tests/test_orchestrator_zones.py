@@ -1142,6 +1142,13 @@ def test_stage_load_condition_requires_authoritative_fresh_named_feedback(field,
     stage_at_load(valid)
 
 
+def test_stage_load_condition_refuses_unmapped_encoder_coordinates():
+    state = ZoneService("stage").state()
+    state["closed_loop"] = True
+    with pytest.raises(RuntimeError, match="encoder-to-station mapping"):
+        stage_at_load(state)
+
+
 def test_invalid_zone_configuration_fails_before_clients_or_store(
     zone_settings, tmp_path, monkeypatch
 ):
@@ -1489,7 +1496,7 @@ def test_owned_robot_zone_recovery_confirms_manual_disable_without_relocking(tmp
             wait_zone(lambda: runner._settled)
             assert runner.snapshot()["zones"]["tray"]["status"] == "unknown"
             raw = demo.robot_state.snapshot()
-            assert "fault" not in raw and "connected" not in raw and raw["locked"] is True
+            assert raw["locked"] is False
             # Explicit operator-equivalent recovery reaches only this owned SIM-01 rig.
             demo.clients["robot"].run("disable", timeout=3)
             assert demo.robot_state.snapshot()["locked"] is False
@@ -1507,7 +1514,6 @@ def test_owned_robot_zone_recovery_confirms_manual_disable_without_relocking(tmp
             )
             state = json.loads(resolution["data_json"])["states"]["robot"]
             assert state["locked"] is False and state["last_command"]["action"] == "disable"
-            assert "fault" not in state and "connected" not in state
         finally:
             finish_zone_runner(runner)
 
@@ -1665,16 +1671,15 @@ def test_foreign_run_occupancy_does_not_request_physical_clearance():
     assert runner.resolutions == [{"manually_completed": True, "note": "repaired this run"}]
 
 
-def test_stage_stop_all_bypasses_only_its_own_known_stop_action(zone_context):
+def test_only_the_stop_action_bypasses_zones(zone_context):
     manager, authority, _ = zone_context
     manager.store.acquire("crucible-load", claim("another-run"))
-    stage = ZoneService("stage")
-    StepClient(authority, stage, zones=manager, device="stage").command("stop_all")
-    assert stage.calls == ["stop_all"]
-    robot = ZoneService("robot")
-    with pytest.raises(RuntimeError, match="another run"):
-        StepClient(authority, robot, zones=manager, device="robot").command("stop_all")
-    assert robot.calls == []
+    service = ZoneService("stage")
+    stage = StepClient(authority, service, zones=manager, device="stage")
+    stage.command("stop")
+    with pytest.raises(RuntimeError, match="blocked"):
+        stage.command("stop_all")
+    assert service.calls == ["stop"]
 
 
 def test_stage_dispatch_and_robot_zone_admission_are_serialized(zone_settings, monkeypatch):

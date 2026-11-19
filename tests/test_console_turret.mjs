@@ -326,9 +326,9 @@ test("a saved profile is labeled Saved before it is selected", () => {
 test("focus guidance recommends clearance while all captures enable Save & use", () => {
   const draft = profile(Object.fromEntries([0, 1, 2, 3].map(id => [id, cap()])));
   const { ui, lang } = setup(state({ draft, switch_focus: 800, compatible_for_switch: false }));
-  assert.equal(role(ui, "focus-summary").textContent, "Clearance: 800 full steps · Recorded: 100 full steps");
+  assert.equal(role(ui, "focus-summary").textContent, "Clearance: 800 MICRO 4 pulses · Recorded: 100 MICRO 4 pulses");
   assert.equal(role(ui, "switch-warning").hidden, false);
-  assert.equal(role(ui, "switch-warning").textContent, "We recommend recording at clearance 800 full steps.");
+  assert.equal(role(ui, "switch-warning").textContent, "We recommend recording at clearance 800 MICRO 4 pulses.");
   assert.match(ui.element.textContent, /Before Start, we recommend moving focus manually to clearance/);
   ui._test.applyState(state({ draft: { ...draft, focus_position: null }, switch_focus: 800, compatible_for_switch: false }));
   assert.match(role(ui, "focus-summary").textContent, /Recorded: \(focus not zeroed\)/);

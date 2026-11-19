@@ -4,9 +4,11 @@
 
 本地预览使用实际 Lab Console 界面和模拟设备，默认打开 Motion。Position Finder (legacy) 默认关闭。预览不连接 Olares，也不使用 LarePass VPN。
 
-外观开发使用此预览。共享仪表板的页头显示 AI Chemistry Console，标志来自 `src/orchestrator/web/static/console/console-logo.png`。只有明确要求时，才把外观修改部署到 Olares。
+外观开发使用此预览。共享仪表板的页头显示 AI Chemistry Console，标志来自 `src/orchestrator/web/static/console/console-logo.webp`。只有明确要求时，才把外观修改部署到 Olares。
 
-最后一个工作区标签为 Position Finder (legacy)，地址仍为 `#twin`。打开启用开关后可使用监控和校准。关闭后停止请求并释放临时图像数据。已存配置仍保留在磁盘上。
+最后一个工作区标签为 Position Finder (legacy)，地址为 `#position-finder`。打开启用开关后可使用监控和校准。关闭后停止请求并释放临时图像数据。已存配置仍保留在磁盘上。
+
+独立的 **Twin** 工作区使用 `#twin`，显示 3D 台面模型。它使用 `twin.js` 和 `twin.css`。离线预览可能无法加载模型资源和 CDN 库。定义模型映射前，编码器位移台几何保持未校准。
 
 ## 启动与停止
 
@@ -62,7 +64,7 @@ uv sync --locked --no-default-groups --group vision --group stage --group dev
 - 转盘校准使用 `1280 × 720` 模拟 Camera3 图像，图中只有当前物镜标记。物镜标记边长约为 8 mm。ID 0、1、2、3 分别对应 5x、10x、20x、50x。点击 **Record** 时，模拟图像切换到所选物镜。
 - 转盘配置保存在 `work/console-preview/calibration/microscope/turret_profiles/`。点击 **Start calibration** 后，依次记录 4 个物镜。点击 **Finish calibration**，再点击 **Save & use**。未完成的配置使用 **Save profile** 保存，用 **Load draft** 继续编辑。JSON 上传上限为 2 MiB。
 - **Lens calibration** 选择的完整配置供 5x、10x、20x 和 50x 按钮使用。重启预览后，所选配置保留。完整配置包含全部 4 个物镜的记录。记录时的对焦位置仅供参考，未知位置保留为未知，不按 `0` 处理。
-- 实机 **Start calibration** 只释放转盘电机。建议先手动把对焦轴移到界面显示的避让位置。界面以整步显示避让位置和已知的记录位置。自动移动前，当前对焦零点必须已知。转盘转动前，对焦轴必须到达已配置的避让位置。
+- 实机 **Start calibration** 只释放转盘电机。建议先手动把对焦轴移到界面显示的避让位置。界面以 `MICRO 4` 脉冲显示避让位置和已知的记录位置。自动移动前，当前对焦零点必须已知。转盘转动前，对焦轴必须到达已配置的避让位置。
 - 保持当前物镜标记清晰且完整可见。对齐使用固定摄像头下已记录的图像坐标。移动摄像头或改变其对焦、变焦后，重新记录全部 4 个物镜。本地模拟不验证定位精度或实际电机行为。
 
 ## 样品转移预览
@@ -77,19 +79,19 @@ uv sync --locked --no-default-groups --group vision --group stage --group dev
 
 ## 运行本地检查
 
-修改预览脚本或数字孪生 Python 代码后，从仓库根目录运行相关测试：
+修改预览脚本或Position Finder Python 代码后，从仓库根目录运行相关测试：
 
 ```powershell
 $env:PYTHONPATH = Join-Path (Get-Location) 'src'
-.\.venv\Scripts\python.exe -m pytest -q tests/test_console_preview.py tests/test_console_twin.py tests/test_stage_twin.py
+.\.venv\Scripts\python.exe -m pytest -q tests/test_console_preview.py tests/test_console_position_finder.py tests/test_stage_twin.py
 .\.venv\Scripts\ruff.exe check
 .\.venv\Scripts\ruff.exe format --check
 ```
 
-修改数字孪生 JavaScript 后，使用 `PATH` 中的 Node.js 运行：
+修改Position Finder JavaScript 后，使用 `PATH` 中的 Node.js 运行：
 
 ```powershell
-node --test tests/test_console_twin.mjs
+node --test tests/test_console_position_finder.mjs
 ```
 
 修改转盘校准 JavaScript 后，运行：

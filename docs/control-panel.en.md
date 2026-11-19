@@ -30,9 +30,12 @@ On the robot card of the Motion workspace, use this sequence:
 1. Click `Take control` and wait for measured coordinates.
 2. Click `Enable` to enable the robot.
 3. Select a movement method:
-   - Jog: select the step 0.5, 2, or 10, then click a direction button.
-   - Move to a pose: click `Use actual`, change X/Y/Z (mm) and R (degrees), set the speed, then click `Execute ↗`.
-4. When you finish, click `Disable`, then `Release`.
+   - Keyboard jog: turn on `Keyboard jog`, then hold a key to move. See [Lab Console](dashboard.en.md) for the keys and the speed.
+   - Jog buttons: open `Jog buttons`, select the step 0.5, 2, or 10, then click a direction button.
+   - Move to a pose: click `Use actual`, change X/Y/Z (mm) and R (degrees), set the speed, then click `Execute`.
+   - Home: click `Home…` and confirm. J1–J4 move to 0°.
+4. Click `Stop arm` to stop the robot at any time.
+5. When you finish, click `Release`.
 
 Each jog adds 1 step on one axis to the measured pose. The step unit is mm for X/Y/Z and degrees for R.
 Coordinates use the base frame and flange origin (`User=0,Tool=0`).
@@ -41,9 +44,9 @@ See [Lab Console](dashboard.en.md) for the workspace bounds and tool offset.
 The service then checks the target with the controller's inverse kinematics and the existing joint range checks.
 
 Clients can supply an integer `speed` with the `execute` command. The console speed input sets this value.
-The host setting `MG400_ROBOT_MAX_SPEED_L` limits this value. The service rejects values above the cap with 400.
+The speed cap is fixed at `20`. The service rejects values above the cap with 400.
 The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
-The acceleration cap is `MG400_ROBOT_MAX_ACC_L`.
+The acceleration cap is fixed at `20`.
 Without `speed`, the command remains `SpeedL=1,AccL=1`, even with higher caps.
 
 Both settings default to 1 and accept integers from 1–100. Empty settings also use 1.
@@ -56,7 +59,7 @@ An operator must validate speeds above 1 on hardware before unattended transfers
 
 ## Control the suction cup
 
-The Motion page of the [Lab Console](dashboard.en.md) has **Suck** and **Drop** (`release`). In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example the [Python client](development.en.md#python-client):
+The Motion workspace of the [Lab Console](dashboard.en.md) has **Suck** and **Drop** (`release`). In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example the [Python client](development.en.md#python-client):
 
 ```python
 client.run("vacuum", operation="suck")
@@ -72,18 +75,23 @@ Stop and disable end the blow. They keep the suck output.
 It requests a controlled stop. It is not a physical emergency stop.
 If a stop or command result cannot be confirmed, use the physical emergency stop on site.
 
-When you finish normally, click `Disable` first, then `Release`.
-If the robot is enabled, `Release` (`stop_sync`) stops it and releases control, but keeps feedback connected and control locked.
-The service does not disable the robot automatically.
-Click `Take control` again to cancel the pending disconnect. Then click `Disable`, then `Release`.
+The console `Release` sends `disable` first and waits up to 12 seconds. Then it sends `stop_sync`.
+If the console page sends no heartbeat within 3 seconds, the console releases control in the same sequence.
 The service disconnects feedback and unlocks control only after it confirms disabled mode 4 and rest.
+If the robot was already disabled and idle, disabled mode 4 is sufficient. You can move a disabled arm by hand, and a `Disable` or `Release` does not lock control.
 Stale feedback cannot confirm a stop. If the service reports an unconfirmed stop, use the physical emergency stop on site.
 If the service recorded no unconfirmed stop during a brief feedback gap, fresh feedback lets it confirm a new explicit `disable` request.
-If the feedback reader fails, the stop stays unconfirmed and the connection lock stays held.
 
-When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control.
+If the feedback connection fails, the service records an unconfirmed stop and keeps the connection lock.
+The service connects again every 1 second. `Recover` and `Clear alarm` both need fresh feedback.
+When fresh feedback returns, check the robot state, then click `Recover`.
+
+For clients that connect directly to the service, such as `RobotClient` and the interactive terminal, `stop_sync` does not disable the robot.
+If the robot is enabled, `stop_sync` stops it and releases control, but keeps feedback connected and control locked.
+The client can send `start_sync` again to cancel the pending disconnect. Then it sends `disable`, then `stop_sync`.
+If the robot is already disabled, `stop_sync` confirms disable, then disconnects.
+When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control. A client created with `keep_control=True` does not send it.
 After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.
-If the robot is already disabled, `stop_sync` confirms disable and rest, then disconnects.
 
 Only one client holds control at a time.
 If the holder does not renew within 3 seconds, the service requests a robot stop and locks control.
@@ -100,7 +108,8 @@ The robot may continue to the endpoint of the trajectory already sent.
 After a confirmed stop, you can disable and re-enable the robot.
 Taking control again does not unlock an unknown command result.
 If stopping cannot be confirmed during disconnection, the service stops normal coordinate queries.
-It retains feedback, the connection lock, and the warning. Another client cannot take control. Check the robot, then click `Recover`.
+It retains feedback, the connection lock, and the warning. Another program cannot connect to the robot.
+After the 3-second lease expires, another client can take control, but it cannot move the robot before you click `Recover`. Check the robot, then click `Recover`.
 Do not delete the lock file to release ownership.
 After deletion, 2 processes can each hold their own lock.
 
@@ -117,7 +126,15 @@ Use this recovery sequence:
 2. Click `Clear alarm` on the robot card.
 3. Wait for the service to report that the alarm is cleared and confirm that the robot is disabled and stationary.
 
-`Clear alarm` (`clear_alarm`) sends only `ClearError()`. It does not send `Continue()`.
+The robot card shows the button only when the service accepts it:
+
+- During an alarm, the button reads `Clear alarm`.
+- After an unconfirmed stop without an alarm, the button reads `Recover`. It needs fresh feedback.
+- After a confirmed stop, the card shows `Stopped` and no button. Click `Disable` to unlock control.
+- A `stop` command that arrives while the robot is enabled and idle, without an alarm or keyboard control, does not lock control after the stop is confirmed.
+
+Both buttons send `clear_alarm`.
+`clear_alarm` sends only `ClearError()`. It does not send `Continue()`.
 Motion paused before the alarm does not resume.
 After the alarm clears, the service disables the robot through a new control instance and confirms that it is stationary.
 Control unlocks only after both are confirmed.
@@ -128,7 +145,7 @@ Use DobotStudio Pro or the teach pendant to jog it back.
 After jogging back, check the controller mode as described in [Switch to TCP/IP mode from the server](hardware.en.md#switch-to-tcpip-mode-from-the-server).
 
 When collision detection triggers, the alarm list shows `-2` (Collision detected).
-If the alarm clears outside the console, for example with the robot's Collision Resume button, check the robot state, then click `Clear alarm`.
+If the alarm clears outside the console, for example with the robot's Collision Resume button, check the robot state, then click the button (`Recover` or `Clear alarm`).
 The service disables the robot through a new control instance and confirms that it is stationary, then unlocks control.
 
 An unconfirmed stop without an alarm shows a warning, and the button reads `Recover`.
@@ -153,10 +170,10 @@ The mode switch script must get the [panel connection lock](deploy.en.md#panel-c
 Use this recovery sequence:
 
 1. Make sure that the robot is stationary.
-2. Run `sudo mg400ctl mode` and read the controller mode.
-3. Run `sudo mg400ctl stop web`.
-4. Run `sudo mg400ctl mode --switch-to-tcp`.
-5. Run `sudo mg400ctl start web`, then click `Take control` in the console.
+2. Run `sudo labctl mode` and read the controller mode.
+3. Run `sudo labctl stop web`.
+4. Run `sudo labctl mode --switch-to-tcp`.
+5. Run `sudo labctl start web`, then click `Take control` in the console.
 
 For the switch conditions, see [Switch to TCP/IP mode from the server](hardware.en.md#switch-to-tcpip-mode-from-the-server).
 
@@ -174,12 +191,12 @@ It provides no coordinate feedback and accepts no motion commands.
 
 ## Service configuration
 
-The service is `mg400-web-panel.service`, installed by [Host deployment](deploy.en.md). Its `mg400ctl` name is `web`.
+The service is `mg400-web-panel.service`, installed by [Host deployment](deploy.en.md). Its `labctl` name is `web`.
 Start or check the service on the host:
 
 ```sh
-sudo mg400ctl start web
-sudo mg400ctl status
+sudo labctl start web
+sudo labctl status
 ```
 
 For a local start, enter the project directory on a host that can reach the robot and run:
@@ -188,13 +205,17 @@ For a local start, enter the project directory on a host that can reach the robo
 python3 apps/control_panel/server.py
 ```
 
+The connection lock directory is fixed at `/var/lib/mg400/locks`. All programs share this directory, so the local service excludes the other programs.
+
 If you omit `--mode`, the service uses `robot` mode.
 The robot address defaults to `MG400_ROBOT_HOST`, or to `config/robot.toml` if that variable is unset. Use `--robot-host` to specify it.
 
 During service shutdown, the service can take about 60 seconds to confirm that the robot stopped.
 The service's `TimeoutStopSec` is 90 seconds, which is longer than this interval.
 
-The service listens on `127.0.0.1:8766`. `--bind` and `--port` override this fixed default.
+By default, the service listens on `127.0.0.1:8766`.
+`--bind` and `--port` override the default. If the port is not an integer from 1–65535, the service does not start.
+The Lab Console and the recipe service always connect to `http://127.0.0.1:8766/`. See [Recipe orchestrator](orchestrator.en.md#service-settings).
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 Set the path prefix with `--base-path`, for example `--base-path /mg400-panel/`. All interface routes use this prefix.
@@ -205,7 +226,7 @@ If a reverse proxy is in front of the service, the proxy must meet these require
 
 See [Robot service interface](development.en.md#robot-service-interface) for the interface reference.
 
-After updating code, run the installer as described in [Host deployment](deploy.en.md#installation-and-updates), then run `mg400ctl restart web`.
+After updating code, run the installer as described in [Host deployment](deploy.en.md#installation-and-updates), then run `labctl restart web`.
 
 ### Service logs
 
@@ -224,7 +245,7 @@ A separate thread writes the logs. Blocking standard error does not delay a stop
 Read the logs on the Olares host:
 
 ```sh
-sudo mg400ctl logs web -n 200
+sudo labctl logs web -n 200
 ```
 
 When control is locked, find the first `Stop or disable unconfirmed.` in the logs.

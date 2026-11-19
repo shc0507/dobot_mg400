@@ -13,14 +13,12 @@ import time
 import urllib.error
 from collections import deque
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from stage_helpers import home_stage
-from test_deploy_mg400ctl import ctl as ctl
+from test_deploy_labctl import ctl as ctl
 from test_orchestrator_runner import FakeService, running, until
 from test_orchestrator_transfer import Robot
 
@@ -399,6 +397,15 @@ def test_stage_refusal_prevents_all_dispatch(crucible_geometry, mutation):
     assert not ctx.clients["robot"].calls and not ctx.clients["stage"].calls
 
 
+@pytest.mark.parametrize("unloading", [False, True])
+def test_encoder_stage_refuses_legacy_crucible_transfer_before_motion(crucible_geometry, unloading):
+    ctx = CrucibleContext(unloading=unloading)
+    ctx.clients["stage"].value["closed_loop"] = True
+    with pytest.raises(RuntimeError, match="encoder-to-station mapping"):
+        (unload if unloading else load)(ctx, "slot")
+    assert not ctx.clients["robot"].calls and not ctx.clients["stage"].calls
+
+
 def test_unload_refuses_partial_pose_without_commanding_pose(crucible_geometry):
     ctx = CrucibleContext()
     with pytest.raises(RuntimeError, match="complete furnace pose"):
@@ -582,63 +589,33 @@ def test_crucible_registry_keeps_full_scalar_and_unknown_parameter_validation():
             registry["crucible.load"].validate(params)
 
 
-def test_stage_pose_proof_uses_all_calibrated_axes_and_actual_feedback(stage_rig):
+@pytest.mark.parametrize("calibrated", [False, True])
+@pytest.mark.parametrize("unloading", [False, True])
+def test_encoder_coordinates_do_not_establish_legacy_crucible_pose(
+    stage_rig, crucible_geometry, calibrated, unloading
+):
     controller, board, clock = stage_rig
-    home_stage(controller, clock)
-    proof = controller.snapshot()["automation"]["at_poses"]["furnace"]
-    assert proof == {"matched": False, "axes": {"bottom": True, "top": True, "insert": False}}
-    controller.pose("furnace")
-    for _ in range(30):
-        clock.advance(0.5)
-        controller.poll()
-        if not controller.snapshot()["busy"]:
-            break
-        assert controller.snapshot()["automation"]["at_poses"] == {}
-    assert controller.snapshot()["automation"]["at_poses"]["furnace"]["matched"]
-    clock.advance(2.01)
-    assert controller.snapshot()["automation"]["at_poses"] == {}
-    controller.poll()
-    assert controller.snapshot()["automation"]["at_poses"]["furnace"]["matched"]
-    controller.set_microstep(2)
-    assert controller.snapshot()["automation"]["at_poses"] == {}
-
-
-@pytest.mark.parametrize("failure", ["reference", "soft", "active", "fault", "disconnect"])
-def test_stage_pose_proof_disappears_on_any_uncertainty(stage_rig, failure):
-    controller, board, clock = stage_rig
-    home_stage(controller, clock)
-    if failure == "reference":
-        controller._references.pop("bottom")
-    elif failure == "soft":
-        board.motors["top"].soft = False
-        controller.poll()
-    elif failure == "active":
-        controller._automation = dict(
-            action="pose", motor=None, pose="furnace", phase="cooldown", axes=("insert",)
-        )
-    elif failure == "fault":
-        controller._contract_fault = "unknown stop"
-    else:
-        controller.disconnect()
-    assert controller.snapshot()["automation"]["at_poses"] == {}
-
-
-def test_pose_proof_uses_nonzero_calibration_and_current_microstep(stage_rig):
-    controller, board, clock = stage_rig
-    controller._geometry = replace(
-        controller._geometry,
-        poses={"furnace": (("bottom", 3), ("top", 5), ("insert", 20))},
-    )
-    for mode in (1, 4):
-        if mode != 1:
-            controller.set_microstep(mode)
-        home_stage(controller, clock)
-        proof = controller.snapshot()["automation"]["at_poses"]["furnace"]
-        assert proof == {"matched": False, "axes": {"bottom": False, "top": False, "insert": False}}
-        for motor, mm in controller._geometry.poses["furnace"]:
-            board.motors[motor].position = controller._geometry.motors[motor].target(mm, mode)
-        controller.poll()
-        assert controller.snapshot()["automation"]["at_poses"]["furnace"]["matched"] is True
+    if calibrated:
+        for motor in ("bottom", "top", "insert"):
+            controller.calibrate(motor, 0.25)
+            clock.advance(10)
+            controller.poll()
+            clock.advance(1.1)
+            controller.poll()
+    controller.lease.acquire("owned-run")
+    state = controller.snapshot() | {"lease": controller.lease.snapshot()}
+    assert state["closed_loop"] is True and state["coordinate_unit"] == "rotations"
+    assert state["legacy_geometry_active"] is False and "automation" not in state
+    assert all(axis["positioning_ready"] is calibrated for axis in state["motors"])
+    assert all("position_mm" not in axis and "at_positions" not in axis for axis in state["motors"])
+    assert {"home", "pose", "goto", "awake"}.isdisjoint(controller.describe()["commands"])
+    before = list(board.commands)
+    ctx = CrucibleContext(unloading=unloading)
+    ctx.clients["stage"].value = state
+    with pytest.raises(RuntimeError, match="encoder-to-station mapping"):
+        (unload if unloading else load)(ctx, "slot")
+    assert board.commands == before
+    assert not ctx.clients["robot"].calls and not ctx.clients["stage"].calls
 
 
 def test_load_accepts_fresh_stopped_cooling_state_without_starting_outputs(crucible_geometry):
@@ -704,10 +681,9 @@ def test_demo_environments_retain_only_explicit_crucible_data(monkeypatch):
     with cli._demo_environment():
         assert forbidden.isdisjoint(os.environ)
         assert {key: os.environ[key] for key in explicit} == explicit
-    clean = demo_environment({**os.environ, "MG400_ORCH_PORT": "8772"})
+    clean = demo_environment(dict(os.environ))
     assert forbidden.isdisjoint(clean)
     assert {key: clean[key] for key in explicit} == explicit
-    assert clean["MG400_ORCH_PORT"] == "8772"
 
 
 def _crucible_files(tmp_path, monkeypatch):
@@ -729,27 +705,6 @@ conditions = ["robot_clear"]
     regions.chmod(0o640)
     monkeypatch.setenv(PREFIX + "ROIS_FILE", str(regions))
     return config
-
-
-def _home_owned_demo(stage):
-    stage.acquire()
-    try:
-        for motor in ("bottom", "top", "insert"):
-            command = stage.command("home", motor=motor)["command_id"]
-            deadline = time.monotonic() + 5
-            while True:
-                stage.heartbeat()
-                state = stage.state()
-                axis = next(item for item in state["motors"] if item["id"] == motor)
-                result = state.get("last_command")
-                if result and result["id"] == command:
-                    assert result["result"] == "ok", result
-                    if axis["available"]:
-                        break
-                assert time.monotonic() < deadline, state
-                time.sleep(0.03)
-    finally:
-        stage.release()
 
 
 @pytest.fixture
@@ -1016,12 +971,12 @@ def _observe_robot_stops(robot, diagnostics, gc_snapshot):
     return restore
 
 
-@pytest.mark.parametrize("scenario", ["complete", "unhomed", "hot"])
-def test_public_rehearsal_load_unload_uses_owned_four_services_only(
+@pytest.mark.parametrize("unloading", [False, True])
+def test_public_rehearsal_refuses_encoder_crucible_transfer_before_motion(
     crucible_geometry,
     tmp_path,
     monkeypatch,
-    scenario,
+    unloading,
     crucible_gc_observer,
 ):
     _crucible_files(tmp_path, monkeypatch)
@@ -1073,32 +1028,32 @@ def test_public_rehearsal_load_unload_uses_owned_four_services_only(
             )
             assert set(self.clients) == {"robot", "stage", "thermal", "furnace"}, diagnostics()
             assert all(client.describe()["demo"] for client in self.clients.values()), diagnostics()
-            if scenario != "unhomed":
-                _home_owned_demo(self.clients["stage"])
+            assert self.clients["stage"].state()["closed_loop"] is True, diagnostics()
             return self
+
+        def __exit__(self, *args):
+            self.stage_final = self.clients["stage"].state()
+            return super().__exit__(*args)
 
     monkeypatch.setattr(cli, "Rehearsal", Demo)
     recipe = tmp_path / "crucible.toml"
+    transfers = [("unload", "to_slot"), ("load", "from_slot")]
+    if not unloading:
+        transfers.reverse()
     recipe.write_text(
-        """name = "Owned crucible rehearsal"
+        """name = "Owned encoder crucible rehearsal"
 version = 1
 params = {}
 [[steps]]
 skill = "robot.enable"
 params = {}
 timeout_s = 5
-[[steps]]
-skill = "crucible.load"
-params = {from_slot="slot"}
-timeout_s = 20
-[[steps]]
-skill = "crucible.unload"
-params = {to_slot="slot", unload_max_c="""
-        + ("1" if scenario == "hot" else "40")
-        + """}
-timeout_s = """
-        + ("2" if scenario == "hot" else "20")
-        + "\n"
+"""
+        + "".join(
+            f'[[steps]]\nskill = "crucible.{action}"\n'
+            f'params = {{{parameter}="slot"}}\ntimeout_s = 20\n'
+            for action, parameter in transfers
+        )
     )
     output = io.StringIO()
     # Clear prior-suite cycles before owned services start their real 250 ms watchdog.
@@ -1116,23 +1071,14 @@ timeout_s = """
     )
     reports = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
     assert reports, (output.getvalue(), diagnostics())
-    if scenario == "complete":
-        assert code == 0, (
-            [(item["status"], item["step"], item["detail"]) for item in reports],
-            diagnostics(),
-        )
-        assert reports[-1]["status"] == "completed" and reports[-1]["zones"] == {}, diagnostics()
-        assert demos[0].simulator.controller.sent().count("DOExecute(2,1)") == 2, diagnostics()
-    else:
-        assert code == 1 and reports[-1]["status"] == "aborted", (output.getvalue(), diagnostics())
-        assert any(report["status"] == "held" for report in reports), diagnostics()
-        sucks = demos[0].simulator.controller.sent().count("DOExecute(2,1)")
-        assert sucks == (1 if scenario == "hot" else 0), diagnostics()
-        if scenario == "hot":
-            held = next(item for item in reports if item["status"] == "held")
-            assert any(
-                word in held["detail"] for word in ("timed out", "permission", "deadline")
-            ), diagnostics()
+    assert code == 1 and reports[-1]["status"] == "aborted", (output.getvalue(), diagnostics())
+    held = [report for report in reports if report["status"] == "held"]
+    assert held and all("encoder-to-station mapping" in report["detail"] for report in held), (
+        output.getvalue(),
+        diagnostics(),
+    )
+    assert demos[0].simulator.controller.sent().count("DOExecute(2,1)") == 0, diagnostics()
+    assert demos[0].stage_final["last_command"] is None, diagnostics()
 
 
 def test_service_demo_factory_returns_context_bound_furnace_and_roi_clients(

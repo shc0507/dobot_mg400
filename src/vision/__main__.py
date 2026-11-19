@@ -5,6 +5,8 @@ import logging
 import os
 import signal
 
+from labkit import ports
+
 from .calibration import DEFAULT_DIRECTORY, calibration_settings
 from .frames import DemoSource, Go2RTCSource
 from .service import DEFAULT_WEIGHTS, FIXTURES, MAX_REQUEST_BYTES, VisionService, create_app
@@ -18,9 +20,9 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
     parser.add_argument(
         "--demo", action="store_true", help="Use offline fixtures without torch or cameras"
     )
-    parser.add_argument("--bind", default=env.get("MG400_VISION_BIND") or "127.0.0.1")
-    parser.add_argument("--port", default=env.get("MG400_VISION_PORT") or "8771", type=int)
-    parser.add_argument("--base-path", default=env.get("MG400_VISION_BASE_PATH") or "/")
+    parser.add_argument("--bind", default=ports.HOST)
+    parser.add_argument("--port", default=ports.PORTS["vision"], type=int)
+    parser.add_argument("--base-path", default="/")
     parser.add_argument("--weights", default=env.get("MG400_VISION_WEIGHTS") or DEFAULT_WEIGHTS)
     parser.add_argument("--device", default=env.get("MG400_VISION_DEVICE") or None)
     parser.add_argument(

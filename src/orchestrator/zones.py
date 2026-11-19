@@ -1,7 +1,6 @@
 """Durable exclusive zone occupancy, guarded state checks and explicit recovery."""
 
 import copy
-import fcntl
 import hashlib
 import json
 import os
@@ -231,6 +230,8 @@ class OccupancyStore:
             lock.release()
 
     def _change_locked(self, update, deadline, cancelled, commit_guard):
+        import fcntl
+
         with _parent(self.path) as (parent, name):
             while True:
                 if cancelled is not None and cancelled.is_set():
@@ -365,6 +366,11 @@ def _instance(state, *, robot=False):
 
 
 def stage_at_load(state):
+    if state.get("closed_loop"):
+        raise RuntimeError(
+            "The stage_at_load check requires a new encoder-to-station mapping. "
+            "Encoder stage admission is unavailable until that mapping is defined."
+        )
     if state.get("feedback_fresh") is not True or state.get("busy") is not False:
         raise RuntimeError("Stage feedback must be fresh and idle at load.")
     motors = state.get("motors")

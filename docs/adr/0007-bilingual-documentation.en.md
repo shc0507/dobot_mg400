@@ -20,7 +20,7 @@ Human documents use Chinese `X.md` and English `X.en.md` beside it. Change both 
 - The first line links to the other language. English pages link to `.en.md` targets and English anchors.
 - `scripts/check_doc_pairs.py` runs through pytest in CI. It checks pair existence, ordered fenced code after comment removal, inline code sets, ASCII numbers outside code, link targets, and heading counts by level.
 - Link comparison ignores fragments and treats `.md` and `.en.md` targets as the same document.
-- The checker permits missing pairs only through `docs/agents/doc-pairs-pending.txt`. Until a pair exists, edit the Chinese file. Remove its pending entry when you add the English pair.
+- The checker permits missing pairs only through `docs/agents/doc-pairs-pending.txt`. The file exists only while a pair is missing. Until a pair exists, edit the Chinese file. Remove its pending entry when you add the English pair.
 - Write Chinese with `jianming-zhongwen` and English with `asd-ste100`. Keep instructions concise and current. Store run outcomes in issue comments, not instruction pages.
 
 ## Consequences

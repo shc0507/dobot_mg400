@@ -724,7 +724,8 @@ def test_key_input_after_lease_expiry_turns_keys_off_and_is_refused(rig):
 
 def test_arm_refuses_locked_control(rig):
     rig.connect()
-    rig.browser.command("stop")
+    with rig.state._lock:
+        rig.state._request_stop(reason="Robot operation failed")
     rig.idle()
     with pytest.raises(RuntimeError, match="locked"):
         rig.browser.arm()

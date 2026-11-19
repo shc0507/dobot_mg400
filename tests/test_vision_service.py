@@ -488,7 +488,7 @@ def test_stop_or_expiry_keeps_inference_serial_and_discards_late_result(make_ser
 @pytest.mark.parametrize(
     "environ,argv",
     [
-        ({"MG400_VISION_PORT": "bad"}, []),
+        ({}, ["--port", "bad"]),
         ({}, ["--port", "0"]),
         ({}, ["--gpu-fraction", "nan"]),
         ({}, ["--device", "bogus"]),

@@ -440,10 +440,13 @@ def test_stream_disconnect_releases_slot_after_generator_started():
 
 def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_rig):
     rig = demo_rig()
-    assert service_post(rig, "manual/set_focus_zero", {"confirm": True}).status_code == 409
+    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code == 409
     assert service_post(rig, "heartbeat").status_code == 200
-    assert service_post(rig, "manual/set_focus_zero", {"confirm": False}).status_code == 400
-    zero = service_post(rig, "manual/set_focus_zero", {"confirm": True})
+    assert (
+        service_post(rig, "command", {"action": "set_focus_zero", "confirm": False}).status_code
+        == 400
+    )
+    zero = service_post(rig, "command", {"action": "set_focus_zero"})
     assert zero.status_code == 202
     assert service_post(rig, "renew").status_code == 200
     state = wait_command(rig, zero.json["command_id"])
@@ -468,14 +471,13 @@ def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_
 def test_focus_zero_refuses_a_client_without_the_lease(demo_rig):
     rig = demo_rig()
     assert service_post(rig, "heartbeat", actor="automation").status_code == 200
-    assert service_post(rig, "manual/heartbeat", actor="operator").status_code == 409
+    assert service_post(rig, "heartbeat", actor="operator").status_code == 409
     assert (
-        service_post(rig, "manual/set_focus_zero", {"confirm": True}, actor="operator").status_code
+        service_post(rig, "command", {"action": "set_focus_zero"}, actor="operator").status_code
         == 409
     )
     response = service_post(rig, "command", {"action": "set_focus_zero"}, actor="operator")
     assert response.status_code == 409
-    assert rig.service.snapshot()["manual_client"] is None
     assert not any(command == "FOCUS ZERO" for command in rig.port.commands)
 
 
@@ -1396,13 +1398,13 @@ def test_recording_columns_match_existing_furnace_source_schema():
     assert FRAME_METADATA_FIELDS == SOURCE_FIELDS
 
 
-def test_furnace_provider_settings_read_the_furnace_url():
+def test_furnace_provider_uses_the_fixed_furnace_url():
     from microscope.service import MicroscopeConfig
 
     config = MicroscopeConfig.from_env(
         {"MG400_MICROSCOPE_FURNACE_URL": "http://127.0.0.1:8769/heat/"}
     )
-    assert config.furnace_url.endswith("/heat/")
+    assert config.furnace_url == "http://127.0.0.1:8769/"
 
 
 def test_recording_cleanup_failure_keeps_stop_unconfirmed(recording_rig):

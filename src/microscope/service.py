@@ -1469,7 +1469,7 @@ class MicroscopeService(TurretCalibrationMixin):
         offset = self._objective_offset + steps
         if abs(offset) > window:
             raise ServiceError(
-                409, f"The turret offset would be {offset:+d}, outside Â±{window} full steps"
+                409, f"The turret offset would be {offset:+d}, outside ±{window} full steps"
             )
 
     def _dispatch(self, action, args, client):

@@ -306,4 +306,4 @@ class StageContract:
     def on_lease_expired(self):
         outcome = self.stop("lease-expiry", 0)
         with self._lock:
-            self._event(f"Automation lease expired Â· stop {outcome}")
+            self._event(f"Automation lease expired · stop {outcome}")

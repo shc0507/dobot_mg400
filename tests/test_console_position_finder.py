@@ -19,7 +19,6 @@ from werkzeug.exceptions import HTTPException
 
 from orchestrator.web import twin
 from orchestrator.web.workspaces import position_finder as workspace
-from vision.frames import FrameError, Go2RTCSource
 from vision.stage_twin import TuningPolicy, analyze_frame, new_profile
 
 
@@ -1025,40 +1024,7 @@ def test_live_camera_choices_use_configured_streams_and_stable_device_identity()
         frames.identity("camera3")
 
 
-def test_native_still_uses_requested_size_without_resizing_preview():
-    content = BytesIO()
-    Image.new("RGB", (3840, 2160), "white").save(content, format="JPEG")
-    calls = []
-
-    def open_frame(url, timeout):
-        calls.append((url, timeout))
-        return BytesIO(content.getvalue())
-
-    settings = {"MG400_CAMERA_DEVICES": "/dev/v4l/by-path/usb-stage"}
-    source = Go2RTCSource(settings=settings, opener=open_frame, timeout=30)
-    assert source.full_still(1, [3840, 2160]).size == (3840, 2160)
-    assert calls == [("http://127.0.0.1:1985/camera1.full.jpg?size=3840x2160", 30)]
-
-    content = BytesIO()
-    Image.new("RGB", (1280, 720), "white").save(content, format="JPEG")
-    with pytest.raises(FrameError, match="1280x720.*3840x2160"):
-        source.full_still(1, [3840, 2160])
-    assert len(calls) == 2
-
-
-@pytest.mark.parametrize("dimensions", [None, [3840], [True, 2160], [123, 456], "3840x2160"])
-def test_native_still_rejects_unsupported_dimensions_before_camera_access(dimensions):
-    def forbidden(*args, **kwargs):
-        pytest.fail("Unsupported resolution opened the camera source")
-
-    source = Go2RTCSource(
-        settings={"MG400_CAMERA_DEVICES": "/dev/v4l/by-path/usb-stage"}, opener=forbidden
-    )
-    with pytest.raises(ValueError, match="unsupported camera resolution"):
-        source.full_still(1, dimensions)
-
-
-def test_live_twin_samples_default_to_4k_and_reuse_matching_preview(monkeypatch):
+def test_live_twin_samples_need_the_configured_stream_size(monkeypatch):
     calls = []
 
     class Source:
@@ -1069,22 +1035,14 @@ def test_live_twin_samples_default_to_4k_and_reuse_matching_preview(monkeypatch)
             calls.append(("preview", camera, self.timeout))
             return Image.new("RGB", (1280, 720))
 
-        def full_still(self, camera, dimensions):
-            calls.append(("native", camera, self.timeout, tuple(dimensions)))
-            return Image.new("RGB", dimensions)
-
     monkeypatch.setattr("vision.frames.Go2RTCSource", Source)
     frames = twin.CameraFrames({"MG400_CAMERA_DEVICES": "/dev/v4l/by-path/usb-stage"})
     assert Image.open(BytesIO(frames.read("camera1"))).size == (1280, 720)
-    assert Image.open(BytesIO(frames.sample("camera1"))).size == (3840, 2160)
     assert Image.open(BytesIO(frames.sample("camera1", [1280, 720]))).size == (1280, 720)
-    assert Image.open(BytesIO(frames.sample("camera1", [1920, 1080]))).size == (1920, 1080)
-    assert calls == [
-        ("preview", 1, 2),
-        ("native", 1, 30, (3840, 2160)),
-        ("preview", 1, 2),
-        ("native", 1, 30, (1920, 1080)),
-    ]
+    for dimensions in (None, [3840, 2160], [1920, 1080]):
+        with pytest.raises(ValueError, match="use a 1280x720 profile"):
+            frames.sample("camera1", dimensions)
+    assert calls == [("preview", 1, 2), ("preview", 1, 2)]
 
 
 def test_live_4k_stage_samples_reuse_capture_without_mode_changes(monkeypatch):

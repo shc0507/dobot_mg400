@@ -31,7 +31,7 @@
 | `/var/lib/mg400/furnace` | 炉控状态和持久锁，文件为 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/runs` | 编排器记录和显微镜运行输出，文件为 `0600` 或 `0640` | `1000:1000`，`0750` |
 | `/var/lib/mg400/zones` | 区域配置和保留占用，文件为 `0640` 或 `0600` | `1000:1000`，`0750` |
-| `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14 | `root:root`，`0755` |
+| `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14，带补丁 `deploy/go2rtc/aggregation-packets.patch` | `root:root`，`0755` |
 | `/usr/local/lib/mg400/caddy` | 代理程序 Caddy 2 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
 | `/usr/local/bin/labctl` | 日常命令，链接到 `/opt/mg400/deploy/labctl` | 无 |
@@ -63,7 +63,17 @@
 - 主机能访问 PyPI。`uv sync` 从 PyPI 下载依赖。
 - 主机有一个网口直连机械臂，地址为 `192.168.1.10/24`。
 - 该网口能连接机械臂的 TCP `29999`、`30003` 和 `30004`。
-- 使用摄像头时，从 [go2rtc 发布页](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14) 下载 1.9.14 版的 Linux 程序。
+- 使用摄像头时，准备带补丁 `deploy/go2rtc/aggregation-packets.patch` 的 go2rtc 1.9.14 Linux 程序。
+  该补丁让 go2rtc 拆分 H.265 的 RTP 聚合包。大于 `1280x720` 的摄像头的 H.265 预览必须用它。
+  在装有 Go 的电脑上构建：
+
+  ```sh
+  git clone --depth 1 --branch v1.9.14 https://github.com/AlexxIT/go2rtc.git
+  git -C go2rtc apply /path/to/dobot_mg400/deploy/go2rtc/aggregation-packets.patch
+  cd go2rtc && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o go2rtc .
+  ```
+
+  没有大于 `1280x720` 的摄像头时，可以用 [go2rtc 发布页](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14) 的 1.9.14 版。
 - 使用显微镜录像或摄像头 H.264 预览时，主机已安装 `ffmpeg` 和 `ffprobe`。在 Debian 或 Ubuntu 上，`ffmpeg` 软件包提供这两个程序：`apt-get install ffmpeg`。
   ffmpeg 必须为 5.1 或更高版本，因为预览编码使用 `-fps_mode passthrough`。
   使用 NVENC 时，ffmpeg 必须支持 `h264_nvenc` 和 `hevc_nvenc`，主机须安装 NVIDIA 驱动。
@@ -475,10 +485,9 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 模式列表为空时，普通摄像头使用 `1280x720@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项。它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
 显式模式列表覆盖这些默认值。数量、路径或模式无效时，安装器在修改主机前退出。
-宽度不超过 1280 且高度不超过 720 的流会预加载。`3840x2160@30` 的 `camera1` 也会预加载。
-浏览器关闭后，预加载的流继续采集。其他更大的流按需启动。
+只有宽度不超过 1280 且高度不超过 720 的流会预加载。
+浏览器关闭后，预加载的流继续采集。更大的流按需启动。
 实验室配置中，`camera1` 使用 `3840x2160@30`，其他 3 台摄像头使用 `1280x720@30`。
-`camera1` 预览保留原生 `3840x2160` 像素。H.264 码率上限为 8 Mbit/s，H.265 为 6 Mbit/s。
 多台摄像头使用大于 `640x480` 的模式时，先安装 [USB 带宽补丁](olares.md#usb-带宽补丁)。
 修改设备或模式后，重新运行安装器，生成新的 `go2rtc.yaml`，再运行 `labctl restart camera vision microscope orch`。未启用 `vision` 时，从命令中去掉 `vision`：`restart` 拒绝未启用的可选服务。
 允许的模式和托盘摄像头配置见[摄像头](olares.md#摄像头)。

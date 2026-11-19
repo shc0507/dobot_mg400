@@ -13,7 +13,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from PIL import Image, ImageOps
 
-from cameras.config import MJPEG_MODES, camera_configuration
+from cameras.config import camera_configuration
 from labkit import ports
 
 _MAX_BYTES = 8 * 1024 * 1024
@@ -132,23 +132,6 @@ class Go2RTCSource:
         """Read one frame from the same configured stream and check its dimensions."""
         camera = validate_camera(camera, self.camera_count)
         url = ports.url("go2rtc", f"api/frame.jpeg?src=camera{camera}")
-        return self._frame(camera, url, self.configuration.mode(camera)[:2])
-
-    def full_still(self, camera: int, dimensions) -> Image.Image:
-        """Capture a native-size JPEG; the shared owner restores previews afterward."""
-        camera = validate_camera(camera, self.camera_count)
-        if (
-            not isinstance(dimensions, (list, tuple))
-            or len(dimensions) != 2
-            or any(type(value) is not int for value in dimensions)
-            or tuple(dimensions) not in {(width, height) for width, height, _ in MJPEG_MODES}
-        ):
-            raise ValueError("The calibration requires an unsupported camera resolution.")
-        width, height = dimensions
-        url = ports.url("camera", f"camera{camera}.full.jpg?size={width}x{height}")
-        return self._frame(camera, url, (width, height))
-
-    def _frame(self, camera, url, expected):
         opener = self._opener
         if opener is None:
             opener = build_opener(ProxyHandler({}), _NoRedirect())
@@ -168,6 +151,7 @@ class Go2RTCSource:
                     clock=self._clock,
                 )
             image = _decode(data, "JPEG")
+            expected = self.configuration.mode(camera)[:2]
             if image.size != expected:
                 raise FrameError(
                     f"Camera {camera} frame size {image.size[0]}x{image.size[1]} "

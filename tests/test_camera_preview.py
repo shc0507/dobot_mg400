@@ -115,16 +115,6 @@ def test_snapshots_reuse_http_connection_without_truncating_frames(preview):
         "camera1.mjpeg?fps=5.5",
         "camera1.mjpeg?fps=5&src=admin",
         "camera1.jpg?fps=5",
-        "camera1.full.jpg?size=3840x2160&fps=1",
-        "camera1.full.jpg?size=3840x2160&size=4000x3000",
-        "camera1.full.jpg?size=3840x2160&src=camera2",
-        "camera1.full.jpg?size=3840X2160",
-        "camera1.full.jpg?size=03840x2160",
-        "camera1.full.jpg?size=3840x2161",
-        "camera1.full.jpg?size=1x1",
-        "camera1.full.jpg?size=",
-        "camera1.full.jpg?fps=5",
-        "camera4.full.jpg?size=3840x2160",
         "camera4.mp4",
         "camera1.mp4?src=admin",
         "camera1.mp4?fps=5",
@@ -749,19 +739,20 @@ def test_mp4_route_returns_502_when_go2rtc_cannot_encode(preview):
     assert request(module, "camera1.mp4")[0] == 502
 
 
-def test_h264_previews_exist_only_for_preloaded_streams_and_the_microscope(preview, monkeypatch):
+def test_video_previews_exist_for_all_streams_but_a_large_side_stream(preview, monkeypatch):
     _, upstream = preview
     monkeypatch.setenv(
         "MG400_CAMERA_DEVICES",
         ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)),
     )
-    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,1280x720@30,1600x1200@30")
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,1600x1200@30,3840x2160@30")
+    monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
     module = load_preview()
     assert module.VIDEOS == {
-        **{f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 3)},
+        **{f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 4)},
         "microscope.mp4": "microscope",
     }
-    assert request(module, "camera4.mp4")[0] == 404
+    assert request(module, "camera3.mp4")[0] == 404
     upstream.assert_not_called()
 
 
@@ -782,117 +773,6 @@ class MJPEG(io.BytesIO):
         )
 
 
-def configure_native_camera(module, monkeypatch):
-    monkeypatch.setattr(
-        module,
-        "CAMERAS",
-        SimpleNamespace(
-            devices=module.CAMERAS.devices,
-            streams=module.CAMERAS.streams,
-            modes=((3840, 2160, 30), (1280, 720, 30), (3840, 2160, 30)),
-            preloaded=("camera1", "camera2"),
-        ),
-    )
-
-
-@pytest.fixture
-def shared_still(preview, monkeypatch):
-    module, upstream = preview
-    configure_native_camera(module, monkeypatch)
-    monkeypatch.setattr(module, "SIDE", "camera3")
-    monkeypatch.setattr(module, "microscope_busy", Mock(return_value=True))
-    monkeypatch.setattr(module, "STILL_CONFIG", Mock())
-    monkeypatch.setattr(module, "restart_go2rtc", Mock())
-    monkeypatch.setattr(module, "grab_still", Mock(side_effect=AssertionError("Mode changed")))
-    yield module, upstream
-    module.microscope_busy.assert_not_called()
-    module.STILL_CONFIG.write_text.assert_not_called()
-    module.STILL_CONFIG.unlink.assert_not_called()
-    module.restart_go2rtc.assert_not_called()
-    module.grab_still.assert_not_called()
-    assert not module.STILL_LOCK.locked()
-
-
-@pytest.mark.parametrize("camera, size", [(1, (3840, 2160)), (2, (1280, 720))])
-def test_sized_still_reuses_preloaded_native_stream_during_microscope_job(
-    shared_still, camera, size
-):
-    module, upstream = shared_still
-    frame = jpeg(*size)
-
-    def urlopen(_target, timeout=None):
-        assert module.STILL_LOCK.locked()
-        response = io.BytesIO(frame)
-        response.headers = {"Content-Length": str(len(frame))}
-        return response
-
-    upstream.side_effect = urlopen
-    status, headers, body = request(module, f"camera{camera}.full.jpg?size={size[0]}x{size[1]}")
-    assert status == 200
-    assert body == frame
-    assert headers["Content-Type"] == "image/jpeg"
-    assert headers["Content-Length"] == str(len(frame))
-    assert headers["Cache-Control"] == "no-store"
-    upstream.assert_called_once_with(
-        f"http://127.0.0.1:1984/api/frame.jpeg?src=camera{camera}", timeout=5
-    )
-
-
-@pytest.mark.parametrize(
-    "frame, length",
-    [
-        (jpeg(1280, 720), None),
-        (jpeg(3840, 2160)[:-2], None),
-        (b"\xff\xd8broken\xff\xd9", None),
-        (b"not a JPEG\xff\xd9", None),
-        (jpeg(3840, 2160), "1000"),
-        (jpeg(3840, 2160), "invalid"),
-    ],
-)
-def test_native_still_rejects_invalid_frames_without_restart(shared_still, frame, length):
-    module, upstream = shared_still
-    response = io.BytesIO(frame)
-    response.headers = {} if length is None else {"Content-Length": length}
-    upstream.side_effect = lambda *_args, **_kwargs: response
-    status, headers, _ = request(module, "camera1.full.jpg?size=3840x2160")
-    assert status == 502
-    assert headers["Cache-Control"] == "no-store"
-    assert upstream.call_count == 1
-
-
-def test_native_still_bounds_the_frame_read(shared_still, monkeypatch):
-    module, upstream = shared_still
-    monkeypatch.setattr(module, "STILL_MAX_FRAME", 64)
-    response = Mock(wraps=io.BytesIO(jpeg(3840, 2160) + bytes(128)))
-    response.headers = {}
-    upstream.side_effect = lambda *_args, **_kwargs: nullcontext(response)
-    assert request(module, "camera1.full.jpg?size=3840x2160")[0] == 502
-    response.read.assert_called_once_with(65)
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        urllib.error.URLError("Camera unavailable"),
-        OSError("Camera unavailable"),
-        IncompleteRead(b""),
-    ],
-)
-def test_native_still_upstream_failure_returns_502_without_restart(shared_still, error):
-    module, upstream = shared_still
-    upstream.side_effect = error
-    assert request(module, "camera1.full.jpg?size=3840x2160")[0] == 502
-    assert upstream.call_count == 1
-
-
-def test_native_still_rejects_an_occupied_capture_slot(shared_still):
-    module, upstream = shared_still
-    with module.STILL_LOCK:
-        assert request(module, "camera1.full.jpg?size=3840x2160")[0] == 503
-        assert module.STILL_LOCK.locked()
-    upstream.assert_not_called()
-
-
 @pytest.fixture
 def still(preview, monkeypatch, tmp_path):
     module, _ = preview
@@ -908,15 +788,7 @@ def still(preview, monkeypatch, tmp_path):
             path = module.STILL_CONFIG
             overlays.append(path.read_text() if path.exists() else None)
         if "/api/stream.mjpeg" in url:
-            return MJPEG(
-                [
-                    jpeg(640, 480),
-                    b"\xff\xd8broken\xff\xd9",
-                    jpeg(4000, 3000),
-                    jpeg(3840, 2160),
-                    jpeg(1920, 1080),
-                ]
-            )
+            return MJPEG([jpeg(640, 480), b"\xff\xd8broken\xff\xd9", jpeg(4000, 3000)])
         return io.BytesIO(b"{}")
 
     monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
@@ -954,55 +826,16 @@ def test_full_still_streams_one_camera_alone_and_restores_the_previews(still, ca
     assert len(lines) == 10
 
 
-@pytest.mark.parametrize("size", [(3840, 2160), (1920, 1080)])
-def test_sized_still_uses_native_dimensions_at_the_lowest_supported_rate(still, size):
-    module, calls, overlays = still
-    width, height = size
-    status, headers, body = request(module, f"camera1.full.jpg?size={width}x{height}")
-    assert status == 200
-    assert headers["Content-Type"] == "image/jpeg"
-    assert headers["Cache-Control"] == "no-store"
-    assert body == jpeg(width, height)
-    overlay, restored = overlays
-    assert (
-        f'  camera1: "v4l2:device?video=/dev/v4l/by-path/fake-camera-1'
-        f'&input_format=mjpeg&video_size={width}x{height}&framerate=30"'
-    ) in overlay.splitlines()
-    assert '  camera2: ""' in overlay.splitlines()
-    assert '  camera3: ""' in overlay.splitlines()
-    assert restored is None and not module.STILL_CONFIG.exists()
-    assert calls[-2:] == ["http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
-    assert not module.STILL_LOCK.locked()
-
-
-@pytest.mark.parametrize(
-    "route, size",
-    [("camera1.full.jpg", (4000, 3000)), ("camera3.full.jpg?size=3840x2160", (3840, 2160))],
-)
-def test_preloaded_native_mode_preserves_other_still_captures(still, monkeypatch, route, size):
-    module, calls, overlays = still
-    configure_native_camera(module, monkeypatch)
-    status, _, body = request(module, route)
-    assert status == 200
-    assert body == jpeg(*size)
-    assert len(overlays) == 2
-    assert overlays[0] is not None and overlays[1] is None
-    assert calls[-2:] == ["http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
-    assert not module.STILL_LOCK.locked()
-
-
-@pytest.mark.parametrize("query", ["", "?size=3840x2160"])
-def test_full_still_failure_still_restores_the_previews(still, monkeypatch, query):
+def test_full_still_failure_still_restores_the_previews(still, monkeypatch):
     module, calls, overlays = still
     monkeypatch.setattr(module, "iter_mjpeg", Mock(side_effect=ValueError("truncated")))
-    assert request(module, "camera2.full.jpg" + query)[0] == 502
+    assert request(module, "camera2.full.jpg")[0] == 502
     assert overlays[-1] is None and not module.STILL_CONFIG.exists()
     assert calls[-2:] == ["http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
     assert not module.STILL_LOCK.locked()
 
 
-@pytest.mark.parametrize("query", ["", "?size=3840x2160"])
-def test_full_still_waits_for_the_full_mode(still, monkeypatch, query):
+def test_full_still_waits_for_the_full_mode(still, monkeypatch):
     module, _, overlays = still
     monkeypatch.setattr(
         module.urllib.request,
@@ -1011,42 +844,30 @@ def test_full_still_waits_for_the_full_mode(still, monkeypatch, query):
             MJPEG([jpeg(640, 480)]) if "stream.mjpeg" in str(target) else io.BytesIO(b"{}")
         ),
     )
-    assert request(module, "camera1.full.jpg" + query)[0] == 502
+    assert request(module, "camera1.full.jpg")[0] == 502
     assert not module.STILL_CONFIG.exists()
 
 
-def test_sized_still_rejects_an_occupied_capture_slot_without_waiting(preview, monkeypatch):
-    module, upstream = preview
-    lock = Mock()
-    lock.acquire.return_value = False
-    monkeypatch.setattr(module, "STILL_LOCK", lock)
-    assert request(module, "camera1.full.jpg?size=3840x2160")[0] == 503
-    lock.acquire.assert_called_once_with(blocking=False)
-    lock.release.assert_not_called()
-    upstream.assert_not_called()
-
-
-def test_default_full_still_keeps_its_capture_wait(preview, monkeypatch):
-    module, upstream = preview
-    lock = Mock()
-    lock.acquire.return_value = False
-    monkeypatch.setattr(module, "STILL_LOCK", lock)
-    assert request(module, "camera1.full.jpg")[0] == 503
-    lock.acquire.assert_called_once_with(timeout=45)
-    lock.release.assert_not_called()
-    upstream.assert_not_called()
-
-
-@pytest.mark.parametrize("camera", [1, 3])
-@pytest.mark.parametrize("query", ["", "?size=3840x2160"])
-def test_full_still_waits_for_an_idle_microscope(preview, monkeypatch, camera, query):
+def test_full_still_of_the_side_stream_waits_for_an_idle_microscope(preview, monkeypatch):
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x480@30,640x360@30")
     module = load_preview()
     state = Mock(return_value=io.BytesIO(b'{"busy": true}'))
     monkeypatch.setattr(module.urllib.request, "urlopen", state)
-    assert request(module, f"camera{camera}.full.jpg" + query)[0] == 409
+    assert request(module, "camera3.full.jpg")[0] == 409
     state.assert_called_once_with("http://127.0.0.1:8770/api/state", timeout=2)
-    assert not module.STILL_LOCK.locked()
     assert request(module, "camera4.full.jpg")[0] == 404
     assert request(module, "camera1.full.jpg?fps=5")[0] == 404
+
+
+def test_still_overlay_also_stops_the_h265_preview_of_a_large_camera(monkeypatch):
+    monkeypatch.setenv(
+        "MG400_CAMERA_DEVICES",
+        ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in (1, 2)),
+    )
+    monkeypatch.setenv("MG400_CAMERA_MODES", "3840x2160@30,1280x720@30")
+    module = load_preview()
+    lines = module.still_overlay("camera2").splitlines()
+    assert '  camera1_h265: ""' in lines
+    assert '  camera1_h264: ""' not in lines
+    assert '  camera2_h264: ""' in lines and '  camera2_h265: ""' in lines

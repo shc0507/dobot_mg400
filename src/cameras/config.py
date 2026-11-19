@@ -65,9 +65,14 @@ class CameraConfig:
     def preloaded(self):
         return tuple(
             stream
-            for stream, mode in zip(self.streams, self.modes)
-            if (mode[0] <= 1280 and mode[1] <= 720)
-            or (stream == "camera1" and mode == (3840, 2160, 30))
+            for stream, (width, height, _) in zip(self.streams, self.modes)
+            if width <= 1280 and height <= 720
+        )
+
+    def large(self, side=""):
+        """Streams above 1280x720 that a viewer starts. The microscope side stream is not one."""
+        return tuple(
+            stream for stream in self.streams if stream not in self.preloaded and stream != side
         )
 
     def mode(self, camera):

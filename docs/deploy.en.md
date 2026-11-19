@@ -31,7 +31,7 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/var/lib/mg400/furnace` | Furnace state and persistent lock, files `0600` | `1000:1000`, `0750` |
 | `/var/lib/mg400/runs` | Orchestrator records and microscope run outputs, files `0600` or `0640` | `1000:1000`, `0750` |
 | `/var/lib/mg400/zones` | Zone configuration and retained occupancy, files `0640` or `0600` | `1000:1000`, `0750` |
-| `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program | `root:root`, `0755` |
+| `/usr/local/lib/mg400/go2rtc` | go2rtc 1.9.14 camera capture program, with the patch `deploy/go2rtc/aggregation-packets.patch` | `root:root`, `0755` |
 | `/usr/local/lib/mg400/caddy` | Caddy 2 proxy program | `root:root`, `0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | Optional Toupcam 59.30594.20260120 Linux x64 library | `root:root`, `0755` |
 | `/usr/local/bin/labctl` | Routine command tool, linked to `/opt/mg400/deploy/labctl` | None |
@@ -63,7 +63,17 @@ Start services manually. They do not start automatically at boot.
 - The host can access PyPI. `uv sync` downloads dependencies from PyPI.
 - A host network interface connects directly to the robot and has address `192.168.1.10/24`.
 - This interface can connect to the robot's TCP ports `29999`, `30003`, and `30004`.
-- For cameras, download the Linux program for version 1.9.14 from the [go2rtc releases page](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14).
+- For cameras, prepare the go2rtc 1.9.14 Linux program with the patch `deploy/go2rtc/aggregation-packets.patch`.
+  The patch makes go2rtc split H.265 RTP aggregation packets. The H.265 preview of a camera above `1280x720` must use it.
+  Build it on a computer that has Go:
+
+  ```sh
+  git clone --depth 1 --branch v1.9.14 https://github.com/AlexxIT/go2rtc.git
+  git -C go2rtc apply /path/to/dobot_mg400/deploy/go2rtc/aggregation-packets.patch
+  cd go2rtc && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o go2rtc .
+  ```
+
+  If no camera is above `1280x720`, you can use version 1.9.14 from the [go2rtc releases page](https://github.com/AlexxIT/go2rtc/releases/tag/v1.9.14).
 - For microscope recordings or H.264 camera previews, `ffmpeg` and `ffprobe` are installed on the host. On Debian or Ubuntu, the `ffmpeg` package supplies both programs: `apt-get install ffmpeg`.
   ffmpeg must be version 5.1 or later, because the preview encoders use `-fps_mode passthrough`.
   For NVENC, ffmpeg must support `h264_nvenc` and `hevc_nvenc`, and the host must have the NVIDIA driver.
@@ -475,10 +485,9 @@ The camera service provides only configured streams, named `camera1` through `ca
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry. If it is set with `MG400_CAMERA_MODES`, the installer, `labctl` and preview service refuse to run.
 An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.
-Streams with width at most 1280 and height at most 720 are preloaded, as is `camera1` at `3840x2160@30`.
-Preloaded capture continues when the browser is closed. Other larger streams start on demand.
+Only streams with width at most 1280 and height at most 720 are preloaded.
+Preloaded capture continues when the browser is closed. Larger streams start on demand.
 The lab configuration uses `3840x2160@30` for `camera1` and `1280x720@30` for the other 3 cameras.
-The `camera1` preview keeps native `3840x2160` pixels, with caps of 8 Mbit/s for H.264 and 6 Mbit/s for H.265.
 Before several cameras use modes above `640x480`, install the [USB bandwidth patch](olares.en.md#usb-bandwidth-patch).
 After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `labctl restart camera vision microscope orch`. If `vision` is not enabled, remove `vision` from the command: `restart` refuses optional services that are not enabled.
 See [Cameras](olares.en.md#cameras) for approved modes and the tray-camera configuration.

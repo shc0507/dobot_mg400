@@ -105,10 +105,10 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 - **All views** shows 6 views as a wall that fits the window: camera1 to camera4, the thermal camera and the microscope (Toupcam). Inside its frame, each view shows its role, a green dot while live or STALE, OFFLINE or FROZEN with the frame age, its mode with the measured frame rate, and **Snapshot** and **Expand**. The tooltip on the role shows the camera ID. The microscope shows its decoded size while it plays. Camera 4 adds the detection count to the mode line.
 - **Large view** shows 1 view large and a rail of the other 5. **Expand** or a click on a rail view puts that view in the large place. **All views** goes back to the wall.
 - The measured frame rate updates about every 1 s, for example `640×480 · 29.8 fps`. An H.264 view counts the frames that the browser shows. An MJPEG view shows the frames per second that the camera preview or the microscope relay sent to each viewer in the last 2 s. With several viewers of the same view, it shows their mean. The thermal view counts the new frames that it gets. Without a new measurement, the view shows no frame rate.
-- camera1 to camera4 and the microscope load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate. Stage (`camera1`) shows native `3840x2160` without resizing, at most 8 Mbit/s. Other views wider than 640 use at most 4 Mbit/s, or 3 Mbit/s with NVENC. Smaller views use at most 2 Mbit/s, and the microscope view at most 3 Mbit/s.
-- Stage (`camera1`) uses H.264 to preserve its native display dimensions. If the browser supports HEVC, other views first request `/camera/<view>.mp4?codec=h265`. If H.265 does not start to play, the page uses H.264.
+- camera1 to camera4 and the microscope load directly from the proxy. A view plays H.264 video from `/camera/<view>.mp4` at the camera frame rate. Views wider than 640 use at most 4 Mbit/s, or 3 Mbit/s with NVENC. Smaller views use at most 2 Mbit/s, and the microscope view at most 3 Mbit/s. With NVENC, a camera above `1280x720` has only an H.265 preview. See [Cameras](olares.en.md#cameras).
+- If the browser supports HEVC, a view first requests `/camera/<view>.mp4?codec=h265`. If H.265 does not start to play, the page uses H.264.
 - If the browser or the host cannot play H.264, camera1 to camera4 load MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Wall and rail views get at most 3 frames a second, and the large view at most 6.
-- **Snapshot** on Stage (`camera1`) downloads a native `3840x2160` JPEG from `/camera/camera1.full.jpg?size=3840x2160`. It reads the continuous stream without restarting go2rtc or interrupting other views. A running microscope job does not block this matching-size request. Other cameras download `4000x3000` from `/camera/<view>.full.jpg`. These mode changes temporarily pause other camera streams and restore them afterward. Only 1 still runs at a time. With a configured microscope side camera, a microscope job blocks mode changes.
+- **Snapshot** on camera1 to camera4 downloads a `4000x3000` JPEG from `/camera/<view>.full.jpg`. This mode change temporarily pauses other camera streams and restores them afterward. Only 1 still runs at a time.
 - The console relays the thermal frame. If the microscope view cannot play H.264, it uses `/camera/microscope.mjpeg`. Its **Snapshot** downloads a lossless `2592x1944` PNG from `/camera/microscope.png`. It needs no control.
 - While a microscope job runs, **Snapshot** on camera3 returns `409`, because an objective switch reads the side stream.
 - The microscope proxy sends only the newest complete frame. Wall and rail views get at most 10 frames a second, and the large view at most 30.
@@ -128,8 +128,8 @@ When enabled, Position Finder estimates stage positions from camera images. The 
 The camera dropdown lists the configured shared optical cameras from `camera1` through `camera4`. It selects the overhead stage camera `camera1` by default.
 
 New calibration profiles for real cameras default to `3840x2160`. Monitoring uses the saved profile's image dimensions. Endpoint capture uses the draft dimensions.
-With `camera1` at `3840x2160@30`, new `3840x2160` captures and saved `3840x2160` profiles use the continuous shared stream.
-For sampling without interrupting other views, the profile dimensions must match the configured stream dimensions.
+Captures and monitoring read the continuous shared stream of the selected camera.
+The profile dimensions must match the configured stream dimensions. Other dimensions are refused.
 Native captures preserve the camera's actual pixels without image resizing.
 
 Create a calibration profile in the console:

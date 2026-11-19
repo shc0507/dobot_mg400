@@ -100,7 +100,8 @@ The Dobot Mini Vacuum Source (DT-AC-MAP1-001) drives the suction cup. The MG400 
 - Controller firmware 1.6.0.0 and later accepts `DOExecute(index,status)`. The command runs immediately, outside the motion queue.
 - In the 30004 feedback frame, `DigitalInputs` (bytes 8–15) and `DigitalOutputs` (bytes 16–23) give the measured base DI and DO levels. Bit 0 is DI1 or DO1. `Load` (bytes 1168–1175) gives the controller payload in kg.
 - Stop and disable do not change DO2. A held part does not drop because of a stop. When DO1 is high or a blow is in progress, stop and disable send `DOExecute(1,0)` to end the blow.
-- The vacuum source cannot report whether it holds a part. When a vacuum switch is installed, connect it to a base DI and set `GRIP_DI` in `src/mg400/suction.py`.
+- The vacuum switch is on base DI8 (`GRIP_DI` in `src/mg400/suction.py`). DI8 is high when the cup seals on a part or a flat surface.
+- With the cup on, the vacuum switch is a Z touch probe: suck, step down at `SpeedL=1`, and take the first step where DI8 goes high as the contact. The contact force is almost zero. The surface must be flat and must not leak air; the cup does not seal over a breadboard hole. Blow for 0.3 seconds before you lift.
 
 ## Completion checks and failure handling
 

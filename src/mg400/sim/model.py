@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import replace
 
+from mg400 import suction
 from mg400.feedback import Feedback
 
 START = (30.0, 0.0, 10.0, 0.0)
@@ -213,7 +214,12 @@ class Controller:
             index, status = (int(value) for value in text[len("DOExecute(") : -1].split(","))
             assert 1 <= index <= 16 and status in (0, 1), text
             outputs = (sample.digital_outputs or 0) & ~(1 << (index - 1)) | status << (index - 1)
-            self._sample = replace(sample, digital_outputs=outputs)
+            inputs = sample.digital_inputs or 0
+            if index == suction.VACUUM_DO and suction.GRIP_DI is not None:
+                # The simulated cup always seals, so the vacuum switch follows suction.
+                bit = 1 << (suction.GRIP_DI - 1)
+                inputs = inputs | bit if status else inputs & ~bit
+            self._sample = replace(sample, digital_outputs=outputs, digital_inputs=inputs)
             return ""
         if text == "EnableRobot()":
             self._sample = replace(sample, mode=5)

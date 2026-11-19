@@ -411,7 +411,7 @@ def test_suction_commands_show_the_measured_outputs(sim):
                 lambda s: s if not s["busy"] and s["vacuum"]["suck"] is suck else None
             )(motion_state(sim)["robot"])
         )
-        assert robot["vacuum"] == {"suck": suck, "blow": False, "held": None}
+        assert robot["vacuum"] == {"suck": suck, "blow": False, "held": suck}
         assert "gripper" not in robot
 
 

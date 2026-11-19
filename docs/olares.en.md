@@ -295,9 +295,9 @@ MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
-Streams with width at most 1280 and height at most 720 are preloaded, as is `camera1` at `3840x2160@30`.
+Only streams with width at most 1280 and height at most 720 are preloaded.
 Preloaded capture continues when the browser is closed.
-Other larger streams start when a video stream, microscope, or still consumer requests them.
+Larger streams start when a video stream, microscope, or still consumer requests them.
 The microscope service reads its side stream only during `select_objective`.
 The preview relay does not serve a side stream above `1280x720`.
 A demand-started stream can send a truncated first frame. The microscope reader drops incomplete frames.
@@ -305,37 +305,23 @@ After the last viewer leaves a demand-started stream, the preview service releas
 Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
-Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate.
-At `3840x2160@30`, `camera1` sends native `3840x2160` video without resizing, at most 8 Mbit/s.
-Other streams wider than 640 get at most 4 Mbit/s, or 3 Mbit/s with NVENC. Smaller streams get 2 Mbit/s.
-H.264 encoders select the level automatically. This route accepts only the query `codec=h265`.
+Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate. A stream wider than 640 gets at most 4 Mbit/s, or 3 Mbit/s with NVENC. Other streams get 2 Mbit/s. This route accepts only the query `codec=h265`.
 go2rtc reads the `1296x968` microscope preview from `http://127.0.0.1:8770/api/camera/microscope/mjpeg`. It serves it as H.264 at `/camera/microscope.mp4`, at most 3 Mbit/s.
 go2rtc reads the microscope preview only while an H.264 viewer is open. If the microscope service has no frame, `/camera/microscope.mp4` returns 502, and the console uses `/camera/microscope.mjpeg`. The preview reads this MJPEG from go2rtc, and relays the full-size still `/camera/microscope.png` from the microscope service.
 `/camera/fps.json` returns, for each MJPEG stream, the frames per second that each viewer got in the last 2 s. A stream with no viewer has `null`. The console reads these values for the camera status.
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.
 ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). It sends each source frame once and 1 keyframe each 1 s. Thus a new view shows its first frame in about 1 s, also for the microscope at a low frame rate. `-fps_mode` needs ffmpeg 5.1 or later.
 The installer runs ffmpeg to test `h264_nvenc`. If the test passes, the H.264 previews use the NVIDIA GPU encoder. If not, they use `libx264`. After you change the GPU or its driver, run the installer again.
-With NVENC, each preview also has an H.265 version from `hevc_nvenc`.
-At `3840x2160@30`, `camera1` sends native `3840x2160` video without resizing, at most 6 Mbit/s.
-Other streams wider than 640 and the microscope get at most 2.5 Mbit/s. Smaller streams get 2 Mbit/s.
-A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264.
-The H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). go2rtc 1.9.14 does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
-ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). Without an estimate, ffmpeg assumes 90000 fps, and `hevc_nvenc` sends only about 0.1 Mbit/s.
-For `camera1` at `3840x2160@30`, ffmpeg reads the shared HTTP MJPEG stream at `http://127.0.0.1:1984/api/stream.mjpeg?src=camera1`.
-This preserves the full native dimensions. Other encoders read their input through RTSP.
-All encoders send their output through RTSP, which listens only on `127.0.0.1:8554`.
-If ffmpeg is not installed on the host, the H.264 preview returns 502.
-`/camera/<view>.jpg` uses the same go2rtc stream at its configured resolution. It does not switch mode or open another device capture.
-
-`/camera/<view>.full.jpg?size=3840x2160` captures a JPEG at the specified native size.
-`size` accepts only dimensions from the MJPEG modes above. A mode change uses the lowest supported frame rate for those dimensions.
-Without query parameters, `/camera/<view>.full.jpg` still captures `4000x3000`.
-
-The service does not enlarge low-resolution images.
-If the requested dimensions match a preloaded stream, the service reads that stream without an overlay or a go2rtc restart.
-Thus `/camera/camera1.full.jpg?size=3840x2160` preserves the other streams and does not check whether the microscope is busy.
-Other captures temporarily pause the other camera streams and restore them after capture.
-When `MG400_MICROSCOPE_SIDE_STREAM` is configured, a running microscope job blocks captures that require a mode change.
+With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream wider than 640 and the microscope get at most 2.5 Mbit/s. Other streams get 2 Mbit/s. A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264.
+With NVENC, a stream above `1280x720` has only an H.265 preview, except the side stream. The preview has the resolution of the capture mode, at most 6 Mbit/s.
+RTP cannot carry a JPEG wider than 2040, so ffmpeg reads the MJPEG of this stream through HTTP.
+A camera can send fewer frames than its mode. Each frame gets its arrival time as timestamp, so the preview frame rate is the real frame rate.
+The go2rtc 1.9.14 release does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
+Thus the H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`).
+NVENC cuts a `3840x2160` frame into 2 slices, and ffmpeg also puts them into 1 packet. Thus a large preview must use go2rtc with the patch `deploy/go2rtc/aggregation-packets.patch`.
+ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
+Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture.
+The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
 
 `camera1` shares the original hub's USB 2 connection with the thermal camera and controllers.
 `camera2`, `camera3`, and `camera4` share the second hub's USB 2 connection.
@@ -399,8 +385,7 @@ Limits:
 
 If an image looks wrong, first run `labctl camera-check`.
 It checks configured cameras by their USB port paths, then checks the 2 services and the expected go2rtc preloaded streams.
-It expects a continuous preload for `camera1` at `3840x2160@30`.
-It reports other larger streams as demand-started and does not require or start a continuous preload for them.
+It reports larger streams as demand-started and does not require or start a continuous preload for them.
 It exits with code 0 if all checks pass. If a check fails, it exits with code 1 and shows the next action.
 If a camera is missing, it does not check the services.
 
@@ -412,7 +397,6 @@ If the host recognizes neither the hub nor the cameras, a preview service restar
 If the host recognizes the cameras but the stream frame rate is very low, run
 `curl -s http://127.0.0.1:1984/api/preload` on the Olares host.
 Check that the output includes each configured stream whose width is at most 1280 and height is at most 720.
-Also check for `camera1` when its mode is `3840x2160@30`.
 If an expected preload is missing, run `labctl restart camera`, wait 2 seconds, and query again.
 Preloading might not start if a device is missing when the capture service starts.
 The console video streams reconnect automatically. The configured `camera<N>.jpg` single-frame endpoints can be slow when a stream starts on demand.

@@ -33,8 +33,17 @@ def test_command_text_rejects_invalid_outputs(index, status):
 
 def test_decode_state_reads_measured_bits():
     assert suction.decode_state(None, None) == {"suck": None, "blow": None, "held": None}
-    assert suction.decode_state(0b10, 0b1) == {"suck": True, "blow": False, "held": None}
-    assert suction.decode_state(0b01, 0) == {"suck": False, "blow": True, "held": None}
+    held = 1 << (suction.GRIP_DI - 1)
+    assert suction.decode_state(0b10, held) == {"suck": True, "blow": False, "held": True}
+    others = ~held & 0xFFFF
+    assert suction.decode_state(0b10, others) == {"suck": True, "blow": False, "held": False}
+    assert suction.decode_state(0b01, 0) == {"suck": False, "blow": True, "held": False}
+    assert suction.decode_state(0b01, None) == {"suck": False, "blow": True, "held": None}
+
+
+def test_decode_state_without_a_switch(monkeypatch):
+    monkeypatch.setattr(suction, "GRIP_DI", None)
+    assert suction.decode_state(0b10, 0xFFFF) == {"suck": True, "blow": False, "held": None}
 
 
 @pytest.mark.parametrize("mode", [4, 5])
@@ -58,7 +67,8 @@ def test_vacuum_actions_send_ordered_dashboard_outputs(make_sim_rig, mode):
         assert rig.snapshot()["last_command"]["result"] == "ok", rig.describe()
         sent, state = expected[operation]
         assert [t for t in rig.controller.sent(mark) if t.startswith("DO")] == sent
-        assert rig.snapshot()["vacuum"] == {**state, "held": None}
+        # The simulator's vacuum switch follows suction.
+        assert rig.snapshot()["vacuum"] == {**state, "held": state["suck"]}
     assert rig.controller.motion() == []
     assert not rig.snapshot()["locked"]
 
@@ -142,7 +152,7 @@ def test_stop_during_the_blow_pulse_clears_only_the_blow_output(make_sim_rig, lo
     # The stop does not wait for the 5 s pulse to end.
     assert time.monotonic() - started < 3
     assert rig.snapshot()["last_command"]["result"] in {"ok", "stopped"}
-    assert rig.snapshot()["vacuum"] == {"suck": False, "blow": False, "held": None}
+    assert rig.snapshot()["vacuum"] == {"suck": False, "blow": False, "held": False}
     sent = rig.controller.sent(mark)
     assert [text for text in sent if text.startswith("DO")] == ["DOExecute(1,0)"]
     first = "ResetRobot()" if action == "stop" else "DisableRobot()"

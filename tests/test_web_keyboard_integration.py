@@ -464,14 +464,14 @@ def test_z_sucks_and_x_releases_once_per_press_without_motion(rig):
     rig.wait_passes(worker=2, watchdog=3)
     assert outputs(rig, mark) == SUCK
     snapshot = rig.snapshot()
-    assert snapshot["vacuum"] == {"suck": True, "blow": False, "held": None}
+    assert snapshot["vacuum"] == {"suck": True, "blow": False, "held": True}
     assert snapshot["keyboard_enabled"] and not snapshot["locked"]
     rig.keys()
     mark = rig.controller.mark()
     rig.keys("X")
     rig.wait_idle("Suction: release done. Hold a key for the next move.")
     assert outputs(rig, mark) == RELEASE
-    assert rig.snapshot()["vacuum"] == {"suck": False, "blow": False, "held": None}
+    assert rig.snapshot()["vacuum"] == {"suck": False, "blow": False, "held": False}
     rig.keys()
     assert rig.controller.motion() == []
     assert rig.controller.mutations() == ["SpeedFactor(1)", *SUCK, *RELEASE]
@@ -526,4 +526,4 @@ def test_stop_during_the_release_blow_stops_the_robot_and_turns_keys_off(rig):
     assert rig.controller.motion() == ["ResetRobot()"]
     # The stop ends the blow pulse and sends no DO2 command.
     assert outputs(rig, mark) == ["DOExecute(2,0)", "DOExecute(1,1)", "DOExecute(1,0)"]
-    rig.wait(lambda s: s["vacuum"] == {"suck": False, "blow": False, "held": None})
+    rig.wait(lambda s: s["vacuum"] == {"suck": False, "blow": False, "held": False})

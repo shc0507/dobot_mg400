@@ -294,9 +294,9 @@ MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
-宽度不超过 1280 且高度不超过 720 的流会预加载。`3840x2160@30` 的 `camera1` 也会预加载。
+只有宽度不超过 1280 且高度不超过 720 的流会预加载。
 浏览器关闭后，预加载的流继续采集。
-其他更大的流在视频流、显微镜或单帧读取请求时启动。
+更大的流在视频流、显微镜或单帧读取请求时启动。
 显微镜服务只在 `select_objective` 运行期间读取侧视流。
 预览转发服务不转发大于 `1280x720` 的侧视流。
 按需启动的流可能发送截断的第 1 帧。显微镜读取线程丢弃不完整的帧。
@@ -304,37 +304,23 @@ MG400_MICROSCOPE_SIDE_STREAM=camera3
 套接字操作仍使用 2 秒超时。这不是总关闭时限。其他读取者可使该流继续运行。
 视频流上限为 30 fps，包括采集模式为 `1920x1080@60` 时。
 观看者可以用 `?fps=N` 请求更低的帧率，N 为 1 到 30，例如 `/camera/camera2.mjpeg?fps=5`。其他查询值返回 404。
-每个预加载的流另有 1 路 H.264 预览 `/camera/<view>.mp4`，格式为分段 MP4，帧率与摄像头相同。
-`camera1` 使用 `3840x2160@30` 时，视频保持原生 `3840x2160`，不缩放，码率上限为 8 Mbit/s。
-其他宽度大于 640 的流码率上限为 4 Mbit/s，使用 NVENC 时为 3 Mbit/s。更小的流为 2 Mbit/s。
-H.264 编码器自动选择级别。该路由只接受查询参数 `codec=h265`。
+每个预加载的流另有 1 路 H.264 预览 `/camera/<view>.mp4`，格式为分段 MP4，帧率与摄像头相同。宽度大于 640 的流码率上限为 4 Mbit/s，使用 NVENC 时为 3 Mbit/s。其他流为 2 Mbit/s。该路由只接受查询参数 `codec=h265`。
 go2rtc 从 `http://127.0.0.1:8770/api/camera/microscope/mjpeg` 读取 `1296x968` 的显微镜预览，在 `/camera/microscope.mp4` 提供码率上限为 3 Mbit/s 的 H.264 预览。
 go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有画面时，`/camera/microscope.mp4` 返回 502，控制台改用 `/camera/microscope.mjpeg`。预览服务从 go2rtc 读取该 MJPEG，并从显微镜服务转发 `/camera/microscope.png` 原尺寸静帧。
 `/camera/fps.json` 返回每路 MJPEG 流在最近 2 s 内发送给每个观看者的帧率。没有观看者的流为 `null`。控制台在摄像头状态中读取这些值。
 go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最后 1 个观看者离开后停止。
 ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发送 1 次，每 1 s 发送 1 个关键帧。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
 安装器运行 ffmpeg 测试 `h264_nvenc`。测试通过时，H.264 预览用 NVIDIA GPU 编码，否则用 `libx264`。更换 GPU 或驱动后，重新运行安装器。
-使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。
-`camera1` 使用 `3840x2160@30` 时，视频保持原生 `3840x2160`，不缩放，码率上限为 6 Mbit/s。
-其他宽度大于 640 的流和显微镜码率上限为 2.5 Mbit/s。更小的流为 2 Mbit/s。
-请求 `/camera/<view>.mp4?codec=h265` 得到 H.265。主机没有 H.265 预览时返回 H.264。
-H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。go2rtc 1.9.14 不拆分 RTP 聚合包：ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
-ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`）。不估计时，ffmpeg 假定 90000 fps，`hevc_nvenc` 只输出约 0.1 Mbit/s。
-`camera1` 使用 `3840x2160@30` 时，ffmpeg 从 `http://127.0.0.1:1984/api/stream.mjpeg?src=camera1` 读取共享 HTTP MJPEG 流。
-此输入保留完整的原生尺寸。其他编码器通过 RTSP 读取输入。
-所有编码器都通过 RTSP 发送输出，该接口只监听 `127.0.0.1:8554`。
-主机未安装 ffmpeg 时，H.264 预览返回 502。
-`/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。
-
-`/camera/<view>.full.jpg?size=3840x2160` 采集指定原生尺寸的 JPEG。
-`size` 只接受上述 MJPEG 模式中的尺寸。切换模式时，使用该尺寸支持的最低帧率。
-无查询参数的 `/camera/<view>.full.jpg` 仍采集 `4000x3000`。
-
-服务不会放大低分辨率图像。
-请求尺寸与预加载流一致时，服务直接读取该流，不写覆盖文件，也不重启 go2rtc。
-因此，`/camera/camera1.full.jpg?size=3840x2160` 保持其他流运行，也不检查显微镜忙碌状态。
-其他采集会暂时暂停其他摄像头流，采集后恢复。
-配置了 `MG400_MICROSCOPE_SIDE_STREAM` 时，运行中的显微镜作业会阻止要求切换模式的采集。
+使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。宽度大于 640 的流和显微镜码率上限为 2.5 Mbit/s，其他流为 2 Mbit/s。请求 `/camera/<view>.mp4?codec=h265` 得到 H.265；主机没有 H.265 预览时返回 H.264。
+使用 NVENC 时，大于 `1280x720` 的流只有 H.265 预览，侧视流除外。预览分辨率与采集模式相同，码率上限为 6 Mbit/s。
+RTP 不能传输宽度大于 2040 的 JPEG，因此 ffmpeg 通过 HTTP 读取该流的 MJPEG。
+摄像头实际发送的帧率可以低于模式帧率。每帧以到达时间为时间戳，因此预览帧率与实际帧率相同。
+go2rtc 1.9.14 发布版不拆分 RTP 聚合包。ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
+因此 H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。
+NVENC 把 `3840x2160` 的帧分成 2 个 slice，ffmpeg 也把它们合成 1 个包。大尺寸预览因此必须用带补丁 `deploy/go2rtc/aggregation-packets.patch` 的 go2rtc。
+ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
+单帧请求 `/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。
+全分辨率单帧 `/camera/<view>.full.jpg` 例外：拍摄期间 go2rtc 只以 `4000x3000@15` 采集这 1 台摄像头，其他画面暂停。显微镜正在使用侧视流时返回 409。另一张单帧 45 s 内未完成时返回 503。参见[相机工作区](dashboard.md#相机工作区)。
 
 `camera1` 与热像仪和控制器共用原集线器的 USB 2 连接。
 `camera2`、`camera3` 和 `camera4` 共用第二个集线器的 USB 2 连接。
@@ -398,8 +384,7 @@ labctl start camera
 
 画面异常时，先运行 `labctl camera-check`。
 它按 USB 接口路径检查已配置的摄像头，再检查 2 个服务和应预加载的 go2rtc 流。
-它要求 `3840x2160@30` 的 `camera1` 连续预加载。
-对其他更大的流，它报告按需启动，不要求或启动连续预加载。
+对更大的流，它报告按需启动，不要求或启动连续预加载。
 全部正常时，退出码为 0。有问题时，退出码为 1，并显示下一步操作。
 有摄像头缺失时，它不再检查服务。
 
@@ -410,7 +395,6 @@ labctl start camera
 若摄像头已被识别，但视频流帧率很低，在 Olares 主机运行
 `curl -s http://127.0.0.1:1984/api/preload`。
 确认输出包含所有宽度不超过 1280 且高度不超过 720 的已配置流。
-`camera1` 的模式为 `3840x2160@30` 时，也检查输出是否包含它。
 若应预加载的流缺失，运行 `labctl restart camera`，等待 2 秒后再次查询。
 采集服务启动时若设备缺失，预加载可能未建立。
 控制台的视频流会自动重连。已配置的 `camera<N>.jpg` 单帧接口在流按需启动时可能较慢。

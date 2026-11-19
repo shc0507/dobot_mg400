@@ -1589,7 +1589,8 @@ def test_installer_renders_side_stream_capture_size(host, module, tmp_path):
     assert host.install("--go2rtc", str(binary)) == 0
     config = (host.root / "etc/mg400/go2rtc.yaml").read_text()
     sizes = [(1280, 720), (3840, 2160), (1280, 720)]
-    assert config == module.render_go2rtc(DEVICES, sizes, nvenc=True)
+    assert config == module.render_go2rtc(DEVICES, sizes, nvenc=True, side="camera2")
+    assert "camera2_h265" not in config
 
 
 def test_previews_fall_back_to_libx264_without_nvenc(host, module, tmp_path):
@@ -1645,53 +1646,22 @@ def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
     assert "hevc_nvenc" not in module.render_go2rtc(DEVICES, modes=modes)
 
 
-@pytest.mark.parametrize("nvenc", [False, True])
-@pytest.mark.parametrize("side_mode", [(1280, 720, 30), (3840, 2160, 30)])
-def test_camera1_4k_capture_and_previews_keep_native_size(module, nvenc, side_mode):
-    devices = [*DEVICES, "/dev/v4l/by-path/offline-tray-video-index0"]
-    modes = [(3840, 2160, 30), (1280, 720, 30), side_mode, (1280, 720, 30)]
-    configured = module.camera_configuration(
-        {
-            "MG400_CAMERA_DEVICES": ",".join(devices),
-            "MG400_CAMERA_MODES": ",".join(f"{w}x{h}@{fps}" for w, h, fps in modes),
-        }
-    )
-    expected_preload = ("camera1", "camera2", "camera4")
-    if side_mode == (1280, 720, 30):
-        expected_preload = ("camera1", "camera2", "camera3", "camera4")
-    assert configured.preloaded == expected_preload
-    rendered = module.render_go2rtc(devices, modes=configured.modes, nvenc=nvenc)
-    assert "preload:\n" + "".join(f"  {name}: video\n" for name in expected_preload) in rendered
-    for number, (device, (width, height, fps)) in enumerate(zip(devices, modes), 1):
-        assert (
-            f"  camera{number}: v4l2:device?video={device}&input_format=mjpeg"
-            f"&video_size={width}x{height}&framerate={fps}\n" in rendered
-        )
-    source = "http://127.0.0.1:1984/api/stream.mjpeg?src=camera1#input=mjpeg30"
-    assert f"  camera1_h264: ffmpeg:{source}#video=h264#bitrate=8M\n" in rendered
-    assert "ffmpeg:camera1#" not in rendered
-    # HTTP preserves the JPEG dimensions. The input rate supplies its missing timestamps.
+def test_nvenc_gives_a_large_camera_an_h265_preview_with_arrival_timestamps(module):
+    modes = [(3840, 2160, 30), (1280, 720, 30), (2560, 1440, 30)]
+    rendered = module.render_go2rtc(DEVICES, modes=modes, nvenc=True, side="camera3")
+    # RTP cannot carry a 3840 pixel wide JPEG: the encoder reads the MJPEG stream over HTTP.
     assert (
-        '  mjpeg30: "-fflags nobuffer -flags low_delay -f mpjpeg -r 30'
-        ' -fpsprobesize 2 -i {input}"\n' in rendered
-    )
-    h264 = next(line for line in rendered.splitlines() if line.startswith("  h264: "))
-    # Automatic H.264 level selection permits 4K without raising every preview's level.
-    assert "-level" not in h264
-    assert f"-c:v {'h264_nvenc' if nvenc else 'libx264'}" in h264
-    for name in expected_preload[1:]:
-        assert f"  {name}_h264: ffmpeg:{name}#video=h264#bitrate={3 if nvenc else 4}M\n" in rendered
-    if nvenc:
-        assert f"  camera1_h265: ffmpeg:{source}#video=h265#bitrate=6M\n" in rendered
-        for name in expected_preload[1:]:
-            assert f"  {name}_h265: ffmpeg:{name}#video=h265#bitrate=2500k\n" in rendered
-    else:
-        assert "_h265:" not in rendered
-    if side_mode == (3840, 2160, 30):
-        assert "camera3: video\n" not in rendered
-        assert "camera3_h264:" not in rendered and "camera3_h265:" not in rendered
-    assert "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n" in rendered
-    assert "#width=" not in rendered and "#height=" not in rendered and "scale=" not in rendered
+        "  camera1_h265: ffmpeg:http://127.0.0.1:1984/api/stream.mjpeg?src=camera1"
+        "#input=mjpeg#video=h265#bitrate=6M\n"
+    ) in rendered
+    assert "camera1_h264" not in rendered and "camera1: video\n" not in rendered
+    # The microscope side stream runs only during an objective switch.
+    assert "camera3_h265" not in rendered
+    mjpeg = next(line for line in rendered.splitlines() if line.startswith("  mjpeg: "))
+    assert "-f mpjpeg" in mjpeg and "-i {input}" in mjpeg
+    assert "setpts=(RTCTIME-RTCSTART)/1000" in mjpeg and "-enc_time_base:v 1/1000" in mjpeg
+    without_nvenc = module.render_go2rtc(DEVICES, modes=modes)
+    assert "camera1_h265" not in without_nvenc and "  mjpeg: " not in without_nvenc
 
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
@@ -1747,22 +1717,15 @@ def test_camera_configuration_renders_exact_device_count(module, count):
         (320, 240, 30),
     ],
 )
-def test_descriptor_modes_render_with_only_low_resolution_and_camera1_4k_preloaded(module, mode):
+def test_only_descriptor_approved_mjpeg_modes_render_and_large_streams_stay_idle(module, mode):
     rendered = module.render_go2rtc(DEVICES[:1], modes=[mode])
     width, height, fps = mode
     assert f"input_format=mjpeg&video_size={width}x{height}&framerate={fps}" in rendered
     if width <= 1280 and height <= 720:
         assert "preload:\n  camera1: video\n" in rendered
         assert f"#bitrate={4 if width > 640 else 2}M\n" in rendered
-    elif mode == (3840, 2160, 30):
-        assert "preload:\n  camera1: video\n" in rendered
-        assert (
-            "camera1_h264: ffmpeg:http://127.0.0.1:1984/api/stream.mjpeg?src=camera1"
-            "#input=mjpeg30#video=h264#bitrate=8M\n" in rendered
-        )
     else:
         assert "preload: {}\n" in rendered
-        assert "camera1_h264:" not in rendered
 
 
 @pytest.mark.parametrize(

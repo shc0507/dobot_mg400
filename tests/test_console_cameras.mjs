@@ -104,7 +104,6 @@ test("the workspace never parses data as HTML and never stores a token", () => {
 });
 
 test("cameras and the microscope load from the proxy", () => {
-  assert.equal(logic.snapshotUrl("camera1"), "/camera/camera1.full.jpg?size=3840x2160");
   assert.equal(logic.streamUrl("camera2", false), "/camera/camera2.mjpeg?fps=3");
   assert.equal(logic.streamUrl("camera2", true), "/camera/camera2.mjpeg?fps=6");
   assert.equal(logic.snapshotUrl("camera4"), "/camera/camera4.full.jpg");
@@ -115,7 +114,6 @@ test("cameras and the microscope load from the proxy", () => {
 
 test("USB cameras and the microscope play H.264 from the proxy; the thermal view has none", () => {
   assert.equal(logic.videoUrl("camera1"), "/camera/camera1.mp4");
-  assert.equal(logic.videoUrl("camera1", true), "/camera/camera1.mp4");
   assert.equal(logic.videoUrl("camera4"), "/camera/camera4.mp4");
   assert.equal(logic.videoUrl("microscope"), "/camera/microscope.mp4");
   assert.equal(logic.videoUrl("thermal"), null);

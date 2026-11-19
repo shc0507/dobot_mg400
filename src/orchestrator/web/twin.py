@@ -119,12 +119,11 @@ class CameraFrames:
         if self.demo:
             return self.read(camera)
         dimensions = dimensions or (3840, 2160)
-        number = int(camera[-1])
-        if tuple(dimensions) == self.configuration.mode(number)[:2]:
-            return self.read(camera)
-        # A mode change includes exposure settling and preview restoration.
-        image = self._source(timeout=30).full_still(number, dimensions)
-        return self._jpeg(image)
+        width, height = self.configuration.mode(int(camera[-1]))[:2]
+        if tuple(dimensions) != (width, height):
+            wanted = f"{dimensions[0]}x{dimensions[1]}"
+            raise ValueError(f"Set {camera} to {wanted} or use a {width}x{height} profile.")
+        return self.read(camera)
 
 
 def _identifier(value):

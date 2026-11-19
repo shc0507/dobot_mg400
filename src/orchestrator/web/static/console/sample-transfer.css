@@ -26,6 +26,7 @@
 #ws-sample-transfer .st-reference { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
 #ws-sample-transfer :is(input[type="text"], select) { height: 44px; width: 100%; padding: 8px 12px; border: 1px solid var(--lc-edge); border-radius: 10px; background: var(--lc-card); color: var(--lc-text); min-width: 0; }
 #ws-sample-transfer .st-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+#ws-sample-transfer .st-stage-actions { display: flex; flex-direction: column; gap: 14px; padding-top: 18px; border-top: 1px solid var(--lc-line); }
 #ws-sample-transfer .st-action { border: 1px solid var(--lc-line); border-radius: 14px; padding: 14px; background: var(--lc-surface); display: flex; flex-direction: column; gap: 10px; }
 #ws-sample-transfer .st-action-buttons { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 #ws-sample-transfer .st-move { min-height: 68px; font-size: 19px; text-align: left; padding: 16px 20px; }
@@ -60,6 +61,12 @@
 #ws-sample-transfer .st-position-value > span { width: 100%; color: var(--lc-text-2); font-size: 12px; }
 #ws-sample-transfer .st-position-value strong { font-size: 20px; font-variant-numeric: tabular-nums; }
 #ws-sample-transfer .st-position-value small { color: var(--lc-text-2); font-size: 12px; }
+#ws-sample-transfer .st-endpoint-calibration { display: flex; flex-direction: column; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--lc-line); }
+#ws-sample-transfer .st-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+#ws-sample-transfer .st-endpoint { display: flex; flex-direction: column; gap: 14px; padding: 16px; border: 1px solid var(--lc-line); border-radius: 13px; background: var(--lc-surface); }
+#ws-sample-transfer .st-endpoint .st-position-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#ws-sample-transfer .st-endpoint .st-position-value strong { font-size: 17px; overflow-wrap: anywhere; }
+#ws-sample-transfer .st-endpoint .st-button { min-height: 36px; padding: 7px 11px; font-size: 12px; }
 #ws-sample-transfer .st-manual { display: flex; flex-direction: column; gap: 14px; border-top: 1px solid var(--lc-line); padding-top: 18px; }
 #ws-sample-transfer .st-jogs { display: flex; flex-direction: column; gap: 8px; }
 #ws-sample-transfer .st-jog-axis { display: grid; grid-template-columns: 60px repeat(2, minmax(0, 1fr)); align-items: center; gap: 8px; }
@@ -78,6 +85,7 @@
   #ws-sample-transfer .st-tabs > button { flex: 1; }
   #ws-sample-transfer .st-card { padding: 18px; gap: 16px; border-radius: 14px; }
   #ws-sample-transfer .st-actions { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  #ws-sample-transfer .st-endpoints { grid-template-columns: minmax(0, 1fr); }
   #ws-sample-transfer .st-move { min-height: 58px; font-size: 17px; padding: 14px; }
   #ws-sample-transfer .st-coordinate { padding: 14px 12px; gap: 5px; }
   #ws-sample-transfer .st-coordinate strong { font-size: 24px; }
@@ -88,3 +96,6 @@
   #ws-sample-transfer .st-coordinate strong { font-size: 20px; }
   #ws-sample-transfer .st-stop { min-width: 74px; }
 }
+
+#st-panel-operate { display: flex; flex-direction: column; gap: 20px; }
+#ws-sample-transfer .st-named-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 14px; }

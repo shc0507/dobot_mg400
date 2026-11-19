@@ -6,7 +6,7 @@ FIRST = "hold-session-first-0001"
 SECOND = "hold-session-second-0002"
 
 
-def start(controller, clock, motor="bottom", direction="cw", speed=50, hold_id=FIRST):
+def start(controller, clock, motor="bottom", direction="cw", speed=0.25, hold_id=FIRST):
     return controller.hold(motor, direction, speed, hold_id, clock())
 
 
@@ -14,36 +14,34 @@ def status(controller, motor="bottom"):
     return next(item for item in controller.snapshot()["motors"] if item["id"] == motor)
 
 
-def test_hold_runs_at_speed_until_release_without_step_limit(stage_rig):
+def test_hold_runs_at_speed_until_release_without_rotation_limit(stage_rig):
     controller, transport, clock = stage_rig
     start(controller, clock)
-    assert transport.commands == ["motor bottom", "dir cw", "speed 50", "hold"]
+    assert transport.commands == ["motor bottom", "dir cw", "speed 0.25", "hold"]
     for _ in range(20):
         clock.advance(0.5)
         controller.keep_hold_alive("bottom", FIRST)
         controller.poll()
     assert status(controller)["mode"] == "continuous"
-    assert status(controller)["position"] == 500
+    assert status(controller)["position"] == -2.375
     controller.release_hold("bottom", FIRST)
     assert transport.commands[-2:] == ["motor bottom", "stop"]
     assert status(controller)["mode"] == "idle"
     assert status(controller)["cooldown"] == 1
     clock.advance(5)
     controller.poll()
-    assert status(controller)["position"] == 500
+    assert status(controller)["position"] == -2.375
 
 
-def test_release_only_stops_its_motor_after_other_motor_was_selected(stage_rig):
+def test_release_selects_held_axis_after_another_motor_was_selected(stage_rig):
     controller, transport, clock = stage_rig
     start(controller, clock)
-    start(controller, clock, "top", "ccw", 100, SECOND)
+    transport.command("motor top")
     clock.advance(0.5)
-    controller.keep_hold_alive("top", SECOND)
     controller.release_hold("bottom", FIRST)
     assert transport.commands[-2:] == ["motor bottom", "stop"]
     assert status(controller)["mode"] == "idle"
-    assert status(controller, "top")["mode"] == "continuous"
-    assert status(controller, "top")["position"] == -50
+    assert status(controller, "top")["mode"] == "idle"
 
 
 def test_release_before_start_prevents_late_motion(stage_rig):
@@ -55,7 +53,7 @@ def test_release_before_start_prevents_late_motion(stage_rig):
     assert transport.commands == []
     clock.advance(11)
     with pytest.raises(ControllerError, match="expired"):
-        controller.hold("bottom", "cw", 50, FIRST, sampled_at)
+        controller.hold("bottom", "cw", 0.25, FIRST, sampled_at)
     assert transport.commands == []
 
 
@@ -79,7 +77,7 @@ def test_missing_heartbeat_stops_and_cannot_restart_with_old_identifier(stage_ri
     clock.advance(1.1)
     controller.poll()
     assert status(controller)["mode"] == "idle"
-    assert status(controller)["position"] == 50
+    assert status(controller)["position"] == -0.125
     assert status(controller)["cooldown"] == 1
     transport.commands.clear()
     with pytest.raises(ControllerError, match="ended"):
@@ -103,21 +101,20 @@ def test_firmware_watchdog_is_independent_of_controller_polling(stage_rig):
     _, _, clock = stage_rig
     transport = DemoTransport(clock)
     transport.command("dir ccw")
-    transport.command("speed 50")
+    transport.command("speed 0.25")
     transport.command("hold")
     clock.advance(8)
     with pytest.raises(CommandRejected, match="ended"):
         transport.command("keepalive")
     state = transport.status()["bottom"]
     assert state.mode == "idle"
-    assert state.position == -50
+    assert state.position == 0.125
 
 
 @pytest.mark.parametrize("finish", ["stop_all", "disconnect"])
 def test_stop_all_and_disconnect_cancel_holds(stage_rig, finish):
     controller, transport, clock = stage_rig
     start(controller, clock)
-    start(controller, clock, "top", hold_id=SECOND)
     getattr(controller, finish)()
     assert all(item.mode == "idle" for item in transport.motors.values())
     with pytest.raises(ControllerError):
@@ -127,7 +124,7 @@ def test_stop_all_and_disconnect_cancel_holds(stage_rig, finish):
 
 def test_hold_respects_busy_state_and_cooldown(stage_rig):
     controller, _, clock = stage_rig
-    controller.move("bottom", "cw", 50, 50)
+    controller.move("bottom", "cw", 0.25, 0.25)
     with pytest.raises(ControllerError, match="still moving"):
         start(controller, clock)
     clock.advance(1)
@@ -137,7 +134,7 @@ def test_hold_respects_busy_state_and_cooldown(stage_rig):
     clock.advance(1)
     start(controller, clock)
     with pytest.raises(ControllerError, match="still moving"):
-        controller.move("bottom", "cw", 50, 50)
+        controller.move("bottom", "cw", 0.25, 0.25)
 
 
 def test_old_firmware_does_not_fall_back_to_unbounded_rotation(stage_rig, monkeypatch):
@@ -150,15 +147,49 @@ def test_old_firmware_does_not_fall_back_to_unbounded_rotation(stage_rig, monkey
         original(command)
 
     monkeypatch.setattr(transport, "command", old_firmware)
-    with pytest.raises(ControllerError, match="updated three-motor-demo"):
+    with pytest.raises(ControllerError, match="stage-controller-v3"):
         start(controller, clock)
     assert "start" not in transport.commands
     assert status(controller)["mode"] == "idle"
 
 
-@pytest.mark.parametrize("speed", [0, 1001, True, 1.5, "50", None])
+@pytest.mark.parametrize("speed", [0, 5.001, True, float("nan"), float("inf"), "0.25", None])
 def test_invalid_hold_speed_never_sends_commands(stage_rig, speed):
     controller, transport, clock = stage_rig
     with pytest.raises(ValueError):
         start(controller, clock, speed=speed)
+    assert transport.commands == []
+
+
+def test_hardware_fault_ends_hold_and_renewal_cannot_restart_it(stage_rig):
+    controller, transport, clock = stage_rig
+    start(controller, clock)
+    # Emulate the device's own fault stop, independently of browser release.
+    transport.command("stop")
+    transport.motors["bottom"].fault = "stall"
+    controller.poll()
+    transport.commands.clear()
+    assert status(controller)["mode"] == "idle"
+    assert not status(controller)["available"]
+    with pytest.raises(ControllerError, match="ended"):
+        controller.keep_hold_alive("bottom", FIRST)
+    assert transport.commands == []
+    assert any(event["level"] == "error" for event in controller.snapshot()["events"])
+
+
+@pytest.mark.parametrize(
+    "sampled_at",
+    [
+        None,
+        True,
+        "100",
+        float("nan"),
+        float("inf"),
+        pytest.param(10**400, id="oversized-timestamp-integer"),
+    ],
+)
+def test_invalid_hold_timestamp_never_writes_to_serial(stage_rig, sampled_at):
+    controller, transport, _ = stage_rig
+    with pytest.raises(ControllerError, match="expired"):
+        controller.hold("bottom", "cw", 0.25, FIRST, sampled_at)
     assert transport.commands == []

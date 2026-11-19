@@ -6,7 +6,7 @@ import json
 from hashlib import sha256
 from http.client import HTTPConnection
 from io import BytesIO
-from threading import Thread
+from threading import Event, Thread
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -100,11 +100,89 @@ def routes(tmp_path, monkeypatch):
     frames = Frames()
     monkeypatch.setattr(twin, "CameraFrames", lambda settings, demo: frames)
     service = SimpleNamespace(demo=True, temporary=SimpleNamespace(name=str(tmp_path)), settings={})
-    return app_for(service).test_client(), frames, tmp_path / "calibration" / "twin"
+    client = app_for(service).test_client()
+    assert (
+        client.post("/twin/enabled", json={"enabled": True}, headers=headers()).status_code == 200
+    )
+    return client, frames, tmp_path / "calibration" / "twin"
 
 
 def headers(client="page-a"):
     return {"X-MG400-Client": client}
+
+
+def test_legacy_sleep_does_not_create_processor_or_read_frames(tmp_path):
+    frames = Frames()
+    service = SimpleNamespace(
+        demo=True, temporary=SimpleNamespace(name=str(tmp_path)), settings={}, twin_frames=frames
+    )
+    client = app_for(service).test_client()
+    assert client.get("/twin/state", headers=headers()).get_json() == {"enabled": False}
+    assert client.post("/twin/measure", json={}, headers=headers()).status_code == 409
+    assert client.get("/twin/frame", headers=headers()).status_code == 409
+    assert not hasattr(service, "_twin_console")
+    assert not frames.reads and not list(tmp_path.iterdir())
+    client.post("/twin/enabled", json={"enabled": True}, headers=headers())
+    saved = client.post(
+        "/twin/profile/save", json={"name": "Keep this"}, headers=headers()
+    ).get_json()
+    files = {p: p.read_bytes() for p in tmp_path.rglob("*.json")}
+    client.post("/twin/enabled", json={"enabled": False}, headers=headers())
+    assert service._twin_console.pages == {}
+    assert client.get("/twin/state", headers=headers()).get_json() == {"enabled": False}
+    assert client.post("/twin/measure", json={}, headers=headers()).status_code == 409
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*.json")} == files
+    resumed = client.post("/twin/enabled", json={"enabled": True}, headers=headers()).get_json()
+    assert resumed["selected_profile"] == saved["selected_profile"]
+    assert not frames.reads
+
+
+def test_legacy_disable_cancels_capture_after_current_frame(tmp_path):
+    frames = Frames()
+    entered, release = Event(), Event()
+    original = frames.sample
+
+    def blocked(camera, dimensions=None):
+        entered.set()
+        assert release.wait(5)
+        return original(camera, dimensions)
+
+    frames.sample = blocked
+    service = SimpleNamespace(
+        demo=True, temporary=SimpleNamespace(name=str(tmp_path)), settings={}, twin_frames=frames
+    )
+    app = app_for(service)
+    client = app.test_client()
+    client.post("/twin/enabled", json={"enabled": True}, headers=headers())
+    replies = []
+    worker = Thread(
+        target=lambda: replies.append(
+            app.test_client().post(
+                "/twin/capture", json={"endpoint": "x_low", "max_frames": 8}, headers=headers()
+            )
+        )
+    )
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert (
+            client.post("/twin/enabled", json={"enabled": False}, headers=headers()).status_code
+            == 200
+        )
+        assert service._twin_console.pages == {}
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert replies[0].status_code == 409
+    assert frames.reads == ["camera1"]
+
+
+def test_legacy_activation_is_page_local(routes):
+    client, _, _ = routes
+    assert client.get("/twin/state", headers=headers()).get_json()["enabled"]
+    # Another page remains asleep until explicitly enabled.
+    assert client.get("/twin/state", headers=headers("other-page")).get_json() == {"enabled": False}
 
 
 def profile_from(response):
@@ -343,8 +421,7 @@ def test_cancel_tuning_route_preserves_profile_and_does_not_read_camera(console,
     policy = page.policy = TuningPolicy(("x",), automatic=False)
     assert policy.start_manual()
     before = copy.deepcopy(page.profile)
-    monkeypatch.setattr(workspace, "get_twin_console", lambda service: manager)
-    client = app_for(SimpleNamespace(demo=False, settings={})).test_client()
+    client = app_for(SimpleNamespace(demo=False, settings={}, _twin_console=manager)).test_client()
     invalid = client.post("/twin/tuning/cancel", json={"tune": False}, headers=headers())
     assert invalid.status_code == 400
     assert policy.searching
@@ -488,7 +565,9 @@ def test_route_save_selection_and_page_drafts(routes):
     saved = profile_from(client.post("/twin/profile/save", json={}, headers=headers()))
     assert saved["id"] != first["id"]
     assert (root / "profiles" / (saved["id"] + ".json")).is_file()
-    resumed = profile_from(client.get("/twin/state", headers=headers("page-b")))
+    resumed = profile_from(
+        client.post("/twin/enabled", json={"enabled": True}, headers=headers("page-b"))
+    )
     assert resumed["id"] == saved["id"]
     profile_from(
         client.post("/twin/profile/edit", json={"name": "Unsaved draft"}, headers=headers())
@@ -520,7 +599,12 @@ def test_upload_rebinds_camera_and_saves_new_snapshot_without_camera_access(rout
     assert uploaded["name"] == source["name"]
     assert uploaded["axes"] == {}
     assert (root / "profiles" / (uploaded["id"] + ".json")).is_file()
-    assert profile_from(client.get("/twin/state", headers=headers("page-b"))) == uploaded
+    assert (
+        profile_from(
+            client.post("/twin/enabled", json={"enabled": True}, headers=headers("page-b"))
+        )
+        == uploaded
+    )
     second = profile_from(
         client.post("/twin/profile/upload", json={"profile": json.dumps(source)}, headers=headers())
     )
@@ -619,6 +703,9 @@ def test_upload_request_limit_precedes_app_json_parsing(tmp_path):
 
     client = app.test_client()
     raw = json.dumps(new_profile()).ljust(twin.MAX_PROFILE_BYTES)
+    assert (
+        client.post("/twin/enabled", json={"enabled": True}, headers=headers()).status_code == 200
+    )
     response = client.post("/twin/profile/upload", json={"profile": raw}, headers=headers())
     assert response.status_code == 200, response.get_data(as_text=True)
     response = client.post("/twin/profile/upload", json={"profile": raw + " "}, headers=headers())
@@ -672,6 +759,7 @@ def test_waitress_accepts_bounded_profile_upload_and_keeps_normal_route_limit(tm
             connection.close()
 
     try:
+        assert post("/twin/enabled", b'{"enabled":true}')[0] == 200
         raw = json.dumps(new_profile()).ljust(twin.MAX_PROFILE_BYTES)
         # Exercise the largest JSON string expansion, not only a short upload.
         encoded = '{"profile":"' + "".join(f"\\u{ord(char):04x}" for char in raw) + '"}'
@@ -812,7 +900,7 @@ def test_failed_upload_selection_write_preserves_draft_and_saved_files(console, 
 
 def test_frame_route_returns_the_selected_camera_bytes_without_profile_write(routes):
     client, frames, root = routes
-    response = client.get("/twin/frame?camera=camera2")
+    response = client.get("/twin/frame?camera=camera2", headers=headers())
     assert response.status_code == 200
     assert response.data == frames.data
     assert response.mimetype == "image/jpeg"
@@ -823,10 +911,10 @@ def test_frame_route_returns_the_selected_camera_bytes_without_profile_write(rou
 
 def test_preview_frame_remains_available_while_detector_is_busy(console, monkeypatch):
     manager, frames = console
-    monkeypatch.setattr(workspace, "get_twin_console", lambda service: manager)
-    client = app_for(SimpleNamespace(demo=False, settings={})).test_client()
+    manager.page("page-a")
+    client = app_for(SimpleNamespace(demo=False, settings={}, _twin_console=manager)).test_client()
     with manager.processing():
-        preview = client.get("/twin/frame?camera=camera2")
+        preview = client.get("/twin/frame?camera=camera2", headers=headers())
         measure = client.post("/twin/measure", json={}, headers=headers())
         capture = client.post("/twin/capture", json={"endpoint": "x_low"}, headers=headers())
     assert preview.status_code == 200
@@ -847,10 +935,11 @@ def test_demo_starts_without_camera_network_or_profile_directories(tmp_path, mon
     root = tmp_path / "calibration" / "twin"
     assert not root.exists()
     client = app.test_client()
-    state = client.get("/twin/state", headers=headers())
+    assert client.get("/twin/state", headers=headers()).get_json() == {"enabled": False}
+    state = client.post("/twin/enabled", json={"enabled": True}, headers=headers())
     assert profile_from(state)["camera"]["device_id"] == "demo:camera1"
     assert len(state.get_json()["cameras"]) == 4
-    frame = client.get("/twin/frame")
+    frame = client.get("/twin/frame", headers=headers())
     assert frame.status_code == 200
     assert analyze_frame(frame.data)["detections"]
     assert not root.exists()
@@ -861,7 +950,7 @@ def test_demo_starts_without_camera_network_or_profile_directories(tmp_path, mon
 def test_demo_service_must_start_before_first_request(tmp_path):
     service = SimpleNamespace(demo=True, temporary=None, settings={})
     client = app_for(service).test_client()
-    response = client.get("/twin/state", headers=headers())
+    response = client.post("/twin/enabled", json={"enabled": True}, headers=headers())
     assert response.status_code == 409
     assert "has not started" in response.get_json()["error"]
     assert not list(tmp_path.iterdir())

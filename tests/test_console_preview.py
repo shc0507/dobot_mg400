@@ -18,6 +18,7 @@ HEADERS = {"X-MG400-Client": "preview-test"}
 TWIN = "/lab/api/console/ws/twin"
 TURRET = "/lab/api/console/ws/process/turret"
 TRANSFER = "/lab/api/console/ws/sample-transfer"
+MOTION = "/lab/api/console/ws/motion"
 
 
 @pytest.fixture
@@ -28,12 +29,23 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", network_forbidden)
     monkeypatch.setenv("MG400_CAMERA_DEVICES", "/dev/video0")
     monkeypatch.setenv("MG400_ORCH_ROBOT_URL", "http://hardware.invalid/")
-    return preview.create_app(tmp_path).test_client()
+    apps = []
+    create = preview.create_app
+
+    def tracked_create(*args, **kwargs):
+        app = create(*args, **kwargs)
+        apps.append(app)
+        return app
+
+    monkeypatch.setattr(preview, "create_app", tracked_create)
+    yield preview.create_app(tmp_path).test_client()
+    for app in reversed(apps):
+        app.extensions["preview_close"]()
 
 
 def test_real_shell_and_workspace_polls_stay_offline(client):
     shell = client.get("/lab/").get_data(as_text=True)
-    assert "AI Chemistry Console" in shell and "Position Finder" in shell
+    assert "AI Chemistry Console" in shell and "Position Finder (legacy)" in shell
     assert 'data-title-en="Furnace"' in shell and "Furnace + microscope" not in shell
     assert 'id="ws-sample-transfer"' in shell and 'data-title-en="Sample Transfer"' in shell
     assert 'src="/lab/console-static/sample-transfer.js"' in shell
@@ -51,45 +63,63 @@ def test_real_shell_and_workspace_polls_stay_offline(client):
         "/lab/api/console/ws/cameras/status",
         "/lab/api/console/ws/process/status",
         TWIN + "/state",
-        TWIN + "/frame",
         TRANSFER + "/state",
     ):
         assert client.get(path, headers=HEADERS).status_code == 200
     state = client.get("/lab/api/console/state").get_json()
-    assert all(row["connected"] is False for row in state["services"])
+    assert all(row["connected"] is (row["id"] == "stage") for row in state["services"])
     cameras = client.get("/lab/api/console/ws/cameras/status").get_json()
     assert all(row["configured"] is False for row in cameras["views"])
     for path in ("thermal/frame", "thermal/regions", "snapshot/microscope"):
         assert client.get("/lab/api/console/ws/cameras/" + path).status_code == 502
 
 
-def test_device_commands_are_unavailable_and_stops_need_no_control(client):
+def test_legacy_stays_asleep_until_explicit_activation(client, tmp_path):
+    assert client.get("/").headers["Location"].endswith("/lab/#motion")
+    assert client.get(TWIN + "/state", headers=HEADERS).get_json() == {"enabled": False}
+    assert client.get(TWIN + "/frame", headers=HEADERS).status_code == 409
+    assert client.post(TWIN + "/measure", json={}, headers=HEADERS).status_code == 409
+    assert not (tmp_path / "calibration" / "twin").exists()
+    for path in ("/lab/api/console/ws/motion/state", TRANSFER + "/state"):
+        assert client.get(path, headers=HEADERS).status_code == 200
+    assert not (tmp_path / "calibration" / "twin").exists()
+    enabled = client.post(TWIN + "/enabled", json={"enabled": True}, headers=HEADERS)
+    assert enabled.status_code == 200 and enabled.get_json()["enabled"] is True
+    assert (tmp_path / "calibration" / "twin" / "profiles").is_dir()
+    assert client.get(TWIN + "/frame", headers=HEADERS).status_code == 200
+    disabled = client.post(TWIN + "/enabled", json={"enabled": False}, headers=HEADERS)
+    assert disabled.get_json() == {"enabled": False}
+    assert client.get(TWIN + "/frame", headers=HEADERS).status_code == 409
+    assert client.get(TWIN + "/state", headers=HEADERS).get_json() == {"enabled": False}
+
+
+def test_only_simulated_stage_is_available_and_stops_need_no_control(client):
     for name in preview.SERVICES:
+        if name == "stage":
+            continue
         assert (
             client.post(
                 f"/lab/api/console/control/{name}/take", json={}, headers=HEADERS
             ).status_code
-            == 503
+            == 502
         )
         assert (
-            client.post(f"/lab/api/console/stop/{name}", json={}, headers=HEADERS).get_json()[
-                "outcome"
-            ]
-            == "unavailable"
+            client.post(f"/lab/api/console/stop/{name}", json={}, headers=HEADERS).status_code
+            == 409
         )
+    assert (
+        client.post("/lab/api/console/stop/stage", json={}, headers=HEADERS).get_json()["outcome"]
+        == "confirmed"
+    )
     for action in ("motion", "heat", "gas"):
         assert client.post(f"/lab/api/dashboard/{action}", json={}).status_code == 202
     state = client.get("/lab/api/console/state").get_json()
     assert len(state["operations"]) == 3
-    assert all(
-        row["status"] == "unavailable"
-        for operation in state["operations"]
-        for row in operation["results"].values()
-    )
+    assert state["operations"][0]["results"]["stage"]["status"] == "confirmed"
 
 
 def test_mock_calibration_and_saved_edits_survive_restart(client, tmp_path):
-    state = client.get(TWIN + "/state", headers=HEADERS).get_json()
+    state = client.post(TWIN + "/enabled", json={"enabled": True}, headers=HEADERS).get_json()
     profile = state["calibration"]["profile"]
     assert profile["name"] == "Mock stage"
     assert all(axis["status"] == "calibrated" for axis in profile["axis_status"].values())
@@ -101,7 +131,8 @@ def test_mock_calibration_and_saved_edits_survive_restart(client, tmp_path):
     saved = client.post(TWIN + "/profile/save", json={"name": "My preview"}, headers=HEADERS)
     assert saved.status_code == 200
     restarted = preview.create_app(tmp_path).test_client()
-    state = restarted.get(TWIN + "/state", headers=HEADERS).get_json()
+    assert restarted.get(TWIN + "/state", headers=HEADERS).get_json() == {"enabled": False}
+    state = restarted.post(TWIN + "/enabled", json={"enabled": True}, headers=HEADERS).get_json()
     assert state["calibration"]["profile"]["name"] == "My preview"
     assert len(state["profiles"]) == 2
 
@@ -205,39 +236,45 @@ def transfer_idle(client):
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         state = client.get(TRANSFER + "/state", headers=HEADERS).get_json()
+        client.post("/lab/api/console/heartbeat", json={}, headers=HEADERS)
         if not state["operation"].get("settling"):
             return state
         time.sleep(0.01)
     pytest.fail("The transfer preview did not finish.")
 
 
-def test_transfer_teaching_uses_moving_camera_and_persists_profiles(client, tmp_path):
-    transfer_action(client, "profile/new", {"name": "Preview transfer"})
-    out = transfer_action(client, "record", {"name": "Pickup"})
-    out_mm = out["draft"]["positions"]["Pickup"]["position_mm"]
-    transfer_action(client, "jog", {"motor": "insert", "direction": "ccw"})
-    assert transfer_idle(client)["operation"]["status"] == "completed"
-    inside = transfer_action(client, "record", {"name": "Inspection"})
-    in_mm = inside["draft"]["positions"]["Inspection"]["position_mm"]
-    # Ten pulses can be smaller than one pixel in the synthetic camera frame.
-    assert in_mm["insert"] >= out_mm["insert"]
-    assert in_mm["x"] == pytest.approx(out_mm["x"], abs=0.05)
-    assert in_mm["y"] == pytest.approx(out_mm["y"], abs=0.05)
+def test_legacy_transfer_profiles_remain_manageable_but_cannot_move(client, tmp_path):
+    state = transfer_action(client, "profile/new", {"name": "Preview transfer"})
+    assert state["draft"]["source"] is None and state["draft"]["positions"] == {}
     saved = transfer_action(client, "profile/save", {"name": "Preview transfer"})
-    identifier = saved["selected_profile"]
-    assert identifier == saved["draft"]["id"]
-    transfer_action(client, "move", {"target": "fully_out"})
-    extracted = transfer_idle(client)
-    assert extracted["operation"]["status"] == "completed", extracted["operation"]
-    assert extracted["operation"]["target_mm"] == 0
-    assert extracted["position"]["insert"] == pytest.approx(0, abs=0.5)
-    transfer_action(client, "move", {"target": "fully_in"})
-    inserted = transfer_idle(client)
-    assert inserted["operation"]["status"] == "completed", inserted["operation"]
-    assert inserted["operation"]["target_mm"] == 150
-    assert inserted["position"]["insert"] == pytest.approx(150, abs=0.5)
-    optical = client.post(TWIN + "/measure", json={}, headers=HEADERS).get_json()
-    assert optical["axes"]["insert"]["value_mm"] == inserted["position"]["insert"]
+    empty_id = saved["draft"]["id"]
+    assert saved["selected_profile"] is None
+    # Import an existing optical record without connecting its old source.
+    profile = client.get(TRANSFER + "/profile/" + empty_id, headers=HEADERS).get_json()
+    profile["schema_version"] = 2
+    profile.pop("unit")
+    profile.pop("stage_positions")
+    profile["source"] = {
+        "camera": "camera1",
+        "device_id": "demo:camera1",
+        "profile_id": "00000000-0000-0000-0000-000000000001",
+        "name": "Earlier calibration",
+    }
+    profile["positions"] = {
+        "Pickup": {
+            "position_mm": {"x": 10, "y": 20, "insert": 30},
+            "captured_at": profile["created_at"],
+            "image_sha256": "a" * 64,
+        }
+    }
+    imported = transfer_action(client, "profile/upload", {"profile": json.dumps(profile)})
+    identifier = imported["draft"]["id"]
+    assert len(imported["profiles"]) == 2 and imported["selected_profile"] is None
+    selected = transfer_action(client, "profile/select", {"id": identifier})
+    assert selected["selected_profile"] == identifier
+    assert selected["named_motion_ready"] is False
+    blocked = client.post(TRANSFER + "/position/move", json={"name": "Pickup"}, headers=HEADERS)
+    assert blocked.status_code == 400
     restarted = preview.create_app(tmp_path).test_client()
     assert (
         restarted.get(TRANSFER + "/state", headers=HEADERS).get_json()["selected_profile"]
@@ -245,35 +282,260 @@ def test_transfer_teaching_uses_moving_camera_and_persists_profiles(client, tmp_
     )
     exported = client.get(TRANSFER + "/profile/" + identifier, headers=HEADERS)
     assert exported.status_code == 200 and exported.mimetype == "application/json"
-    imported = transfer_action(
-        client, "profile/upload", {"profile": exported.get_data(as_text=True)}
+    assert exported.get_json()["positions"] == profile["positions"]
+    loaded = transfer_action(client, "profile/load", {"id": identifier})
+    assert loaded["draft"]["positions"] == profile["positions"]
+    assert (
+        transfer_action(client, "position/delete", {"name": "Pickup"})["draft"]["positions"] == {}
     )
-    assert len(imported["profiles"]) == 2 and imported["selected_profile"] == identifier
     invalid = client.post(TRANSFER + "/profile/upload", json={"profile": "{}"}, headers=HEADERS)
     assert invalid.status_code == 400
     deleted = transfer_action(client, "profile/delete", {"id": identifier})
     assert deleted["selected_profile"] is None and len(deleted["profiles"]) == 1
+    assert not (tmp_path / "calibration" / "twin").exists()
 
 
-def test_stop_all_cancels_preview_insert_between_measurements(client):
-    state = transfer_action(client, "measure")
-    assert state["profiles"] == [] and state["selected_profile"] is None
-    start = state["position"]["insert"]
-    target = state["transfer_reference"]["targets_mm"]["fully_out"]
-    transfer_action(client, "move", {"target": "fully_out"})
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        state = client.get(TRANSFER + "/state", headers=HEADERS).get_json()
-        position = state["operation"]["position_mm"]
-        if position is not None and target + 1 < position < start - 1:
-            break
-        time.sleep(0.01)
-    else:
-        pytest.fail("The preview did not move toward the endpoint.")
-    response = client.post("/lab/api/dashboard/motion", json={}, headers=HEADERS)
-    assert response.status_code == 202
+@pytest.mark.parametrize("legacy_enabled", [False, True])
+def test_transfer_never_uses_legacy_finder_as_a_position_source(client, legacy_enabled):
+    if legacy_enabled:
+        assert (
+            client.post(TWIN + "/enabled", json={"enabled": True}, headers=HEADERS).status_code
+            == 200
+        )
+        assert client.post(TWIN + "/measure", json={}, headers=HEADERS).status_code == 200
+    wait_stage(client, lambda stage: all(m["telemetry_fresh"] for m in stage["motors"]))
+    state = client.get(TRANSFER + "/state", headers=HEADERS).get_json()
+    assert state["position_available"] is True
+    assert state["position"] == {"x": 0, "y": 0, "insert": 0}
+    assert state["position_source"]["kind"] == "stage_encoder"
+    assert state["transfer_reference"]["ready"] is False
+    assert "stage_position" not in client.get("/lab/api/console/ws/motion/state").get_json()
+
+
+def test_manual_jog_uses_encoder_feedback_without_legacy_calibration(client, tmp_path):
+    take_stage(client)
+    wait_stage(client, lambda stage: all(m["telemetry_fresh"] for m in stage["motors"]))
+    transfer_action(client, "jog", {"motor": "insert", "direction": "ccw"})
+    state = transfer_idle(client)
+    assert state["operation"]["status"] == "completed", state["operation"]
+    assert state["position_available"] is True
+    assert state["position"]["insert"] == pytest.approx(0.1, abs=0.001)
+    assert not (tmp_path / "calibration" / "twin").exists()
+
+
+@pytest.mark.parametrize(
+    "path,identity",
+    [
+        (TRANSFER + "/stop", "another-page"),
+        ("/lab/api/dashboard/motion", "another-page"),
+        ("/lab/api/console/control/stage/release", "preview-test"),
+    ],
+)
+def test_stops_cancel_simulated_encoder_move_without_control(client, path, identity):
+    take_stage(client)
+    wait_stage(client, lambda stage: all(m["telemetry_fresh"] for m in stage["motors"]))
+    transfer_action(client, "jog", {"motor": "insert", "direction": "ccw"})
+    wait_stage(client, lambda stage: stage["motors"][2]["mode"] != "idle")
+    response = client.post(path, json={}, headers={"X-MG400-Client": identity})
+    assert response.status_code in (200, 202)
     assert transfer_idle(client)["operation"]["status"] == "stopped"
-    first = transfer_action(client, "measure")["position"]["insert"]
-    time.sleep(0.3)
-    second = transfer_action(client, "measure")["position"]["insert"]
-    assert second == first and target < second < start
+    stopped = wait_stage(client, lambda stage: all(m["mode"] == "idle" for m in stage["motors"]))
+    assert stopped["motors"][2]["position_rotations"] < 0.1
+
+
+def test_motion_coordinates_use_live_stage_and_all_stop_routes_cancel_sequence(client, tmp_path):
+    service = client.application.extensions["preview_service"]
+    assert (
+        client.get(MOTION + "/state", headers=HEADERS).json["stage_operation"]["status"] == "idle"
+    )
+    assert not hasattr(service, "sample_transfer")
+    take_stage(client)
+    for motor in ("bottom", "top", "insert"):
+        response = client.post(
+            "/lab/api/console/command/stage",
+            json={"action": "calibrate", "params": {"motor": motor, "speed": 0.25}},
+            headers=HEADERS,
+        )
+        assert response.status_code == 202, response.json
+        wait_stage(
+            client,
+            lambda state: next(m for m in state["motors"] if m["id"] == motor)["positioning_ready"],
+        )
+
+    seen = []
+
+    def settled(stage):
+        moving = [m["id"] for m in stage["motors"] if m["mode"] != "idle"]
+        assert len(moving) <= 1
+        if moving and (not seen or seen[-1] != moving[0]):
+            seen.append(moving[0])
+        return not client.get(MOTION + "/state", headers=HEADERS).json["stage_operation"][
+            "settling"
+        ]
+
+    def position(target):
+        response = client.post(MOTION + "/stage/position", json={"target": target}, headers=HEADERS)
+        assert response.status_code == 202, response.json
+        return response.json["operation"]
+
+    def values(stage):
+        return {motor["id"]: motor["position_rotations"] for motor in stage["motors"]}
+
+    position({"x": 0.7, "y": 0.65})
+    reached = wait_stage(client, settled)
+    assert seen == ["bottom", "top"]
+    assert values(reached) == pytest.approx({"top": 0.7, "bottom": 0.65, "insert": 0.5}, abs=0.002)
+    seen.clear()
+    position({"insert": 0.3})
+    reached = wait_stage(client, settled)
+    assert seen == ["insert"]
+    assert values(reached) == pytest.approx({"top": 0.7, "bottom": 0.65, "insert": 0.3}, abs=0.002)
+    assert service.sample_transfer.pages == {}
+
+    for path, identity in (
+        ("/lab/api/console/stop/stage", "another-page"),
+        ("/lab/api/dashboard/motion", "another-page"),
+        (TRANSFER + "/stop", "another-page"),
+        ("/lab/api/console/control/stage/release", "preview-test"),
+        ("/lab/api/console/release-page", "preview-test"),
+        ("/lab/api/console/release-all", "another-page"),
+    ):
+        take_stage(client)
+        wait_stage(client, lambda stage: all(m["positioning_ready"] for m in stage["motors"]))
+        seen.clear()
+        position({"x": 0.9, "y": 0.9})
+        wait_stage(
+            client,
+            lambda stage: next(m for m in stage["motors"] if m["id"] == "bottom")["mode"] != "idle",
+        )
+        before = client.get(MOTION + "/state", headers=HEADERS).json["stage"]["stop_epoch"]
+        response = client.post(path, json={}, headers={"X-MG400-Client": identity})
+        assert response.status_code in (200, 202), response.json
+        stopped = wait_stage(client, settled)
+        state = client.get(MOTION + "/state", headers=HEADERS).json
+        assert state["stage_operation"]["status"] == "stopped"
+        assert state["stage"]["stop_epoch"] > before
+        assert values(stopped)["top"] == pytest.approx(0.7, abs=0.002)
+        assert values(stopped)["insert"] == pytest.approx(0.3, abs=0.002)
+    assert "preview-test" not in service.sample_transfer.pages
+    assert not (tmp_path / "calibration" / "sample-transfer").exists()
+
+
+def take_stage(client):
+    result = client.post("/lab/api/console/control/stage/take", json={}, headers=HEADERS)
+    assert result.status_code == 200, result.get_json()
+
+
+def test_rejected_manual_move_cancels_and_stops_active_transfer(client):
+    take_stage(client)
+    wait_stage(client, lambda stage: all(m["telemetry_fresh"] for m in stage["motors"]))
+    transfer_action(client, "jog", {"motor": "insert", "direction": "ccw"})
+    wait_stage(client, lambda stage: stage["motors"][2]["mode"] != "idle")
+    rejected = client.post(
+        "/lab/api/console/command/stage",
+        json={
+            "action": "move",
+            "params": {"motor": "top", "direction": "ccw", "speed": 0.25, "rotations": 0.1},
+        },
+        headers=HEADERS,
+    )
+    assert rejected.status_code == 409
+    assert transfer_idle(client)["operation"]["status"] == "stopped"
+    stage = wait_stage(client, lambda state: all(m["mode"] == "idle" for m in state["motors"]))
+    assert stage["motors"][2]["position_rotations"] < 0.1
+
+
+def wait_stage(client, condition, timeout=20):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = client.application.extensions["preview_stage"].state()
+        if condition(state):
+            return state
+        client.post("/lab/api/console/heartbeat", json={}, headers=HEADERS)
+        time.sleep(0.05)
+    pytest.fail(f"Stage did not settle: {state}")
+
+
+def test_simulated_calibration_saved_target_and_sequential_move(client, tmp_path):
+    take_stage(client)
+    for motor in ("bottom", "top", "insert"):
+        result = client.post(
+            "/lab/api/console/command/stage",
+            json={"action": "calibrate", "params": {"motor": motor, "speed": 0.25}},
+            headers=HEADERS,
+        )
+        assert result.status_code == 202, result.get_json()
+        wait_stage(
+            client,
+            lambda state: next(m for m in state["motors"] if m["id"] == motor)["positioning_ready"],
+        )
+    saved = transfer_action(client, "record", {"name": "Center"})
+    capture = saved["draft"]["positions"]["Center"]["position_rotations"]
+    assert all(value == pytest.approx(0.5, abs=0.002) for value in capture.values())
+    saved = transfer_action(client, "profile/save", {"name": "Encoder positions"})
+    transfer_action(client, "profile/select", {"id": saved["draft"]["id"]})
+    # Change all axes, then require the recorded Bottom -> Top -> Insert sequence.
+    for motor in ("bottom", "top", "insert"):
+        transfer_action(client, "jog", {"motor": motor, "direction": "ccw"})
+        assert transfer_idle(client)["operation"]["status"] == "completed"
+    transfer_action(client, "position/move", {"name": "Center"})
+    seen = []
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        stage = client.application.extensions["preview_stage"].state()
+        moving = [m["id"] for m in stage["motors"] if m["mode"] != "idle"]
+        assert len(moving) <= 1
+        if moving and (not seen or seen[-1] != moving[0]):
+            seen.append(moving[0])
+        state = client.get(TRANSFER + "/state", headers=HEADERS).get_json()
+        if not state["operation"]["settling"]:
+            break
+        client.post("/lab/api/console/heartbeat", json={}, headers=HEADERS)
+        time.sleep(0.03)
+    assert state["operation"]["status"] == "completed", state["operation"]
+    assert seen == ["bottom", "top", "insert"]
+    assert state["position"] == pytest.approx(capture, abs=0.002)
+    # Transfer uses the live Insert bounds before any XY stage target is recorded.
+    reference = state["transfer_reference"]["targets_rotations"]
+    assert reference["fully_out"] == 0
+    assert reference["fully_in"] == pytest.approx(1, abs=0.002)
+    for endpoint, target in reference.items():
+        transfer_action(client, "move", {"target": endpoint})
+        reached = transfer_idle(client)
+        assert reached["operation"]["status"] == "completed", reached["operation"]
+        assert reached["position"] == pytest.approx(
+            {"x": capture["x"], "y": capture["y"], "insert": target}, abs=0.002
+        )
+    insert = reached["position"]["insert"]
+    for endpoint, target in (("out_stage", 0.3), ("microscope", 0.7)):
+        for motor in ("bottom", "top"):
+            result = client.post(
+                "/lab/api/console/command/stage",
+                json={
+                    "action": "move_to_position",
+                    "params": {"motor": motor, "position": target, "speed": 0.25},
+                },
+                headers=HEADERS,
+            )
+            assert result.status_code == 202, result.get_json()
+            wait_stage(
+                client,
+                lambda stage: all(m["positioning_ready"] for m in stage["motors"]),
+            )
+        transfer_action(client, "endpoint/record", {"target": endpoint})
+    saved = transfer_action(client, "profile/save", {"name": "Stage coordinates"})
+    identifier = saved["draft"]["id"]
+    positions = saved["draft"]["stage_positions"]
+    assert all(set(capture["position_rotations"]) == {"x", "y"} for capture in positions.values())
+    for endpoint, target in (("out_stage", 0.3), ("microscope", 0.7)):
+        transfer_action(client, "stage/move", {"target": endpoint})
+        reached = transfer_idle(client)
+        assert reached["operation"]["status"] == "completed", reached["operation"]
+        assert reached["position"] == pytest.approx(
+            {"x": target, "y": target, "insert": insert}, abs=0.002
+        )
+    restarted = preview.create_app(tmp_path).test_client()
+    restored = restarted.get(TRANSFER + "/state", headers=HEADERS).get_json()
+    assert restored["selected_profile"] == identifier
+    assert restored["active_profile"]["stage_positions"] == positions
+    assert not (tmp_path / "calibration" / "twin").exists()

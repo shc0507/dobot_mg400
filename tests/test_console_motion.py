@@ -160,6 +160,7 @@ def test_unreachable_device_is_reported_without_an_error(fake, monkeypatch):
     assert body == {
         "robot": {"available": False, "reason": "unreachable"},
         "stage": {"available": False, "reason": "unreachable"},
+        "stage_operation": {"status": "idle", "mine": False, "message": "", "settling": False},
     }
 
 
@@ -426,12 +427,10 @@ def test_suction_commands_show_the_measured_outputs(sim):
 
 
 def test_stage_moves_without_a_zero_and_stops_without_control(sim):
-    take(sim, "stage")
-    stage = wait_for(lambda: (lambda s: s if s.get("motors") else None)(motion_state(sim)["stage"]))
-    motor = stage["motors"][0]["id"]
-    # Set zero needs the explicit confirm flag from the page confirmation.
-    assert command(sim, "stage", "zero", {"motor": motor})[0] == 409
-    move = {"motor": motor, "direction": "cw", "speed": 50, "steps": 800}
+    motor = stage_ready(sim)[0]
+    # The encoder contract does not accept the legacy zero command.
+    assert command(sim, "stage", "zero", {"motor": motor})[0] == 400
+    move = {"motor": motor, "direction": "ccw", "speed": 0.25, "rotations": 0.25}
     status, body = command(sim, "stage", "move", move)
     assert status == 202, body
     wait_for(
@@ -529,14 +528,21 @@ def stage_motors(rig):
 
 def stage_ready(rig):
     take(rig, "stage")
-    return list(wait_for(lambda: stage_motors(rig)))
+
+    def ready():
+        motors = stage_motors(rig)
+        return (
+            motors if motors and all(motor["motion_ready"] for motor in motors.values()) else None
+        )
+
+    return list(wait_for(ready))
 
 
 def mode(rig, motor):
     return stage_motors(rig)[motor]["mode"]
 
 
-def hold(rig, hold_id=HOLD, motor="bottom", direction="cw", speed=50, page="console-page-a"):
+def hold(rig, hold_id=HOLD, motor="bottom", direction="ccw", speed=0.25, page="console-page-a"):
     body = {"id": hold_id, "motor": motor, "direction": direction, "speed": speed}
     return ws(rig, "stage/hold", body, page)
 
@@ -547,7 +553,7 @@ def release_hold(rig, hold_id=HOLD, page="console-page-a"):
 
 def test_stage_hold_moves_while_the_page_refreshes_it_and_stops_on_release(sim):
     motor = stage_ready(sim)[0]
-    start = stage_motors(sim)[motor]["position"]
+    start = stage_motors(sim)[motor]["position_rotations"]
     assert hold(sim, motor=motor) == (200, {"outcome": "accepted"})
     wait_for(lambda: mode(sim, motor) == "continuous")
     # The console renews the hold, so it outlives the 1 s firmware watchdog.
@@ -558,7 +564,7 @@ def test_stage_hold_moves_while_the_page_refreshes_it_and_stops_on_release(sim):
     assert mode(sim, motor) == "continuous"
     assert release_hold(sim) == (200, {"outcome": "accepted"})
     wait_for(lambda: mode(sim, motor) == "idle")
-    assert stage_motors(sim)[motor]["position"] > start
+    assert stage_motors(sim)[motor]["position_rotations"] > start
     # A released hold cannot restart. The page must press again with a new id.
     status, body = hold(sim, motor=motor)
     assert status == 409 and "press again" in body["error"]
@@ -614,6 +620,7 @@ def test_stop_and_release_of_control_end_the_stage_hold(sim):
     assert post(sim, "stop/stage", page="console-page-b").status_code == 200
     wait_for(lambda: mode(sim, first) == "idle")
     wait_for(lambda: hold(sim, motor=first)[0] == 409)
+    wait_for(lambda: stage_motors(sim)[second]["motion_ready"])
     # Release of control sends release_hold before it releases the lease.
     sent = []
     adapter = sim.service.console.sessions["stage"].adapter

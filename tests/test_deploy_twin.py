@@ -196,7 +196,9 @@ def test_camera_restart_classification(twin, path, restart):
 
 @pytest.mark.parametrize("response", [{"top": 30.0}, []])
 def test_camera_readiness_uses_preview_status_without_capturing(twin, monkeypatch, response):
-    request = Mock(return_value=io.BytesIO(json.dumps(response).encode()))
+    payload = io.BytesIO(json.dumps(response).encode())
+    payload.status = 200
+    request = Mock(return_value=payload)
     monkeypatch.setattr(twin.urllib.request, "urlopen", request)
     monkeypatch.setattr(twin.time, "monotonic", Mock(side_effect=[0, 16]))
     if isinstance(response, dict):
@@ -205,6 +207,37 @@ def test_camera_readiness_uses_preview_status_without_capturing(twin, monkeypatc
         with pytest.raises(RuntimeError, match="camera preview did not become ready"):
             twin.ready(camera=True)
     assert request.call_args.args[0].full_url == "http://127.0.0.1:1985/fps.json"
+
+
+@pytest.mark.parametrize(
+    "state,status,valid",
+    [
+        ({"enabled": False}, 200, True),
+        ({"cameras": []}, 200, True),
+        ({"enabled": True, "cameras": []}, 200, True),
+        ({"enabled": False}, 202, False),
+        ({"enabled": False, "error": "Unavailable"}, 200, False),
+        ({"enabled": 0}, 200, False),
+        ({"enabled": True}, 200, False),
+        ({"error": "Unavailable"}, 200, False),
+        ([], 200, False),
+    ],
+)
+def test_console_readiness_accepts_sleeping_legacy_workspace(
+    twin, monkeypatch, state, status, valid
+):
+    payload = io.BytesIO(json.dumps(state).encode())
+    payload.status = status
+    request = Mock(return_value=payload)
+    monkeypatch.setattr(twin.urllib.request, "urlopen", request)
+    monkeypatch.setattr(twin.time, "monotonic", Mock(side_effect=[0, 16]))
+    if valid:
+        twin.ready()
+    else:
+        with pytest.raises(RuntimeError, match="test Console did not become ready"):
+            twin.ready()
+    assert request.call_args.args[0].full_url == twin.URL + "api/console/ws/twin/state"
+    assert request.call_args.args[0].get_header("X-mg400-client") == "deploy-check"
 
 
 @pytest.mark.parametrize(

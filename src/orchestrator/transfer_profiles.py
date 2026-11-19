@@ -15,6 +15,9 @@ FORMAT = "sample-transfer.calibration-profile"
 MAX_PROFILE_BYTES = 128 * 1024
 MAX_POSITIONS = 64
 LEGACY_ENDPOINTS = {"fully_out": "Fully out", "fully_in": "Fully in"}
+TRANSFER_ENDPOINTS = ("fully_out", "fully_in")
+STAGE_POSITIONS = ("out_stage", "microscope")
+LEGACY_TRANSFER_NAMES = {"fully_out": "Legacy Extract", "fully_in": "Legacy Insert"}
 
 
 def _now():
@@ -64,7 +67,7 @@ def _coordinate(value, *, optional=False):
     if value is None and optional:
         return None
     if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 1_000_000:
-        raise ValueError("Positions must be finite millimetre coordinates.")
+        raise ValueError("Positions must be finite numeric coordinates.")
     return float(value)
 
 
@@ -84,13 +87,15 @@ def new_profile(name, source=None):
     return validate_profile(
         {
             "format": FORMAT,
-            "schema_version": 2,
+            "schema_version": 5,
+            "unit": "rotations",
             "id": str(uuid4()),
             "name": name,
             "created_at": _now(),
             "updated_at": _now(),
             "source": source,
             "positions": {},
+            "stage_positions": {},
         }
     )
 
@@ -104,14 +109,18 @@ def validate_profile(value):
     if not isinstance(value, dict) or (
         value.get("format") != FORMAT
         or type(value.get("schema_version")) is not int
-        or value["schema_version"] not in (1, 2)
+        or value["schema_version"] not in (1, 2, 3, 4, 5)
     ):
         raise ValueError("Unsupported Sample Transfer profile format or version.")
     legacy = value["schema_version"] == 1
+    rotations = value["schema_version"] in (3, 4, 5)
     field = "endpoints" if legacy else "positions"
     _fields(
         value,
-        ("format", "schema_version", "id", "name", "created_at", "updated_at", "source", field),
+        ("format", "schema_version", "id", "name", "created_at", "updated_at", "source", field)
+        + (("unit",) if rotations else ())
+        + (("transfer_endpoints",) if value["schema_version"] == 4 else ())
+        + (("stage_positions",) if value["schema_version"] == 5 else ()),
         "Transfer profile",
     )
     result = copy.deepcopy(value)
@@ -120,30 +129,48 @@ def validate_profile(value):
     for key in ("created_at", "updated_at"):
         result[key] = _timestamp(result[key])
     records = result.pop(field)
-    if not isinstance(records, dict) or len(records) > MAX_POSITIONS:
-        raise ValueError("A profile can contain at most 64 named positions.")
+    endpoints = result.pop("transfer_endpoints", {})
+    stage_positions = result.get("stage_positions", {})
+    if not isinstance(endpoints, dict) or set(endpoints) - set(TRANSFER_ENDPOINTS):
+        raise ValueError("Choose Fully out or Fully in for transfer endpoints.")
+    if not isinstance(stage_positions, dict) or set(stage_positions) - set(STAGE_POSITIONS):
+        raise ValueError("Choose Out stage or Microscope for stage positions.")
+    # Schema 4 can contain 64 named records and 2 additional endpoint captures.
+    limit = MAX_POSITIONS + (2 if value["schema_version"] == 5 else 0)
+    if not isinstance(records, dict) or len(records) > limit:
+        raise ValueError(f"A profile can contain at most {limit} named positions.")
     if legacy:
         if set(records) - set(LEGACY_ENDPOINTS):
             raise ValueError("Unsupported legacy transfer endpoint.")
         records = {LEGACY_ENDPOINTS[name]: capture for name, capture in records.items()}
     elif any(position_name(name) != name for name in records):
         raise ValueError("Position names cannot start or end with spaces.")
+    if rotations and result["unit"] != "rotations":
+        raise ValueError("Encoder profiles must use rotations.")
     if result["source"] is not None:
-        result["source"] = _source(result["source"])
-    elif records:
-        raise ValueError("Recorded positions need a Position Finder source.")
-    for capture in records.values():
-        _fields(capture, ("position_mm", "captured_at", "image_sha256"), "Position record")
-        positions = capture["position_mm"]
+        result["source"] = (
+            encoder_source(result["source"]) if rotations else _source(result["source"])
+        )
+    elif records or endpoints or stage_positions:
+        raise ValueError("Recorded positions need a position source.")
+    for capture in (*records.values(), *endpoints.values()):
+        coordinate_key = "position_rotations" if rotations else "position_mm"
+        _fields(
+            capture,
+            (coordinate_key, "captured_at") + (() if rotations else ("image_sha256",)),
+            "Position record",
+        )
+        positions = capture[coordinate_key]
         _fields(positions, ("x", "y", "insert"), "Position coordinates")
         # Legacy records can have unknown X/Y. Preserve those values on later saves.
-        capture["position_mm"] = {
-            axis: _coordinate(positions[axis], optional=axis != "insert")
+        capture[coordinate_key] = {
+            axis: _coordinate(positions[axis], optional=not rotations and axis != "insert")
             for axis in ("x", "y", "insert")
         }
         _timestamp(capture["captured_at"])
-        if not isinstance(capture["image_sha256"], str) or not re.fullmatch(
-            r"[0-9a-f]{64}", capture["image_sha256"]
+        if not rotations and (
+            not isinstance(capture["image_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", capture["image_sha256"])
         ):
             raise ValueError("The position image fingerprint is invalid.")
     if legacy and set(records) == set(LEGACY_ENDPOINTS.values()):
@@ -152,44 +179,112 @@ def validate_profile(value):
             >= records["Fully in"]["position_mm"]["insert"]
         ):
             raise ValueError("Fully in must have a larger insert coordinate than fully out.")
-    result.update(schema_version=2, positions=records)
+    for capture in stage_positions.values():
+        _fields(capture, ("position_rotations", "captured_at"), "Stage position record")
+        positions = capture["position_rotations"]
+        _fields(positions, ("x", "y"), "Stage position coordinates")
+        capture["position_rotations"] = {axis: _coordinate(positions[axis]) for axis in ("x", "y")}
+        _timestamp(capture["captured_at"])
+    for target, capture in endpoints.items():
+        base = LEGACY_TRANSFER_NAMES[target]
+        name, suffix = base, 2
+        while name in records:
+            name = f"{base} ({suffix})"
+            suffix += 1
+        records[name] = capture
+    result.update(schema_version=5 if rotations else 2, positions=records)
+    if rotations:
+        result["stage_positions"] = stage_positions
     return result
 
 
 def is_complete(profile):
     records = profile.get("positions", {}) if isinstance(profile, dict) else {}
-    return bool(records) and all(
-        all(capture["position_mm"][axis] is not None for axis in ("x", "y", "insert"))
-        for capture in records.values()
+    captures = list(records.values())
+    stage_captures = profile.get("stage_positions", {}) if compatible(profile) else {}
+    key = "position_rotations" if compatible(profile) else "position_mm"
+    return bool(captures or stage_captures) and all(
+        all(capture[key][axis] is not None for axis in ("x", "y", "insert")) for capture in captures
     )
 
 
-def record_position(profile, name, source, report):
-    """Record a named coordinate from a fresh, valid optical reading of every axis."""
-    name = position_name(name)
+def compatible(profile):
+    return (
+        isinstance(profile, dict)
+        and profile.get("schema_version") in (3, 4, 5)
+        and profile.get("unit") == "rotations"
+    )
+
+
+def encoder_source(value):
+    _fields(value, ("kind", "device_id", "name"), "Encoder source")
+    if value["kind"] != "stage_encoder":
+        raise ValueError("Use the stage encoder coordinate source.")
+    return {
+        "kind": "stage_encoder",
+        "device_id": _text(value["device_id"], "Stage identity", 1024),
+        "name": _text(value["name"], "Stage name"),
+    }
+
+
+def _record_capture(profile, source, report, axes=("x", "y", "insert")):
+    """Validate a fresh encoder reading before assigning it to the profile."""
     candidate = validate_profile(profile)
-    source = _source(source)
+    if not compatible(candidate):
+        raise ValueError("This profile uses legacy millimetres. Create a new rotation profile.")
+    source = encoder_source(source)
     if candidate["source"] is not None and candidate["source"] != source:
         raise ValueError(
-            "Use the same Position Finder profile for all recorded positions. "
+            "Use the same stage encoder source for all recorded positions. "
             "Start a new profile to change it."
         )
-    if report.get("profile_id") != source["profile_id"] or report.get("camera") != source["camera"]:
-        raise ValueError("The measurement does not match the Position Finder source.")
+    if report.get("source") != source:
+        raise ValueError("The measurement does not match the stage encoder source.")
     positions = {}
-    for axis in ("x", "y", "insert"):
+    for axis in axes:
         reading = report.get("axes", {}).get(axis, {})
-        if reading.get("status") != "provisional_interpolation":
-            raise ValueError("X, Y and Insert must be visible within their calibrated travel.")
-        positions[axis] = _coordinate(reading.get("value_mm"))
+        if reading.get("ready") is not True:
+            raise ValueError(
+                "Calibrate the required axes and wait for fresh, idle encoder feedback."
+            )
+        positions[axis] = _coordinate(reading.get("value_rotations"))
     candidate["source"] = source
     candidate["updated_at"] = _now()
-    candidate["positions"][name] = {
-        "position_mm": positions,
+    capture = {
+        "position_rotations": positions,
         "captured_at": report.get("received_at"),
-        "image_sha256": report.get("image_sha256"),
     }
+    return candidate, capture
+
+
+def record_position(profile, name, source, report):
+    """Record the fresh, calibrated encoder position of every axis."""
+    name = position_name(name)
+    candidate, capture = _record_capture(profile, source, report)
+    if name not in candidate["positions"] and len(candidate["positions"]) >= MAX_POSITIONS:
+        raise ValueError("A profile can contain at most 64 named positions.")
+    candidate["positions"][name] = capture
     return validate_profile(candidate)
+
+
+def record_endpoint(profile, target, source, report):
+    """Record an X/Y stage target without reading or storing Insert."""
+    if target not in STAGE_POSITIONS:
+        raise ValueError("Choose Out stage or Microscope.")
+    candidate, capture = _record_capture(profile, source, report, axes=("x", "y"))
+    candidate["stage_positions"][target] = capture
+    return validate_profile(candidate)
+
+
+def delete_endpoint(profile, target):
+    candidate = validate_profile(profile)
+    if target not in STAGE_POSITIONS:
+        raise ValueError("Choose Out stage or Microscope.")
+    if target not in candidate.get("stage_positions", {}):
+        raise ValueError("Choose a recorded stage position.")
+    del candidate["stage_positions"][target]
+    candidate["updated_at"] = _now()
+    return candidate
 
 
 def delete_position(profile, name):
@@ -258,6 +353,9 @@ class TransferProfileStore:
                     | {
                         "complete": is_complete(profile),
                         "position_count": len(profile["positions"]),
+                        "stage_position_count": len(profile.get("stage_positions", {})),
+                        "compatible": compatible(profile),
+                        "unit": "rotations" if compatible(profile) else "mm",
                     }
                 )
             return sorted(profiles, key=lambda item: item["updated_at"], reverse=True)

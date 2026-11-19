@@ -274,9 +274,9 @@ def test_state_reports_frame_data_without_secrets(rig):
         "overview",
         "motion",
         "cameras",
-        "twin",
         "process",
         "sample-transfer",
+        "twin",
     ]
     assert "readiness" not in body
     assert PRIVATE not in response.get_data(as_text=True)
@@ -519,12 +519,12 @@ def test_workspace_registry_needs_unique_ids_and_both_titles():
         ("overview", 0),
         ("motion", 20),
         ("cameras", 30),
-        ("twin", 35),
         ("process", 40),
         ("sample-transfer", 50),
+        ("twin", 100),
     ]
     twin = next(item for item in workspaces if item.id == "twin")
-    assert twin.title == {"en": "Digital Twin", "zh": "数字孪生"}
+    assert twin.title == {"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"}
     assert callable(twin.register) and twin.script and twin.style
     with pytest.raises(ValueError):
         Workspace(id="Bad Id", order=1, title={"en": "x", "zh": "x"})

@@ -109,6 +109,7 @@ AREAS = [
         ],
     ),
     ("src/stage_controller/*", ["test_stage_*.py", "test_orchestrator_rehearsal.py"]),
+    ("firmware/stage-controller-v3/*", ["test_stage_*.py", "test_console_preview.py"]),
     ("src/thermal_cam/*", ["test_thermal_*.py", "test_orchestrator_rehearsal.py"]),
     ("src/vision/stage_twin/*", ["test_stage_twin.py", "test_console_twin.py"]),
     (

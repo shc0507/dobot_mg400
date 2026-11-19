@@ -148,8 +148,15 @@ def ready(*, camera=False):
         try:
             request = urllib.request.Request(url, headers={"X-MG400-Client": "deploy-check"})
             with urllib.request.urlopen(request, timeout=2) as response:
+                if response.status != 200:
+                    raise ValueError(f"The {name} returned an unexpected HTTP status.")
                 state = json.load(response)
-            if not isinstance(state, dict) or (not camera and "cameras" not in state):
+            legacy_off = (
+                isinstance(state, dict) and set(state) == {"enabled"} and state["enabled"] is False
+            )
+            if not isinstance(state, dict) or (
+                not camera and "cameras" not in state and not legacy_off
+            ):
                 raise ValueError(f"The {name} returned an invalid state.")
             return
         except (OSError, ValueError):

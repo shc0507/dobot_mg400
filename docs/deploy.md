@@ -180,15 +180,20 @@ systemctl restart mg400-camera-preview.service
 ### 位移台测试后端
 
 测试样品转移时，复用 `mg400-stage-panel.service`，保持 1 个设备所有者。
-原控制台和测试控制台共用端口 `8767` 的根路径 `/api`。
+测试控制台使用端口 `8767` 的 `/contract/api`。
+旧路径 `/api/*` 指向相同处理函数，供原控制台读取状态、停止和管理控制租约。
+两个路径均使用转数。服务拒绝旧脉冲运动参数，不转换单位。
 仅在位移台空闲且无有效控制租约时重启。
 重启后，检查服务保持断开连接且各轴参考已清除。
 
-保留主机原 `stage_controller` 包。
-从主机当前部署的包创建独立副本。
-将 `move_guarded`、`set_microstep_guarded` 及其所需改动移入副本。
-运行位移台测试。
-验证后，将 `/var/lib/mg400/twin-test/stage-runtime` 设为指向副本运行目录的符号链接。
+保留主机原包。按以下步骤准备编码器运行目录：
+
+1. 保存 `/var/lib/mg400/twin-test/stage-runtime` 的当前链接目标和下述两个覆盖文件。文件不存在时，也记录此状态。
+2. 从同一份检出代码复制完整的 `src/stage_controller` 和配套的 `src/labkit` 包到 `/var/lib/mg400/twin-test/<backup>/runtime`。
+   该目录必须直接包含 `stage_controller/` 和 `labkit/`。
+3. 对快照所用的代码版本运行位移台测试。
+4. 验证后，将 `/var/lib/mg400/twin-test/stage-runtime` 指向新运行目录。
+
 由 root 安装 `/etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf`：
 
 ```ini
@@ -198,12 +203,12 @@ ExecStart=
 ExecStart=/opt/mg400/.venv/bin/python -m stage_controller
 ```
 
-测试控制台必须使用主机的根路径 API。
+测试控制台必须使用契约 API。
 由 root 安装 `/etc/systemd/system/mg400-twin-test.service.d/stage-api.conf`：
 
 ```ini
 [Service]
-Environment=MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/
+Environment=MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/contract/
 ```
 
 按上述空闲条件执行：
@@ -214,24 +219,28 @@ systemctl restart mg400-stage-panel.service
 systemctl restart mg400-twin-test.service
 ```
 
-轮询 `http://127.0.0.1:8767/` 的 `GET /api/describe` 和 `GET /api/state`，直到两者返回成功。
-检查 `move_guarded` 和 `set_microstep_guarded` 可用，服务仍断开连接且各轴参考已清除。
-原包文件和根路径 API 保持不变。
-`deploy/twin.py` 不管理或更新此副本及位移台覆盖文件。
-后续修改位移台时，必须使用主机当前包的独立副本。
-移入改动后，再测试此副本。
+轮询 `http://127.0.0.1:8767/` 的 `GET /contract/api/describe` 和 `GET /contract/api/state`，直到两者返回成功。
+检查发现接口包含 `move_to_position_guarded` 和 `calibrate`。
+检查服务保持断开连接且各轴参考已清除。
+检查旧别名 `GET /api/state` 返回成功。
 
-恢复原后端时，仅删除位移台覆盖文件。
+`deploy/twin.py` 不管理此运行快照、链接或上述覆盖文件。
+后续修改位移台时，从更新后的检出代码创建两个包的新快照。
+重新测试后，按上述空闲条件切换链接。
+
+恢复前一版后端时，还原保存的链接目标和两个覆盖文件。
+仅当原配置中没有该文件时，删除对应覆盖文件。
+重启前，检查测试控制台 URL 与恢复的 API 匹配。
+若前一版后端仅有根路径 API，使用 `http://127.0.0.1:8767/`。
 按上述空闲条件重启：
 
 ```sh
-rm /etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf
 systemctl daemon-reload
 systemctl restart mg400-stage-panel.service
+systemctl restart mg400-twin-test.service
 ```
 
-保留测试控制台的根路径 URL，使其匹配实际服务。
-再次检查上述 API、断开连接状态和已清除的轴参考。
+再次检查恢复的 API、断开连接状态和已清除的轴参考。
 
 ### 显微镜测试后端
 

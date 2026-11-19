@@ -3,7 +3,11 @@
 import math
 
 from .config import DEFAULT_CONFIG, demo_geometry, load_geometry
-from .protocol import DEFAULT_SPEED, MAX_STEPS, MOTOR_IDS, ControllerError, LinkError
+from .protocol import MOTOR_IDS, ControllerError, LinkError
+
+# Legacy pulse automation is no longer mixed into MotorController.
+DEFAULT_SPEED = 50
+MAX_STEPS = 100_000
 
 
 class StageAutomation:

@@ -214,13 +214,14 @@ Lab USB devices use 2 hubs on controller `0000:80:14.0`.
 The original self-powered hub uses USB 2 root port `12` and USB 3 root port `3`.
 It carries `camera1`, the thermal camera, and the other lab devices.
 The second hub uses USB 2 root port `6` for `camera2`, `camera3`, and `camera4`.
-All 4 AC410 cameras connect at 480 Mbit/s. Both hubs use the same host controller.
+All 4 USB webcams connect at 480 Mbit/s. Both hubs use the same host controller.
 
 Keep the Toupcam camera on the original hub's USB 3 side. Never reset the original hub.
 A reset disconnects its motor, furnace, gas, and camera connections together.
 
 Keep each camera on its listed hub port.
-The 4 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
+The 3 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
+The Angetube Live Camera (`camera1`) reports serial number `HU1234567898`.
 The camera on `12.1.2` sees the stage from above. The camera on `6.4` looks along the Insert rail, with the tray behind it.
 The microscope side camera (`camera3`) uses `6.1` and watches the objective turret.
 The tray camera (`camera4`) uses `6.3`.
@@ -234,7 +235,7 @@ go2rtc owns the side camera, and the microscope reads its shared `camera3` strea
 | Furnace FT231X | `0403:6015` | `/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_DU0DT9G8-if00-port0` | `12.3.2` | `furnace` (`MG400_FURNACE_SERIAL`) |
 | Gas controller FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace` (`MG400_MFC_SERIAL`) |
 | Thermal Master P1 | `3474:45c2` | libusb, serial `P1016021DG040100208` | `12.1.1` | `thermal` |
-| AC410 stage camera, from above | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
+| Angetube Live Camera, wide-angle 4K stage camera from above | `eba4:1303` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
 | AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0` | `6.4` | `camera` |
 | AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0` | `6.1` | `camera`, shared through go2rtc |
 | AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0` | `6.3` | `camera` |
@@ -267,9 +268,10 @@ Templates do not select device paths in service settings. Keep those paths consi
 
 ## Cameras
 
-Configure 1 to 4 AC410 cameras with distinct USB port paths in `MG400_CAMERA_DEVICES`.
+Configure 1 to 4 USB cameras in `MG400_CAMERA_DEVICES`. Use distinct USB port paths.
 Stream names follow device order, from `camera1` through `camera4`. Empty settings disable cameras.
-Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only these modes are accepted:
+Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device.
+The software accepts only the following mode list, based on the AC410 cameras (`camera2` to `camera4`). The selected camera must also advertise the mode:
 
 ```text
 1920x1080@60, 1920x1080@30, 4000x3000@15, 3840x2160@30,
@@ -277,6 +279,10 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 1280x720@30, 1024x768@30, 1024x576@30, 800x600@30,
 640x480@30, 640x360@30, 320x240@30
 ```
+
+Before configuring a replacement camera, query its MJPEG modes with `v4l2-ctl --device <by-path> --list-formats-ext`.
+This command requires the `v4l-utils` package.
+The Angetube Live Camera (`camera1`) supports MJPEG at `3840x2160@30`.
 
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream.
@@ -342,6 +348,7 @@ H-21 requires supervised bandwidth checks before simultaneous hardware use.
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
 Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `mg400ctl restart camera vision microscope orch`. These services all read the camera modes.
+After replacing a camera, preserve the original calibration files. Recalibrate its image-coordinate mapping even if the mount stays the same.
 
 Start the camera services:
 

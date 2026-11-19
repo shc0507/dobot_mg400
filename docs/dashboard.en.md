@@ -11,7 +11,7 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 The console is the only operator web page.
 
 - Row 1 of the header shows the console name, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Hover over the console name to see the deployed commit. The controlled devices show only while this page holds 1 or more devices. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
-- The workspaces are **Overview**, **Motion**, **Cameras**, **Position Finder**, **Furnace** and **Sample Transfer**. Sample Transfer moves Insert between the Position Finder endpoints and stores named stage positions.
+- The workspaces are **Overview**, **Motion**, **Cameras**, **Furnace**, **Sample Transfer** and **Position Finder (legacy)**. The legacy workspace is last and starts disabled. Sample Transfer uses live encoder rotations and saved named positions.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - Select **Dark mode** or **Light mode** beside the language switch to change the dashboard appearance. Light mode is the default. The browser saves the choice for this Console address.
 - The status strip shows 1 chip for each service: a dot and a text. The **Runs** chip shows only while a run exists. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
@@ -52,9 +52,11 @@ The workspaces send manual commands through the console. The console forwards ea
 
 ### Motion workspace
 
-The Motion workspace places stage controls and **Stage position** side by side. The robot arm controls and camera appear below them. Below 1100 px the panels stack. **Robot and stage activity** lists device events and the outcome of each command from this page.
+The Motion workspace places stage controls beside **Stage position**, which shows encoder rotations: Top is X, Bottom is Y, and Insert has its own travel diagram. Motion reads broadcast positions every 250 ms. Fresh values appear without camera sampling or Position Finder. Stale or untrusted readings show **—**. Plot markers require valid lower and upper limits. The X/Y diagram labels the minimum and maximum coordinates at each corner. Unavailable bounds show **—**.
 
-**Stage position** shows camera measurements for X, Y and Insert, with travel plots. **Start sampling** and **Target rate** use the camera and saved calibration selected in **Digital Twin**. Camera selection and calibration stay in **Digital Twin**. Leaving Motion pauses sampling. Paused or unavailable measurements show **Last recorded** with the measurement time. Return to Motion and start sampling to read the current position.
+**Stage position** retains the X/Y and Insert travel diagrams for a new position source. Without a source, readings show **—** and the diagrams show no position marker. Motion does not start Position Finder, sample camera frames or use its calibration. Motor pulse counts do not supply measured coordinates.
+
+With stage control, fresh encoder feedback and calibrated limits, double-click the X/Y map or Insert rail to select a target. A flashing marker shows the target; the current-position marker stays visible. Select **Confirm move** within 5 s, or select **Cancel**. An unconfirmed target expires without movement. X/Y moves Bottom first, then Top, and leaves Insert unchanged. An Insert target moves only Insert. These moves use rotations and do not change saved profiles. STOP cancels movement and clears the target.
 
 Views:
 
@@ -79,20 +81,19 @@ Robot arm:
 
 Stage:
 
-- The header row has the state, **Take control** and **Stop stage**. **Stop stage** needs no control. When another page or client holds the stage, the control button says so. A demo stage shows DEMO.
-- If the Arduino is not connected, pick 1 of the listed serial ports, then select **Connect**. Each port shows its description and device name. The full device path is in the tooltip. **Refresh ports** reads the port list again.
-- Each axis row shows the position, direction-labeled Hold buttons, the hold speed in pulses/s and the keys of the axis. With a confirmed reference the position is in mm. Without one it is the pulse count. While the Arduino is not connected, the position shows —. An axis shows its state only when it is not idle.
-- The Hold buttons move the axis at the entered pulses/s while you press the button. Release the button to stop the axis. 1 axis moves at a time. When the axis has a confirmed reference, the axis stops at its soft limits.
-- Bottom (Y) uses **Hold Up** / **Hold Down**. Top (X) uses **Hold Left** / **Hold Right**. Insert moves the crucible with **Hold In** / **Hold Out**. Step buttons use the same directions. The controller maps `ccw` to Up, Right, and In, and `cw` to Down, Left, and Out.
-- The console sends the stage commands of a hold. It sends 1 `hold`, then 1 `keepalive` every 0.2 s while the page refreshes the hold. The page refreshes the hold through `ws/motion/stage/hold` every 150 ms. When no refresh arrives for 0.5 s, the console releases the hold. If the console stops, the firmware stops the axis 1 s after the last `keepalive`.
-- **Stepping** below the axes sets the stepping mode of all 3 axes: Full, 1/2, 1/4, 1/8 or 1/16. A change clears the zero and soft limits of all 3 axes and needs a confirmation.
-- **Keys**: when this page holds stage control, turn on the switch. While the page has focus, hold I/K (Bottom/Y Up and Down), J/L (Top/X Right and Left) or U/O (Insert In and Out). Each key moves its axis like the Hold button. The page releases the hold and turns the keyboard off on a window focus loss or a hidden tab. It does the same when you leave the Motion tab, turn off the switch or lose control.
-- After a refused or interrupted hold, release the button or the key, then press again. **Stop stage** and **STOP ALL MOTION** stop a held axis at all times.
-- **Named positions** sends `goto` for each named position of an axis. **Named poses** sends 1 `pose` for the selected pose. The pose moves 1 axis at a time in the configured order. It is available when all 3 axes are homed or zeroed. Both show only when the stage config has them.
-- **Step moves and zero** (folded) has 1 block for each axis: the reference state, directional Step buttons, **Home…**, **Set zero…**, **Check reference** and **Teach reference…**.
-- The Step buttons send 1 `move` of the entered steps and pulses/s. A step move needs no reference. Soft limits apply when the axis has a confirmed reference.
-- **Set zero…** shows only when the stage service can zero the axis. It needs the [stage calibration](stage-panel.en.md#stage-calibration) file `/var/lib/mg400/stage/stage.toml` and zero support in the firmware. Without them, the fold says so, and hold and step still work. Without stage control, the fold says that control is necessary. **Home…** (boards with switches) and **Set zero…** need a confirmation. **Set zero…** sets the zero and the soft limits.
-- For an axis with a camera reference, **Check reference** shows the camera frame with the marker and the marker offset in pixels. **Teach reference…** needs a confirmation. It saves the current marker position as the camera reference of the axis in the stage config.
+- The header has the state, **Take control** and **Stop stage**. Stop needs no control. A demo stage shows DEMO.
+- If the Arduino is disconnected, select a serial port and **Connect**. **Refresh ports** reads the list again.
+- Positions use measured shaft rotations. Speeds use rotations/s. All 3 axes use fixed 1/8 stepping. Each motor reports its maximum speed. The default speed is 0.25 rotations/s.
+- Hold a direction button to move. Release it to stop. Bottom (Y) uses Up/Down, Top (X) uses Left/Right, and Insert uses In/Out. The controller maps `ccw` to Up, Right and In. These directions increase the coordinate. It maps `cw` to Down, Left and Out.
+- **Keys** retains I/K for Bottom Up/Down, J/L for Top Right/Left, and U/O for Insert In/Out. A hold moves 1 axis at a time. Loss of focus or control, a hidden tab, or leaving Motion releases the hold.
+- The page refreshes `ws/motion/stage/hold` every 150 ms. The console sends `keepalive` every 0.2 s. Without page refreshes for 0.5 s, it releases the hold. Firmware stops the axis 1 s after its last keepalive.
+- **Moves, limits and calibration** contains each axis's relative rotations, absolute target and setup controls. A relative move accepts fractions from 0.001 to 10000 rotations. It requires fresh encoder feedback, but no completed calibration.
+- **Auto calibrate** moves to the lower switch, sets the lower coordinate to 0, finds the upper switch, then moves to the center. The page shows each phase. New moves remain unavailable during calibration.
+- **Move to target** uses the entered rotation coordinate. It requires completed calibration, both limits and fresh feedback. The firmware controls the move.
+- **Reset position** sets the measured position to 0 and clears both limits. **Set limit here** records a positive position as the upper limit or a negative position as the lower limit. It rejects 0. These actions invalidate calibration.
+- **Clear upper** and **Clear lower** remove only the selected limit. Each visible axis row has **Clear fault**, which resets feedback fault state without moving. These controls require stage control and remain available while an idle encoder reports a fault.
+- Live status shows feedback age, encoder state, measured speed, switch contact and faults. Direction-pause counts and calibration recommendations are advisory. They do not start calibration. Unknown or stale measurements show **—**.
+- Configured soft limits and switch interlocks remain active. Switch contact does not reset the coordinate. Older pulse firmware can connect and stop, but encoder motion controls remain unavailable. **Stop stage**, each axis's **Stop**, and **STOP ALL MOTION** always remain available.
 
 Control socket: the page sends arm keys, stage holds and hold releases over 1 WebSocket, `/lab/api/console/socket`. Chrome opens at most 6 HTTP connections to the console, and the 2 camera views use 2 of them. Requests on the socket do not wait for a free connection. When the socket is closed, the page sends these requests over HTTP. Stop and **STOP ALL MOTION** go over the socket and over HTTP.
 
@@ -118,7 +119,9 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 
 ### Digital Twin workspace
 
-Digital Twin estimates stage positions from camera images. The monitor image, detected markers, and axis readings come from the same frame.
+**Position Finder (legacy)** is the last workspace tab. It starts disabled. Use its activation toggle to open **Monitor** and **Calibration**. Turning it off stops sampling and preview requests and releases temporary image data. Saved calibration profiles remain on disk. Enabling it does not connect Motion or Sample Transfer to its measurements.
+
+When enabled, Position Finder estimates stage positions from camera images. The monitor image, detected markers, and axis readings come from the same frame.
 The camera dropdown lists the configured shared optical cameras from `camera1` through `camera4`. It selects the overhead stage camera `camera1` by default.
 
 New calibration profiles for real cameras default to `3840x2160`. Monitoring uses the saved profile's image dimensions. Endpoint capture uses the draft dimensions.
@@ -131,7 +134,7 @@ Create a calibration profile in the console:
 1. Open **Calibration**. Select the camera. Click **New profile**.
 2. Enter the profile name and travel.
 3. Move the stage manually in the Motion workspace.
-4. When the stage is stationary, return to Digital Twin. Capture an endpoint.
+4. When the stage is stationary, return to Position Finder (legacy). Capture an endpoint.
 5. Capture 2 endpoints for each of the 3 axes, for 6 endpoints in total.
 6. Click **Save calibration**. The console automatically selects the saved profile for monitoring.
 
@@ -154,12 +157,12 @@ In **Monitor**, select a saved profile from the profile dropdown. Click **Start 
 Monitor uses the selected saved profile. Draft edits affect monitoring only after you save them.
 
 **Target rate** sets the sampling frequency limit. When capture is slower, the console skips missed sample times, so the actual frame rate decreases.
-During sampling or automatic tuning, Digital Twin sends no separate preview requests.
+During sampling or automatic tuning, Position Finder sends no separate preview requests.
 Matching native captures read the preloaded stream without an overlay or a go2rtc restart. They do not check whether the microscope is busy.
 Captures that require a mode change temporarily pause the other camera streams and restore them afterward.
 When a microscope side camera is configured, a microscope job blocks mode changes.
 
-**Save calibration** needs no local file picker. Digital Twin sends no motion commands.
+**Save calibration** needs no local file picker. Position Finder sends no motion commands.
 You can save a partial profile and capture the remaining endpoints later.
 The console saves host profiles in `/var/lib/mg400/calibration/twin/profiles/`.
 The console records the selected profile in `/var/lib/mg400/calibration/twin/selection.json`.
@@ -209,58 +212,43 @@ The interface shows when focus is not zeroed or the profile cannot support autom
 
 ### Sample Transfer workspace
 
-**Operate** shows the transfer controls and current coordinates. **Calibration** records named positions and contains manual stage adjustment and saved profile management. Position readings and stop controls remain available in both views.
+**Operate** shows Extract/Insert controls, **Move Out Stage**, **Move to Microscope**, saved named positions and live encoder coordinates. **Calibration** contains manual adjustment, position recording and profile management. Both views contain stop controls. Coordinates use motor rotations: X is Top, Y is Bottom, and Insert is the insertion axis. Sample Transfer does not read Position Finder (legacy) images or profiles.
 
-In **Position Finder**, select a saved camera profile with calibrated Insert travel. **Extract Sample** moves Insert to **Fully out**, at 0 mm. **Insert Sample** moves Insert to **Fully in**, at the profile's Insert travel distance. These targets come directly from Position Finder. Sample Transfer profiles do not change them. Each operation keeps the source and target selected when it starts.
+Take stage control in Motion or Sample Transfer. In Motion, run **Auto calibrate** for each axis used by the action. The firmware finds the lower and upper switches, sets the lower position to zero, then moves to the midpoint. Calibration must finish before an absolute move. After a board restart or zero reset, calibrate again.
 
-These actions leave X and Y unchanged. Check their alignment before each transfer. Chip recognition, robot transfer and movement to named positions are not implemented in this workspace.
+**Extract Sample** moves only Insert to coordinate `0`. **Insert Sample** moves only Insert to its current firmware upper limit. These actions require a calibrated Insert axis and fresh feedback, but no saved profile. Coordinate `0` must be within the current bounds. X/Y do not move.
 
-Record named positions:
+In **Calibration**, record the X/Y positions for **Move Out Stage** and **Move to Microscope**, then select **Save profile**. Each record contains only X and Y encoder rotations. In Operate, each button moves Bottom first, then Top, to its target in the selected saved profile. Insert does not move and does not need calibration for these records. A missing or out-of-range target disables its action.
 
-1. In **Position Finder**, select a saved camera profile that can measure X, Y and Insert.
-2. Open **Sample Transfer → Calibration**. Take stage control. Click **New profile**. Enter a profile name.
-3. Use **Manual stage adjustment** to reach the position. Each button press sends 10 pulses.
-4. Enter a position name. Click **Record position**.
-5. Repeat for other positions. Use distinct names to keep separate records.
-6. Click **Save profile**. Use the saved list to load or select it later.
+In **Calibration**, adjust the motors to the required position. Each manual button moves 0.1 rotations. Enter a position name, then select **Record position**. The server records fresh, idle encoder coordinates for all axes. **Record again** replaces that draft record. Save the profile before using its positions in Operate.
 
-**Record position** captures a new camera image on the server. It saves valid X, Y and Insert coordinates from Position Finder in mm. Motor counts and previous displayed readings do not supply the recorded coordinates. Recording an existing name replaces that position. Delete individual positions from the draft, then save the profile.
+In **Operate**, **Move to position** uses the selected saved profile. It moves Bottom, then Top, then Insert. Only 1 axis moves at a time. Each axis must finish within its reported tolerance before the next starts. An axis already within tolerance is skipped. The firmware controls each absolute movement. Stale feedback, faults, lost control or Stop cancel the remaining sequence. Chip recognition and robot transfer are not implemented in this workspace.
 
-**Save profile** preserves drafts. **Load draft** continues editing. The profile list supports **Select**, **Delete**, **Upload JSON** and **Download**. Selection only chooses a stored position profile for review. It does not move the stage or change the Extract/Insert targets.
+New profiles default to `Stage Coordinate Calibration YYYY-MM-DD`, using the current local date in the browser. **Save profile** saves a new profile and selects it when it contains named positions or X/Y targets. Saving edits to the selected profile also selects an empty result, so removing all saved targets disables their actions. Extract/Insert remain independent of profiles. **Load draft** resumes editing without selecting another profile. The list supports **Select**, **Delete**, **Upload JSON** and **Download**. Delete individual named positions or X/Y targets from a draft, then save it. Draft edits do not change the saved targets until saved. Selecting a profile does not move the stage.
 
-Transfer files use `sample-transfer.calibration-profile`, schema version `2`, with named records in `positions`. The server validates uploaded files before saving them. Uploads are limited to 128 KiB. Each profile can contain 64 positions with names of up to 120 characters.
+Transfer files use `sample-transfer.calibration-profile`, schema version `5`, with `unit: rotations`. Named `position_rotations` records remain in `positions`; X/Y targets are in `stage_positions`, keyed by `out_stage` and `microscope`. Versions `3` and `4` retain their named positions and load with empty X/Y targets. Version `4` also preserves its previous `transfer_endpoints` as named full-coordinate positions with unique legacy names. Those records do not become X/Y targets automatically. The server validates uploads before saving them. Uploads are limited to 128 KiB. New captures allow 64 named positions; migration can preserve up to 66. Names can contain up to 120 characters. Host profiles persist under `/var/lib/mg400/calibration/sample-transfer/`.
 
-Version `1` files load their old endpoints as **Fully out** and **Fully in** named positions. Unknown X or Y coordinates stay unknown. Loading does not rewrite the original files. Host profiles persist under `/var/lib/mg400/calibration/sample-transfer/`.
+Schema versions `1` and `2` retain their millimetre coordinates and source metadata. Version `1` endpoints load as **Fully out** and **Fully in** named positions. Unknown X or Y values stay unknown. These legacy profiles remain available for review, export and deletion. They cannot record encoder positions or command movements. Create a new rotation profile instead. Loading does not rewrite the original files. Existing `motion-scale.json` files remain on disk but are not used.
 
-Each position profile uses its recorded Position Finder profile and camera. Keep that optical profile available. After repositioning the camera, repeat optical calibration and record the named positions again.
-
-Extract/Insert use hybrid positioning: motor pulses estimate travel, and new Position Finder images correct the next move. Each click prepares 1/8 stepping while all stage motors are idle. This mode applies to all 3 stage axes and remains selected after transfer. A mode change clears their zero references and soft limits. Only Insert receives movement pulses.
-
-For a directly coupled 0.9° motor and 5 mm-lead screw, the nominal scale is `(360 / 0.9) * 8 / 5 = 640` pulses/mm. Nominal command resolution is `1 / 640` mm. This is not a positioning-accuracy guarantee. The operation checks the scale with short movements, then uses larger batches when far from the target. It reduces the batch size and pulse rate near the target. The status shows the phase, stepping mode and pulse scale.
-
-Every batch stops before a new camera measurement. The operation requires 3 consistent readings within 0.5 mm of the target. Missing readings receive bounded retries while stationary. An unreadable Insert coordinate, invalidated control or changed stepping mode ends the operation. Failed or uncertain movement commands are not retried automatically.
-
-Verified pulse scales persist in `/var/lib/mg400/calibration/sample-transfer/motion-scale.json`, separately for the optical source, stage port and direction. Each new operation checks its stored scale before longer movements. The operation limit is 600 seconds. The 1000 pulses/second cap gives a nominal maximum of 1.5625 mm/second at 640 pulses/mm. Acceleration, camera checks and final corrections add time.
-
-Take stage control to enable the movement and recording buttons. **STOP** and **STOP ALL MOTION** work without control. Leaving the workspace or hiding the page requests a stop for motion started by that page.
+**STOP** and **STOP ALL MOTION** need no control lease. Leaving the workspace or hiding the page requests a stop for motion started by that page.
 
 ### Run offline
 
 For a local dashboard preview on Windows or Linux, run this command from the repository root:
 
 ```sh
-uv run --no-default-groups --group vision python scripts/console_preview.py
+uv run --no-default-groups --group vision --group stage python scripts/console_preview.py
 ```
 
-Open `http://127.0.0.1:8790/lab/#twin`. The preview uses the real dashboard assets and Digital Twin routes with synthetic camera images. It requires no VPN or Olares connection.
+Open `http://127.0.0.1:8790/lab/#motion`. The preview uses the real dashboard assets and requires no VPN or Olares connection. Open `#twin` and use the activation toggle to inspect the legacy monitor and calibration with synthetic camera images.
 
 Open `http://127.0.0.1:8790/lab/#process` to preview turret calibration. Camera3 uses a synthetic `1280 × 720` image. **Start calibration**, objective capture and profile operations use a local simulator. They require no physical microscope control. Profiles persist under `work/console-preview/calibration/microscope/turret_profiles/`.
 
-Open `http://127.0.0.1:8790/lab/#sample-transfer` to preview named position recording, movement and stopping. Select the `Mock stage` profile for Camera1 in Position Finder. Camera1 markers follow the synthetic stage. Transfer profiles persist under `work/console-preview/calibration/sample-transfer/`.
+Open `http://127.0.0.1:8790/lab/#sample-transfer` to inspect both views, saved profiles, manual adjustment and STOP. Calibrate the simulated stage in Motion before recording or moving to positions. Transfer profiles persist under `work/console-preview/calibration/sample-transfer/`.
 
-New mock profiles use `3840 × 2880` images for fine motion checks. Existing `640 × 480` profiles remain unchanged. See [local preview profiles](../DEV_NOTE.en.md#profiles-and-mock-data) to back them up and create a new mock profile. Preview timing does not predict physical transfer duration.
+Legacy mock profiles use `3840 × 2880` images. Existing `640 × 480` profiles remain unchanged. See [local preview profiles](../DEV_NOTE.en.md#profiles-and-mock-data) for profile storage and replacement instructions.
 
-Other device controls remain unavailable. Local calibration profiles persist under `work/console-preview/` and do not change Olares profiles. The first start creates the `Mock stage` profile. Synthetic motion cannot validate physical accuracy or real device commands.
+Other device controls remain unavailable. Local calibration profiles persist under `work/console-preview/` and do not change Olares profiles. First legacy activation creates a `Mock stage` profile if its directory is absent. Synthetic movement cannot validate physical accuracy or real device commands.
 
 Refresh the browser after CSS or JavaScript changes. Restart the preview after Python or HTML template changes. Use `Ctrl+C` in its terminal to stop it. Use Olares to verify real camera resolution, capture timing, and device commands.
 

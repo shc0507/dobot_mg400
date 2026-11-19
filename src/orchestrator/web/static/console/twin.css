@@ -1,4 +1,16 @@
 body:has(:is(#ws-twin, .tw-compact):not([hidden])) { background: var(--lc-ground); }
+.tw-legacy-card { padding: 24px; }
+.tw-legacy-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.tw-legacy-header h2 { margin-bottom: 8px !important; }
+.tw-legacy-toggle { display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer; }
+.tw-legacy-toggle input { appearance: none; width: 42px; height: 24px; margin: 0; border-radius: 20px; background: var(--lc-edge); position: relative; cursor: pointer; flex-shrink: 0; }
+.tw-legacy-toggle input::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; border-radius: 50%; background: var(--lc-card); transition: transform .15s; }
+.tw-legacy-toggle input:checked { background: var(--lc-action); }
+.tw-legacy-toggle input:checked::before { transform: translateX(18px); }
+.tw-legacy-toggle input:disabled { opacity: .5; }
+.tw-legacy-status { border-radius: 20px; padding: 5px 10px; background: var(--lc-fill); color: var(--lc-text-2); font-size: 12px; }
+.tw-legacy-content { display: flex; flex-direction: column; gap: 20px; }
+@media (max-width: 700px) { .tw-legacy-header { align-items: start; flex-direction: column; } }
 :is(#ws-twin, .tw-compact) {
   --tw-ground: var(--lc-ground); --tw-card: var(--lc-card); --tw-surface: var(--lc-surface); --tw-fill: var(--lc-fill); --tw-hover: var(--lc-fill-hover);
   --tw-line: var(--lc-line); --tw-edge: var(--lc-edge); --tw-text: var(--lc-text); --tw-muted: var(--lc-text-2); --tw-count: var(--lc-count);

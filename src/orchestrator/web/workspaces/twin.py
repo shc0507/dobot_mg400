@@ -1,12 +1,15 @@
 """Digital Twin workspace routes; use existing Console request identity."""
 
+import time
+
 from flask import Response, jsonify, request
 
 from labkit.lease import validate_client
-from orchestrator.web.twin import get_twin_console
-from vision.stage_twin import MAX_PROFILE_BYTES
 
 from . import Workspace
+
+# Keep the detector and image libraries unloaded until this legacy view is enabled.
+MAX_PROFILE_BYTES = 1024 * 1024
 
 
 def register(blueprint, service):
@@ -18,21 +21,73 @@ def register(blueprint, service):
             request.max_content_length = 6 * MAX_PROFILE_BYTES + 1024
 
     def console():
-        return get_twin_console(service)
+        manager = getattr(service, "_twin_console", None)
+        if manager is None:
+            raise RuntimeError("Activate Position Finder (legacy) first.")
+        return manager
 
     def page():
-        return console().page(validate_client(request.headers.get("X-MG400-Client")))
+        client = validate_client(request.headers.get("X-MG400-Client"))
+        current = console().pages.get(client)
+        if current is None:
+            raise RuntimeError("Activate Position Finder (legacy) first.")
+        return current
+
+    def require_active(current, client):
+        if console().pages.get(client) is not current:
+            raise RuntimeError("Activate Position Finder (legacy) first.")
+        current.touched = time.monotonic()
+
+    @blueprint.post("/enabled")
+    def enabled():
+        data = request.get_json()
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"enabled"}
+            or type(data["enabled"]) is not bool
+        ):
+            raise ValueError("Send enabled as true or false.")
+        client = validate_client(request.headers.get("X-MG400-Client"))
+        if data["enabled"]:
+            from orchestrator.web.twin import get_twin_console
+
+            manager = get_twin_console(service)
+            current = manager.page(client)
+            with current.lock:
+                return jsonify(**manager.state(current), enabled=True, client=client)
+        manager = getattr(service, "_twin_console", None)
+        if manager is not None:
+            with manager.lock:
+                current = manager.pages.pop(client, None)
+                if current is not None:
+                    # An accepted camera read may finish, but no further attempts start.
+                    current.cancelled.set()
+        return jsonify(enabled=False)
 
     @blueprint.get("/state")
     def state():
+        client = validate_client(request.headers.get("X-MG400-Client"))
+        manager = getattr(service, "_twin_console", None)
+        if manager is None or client not in manager.pages:
+            return jsonify(enabled=False)
         current = page()
         with current.lock:
-            return jsonify(console().state(current))
+            require_active(current, client)
+            return jsonify(**console().state(current), enabled=True, client=client)
 
     @blueprint.get("/frame")
     def frame():
-        data, _ = console().read(request.args.get("camera", "camera1"))
-        return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+        client = validate_client(
+            request.headers.get("X-MG400-Client") or request.args.get("client")
+        )
+        manager = console()
+        current = manager.pages.get(client)
+        if current is None:
+            raise RuntimeError("Activate Position Finder (legacy) first.")
+        with current.lock:
+            require_active(current, client)
+            data, _ = manager.read(request.args.get("camera", "camera1"))
+            return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
     def action(name, allowed):
         data = request.get_json()
@@ -40,6 +95,7 @@ def register(blueprint, service):
             raise ValueError("Send the supported Digital Twin fields as a JSON object.")
         current = page()
         with current.lock:
+            require_active(current, request.headers.get("X-MG400-Client"))
             if name == "measure":
                 result = console().measure(current, data)
             elif name == "capture":
@@ -49,6 +105,10 @@ def register(blueprint, service):
                 result = console().state(current)
             else:
                 result = console().mutate(current, name, data)
+            if "cameras" in result:
+                result.update(enabled=True, client=request.headers.get("X-MG400-Client"))
+            if "state" in result:
+                result["state"].update(enabled=True, client=request.headers.get("X-MG400-Client"))
             return jsonify(result)
 
     fields = {
@@ -74,5 +134,8 @@ def register(blueprint, service):
 
 
 WORKSPACE = Workspace(
-    id="twin", order=35, title={"en": "Digital Twin", "zh": "数字孪生"}, register=register
+    id="twin",
+    order=100,
+    title={"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"},
+    register=register,
 )

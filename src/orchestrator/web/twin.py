@@ -44,8 +44,9 @@ def get_twin_console(service):
             if demo and getattr(service, "temporary", None) is None:
                 raise RuntimeError("The demo service has not started.")
             root = Path(service.temporary.name) / "calibration" / "twin" if demo else PROFILE_ROOT
-            frames = getattr(service, "twin_frames", None) or CameraFrames(
-                getattr(service, "settings", {}), demo=demo
+            factory = getattr(service, "twin_frames_factory", None)
+            frames = getattr(service, "twin_frames", None) or (
+                factory() if factory else CameraFrames(getattr(service, "settings", {}), demo=demo)
             )
             manager = service._twin_console = TwinConsole(root, frames)
         return manager
@@ -249,9 +250,14 @@ class Page:
     touched: float = field(default_factory=time.monotonic)
     lock: object = field(default_factory=threading.RLock)
     policy: object = None
+    cancelled: object = field(default_factory=threading.Event)
 
     def reset(self):
         self.policy = TuningPolicy(self.active_profile["axes"])
+
+    def check_active(self):
+        if self.cancelled.is_set():
+            raise RuntimeError("Position Finder (legacy) is sleeping.")
 
 
 class TwinConsole:
@@ -427,6 +433,7 @@ class TwinConsole:
         return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
 
     def measure(self, page, data):
+        page.check_active()
         self.sync_selection(page)
         if not page.camera:
             raise ValueError("No Console camera is configured.")
@@ -438,6 +445,7 @@ class TwinConsole:
             page.policy.start_manual()
         with self.processing():
             frame, received_at = self.read(page.camera, page.active_profile)
+            page.check_active()
             report = StageConverter.from_profile(page.active_profile).measure(
                 frame, preset=page.policy.next_preset()
             )
@@ -452,6 +460,7 @@ class TwinConsole:
         }
 
     def capture(self, page, data):
+        page.check_active()
         self.sync_selection(page)
         endpoint, automatic, limit = (
             data.get("endpoint"),
@@ -470,7 +479,9 @@ class TwinConsole:
         started = time.monotonic()
         with self.processing():
             for attempt in range(1, (limit if automatic else 1) + 1):
+                page.check_active()
                 frame, received_at = self.read(page.camera, page.profile)
+                page.check_active()
                 result = analyze_attempt(frame, endpoint, attempt, page.profile["marker_groups"])
                 dimensions = page.profile["camera"]["dimensions"]
                 if dimensions and result["capture"]["image_size_px"] != dimensions:
@@ -496,6 +507,7 @@ class TwinConsole:
                     best = (score, result, frame, received_at, profile)
                 if rank == 2 and tuning["complete"] or time.monotonic() - started >= 20:
                     break
+        page.check_active()
         _, result, frame, received_at, profile = best
         tuning = result["tuning"]
         previous = page.profile["endpoints"].get(endpoint)

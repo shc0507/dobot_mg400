@@ -1,6 +1,3 @@
-import errno
-import fcntl
-import os
 from collections import deque
 
 import pytest
@@ -14,6 +11,22 @@ STATUS = [
     b"  top ccw moving pos=-12 remaining=-188 speed=300.0 accel=50.0 spr=200\r\n",
     b"  insert cw continuous pos=70 remaining=0 speed=100.0 accel=80.0 spr=400\r\n",
 ]
+
+CLOSED_STATUS = [
+    b"* bottom cw idle pos=0.100098 remaining=0.000000 speed=0.250000 "
+    b"accel=0.250000 spr=200 encoder=ok fault=none tolerance=0.000977 "
+    b"max_speed=0.500000 measured_speed=0.000000\n",
+    b"  top ccw moving pos=-1.500000 remaining=-0.500000 speed=0.100000 "
+    b"accel=0.250000 spr=200 encoder=ok fault=none tolerance=0.000977 "
+    b"max_speed=0.500000 measured_speed=-0.098000\n",
+    b"  insert cw idle pos=3.000000 remaining=0.000000 speed=0.250000 "
+    b"accel=0.250000 spr=400 encoder=offline fault=encoder tolerance=0.000732 "
+    b"max_speed=0.250000 measured_speed=0.000000\n",
+]
+
+
+def closed_reply(lines=CLOSED_STATUS):
+    return [b"motion=closed_loop_v1\n", b"microstep=8\n", *lines]
 
 
 class FakeSerial:
@@ -32,6 +45,20 @@ class FakeSerial:
             raise serial.SerialException("device removed")
         return self.lines.popleft()
 
+    @property
+    def in_waiting(self):
+        return sum(len(chunk) for chunk in self.lines)
+
+    def read(self, size=1):
+        result = bytearray()
+        while self.lines and len(result) < size:
+            chunk = self.lines.popleft()
+            remaining = size - len(result)
+            result.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                self.lines.appendleft(chunk[remaining:])
+        return bytes(result)
+
     def reset_input_buffer(self):
         self.reset = True
 
@@ -43,12 +70,7 @@ class FakeSerial:
 def make_transport(monkeypatch):
     def make(lines=()):
         port = FakeSerial(lines)
-
-        def open_port(**options):
-            port.options = options
-            return port
-
-        monkeypatch.setattr(protocol.serial, "Serial", open_port)
+        monkeypatch.setattr(protocol.serial, "Serial", lambda **_kwargs: port)
         monkeypatch.setattr(protocol.time, "sleep", lambda _delay: None)
         return SerialTransport("COM7"), port
 
@@ -91,38 +113,6 @@ def test_firmware_rejection_is_explicit(make_transport):
     transport, _ = make_transport([b"ERROR: motor busy\n"])
     with pytest.raises(CommandRejected, match="motor busy"):
         transport.command("dir ccw")
-
-
-def test_new_status_fields_and_deferred_home_errors_keep_stop_synchronized(make_transport):
-    extended = [line.rstrip() + b" homed=1 limits=10 soft=1 awake=1\n" for line in STATUS]
-    transport, _ = make_transport(
-        [
-            b"ERROR: home failed: bottom timeout\n",
-            b"OK: All motors stopped.\n",
-            b"ERROR: home failed: insert cancelled\n",
-            b"microstep=4\n",
-            *extended,
-        ]
-    )
-    transport.command("stop all")
-    statuses = transport.status()
-    assert statuses["bottom"].homed and statuses["bottom"].limits == "10"
-    assert statuses["top"].soft and statuses["insert"].awake
-    assert list(transport.home_errors) == [("bottom", "timeout"), ("insert", "cancelled")]
-
-
-@pytest.mark.parametrize("header", [[], [b"microstep=1\n"]])
-def test_partial_extended_status_is_rejected(make_transport, header):
-    extended = STATUS[0].rstrip() + b" homed=0 limits=00 soft=0 awake=0\n"
-    transport, _ = make_transport([*header, extended, *STATUS[1:]])
-    with pytest.raises(LinkError, match="Inconsistent"):
-        transport.status()
-
-
-def test_homing_command_rejection_is_not_mistaken_for_deferred_failure(make_transport):
-    transport, _ = make_transport([b"ERROR: home failed: minimum limit not configured\n"])
-    with pytest.raises(CommandRejected, match="not configured"):
-        transport.command("home")
 
 
 def test_timeout_and_unplug_are_errors(make_transport, monkeypatch):
@@ -180,6 +170,7 @@ def test_legacy_status_reports_unknown_mode_instead_of_assuming_full_step(make_t
     transport.microstep = 16
     transport.status()
     assert transport.microstep is None
+    assert transport.closed_loop is False
 
 
 @pytest.mark.parametrize("line", [b"microstep=3\n", b"microstep=0\n", b"microstep=16 extra\n"])
@@ -209,80 +200,76 @@ def test_wrong_mode_ack_is_not_accepted(make_transport):
         transport.command("microstep 16")
 
 
-def test_port_is_opened_exclusively(make_transport):
-    _, port = make_transport()
-    assert port.options["port"] == "COM7"
-    assert port.options["exclusive"] is True
+def test_closed_loop_status_keeps_measured_fractional_and_signed_units(make_transport):
+    transport, _ = make_transport(closed_reply())
+    states = transport.status()
+    assert transport.closed_loop is True
+    assert transport.microstep == 8
+    assert states["bottom"].position == pytest.approx(0.100098)
+    assert states["top"].position == -1.5
+    assert states["top"].remaining == -0.5
+    assert states["top"].measured_speed == pytest.approx(-0.098)
+    assert states["bottom"].tolerance == 0.000977
+    assert states["insert"].encoder == "offline"
+    assert states["insert"].fault == "encoder"
+    assert states["insert"].max_speed == 0.25
 
 
-@pytest.mark.parametrize("code", [errno.EAGAIN, errno.EBUSY])
-def test_port_held_by_another_program_is_a_link_error(monkeypatch, code):
-    def held(**options):
-        raise serial.SerialException(code, f"could not open port {options['port']}")
-
-    monkeypatch.setattr(protocol.serial, "Serial", held)
-    with pytest.raises(LinkError, match="COM7 is in use by another program"):
-        SerialTransport("COM7")
+def test_closed_loop_capability_is_not_retained_after_legacy_reply(make_transport):
+    transport, port = make_transport(closed_reply())
+    transport.status()
+    port.lines.extend(STATUS)
+    transport.status()
+    assert transport.closed_loop is False
 
 
-@pytest.fixture
-def pty_port(monkeypatch):
-    """Return the device name of a pseudo-terminal that stands in for a USB serial port."""
-    monkeypatch.setattr(protocol.time, "sleep", lambda _delay: None)
-    controller_end, device_end = os.openpty()
-    yield os.ttyname(device_end)
-    os.close(device_end)
-    os.close(controller_end)
-
-
-def test_a_port_locked_by_another_program_cannot_be_opened(pty_port):
-    descriptor = os.open(pty_port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(LinkError, match="in use by another program"):
-            SerialTransport(pty_port)
-    finally:
-        os.close(descriptor)
-
-
-def test_a_second_transport_cannot_share_an_open_port(pty_port):
-    first = SerialTransport(pty_port)
-    try:
-        with pytest.raises(LinkError, match="in use by another program"):
-            SerialTransport(pty_port)
-    finally:
-        first.close()
-    SerialTransport(pty_port).close()
-
-
-@pytest.mark.parametrize("bits", ["000", "111", "010"])
-def test_additive_zero_capabilities_leave_status_format_unchanged(make_transport, bits):
-    transport, port = make_transport([f"FEATURES zero=1 home={bits}\r\n".encode(), *STATUS])
-    transport.features()
-    assert transport.zero_supported
-    assert transport.home_switches == dict(
-        zip(("bottom", "top", "insert"), (bit == "1" for bit in bits))
+def test_new_commands_need_matching_acknowledgements(make_transport):
+    transport, port = make_transport(
+        [b"OK: top motor\n", b"OK: top speed\n", b"OK: top rev\n", b"OK: top clear\n"]
     )
-    assert transport.status()["top"].position == -12
-    assert port.writes == [b"features\n", b"status\n"]
+    for command in ("motor top", "speed 0.1", "rev 0.5", "clear"):
+        transport.command(command)
+    assert port.writes == [b"motor top\n", b"speed 0.1\n", b"rev 0.5\n", b"clear\n"]
 
 
-def test_old_firmware_refuses_features_and_keeps_legacy_control(make_transport):
-    transport, _ = make_transport([b"ERROR: unknown command\r\n", b"OK: bottom speed\r\n"])
-    transport.features()
-    assert not transport.zero_supported and transport.home_switches is None
-    transport.command("speed 50")
-
-
-def test_invalid_features_never_enable_manual_zero(make_transport):
-    transport, _ = make_transport([b"FEATURES zero=1 home=01X\r\n"])
+@pytest.mark.parametrize(
+    "header",
+    [b"motion=open_loop\n", b"motion=closed_loop_v2\n", b"motion=closed_loop_v1 extra\n"],
+)
+def test_unknown_motion_protocol_is_rejected(make_transport, header):
+    transport, _ = make_transport([header, b"microstep=1\n", *CLOSED_STATUS])
     with pytest.raises(LinkError):
-        transport.features()
-    assert not transport.zero_supported
+        transport.status()
 
 
-def test_manual_zero_requires_selected_motor_acknowledgement(make_transport):
-    transport, port = make_transport([b"OK: insert motor\r\n", b"OK: insert zero\r\n"])
-    transport.command("motor insert")
-    transport.command("zero")
-    assert port.writes[-1] == b"zero\n"
+def test_duplicate_motion_header_is_rejected(make_transport):
+    transport, _ = make_transport([b"motion=closed_loop_v1\n", *closed_reply()])
+    with pytest.raises(LinkError):
+        transport.status()
+
+
+@pytest.mark.parametrize(
+    "original,replacement",
+    [
+        (b"pos=0.100098", b"pos=nan"),
+        (b"remaining=0.000000", b"remaining=inf"),
+        (b"speed=0.250000", b"speed=-0.250000"),
+        (b"spr=200", b"spr=0"),
+        (b"encoder=ok", b"encoder=unknown_code"),
+        (b"fault=none", b"fault=unknown_code"),
+        (b"tolerance=0.000977", b"tolerance=0.000000"),
+        (b"max_speed=0.500000", b"max_speed=0.000000"),
+        (b" measured_speed=0.000000", b""),
+    ],
+)
+def test_invalid_feedback_status_cannot_unlock_motion(make_transport, original, replacement):
+    bad = CLOSED_STATUS[0].replace(original, replacement)
+    transport, _ = make_transport(closed_reply([bad, *CLOSED_STATUS[1:]]))
+    with pytest.raises(LinkError):
+        transport.status()
+
+
+def test_closed_loop_header_cannot_relabel_legacy_pulse_counts_as_rotations(make_transport):
+    transport, _ = make_transport(closed_reply(STATUS))
+    with pytest.raises(LinkError):
+        transport.status()

@@ -1,15 +1,13 @@
 """Serve the Console UI with offline calibration and Sample Transfer previews.
 
-Run ``python scripts/console_preview.py`` and open ``http://127.0.0.1:8790/lab/#twin``.
+Run ``python scripts/console_preview.py`` and open ``http://127.0.0.1:8790/lab/#motion``.
 Profiles persist in ``work/console-preview``. Physical devices remain unavailable.
 Open ``#process`` for synthetic turret capture and profile management.
-Open ``#sample-transfer`` for simulated Insert moves and optical endpoint capture.
+Open ``#sample-transfer`` for simulated rotation targets and saved-position moves.
 """
 
 import argparse
 import sys
-import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,17 +19,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from labkit.errors import ServiceError  # noqa: E402
+from labkit.events import EventLog  # noqa: E402
 from orchestrator.clients import SERVICES  # noqa: E402
+from orchestrator.web.console import Console  # noqa: E402
 from orchestrator.web.console_routes import console_blueprints  # noqa: E402
+from orchestrator.web.sample_transfer import LiveTransferAdapter  # noqa: E402
 from orchestrator.web.sample_transfer_preview import (  # noqa: E402
     PreviewStage,
     PreviewStageFrames,
-    TransferPreviewAdapter,
 )
+from orchestrator.web.stage_preview import StagePreview  # noqa: E402
 from orchestrator.web.turret_preview import TurretPreview  # noqa: E402
-from orchestrator.web.twin import ProfileStore  # noqa: E402
 from orchestrator.web.workspaces.cameras import SourceError  # noqa: E402
-from vision.stage_twin import ENDPOINTS, capture_endpoint, new_profile  # noqa: E402
 
 UNAVAILABLE = "Devices are unavailable in the local preview."
 
@@ -64,6 +63,9 @@ def seed_profile(root):
     import cv2
     import numpy as np
 
+    from orchestrator.web.twin import ProfileStore
+    from vision.stage_twin import ENDPOINTS, capture_endpoint, new_profile
+
     profile = new_profile(name="Mock stage")
     profile["camera"].update(device_id="demo:camera1", label="Stage", dimensions=[3840, 2880])
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -87,94 +89,84 @@ def seed_profile(root):
 
 
 def create_app(storage_root=ROOT / "work" / "console-preview"):
-    """Mount the production workspaces with local profiles and disconnected devices."""
-    seed_profile(Path(storage_root) / "calibration" / "twin")
+    """Mount production workspaces with a simulated Stage and local profiles."""
     operations = []
-    console = SimpleNamespace(
-        commit="local preview",
-        clock=time.monotonic,
-        lock=threading.Lock(),
-        raw={},
-        events_at=None,
-        refresh_events=lambda: None,
-        control=lambda page: [],
-        event_report=lambda: {"events": [], "errors": {}},
-        stop=lambda name: {"outcome": "unavailable", "error": UNAVAILABLE},
-    )
-    for name in (
-        "describe",
-        "read",
-        "take",
-        "release",
-        "release_all",
-        "heartbeat",
-        "command",
-        "operator",
-        "keys",
-        "stage_hold",
-        "stage_release",
-    ):
-        setattr(console, name, unavailable)
-    dashboard = SimpleNamespace(
-        refresh=lambda: None,
-        snapshot=lambda: {
+    stage = StagePreview()
+
+    def dashboard_snapshot():
+        state = stage.state()
+        return {
             "services": [
-                {"id": name, "phase": "unavailable", "connected": False, "demo": True}
+                {
+                    "id": name,
+                    "phase": "ready" if name == "stage" and state["connected"] else "unavailable",
+                    "connected": name == "stage" and state["connected"],
+                    "demo": True,
+                }
                 for name in SERVICES
             ],
             "cameras": [],
             "orchestrator": {"stale": False},
             "run": None,
             "operations": list(operations),
-        },
-    )
-    stage = SimpleNamespace(
-        state=lambda: {
-            "connected": False,
-            "demo": True,
-            "motors": [
-                {"id": name, "mode": "idle", "available": False}
-                for name in ("bottom", "top", "insert")
-            ],
-        },
-        close=lambda: None,
-    )
-    console.read = lambda name, path: (
-        {"ports": []} if name == "stage" and path == "api/ports" else unavailable()
+        }
+
+    dashboard = SimpleNamespace(
+        refresh=lambda: None,
+        snapshot=dashboard_snapshot,
+        text=lambda value: str(value)[:512],
     )
     service = SimpleNamespace(
         demo=True,
         settings={},
         # The Twin demo route uses this name as its storage root. It is not temporary here.
         temporary=SimpleNamespace(name=str(storage_root)),
-        console=console,
+        events=EventLog(),
         dashboard=dashboard,
         camera_sources=OfflineCameras(),
         turret_preview=TurretPreview(
             Path(storage_root) / "calibration" / "microscope" / "turret_profiles"
         ),
         dashboard_configured=lambda name: name == "stage",
-        console_client=lambda name, *args: stage if name == "stage" else None,
+        console_client=stage.client,
+        console_start_demo=unavailable,
     )
+    service.console = Console(service)
+    service.console.commit = "local preview"
     preview_stage = PreviewStage()
-    service.twin_frames = PreviewStageFrames(preview_stage)
-    service.sample_transfer_adapter = TransferPreviewAdapter(service, preview_stage)
+
+    def legacy_frames():
+        seed_profile(Path(storage_root) / "calibration" / "twin")
+        return PreviewStageFrames(preview_stage)
+
+    service.twin_frames_factory = legacy_frames
+    service.sample_transfer_adapter = LiveTransferAdapter(service)
     app = Flask(__name__)
+    app.extensions["preview_service"] = service
+
+    def close():
+        service.console.close()
+        transfer = getattr(service, "sample_transfer", None)
+        if transfer is not None:
+            transfer.close()
+        stage.close()
+
+    app.extensions["preview_close"] = close
+    app.extensions["preview_stage"] = stage
 
     for blueprint in console_blueprints(service, "/lab"):
         app.register_blueprint(blueprint)
 
     @app.get("/")
     def index():
-        return redirect("/lab/#twin")
+        return redirect("/lab/#motion")
 
     @app.post("/lab/api/dashboard/<action>")
     def stop_all(action):
         if action not in {"motion", "heat", "gas"}:
             abort(404)
         targets = ("robot", "stage", "microscope") if action == "motion" else ("furnace",)
-        transfer = getattr(service, "sample_transfer", None)
-        transfer_stop = transfer.stop() if action == "motion" and transfer is not None else None
+        stage_stop = service.console.stop("stage") if action == "motion" else None
         operation = {
             "id": str(uuid4()),
             "action": action,
@@ -185,9 +177,9 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
                 name: {"status": "unavailable", "message": UNAVAILABLE} for name in targets
             },
         }
-        if transfer_stop is not None:
+        if stage_stop is not None:
             operation["results"]["stage"] = {
-                "status": "confirmed",
+                "status": stage_stop["outcome"],
                 "message": "Preview stage stopped.",
             }
         operations.append(operation)
@@ -226,8 +218,11 @@ def main(argv=None):
     from waitress import serve
 
     app = create_app()
-    print(f"Local preview: http://127.0.0.1:{args.port}/lab/#twin", flush=True)
-    serve(app, host="127.0.0.1", port=args.port)
+    print(f"Local preview: http://127.0.0.1:{args.port}/lab/#motion", flush=True)
+    try:
+        serve(app, host="127.0.0.1", port=args.port)
+    finally:
+        app.extensions["preview_close"]()
 
 
 if __name__ == "__main__":

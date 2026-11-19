@@ -180,15 +180,20 @@ systemctl restart mg400-camera-preview.service
 ### Stage test backend
 
 Use `mg400-stage-panel.service` for Sample Transfer tests to retain 1 device owner.
-The original Console and test Console share the root `/api` on port `8767`.
+The test Console uses `/contract/api` on port `8767`.
+The legacy `/api/*` paths alias the same handlers for the original Console's state reads, Stop, and control lease.
+Both paths use rotations. The service rejects old pulse motion payloads without converting their units.
 Restart only when the stage is idle and has no active control lease.
 After restart, check that the service remains disconnected and all axis references are cleared.
 
-Preserve the original host `stage_controller` package.
-Create a separate copy of the package currently deployed on the host.
-Add `move_guarded`, `set_microstep_guarded` and their required changes to the copy.
-Run the stage tests.
-After verification, make `/var/lib/mg400/twin-test/stage-runtime` a symbolic link to the copy's runtime directory.
+Preserve the original host packages. Prepare the encoder runtime:
+
+1. Save the current `/var/lib/mg400/twin-test/stage-runtime` link target and both override files below. Record absent files too.
+2. Copy the complete `src/stage_controller` and matching `src/labkit` packages from the same checkout into `/var/lib/mg400/twin-test/<backup>/runtime`.
+   This directory must contain `stage_controller/` and `labkit/` directly.
+3. Run the stage tests against the source revision used for this snapshot.
+4. After verification, point `/var/lib/mg400/twin-test/stage-runtime` to the new runtime directory.
+
 As root, install `/etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf`:
 
 ```ini
@@ -198,12 +203,12 @@ ExecStart=
 ExecStart=/opt/mg400/.venv/bin/python -m stage_controller
 ```
 
-The test Console must use the host's root API.
+The test Console must use the contract API.
 As root, install `/etc/systemd/system/mg400-twin-test.service.d/stage-api.conf`:
 
 ```ini
 [Service]
-Environment=MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/
+Environment=MG400_ORCH_STAGE_URL=http://127.0.0.1:8767/contract/
 ```
 
 Under the idle conditions above, run:
@@ -214,24 +219,28 @@ systemctl restart mg400-stage-panel.service
 systemctl restart mg400-twin-test.service
 ```
 
-Poll `GET /api/describe` and `GET /api/state` at `http://127.0.0.1:8767/` until both requests succeed.
-Check that `move_guarded` and `set_microstep_guarded` are available, the service remains disconnected, and all axis references are cleared.
-The original package files and root API remain unchanged.
-`deploy/twin.py` does not manage or update this copy or the stage override file.
-For later stage changes, you must use a separate copy of the current host package.
-After you apply the changes, test this copy again.
+Poll `GET /contract/api/describe` and `GET /contract/api/state` at `http://127.0.0.1:8767/` until both requests succeed.
+Check that discovery exposes `move_to_position_guarded` and `calibrate`.
+Check that the service remains disconnected and all axis references are cleared.
+Check that the legacy `GET /api/state` alias succeeds.
 
-To restore the original backend, remove only the stage override file.
+`deploy/twin.py` does not manage this runtime snapshot, its link, or either override file.
+For later stage changes, create a new snapshot of both packages from the updated checkout.
+Repeat the tests and switch the link under the idle conditions above.
+
+To restore the previous backend, restore the saved link target and both override files.
+Remove an override only if the saved configuration had no such file.
+Before restart, check that the test Console URL matches the restored API.
+For a previous backend with only the root API, use `http://127.0.0.1:8767/`.
 Restart under the idle conditions above:
 
 ```sh
-rm /etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf
 systemctl daemon-reload
 systemctl restart mg400-stage-panel.service
+systemctl restart mg400-twin-test.service
 ```
 
-Keep the test Console's root URL so it matches the running service.
-Check the APIs, disconnected state, and cleared axis references again.
+Check the restored APIs, disconnected state, and cleared axis references again.
 
 ### Microscope test backend
 

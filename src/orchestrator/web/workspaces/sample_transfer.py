@@ -50,6 +50,10 @@ def register(blueprint, service):
             return jsonify({**manager.state(current), "stop": outcome})
         if name == "move":
             return jsonify(manager.start(current, data.get("target"))), 202
+        if name == "stage/move":
+            return jsonify(manager.start_stage(current, data.get("target"))), 202
+        if name == "position/move":
+            return jsonify(manager.start_position(current, data.get("name"))), 202
         if name == "jog":
             return jsonify(manager.jog(current, data.get("motor"), data.get("direction"))), 202
         if name == "measure":
@@ -60,13 +64,17 @@ def register(blueprint, service):
         "measure": set(),
         "profile/new": {"name"},
         "record": {"name"},
+        "endpoint/record": {"target"},
+        "endpoint/delete": {"target"},
         "position/delete": {"name"},
+        "position/move": {"name"},
         "profile/save": {"name"},
         "profile/select": {"id"},
         "profile/load": {"id"},
         "profile/delete": {"id"},
         "profile/upload": {"profile"},
         "move": {"target"},
+        "stage/move": {"target"},
         "jog": {"motor", "direction"},
         "stop": set(),
     }

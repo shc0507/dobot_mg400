@@ -6,7 +6,7 @@
   const exported = factory(root);
   root.LabTwin = exported;
   if (typeof module !== "undefined" && module.exports) module.exports = exported;
-  else if (root.LabConsole) root.LabConsole.register(exported.workspace());
+  else if (root.LabConsole) root.LabConsole.register(exported.legacyWorkspace());
 })(typeof window !== "undefined" ? window : globalThis, function (root) {
   "use strict";
 
@@ -21,6 +21,10 @@
   const GROUPS = { desk: [10, 11, 12], y: [14, 15, 16], x: [18, 19, 20], insert: [22] };
   const i18n = {
     en: {
+      "twin.legacyTitle": "Position Finder (legacy)", "twin.enable": "Activate Position Finder",
+      "twin.sleeping": "Sleeping", "twin.active": "Active", "twin.changing": "Updating…",
+      "twin.sleepHint": "Camera sampling is off. Saved calibration profiles stay available when activated.",
+      "twin.activeHint": "Legacy camera tracking · independent of Motion and Sample Transfer",
       "twin.monitor": "Monitor", "twin.calibration": "Calibration", "twin.camera": "Camera",
       "twin.profile": "Saved profile", "twin.draft": "Unsaved profile", "twin.noSavedProfile": "No saved profile", "twin.refresh": "Refresh",
       "twin.new": "New profile", "twin.name": "Profile name", "twin.save": "Save calibration",
@@ -67,6 +71,10 @@
       "twin.replace": "Replace the unsaved draft?", "twin.discard": "Discard draft", "twin.cancel": "Cancel",
     },
     zh: {
+      "twin.legacyTitle": "位置查找（旧版）", "twin.enable": "启用位置查找",
+      "twin.sleeping": "休眠", "twin.active": "已启用", "twin.changing": "更新中…",
+      "twin.sleepHint": "相机采样已关闭。启用后可使用已保存的校准配置。",
+      "twin.activeHint": "旧版相机定位 · 与运动和样品转移独立",
       "twin.monitor": "监测", "twin.calibration": "校准", "twin.camera": "摄像头",
       "twin.profile": "已存配置", "twin.draft": "未保存配置", "twin.noSavedProfile": "没有已存配置", "twin.refresh": "刷新",
       "twin.new": "新建配置", "twin.name": "配置名称", "twin.save": "保存校准",
@@ -193,7 +201,53 @@
     return monitor;
   }
 
+  function legacyWorkspace() {
+    let host, api, content, toggle, status, hint, error, engine = null, visible = false, changing = false, requested = false;
+    const text = key => api.t("twin." + key);
+    function render() {
+      toggle.checked = changing ? requested : Boolean(engine); toggle.disabled = changing;
+      status.textContent = text(changing ? "changing" : engine ? "active" : "sleeping");
+      hint.textContent = text(engine ? "activeHint" : "sleepHint");
+      error.hidden = !error.textContent;
+      content.hidden = !engine;
+    }
+    async function activate(value) {
+      if (changing) return;
+      changing = true; requested = value; error.textContent = "";
+      // Stop requests and free image/DOM references immediately, before the server replies.
+      if (!value) { engine?.destroy(); engine = null; content.replaceChildren(); }
+      render();
+      try {
+        await api.request("enabled", { enabled: value }, { timeout: 45000 });
+        if (value) {
+          engine = workspace(); engine.mount(content, { ...api, onLanguage() {} });
+          if (visible) engine.show();
+        }
+      } catch (failure) { error.textContent = failure.message; }
+      finally { changing = false; render(); }
+    }
+    function build() {
+      const h = api.el;
+      toggle = h("input", { type: "checkbox", role: "switch", "aria-label": text("enable"), onchange: event => activate(event.target.checked) });
+      status = h("span", { class: "tw-legacy-status", role: "status" });
+      hint = h("p", { class: "tw-muted" }); error = h("p", { class: "tw-message", role: "alert" });
+      content ||= h("div", { class: "tw-legacy-content" });
+      host.replaceChildren(h("section", { class: "lc-card tw-legacy-card" },
+        h("div", { class: "tw-legacy-header" }, h("div", {}, h("h2", { text: text("legacyTitle") }), hint),
+          h("label", { class: "tw-legacy-toggle" }, status, toggle, h("span", { text: text("enable") })))), error, content);
+      render(); engine?.rebuild();
+    }
+    return {
+      id: "twin", i18n,
+      mount(node, shellApi) { host = node; api = shellApi; build(); api.onLanguage(build); },
+      show() { visible = true; engine?.show(); },
+      hide() { visible = false; engine?.hide(); },
+      _state: () => ({ enabled: Boolean(engine), changing }),
+    };
+  }
+
   function workspace({ compact = false } = {}) {
+    let destroyed = false, removeLanguage;
     let host, api, nodes = {}, state = null, section = "monitor", visible = false, busy = false, loading = false;
     let running = false, measuring = false, version = 0, timer = null, lastStarted = null, previewTimer = null, previewVersion = 0, previewPending = false, editTimer = null;
     let latest = null, lastSnap = null, cache = {}, display = {}, log = [], times = [], tuning = null, pendingAction = null;
@@ -231,6 +285,7 @@
     function saveSettings() { try { root.localStorage?.setItem("lab-twin-tuning", JSON.stringify(settings)); } catch { /* Storage can be unavailable. */ } }
 
     function build() {
+      if (destroyed) return;
       clearPreview(); nodes = {};
       if (compact) {
         nodes.message = h("p", { class: "tw-message", role: "status", text: errorMessage, hidden: !errorMessage });
@@ -369,9 +424,11 @@
     }
 
     function syncSelection() {
+      if (destroyed) return;
       nodes.camera.value = state?.camera || ""; nodes.profiles.value = state?.selected_profile || "";
     }
     function render() {
+      if (destroyed) return;
       if (compact) {
         nodes.sampling.disabled = loading || !state?.camera || !AXES.some(axis => calibrated(monitorProfile(), axis));
         nodes.sampling.textContent = t(running ? "pause" : "start");
@@ -516,7 +573,7 @@
             if (section === "calibration" && !showSnapshot) nodes.snapMedia.placeholder.hidden = !failed;
           };
           image.onload = () => done(false); image.onerror = () => done(true); previewPending = true;
-          image.setAttribute("src", (api.base || "") + "/api/console/ws/twin/frame?camera=" + encodeURIComponent(state.camera) + "&t=" + Date.now()); image.hidden = false;
+          image.setAttribute("src", (api.base || "") + "/api/console/ws/twin/frame?camera=" + encodeURIComponent(state.camera) + "&client=" + encodeURIComponent(state.client || "") + "&t=" + Date.now()); image.hidden = false;
           if (section === "calibration") nodes.snapMedia.placeholder.hidden = true;
         } else previewTimer = setTimeout(update, 1000);
       }
@@ -529,6 +586,7 @@
       if (typeof image.decode === "function") { try { await image.decode(); } catch { throw new Error(t("imageError")); } }
     }
     function replaceDraft(action) {
+      if (destroyed) return;
       if (busy || loading || pendingAction || !state) { syncSelection(); return; }
       if (!dirty) { action(); return; }
       clearTimeout(editTimer); editTimer = null;
@@ -540,7 +598,7 @@
       loading = true; render();
       try {
         const updated = await api.request("state");
-        if (compact && generation !== version) return;
+        if (destroyed || (compact && generation !== version)) return;
         state = updated; message(); build();
       }
       catch (error) { if (!compact || generation === version) message(error.message); }
@@ -550,13 +608,15 @@
       }
     }
     async function mutate(path, data) {
-      if (busy || loading || pendingAction) return false;
+      if (destroyed || busy || loading || pendingAction) return false;
       clearTimeout(editTimer); editTimer = null;
       const deleting = path === "profile/delete", deletingSelected = deleting && data.id === state?.selected_profile;
       if (!deleting || deletingSelected) invalidate();
       busy = true; pausePreview(); message(); render();
       try {
-        state = await api.request(path, data);
+        const updated = await api.request(path, data);
+        if (destroyed) return false;
+        state = updated;
         if (deleting) dirty = dirty || deletingSelected;
         else {
           captureMessages = {}; formDraft = null;
@@ -578,6 +638,7 @@
       try {
         if (file.size > MAX_PROFILE_BYTES) throw new Error(t("fileSize"));
         try { contents = await file.text(); } catch { throw new Error(t("fileRead")); }
+        if (destroyed) return;
         let parsed;
         try { parsed = JSON.parse(contents); } catch { throw new Error(t("fileJson")); }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(t("fileJson"));
@@ -689,18 +750,19 @@
         schedule();
       }
     }
+    function visibilityChanged() {
+      if (root.document.hidden) {
+        cancelTuning(); version++; clearTimeout(timer); clearPreview();
+        if (compact) { display = readings(cache, {}, monitorProfile()).display; render(); }
+      }
+      else if (visible) { startPreview(); schedule(); }
+    }
     return {
       id: "twin", i18n,
       mount(node, shellApi) {
         host = node; api = shellApi; build();
-        api.onLanguage(() => build());
-        root.document.addEventListener?.("visibilitychange", () => {
-          if (root.document.hidden) {
-            cancelTuning(); version++; clearTimeout(timer); clearPreview();
-            if (compact) { display = readings(cache, {}, monitorProfile()).display; render(); }
-          }
-          else if (visible) { startPreview(); schedule(); }
-        });
+        removeLanguage = api.onLanguage(() => build());
+        root.document.addEventListener?.("visibilitychange", visibilityChanged);
       },
       show() {
         visible = true;
@@ -711,9 +773,14 @@
         refresh(); startPreview(); schedule();
       },
       hide() { visible = false; cancelTuning(); invalidate(false); clearPreview(); clearTimeout(editTimer); editTimer = null; render(); },
+      destroy() {
+        visible = false; destroyed = true; invalidate(); clearPreview(); clearTimeout(editTimer); editTimer = null;
+        root.document.removeEventListener?.("visibilitychange", visibilityChanged); removeLanguage?.();
+        state = lastSnap = formDraft = pendingAction = null; nodes = {}; host.replaceChildren();
+      },
       rebuild: build,
       _state: () => ({ state, section, running, latest, display, log, busy, measuring, dirty }),
     };
   }
-  return { workspace, positionMonitor, i18n, AXES, ENDPOINTS, RATES, logic: { readings, calibrated, fraction, mapPosition, travel, effectiveRate, nextDue, safeImage, detectionGeometry, preferences, number } };
+  return { workspace, legacyWorkspace, positionMonitor, i18n, AXES, ENDPOINTS, RATES, logic: { readings, calibrated, fraction, mapPosition, travel, effectiveRate, nextDue, safeImage, detectionGeometry, preferences, number } };
 });

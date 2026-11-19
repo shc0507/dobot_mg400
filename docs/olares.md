@@ -213,13 +213,14 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 原自供电集线器使用 USB 2 根端口 `12` 和 USB 3 根端口 `3`。
 它连接 `camera1`、热像仪和其他实验室设备。
 第二个集线器使用 USB 2 根端口 `6`，连接 `camera2`、`camera3` 和 `camera4`。
-4 台 AC410 的连接速率均为 480 Mbit/s。两个集线器共用同一主机控制器。
+4 台 USB 网络摄像头的连接速率均为 480 Mbit/s。两个集线器共用同一主机控制器。
 
 Toupcam 摄像头保持连接在原集线器的 USB 3 侧。不得复位原集线器。
 复位会同时断开其电机、炉子、气体和摄像头的连接。
 
 每台摄像头保持连接在表中的集线器端口。
-4 台 AC410 的序列号均为 `HU12321178`，因此稳定名称使用端口路径。
+3 台 AC410 的序列号均为 `HU12321178`，因此稳定名称使用端口路径。
+Angetube Live Camera（`camera1`）的序列号为 `HU1234567898`。
 `12.1.2` 上的摄像头从上方拍摄位移台。`6.4` 上的摄像头沿插入导轨拍摄，后方可见托盘。
 显微镜侧视摄像头（`camera3`）使用 `6.1`，拍摄物镜转盘。
 托盘摄像头（`camera4`）使用 `6.3`。
@@ -233,7 +234,7 @@ go2rtc 独占侧视摄像头，显微镜读取共享的 `camera3` 视频流。
 | 炉子 FT231X | `0403:6015` | `/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_DU0DT9G8-if00-port0` | `12.3.2` | `furnace`（`MG400_FURNACE_SERIAL`） |
 | 气体控制器 FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace`（`MG400_MFC_SERIAL`） |
 | Thermal Master P1 | `3474:45c2` | libusb，序列号 `P1016021DG040100208` | `12.1.1` | `thermal` |
-| AC410 位移台俯视摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
+| Angetube Live Camera 广角 4K 位移台俯视摄像头 | `eba4:1303` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
 | AC410 插入导轨摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0` | `6.4` | `camera` |
 | AC410 显微镜侧视摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0` | `6.1` | `camera`，通过 go2rtc 共享 |
 | AC410 托盘摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0` | `6.3` | `camera` |
@@ -266,9 +267,10 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 
 ## 摄像头
 
-在 `MG400_CAMERA_DEVICES` 中配置 1 到 4 台 AC410，使用不同的 USB 接口路径。
+在 `MG400_CAMERA_DEVICES` 中配置 1 到 4 台 USB 摄像头。使用不同的 USB 接口路径。
 视频流按设备顺序命名为 `camera1` 到 `camera4`。配置为空时关闭摄像头。
-在 `MG400_CAMERA_MODES` 中为每台设备指定 1 个 MJPEG 模式，用逗号分隔。只接受以下模式：
+在 `MG400_CAMERA_MODES` 中为每台设备指定 1 个 MJPEG 模式，用逗号分隔。
+软件只接受以下模式，列表来自 AC410（`camera2` 到 `camera4`）。所选摄像头也必须报告支持该模式：
 
 ```text
 1920x1080@60, 1920x1080@30, 4000x3000@15, 3840x2160@30,
@@ -276,6 +278,10 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 1280x720@30, 1024x768@30, 1024x576@30, 800x600@30,
 640x480@30, 640x360@30, 320x240@30
 ```
+
+配置替换摄像头前，用 `v4l2-ctl --device <by-path> --list-formats-ext` 查询该设备的 MJPEG 模式。
+此命令需要 `v4l-utils` 软件包。
+Angetube Live Camera（`camera1`）支持 `3840x2160@30` MJPEG。
 
 列表为空时，普通流使用 `1280x720@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 显式列表覆盖这些默认值，包括侧视流。
@@ -341,6 +347,7 @@ ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`）。不估计时，ffmpe
 托盘上约 30 mm 的 Micro QR 标签含 17 个模块，横向至少需要 70 像素。
 图像宽度为 1280 像素时，556 mm 的托盘视野约有 2.3 像素/mm。
 保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器，再运行 `mg400ctl restart camera vision microscope orch`。这些服务都读取摄像头模式。
+更换摄像头后，保留原校准文件。即使安装位置不变，也必须重新校准图像坐标映射。
 
 启动摄像头服务：
 

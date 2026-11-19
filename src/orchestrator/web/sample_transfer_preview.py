@@ -6,9 +6,10 @@ import time
 from uuid import uuid4
 
 from labkit.errors import ServiceError
-from orchestrator.transfer_motion import MICROSTEP, NOMINAL_PULSES_PER_MM
 
-from .twin import CameraFrames
+# This model is used only for the optional legacy optical demonstration.
+MICROSTEP = 8
+NOMINAL_PULSES_PER_MM = 640
 
 AXES = {"top": "x", "bottom": "y", "insert": "insert"}
 TRAVEL = {"x": 45.0, "y": 40.0, "insert": 150.0}
@@ -137,12 +138,20 @@ class PreviewStage:
             return {"outcome": "confirmed"}
 
 
-class PreviewStageFrames(CameraFrames):
+class PreviewStageFrames:
     """Draw markers that follow the same Mock stage calibration as Position Finder."""
 
     def __init__(self, stage):
-        super().__init__({}, demo=True)
+        from .twin import CameraFrames
+
+        self.frames = CameraFrames({}, demo=True)
         self.stage = stage
+
+    def cameras(self):
+        return self.frames.cameras()
+
+    def identity(self, camera):
+        return self.frames.identity(camera)
 
     def read(self, camera):
         return self._render(camera, 6)
@@ -155,7 +164,7 @@ class PreviewStageFrames(CameraFrames):
     def _render(self, camera, scale):
         self.identity(camera)
         if camera != "camera1":
-            return super().read(camera)
+            return self.frames.read(camera)
         import cv2
         import numpy as np
 
@@ -175,34 +184,3 @@ class PreviewStageFrames(CameraFrames):
         if not ok:
             raise RuntimeError("Cannot encode the preview camera frame.")
         return encoded.tobytes()
-
-
-class TransferPreviewAdapter:
-    def __init__(self, service, stage):
-        self.service, self.stage = service, stage
-
-    def owns(self, page):
-        return bool(page)
-
-    def stage_state(self, page):
-        return self.stage.state()
-
-    def transfer_reference(self, page):
-        from .sample_transfer import LiveTransferAdapter
-
-        return LiveTransferAdapter(self.service).transfer_reference(page)
-
-    def sample(self, page, source=None):
-        # Exercise the production optical conversion; do not return motor coordinates.
-        from .sample_transfer import LiveTransferAdapter
-
-        return LiveTransferAdapter(self.service).sample(page, source)
-
-    def move(self, page, **params):
-        return self.stage.move(**params)
-
-    def prepare(self, page, stop_epoch):
-        return self.stage.prepare(stop_epoch)
-
-    def stop(self):
-        return self.stage.stop()

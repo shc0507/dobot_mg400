@@ -11,7 +11,7 @@
 控制台是唯一的操作网页。
 
 - 页头第 1 行显示控制台名称、工作区标签、**Chip passport** 链接、本页控制的设备和语言切换。鼠标悬停在控制台名称上显示部署的提交。本页控制 1 台或多台设备时，才显示所控制的设备。第 2 行是状态条。**STOP ALL MOTION** 是页头右侧的高按钮，跨越这 2 行。
-- 工作区为 **Overview**、**Motion**、**Cameras**、**Position Finder**、**Furnace** 和 **Sample Transfer**。Sample Transfer 在 Position Finder 的端点之间移动插入轴，并保存命名位置。
+- 工作区为 **Overview**、**Motion**、**Cameras**、**Furnace**、**Sample Transfer** 和 **Position Finder (legacy)**。旧版工作区排在最后，默认关闭。Sample Transfer 使用实时编码器转数和已存命名位置。
 - 语言切换在 English 和中文之间切换。浏览器保存所选语言。
 - 在语言按钮旁选择 **Dark mode** 或 **Light mode**，切换控制台外观。默认使用浅色模式。浏览器按控制台地址保存所选模式。
 - 状态条为每个服务显示 1 个标签：圆点和文字。有运行时才显示 **Runs** 标签。需要注意的状态（例如过期、故障、不可用）带底色。状态超过 3 秒即显示过期。
@@ -52,9 +52,11 @@
 
 ### 运动工作区
 
-运动工作区并排显示位移台控制和 **Stage position**。机械臂控制和相机视图在下方。窗口窄于 1100 px 时，各面板上下排列。**Robot and stage activity** 列出设备事件和本页每条命令的结果。
+运动工作区并排显示位移台控制和 **Stage position**。后者显示编码器圈数：顶部为 X，底部为 Y，Insert 单独显示行程图。Motion 每 250 ms 读取广播位置，不采集相机图像，也不启动 Position Finder。过期或不可信的读数显示 **—**。位置标记要求有效的上下限。X/Y 图的各角标出最小和最大坐标。未知限位显示 **—**。
 
-**Stage position** 显示相机测得的 X、Y 和 Insert 位置及行程图。**Start sampling** 和 **Target rate** 使用 **Digital Twin** 中选定的相机和已保存校准。相机选择和校准仍在 **Digital Twin** 中操作。离开 Motion 会暂停采样。暂停或无法获取测量值时，已有读数显示 **Last recorded** 和测量时间。返回 Motion 后，启动采样即可读取当前位置。
+**Stage position** 保留 X/Y 和 Insert 行程图，供新的位置来源使用。没有来源时，读数显示 **—**，图中不显示位置标记。Motion 不启动 Position Finder，不采集其相机图像，也不使用其校准。电机脉冲计数不作为测量坐标。
+
+取得位移台控制权、反馈未过期且限位已标定时，双击 X/Y 图或 Insert 行程图可选择目标。闪烁标记显示目标，当前位置标记保留。在 5 s 内点击 **Confirm move**，或点击 **Cancel**。未确认的目标到期后清除，不移动电机。X/Y 先移动 Bottom，再移动 Top，Insert 不变。Insert 目标只移动 Insert。坐标使用圈数，不修改已存配置。STOP 取消移动并清除目标。
 
 视图：
 
@@ -79,20 +81,19 @@
 
 位移台：
 
-- 标题行有状态、**Take control** 和 **Stop stage**。**Stop stage** 不需要控制权。另一个页面或客户端持有位移台时，控制按钮显示这一点。演示位移台显示 DEMO。
-- Arduino 未连接时，从列出的串口中选择 1 个，再选 **Connect**。每个串口显示其说明和设备名，完整设备路径在提示中。**Refresh ports** 重新读取串口列表。
-- 每个轴一行，显示位置、标有方向的 Hold 按钮、以脉冲/秒为单位的按住速度和该轴的按键。有已确认的参考时，位置以 mm 显示；没有时显示脉冲计数。Arduino 未连接时，位置显示 —。轴不空闲时才显示其状态。
-- Hold 按钮：按住按钮时，轴按输入的脉冲/秒运动。松开按钮，轴停止。同一时间只有 1 个轴运动。轴有已确认的参考时，在软限位处停止。
-- Bottom (Y) 使用 **Hold Up** / **Hold Down**。Top (X) 使用 **Hold Left** / **Hold Right**。Insert 用 **Hold In** / **Hold Out** 移入或移出坩埚。Step 按钮使用相同方向。控制器的 `ccw` 对应上、右、进，`cw` 对应下、左、出。
-- 控制台发送按住运动的位移台命令。它先发送 1 条 `hold`，页面刷新按住期间每 0.2 s 再发送 1 条 `keepalive`。页面每 150 ms 通过 `ws/motion/stage/hold` 刷新按住。0.5 s 内没有收到刷新时，控制台松开按住。控制台停止时，固件在最后的 `keepalive` 之后 1 s 停止该轴。
-- 轴下方的 **Stepping** 设置全部 3 轴的细分模式：Full、1/2、1/4、1/8 或 1/16。更改会清除全部 3 轴的零点和软限位，需要确认。
-- **Keys**：本页持有位移台控制权时，打开开关。页面有焦点时，按住 I/K（底部 Y 轴向上和向下）、J/L（顶部 X 轴向右和向左）或 U/O（插入轴进和出）。每个键与对应的 Hold 按钮一样移动该轴。窗口失去焦点或标签页隐藏时，页面松开按住并关闭键盘。离开运动工作区、关闭开关或失去控制权时也一样。
-- 服务拒绝按住或按住中断后，松开按钮或按键，再重新按下。**Stop stage** 和 **STOP ALL MOTION** 随时都能停止按住运动的轴。
-- **Named positions** 为轴的每个命名位置发送 `goto`。**Named poses** 为所选位姿发送 1 条 `pose`。位姿按配置的顺序每次移动 1 个轴。全部 3 轴已回零或设零后才可用。两者只在位移台配置中有对应项时显示。
-- **Step moves and zero**（折叠）为每个轴列出 1 组：参考状态、标有方向的 Step 按钮、**Home…**、**Set zero…**、**Check reference** 和 **Teach reference…**。
-- Step 按钮按输入的步数和脉冲/秒发送 1 条 `move`。步进移动不需要参考。轴有已确认的参考时，应用软限位。
-- 只有位移台服务能为该轴设零时才显示 **Set zero…**。设零需要[位移台校准](stage-panel.md#位移台校准)文件 `/var/lib/mg400/stage/stage.toml` 和固件的设零支持。没有它们时，折叠项会说明原因，按住移动和步进仍可使用。没有位移台控制权时，折叠项说明需要控制权。**Home…**（带开关的板）和 **Set zero…** 需要确认。**Set zero…** 设置零点和软限位。
-- 轴配置了相机参考时，**Check reference** 显示带标记的相机画面和以像素为单位的标记偏移。**Teach reference…** 需要确认。它把当前标记位置保存为该轴在位移台配置中的相机参考。
+- 标题栏显示状态、**Take control** 和 **Stop stage**。停止不要求控制权。演示位移台显示 DEMO。
+- Arduino 未连接时，选择串口，再选 **Connect**。**Refresh ports** 重新读取列表。
+- 位置使用实测电机轴圈数，速度使用圈/秒。全部 3 轴固定采用 1/8 细分。每个电机报告速度上限。默认速度为 0.25 圈/秒。
+- 按住方向按钮即可移动，松开即停。Bottom (Y) 对应上/下，Top (X) 对应左/右，Insert 对应进/出。控制器的 `ccw` 对应上、右、进，坐标随之增加。`cw` 对应下、左、出。
+- **Keys** 保留 I/K（底部上/下）、J/L（顶部右/左）和 U/O（插入进/出）。按住移动每次只控制 1 个轴。失去焦点或控制权、隐藏页面或离开 Motion 时，页面松开按住。
+- 页面每 150 ms 刷新 `ws/motion/stage/hold`。控制台每 0.2 s 发送 `keepalive`。0.5 s 内无页面刷新时，控制台松开按住。固件在最后一次保活后 1 s 停止该轴。
+- **Moves, limits and calibration** 包含各轴的相对圈数、绝对目标和设置控件。相对移动接受 0.001 到 10000 圈的小数。它要求编码器反馈未过期，但不要求完成标定。
+- **Auto calibrate** 先寻找下限开关，将下限坐标设为 0，再寻找上限，最后移到中心。页面显示各个阶段。标定期间不能启动新移动。
+- **Move to target** 使用输入的圈数坐标。它要求已完成标定、已设置全部限位且反馈未过期。固件控制移动过程。
+- **Reset position** 将实测位置设为 0，并清除全部限位。**Set limit here** 将正位置设为上限，负位置设为下限。它拒绝 0。这些操作使标定失效。
+- **Clear upper** 和 **Clear lower** 只清除所选限位。每个轴的可见控制行都有 **Clear fault**，用于清除反馈故障状态，不移动电机。这些控件要求位移台控制权。轴空闲且编码器有故障时，仍可使用。
+- 实时状态显示反馈时间、编码器状态、实测速度、开关接触和故障。方向暂停次数和重新标定提示只作建议，不启动标定。未知或过期的测量值显示 **—**。
+- 已设软限位和开关互锁保持生效。触发开关不会重置坐标。旧脉冲固件仍能连接和停止，但不能使用编码器移动控件。**Stop stage**、各轴的 **Stop** 和 **STOP ALL MOTION** 始终可用。
 
 控制套接字：页面通过 1 个 WebSocket（`/lab/api/console/socket`）发送机械臂按键、位移台按住运动和松开。Chrome 对控制台最多打开 6 个 HTTP 连接，2 个相机视图占用其中 2 个。套接字上的请求不用等待空闲连接。套接字关闭时，页面通过 HTTP 发送这些请求。停止和 **STOP ALL MOTION** 同时通过套接字和 HTTP 发送。
 
@@ -118,7 +119,9 @@
 
 ### 数字孪生工作区
 
-Digital Twin 从相机图像估算位移台位置。监视图像、检测标记和轴读数来自同一帧。
+**Position Finder (legacy)** 排在工作区标签末尾，默认关闭。用启用开关打开 **Monitor** 和 **Calibration**。关闭后停止采样和预览请求，并释放临时图像数据。已存校准配置仍保留在磁盘上。启用它不会把测量值接入 Motion 或 Sample Transfer。
+
+启用后，Position Finder 从相机图像估算位移台位置。监视图像、检测标记和轴读数来自同一帧。
 相机下拉框列出已配置的共享光学相机 `camera1` 至 `camera4`，默认选位移台俯视相机 `camera1`。
 
 新建真机校准配置默认使用 `3840x2160`。监测使用已保存配置的图像尺寸，端点采集使用草稿尺寸。
@@ -131,7 +134,7 @@ Digital Twin 从相机图像估算位移台位置。监视图像、检测标记�
 1. 打开 **Calibration**。选择相机。点击 **New profile**。
 2. 填写配置名称和行程。
 3. 在 Motion 工作区手动移动位移台。
-4. 位移台静止后，返回 Digital Twin。采集端点。
+4. 位移台静止后，返回 Position Finder (legacy)。采集端点。
 5. 依次采集 3 个轴各自的 2 个端点，共 6 个端点。
 6. 点击 **Save calibration**。控制台自动选择所保存的配置来监视位移。
 
@@ -154,12 +157,12 @@ Digital Twin 从相机图像估算位移台位置。监视图像、检测标记�
 Monitor 使用所选的已保存配置。草稿修改在保存后才用于监测。
 
 **Target rate** 是采样频率上限。采集较慢时，控制台跳过已错过的采样时点，实际帧率会降低。
-采样或自动调参期间，Digital Twin 不另发预览请求。
+采样或自动调参期间，Position Finder 不另发预览请求。
 尺寸一致的原生采集直接读取预加载流，不写覆盖文件，也不重启 go2rtc。它不检查显微镜忙碌状态。
 要求切换模式的采集会暂时暂停其他摄像头流，随后恢复。
 配置了显微镜侧视相机时，显微镜作业会阻止模式切换。
 
-**Save calibration** 无需选择本地文件。Digital Twin 不发送运动命令。
+**Save calibration** 无需选择本地文件。Position Finder 不发送运动命令。
 未完成的配置也可以保存，之后继续采集端点。
 控制台将主机配置保存到 `/var/lib/mg400/calibration/twin/profiles/`。
 控制台将所选配置记录到 `/var/lib/mg400/calibration/twin/selection.json`。
@@ -209,58 +212,43 @@ Monitor 使用所选的已保存配置。草稿修改在保存后才用于监测
 
 ### 样品转移工作区
 
-**Operate** 显示转移控制和当前坐标。**Calibration** 记录命名位置，并提供手动位移台调整和已存配置管理。两个视图都保留位置读数和停止按钮。
+**Operate** 显示取出、插入、**Move Out Stage**、**Move to Microscope**、已存位置和实时编码器坐标。**Calibration** 包含手动调整、位置记录和配置管理。两个视图都有停止按钮。坐标单位为电机转数。X 对应 Top，Y 对应 Bottom，Insert 对应插入轴。Sample Transfer 不读取 Position Finder (legacy) 的图像或配置。
 
-在 **Position Finder** 中选择已校准插入轴行程的相机配置。**Extract Sample** 把插入轴移到 **Fully out**，即 0 mm。**Insert Sample** 把插入轴移到 **Fully in**，即配置中的插入轴行程。目标直接来自 Position Finder。Sample Transfer 配置不改变这些目标。每次操作沿用开始时的来源和目标。
+先在 Motion 或 Sample Transfer 获取位移台控制权。在 Motion 对动作所用的各轴执行 **Auto calibrate**。固件寻找下限和上限开关，将下限设为零，再移到中点。校准完成后才能执行绝对移动。控制板重启或重置零点后，重新校准。
 
-这两个操作保持 X 和 Y 不动。每次转移前，检查 X 和 Y 是否对齐。此工作区尚未实现芯片识别、机械臂转移或移到命名位置。
+**Extract Sample** 只将 Insert 移到坐标 `0`。**Insert Sample** 只将 Insert 移到固件当前的上限。这些动作要求 Insert 已校准且反馈未过期，不需要已存配置。坐标 `0` 必须在当前限位内。X/Y 不移动。
 
-记录命名位置：
+在 **Calibration** 中，为 **Move Out Stage** 和 **Move to Microscope** 记录 X/Y 位置，再选择 **Save profile**。每条记录只包含 X 和 Y 编码器圈数。在 Operate 中，各按钮使用所选已存配置的目标，先移动 Bottom，再移动 Top。Insert 不移动，记录这些位置也不要求 Insert 已校准。缺少目标或目标超出限位时，对应动作不可用。
 
-1. 在 **Position Finder** 中选择能测量 X、Y 和插入轴的已存配置。
-2. 打开 **Sample Transfer → Calibration**。获取位移台控制权。点击 **New profile**。输入配置名称。
-3. 用 **Manual stage adjustment** 移到目标位置。每次点击按钮发送 10 个脉冲。
-4. 输入位置名称。点击 **Record position**。
-5. 重复记录其他位置。不同位置使用不同名称。
-6. 点击 **Save profile**。之后从已存列表加载或选择配置。
+在 **Calibration** 中手动调整电机到目标位置。每次按键移动 0.1 转。输入位置名称，再选择 **Record position**。服务器记录各轴新鲜、静止的编码器坐标。**Record again** 替换草稿中的该位置。保存配置后，才能在 Operate 使用这些位置。
 
-**Record position** 在服务器上拍摄新图像。它保存 Position Finder 的有效 X、Y 和插入轴坐标，单位为 mm。记录坐标不取自电机计数或界面之前显示的读数。记录同名位置会替换该位置。可以从草稿中删除单个位置，再保存配置。
+在 **Operate** 中，**Move to position** 使用所选的已存配置。移动顺序为 Bottom、Top、Insert，每次只移动 1 个轴。当前轴达到固件报告的容差后，才启动下一轴。已在容差内的轴跳过。固件控制各次绝对移动。反馈过期、故障、失去控制权或停止都会取消剩余动作。此工作区尚未实现芯片识别和机械臂转移。
 
-**Save profile** 保留草稿。用 **Load draft** 继续编辑。配置列表支持 **Select**、**Delete**、**Upload JSON** 和 **Download**。选择只用于查看已存位置配置，不移动位移台，也不改变 Extract/Insert 目标。
+新配置的默认名称为 `Stage Coordinate Calibration YYYY-MM-DD`，日期取浏览器当前的本地日期。**Save profile** 保存新配置。有命名位置或 X/Y 目标时，同时选中该配置。编辑当前所选配置后保存，即使结果为空也会选中，因此移除全部已存目标会禁用对应动作。取出和插入不依赖配置。**Load draft** 继续编辑，不切换所选配置。列表支持 **Select**、**Delete**、**Upload JSON** 和 **Download**。可以删除草稿中的单个位置或 X/Y 目标，再保存。草稿修改在保存前不会改变已存目标。选择配置不会移动电机。
 
-转移文件使用 `sample-transfer.calibration-profile`，结构版本为 `2`。命名记录保存在 `positions` 中。服务器先校验上传文件，再保存。上传上限为 128 KiB。每个配置最多保存 64 个位置，名称最多为 120 个字符。
+转移文件使用 `sample-transfer.calibration-profile`，结构版本为 `5`，单位字段为 `unit: rotations`。命名的 `position_rotations` 记录仍保存在 `positions` 中；X/Y 目标保存在 `stage_positions` 中，键为 `out_stage` 和 `microscope`。版本 `3` 和 `4` 加载后保留命名位置，X/Y 目标为空。版本 `4` 还将原有 `transfer_endpoints` 保留为带唯一旧名称的完整坐标位置，不自动转为 X/Y 目标。服务器先校验上传文件，再保存。上传上限为 128 KiB。新记录允许 64 个命名位置，迁移最多保留 66 个。名称最多为 120 个字符。主机配置保存在 `/var/lib/mg400/calibration/sample-transfer/`。
 
-版本 `1` 文件的旧端点加载为 **Fully out** 和 **Fully in** 命名位置。未知的 X 或 Y 坐标保持未知。加载不改写原文件。主机配置保存在 `/var/lib/mg400/calibration/sample-transfer/`。
+版本 `1` 和 `2` 保留毫米坐标及来源信息。版本 `1` 端点加载为 **Fully out** 和 **Fully in** 命名位置。未知的 X 或 Y 值保持未知。旧配置仍可查看、导出和删除，但不能记录编码器位置或移动电机。请新建转数配置。加载不改写原文件。已有 `motion-scale.json` 文件保留，但不再使用。
 
-每个位置配置使用记录时的 Position Finder 配置和相机。保留该光学校准配置。移动相机后，重新校准图像坐标并记录命名位置。
-
-Extract/Insert 使用混合定位：用电机脉冲估算行程，用新的 Position Finder 图像修正下一次移动。每次点击后，所有位移台电机空闲时准备 1/8 细分。该模式适用于全部 3 轴，转移后保持不变。模式变化会清除各轴的零点参考和软限位。只有插入轴接收运动脉冲。
-
-0.9° 电机直接连接 5 mm 导程丝杆时，标称换算为 `(360 / 0.9) * 8 / 5 = 640` 脉冲/mm。标称指令分辨率为 `1 / 640` mm，不代表定位精度。操作先用短距离移动检查换算，再在远离目标时使用较大的移动批次。接近目标时，减小批次并降低脉冲速率。状态显示当前阶段、细分模式和脉冲换算。
-
-每批移动停止后再采集新的相机测量。连续 3 次一致读数距目标不超过 0.5 mm 时完成。读数缺失时，保持静止并有限重试。插入轴坐标无法读取、控制失效或细分模式改变时，操作结束。失败或结果不确定的运动命令不会自动重试。
-
-已验证的脉冲换算保存在 `/var/lib/mg400/calibration/sample-transfer/motion-scale.json`，按光学来源、位移台串口和方向区分。每次操作先检查已存换算，再移动较长距离。操作时限为 600 秒。在 640 脉冲/mm 下，1000 脉冲/秒的上限对应标称最高速度 1.5625 mm/秒。加速、相机检查和最后修正还会增加耗时。
-
-获取位移台控制权后，移动和记录按钮才可用。**STOP** 和 **STOP ALL MOTION** 不要求控制权。离开工作区或隐藏页面时，页面请求停止由它启动的运动。
+**STOP** 和 **STOP ALL MOTION** 无需控制权。离开工作区或隐藏页面时，页面请求停止由它发起的移动。
 
 ### 离线运行
 
 在 Windows 或 Linux 上预览本地控制台时，从仓库根目录运行：
 
 ```sh
-uv run --no-default-groups --group vision python scripts/console_preview.py
+uv run --no-default-groups --group vision --group stage python scripts/console_preview.py
 ```
 
-打开 `http://127.0.0.1:8790/lab/#twin`。预览使用实际控制台资源和数字孪生接口，摄像头图像为模拟图像。它不连接 VPN 或 Olares。
+打开 `http://127.0.0.1:8790/lab/#motion`。预览使用实际控制台资源，不连接 VPN 或 Olares。打开 `#twin` 并打开启用开关，即可用模拟图像检查旧版监控和校准。
 
 打开 `http://127.0.0.1:8790/lab/#process` 可预览转盘校准。Camera3 使用 `1280 × 720` 模拟图像。**Start calibration**、逐物镜记录和配置操作使用本地模拟服务，不要求实际显微镜控制权。配置保存在 `work/console-preview/calibration/microscope/turret_profiles/`。
 
-打开 `http://127.0.0.1:8790/lab/#sample-transfer`，可预览命名位置记录、移动和停止。在 Position Finder 中为 Camera1 选择 `Mock stage` 配置。Camera1 标记随模拟位移台移动。转移配置保存在 `work/console-preview/calibration/sample-transfer/`。
+打开 `http://127.0.0.1:8790/lab/#sample-transfer`，检查两个视图、已存配置、手动调整和 STOP。记录或移动位置前，在 Motion 校准模拟位移台。转移配置保存在 `work/console-preview/calibration/sample-transfer/`。
 
-新建模拟配置使用 `3840 × 2880` 图像，以检查微小移动。已有的 `640 × 480` 配置保持不变。备份旧配置并创建新模拟配置的方法，参见[本地预览配置](../DEV_NOTE.md#配置与模拟数据)。预览耗时不能预测实际转移耗时。
+旧版模拟配置使用 `3840 × 2880` 图像。已有的 `640 × 480` 配置保持不变。配置存储和替换方法参见[本地预览配置](../DEV_NOTE.md#配置与模拟数据)。
 
-其他设备控制仍不可用。本地校准配置保存在 `work/console-preview/`，不修改 Olares 上的配置。首次启动会创建 `Mock stage` 配置。模拟运动无法验证实际精度或真实设备命令。
+其他设备控制仍不可用。本地校准配置保存在 `work/console-preview/`，不修改 Olares 上的配置。首次启用旧版功能时，如果配置目录不存在，则创建 `Mock stage`。模拟运动无法验证实际精度或真实设备命令。
 
 修改 CSS 或 JavaScript 后，刷新浏览器。修改 Python 或 HTML 模板后，重启预览。在预览终端按 `Ctrl+C` 停止。真实摄像头的分辨率、采样耗时和设备命令仍须在 Olares 上验证。
 

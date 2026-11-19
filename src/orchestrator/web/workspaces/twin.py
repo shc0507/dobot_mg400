@@ -38,9 +38,9 @@ DEVICES = ("robot", "stage", "microscope", "furnace")
 MODEL = Path("/var/lib/mg400/twin/twin.glb")  # config/assets.toml: twin-model
 STAGE_MICROSTEP = 2
 STAGE = {  # model joint: (motor, sign, pulses per mm, offset mm)
-    "stage_bottom": ("bottom", -1, 80.0, -3.90),
-    "stage_top": ("top", -1, 80.0, -0.65),
-    "insert": ("insert", -1, 80.0, -2.63),
+    "stage_bottom": ("bottom", -1, 80.0, -19.93),
+    "stage_top": ("top", -1, 80.0, -2.41),
+    "insert": ("insert", -1, 80.0, 55.94),
 }
 # The model shows objective 1 (10x) at work; 1 turret step = 72 deg (direction not checked).
 WORKING_OBJECTIVE = 1

@@ -300,7 +300,12 @@ go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, an
 ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). It sends each source frame once and 1 keyframe each 1 s. Thus a new view shows its first frame in about 1 s, also for the microscope at a low frame rate. `-fps_mode` needs ffmpeg 5.1 or later.
 The installer runs ffmpeg to test `h264_nvenc`. If the test passes, the H.264 previews use the NVIDIA GPU encoder. If not, they use `libx264`. After you change the GPU or its driver, run the installer again.
 With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream wider than 640 and the microscope get at most 2.5 Mbit/s. Other streams get 2 Mbit/s. A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264.
-The H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). go2rtc 1.9.14 does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
+With NVENC, a stream above `1280x720` has only an H.265 preview, except the side stream. The preview has the resolution of the capture mode, at most 6 Mbit/s.
+RTP cannot carry a JPEG wider than 2040, so ffmpeg reads the MJPEG of this stream through HTTP.
+A camera can send fewer frames than its mode. Each frame gets its arrival time as timestamp, so the preview frame rate is the real frame rate.
+The go2rtc 1.9.14 release does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
+Thus the H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`).
+NVENC cuts a `3840x2160` frame into 2 slices, and ffmpeg also puts them into 1 packet. Thus a large preview must use go2rtc with the patch `deploy/go2rtc/aggregation-packets.patch`.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
 Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture.
 The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).

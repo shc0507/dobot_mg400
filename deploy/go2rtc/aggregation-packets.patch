@@ -1,0 +1,174 @@
+diff --git a/pkg/h265/helper.go b/pkg/h265/helper.go
+index c2ad94d..2f3bcc5 100644
+--- a/pkg/h265/helper.go
++++ b/pkg/h265/helper.go
+@@ -15,6 +15,7 @@ const (
+ 	NALUTypeVPS       = 32
+ 	NALUTypeSPS       = 33
+ 	NALUTypePPS       = 34
++	NALUTypeAP        = 48
+ 	NALUTypePrefixSEI = 39
+ 	NALUTypeSuffixSEI = 40
+ 	NALUTypeFU        = 49
+diff --git a/pkg/h265/rtp.go b/pkg/h265/rtp.go
+index 9c571ec..fed0d81 100644
+--- a/pkg/h265/rtp.go
++++ b/pkg/h265/rtp.go
+@@ -2,15 +2,69 @@ package h265
+ 
+ import (
+ 	"encoding/binary"
++	"strconv"
++	"strings"
+ 
+ 	"github.com/AlexxIT/go2rtc/pkg/core"
+ 	"github.com/AlexxIT/go2rtc/pkg/h264"
+ 	"github.com/pion/rtp"
+ )
+ 
++func hasDON(fmtp string) bool {
++	for _, param := range strings.Split(fmtp, ";") {
++		key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
++		if ok && strings.EqualFold(strings.TrimSpace(key), "sprop-max-don-diff") {
++			value, err := strconv.Atoi(strings.TrimSpace(value))
++			return err == nil && value > 0
++		}
++	}
++	return false
++}
++
++// appendAggregationPacket expands an HEVC aggregation packet into length-prefixed NAL units.
++func appendAggregationPacket(dst, data []byte, donEnabled bool) ([]byte, bool) {
++	if len(data) < 4 {
++		return dst, false
++	}
++
++	offset, count := 2, 0 // skip the two-byte payload header
++	for offset < len(data) {
++		if donEnabled {
++			if count == 0 {
++				if len(data)-offset < 2 { // first unit carries DONL
++					return dst, false
++				}
++				offset += 2
++			} else {
++				if len(data)-offset < 1 { // later units carry DOND
++					return dst, false
++				}
++				offset++
++			}
++		}
++
++		if len(data)-offset < 2 {
++			return dst, false
++		}
++		nalSize := int(binary.BigEndian.Uint16(data[offset:]))
++		offset += 2
++		if nalSize < 2 || nalSize > len(data)-offset {
++			return dst, false
++		}
++
++		dst = binary.BigEndian.AppendUint32(dst, uint32(nalSize))
++		dst = append(dst, data[offset:offset+nalSize]...)
++		offset += nalSize
++		count++
++	}
++
++	return dst, count > 0
++}
++
+ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
+ 	vps, sps, pps := GetParameterSet(codec.FmtpLine)
+ 	ps := h264.JoinNALU(vps, sps, pps)
++	donEnabled := hasDON(codec.FmtpLine)
+ 
+ 	buf := make([]byte, 0, 512*1024) // 512K
+ 	var nuStart int
+@@ -45,7 +99,14 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
+ 
+ 		seqNum = packet.SequenceNumber
+ 
+-		if nuType == NALUTypeFU {
++		if nuType == NALUTypeAP {
++			var ok bool
++			buf, ok = appendAggregationPacket(buf, data, donEnabled)
++			if !ok {
++				buf = buf[:0] // drop the incomplete access unit
++				return
++			}
++		} else if nuType == NALUTypeFU {
+ 			switch data[2] >> 6 {
+ 			case 0b10: // begin
+ 				nuType = data[2] & 0x3F
+diff --git a/pkg/h265/rtp_test.go b/pkg/h265/rtp_test.go
+new file mode 100644
+index 0000000..6ad9fae
+--- /dev/null
++++ b/pkg/h265/rtp_test.go
+@@ -0,0 +1,66 @@
++package h265
++
++import (
++	"testing"
++
++	"github.com/AlexxIT/go2rtc/pkg/core"
++	"github.com/AlexxIT/go2rtc/pkg/h264"
++	"github.com/pion/rtp"
++	"github.com/stretchr/testify/require"
++)
++
++func TestRTPDepayAggregationPacket(t *testing.T) {
++	payload := []byte{
++		0x60, 0x01, // AP header (NAL type 48)
++		0x00, 0x03, 0x40, 0x01, 0xaa, // VPS NAL
++		0x00, 0x03, 0x42, 0x01, 0xbb, // SPS NAL
++	}
++	var got *rtp.Packet
++	depay := RTPDepay(&core.Codec{}, func(packet *rtp.Packet) { got = packet })
++	depay(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, Marker: true, SequenceNumber: 1},
++		Payload: payload,
++	})
++
++	require.NotNil(t, got)
++	require.Equal(t, []byte{
++		0, 0, 0, 3, 0x40, 0x01, 0xaa,
++		0, 0, 0, 3, 0x42, 0x01, 0xbb,
++	}, got.Payload)
++	require.Equal(t, uint8(h264.RTPPacketVersionAVC), got.Version)
++	require.True(t, got.Marker)
++}
++
++func TestRTPDepayAggregationPacketWithDON(t *testing.T) {
++	payload := []byte{
++		0x60, 0x01, // AP header
++		0x00, 0x05, // DONL for first unit
++		0x00, 0x03, 0x40, 0x01, 0xaa, // first NAL
++		0x00, // DOND for second unit
++		0x00, 0x03, 0x42, 0x01, 0xbb, // second NAL
++	}
++	var got *rtp.Packet
++	depay := RTPDepay(&core.Codec{FmtpLine: "sprop-max-don-diff=1"}, func(packet *rtp.Packet) { got = packet })
++	depay(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, Marker: true, SequenceNumber: 1},
++		Payload: payload,
++	})
++
++	require.NotNil(t, got)
++	require.Equal(t, []byte{
++		0, 0, 0, 3, 0x40, 0x01, 0xaa,
++		0, 0, 0, 3, 0x42, 0x01, 0xbb,
++	}, got.Payload)
++}
++
++func TestRTPDepayMalformedAggregationPacketIsDropped(t *testing.T) {
++	payload := []byte{0x60, 0x01, 0x00, 0x05, 0x40, 0x01}
++	called := false
++	depay := RTPDepay(&core.Codec{}, func(*rtp.Packet) { called = true })
++	depay(&rtp.Packet{
++		Header:  rtp.Header{Version: 2, Marker: true, SequenceNumber: 1},
++		Payload: payload,
++	})
++
++	require.False(t, called)
++}

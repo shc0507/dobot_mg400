@@ -371,7 +371,7 @@ Each leg rises only at its starting station, to that station's approach. It foll
 
 A pick descends, then sends `vacuum suck`. Suction must be off before a pick. With suction on, it rises to that station's approach. A place requires suction on. It descends, sends `vacuum release` (a short blow, then off), and rises to that station's approach. Before and after each move, the state check verifies the measured suck and blow outputs: suck must be on while the cup carries a part and off otherwise, and blow must be off.
 
-When a vacuum switch is installed and `GRIP_DI` is set in `src/mg400/suction.py` (default `None`), `vacuum.held` in the robot state reports whether the cup holds a part. If `held` does not become true within 1 second after suck, the skill sends `vacuum release` and fails. If `held` becomes `false` while the cup carries a part, the part dropped and the run holds. If `held` does not become `false` within 1 second after a place, the skill fails. While `GRIP_DI` is not set, `held` is `null` and the skill cannot confirm that the cup holds a part.
+The vacuum switch is on DI8 (`GRIP_DI` in `src/mg400/suction.py`). `vacuum.held` in the robot state reports whether the cup holds a part. If `held` does not become true within 1 second after suck, the skill sends `vacuum release` and fails. If `held` becomes `false` while the cup carries a part, the part dropped and the run holds. If `held` does not become `false` within 1 second after a place, the skill fails. When `GRIP_DI` is `None`, `held` is `null` and the skill cannot confirm that the cup holds a part.
 
 `robot.pick`, `robot.place`, and `robot.transfer` accept `speed`, an integer with default 1. The permitted range is 1 through the robot service's advertised speed cap, which is fixed at 20. Invalid values or an invalid advertised cap refuse the step before motion. All moves use `execute`, and the robot service still enforces its speed and acceleration caps. The controller remains at `User=0,Tool=0`.
 
@@ -524,7 +524,7 @@ From the environment, rehearsal keeps only the zone configuration, workspace, st
 
 The suction-cup outputs come from the temporary SIM-01 simulator. The simulator answers `DOExecute` and reports the DO bits in its feedback.
 
-The simulator has no vacuum switch, so `held` is `null`. The tray rehearsal scene removes the chip when suction starts at a taught slot and puts it down when the cup releases at a taught slot. Offline tests use a fake robot with `held` to check the not-held and drop paths. Rehearsal does not establish physical clearance or prove a real suction pick.
+The simulated cup always seals, so `held` follows suction. The tray rehearsal scene removes the chip when suction starts at a taught slot and puts it down when the cup releases at a taught slot. Offline tests use a fake robot with `held` to check the not-held and drop paths. Rehearsal does not establish physical clearance or prove a real suction pick.
 When `MG400_ORCH_TRAY_FILE` is set, tray rehearsal accepts only the built-in synthetic tray document and refuses a real tray file.
 
 Crucible rehearsal preserves the explicit safety inputs above. It reads named-region data for its owned thermal demo from `MG400_ORCH_CRUCIBLE_ROIS_FILE`.

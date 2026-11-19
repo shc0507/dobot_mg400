@@ -564,11 +564,12 @@ def test_workspace_registry_needs_unique_ids_and_both_titles():
         ("cameras", 30),
         ("process", 40),
         ("sample-transfer", 50),
-        ("twin", 100),
+        ("twin", 60),
+        ("position-finder", 100),
     ]
-    twin = next(item for item in workspaces if item.id == "twin")
-    assert twin.title == {"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"}
-    assert callable(twin.register) and twin.script and twin.style
+    legacy = next(item for item in workspaces if item.id == "position-finder")
+    assert legacy.title == {"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"}
+    assert callable(legacy.register) and legacy.script and legacy.style
     with pytest.raises(ValueError):
         Workspace(id="Bad Id", order=1, title={"en": "x", "zh": "x"})
     with pytest.raises(ValueError):

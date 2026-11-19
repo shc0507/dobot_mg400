@@ -198,5 +198,5 @@ def register(blueprint, service):
 
 
 WORKSPACE = Workspace(
-    id="twin", order=50, title={"en": "Twin", "zh": "实时台面"}, register=register
+    id="twin", order=60, title={"en": "Twin", "zh": "实时台面"}, register=register
 )

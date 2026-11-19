@@ -580,8 +580,8 @@ def test_service_signal_stops_the_motors_before_exit(service, signum):
         return status, json.loads(text)
 
     assert post("/contract/api/heartbeat", {})[0] == 200
-    status, body = post("/contract/api/connect", {"port": "DEMO"})
-    assert (status, body["connected"]) == (200, True)
+    status, body = post("/contract/api/command", {"action": "connect", "port": "DEMO"})
+    assert (status, body["state"]["connected"]) == (202, True)
     move = {"action": "move", "motor": "bottom", "direction": "cw", "speed": 0.1, "rotations": 10}
     assert post("/contract/api/command", move)[0] == 202
     process.send_signal(signum)

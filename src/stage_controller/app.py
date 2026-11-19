@@ -1,8 +1,8 @@
 """Stage contract at the service base path.
 
-Motor and serial behavior live outside the web framework. The only route outside
-the contract is ``GET api/motors/<motor>/reference``: a camera check of one axis,
-too large for the state.
+The canonical prefix is ``<base>/api/``. The existing ``<base>/contract/api/``
+prefix aliases the same handlers, lease and rotation units. Camera references
+are inactive with encoder firmware.
 """
 
 import re
@@ -33,7 +33,8 @@ def normalize_base_path(value):
 
 
 def create_app(controller: MotorController | None = None, *, base_path="/"):
-    prefix = normalize_base_path(base_path).rstrip("/")
+    base = normalize_base_path(base_path).rstrip("/")
+    prefix = base
     app = Flask(__name__, static_folder=None)
     app.config.update(MAX_CONTENT_LENGTH=4096)
     controller = controller or MotorController()
@@ -64,4 +65,15 @@ def create_app(controller: MotorController | None = None, *, base_path="/"):
     def reference(motor):
         return jsonify(controller.preview_reference(motor))
 
+    dispatch = app.wsgi_app
+    legacy_prefix = base + "/contract/api/"
+
+    def legacy_api(environ, start_response):
+        # Rewrite before routing so both prefixes share every handler and access check.
+        path = environ.get("PATH_INFO", "")
+        if path.startswith(legacy_prefix):
+            environ["PATH_INFO"] = prefix + "/api/" + path[len(legacy_prefix) :]
+        return dispatch(environ, start_response)
+
+    app.wsgi_app = legacy_api
     return app

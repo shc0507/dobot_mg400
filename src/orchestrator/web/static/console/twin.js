@@ -18,7 +18,7 @@
       "twin.title": "Bench twin", "twin.loading": "Loading the model…", "twin.noModel": "The model could not be loaded: {why}",
       "twin.robot": "Robot", "twin.stage": "Stage", "twin.microscope": "Microscope", "twin.furnace": "Furnace",
       "twin.unavailable": "No data", "twin.stale": "stale", "twin.alarm": "ALARM", "twin.moving": "moving",
-      "twin.enabled": "enabled", "twin.disabled": "disabled", "twin.uncalibrated": "count scale unknown (microstep changed)",
+      "twin.enabled": "enabled", "twin.disabled": "disabled", "twin.uncalibrated": "stage geometry uncalibrated",
       "twin.objective": "objective {id}", "twin.noObjective": "objective unknown", "twin.focusUnknown": "focus not modelled yet",
       "twin.gasOn": "gas on", "twin.gasOff": "gas off", "twin.running": "running", "twin.stopped": "stopped",
       "twin.legend": "Model at the devices' reported state. See-through: no fresh data. Red: alarm. Blue: moving. Glow: furnace heat.",
@@ -27,7 +27,7 @@
       "twin.title": "实时台面", "twin.loading": "正在加载台面…", "twin.noModel": "无法加载台面：{why}",
       "twin.robot": "机械臂", "twin.stage": "位移台", "twin.microscope": "显微镜", "twin.furnace": "加热炉",
       "twin.unavailable": "无数据", "twin.stale": "数据过期", "twin.alarm": "报警", "twin.moving": "运动中",
-      "twin.enabled": "已使能", "twin.disabled": "未使能", "twin.uncalibrated": "计数对应未知（细分模式已改变）",
+      "twin.enabled": "已使能", "twin.disabled": "未使能", "twin.uncalibrated": "位移台模型位置未校准",
       "twin.objective": "物镜 {id}", "twin.noObjective": "物镜未知", "twin.focusUnknown": "调焦尚未建模",
       "twin.gasOn": "气阀开启", "twin.gasOff": "气阀关闭", "twin.running": "运行中", "twin.stopped": "已停止",
       "twin.legend": "台面显示设备报告的状态。灰色部件：无新数据。红色：报警。变色：运动中。加热炉按炉温变色。",
@@ -69,7 +69,9 @@
     const st = d.stage || {};
     out.push({ key: "stage", title: t("twin.stage"), state: !st.available ? t("twin.unavailable") : !s.stage_calibrated ? t("twin.uncalibrated") : s.stage_moving ? t("twin.moving") : s.stage_stale ? t("twin.stale") : "",
       level: !st.available || s.stage_stale || !s.stage_calibrated ? "off" : s.stage_moving ? "info" : "ok",
-      detail: `Y ${num(j.stage_bottom, "mm")} · X ${num(j.stage_top, "mm")} · insert ${num(j.insert, "mm")}` });
+      detail: st.closed_loop
+        ? `Y ${num(st.motors?.bottom?.position_rotations, "rot", 3)} · X ${num(st.motors?.top?.position_rotations, "rot", 3)} · insert ${num(st.motors?.insert?.position_rotations, "rot", 3)}`
+        : `Y ${num(j.stage_bottom, "mm")} · X ${num(j.stage_top, "mm")} · insert ${num(j.insert, "mm")}` });
     const m = d.microscope || {};
     out.push({ key: "microscope", title: t("twin.microscope"), state: m.available ? "" : t("twin.unavailable"), level: m.available ? "ok" : "off",
       detail: (typeof m.objective_id === "number" ? t("twin.objective", { id: m.objective_id }) : t("twin.noObjective")) + " · " + t("twin.focusUnknown") });

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const shellPath = new URL("../src/orchestrator/web/static/console/shell.js", import.meta.url).pathname;
+const shellPath = require.resolve("../src/orchestrator/web/static/console/shell.js");
 
 class Element {
   constructor(tag, id = "") {

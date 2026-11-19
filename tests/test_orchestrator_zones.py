@@ -1142,6 +1142,13 @@ def test_stage_load_condition_requires_authoritative_fresh_named_feedback(field,
     stage_at_load(valid)
 
 
+def test_stage_load_condition_refuses_unmapped_encoder_coordinates():
+    state = ZoneService("stage").state()
+    state["closed_loop"] = True
+    with pytest.raises(RuntimeError, match="encoder-to-station mapping"):
+        stage_at_load(state)
+
+
 def test_invalid_zone_configuration_fails_before_clients_or_store(
     zone_settings, tmp_path, monkeypatch
 ):

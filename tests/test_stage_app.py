@@ -8,14 +8,14 @@ import sys
 
 import pytest
 from helpers import wait_for
-from stage_helpers import home_stage
 
 import stage_controller.__main__ as stage_main
 from stage_controller.app import create_app
 
 HOST = "100.64.0.1:8767"
-SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-# MG400_STAGE_BIND, _PORT and _BASE_PATH are no longer settings. Clear them to show it.
+SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, name)
+)
 SETTINGS = (
     "MG400_STAGE_BIND",
     "MG400_STAGE_PORT",
@@ -76,28 +76,88 @@ def test_removed_routes_return_not_found(web):
     for path in REMOVED:
         assert client.get(path, headers=headers).status_code == 404
     for path in (
-        "/api/connect",
         "/api/disconnect",
+        "/api/connect",
         "/api/microstep",
         "/api/motors/top/move",
-        "/api/motors/insert/teach_reference",
     ):
         assert client.post(path, json={}, headers=headers).status_code == 404
 
 
-def test_connect_needs_the_lease_holder(web, stage_rig):
+@pytest.mark.parametrize("base_path", ["/", "/stage", "/lab/stage/"])
+def test_legacy_api_alias_shares_contract_and_lease(stage_rig, base_path):
+    controller, _, _ = stage_rig
+    client = create_app(controller, base_path=base_path).test_client()
+    base = base_path.rstrip("/")
+    legacy, contract = base + "/api", base + "/contract/api"
+    for endpoint in ("describe", "state", "events?since=0"):
+        old = client.get(f"{legacy}/{endpoint}")
+        current = client.get(f"{contract}/{endpoint}")
+        assert old.status_code == current.status_code == 200
+        previous, latest = old.json, current.json
+        if endpoint == "state":
+            for key in ("seq", "ts_unix"):
+                previous.pop(key)
+                latest.pop(key)
+        assert previous == latest
+        assert "Location" not in old.headers
+    assert client.get(legacy + "/events?since=invalid").status_code == 400
+    assert client.post(legacy + "/heartbeat", json={}, headers=CLIENT).status_code == 200
+    assert client.get(contract + "/state").json["lease"]["holder"] == OPERATOR
+    other = {"X-MG400-Client": "other"}
+    assert client.post(contract + "/heartbeat", json={}, headers=other).status_code == 409
+    assert client.post(contract + "/renew", json={}, headers=CLIENT).status_code == 200
+    assert client.post(legacy + "/release", json={}, headers=CLIENT).status_code == 200
+    assert client.get(contract + "/state").json["lease"]["holder"] is None
+    assert client.post(contract + "/heartbeat", json={}, headers=other).status_code == 200
+    assert client.get(legacy + "/state").json["lease"]["holder"] == "other"
+    if base:
+        assert client.get("/api/state").status_code == 404
+        assert client.get(base + "other/api/state").status_code == 404
+
+
+@pytest.mark.parametrize("prefix", ["/api", "/contract/api"])
+def test_api_alias_rejects_pulse_commands_and_preserves_stop(web, stage_rig, prefix):
+    client, headers = web
+    controller, transport, _ = stage_rig
+    assert client.post(prefix + "/stop", json={}, headers=headers).status_code == 200
+    assert controller.lease.snapshot()["holder"] is None
+    assert client.post(prefix + "/heartbeat", json={}, headers=headers).status_code == 200
+    transport.commands.clear()
+    move = {"action": "move", "motor": "top", "direction": "cw", "speed": 50, "steps": 100}
+    rejected = client.post(prefix + "/command", json=move, headers=headers)
+    assert rejected.status_code == 400
+    assert not transport.commands
+    move.update(speed=0.25, rotations=0.05)
+    assert client.post(prefix + "/command", json=move, headers=headers).status_code == 400
+    assert not transport.commands
+    del move["steps"]
+    assert client.post(prefix + "/command", json=move, headers=headers).status_code == 202
+    assert controller.snapshot()["motors"][1]["mode"] == "moving"
+    other = {"X-MG400-Client": "other"}
+    stopped = client.post(prefix + "/stop", json={}, headers=other)
+    assert stopped.status_code == 200
+    assert stopped.json["stop"] == "confirmed"
+    assert controller.snapshot()["motors"][1]["mode"] == "idle"
+    assert controller.lease.snapshot()["holder"] == OPERATOR
+
+
+@pytest.mark.parametrize("prefix", ["/api", "/contract/api"])
+def test_connect_needs_the_lease_holder(web, stage_rig, prefix):
     client, headers = web
     controller, transport, _ = stage_rig
     controller.disconnect()
-    response = connect(client)
+    payload = {"action": "connect", "port": "DEMO"}
+    response = client.post(prefix + "/command", json=payload, headers=headers)
     assert response.status_code == 409
     assert "lease" in response.json["error"]
     controller.lease.acquire("automation-a")
-    assert connect(client).status_code == 409
+    response = client.post(prefix + "/command", json=payload, headers=headers)
+    assert response.status_code == 409
     assert not controller.snapshot()["connected"]
     controller.lease.release("automation-a")
-    assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
-    response = connect(client)
+    assert client.post(prefix + "/heartbeat", json={}, headers=headers).status_code == 200
+    response = client.post(prefix + "/command", json=payload, headers=headers)
     assert response.status_code == 202
     assert response.json["state"]["connected"] is True
     assert response.json["state"]["lease"]["holder"] == OPERATOR
@@ -107,9 +167,8 @@ def test_connect_needs_the_lease_holder(web, stage_rig):
 def test_contract_move_and_busy_rejection(web, stage_rig):
     client, headers = web
     controller, _, clock = stage_rig
-    home_stage(controller, clock)
-    assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
-    request = {"motor": "top", "direction": "cw", "speed": 250, "steps": 50}
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    request = {"motor": "top", "direction": "cw", "speed": 0.25, "rotations": 0.05}
     response = command(client, "move", **request)
     assert response.status_code == 202
     assert controller.snapshot()["motors"][1]["mode"] == "moving"
@@ -138,11 +197,15 @@ def test_connect_and_teach_reject_invalid_payloads(web, stage_rig, data):
     assert not transport.commands
 
 
-def test_commands_need_a_client_and_json(web):
+@pytest.mark.parametrize("prefix", ["/api", "/contract/api"])
+def test_commands_need_a_client_and_json(web, prefix):
     client, headers = web
     for invalid in ({}, {"X-MG400-Client": ""}, {"X-MG400-Client": "caf\xe9"}):
-        assert connect(client, headers=invalid).status_code == 400
-    plain = client.post("/api/command", data="{}", content_type="text/plain", headers=headers)
+        response = client.post(
+            prefix + "/command", json={"action": "connect", "port": "DEMO"}, headers=invalid
+        )
+        assert response.status_code == 400
+    plain = client.post(prefix + "/command", data="{}", content_type="text/plain", headers=headers)
     assert plain.status_code == 415
     response = client.get("/api/state")
     assert response.headers["Cache-Control"] == "no-store"
@@ -159,8 +222,8 @@ def test_unplug_returns_a_link_fault_in_the_contract(web, stage_rig, monkeypatch
         raise LinkError("Port removed")
 
     monkeypatch.setattr(transport, "status", unplugged)
-    assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
-    response = command(client, "move", motor="bottom", direction="cw", speed=200, steps=200)
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
+    response = command(client, "move", motor="bottom", direction="cw", speed=0.2, rotations=0.2)
     assert response.status_code == 503
     assert not controller.snapshot()["connected"]
     assert client.get("/api/state").json["fault"]["code"] == "device_link_lost"
@@ -169,10 +232,9 @@ def test_unplug_returns_a_link_fault_in_the_contract(web, stage_rig, monkeypatch
 def test_contract_hold_runs_and_releases_one_motor(web, stage_rig):
     client, headers = web
     controller, _, clock = stage_rig
-    home_stage(controller, clock)
-    assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
     hold = {"motor": "top", "hold_id": "test-api-hold-0001"}
-    response = command(client, "hold", direction="cw", speed=50, sampled_at=clock(), **hold)
+    response = command(client, "hold", direction="cw", speed=0.05, sampled_at=clock(), **hold)
     assert response.status_code == 202
     assert controller.snapshot()["motors"][1]["mode"] == "continuous"
     clock.advance(0.5)
@@ -180,19 +242,18 @@ def test_contract_hold_runs_and_releases_one_motor(web, stage_rig):
     assert command(client, "release_hold", **hold).status_code == 202
     motor = controller.snapshot()["motors"][1]
     assert motor["mode"] == "idle"
-    assert motor["position"] == 25
+    assert motor["position"] == pytest.approx(-0.02)
 
 
 @pytest.mark.parametrize("action", ["hold", "keepalive", "release_hold"])
 def test_contract_hold_needs_a_valid_identifier(web, stage_rig, action):
     client, headers = web
     controller, transport, clock = stage_rig
-    home_stage(controller, clock)
     transport.commands.clear()
     assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
     params = {"motor": "bottom", "hold_id": "short"}
     if action == "hold":
-        params.update(direction="cw", speed=50, sampled_at=clock())
+        params.update(direction="cw", speed=0.05, sampled_at=clock())
     assert command(client, action, **params).status_code == 400
     assert command(client, action, headers={}, **params).status_code == 400
     assert not any(item.startswith(("hold", "keepalive")) for item in transport.commands)
@@ -201,19 +262,18 @@ def test_contract_hold_needs_a_valid_identifier(web, stage_rig, action):
 def test_contract_microstep_rejects_invalid_and_busy_requests(web, stage_rig):
     client, headers = web
     controller, _, clock = stage_rig
-    home_stage(controller, clock)
-    assert command(client, "set_microstep", microstep=16).status_code == 409
-    assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
+    assert command(client, "set_microstep", microstep=8).status_code == 409
+    assert client.post("/contract/api/heartbeat", json={}, headers=headers).status_code == 200
     assert command(client, "set_microstep", microstep=3).status_code == 400
-    response = command(client, "move", motor="insert", direction="cw", speed=50, steps=500)
+    response = command(client, "move", motor="insert", direction="cw", speed=0.05, rotations=0.5)
     assert response.status_code == 202
-    assert command(client, "set_microstep", microstep=16).status_code == 409
-    assert controller.snapshot()["microstep"] == 1
-    assert client.post("/api/stop", json={}, headers=headers).status_code == 200
-    assert command(client, "set_microstep", microstep=16).status_code == 202
+    assert command(client, "set_microstep", microstep=8).status_code == 409
+    assert controller.snapshot()["microstep"] == 8
+    assert client.post("/contract/api/stop", json={}, headers=headers).status_code == 200
+    assert command(client, "set_microstep", microstep=8).status_code == 202
     state = controller.snapshot()
-    assert state["microstep"] == 16
-    assert [item["value"] for item in state["microstep_modes"]] == [1, 2, 4, 8, 16]
+    assert state["microstep"] == 8
+    assert [item["value"] for item in state["microstep_modes"]] == [8]
 
 
 @pytest.mark.parametrize("port", ["/dev/ttyUSB0", "/dev/serial/by-id/usb-FTDI", "demo", 5])
@@ -308,6 +368,7 @@ def test_port_option_must_be_a_tcp_port(monkeypatch, port):
     assert exit_info.value.code == 2
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX service/udev behavior runs on Linux")
 def test_serial_setting_limits_the_port_list(monkeypatch, capsys, stage_usb):
     monkeypatch.setenv("MG400_STAGE_SERIAL", stage_usb["arduino"])
     client = run_main(monkeypatch, [])["app"].test_client()
@@ -318,12 +379,14 @@ def test_serial_setting_limits_the_port_list(monkeypatch, capsys, stage_usb):
     assert ports(client) == [{"device": stage_usb["other"], "description": "Arduino Mega"}]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX service/udev behavior runs on Linux")
 def test_without_serial_setting_every_port_is_listed(monkeypatch, stage_usb, tmp_path):
     client = run_main(monkeypatch, [])["app"].test_client()
     devices = [port["device"] for port in ports(client)]
     assert devices == [str(tmp_path / "ttyACM0"), str(tmp_path / "ttyACM1")]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX service/udev behavior runs on Linux")
 def test_demo_ignores_the_serial_setting(monkeypatch, stage_usb):
     monkeypatch.setenv("MG400_STAGE_SERIAL", stage_usb["other"])
     client = run_main(monkeypatch, ["--demo"])["app"].test_client()
@@ -372,12 +435,12 @@ def signalled_server(signum, before_signal=lambda: None):
     return Server()
 
 
-@pytest.mark.parametrize("signum", SIGNALS, ids=["SIGINT", "SIGTERM", "SIGHUP"])
+@pytest.mark.parametrize("signum", SIGNALS, ids=[signal.Signals(number).name for number in SIGNALS])
 def test_signals_stop_the_motors_before_main_returns(
     monkeypatch, capsys, stage_rig, unreplaced_signals, signum
 ):
     controller, transport, _ = stage_rig
-    controller.move("bottom", "cw", 50, 500)
+    controller.move("bottom", "cw", 0.05, 0.5)
     during_close = []
     original_close = transport.close
 
@@ -398,9 +461,10 @@ def test_signals_stop_the_motors_before_main_returns(
     assert "All motors stopped · disconnected" in capsys.readouterr().out
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX service/udev behavior runs on Linux")
 def test_hung_up_terminal_does_not_prevent_the_stop(monkeypatch, stage_rig, unreplaced_signals):
     controller, transport, _ = stage_rig
-    controller.move("bottom", "cw", 50, 500)
+    controller.move("bottom", "cw", 0.05, 0.5)
     monkeypatch.setattr(stage_main, "MotorController", lambda **_: controller)
 
     class HungUp:
@@ -418,6 +482,7 @@ def test_hung_up_terminal_does_not_prevent_the_stop(monkeypatch, stage_rig, unre
     assert transport.closed
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX service/udev behavior runs on Linux")
 def test_an_ignored_signal_stays_ignored(monkeypatch, stage_rig, unreplaced_signals):
     # Like nohup: a closed terminal must not stop the panel.
     controller, _, _ = stage_rig
@@ -491,6 +556,7 @@ def service():
         process.communicate()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX service/udev behavior runs on Linux")
 def test_service_refuses_a_large_body_before_it_reads_the_body(service):
     _, port = service()
     # A body of 4096 bytes reaches the app, which refuses it without a JSON content type.
@@ -503,7 +569,8 @@ def test_service_refuses_a_large_body_before_it_reads_the_body(service):
     assert "Request Entity Too Large" in body
 
 
-@pytest.mark.parametrize("signum", SIGNALS, ids=["SIGINT", "SIGTERM", "SIGHUP"])
+@pytest.mark.parametrize("signum", SIGNALS, ids=[signal.Signals(number).name for number in SIGNALS])
+@pytest.mark.skipif(os.name == "nt", reason="POSIX service/udev behavior runs on Linux")
 def test_service_signal_stops_the_motors_before_exit(service, signum):
     process, port = service()
     headers = {"Content-Type": "application/json", "X-MG400-Client": OPERATOR}
@@ -512,20 +579,11 @@ def test_service_signal_stops_the_motors_before_exit(service, signum):
         status, text = http_request(port, "POST", path, json.dumps(body), headers)
         return status, json.loads(text)
 
-    assert post("/api/heartbeat", {})[0] == 200
-    status, body = post("/api/command", {"action": "connect", "port": "DEMO"})
+    assert post("/contract/api/heartbeat", {})[0] == 200
+    status, body = post("/contract/api/command", {"action": "connect", "port": "DEMO"})
     assert (status, body["state"]["connected"]) == (202, True)
-    assert post("/api/command", {"action": "home", "motor": "bottom"})[0] == 202
-
-    def homed():
-        _, text = http_request(port, "GET", "/api/state")
-        last = json.loads(text)["last_command"]
-        return last is not None and last["action"] == "home" and last["result"] == "ok"
-
-    wait_for(homed, timeout=10)
-    move = {"action": "move", "motor": "bottom", "direction": "cw", "speed": 10, "steps": 1000}
-    # A refused move sends nothing. The board refuses moves during the cooldown after homing.
-    wait_for(lambda: post("/api/command", move)[0] == 202, timeout=10)
+    move = {"action": "move", "motor": "bottom", "direction": "cw", "speed": 0.1, "rotations": 10}
+    assert post("/contract/api/command", move)[0] == 202
     process.send_signal(signum)
     output, _ = process.communicate(timeout=20)
     assert process.returncode == 0, output

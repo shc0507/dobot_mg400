@@ -1,6 +1,5 @@
 """Validated fingertip stations and serialized, atomic TOML updates."""
 
-import fcntl
 import json
 import os
 import re
@@ -257,11 +256,15 @@ class StationStore:
         return validate(data["stations"], self.workspace)
 
     def load(self):
+        import fcntl
+
         with _parent(self.path) as (parent, name):
             fcntl.flock(parent, fcntl.LOCK_SH)
             return self._load(parent, name)
 
     def _update(self, change):
+        import fcntl
+
         with _parent(self.path) as (parent, name):
             # A directory lock is stable across atomic file replacement and
             # serializes every read-modify-write without a removable lock file.
@@ -284,6 +287,8 @@ class StationStore:
         station must pass validation before any file changes. The new files are
         staged and synced first; only two renames remain at the end.
         """
+        import fcntl
+
         if not isinstance(offset, ToolOffset):
             raise ValueError("A measured ToolOffset is required.")
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

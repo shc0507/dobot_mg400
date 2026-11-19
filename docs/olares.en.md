@@ -206,16 +206,23 @@ Rename `start-terminal.sh.disabled` to its original name to restore the old term
 
 ## USB device layout
 
-Every lab USB device connects through 1 self-powered hub on 1 host port.
-The controller is `0000:80:14.0`, with USB 2 port `12` and USB 3 port `3`.
-Keep the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
-A reset disconnects the motor, furnace, gas, and camera connections together.
+Lab USB devices use 2 hubs on controller `0000:80:14.0`.
+The original self-powered hub uses USB 2 root port `12` and USB 3 root port `3`.
+It carries `camera1`, the thermal camera, and the other lab devices.
+The second hub uses USB 2 root port `6` for `camera2`, `camera3`, and `camera4`.
+All 4 USB webcams connect at 480 Mbit/s. Both hubs use the same host controller.
+
+Keep the Toupcam camera on the original hub's USB 3 side. Never reset the original hub.
+A reset disconnects its motor, furnace, gas, and camera connections together.
 
 Keep each camera on its listed hub port.
-The 4 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
-The camera on `12.1.4` is the microscope side camera. It watches the objective turret. go2rtc owns it, and the microscope reads its shared stream.
-The camera on `12.1.2` sees the stage from above. The camera on `12.1.3` looks along the Insert rail, with the tray behind it.
-The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in the console.
+The 3 AC410 cameras report the same serial number, `HU12321178`, so their stable names use port paths.
+The Angetube Live Camera (`camera1`) reports serial number `HU1234567898`.
+The camera on `12.1.2` sees the stage from above. The camera on `6.4` looks along the Insert rail, with the tray behind it.
+The microscope side camera (`camera3`) uses `6.1` and watches the objective turret.
+The tray camera (`camera4`) uses `6.3`.
+After changing a hub, identify each camera before assigning its path. Keep all 4 list entries to preserve stream numbering.
+go2rtc owns the side camera, and the microscope reads its shared `camera3` stream.
 
 | Device | VID:PID | Stable identity | Hub port | Service |
 | --- | --- | --- | --- | --- |
@@ -224,10 +231,10 @@ The camera on `12.2.1` sees the tray. Add its path as `camera4` to show it in th
 | Furnace FT231X | `0403:6015` | `/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_DU0DT9G8-if00-port0` | `12.3.2` | `furnace` (`MG400_FURNACE_SERIAL`) |
 | Gas controller FT232R | `0403:6001` | `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABBCE4JW-if00-port0` | `12.3.1` | `furnace` (`MG400_MFC_SERIAL`) |
 | Thermal Master P1 | `3474:45c2` | libusb, serial `P1016021DG040100208` | `12.1.1` | `thermal` |
-| AC410 stage camera, from above | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
-| AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0` | `12.1.3` | `camera` |
-| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0` | `12.1.4` | `camera`, shared through go2rtc |
-| AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0` | `12.2.1` | `camera` |
+| Angetube Live Camera, wide-angle 4K stage camera from above | `eba4:1303` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0` | `12.1.2` | `camera` |
+| AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0` | `6.4` | `camera` |
+| AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0` | `6.1` | `camera`, shared through go2rtc |
+| AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0` | `6.3` | `camera` |
 | ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
 Use the full serial paths for controllers.
@@ -257,9 +264,10 @@ Templates do not select device paths in service settings. Keep those paths consi
 
 ## Cameras
 
-Configure 1 to 4 AC410 cameras with distinct USB port paths in `MG400_CAMERA_DEVICES`.
+Configure 1 to 4 USB cameras in `MG400_CAMERA_DEVICES`. Use distinct USB port paths.
 Stream names follow device order, from `camera1` through `camera4`. Empty settings disable cameras.
-Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only these modes are accepted:
+Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device.
+The software accepts only the following mode list, based on the AC410 cameras (`camera2` to `camera4`). The selected camera must also advertise the mode:
 
 ```text
 1920x1080@60, 1920x1080@30, 4000x3000@15, 3840x2160@30,
@@ -268,28 +276,33 @@ Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device. Only thes
 640x480@30, 640x360@30, 320x240@30
 ```
 
+Before configuring a replacement camera, query its MJPEG modes with `v4l2-ctl --device <by-path> --list-formats-ext`.
+This command requires the `v4l-utils` package.
+The Angetube Live Camera (`camera1`) supports MJPEG at `3840x2160@30`.
+
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `labctl`, and the preview service refuse to run.
 The following 4-camera configuration uses the port order in the table above.
-All cameras use `1280x720@30`. The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
-The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`, so the shared USB 2 link holds only 1 such stream.
-With the [USB bandwidth patch](#usb-bandwidth-patch), 4 streams at `1280x720@30` run together at 30 fps.
+`camera1` uses `3840x2160@30`. The other 3 cameras use `1280x720@30`.
+The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
+The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`. A shared USB 2 link then holds only 1 such stream.
+The [USB bandwidth patch](#usb-bandwidth-patch) supports concurrent `1280x720@30` capture settings for all 4 streams. Measure the actual delivered frame rate.
 Before you raise a mode, check the bandwidth with `labctl camera-check` and the kernel log:
 
 ```ini
-MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.3:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.2.1:1.0-video-index0
-MG400_CAMERA_MODES=1280x720@30,1280x720@30,1280x720@30,1280x720@30
+MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0
+MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
 Only streams with width at most 1280 and height at most 720 are preloaded.
+Preloaded capture continues when the browser is closed.
 Larger streams start when a video stream, microscope, or still consumer requests them.
 The microscope service reads its side stream only during `select_objective`.
 The preview relay does not serve a side stream above `1280x720`.
-While `camera3` runs at `3840x2160@30`, the shared USB 2 link truncates `camera2` frames.
 A demand-started stream can send a truncated first frame. The microscope reader drops incomplete frames.
-After the last viewer leaves a large stream, the preview service closes its upstream reader when the next upstream data chunk arrives.
-This reader has no read timeout. Other consumers can keep the stream active.
+After the last viewer leaves a demand-started stream, the preview service releases its upstream reader between body reads.
+Socket operations retain their 2-second timeout; this is not a total shutdown deadline. Other consumers can keep the stream active.
 The video streams are capped at 30 fps, including when capture uses `1920x1080@60`.
 A viewer can ask for a lower rate with `?fps=N`, from 1 to 30, for example `/camera/camera2.mjpeg?fps=5`. Other query values return 404.
 Each preloaded stream also has 1 H.264 preview at `/camera/<view>.mp4`, as fragmented MP4 at the camera frame rate. A stream wider than 640 gets at most 4 Mbit/s, or 3 Mbit/s with NVENC. Other streams get 2 Mbit/s. This route accepts only the query `codec=h265`.
@@ -310,11 +323,14 @@ ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0
 Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture.
 The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
 
-The 4 AC410 cameras and thermal camera share a 480 Mbit/s USB 2 link. Large streams can exceed its periodic transfer budget together.
-Before simultaneous hardware use, do a supervised bandwidth check: open the required views together and make sure that several consecutive JPEG images decode completely.
+`camera1` shares the original hub's USB 2 connection with the thermal camera and controllers.
+`camera2`, `camera3`, and `camera4` share the second hub's USB 2 connection.
+Large streams can exceed the periodic transfer budget of a shared connection.
+Before simultaneous hardware use, open the required views together during a supervised bandwidth check. Check that several consecutive JPEG images decode completely.
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
-Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `labctl restart camera vision microscope orch`. These services all read the camera modes. If `vision` is not enabled, remove `vision` from the command.
+Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `labctl restart camera vision microscope orch`. These services all read the camera modes. If `vision` is disabled, omit `vision` from the command.
+After replacing a camera, preserve the original calibration files. Recalibrate its image-coordinate mapping even if the mount stays the same.
 
 Start the camera services:
 
@@ -363,7 +379,7 @@ Limits:
 
 - DKMS builds the module again for each new kernel of the same series. When the host starts a kernel of a different series, it uses the stock driver and ignores `mjpeg_bpp`. Then run the script again.
 - If the build fails, the script removes its DKMS package. The stock driver stays.
-- 4 streams at `1920x1080@30` are near the link limit. Do not use this configuration.
+- On 1 shared USB 2 link, 4 streams at `1920x1080@30` are near the link limit. Do not use this configuration on that link.
 
 ### Camera failures
 
@@ -389,6 +405,6 @@ After increasing the resolution, check all required views together under supervi
 The resolution and frame rate shown by the browser do not rule out corrupted images or partial image damage.
 If these problems occur, lower the mode to `640x480@30`, then check the USB capture path and the [USB bandwidth patch](#usb-bandwidth-patch).
 
-Every lab device shares the external hub. Never reset the shared upstream hub to recover a camera.
+Each hub carries multiple devices. Never reset a shared upstream hub to recover a camera.
 Check the affected camera's port and logs. Follow the supervised hardware procedure before changing a device connection.
 A restored USB connection does not authorize robot, stage, furnace, or gas commands.

@@ -46,8 +46,11 @@ Shortcuts:
 | `robot enable`, `robot disable`, `robot home`, `robot clear-alarm` | `enable`, `disable`, `home`, `clear_alarm` |
 | `robot move X Y Z R [--speed N] [--relative]` | `execute` with flange `targets`. `--relative` adds the values to the current `actual` pose |
 | `robot vacuum suck\|release\|off` | `vacuum` |
-| `stage move MOTOR STEPS [--speed N]` | `move`. The sign of STEPS selects `cw` or `ccw`. The default speed is 50 |
-| `stage home MOTOR`, `stage zero MOTOR`, `stage goto MOTOR NAME`, `stage pose NAME` | `home`, `zero` with `confirm`, `goto`, `pose` |
+| `stage move MOTOR ROTATIONS [--speed N]` | Relative `move`. Positive ROTATIONS use `ccw`; negative values use `cw`. Default speed is 0.25 rotations/s |
+| `stage goto MOTOR POSITION [--speed N]` | `move_to_position` at an absolute rotation coordinate. Default speed is 0.25 rotations/s |
+| `stage calibrate MOTOR [--speed N]` | `calibrate`. Default speed is 0.25 rotations/s |
+| `stage reset-position MOTOR`, `stage set-limit MOTOR` | `reset_position`, `set_limit` |
+| `stage clear-upper-limit MOTOR`, `stage clear-lower-limit MOTOR`, `stage clear-fault MOTOR` | `clear_upper_limit`, `clear_lower_limit`, `clear_fault` |
 | `stage connect [PORT]` | Connect the stage port. Without PORT, list the ports |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | `set_sequence`, or `start_sequence`, from a JSON file |
@@ -58,6 +61,8 @@ Shortcuts:
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | `start_recording` with a new `recording_id` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`, `read_markers`, `read_labels`. The result is in `state.last_command.output` |
+
+Stage coordinates use measured shaft rotations. Absolute `goto` requires completed calibration, valid bounds and fresh encoder feedback. Use Sample Transfer for saved positions. The old stage `home`, `zero` and `pose` shortcuts, and named `goto`, are unsupported.
 
 Each command waits for its result. The default `--timeout` is 300 seconds. `--no-wait` returns after the console accepts the command.
 
@@ -75,6 +80,8 @@ Each command waits for its result. The default `--timeout` is 300 seconds. `--no
 - The default `--timeout` is 1800 seconds. At the timeout, the CLI aborts the run.
 - The output has `run_id`, `status` (`completed` or `aborted`), `steps` with `skill`, `status`, `result` and `error`, and `devices`.
 - One-step catalog recipes: `slot-state`, `station-transfer`, `crucible-load`, `crucible-unload`, `microscope-record`, `check-calibration`. `chip-pick` and `tray-transfer` are also in the catalog.
+
+Encoder stages cannot run the legacy `crucible-load` or `crucible-unload` recipes. These catalog entries require a new coordinate design before encoder use. Sample Transfer buttons move the stage only and do not replace the robot transfer workflow.
 
 ## Stops
 

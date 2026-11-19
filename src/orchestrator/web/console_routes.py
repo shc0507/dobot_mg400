@@ -10,7 +10,7 @@ from labkit.lease import validate_client
 from ..clients import SERVICES
 from .workspaces import discover
 
-_ASSET = re.compile(r"[a-z][a-z0-9-]{0,31}\.(js|css|woff2)")
+_ASSET = re.compile(r"[a-z][a-z0-9-]{0,31}\.(js|css|woff2|png|webp)")
 
 
 def _page():
@@ -55,7 +55,9 @@ def console_blueprints(service, prefix):
     def asset(name):
         if not _ASSET.fullmatch(name):
             abort(404)
-        return send_from_directory(static, name)
+        return send_from_directory(
+            static, name, mimetype="image/webp" if name.endswith(".webp") else None
+        )
 
     @blueprint.get("/api/console/state")
     def state():

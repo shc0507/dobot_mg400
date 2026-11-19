@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const path = new URL("../src/orchestrator/web/static/console/twin.js", import.meta.url).pathname;
+const path = fileURLToPath(new URL("../src/orchestrator/web/static/console/twin.js", import.meta.url));
 
 function load() {
   delete require.cache[path];
@@ -62,4 +63,20 @@ test("device rows show values and states", () => {
   assert.match(rows[1].detail, /Y -3\.9 mm · X -0\.6 mm · insert -2\.6 mm/);
   assert.match(rows[2].detail, /objective 1/);
   assert.match(rows[3].detail, /21\.3 °C · gas off/);
+});
+
+test("encoder rotations remain visible while stage model geometry is uncalibrated", () => {
+  const ws = load();
+  const body = {
+    devices: { stage: { available: true, closed_loop: true, motors: {
+      bottom: { position_rotations: 0.5 }, top: { position_rotations: 1.25 }, insert: { position_rotations: null },
+    } } },
+    joints: { stage_bottom: null, stage_top: null, insert: null },
+    signals: { stage_calibrated: false },
+  };
+  const row = ws.logic.rows(body, key => ws.i18n.en[key])[1];
+  assert.equal(row.state, "stage geometry uncalibrated");
+  assert.equal(row.detail, "Y 0.500 rot · X 1.250 rot · insert –");
+  assert.equal(ws.logic.entityMode("stage", body.signals, body.devices), "ghost");
+  assert.equal(ws.logic.nodeValue({ joint: "stage_bottom" }, body.joints), 0);
 });

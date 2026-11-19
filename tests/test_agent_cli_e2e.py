@@ -140,7 +140,7 @@ def test_robot_take_enable_move_vacuum_and_release(console):
 def test_commands_need_control_and_one_controller_per_device(console):
     # The demo starts the stage service at its first take.
     assert labctl(console, "stage", "take", session="other")[0] == 0
-    code, result = labctl(console, "stage", "home", "top")
+    code, result = labctl(console, "stage", "calibrate", "top")
     assert code == 1 and result["hint"] == "labctl stage take"
     code, result = labctl(console, "stage", "take")
     assert code == 1 and result["error"]["code"] == "held_by_other"

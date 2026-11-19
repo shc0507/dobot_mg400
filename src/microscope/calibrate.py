@@ -5,7 +5,6 @@ operator and exclusive device admission; tests inject only fake device owners.
 """
 
 import argparse
-import fcntl
 import math
 import os
 import re
@@ -14,7 +13,6 @@ import signal
 import stat
 import struct
 import sys
-import termios
 import threading
 import time
 import tomllib
@@ -23,6 +21,11 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+
+try:
+    import termios
+except ImportError:  # The offline Windows Console imports measured settings only.
+    termios = None
 
 from cameras.config import MJPEG_MODES, camera_devices
 from cameras.uvc import USBCamera
@@ -35,7 +38,7 @@ from .paths import calibration_path, private_open
 from .side_capture import SideCaptureCancelled
 
 MODES = (1, 2, 4, 8, 16)
-# Measured H-06 values of the lab microscope, in full-step pulses. The microscope
+# Measured H-06 focus values of the lab microscope, in MICRO 4 pulses. The microscope
 # has no focus home switch, so manual zero is at clearance.
 FOCUS_LIMITS = (0, 10000)
 SWITCH_FOCUS = 0
@@ -199,6 +202,8 @@ class TerminalOperator:
             raise RuntimeError(
                 "Supervised calibration requires a person at an interactive terminal"
             )
+        if termios is None:
+            raise RuntimeError("Supervised calibration requires a Linux terminal")
 
     def confirm(self, reason, check):
         self.require_interactive()
@@ -833,7 +838,12 @@ class NativeUVCCapture:
             raise ValueError("The native side camera needs one supported MJPEG mode")
         self.device, self.mode = device, mode
         self._system = os if system is None else system
-        self._ioctl = fcntl.ioctl if ioctl is None else ioctl
+        if ioctl is None:
+            try:
+                from fcntl import ioctl
+            except ImportError as exc:
+                raise RuntimeError("Native UVC capture requires Linux") from exc
+        self._ioctl = ioctl
         self._cv = cv2 if cv is None else cv
         self._video_factory = self._cv.VideoCapture if video_factory is None else video_factory
         self._descriptor = None

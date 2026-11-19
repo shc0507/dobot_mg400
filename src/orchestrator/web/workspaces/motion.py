@@ -3,9 +3,8 @@
 The page sends every device command through the console relay. This module
 adds these routes under ``<base>/api/console/ws/motion``:
 
-- ``GET state`` reads the robot and stage state once per request with a fresh
-  read identity and keeps only the fields the page shows. It never acquires,
-  renews or releases a lease.
+- ``GET state`` reads the cached robot and stage state and keeps only the
+  fields the page shows. It never acquires, renews or releases a lease.
 - ``POST jog`` and ``POST move`` send one robot ``execute`` target once through
   ``service.console.command``. The robot service applies its speed cap and refuses
   a move while the controller reports an alarm. A jog adds one step on one axis
@@ -25,8 +24,12 @@ session. The console, not the page, sends the stage commands:
   with a new id. The page sends the same body again every 150 ms. Without it
   for 0.5 s the console releases the hold.
 - ``POST stage/release`` ``{"id"}`` ends that hold.
+- ``POST stage/position`` ``{"target": {"x", "y"}}`` or
+  ``{"target": {"insert"}}`` starts a sequence to encoder coordinates in rotations.
+  The sequence uses current calibrated limits and stops on Stop or lease release.
 """
 
+import math
 import re
 
 from flask import jsonify, request
@@ -34,12 +37,49 @@ from flask import jsonify, request
 from labkit.errors import ServiceError
 from labkit.lease import validate_client
 
+from ..sample_transfer import get_sample_transfer
 from . import Workspace
 
 JOG_STEPS = (0.5, 2, 10)
 AXES = ("x", "y", "z", "r")
 
 DEVICES = ("robot", "stage")
+
+
+def position_snapshot(service):
+    """Optional encoder-position connector. All stage coordinates use rotations."""
+    source = getattr(service, "stage_position_source", None)
+    snapshot = getattr(source, "snapshot", None)
+    if not callable(snapshot):
+        return None
+    try:
+        data = snapshot()
+        if not isinstance(data, dict) or data.get("available") is not True:
+            return {"available": False}
+
+        def finite(value):
+            return type(value) in (int, float) and math.isfinite(value)
+
+        values = data.get("values_rotations")
+        limits = data.get("limits_rotations")
+        values = values if isinstance(values, dict) else {}
+        limits = limits if isinstance(limits, dict) else {}
+        result = {"available": True, "values_rotations": {}, "limits_rotations": {}}
+        for axis in ("x", "y", "insert"):
+            value = values.get(axis)
+            result["values_rotations"][axis] = value if finite(value) else None
+            bounds = limits.get(axis)
+            if (
+                isinstance(bounds, dict)
+                and finite(bounds.get("min"))
+                and finite(bounds.get("max"))
+                and bounds["max"] > bounds["min"]
+            ):
+                result["limits_rotations"][axis] = {key: bounds[key] for key in ("min", "max")}
+        return result
+    except Exception:
+        return {"available": False}
+
 
 ROBOT_FIELDS = (
     "actual",
@@ -75,6 +115,17 @@ STAGE_FIELDS = (
     "microstep_modes",
     "limits",
     "defaults",
+    "closed_loop",
+    "telemetry_streaming",
+    "travel_limits",
+    "home_switches",
+    "auto_calibration",
+    "absolute_positioning",
+    "hold_direction_warnings",
+    "required_microstep",
+    "positive_direction",
+    "sampled_at",
+    "stop_epoch",
 )
 MOTOR_FIELDS = (
     "id",
@@ -90,6 +141,35 @@ MOTOR_FIELDS = (
     "at_positions",
     "available",
     "cooldown",
+    "position_rotations",
+    "remaining_rotations",
+    "speed",
+    "measured_speed",
+    "max_speed",
+    "steps_per_revolution",
+    "tolerance",
+    "position_tolerance_rotations",
+    "acceleration",
+    "encoder",
+    "encoder_raw",
+    "encoder_channel",
+    "magnet_status",
+    "encoder_age_ms",
+    "telemetry_age_ms",
+    "limit_telemetry_age_ms",
+    "switch_mask",
+    "switch_raw",
+    "lower_limit_rotations",
+    "upper_limit_rotations",
+    "lower_limit_set",
+    "upper_limit_set",
+    "calibration",
+    "fault",
+    "warning",
+    "direction_warning_count",
+    "recalibration_recommended",
+    "positioning_ready",
+    "motion_ready",
 )
 COMMAND_FIELDS = ("action", "result", "message", "finished_at")
 
@@ -228,8 +308,13 @@ def register(blueprint, service):
         page = _page()
         data = _body({"id", "motor", "direction", "speed"})
         direction, speed = data["direction"], data["speed"]
-        if direction not in ("cw", "ccw") or type(speed) is not int or speed < 1:
-            raise ValueError("Send a direction of cw or ccw and a whole speed of at least 1.")
+        if (
+            direction not in ("cw", "ccw")
+            or type(speed) not in (int, float)
+            or not math.isfinite(speed)
+            or speed <= 0
+        ):
+            raise ValueError("Send a direction of cw or ccw and a positive speed in rotations/s.")
         hold_id, motor = _hold_id(data["id"]), _motor(data["motor"])
         result = service.console.stage_hold(page, hold_id, motor, direction, speed)
         status = {"accepted": 200, "refused": 409, "unknown": 502}[result["outcome"]]
@@ -241,11 +326,28 @@ def register(blueprint, service):
         data = _body({"id"})
         return jsonify(service.console.stage_release(page, _hold_id(data["id"])))
 
+    @blueprint.post("/stage/position")
+    def stage_position():
+        page = _page()
+        data = _body({"target"})
+        operation = get_sample_transfer(service).start_coordinates(page, data["target"])
+        return jsonify(operation=operation), 202
+
     @blueprint.get("/state")
     def state():
         page = request.headers.get("X-MG400-Client")
         page = validate_client(page) if page else None
-        return jsonify({device: read(service, device, page) for device in DEVICES})
+        result = {device: read(service, device, page) for device in DEVICES}
+        position = position_snapshot(service)
+        if position is not None:
+            result["stage_position"] = position
+        transfer = getattr(service, "sample_transfer", None)
+        result["stage_operation"] = (
+            transfer.operation_state(page)
+            if transfer is not None
+            else {"status": "idle", "mine": False, "message": "", "settling": False}
+        )
+        return jsonify(result)
 
     @blueprint.post("/jog")
     def jog():

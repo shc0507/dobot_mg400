@@ -458,6 +458,8 @@ uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'
 
 ## 坩埚装载与卸载
 
+这些配方仍保留在目录中，供旧版位移台系统使用。重新设计坐标前，编码器位移台拒绝 `crucible.load`、`crucible.unload` 和 `stage_at_load` 条件。旧命名位置和毫米参考不能定义编码器圈数目标。Sample Transfer 只提供位移台移动，其 Extract/Insert 按钮不执行机器人与坩埚之间的转移。
+
 `crucible.load` 把芯片从示教托盘工位转移到 `crucible-load`，再插入坩埚。
 `crucible.unload` 退出坩埚，等待命名热区降温，再把芯片转移到示教托盘工位。
 必须有名为 `crucible-load` 的示教工位，其区域为 `crucible-load`。托盘工位不得为 `crucible-load`。

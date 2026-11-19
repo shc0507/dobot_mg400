@@ -5,6 +5,7 @@ Exit codes: 0 ok, 1 refused or failed, 2 usage, 3 outcome unknown, 130 interrupt
 
 import argparse
 import json
+import math
 import secrets
 import signal
 import sys
@@ -52,7 +53,11 @@ def _interrupts():
         raise KeyboardInterrupt
 
     try:
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        for signum in (
+            getattr(signal, name)
+            for name in ("SIGINT", "SIGTERM", "SIGHUP")
+            if hasattr(signal, name)
+        ):
             previous[signum] = signal.signal(signum, interrupt)
         yield
     finally:
@@ -110,14 +115,23 @@ def _parser():
         elif device == "stage":
             move = verb(verbs, "move", sends=True)
             move.add_argument("motor")
-            move.add_argument("steps", type=int)
-            move.add_argument("--speed", type=int, default=50)
-            for name in ("home", "zero"):
+            move.add_argument("rotations", type=float)
+            move.add_argument("--speed", type=float, default=0.25)
+            calibrate = verb(verbs, "calibrate", sends=True)
+            calibrate.add_argument("motor")
+            calibrate.add_argument("--speed", type=float, default=0.25)
+            for name in (
+                "reset-position",
+                "set-limit",
+                "clear-upper-limit",
+                "clear-lower-limit",
+                "clear-fault",
+            ):
                 verb(verbs, name, sends=True).add_argument("motor")
             goto = verb(verbs, "goto", sends=True)
             goto.add_argument("motor")
-            goto.add_argument("name")
-            verb(verbs, "pose", sends=True).add_argument("name")
+            goto.add_argument("position", type=float)
+            goto.add_argument("--speed", type=float, default=0.25)
             verb(verbs, "connect").add_argument("port", nargs="?")
         elif device == "furnace":
             setpoint = verb(verbs, "setpoint", sends=True)
@@ -214,23 +228,37 @@ def _shortcut(agent, args):
                 params["speed"] = args.speed
             return "execute", params
     if group == "stage":
+        if verb in {"move", "goto", "calibrate"} and (
+            not math.isfinite(args.speed) or args.speed <= 0
+        ):
+            raise UsageError("SPEED must be a positive finite rotation rate.")
         if verb == "move":
-            if args.steps == 0:
-                raise UsageError("STEPS must not be 0.")
+            if not math.isfinite(args.rotations) or args.rotations == 0:
+                raise UsageError("ROTATIONS must be finite and must not be 0.")
             return "move", {
                 "motor": args.motor,
-                "direction": "cw" if args.steps > 0 else "ccw",
-                "steps": abs(args.steps),
+                "direction": "ccw" if args.rotations > 0 else "cw",
+                "rotations": abs(args.rotations),
                 "speed": args.speed,
             }
-        if verb == "home":
-            return "home", {"motor": args.motor}
-        if verb == "zero":
-            return "zero", {"motor": args.motor, "confirm": True}
+        if verb == "calibrate":
+            return "calibrate", {"motor": args.motor, "speed": args.speed}
+        if verb in {
+            "reset-position",
+            "set-limit",
+            "clear-upper-limit",
+            "clear-lower-limit",
+            "clear-fault",
+        }:
+            return verb.replace("-", "_"), {"motor": args.motor}
         if verb == "goto":
-            return "goto", {"motor": args.motor, "name": args.name}
-        if verb == "pose":
-            return "pose", {"name": args.name}
+            if not math.isfinite(args.position):
+                raise UsageError("POSITION must be finite rotations.")
+            return "move_to_position", {
+                "motor": args.motor,
+                "position": args.position,
+                "speed": args.speed,
+            }
     if group == "furnace":
         if verb == "setpoint":
             return "apply_setpoint", {

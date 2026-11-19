@@ -15,7 +15,7 @@
   ];
   const CAMERAS = ["camera2", "camera4", "camera3"];
   // Each station shows the view of its own device first. Any of its views can take the frame.
-  const STATION_VIEWS = { arm: ["camera2", "camera4", "camera3"], stage: ["microscope", "camera3", "camera2"] };
+  const STATION_VIEWS = { arm: ["camera2", "camera4", "camera3", "camera1", "microscope", "thermal"], stage: ["microscope", "camera1", "camera3", "camera2", "camera4", "thermal"] };
   // Keyboard jog: the robot service moves while it sees a key held (lease 0.4 s).
   const KEYS = "WASDQERFZX";
   // The keyboard jog keys in pairs, each with the label of its pair. The first key of a pair moves out, +, up or opens.
@@ -25,12 +25,18 @@
   const JOG_KEYS = { "z+": "R", "z-": "F", "r+": "Q", "r-": "E" };
   const KEYS_MS = 150;
   // Stage hold: the console keeps 1 axis moving while this page refreshes the hold (dead-man 0.5 s).
-  // Each pair is the Hold − key (ccw) and the Hold + key (cw) of 1 axis.
+  // Each pair keeps its existing ccw / cw bindings. Physical directions match the original stage controller.
   const STAGE_KEYS = [["I", "K", "bottom"], ["J", "L", "top"], ["U", "O", "insert"]];
+  const STAGE_DIRECTIONS = {
+    bottom: { ccw: "up", cw: "down" },
+    top: { ccw: "right", cw: "left" },
+    insert: { ccw: "in", cw: "out" },
+  };
   const HOLD_MS = 150;
-  const POLL_MS = 1000;
+  const POLL_MS = 250;
   const EVENTS_MS = 2000;
   const LOG_LIMIT = 40;
+  const TARGET_MS = 5000;
 
   // Pure functions. Tests load them without a DOM.
 
@@ -38,6 +44,95 @@
   function actualPose(robot) {
     const values = Array.isArray(robot?.actual) ? robot.actual.slice(0, 4) : [];
     return values.length === 4 && values.every(value => typeof value === "number" && Number.isFinite(value)) ? values : null;
+  }
+
+  // Equal X/Y scales, centred on the origin. This is a plot scale, not a motion limit.
+  function armXY(pose) {
+    if (!Array.isArray(pose) || !pose.slice(0, 2).every(value => typeof value === "number" && Number.isFinite(value)) || pose.length < 2) return null;
+    const extent = Math.max(500, Math.ceil(Math.max(Math.abs(pose[0]), Math.abs(pose[1])) / 100) * 100);
+    return { extent, x: (pose[0] / extent + 1) / 2, y: (pose[1] / extent + 1) / 2 };
+  }
+
+  /** Fresh encoder rotations only. No position is inferred from motor commands. */
+  function encoderPosition(stage) {
+    const result = { available: Boolean(stage?.connected && stage.closed_loop), values_rotations: {}, limits_rotations: {} };
+    for (const [id, axis] of [["top", "x"], ["bottom", "y"], ["insert", "insert"]]) {
+      const motor = stage?.motors?.find(item => item.id === id);
+      if (!result.available || !motor || !encoderFresh(stage, motor)) continue;
+      result.values_rotations[axis] = motor.position_rotations;
+      if (motor.lower_limit_set && motor.upper_limit_set) result.limits_rotations[axis] = { min: motor.lower_limit_rotations, max: motor.upper_limit_rotations };
+    }
+    return result;
+  }
+
+  function encoderFresh(stage, motor) {
+    const elapsed = stage?._receivedAt ? Math.max(0, Date.now() - stage._receivedAt) : 0;
+    const fresh = age => typeof age === "number" && Number.isFinite(age) && age >= 0 && age + elapsed <= 1000;
+    return Boolean(stage?.connected && stage.closed_loop && motor?.encoder === "ok"
+      && (!stage.telemetry_streaming || fresh(motor.telemetry_age_ms)));
+  }
+
+  /** Measured positions and configured travel ranges, in shaft rotations. */
+  function stagePosition(snapshot) {
+    const finite = value => typeof value === "number" && Number.isFinite(value);
+    const axes = {};
+    for (const axis of ["x", "y", "insert"]) {
+      const value = snapshot?.available === true && finite(snapshot.values_rotations?.[axis]) ? snapshot.values_rotations[axis] : null;
+      const limits = snapshot?.available === true ? snapshot.limits_rotations?.[axis] : null;
+      const range = finite(limits?.min) && finite(limits?.max) && limits.max > limits.min ? limits : null;
+      const fraction = value !== null && range ? (value - range.min) / (range.max - range.min) : null;
+      axes[axis] = { value, range, fraction: fraction !== null && fraction >= 0 && fraction <= 1 ? fraction : null };
+    }
+    return axes;
+  }
+
+  /** Map viewport coordinates through the plot content box to absolute rotations. */
+  function stageTargetAt(axes, kind, box, clientX, clientY) {
+    const names = kind === "xy" ? ["x", "y"] : kind === "insert" ? ["insert"] : [];
+    if (!names.length || !box || !Number.isFinite(clientX) || !(box.width > 0)
+      || (kind === "xy" && (!Number.isFinite(clientY) || !(box.height > 0)))
+      || names.some(name => !axes[name]?.range)) return null;
+    const fraction = value => Math.max(0, Math.min(1, value));
+    return Object.fromEntries(names.map(name => {
+      const ratio = name === "y" ? 1 - fraction((clientY - box.top) / box.height) : fraction((clientX - box.left) / box.width);
+      const { min, max } = axes[name].range;
+      return [name, min + ratio * (max - min)];
+    }));
+  }
+
+  function plotContentBox(node) {
+    const rect = node?.getBoundingClientRect?.();
+    if (!rect) return null;
+    const style = typeof root.getComputedStyle === "function" ? root.getComputedStyle(node) : {};
+    const size = key => parseFloat(style[key]) || 0;
+    const sx = node.offsetWidth ? rect.width / node.offsetWidth : 1, sy = node.offsetHeight ? rect.height / node.offsetHeight : 1;
+    const left = (size("borderLeftWidth") + size("paddingLeft")) * sx, right = (size("borderRightWidth") + size("paddingRight")) * sx;
+    const top = (size("borderTopWidth") + size("paddingTop")) * sy, bottom = (size("borderBottomWidth") + size("paddingBottom")) * sy;
+    return { left: rect.left + left, top: rect.top + top, width: rect.width - left - right, height: rect.height - top - bottom };
+  }
+
+  function stageTargetReady(stage, axes, names) {
+    if (!stage?.available || !stage.connected || !stage.closed_loop || stage.locked || stage.fault || stage.busy) return false;
+    if (!stage.motors?.length || stage.motors.some(motor => motor.mode !== "idle" || ["lower", "upper", "center"].includes(motor.calibration))) return false;
+    return names.every(name => {
+      const motor = stage.motors.find(item => item.id === ({ x: "top", y: "bottom", insert: "insert" })[name]);
+      const axis = axes[name];
+      return motor?.positioning_ready === true && encoderFresh(stage, motor) && (!motor.fault || motor.fault === "none")
+        && axis?.fraction !== null && axis?.range && motor.lower_limit_set && motor.upper_limit_set
+        && axis.range.min === motor.lower_limit_rotations && axis.range.max === motor.upper_limit_rotations;
+    });
+  }
+
+  /** Fractional rotations and rotation rates. Reject blank, non-finite and exponent inputs. */
+  function parseRotation(text, minimum, maximum) {
+    const value = String(text ?? "").trim();
+    if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(value)) return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= minimum && number <= maximum ? number : null;
+  }
+
+  function stageSpeedLimit(stage, motor) {
+    return typeof motor?.max_speed === "number" && motor.max_speed > 0 ? motor.max_speed : stage?.limits?.speed || 0.5;
   }
 
   /** One jog: the actual pose plus one step on one axis. */
@@ -179,11 +274,20 @@
   /** The short stepping label: Full for full step, otherwise the step fraction. */
   function stepLabel(value, full) { return value === 1 ? full : "1/" + value; }
 
-  const logic = { actualPose, jogTarget, parsePose, speedCap, keyboardCap, jogKey, holdKey, holdId, clampSpeed, parseCount, axisReference, axisState, portLabel, activityRows, clock, fixed, stepLabel, STEPS, CAMERAS, STATION_VIEWS };
+  const logic = { actualPose, stagePosition, encoderPosition, encoderFresh, stageTargetAt, plotContentBox, stageTargetReady, parseRotation, stageSpeedLimit, jogTarget, parsePose, speedCap, keyboardCap, jogKey, holdKey, holdId, clampSpeed, parseCount, axisReference, axisState, portLabel, activityRows, clock, fixed, stepLabel, STEPS, CAMERAS, STATION_VIEWS };
 
   const i18n = {
     en: {
+      "axis.encoderDetails": "Raw angle {raw} · I²C channel {channel} · magnet status {magnet} · remaining {remaining} rot · tolerance {tolerance} rot",
       "arm.title": "Robot arm", "stage.title": "Stage",
+      "position.title": "Stage position",
+      "position.xy": "X/Y travel", "position.insert": "Insert travel", "position.out": "Fully out", "position.in": "Fully in",
+      "position.min": "{axis} min {value} rot", "position.max": "{axis} max {value} rot",
+      "target.hint": "Double-click a chart to select a target.", "target.confirm": "Confirm move",
+      "target.pending": "Confirm within 5 seconds.", "target.sending": "Sending move…", "target.moving": "Moving…",
+      "target.completed": "Target reached", "target.stopped": "Move stopped", "target.failed": "Move failed",
+      "target.unknown": "Move result unknown. Check the stage.",
+      "target.error": "Move failed: {message}", "target.readout": "Target · {coordinates}",
       "badge.demo": "DEMO",
       "dev.unconfigured": "Not configured", "dev.offline": "Not running", "dev.unreachable": "Not reachable", "dev.loading": "Loading…",
       "arm.enabled": "Enabled", "arm.disabled": "Disabled", "arm.busy": "Moving", "arm.alarm": "Alarm",
@@ -205,7 +309,8 @@
       "key.Q": "J4 +", "key.W": "Reach out", "key.E": "J4 −", "key.R": "Z up", "key.A": "J1 +", "key.S": "Reach in",
       "key.D": "J1 −", "key.F": "Z down", "key.Z": "Suck", "key.X": "Drop",
       "pair.reach": "Out / In", "pair.j1": "J1 + / −", "pair.z": "Z up / down", "pair.j4": "J4 + / −", "pair.suction": "Suck / Drop",
-      "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons", "fold.stage": "Step moves and zero",
+      "pose.actual": "Actual pose", "pose.joints": "Joint angles", "fold.jog": "Jog buttons",
+      "pose.xy": "X/Y position", "pose.current": "Current", "pose.last": "Last known", "pose.unknown": "No position",
       "vac.title": "Suction", "vac.suck": "Suck", "vac.release": "Drop",
       "vac.state.suck": "Sucking", "vac.state.blow": "Blowing", "vac.state.off": "Off",
       "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}",
@@ -215,16 +320,16 @@
       "stage.stepping": "Stepping", "stage.full": "Full", "stage.keys": "Keys",
       "stage.steppingConfirm": "Set {mode}? This clears the zero and soft limits of all 3 axes.",
       "stage.zeroNone": "Set zero needs the stage calibration file and zero support in the firmware. Hold and step work without them.",
-      "axis.bottom": "Bottom", "axis.top": "Top", "axis.insert": "Insert",
+      "axis.bottom": "Bottom (Y)", "axis.top": "Top (X)", "axis.insert": "Insert",
+      "direction.up": "Up", "direction.down": "Down", "direction.left": "Left", "direction.right": "Right",
+      "direction.in": "In", "direction.out": "Out",
       "axis.idle": "Idle", "axis.moving": "Moving", "axis.cooldown": "Cooling down",
       "axis.pulses": "{n} pulses", "axis.mm": "{mm} mm",
       "ref.homed": "Homed", "ref.zeroed": "Zero confirmed", "ref.homeRequired": "Home required",
       "ref.zeroRequired": "Zero required", "ref.unavailable": "Reference unavailable",
-      "axis.steps": "Steps", "axis.speed": "Pulses/s", "axis.speedUnit": "p/s", "axis.speedLabel": "{axis} speed, pulses/s", "axis.unit": "pulses",
-      "axis.minus": "Step −", "axis.plus": "Step +", "axis.minusLabel": "Move {axis} minus by the steps",
-      "axis.plusLabel": "Move {axis} plus by the steps", "axis.badCount": "Enter whole steps from 1 to {max} and a speed from 1 to {speed}.",
-      "axis.holdMinus": "Hold −", "axis.holdPlus": "Hold +", "axis.holdMinusLabel": "Hold to move {axis} minus",
-      "axis.holdPlusLabel": "Hold to move {axis} plus", "axis.badSpeed": "Enter a speed from 1 to {speed} pulses/s.",
+      "axis.steps": "Steps", "axis.speed": "Pulses/s", "axis.speedUnit": "p/s",  "axis.unit": "pulses",
+      "axis.badCount": "Enter whole steps from 1 to {max} and a speed from 1 to {speed}.",
+      "axis.hold": "Hold {direction}", "axis.holdLabel": "Hold to move {axis} {direction}",
       "kb.stage": "Stage keyboard", "kb.axis": "{axis} − / +",
       "axis.home": "Home…", "axis.homeConfirm": "Clear the travel path. {axis} moves to its reference switch.",
       "axis.check": "Check reference", "axis.zero": "Set zero…", "axis.teach": "Teach reference…",
@@ -246,12 +351,73 @@
       "act.set_microstep": "Stepping", "act.teach_reference": "Teach reference", "act.zero": "Set zero",
       "act.stop": "Stop", "act.stop_sync": "Stop", "act.release_hold": "Release hold", "act.keepalive": "Hold refresh",
       "res.ok": "ok", "res.failed": "failed", "res.refused": "refused",
-      "stage.needControl": "Take control of the stage to step, home or set zero.",
       "cam.offline": "OFFLINE",
       "view.arm": "Arm view", "view.stage": "Stage view", "view.camera2": "Insert rail", "view.camera4": "Tray",
-      "view.camera3": "Microscope side", "view.microscope": "Microscope",
+      "view.camera3": "Microscope side", "view.microscope": "Microscope", "view.camera1": "Stage", "view.thermal": "Thermal",
+
+      "position.waiting": "Waiting for fresh encoder feedback",
+      "position.current": "Live encoder position",
+      "fold.stage": "Moves, limits and calibration",
+      "axis.speedLabel": "{axis} speed, rotations/s",
+      "axis.step": "Move {direction}",
+      "axis.stepLabel": "Move {axis} {direction} by the rotations",
+      "axis.badSpeed": "Enter a speed from 0.001 to {speed} rotations/s.",
+      "stage.needControl": "Take stage control to change positions or limits.",
+      "stage.fixedStep": "1/8 stepping · encoder feedback",
+      "stage.encoderRequired": "Encoder firmware required. Stop and serial connection remain available.",
+      "axis.rotations": "Relative rotations",
+      "axis.target": "Target rotation",
+      "axis.badRotations": "Enter rotations from 0.001 to 10000.",
+      "axis.badTarget": "Enter a target within the calibrated limits.",
+      "axis.reset": "Reset position",
+      "axis.setLimit": "Set limit here",
+      "axis.clearUpper": "Clear upper",
+      "axis.clearLower": "Clear lower",
+      "axis.clearFault": "Clear fault",
+      "axis.calibrate": "Auto calibrate",
+      "axis.goto": "Move to target",
+      "axis.calibrationHelp": "Auto calibrate moves to lower, upper, then center. Reset position clears both limits. Set limit records a positive upper or negative lower position.",
+      "axis.limits": "Limits {lower} → {upper} rot · {calibration}",
+      "axis.live": "Live · {age} ms",
+      "axis.stale": "Feedback stale",
+      "axis.polled": "Polled feedback",
+      "axis.encoder": "Encoder {encoder} · {speed} rot/s",
+      "axis.switches": "Switches: {switches}",
+      "axis.switchNone": "clear",
+      "axis.switchUpper": "upper",
+      "axis.switchLower": "lower",
+      "axis.switchBoth": "both",
+      "axis.switchUnknown": "unknown",
+      "axis.fault": "Fault: {fault}",
+      "axis.warning": "Direction pauses: {count}{retry}{recommend}",
+      "axis.retry": " · retrying",
+      "axis.recommend": " · calibration recommended",
+      "axis.cal.none": "not calibrated",
+      "axis.cal.lower": "seeking lower",
+      "axis.cal.upper": "seeking upper",
+      "axis.cal.center": "moving to center",
+      "axis.cal.done": "calibrated",
+      "axis.cal.cancelled": "calibration cancelled",
+      "axis.cal.failed": "calibration failed",
+      "act.move_to_position": "Move to target",
+      "act.reset_position": "Reset position",
+      "act.set_limit": "Set limit here",
+      "act.clear_upper_limit": "Clear upper",
+      "act.clear_lower_limit": "Clear lower",
+      "act.clear_fault": "Clear fault",
+      "act.calibrate": "Auto calibrate",
+      "axis.maxSpeed": "Maximum {speed} rot/s",
     },
     zh: {
+      "axis.encoderDetails": "原始角度 {raw} · I²C 通道 {channel} · 磁铁状态 {magnet} · 剩余 {remaining} 圈 · 容差 {tolerance} 圈",
+      "position.title": "位移台位置",
+      "position.xy": "X/Y 行程", "position.insert": "Insert 行程", "position.out": "完全退出", "position.in": "完全插入",
+      "position.min": "{axis} 下限 {value} 圈", "position.max": "{axis} 上限 {value} 圈",
+      "target.hint": "双击图表选择目标。", "target.confirm": "确认移动",
+      "target.pending": "请在 5 秒内确认。", "target.sending": "正在发送移动…", "target.moving": "移动中…",
+      "target.completed": "已到达目标", "target.stopped": "移动已停止", "target.failed": "移动失败",
+      "target.unknown": "移动结果未知。请检查位移台。",
+      "target.error": "移动失败：{message}", "target.readout": "目标 · {coordinates}",
       "arm.title": "机械臂", "stage.title": "位移台",
       "badge.demo": "演示",
       "dev.unconfigured": "未配置", "dev.offline": "未运行", "dev.unreachable": "无法连接", "dev.loading": "加载中…",
@@ -274,7 +440,8 @@
       "key.Q": "J4 +", "key.W": "伸出", "key.E": "J4 −", "key.R": "Z 上", "key.A": "J1 +", "key.S": "收回",
       "key.D": "J1 −", "key.F": "Z 下", "key.Z": "吸取", "key.X": "放下",
       "pair.reach": "伸出 / 收回", "pair.j1": "J1 + / −", "pair.z": "Z 上 / 下", "pair.j4": "J4 + / −", "pair.suction": "吸取 / 放下",
-      "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮", "fold.stage": "步进和零点",
+      "pose.actual": "实际位姿", "pose.joints": "关节角度", "fold.jog": "点动按钮",
+      "pose.xy": "X/Y 位置", "pose.current": "当前位置", "pose.last": "最后位置", "pose.unknown": "无位置",
       "vac.title": "吸盘", "vac.suck": "吸取", "vac.release": "放下",
       "vac.state.suck": "吸取中", "vac.state.blow": "吹气中", "vac.state.off": "已关闭",
       "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}",
@@ -284,16 +451,16 @@
       "stage.stepping": "细分", "stage.full": "整步", "stage.keys": "按键",
       "stage.steppingConfirm": "设为{mode}？这会清除全部 3 轴的零点和软限位。",
       "stage.zeroNone": "设零需要位移台标定文件和固件的设零支持。没有它们时，按住移动和步进仍可使用。",
-      "axis.bottom": "底部轴", "axis.top": "顶部轴", "axis.insert": "插入轴",
+      "axis.bottom": "底部轴 (Y)", "axis.top": "顶部轴 (X)", "axis.insert": "插入轴",
+      "direction.up": "上", "direction.down": "下", "direction.left": "左", "direction.right": "右",
+      "direction.in": "进", "direction.out": "出",
       "axis.idle": "空闲", "axis.moving": "运动中", "axis.cooldown": "冷却中",
       "axis.pulses": "{n} 脉冲", "axis.mm": "{mm} mm",
       "ref.homed": "已回零", "ref.zeroed": "零点已确认", "ref.homeRequired": "需要回零",
       "ref.zeroRequired": "需要设零", "ref.unavailable": "参考不可用",
-      "axis.steps": "步数", "axis.speed": "脉冲/秒", "axis.speedUnit": "脉冲/秒", "axis.speedLabel": "{axis}速度，脉冲/秒", "axis.unit": "脉冲",
-      "axis.minus": "步进 −", "axis.plus": "步进 +", "axis.minusLabel": "{axis}按步数负向移动",
-      "axis.plusLabel": "{axis}按步数正向移动", "axis.badCount": "请输入 1 到 {max} 的整数步数和 1 到 {speed} 的速度。",
-      "axis.holdMinus": "按住 −", "axis.holdPlus": "按住 +", "axis.holdMinusLabel": "按住使{axis}负向移动",
-      "axis.holdPlusLabel": "按住使{axis}正向移动", "axis.badSpeed": "请输入 1 到 {speed} 的速度（脉冲/秒）。",
+      "axis.steps": "步数", "axis.speed": "脉冲/秒", "axis.speedUnit": "脉冲/秒",  "axis.unit": "脉冲",
+      "axis.badCount": "请输入 1 到 {max} 的整数步数和 1 到 {speed} 的速度。",
+      "axis.hold": "按住向{direction}", "axis.holdLabel": "按住使{axis}向{direction}移动",
       "kb.stage": "位移台键盘", "kb.axis": "{axis} − / +",
       "axis.home": "回零…", "axis.homeConfirm": "请清空行程。{axis}将移动到参考开关。",
       "axis.check": "检查参考", "axis.zero": "设零…", "axis.teach": "示教参考…",
@@ -315,18 +482,71 @@
       "act.set_microstep": "细分", "act.teach_reference": "示教参考", "act.zero": "设零",
       "act.stop": "停止", "act.stop_sync": "停止", "act.release_hold": "松开按住", "act.keepalive": "刷新按住",
       "res.ok": "完成", "res.failed": "失败", "res.refused": "被拒绝",
-      "stage.needControl": "获取位移台控制权后，才能步进、回零或设零。",
       "cam.offline": "离线",
       "view.arm": "机械臂视图", "view.stage": "位移台视图", "view.camera2": "插入导轨", "view.camera4": "托盘",
-      "view.camera3": "显微镜侧视", "view.microscope": "显微镜",
+      "view.camera3": "显微镜侧视", "view.microscope": "显微镜", "view.camera1": "位移台", "view.thermal": "热像仪",
+
+      "position.waiting": "等待编码器反馈",
+      "position.current": "实时编码器位置",
+      "fold.stage": "移动、限位和标定",
+      "axis.speedLabel": "{axis}速度，圈/秒",
+      "axis.step": "向{direction}移动",
+      "axis.stepLabel": "{axis}按圈数向{direction}移动",
+      "axis.badSpeed": "请输入 0.001 到 {speed} 圈/秒的速度。",
+      "stage.needControl": "获取位移台控制权后可移动或设置限位。",
+      "stage.fixedStep": "1/8 细分 · 编码器反馈",
+      "stage.encoderRequired": "需要编码器固件。仍可停止和连接串口。",
+      "axis.rotations": "相对圈数",
+      "axis.target": "目标圈数",
+      "axis.badRotations": "请输入 0.001 到 10000 圈。",
+      "axis.badTarget": "请输入标定范围内的目标。",
+      "axis.reset": "位置归零",
+      "axis.setLimit": "设当前位置为限位",
+      "axis.clearUpper": "清除上限",
+      "axis.clearLower": "清除下限",
+      "axis.clearFault": "清除故障",
+      "axis.calibrate": "自动标定",
+      "axis.goto": "移到目标",
+      "axis.calibrationHelp": "自动标定依次移到下限、上限和中心。位置归零会清除全部限位。正位置可设为上限，负位置可设为下限。",
+      "axis.limits": "限位 {lower} → {upper} 圈 · {calibration}",
+      "axis.live": "实时 · {age} 毫秒",
+      "axis.stale": "反馈过期",
+      "axis.polled": "轮询反馈",
+      "axis.encoder": "编码器 {encoder} · {speed} 圈/秒",
+      "axis.switches": "开关：{switches}",
+      "axis.switchNone": "未触发",
+      "axis.switchUpper": "上限",
+      "axis.switchLower": "下限",
+      "axis.switchBoth": "全部触发",
+      "axis.switchUnknown": "未知",
+      "axis.fault": "故障：{fault}",
+      "axis.warning": "方向暂停次数：{count}{retry}{recommend}",
+      "axis.retry": " · 重试中",
+      "axis.recommend": " · 建议重新标定",
+      "axis.cal.none": "未标定",
+      "axis.cal.lower": "寻找下限",
+      "axis.cal.upper": "寻找上限",
+      "axis.cal.center": "移到中心",
+      "axis.cal.done": "已标定",
+      "axis.cal.cancelled": "标定已取消",
+      "axis.cal.failed": "标定失败",
+      "act.move_to_position": "移到目标",
+      "act.reset_position": "位置归零",
+      "act.set_limit": "设当前位置为限位",
+      "act.clear_upper_limit": "清除上限",
+      "act.clear_lower_limit": "清除下限",
+      "act.clear_fault": "清除故障",
+      "act.calibrate": "自动标定",
+      "axis.maxSpeed": "最大 {speed} 圈/秒",
     },
   };
 
   Object.assign(logic, { vacuumView, alarmRows });
 
   function workspace() {
-    let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false;
-    const data = { robot: null, stage: null, events: [], cap: null, kbCap: null, loaded: false };
+    let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false, refreshing = false;
+    const data = { robot: null, stage: null, stagePosition: null, stageOperation: null, events: [], cap: null, kbCap: null, loaded: false };
+    let targetTimer = null, removeLanguage, removeState;
     // on: this page armed the keyboard. seen: the service reported it on or arming since then.
     const kb = { on: false, seen: false, speed: null, held: new Set(), seq: 0, timer: null, pending: 0 };
     // on: the stage keyboard switch. active: this page's stage hold, 1 axis at a time.
@@ -334,7 +554,7 @@
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, views: { arm: STATION_VIEWS.arm[0], stage: STATION_VIEWS.stage[0] },
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
-      port: "", refView: {},
+      port: "", refView: {}, stageTarget: null,
     };
     let refs = {};
 
@@ -366,6 +586,7 @@
 
     async function send(device, action, params, key = action, path = null) {
       if (model.inflight.has(device + ":" + key)) return null;
+      clearStageTarget();
       model.inflight.add(device + ":" + key);
       update();
       try {
@@ -382,6 +603,7 @@
     }
 
     async function stopDevice(device) {
+      clearStageTarget();
       if (device === "stage") holdEnd();
       const result = await api.stop(device);
       const outcome = ["confirmed", "pending", "unconfirmed"].includes(result?.outcome) ? result.outcome : "unknown";
@@ -390,6 +612,7 @@
     }
 
     async function control(device) {
+      if (device === "stage") clearStageTarget();
       try {
         if (api.owns(device)) await api.release(device);
         else await api.take(device);
@@ -415,13 +638,20 @@
     }
 
     async function refresh() {
+      if (refreshing) { update(); return; }
+      refreshing = true;
       try {
         const body = await api.request("state");
         data.robot = body.robot || null;
-        data.stage = body.stage || null;
+        data.stage = body.stage ? { ...body.stage, _receivedAt: Date.now() } : null;
+        data.stagePosition = body.stage_position || null;
+        data.stageOperation = body.stage_operation || null;
       } catch {
         data.robot = data.stage = { available: false, reason: "unreachable" };
+        data.stagePosition = null;
+        data.stageOperation = null;
       }
+      refreshing = false;
       data.loaded = true;
       if (!data.cap && data.robot?.available) describeRobot();
       if (stageKey() !== refs.stageKey) buildStage();
@@ -524,6 +754,14 @@
 
       // Readout: pose, joints and suction.
       refs.pose = AXES.map(() => el("b", { class: "mo-num" }));
+      refs.armXYDot = el("span", { class: "mo-xy-point", hidden: true });
+      refs.armXYState = el("span", { class: "mo-xy-state" });
+      refs.armXYScale = el("span", { class: "mo-xy-scale" });
+      refs.armXYMap = el("div", { class: "mo-xy-map", role: "img", "aria-label": t("pose.xy") },
+        refs.armXYDot, el("span", { class: "mo-xy-zero", text: "0" }),
+        el("span", { class: "mo-xy-x", text: "X →" }), el("span", { class: "mo-xy-y", text: "Y ↑" }));
+      const poseReading = (axis, i) => el("div", { class: "mo-reading" }, el("span", { text: axis.toUpperCase() }),
+        el("span", { class: "mo-pose-value" }, refs.pose[i], el("span", { class: "mo-unit", text: axis === "r" ? "°" : "mm" })));
       refs.joints = [0, 1, 2, 3].map(() => el("b", { class: "mo-num-small mo-deg" }));
       refs.vacState = el("span", { class: "mo-vac-state" });
       // The grip switch is not installed yet. Held shows when the robot service reports it.
@@ -532,8 +770,11 @@
         el("button", { type: "button", class: "mo-btn", text: t("vac." + operation), "aria-label": t("vac.label", { action: t("vac." + operation) }),
           onclick: () => send("robot", "vacuum", { operation }, "vacuum") })]));
       const readout = el("div", { class: "mo-readout" },
-        el("div", { class: "mo-pose", role: "group", "aria-label": t("pose.actual") },
-          ...AXES.map((axis, i) => el("div", { class: "mo-reading" }, el("span", { text: axis.toUpperCase() }), refs.pose[i]))),
+        el("div", { class: "mo-arm-position", role: "group", "aria-label": t("pose.actual") },
+          el("div", { class: "mo-xy-heading" }, el("span", { text: t("pose.xy") }), refs.armXYState),
+          el("div", { class: "mo-pose" }, ...AXES.slice(0, 2).map(poseReading)),
+          refs.armXYMap, refs.armXYScale,
+          el("div", { class: "mo-pose mo-zr-readings" }, poseReading("z", 2), poseReading("r", 3))),
         el("div", { class: "mo-joints", role: "group", "aria-label": t("pose.joints") },
           ...refs.joints.map((node, i) => el("div", { class: "mo-reading" }, el("span", { text: "J" + (i + 1) }), node))),
         el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld),
@@ -592,13 +833,13 @@
       refs.armLast = el("p", { class: "mo-muted mo-last", role: "status" });
 
       return el("section", { class: "mo-station mo-station-arm", "aria-labelledby": "mo-arm-title" },
-        buildView("arm"),
         el("div", { class: "mo-body" },
           el("div", { class: "mo-head" },
             el("h2", { id: "mo-arm-title", text: t("arm.title") }), refs.armStatus, refs.armBadge,
             el("span", { class: "mo-actions" }, refs.enable, refs.home, controlButton("robot"), refs.armStop)),
           refs.alarmNote, confirmSlot("home"),
-          el("div", { class: "mo-armbody" }, kbBox, readout),
+          el("div", { class: "mo-armbody" },
+            el("div", { class: "mo-arm-visual" }, buildView("arm"), kbBox), readout),
           el("div", { class: "mo-folds" }, jogFold, moveFold),
           refs.armMessage, refs.armLast));
     }
@@ -677,6 +918,7 @@
       event.preventDefault?.();
       if (event.repeat || !focused()) return;
       if (key && !kb.held.has(key) && api.owns("robot")) {
+        clearStageTarget();
         kb.held.add(key);
         keysChanged();
       }
@@ -717,9 +959,12 @@
     /** Start 1 stage hold. The console sends hold and keepalive while this page refreshes it. */
     function holdStart(motor, direction, source) {
       if (sh.active || !api.owns("stage") || !focused()) return;
-      const limit = data.stage?.limits?.speed || 1000;
-      const speed = parseCount(model.axis[motor]?.speed, limit);
+      const status = data.stage?.motors?.find(item => item.id === motor);
+      if (!status?.motion_ready || !encoderFresh(data.stage, status)) return;
+      const limit = stageSpeedLimit(data.stage, status);
+      const speed = parseRotation(model.axis[motor]?.speed, data.stage?.limits?.min_speed || 0.001, limit);
       if (!speed) { api.notify(t("axis.badSpeed", { speed: limit }), "warn"); return; }
+      clearStageTarget();
       const item = { id: holdId(), motor, direction, speed, source, pending: 0 };
       sh.active = item;
       sendHold(item);
@@ -856,124 +1101,121 @@
     // Stage column ----------------------------------------------------------
 
     function stageKey() {
-      const motors = data.stage?.available ? data.stage.motors || [] : [];
-      const modes = data.stage?.microstep_modes || [];
-      return JSON.stringify([motors.map(m => [m.id, m.named_positions || [], m.homing_available === true]), modes.map(m => m.value), data.stage?.poses || []]);
+      return JSON.stringify((data.stage?.motors || []).map(motor => motor.id));
     }
 
     function buildStage() {
       refs.stageKey = stageKey();
       if (!refs.stageBody) return;
-      buildPoses();
       const stage = data.stage?.available ? data.stage : null;
-      const motors = stage?.motors || [];
-      refs.modes = (stage?.microstep_modes || []).map(mode => el("button", {
-        type: "button", role: "radio", class: "mo-seg-btn", text: stepLabel(mode.value, t("stage.full")), "aria-label": mode.label, "data-value": String(mode.value),
-        onclick: () => {
-          if (stage && mode.value === data.stage?.microstep) return;
-          askConfirm("stage", t("stage.steppingConfirm", { mode: mode.label }), () => send("stage", "set_microstep", { microstep: mode.value }, "microstep"));
-        },
-      }));
       refs.axes = {};
       refs.holdKeys = {};
-      const keyCap = key => (refs.holdKeys[key] = el("kbd", { class: "mo-kcap", text: key }));
-      const keysFor = id => STAGE_KEYS.find(([, , motor]) => motor === id);
-      const rows = [];
-      const setup = [];
-      for (const motor of motors) {
-        const id = motor.id;
-        const axis = t("axis." + id);
-        model.axis[id] = model.axis[id] || { steps: String(stage?.defaults?.steps || 50), speed: String(stage?.defaults?.speed || 50) };
-        const row = {};
-        row.state = el("span", { class: "mo-axstate" });
-        row.num = el("b", { class: "mo-num" });
-        row.unit = el("span", { class: "mo-unit" });
-        row.value = el("span", { class: "mo-axval" }, row.num, row.unit);
-        row.ref = el("span", { class: "mo-axstate" });
-        const input = (field, props) => {
-          const node = el("input", { type: "text", inputmode: "numeric", class: "mo-input mo-narrow", autocomplete: "off", ...props, oninput: event => { model.axis[id][field] = event.target.value; } });
+      const rows = [], setup = [];
+      for (const motor of stage?.motors || []) {
+        const id = motor.id, axis = t("axis." + id);
+        const directionLabel = direction => t("direction." + STAGE_DIRECTIONS[id][direction]);
+        const directions = id === "top" ? ["cw", "ccw"] : ["ccw", "cw"];
+        model.axis[id] ||= { rotations: String(stage?.defaults?.rotations || 0.25), speed: String(stage?.defaults?.speed || 0.25), target: "" };
+        const row = refs.axes[id] = {};
+        const input = (field, label) => {
+          const node = el("input", { type: "text", inputmode: "decimal", class: "mo-input mo-narrow", autocomplete: "off", "aria-label": label,
+            oninput: event => { model.axis[id][field] = event.target.value; } });
           node.value = model.axis[id][field];
+          row[field + "Input"] = node;
           return node;
         };
-        const move = direction => () => {
-          const limits = data.stage?.limits || {};
-          const steps = parseCount(model.axis[id].steps, limits.steps || 100000);
-          const speed = parseCount(model.axis[id].speed, limits.speed || 1000);
-          if (!steps || !speed) { api.notify(t("axis.badCount", { max: limits.steps || 100000, speed: limits.speed || 1000 }), "warn"); return; }
-          send("stage", "move", { motor: id, direction, speed, steps }, "move-" + id);
+        const speedValue = () => {
+          const live = data.stage?.motors?.find(item => item.id === id);
+          const maximum = stageSpeedLimit(data.stage, live);
+          const speed = parseRotation(model.axis[id].speed, data.stage?.limits?.min_speed || 0.001, maximum);
+          if (speed === null) api.notify(t("axis.badSpeed", { speed: maximum }), "warn");
+          return speed;
         };
-        row.minus = el("button", { type: "button", class: "mo-btn", text: t("axis.minus"), "aria-label": t("axis.minusLabel", { axis }), onclick: move("ccw") });
-        row.plus = el("button", { type: "button", class: "mo-btn", text: t("axis.plus"), "aria-label": t("axis.plusLabel", { axis }), onclick: move("cw") });
-        // The pointer capture sends pointerup to the pressed button, also outside it.
-        const holdButton = (direction, text, label) => el("button", {
-          type: "button", class: "mo-hold", text, "aria-label": label,
+        const move = direction => () => {
+          const rotations = parseRotation(model.axis[id].rotations, data.stage?.limits?.min_rotations || 0.001, data.stage?.limits?.rotations || 10000);
+          const speed = speedValue();
+          if (rotations === null) { api.notify(t("axis.badRotations"), "warn"); return; }
+          if (speed !== null) send("stage", "move", { motor: id, direction, speed, rotations }, "move-" + id);
+        };
+        const button = (key, action, run) => el("button", { type: "button", class: "mo-btn", text: t(key),
+          "aria-label": axis + ": " + t(key), onclick: run || (() => send("stage", action, { motor: id }, "ref-" + id)) });
+        row.state = el("span", { class: "mo-axstate" });
+        row.num = el("b", { class: "mo-num" });
+        row.unit = el("span", { class: "mo-unit", text: "rot" });
+        row.value = el("span", { class: "mo-axval" }, row.num, row.unit);
+        row.telemetry = el("p", { class: "mo-encoder-status", role: "status" });
+        row.warning = el("p", { class: "mo-encoder-warning", role: "status", hidden: true });
+        row.limits = el("p", { class: "mo-muted" });
+        row.details = el("p", { class: "mo-muted" });
+        row.minus = el("button", { type: "button", class: "mo-btn", text: t("axis.step", { direction: directionLabel("ccw") }),
+          "aria-label": t("axis.stepLabel", { axis, direction: directionLabel("ccw") }), onclick: move("ccw") });
+        row.plus = el("button", { type: "button", class: "mo-btn", text: t("axis.step", { direction: directionLabel("cw") }),
+          "aria-label": t("axis.stepLabel", { axis, direction: directionLabel("cw") }), onclick: move("cw") });
+        const holdButton = direction => el("button", { type: "button", class: "mo-hold", text: t("axis.hold", { direction: directionLabel(direction) }),
+          "aria-label": t("axis.holdLabel", { axis, direction: directionLabel(direction) }),
           onpointerdown: event => {
             if (event.button) return;
             event.preventDefault?.();
-            try { (event.currentTarget || event.target)?.setPointerCapture?.(event.pointerId); } catch { /* The window pointerup ends it. */ }
+            try { (event.currentTarget || event.target)?.setPointerCapture?.(event.pointerId); } catch { /* Window pointerup ends the hold. */ }
             holdStart(id, direction, "button");
           },
           onpointerup: buttonUp, onpointercancel: buttonUp, onlostpointercapture: buttonUp,
           oncontextmenu: event => event.preventDefault?.(),
         });
-        row.holdMinus = holdButton("ccw", t("axis.holdMinus"), t("axis.holdMinusLabel", { axis }));
-        row.holdPlus = holdButton("cw", t("axis.holdPlus"), t("axis.holdPlusLabel", { axis }));
-        row.home = motor.homing_available ? el("button", {
-          type: "button", class: "mo-btn", text: t("axis.home"),
-          onclick: () => askConfirm("stage", t("axis.homeConfirm", { axis }), () => send("stage", "home", { motor: id }, "ref-" + id)),
-        }) : null;
-        row.check = el("button", { type: "button", class: "mo-btn", text: t("axis.check"), onclick: () => checkReference(id) });
-        row.teach = el("button", {
-          type: "button", class: "mo-btn", text: t("axis.teach"),
-          onclick: () => askConfirm("stage", t("axis.teachConfirm", { axis }), () => send("stage", "teach_reference", { motor: id, confirm: true }, "ref-" + id)),
+        row.holdMinus = holdButton("ccw");
+        row.holdPlus = holdButton("cw");
+        row.reset = button("axis.reset", "reset_position");
+        row.setLimit = button("axis.setLimit", "set_limit");
+        row.clearUpper = button("axis.clearUpper", "clear_upper_limit");
+        row.clearLower = button("axis.clearLower", "clear_lower_limit");
+        row.clearFault = button("axis.clearFault", "clear_fault");
+        row.clearFault.className += " mo-clear-fault";
+        row.calibrate = button("axis.calibrate", "calibrate", () => {
+          const speed = speedValue();
+          if (speed !== null) send("stage", "calibrate", { motor: id, speed }, "ref-" + id);
         });
-        row.view = el("div", { class: "mo-ref", hidden: true });
-        row.zero = el("button", {
-          type: "button", class: "mo-btn", text: t("axis.zero"),
-          onclick: () => askConfirm("stage", t("axis.zeroConfirm", { axis }), () => send("stage", "zero", { motor: id, confirm: true }, "ref-" + id)),
+        row.goto = button("axis.goto", "move_to_position", () => {
+          const live = data.stage?.motors?.find(item => item.id === id);
+          const position = parseRotation(model.axis[id].target, live?.lower_limit_rotations, live?.upper_limit_rotations);
+          const speed = speedValue();
+          if (position === null) { api.notify(t("axis.badTarget"), "warn"); return; }
+          if (speed !== null) send("stage", "move_to_position", { motor: id, position, speed }, "move-" + id);
         });
-        refs.axes[id] = row;
-        const keys = keysFor(id);
-        rows.push(el("div", { class: "mo-axis", role: "group", "aria-label": axis },
-          el("span", { class: "mo-axname" }, el("b", { text: axis }), row.state),
-          row.value, row.holdMinus, row.holdPlus,
-          el("label", { class: "mo-axspeed" }, input("speed", { "aria-label": t("axis.speedLabel", { axis }) }), el("span", { text: t("axis.speedUnit") })),
-          keys ? el("span", { class: "mo-axkeys", "aria-hidden": "true" }, keyCap(keys[0]), keyCap(keys[1])) : el("span")));
-        setup.push(el("div", { class: "mo-setup", role: "group", "aria-label": axis },
-          el("span", { class: "mo-axname" }, el("b", { text: axis }), row.ref),
-          el("label", { class: "mo-inline" }, t("axis.steps"), input("steps", {})), row.minus, row.plus,
-          row.home, row.zero, row.check, row.teach, row.view));
-      }
-      refs.named = [];
-      const named = [];
-      for (const motor of motors) {
-        for (const name of motor.named_positions || []) {
-          const button = el("button", {
-            type: "button", class: "mo-btn", text: t("named.go", { axis: t("axis." + motor.id), name }),
-            onclick: () => send("stage", "goto", { motor: motor.id, name }, "move-" + motor.id),
-          });
-          refs.named.push({ button, motor: motor.id, name });
-          named.push(button);
-        }
+        row.stop = el("button", { type: "button", class: "mo-stop", text: t("act.stop"), "aria-label": axis + ": " + t("act.stop"), onclick: () => stopDevice("stage") });
+        const keys = STAGE_KEYS.find(([, , motor]) => motor === id);
+        rows.push(el("div", { class: "mo-encoder-axis", role: "group", "aria-label": axis },
+          el("div", { class: "mo-axis" }, el("span", { class: "mo-axname" }, el("b", { text: axis }), row.state),
+            row.value, ...directions.map(direction => direction === "ccw" ? row.holdMinus : row.holdPlus),
+            el("label", { class: "mo-axspeed" }, input("speed", t("axis.speedLabel", { axis })), el("span", { text: "rot/s" })),
+            el("div", { class: "mo-axactions" }, row.clearFault,
+              keys ? el("span", { class: "mo-axkeys", "aria-hidden": "true" }, ...directions.map(direction => {
+              const key = keys[direction === "ccw" ? 0 : 1];
+              return refs.holdKeys[key] = el("kbd", { class: "mo-kcap", text: key, title: directionLabel(direction) });
+            })) : "")),
+          row.telemetry, row.warning));
+        setup.push(el("div", { class: "mo-encoder-setup", role: "group", "aria-label": axis + ": " + t("fold.stage") },
+          el("div", { class: "mo-row" }, el("b", { class: "mo-label", text: axis }), row.stop),
+          el("div", { class: "mo-row" },
+            el("label", { class: "mo-inline" }, t("axis.rotations"), input("rotations", axis + ": " + t("axis.rotations"))),
+            ...directions.map(direction => direction === "ccw" ? row.minus : row.plus)),
+          el("div", { class: "mo-row" },
+            el("label", { class: "mo-inline" }, t("axis.target"), input("target", axis + ": " + t("axis.target"))), row.goto),
+          row.limits, row.details,
+          el("div", { class: "mo-row" }, row.calibrate, row.reset, row.setLimit, row.clearUpper, row.clearLower)));
       }
       refs.stageKb = el("button", {
         type: "button", role: "switch", class: "mo-switch mo-small", "aria-label": t("kb.stage"), "aria-checked": "false",
-        onclick: () => {
-          if (sh.on) stageOff();
-          else if (api.owns("stage")) { sh.on = true; renderHold(); }
-        },
+        onclick: () => { if (sh.on) stageOff(); else if (api.owns("stage")) { sh.on = true; renderHold(); } },
       }, el("span", { class: "mo-knob", "aria-hidden": "true" }), el("span", { text: t("stage.keys") }));
-      refs.zeroNote = el("p", { class: "mo-reason", hidden: true, text: t("stage.zeroNone") });
+      refs.zeroNote = el("p", { class: "mo-reason", hidden: true, text: t("stage.encoderRequired") });
       refs.setupNeed = el("p", { class: "mo-reason", hidden: true, text: t("stage.needControl") });
-      refs.stageBody.replaceChildren(...rows);
-      refs.namedBlock.hidden = !named.length;
-      refs.namedBlock.replaceChildren(...(named.length ? [el("span", { class: "mo-label", text: t("named.title") }), ...named] : []));
-      refs.stageFoot.replaceChildren(
-        refs.modes.length ? el("div", { class: "mo-seg-row" }, el("span", { class: "mo-label", id: "mo-step-label", text: t("stage.stepping") }),
-          el("div", { class: "mo-seg", role: "radiogroup", "aria-labelledby": "mo-step-label" }, ...refs.modes)) : "",
-        rows.length ? refs.stageKb : "",
-        rows.length ? refs.stageFoldEl : "");
-      refs.stageFold.replaceChildren(refs.zeroNote, refs.setupNeed, ...setup);
+      refs.stageBody.replaceChildren(refs.zeroNote, ...rows);
+      refs.namedBlock.hidden = true;
+      refs.namedBlock.replaceChildren();
+      refs.poseBlock.hidden = true;
+      refs.poseBlock.replaceChildren();
+      refs.stageFoot.replaceChildren(el("span", { class: "mo-muted", text: t("stage.fixedStep") }), refs.stageKb, refs.stageFoldEl);
+      refs.stageFold.replaceChildren(refs.setupNeed, el("p", { class: "mo-muted", text: t("axis.calibrationHelp") }), ...setup);
     }
 
     function buildStageCard() {
@@ -1002,16 +1244,6 @@
       return card;
     }
 
-    /** Named poses move several axes in the configured order with the described `pose` command. */
-    function buildPoses() {
-      if (!refs.poseBlock) return;
-      const poses = data.stage?.available && Array.isArray(data.stage.poses) ? data.stage.poses : [];
-      refs.poses = poses.map(name => ({ name, button: el("button", { type: "button", class: "mo-btn", text: name, onclick: () => send("stage", "pose", { name }, "pose") }) }));
-      refs.poseNote = el("p", { class: "mo-muted" });
-      refs.poseBlock.hidden = !poses.length;
-      refs.poseBlock.replaceChildren(...(poses.length ? [el("span", { class: "mo-label", text: t("pose.title") }), ...refs.poses.map(item => item.button), refs.poseNote] : []));
-    }
-
     // Activity --------------------------------------------------------------
 
     function renderLog() {
@@ -1025,13 +1257,217 @@
 
     // Whole workspace -------------------------------------------------------
 
+    function targetAxes() { return stagePosition(data.stagePosition || encoderPosition(data.stage)); }
+    function targetBounds(axes, names) { return JSON.stringify(names.map(name => [name, axes[name]?.range])); }
+    function canSelectTarget(names, axes = targetAxes()) {
+      return api.owns("stage") && !sh.active
+        && ![...model.inflight].some(key => key.startsWith("stage:")) && data.stageOperation?.status !== "moving"
+        && stageTargetReady(data.stage, axes, names);
+    }
+
+    function clearStageTarget() {
+      if (targetTimer) clearTimeout(targetTimer);
+      targetTimer = null;
+      model.stageTarget = null;
+      renderStageTarget();
+    }
+
+    function targetTimeout(item, delay) {
+      if (targetTimer) clearTimeout(targetTimer);
+      targetTimer = setTimeout(() => { if (model.stageTarget === item) clearStageTarget(); }, delay);
+    }
+
+    function selectStageTarget(kind, event) {
+      const axes = targetAxes(), names = kind === "xy" ? ["x", "y"] : ["insert"];
+      if (!canSelectTarget(names, axes) || ["sending", "moving"].includes(model.stageTarget?.status)) return;
+      const surface = refs.stagePosition[kind === "xy" ? "xyMap" : "insertMap"];
+      const target = stageTargetAt(axes, kind, plotContentBox(surface), event.clientX, event.clientY);
+      if (!target) return;
+      event.preventDefault?.();
+      const item = { target, status: "pending", bounds: targetBounds(axes, names), stopEpoch: data.stage?.stop_epoch,
+        previousOperationId: data.stageOperation?.id, expiresAt: Date.now() + TARGET_MS };
+      model.stageTarget = item;
+      targetTimeout(item, TARGET_MS);
+      renderStageTarget();
+    }
+
+    function validStageTarget(item) {
+      const names = Object.keys(item.target), axes = targetAxes();
+      return Date.now() < item.expiresAt && item.stopEpoch === data.stage?.stop_epoch
+        && item.bounds === targetBounds(axes, names) && canSelectTarget(names, axes);
+    }
+
+    function applyTargetOperation(item, operation) {
+      if (model.stageTarget !== item || !operation || !["moving", "completed", "stopped", "failed"].includes(operation.status)) return;
+      const changed = item.status !== operation.status;
+      item.operationId = operation.id;
+      item.status = operation.status;
+      item.message = operation.message || "";
+      if (changed && item.status !== "moving") {
+        const message = item.status === "failed" && item.message ? t("target.error", { message: item.message }) : t("target." + item.status);
+        note("stage", item.status === "failed" ? "warning" : "info", message);
+        targetTimeout(item, TARGET_MS);
+      }
+    }
+
+    async function confirmStageTarget() {
+      const item = model.stageTarget;
+      if (!item || item.status !== "pending") return;
+      if (!validStageTarget(item)) { clearStageTarget(); return; }
+      clearTimeout(targetTimer); targetTimer = null;
+      item.status = "sending";
+      model.inflight.add("stage:point");
+      renderStageTarget();
+      try {
+        const result = await api.request("stage/position", { target: item.target }, { timeout: 8000 });
+        if (model.stageTarget !== item) return;
+        if (!result.operation) throw new Error(result.error || t("target.failed"));
+        data.stageOperation = result.operation;
+        applyTargetOperation(item, result.operation);
+      } catch (error) {
+        if (model.stageTarget !== item) return;
+        if (item.operationId) return;
+        if (error.status === 0) {
+          item.status = "unknown";
+          note("stage", "warning", t("target.unknown"));
+          api.notify(t("target.unknown"), "warn");
+          targetTimeout(item, TARGET_MS);
+        } else {
+          applyTargetOperation(item, { status: "failed", message: error.message });
+          api.notify(t("target.error", { message: error.message }), "warn");
+        }
+      } finally {
+        model.inflight.delete("stage:point");
+        renderStageTarget();
+        refresh();
+      }
+    }
+
+    function renderStageTarget() {
+      const position = refs.stagePosition;
+      if (!position?.targetPanel) return;
+      const axes = targetAxes();
+      let item = model.stageTarget;
+      if (item && (item.stopEpoch !== data.stage?.stop_epoch || (item.status === "pending" && !validStageTarget(item)))) {
+        clearStageTarget(); return;
+      }
+      const operation = data.stageOperation;
+      if (item && !item.operationId && ["sending", "unknown"].includes(item.status) && operation?.mine === true
+        && operation.id && operation.id !== item.previousOperationId
+        && Object.keys(operation.target || {}).length === Object.keys(item.target).length
+        && Object.entries(item.target).every(([axis, value]) => operation.target[axis] === value)) {
+        if (targetTimer) clearTimeout(targetTimer);
+        targetTimer = null;
+        applyTargetOperation(item, operation);
+      } else if (item?.operationId && operation?.id === item.operationId) applyTargetOperation(item, operation);
+      item = model.stageTarget;
+      const active = ["pending", "sending", "moving", "unknown"].includes(item?.status);
+      const xy = item && "x" in item.target;
+      position.xyTarget.hidden = !xy;
+      position.insertTarget.hidden = !item || xy;
+      for (const [node, names] of [[position.xyTarget, ["x", "y"]], [position.insertTarget, ["insert"]]]) {
+        node.setAttribute("data-active", String(active));
+        if (node.hidden) { node.removeAttribute("style"); continue; }
+        const ratios = names.map(name => {
+          const range = axes[name].range;
+          return range ? (item.target[name] - range.min) / (range.max - range.min) : null;
+        });
+        if (ratios.some(value => value === null || value < 0 || value > 1)) { node.hidden = true; continue; }
+        node.setAttribute("style", `left:${ratios[0] * 100}%` + (names.length === 2 ? `;bottom:${ratios[1] * 100}%` : ""));
+      }
+      for (const [node, names] of [[position.xyMap, ["x", "y"]], [position.insertMap, ["insert"]]]) {
+        const ready = canSelectTarget(names, axes) && !["sending", "moving"].includes(item?.status);
+        node.setAttribute("data-selectable", String(ready));
+        node.setAttribute("aria-disabled", String(!ready));
+        node.setAttribute("title", ready ? t("target.hint") : "");
+      }
+      position.targetHint.hidden = Boolean(item) || !(canSelectTarget(["x", "y"], axes) || canSelectTarget(["insert"], axes));
+      position.targetPanel.hidden = !item;
+      position.targetReadout.textContent = item ? t("target.readout", { coordinates: Object.entries(item.target).map(([name, value]) => `${name === "insert" ? t("axis.insert") : name.toUpperCase()} ${fixed(value, 3)} rot`).join(" · ") }) : "";
+      position.targetStatus.textContent = !item ? "" : item.status === "failed" && item.message ? t("target.error", { message: item.message }) : t("target." + item.status);
+      position.targetStatus.className = "mo-target-status" + (item?.status === "failed" ? " mo-bad" : " mo-muted");
+      position.targetConfirm.hidden = position.targetCancel.hidden = item?.status !== "pending";
+      position.targetConfirm.disabled = item?.status !== "pending";
+    }
+
+    function buildStagePosition() {
+      const position = refs.stagePosition = { values: {} };
+      position.state = el("p", { class: "mo-muted", role: "status" });
+      const values = el("div", { class: "mo-position-readings" }, ["x", "y", "insert"].map(axis => {
+        position.values[axis] = el("strong", { text: "—" });
+        return el("div", {}, el("span", { class: "mo-muted", text: axis === "insert" ? t("axis.insert") : axis.toUpperCase() }),
+          el("div", {}, position.values[axis], el("span", { class: "mo-unit", text: "rot" })));
+      }));
+      position.xyDot = el("span", { class: "mo-position-point", hidden: true });
+      position.xyTarget = el("span", { class: "mo-position-target", hidden: true, "aria-hidden": "true" });
+      position.xyMap = el("div", { class: "mo-position-xy", role: "img", "aria-label": t("position.xy"), ondblclick: event => selectStageTarget("xy", event) },
+        position.xyDot, position.xyTarget, el("span", { class: "mo-position-x", text: "X →" }), el("span", { class: "mo-position-y", text: "Y ↑" }));
+      position.corners = {};
+      const corner = (name, x, y) => {
+        const label = el("div", { class: "mo-position-corner mo-position-corner-" + name });
+        const values = [el("span"), el("span")];
+        label.append(...values);
+        position.corners[name] = { label, x, y, values };
+        return label;
+      };
+      const xyPlot = el("div", { class: "mo-position-plot" },
+        corner("upper-left", "min", "max"), corner("upper-right", "max", "max"), position.xyMap,
+        corner("lower-left", "min", "min"), corner("lower-right", "max", "min"));
+      position.xyRange = el("span", { class: "mo-muted" });
+      position.insertDot = el("span", { class: "mo-position-point", hidden: true });
+      position.insertTarget = el("span", { class: "mo-position-target", hidden: true, "aria-hidden": "true" });
+      position.insertMap = el("div", { class: "mo-position-insert", role: "img", "aria-label": t("position.insert"), ondblclick: event => selectStageTarget("insert", event) }, position.insertDot, position.insertTarget);
+      position.insertRange = el("span", { class: "mo-muted" });
+      position.targetHint = el("p", { class: "mo-muted", text: t("target.hint"), hidden: true });
+      position.targetReadout = el("p", { class: "mo-target-readout" });
+      position.targetStatus = el("p", { class: "mo-target-status", role: "status" });
+      position.targetConfirm = el("button", { type: "button", class: "mo-btn mo-primary mo-target-confirm", text: t("target.confirm"), onclick: confirmStageTarget });
+      position.targetCancel = el("button", { type: "button", class: "mo-btn mo-target-cancel", text: t("cancel"), onclick: clearStageTarget });
+      position.targetPanel = el("div", { class: "mo-target-panel", hidden: true, onkeydown: event => { if (event.key === "Escape" && model.stageTarget?.status === "pending") clearStageTarget(); } },
+        position.targetReadout, position.targetStatus, el("div", { class: "mo-row" }, position.targetConfirm, position.targetCancel));
+      return el("section", { class: "mo-station mo-position", "aria-labelledby": "mo-position-title" },
+        el("h2", { id: "mo-position-title", text: t("position.title") }), position.state, values,
+        el("div", { class: "mo-position-heading" }, el("h3", { text: t("position.xy") }), position.xyRange), xyPlot,
+        el("div", { class: "mo-position-heading" }, el("h3", { text: t("position.insert") }), position.insertRange),
+        el("div", { class: "mo-position-heading mo-muted" }, el("span", { text: t("position.out") }), el("span", { text: t("position.in") })), position.insertMap,
+        position.targetHint, position.targetPanel);
+    }
+
+    function updateStagePosition() {
+      const position = refs.stagePosition, axes = stagePosition(data.stagePosition || encoderPosition(data.stage));
+      const known = Object.values(axes).some(axis => axis.value !== null);
+      position.state.textContent = t(known ? "position.current" : "position.waiting");
+      for (const [axis, reading] of Object.entries(axes)) position.values[axis].textContent = reading.value === null ? "—" : fixed(reading.value, 3);
+      const xy = axes.x.fraction !== null && axes.y.fraction !== null;
+      position.xyDot.hidden = !xy;
+      if (xy) position.xyDot.setAttribute("style", `left:${axes.x.fraction * 100}%;bottom:${axes.y.fraction * 100}%`);
+      else position.xyDot.removeAttribute("style");
+      position.insertDot.hidden = axes.insert.fraction === null;
+      if (axes.insert.fraction !== null) position.insertDot.setAttribute("style", `left:${axes.insert.fraction * 100}%`);
+      else position.insertDot.removeAttribute("style");
+      const range = axis => axis.range ? `${fixed(axis.range.min, 1)}–${fixed(axis.range.max, 1)} rot` : "—";
+      position.xyRange.textContent = axes.x.range && axes.y.range ? `X ${range(axes.x)} · Y ${range(axes.y)}` : "—";
+      for (const corner of Object.values(position.corners)) {
+        ["x", "y"].forEach((axis, index) => {
+          const bound = corner[axis];
+          corner.values[index].textContent = t("position." + bound, {
+            axis: axis.toUpperCase(), value: axes[axis].range ? fixed(axes[axis].range[bound], 3) : "—",
+          });
+        });
+      }
+      position.insertRange.textContent = range(axes.insert);
+      position.xyMap.setAttribute("aria-label", t("position.xy") + (xy ? `: X ${fixed(axes.x.value, 3)} rot; Y ${fixed(axes.y.value, 3)} rot` : ": " + t("pose.unknown")));
+      position.insertMap.setAttribute("aria-label", t("position.insert") + (axes.insert.fraction !== null ? `: ${fixed(axes.insert.value, 3)} rot` : ": " + t("pose.unknown")));
+      renderStageTarget();
+    }
+
     function build() {
       if (!rootNode) return;
       dropTiles();
       refs = { confirms: {}, tiles: {}, views: {}, viewTabs: {} };
       refs.log = el("div", { class: "lc-events mo-events" });
       rootNode.replaceChildren(
-        el("div", { class: "mo-stations" }, buildArm(), buildStageCard()),
+        el("div", { class: "mo-stations" }, buildStageCard(), buildStagePosition(), buildArm()),
         el("section", { class: "mo-log", "aria-labelledby": "mo-log-title" },
           el("h2", { id: "mo-log-title", text: t("log.title") }), refs.log));
       renderCameras();
@@ -1067,6 +1503,7 @@
 
     function update() {
       if (!rootNode || !refs.enable) return;
+      updateStagePosition();
       const robot = data.robot?.available ? data.robot : null;
       const stage = data.stage?.available ? data.stage : null;
       const ownsRobot = api.owns("robot");
@@ -1126,6 +1563,15 @@
         // Old feedback stays visible in grey, so it never reads as the current pose.
         refs.pose[i].className = "mo-num" + (pose && fresh ? "" : " mo-stale");
       });
+      const point = armXY(shownPose), current = Boolean(pose && fresh);
+      const positionState = t(!point ? "pose.unknown" : current ? "pose.current" : "pose.last");
+      refs.armXYDot.hidden = !point;
+      refs.armXYDot.setAttribute("data-stale", String(!current));
+      if (point) refs.armXYDot.setAttribute("style", `left:${point.x * 100}%;bottom:${point.y * 100}%`);
+      refs.armXYState.textContent = positionState;
+      refs.armXYState.setAttribute("data-stale", String(!current));
+      refs.armXYScale.textContent = `−${point?.extent || 500} … ${point?.extent || 500} mm`;
+      refs.armXYMap.setAttribute("aria-label", t("pose.xy") + ": " + positionState + (point ? `; X ${fixed(shownPose[0], 2)} mm; Y ${fixed(shownPose[1], 2)} mm` : ""));
       const canMove = ready && robot.enabled === true && !robot.busy && Boolean(pose) && !model.inflight.has("robot:move");
       for (const node of Object.values(refs.jog)) node.disabled = !canMove;
       refs.steps.forEach((node, i) => {
@@ -1161,62 +1607,57 @@
       refs.stageBadge.hidden = !(stage && stage.demo);
       updateControl("stage", data.stage);
       if ((sh.on || sh.active) && !ownsStage) stageOff();
-      const stageReady = Boolean(stage && ownsStage && stage.connected && !stage.locked);
-      const idle = (stage?.motors || []).every(motor => motor.mode === "idle");
-      for (const node of refs.modes || []) {
-        const on = Number(node.getAttribute("data-value")) === stage?.microstep;
-        node.setAttribute("aria-checked", on ? "true" : "false");
-        node.className = "mo-seg-btn" + (on ? " mo-on" : "");
-        node.disabled = !stageReady || !idle || stage?.busy || busy("stage");
-      }
+      const stageReady = Boolean(stage && ownsStage && stage.connected && stage.closed_loop && !stage.locked);
       for (const motor of stage?.motors || []) {
         const row = refs.axes?.[motor.id];
         if (!row) continue;
-        // An idle axis shows no state; a disconnected stage shows no position.
+        const fresh = encoderFresh(stage, motor);
+        const calibrating = ["lower", "upper", "center"].includes(motor.calibration);
         const state = axisState(motor);
-        row.state.textContent = state.key === "axis.idle" ? "" : t(state.key);
+        row.state.textContent = calibrating ? t("axis.cal." + motor.calibration) : state.key === "axis.idle" ? "" : t(state.key);
         row.state.className = "mo-axstate mo-tone-" + state.tone;
-        // A position in mm needs a confirmed reference. Without one the pulse count is only a count.
-        const mm = typeof motor.position_mm === "number" && Number.isFinite(motor.position_mm);
-        const known = stage.connected === true && (mm || (motor.position !== null && motor.position !== undefined));
-        row.num.textContent = !known ? "—" : mm ? fixed(motor.position_mm, 2) : String(motor.position);
-        row.unit.textContent = !known ? "" : mm ? "mm" : t("axis.unit");
+        const known = fresh && typeof motor.position_rotations === "number" && Number.isFinite(motor.position_rotations);
+        row.num.textContent = known ? fixed(motor.position_rotations, 3) : "—";
+        row.unit.textContent = "rot";
         row.value.className = "mo-axval";
-        const reference = axisReference(motor);
-        row.ref.textContent = t(reference.key);
-        row.ref.className = "mo-axstate mo-tone-" + reference.tone;
-        const moving = model.inflight.has("stage:move-" + motor.id);
-        const canStep = stageReady && motor.available === true && !stage.busy && !moving;
+        const elapsed = Math.max(0, Date.now() - (stage._receivedAt || Date.now()));
+        const switchFresh = typeof motor.limit_telemetry_age_ms === "number" && motor.limit_telemetry_age_ms >= 0 && motor.limit_telemetry_age_ms + elapsed <= 1000;
+        const mask = stage.home_switches && switchFresh && Number.isInteger(motor.switch_mask) ? motor.switch_mask : null;
+        const switches = t("axis.switch" + ({ 0: "None", 1: "Upper", 2: "Lower", 3: "Both" }[mask] || "Unknown"));
+        const telemetry = !fresh ? t("axis.stale") : stage.telemetry_streaming ? t("axis.live", { age: Math.round(motor.telemetry_age_ms) }) : t("axis.polled");
+        row.telemetry.textContent = telemetry + " · " + t("axis.encoder", { encoder: motor.encoder || "unknown", speed: fixed(motor.measured_speed, 3) })
+          + " · " + t("axis.switches", { switches })
+          + (motor.fault && motor.fault !== "none" ? " · " + t("axis.fault", { fault: motor.fault }) : "");
+        row.telemetry.className = "mo-encoder-status" + (!fresh || (motor.fault && motor.fault !== "none") ? " mo-tone-warn" : "");
+        const count = Number.isInteger(motor.direction_warning_count) ? motor.direction_warning_count : 0;
+        row.warning.hidden = !(motor.warning === "direction_pause" || count > 0 || motor.recalibration_recommended);
+        row.warning.textContent = t("axis.warning", { count,
+          retry: motor.warning === "direction_pause" && fresh && motor.mode === "continuous" ? t("axis.retry") : "",
+          recommend: motor.recalibration_recommended ? t("axis.recommend") : "" });
+        row.limits.textContent = t("axis.limits", {
+          lower: motor.lower_limit_set ? fixed(motor.lower_limit_rotations, 3) : "—",
+          upper: motor.upper_limit_set ? fixed(motor.upper_limit_rotations, 3) : "—",
+          calibration: t("axis.cal." + (motor.calibration || "none")),
+        });
+        row.details.textContent = t("axis.encoderDetails", { raw: motor.encoder_raw ?? "—", channel: motor.encoder_channel ?? "—",
+          magnet: motor.magnet_status ?? "—", remaining: fixed(motor.remaining_rotations, 3), tolerance: fixed(motor.tolerance, 4) });
+        const pending = model.inflight.has("stage:move-" + motor.id) || model.inflight.has("stage:ref-" + motor.id);
+        const canStep = stageReady && fresh && motor.motion_ready === true && motor.mode === "idle" && !calibrating && !pending;
         row.minus.disabled = row.plus.disabled = !canStep;
-        // Never disable a held button: a disabled button can miss its pointerup.
         row.holdMinus.disabled = row.holdPlus.disabled = !canStep && sh.active?.motor !== motor.id;
-        const refBusy = model.inflight.has("stage:ref-" + motor.id);
-        if (row.home) row.home.disabled = !stageReady || motor.mode !== "idle" || stage.busy || refBusy;
-        row.zero.hidden = motor.zero_available !== true;
-        row.zero.disabled = !stageReady || motor.zero_available !== true || motor.mode !== "idle" || stage.busy || refBusy;
-        row.check.hidden = row.teach.hidden = motor.reference_configured !== true;
-        row.check.disabled = !stage.connected || refBusy;
-        row.teach.disabled = row.zero.disabled || motor.reference_configured !== true;
-        renderReference(row, motor.id);
-      }
-      const referenced = (stage?.motors || []).length > 0 && stage.motors.every(motor => motor.automation_ready === true);
-      const posesReady = stageReady && referenced && !stage.busy && stage.motors.every(motor => motor.available === true);
-      for (const item of refs.poses || []) {
-        const at = (stage?.at_poses || []).includes(item.name);
-        item.button.className = "mo-btn" + (at ? " mo-at" : "");
-        item.button.setAttribute("aria-pressed", at ? "true" : "false");
-        item.button.disabled = !posesReady || model.inflight.has("stage:pose");
-      }
-      if (refs.poseNote) refs.poseNote.textContent = stage && !referenced ? t("pose.needRef") : "";
-      for (const item of refs.named || []) {
-        const motor = (stage?.motors || []).find(m => m.id === item.motor);
-        const at = (motor?.at_positions || []).includes(item.name);
-        item.button.className = "mo-btn" + (at ? " mo-at" : "");
-        item.button.setAttribute("aria-pressed", at ? "true" : "false");
-        item.button.disabled = !stageReady || !motor || stage.busy || motor.mode !== "idle" || model.inflight.has("stage:move-" + item.motor);
+        const idle = motor.mode === "idle" && !calibrating && !(motor.cooldown > 0);
+        const canSetup = stageReady && idle && !pending;
+        row.reset.disabled = !canSetup || !fresh;
+        row.setLimit.disabled = !canSetup || !fresh || !stage.travel_limits || !known || motor.position_rotations === 0;
+        row.clearUpper.disabled = !canSetup || !stage.travel_limits || motor.upper_limit_set !== true;
+        row.clearLower.disabled = !canSetup || !stage.travel_limits || motor.lower_limit_set !== true;
+        row.clearFault.disabled = !canSetup;
+        row.calibrate.disabled = !canStep || !stage.auto_calibration;
+        row.goto.disabled = !canStep || motor.positioning_ready !== true;
+        row.speedInput.setAttribute("title", t("axis.maxSpeed", { speed: stageSpeedLimit(stage, motor) }));
       }
       if (refs.stageKb) refs.stageKb.disabled = !sh.on && !stageReady;
-      if (refs.zeroNote) refs.zeroNote.hidden = !stage?.connected || (stage.motors || []).some(motor => motor.zero_available === true || motor.homing_available === true);
+      if (refs.zeroNote) refs.zeroNote.hidden = !stage?.connected || stage.closed_loop === true;
       if (refs.setupNeed) refs.setupNeed.hidden = !stage?.connected || ownsStage;
       renderHold();
       refs.stageLast.textContent = stage ? lastText("stage", stage.last_command) : "";
@@ -1240,32 +1681,6 @@
       refs.portSelect.value = model.port;
     }
 
-    async function checkReference(id) {
-      const key = "stage:ref-" + id;
-      if (model.inflight.has(key)) return;
-      model.inflight.add(key);
-      update();
-      try {
-        model.refView[id] = await api.request("stage/reference/" + encodeURIComponent(id));
-      } catch (error) {
-        model.refView[id] = { error: error.message };
-      } finally {
-        model.inflight.delete(key);
-        update();
-      }
-    }
-
-    function renderReference(row, id) {
-      const view = model.refView[id];
-      row.view.hidden = !view;
-      if (!view || row.shown === view) return;
-      row.shown = view;
-      const offset = Array.isArray(view.offset_px) ? view.offset_px : null;
-      row.view.replaceChildren(
-        view.image ? el("img", { class: "mo-ref-img", src: view.image, alt: t("axis.check") }) : "",
-        el("p", { class: "mo-muted", text: view.error ? t("axis.checkFailed", { error: view.error }) : offset ? t("axis.offset", { x: fixed(offset[0], 1), y: fixed(offset[1], 1) }) : "" }));
-    }
-
     function start() {
       stop();
       refresh();
@@ -1280,30 +1695,42 @@
       timer = eventsTimer = null;
     }
 
+    function onBlur() { clearStageTarget(); disarm("focus"); stageOff(); }
+    function onVisibility() { if (root.document.visibilityState !== "visible") onBlur(); }
+    function onGlobalStop(event) { if (event.target?.closest?.("#lc-stop-all")) clearStageTarget(); }
+
     return {
       id: "motion",
       i18n,
       mount(node, consoleApi) {
         api = consoleApi;
         rootNode = node;
-        api.onLanguage(build);
-        api.onState(update);
+        removeLanguage = api.onLanguage(build);
+        removeState = api.onState(update);
         shown = true;
         if (typeof root.addEventListener === "function") {
           root.addEventListener("keydown", onKeyDown);
           root.addEventListener("keyup", onKeyUp);
-          root.addEventListener("blur", () => { disarm("focus"); stageOff(); });
+          root.addEventListener("blur", onBlur);
+          root.addEventListener("pagehide", onBlur);
           root.addEventListener("pointerup", buttonUp);
           root.addEventListener("pointercancel", buttonUp);
         }
-        root.document?.addEventListener?.("visibilitychange", () => {
-          if (root.document.visibilityState !== "visible") { disarm("focus"); stageOff(); }
-        });
+        root.document?.addEventListener?.("visibilitychange", onVisibility);
+        root.document?.addEventListener?.("click", onGlobalStop, true);
         build();
         start();
       },
       show() { shown = true; if (api) { renderCameras(); start(); } },
-      hide() { disarm("focus"); stageOff(); shown = false; stop(); dropTiles(); for (const slot of Object.values(refs.views || {})) slot.replaceChildren(); },
+      hide() { onBlur(); shown = false; stop(); dropTiles(); for (const slot of Object.values(refs.views || {})) slot.replaceChildren(); },
+      destroy() {
+        this.hide();
+        removeLanguage?.(); removeState?.();
+        for (const [event, handler] of [["keydown", onKeyDown], ["keyup", onKeyUp], ["blur", onBlur], ["pagehide", onBlur], ["pointerup", buttonUp], ["pointercancel", buttonUp]]) root.removeEventListener?.(event, handler);
+        root.document?.removeEventListener?.("visibilitychange", onVisibility);
+        root.document?.removeEventListener?.("click", onGlobalStop, true);
+        rootNode = null;
+      },
       _test: { data, model, kb, sh, refs: () => refs, refresh, update },
     };
   }

@@ -135,12 +135,164 @@ The installer works in this order:
    If `--toupcam` is supplied, install the library bytes verified in step 1.
 7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
 8. Install selected service definitions and reload systemd.
-9. Create the `labctl` link and remove an old `mg400ctl` link.
+9. Create the `labctl` link and remove an old `labctl` link.
 
 The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
 After the update, start services, then reload the Lab Console if it is open.
 Do not edit files in `/opt/mg400`. Modified files can cause `git switch` to abort the update.
+
+## Update the Console test instance from Windows
+
+`deploy/twin.py` updates an existing Console test instance on Olares from a Windows PC.
+Before you run it, enable the VPN through LarePass.
+The PC must have the SSH key `~/.ssh/olares_ed25519`, and the project must contain `work/olares-known_hosts`.
+
+First, run the tests for the area you changed.
+In PowerShell at the project root, preview the update:
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py --check
+```
+
+Without `--check`, the script deploys the update:
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py
+```
+
+The script applies these update rules:
+
+- Transfer only changed source files, including uncommitted changes to Git-tracked files and new files that Git does not ignore.
+- Delete previously deployed source files that no longer exist locally.
+- Sync dependencies only when `pyproject.toml` or `uv.lock` changes. Otherwise, reuse installed packages.
+- If only static console JavaScript/CSS changes, do not restart services.
+- If backend code or templates change, restart `mg400-twin-test`.
+- Restart `mg400-camera-preview.service` for camera code or dependency changes only when the override below is active and verified.
+
+The script preserves the calibration profile and run data directories.
+After deployment, the script checks service health. It does not run tests.
+If deployment fails, the script rolls back the update.
+After the update, open the [Console test instance](http://100.64.0.1:8082/lab/#motion).
+
+Native sampling in the test instance uses a camera service override.
+As root, manually install `/etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf`:
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python /opt/mg400-twin-test/scripts/camera_preview.py
+```
+
+After installation, run `systemctl daemon-reload` and `systemctl restart mg400-camera-preview.service`.
+The updater checks the override file and systemd's current `ExecStart` to confirm that the service uses the test instance code.
+To restore the original camera preview, remove only this override file:
+
+```sh
+rm /etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf
+systemctl daemon-reload
+systemctl restart mg400-camera-preview.service
+```
+
+### Stage test backend
+
+Use `mg400-stage-panel.service` for Sample Transfer tests to retain 1 device owner.
+Both Consoles use the canonical `/api/*` routes at `http://127.0.0.1:8767/`.
+The `/contract/api/*` aliases share the same handlers and control lease for older clients.
+Both paths use rotations. The service rejects old pulse motion payloads without converting their units.
+Restart only when the stage is idle and has no active control lease.
+After restart, check that the service remains disconnected and all axis references are cleared.
+
+Preserve the original host packages. Prepare the encoder runtime:
+
+1. Save the current `/var/lib/mg400/twin-test/stage-runtime` link target and the override file below. Record an absent file too.
+2. Copy the complete `src/stage_controller` and matching `src/labkit` packages from the same checkout into `/var/lib/mg400/twin-test/<backup>/runtime`.
+   This directory must contain `stage_controller/` and `labkit/` directly.
+3. Run the stage tests against the source revision used for this snapshot.
+4. After verification, point `/var/lib/mg400/twin-test/stage-runtime` to the new runtime directory.
+
+As root, install `/etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf`:
+
+```ini
+[Service]
+WorkingDirectory=/var/lib/mg400/twin-test/stage-runtime
+ExecStart=
+ExecStart=/opt/mg400/.venv/bin/python -m stage_controller
+```
+
+The Console uses fixed device endpoints. Do not add an `MG400_ORCH_STAGE_URL` override.
+The old `/etc/systemd/system/mg400-twin-test.service.d/stage-api.conf` is no longer required.
+
+Under the idle conditions above, run:
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-stage-panel.service
+systemctl restart mg400-twin-test.service
+```
+
+Poll `GET /api/describe` and `GET /api/state` at `http://127.0.0.1:8767/` until both requests succeed.
+Check that discovery exposes `move_to_position_guarded`, `calibrate` and `connect`.
+Check that the service remains disconnected and all axis references are cleared.
+Check that the compatibility alias `GET /contract/api/state` succeeds.
+
+`deploy/twin.py` does not manage this runtime snapshot, its link, or the override file.
+For later stage changes, create a new snapshot of both packages from the updated checkout.
+Repeat the tests and switch the link under the idle conditions above.
+
+To restore the previous backend, restore the saved link target and override file.
+Remove the override only if the saved configuration had no such file.
+Before restart, check that the restored backend supports the canonical root API.
+Repeat the restart commands and readiness checks above under the same idle conditions.
+
+### Microscope test backend
+
+Use `mg400-microscope.service` for the turret calibration test backend to retain 1 device owner.
+The original Console and test Console share the microscope API on port `8770`.
+Restart only when the microscope is idle, has no active control lease, and is not recording.
+Restart preserves `/var/lib/mg400/calibration/microscope` but clears the focus reference and unsaved draft.
+
+The test backend reads microscope motion settings from environment variables.
+If the host environment file omits these settings, retain the existing backend's fixed values below in the override.
+
+Deploy the test code first.
+As root, install the override file `/etc/systemd/system/mg400-microscope.service.d/twin-turret.conf`:
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+Environment=MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
+Environment=MG400_MICROSCOPE_SWITCH_FOCUS=0
+Environment=MG400_MICROSCOPE_HOME_SWITCH=0
+Environment=MG400_MICROSCOPE_NUDGE_STEPS=20
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python -m microscope
+```
+
+After installation, reload systemd and restart the service:
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
+
+Poll `GET /api/state` and `GET /api/turret-calibration` at `http://127.0.0.1:8770/` until both requests succeed.
+Confirm that the state reports `connected` as `true` and `fault` as `null`.
+
+The current `deploy/twin.py` does not manage the microscope service or this override file.
+With this override active, run `systemctl stop mg400-microscope.service` before subsequent updates to the test instance backend or dependencies.
+After the update or script rollback, run `systemctl start mg400-microscope.service`.
+Check the APIs above again.
+
+To restore the original backend, remove only this override file.
+Restart the service under the idle conditions above:
+
+```sh
+rm /etc/systemd/system/mg400-microscope.service.d/twin-turret.conf
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
 
 ## Toupcam library
 
@@ -214,7 +366,7 @@ See [Vision service](vision.en.md) for runtime settings and [Olares networking](
 The `orch` service uses the `orchestrator` dependency group in `/opt/mg400/.venv`.
 This group includes Flask, waitress, and the `stage`, `thermal`, and `furnace` groups for supported owned demos.
 The installer prepares the `runs` and `zones` directories. It does not invent zone configuration or start the service.
-The same service serves the [Lab Console](dashboard.en.md#lab-console). It is the only operator web page. It has the Overview, Motion, Cameras, and Furnace + microscope workspaces, and separate motion, heat, and gas stop controls.
+The same service serves the [Lab Console](dashboard.en.md#lab-console). It is the only operator web page. It has the Overview, Motion, Cameras, Furnace, Sample Transfer, Twin and Position Finder (legacy) workspaces, and separate motion, heat, and gas stop controls.
 The console has no recipe run controls. Use the [recipe service interface](orchestrator.en.md#http-service) to start, abort, and recover runs.
 
 The `proxy` service adds no Python dependency group. On the first installation, supply Caddy 2 through `--caddy PATH` and configure the [single-port entry](olares.en.md#single-port-proxy).
@@ -331,8 +483,11 @@ Configure microscope device selection, focus limits, and camera streams as descr
 Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
 The camera service provides only configured streams, named `camera1` through `camera4` in device order.
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
-An explicit mode list overrides these defaults. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `labctl`, and the preview service refuse to run. Invalid counts, paths, or modes stop installation before host changes.
-Only streams with width at most 1280 and height at most 720 are preloaded. Larger streams start on demand.
+Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry. If it is set with `MG400_CAMERA_MODES`, the installer, `labctl` and preview service refuse to run.
+An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.
+Only streams with width at most 1280 and height at most 720 are preloaded.
+Preloaded capture continues when the browser is closed. Larger streams start on demand.
+The lab configuration uses `3840x2160@30` for `camera1` and `1280x720@30` for the other 3 cameras.
 Before several cameras use modes above `640x480`, install the [USB bandwidth patch](olares.en.md#usb-bandwidth-patch).
 After changing devices or modes, run the installer again to generate a new `go2rtc.yaml`, then run `labctl restart camera vision microscope orch`. If `vision` is not enabled, remove `vision` from the command: `restart` refuses optional services that are not enabled.
 See [Cameras](olares.en.md#cameras) for approved modes and the tray-camera configuration.
@@ -437,7 +592,7 @@ The backup includes the following paths when they exist:
 | `/var/lib/mg400/calibration/microscope/` | Turret, autofocus, and reference-view data |
 | `/var/lib/mg400/robot/stations.toml` | Taught robot stations |
 | `/var/lib/mg400/robot/tool.toml` | Suction cup tool offset |
-| `/var/lib/mg400/stage/stage.toml` | Stage steps per mm, soft limits, named positions, and poses |
+| `/var/lib/mg400/stage/stage.toml` | Retained legacy stage geometry; inactive for encoder motion |
 | `/var/lib/mg400/thermal/rois.toml` | Named thermal regions |
 | `/var/lib/mg400/furnace/state.json` | Furnace sequence state |
 | `/var/lib/mg400/runs/` | Run files and SQLite index |

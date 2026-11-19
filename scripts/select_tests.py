@@ -37,6 +37,7 @@ ORCHESTRATOR = [
     "test_deploy_labctl.py",
     "test_console*.py",
     "test_dashboard*.py",
+    "test_transfer_profiles.py",
 ]
 MICROSCOPE = ["test_microscope_*.py"]
 DEPLOY = ["test_deploy_*.py", "test_systemd_units.py", "test_udev_rules.py", "test_console.py"]
@@ -54,11 +55,32 @@ AREAS = [
     ("apps/control_panel/*", ROBOT),
     ("config/robot.toml", ROBOT),
     ("examples/*", ["test_joint_example.py"]),
+    (
+        "src/orchestrator/transfer_profiles.py",
+        ["test_transfer_profiles.py", "test_console_sample_transfer.py", "test_console_preview.py"],
+    ),
+    (
+        "src/orchestrator/transfer_motion.py",
+        ["test_console_sample_transfer.py", "test_console_preview.py"],
+    ),
     ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py", "test_agent_cli*.py"]),
     ("src/orchestrator/agent*.py", ["test_agent_cli*.py", "test_orchestrator_cli.py"]),
     ("scripts/console_font.py", ["test_console.py"]),
+    (
+        "scripts/console_preview.py",
+        [
+            "test_console_preview.py",
+            "test_console_twin.py",
+            "test_console_position_finder.py",
+            "test_console_turret.py",
+        ],
+    ),
     ("src/orchestrator/*", ORCHESTRATOR),
     ("recipes/*", ORCHESTRATOR),
+    (
+        "src/microscope/turret_calibration.py",
+        [*MICROSCOPE, "test_console_preview.py", "test_console_turret.py"],
+    ),
     ("deploy/labctl", ORCHESTRATOR),
     ("src/microscope/*", MICROSCOPE),
     ("firmware/microscope-axes/*", MICROSCOPE),
@@ -69,6 +91,9 @@ AREAS = [
             "test_deploy_install.py",
             "test_camera_preview.py",
             "test_console_cameras.py",
+            "test_console_twin.py",
+            "test_console_position_finder.py",
+            "test_stage_twin.py",
             "test_vision_calibration.py",
             "test_vision_drift.py",
             "test_vision_service.py",
@@ -88,8 +113,19 @@ AREAS = [
         ],
     ),
     ("src/stage_controller/*", ["test_stage_*.py", "test_orchestrator_rehearsal.py"]),
+    ("firmware/stage-controller-v3/*", ["test_stage_*.py", "test_console_preview.py"]),
     ("src/thermal_cam/*", ["test_thermal_*.py", "test_orchestrator_rehearsal.py"]),
-    ("src/vision/*", ["test_vision_*.py", "test_orchestrator_rehearsal.py"]),
+    ("src/vision/stage_twin/*", ["test_stage_twin.py", "test_console_position_finder.py"]),
+    (
+        "src/vision/*",
+        [
+            "test_vision_*.py",
+            "test_stage_twin.py",
+            "test_console_twin.py",
+            "test_console_position_finder.py",
+            "test_orchestrator_rehearsal.py",
+        ],
+    ),
     ("config/trays/*", ["test_vision_tray.py"]),
     ("scripts/vision_eval.py", ["test_vision_eval.py"]),
     ("scripts/console_shots.py", ["test_console_shots.py"]),

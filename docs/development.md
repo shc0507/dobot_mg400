@@ -125,7 +125,7 @@ wait "$sim_pid"
 | `config/trays/`、`config/proxy/`、`config/udev/` | 托盘几何、代理模板和 USB 访问规则模板 |
 | `firmware/three-motor-demo/` | 位移台的 Arduino 固件和接线说明（英文） |
 | `firmware/microscope-axes/` | 显微镜转盘与调焦的固件，见[固件说明](../firmware/microscope-axes/README.md) |
-| `scripts/` | 摄像头预览、控制模式切换、交互终端入口、控制台截图（`console_shots.py`）、测试选择（`select_tests.py`）、文档对检查（`check_doc_pairs.py`）、代理信号（`agent_signal.py`）、检测模型评估（`vision_eval.py`）和控制台字体（`console_font.py`） |
+| `scripts/` | 摄像头预览、控制模式切换、控制台截图（`console_shots.py`）、测试选择（`select_tests.py`）、文档对检查（`check_doc_pairs.py`）、代理信号（`agent_signal.py`）、检测模型评估（`vision_eval.py`）和控制台字体（`console_font.py`） |
 | `examples/` | 单文件教学和 notebook |
 | `tests/` | Python 和 JavaScript 离线测试 |
 | `docs/` | 操作、部署和开发指南，`docs/agents/` 保存代理操作规程 |
@@ -440,86 +440,82 @@ hello 失败、协议错误或连接被替换后，客户端停止尝试连接�
 
 ## 位移台服务接口
 
-位移台服务的 HTTP 接口使用 JSON，全部位于 `{prefix}api/`。
-`{prefix}` 是 `--base-path` 的值，默认为 `/`。
-服务每 0.2 秒查询一次 Arduino 状态，并在查询时停止超时的长按。
+JSON API 默认位于 `/api/`。`labkit.client.ServiceClient` 使用 `http://127.0.0.1:8767/`。兼容别名 `/contract/api/` 共用同一组处理器和租约。服务遵循[仪器服务契约](adr/0001-instrument-service-contract.md)。
+
+Arduino 广播编码器和开关状态。服务每 0.05 s 读取遥测。公开坐标和相对距离使用电机轴圈数，速度使用圈/秒。`ccw` 增加坐标，`cw` 减少坐标。固件执行控制环。
 
 ### 位移台自动化契约
 
-`labkit.client.ServiceClient` 的基地址为 `http://127.0.0.1:8767/`。
-接口遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)。
-
 | 接口 | 用途 |
 | --- | --- |
-| `GET /api/describe` | 读取命令参数、限制、演示标志和租约规则 |
-| `GET /api/state` | 读取电机状态及 `service`、`seq`、`ts_unix`、`busy`、`locked`、`fault`、`lease`、`last_command` |
-| `POST /api/heartbeat` | 取得或续期控制租约。其他客户端占用时返回 409 |
-| `POST /api/renew` | 仅续期调用者持有且未过期的租约，否则返回 409 |
-| `POST /api/release` | 释放调用者的控制租约，不发送停止命令 |
-| `POST /api/command` | 正文携带 `action` 和对应参数。接受后返回 202、`command_id` 和 `state` |
-| `POST /api/stop` | 任意客户端可请求停止，无须租约。`wait_s` 为 0–15 秒，默认 0 |
-| `GET /api/events?since=0` | 读取活动事件和 `next` 游标。每条活动只记录一次，同时写入服务日志 |
+| `GET /api/describe` | 读取命令格式、限制、能力和租约规则 |
+| `GET /api/state` | 读取电机、连接、租约、命令结果和取消序号 |
+| `POST /api/heartbeat` | 获取或续期控制权，有其他持有者时返回 409 |
+| `POST /api/renew` | 只续期调用者持有且未过期的租约 |
+| `POST /api/release` | 释放控制权，不发送停止 |
+| `POST /api/command` | 发送 `action` 和参数，接受后返回 202、`command_id` 和 `state` |
+| `POST /api/stop` | 不要求租约的停止请求，`wait_s` 为 0–15 s，默认 0 |
+| `GET /api/events?since=0` | 读取活动和 `next` 游标 |
 
-| `action` | 参数 | 完成判定 |
+| `action` | 参数 | 含义 |
 | --- | --- | --- |
-| `move` | `motor`、`direction`、`speed`、`steps` | 新鲜反馈确认目标电机空闲后，更新 `last_command` |
-| `hold` | `motor`、`direction`、`speed`、`hold_id`、`sampled_at` | Arduino 确认开始长按。电机继续运动 |
-| `keepalive` | `motor`、`hold_id` | Arduino 确认续期长按 |
-| `release_hold` | `motor`、`hold_id` | 结束对应长按 |
-| `connect` | `port` | 连接状态 `ports` 列出的串口。演示模式只接受 `DEMO`。服务锁定时也可发送 |
-| `teach_reference` | `motor`、`confirm: true` | 把当前标记位置保存为该轴的参考 |
-| `set_microstep` | `microstep` | Arduino 确认细分模式 |
+| `connect` | `port` | 连接状态中列出的串口。演示只接受 `DEMO`。服务故障时仍可用 |
+| `move` | `motor`、`direction`、`speed`、`rotations` | 编码器相对移动 |
+| `move_guarded` | `motor`、`direction`、`speed`、`rotations`、`stop_epoch` | 检查取消状态后相对移动 |
+| `move_to_position` | `motor`、`position`、`speed` | 标定后的编码器绝对目标 |
+| `move_to_position_guarded` | `motor`、`position`、`speed`、`stop_epoch` | 检查取消状态后移到绝对目标 |
+| `calibrate` | `motor`、`speed` | 寻找下限、上限，再移到中心 |
+| `reset_position` | `motor` | 位置归零并清除全部限位 |
+| `set_limit` | `motor` | 记录正上限或负下限，拒绝零值 |
+| `clear_upper_limit` | `motor` | 清除上限 |
+| `clear_lower_limit` | `motor` | 清除下限 |
+| `clear_fault` | `motor` | 清除反馈故障，不移动 |
+| `hold` | `motor`、`direction`、`speed`、`hold_id`、`sampled_at` | 开始连续移动 |
+| `keepalive` | `motor`、`hold_id` | 续期对应的按住移动 |
+| `release_hold` | `motor`、`hold_id` | 结束对应的按住移动 |
+| `stop_all` | 无 | 所有客户端均可请求停止 |
+| `set_microstep` | `microstep` | 确认固定 1/8 模式 |
+| `set_microstep_guarded` | `microstep`、`stop_epoch` | 检查取消状态后确认固定模式 |
 
-`motor` 取 `bottom`、`top` 或 `insert`，`direction` 取 `cw` 或 `ccw`。
-`speed` 是 1–1000 的整数，`steps` 是 1–100000 的整数，`microstep` 取 1、2、4、8 或 16。
-`hold_id` 由客户端生成，长度为 16–64 个字符，只含字母、数字、`_` 和 `-`。
-每次长按必须使用新的 `hold_id`。
-`sampled_at` 取自 `api/state` 的同名字段，必须在服务时钟的最近 2 秒内。
-`release_hold` 可以重复发送。它先于同一 `hold_id` 的 `hold` 到达时，服务拒绝之后到达的 `hold`。
-契约还提供 `home`（`motor`）、`zero`（`motor`、`confirm: true`）、`awake`（`motor`、`seconds` 0–60）、`goto`（`motor`、`name`）和 `pose`（`name`），见 [位移台接口](stage-panel.md#接口)。
-服务拒绝缺少或多余的参数。
+`motor` 为 `bottom`、`top` 或 `insert`。`direction` 为 `cw` 或 `ccw`。`rotations` 接受 0.001–10000。`speed` 接受 0.001–5，并受电机 `max_speed` 限制。`position` 必须非负，且在标定限位内。`microstep` 只接受 8。缺少或多余的参数均被拒绝。
 
-控制租约默认有效 3 秒，长按仍须在 1 秒内单独续期。
-长按续期不续期控制租约。
-labkit Flask 适配器在发现响应中声明 `renew_only_heartbeat: true`。
-要持续持有控制权，先用 `ServiceClient.heartbeat()` 明确取得租约，再用 `ServiceClient.renew()` 续期。
-可选的 `heartbeat_thread(renew_only=True)` 辅助线程使用严格续期，首次出错后停止。
-续期请求在租约过期或释放后到达时，返回 409，不会重新取得控制权。
-旧服务没有 `api/renew` 时，返回 404。客户端不会改为取得租约。
-`heartbeat()` 和默认 `heartbeat_thread()` 取得或续期租约。
-续期失败后，先停止运动并核对服务状态，再明确取得控制权。
-租约过期时，服务请求停止所有电机。
-释放租约不停止运动。先等待完成或请求停止，再交还控制权。
+服务每次只允许 1 个轴移动，并等待位移台冷却结束后再移动。相对移动和按住移动要求编码器反馈正常且未过期。绝对移动还要求完成标定并设置全部限位。修改零点或限位会使标定失效。正常触发开关不会使坐标归零。
 
-专用停止接口返回 `stop` 和 `state`，`stop` 为 `confirmed`、`pending` 或 `unconfirmed`。
-仅确认所有电机空闲后才返回 `confirmed`。
-等待反馈时，服务允许其他停止请求，但禁止新运动。
-停止等待到期或串口结果未知时，`locked` 为真且 `fault` 非空。
-后续空闲反馈不清除故障。核对现场状态后，运行 `labctl restart stage`，再重新连接。确认所有电机空闲后才清除。
-停止确认尚未结束时，重新连接请求返回 409，防止用新连接的反馈确认旧设备已停止。
-`last_command` 区分 `ok`、`failed`、`rejected` 和 `stopped`。服务不自动重试运动。
+状态含 `service`、`seq`、`ts_unix`、`sampled_at`、`busy`、`locked`、`fault`、`lease`、`last_command`、`stop_epoch` 和 `coordinate_unit`。坐标单位为 `rotations`。设备能力含 `closed_loop`、`telemetry_streaming`、`home_switches`、`auto_calibration` 和 `absolute_positioning`。
 
-### 参考检查
+每个电机提供 `position_rotations`、`remaining_rotations`、`measured_speed`、`max_speed`、`encoder`、`fault`、`telemetry_age_ms`、`limit_telemetry_age_ms`、`telemetry_fresh`、`switch_mask`、`calibration`、`lower_limit_rotations`、`upper_limit_rotations`、`lower_limit_set`、`upper_limit_set`、`motion_ready`、`positioning_ready` 和 `position_tolerance_rotations`。未设限位的别名为 null。编码器和受支持的开关帧不超过 1 s 时，反馈才未过期。编码器固件中的原始 `position`、`remaining`、`lower_limit` 和 `upper_limit` 也使用圈数。
 
-`GET /api/motors/<motor>/reference` 读取相机图像和标记的像素偏移。图像太大，不放入状态。
-状态的 `ports` 在未连接时列出串口 `{"device", "description"}`，已连接时为空。设置 `MG400_STAGE_SERIAL` 时只列出该设备。
+标定阶段为 `none`、`lower`、`upper`、`center`、`done`、`cancelled` 和 `failed`。活动阶段计为忙碌，包括内部移动之间的间隔。`warning`、`direction_warning_count` 和 `recalibration_recommended` 报告方向暂停建议，不启动标定。
+
+命令获接受不表示移动完成。`last_command.result` 可以为 `running`、`ok`、`failed`、`rejected` 或 `stopped`。只有未过期的空闲反馈确认实测目标在编码器容差内，移动才算完成。标定还要求 `done`。停止会取消待完成的移动命令。服务不自动重试移动。
+
+受保护命令使用获取控制权后读取的 `stop_epoch`，整个序列保留该值。服务在运动锁内检查它。停止、控制权变化、断开、连接丢失和不受保护的命令会使其失效。续期保留该值。不匹配时返回 409。不得读取新序号来恢复已取消的序列。
+
+每次按住移动生成新的 `hold_id`，长度为 16–64，只含字母、数字、下划线或连字符。`sampled_at` 必须来自服务时钟最近 2 s 内的状态。`release_hold` 可重复，并阻止使用相同 ID 后续启动。按住移动要求 1 s 内保活，与 3 s 控制租约分别续期。
+
+发现接口报告 `renew_only_heartbeat: true`。使用 `ServiceClient.heartbeat()` 获取控制权，再用 `ServiceClient.renew()` 或 `heartbeat_thread(renew_only=True)` 续期。释放或过期后续期返回 409，不重新获取。无续期接口的旧服务返回 404，不回退。租约过期请求停止。单独释放不会停止移动。
+
+专用停止路由返回 `stop` 和 `state`。结果为 `confirmed`、`pending` 或 `unconfirmed`。确认要求全部电机空闲，无活动标定或方向暂停。等待停止期间允许其他停止请求，但阻止新移动。串口结果未知或停止等待过期会锁定服务。后续空闲反馈不会单独清除该故障。确认实际位移台状态后，运行 `labctl restart stage` 并重新连接。停止确认进行中，重连返回 409。
+
+### 位移台连接与兼容性
+
+未连接时，状态的 `ports` 以 `{"device", "description"}` 列出可用串口。连接后列表为空。`MG400_STAGE_SERIAL` 将列表限制为该设备。通过 `POST /api/command` 发送 `connect` 命令，不提供独立的操作员连接路由。
+
+旧 `steps`、毫米目标、命名脉冲位姿和相机校准不生成编码器移动。旧几何文件保持未启用。使用上述命令和基于圈数的 Sample Transfer 配置。
 
 ### 访问检查
 
-服务不检查令牌、`Host` 或 `Origin`，见 [访问与客户端 ID](#访问与客户端-id)。
-POST 必须带 `Content-Type: application/json` 和 `X-MG400-Client`，正文必须是 JSON 对象。
-客户端 ID 为 1–128 个可打印 ASCII 字符。
-正文大小上限为 4096 字节。
+服务不检查令牌、`Host` 或 `Origin`，见[访问与客户端 ID](#访问与客户端-id)。POST 请求必须含 `Content-Type: application/json`、`X-MG400-Client` 和 JSON 对象。客户端 ID 使用 1–128 个可打印 ASCII 字符。请求正文上限为 4096 字节。
 
-操作接口拒绝时，正文为 `{"error": "..."}`，状态码如下：
+操作接口错误使用 `{"error": "..."}`：
 
-| 状态码 | 含义 |
+| 状态 | 含义 |
 | --- | --- |
-| 400 | 请求无效，或串口不在当前列表中 |
-| 409 | 状态冲突，例如未持有租约、已连接或电机仍在运动 |
-| 413 | 请求正文超过 4096 字节 |
-| 415 | 不是 JSON 请求 |
-| 503 | 串口通信失败，服务已关闭串口连接 |
+| 400 | 参数无效或串口不在列表中 |
+| 409 | 租约、固件能力、标定或电机状态冲突 |
+| 413 | 正文超过 4096 字节 |
+| 415 | 请求不是 JSON |
+| 503 | 串口失败，连接关闭 |
 
 ## 真机控制参考
 

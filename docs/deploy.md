@@ -135,12 +135,164 @@
    如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
 8. 安装所选服务定义，重新加载 systemd。
-9. 链接 `labctl`，删除旧的 `mg400ctl` 链接。
+9. 链接 `labctl`，删除旧的 `labctl` 链接。
 
 安装器不启动、不停止，也不重启服务。
 更新代码前必须停止服务。运行中的服务可能读取新旧混合的文件。
 更新后，启动服务，再重新加载已打开的实验室控制台。
 不要在 `/opt/mg400` 修改文件。修改的文件可能让 `git switch` 中止更新。
+
+## 从 Windows 更新控制台测试实例
+
+`deploy/twin.py` 从 Windows 电脑更新 Olares 上已安装的控制台测试实例。
+运行前，用 LarePass 开启 VPN。
+电脑必须有 SSH 密钥 `~/.ssh/olares_ed25519`，项目内必须有 `work/olares-known_hosts`。
+
+先运行所改区域的测试。
+在项目根目录的 PowerShell 中预览更新：
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py --check
+```
+
+不加 `--check` 时，脚本部署更新：
+
+```powershell
+.\.venv\Scripts\python.exe deploy/twin.py
+```
+
+脚本按以下规则更新：
+
+- 只传输更改的源文件，包括 Git 跟踪的未提交修改和未被忽略的新文件。
+- 删除以前部署过、现已在本地删除的源文件。
+- 只有 `pyproject.toml` 或 `uv.lock` 更改时才同步依赖，否则复用已安装的包。
+- 只更改控制台静态 JavaScript/CSS 时，不重启服务。
+- 后端代码或模板更改时，重启 `mg400-twin-test`。
+- 下述相机覆盖配置已生效且通过检查时，相机代码或依赖更改会重启 `mg400-camera-preview.service`。
+
+脚本保留校准配置和运行数据目录。
+部署后，脚本检查服务健康状态，不运行测试。
+部署失败时，脚本回滚本次更新。
+更新后，打开[控制台测试实例](http://100.64.0.1:8082/lab/#motion)。
+
+测试实例的原生尺寸采样使用相机服务覆盖文件。
+由 root 手动安装 `/etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf`：
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python /opt/mg400-twin-test/scripts/camera_preview.py
+```
+
+安装后，运行 `systemctl daemon-reload` 和 `systemctl restart mg400-camera-preview.service`。
+更新脚本检查覆盖文件和 systemd 当前的 `ExecStart`，确认服务使用测试实例的代码。
+恢复原相机预览时，只删除此覆盖文件：
+
+```sh
+rm /etc/systemd/system/mg400-camera-preview.service.d/twin-sampling.conf
+systemctl daemon-reload
+systemctl restart mg400-camera-preview.service
+```
+
+### 位移台测试后端
+
+测试样品转移时，复用 `mg400-stage-panel.service`，保持 1 个设备所有者。
+两个控制台均使用 `http://127.0.0.1:8767/` 的正式路由 `/api/*`。
+兼容别名 `/contract/api/*` 供旧客户端使用，共用相同处理器和控制租约。
+两个路径均使用圈数。服务拒绝旧脉冲运动参数，不转换单位。
+仅在位移台空闲且无有效控制租约时重启。
+重启后，检查服务保持断开连接且各轴参考已清除。
+
+保留主机原包。按以下步骤准备编码器运行目录：
+
+1. 保存 `/var/lib/mg400/twin-test/stage-runtime` 的当前链接目标和下述覆盖文件。文件不存在时，也记录此状态。
+2. 把同一检出代码的完整 `src/stage_controller` 和匹配的 `src/labkit` 包复制到 `/var/lib/mg400/twin-test/<backup>/runtime`。
+   此目录必须直接包含 `stage_controller/` 和 `labkit/`。
+3. 针对此快照的源代码版本运行位移台测试。
+4. 验证后，将 `/var/lib/mg400/twin-test/stage-runtime` 指向新运行目录。
+
+由 root 安装 `/etc/systemd/system/mg400-stage-panel.service.d/twin-transfer.conf`：
+
+```ini
+[Service]
+WorkingDirectory=/var/lib/mg400/twin-test/stage-runtime
+ExecStart=
+ExecStart=/opt/mg400/.venv/bin/python -m stage_controller
+```
+
+控制台使用固定设备端点。不要添加 `MG400_ORCH_STAGE_URL` 覆盖项。
+旧文件 `/etc/systemd/system/mg400-twin-test.service.d/stage-api.conf` 不再需要。
+
+按上述空闲条件执行：
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-stage-panel.service
+systemctl restart mg400-twin-test.service
+```
+
+轮询 `http://127.0.0.1:8767/` 的 `GET /api/describe` 和 `GET /api/state`，直到两者返回成功。
+检查发现接口包含 `move_to_position_guarded`、`calibrate` 和 `connect`。
+检查服务保持断开连接且各轴参考已清除。
+检查兼容别名 `GET /contract/api/state` 返回成功。
+
+`deploy/twin.py` 不管理此运行快照、链接或覆盖文件。
+后续修改位移台时，从更新后的检出代码创建两个包的新快照。
+重新测试后，按上述空闲条件切换链接。
+
+恢复前一版后端时，还原保存的链接目标和覆盖文件。
+仅当原配置中没有该文件时，删除覆盖文件。
+重启前，检查恢复的后端支持正式根路径 API。
+按相同空闲条件，重复上述重启命令和就绪检查。
+
+### 显微镜测试后端
+
+测试转盘校准后端时，复用 `mg400-microscope.service`，保持 1 个设备所有者。
+原控制台和测试控制台共用端口 `8770` 的显微镜 API。
+仅在显微镜空闲、无有效控制租约且未录像时重启。
+重启保留 `/var/lib/mg400/calibration/microscope`，但清除对焦参考和未保存草稿。
+
+测试后端从环境变量读取显微镜运动参数。
+主机环境文件未提供这些参数时，在覆盖文件中保留下面这些现有后端的固定值。
+
+先部署测试代码。
+由 root 安装覆盖文件 `/etc/systemd/system/mg400-microscope.service.d/twin-turret.conf`：
+
+```ini
+[Service]
+WorkingDirectory=/opt/mg400-twin-test
+Environment=MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
+Environment=MG400_MICROSCOPE_SWITCH_FOCUS=0
+Environment=MG400_MICROSCOPE_HOME_SWITCH=0
+Environment=MG400_MICROSCOPE_NUDGE_STEPS=20
+ExecStart=
+ExecStart=/opt/mg400-twin-test/.venv/bin/python -m microscope
+```
+
+安装后，重新加载 systemd 并重启服务：
+
+```sh
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
+
+轮询 `http://127.0.0.1:8770/` 的 `GET /api/state` 和 `GET /api/turret-calibration`，直到两者返回成功。
+确认状态中的 `connected` 为 `true`，且 `fault` 为 `null`。
+
+当前 `deploy/twin.py` 不管理显微镜服务及此覆盖文件。
+使用此覆盖时，后续更新测试实例后端或依赖前，先运行 `systemctl stop mg400-microscope.service`。
+更新结束或脚本回滚后，运行 `systemctl start mg400-microscope.service`。
+再次检查上述 API。
+
+恢复原后端时，仅删除此覆盖文件。
+按上述空闲条件重启服务：
+
+```sh
+rm /etc/systemd/system/mg400-microscope.service.d/twin-turret.conf
+systemctl daemon-reload
+systemctl restart mg400-microscope.service
+```
 
 ## Toupcam 库
 
@@ -214,7 +366,7 @@
 服务 `orch` 在 `/opt/mg400/.venv` 中使用 `orchestrator` 依赖组。
 此组含 Flask、waitress，以及自有演示服务所需的 `stage`、`thermal` 和 `furnace` 组。
 安装器准备 `runs` 和 `zones` 目录。它不会生成区域配置，也不会启动服务。
-同一服务还提供[实验室控制台](dashboard.md#实验室控制台)。它是唯一的操作网页，含 Overview、Motion、Cameras 和 Furnace + microscope 工作区，以及独立的运动、加热和气体停止操作。
+同一服务还提供[实验室控制台](dashboard.md#实验室控制台)。它是唯一的操作网页，含 Overview、Motion、Cameras、Furnace、Sample Transfer、Twin 和 Position Finder (legacy) 工作区，以及独立的运动、加热和气体停止操作。
 控制台没有配方运行控制。启动、终止和恢复运行使用[配方服务接口](orchestrator.md#http-服务)。
 
 服务 `proxy` 不增加 Python 依赖组。首次安装时通过 `--caddy PATH` 提供 Caddy 2，并配置[单端口入口](olares.md#单端口代理)。
@@ -331,8 +483,11 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。
 摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera4`。
 模式列表为空时，普通摄像头使用 `1280x720@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
-显式模式列表覆盖这些默认值。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。数量、路径或模式无效时，安装器在修改主机前退出。
-只预加载宽度不超过 1280 且高度不超过 720 的流。更大的流按需启动。
+删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项。它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
+显式模式列表覆盖这些默认值。数量、路径或模式无效时，安装器在修改主机前退出。
+只有宽度不超过 1280 且高度不超过 720 的流会预加载。
+浏览器关闭后，预加载的流继续采集。更大的流按需启动。
+实验室配置中，`camera1` 使用 `3840x2160@30`，其他 3 台摄像头使用 `1280x720@30`。
 多台摄像头使用大于 `640x480` 的模式时，先安装 [USB 带宽补丁](olares.md#usb-带宽补丁)。
 修改设备或模式后，重新运行安装器，生成新的 `go2rtc.yaml`，再运行 `labctl restart camera vision microscope orch`。未启用 `vision` 时，从命令中去掉 `vision`：`restart` 拒绝未启用的可选服务。
 允许的模式和托盘摄像头配置见[摄像头](olares.md#摄像头)。
@@ -437,7 +592,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 | `/var/lib/mg400/calibration/microscope/` | 物镜转盘、自动对焦和参考视图数据 |
 | `/var/lib/mg400/robot/stations.toml` | 示教机械臂工位 |
 | `/var/lib/mg400/robot/tool.toml` | 吸盘工具偏移 |
-| `/var/lib/mg400/stage/stage.toml` | 位移台每毫米步数、软限位、命名位置和位姿 |
+| `/var/lib/mg400/stage/stage.toml` | 保留的旧位移台几何，编码器移动不使用 |
 | `/var/lib/mg400/thermal/rois.toml` | 命名热像区域 |
 | `/var/lib/mg400/furnace/state.json` | 炉程序状态 |
 | `/var/lib/mg400/runs/` | 运行文件和 SQLite 索引 |

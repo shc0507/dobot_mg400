@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const path = new URL("../src/orchestrator/web/static/console/cameras.js", import.meta.url).pathname;
+const path = fileURLToPath(new URL("../src/orchestrator/web/static/console/cameras.js", import.meta.url));
 const cameras = require(path);
 const { logic } = cameras;
 

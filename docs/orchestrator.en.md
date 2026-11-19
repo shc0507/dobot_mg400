@@ -457,6 +457,8 @@ uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'
 
 ## Crucible load and unload
 
+These recipes remain in the catalog for legacy stage systems. Encoder stages reject `crucible.load`, `crucible.unload` and the `stage_at_load` condition until their coordinates are redesigned. The old named positions and millimetre references do not define encoder rotation targets. Sample Transfer provides stage-only movements. Its Extract/Insert buttons do not perform robot-to-crucible transfers.
+
 `crucible.load` moves a chip from a taught tray station to `crucible-load`, then inserts the crucible.
 `crucible.unload` withdraws the crucible, waits for a cold named thermal region, then transfers the chip to a taught tray station.
 A taught station named `crucible-load` must exist, with zone `crucible-load`. The tray station must differ from `crucible-load`.

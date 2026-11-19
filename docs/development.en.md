@@ -127,7 +127,7 @@ Exception: a `labctl` stop goes to the orchestrator and also directly to the dev
 | `config/trays/`, `config/proxy/`, `config/udev/` | Tray geometry, proxy template, and USB access rule templates |
 | `firmware/three-motor-demo/` | Stage Arduino firmware and wiring instructions in English |
 | `firmware/microscope-axes/` | Microscope turret and focus firmware. See the [firmware guide](../firmware/microscope-axes/README.en.md) |
-| `scripts/` | Camera preview, control mode switching, the interactive terminal entry point, console screenshots (`console_shots.py`), test selection (`select_tests.py`), document pair checks (`check_doc_pairs.py`), agent signals (`agent_signal.py`), detector evaluation (`vision_eval.py`), and the console font (`console_font.py`) |
+| `scripts/` | Camera preview, control mode switching, console screenshots (`console_shots.py`), test selection (`select_tests.py`), document pair checks (`check_doc_pairs.py`), agent signals (`agent_signal.py`), detector evaluation (`vision_eval.py`), and the console font (`console_font.py`) |
 | `examples/` | Single-file tutorials and notebooks |
 | `tests/` | Python and JavaScript offline tests |
 | `docs/` | Operating, deployment, and development guides. `docs/agents/` contains agent procedures |
@@ -444,86 +444,82 @@ During a network interruption, the service might not detect connection closure. 
 
 ## Stage service API
 
-The stage service HTTP interface uses JSON. All routes are under `{prefix}api/`.
-`{prefix}` is the value of `--base-path`. The default is `/`.
-The service queries Arduino state every 0.2 seconds and stops expired press-and-hold motion during each query.
+The JSON API is under `/api/` by default. Use `http://127.0.0.1:8767/` for `labkit.client.ServiceClient`. The `/contract/api/` compatibility aliases share the same handlers and lease. The service follows the [instrument service contract](adr/0001-instrument-service-contract.en.md).
+
+The Arduino broadcasts encoder and switch state. The service drains telemetry every 0.05 s. Public coordinates and relative distances use motor shaft rotations. Speeds use rotations/s. `ccw` increases the coordinate. `cw` decreases it. The firmware owns the control loop.
 
 ### Stage automation contract
 
-The base URL for `labkit.client.ServiceClient` is `http://127.0.0.1:8767/`.
-The interface follows the [instrument service contract](adr/0001-instrument-service-contract.en.md).
-
 | Interface | Purpose |
 | --- | --- |
-| `GET /api/describe` | Read command parameters, limits, demo status, and lease rules |
-| `GET /api/state` | Read motor state plus `service`, `seq`, `ts_unix`, `busy`, `locked`, `fault`, `lease`, and `last_command` |
-| `POST /api/heartbeat` | Acquire or renew the control lease. Return 409 if another client holds it |
-| `POST /api/renew` | Renew only an existing, unexpired lease held by the caller. Otherwise return 409 |
-| `POST /api/release` | Release the caller's control lease without sending a stop command |
-| `POST /api/command` | Send `action` and its parameters. Acceptance returns 202, `command_id`, and `state` |
-| `POST /api/stop` | Any client can request a stop without a lease. `wait_s` is 0–15 seconds, default 0 |
-| `GET /api/events?since=0` | Read activity events and the `next` cursor. Record each activity once and also write it to the service journal |
+| `GET /api/describe` | Read command schemas, limits, capabilities and lease rules |
+| `GET /api/state` | Read motors, connection, lease, command result and cancellation epoch |
+| `POST /api/heartbeat` | Acquire or renew control; another holder returns 409 |
+| `POST /api/renew` | Renew only the caller's existing, unexpired lease |
+| `POST /api/release` | Release ownership without sending stop |
+| `POST /api/command` | Send `action` and parameters; accepted requests return 202, `command_id` and `state` |
+| `POST /api/stop` | Request stop without a lease; `wait_s` is 0–15 s, default 0 |
+| `GET /api/events?since=0` | Read activity and the `next` cursor |
 
-| `action` | Parameters | Completion |
+| `action` | Parameters | Meaning |
 | --- | --- | --- |
-| `move` | `motor`, `direction`, `speed`, `steps` | Update `last_command` after fresh feedback confirms that the target motor is idle |
-| `hold` | `motor`, `direction`, `speed`, `hold_id`, `sampled_at` | Arduino acknowledges the hold start. The motor continues moving |
-| `keepalive` | `motor`, `hold_id` | Arduino acknowledges hold renewal |
-| `release_hold` | `motor`, `hold_id` | End the matching hold |
-| `connect` | `port` | Connect a serial port that the state `ports` lists. Demo mode accepts only `DEMO`. The service accepts it also when locked |
-| `teach_reference` | `motor`, `confirm: true` | Save the current marker position as the reference of that axis |
-| `set_microstep` | `microstep` | Arduino confirms the microstep mode |
+| `connect` | `port` | Connect a port listed in state. Demo accepts only `DEMO`. Available during a service fault |
+| `move` | `motor`, `direction`, `speed`, `rotations` | Relative encoder move |
+| `move_guarded` | `motor`, `direction`, `speed`, `rotations`, `stop_epoch` | Relative move with cancellation check |
+| `move_to_position` | `motor`, `position`, `speed` | Absolute encoder target after calibration |
+| `move_to_position_guarded` | `motor`, `position`, `speed`, `stop_epoch` | Absolute target with cancellation check |
+| `calibrate` | `motor`, `speed` | Seek lower, seek upper, then move to center |
+| `reset_position` | `motor` | Set position to zero and clear both bounds |
+| `set_limit` | `motor` | Record positive upper or negative lower bound; reject zero |
+| `clear_upper_limit` | `motor` | Remove upper bound |
+| `clear_lower_limit` | `motor` | Remove lower bound |
+| `clear_fault` | `motor` | Reset feedback fault without motion |
+| `hold` | `motor`, `direction`, `speed`, `hold_id`, `sampled_at` | Start continuous movement |
+| `keepalive` | `motor`, `hold_id` | Renew matching hold |
+| `release_hold` | `motor`, `hold_id` | End matching hold |
+| `stop_all` | None | Stop request available to any client |
+| `set_microstep` | `microstep` | Confirm fixed 1/8 mode |
+| `set_microstep_guarded` | `microstep`, `stop_epoch` | Confirm fixed mode with cancellation check |
 
-The values for `motor` are `bottom`, `top`, and `insert`. The values for `direction` are `cw` and `ccw`.
-`speed` is an integer from 1–1000. `steps` is an integer from 1–100000. `microstep` is 1, 2, 4, 8, or 16.
-The client generates `hold_id`: 16–64 characters, with only letters, digits, `_`, and `-`.
-Each press-and-hold operation must use a new `hold_id`.
-`sampled_at` comes from the field with the same name in `api/state`. It must be within the service clock's last 2 seconds.
-`release_hold` can be sent repeatedly. If it arrives before `hold` with the same `hold_id`, the service rejects the later `hold`.
-The contract also provides `home` (`motor`), `zero` (`motor`, `confirm: true`), `awake` (`motor`, `seconds` 0–60), `goto` (`motor`, `name`), and `pose` (`name`). See [Stage API](stage-panel.en.md#api).
-The service rejects missing or extra parameters.
+`motor` is `bottom`, `top` or `insert`. `direction` is `cw` or `ccw`. `rotations` accepts 0.001–10000. `speed` accepts 0.001–5, further limited by the motor's `max_speed`. `position` is nonnegative and must lie within the calibrated bounds. `microstep` accepts only 8. Missing or extra parameters are rejected.
 
-The control lease lasts 3 seconds by default. Holds still require a separate renewal within 1 second.
-Hold renewal does not renew the control lease.
-The labkit Flask adapter advertises `renew_only_heartbeat: true` in discovery.
-For continuous ownership, acquire explicitly with `ServiceClient.heartbeat()`, then use `ServiceClient.renew()`.
-The optional `heartbeat_thread(renew_only=True)` helper uses this strict renewal and stops on its first error.
-If a renewal arrives after lease expiry or release, it returns 409 without taking control again.
-An older service without `api/renew` returns 404. The client never falls back to acquisition.
-`heartbeat()` and the default `heartbeat_thread()` acquire or renew the lease.
-After a renewal failure, stop motion and reconcile the service state before explicitly taking control again.
-On lease expiry, the service requests that all motors stop.
-Releasing the lease does not stop motion. Wait for completion or request a stop before returning control.
+The service permits 1 moving axis at a time and waits for the stage cooldown before another move. Relative moves and holds require fresh healthy encoder feedback. Absolute moves also require completed calibration and both bounds. Changing zero or bounds invalidates calibration. Ordinary switch contact does not zero the coordinate.
 
-The dedicated stop interface returns `stop` and `state`. The `stop` value is `confirmed`, `pending`, or `unconfirmed`.
-It returns `confirmed` only after all motors report idle.
-While waiting for feedback, the service permits other stop requests but blocks new motion.
-If the stop wait expires or a serial outcome is unknown, `locked` is true and `fault` is non-null.
-Later idle feedback does not clear the fault. Check the physical state, then run `labctl restart stage` and connect again. The fault clears only after all motors report idle.
-Reconnection returns 409 while stop confirmation is in progress. Feedback from a new connection cannot confirm that the old device stopped.
-`last_command` distinguishes `ok`, `failed`, `rejected`, and `stopped`. The service never retries motion automatically.
+State includes `service`, `seq`, `ts_unix`, `sampled_at`, `busy`, `locked`, `fault`, `lease`, `last_command`, `stop_epoch` and `coordinate_unit`. The coordinate unit is `rotations`. Device capabilities include `closed_loop`, `telemetry_streaming`, `home_switches`, `auto_calibration` and `absolute_positioning`.
 
-### Reference check
+Each motor supplies `position_rotations`, `remaining_rotations`, `measured_speed`, `max_speed`, `encoder`, `fault`, `telemetry_age_ms`, `limit_telemetry_age_ms`, `telemetry_fresh`, `switch_mask`, `calibration`, `lower_limit_rotations`, `upper_limit_rotations`, `lower_limit_set`, `upper_limit_set`, `motion_ready`, `positioning_ready` and `position_tolerance_rotations`. Unset bound aliases are null. Freshness requires encoder and supported switch frames no older than 1 s. Raw `position`, `remaining`, `lower_limit` and `upper_limit` also use rotations on encoder firmware.
 
-`GET /api/motors/<motor>/reference` reads the camera image and the pixel offset of the marker. The image is too large for the state.
-When the stage is not connected, the state `ports` lists the serial ports as `{"device", "description"}`. When it is connected, the list is empty. When `MG400_STAGE_SERIAL` is set, the list has only that device.
+Calibration phases are `none`, `lower`, `upper`, `center`, `done`, `cancelled` and `failed`. Active phases count as busy, even between internal movements. `warning`, `direction_warning_count` and `recalibration_recommended` report advisory direction pauses. They do not start calibration.
+
+Command acceptance does not mean motion completion. `last_command.result` can be `running`, `ok`, `failed`, `rejected` or `stopped`. A move completes only after fresh idle feedback confirms the measured target within encoder tolerance. Calibration additionally requires `done`. Stops cancel pending motion commands. The service does not retry motion automatically.
+
+For guarded commands, read `stop_epoch` after acquiring control and keep that value throughout the sequence. The service checks it under the motion lock. Stops, ownership changes, disconnection, link loss and unguarded commands invalidate it. Renewal preserves it. A mismatch returns 409. Do not read a new epoch to resume a cancelled sequence.
+
+Generate a new `hold_id` for each hold: 16–64 letters, digits, underscores or hyphens. `sampled_at` must come from state within the last 2 s of the service clock. `release_hold` is repeatable and prevents a later start with the same ID. Holds require keepalive within 1 s, independently of the 3 s control lease.
+
+Discovery advertises `renew_only_heartbeat: true`. Acquire with `ServiceClient.heartbeat()`, then renew with `ServiceClient.renew()` or `heartbeat_thread(renew_only=True)`. Renewal after release or expiry returns 409 without reacquiring. An older service without renewal returns 404 without fallback. Lease expiry requests stop. Release alone does not stop motion.
+
+The dedicated stop route returns `stop` and `state`. Outcomes are `confirmed`, `pending` or `unconfirmed`. Confirmation requires every motor idle with no active calibration or direction pause. Stop waiting permits other stop requests but blocks new motion. An unknown serial outcome or expired stop wait locks the service. Later idle feedback alone does not clear this fault. Check the physical stage, restart with `labctl restart stage`, then reconnect. Reconnection returns 409 while stop confirmation is in progress.
+
+### Stage connection and compatibility
+
+When disconnected, state `ports` lists available serial ports as `{"device", "description"}`. The list is empty while connected. `MG400_STAGE_SERIAL` restricts the list to that device. Use the `connect` command through `POST /api/command`. There is no separate operator connect route.
+
+Legacy `steps`, millimetre targets, named pulse poses and camera calibration do not create encoder motion. Existing geometry files remain inactive. Use the commands above and rotation-based Sample Transfer profiles.
 
 ### Access checks
 
-The service checks no token, `Host`, or `Origin`. See [Access and client ID](#access-and-client-id).
-POST requests must include `Content-Type: application/json` and `X-MG400-Client`. The body must be a JSON object.
-Client IDs contain 1–128 printable ASCII characters.
-The body limit is 4096 bytes.
+The service checks no token, `Host` or `Origin`. See [Access and client ID](#access-and-client-id). POST requests require `Content-Type: application/json`, `X-MG400-Client` and a JSON object. Client IDs use 1–128 printable ASCII characters. The request-body limit is 4096 bytes.
 
-On rejection, the operator routes return the body `{"error": "..."}`, with these status codes:
+Operator errors use `{"error": "..."}`:
 
-| Status code | Meaning |
+| Status | Meaning |
 | --- | --- |
-| 400 | Invalid request, or the serial port is not in the current list |
-| 409 | State conflict, such as no lease, an existing connection, or a motor still moving |
-| 413 | The request body exceeds 4096 bytes |
-| 415 | The request is not JSON |
-| 503 | Serial communication failed. The service closed the serial connection |
+| 400 | Invalid parameters or unlisted port |
+| 409 | Lease, firmware capability, calibration or motor-state conflict |
+| 413 | Body exceeds 4096 bytes |
+| 415 | Request is not JSON |
+| 503 | Serial failure; connection closed |
 
 ## Physical robot control reference
 

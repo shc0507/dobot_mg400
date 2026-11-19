@@ -46,8 +46,11 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `robot enable`, `robot disable`, `robot home`, `robot clear-alarm` | `enable`、`disable`、`home`、`clear_alarm` |
 | `robot move X Y Z R [--speed N] [--relative]` | 带法兰 `targets` 的 `execute`。`--relative` 把数值加到当前 `actual` 位姿上 |
 | `robot vacuum suck\|release\|off` | `vacuum` |
-| `stage move MOTOR STEPS [--speed N]` | `move`。STEPS 的正负选择 `cw` 或 `ccw`。默认速度为 50 |
-| `stage home MOTOR`, `stage zero MOTOR`, `stage goto MOTOR NAME`, `stage pose NAME` | `home`、带 `confirm` 的 `zero`、`goto`、`pose` |
+| `stage move MOTOR ROTATIONS [--speed N]` | 相对 `move`。ROTATIONS 为正时使用 `ccw`，为负时使用 `cw`。默认速度为 0.25 圈/秒 |
+| `stage goto MOTOR POSITION [--speed N]` | `move_to_position`，目标为绝对圈数坐标。默认速度为 0.25 圈/秒 |
+| `stage calibrate MOTOR [--speed N]` | `calibrate`。默认速度为 0.25 圈/秒 |
+| `stage reset-position MOTOR`, `stage set-limit MOTOR` | `reset_position`、`set_limit` |
+| `stage clear-upper-limit MOTOR`, `stage clear-lower-limit MOTOR`, `stage clear-fault MOTOR` | `clear_upper_limit`、`clear_lower_limit`、`clear_fault` |
 | `stage connect [PORT]` | 连接电动台串口。不给 PORT 时列出串口 |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | 从 JSON 文件发送 `set_sequence` 或 `start_sequence` |
@@ -58,6 +61,8 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | 带新 `recording_id` 的 `start_recording` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`、`read_markers`、`read_labels`。结果在 `state.last_command.output` 中 |
+
+位移台坐标使用实测轴圈数。绝对 `goto` 要求完成标定、有效限位和未过期的编码器反馈。已存位置使用 Sample Transfer。旧位移台快捷命令 `home`、`zero`、`pose` 和按名称的 `goto` 均不支持。
 
 每条命令等待其结果。默认 `--timeout` 为 300 秒。`--no-wait` 在控制台接受命令后返回。
 
@@ -75,6 +80,8 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
 - 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。
 - 单步目录配方：`slot-state`、`station-transfer`、`crucible-load`、`crucible-unload`、`microscope-record`、`check-calibration`。目录中还有 `chip-pick` 和 `tray-transfer`。
+
+编码器位移台不能运行旧版 `crucible-load` 或 `crucible-unload` 配方。为编码器重新设计坐标后，才能使用这些目录条目。Sample Transfer 按钮只移动位移台，不替代机器人转移流程。
 
 ## 停止
 

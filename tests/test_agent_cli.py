@@ -118,6 +118,59 @@ def test_session_option_works_before_and_after_the_verb():
     assert seen == ["a", "b"]
 
 
+@pytest.mark.parametrize(
+    "arguments,action,params",
+    [
+        (
+            ["move", "top", "0.125"],
+            "move",
+            {"motor": "top", "direction": "ccw", "rotations": 0.125, "speed": 0.25},
+        ),
+        (
+            ["goto", "insert", "2.5"],
+            "move_to_position",
+            {"motor": "insert", "position": 2.5, "speed": 0.25},
+        ),
+        (["calibrate", "bottom"], "calibrate", {"motor": "bottom", "speed": 0.25}),
+        (["clear-fault", "top"], "clear_fault", {"motor": "top"}),
+        (["reset-position", "insert"], "reset_position", {"motor": "insert"}),
+        (["set-limit", "bottom"], "set_limit", {"motor": "bottom"}),
+        (["clear-upper-limit", "bottom"], "clear_upper_limit", {"motor": "bottom"}),
+        (["clear-lower-limit", "bottom"], "clear_lower_limit", {"motor": "bottom"}),
+    ],
+)
+def test_stage_shortcuts_send_encoder_commands(arguments, action, params):
+    agent, http = make(
+        {
+            "api/console/heartbeat": beat({"device": "stage", "holder": "h"}),
+            "api/console/command/stage": (202, {"command_id": "7"}),
+        }
+    )
+    code, result = run_cli(["stage", *arguments, "--no-wait"], agent)
+    assert code == 0 and result["outcome"] == "accepted"
+    assert http.sent("api/console/command/stage") == [{"action": action, "params": params}]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["move", "top", "nan"],
+        ["move", "top", "inf"],
+        ["move", "top", "1", "--speed", "nan"],
+        ["goto", "insert", "inf"],
+        ["home", "top"],
+        ["zero", "top"],
+        ["goto", "top", "load"],
+        ["pose", "load"],
+    ],
+)
+def test_invalid_or_legacy_stage_coordinates_send_nothing(arguments):
+    agent, http = make({})
+    code, result = run_cli(["stage", *arguments], agent)
+    assert code == 2 and result["error"]["code"] == "usage"
+    assert http.calls == []
+
+
 def test_contract_command_waits_for_its_own_result():
     pending = {"busy": True, "last_command": {"id": "41", "result": "ok"}}
     done = {"busy": False, "last_command": {"id": "42", "result": "ok", "message": "Done."}}
@@ -128,13 +181,13 @@ def test_contract_command_waits_for_its_own_result():
             "api/console/command/stage": (202, {"outcome": "accepted", "command_id": "42"}),
         }
     )
-    code, result = run_cli(["stage", "move", "bottom", "-100", "--speed", "20"], agent)
+    code, result = run_cli(["stage", "move", "bottom", "-0.5", "--speed", "0.25"], agent)
     assert code == 0 and result["outcome"] == "ok" and result["message"] == "Done."
     assert result["state"] == done
     assert http.sent("api/console/command/stage") == [
         {
             "action": "move",
-            "params": {"motor": "bottom", "direction": "ccw", "steps": 100, "speed": 20},
+            "params": {"motor": "bottom", "direction": "cw", "rotations": 0.5, "speed": 0.25},
         }
     ]
 
@@ -165,7 +218,7 @@ def test_a_newer_command_of_this_session_makes_the_outcome_unknown():
             "api/console/command/stage": (202, {"command_id": "9"}),
         }
     )
-    code, result = run_cli(["stage", "home", "top"], agent)
+    code, result = run_cli(["stage", "calibrate", "top"], agent)
     assert code == 3 and result["outcome"] == "unknown"
 
 
@@ -177,7 +230,7 @@ def test_timeout_is_unknown_and_never_resends():
             "api/console/command/stage": (202, {"command_id": "9"}),
         }
     )
-    code, result = run_cli(["stage", "pose", "load", "--timeout", "2"], agent)
+    code, result = run_cli(["stage", "goto", "insert", "0", "--timeout", "2"], agent)
     assert code == 3 and result["error"]["code"] == "timeout"
     assert len(http.sent("api/console/command/stage")) == 1
     # The wait beats the agent page about every second.
@@ -272,7 +325,7 @@ def test_lost_connection_after_send_is_unknown():
             "api/console/command/stage": Unreachable("reset"),
         }
     )
-    code, result = run_cli(["stage", "home", "top"], agent)
+    code, result = run_cli(["stage", "calibrate", "top"], agent)
     assert code == 3 and result["outcome"] == "unknown"
 
 
@@ -293,7 +346,7 @@ def test_interrupt_during_a_wait_sends_one_device_stop(monkeypatch):
             "api/console/stop/stage": (200, {"device": "stage", "outcome": "confirmed"}),
         }
     )
-    code, result = run_cli(["stage", "home", "top"], agent)
+    code, result = run_cli(["stage", "calibrate", "top"], agent)
     assert code == 130 and result["outcome"] == "interrupted"
     assert result["stop"]["results"] == {"stage": "confirmed"}
     assert len(http.sent("api/console/stop/stage")) == 1

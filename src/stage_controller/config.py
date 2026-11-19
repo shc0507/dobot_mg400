@@ -8,7 +8,10 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from .protocol import MICROSTEP_MODES, MOTOR_IDS
+from .protocol import MOTOR_IDS
+
+# Historical files retain their original pulse geometry; the encoder service does not apply it.
+MICROSTEP_MODES = {1, 2, 4, 8, 16}
 
 DEFAULT_CONFIG = Path("/var/lib/mg400/stage/stage.toml")
 MAX_PULSES = 2**31 - 1

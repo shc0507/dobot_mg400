@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrator.app import OrchestratorService, create_app
 from orchestrator.web.workspaces import discover, twin
 
 PRIVATE = "private-robot-service-token-0123456789"
@@ -83,6 +82,8 @@ FURNACE = {
 
 @pytest.fixture
 def rig(tmp_path):
+    from orchestrator.app import OrchestratorService, create_app
+
     states = {"robot": ROBOT, "stage": STAGE, "microscope": MICROSCOPE, "furnace": FURNACE}
 
     def factory(required, identity):
@@ -130,9 +131,9 @@ def test_state_maps_joints_and_signals_and_hides_identities(rig):
     )
     j = body["joints"]
     assert [j["J1"], j["J2"], j["J3"], j["J4"]] == [10.0, 20.0, 30.0, 40.0]
-    assert j["stage_bottom"] == round(-1193 / 80 - 3.90, 2)
-    assert j["stage_top"] == round(-258 / 80 - 0.65, 2) and j["insert"] == round(
-        -3334 / 80 - 2.63, 2
+    assert j["stage_bottom"] == round(-1193 / 80 - 19.93, 2)
+    assert j["stage_top"] == round(-258 / 80 - 2.41, 2) and j["insert"] == round(
+        -3334 / 80 + 55.94, 2
     )
     assert j["turret"] == 144.0 and j["focus"] is None
     s = body["signals"]
@@ -178,6 +179,40 @@ def test_alarm_and_motion_signals():
     }
     s = twin.signals(rows)
     assert s["robot_alarm"] and s["robot_moving"] and s["stage_moving"]
+
+
+def test_encoder_stage_keeps_fresh_rotations_without_reusing_the_pulse_mapping():
+    raw = {
+        "connected": True,
+        "closed_loop": True,
+        "microstep": 2,
+        "motors": [
+            {
+                "id": name,
+                "mode": "idle",
+                "position": 800,
+                "position_rotations": value,
+                "telemetry_fresh": True,
+                "encoder": "ok",
+                "fault": None,
+            }
+            for name, value in (("bottom", 0.5), ("top", 1.25), ("insert", 2.75))
+        ],
+    }
+    stage = dict(twin._stage(raw), available=True)
+    assert stage["motors"]["top"]["position_rotations"] == 1.25
+    assert stage["feedback_fresh"] is True
+    rows = {"stage": stage}
+    assert all(twin.joints(rows)[axis] is None for axis in ("stage_bottom", "stage_top", "insert"))
+    assert twin.signals(rows)["stage_calibrated"] is False
+    assert twin.signals(rows)["stage_stale"] is False
+
+    raw["motors"][0]["telemetry_fresh"] = False
+    raw["motors"][1]["fault"] = "encoder"
+    raw["motors"][2]["position_rotations"] = float("nan")
+    stage = dict(twin._stage(raw), available=True)
+    assert all(axis["position_rotations"] is None for axis in stage["motors"].values())
+    assert twin.signals({"stage": stage})["stage_stale"] is True
 
 
 def test_unreachable_devices_are_reported_without_an_error(rig, monkeypatch):

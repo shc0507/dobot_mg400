@@ -12,13 +12,17 @@ Joint values are relative to the model's own state (the first bench video):
 robot J1-J4 in degrees, ``stage_bottom``, ``stage_top`` and ``insert`` in mm,
 ``turret`` in degrees. A value is ``None`` when it is unknown.
 
-The stage reports only pulse counts. ``STAGE`` maps them; camera snapshots of
-the stage markers at half-step measured it (2026-11-11):
+The legacy stage reports pulse counts. ``STAGE`` maps them; camera snapshots of
+the stage markers at half-step measured it:
 mm = sign * pulses / pulses_per_mm + offset. The mapping holds while the counts
 keep their reference and the microstep mode stays the same. Otherwise the stage
 joints are ``None``. A stage connect resets the Arduino: the counts return to 0
 and the mode to full step, so the joints stay ``None`` until half-step is set
 again, and the offsets need a new snapshot unless the stage did not move.
+
+Encoder stages report shaft rotations. Their model geometry remains uncalibrated
+until a rotation-to-model mapping defines each axis's scale, direction and zero.
+The device rows retain fresh encoder rotations, but model travel stays unknown.
 """
 
 from pathlib import Path
@@ -27,15 +31,16 @@ from flask import abort, jsonify, request, send_file
 
 from labkit.lease import validate_client
 
+from ...transfer_motion import fresh as encoder_fresh
 from . import Workspace
 
 DEVICES = ("robot", "stage", "microscope", "furnace")
 MODEL = Path("/var/lib/mg400/twin/twin.glb")  # config/assets.toml: twin-model
 STAGE_MICROSTEP = 2
 STAGE = {  # model joint: (motor, sign, pulses per mm, offset mm)
-    "stage_bottom": ("bottom", -1, 80.0, -3.90),
-    "stage_top": ("top", -1, 80.0, -0.65),
-    "insert": ("insert", -1, 80.0, -2.63),
+    "stage_bottom": ("bottom", -1, 80.0, -19.93),
+    "stage_top": ("top", -1, 80.0, -2.41),
+    "insert": ("insert", -1, 80.0, 55.94),
 }
 # The model shows objective 1 (10x) at work; 1 turret step = 72 deg (direction not checked).
 WORKING_OBJECTIVE = 1
@@ -54,12 +59,23 @@ def _robot(state):
 
 
 def _stage(state):
-    row = _pick(state, ("connected", "busy", "fault", "feedback_fresh", "microstep"))
+    row = _pick(state, ("connected", "busy", "fault", "feedback_fresh", "microstep", "closed_loop"))
     row["motors"] = {
         m["id"]: _pick(m, ("position", "mode"))
         for m in state.get("motors") or ()
         if isinstance(m, dict) and isinstance(m.get("id"), str)
     }
+    if state.get("closed_loop"):
+        for motor in state.get("motors") or ():
+            if not isinstance(motor, dict) or motor.get("id") not in row["motors"]:
+                continue
+            row["motors"][motor["id"]]["position_rotations"] = (
+                motor.get("position_rotations") if encoder_fresh(state, motor) else None
+            )
+        row["feedback_fresh"] = all(
+            row["motors"].get(motor, {}).get("position_rotations") is not None
+            for motor in ("bottom", "top", "insert")
+        )
     return row
 
 
@@ -124,7 +140,11 @@ def joints(rows):
     for k in range(4):
         out[f"J{k + 1}"] = _number(j[k]) if isinstance(j, list) and len(j) == 4 else None
     stage = rows.get("stage", {})
-    same_mode = stage.get("available") and stage.get("microstep") == STAGE_MICROSTEP
+    same_mode = (
+        stage.get("available")
+        and not stage.get("closed_loop")
+        and stage.get("microstep") == STAGE_MICROSTEP
+    )
     for name, (motor, sign, ppm, offset) in STAGE.items():
         pulses = (
             _number(stage.get("motors", {}).get(motor, {}).get("position")) if same_mode else None
@@ -151,7 +171,9 @@ def signals(rows):
         "stage_moving": bool(stage.get("busy"))
         or any(m.get("mode") not in (None, "idle") for m in stage.get("motors", {}).values()),
         "stage_calibrated": bool(
-            stage.get("available") and stage.get("microstep") == STAGE_MICROSTEP
+            stage.get("available")
+            and not stage.get("closed_loop")
+            and stage.get("microstep") == STAGE_MICROSTEP
         ),
         "furnace_c": pv,
         "furnace_hot": pv is not None and pv >= HOT_C,
@@ -176,5 +198,5 @@ def register(blueprint, service):
 
 
 WORKSPACE = Workspace(
-    id="twin", order=50, title={"en": "Twin", "zh": "实时台面"}, register=register
+    id="twin", order=60, title={"en": "Twin", "zh": "实时台面"}, register=register
 )

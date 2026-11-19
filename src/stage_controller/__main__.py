@@ -89,7 +89,9 @@ def main(argv=None):
         print("Demo mode: no serial hardware will be opened.", flush=True)
     elif serial:
         print(f"Serial port: {serial}", flush=True)
-    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    signals = tuple(
+        getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, name)
+    )
     previous = {signum: signal.getsignal(signum) for signum in signals}
 
     def interrupted(signum, frame):

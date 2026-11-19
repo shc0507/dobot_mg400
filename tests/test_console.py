@@ -221,21 +221,15 @@ def post(rig, path, data=None, page="console-page-a"):
     )
 
 
-def test_console_font_covers_every_chinese_string():
-    """The console serves its own Chinese face. A new Chinese string needs a new font subset."""
+def test_console_fonts_are_local_with_system_fallbacks():
+    """New translated text can use system fonts without rebuilding the bundled subset."""
     web = Path(console_module.__file__).parent
-    covered = set((web / "static/console/wulab-sans-sc.txt").read_text(encoding="utf-8"))
-    used: set[str] = set()
-    for path in web.rglob("*"):
-        if path.suffix in {".py", ".js", ".html"}:
-            used |= set(
-                re.findall(
-                    r"[\u3000-\u303f\u3400-\u9fff\uff00-\uffef]", path.read_text(encoding="utf-8")
-                )
-            )
-    missing = "".join(sorted(used - covered))
-    assert not missing, f"Run scripts/console_font.py (see its docstring). Missing: {missing}"
     css = (web / "static/console/shell.css").read_text(encoding="utf-8")
+    body = re.search(r"body\s*\{[^}]*font-family:\s*([^;]+)", css)
+    assert body is not None
+    family = body.group(1)
+    for fallback in ("system-ui", '"PingFang SC"', '"Microsoft YaHei"', "sans-serif"):
+        assert family.index('"WuLab Sans SC"') < family.index(fallback)
     for weight in (400, 600, 700):
         assert (web / f"static/console/wulab-sans-sc-{weight}.woff2").stat().st_size < 120_000
         assert f'url("wulab-sans-sc-{weight}.woff2")' in css
@@ -246,9 +240,15 @@ def test_shell_and_apis_need_no_token(rig):
     assert page.status_code == 200
     text = page.get_data(as_text=True)
     assert "STOP ALL MOTION" in text and "abc1234" in text
-    for name in ("overview", "motion", "cameras", "process"):
+    for name in ("overview", "motion", "cameras", "twin", "process"):
         assert f'data-workspace="{name}"' in text
         assert rig.client.get(f"/lab/console-static/{name}.js").status_code == 200
+    assert 'id="ws-twin"' in text
+    assert 'id="ws-sample-transfer"' in text
+    assert 'src="/lab/console-static/sample-transfer.js"' in text
+    assert 'src="/lab/console-static/twin.js"' in text
+    assert 'href="/lab/console-static/twin.css"' in text
+    assert rig.client.get("/lab/console-static/twin.css").status_code == 200
     assert 'href="/lab/chip"' in text and rig.client.get("/lab/chip").status_code == 200
     assert PRIVATE not in text and "lc-token" not in text
     assert "Access-Control-Allow-Origin" not in page.headers
@@ -275,7 +275,9 @@ def test_state_reports_frame_data_without_secrets(rig):
         "motion",
         "cameras",
         "process",
+        "sample-transfer",
         "twin",
+        "position-finder",
     ]
     assert "readiness" not in body
     assert PRIVATE not in response.get_data(as_text=True)
@@ -555,7 +557,19 @@ def test_rehearsal_console_profile_adds_events_only():
 def test_workspace_registry_needs_unique_ids_and_both_titles():
     from orchestrator.web.workspaces import Workspace, discover
 
-    assert [item.id for item in discover()][0] == "overview"
+    workspaces = discover()
+    assert [(item.id, item.order) for item in workspaces] == [
+        ("overview", 0),
+        ("motion", 20),
+        ("cameras", 30),
+        ("process", 40),
+        ("sample-transfer", 50),
+        ("twin", 60),
+        ("position-finder", 100),
+    ]
+    legacy = next(item for item in workspaces if item.id == "position-finder")
+    assert legacy.title == {"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"}
+    assert callable(legacy.register) and legacy.script and legacy.style
     with pytest.raises(ValueError):
         Workspace(id="Bad Id", order=1, title={"en": "x", "zh": "x"})
     with pytest.raises(ValueError):

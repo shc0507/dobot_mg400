@@ -221,6 +221,12 @@ class Console:
 
     def _end(self, item, *, release):
         """Release once, close the transport and forget the session. Never reacquire."""
+        transfer = getattr(self.service, "sample_transfer", None)
+        if item.device == "stage" and transfer is not None and transfer.cancel(item.page):
+            try:
+                self.stop("stage")
+            except Exception:
+                pass
         # Let the hold worker send release_hold while the lease is still held.
         with self.lock:
             hold = item.hold
@@ -665,6 +671,9 @@ class Console:
 
     def stop(self, device):
         """Stop one device without control or a lease wait. Send once; never retry."""
+        transfer = getattr(self.service, "sample_transfer", None)
+        if device == "stage" and transfer is not None:
+            transfer.cancel()
         _, adapter = self._client(device, "stop")
         try:
             value = adapter.stop()

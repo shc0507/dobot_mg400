@@ -9,6 +9,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "config/systemd"
 HOST_VALUES = ("100.64.", "/olares", "/opt/mg400-", "/root/")
+# deploy/twin.py updates one Olares test instance from a development PC over SSH.
+# It names that host, its user and its checkout. The installed services do not run it.
+HOST_TOOLS = {ROOT / "deploy/twin.py"}
 with (ROOT / "deploy/services.toml").open("rb") as stream:
     REGISTRY = tomllib.load(stream)["service"]
 SERVICES = tuple(unit for entry in REGISTRY for unit in entry["units"])
@@ -210,6 +213,8 @@ def test_service_files_and_code_hold_no_host_values():
     ]
     for path in code:
         suffixes = {".service", ".path", ".py", ".html", ".js", ".css", ".svg", ".example"}
+        if path in HOST_TOOLS:
+            continue
         if path.suffix in suffixes or path.name == "labctl":
             text = path.read_text()
             assert [value for value in HOST_VALUES if value in text] == [], path

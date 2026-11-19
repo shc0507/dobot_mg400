@@ -48,14 +48,17 @@ const ROBOT = {
   stop_unconfirmed: false, feedback_fresh: true, vacuum: { suck: false, blow: false, held: null }, demo: true, last_command: null,
 };
 const STAGE = {
-  available: true, holder: "mine", connected: true, demo: true, busy: false, locked: false, microstep: 1,
-  microstep_modes: [{ value: 1, label: "Full step" }, { value: 2, label: "Half step (1/2)" }],
-  limits: { speed: 1000, steps: 100000 }, defaults: { speed: 50, steps: 50 },
-  motors: [{ id: "insert", mode: "idle", position: 0, position_mm: 0, homed: false, automation_ready: false,
-    homing_available: false, zero_available: true, named_positions: ["load"], at_positions: [], available: true, cooldown: 0 }],
+  available: true, holder: "mine", connected: true, demo: true, busy: false, locked: false, microstep: 8,
+  closed_loop: true, telemetry_streaming: true, travel_limits: true, home_switches: true,
+  absolute_positioning: true, auto_calibration: true, hold_direction_warnings: true,
+  limits: { speed: 5, min_speed: 0.001, min_rotations: 0.001, rotations: 10000 }, defaults: { speed: 0.25, rotations: 0.25 },
+  motors: [{ id: "insert", mode: "idle", position_rotations: 0, encoder: "ok", fault: "none", warning: "none",
+    motion_ready: true, available: true, positioning_ready: false, max_speed: 0.5, telemetry_age_ms: 20,
+    measured_speed: 0, switch_mask: 0, limit_telemetry_age_ms: 20, calibration: "none", cooldown: 0,
+    lower_limit_set: false, upper_limit_set: false }],
 };
 
-async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE, replies = {} } = {}) {
+async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE, position = null, operation = null, replies = {} } = {}) {
   const calls = [];
   const sent = [];
   const tables = { en: i18n.en };
@@ -67,7 +70,7 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
       calls.push(["request", path, data]);
       sent.push([path, options]);
       if (replies[path]) return replies[path](data);
-      if (path === "state") return { robot, stage };
+      if (path === "state") return { robot, stage, stage_position: position, stage_operation: operation };
       if (path.startsWith("stage/reference/")) return { image: "data:image/jpeg;base64,AAAA", offset_px: [1.5, -2], distance_px: 2.5 };
       return { outcome: "accepted" };
     },
@@ -89,6 +92,180 @@ async function mounted({ owns = ["robot", "stage"], robot = ROBOT, stage = STAGE
   const find = label => root.all().find(node => node.getAttribute("aria-label") === label || (node.tagName === "BUTTON" && node.textContent === label));
   return { ws, root, calls, sent, find, settle: async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); } };
 }
+
+function calibratedStage() {
+  return { ...structuredClone(STAGE), stop_epoch: 0, motors: [
+    ["top", 15, 10, 50], ["bottom", 0, -20, 20], ["insert", 4, 2, 8],
+  ].map(([id, value, min, max]) => ({ ...structuredClone(STAGE.motors[0]), id, position_rotations: value,
+    positioning_ready: true, lower_limit_set: true, upper_limit_set: true, lower_limit_rotations: min, upper_limit_rotations: max, tolerance: 0.001 })) };
+}
+
+function pickTarget(page, kind = "xy", clientX = 160, clientY = 80) {
+  const position = page.ws._test.refs().stagePosition, surface = position[kind === "xy" ? "xyMap" : "insertMap"];
+  surface.getBoundingClientRect = () => ({ left: 60, top: 30, width: 200, height: 100 });
+  surface.listeners.get("dblclick")({ clientX, clientY, preventDefault() {} });
+  return position;
+}
+
+const pointRequests = page => page.calls.filter(call => call[0] === "request" && call[1] === "stage/position");
+
+test("chart target mapping uses absolute limits, offsets and inverted Y", () => {
+  const axes = logic.stagePosition(logic.encoderPosition(calibratedStage()));
+  const box = { left: 60, top: 30, width: 200, height: 100 };
+  assert.deepEqual(logic.stageTargetAt(axes, "xy", box, 60, 30), { x: 10, y: 20 });
+  assert.deepEqual(logic.stageTargetAt(axes, "xy", box, 260, 130), { x: 50, y: -20 });
+  assert.deepEqual(logic.stageTargetAt(axes, "xy", box, 110, 55), { x: 20, y: 10 });
+  assert.deepEqual(logic.stageTargetAt(axes, "insert", box, 210, 30), { insert: 6.5 });
+  assert.equal(logic.stageTargetAt(axes, "xy", { ...box, width: 0 }, 60, 30), null);
+  assert.equal(logic.stageTargetAt({ ...axes, x: { range: null } }, "xy", box, 60, 30), null);
+});
+
+test("plot mapping excludes borders and padding from the content box", () => {
+  const original = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => ({ borderLeftWidth: "2px", borderRightWidth: "4px", borderTopWidth: "1px", borderBottomWidth: "3px", paddingLeft: "5px", paddingRight: "7px", paddingTop: "6px", paddingBottom: "8px" });
+  try {
+    assert.deepEqual(logic.plotContentBox({ getBoundingClientRect: () => ({ left: 60, top: 30, width: 218, height: 118 }) }),
+      { left: 67, top: 37, width: 200, height: 100 });
+  } finally { globalThis.getComputedStyle = original; }
+});
+
+test("chart clicks select one target without commands and preserve the measured dots", async () => {
+  const page = await mounted({ stage: calibratedStage() });
+  try {
+    const position = page.ws._test.refs().stagePosition, measured = position.xyDot.getAttribute("style");
+    position.xyMap.click();
+    assert.equal(page.ws._test.model.stageTarget, null);
+    pickTarget(page, "xy", 110, 55);
+    assert.deepEqual(page.ws._test.model.stageTarget.target, { x: 20, y: 10 });
+    assert.equal(position.xyTarget.getAttribute("style"), "left:25%;bottom:75%");
+    assert.equal(position.xyDot.getAttribute("style"), measured);
+    assert.equal(position.targetReadout.textContent, "Target · X 20.000 rot · Y 10.000 rot");
+    assert.equal(position.xyTarget.hidden, false);
+    pickTarget(page, "insert", 210);
+    assert.deepEqual(page.ws._test.model.stageTarget.target, { insert: 6.5 });
+    assert.equal(position.xyTarget.hidden, true);
+    assert.equal(position.insertTarget.hidden, false);
+    assert.equal(position.insertDot.hidden, false);
+    assert.equal(pointRequests(page).length, 0);
+    position.targetCancel.click();
+    assert.equal(page.ws._test.model.stageTarget, null);
+  } finally { page.ws.hide(); }
+});
+
+test("an unconfirmed chart target expires after 5 seconds without sending", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100000 });
+  const page = await mounted({ stage: calibratedStage() });
+  try {
+    const position = pickTarget(page);
+    t.mock.timers.tick(4999);
+    assert.equal(position.xyTarget.hidden, false);
+    t.mock.timers.tick(1);
+    assert.equal(page.ws._test.model.stageTarget, null);
+    assert.equal(position.xyTarget.hidden, true);
+    assert.equal(pointRequests(page).length, 0);
+  } finally { page.ws.hide(); }
+});
+
+test("Confirm sends one target once and shows backend motion and completion", async () => {
+  const stage = calibratedStage(), operation = { id: "point-1", status: "moving", mine: true, target: { x: 30, y: 0 } };
+  let accept;
+  const page = await mounted({ stage, replies: { "stage/position": () => new Promise(resolve => { accept = resolve; }) } });
+  try {
+    const position = pickTarget(page);
+    position.targetConfirm.click(); position.targetConfirm.click();
+    assert.equal(pointRequests(page).length, 1);
+    assert.deepEqual(pointRequests(page)[0][2], { target: { x: 30, y: 0 } });
+    assert.equal(position.targetStatus.textContent, "Sending move…");
+    assert.equal(position.targetConfirm.hidden, true);
+    accept({ operation }); await page.settle();
+    assert.equal(position.targetStatus.textContent, "Moving…");
+    assert.equal(position.xyTarget.hidden, false);
+    page.ws._test.data.stageOperation = { ...operation, status: "completed" };
+    page.ws._test.update();
+    assert.equal(position.targetStatus.textContent, "Target reached");
+    assert.equal(position.xyTarget.getAttribute("data-active"), "false");
+  } finally { page.ws.hide(); }
+});
+
+test("Insert confirmation sends only Insert and shows a rejected move", async () => {
+  const page = await mounted({ stage: calibratedStage(), replies: { "stage/position": () => { throw new Error("Encoder feedback is stale."); } } });
+  try {
+    const position = pickTarget(page, "insert", 210);
+    position.targetConfirm.click(); await page.settle();
+    assert.deepEqual(pointRequests(page)[0][2], { target: { insert: 6.5 } });
+    assert.equal(position.targetStatus.textContent, "Move failed: Encoder feedback is stale.");
+    assert.equal(position.insertTarget.hidden, false);
+    assert.equal(position.targetConfirm.hidden, true);
+  } finally { page.ws.hide(); }
+});
+
+test("a lost response reports an unknown result and follows the accepted operation", async () => {
+  const page = await mounted({ stage: calibratedStage(), replies: { "stage/position": () => { throw Object.assign(new Error("Connection lost."), { status: 0 }); } } });
+  try {
+    const position = pickTarget(page); position.targetConfirm.click(); await page.settle();
+    assert.equal(position.targetStatus.textContent, "Move result unknown. Check the stage.");
+    page.ws._test.data.stageOperation = { id: "point-recovered", status: "moving", mine: true, target: { x: 30, y: 0 } };
+    page.ws._test.update();
+    assert.equal(position.targetStatus.textContent, "Moving…");
+    assert.equal(pointRequests(page).length, 1);
+  } finally { page.ws.hide(); }
+});
+
+test("target selection requires control, fresh encoders, calibrated limits and idle motors", async () => {
+  const mutations = [stage => { stage.connected = false; }, stage => { stage.locked = true; }, stage => { stage.fault = { message: "Fault" }; },
+    stage => { stage.motors[0].telemetry_age_ms = 1001; }, stage => { stage.motors[0].positioning_ready = false; },
+    stage => { stage.motors[0].upper_limit_set = false; }, stage => { stage.motors[0].upper_limit_rotations = 10; },
+    stage => { stage.motors[2].mode = "continuous"; }, stage => { stage.motors[2].calibration = "lower"; }];
+  for (const mutate of mutations) {
+    const stage = calibratedStage(); mutate(stage);
+    const page = await mounted({ stage });
+    pickTarget(page);
+    assert.equal(page.ws._test.model.stageTarget, null);
+    assert.equal(pointRequests(page).length, 0);
+  }
+  const noControl = await mounted({ stage: calibratedStage(), owns: ["robot"] });
+  const position = pickTarget(noControl);
+  assert.equal(noControl.ws._test.model.stageTarget, null);
+  assert.equal(position.xyMap.getAttribute("aria-disabled"), "true");
+  assert.equal(noControl.find("Stop stage").disabled, false);
+});
+
+test("Confirm revalidates the lease, feedback, limits, stop epoch and idle state", async () => {
+  for (const mutate of [page => { page.ws._test.data.stage.motors[0].telemetry_age_ms = 1001; },
+    page => { page.ws._test.data.stage.motors[0].upper_limit_rotations = 60; },
+    page => { page.ws._test.data.stage.stop_epoch++; }, page => { page.ws._test.data.stage.motors[1].mode = "continuous"; },
+    page => { page.ws._test.data.stage.fault = { message: "Fault" }; }]) {
+    const page = await mounted({ stage: calibratedStage() });
+    const position = pickTarget(page); mutate(page); position.targetConfirm.click();
+    assert.equal(page.ws._test.model.stageTarget, null);
+    assert.equal(pointRequests(page).length, 0);
+  }
+  const owns = ["robot", "stage"], page = await mounted({ stage: calibratedStage(), owns });
+  const position = pickTarget(page); owns.pop(); position.targetConfirm.click();
+  assert.equal(page.ws._test.model.stageTarget, null);
+  assert.equal(pointRequests(page).length, 0);
+});
+
+test("poll changes clear pending targets on stale feedback, changed bounds and stop", async () => {
+  for (const mutate of [stage => { stage.motors[0].telemetry_age_ms = 1001; },
+    stage => { stage.motors[1].upper_limit_rotations = 30; }, stage => { stage.stop_epoch++; }]) {
+    const stage = calibratedStage(), page = await mounted({ stage });
+    const position = pickTarget(page); mutate(stage); await page.ws._test.refresh();
+    assert.equal(position.xyTarget.hidden, true);
+    assert.equal(page.ws._test.model.stageTarget, null);
+  }
+});
+
+test("Stop clears the target and a late acceptance cannot restore it", async () => {
+  let accept;
+  const page = await mounted({ stage: calibratedStage(), replies: { "stage/position": () => new Promise(resolve => { accept = resolve; }) } });
+  const position = pickTarget(page); position.targetConfirm.click(); page.find("Stop stage").click();
+  assert.equal(page.ws._test.model.stageTarget, null);
+  assert.equal(page.calls.some(call => call[0] === "stop" && call[1] === "stage"), true);
+  accept({ operation: { id: "point-1", status: "moving" } }); await page.settle();
+  assert.equal(page.ws._test.model.stageTarget, null);
+  assert.equal(position.xyTarget.hidden, true);
+});
 
 test("jog targets add one bounded step to one axis", () => {
   assert.deepEqual(logic.jogTarget([250, 10, 40, 30], "x", 1, 2), { x: 252, y: 10, z: 40, r: 30 });
@@ -125,6 +302,167 @@ test("reference badges and the activity list", () => {
 
 test("both languages define the same strings", () => {
   assert.deepEqual(Object.keys(i18n.zh).sort(), Object.keys(i18n.en).sort());
+});
+
+test("stage charts read live encoder rotations without loading Position Finder", async () => {
+  const previous = globalThis.LabPositionFinder;
+  globalThis.LabPositionFinder = { positionMonitor() { throw new Error("Legacy monitor must stay asleep"); } };
+  try {
+    const ui = await mounted();
+    const position = ui.ws._test.refs().stagePosition;
+    assert.equal(position.values.insert.textContent, "0.000");
+    assert.equal(position.state.textContent, "Live encoder position");
+    assert.equal(position.xyDot.hidden, true);
+    assert.equal(position.insertDot.hidden, true);
+    assert.ok(ui.root.textContent.includes("X/Y travel"));
+    assert.ok(ui.root.textContent.includes("Insert travel"));
+    assert.ok(!ui.root.textContent.includes("Target rate"));
+    assert.ok(!ui.calls.some(call => String(call[1]).includes("/twin/")));
+  } finally { if (previous === undefined) delete globalThis.LabPositionFinder; else globalThis.LabPositionFinder = previous; }
+});
+
+test("stage charts use the position connector and clear readings when it becomes unavailable", async () => {
+  const position = { available: true, values_rotations: { x: 25, y: 10, insert: 50 },
+    limits_rotations: { x: { min: 0, max: 100 }, y: { min: 0, max: 20 }, insert: { min: 0, max: 100 } } };
+  const ui = await mounted({ position });
+  const refs = ui.ws._test.refs().stagePosition;
+  assert.equal(refs.values.x.textContent, "25.000");
+  assert.equal(refs.xyDot.hidden, false);
+  assert.equal(refs.xyDot.getAttribute("style"), "left:25%;bottom:50%");
+  assert.equal(refs.insertDot.getAttribute("style"), "left:50%");
+  position.available = false;
+  await ui.ws._test.refresh();
+  assert.equal(refs.values.x.textContent, "—");
+  assert.equal(refs.xyDot.hidden, true);
+  assert.equal(refs.xyDot.getAttribute("style"), null);
+  assert.equal(refs.insertDot.hidden, true);
+});
+
+test("XY corners show each live bound in rotations and clear unavailable bounds", async () => {
+  const position = { available: true, values_rotations: { x: 0, y: 0 },
+    limits_rotations: { x: { min: -1.125, max: 2.375 }, y: { min: -3.25, max: 4.5 } } };
+  const page = await mounted({ position });
+  const refs = page.ws._test.refs().stagePosition;
+  const labels = name => refs.corners[name].values.map(node => node.textContent);
+  assert.deepEqual(labels("lower-left"), ["X min -1.125 rot", "Y min -3.250 rot"]);
+  assert.deepEqual(labels("upper-left"), ["X min -1.125 rot", "Y max 4.500 rot"]);
+  assert.deepEqual(labels("lower-right"), ["X max 2.375 rot", "Y min -3.250 rot"]);
+  assert.deepEqual(labels("upper-right"), ["X max 2.375 rot", "Y max 4.500 rot"]);
+  position.limits_rotations.x = { min: -2.625, max: 5.875 };
+  position.limits_rotations.y = { min: 10, max: 10 };
+  await page.ws._test.refresh();
+  assert.deepEqual(labels("upper-left"), ["X min -2.625 rot", "Y max — rot"]);
+  assert.deepEqual(labels("lower-right"), ["X max 5.875 rot", "Y min — rot"]);
+  position.available = false;
+  await page.ws._test.refresh();
+  assert.deepEqual(labels("lower-left"), ["X min — rot", "Y min — rot"]);
+  assert.deepEqual(labels("upper-right"), ["X max — rot", "Y max — rot"]);
+});
+
+test("stage position rejects missing measurements and invalid plot ranges", () => {
+  const reading = logic.stagePosition({ available: true, values_rotations: { x: true, y: NaN, insert: 101 },
+    limits_rotations: { x: { min: 0, max: 100 }, y: { min: 0, max: Infinity }, insert: { min: 0, max: 100 } } });
+  assert.equal(reading.x.value, null);
+  assert.equal(reading.y.value, null);
+  assert.equal(reading.y.range, null);
+  assert.equal(reading.insert.value, 101);
+  assert.equal(reading.insert.fraction, null);
+});
+
+test("encoder charts map top to X and bottom to Y and never use pulse positions", async () => {
+  const motors = ["top", "bottom", "insert"].map((id, index) => ({ ...STAGE.motors[0], id,
+    position: 9999, position_mm: 999, position_rotations: index + 0.25,
+    lower_limit_set: true, upper_limit_set: true, lower_limit_rotations: 0, upper_limit_rotations: 10 }));
+  const stage = { ...STAGE, motors };
+  const page = await mounted({ stage });
+  const refs = page.ws._test.refs().stagePosition;
+  assert.equal(refs.values.x.textContent, "0.250");
+  assert.equal(refs.values.y.textContent, "1.250");
+  assert.equal(refs.values.insert.textContent, "2.250");
+  assert.equal(refs.xyDot.getAttribute("style"), "left:2.5%;bottom:12.5%");
+  assert.equal(refs.corners["upper-right"].values[0].textContent, "X max 10.000 rot");
+  motors[0].encoder = "untrusted";
+  await page.ws._test.refresh();
+  assert.equal(refs.values.x.textContent, "—");
+  assert.equal(refs.xyDot.hidden, true);
+  assert.equal(refs.corners["upper-right"].values[0].textContent, "X max — rot");
+});
+
+test("rotation inputs reject invalid numbers and speeds above each motor maximum", async () => {
+  for (const invalid of ["", " ", "NaN", "Infinity", "1e2", "0.0", "0.0001", "-0.2"]) {
+    assert.equal(logic.parseRotation(invalid, 0.001, 0.5), null);
+  }
+  assert.equal(logic.parseRotation(".125", 0.001, 0.5), 0.125);
+  const page = await mounted();
+  const input = page.find("Insert speed, rotations/s");
+  input.value = "0.51";
+  input.listeners.get("input")({ target: input });
+  page.find("Move Insert Out by the rotations").click();
+  await page.settle();
+  assert.equal(page.calls.some(call => call[0] === "relay"), false);
+  assert.ok(page.calls.some(call => call[0] === "notify" && call[1].includes("0.5 rotations/s")));
+});
+
+test("calibration phases block new moves while warning history stays advisory", async () => {
+  const motor = { ...STAGE.motors[0], calibration: "upper", direction_warning_count: 7, recalibration_recommended: true };
+  const page = await mounted({ stage: { ...STAGE, motors: [motor] } });
+  assert.equal(page.find("Move Insert Out by the rotations").disabled, true);
+  assert.equal(page.find("Insert: Reset position").disabled, true);
+  assert.equal(page.find("Stop stage").disabled, false);
+  assert.ok(page.root.textContent.includes("seeking upper"));
+  motor.calibration = "none";
+  await page.ws._test.refresh();
+  assert.equal(page.find("Insert: Auto calibrate").disabled, false);
+  assert.ok(page.root.textContent.includes("calibration recommended"));
+});
+
+test("limit clearing and fault reset remain available with an encoder fault", async () => {
+  const motor = { ...STAGE.motors[0], encoder: "untrusted", fault: "tracking_lost", motion_ready: false,
+    upper_limit_set: true, lower_limit_set: true };
+  const page = await mounted({ stage: { ...STAGE, motors: [motor] } });
+  for (const label of ["Clear upper", "Clear lower", "Clear fault"]) assert.equal(page.find("Insert: " + label).disabled, false);
+  assert.equal(page.find("Move Insert Out by the rotations").disabled, true);
+  assert.ok(page.root.textContent.includes("Fault: tracking_lost"));
+});
+
+test("each visible stage axis row clears only its own fault", async () => {
+  const motors = ["bottom", "top", "insert"].map(id => ({ ...STAGE.motors[0], id,
+    encoder: "untrusted", fault: "tracking_lost", motion_ready: false }));
+  const page = await mounted({ stage: { ...STAGE, motors } });
+  const refs = page.ws._test.refs();
+  const visibleRows = page.root.all().filter(node => node.className === "mo-axis");
+  assert.equal(visibleRows.length, 3);
+  for (const [index, motor] of motors.entries()) {
+    const button = refs.axes[motor.id].clearFault;
+    assert.equal(button.textContent, "Clear fault");
+    assert.ok(visibleRows[index].all().includes(button));
+    assert.ok(!refs.stageFold.all().includes(button));
+    assert.equal(button.disabled, false);
+    button.click();
+    button.click();
+    await page.settle();
+  }
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), motors.map(motor =>
+    ["relay", "stage", "clear_fault", { motor: motor.id }]));
+});
+
+test("Clear fault needs stage control, an idle axis and an available encoder controller", async () => {
+  for (const options of [
+    { owns: [] },
+    { stage: { ...STAGE, connected: false } },
+    { stage: { ...STAGE, closed_loop: false } },
+    { stage: { ...STAGE, locked: true } },
+    ...[{ mode: "continuous" }, { calibration: "upper" }, { cooldown: 1 }].map(state =>
+      ({ stage: { ...STAGE, motors: [{ ...STAGE.motors[0], ...state }] } })),
+  ]) {
+    const page = await mounted(options);
+    const button = page.find("Insert: Clear fault");
+    assert.equal(button.disabled, true);
+    button.click();
+    await page.settle();
+    assert.equal(page.calls.some(call => call[0] === "relay"), false);
+    assert.equal(page.find("Stop stage").disabled, false);
+  }
 });
 
 test("a jog goes through the checked jog route once", async () => {
@@ -245,15 +583,23 @@ test("Disable stays offered while the arm jogs; Enable needs a disabled arm and 
 
 test("each station switches its view with the tabs inside the frame", async () => {
   const page = await mounted();
-  const tabs = label => page.root.all().filter(node => node.className.startsWith("mo-tab") && node.textContent === label);
-  assert.equal(tabs("Insert rail").length, 2);
-  assert.equal(tabs("Microscope")[0].getAttribute("aria-pressed"), "true");
-  assert.equal(tabs("Tray")[0].getAttribute("aria-pressed"), "false");
-  tabs("Tray")[0].click();
-  assert.equal(tabs("Tray")[0].getAttribute("aria-pressed"), "true");
-  assert.equal(tabs("Insert rail")[0].getAttribute("aria-pressed"), "false");
-  assert.ok(page.root.all().some(node => node.getAttribute("aria-label") === "Tray, OFFLINE"));
+  for (const [station, labels] of [
+    ["stage", ["Microscope", "Stage", "Microscope side", "Insert rail", "Tray", "Thermal"]],
+    ["arm", ["Insert rail", "Tray", "Microscope side", "Stage", "Microscope", "Thermal"]],
+  ]) {
+    const frame = page.root.all().find(node => node.className === "mo-view mo-view-" + station);
+    const tabs = frame.all().filter(node => node.className.startsWith("mo-tab") && node.tagName === "BUTTON");
+    assert.deepEqual(tabs.map(node => node.textContent), labels);
+    assert.equal(tabs[0].getAttribute("aria-pressed"), "true");
+    for (const tab of [...tabs.slice(1), tabs[0]]) {
+      tab.click();
+      assert.equal(tab.getAttribute("aria-pressed"), "true");
+      assert.equal(tabs.filter(node => node.getAttribute("aria-pressed") === "true").length, 1);
+      assert.ok(frame.all().some(node => node.getAttribute("aria-label") === `${tab.textContent}, OFFLINE`));
+    }
+  }
   assert.equal(page.root.all().some(node => /Swap view/.test(node.textContent)), false);
+  assert.equal(page.calls.some(call => call[0] === "relay"), false);
 });
 
 test("only a demo device shows a badge, and a held device names its holder on the button", async () => {
@@ -269,19 +615,15 @@ test("only a demo device shows a badge, and a held device names its holder on th
   assert.equal(real.root.all().some(node => ["Free", "You control it"].includes(node.ownText)), false);
 });
 
-test("Set zero hides with a reason when the stage cannot zero; stepping labels are short", async () => {
-  const motor = { ...STAGE.motors[0], zero_available: false, homing_available: false };
-  const page = await mounted({ stage: { ...STAGE, motors: [motor] } });
-  const zero = page.find("Set zero…");
-  assert.equal(zero.hidden, true);
-  const note = page.root.all().find(node => node.ownText.startsWith("Set zero needs the stage calibration file"));
+test("old pulse firmware cannot move; Stop remains available and stepping is fixed", async () => {
+  const page = await mounted({ stage: { ...STAGE, closed_loop: false } });
+  assert.equal(page.find("Hold to move Insert Out").disabled, true);
+  assert.equal(page.find("Insert: Auto calibrate").disabled, true);
+  assert.equal(page.find("Stop stage").disabled, false);
+  const note = page.ws._test.refs().zeroNote;
   assert.equal(note.hidden, false);
-  const ready = await mounted();
-  assert.equal(ready.find("Set zero…").hidden, false);
-  assert.equal(ready.root.all().find(node => node.ownText.startsWith("Set zero needs")).hidden, true);
-  assert.equal(logic.stepLabel(1, "Full"), "Full");
-  assert.equal(logic.stepLabel(4, "Full"), "1/4");
-  assert.equal(ready.find("Half step (1/2)").textContent, "1/2");
+  assert.ok(page.root.textContent.includes("1/8 stepping"));
+  assert.equal(page.find("Half step (1/2)"), undefined);
 });
 
 test("a confirmation takes the focus, and Esc closes it without sending", async () => {
@@ -334,35 +676,53 @@ test("the suction buttons wait for a measured state and show held when the servi
   assert.equal(node.textContent, "Held");
 });
 
-test("named poses need all axes referenced and send 1 pose command", async () => {
-  const ready = { ...STAGE.motors[0], automation_ready: true };
-  const page = await mounted({ stage: { ...STAGE, motors: [ready], poses: ["load", "inspect"], at_poses: ["load"] } });
-  assert.equal(page.find("load").getAttribute("aria-pressed"), "true");
-  page.find("inspect").click();
+test("an absolute target needs calibration and sends fractional encoder coordinates", async () => {
+  const motor = { ...STAGE.motors[0], positioning_ready: true, calibration: "done",
+    lower_limit_set: true, upper_limit_set: true, lower_limit_rotations: 0, upper_limit_rotations: 12.5 };
+  const page = await mounted({ stage: { ...STAGE, motors: [motor] } });
+  const input = page.find("Insert: Target rotation");
+  input.value = "2.375";
+  input.listeners.get("input")({ target: input });
+  page.find("Insert: Move to target").click();
   await page.settle();
-  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "pose", { name: "inspect" }]]);
-  const waiting = await mounted({ stage: { ...STAGE, poses: ["load"], at_poses: [] } });
-  assert.equal(waiting.find("load").disabled, true);
-  assert.ok(waiting.root.all().some(node => node.ownText === "Home or zero all 3 axes before a named pose."));
-  const none = await mounted();
-  assert.equal(none.root.all().some(node => node.ownText === "Named poses"), false);
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [
+    ["relay", "stage", "move_to_position", { motor: "insert", position: 2.375, speed: 0.25 }],
+  ]);
+  const waiting = await mounted();
+  assert.equal(waiting.find("Insert: Move to target").disabled, true);
 });
 
-test("Set zero sends only after the page confirmation", async () => {
+test("encoder setup actions use the stage relay and Stop needs no control", async () => {
+  const motor = { ...STAGE.motors[0], position_rotations: 1.25, upper_limit_set: true, lower_limit_set: true };
+  const page = await mounted({ stage: { ...STAGE, motors: [motor] } });
+  for (const [label, action] of [["Reset position", "reset_position"], ["Set limit here", "set_limit"],
+    ["Clear upper", "clear_upper_limit"], ["Clear lower", "clear_lower_limit"], ["Clear fault", "clear_fault"]]) {
+    page.find("Insert: " + label).click();
+    await page.settle();
+    assert.deepEqual(page.calls.filter(call => call[0] === "relay").at(-1), ["relay", "stage", action, { motor: "insert" }]);
+  }
+  page.find("Insert: Auto calibrate").click();
+  await page.settle();
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay").at(-1), ["relay", "stage", "calibrate", { motor: "insert", speed: 0.25 }]);
+  const unowned = await mounted({ owns: [] });
+  unowned.find("Insert: Stop").click();
+  await unowned.settle();
+  assert.deepEqual(unowned.calls.filter(call => call[0] === "stop"), [["stop", "stage"]]);
+});
+
+test("fractional relative moves need encoder feedback but no calibration", async () => {
   const page = await mounted();
-  page.find("Set zero…").click();
+  const rotations = page.find("Insert: Relative rotations");
+  rotations.value = "0.125";
+  rotations.listeners.get("input")({ target: rotations });
+  const speed = page.find("Insert speed, rotations/s");
+  speed.value = "0.1";
+  speed.listeners.get("input")({ target: speed });
+  page.find("Move Insert Out by the rotations").click();
   await page.settle();
-  assert.equal(page.calls.some(call => call[0] === "relay"), false);
-  page.find("Confirm").click();
-  await page.settle();
-  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "zero", { motor: "insert", confirm: true }]]);
-});
-
-test("a stage step needs no zero or reference", async () => {
-  const second = await mounted();
-  second.find("Move Insert plus by the steps").click();
-  await second.settle();
-  assert.deepEqual(second.calls.filter(call => call[0] === "relay"), [["relay", "stage", "move", { motor: "insert", direction: "cw", speed: 50, steps: 50 }]]);
+  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "move", { motor: "insert", direction: "cw", speed: 0.1, rotations: 0.125 }]]);
+  assert.equal(rotations.value, "0.125");
+  assert.equal(speed.value, "0.1");
 });
 
 test("an arm without fresh feedback reads Not connected and greys its last pose", async () => {
@@ -377,6 +737,27 @@ test("an arm without fresh feedback reads Not connected and greys its last pose"
   // An ok command shows only the service message, not a second Last line.
   assert.equal(texts.filter(text => text.includes("Robot disable and rest are confirmed.")).length, 1);
   assert.equal(texts.some(text => text.startsWith("Last:")), false);
+});
+
+test("arm XY plot follows controller coordinates, marks retained poses and hides unknown positions", async () => {
+  const page = await mounted({ robot: { ...ROBOT, actual: [250, -100, 40, 30] } });
+  const refs = page.ws._test.refs();
+  assert.equal(refs.armXYDot.getAttribute("style"), "left:75%;bottom:40%");
+  assert.equal(refs.armXYDot.getAttribute("data-stale"), "false");
+  assert.match(refs.armXYMap.getAttribute("aria-label"), /X 250.00 mm; Y -100.00 mm/);
+  assert.equal(page.root.all().find(node => node.className === "mo-pose mo-zr-readings").textContent, "Z40.00mmR30.00°");
+  page.ws._test.data.robot = { ...ROBOT, actual: null, busy: true };
+  page.ws._test.update();
+  assert.equal(refs.armXYState.textContent, "Last known");
+  assert.equal(refs.armXYDot.hidden, false);
+  assert.equal(refs.armXYDot.getAttribute("data-stale"), "true");
+  page.ws._test.data.robot = { ...ROBOT, actual: [650, -200, 40, 30] };
+  page.ws._test.update();
+  assert.equal(refs.armXYScale.textContent, "−700 … 700 mm");
+  page.ws._test.data.robot = { ...ROBOT, actual: null };
+  page.ws._test.update();
+  assert.equal(refs.armXYDot.hidden, true);
+  assert.equal(refs.armXYState.textContent, "No position");
 });
 
 test("an idle axis shows no state, a disconnected stage no position, and ports get short labels", async () => {
@@ -401,21 +782,16 @@ test("a disconnected stage lists the state ports and sends 1 connect command", a
   assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "connect", { port: "/dev/ttyACM0" }]]);
 });
 
-test("Check reference shows the marked frame and Teach reference needs a confirmation", async () => {
-  const stage = { ...STAGE, motors: [{ ...STAGE.motors[0], reference_configured: true }] };
+test("stale encoder feedback hides measured position and disables new moves without a camera reference", async () => {
+  const stage = structuredClone(STAGE);
   const page = await mounted({ stage });
-  assert.equal(page.root.all().some(node => node.tagName === "A"), false);
-  page.find("Check reference").click();
-  await page.settle();
-  const image = page.root.all().find(node => node.tagName === "IMG");
-  assert.equal(image.getAttribute("src"), "data:image/jpeg;base64,AAAA");
-  assert.match(page.root.textContent, /Marker offset 1\.5, -2\.0 px/);
-  page.find("Teach reference…").click();
-  await page.settle();
-  assert.equal(page.calls.some(call => call[0] === "relay"), false);
-  page.find("Confirm").click();
-  await page.settle();
-  assert.deepEqual(page.calls.filter(call => call[0] === "relay"), [["relay", "stage", "teach_reference", { motor: "insert", confirm: true }]]);
+  assert.equal(page.find("Check reference"), undefined);
+  stage.motors[0].telemetry_age_ms = 1500;
+  await page.ws._test.refresh();
+  assert.equal(page.ws._test.refs().stagePosition.values.insert.textContent, "—");
+  assert.equal(page.find("Hold to move Insert Out").disabled, true);
+  assert.ok(page.root.textContent.includes("Feedback stale"));
+  assert.equal(page.find("Stop stage").disabled, false);
 });
 
 /** A window and a document with listeners, and interval callbacks the test runs by hand. */
@@ -439,6 +815,39 @@ async function keyboardPage(options = {}) {
   const holdCalls = () => page.calls.filter(call => call[0] === "request" && (call[1] === "stage/hold" || call[1] === "stage/release"));
   return { ...page, win, docListeners, intervals, restore, key, keyCalls, holdCalls };
 }
+
+test("pending targets clear on STOP ALL, pagehide, blur, hidden tabs and destroy", async () => {
+  for (const leave of [page => page.docListeners.get("click")({ target: { closest: selector => selector === "#lc-stop-all" } }),
+    page => page.win.get("pagehide")(), page => page.win.get("blur")(),
+    page => { globalThis.document.visibilityState = "hidden"; page.docListeners.get("visibilitychange")(); },
+    page => page.ws.hide(), page => page.ws.destroy()]) {
+    const page = await keyboardPage({ stage: calibratedStage() });
+    try {
+      const position = pickTarget(page);
+      assert.equal(position.xyTarget.hidden, false);
+      leave(page);
+      assert.equal(position.xyTarget.hidden, true);
+      assert.equal(page.ws._test.model.stageTarget, null);
+      assert.equal(pointRequests(page).length, 0);
+    } finally { page.ws.hide(); page.restore(); }
+  }
+});
+
+test("stage keyboard and other motion commands clear an unconfirmed chart target", async () => {
+  const page = await keyboardPage({ stage: calibratedStage() });
+  try {
+    page.find("Stage keyboard").click();
+    let position = pickTarget(page);
+    page.key("keydown", "KeyI");
+    assert.equal(position.xyTarget.hidden, true);
+    assert.equal(page.ws._test.model.stageTarget, null);
+    page.key("keyup", "KeyI"); await page.settle();
+    position = pickTarget(page);
+    page.ws._test.refs().axes.insert.plus.click();
+    assert.equal(position.xyTarget.hidden, true);
+    assert.equal(pointRequests(page).length, 0);
+  } finally { page.ws.hide(); page.restore(); }
+});
 
 test("while the keyboard is on, the Z and R jog buttons show the key that moves the same way", async () => {
   const page = await keyboardPage();
@@ -543,6 +952,35 @@ test("stage hold keys map to 1 axis and 1 direction", () => {
 
 const press = { button: 0, pointerId: 1, preventDefault() {} };
 
+test("physical stage labels send the original controller directions for holds and steps", async () => {
+  const motors = ["bottom", "top", "insert"].map(id => ({ ...STAGE.motors[0], id }));
+  const page = await keyboardPage({ stage: { ...STAGE, motors } });
+  try {
+    for (const [motor, axis, label, direction] of [
+      ["bottom", "Bottom (Y)", "Up", "ccw"], ["bottom", "Bottom (Y)", "Down", "cw"],
+      ["top", "Top (X)", "Left", "cw"], ["top", "Top (X)", "Right", "ccw"],
+      ["insert", "Insert", "In", "ccw"], ["insert", "Insert", "Out", "cw"],
+    ]) {
+      const button = page.find(`Hold to move ${axis} ${label}`);
+      assert.equal(button.textContent, `Hold ${label}`);
+      button.listeners.get("pointerdown")(press);
+      await page.settle();
+      const hold = page.holdCalls().filter(call => call[1] === "stage/hold").at(-1)[2];
+      assert.equal(hold.motor, motor);
+      assert.equal(hold.direction, direction);
+      button.listeners.get("pointerup")({});
+      await page.settle();
+      page.find(`Move ${axis} ${label} by the rotations`).click();
+      await page.settle();
+      assert.deepEqual(page.calls.filter(call => call[0] === "relay").at(-1),
+        ["relay", "stage", "move", { motor, direction, speed: 0.25, rotations: 0.25 }]);
+    }
+    const top = page.root.all().find(node => node.className === "mo-encoder-axis" && node.getAttribute("aria-label") === "Top (X)");
+    assert.deepEqual(top.all().filter(node => node.className === "mo-hold").map(node => node.textContent), ["Hold Left", "Hold Right"]);
+    assert.deepEqual(top.all().filter(node => node.tagName === "KBD").map(node => [node.textContent, node.getAttribute("title")]), [["L", "Left"], ["J", "Right"]]);
+  } finally { page.restore(); }
+});
+
 test("stage holds, their releases and arm keys ask for the control socket", async () => {
   const page = await keyboardPage();
   try {
@@ -550,7 +988,7 @@ test("stage holds, their releases and arm keys ask for the control socket", asyn
     await page.settle();
     page.key("keydown", "KeyW");
     page.key("keyup", "KeyW");
-    const button = page.find("Hold to move Insert plus");
+    const button = page.find("Hold to move Insert Out");
     button.listeners.get("pointerdown")(press);
     button.listeners.get("pointerup")({});
     await page.settle();
@@ -567,7 +1005,7 @@ test("a Hold button refreshes the hold while pressed and releases it on pointeru
   const page = await keyboardPage({ stage });
   try {
     const before = page.intervals.length;
-    const button = page.find("Hold to move Insert plus");
+    const button = page.find("Hold to move Insert Out");
     button.listeners.get("pointerdown")(press);
     await page.settle();
     page.intervals[before]();
@@ -577,21 +1015,21 @@ test("a Hold button refreshes the hold while pressed and releases it on pointeru
     await page.ws._test.refresh();
     assert.equal(button.disabled, false);
     assert.equal(button.getAttribute("aria-pressed"), "true");
-    assert.equal(page.find("Move Insert plus by the steps").disabled, true);
+    assert.equal(page.find("Move Insert Out by the rotations").disabled, true);
     button.listeners.get("pointerup")({});
     button.listeners.get("lostpointercapture")({});
     await page.settle();
     const calls = page.holdCalls();
     const id = calls[0][2].id;
     assert.deepEqual(calls, [
-      ["request", "stage/hold", { id, motor: "insert", direction: "cw", speed: 50 }],
-      ["request", "stage/hold", { id, motor: "insert", direction: "cw", speed: 50 }],
+      ["request", "stage/hold", { id, motor: "insert", direction: "cw", speed: 0.25 }],
+      ["request", "stage/hold", { id, motor: "insert", direction: "cw", speed: 0.25 }],
       ["request", "stage/release", { id }],
     ]);
     assert.equal(page.intervals[before], null);
     assert.equal(button.getAttribute("aria-pressed"), "false");
     // A pointerup anywhere in the window also ends a button hold.
-    page.find("Hold to move Insert minus").listeners.get("pointerdown")(press);
+    page.find("Hold to move Insert In").listeners.get("pointerdown")(press);
     page.win.get("pointerup")({});
     await page.settle();
     assert.deepEqual(page.holdCalls().slice(3).map(call => call[1]), ["stage/hold", "stage/release"]);
@@ -604,7 +1042,7 @@ test("a refused hold ends at once and needs a new press", async () => {
   const page = await keyboardPage({ replies: { "stage/hold": () => (++sent > 1 ? refused : { outcome: "accepted" }) } });
   try {
     const before = page.intervals.length;
-    const button = page.find("Hold to move Insert minus");
+    const button = page.find("Hold to move Insert In");
     button.listeners.get("pointerdown")(press);
     await page.settle();
     page.intervals[before]();
@@ -666,6 +1104,6 @@ test("the stage keyboard holds 1 axis and stops on keyup, blur, a hidden tab, lo
 
 test("without stage control the Hold buttons and the stage keyboard are unavailable", async () => {
   const page = await mounted({ owns: [], stage: { ...STAGE, holder: null } });
-  assert.equal(page.find("Hold to move Insert plus").disabled, true);
+  assert.equal(page.find("Hold to move Insert Out").disabled, true);
   assert.equal(page.find("Stage keyboard").disabled, true);
 });

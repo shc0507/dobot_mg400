@@ -7,7 +7,9 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from test_console import Device
 
+from labkit.errors import ServiceError
 from orchestrator.app import DemoResources, OrchestratorService, create_app
 from orchestrator.web import console as console_module
 from orchestrator.web.workspaces import discover, motion
@@ -159,7 +161,89 @@ def test_unreachable_device_is_reported_without_an_error(fake, monkeypatch):
     assert body == {
         "robot": {"available": False, "reason": "unreachable"},
         "stage": {"available": False, "reason": "unreachable"},
+        "stage_operation": {"status": "idle", "mine": False, "message": "", "settling": False},
     }
+
+
+@pytest.fixture
+def contract_rig(tmp_path):
+    stage = Device("stage")
+
+    def factory(required, identity):
+        return {name: stage.adapter(identity) for name in required if name == "stage"}
+
+    service = OrchestratorService(
+        settings={"MG400_CONSOLE_COMMIT": "abc1234"},
+        recipes_dir=tmp_path,
+        demo=True,
+        client_factory=factory,
+        clock=Clock(),
+    ).start(background=False)
+    app = create_app(service, base_path="/lab")
+    yield SimpleNamespace(service=service, client=app.test_client(), devices={"stage": stage})
+    service.close()
+
+
+@pytest.mark.parametrize(
+    "ports", [[], [{"device": "COM3", "description": "Arduino"}], [{"device": "COM4"}]]
+)
+def test_stage_port_listing_uses_cached_state_without_control_or_legacy_reads(contract_rig, ports):
+    stage = contract_rig.devices["stage"]
+    stage.state["ports"] = ports
+    contract_rig.service.devices.fresh("stage")
+    response = contract_rig.client.get("/lab/api/console/ws/motion/state")
+    assert response.status_code == 200
+    assert response.json["stage"]["ports"] == ports
+    assert not [call for call in stage.calls if call[0] in {"request", "command", "acquire"}]
+    assert stage.holder is None
+    assert contract_rig.client.get("/lab/api/console/ws/motion/stage/ports").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "action,params",
+    [("connect", {"port": "COM3"}), ("calibrate", {"motor": "insert", "speed": 0.25})],
+)
+def test_stage_operator_uses_the_described_relay_and_keeps_control(contract_rig, action, params):
+    stage = contract_rig.devices["stage"]
+    stage.commands[action] = {"params": {"type": "object"}, "any_client": False}
+    body = {"action": action, "params": params}
+    assert post(contract_rig, "command/stage", body).status_code == 409
+    contract_rig.service.console.take("stage", "console-page-a")
+    assert post(contract_rig, "command/stage", body, page="other-page").status_code == 409
+    response = post(contract_rig, "command/stage", body)
+    assert response.status_code == 202
+    assert response.json == {"outcome": "accepted", "command_id": "c-1"}
+    writes = [call for call in stage.calls if call[0] in {"command", "request"}]
+    assert writes == [("command", stage.holder, action, params)]
+
+
+def test_undescribed_stage_operator_does_not_fall_back_to_a_legacy_route(contract_rig):
+    stage = contract_rig.devices["stage"]
+    contract_rig.service.console.take("stage", "console-page-a")
+    response = post(
+        contract_rig, "command/stage", {"action": "connect", "params": {"port": "COM3"}}
+    )
+    assert response.status_code == 400
+    assert not [call for call in stage.calls if call[0] in {"command", "request"}]
+    assert post(contract_rig, "ws/motion/stage/connect", {"port": "COM3"}).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "error_status,http_status,outcome", [(409, 409, "refused"), (0, 502, "unknown")]
+)
+def test_stage_contract_command_failure_does_not_retry_legacy_route(
+    contract_rig, error_status, http_status, outcome
+):
+    stage = contract_rig.devices["stage"]
+    stage.commands["connect"] = {"params": {"type": "object"}, "any_client": False}
+    contract_rig.service.console.take("stage", "console-page-a")
+    stage.fail["command"] = ServiceError(error_status, "Connection failed")
+    response = post(
+        contract_rig, "command/stage", {"action": "connect", "params": {"port": "COM3"}}
+    )
+    assert response.status_code == http_status and response.json["outcome"] == outcome
+    writes = [call for call in stage.calls if call[0] in {"command", "request"}]
+    assert writes == [("command", stage.holder, "connect", {"port": "COM3"})]
 
 
 # Robot and stage simulators ------------------------------------------------
@@ -332,12 +416,10 @@ def test_suction_commands_show_the_measured_outputs(sim):
 
 
 def test_stage_moves_without_a_zero_and_stops_without_control(sim):
-    take(sim, "stage")
-    stage = wait_for(lambda: (lambda s: s if s.get("motors") else None)(motion_state(sim)["stage"]))
-    motor = stage["motors"][0]["id"]
-    # Set zero needs the explicit confirm flag from the page confirmation.
-    assert command(sim, "stage", "zero", {"motor": motor})[0] == 409
-    move = {"motor": motor, "direction": "cw", "speed": 50, "steps": 800}
+    motor = stage_ready(sim)[0]
+    # The encoder contract does not accept the legacy zero command.
+    assert command(sim, "stage", "zero", {"motor": motor})[0] == 400
+    move = {"motor": motor, "direction": "ccw", "speed": 0.25, "rotations": 0.25}
     status, body = command(sim, "stage", "move", move)
     assert status == 202, body
     wait_for(
@@ -435,14 +517,21 @@ def stage_motors(rig):
 
 def stage_ready(rig):
     take(rig, "stage")
-    return list(wait_for(lambda: stage_motors(rig)))
+
+    def ready():
+        motors = stage_motors(rig)
+        return (
+            motors if motors and all(motor["motion_ready"] for motor in motors.values()) else None
+        )
+
+    return list(wait_for(ready))
 
 
 def mode(rig, motor):
     return stage_motors(rig)[motor]["mode"]
 
 
-def hold(rig, hold_id=HOLD, motor="bottom", direction="cw", speed=50, page="console-page-a"):
+def hold(rig, hold_id=HOLD, motor="bottom", direction="ccw", speed=0.25, page="console-page-a"):
     body = {"id": hold_id, "motor": motor, "direction": direction, "speed": speed}
     return ws(rig, "stage/hold", body, page)
 
@@ -453,7 +542,7 @@ def release_hold(rig, hold_id=HOLD, page="console-page-a"):
 
 def test_stage_hold_moves_while_the_page_refreshes_it_and_stops_on_release(sim):
     motor = stage_ready(sim)[0]
-    start = stage_motors(sim)[motor]["position"]
+    start = stage_motors(sim)[motor]["position_rotations"]
     assert hold(sim, motor=motor) == (200, {"outcome": "accepted"})
     wait_for(lambda: mode(sim, motor) == "continuous")
     # The console renews the hold, so it outlives the 1 s firmware watchdog.
@@ -464,7 +553,7 @@ def test_stage_hold_moves_while_the_page_refreshes_it_and_stops_on_release(sim):
     assert mode(sim, motor) == "continuous"
     assert release_hold(sim) == (200, {"outcome": "accepted"})
     wait_for(lambda: mode(sim, motor) == "idle")
-    assert stage_motors(sim)[motor]["position"] > start
+    assert stage_motors(sim)[motor]["position_rotations"] > start
     # A released hold cannot restart. The page must press again with a new id.
     status, body = hold(sim, motor=motor)
     assert status == 409 and "press again" in body["error"]
@@ -520,6 +609,7 @@ def test_stop_and_release_of_control_end_the_stage_hold(sim):
     assert post(sim, "stop/stage", page="console-page-b").status_code == 200
     wait_for(lambda: mode(sim, first) == "idle")
     wait_for(lambda: hold(sim, motor=first)[0] == 409)
+    wait_for(lambda: stage_motors(sim)[second]["motion_ready"])
     # Release of control sends release_hold before it releases the lease.
     sent = []
     adapter = sim.service.console.sessions["stage"].adapter

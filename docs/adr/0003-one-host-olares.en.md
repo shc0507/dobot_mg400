@@ -31,8 +31,8 @@ All services listen only on `127.0.0.1`. The proxy is the only entry point on th
 - Keep models, calibration, taught stations, tool offsets, stage configuration, thermal regions, furnace state, runs, and recordings under `/var/lib/mg400`.
 - `/var/lib/mg400` is `0:1000` with mode `0750`. Its data directories are `1000:1000` with mode `0750`, and files use mode `0640` or `0600`. The private directories `locks`, `camera`, `stage`, and `calibration/cameras` use mode `0700`. The installer creates data directories.
 - Inventory every USB device by device name, VID:PID, stable path, hub/port, and service. Use `/dev/serial/by-id/` and `/dev/v4l/by-path/` identities.
-- Connect every USB device through 1 self-powered hub on 1 host port. Put the Toupcam camera on the hub's USB 3 side. Never reset the shared hub.
-- Keep each camera on its fixed hub port. The 4 AC410 cameras report the same serial number, so stable names must distinguish their ports.
+- Use 2 USB hubs. The original self-powered hub carries `camera1`, the thermal camera, and controllers through USB 2 root port `12`. Put the Toupcam camera on its USB 3 side. The second bus-powered hub carries `camera2`, `camera3`, and `camera4` through USB 2 root port `6`. Never reset either shared hub.
+- Keep each camera on its fixed hub port. The AC410 cameras share a serial number. Stable device names must distinguish their ports, including the replacement Angetube `camera1`.
 - Render enabled services' udev templates with their VID/PID, `MODE="0660"`, and `@SERVICE_GROUP@` replaced by the group for GID 1000. Install `/etc/udev/rules.d/70-mg400-<name>.rules` as root with mode `0644`. Reload the rules and trigger USB enumeration.
 
 ## Consequences

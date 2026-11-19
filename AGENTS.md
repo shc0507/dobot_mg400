@@ -10,7 +10,8 @@ This document provides permanent information/instructions for the convenience of
 - Agents operate the lab devices with `sudo labctl <device> ...` on Olares. Read [docs/agent-cli.en.md](docs/agent-cli.en.md) first.
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
 - 排查真机报警或碰撞时，先读 [报警与历史日志](docs/hardware.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
-- When git-committing a task, also write a brief description of what was done.
+- When the user asks to commit, write a commit message that briefly describes the changes and commit to the current branch. Do not rerun tests, linters, or format checks for a commit request.
+- Leave pushing and publishing branches to the user.
 - Coordinator and workers: a coordinator session reads [docs/agents/coordinator.md](docs/agents/coordinator.md) and keeps the board in `work/board.md`. A dispatched worker reads [docs/agents/worker.md](docs/agents/worker.md).
 
 ## Temporary screenshot cleanup
@@ -40,13 +41,15 @@ This document provides permanent information/instructions for the convenience of
 ## UX design
 
 - Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
+- Use the local preview for appearance work. Deploy appearance changes to Olares only when the user requests it. Keep checks focused on the changed views and reuse the browser check script with 2 to 4 screenshots.
+- Prioritize the English UI. Keep translations simple and use existing fonts or system fallbacks. Do not rebuild fonts solely for translated text unless the user asks.
 
 ## Reading the codebase
 
 Read only the files that the task needs. The tests are larger than the code, so a full read costs many tokens.
 
 - Find the files for a task with a search first. Then read only the files that the task changes or calls.
-- Use the table below to find the tests and the doc for an area. Read and run only those tests. Before you commit, run `ruff check`, `ruff format --check` and the area tests. Do not run the full suite locally.
+- Use the table below to find the tests and the doc for an area. After each implementation update, run `ruff check`, `ruff format --check` and the area tests. Reuse these results when committing. Do not run the full suite locally.
 - Read a large test file by search, not from the top. List its tests with `rg -n "^def test_" <file>`, then read only the tests that you need.
 - Read the shared test helpers (`tests/conftest.py`, `tests/helpers.py`, `tests/sim_mg400.py`, `tests/panel_ws.py`, `tests/stage_helpers.py`) only when a test that you read uses them.
 - Do not read `uv.lock`, `firmware/`, `apps/layout-studio/` or `examples/` unless the task names them. Load a skill from `.agents/skills/` only when the task needs it.
@@ -61,6 +64,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
 | Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py`, `errors.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |
 | Stage panel | `src/stage_controller/` | `test_stage_*.py` | [stage-panel.md](docs/stage-panel.md) |
+| Stage encoder firmware | `firmware/stage-controller-v3/` | `firmware/stage-controller-v3/tests/run.py`, `test_stage_*.py`, `test_console_preview.py` | [Firmware guide](firmware/stage-controller-v3/README.en.md) |
 | Camera configuration and preview | `src/cameras/config.py`, `scripts/camera_preview.py` | `test_deploy_install.py`, `test_camera_preview.py`, `test_console_cameras.py` | [olares.md](docs/olares.md#摄像头) |
 | Deployment | `deploy/`, `config/systemd/`, `config/proxy/`, `config/udev/`, `config/assets.toml` | `test_deploy_*.py`, `test_systemd_units.py`, `test_udev_rules.py`, `test_console.py` | [deploy.md](docs/deploy.md), [olares.md](docs/olares.md) |
 | QR reader | `src/vision/qr.py`, `qr_micro.py` | `test_vision_qr*.py` | Module docstrings |
@@ -71,6 +75,10 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Agent coordination signals | `scripts/agent_signal.py`, `.claude/settings.json` | `test_agent_signal.py` | [coordinator.md](docs/agents/coordinator.md) |
 | Detector evaluation | `scripts/vision_eval.py` | `test_vision_eval.py` | [vision.md](docs/vision.md#检测模型评估) |
 | Vision service | `src/vision/service.py`, `frames.py`, `__main__.py` | `test_vision_service.py`, `contract_helpers.py` | [vision.md](docs/vision.md#路由与命令) |
+| 3D Twin | `src/orchestrator/web/workspaces/twin.py`, `src/orchestrator/web/static/console/twin.*`, `config/assets.toml` | `test_console_twin.py`, `test_console_twin.mjs` | [dashboard.md](docs/dashboard.md#实时台面工作区) |
+| Position Finder (legacy) monitor and calibration | `src/vision/stage_twin/`, `src/orchestrator/web/twin.py`, `src/orchestrator/web/workspaces/position_finder.py`, `src/orchestrator/web/static/console/position-finder.*` | `test_stage_twin.py`, `test_console_position_finder.py`, `test_console_position_finder.mjs` | [dashboard.md](docs/dashboard.md#位置查找旧版工作区) |
+| Sample Transfer and named positions | `src/orchestrator/transfer_profiles.py`, `transfer_motion.py`, `src/orchestrator/web/sample_transfer.py`, `sample_transfer_preview.py`, `workspaces/sample_transfer.py`, `static/console/sample-transfer.*` | `test_transfer_profiles.py`, `test_console_sample_transfer.py`, `test_console_sample_transfer.mjs`, `test_console_preview.py`, `test_stage_contract.py` | [dashboard.md](docs/dashboard.md) |
+| Turret image-coordinate calibration | `src/microscope/turret_calibration.py`, `src/microscope/service.py`, `src/orchestrator/web/turret.py`, `turret_preview.py`, `static/console/turret.*` | `test_microscope_turret.py`, `test_microscope_turret_service.py`, `test_console_turret.py`, `test_console_turret.mjs`, `test_console_preview.py` | [microscope.md](docs/microscope.md) |
 | Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py`, `test_orchestrator_rehearsal.py` | [vision.md](docs/vision.md#相机到机器人校准) |
 | Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md#校准漂移检查) |
 | Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/`, `src/vision/service.py` (`observe_slots`), `src/orchestrator/skills/vision.py` | `test_vision_tray.py`, `test_recipe_tray_transfer.py` | [vision.md](docs/vision.md#托盘几何与交叉检查) |
@@ -82,7 +90,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Furnace run lifecycle and recovery | `src/furnace/service.py`, `state.py`, `sim.py` | `test_furnace_service.py`, `test_furnace_sim.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Agent CLI (`labctl` device groups) | `src/orchestrator/agent.py`, `agent_cli.py`, `web/console.py`, `deploy/labctl` | `test_agent_cli.py`, `test_agent_cli_e2e.py`, `test_console.py`, `test_deploy_labctl.py` | [agent-cli.md](docs/agent-cli.md) |
 | Recipe orchestration and rehearsal | `src/orchestrator/`, `recipes/`, `deploy/labctl` | `test_orchestrator_*.py`, `test_recipe_tray_transfer.py`, `test_deploy_labctl.py` | [orchestrator.md](docs/orchestrator.md) |
-| Lab Console and device cache | `src/orchestrator/web/`, `src/orchestrator/devices.py`, `src/orchestrator/app.py`, `scripts/console_font.py` | `test_console*.py`, `test_console*.mjs`, `test_dashboard.py`, `test_dashboard_passport.py` | [dashboard.md](docs/dashboard.md) |
+| Lab Console and device cache | `src/orchestrator/web/`, `src/orchestrator/devices.py`, `src/orchestrator/app.py`, `scripts/console_font.py`, `scripts/console_preview.py` | `test_console*.py`, `test_console*.mjs`, `test_dashboard.py`, `test_dashboard_passport.py` | [dashboard.md](docs/dashboard.md) |
 | Microscope motor firmware and simulator | `firmware/microscope-axes/`, `src/microscope/sim.py` | `test_microscope_protocol.py` | [Firmware guide](firmware/microscope-axes/README.md) |
 | Microscope algorithms, service and panel, motors, and camera input | `src/microscope/`, `src/cameras/` | `test_microscope_calibrate.py`, `test_microscope_calibration_policy.py`, `test_microscope_focus_completion.py`, `test_microscope_motors.py`, `test_microscope_io.py`, `test_microscope_service.py`, `test_microscope_panel.py` | [microscope.md](docs/microscope.md) |
 

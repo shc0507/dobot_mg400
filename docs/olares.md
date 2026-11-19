@@ -299,7 +299,12 @@ go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最�
 ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发送 1 次，每 1 s 发送 1 个关键帧。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
 安装器运行 ffmpeg 测试 `h264_nvenc`。测试通过时，H.264 预览用 NVIDIA GPU 编码，否则用 `libx264`。更换 GPU 或驱动后，重新运行安装器。
 使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。宽度大于 640 的流和显微镜码率上限为 2.5 Mbit/s，其他流为 2 Mbit/s。请求 `/camera/<view>.mp4?codec=h265` 得到 H.265；主机没有 H.265 预览时返回 H.264。
-H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。go2rtc 1.9.14 不拆分 RTP 聚合包：ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
+使用 NVENC 时，大于 `1280x720` 的流只有 H.265 预览，侧视流除外。预览分辨率与采集模式相同，码率上限为 6 Mbit/s。
+RTP 不能传输宽度大于 2040 的 JPEG，因此 ffmpeg 通过 HTTP 读取该流的 MJPEG。
+摄像头实际发送的帧率可以低于模式帧率。每帧以到达时间为时间戳，因此预览帧率与实际帧率相同。
+go2rtc 1.9.14 发布版不拆分 RTP 聚合包。ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
+因此 H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。
+NVENC 把 `3840x2160` 的帧分成 2 个 slice，ffmpeg 也把它们合成 1 个包。大尺寸预览因此必须用带补丁 `deploy/go2rtc/aggregation-packets.patch` 的 go2rtc。
 ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
 单帧请求 `/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。
 全分辨率单帧 `/camera/<view>.full.jpg` 例外：拍摄期间 go2rtc 只以 `4000x3000@15` 采集这 1 台摄像头，其他画面暂停。显微镜正在使用侧视流时返回 409。另一张单帧 45 s 内未完成时返回 503。参见[相机工作区](dashboard.md#相机工作区)。

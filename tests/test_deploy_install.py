@@ -1566,7 +1566,8 @@ def test_installer_renders_side_stream_capture_size(host, module, tmp_path):
     assert host.install("--go2rtc", str(binary)) == 0
     config = (host.root / "etc/mg400/go2rtc.yaml").read_text()
     sizes = [(1280, 720), (3840, 2160), (1280, 720)]
-    assert config == module.render_go2rtc(DEVICES, sizes, nvenc=True)
+    assert config == module.render_go2rtc(DEVICES, sizes, nvenc=True, side="camera2")
+    assert "camera2_h265" not in config
 
 
 def test_previews_fall_back_to_libx264_without_nvenc(host, module, tmp_path):
@@ -1620,6 +1621,24 @@ def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
     assert "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n" in rendered
     assert "_h265" not in module.render_go2rtc(DEVICES, modes=modes)
     assert "hevc_nvenc" not in module.render_go2rtc(DEVICES, modes=modes)
+
+
+def test_nvenc_gives_a_large_camera_an_h265_preview_with_arrival_timestamps(module):
+    modes = [(3840, 2160, 30), (1280, 720, 30), (2560, 1440, 30)]
+    rendered = module.render_go2rtc(DEVICES, modes=modes, nvenc=True, side="camera3")
+    # RTP cannot carry a 3840 pixel wide JPEG: the encoder reads the MJPEG stream over HTTP.
+    assert (
+        "  camera1_h265: ffmpeg:http://127.0.0.1:1984/api/stream.mjpeg?src=camera1"
+        "#input=mjpeg#video=h265#bitrate=6M\n"
+    ) in rendered
+    assert "camera1_h264" not in rendered and "camera1: video\n" not in rendered
+    # The microscope side stream runs only during an objective switch.
+    assert "camera3_h265" not in rendered
+    mjpeg = next(line for line in rendered.splitlines() if line.startswith("  mjpeg: "))
+    assert "-f mpjpeg" in mjpeg and "-i {input}" in mjpeg
+    assert "setpts=(RTCTIME-RTCSTART)/1000" in mjpeg and "-enc_time_base:v 1/1000" in mjpeg
+    without_nvenc = module.render_go2rtc(DEVICES, modes=modes)
+    assert "camera1_h265" not in without_nvenc and "  mjpeg: " not in without_nvenc
 
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])

@@ -28,7 +28,10 @@ STREAMS = {
 }
 # go2rtc encodes each camera up to 1280x720 and the microscope preview to H.264 for its first
 # viewer, as fragmented MP4. H.264 needs much less VPN bandwidth than MJPEG at the camera rate.
-VIDEOS = {f"{stream}.mp4": stream for stream in (*CAMERAS.preloaded, "microscope")}
+# With NVENC, a larger camera has only an H.265 preview at its own resolution.
+VIDEOS = {
+    f"{stream}.mp4": stream for stream in (*CAMERAS.preloaded, *CAMERAS.large(SIDE), "microscope")
+}
 VIDEO_TYPE = re.compile(r'video/mp4; codecs="[A-Za-z0-9.,]{1,100}"')
 MAX_FRAME = 4 * 1024 * 1024
 # A viewer may cap its frame rate with ?fps=. The console asks for less than the camera
@@ -137,6 +140,7 @@ def still_overlay(stream):
         )
         lines.append(f'  {name}: "{source}"\n')
     lines += [f'  {name}_{codec}: ""\n' for name in CAMERAS.preloaded for codec in ("h264", "h265")]
+    lines += [f'  {name}_h265: ""\n' for name in CAMERAS.large(SIDE)]
     return "streams:\n" + "".join(lines)
 
 

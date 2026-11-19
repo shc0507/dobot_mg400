@@ -739,19 +739,20 @@ def test_mp4_route_returns_502_when_go2rtc_cannot_encode(preview):
     assert request(module, "camera1.mp4")[0] == 502
 
 
-def test_h264_previews_exist_only_for_preloaded_streams_and_the_microscope(preview, monkeypatch):
+def test_video_previews_exist_for_all_streams_but_a_large_side_stream(preview, monkeypatch):
     _, upstream = preview
     monkeypatch.setenv(
         "MG400_CAMERA_DEVICES",
         ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)),
     )
-    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,1280x720@30,1600x1200@30")
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x360@30,1600x1200@30,3840x2160@30")
+    monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
     module = load_preview()
     assert module.VIDEOS == {
-        **{f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 3)},
+        **{f"camera{camera}.mp4": f"camera{camera}" for camera in (1, 2, 4)},
         "microscope.mp4": "microscope",
     }
-    assert request(module, "camera4.mp4")[0] == 404
+    assert request(module, "camera3.mp4")[0] == 404
     upstream.assert_not_called()
 
 
@@ -857,3 +858,16 @@ def test_full_still_of_the_side_stream_waits_for_an_idle_microscope(preview, mon
     state.assert_called_once_with("http://127.0.0.1:8770/api/state", timeout=2)
     assert request(module, "camera4.full.jpg")[0] == 404
     assert request(module, "camera1.full.jpg?fps=5")[0] == 404
+
+
+def test_still_overlay_also_stops_the_h265_preview_of_a_large_camera(monkeypatch):
+    monkeypatch.setenv(
+        "MG400_CAMERA_DEVICES",
+        ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in (1, 2)),
+    )
+    monkeypatch.setenv("MG400_CAMERA_MODES", "3840x2160@30,1280x720@30")
+    module = load_preview()
+    lines = module.still_overlay("camera2").splitlines()
+    assert '  camera1_h265: ""' in lines
+    assert '  camera1_h264: ""' not in lines
+    assert '  camera2_h264: ""' in lines and '  camera2_h265: ""' in lines

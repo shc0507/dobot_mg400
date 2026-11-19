@@ -69,6 +69,12 @@ class CameraConfig:
             if width <= 1280 and height <= 720
         )
 
+    def large(self, side=""):
+        """Streams above 1280x720 that a viewer starts. The microscope side stream is not one."""
+        return tuple(
+            stream for stream in self.streams if stream not in self.preloaded and stream != side
+        )
+
     def mode(self, camera):
         if type(camera) is not int or not 1 <= camera <= self.count:
             raise ValueError("Camera must identify a configured stream.")

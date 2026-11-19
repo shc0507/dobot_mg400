@@ -609,8 +609,8 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 - 机械臂必须空闲，控制器模式为 4 或 5。命令不使能、也不移动机械臂。
 - 服务每条命令只发送一次，然后等待 30004 反馈中的 DO 实测位改变，时限 1 秒。
 - 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，`JointControl.stop()` 的结果包含 `blow_error`，停止本身不因此失败。机器人服务不报告 `blow_error`，下使能不记录该错误。
-- 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。未设置 `GRIP_DI` 时，`held` 为 `null`。
+- 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。`held` 是 DI8（`GRIP_DI`）的实测电平；`GRIP_DI` 为 `None` 或无反馈时为 `null`。
 - 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。
-- 离线模拟器响应 `DOExecute`，并在反馈帧中报告 DO 位。
+- 离线模拟器响应 `DOExecute`，并在反馈帧中报告 DO 位。DO2 为高电平时，模拟器同时置高 DI8。
 - 接线和反馈字段见 [真空吸盘](hardware.md#真空吸盘)。

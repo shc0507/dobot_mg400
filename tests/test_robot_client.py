@@ -700,12 +700,13 @@ def test_keys_sends_one_keys_message_once(make_client, rig, monkeypatch):
 
 def test_vacuum_runs_each_operation_once_and_reports_measured_state(make_client, rig):
     client = started(make_client)
-    assert client.vacuum_state == {"suck": False, "blow": False, "held": None}
+    assert client.vacuum_state == {"suck": False, "blow": False, "held": False}
     result = client.vacuum("suck")
     assert result["last_command"]["action"] == "vacuum"
     assert result["vacuum"]["suck"] is True
+    assert result["vacuum"]["held"] is True
     client.vacuum("release")
-    assert client.vacuum_state == {"suck": False, "blow": False, "held": None}
+    assert client.vacuum_state == {"suck": False, "blow": False, "held": False}
     client.vacuum("off")
     assert [text for text in rig.controller.sent() if text.startswith("DO")] == [
         "DOExecute(1,0)",

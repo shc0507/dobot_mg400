@@ -11,9 +11,9 @@ VACUUM_DO = 2
 # Release blows for this time, then stops. Tune it on the bench.
 BLOW_SECONDS = 0.3
 
-# Grip switch input on the base I/O block. None until the vacuum switch is installed.
-# Then set it to the DI number (the plan proposes DI1), and decode_state reports `held`.
-GRIP_DI = None
+# Vacuum switch input on the base I/O block. It goes high when the cup seals on a part
+# or a flat surface. Set it to None to run without a switch; `held` is then None.
+GRIP_DI = 8
 
 ACTIONS = ("suck", "release", "off")
 

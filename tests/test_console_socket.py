@@ -55,7 +55,7 @@ def test_socket_runs_stage_holds_for_the_page_that_opened_it(served):
     motor = stage_ready(served)[0]
     status, connection = handshake(served.port)
     assert status == 101
-    hold = {"id": HOLD, "motor": motor, "direction": "cw", "speed": 50}
+    hold = {"id": HOLD, "motor": motor, "direction": "cw", "speed": 0.25}
     reply = call(connection, "/api/console/ws/motion/stage/hold", hold)
     assert reply["seq"] == 1 and reply["status"] == 200
     assert reply["body"] == {"outcome": "accepted"} and isinstance(reply["t"], float)

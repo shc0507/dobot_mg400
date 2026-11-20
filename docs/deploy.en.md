@@ -546,7 +546,9 @@ When the robot service stops or restarts, it can take up to approximately 60 sec
 
 The robot service, interactive terminal, and mode-switch tool acquire a file lock before connecting to the robot.
 The robot service's read-only mode also uses this lock.
-If another program holds the lock, a new connection returns `Robot controlled by another panel`.
+If another program holds the lock, a new connection returns `Robot controlled by another panel`, and `Disable` is refused.
+`Stop` and STOP ALL then still send 1 `ResetRobot()`, but they do not check rest, and the result is unconfirmed. The robot service locks control. When the lock is free, start sync and click Recover.
+The controller keeps only the newest `29999` connection. This stop disconnects the `29999` connection of the program that holds the lock.
 After a normal disconnect, the robot service waits for the feedback thread and command tasks to end before releasing the lock.
 If it cannot confirm the stopped state, the robot service stops routine coordinate queries, keeps feedback and the lock, and shows a warning.
 Check the robot, then click Recover. Reloading the Lab Console does not clear the warning.

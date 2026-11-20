@@ -711,6 +711,70 @@ def test_active_recording_authority_is_irreversible(recording_rig, revoke):
     assert state["recording"]["summary"] is None
 
 
+def test_jog_past_focus_limit_is_refused_before_dispatch_during_recording(recording_rig):
+    rig = recording_rig
+    assert rig.command("set_focus_zero", {})["focus_zero_known"]
+    ident = "c" * 32
+    rig.command("start_recording", {"recording_id": ident, "mode": "live"})
+    # Zero is inside the demo limits -200..200, so -300 leaves them.
+    with pytest.raises(ServiceError, match="exceeds the configured limits") as refused:
+        rig.service.command("focus_move", {"steps": -300}, "operator")
+    assert refused.value.status == 409
+    state = rig.service.snapshot()
+    assert state["focus_zero_known"] and state["recording"]["status"] == "recording"
+    state = rig.command("stop_recording", {"recording_id": ident})
+    assert state["recording"]["status"] == "completed" and rig.calls == [ident]
+
+
+@pytest.mark.parametrize("trigger", ["firmware-refusal", "motor-fault"])
+def test_motor_refusal_or_fault_keeps_recording_until_stop_recording(
+    recording_rig, monkeypatch, trigger
+):
+    from microscope.motors import CommandRejected
+
+    rig = recording_rig
+    rig.command("set_focus_zero", {})
+    ident = "d" * 32
+    rig.command("start_recording", {"recording_id": ident, "mode": "live"})
+    recording = rig.service._recording
+    if trigger == "firmware-refusal":
+
+        def rejected(*_args, **_kwargs):
+            raise CommandRejected("ERR FOCUS MOVE")
+
+        monkeypatch.setattr(rig.service._motor, "focus_move_async", rejected)
+        state = rig.command("focus_move", {"steps": 10})
+        assert state["last_command"]["result"] == "failed" and not state["locked"]
+    else:
+        rig.service._motor._fail("Microscope firmware reset; reconnect required")
+        state = wait_state(rig, lambda value: value["locked"], "the locked fault state")
+        with pytest.raises(ServiceError, match="locked"):
+            rig.service.command("focus_move", {"steps": 1}, "operator")
+    # The motor stop clears focus zero but leaves the camera recording.
+    assert not state["focus_zero_known"]
+    assert state["recording"]["status"] == "recording" and not recording.cancel.is_set()
+    state = rig.command("stop_recording", {"recording_id": ident})
+    assert state["last_command"]["result"] == "ok"
+    assert state["recording"]["status"] == "completed"
+    assert state["recording"]["summary"] == f"{ident}_shortened_3_min.mp4"
+    assert rig.calls == [ident]
+    if trigger == "motor-fault":
+        with pytest.raises(ServiceError, match="locked"):
+            rig.service.command("start_recording", {"recording_id": "e" * 32}, "operator")
+
+
+def test_motor_fault_keeps_an_armed_sequence_until_disarm(recording_rig):
+    rig = recording_rig
+    ident = "f" * 32
+    rig.command("record_with_sequence", {"recording_id": ident, "enabled": True})
+    rig.service._motor._fail("Microscope firmware reset; reconnect required")
+    state = wait_state(rig, lambda value: value["locked"], "the locked fault state")
+    assert state["recording_sequence"]["armed"]
+    state = rig.command("record_with_sequence", {"recording_id": ident, "enabled": False})
+    assert state["last_command"]["result"] == "ok"
+    assert not state["recording_sequence"]["armed"] and rig.camera.start_calls == 0
+
+
 @pytest.mark.parametrize("action", ["start_recording", "set_stabilization"])
 @pytest.mark.parametrize("revoke", ["stop", "release", "expiry", "same-id"])
 def test_camera_admission_rechecks_revoked_service_authority(

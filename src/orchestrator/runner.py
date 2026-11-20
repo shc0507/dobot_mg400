@@ -91,11 +91,13 @@ class StepClient:
 
     __slots__ = ("__call", "__remaining", "tool_file")
 
-    def __init__(self, authority, service, *, zones=None, device=None):
+    def __init__(self, authority, service, *, zones=None, device=None, precheck=None):
         # A rehearsal robot names its synthetic tool file; other services have none.
         self.tool_file = getattr(service, "tool_file", None)
 
         def invoke(method, *args, **kwargs):
+            if precheck is not None and method in {"run", "command"} and args[0] != "stop":
+                authority.call(precheck)
             if zones is not None and method in {"run", "command"} and args[0] != "stop":
 
                 def guarded():
@@ -168,10 +170,29 @@ class StepStore:
 
 
 class Context:
-    def __init__(self, authority, services, store, run_id, position, chip_id, time_scale, zones):
+    def __init__(
+        self,
+        authority,
+        services,
+        store,
+        run_id,
+        position,
+        chip_id,
+        time_scale,
+        zones,
+        *,
+        robot_check=None,
+    ):
+        # robot_check runs before each robot command and raises to refuse it.
         self.clients = MappingProxyType(
             {
-                name: StepClient(authority, service, zones=zones, device=name)
+                name: StepClient(
+                    authority,
+                    service,
+                    zones=zones,
+                    device=name,
+                    precheck=robot_check if name == "robot" else None,
+                )
                 for name, service in services.items()
             }
         )
@@ -512,7 +533,8 @@ class Runner:
             self._final_round = None
             self._cancel_run.set()
             if self._authority is not None:
-                self._authority.revoke()
+                # The step error then reports the hold reason.
+                self._authority.revoke(Revoked(reason))
             self._monitor_stop.set()
             self._condition.notify_all()
             return True
@@ -640,6 +662,8 @@ class Runner:
         try:
             round_id = self._stop(recovery=True)
             states = self.clients.reconcile()
+            # The person resumes after every stop up to this state.
+            self.clients.accept(states)
             claims = self.zones.owned()
             if claims and physically_clear is not True:
                 raise ValueError("Declare physical clearance of retained zones before resuming.")
@@ -720,6 +744,22 @@ class Runner:
             step=self._position,
         )
         return result
+
+    def _check_stops(self, *, quiet=False):
+        """Hold the run when another client stopped the robot. Raise to refuse the next action.
+
+        With quiet, a failed state read passes: each robot command checks again first.
+        """
+        try:
+            stop = self.clients.foreign_stop()
+        except Exception:
+            if quiet:
+                return
+            raise
+        if stop is not None:
+            reason = f"Another client stopped the robot ({stop.get('client')}). The run is held."
+            self.hold(reason)
+            raise Revoked(reason)
 
     def _hold(self, error, *, abort=False, interrupted=True):
         with self._condition:
@@ -839,6 +879,7 @@ class Runner:
                 self._chip_id(),
                 self.time_scale,
                 self.zones,
+                robot_check=self._check_stops,
             )
         except BaseException as exc:
             authority.revoke()
@@ -871,6 +912,7 @@ class Runner:
                 while not monitor_stop.is_set():
                     self.zones.check_held(authority)
                     ctx.check_guards()
+                    self._check_stops(quiet=True)
                     if monitor_stop.is_set():
                         return
                     authority.check()

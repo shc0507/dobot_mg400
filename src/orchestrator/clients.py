@@ -347,6 +347,8 @@ class Clients:
         self.stop_round = 0
         self.stop_results = {}
         self._instances = {}
+        # The last robot command that this run accepted, at acquisition or resume.
+        self._robot_baseline = None
         self._lock = threading.RLock()
 
     @property
@@ -382,6 +384,8 @@ class Clients:
             if not service.owned(state):
                 raise RuntimeError(f"{name} did not grant ownership to this run.")
             self._instances[name] = state.get("instance")
+            if name == "robot":
+                self.accept({name: state})
             worker = threading.Thread(
                 target=self._renew, args=(service,), daemon=True, name=f"orch-lease-{name}"
             )
@@ -482,6 +486,33 @@ class Clients:
             return self.round_done(self.stop_round) and all(
                 self.stop_results.get(name, {}).get("stop") == "confirmed" for name in self.acquired
             )
+
+    def accept(self, states):
+        """Accept the robot's current last command, so that only later stops count."""
+        state = states.get("robot")
+        if isinstance(state, dict):
+            last = state.get("last_command")
+            self._robot_baseline = last.get("id") if isinstance(last, dict) else None
+
+    def foreign_stop(self):
+        """Return the robot stop that another client sent after acceptance, or None.
+
+        STOP ALL, a console Stop arm or labctl robot stop confirms and unlocks an
+        idle robot, while this run keeps the lease. The run must hold at that stop.
+        """
+        if "robot" not in self.acquired:
+            return None
+        service = self.services["robot"]
+        last = service.state().get("last_command")
+        if (
+            isinstance(last, dict)
+            and last.get("action") in STOP_ACTIONS
+            and last.get("result") != "rejected"
+            and last.get("client") != getattr(service, "identity", None)
+            and last.get("id") != self._robot_baseline
+        ):
+            return last
+        return None
 
     def reconcile(self):
         if self.error:

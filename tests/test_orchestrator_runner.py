@@ -717,6 +717,78 @@ def test_public_hold_revokes_work_keeps_leases_and_resumes_only_after_manual_com
         assert store.get(runner.run_id)["steps"][0]["status"] == "manually_completed"
 
 
+def foreign(command_id, client="dashboard-stop-x", action="stop", result="ok"):
+    return {"id": command_id, "action": action, "client": client, "result": result}
+
+
+def test_robot_stop_from_another_client_holds_the_run_before_the_next_move(tmp_path):
+    registry, service = Registry(), FakeService()
+    service.value["last_command"] = foreign("before-acquisition", client="dashboard-stop-old")
+    waiting = threading.Event()
+
+    def pause(ctx):
+        waiting.set()
+        ctx.sleep(5)
+
+    registry.register("pause", pause)
+    registry.register("move", lambda ctx: ctx.clients["robot"].run("move"), services=("robot",))
+    with running(tmp_path, registry, ["pause", "move"], {"robot": service}, timeout=10) as (
+        runner,
+        store,
+    ):
+        assert waiting.wait(2)
+        service.value["last_command"] = foreign("stop-all")
+        assert runner.wait() == "held"
+        assert "dashboard-stop-x" in runner.snapshot()["detail"]
+        settled(runner)
+        assert "move" not in service.events and "release" not in service.events
+        # Resume accepts the stop that the person saw. Only a later stop holds again.
+        runner.resume(manually_completed=True, note="Checked the bench after STOP ALL")
+        assert runner.wait_closed(3) and runner.status == "completed"
+        assert "move" in service.events
+        assert store.get(runner.run_id)["steps"][0]["status"] == "manually_completed"
+
+
+def test_robot_command_is_refused_after_a_stop_from_another_client(tmp_path):
+    registry, service = Registry(), FakeService()
+
+    def stopped_then_move(ctx):
+        service.value["last_command"] = foreign("console-stop", client="console-stop-x")
+        ctx.clients["robot"].run("move")
+
+    registry.register("step", stopped_then_move, services=("robot",))
+    with running(tmp_path, registry, ["step"], {"robot": service}, on_fail="abort") as (
+        runner,
+        _store,
+    ):
+        assert runner.wait() == "held"
+        assert "console-stop-x" in runner.snapshot()["detail"]
+        assert "move" not in service.events
+
+
+@pytest.mark.parametrize(
+    "last",
+    [
+        foreign("before-acquisition", client="dashboard-stop-old"),
+        foreign("own", client="orch-test-unique"),
+        foreign("refused", result="rejected"),
+        foreign("jog", action="execute"),
+    ],
+)
+def test_accepted_own_refused_or_motion_commands_do_not_hold_the_run(tmp_path, last):
+    registry, service = Registry(), FakeService()
+    service.value["last_command"] = foreign("before-acquisition", client="dashboard-stop-old")
+
+    def step(ctx):
+        service.value["last_command"] = last
+        ctx.clients["robot"].run("move")
+
+    registry.register("step", step, services=("robot",))
+    with running(tmp_path, registry, ["step"], {"robot": service}) as (runner, _store):
+        assert runner.wait() == "completed"
+        assert "move" in service.events
+
+
 @pytest.mark.parametrize("operation", ["hold", "shutdown"])
 def test_public_request_before_start_fences_acquisition(tmp_path, operation):
     registry, service = Registry(), FakeService()

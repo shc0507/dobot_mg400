@@ -186,6 +186,52 @@ def test_failing_step_holds_owned_robot_and_resumes_after_explicit_manual_recove
             assert not runner._thread.is_alive()
 
 
+def test_stop_all_during_a_terminal_run_wait_holds_before_the_next_move(tmp_path):
+    """A terminal run (labctl run) holds after STOP ALL; its next step does not move the arm."""
+    registry = default_registry()
+    recipe = validate(
+        {
+            "name": "Wait before a move",
+            "version": 1,
+            "params": {},
+            "steps": [
+                {"skill": "robot.enable", "params": {}, "timeout_s": 10},
+                {"skill": "wait", "params": {"seconds": 5.0}, "timeout_s": 10},
+                {
+                    "skill": "robot.move",
+                    "params": {"x_mm": 230.0, "y_mm": 0.0, "z_mm": 20.0, "r_deg": 0.0},
+                    "timeout_s": 10,
+                },
+            ],
+        },
+        registry,
+    )
+    with (
+        RunStore(tmp_path / "runs") as store,
+        Rehearsal(tmp_path / "demos", recipe.services, identity="orch-stop-all") as demo,
+    ):
+        runner = Runner(recipe, registry, demo.clients, store).start()
+        try:
+            wait_for(lambda: runner.snapshot()["step"] == 1, timeout=10)
+            pose = demo.simulator.controller.pose
+            stopper = demo.new_clients("dashboard-stop-" + uuid.uuid4().hex)["robot"]
+            result = stopper.stop()
+            # The idle enabled robot confirms the stop and unlocks; the run keeps its lease.
+            assert result["stop"] == "confirmed" and result["state"]["locked"] is False
+            assert runner.wait(5) == "held", runner.snapshot()
+            assert "dashboard-stop-" in runner.snapshot()["detail"]
+            wait_for(lambda: runner._settled)
+            assert demo.simulator.controller.pose == pose
+            assert store.get(runner.run_id)["steps"][2]["status"] == "pending"
+            runner.resume(manually_completed=True, note="Bench checked after STOP ALL.")
+            wait_for(lambda: runner.status == "completed", timeout=10)
+            assert demo.simulator.controller.pose != pose
+        finally:
+            runner.abort()
+            runner._thread.join(5)
+            assert not runner._thread.is_alive()
+
+
 def test_fresh_clients_use_same_owned_endpoints_without_acquiring(
     tmp_path, monkeypatch, numeric_loopback_only
 ):

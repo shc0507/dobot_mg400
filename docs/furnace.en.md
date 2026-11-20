@@ -164,6 +164,7 @@ If all persistent writes and invalidation fail, the service cannot guarantee a d
 A confirmed response requires verified stopped heat and gas. Otherwise the response remains unconfirmed.
 Without a gas controller, or without gas readback, a stop remains unconfirmed.
 If a stop command fails on an open port, the service closes the port, opens it again, and sends the stop 1 more time. This covers a USB adapter reset. Automatic stops after a fault also do this.
+If the stop still fails, the furnace stays locked and the service repeats the stop every 5 s until heat and gas stop, for example when a removed adapter returns. Acknowledgement ends the repeats.
 A gas channel shows a target of 0 % only after the controller accepts the zero setpoint.
 Stop is available regardless of lease ownership or expiry failure. The JSON, `X-MG400-Client`, and body-format checks still apply.
 

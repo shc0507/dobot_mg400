@@ -360,25 +360,24 @@ class FurnaceService:
         controller = self._ensure_flow_controller()
         unit = controller.gas_unit_id(channel)
         errors = []
+        snapshot = self._flow_channels[("gas", unit)]
+        snapshot.update(
+            actual_percent=None, available=False, setpoint_verified=False, readback="unverified"
+        )
         try:
             controller._send_without_response(unit, "SFR", "0")
             controller._controlled_unit_ids.add(unit)
         except Exception as error:
             errors.append(error)
+        else:
+            # Report a zero target only after the controller took it; gas may still flow.
+            snapshot.update(target_percent=0.0)
+            self._gas_targets[channel] = 0.0
         try:
             self._gas_valves[channel] = controller.set_gas_valve(channel, False)
         except Exception as error:
             self._gas_valves[channel].update(open=None, verified=False)
             errors.append(error)
-        snapshot = self._flow_channels[("gas", unit)]
-        snapshot.update(
-            target_percent=0.0,
-            actual_percent=None,
-            available=False,
-            setpoint_verified=False,
-            readback="unverified",
-        )
-        self._gas_targets[channel] = 0.0
         if errors:
             raise RuntimeError("; ".join(str(error) for error in errors))
         self._read_flow(channel)
@@ -924,7 +923,7 @@ class FurnaceService:
                 self.events.add(
                     "error", "Cannot invalidate stale recovery state", error=str(invalidation_error)
                 )
-        # Never remove a durable fault or retry a failed output automatically.
+        # Never remove a durable fault automatically. A failed stop retries once on a new handle.
         errors = self._stop_outputs(idle=idle)
         if errors:
             self._fault["message"] += "; stop: " + "; ".join(str(item) for item in errors)
@@ -934,32 +933,30 @@ class FurnaceService:
             self._persistence_error = str(persistence_error)
 
     def _stop_outputs(self, *, gas=True, idle=False):
-        errors = []
-        if self._furnace is None and self.port is not None:
-            try:
-                self._furnace = self._furnace_factory(
-                    port=self.port, slave_address=self.slave_address, config=self.config
-                )
-            except Exception as error:
-                errors.append(error)
-        if self._furnace is not None:
-            try:
-                self._furnace.set_stop()
-                self._mark_stopped()
-            except Exception as error:
-                errors.append(error)
-                # A replugged USB port stays "open" but every write fails: reopen on the next stop.
-                self._furnace, dead = None, self._furnace
-                self._close_quietly(dead)
+        errors = self._stop_heat()
         if gas:
             gas_stopped = False
-            try:
-                self._flow_off()
-                gas_stopped = True
-            except Exception as error:
-                errors.append(error)
-                self._flow_controller, dead = None, self._flow_controller
-                self._close_quietly(dead)
+            gas_errors = []
+            # A handle that failed may be a replugged port: close it and retry once on a new open.
+            retry = self._flow_controller is not None
+            while True:
+                try:
+                    self._flow_off()
+                    gas_stopped = True
+                except Exception as error:
+                    gas_errors.append(error)
+                    self._flow_controller, dead = None, self._flow_controller
+                    self._close_quietly(dead)
+                    if retry:
+                        retry = False
+                        continue
+                break
+            if gas_stopped and gas_errors:
+                self.events.add(
+                    "warning", "Gas stopped after reopening the flow port", error=str(gas_errors[0])
+                )
+            else:
+                errors.extend(gas_errors)
             if idle and gas_stopped and any(self.idle_gas.values()):
                 try:
                     self._apply_gas(self.idle_gas)
@@ -971,6 +968,41 @@ class FurnaceService:
                     except Exception as cleanup_error:
                         errors.append(cleanup_error)
         return errors
+
+    def _stop_heat(self):
+        """Send STOP. After a failure on an existing handle, reopen the port and send it once more.
+
+        A replugged USB port stays "open" but every write on the old handle fails.
+        """
+        errors = []
+        retry = self._furnace is not None
+        while True:
+            if self._furnace is None:
+                if self.port is None:
+                    return errors
+                try:
+                    self._furnace = self._furnace_factory(
+                        port=self.port, slave_address=self.slave_address, config=self.config
+                    )
+                except Exception as error:
+                    errors.append(error)
+                    return errors
+            try:
+                self._furnace.set_stop()
+            except Exception as error:
+                errors.append(error)
+                self._furnace, dead = None, self._furnace
+                self._close_quietly(dead)
+                if retry:
+                    retry = False
+                    continue
+                return errors
+            self._mark_stopped()
+            if errors:
+                self.events.add(
+                    "warning", "Heat stopped after reopening the furnace port", error=str(errors[0])
+                )
+            return []
 
     @staticmethod
     def _close_quietly(handle):

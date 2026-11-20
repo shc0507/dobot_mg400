@@ -1295,6 +1295,7 @@ def recover_held_runner(env):
         services=env.clients,
         acquired=list(env.clients),
         reconcile=lambda: {},
+        accept=lambda states: None,
         round_done=lambda value: True,
         lifecycle_lock=threading.RLock(),
         error=None,

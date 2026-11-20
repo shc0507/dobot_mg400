@@ -131,6 +131,8 @@ class RobotPanelState:
         self._control_factory = control_factory
         self._session_factory = session_factory
         self._ownership = ControllerOwnership(host)
+        # A new dashboard connection drops the previous one, so these stops send one at a time.
+        self._unowned_stop_lock = threading.Lock()
         self._lock = threading.RLock()
         self._stop_changed = threading.Condition(self._lock)
         self.events = EventLog(logger=_PanelJournal())
@@ -903,7 +905,8 @@ class RobotPanelState:
 
     def _send_unowned_stop(self, record):
         try:
-            self._new_control().send_stop()
+            with self._unowned_stop_lock:
+                self._new_control().send_stop()
         except Exception as error:
             message = (
                 f"ResetRobot() without the robot lock failed: {error}. "

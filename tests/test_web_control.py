@@ -106,6 +106,36 @@ def test_stop_without_the_lock_sends_reset_and_stays_unconfirmed(rig, failure):
         other.close()
 
 
+def test_stops_without_the_lock_send_one_at_a_time(rig):
+    state, feed, controls = rig
+    connect(state)
+    active, overlap = [], []
+    gate = threading.Event()
+
+    class GatedControl(PanelControl):
+        def send_stop(self):
+            active.append(self)
+            overlap.append(len(active))
+            gate.wait(2)
+            active.remove(self)
+            super().send_stop()
+
+    other = RobotPanelState("robot.test", connection_factory=Feed(), control_factory=GatedControl)
+    try:
+        # The direct and console paths of one labctl stop arrive together.
+        other.stop("browser-b")
+        other.stop("browser-c")
+        wait_for(lambda: overlap == [1])
+        time.sleep(0.05)
+        assert overlap == [1]
+        gate.set()
+        wait_for(lambda: not other.snapshot()["busy"])
+        assert overlap == [1, 1]
+    finally:
+        gate.set()
+        other.close()
+
+
 def test_confirmed_disconnect_releases_ownership_after_feedback_reader_exits(rig):
     state, feed, controls = rig
     feed.sample = Feedback((1, 2, 3, 4), 4, 0, False)

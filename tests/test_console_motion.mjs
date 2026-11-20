@@ -892,6 +892,54 @@ test("keyboard jog arms, refreshes held keys and releases them on blur", async (
   } finally { page.restore(); }
 });
 
+test("a modifier, a context menu or a drag start releases held jog and stage keys", async () => {
+  const leaves = [
+    page => page.key("keydown", "MetaLeft", { key: "Meta", metaKey: true }),
+    page => page.key("keydown", "KeyC", { ctrlKey: true }),
+    page => page.key("keydown", "AltLeft", { key: "Alt" }),
+    page => page.win.get("contextmenu")(),
+    page => page.win.get("dragstart")(),
+  ];
+  for (const [index, leave] of leaves.entries()) {
+    const page = await keyboardPage({ owns: ["robot", "stage"] });
+    try {
+      page.find("Keyboard jog").click();
+      page.find("Stage keyboard").click();
+      await page.settle();
+      const before = page.intervals.length;
+      page.key("keydown", "KeyW");
+      page.key("keydown", "KeyU");
+      await page.settle();
+      leave(page);
+      await page.settle();
+      assert.equal(page.ws._test.kb.held.size, 0, `leave ${index}`);
+      assert.equal(page.ws._test.kb.on, false, `leave ${index}`);
+      assert.equal(page.ws._test.sh.on, false, `leave ${index}`);
+      assert.equal(page.ws._test.sh.active, null, `leave ${index}`);
+      assert.deepEqual(page.holdCalls().map(call => call[1]), ["stage/hold", "stage/release"], `leave ${index}`);
+      const off = page.keyCalls().filter(call => call[3]?.enabled === false).map(call => call[3].reason);
+      assert.deepEqual(off, [index < 3 ? "modifier" : "focus"], `leave ${index}`);
+      // No timer keeps sending the held key after the release.
+      const timers = page.intervals.slice(before);
+      assert.equal(timers.length, 2, `leave ${index}`);
+      assert.ok(timers.every(callback => callback === null), `leave ${index}`);
+    } finally { page.restore(); }
+  }
+});
+
+test("a modifier without a held key leaves the keyboard armed", async () => {
+  const page = await keyboardPage();
+  try {
+    page.find("Keyboard jog").click();
+    await page.settle();
+    page.key("keydown", "MetaLeft", { key: "Meta", metaKey: true });
+    page.key("keydown", "KeyW", { metaKey: true });
+    await page.settle();
+    assert.equal(page.ws._test.kb.on, true);
+    assert.equal(page.keyCalls().length, 1);
+  } finally { page.restore(); }
+});
+
 test("keyboard jog disarms when the tab is hidden and when the Motion tab is left", async () => {
   const page = await keyboardPage();
   try {

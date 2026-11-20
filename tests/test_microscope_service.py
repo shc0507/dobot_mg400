@@ -603,6 +603,21 @@ def test_snapshot_is_exclusive_private_png_in_run_store(demo_rig, tmp_path):
     assert response.status_code == 400 and not (tmp_path / "outside.png").exists()
 
 
+def test_snapshot_to_existing_path_fails_without_lock_or_motor_stop(demo_rig, monkeypatch):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    assert dispatch(rig, "snapshot", path="sample-1.png")["last_command"]["result"] == "ok"
+    response = service_post(rig, "command", {"action": "snapshot", "path": "sample-1.png"})
+    assert response.status_code == 400 and "already exists" in response.json["error"]
+    # A file that appears after the check fails the job only.
+    monkeypatch.setattr(rig.service, "_arguments", lambda action, args: None)
+    state = dispatch(rig, "snapshot", path="sample-1.png")
+    assert state["last_command"]["result"] == "failed", state
+    assert not state["locked"] and state["fault"] is None and state["focus_zero_known"]
+    assert rig.port.sim.focus.enabled
+    assert dispatch(rig, "focus_move", steps=1)["last_command"]["result"] == "ok"
+
+
 def test_home_requires_configured_switch_and_never_substitutes_manual_zero(demo_rig):
     missing = demo_rig()
     acquire_automation(missing)

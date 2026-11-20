@@ -666,6 +666,24 @@ def test_recording_exact_id_start_finish_and_private_retained_outputs(recording_
     assert (rig.root / ident / "run.json").read_bytes() == before
 
 
+@pytest.mark.parametrize("cause", ["reused-id", "unhealthy-arm"])
+def test_failed_recording_start_keeps_motors_and_focus_zero(recording_rig, cause):
+    rig = recording_rig
+    assert rig.command("set_focus_zero", {})["focus_zero_known"]
+    if cause == "reused-id":
+        ident = "d" * 32
+        rig.command("start_recording", {"recording_id": ident, "mode": "live"})
+        rig.command("stop_recording", {"recording_id": ident})
+        state = rig.command("start_recording", {"recording_id": ident})
+    else:
+        rig.readings.value["sequence"]["healthy"] = False
+        state = rig.command("record_with_sequence", {"recording_id": "e" * 32, "enabled": True})
+    assert state["last_command"]["result"] == "failed", state
+    assert not state["locked"] and state["fault"] is None and state["focus_zero_known"]
+    assert rig.service._demo_port.sim.focus.enabled
+    assert rig.command("focus_move", {"steps": 1})["last_command"]["result"] == "ok"
+
+
 @pytest.mark.parametrize(
     "action,args",
     [

@@ -41,9 +41,13 @@ class FakeService:
             "holder": self.identity,
         }
         if name == "robot":
+            # The robot state also carries its own owner and feedback fields.
             self.value.update(
                 mode="robot",
                 instance="offline-robot-instance",
+                controller_id=self.identity,
+                syncing=True,
+                feedback_fresh=True,
                 robot_error=False,
                 stop_unconfirmed=False,
             )

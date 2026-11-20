@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 from helpers import Feed, PanelControl, wait_for
-from panel_ws import PANEL, PanelServer, running
+from panel_http import PANEL, PanelServer, running
 
 from labkit.client import ServiceClient
 from labkit.errors import ServiceError
@@ -26,7 +26,6 @@ ReadOnlyPanelState = PANEL["ReadOnlyPanelState"]
 PANEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 ROBOT_HEADERS = {
     "Content-Type": "application/json",
-    "X-MG400-Panel": "1",
     "X-MG400-Client": "browser-a",
 }
 
@@ -337,8 +336,7 @@ def test_robot_http_starts_without_connecting_and_rejects_motion_before_ownershi
         data = json.loads(body)
         assert status == 200 and data["mode"] == "robot"
         assert not data["syncing"] and data["actual"] == [None] * 4
-        assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == 200
-        assert request(server, "POST", "/api/command", '{"action":"enable"}', headers)[0] == 403
+        assert request(server, "POST", "/api/command", '{"action":"enable"}', headers)[0] == 409
         assert robot.snapshot()["controller_id"] is None
     finally:
         server.state = original
@@ -357,53 +355,57 @@ class RecordingState:
     def snapshot(self):
         return {"mode": "robot", "busy": False}
 
-    def heartbeat(self, client_id):
-        self.calls.append(("heartbeat", client_id))
+    def _lease(self, name, client_id):
+        self.calls.append((name, client_id))
         if self.failure is not None:
             raise self.failure
-        return {"mode": "robot", "controller_id": client_id}
+        return {"holder": client_id, "remaining_s": 3.0}
 
-    def command(self, payload, client_id=None):
+    def acquire(self, client_id):
+        return self._lease("heartbeat", client_id)
+
+    def renew(self, client_id):
+        return self._lease("renew", client_id)
+
+    def release(self, client_id):
+        return self._lease("release", client_id)
+
+    def submit(self, payload, client_id):
         self.calls.append(("command", payload, client_id))
-        return self.snapshot()
-
-    def keys(self, payload, client_id):
-        self.calls.append(("keys", payload, client_id))
-        return self.snapshot()
+        return "robot:1", self.snapshot()
 
     def close(self):
         pass
 
 
 @pytest.mark.parametrize("base_path", ["/", "/mg400-panel/"])
-def test_key_updates_have_no_http_endpoint(base_path):
+def test_key_updates_are_a_command_without_a_command_id(base_path):
     state = RecordingState()
     with running(state, base_path=base_path) as server:
-        body = json.dumps({"seq": 7, "held": ["W", "Z"]})
-        path = f"{server.base_path}api/keys"
-        assert request(server, "POST", path, body, ROBOT_HEADERS)[0] == 404
-    # Key updates travel only over the WebSocket.
-    assert state.calls == []
+        body = json.dumps({"action": "keys", "seq": 7, "held": ["W", "Z"]})
+        assert request(server, "POST", f"{server.base_path}api/keys", body, ROBOT_HEADERS)[0] == 404
+        assert (
+            request(server, "POST", f"{server.base_path}api/command", body, ROBOT_HEADERS)[0] == 202
+        )
+    assert state.calls == [("command", json.loads(body), "browser-a")]
 
 
 @pytest.mark.parametrize(
     ("change", "status"),
     [
-        ({"Content-Type": None}, 403),
-        ({"Content-Type": "text/plain"}, 403),
-        ({"X-MG400-Panel": "0"}, 403),
+        ({"Content-Type": None}, 415),
+        ({"Content-Type": "text/plain"}, 415),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "x" * 129}, 400),
     ],
     ids=[
         "no-content-type",
         "text-content-type",
-        "wrong-panel-header",
         "no-client-id",
         "long-client-id",
     ],
 )
-def test_robot_posts_require_the_panel_request_guard(change, status):
+def test_robot_posts_require_json_and_a_client_id(change, status):
     state = RecordingState()
     headers = {
         name: value for name, value in {**ROBOT_HEADERS, **change}.items() if value is not None
@@ -433,7 +435,7 @@ def test_api_heartbeat_routes_under_the_base_path():
     ("failure", "status"),
     [
         (ValueError("A browser client ID is required"), 400),
-        (PermissionError("Start sync in this browser before issuing commands"), 403),
+        (PermissionError("Another browser controls the robot"), 409),
         (RuntimeError("The panel is closing"), 409),
     ],
     ids=["invalid", "not-owner", "conflict"],
@@ -449,8 +451,8 @@ def test_robot_posts_report_state_errors_with_their_http_status(failure, status)
 
 @pytest.mark.parametrize(
     "body",
-    ["{", "", "{" + " " * 4096 + "}", '{"action":"enable"}'],
-    ids=["bad-json", "empty", "too-large", "heartbeat-with-body"],
+    ["{", "", "{" + " " * 4096 + "}", '{"action":"enable"}', "[]"],
+    ids=["bad-json", "empty", "too-large", "heartbeat-with-body", "not-an-object"],
 )
 def test_robot_posts_reject_malformed_bodies_before_the_state(body):
     state = RecordingState()
@@ -469,18 +471,18 @@ def test_successful_heartbeats_stay_out_of_the_request_log(capsys, base_path):
         command = json.dumps({"action": "stop"})
         assert (
             request(server, "POST", f"{server.base_path}api/command", command, ROBOT_HEADERS)[0]
-            == 200
+            == 202
         )
         state.failure = RuntimeError("Another robot operation is in progress")
         assert request(server, "POST", heartbeat, "{}", ROBOT_HEADERS)[0] == 409
-        wrong = {**ROBOT_HEADERS, "X-MG400-Panel": "0"}
-        assert request(server, "POST", heartbeat, "{}", wrong)[0] == 403
+        wrong = {**ROBOT_HEADERS, "Content-Type": "text/plain"}
+        assert request(server, "POST", heartbeat, "{}", wrong)[0] == 415
     log = capsys.readouterr().err
     assert f'"POST {heartbeat} HTTP/1.1" 200' not in log
     assert f'"POST {heartbeat} HTTP/1.1" 409' in log
-    assert f'"POST {heartbeat} HTTP/1.1" 403' in log
+    assert f'"POST {heartbeat} HTTP/1.1" 415' in log
     # Only heartbeats are quiet. Robot commands stay in the request log.
-    assert f'"POST {server.base_path}api/command HTTP/1.1" 200' in log
+    assert f'"POST {server.base_path}api/command HTTP/1.1" 202' in log
 
 
 def test_read_only_mode_refuses_keyboard_control(server):
@@ -508,8 +510,7 @@ def test_successful_responses_keep_the_connection_open():
                 connection.request("POST", "/api/heartbeat", "{}", ROBOT_HEADERS)
                 response = connection.getresponse()
                 assert json.loads(response.read()) == {
-                    "mode": "robot",
-                    "controller_id": "browser-a",
+                    "lease": {"holder": "browser-a", "remaining_s": 3.0}
                 }
                 assert response.status == 200
                 assert response.version == 11
@@ -553,7 +554,6 @@ def exchange(server, raw):
 EMPTY_BODY = b"{}"
 AUTH = "Accept: application/json"
 JSON_TYPE = "Content-Type: application/json"
-PANEL_HEADER = "X-MG400-Panel: 1"
 CLIENT = "X-MG400-Client: browser-a"
 
 
@@ -561,18 +561,20 @@ CLIENT = "X-MG400-Client: browser-a"
     ("raw", "status"),
     [
         (
-            http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, "X-MG400-Panel: 0"]),
-            403,
+            http11(
+                "POST", "/api/heartbeat", EMPTY_BODY, [AUTH, "Content-Type: text/plain", CLIENT]
+            ),
+            415,
         ),
-        (http11("POST", "/api/other", EMPTY_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 404),
-        (http11("POST", "/api/heartbeat", b"{", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]), 400),
+        (http11("POST", "/api/other", EMPTY_BODY, [AUTH, JSON_TYPE, CLIENT]), 404),
+        (http11("POST", "/api/heartbeat", b"{", [AUTH, JSON_TYPE, CLIENT]), 400),
         (
-            http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT]),
+            http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, CLIENT]),
             409,
         ),
         (http11("GET", "/missing"), 404),
     ],
-    ids=["403-unread-body", "404-unread-body", "400", "409", "404-get"],
+    ids=["415-unread-body", "404-unread-body", "400", "409", "404-get"],
 )
 def test_error_responses_close_the_connection(raw, status):
     state = RecordingState()
@@ -593,15 +595,7 @@ def test_handler_speaks_http11_with_the_specified_idle_timeout():
     assert handler.disable_nagle_algorithm is True
 
 
-SMUGGLED = http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT])
-
-
-UPGRADE = [
-    "Upgrade: websocket",
-    "Connection: Upgrade",
-    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-    "Sec-WebSocket-Version: 13",
-]
+SMUGGLED = http11("POST", "/api/heartbeat", EMPTY_BODY, [AUTH, JSON_TYPE, CLIENT])
 
 
 @pytest.mark.parametrize(
@@ -610,10 +604,8 @@ UPGRADE = [
         ("/", "/", [AUTH]),
         ("/", "/api/state", [AUTH]),
         ("/mg400-panel/", "/mg400-panel", [AUTH]),
-        # An accepted body would be read as WebSocket frames.
-        ("/", "/api/ws", [AUTH, *UPGRADE]),
     ],
-    ids=["page", "state", "redirect", "websocket"],
+    ids=["page", "state", "redirect"],
 )
 def test_get_with_a_body_is_refused_and_cannot_smuggle_a_request(base_path, path, headers):
     state = RecordingState()
@@ -629,7 +621,7 @@ def test_post_with_transfer_encoding_is_refused_before_the_state_sees_it():
     state = RecordingState()
     # A valid JSON prefix covered by Content-Length, then a second request in the same body.
     framing = [f"Content-Length: {len(EMPTY_BODY)}", "Transfer-Encoding: chunked"]
-    raw = http11("POST", "/api/heartbeat", b"", [AUTH, JSON_TYPE, PANEL_HEADER, CLIENT, *framing])
+    raw = http11("POST", "/api/heartbeat", b"", [AUTH, JSON_TYPE, CLIENT, *framing])
     with running(state) as server:
         code, headers, _ = exchange(server, raw + EMPTY_BODY + SMUGGLED)
     assert code == 400
@@ -949,14 +941,13 @@ def test_contract_routes_follow_base_path_and_event_cursor(base_path):
 @pytest.mark.parametrize(
     ("change", "status"),
     [
-        ({"X-MG400-Panel": "0"}, 403),
-        ({"Content-Type": "text/plain"}, 403),
+        ({"Content-Type": "text/plain"}, 415),
         ({"X-MG400-Client": None}, 400),
         ({"X-MG400-Client": "\x7f"}, 400),
         ({"X-MG400-Client": " "}, 400),
     ],
 )
-def test_contract_stop_preserves_legacy_post_guard_and_validates_identity(change, status):
+def test_contract_stop_checks_the_content_type_and_identity(change, status):
     state = ContractRecordingState()
     headers = {
         key: value for key, value in {**ROBOT_HEADERS, **change}.items() if value is not None
@@ -1006,12 +997,9 @@ def test_robot_caps_are_fixed_in_code(monkeypatch, signal_table):
     )
 
 
-@pytest.mark.usefixtures("closed_clients")
-@pytest.mark.parametrize("transport", ["http", "websocket"])
 @pytest.mark.parametrize("speed", [True, 1.0, None, 0, 2, 10**400, float("nan"), float("inf")])
-def test_invalid_execute_speed_reports_400_without_feedback_or_motion(transport, speed):
+def test_invalid_execute_speed_reports_400_without_feedback_or_motion(speed):
     from helpers import PanelControl
-    from panel_ws import WsClient
 
     from mg400.web_control import RobotPanelState
 
@@ -1020,14 +1008,7 @@ def test_invalid_execute_speed_reports_400_without_feedback_or_motion(transport,
     payload = {"action": "execute", "targets": {"x": 250, "y": 0, "z": 30, "r": 0}, "speed": speed}
     try:
         with running(state) as server:
-            if transport == "http":
-                status, _ = request(
-                    server, "POST", "/api/command", json.dumps(payload), ROBOT_HEADERS
-                )
-            else:
-                client = WsClient(server)
-                client.hello()
-                status = client.request("command", payload)["status"]
+            status, _ = request(server, "POST", "/api/command", json.dumps(payload), ROBOT_HEADERS)
             assert status == 400
             assert state._control.calls == []
             assert state._job is None and not state.snapshot()["busy"]

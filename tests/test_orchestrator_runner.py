@@ -41,15 +41,9 @@ class FakeService:
             "holder": self.identity,
         }
         if name == "robot":
-            self.value.pop("connected")
-            self.value.pop("fault")
-            self.value.pop("holder")
             self.value.update(
                 mode="robot",
                 instance="offline-robot-instance",
-                controller_id=self.identity,
-                syncing=True,
-                feedback_fresh=True,
                 robot_error=False,
                 stop_unconfirmed=False,
             )
@@ -69,11 +63,9 @@ class FakeService:
         return copy.deepcopy(self.value)
 
     def owned(self, state):
-        return state.get("controller_id" if self.name == "robot" else "holder") == self.identity
+        return state.get("holder") == self.identity
 
     def healthy(self, state):
-        if self.name == "robot":
-            return state.get("syncing") is True and state.get("feedback_fresh") is True
         return state.get("connected") is True
 
     def command(self, action, **params):
@@ -202,7 +194,7 @@ def test_resume_requires_manual_completion_and_fresh_stop_after_repair(tmp_path)
         lambda state: state.update(locked=0),
         lambda state: state.pop("robot_error"),
         lambda state: state.update(fault="unknown outcome"),
-        lambda state: state.update(controller_id="other"),
+        lambda state: state.update(holder="other"),
         lambda state: state.update(instance="replacement"),
         lambda state: state.update(stop_unconfirmed=True),
     ],
@@ -942,7 +934,7 @@ def terminal_zone_run(tmp_path, *, ending="abort"):
 def owned_recovery_pool():
     service = FakeService()
     service.identity = "fresh-recovery-transaction"
-    service.value["controller_id"] = service.identity
+    service.value["holder"] = service.identity
     pool = Clients({"robot": service})
     pool.acquire(("robot",), cancelled=threading.Event())
     pool.stop_all()
@@ -1018,7 +1010,7 @@ def test_terminal_recovery_rejects_old_identity_and_missing_ownership(tmp_path):
                 pool, physically_clear=True, note="Checked", cancelled=threading.Event()
             )
         new.identity = "fresh-recovery-transaction"
-        new.value["controller_id"] = "other-owner"
+        new.value["holder"] = "other-owner"
         with pytest.raises(RuntimeError, match="manual recovery"):
             runner.recover_terminal(
                 pool, physically_clear=True, note="Checked", cancelled=threading.Event()

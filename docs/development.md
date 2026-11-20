@@ -72,12 +72,15 @@ kill "$sim_pid"
 wait "$sim_pid"
 ```
 
-在另一个终端用 [Python 客户端](#python-客户端) 连接 `http://127.0.0.1:18766/`，按以下顺序发送命令：
+在另一个终端用 `labkit.client.ServiceClient("http://127.0.0.1:18766/", "<client-id>")` 连接，按以下顺序发送请求：
 
-1. 运行 `start_sync`，等待反馈更新。
-2. 运行 `enable`，等待使能完成。
-3. 用 `execute` 发送目标坐标。
-4. 运行 `stop_sync`，等待停止确认，再运行 `disable`。
+1. 调用 `heartbeat()` 取得租约，等待状态的 `connected` 为 `true`。
+2. 调用 `command("enable")`，等待使能完成。
+3. 用 `command("execute", targets=...)` 发送目标坐标。
+4. 先调用 `command("disable")`，等待停止确认，再调用 `release()`。
+
+每个 `command()` 返回 `command_id`。`state()` 的 `last_command.id` 等于它，且 `busy` 为 `false` 时，命令完成。
+租约每 3 秒到期，等待期间调用 `renew()`。
 
 在终端按 `Ctrl+C` 结束机器人服务。
 随后的命令结束本次模拟器进程，并删除临时锁目录。
@@ -133,12 +136,12 @@ wait "$sim_pid"
 
 用浏览器打开 [布局编辑器](../apps/layout-studio/index.html)，可编辑并导出界面布局。
 
-`apps/control_panel/server.py` 是机器人服务，提供 HTTP 接口和 WebSocket 接口，不提供网页。
+`apps/control_panel/server.py` 是机器人服务，提供 HTTP 接口，不提供网页。
 实验室控制台的 Motion 工作区通过该服务控制机械臂和吸盘。
-`websocket.py` 用标准库实现 WebSocket 帧编解码和连接写线程。
+`websocket.py` 用标准库实现 WebSocket 帧编解码，供控制台控制套接字使用。
 接口说明见 [机器人服务接口](#机器人服务接口)。
 
-WebSocket 按键点动由 `web_control.py` 调度，机械臂长按复用 `keyboard_jog.py`。
+按键点动由 `web_control.py` 调度，机械臂长按复用 `keyboard_jog.py`。
 `web_keyboard.py` 校验按键输入，并把 Z 和 X 映射为吸取和放下。
 
 机器人服务通过 TCP 协议控制机械臂。
@@ -159,7 +162,7 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 
 ## 机器人服务接口
 
-机器人服务执行 `start_sync` 后连接机械臂，并持有连接锁。
+机器人服务取得控制租约后连接机械臂，并持有连接锁。
 实验室控制台和自写客户端通过服务读取状态和发送命令。
 `labctl mode` 直接连接机械臂。
 它与服务共用连接锁，不能与服务同时连接。
@@ -172,13 +175,12 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 | `POST {prefix}api/stop` | 请求停止并读取确认结果 |
 | `GET {prefix}api/events?since=<seq>` | 读取指定序号之后的日志事件 |
 | `POST {prefix}api/command` | 发送一个命令 |
-| `POST {prefix}api/heartbeat` | 续期控制租约。契约请求也取得租约 |
-| `POST {prefix}api/renew`、`POST {prefix}api/release` | 契约请求：续期或释放租约，见 [契约租约与命令](#契约租约与命令) |
-| `GET {prefix}api/ws` | WebSocket 连接：状态推送、命令、心跳和按键 |
+| `POST {prefix}api/heartbeat` | 取得控制租约，连接机械臂 |
+| `POST {prefix}api/renew`、`POST {prefix}api/release` | 续期或释放租约，见 [契约租约与命令](#契约租约与命令) |
 
 `{prefix}` 是 `--base-path` 的值，默认为 `/`。
 本节用尖括号表示占位符，例如 `<client-id>` 表示客户端 ID。
-按键经 WebSocket 或契约命令 `keys` 发送。
+按键经命令 `keys` 发送。
 
 ### 访问与客户端 ID
 
@@ -187,27 +189,26 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 真机控制模式用客户端 ID 区分客户端，长度为 1–128 个可打印 ASCII 字符。
 同一时刻只有一个客户端 ID 持有控制权。
 控制者必须在 3 秒内续期控制租约（控制权的有效期）。
-心跳、按键更新和控制者的命令都能续期。
+续期、按键更新和控制者的命令都能续期。
 服务 3 秒内未收到续期时，请求停止机械臂并锁定控制。
 
 ### HTTP 接口
 
-带 `X-MG400-Panel` 的 POST 请求必须满足以下条件：
+POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)，必须满足以下条件：
 
-1. 带 `Content-Type: application/json` 和 `X-MG400-Panel: 1`。
+1. 带 `Content-Type: application/json`。其他内容类型返回 415。
 2. 真机控制模式带 `X-MG400-Client: <client-id>`。
-3. 正文为 1–4096 字节的 JSON 对象，用 `Content-Length` 标明长度。
+3. 正文为 1–4096 字节的 JSON 对象，用 `Content-Length` 标明长度。租约请求的正文为 `{}`。
 
-`api/command` 和 `api/heartbeat` 成功时返回 200 和状态对象。
-拒绝时返回 400（请求无效）、403（拒绝）或 409（状态冲突）。
+`api/command` 成功时返回 202、`command_id` 和 `state`。
+`api/heartbeat`、`api/renew` 和 `api/release` 成功时返回 200 和 `{"lease": {...}}`。
+拒绝时返回 400（请求无效）或 409（状态冲突，含机器人核心的拒绝）。
 拒绝的正文为 `{"error": "..."}`。
 
 命令正文为 `{"action": "<action>", ...}`，不得包含其他字段：
 
 | 命令 | 其他字段 | 行为 |
 | --- | --- | --- |
-| `start_sync` | 无 | 连接机械臂并取得控制权 |
-| `stop_sync` | 无 | 停止机械臂并释放控制权，保留反馈直到下使能和停稳获确认。机械臂已下使能且空闲时，确认模式 4 即可 |
 | `enable` | 无 | 使能机械臂 |
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
@@ -216,6 +217,7 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 | `vacuum` | `operation`：`suck`、`release` 或 `off` | 控制真空吸盘，见 [真空吸盘](#真空吸盘) |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
 | `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
+| `keys` | `seq`、`held` | 发送一次按住的键，`command_id` 为 `null`，见 [按键](#按键) |
 
 对于 `keyboard`，`speed` 是 1–100 的整数。
 对于 `execute`，可选 `speed` 是整数，范围从 1 到速度上限 `20`。
@@ -238,7 +240,7 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 
 ### 状态对象
 
-`api/state`、WebSocket 状态推送和成功回复返回同一个状态对象。真机控制模式的字段如下：
+`api/state` 和命令的成功回复返回同一个状态对象。真机控制模式的字段如下：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -267,26 +269,29 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 
 ### 契约租约与命令
 
-不带 `X-MG400-Panel` 的 POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)，例如 `labkit.client.ServiceClient` 的请求：
-
-- 请求带 `Content-Type: application/json` 和 `X-MG400-Client`。其他内容类型返回 415。
-- `api/heartbeat` 取得或续期租约。取得租约时，服务执行 `start_sync`。其他客户端持有租约时，返回 409。
-- `api/renew` 只续期调用者持有的租约。`api/release` 执行 `stop_sync`。
-- 租约过期时，服务执行与 `stop_sync` 相同的停止和断开。机械臂已使能时，服务停止并锁定，保留反馈直到下使能。
+- `api/heartbeat` 取得租约，服务连接机械臂。其他客户端持有租约时，返回 409。
+- `api/renew` 只续期调用者持有的租约。租约过期或已释放时返回 409，不重新取得租约。
+- `api/release` 停止机械臂并释放租约。机械臂已使能时，服务保留反馈和控制锁，直到显式 `disable` 确认模式 4 和停稳。机械臂已下使能且空闲时，确认模式 4 即可。
+- 租约过期时，服务执行与 `api/release` 相同的停止和断开。机械臂已使能时，服务停止并锁定，保留反馈直到下使能。
+- 服务锁定时，新持有者仍可取得租约，并可发送 `clear_alarm` 恢复。服务继续拒绝运动。
 - `api/command` 接受后返回 202、`command_id` 和 `state`。机器人核心的拒绝返回 409。
-- `keys` 命令带 `seq` 和 `held`，与 WebSocket 按键更新相同。它的 `command_id` 为 `null`。
+- 命令 `start_sync` 和 `stop_sync` 不存在，请使用租约路由。
+
+`state.last_command.id` 等于 `command_id` 时，命令结束。
+`busy` 为 `false` 且 `locked` 与 `stop_unconfirmed` 均为 `false`（`stop`、`disable` 除外）时，运动命令才算成功。
+服务重启（`instance` 改变）或后续停止取代命令时，结果未知。
+客户端不得重发命令，回复丢失后须先读取状态。
 
 ### 契约发现、停止与事件
 
 真机控制模式提供 `api/describe`、`api/stop` 和 `api/events`。
-`api/stop` 检查上述 POST 请求头和客户端 ID。
+`api/stop` 检查上述请求头和客户端 ID。
 
 `api/describe` 返回 `service`、`version`、`contract`、`demo`、`zones`、`lease_seconds`、`on_lease_expiry` 和 `commands`。
 `contract` 为 1，`demo` 为 `false`。
 每个命令的 `params` 用 JSON Schema 描述参数，不含 `action`。
 `stop` 和 `disable` 的 `any_client` 为 `true`。
 `keyboard` 和 `keys` 的 `ui_only` 为 `true`，只供交互界面使用。
-带 `X-MG400-Panel` 时，`start_sync` 取得控制权，`api/heartbeat` 只续期持有者的租约，不取得控制权。
 
 `api/stop` 的正文为 `{"wait_s": 0}`。
 `wait_s` 可省略，默认为 0，范围为 0–15 秒，必须是有限数值。
@@ -320,123 +325,14 @@ TCP 协议参考与完成判定见 [真机控制接口](hardware.md)。
 事件记录状态消息、锁定和解锁、停止未确认及其清除。
 事件还记录反馈模式和报警标志的变化、报警和键盘关闭原因。每个事件的 `message` 即对应的服务日志行。
 
-### Python 客户端
+### 按键
 
-`mg400.client.RobotClient(url, client_id)` 使用服务基础 URL 和明确的客户端 ID。
-每个程序使用独立 ID。运行中的程序不得共用 ID。
-构造对象不会连接服务。`connect()` 检查 WebSocket 协议 1 和服务契约 1，然后启动客户端线程。
-支持 `http://`、`https://`、`ws://` 和 `wss://`。如果服务配置了基础路径，URL 必须包含该路径。
-
-运行示例前，启动[离线模拟器和机器人服务](#离线机器人模拟器)。
-示例向该模拟器发送运动命令。
-
-```python
-from mg400.client import RobotClient
-
-with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
-    robot.run("start_sync")
-    robot.run("enable")
-    result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
-    print(result["last_command"])
-```
-
-- `state` 返回最新状态的副本。连接前为 `None`。`connected` 表示 WebSocket 是否可用。
-- `command(action, **fields)` 发送 1 次请求并返回协议回复。检查 `status`。接受请求不表示操作完成。
-- `wait(predicate, timeout)` 返回满足条件的状态。超时抛出 `TimeoutError`。
-- `run(action, timeout=30, **fields)` 等待 `busy == False`，并检查属于本次动作和客户端的新 `last_command`。
-- `vacuum(operation, timeout=30)` 用 `run()` 发送 1 次 `vacuum` 命令。`operation` 取 `suck`、`release` 或 `off`，其他值抛出 `ValueError`。见[真空吸盘](#真空吸盘)。
-- `vacuum_state` 返回最新状态的 `vacuum` 字段。连接前为 `None`。
-- `keys(seq, held)` 经 WebSocket 发送 1 次按键集合并返回协议回复，不重试。
-- `RobotClientError` 表示请求被拒绝或结果未知。如果服务提供错误码，异常保留 `status` 和 `close_code`。
-
-`run()` 接受 `ok`。对于 `stop`、`disable` 和 `stop_sync`，停止仍获确认时，也接受 `stopped`。
-服务锁定时，`run("start_sync")` 仍可成功，新持有者因此可以发送 `clear_alarm` 恢复。服务继续拒绝运动。
-`start_sync` 还等待 `feedback_fresh` 为真。
-其他动作完成时，若 `stop_unconfirmed` 为真，`run()` 抛出 `RobotClientError`。若 `locked` 为真，`run()` 也抛出该异常，`stop`、`disable` 和 `stop_sync` 除外。
-请求被拒绝、操作失败、停止取代运动或服务重启，都不能算作运动成功。
-每个客户端 ID 只能有 1 个运行中的程序。`run()` 期间，同一客户端的普通命令串行执行。
-其他线程仍可调用 `command("stop")`、`command("disable")`、`run("stop")` 或 `run("disable")`。
-
-持有控制权时，客户端每 0.5 秒发送心跳。
-套接字断开后，客户端最多尝试重连传输连接 2.5 秒，短于 3 秒租约。
-客户端不会重发命令。回复丢失或超时后，命令是否送达或完成可能未知。
-再次操作前，检查服务状态。不得自动重试运动。
-hello 失败、协议错误或连接被替换后，客户端停止尝试连接。
-
-套接字不可用时，`command("stop")` 和 `command("disable")` 通过 HTTP 发送，保留客户端 ID。
-改用 HTTP 时，先检查契约 1。
-回复保留 `locked` 和 `stop_unconfirmed`。回复仍只表示接受请求，不表示停止已获确认。
-其他命令不会改用 HTTP。HTTP 请求不跟随重定向，也不会自动重试。
-
-退出上下文时，如果客户端持有控制权，先运行 `stop_sync`，再关闭连接并停止线程。
-机械臂仍使能时，服务保留反馈并阻止运动，直到显式 `disable` 确认模式 4 和停稳。
-客户端不会自动下使能。停止获确认后，发送 `disable` 即可完成断开，无须重启服务。
-可选参数 `keep_control=True` 跳过 `stop_sync`。退出后仍会停止心跳。
-直接调用 `close()` 也会停止线程，不续期或释放控制权。
-服务随后按租约超时规则停止机械臂并锁定控制。
-可选参数 `timeout=5` 配置连接和回复超时，单位为秒。
-
-### WebSocket 接口
-
-按以下顺序通信：
-
-1. 连接后 3 秒内，发送 `{"type":"hello","protocol":1,"client":"<client-id>"}`。
-2. 等待服务推送 `{"type":"state","state":{...}}`。
-3. 发送请求 `{"type":"<type>","id":<integer>,"body":{...}}`。
-4. 按 `id` 匹配回复。
-
-`protocol` 是消息格式版本，当前为 1。hello 不得含其他字段。
-`state` 的字段与 `api/state` 相同。
-状态变化时，服务推送状态。
-每次回复后，服务也推送一次。
-服务至少每秒推送一次。
-
-| 请求类型 | `body` |
-| --- | --- |
-| `command` | 与 `api/command` 的正文相同 |
-| `heartbeat` | `{}` |
-| `keys` | `{"seq":<seq>,"held":[<key>]}` |
-
-`id` 是 0 到 2^53 的整数，由客户端选择。
-服务按请求顺序逐个回复，每个请求一个回复。
-成功回复为 `{"type":"reply","id":<id>,"status":200,"state":{...}}`。
-拒绝回复为 `{"type":"reply","id":<id>,"status":<status>,"error":"..."}`。
-状态码含义同 HTTP 接口，500 表示服务内部错误。
-`body` 无效时，服务只回复错误，连接保持打开。
-`command` 的成功回复表示命令已受理，不表示动作已完成。
-动作结束后，状态中的 `busy` 变为 `false`，`message` 给出结果。
-服务日志为每个 `command` 记录一行，`keys` 和 `heartbeat` 不记录。
-
-`keys` 的 `seq` 与键盘开关命令共用一个递增序号，服务忽略不大于上次值的消息。
+`keys` 命令的正文为 `{"action":"keys","seq":<seq>,"held":[<key>]}`。
+`seq` 与键盘开关命令共用一个递增序号，服务忽略不大于上次值的消息。
 `held` 列出当前按住的键，取值为 W、A、S、D、Q、E、R、F、Z、X。
 按住按键时，客户端必须在 0.4 秒内重发。实验室控制台每 150 ms 重发一次。
 服务 0.4 秒内未收到更新时，停止点动并关闭键盘控制。
-
-关闭码为 4400、4426 或 1013 时，服务先发送 `{"type":"error","status":<status>,"error":"..."}`，再关闭连接。
-
-| 关闭码 | 含义 |
-| --- | --- |
-| 4400 | hello 或请求格式无效 |
-| 4426 | `protocol` 与服务不一致，客户端必须更新 |
-| 4409 | 同一客户端 ID 的新连接替换了此连接 |
-| 1013 | 连接数已满 |
-| 1001 | 服务停止，关闭前推送最后状态 |
-| 1011 | 服务处理连接时出错 |
-| 1002、1003、1007、1009 | 帧格式错误、二进制消息、文本不是 UTF-8 或消息过长 |
-
-连接规则如下：
-
-- 消息只能是不超过 4096 字节的 UTF-8 文本。
-- 服务每 5 秒发送 ping，15 秒未收到任何帧时关闭连接。
-- 最多 8 个客户端 ID 同时保持 hello 后的连接。
-- 最多 8 个连接同时等待 hello。超出时，服务关闭等待最久的连接。
-- `GET api/ws` 不是 WebSocket 升级请求时，服务返回 HTTP 426。
-- 同一客户端 ID 再次发送 hello 时，服务关闭旧连接。
-- 客户端的最新连接关闭，或同一客户端 ID 的新连接替换它时，服务立即关闭该客户端的键盘控制。
-
-连接关闭不终止控制租约。
-服务或代理关闭连接、客户端 3 秒内重连并续期时，保留控制权。
-网络中断时，服务可能检测不到连接关闭，由按键超时和控制租约停止机械臂。
+服务日志不记录 `keys` 请求。
 
 ## 位移台服务接口
 

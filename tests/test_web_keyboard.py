@@ -438,7 +438,7 @@ def test_snapshot_version_increases_with_each_snapshot_and_response(rig):
     rig.connect()
     response = rig.browser.keys()
     assert response["version"] > second
-    assert rig.state.heartbeat(CLIENT)["version"] > response["version"]
+    assert rig.snapshot()["version"] > response["version"]
 
 
 @pytest.mark.parametrize(

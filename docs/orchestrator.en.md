@@ -422,7 +422,7 @@ Observation results stay inside the guarded step, with stable camera, image dime
 See [guarded slot evidence](vision.en.md#guarded-slot-evidence) for the observation contract.
 
 For hardware use, an operator must validate the settings, clearance, reach, and suction convention before the supervised procedure.
-After an enabled robot receives `stop_sync` or its client context exits, feedback and the motion lock remain until explicit disable.
+After the lease of an enabled robot is released, feedback and the motion lock remain until explicit disable.
 Prepare subsequent runs through that explicit operator workflow. The recipe does not recover or retry automatically.
 
 Run the offline acceptance cases without opening device or network ports:

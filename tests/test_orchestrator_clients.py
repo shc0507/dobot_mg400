@@ -184,13 +184,12 @@ def reconciliation_pool(monkeypatch, name, state):
 
 @pytest.fixture
 def robot_reconciliation(monkeypatch):
-    # RobotPanelState.snapshot uses these fields, without generic connected/fault.
     state = {
         "mode": "robot",
         "instance": "robot-process-instance",
-        "controller_id": "orch-recovery-test",
-        "syncing": True,
-        "feedback_fresh": True,
+        "connected": True,
+        "fault": None,
+        "lease": {"holder": "orch-recovery-test", "remaining_s": 2},
         "busy": False,
         "locked": False,
         "robot_error": False,
@@ -199,9 +198,8 @@ def robot_reconciliation(monkeypatch):
     return reconciliation_pool(monkeypatch, "robot", state), state
 
 
-def test_reconcile_accepts_the_kept_robot_state_without_generic_fields(robot_reconciliation):
+def test_reconcile_accepts_the_robot_contract_state(robot_reconciliation):
     pool, state = robot_reconciliation
-    assert "fault" not in state and "connected" not in state
     assert pool.reconcile() == {"robot": state}
 
 
@@ -213,14 +211,11 @@ _ABSENT = object()
     [
         ("mode", _ABSENT),
         ("mode", "read-only"),
-        ("controller_id", _ABSENT),
-        ("controller_id", "other-holder"),
-        ("syncing", _ABSENT),
-        ("syncing", False),
-        ("syncing", 1),
-        ("feedback_fresh", _ABSENT),
-        ("feedback_fresh", False),
-        ("feedback_fresh", 1),
+        ("lease", _ABSENT),
+        ("lease", {"holder": "other-holder", "remaining_s": 2}),
+        ("connected", _ABSENT),
+        ("connected", False),
+        ("connected", 1),
         ("busy", _ABSENT),
         ("busy", True),
         ("busy", 0),
@@ -241,6 +236,7 @@ _ABSENT = object()
         ("instance", " "),
         ("instance", 0),
         ("instance", "replacement-process"),
+        ("fault", _ABSENT),
         ("fault", {"code": "unknown", "message": "A reported fault"}),
         ("fault", False),
     ],
@@ -330,7 +326,7 @@ def disabled_robot(robot_reconciliation, monkeypatch):
         },
     )
     stop = Mock(return_value={"stop": "confirmed"})
-    monkeypatch.setattr(pool.services["robot"]._robot, "_http", stop)
+    monkeypatch.setattr(pool.services["robot"]._http, "stop", stop)
     return pool, state, stop
 
 
@@ -351,9 +347,8 @@ def test_recovery_only_confirmation_uses_fresh_explicit_manual_disable(disabled_
         ("instance", _ABSENT),
         ("instance", "other-instance"),
         ("mode", "read-only"),
-        ("controller_id", "other-holder"),
-        ("syncing", False),
-        ("feedback_fresh", False),
+        ("lease", {"holder": "other-holder", "remaining_s": 2}),
+        ("connected", False),
         ("robot_mode", _ABSENT),
         ("robot_mode", 5),
         ("robot_mode", 4.0),
@@ -381,7 +376,7 @@ def test_unproven_recovery_state_sends_real_stop(disabled_robot, field, value):
     else:
         state[field] = value
     assert pool.services["robot"].recovery_stop(pool._instances["robot"]) == {"stop": "confirmed"}
-    stop.assert_called_once_with("stop", {"wait_s": 1})
+    stop.assert_called_once_with(wait_s=1)
 
 
 @pytest.mark.parametrize(
@@ -449,7 +444,7 @@ def test_default_stop_round_always_cancels_even_with_valid_disabled_proof(disabl
     pool, _, stop = disabled_robot
     round_id = pool.stop_all()
     assert pool.round_done(round_id) and pool.confirmed
-    stop.assert_called_once_with("stop", {"wait_s": 1})
+    stop.assert_called_once_with(wait_s=1)
     assert "recovery" not in pool.stop_snapshot()["robot"]
 
 
@@ -457,7 +452,7 @@ def test_lease_failure_cannot_select_recovery_proof(disabled_robot):
     pool, _, stop = disabled_robot
     pool._failed("Lease renewal failed")
     pool.recovery_stop_all()
-    stop.assert_called_once_with("stop", {"wait_s": 1})
+    stop.assert_called_once_with(wait_s=1)
 
 
 def test_recovery_mode_survives_async_round_progress_and_new_round_defaults_to_stop():

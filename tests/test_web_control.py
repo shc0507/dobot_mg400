@@ -280,7 +280,7 @@ def test_browser_identity_and_owner_are_required(rig):
         state.command({"action": "start_sync"}, "browser-b")
     with pytest.raises(PermissionError, match="Another browser"):
         state.command(payload, "browser-b")
-    assert state.heartbeat("browser-b")["controller_id"] == "browser-a"
+    assert state.snapshot()["controller_id"] == "browser-a"
 
 
 def test_robot_targets_have_no_demo_bounds_and_home_uses_joint_zero(rig):
@@ -362,7 +362,9 @@ def test_expired_lease_cannot_be_revived_by_late_heartbeat(rig):
     connect(state)
     with state._lock:
         state._heartbeat -= 4
-    snapshot = state.heartbeat("browser-a")
+    with pytest.raises(RuntimeError, match="Acquire the control lease"):
+        state.renew("browser-a")
+    snapshot = state.snapshot()
     assert snapshot["controller_id"] is None
     assert snapshot["locked"]
     assert controls[0].stop_entered.wait(1)
@@ -1057,16 +1059,15 @@ def test_alarms_and_mode_changes_are_logged_once(rig, caplog):
     assert log.count("Controller alarms cleared.") == 1
 
 
-def test_contract_description_preserves_legacy_commands_and_parameters(rig):
+def test_contract_description_lists_the_commands_and_parameters(rig):
     state, _, _ = rig
     value = state.describe()
     assert value["service"] == "robot" and value["contract"] == 1
     assert value["demo"] is False
     assert value["lease_seconds"] == 3
     commands = value["commands"]
+    # Take and release control are the lease routes, not commands.
     assert set(commands) == {
-        "start_sync",
-        "stop_sync",
         "enable",
         "disable",
         "stop",
@@ -1084,6 +1085,14 @@ def test_contract_description_preserves_legacy_commands_and_parameters(rig):
     assert target["required"] == ["x", "y", "z", "r"]
     assert set(target["properties"]) == {"x", "y", "z", "r"}
     assert state.snapshot()["last_command"] is None
+
+
+@pytest.mark.parametrize("action", ["start_sync", "stop_sync"])
+def test_contract_commands_cannot_take_or_release_control(rig, action):
+    state, _, _ = rig
+    with pytest.raises(ValueError, match="api/heartbeat"):
+        state.submit({"action": action}, "browser-a")
+    assert state.snapshot()["controller_id"] is None
 
 
 def test_contract_events_preserve_existing_journal_lines_once(rig, caplog):

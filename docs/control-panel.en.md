@@ -5,15 +5,15 @@
 [Return to the project home page](../README.en.md)
 
 The robot service (`apps/control_panel/server.py`) controls the MG400 and the vacuum suction cup.
-It uses the Python 3.12+ standard library and provides an HTTP interface and a WebSocket connection.
+It uses the Python 3.12+ standard library and provides an HTTP interface.
 Operators control the robot in the Motion workspace of the [Lab Console](dashboard.en.md).
-The recipe runner, command-line tools, and the Python client use the same interface.
+The recipe runner, command-line tools, and the `labkit` client use the same interface.
 
 ## Before use
 
 The service uses real-robot control mode by default.
 Starting the service does not connect to the robot or send motion commands.
-The service connects to the robot only after a client takes control (`start_sync`).
+The service connects to the robot only after a client takes the control lease (`api/heartbeat`).
 Before use, close the interactive terminal and other control programs.
 Connections can interrupt each other when multiple programs query the controller.
 
@@ -59,10 +59,10 @@ An operator must validate speeds above 1 on hardware before unattended transfers
 
 ## Control the suction cup
 
-The Motion workspace of the [Lab Console](dashboard.en.md) has **Suck** and **Drop** (`release`). In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example the [Python client](development.en.md#python-client):
+The Motion workspace of the [Lab Console](dashboard.en.md) has **Suck** and **Drop** (`release`). In keyboard jog, Z sucks and X drops. A client uses the `vacuum` command, for example `labkit.client.ServiceClient`:
 
 ```python
-client.run("vacuum", operation="suck")
+client.command("vacuum", operation="suck")
 ```
 
 `operation` is `suck`, `release` or `off`. The robot must be idle.
@@ -75,7 +75,7 @@ Stop and disable end the blow. They keep the suck output.
 It requests a controlled stop. It is not a physical emergency stop.
 If a stop or command result cannot be confirmed, use the physical emergency stop on site.
 
-The console `Release` sends `disable` first and waits up to 12 seconds. Then it sends `stop_sync`.
+The console `Release` sends `disable` first and waits up to 12 seconds. Then it releases the lease (`api/release`).
 If the console page sends no heartbeat within 3 seconds, the console releases control in the same sequence.
 The service disconnects feedback and unlocks control only after it confirms disabled mode 4 and rest.
 If the robot was already disabled and idle, disabled mode 4 is sufficient. You can move a disabled arm by hand, and a `Disable` or `Release` does not lock control.
@@ -86,16 +86,15 @@ If the feedback connection fails, the service records an unconfirmed stop and ke
 The service connects again every 1 second. `Recover` and `Clear alarm` both need fresh feedback.
 When fresh feedback returns, check the robot state, then click `Recover`.
 
-For clients that connect directly to the service, such as `RobotClient` and the interactive terminal, `stop_sync` does not disable the robot.
-If the robot is enabled, `stop_sync` stops it and releases control, but keeps feedback connected and control locked.
-The client can send `start_sync` again to cancel the pending disconnect. Then it sends `disable`, then `stop_sync`.
-If the robot is already disabled, `stop_sync` confirms disable, then disconnects.
-When a `RobotClient` `with` block ends, it sends `stop_sync` if it holds control. A client created with `keep_control=True` does not send it.
+When a client that connects directly to the service releases the lease, such as a `labkit` client or the interactive terminal, the service does not disable the robot.
+If the robot is enabled, `api/release` stops it and releases control, but keeps feedback connected and control locked.
+The client can take the lease again to cancel the pending disconnect. Then it sends `disable`, then releases the lease.
+If the robot is already disabled, `api/release` confirms disable, then disconnects.
 After a confirmed stop, send an explicit `disable` to complete the disconnect without restarting the service.
 
 Only one client holds control at a time.
 If the holder does not renew within 3 seconds, the service requests a robot stop and locks control.
-The console page sends a heartbeat every 0.5 seconds. The console renews control on each heartbeat.
+The console page sends a heartbeat every 0.5 seconds. The console renews control (`api/renew`) on each heartbeat.
 If the page closes or sends no heartbeat within 3 seconds, the console releases control.
 
 When you press Ctrl+C in the service terminal or stop the systemd service, the service first requests a stop and waits for confirmation.
@@ -185,7 +184,7 @@ Use this command for read-only mode:
 python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
 ```
 
-Only the `start_sync` command connects to TCP `30004`. `stop_sync` stops reading.
+Only the `start_sync` command connects to TCP `30004`. `stop_sync` stops reading. In this mode, both commands go through `api/command` and need no lease.
 This mode provides only measured joints, controller mode, and alarm flags.
 It provides no coordinate feedback and accepts no motion commands.
 
@@ -219,11 +218,6 @@ The Lab Console and the recipe service always connect to `http://127.0.0.1:8766/
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 Set the path prefix with `--base-path`, for example `--base-path /mg400-panel/`. All interface routes use this prefix.
-If a reverse proxy is in front of the service, the proxy must meet these requirements:
-
-- Forward `api/ws` with HTTP/1.1, including the `Upgrade` and `Connection` request headers.
-- Set the read timeout above 5 seconds. The service pushes state at least once per second and sends a ping every 5 seconds.
-
 See [Robot service interface](development.en.md#robot-service-interface) for the interface reference.
 
 After updating code, run the installer as described in [Host deployment](deploy.en.md#installation-and-updates), then run `labctl restart web`.
@@ -239,7 +233,7 @@ The service writes these events to standard error:
 - Changes to mode and alarm flags in robot feedback
 
 The service also records the result of each command.
-It does not log heartbeats or state pushes.
+It does not log lease requests or `keys` requests.
 A separate thread writes the logs. Blocking standard error does not delay a stop.
 
 Read the logs on the Olares host:

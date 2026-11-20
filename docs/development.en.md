@@ -74,12 +74,15 @@ kill "$sim_pid"
 wait "$sim_pid"
 ```
 
-In another terminal, use the [Python client](#python-client) to connect to `http://127.0.0.1:18766/`. Send these commands in sequence:
+In another terminal, connect with `labkit.client.ServiceClient("http://127.0.0.1:18766/", "<client-id>")`. Send these requests in sequence:
 
-1. Run `start_sync`. Wait for feedback to update.
-2. Run `enable`. Wait for the robot to become enabled.
-3. Send the target coordinates with `execute`.
-4. Run `stop_sync`. Wait for stop confirmation, then run `disable`.
+1. Call `heartbeat()` to take the lease. Wait until `connected` in the state is `true`.
+2. Call `command("enable")`. Wait for the robot to become enabled.
+3. Send the target coordinates with `command("execute", targets=...)`.
+4. Call `command("disable")`. Wait for stop confirmation, then call `release()`.
+
+Each `command()` returns a `command_id`. The command is finished when `last_command.id` in `state()` equals it and `busy` is `false`.
+The lease expires every 3 seconds. Call `renew()` while you wait.
 
 Press `Ctrl+C` in the terminal to stop the robot service.
 The next commands terminate this simulator process and remove the temporary lock directory.
@@ -135,12 +138,12 @@ Exception: a `labctl` stop goes to the orchestrator and also directly to the dev
 
 Open the [layout editor](../apps/layout-studio/index.html) in a browser to edit and export interface layouts.
 
-`apps/control_panel/server.py` is the robot service. It provides the HTTP interface and WebSocket interface, without a web page.
+`apps/control_panel/server.py` is the robot service. It provides the HTTP interface, without a web page.
 The Motion workspace of the Lab Console controls the robot and suction cup through this service.
-`websocket.py` uses the standard library for WebSocket frame encoding and decoding, and for connection writer threads.
+`websocket.py` uses the standard library for WebSocket frame encoding and decoding. The console control socket uses it.
 See [Robot service interface](#robot-service-interface) for interface details.
 
-`web_control.py` dispatches WebSocket key jogging. Robot press-and-hold control reuses `keyboard_jog.py`.
+`web_control.py` dispatches key jogging. Robot press-and-hold control reuses `keyboard_jog.py`.
 `web_keyboard.py` validates key input. It maps Z to suck and X to release.
 
 The robot service controls the robot through the TCP protocol.
@@ -161,7 +164,7 @@ See [Stage service API](#stage-service-api) for interface details.
 
 ## Robot service interface
 
-After `start_sync`, the robot service connects to the robot and holds the connection lock.
+After it takes the control lease, the robot service connects to the robot and holds the connection lock.
 The Lab Console and custom clients read state and send commands through the service.
 `labctl mode` connects directly to the robot.
 It shares the connection lock with the service and cannot connect at the same time as the service.
@@ -174,13 +177,12 @@ The service uses only the Python standard library.
 | `POST {prefix}api/stop` | Request a stop and read its confirmation status |
 | `GET {prefix}api/events?since=<seq>` | Read journal events after the specified sequence |
 | `POST {prefix}api/command` | Send one command |
-| `POST {prefix}api/heartbeat` | Renew the control lease. A contract request also takes the lease |
-| `POST {prefix}api/renew`, `POST {prefix}api/release` | Contract requests: renew or release the lease. See [Contract lease and commands](#contract-lease-and-commands) |
-| `GET {prefix}api/ws` | WebSocket connection: state updates, commands, heartbeats, and keys |
+| `POST {prefix}api/heartbeat` | Take the control lease and connect to the robot |
+| `POST {prefix}api/renew`, `POST {prefix}api/release` | Renew or release the lease. See [Contract lease and commands](#contract-lease-and-commands) |
 
 `{prefix}` is the value of `--base-path`, which defaults to `/`.
 In this section, angle brackets show placeholders. For example, `<client-id>` is the client ID.
-Send keys through WebSocket or with the contract command `keys`.
+Send keys with the command `keys`.
 
 ### Access and client ID
 
@@ -189,27 +191,26 @@ The service listens on `127.0.0.1` and does not check tokens, `Host`, or `Origin
 Physical robot control mode identifies clients by a client ID of 1–128 printable ASCII characters.
 Only one client ID has control at a time.
 The controlling client must renew the control lease within 3 seconds. The lease defines how long control remains valid.
-Heartbeats, key updates, and commands from the controlling client renew the lease.
+Renewals, key updates, and commands from the controlling client renew the lease.
 If the service receives no renewal within 3 seconds, it requests a robot stop and locks control.
 
 ### HTTP interface
 
-POST requests with `X-MG400-Panel` must meet these conditions:
+POST requests follow the [instrument service contract](adr/0001-instrument-service-contract.en.md). They must meet these conditions:
 
-1. Include `Content-Type: application/json` and `X-MG400-Panel: 1`.
+1. Include `Content-Type: application/json`. Other content types return 415.
 2. In physical robot control mode, include `X-MG400-Client: <client-id>`.
-3. Send a JSON object of 1–4096 bytes, with its length specified by `Content-Length`.
+3. Send a JSON object of 1–4096 bytes, with its length specified by `Content-Length`. Lease requests send `{}`.
 
-Successful `api/command` and `api/heartbeat` requests return 200 and the state object.
-Rejection returns 400 (invalid request), 403 (refused), or 409 (state conflict).
+A successful `api/command` returns 202, `command_id`, and `state`.
+A successful `api/heartbeat`, `api/renew`, or `api/release` returns 200 and `{"lease": {...}}`.
+Rejection returns 400 (invalid request) or 409 (state conflict, including a refusal from the robot core).
 The rejection body is `{"error": "..."}`.
 
 The command body is `{"action": "<action>", ...}`. It must contain no fields beyond those listed:
 
 | Command | Additional fields | Behavior |
 | --- | --- | --- |
-| `start_sync` | None | Connect to the robot and take control |
-| `stop_sync` | None | Stop the robot and release control. Keep feedback until disable and rest are confirmed. If the robot is already disabled and idle, a confirmed mode 4 is sufficient |
 | `enable` | None | Enable the robot |
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
@@ -218,6 +219,7 @@ The command body is `{"action": "<action>", ...}`. It must contain no fields bey
 | `vacuum` | `operation`: `suck`, `release` or `off` | Control the vacuum suction cup. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
 | `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
+| `keys` | `seq`, `held` | Send 1 held-key set. `command_id` is `null`. See [Keys](#keys) |
 
 For `keyboard`, `speed` is an integer from 1–100.
 For `execute`, optional `speed` is an integer from 1 to the speed cap `20`.
@@ -240,7 +242,7 @@ The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
 
 ### State object
 
-`api/state`, WebSocket state updates, and successful replies return the same state object. In physical robot control mode, it has these fields:
+`api/state` and successful command replies return the same state object. In physical robot control mode, it has these fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -269,26 +271,29 @@ Read-only mode returns only `mode`, `robot_host`, `enabled` (`null`), `syncing`,
 
 ### Contract lease and commands
 
-POST requests without `X-MG400-Panel` follow the [instrument service contract](adr/0001-instrument-service-contract.en.md), for example the requests of `labkit.client.ServiceClient`:
-
-- Include `Content-Type: application/json` and `X-MG400-Client`. Other content types return 415.
-- `api/heartbeat` takes or renews the lease. When it takes the lease, the service runs `start_sync`. When another client holds the lease, it returns 409.
-- `api/renew` renews only a lease that the caller holds. `api/release` runs `stop_sync`.
-- When the lease expires, the service does the same stop and disconnect as `stop_sync`. If the robot is enabled, the service stops and locks, and keeps feedback until a disable.
+- `api/heartbeat` takes the lease, and the service connects to the robot. When another client holds the lease, it returns 409.
+- `api/renew` renews only a lease that the caller holds. After the lease expires or is released, it returns 409 and does not take the lease again.
+- `api/release` stops the robot and releases the lease. If the robot is enabled, the service keeps feedback and the control lock until an explicit `disable` confirms mode 4 and rest. If the robot is already disabled and idle, a confirmed mode 4 is sufficient.
+- When the lease expires, the service does the same stop and disconnect as `api/release`. If the robot is enabled, the service stops and locks, and keeps feedback until a disable.
+- While the service is locked, a new holder can still take the lease and send `clear_alarm` to recover. The service still refuses motion.
 - `api/command` returns 202, `command_id`, and `state` when it accepts a command. A refusal from the robot core returns 409.
-- The `keys` command has `seq` and `held`, the same as a WebSocket key update. Its `command_id` is `null`.
+- The commands `start_sync` and `stop_sync` do not exist. Use the lease routes.
+
+A command is finished when `state.last_command.id` equals its `command_id`.
+A motion command succeeds only when `busy` is `false` and neither `locked` nor `stop_unconfirmed` is `true` (except for `stop` and `disable`).
+The result is unknown after a service restart (`instance` changes) or when a later stop replaces the command.
+A client must not send a command again. After a lost reply, read the state first.
 
 ### Contract discovery, stop, and events
 
 Physical robot control mode provides `api/describe`, `api/stop`, and `api/events`.
-`api/stop` checks the POST headers and client ID described above.
+`api/stop` checks the request headers and client ID described above.
 
 `api/describe` returns `service`, `version`, `contract`, `demo`, `zones`, `lease_seconds`, `on_lease_expiry`, and `commands`.
 `contract` is 1, and `demo` is `false`.
 Each command's `params` describes its arguments as JSON Schema, excluding `action`.
 For `stop` and `disable`, `any_client` is `true`.
 For `keyboard` and `keys`, `ui_only` is `true`. Only interactive interfaces use these commands.
-With `X-MG400-Panel`, `start_sync` takes control, and `api/heartbeat` renews only the holder's lease. It never takes control.
 
 The `api/stop` body is `{"wait_s": 0}`.
 `wait_s` is optional and defaults to 0. It must be a finite number from 0–15 seconds.
@@ -322,125 +327,14 @@ The service retains the latest 1000 events. Sequence numbering restarts with the
 Events record state messages, lock and unlock, and unconfirmed stops and their clearance.
 They also record feedback mode and alarm flag changes, alarms, and keyboard close reasons. The `message` of each event is the related service log line.
 
-### Python client
+### Keys
 
-`mg400.client.RobotClient(url, client_id)` uses the service base URL and an explicit client ID.
-Use a unique ID for each program. Do not share an ID between active programs.
-Construction opens no connection. `connect()` checks WebSocket protocol 1 and service contract 1, then starts the client threads.
-Use `http://`, `https://`, `ws://`, or `wss://`, including the service base path when configured.
-
-Start the [offline simulator and robot service](#offline-robot-simulator) before this example.
-The example sends movement commands to that simulator.
-
-```python
-from mg400.client import RobotClient
-
-with RobotClient("http://127.0.0.1:18766/", "recipe-example") as robot:
-    robot.run("start_sync")
-    robot.run("enable")
-    result = robot.run("execute", timeout=30, targets={"x": 260, "y": 12, "z": 42, "r": 31})
-    print(result["last_command"])
-```
-
-- `state` returns a copy of the latest state. It is `None` before connection. `connected` reports whether the WebSocket is available.
-- `command(action, **fields)` sends 1 request and returns the protocol reply. Check `status`. Acceptance does not mean completion.
-- `wait(predicate, timeout)` returns a state that satisfies the predicate. A timeout raises `TimeoutError`.
-- `run(action, timeout=30, **fields)` waits for `busy == False` and a new `last_command` for its action and client.
-- `vacuum(operation, timeout=30)` sends 1 `vacuum` command through `run()`. `operation` is `suck`, `release` or `off`. Other values raise `ValueError`. See [Vacuum suction cup](#vacuum-suction-cup).
-- `vacuum_state` returns the `vacuum` field of the latest state, or `None` before connection.
-- `keys(seq, held)` sends 1 held-key set through the WebSocket and returns the protocol reply. It does not retry.
-- `RobotClientError` reports a refusal or uncertain outcome. It retains `status` and `close_code` when available.
-
-`run()` accepts `ok`. For `stop`, `disable`, and `stop_sync`, it also accepts `stopped` when the stop remains confirmed.
-`run("start_sync")` can succeed while the service is locked, so the new holder can send `clear_alarm` to recover. The service still refuses motion.
-`start_sync` also waits until `feedback_fresh` is true.
-When another action completes and `stop_unconfirmed` is true, `run()` raises `RobotClientError`. If `locked` is true, `run()` also raises this error, except for `stop`, `disable`, and `stop_sync`.
-A rejection, failed operation, superseding stop, or service restart cannot count as successful motion.
-Use 1 active program per client ID. Ordinary commands from the same client are serialized during `run()`.
-A different thread can still call `command("stop")`, `command("disable")`, `run("stop")`, or `run("disable")`.
-
-While this client holds control, it sends heartbeats every 0.5 seconds.
-After a dropped socket, it attempts transport reconnection for up to 2.5 seconds, within the 3-second lease.
-It never replays a command. A lost reply or timeout can leave delivery or completion unknown.
-Inspect the service state before another action. Do not automatically retry motion.
-Hello, protocol, and replacement failures end the connection attempts.
-
-When the socket is unavailable, `command("stop")` and `command("disable")` use HTTP with the same client ID.
-The fallback checks contract 1 before sending a command.
-Its replies preserve `locked` and `stop_unconfirmed`. A reply still means acceptance, not verified completion.
-Other commands have no HTTP fallback. HTTP requests follow no redirects and have no automatic retries.
-
-Context exit runs `stop_sync` while this client holds control, then closes the connection and stops its threads.
-If the arm is enabled, the service keeps feedback and blocks motion until an explicit `disable` confirms mode 4 and rest.
-The client does not disable the arm automatically. After a confirmed stop, `disable` can complete the disconnect without a service restart.
-The optional `keep_control=True` skips `stop_sync`. It does not keep heartbeats running after exit.
-Calling `close()` directly also ends the threads without renewing or releasing control.
-The service then applies its lease-expiry stop and lock.
-The optional `timeout=5` sets the connection and reply timeout in seconds.
-
-### WebSocket interface
-
-Communicate in this sequence:
-
-1. Within 3 seconds of connection, send `{"type":"hello","protocol":1,"client":"<client-id>"}`.
-2. Wait for the service to send `{"type":"state","state":{...}}`.
-3. Send a request: `{"type":"<type>","id":<integer>,"body":{...}}`.
-4. Match the reply by `id`.
-
-`protocol` is the message format version, currently 1. The hello must contain no other fields.
-The fields in `state` are the same as in `api/state`.
-The service sends state updates when the state changes.
-It also sends an update after each reply.
-It sends at least one update per second.
-
-| Request type | `body` |
-| --- | --- |
-| `command` | Same as the `api/command` body |
-| `heartbeat` | `{}` |
-| `keys` | `{"seq":<seq>,"held":[<key>]}` |
-
-`id` is an integer from 0 to 2^53, selected by the client.
-The service replies in request order, with one reply per request.
-A successful reply is `{"type":"reply","id":<id>,"status":200,"state":{...}}`.
-A rejected reply is `{"type":"reply","id":<id>,"status":<status>,"error":"..."}`.
-Status codes have the same meanings as in the HTTP interface. 500 means an internal service error.
-For an invalid `body`, the service replies with an error and keeps the connection open.
-A successful `command` reply means that the service accepted the command. It does not mean that the action is complete.
-When the action ends, `busy` becomes `false` in the state, and `message` gives the result.
-The service writes one log entry per `command`. It does not log `keys` or `heartbeat`.
-
-The `seq` in `keys` shares an increasing sequence number with the keyboard enable/disable command.
-The service ignores messages whose value is not greater than the previous value.
-`held` lists the keys that are currently held: W, A, S, D, Q, E, R, F, Z, and X.
-While a key is held, the client must resend the message within 0.4 seconds. The Lab Console resends it every 150 ms.
-If the service receives no update within 0.4 seconds, it stops jogging and disables keyboard control.
-
-For close codes 4400, 4426, or 1013, the service sends `{"type":"error","status":<status>,"error":"..."}` before it closes the connection.
-
-| Close code | Meaning |
-| --- | --- |
-| 4400 | Invalid hello or request format |
-| 4426 | `protocol` does not match the service. Update the client |
-| 4409 | A new connection with the same client ID replaced this connection |
-| 1013 | Connection capacity is full |
-| 1001 | Service shutdown. The service sends the final state before closure |
-| 1011 | The service failed while it handled the connection |
-| 1002, 1003, 1007, 1009 | Invalid frame format, binary message, text that is not UTF-8, or an oversized message |
-
-Connection rules:
-
-- Messages must be UTF-8 text of no more than 4096 bytes.
-- The service sends a ping every 5 seconds. It closes the connection if it receives no frames for 15 seconds.
-- Up to 8 client IDs can have connections after hello at the same time.
-- Up to 8 connections can wait for hello at the same time. When a new connection exceeds this limit, the service closes the connection that waited longest.
-- If `GET api/ws` is not a WebSocket upgrade request, the service returns HTTP 426.
-- When the same client ID sends hello again, the service closes the old connection.
-- The service immediately disables a client's keyboard control when its latest connection closes.
-  The same applies when a new connection with the same client ID replaces it.
-
-Connection closure does not end the control lease.
-If the service or proxy closes the connection, the client keeps control if it reconnects and renews within 3 seconds.
-During a network interruption, the service might not detect connection closure. The key timeout and control lease stop the robot.
+The `keys` command body is `{"action":"keys","seq":<seq>,"held":[<key>]}`.
+`seq` shares one increasing sequence with the keyboard on and off commands. The service ignores a message that is not greater than the last value.
+`held` lists the keys that are held now: W, A, S, D, Q, E, R, F, Z, or X.
+While a key is held, the client must send it again within 0.4 seconds. The lab console sends it again every 150 ms.
+If the service receives no update within 0.4 seconds, it stops the jog and disables keyboard control.
+The service log does not record `keys` requests.
 
 ## Stage service API
 

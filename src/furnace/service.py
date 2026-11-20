@@ -33,6 +33,8 @@ from .state import StateError, StateStore
 
 # Minutes without a lease renewal before an orphaned run cools down.
 ORPHAN_GRACE_MIN = 15
+# While locked after a failed stop, the poll loop repeats the stop at this interval.
+STOP_RETRY_S = 5.0
 FRAME_METADATA_FIELDS = (
     "temperature_sample_time",
     "temperature_c",
@@ -161,6 +163,7 @@ class FurnaceService:
         self._end_gas_until_c = None
         self._gas_targets = {}
         self._last_persist_at = self.clock()
+        self._stop_retry_at = None
         self._notifications = []
         self.on_sequence_end = None
         self.events = EventLog(clock=wall_clock)
@@ -923,7 +926,7 @@ class FurnaceService:
                 self.events.add(
                     "error", "Cannot invalidate stale recovery state", error=str(invalidation_error)
                 )
-        # Never remove a durable fault automatically. A failed stop retries once on a new handle.
+        # Never remove a durable fault automatically. A failed stop retries until it succeeds.
         errors = self._stop_outputs(idle=idle)
         if errors:
             self._fault["message"] += "; stop: " + "; ".join(str(item) for item in errors)
@@ -967,7 +970,19 @@ class FurnaceService:
                         self._flow_off()
                     except Exception as cleanup_error:
                         errors.append(cleanup_error)
+        self._stop_retry_at = self.clock() + STOP_RETRY_S if errors else None
         return errors
+
+    def _retry_stop(self):
+        """Repeat a failed stop while locked, for example until a reset USB port returns."""
+        if self._stop_outputs():
+            return
+        self.events.add("info", "Heat and gas stopped on a stop retry")
+        self._fault["message"] += "; stop retry succeeded"
+        try:
+            self._persist()
+        except Exception as error:
+            self._persistence_error = str(error)
 
     def _stop_heat(self):
         """Send STOP. After a failure on an existing handle, reopen the port and send it once more.
@@ -1070,6 +1085,7 @@ class FurnaceService:
                     raise ServiceError(409, "Verify controller STOP before acknowledgement")
                 self._locked = False
                 self._fault = self._error = None
+                self._stop_retry_at = None
                 self._sequence_phase = "idle"
                 self._sequence_running = False
                 try:
@@ -1104,6 +1120,13 @@ class FurnaceService:
             return self.status()
         lease = self.lease.snapshot()
         with self._operation_lock:
+            if (
+                not self._closed
+                and self._locked
+                and self._stop_retry_at is not None
+                and self.clock() >= self._stop_retry_at
+            ):
+                self._retry_stop()
             if self._closed or not self.connected or self._locked:
                 return self._status_locked(lease)
             try:

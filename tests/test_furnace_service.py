@@ -15,7 +15,7 @@ import serial
 from furnace import controller as p
 from furnace.config import FurnaceConfig
 from furnace.controller import Furnace, MFCFlowController
-from furnace.service import FRAME_METADATA_FIELDS, FurnaceService
+from furnace.service import FRAME_METADATA_FIELDS, STOP_RETRY_S, FurnaceService
 from furnace.sim import FurnaceSerial, MFCSerial
 from furnace.state import StateError, StateStore
 from labkit.errors import ServiceError
@@ -584,6 +584,61 @@ def test_poll_fault_after_furnace_usb_reset_stops_heat_on_a_new_handle(lab):
     assert lab.service.connected
     lab.service.lease.acquire("operator")
     assert not lab.service.acknowledge(client="operator")["locked"]
+
+
+def unplug(transport):
+    """Model a USB reset with an absence: old writes fail and a new open fails until replug."""
+
+    def dead(data):
+        raise serial.SerialException("write failed: [Errno 5] Input/output error")
+
+    def absent():
+        raise serial.SerialException("could not open port: No such file or directory")
+
+    transport.write, transport.open = dead, absent
+
+    def back():
+        del transport.write, transport.open
+
+    return back
+
+
+def test_failed_stop_retries_while_locked_until_the_port_returns(lab):
+    lab.service.start_sequence(
+        recipe(hold=60, gas={0: 20}), end_gas={}, end_gas_until_c=30, client="operator"
+    )
+    enter_hold(lab)
+    back = unplug(lab.serial)
+    assert lab.service.poll_once()["locked"]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 2
+    lab.clock.advance(STOP_RETRY_S)
+    lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] == 2
+    back()
+    lab.clock.advance(STOP_RETRY_S / 2)
+    lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] == 2
+    lab.clock.advance(STOP_RETRY_S / 2)
+    result = lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert result["locked"] and result["connected"]
+    assert result["fault"]["message"].endswith("; stop retry succeeded")
+    before = len(writes(lab.serial))
+    lab.clock.advance(STOP_RETRY_S)
+    lab.service.poll_once()
+    assert len(writes(lab.serial)) == before
+
+
+def test_acknowledge_ends_stop_retries(lab, monkeypatch):
+    lab.service.set_gas_flow(0, 20, client="operator")
+    monkeypatch.setattr(lab.service, "_flow_off", lambda: (_ for _ in ()).throw(OSError("MFC")))
+    assert lab.service.stop_sequence()["locked"]
+    lab.service.lease.acquire("operator")
+    assert not lab.service.acknowledge(client="operator")["locked"]
+    lab.service.apply_setpoint(30, 10, client="operator")
+    lab.clock.advance(STOP_RETRY_S)
+    lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] != 1
 
 
 def test_gas_usb_reset_at_step_change_stops_gas_on_a_new_handle(lab):
